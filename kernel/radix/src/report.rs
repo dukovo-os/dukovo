@@ -101,13 +101,15 @@ pub fn write_heap(line: &mut dyn FnMut(fmt::Arguments<'_>)) {
     let stats = HEAP.stats();
     line(format_args!(
         "Heap: {} objects in use ({}), {} cached in magazines, {} of slabs, {} large blocks \
-         ({}); {} failed requests, {} damaged objects found",
+         ({}), {} areas ({}); {} failed requests, {} damaged objects found",
         stats.objects,
         Size(stats.object_bytes).to_string_buf().as_str(),
         stats.cached,
         Size(stats.slab_bytes).to_string_buf().as_str(),
         stats.large_blocks,
         Size(stats.large_bytes).to_string_buf().as_str(),
+        stats.areas,
+        Size(stats.area_bytes).to_string_buf().as_str(),
         stats.failures,
         stats.corruptions
     ));

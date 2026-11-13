@@ -208,6 +208,32 @@ fn names(volume: &Volume) -> BTreeSet<String> {
 }
 
 #[test]
+fn changes_to_free_space_that_follow_on_are_noted_as_one() {
+    use crate::space::{Log, note};
+    let mut log: Log = mem::vec();
+    // Sixteen blocks taken one after another, as a file's are.
+    for at in (0..64 << 10).step_by(4096) {
+        note(&mut log, at, at + 4096, false).unwrap();
+    }
+    // A gap, then a block taken and the two after it freed.
+    let at = 1 << 20;
+    note(&mut log, at, at + 4096, false).unwrap();
+    note(&mut log, at + 4096, at + 8192, true).unwrap();
+    note(&mut log, at + 8192, at + 12288, true).unwrap();
+    // A range freed again before the one it follows is not joined to it.
+    note(&mut log, at, at + 4096, true).unwrap();
+    assert_eq!(
+        &log[..],
+        &[
+            (0, 64 << 10, false),
+            (at, at + 4096, false),
+            (at + 4096, at + 12288, true),
+            (at, at + 4096, true)
+        ]
+    );
+}
+
+#[test]
 fn a_commit_with_nothing_changed_writes_nothing() {
     let image = mkfs_empty(&[]);
     let disk = writable(&image);

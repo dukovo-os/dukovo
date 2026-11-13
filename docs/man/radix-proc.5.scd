@@ -190,13 +190,17 @@ _/processes/meminfo_
 	Memory in KiB, each value followed by *KiB*: *total*, the memory the
 	kernel manages; *free*; and what each owner holds: *kernel*,
 	*page_tables*, *heap_slabs*, *large_heap_blocks*, *mapped_areas*,
-	*per_cpu_caches*, *memory_objects* and *page_cache*. The page cache
-	is the files' data in memory (*radix-files*(7)), which the kernel
-	gives back when memory runs low. Then *swap_total* and *swap_free*,
-	the room of the swap areas on and how much of it is free (*swapon*(8)),
-	and *hardware_corrupted*, the memory a machine check said went bad,
-	which is out of use for good or leaves use when freed (Linux's
-	*HardwareCorrupted*; *dukovo-boot*(7)).
+	*per_cpu_caches*, *memory_objects* and *page_cache*.
+	*large_heap_blocks* is the kernel heap's requests over 8 KiB, each
+	served by a block of memory of its own or, when no block that large
+	is free, by single pages the heap maps one after another;
+	*mapped_areas* is the kernel's stacks and the other memory it maps
+	with guard pages. The page cache is the files' data in memory
+	(*radix-files*(7)), which the kernel gives back when memory runs low.
+	Then *swap_total* and *swap_free*, the room of the swap areas on and
+	how much of it is free (*swapon*(8)), and *hardware_corrupted*, the
+	memory a machine check said went bad, which is out of use for good or
+	leaves use when freed (Linux's *HardwareCorrupted*; *dukovo-boot*(7)).
 
 _/processes/stat_
 	A line per online CPU, *cpu*_n_*:* then the fields *user_ns*,

@@ -139,8 +139,25 @@ classes (`class.rs`), 16 bytes to 8 KiB: 16 bytes apart up to 64 bytes,
 then a quarter of a power of two apart, so above 64 bytes rounding wastes
 less than a fifth of an object. An object's alignment is the largest power of two dividing its size,
 up to a page; a request with a stricter alignment moves up to the first
-class that provides it. Larger requests get a block of frames of their own
-from the frame allocator.
+class that provides it. Larger requests, up to 4 MiB, get a block of
+frames of their own from the frame allocator.
+
+A block is physically contiguous, and running out of contiguous memory is
+not running out of memory: as a machine runs, its free memory breaks into
+pieces, and a request for 256 KiB can fail with a gigabyte free. So a
+large request from a caller that may sleep, aligned to a page or less and
+not limited to the first 4 GiB, first asks for a block without reclaiming
+anything for it; if none is free, the heap takes a frame for each page,
+anywhere in memory, and maps them one after another in the mapping window
+as an *area* (ADR 0524). Its frames come with reclaim, as a small
+request's do. The heap maps areas only for callers that may wait for the
+other CPUs (interrupts on, outside an interrupt handler, no spin lock
+held), since releasing one flushes it from every CPU's TLB. An area freed
+by a caller that may not wait goes on a list linked through the areas'
+own first bytes, and the next large request or free that may wait, or the
+reclaim hook, releases it. The first frame of an area keeps its page
+count in its record, and a free marks it there in one atomic step, so a
+second free is found even when it races the first.
 
 Each class has a slab cache (`slab.rs`). A slab is a block of 1 to 8
 frames, the smallest that holds eight objects (for the classes above
@@ -212,7 +229,14 @@ other areas that need contiguous virtual memory. `radix_mm::Ranges`
 free extents; every area gets an unmapped guard page below it, so a stack
 overflow faults (and is reported as such) instead of running into the next
 area. `map_area` maps fresh zeroed frames there; `unmap_area` unmaps them,
-shoots the range down and frees the frames.
+shoots the range down and frees the frames. The heap's areas are reserved
+with `reserve_area`, mapped a page at a time with `map_area_page` as the
+heap takes their frames, and given back with `release_area`, which hands
+the frames to the heap to free. `area_frame` reads which frame a page of
+the window maps without taking the window's lock, which is safe because
+the window's page tables are never freed. A window whose free space is in
+too many pieces to take a range back (256 extents) keeps it out of use,
+which costs only addresses.
 
 SMEP (CR4 bit 20) makes the kernel fault if it runs code from a user page,
 and SMAP (bit 21) if it touches one without first setting `EFLAGS.AC`
@@ -364,7 +388,13 @@ the real thing.
 
 **Unit tests** (`cargo test`, run by `ob test unit`) cover each module on
 the host with hand-written cases, including multi-threaded heap tests in
-which each host thread plays a CPU.
+which each host thread plays a CPU. For the heap's areas, the host
+platform has a mapping window of host memory, and the tests break memory
+into single frames (`stress::break_up`) and check that large requests get
+areas while callers that may not sleep or may not wait do not, that an
+area freed where its caller may not wait is released by the next caller
+that may or by the reclaim hook, that a failed request gives back every
+frame and page of the window it took, and that wrong frees are reported.
 
 **Property tests** use proptest (ADR 0019) to run random operation
 sequences against a model:
@@ -389,7 +419,7 @@ bounds, not a sample:
 | `classes_fit_requests` | for every size up to 8 KiB + 1 and alignment up to 8 KiB, the chosen class is the smallest that fits, and every class holds 4 to 65,534 objects per slab |
 | `large_orders_fit_requests` | for every size and alignment, the order chosen for a large request is the smallest block of frames that fits |
 | `magazines_hold_what_was_pushed` | for every capacity up to 30 and every sequence of 4 pushes and pops, a CPU's two magazines never lose or duplicate an object, and a push fails only when both are full |
-| `ranges_never_overlap` | on a 16-page window with 4 extent slots, every sequence of 3 operations, each an allocation (1 to 8 pages, alignment up to 4 pages) or a release of a live range, keeps the table sorted and disjoint, never hands out overlapping ranges, and accounts for every byte |
+| `ranges_never_overlap` | on a 16-page window with 4 extent slots, every sequence of 3 operations, each an allocation (1 to 8 pages, alignment up to 4 pages) or a release of a live range, keeps the table sorted and disjoint, never hands out overlapping ranges, accounts for every byte, and finds a range taken until it is released and not after |
 | `running_spaces_never_share_an_identifier` | with 3 identifiers, 2 CPUs and 4 spaces, every sequence of 4 switches leaves the two CPUs' spaces with different identifiers, through any rollover |
 
 The bounds keep each harness within minutes; the property tests run the
@@ -405,8 +435,11 @@ concurrency; the stress test covers that.
 
 **Boot tests** run the real thing in QEMU (`ob test`): `mm-stress` has 4
 CPUs on 2 NUMA nodes allocate and free about 24 million heap objects of
-random sizes and contexts, and map and unmap 800 areas with shootdowns, then
-checks that every frame is back and nothing was damaged; `tlb` checks
+random sizes and contexts, and map and unmap 800 areas with shootdowns,
+then breaks memory into single frames and has every CPU make 120 large
+heap requests at once, which areas must serve, freeing one in three with
+interrupts disabled; it then checks that every frame is back and nothing
+was damaged; `tlb` checks
 shootdowns and address-space switches across CPUs; `stack-overflow`, `smep`
 and `smap` check that the protections fault and are reported correctly;
 and every normal boot checks the KASLR layout, W^X and the zones.
@@ -427,6 +460,12 @@ and every normal boot checks the KASLR layout, W^X and the zones.
   `docs/design/scheduler.md`). Pages swapped out stay charged to their
   domain, and come back one at a time, with no read-ahead; there are no
   swap files yet.
+- Memory breaks into pieces as it does on any kernel. The heap's large
+  requests fall back to areas, but its slabs (blocks of up to 32 KiB)
+  and devices' memory need contiguous blocks, which reclaim and, at
+  worst, the out-of-memory policy find room for. Frames are not grouped
+  by how long they live, and no compaction moves pages to join free
+  blocks (`docs/deferred.md`).
 - NUMA has been tested only on QEMU's emulated nodes. Memory hot-plug is
   not supported; the frame records are sized for the memory map at boot.
 - The kernel image's slide has about 9 bits of entropy, which is typical

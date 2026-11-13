@@ -7,7 +7,8 @@
 //! [`crate::class`]: each class has a cache of slabs ([`crate::slab`]) and,
 //! in front of it, a magazine layer ([`crate::magazine`]) so that most
 //! allocations and frees stay on the CPU making them, without a shared
-//! lock. Larger requests take a block of frames of their own.
+//! lock. Larger requests take a block of frames of their own or, when no
+//! block that large is free, an area (ADR 0524).
 //!
 //! Every call states its context with [`Flags`] (spec 3.4), and every
 //! failure is an [`AllocError`] the caller handles. The kernel's global
@@ -26,21 +27,43 @@
 //! held, and the heap's own bookkeeping (magazines, per-CPU caches) is
 //! allocated without reclaim. So [`Heap::drain`], the reclaim hook, can
 //! take every lock.
+//!
+//! # Areas
+//!
+//! Running out of contiguous memory is not running out of memory: as a
+//! machine runs, its free memory breaks into pieces, and a request for a
+//! block of 64 KiB can fail with a gigabyte free. So a large request from
+//! a caller that may sleep, aligned to a page or less, first asks for a
+//! block without reclaiming anything for it and, if none is free, takes a
+//! frame for each page, anywhere in memory, and has the platform map them
+//! one after another in the kernel's mapping window, with an unmapped
+//! guard page below ([`Platform::reserve_area`]). The frames come with
+//! reclaim, as small requests do. Areas are built and released holding
+//! none of the heap's locks.
+//!
+//! The first frame of an area keeps its page count in the frame's
+//! owner-defined word, and the free that marks it freed is the only one
+//! that goes on: of two frees of an area, the other is reported as a
+//! double free. Unmapping an area waits for every CPU to flush it from its
+//! TLB, which a caller holding a spin lock may not do, so where the caller
+//! may not wait ([`Platform::may_wait`]) the area goes on a list of areas
+//! to release, linked through the areas' own first bytes; the next large
+//! request or free that may wait releases them, as does the reclaim hook.
 
 #![allow(unsafe_code)]
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use radix_sync::{Once, RawSpinLock, SpinLock};
 
 use crate::class::{self, CLASSES, Class};
-use crate::context::{AllocError, Context, Flags};
+use crate::context::{AllocError, Context, Flags, ZoneLimit};
 use crate::frames::Frames;
 use crate::magazine::{Depot, Loaded, MAGAZINE_BYTES, Magazine};
-use crate::page::{Owner, PAGE_SHIFT, PAGE_SIZE};
+use crate::page::{Owner, PAGE_SHIFT, PAGE_SIZE, State};
 use crate::platform::{MAX_CPUS, NoInterrupts, Platform};
 use crate::raw;
 use crate::slab::{self, Corruption, CorruptionKind, Env, SlabCache};
@@ -58,6 +81,10 @@ const DEPOT_EMPTY: usize = 32;
 
 /// Flags for the heap's own bookkeeping: no reserves, no zeroing.
 const BOOKKEEPING: Flags = Flags::MAY_SLEEP;
+
+/// Set beside an area's page count, in its first frame's owner-defined
+/// word, once the area is freed. The area's other frames hold 0 there.
+const AREA_FREED: u32 = 1 << 31;
 
 /// One CPU's magazines, in a frame of its own on the CPU's node.
 ///
@@ -171,6 +198,11 @@ pub struct HeapStats {
     pub large_blocks: u64,
     /// Bytes in those blocks.
     pub large_bytes: u64,
+    /// Areas mapped for large requests, those freed but not yet released
+    /// included.
+    pub areas: u64,
+    /// Bytes in those areas.
+    pub area_bytes: u64,
     /// Requests that failed.
     pub failures: u64,
     /// Damage found.
@@ -186,6 +218,11 @@ pub struct Heap {
     magazines: AtomicU64,
     large_blocks: AtomicU64,
     large_pages: AtomicU64,
+    areas: AtomicU64,
+    area_pages: AtomicU64,
+    /// The first area of the list of areas freed where their callers
+    /// could not wait to release them, or 0.
+    retired: AtomicUsize,
     failures: AtomicU64,
     corruptions: AtomicU64,
     on_corruption: Once<fn(&Corruption)>,
@@ -203,6 +240,9 @@ impl Heap {
             magazines: AtomicU64::new(0),
             large_blocks: AtomicU64::new(0),
             large_pages: AtomicU64::new(0),
+            areas: AtomicU64::new(0),
+            area_pages: AtomicU64::new(0),
+            retired: AtomicUsize::new(0),
             failures: AtomicU64::new(0),
             corruptions: AtomicU64::new(0),
             on_corruption: Once::new(),
@@ -252,7 +292,7 @@ impl Heap {
         let platform = self.frames.platform().ok_or(AllocError)?;
         let env = || Env { frames: self.frames, direct_map: self.frames.direct_map() };
         let Some(class) = Class::for_layout(layout.size(), layout.align()) else {
-            return self.alloc_large(env(), layout, flags);
+            return self.alloc_large(platform, env(), layout, flags);
         };
         let addr = match self.take_from_magazines(platform, class) {
             Some(addr) => addr,
@@ -354,17 +394,81 @@ impl Heap {
         Err(AllocError)
     }
 
+    /// Serves a request too large for a slab: with a block of frames, or
+    /// an area where no block is free ([Areas](self#areas)).
     fn alloc_large(
         &self,
+        platform: &'static dyn Platform,
         env: Env<'static>,
         layout: Layout,
         flags: Flags,
     ) -> Result<NonNull<u8>, AllocError> {
         let order = class::large_order(layout.size(), layout.align()).ok_or(AllocError)?;
+        // An area is not physically contiguous, so it serves no caller that
+        // asked for memory a device can reach, and its pages are aligned to
+        // a page at most.
+        let mappable = flags.context == Context::MaySleep
+            && flags.zone == ZoneLimit::Any
+            && layout.align() <= PAGE_SIZE
+            && platform.may_wait();
+        if mappable {
+            self.release_retired(platform);
+            if let Ok(phys) = self.frames.alloc_inner(order, flags, Owner::Heap, 0, false, false) {
+                return self.block(env, phys, order);
+            }
+            if let Some(area) = self.alloc_area(platform, layout.size(), flags)? {
+                return Ok(area);
+            }
+        }
         let phys = self.frames.alloc(order, flags, Owner::Heap)?;
+        self.block(env, phys, order)
+    }
+
+    /// The block of 2^`order` frames at `phys`, counted.
+    fn block(&self, env: Env<'static>, phys: u64, order: u32) -> Result<NonNull<u8>, AllocError> {
         self.large_blocks.fetch_add(1, Ordering::Relaxed);
         self.large_pages.fetch_add(1 << order, Ordering::Relaxed);
         NonNull::new((env.direct_map + phys as usize) as *mut u8).ok_or(AllocError)
+    }
+
+    /// Maps a frame for each page of `size` bytes, from anywhere in
+    /// memory, one after another in an area of the mapping window; `None`
+    /// if the window has no room for one. A frame that cannot be had
+    /// fails the request, and gives back what it took.
+    fn alloc_area(
+        &self,
+        platform: &'static dyn Platform,
+        size: usize,
+        flags: Flags,
+    ) -> Result<Option<NonNull<u8>>, AllocError> {
+        let pages = size.div_ceil(PAGE_SIZE);
+        let count = u32::try_from(pages).map_err(|_| AllocError)?;
+        let Some(area) = platform.reserve_area(pages) else { return Ok(None) };
+        self.areas.fetch_add(1, Ordering::Relaxed);
+        self.area_pages.fetch_add(pages as u64, Ordering::Relaxed);
+        // Zeroed, if asked, through the area once it is mapped.
+        let frame_flags = Flags { zero: false, ..flags };
+        for page in 0..pages {
+            let mapped = self.frames.alloc(0, frame_flags, Owner::Heap).and_then(|phys| {
+                if let Some(info) = self.frames.info(phys) {
+                    info.set_aux(if page == 0 { count } else { 0 });
+                }
+                platform.map_page(area + page * PAGE_SIZE, phys).inspect_err(|_| {
+                    // Cannot fail: the frame was just allocated.
+                    let _ = self.frames.free(phys, 0, Owner::Heap);
+                })
+            });
+            if mapped.is_err() {
+                self.release(platform, area, pages);
+                return Err(AllocError);
+            }
+        }
+        if flags.zero {
+            // SAFETY: the area was just mapped, writable, for this request
+            // alone.
+            unsafe { raw::zero(area, size) };
+        }
+        Ok(NonNull::new(area as *mut u8))
     }
 
     /// Frees memory that [`Heap::alloc`] returned.
@@ -381,7 +485,7 @@ impl Heap {
         let Some((platform, env)) = self.env() else { return };
         let addr = ptr.as_ptr() as usize;
         let Some(class) = Class::for_layout(layout.size(), layout.align()) else {
-            return self.free_large(env, addr, layout);
+            return self.free_large(platform, env, addr, layout);
         };
         let Some(location) = env.locate(class, addr) else {
             let size = class.size();
@@ -510,7 +614,13 @@ impl Heap {
         }
     }
 
-    fn free_large(&self, env: Env<'static>, addr: usize, layout: Layout) {
+    fn free_large(
+        &self,
+        platform: &'static dyn Platform,
+        env: Env<'static>,
+        addr: usize,
+        layout: Layout,
+    ) {
         let Some(order) = class::large_order(layout.size(), layout.align()) else {
             let size = layout.size();
             return self.report(Corruption {
@@ -519,6 +629,9 @@ impl Heap {
                 size,
             });
         };
+        if let Some(first) = platform.area_frame(addr) {
+            return self.free_area(platform, addr, first, layout.size().div_ceil(PAGE_SIZE));
+        }
         let phys = addr.wrapping_sub(env.direct_map) as u64;
         match self.frames.free(phys, order, Owner::Heap) {
             Ok(()) => {
@@ -534,6 +647,96 @@ impl Heap {
                 address: addr,
                 size: PAGE_SIZE << order,
             }),
+        }
+    }
+
+    /// Frees the area of `pages` pages at `addr`, whose first page maps the
+    /// frame at `first`: at once where the caller may wait for the other
+    /// CPUs, or else onto the list of areas to release.
+    fn free_area(&self, platform: &'static dyn Platform, addr: usize, first: u64, pages: usize) {
+        let size = pages * PAGE_SIZE;
+        let damage = |kind| Corruption { kind, address: addr, size };
+        let record = self
+            .frames
+            .info(first)
+            .filter(|info| info.state() == State::Allocated && info.owner() == Owner::Heap);
+        let Some((record, count)) = record.zip(u32::try_from(pages).ok()) else {
+            return self.report(damage(CorruptionKind::BadPointer));
+        };
+        if !addr.is_multiple_of(PAGE_SIZE) {
+            return self.report(damage(CorruptionKind::BadPointer));
+        }
+        match record.change_aux(count, count | AREA_FREED) {
+            Ok(_) => {}
+            Err(aux) if aux == count | AREA_FREED => {
+                return self.report(damage(CorruptionKind::DoubleFree));
+            }
+            Err(_) => return self.report(damage(CorruptionKind::BadPointer)),
+        }
+        if platform.may_wait() {
+            self.release_retired(platform);
+            self.release(platform, addr, pages);
+        } else {
+            self.retire(addr, pages);
+        }
+    }
+
+    /// Puts the freed area of `pages` pages at `addr` on the list of areas
+    /// to release, with a record in its first bytes: the next area on the
+    /// list, and its page count.
+    fn retire(&self, addr: usize, pages: usize) {
+        let mut next = self.retired.load(Ordering::Relaxed);
+        loop {
+            // SAFETY: the area stays mapped until it is released, and is the
+            // heap's now: its caller gave it up, and the free that marked it
+            // freed is the only one that gets here.
+            unsafe {
+                raw::write_word(addr, next);
+                raw::write_word(addr + 8, pages);
+            }
+            match self.retired.compare_exchange_weak(
+                next,
+                addr,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(head) => next = head,
+            }
+        }
+    }
+
+    /// Releases the areas on the list of areas to release. Only where the
+    /// caller may wait for the other CPUs.
+    fn release_retired(&self, platform: &'static dyn Platform) {
+        if self.retired.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let mut next = self.retired.swap(0, Ordering::Acquire);
+        while next != 0 {
+            // SAFETY: an area on the list stays mapped until it is released,
+            // below, and its record was written before it went on the list,
+            // which the swap's acquire sees.
+            let (after, pages) = unsafe { (raw::read_word(next), raw::read_word(next + 8)) };
+            self.release(platform, next, pages);
+            next = after;
+        }
+    }
+
+    /// Unmaps the area of `pages` pages at `addr` and frees the frames it
+    /// maps. Only where the caller may wait for the other CPUs.
+    fn release(&self, platform: &'static dyn Platform, addr: usize, pages: usize) {
+        let mut lost = false;
+        let released = platform.release_area(addr, pages, &mut |phys| {
+            lost |= self.frames.free(phys, 0, Owner::Heap).is_err();
+        });
+        if released.is_ok() {
+            self.areas.fetch_sub(1, Ordering::Relaxed);
+            self.area_pages.fetch_sub(pages as u64, Ordering::Relaxed);
+        }
+        if released.is_err() || lost {
+            let size = pages * PAGE_SIZE;
+            self.report(Corruption { kind: CorruptionKind::BadPointer, address: addr, size });
         }
     }
 
@@ -581,13 +784,18 @@ impl Heap {
     }
 
     /// Returns every cached object to its slab and every empty slab to the
-    /// frame allocator. The frame allocator calls it before failing a
+    /// frame allocator, and releases the areas freed where their callers
+    /// could not wait to. The frame allocator calls it before failing a
     /// `MaySleep` allocation; tests call it to check for leaks.
     ///
     /// Where it may not sleep, it cannot wait to reach into other CPUs'
-    /// caches ([`CpuCache`]), and drains this CPU's alone.
+    /// caches ([`CpuCache`]), and drains this CPU's alone; where it may not
+    /// wait for the other CPUs, it leaves the areas for later.
     pub fn drain(&self) {
         let Some((platform, env)) = self.env() else { return };
+        if platform.may_wait() {
+            self.release_retired(platform);
+        }
         let empty = |classes: &mut [Loaded; CLASSES], class: Class| {
             let slot = &mut classes[class.index()];
             [slot.loaded.take(), slot.previous.take()]
@@ -706,6 +914,8 @@ impl Heap {
         stats.cpus = self.cpus.iter().filter(|slot| slot.get().is_some()).count() as u64;
         stats.large_blocks = self.large_blocks.load(Ordering::Relaxed);
         stats.large_bytes = self.large_pages.load(Ordering::Relaxed) * PAGE_SIZE as u64;
+        stats.areas = self.areas.load(Ordering::Relaxed);
+        stats.area_bytes = self.area_pages.load(Ordering::Relaxed) * PAGE_SIZE as u64;
         stats.failures = self.failures.load(Ordering::Relaxed);
         stats.corruptions = self.corruptions.load(Ordering::Relaxed);
         stats
@@ -796,7 +1006,10 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::tests::{become_cpu, heap_with};
+    use crate::stress::break_up;
+    use crate::tests::{
+        HostPlatform, become_cpu, heap_with, heap_with_window, set_maps_left, set_may_wait,
+    };
 
     fn layout(size: usize, align: usize) -> Layout {
         Layout::from_size_align(size, align).unwrap()
@@ -876,6 +1089,157 @@ mod tests {
         assert_eq!(heap.stats().corruptions, 4);
         // SAFETY: allocated above with this layout.
         unsafe { heap.free(c, small) };
+    }
+
+    /// Checks that the heap holds no area and the window is all free.
+    fn assert_no_areas(heap: &Heap, platform: &HostPlatform, window: usize) {
+        let stats = heap.stats();
+        assert_eq!((stats.areas, stats.area_bytes), (0, 0), "{stats:?}");
+        assert_eq!(platform.window_use(), ((window * PAGE_SIZE) as u64, 0));
+    }
+
+    #[test]
+    fn large_requests_take_areas_when_memory_is_in_pieces() {
+        let (heap, platform) = heap_with_window(256, 64);
+        let frames = heap.frames();
+        let pieces = break_up(frames);
+        let free = frames.free_pages();
+        // Ten pages, which a block would round up to sixteen.
+        let size = 10 * PAGE_SIZE - 100;
+        let big = layout(size, 8);
+        // A caller that may not sleep, or that needs more than a page's
+        // alignment, gets no area, and no block is free.
+        assert!(heap.alloc(big, Flags::ATOMIC).is_err());
+        assert!(heap.alloc(layout(size, 2 * PAGE_SIZE), Flags::MAY_SLEEP).is_err());
+        let ptr = heap.alloc(big, Flags::MAY_SLEEP.zeroed()).unwrap();
+        let addr = ptr.as_ptr().addr();
+        assert!(platform.area_frame(addr).is_some());
+        let stats = heap.stats();
+        assert_eq!((stats.areas, stats.area_bytes), (1, 10 * PAGE_SIZE as u64));
+        assert_eq!((stats.large_blocks, stats.failures), (0, 2));
+        assert_eq!(frames.free_pages(), free - 10);
+        assert_eq!(frames.owner_pages(Owner::Heap), 10);
+        assert_eq!(platform.window_use(), (53 * PAGE_SIZE as u64, 10));
+        // SAFETY: the heap just gave us `size` zeroed bytes.
+        let bytes = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), size) };
+        assert!(bytes.iter().all(|&b| b == 0));
+        bytes.fill(0xa5);
+        // SAFETY: allocated above with this layout.
+        unsafe { heap.free(ptr, big) };
+        assert_eq!(frames.free_pages(), free);
+        assert_no_areas(heap, platform, 64);
+        pieces.join();
+        // With memory whole again, a block serves the request.
+        let ptr = heap.alloc(big, Flags::MAY_SLEEP).unwrap();
+        assert_eq!((heap.stats().large_blocks, heap.stats().areas), (1, 0));
+        // SAFETY: allocated above with this layout.
+        unsafe { heap.free(ptr, big) };
+        assert_drained(heap);
+    }
+
+    #[test]
+    fn areas_freed_where_the_caller_may_not_wait_are_released_later() {
+        let (heap, platform) = heap_with_window(256, 128);
+        let frames = heap.frames();
+        let pieces = break_up(frames);
+        let free = frames.free_pages();
+        let big = layout(5 * PAGE_SIZE, 8);
+        let [a, b, c] = [(); 3].map(|()| heap.alloc(big, Flags::MAY_SLEEP).unwrap());
+        set_may_wait(false);
+        // A caller that may not wait for the other CPUs gets no area.
+        assert!(heap.alloc(big, Flags::MAY_SLEEP).is_err());
+        // SAFETY: allocated above with this layout.
+        unsafe {
+            heap.free(a, big);
+            heap.free(b, big);
+        }
+        // A second free of an area that waits to be released is found, and
+        // changes nothing.
+        // SAFETY: deliberately wrong, to test the check: the area is still
+        // mapped and the heap's.
+        unsafe { heap.free(a, big) };
+        assert_eq!(heap.stats().corruptions, 1);
+        // The areas stay mapped until a caller that may wait comes.
+        heap.drain();
+        assert_eq!(heap.stats().areas, 3);
+        assert_eq!(frames.free_pages(), free - 15);
+        set_may_wait(true);
+        // The next large request releases them first.
+        let d = heap.alloc(big, Flags::MAY_SLEEP).unwrap();
+        assert_eq!(heap.stats().areas, 2);
+        assert_eq!(frames.free_pages(), free - 10);
+        set_may_wait(false);
+        // SAFETY: allocated above with this layout.
+        unsafe {
+            heap.free(c, big);
+            heap.free(d, big);
+        }
+        set_may_wait(true);
+        // As does the reclaim hook.
+        heap.drain();
+        assert_eq!(frames.free_pages(), free);
+        assert_no_areas(heap, platform, 128);
+        assert_eq!(heap.stats().corruptions, 1);
+        pieces.join();
+        assert_eq!(frames.owner_pages(Owner::Heap), 0);
+        frames.check().unwrap();
+    }
+
+    #[test]
+    fn a_failed_area_gives_back_what_it_took() {
+        let (heap, platform) = heap_with_window(256, 512);
+        let frames = heap.frames();
+        let pieces = break_up(frames);
+        let free = frames.free_pages();
+        // More pages than there are free frames.
+        let more = layout((free as usize + 1) * PAGE_SIZE, 8);
+        assert!(heap.alloc(more, Flags::MAY_SLEEP).is_err());
+        // No memory for a page table, after three pages.
+        set_maps_left(3);
+        assert!(heap.alloc(layout(8 * PAGE_SIZE, 8), Flags::MAY_SLEEP).is_err());
+        set_maps_left(usize::MAX);
+        assert_eq!(frames.free_pages(), free);
+        assert_no_areas(heap, platform, 512);
+        pieces.join();
+        assert_drained(heap);
+        // A window with no room for an area leaves the request to blocks.
+        let (heap, platform) = heap_with_window(256, 4);
+        let frames = heap.frames();
+        let pieces = break_up(frames);
+        let free = frames.free_pages();
+        assert!(heap.alloc(layout(4 * PAGE_SIZE, 8), Flags::MAY_SLEEP).is_err());
+        assert_eq!(frames.free_pages(), free);
+        assert_no_areas(heap, platform, 4);
+        pieces.join();
+        assert_drained(heap);
+    }
+
+    #[test]
+    fn frees_of_areas_are_checked() {
+        let (heap, platform) = heap_with_window(256, 64);
+        let frames = heap.frames();
+        let pieces = break_up(frames);
+        let big = layout(6 * PAGE_SIZE, 8);
+        let ptr = heap.alloc(big, Flags::MAY_SLEEP).unwrap();
+        // SAFETY: deliberately wrong, to test the checks, which reject each
+        // before changing anything: a pointer into the first page, one to
+        // the second, and the right pointer with the wrong size.
+        unsafe {
+            heap.free(ptr.byte_add(8), big);
+            heap.free(ptr.byte_add(PAGE_SIZE), big);
+            heap.free(ptr, layout(9 * PAGE_SIZE, 8));
+        }
+        assert_eq!((heap.stats().corruptions, heap.stats().areas), (3, 1));
+        // SAFETY: allocated above with this layout.
+        unsafe { heap.free(ptr, big) };
+        assert_no_areas(heap, platform, 64);
+        // Once the area is released, its address is no object at all.
+        // SAFETY: deliberately wrong, as above: nothing is mapped there.
+        unsafe { heap.free(ptr, big) };
+        assert_eq!(heap.stats().corruptions, 4);
+        pieces.join();
+        assert_eq!(frames.owner_pages(Owner::Heap), 0);
+        frames.check().unwrap();
     }
 
     static RECLAIM_HEAP: OnceLock<&'static Heap> = OnceLock::new();

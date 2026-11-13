@@ -68,7 +68,8 @@ pub enum Owner {
     PageTable = 1,
     /// A slab of the kernel heap.
     Slab = 2,
-    /// A heap allocation too large for a slab.
+    /// A heap allocation too large for a slab: a block of its own, or a
+    /// frame of an area the heap maps (ADR 0524).
     Heap = 3,
     /// A page of a mapped area (stacks and other mappings with guard pages).
     Area = 4,
@@ -244,6 +245,13 @@ impl PageInfo {
 
     pub(crate) fn set_aux(&self, value: u32) {
         self.aux.store(value, Relaxed);
+    }
+
+    /// Changes `aux` from `current` to `new` in one atomic step, or gives
+    /// what it holds instead: of two callers that find the same value,
+    /// only one changes it.
+    pub(crate) fn change_aux(&self, current: u32, new: u32) -> Result<u32, u32> {
+        self.aux.compare_exchange(current, new, AcqRel, Acquire)
     }
 
     /// For a page of anonymous memory ([`Owner::Anon`]): how many address

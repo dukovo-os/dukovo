@@ -207,7 +207,7 @@ pub fn run() {
     }
     // The store keeps its tables, which may have grown, and each block of
     // its space and object tables made for what the test made at once.
-    let held = |stats: &radix_mm::HeapStats| stats.objects + stats.large_blocks;
+    let held = |stats: &radix_mm::HeapStats| stats.objects + stats.large_blocks + stats.areas;
     let new_blocks = (after.3 - before.3) as u64;
     if held(&after.2) > held(&before.2) + 2 + new_blocks {
         error!(

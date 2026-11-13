@@ -15,7 +15,7 @@ use crate::buddy::{Buddy, MAX_ORDER};
 use crate::class::{self, CLASSES, Class, MAX_SMALL};
 use crate::magazine::{Loaded, Magazine, ROUNDS};
 use crate::page::{Owner, PAGE_SIZE, PageInfo, Region};
-use crate::vrange::RangeTable;
+use crate::vrange::{RangeError, RangeTable};
 
 /// Frames in the zone the buddy proofs use: room for a block of every
 /// order up to [`MAX_ORDER`], which is 2 in the Kani build.
@@ -191,7 +191,9 @@ fn ranges_never_overlap() {
         } else {
             let index: usize = kani::any_where(|&i| i < live);
             let (start, end) = taken[index];
+            assert!(ranges.check_taken(start, end - start).is_ok());
             assert!(ranges.release(start, end - start).is_ok());
+            assert!(ranges.check_taken(start, end - start) == Err(RangeError::AlreadyFree));
             taken[index] = taken[live - 1];
             live -= 1;
         }
