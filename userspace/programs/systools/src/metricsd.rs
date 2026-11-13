@@ -3,4 +3,5 @@
 
 //! metricsd(8): the machine's history (ADR 0484).
 
+mod sample;
 mod store;

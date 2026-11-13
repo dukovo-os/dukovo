@@ -408,10 +408,14 @@ pub fn stat() -> io::Result<Stat> {
 /// `/processes/meminfo`: memory in KiB, by key (`total`, `free`,
 /// `page_cache` and the other owners).
 pub fn meminfo() -> io::Result<Vec<(String, u64)>> {
-    let text = fs::read(format!("{PROC}/meminfo"))?;
-    Ok(pairs(&text)
+    Ok(parse_meminfo(&fs::read(format!("{PROC}/meminfo"))?))
+}
+
+/// The lines of a `meminfo`.
+pub fn parse_meminfo(text: &[u8]) -> Vec<(String, u64)> {
+    pairs(text)
         .map(|(key, value)| (String::from_utf8_lossy(key).into_owned(), number(value)))
-        .collect())
+        .collect()
 }
 
 /// Memory as free(1) shows it, in KiB.
@@ -445,22 +449,31 @@ impl Memory {
 
 /// The system's memory.
 pub fn memory() -> io::Result<Memory> {
-    let info = meminfo()?;
+    Ok(parse_memory(&fs::read(format!("{PROC}/meminfo"))?))
+}
+
+/// The memory a `meminfo` describes.
+pub fn parse_memory(text: &[u8]) -> Memory {
+    let info = parse_meminfo(text);
     let get = |key: &str| info.iter().find(|(k, _)| k == key).map_or(0, |(_, v)| *v);
-    Ok(Memory {
+    Memory {
         total: get("total"),
         free: get("free"),
         cache: get("page_cache"),
         swap_total: get("swap_total"),
         swap_free: get("swap_free"),
-    })
+    }
 }
 
 /// The load averages over 1, 5 and 15 minutes.
 pub fn loadavg() -> [f64; 3] {
-    let Ok(text) = fs::read(format!("{PROC}/loadavg")) else { return [0.0; 3] };
+    fs::read(format!("{PROC}/loadavg")).map_or([0.0; 3], |text| parse_loadavg(&text))
+}
+
+/// The load averages a `loadavg` holds.
+pub fn parse_loadavg(text: &[u8]) -> [f64; 3] {
     let mut averages = [0.0; 3];
-    for (key, value) in pairs(&text) {
+    for (key, value) in pairs(text) {
         let slot = match key {
             b"load_1" => 0,
             b"load_5" => 1,
@@ -491,7 +504,11 @@ pub struct Mount {
 
 /// The mounts.
 pub fn mounts() -> io::Result<Vec<Mount>> {
-    let text = fs::read(format!("{PROC}/mounts"))?;
+    Ok(parse_mounts(&fs::read(format!("{PROC}/mounts"))?))
+}
+
+/// The mounts a `mounts` lists.
+pub fn parse_mounts(text: &[u8]) -> Vec<Mount> {
     let mut mounts = Vec::new();
     for line in text.split(|&b| b == b'\n').filter(|line| !line.is_empty()) {
         let parts: Vec<&[u8]> = line.split(|&b| b == b' ').collect();
@@ -505,7 +522,7 @@ pub fn mounts() -> io::Result<Vec<Mount>> {
             label: label.map(|label| String::from_utf8_lossy(&unescape(label)).into_owned()),
         });
     }
-    Ok(mounts)
+    mounts
 }
 
 /// The number of the process that runs this program.
