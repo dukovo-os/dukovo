@@ -114,6 +114,7 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/commands/systools", "systools"),
     ("system/tests/posix/fuse-test", "fuse-test"),
     ("system/tests/posix/git-https-test", "git-https-test"),
+    ("system/tests/posix/monitoring-test", "monitoring-test"),
     ("system/tests/posix/netservices-test", "netservices-test"),
     ("system/tests/posix/std-test", "std-test"),
     ("system/tests/posix/tls-test", "tls-test"),

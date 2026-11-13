@@ -2570,6 +2570,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitoring-test"
+version = "0.15.0"
+dependencies = [
+ "rustls",
+]
+
+[[package]]
 name = "netproto"
 version = "0.15.0"
 dependencies = [
