@@ -45,8 +45,11 @@ const PROGRAM: &str = "/applications/net.php.php/bin/php";
 /// accept(2) gives is blocking, as the kernel makes it, when the listening
 /// one is not (patch 0010), and host names are looked up with the C
 /// library's gethostbyname(3), as build.sh tells configure, which the
-/// sockets extension's tests do to make their listening socket.
+/// sockets extension's tests do to make their listening socket; and calls
+/// nested too deep end in an Error, not a crash, as build.sh tells
+/// configure the stack grows down.
 const SUITE: &[&str] = &[
+    "Zend/tests/gh18572.phpt",
     "ext/standard/tests/streams/gh8472.phpt",
     "ext/standard/tests/network/gethostbyname_basic003.phpt",
     "ext/standard/tests/network/gethostbynamel_basic1.phpt",

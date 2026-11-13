@@ -103,11 +103,19 @@ cd "$PORT_BUILD/radix"
 # - PHP-FPM reads the length of its listen queue with getsockopt(2)'s
 #   TCP_INFO, which the C library's header names and the kernel has no
 #   answer to: left in, every pass of its process manager would log the
-#   failure.
+#   failure;
+# - the stack grows down, as on every x86-64 system. Configure runs a
+#   program to find out, and in a cross build takes it not to, which
+#   builds PHP without its check of how deep calls go: a function that
+#   calls itself without end, or a comparison of objects nested too
+#   deep, then ends the process with SIGSEGV where PHP throws an Error,
+#   and a PHP-FPM worker dies with the request. PHP knows where Linux's
+#   and the BSDs' stacks end, not Radix's, so it allows calls to go 2 MiB
+#   below where it starts, less 32 KiB, its default for a system it does
+#   not know; a program's stack is 8 MiB (radix-posix(7)).
 # Left at configure's answer for a cross build, which is right for
 # Radix: no sched_getcpu, no pread and pwrite tested (the session files
-# handler then uses lseek and write), no stack limit check (the
-# program does not know where its stack ends) and no JIT.
+# handler then uses lseek and write), and no JIT.
 OPENSSL_CFLAGS="-I$openssl/include" OPENSSL_LIBS="-L$openssl/libraries -lssl -lcrypto" \
 	RE2C="$host/re2c" PREFIX="$prefix" \
 	PHP_OS=Dukovo PHP_UNAME="Dukovo x86_64" PHP_BUILD_PROVIDER=Dukovo \
@@ -115,6 +123,7 @@ OPENSSL_CFLAGS="-I$openssl/include" OPENSSL_LIBS="-L$openssl/libraries -lssl -lc
 	php_cv_func_getaddrinfo=yes ac_cv_func_which_gethostbyname_r=no php_cv_have_write_stdout=yes \
 	php_cv_shm_ipc=yes php_cv_shm_mmap_anon=yes php_cv_shm_mmap_posix=yes \
 	php_cv_have_epoll=no php_cv_func_ptrace=no php_cv_file_proc_mem= php_cv_have_TCP_INFO=no \
+	php_cv_have_stack_limit=yes \
 	x86_64-radix-configure "$PORT_SRC" --bindir="$prefix/bin" --libdir="$prefix/lib" \
 	--datarootdir="$prefix/share" --sysconfdir="$sysconf" --localstatedir="$prefix/var" \
 	--with-libdir=libraries --with-config-file-path="$prefix/etc" --with-config-file-scan-dir= \
@@ -140,7 +149,7 @@ OPENSSL_CFLAGS="-I$openssl/include" OPENSSL_LIBS="-L$openssl/libraries -lssl -lc
 # is the list it wrote), libxml among them, which the XML extensions need.
 for feature in HAVE_LIBXML HAVE_OPENSSL_EXT HAVE_CURL HAVE_ZLIB HAVE_BZ2 HAVE_SOCKETS \
 	HAVE_SYSVSEM HAVE_SYSVSHM HAVE_SHMOP HAVE_GETADDRINFO HAVE_FNMATCH PHP_WRITE_STDOUT \
-	HAVE_SHM_IPC HAVE_SHM_MMAP_ANON HAVE_SHM_MMAP_POSIX HAVE_POLL; do
+	HAVE_SHM_IPC HAVE_SHM_MMAP_ANON HAVE_SHM_MMAP_POSIX HAVE_POLL ZEND_CHECK_STACK_LIMIT; do
 	grep -q "^#define $feature 1" main/php_config.h || {
 		echo "php's configure did not set $feature" >&2
 		exit 1
