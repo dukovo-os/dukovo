@@ -6,10 +6,12 @@
 # a change to sshd's file that takes authd's socket from its view, so
 # sshd runs but signs no one in, and the session that made the change is
 # cut off as sshd restarts. Run in the background, its output in
-# /tmp/lab-try-sshd.out.
+# /tmp/lab-try-sshd.out, with SIGHUP ignored; it waits 2 s first, so that
+# the step that started it ends before sshd restarts.
 #
 #   try-sshd.sh SECONDS
 set -eu
 
+sleep 2
 EDITOR='sed -i "s|^files.read = .*|files.read = []|"' \
 	exec service try sshd --for "$1" < /dev/null

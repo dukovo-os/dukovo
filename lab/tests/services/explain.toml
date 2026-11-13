@@ -22,11 +22,11 @@ expect = "copied: lab-needs.service"
 run = "sh -c 'cd /system/settings/spark/services && rm -f lab-broken.toml lab-needs.toml && cp /users/lab/lab-broken.service lab-broken.toml && cp /users/lab/lab-needs.service lab-needs.toml && echo installed'"
 root = true
 expect = "installed"
-# The start waits for lab-broken, which cannot start.
+# Both start: lab-broken ends at once, and Spark starts it again.
 [[step]]
-run = "sh -c 'service lab-needs start 2>&1; echo \"exit $?\"'"
+run = "sh -c 'service lab-needs start 2>&1'"
 root = true
-expect = ["lab-needs waits for lab-broken, which could not start: ", "exit 1"]
+expect = ["started lab-broken (", "started lab-needs ("]
 # Spark gives up on lab-broken after its second start, and stops lab-needs.
 [[step]]
 run = "sh -c 'i=0; while [ $i -lt 30 ] && ! service lab-broken status | grep -q \"Active: failed\"; do sleep 1; i=$((i + 1)); done; service lab-broken status'"

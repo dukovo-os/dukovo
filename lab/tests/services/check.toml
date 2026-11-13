@@ -73,6 +73,7 @@ expect_not = "older copy"
 [[step]]
 run = "sh -c 'printf \"x\\n\" | EDITOR=\"sed -i s/^enabled/discription/\" service edit lab-try 2>&1'"
 root = true
+exit = 1
 expect = [
     "/system/settings/spark/services/lab-try.toml:",
     "`discription` is not a setting here",

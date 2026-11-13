@@ -46,9 +46,12 @@ run = "grep -c Kept /system/settings/spark/services/lab-try.toml"
 expect = "1"
 
 # Cut off: sshd restarts without authd's socket, which ends this
-# session and signs no one in, until Spark undoes the change.
+# session and signs no one in, until Spark undoes the change. The try
+# runs on after this step: authd hangs up an elevated command's process
+# group once its elevate ends, so the shell ignores SIGHUP before it
+# starts the try in the background.
 [[step]]
-run = "sh -c '(sleep 2; sh /users/lab/try-sshd.sh 30) > /tmp/lab-try-sshd.out 2>&1 &'"
+run = "sh -c 'trap \"\" HUP; sh /users/lab/try-sshd.sh 30 > /tmp/lab-try-sshd.out 2>&1 &'"
 root = true
 [[step]]
 serial = "spark: began the trial service.sshd of /system/settings/spark/services/sshd.toml for 30 s"
@@ -68,7 +71,7 @@ expect_not = "Trying:"
 # The power cut while the change is tried: the next start undoes it
 # before sshd starts.
 [[step]]
-run = "sh -c '(sleep 2; sh /users/lab/try-sshd.sh 600) > /tmp/lab-try-sshd.out 2>&1 &'"
+run = "sh -c 'trap \"\" HUP; sh /users/lab/try-sshd.sh 600 > /tmp/lab-try-sshd.out 2>&1 &'"
 root = true
 [[step]]
 serial = "spark: began the trial service.sshd of /system/settings/spark/services/sshd.toml for 600 s"
