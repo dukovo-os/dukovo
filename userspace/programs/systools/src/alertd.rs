@@ -3,8 +3,10 @@
 
 //! alertd(8): keeps the alerts (ADR 0485).
 
+mod deliver;
 mod email;
 mod settings;
 mod state;
+mod text;
 mod trouble;
 mod webhook;

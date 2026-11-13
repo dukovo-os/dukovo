@@ -252,7 +252,7 @@ fn reason(status: u16) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
@@ -262,11 +262,11 @@ mod tests {
 
     /// What the server in a test was sent.
     #[derive(Debug)]
-    struct Received {
-        request_line: String,
+    pub(crate) struct Received {
+        pub request_line: String,
         /// Header names in lower case, and their values.
-        headers: Vec<(String, String)>,
-        body: String,
+        pub headers: Vec<(String, String)>,
+        pub body: String,
     }
 
     impl Received {
@@ -278,7 +278,7 @@ mod tests {
 
     /// A server on lo for one request, which it answers with `status` and
     /// `body`: its port, and what it was sent.
-    fn server(status: &str, body: &'static str) -> (u16, JoinHandle<Received>) {
+    pub(crate) fn server(status: &str, body: &'static str) -> (u16, JoinHandle<Received>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let status = status.to_string();
