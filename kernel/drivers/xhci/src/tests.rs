@@ -302,6 +302,9 @@ struct State {
     erstsz: u32,
     erstba: u64,
     erdp: u64,
+    /// ERDP's low half, written but not yet taken: Intel's controllers
+    /// take a 64-bit register's new value when its high half is written.
+    erdp_low: Option<u32>,
     er_base: u64,
     er_size: u64,
     er_enqueue: u64,
@@ -375,6 +378,7 @@ impl State {
             erstsz: 0,
             erstba: 0,
             erdp: 0,
+            erdp_low: None,
             er_base: 0,
             er_size: 0,
             er_enqueue: 0,
@@ -1376,8 +1380,11 @@ impl Registers for Sim {
                     s.er_enqueue = 0;
                     s.er_cycle = true;
                 }
-                rt::ERDP => s.erdp = (s.erdp & !0xffff_ffff) | u64::from(value & !rt::EHB),
-                0x1c => s.erdp = (s.erdp & 0xffff_ffff) | u64::from(value) << 32,
+                rt::ERDP => s.erdp_low = Some(value & !rt::EHB),
+                0x1c => {
+                    let low = s.erdp_low.take().map_or(s.erdp & 0xffff_ffff, u64::from);
+                    s.erdp = low | u64::from(value) << 32;
+                }
                 _ => {}
             },
             o if o == XCAPS && s.legacy.is_some() => {
@@ -1890,6 +1897,19 @@ fn reading_events_acknowledges_the_interrupt() {
     assert_eq!(s.iman & rt::IP, 0);
     assert_eq!(s.usbsts & op::EINT, 0);
     assert_ne!(s.iman & rt::IE, 0, "the interrupter stays enabled");
+}
+
+#[test]
+fn the_controller_is_told_how_far_its_events_were_read() {
+    // Intel's controllers take ERDP's new value only with its high half.
+    let sim = Sim::new(State::new());
+    let (mut xhci, _host) = start(&sim);
+    sim.state().plug(6, Some(keyboard(3, 64)));
+    assert_eq!(xhci.next_event(), Some(Event::Port { port: 6 }));
+    xhci.events_read();
+    let s = sim.state();
+    assert_eq!(s.erdp, s.er_base + TRB_SIZE as u64);
+    assert_eq!(s.erdp_low, None);
 }
 
 #[test]
