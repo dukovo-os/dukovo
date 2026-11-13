@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the network-serve boot test: netd(8) as the system's own
+# file has it, which gives each machine its address on the cable by what
+# its networkservetest writes into network(5): machine a's own and the
+# addresses it serves by DHCP, and machine b asks for one.
+
+service_version = 1
+description = "Network setup"
+program = "/system/commands/netd"
+order = 20
+restart = "always"
+
+[limits]
+memory = "16M"
+
+[permissions]
+network.outbound = true
+network.listen = [67, 68, 546]
+admin.network = true
+files.read-write = ["/system/state/netd", "/system/live/netd"]
