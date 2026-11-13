@@ -463,6 +463,9 @@ struct Service {
     why: Option<String>,
     /// The service `why` names, when it names one.
     cause: Option<String>,
+    /// Whether `why` says why it is off as it is meant to be, which is
+    /// no failure: see [`Service::leave_off`].
+    off_as_meant: bool,
     /// How many times Spark has tried to start it, which a watch counts
     /// from.
     attempts: u32,
@@ -521,6 +524,7 @@ impl Service {
             complaint: None,
             why: None,
             cause: None,
+            off_as_meant: false,
             attempts: 0,
             last_line: None,
             last_request: None,
@@ -548,6 +552,16 @@ impl Service {
     fn set_why(&mut self, why: Option<String>, cause: Option<&str>) {
         self.why = why;
         self.cause = cause.map(String::from);
+        self.off_as_meant = false;
+    }
+
+    /// Notes that it is off as it is meant to be, for `why`: the kernel
+    /// left it none of the cards it drives, or Rescue or essentials leave
+    /// it off until it is started. `service list` does not count it as
+    /// not running as asked, nor sysupdate's health check as failing.
+    fn leave_off(&mut self, why: String) {
+        self.set_why(Some(why), None);
+        self.off_as_meant = true;
     }
 
     /// When Spark must look at it again, given that it is `time`: its
@@ -939,7 +953,7 @@ impl Supervisor {
                 continue;
             }
             match self.left_off(&self.services[index].spec.name) {
-                Some(why) => self.services[index].set_why(Some(String::from(why)), None),
+                Some(why) => self.services[index].leave_off(String::from(why)),
                 None => self.want(index, Wanted::Boot),
             }
         }
@@ -1041,7 +1055,7 @@ impl Supervisor {
             let why = String::from("the kernel left it none of the cards it drives");
             say(&mut self.told, index, format!("not starting {}: {why}", spec.name));
             let service = &mut self.services[index];
-            service.set_why(Some(why), None);
+            service.leave_off(why);
             service.set(State::Stopped);
             self.stop_dependents(index);
             return;

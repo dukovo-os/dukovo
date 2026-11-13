@@ -103,6 +103,7 @@ fn described(service: &Service, devices: Option<u32>) -> show::Service {
         last_end: service.last.map(ending),
         last_status: service.last,
         why: service.why.clone(),
+        off_as_meant: service.off_as_meant,
         waiting_for: service.waiting_for.clone(),
         started_by: service.wanted_by.clone(),
         health,

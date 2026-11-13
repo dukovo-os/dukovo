@@ -103,11 +103,14 @@ expect = ["Active: failed (Spark gave up on it)", "Why: it failed to start 2 tim
 run = "sh -c 'cp /users/lab/lab-top.service /system/settings/spark/services/lab-top.toml; service lab-top start 2>&1; echo \"exit $?\"'"
 root = true
 expect = ["lab-top waits for lab-slow, which could not start: it did not get ready in 10 s", "exit 1"]
+# Once Spark gives up on lab-slow again, both are listed; e1000d, off as
+# meant with no card left for it to drive, is not.
 [[step]]
-run = "service list --failed"
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! service lab-slow status | grep -q \"Active: failed\"; do sleep 1; i=$((i + 1)); done; service list --failed'"
 root = true
 exit = 1
-expect = "lab-slow"
+expect = ["lab-slow", "lab-top"]
+expect_not = "e1000d"
 # Status works with the log down, without the log's lines.
 [[step]]
 run = "sh -c 'service logd stop > /dev/null; service lab-web status; echo \"status $?\"; service logd start > /dev/null'"

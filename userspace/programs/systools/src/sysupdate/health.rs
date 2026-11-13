@@ -172,14 +172,16 @@ pub enum Look {
 }
 
 /// The essential services of `essential` among `services`, as Spark's
-/// `show` describes them: those it has no file for, are turned off, or
-/// ended well for good (a setup step, or a service whose `restart` lets
-/// it end) do not count. One that runs but fails its health check
+/// `show` describes them: those it has no file for, are turned off, are
+/// off as meant (a driver the kernel left no cards), or ended well for
+/// good (a setup step, or a service whose `restart` lets it end) do not
+/// count. One that runs but fails its health check
 /// (ADR 0470) does not run yet, and fails the check once it has
 /// restarted RESTARTS times; one Spark gave up on fails it at once.
 pub fn look(essential: &[String], services: &[show::Service]) -> Look {
     let ended_well = |s: &show::Service| match s.state {
         State::Disabled | State::Done => true,
+        State::Stopped if s.off_as_meant => true,
         State::Stopped => s.why.is_none() && s.last_status.is_none_or(|status| status == 0),
         _ => false,
     };
@@ -683,6 +685,13 @@ mod tests {
         let ended = show::Service { last_status: Some(0), ..service("netd", State::Stopped, 0) };
         assert_eq!(look(&essential, &[ended]), Look::Running(vec![]));
         assert_eq!(look(&essential, &[service("netd", State::Done, 0)]), Look::Running(vec![]));
+        // Off as meant, as a driver the kernel left no cards is, the same.
+        let idle = show::Service {
+            why: Some("the kernel left it none of the cards it drives".into()),
+            off_as_meant: true,
+            ..service("netd", State::Stopped, 0)
+        };
+        assert_eq!(look(&essential, &[idle]), Look::Running(vec![]));
         // Ended in failure, or refused, it fails the check.
         let ended =
             show::Service { last_status: Some(0x200), ..service("netd", State::Stopped, 0) };

@@ -80,8 +80,13 @@ pub struct Service {
     /// Its last wait status, as waitpid(2) gives it.
     pub last_status: Option<u32>,
     /// Why it is not running as asked, as a clause that follows its
-    /// name: "it requires db, which is stopped".
+    /// name: "it requires db, which is stopped"; or, while it is
+    /// `off_as_meant`, why it is off.
     pub why: Option<String>,
+    /// Whether it is stopped as it is meant to be, which is no failure:
+    /// the kernel left it none of the cards it drives, or Rescue or
+    /// essentials leave it off until it is started.
+    pub off_as_meant: bool,
     /// While it is pending: the services it waits for.
     pub waiting_for: Vec<String>,
     /// What started it: "boot", "a request", or "web, which requires it".
@@ -298,14 +303,22 @@ mod tests {
 
     #[test]
     fn a_document_reads_back_as_it_was_written() {
+        let e1000d = Service {
+            name: "e1000d".into(),
+            state: State::Stopped,
+            why: Some("the kernel left it none of the cards it drives".into()),
+            off_as_meant: true,
+            ..Service::default()
+        };
         let show = Show {
             show_version: VERSION,
             now_ms: 51_234,
-            services: [web()].into(),
+            services: [web(), e1000d].into(),
             shutdown: Some(Shutdown { end: "power off".into(), in_seconds: 60 }),
         };
         let json = to_json(&show).unwrap();
         assert!(json.contains(r#""state":"pending""#), "{json}");
+        assert!(json.contains(r#""off_as_meant":true"#), "{json}");
         assert!(json.contains(r#""health":{"state":"failing""#), "{json}");
         assert!(json.contains(r#""listen":["80","8000-8010"]"#), "{json}");
         assert_eq!(parse(&format!("{json}\n")), Ok(show));

@@ -51,7 +51,9 @@ Not running as asked: lab-sick and lab-web. `service lab-sick status` says why.
 
 The last line, on a terminal, names those not running as asked: given
 up on, waiting to be started again after an end, stopped for a reason,
-or failing their health check. *--failed* lists those alone and exits 1
+or failing their health check. One that is off as it is meant to be, a
+driver the kernel left none of the cards it drives or a service Rescue
+or essentials leave off, is not among them. *--failed* lists those alone and exits 1
 when there are some, for scripts. *--json* prints Spark's *show*
 document as it is (*spark*(8)), which has *show_version* for scripts to
 check. In a pipe, the header is left out.

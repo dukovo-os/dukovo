@@ -611,12 +611,12 @@ fn list(options: &[String]) -> Result<i32, Fail> {
 }
 
 /// Whether `service` is not running as asked: given up on, waiting to
-/// start again after an end, stopped for a reason, or failing its health
-/// check.
+/// start again after an end, stopped for a reason that is not one it is
+/// meant to be off for, or failing its health check.
 fn not_as_asked(service: &show::Service) -> bool {
     match service.state {
         State::Failed | State::Waiting => true,
-        State::Stopped => service.why.is_some(),
+        State::Stopped => service.why.is_some() && !service.off_as_meant,
         State::Running => service.health.as_ref().is_some_and(|h| h.state == HealthState::Failing),
         _ => false,
     }
@@ -814,6 +814,13 @@ mod tests {
         sick.name = "lab-sick".into();
         sick.health = Some(Health { state: HealthState::Failing, ..Health::default() });
         let fine = nginx();
+        let mut refused = nginx();
+        refused.state = State::Stopped;
+        refused.why = Some("it requires db, which Spark gave up on".into());
+        // A driver the kernel left no cards, as on most virtual machines.
+        let mut idle = refused.clone();
+        idle.why = Some("the kernel left it none of the cards it drives".into());
+        idle.off_as_meant = true;
         let text = list_text(&[&sick, &web, &fine], &CLOCK, true);
         let lines: Vec<&str> = text.lines().collect();
         assert!(
@@ -824,7 +831,8 @@ mod tests {
         assert!(lines[2].starts_with("lab-web   failed                   off      "), "{text}");
         assert!(lines[2].ends_with("  Lab web"), "{text}");
         assert!(!list_text(&[&fine], &CLOCK, false).contains("SERVICE"));
-        assert!([&web, &sick].iter().all(|s| not_as_asked(s)) && !not_as_asked(&fine));
+        assert!([&web, &sick, &refused].iter().all(|s| not_as_asked(s)));
+        assert!([&fine, &idle].iter().all(|s| !not_as_asked(s)));
         assert_eq!(
             not_as_asked_line(&["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]),
             "Not running as asked: a, b, c and 2 more. `service a status` says why."

@@ -425,7 +425,10 @@ presses.
 	(given up on); its *pid* while starting or running; *since_ms*,
 	*started_ms* and *ready_ms*; *restarts*, and *failures* (failed
 	starts in a row); *last_end* in words and *last_status*; *why* it
-	is not running as asked, a clause after its name; *started_by*
+	is not running as asked, a clause after its name; *off_as_meant*,
+	true when it is stopped as it is meant to be, which is no failure
+	(the kernel left it none of the cards it drives, or Rescue or
+	essentials leave it off), and *why* then says why; *started_by*
 	(*boot*, *a request*, or the service that requires or wants it);
 	*health* (*state*: *unknown*, *passing* or *failing*, *failures*,
 	*last_failure* and *checked_ms*) when its file has a check;

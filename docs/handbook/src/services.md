@@ -154,7 +154,10 @@ Not running as asked: postgres and shop. `service postgres status` says why.
 ```
 
 `service list --failed` lists those alone, and exits 1 when there are
-some, for a script or a monitoring check.
+some, for a script or a monitoring check. A service that is off as it
+is meant to be is not among them: a network driver the kernel left no
+cards to drive, as on most virtual machines, or a service Rescue or
+essentials leave off.
 
 `service NAME status` says what Spark knows of a service, what its
 file lets it reach, which processes it runs and its last lines in the

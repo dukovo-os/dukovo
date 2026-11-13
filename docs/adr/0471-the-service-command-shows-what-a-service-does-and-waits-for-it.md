@@ -60,7 +60,11 @@ reach.
   `health failing` where its check fails, whether it starts at boot,
   and since when; under it, the services not running as asked.
   `--failed` lists those alone and exits 1 when there are some;
-  `--json` prints Spark's `show` document.
+  `--json` prints Spark's `show` document. A service that is off as it
+  is meant to be, a driver the kernel left none of its cards or one
+  Rescue or essentials leave off, is not among them: `show` marks it
+  `off_as_meant`, so a check on `--failed` stays quiet on a healthy
+  machine.
 - **`service NAME status`** adds when each state began and how long it
   took to be ready; who last asked to start, stop or restart it; the
   last line its output wrote before it ended; what it holds (its own
