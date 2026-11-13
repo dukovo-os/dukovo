@@ -157,6 +157,26 @@ int close_fd(int fd) {
 	return to_errno(delete_fd(fd));
 }
 
+void close_taken(int first, int last, bool close_on_exec) {
+	for(int base = first / 64 * 64; base <= last; base += 64) {
+		uint64_t taken = __atomic_load_n(word_of(base), __ATOMIC_RELAXED);
+		// Only the descriptors from `first` to `last`.
+		if(base < first)
+			taken &= ~(bit_of(first) - 1);
+		if(last - base < 63)
+			taken &= (bit_of(last) << 1) - 1;
+		for(; taken; taken &= taken - 1) {
+			int fd = base + __builtin_ctzll(taken);
+			if(!close_on_exec) {
+				close_fd(fd);
+				continue;
+			}
+			struct radix_capability_flags_results old;
+			radix_capability_flags(slot_of(fd), true, RADIX_SLOT_FLAGS_CLOSE_ON_EXEC, &old);
+		}
+	}
+}
+
 void read_fd_table() {
 	for(uint64_t &word : table.taken)
 		__atomic_store_n(&word, 0, __ATOMIC_RELAXED);
@@ -297,6 +317,16 @@ size_t join(char *out, size_t len, const char *rest, size_t rest_len) {
 
 } // namespace
 
+int from_root(int dirfd, const char *path, size_t len, Path *out) {
+	size_t dir = dir_path(dirfd, out->own);
+	if(!dir)
+		return EXDEV;
+	out->dir = SLOT_ROOT;
+	out->text = out->own;
+	out->len = join(out->own, dir, path, len);
+	return out->len ? 0 : ENAMETOOLONG;
+}
+
 int resolve(int dirfd, const char *path, Path *out) {
 	if(!path)
 		return EFAULT;
@@ -315,12 +345,8 @@ int resolve(int dirfd, const char *path, Path *out) {
 		// library knows it (ADR 0089); one that climbs above a directory
 		// without a path fails with EXDEV.
 		if(climbs(path, total)) {
-			if(size_t len = dir_path(dirfd, out->own); len) {
-				out->dir = SLOT_ROOT;
-				out->text = out->own;
-				out->len = join(out->own, len, path, total);
-				return out->len ? 0 : ENAMETOOLONG;
-			}
+			if(int e = from_root(dirfd, path, total, out); e != EXDEV)
+				return e;
 		}
 		// The kernel takes it as it is.
 		out->text = path;

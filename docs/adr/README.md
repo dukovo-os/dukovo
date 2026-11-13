@@ -99,7 +99,7 @@ their pull requests conflicted.
 | [0078](0078-server-first-release.md) | Dukovo 1.0 is a server release, and Lumen moves to 1.1 | Accepted |
 | [0079](0079-framework-desktop-second-reference-machine.md) | The Framework Desktop is the second reference machine | Accepted |
 | [0080](0080-crates-patched-for-radix.md) | Programs in Rust from elsewhere build with crates.io crates patched for Radix | Accepted |
-| [0081](0081-symbolic-links.md) | Symbolic links are resolved by the kernel, beneath the directory a path starts from | Accepted; changed by [0113](0113-plain-names-for-the-root-folders.md) and [0114](0114-plain-names-inside-system.md) |
+| [0081](0081-symbolic-links.md) | Symbolic links are resolved by the kernel, beneath the directory a path starts from | Accepted; changed by [0113](0113-plain-names-for-the-root-folders.md), [0114](0114-plain-names-inside-system.md) and [0498](0498-absolute-links-beneath-directory-descriptors-a-named-pipe-s-identity-trailing-slashes-and-close-range.md) |
 | [0082](0082-copies-under-the-page-cache-never-wait-for-a-page.md) | Copies under a file's page cache lock never wait for a page | Accepted |
 | [0083](0083-nukesh-the-shell.md) | Nukesh is the shell and /bin/sh, written in Rust and checked against bash | Accepted; changed by [0103](0103-the-shell-corpus.md) |
 | [0084](0084-dev-fd-in-the-c-library.md) | The C library gives /dev/fd, /dev/stdin, /dev/stdout and /dev/stderr | Accepted; changed by [0113](0113-plain-names-for-the-root-folders.md) |

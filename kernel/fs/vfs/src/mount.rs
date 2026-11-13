@@ -463,10 +463,12 @@ impl Vfs {
     /// `follow` is set or a `/` follows it: the path goes on from the
     /// link's directory with the link's target in its place, or, for a
     /// target that starts with `/`, from `base`, as if `base` were the
-    /// root. At most [`MAX_LINKS`] are followed. `..` steps back along the
-    /// chain; at `base` it stays there when `base` is the tree's root or a
-    /// view's, as `/..` is `/`, and is refused anywhere else. Each
-    /// directory it looks in must let `who` search it (ADR 0214).
+    /// root, unless `who.absolute_links_leave`, which fails with
+    /// [`Error::Outside`] as a `..` above `base` does (ADR 0498). At most
+    /// [`MAX_LINKS`] are followed. `..` steps back along the chain; at
+    /// `base` it stays there when `base` is the tree's root or a view's,
+    /// as `/..` is `/`, and is refused anywhere else. Each directory it
+    /// looks in must let `who` search it (ADR 0214).
     fn walk<T>(
         &self,
         who: &Who,
@@ -523,6 +525,9 @@ impl Vfs {
                             mem::extend(&mut next, &target)?;
                             mem::extend(&mut next, rest)?;
                             if target.first() == Some(&b'/') {
+                                if who.absolute_links_leave {
+                                    return Err(Error::Outside);
+                                }
                                 chain.truncate(1);
                                 names.clear();
                             }
@@ -673,7 +678,9 @@ impl Vfs {
     /// Opens `path` beneath `base` for `who`, following symbolic links
     /// unless `flags.no_follow` says not to follow one that is the last
     /// name. A file made through a symbolic link is made where the link
-    /// points, as POSIX has it. One that is there must let `who` do what
+    /// points, as POSIX has it. With `flags.create`, a path with a `/`
+    /// after its last name fails with [`Error::IsDirectory`], whether or
+    /// not the name exists. One that is there must let `who` do what
     /// `flags.want` asks, and write it to truncate it; one the open makes
     /// is `who`'s whatever its mode, and its directory must let `who`
     /// change it.
@@ -686,6 +693,12 @@ impl Vfs {
     ) -> Result<Location> {
         let mut made = false;
         let at = if let Some(access) = flags.create {
+            // A name an open makes has no `/` after it. Linux fails such a
+            // path with EISDIR before it looks anything up, whether or not
+            // the name exists.
+            if path.ends_with('/') {
+                return Err(Error::IsDirectory);
+            }
             // The path again with the link's target for its last name,
             // once a link stood there.
             let mut owned: Option<KVec<u8>> = None;
@@ -704,6 +717,9 @@ impl Vfs {
                             return Err(Error::Loop);
                         }
                         let target = crate::link_target(&*node)?;
+                        if target.first() == Some(&b'/') && who.absolute_links_leave {
+                            return Err(Error::Outside);
+                        }
                         owned = Some(replace_last(text, &target)?);
                     }
                     Ok(node) => break self.cross(dir.beneath(node)),

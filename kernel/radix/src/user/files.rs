@@ -351,12 +351,15 @@ fn directory_of(found: &Found, needs: Rights) -> Result<&FileRef> {
 
 /// Who a call through a capability with `rights` to `object` acts for:
 /// the object's name, which passes the second gate with the bypass right
-/// (ADR 0214). A name whose user was ended since is denied (ADR 0220).
+/// (ADR 0214). A name whose user was ended since is denied (ADR 0220). A
+/// directory opened with `absolute_links_leave` has its walks leave by a
+/// symbolic link with an absolute target (ADR 0498).
 fn who(rights: Rights, object: &FileObject) -> Result<Who<'_>> {
-    object
+    let who = object
         .name
         .who(rights.contains(Rights::BYPASS))
-        .ok_or_else(|| fs::status(radix_vfs::Error::Denied))
+        .ok_or_else(|| fs::status(radix_vfs::Error::Denied))?;
+    Ok(Who { absolute_links_leave: object.description().absolute_links_leave, ..who })
 }
 
 /// The file `found` designates, if its capability has the rights `needs`,
@@ -460,12 +463,14 @@ pub fn directory_method(
                 who = making(user, who);
             }
             let mut at = vfs()?.open(&who, &dir.at, path.as_str()?, flags).map_err(fs::status)?;
+            let kind = at.node.kind();
             let description = Description {
                 append: a.flags.contains(OpenFlags::APPEND),
                 non_blocking: a.flags.contains(OpenFlags::NON_BLOCKING),
+                absolute_links_leave: kind == Kind::Directory
+                    && a.flags.contains(OpenFlags::ABSOLUTE_LINKS_LEAVE),
             };
             let close_on_exec = a.flags.contains(OpenFlags::CLOSE_ON_EXEC);
-            let kind = at.node.kind();
             let object_kind =
                 if kind == Kind::Directory { ObjectKind::Directory } else { ObjectKind::File };
             let wanted = asked.intersection(object_kind.rights());
@@ -1900,6 +1905,7 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                 file.set_description(Description {
                     append: a.flags.contains(DescriptionFlags::APPEND),
                     non_blocking: a.flags.contains(DescriptionFlags::NON_BLOCKING),
+                    ..old
                 });
             }
             let mut flags = DescriptionFlags::NONE;

@@ -94,7 +94,6 @@ test.test_os.test_os.Pep383Tests.test_stat
 test.test_os.test_os.Pep383Tests.test_statvfs
 test.test_posixpath.PosixCommonTest.test_nonascii_abspath
 test.test_posixpath.PosixPathTest.test_realpath_invalid_paths
-test.test_shutil.TestRmTree.test_rmtree_on_named_pipe
 test.test_socket.TestUnixDomain.testUnencodableAddr
 test.test_unicode_file.TestUnicodeFiles.test_directories
 test.test_unicode_file.TestUnicodeFiles.test_single_files
@@ -107,31 +106,14 @@ test.test_zipimport.ZStdCompressedZipImportTestCase.testUnencodable
 # middle of a character is refused.
 test.test_threading.MiscTestCase.test_set_name
 
-# os.fwalk(), which walks by directory descriptors, finds symbolic links
-# and named pipes as Radix's fstatat(2) reports them relative to a
-# descriptor (deferred work).
-test.test_os.test_os.BytesFwalkTests.test_compare_to_walk
-test.test_os.test_os.BytesFwalkTests.test_dir_fd
-test.test_os.test_os.BytesFwalkTests.test_file_like_path
-test.test_os.test_os.BytesFwalkTests.test_walk_above_recursion_limit
-test.test_os.test_os.BytesFwalkTests.test_walk_bottom_up
-test.test_os.test_os.BytesFwalkTests.test_walk_named_pipe2
-test.test_os.test_os.BytesFwalkTests.test_walk_prune
-test.test_os.test_os.BytesFwalkTests.test_walk_symlink
-test.test_os.test_os.BytesFwalkTests.test_walk_topdown
-test.test_os.test_os.FwalkTests.test_compare_to_walk
-test.test_os.test_os.FwalkTests.test_dir_fd
-test.test_os.test_os.FwalkTests.test_file_like_path
-test.test_os.test_os.FwalkTests.test_walk_above_recursion_limit
-test.test_os.test_os.FwalkTests.test_walk_bottom_up
-test.test_os.test_os.FwalkTests.test_walk_named_pipe2
-test.test_os.test_os.FwalkTests.test_walk_prune
-test.test_os.test_os.FwalkTests.test_walk_symlink
-test.test_os.test_os.FwalkTests.test_walk_topdown
-
-# futimens(2) needs a descriptor open for writing: a capability that
-# only reads cannot change what is said of its file (ADR 0213).
+# futimens(2) and fchmod(2) need a descriptor open for writing: a
+# capability that only reads cannot change what is said of its file
+# (ADR 0213). TemporaryDirectory's cleanup sets a file's mode through a
+# descriptor open only for reading; when a symbolic link is swapped in
+# for a directory meanwhile, the refusal makes it remove the link rather
+# than go on beneath it, and the test then finds the name gone.
 test.test_os.test_posix.PosixTester.test_utime_with_fd
+test.test_tempfile.TestTemporaryDirectory.test_cleanup_with_symlink_race
 
 # What the bundle leaves out: libpython, Python's headers and its
 # Makefile, which nothing on Radix could load or build against, and the
@@ -143,17 +125,11 @@ test.test_sysconfig.TestSysConfig.test_get_config_h_filename
 test.test_sysconfig.TestSysConfig.test_srcdir
 
 # Other gaps of Radix's that these tests find, each in deferred work:
-# lowering the descriptor limit, chown's errors, scandir's attributes,
-# copying into a folder that does not exist, a race on a symbolic link
-# while a folder is removed, TLS shut down on a slow socket, and
-# subinterpreters' checks of types.
+# scandir's attributes (the file number d_ino), TLS shut down on a slow
+# socket, and subinterpreters' checks of types.
 test.datetimetester.CapiTest_Fast.test_type_check_in_subinterp
 test.test_asyncio.test_ssl.TestSSL.test_remote_shutdown_receives_trailing_data_on_slow_socket
 test.test_os.test_os.TestScandir.test_attributes
-test.test_shutil.TestCopy.test_copyfile_nonexistent_dir
-test.test_shutil.TestMisc.test_chown
-test.test_subprocess.POSIXProcessTestCase.test_close_fds_when_max_fd_is_lowered
-test.test_tempfile.TestTemporaryDirectory.test_cleanup_with_symlink_race
 
 # The bundle's library is sealed and compiled when it is built, so an
 # import the audit tests watch finds the module without the file events

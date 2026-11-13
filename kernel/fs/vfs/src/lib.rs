@@ -346,13 +346,23 @@ pub struct Who<'a> {
     /// default access list, which decides in its place as on Linux
     /// ([`mount::made_with`], ADR 0256).
     pub file_mask: u16,
+    /// Whether a symbolic link with an absolute target, met by a walk,
+    /// fails with [`Error::Outside`] rather than going on from where the
+    /// walk started as if that were the root (ADR 0498).
+    pub absolute_links_leave: bool,
 }
 
 impl Who<'_> {
     /// The kernel's own calls, and those of a capability with the bypass
     /// right acting for root.
-    pub const KERNEL: Who<'static> =
-        Who { user: 0, group: 0, groups: &[], bypass: true, file_mask: 0 };
+    pub const KERNEL: Who<'static> = Who {
+        user: 0,
+        group: 0,
+        groups: &[],
+        bypass: true,
+        file_mask: 0,
+        absolute_links_leave: false,
+    };
 
     /// Whether it is in `group`.
     pub fn in_group(&self, group: u32) -> bool {

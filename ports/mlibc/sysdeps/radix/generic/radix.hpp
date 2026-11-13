@@ -11,8 +11,10 @@
 
 #include <abi-bits/clockid_t.h>
 #include <abi-bits/pid_t.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <radix/radix.h>
 
@@ -180,6 +182,13 @@ uint64_t delete_fd(int fd);
 // and marks it free. Returns 0 or an errno.
 int close_fd(int fd);
 
+// Closes each descriptor from `first` to `last` (below MAX_FDS) that the
+// table says is taken, or with `close_on_exec` sets close-on-exec on it
+// instead: close_range's work. It takes no lock and allocates nothing, as
+// close_range runs in a child between fork and exec, where a lock that
+// another thread of the parent held stays held.
+void close_taken(int first, int last, bool close_on_exec);
+
 // Reads which descriptors are taken from the kernel's slots: when the
 // program starts, and in a child after fork, where the threads that were
 // opening and closing descriptors are not. Only while no other thread
@@ -245,6 +254,12 @@ struct Path {
 // `path`, which then has to last as long as `out` is used.
 int resolve(int dirfd, const char *path, Path *out);
 
+// Makes `out` the `len` bytes of `path`, which is beneath the directory
+// `dirfd`, as a path beneath the root, by the directory's path (below).
+// Returns 0, ENAMETOOLONG if the whole does not fit, or EXDEV if the C
+// library does not know the directory's path.
+int from_root(int dirfd, const char *path, size_t len, Path *out);
+
 // The paths of directory descriptors (ADR 0089). The kernel resolves a
 // path beneath a directory capability and never above it, so the C
 // library notes the path, beneath the root, by which each directory
@@ -268,6 +283,51 @@ void forget_dir_path(int fd);
 // itself), to `out`, which has room for PATH_MAX_BYTES bytes, and returns
 // its length: 0 if it has none.
 size_t dir_path(int fd, char *out);
+
+// Resolves `path` as resolve does and has `call`, which takes the
+// resolved Path and returns an errno, act on it.
+//
+// The kernel keeps a walk beneath a directory descriptor from leaving the
+// directory, and so fails with EXDEV at a symbolic link with an absolute
+// target (ADR 0498): Unix follows such a link from the root. When `call`
+// fails with EXDEV for a path beneath `dirfd`, it is made again with the
+// path from the root, by the directory's path (ADR 0089), if the C
+// library knows it, and the kernel then follows the link from the root.
+// An EXDEV that has another reason (a rename or a link across mounts)
+// comes again, which costs one more kernel call on an error path.
+template<typename Call>
+int at(int dirfd, const char *path, Call call) {
+	Path resolved;
+	if(int e = resolve(dirfd, path, &resolved); e)
+		return e;
+	int e = call(resolved);
+	if(e != EXDEV || resolved.dir == SLOT_ROOT)
+		return e;
+	if(from_root(dirfd, path, strlen(path), &resolved))
+		return e;
+	return call(resolved);
+}
+
+// at for the calls with two paths, `call` taking both resolved Paths:
+// each that was beneath a directory descriptor is made from the root.
+template<typename Call>
+int at2(int old_dirfd, const char *old_path, int new_dirfd, const char *new_path, Call call) {
+	Path from;
+	if(int e = resolve(old_dirfd, old_path, &from); e)
+		return e;
+	Path to;
+	if(int e = resolve(new_dirfd, new_path, &to); e)
+		return e;
+	int e = call(from, to);
+	if(e != EXDEV)
+		return e;
+	bool again = false;
+	if(from.dir != SLOT_ROOT && !from_root(old_dirfd, old_path, strlen(old_path), &from))
+		again = true;
+	if(to.dir != SLOT_ROOT && !from_root(new_dirfd, new_path, strlen(new_path), &to))
+		again = true;
+	return again ? call(from, to) : e;
+}
 
 // The working directory, absolute, as the program knows it.
 const char *cwd();

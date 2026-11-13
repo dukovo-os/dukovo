@@ -16,11 +16,14 @@
 //! Symbolic links are followed as a path is resolved: a target that does
 //! not start with `/` goes on from the link's directory, and one that
 //! does starts again from the directory the path started from, as if it
-//! were the root, so a link cannot lead out of it either. `..` at the
-//! system's root stays there, as `/..` is `/`. A link that is the last
-//! name of a path is followed too, unless the call says no_follow and no
-//! `/` comes after it; `remove` and `rename` take the link itself. At
-//! most 40 are followed in one call (too_many_links).
+//! were the root, so a link cannot lead out of it either. A directory
+//! opened with `absolute_links_leave` treats such a link as leaving it
+//! instead: the walk fails with outside, as one whose `..` climbs above
+//! it does (ADR 0498). `..` at the system's root stays there, as `/..`
+//! is `/`. A link that is the last name of a path is followed too,
+//! unless the call says no_follow and no `/` comes after it; `remove`
+//! and `rename` take the link itself. At most 40 are followed in one
+//! call (too_many_links).
 //!
 //! Rights: the read right looks names up, lists and opens for reading;
 //! the write right creates, removes and renames, and opens for writing;
@@ -176,6 +179,14 @@ flags OpenFlags: u32 {
     /// Fail with too_many_links if the last name is a symbolic link, as
     /// O_NOFOLLOW does.
     no_follow = 8;
+    /// The directory capability it makes treats a symbolic link with an
+    /// absolute target, met by a walk beneath it, as leaving it: the
+    /// walk fails with outside, as one whose `..` climbs above it does,
+    /// instead of going on from the directory as if it were the root.
+    /// The C library asks for it on every open and follows such a link
+    /// from the root, by the directory's path (ADR 0089). Kept only for
+    /// a directory. (Since Phase 16, ADR 0498.)
+    absolute_links_leave = 9;
 }
 
 /// How `stat`, `set_times` and `set_access` find what they look at.
@@ -558,7 +569,7 @@ struct ScrubProgress {
 }
 
 /// A directory.
-interface directory = 0x000b version 9 {
+interface directory = 0x000b version 10 {
     kind = directory;
     /// Opens the file or directory at `path` (`.` for this one) and puts
     /// a capability to it with `rights` in slot `to`. Returns what it is.

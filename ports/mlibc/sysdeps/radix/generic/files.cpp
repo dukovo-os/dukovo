@@ -97,11 +97,14 @@ int owner_of_ex(const struct f_owner_ex *owner, enum radix_owner_kind *kind, uin
 
 // The kernel's OpenFlags for `flags`.
 uint32_t open_flags(int flags) {
+	// Every open asks for it: a path beneath a directory that this opens
+	// fails with EXDEV at a symbolic link with an absolute target, which
+	// radix::at follows from the root (ADR 0498).
+	uint32_t out = RADIX_OPEN_FLAGS_ABSOLUTE_LINKS_LEAVE;
 	// Most opens ask for no more than an access mode and close-on-exec:
 	// those skip the other eight tests.
 	if(!(flags & ~(O_ACCMODE | O_CLOEXEC)))
-		return (flags & O_CLOEXEC) ? RADIX_OPEN_FLAGS_CLOSE_ON_EXEC : 0;
-	uint32_t out = 0;
+		return (flags & O_CLOEXEC) ? out | RADIX_OPEN_FLAGS_CLOSE_ON_EXEC : out;
 	if(flags & O_CREAT)
 		out |= RADIX_OPEN_FLAGS_CREATE;
 	if(flags & O_EXCL)
@@ -511,12 +514,11 @@ int Sysdeps<Open>::operator()(const char *pathname, int flags, mode_t mode, int 
 }
 
 int Sysdeps<Openat>::operator()(int dirfd, const char *path, int flags, mode_t mode, int *fd) {
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, path, &resolved); e)
-		return e;
-	if(int from = named_fd(resolved); from >= 0)
-		return open_named(from, flags, fd);
-	return open_path(resolved, flags, mode, fd);
+	return radix::at(dirfd, path, [&](const radix::Path &resolved) {
+		if(int from = named_fd(resolved); from >= 0)
+			return open_named(from, flags, fd);
+		return open_path(resolved, flags, mode, fd);
+	});
 }
 
 int Sysdeps<OpenDir>::operator()(const char *path, int *handle) {
@@ -791,6 +793,24 @@ int Sysdeps<Close>::operator()(int fd) {
 	return radix::close_fd(fd);
 }
 
+// Closes the descriptors from `first` to `last`, or with CLOSE_RANGE_CLOEXEC
+// marks them close-on-exec, as Linux's close_range does: a descriptor that
+// fails to close is no error. CLOSE_RANGE_UNSHARE is taken and does
+// nothing, as a Radix process shares its descriptor table with no other
+// process.
+int Sysdeps<CloseRange>::operator()(unsigned int first, unsigned int last, int flags) {
+	unsigned int known = CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC;
+	if((static_cast<unsigned int>(flags) & ~known) || first > last)
+		return EINVAL;
+	// No descriptor is numbered past the table's last.
+	unsigned int top = static_cast<unsigned int>(radix::MAX_FDS) - 1;
+	if(first > top)
+		return 0;
+	radix::close_taken(static_cast<int>(first), static_cast<int>(last < top ? last : top),
+			flags & CLOSE_RANGE_CLOEXEC);
+	return 0;
+}
+
 int Sysdeps<Dup>::operator()(int fd, int flags, int *newfd) {
 	return dup_from(fd, 0, flags & O_CLOEXEC, newfd);
 }
@@ -975,12 +995,11 @@ int Sysdeps<Stat>::operator()(mlibc::fsfd_target fsfdt, int fd, const char *path
 	default:
 		return EINVAL;
 	}
-	radix::Path resolved;
-	if(int e = radix::resolve(fd, path, &resolved); e)
-		return e;
-	if(int from = named_fd(resolved); from >= 0)
-		return stat_named(from, statbuf);
-	return stat_path(resolved, statbuf, flags);
+	return radix::at(fd, path, [&](const radix::Path &resolved) {
+		if(int from = named_fd(resolved); from >= 0)
+			return stat_named(from, statbuf);
+		return stat_path(resolved, statbuf, flags);
+	});
 }
 
 int Sysdeps<Statvfs>::operator()(const char *path, struct statvfs *out) {
@@ -1042,20 +1061,19 @@ int Sysdeps<Access>::operator()(const char *path, int mode) {
 int Sysdeps<Faccessat>::operator()(int dirfd, const char *pathname, int mode, int flags) {
 	if(mode & ~(R_OK | W_OK | X_OK))
 		return EINVAL;
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, pathname, &resolved); e)
-		return e;
-	struct stat st;
-	if(int from = named_fd(resolved); from >= 0)
-		return stat_named(from, &st);
 	// The kernel asks the second gate for the name the directory acts for
 	// (ADR 0214): a process's real and effective IDs are the same, so
 	// AT_EACCESS changes nothing.
 	uint32_t want = (mode & R_OK ? RADIX_DIRECTORY_READ_OK : 0)
 			| (mode & W_OK ? RADIX_DIRECTORY_WRITE_OK : 0)
 			| (mode & X_OK ? RADIX_DIRECTORY_EXECUTE_OK : 0);
-	return radix::to_errno(radix_directory_check_access(resolved.dir, resolved.text, resolved.len,
-			path_flags(flags), want));
+	return radix::at(dirfd, pathname, [&](const radix::Path &resolved) {
+		struct stat st;
+		if(int from = named_fd(resolved); from >= 0)
+			return stat_named(from, &st);
+		return radix::to_errno(radix_directory_check_access(resolved.dir, resolved.text,
+				resolved.len, path_flags(flags), want));
+	});
 }
 
 int Sysdeps<Mkdir>::operator()(const char *path, mode_t mode) {
@@ -1063,11 +1081,10 @@ int Sysdeps<Mkdir>::operator()(const char *path, mode_t mode) {
 }
 
 int Sysdeps<Mkdirat>::operator()(int dirfd, const char *path, mode_t mode) {
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, path, &resolved); e)
-		return e;
-	return radix::to_errno(radix_directory_make_directory(resolved.dir, resolved.text,
-			resolved.len, mode_bits(mode)));
+	return radix::at(dirfd, path, [&](const radix::Path &resolved) {
+		return radix::to_errno(radix_directory_make_directory(resolved.dir, resolved.text,
+				resolved.len, mode_bits(mode)));
+	});
 }
 
 int Sysdeps<Rmdir>::operator()(const char *path) {
@@ -1075,10 +1092,9 @@ int Sysdeps<Rmdir>::operator()(const char *path) {
 }
 
 int Sysdeps<Unlinkat>::operator()(int dirfd, const char *path, int flags) {
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, path, &resolved); e)
-		return e;
-	return remove_path(resolved, flags & AT_REMOVEDIR);
+	return radix::at(dirfd, path, [&](const radix::Path &resolved) {
+		return remove_path(resolved, flags & AT_REMOVEDIR);
+	});
 }
 
 int Sysdeps<Rename>::operator()(const char *path, const char *new_path) {
@@ -1087,14 +1103,11 @@ int Sysdeps<Rename>::operator()(const char *path, const char *new_path) {
 
 int Sysdeps<Renameat>::operator()(int olddirfd, const char *old_path, int newdirfd,
 		const char *new_path) {
-	radix::Path from;
-	if(int e = radix::resolve(olddirfd, old_path, &from); e)
-		return e;
-	radix::Path to;
-	if(int e = radix::resolve(newdirfd, new_path, &to); e)
-		return e;
-	return radix::to_errno(radix_directory_rename(from.dir, from.text, from.len, to.dir, to.text,
-			to.len));
+	return radix::at2(olddirfd, old_path, newdirfd, new_path,
+			[&](const radix::Path &from, const radix::Path &to) {
+		return radix::to_errno(radix_directory_rename(from.dir, from.text, from.len, to.dir,
+				to.text, to.len));
+	});
 }
 
 int Sysdeps<Truncate>::operator()(const char *path, off_t length) {
@@ -1228,16 +1241,15 @@ int Sysdeps<Readlink>::operator()(const char *path, void *buffer, size_t max_siz
 
 int Sysdeps<Readlinkat>::operator()(int dirfd, const char *path, void *buffer, size_t max_size,
 		ssize_t *length) {
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, path, &resolved); e)
-		return e;
-	struct radix_directory_read_link_results r;
-	if(uint64_t status = radix_directory_read_link(resolved.dir, resolved.text, resolved.len,
-			buffer, max_size, &r); status)
-		return radix::to_errno(status);
-	// What did not fit is cut off, as POSIX has it.
-	*length = static_cast<ssize_t>(r.len < max_size ? r.len : max_size);
-	return 0;
+	return radix::at(dirfd, path, [&](const radix::Path &resolved) {
+		struct radix_directory_read_link_results r;
+		if(uint64_t status = radix_directory_read_link(resolved.dir, resolved.text, resolved.len,
+				buffer, max_size, &r); status)
+			return radix::to_errno(status);
+		// What did not fit is cut off, as POSIX has it.
+		*length = static_cast<ssize_t>(r.len < max_size ? r.len : max_size);
+		return 0;
+	});
 }
 
 int Sysdeps<Realpath>::operator()(const char *path, char *out, size_t size) {
@@ -1270,17 +1282,14 @@ int Sysdeps<Linkat>::operator()(int olddirfd, const char *old_path, int newdirfd
 		const char *new_path, int flags) {
 	if(flags & ~AT_SYMLINK_FOLLOW)
 		return EINVAL;
-	radix::Path from;
-	if(int e = radix::resolve(olddirfd, old_path, &from); e)
-		return e;
-	radix::Path to;
-	if(int e = radix::resolve(newdirfd, new_path, &to); e)
-		return e;
 	uint32_t link_flags = flags & AT_SYMLINK_FOLLOW ? RADIX_LINK_FLAGS_FOLLOW : 0;
-	int e = radix::to_errno(radix_directory_link(from.dir, from.text, from.len, link_flags, to.dir,
-			to.text, to.len));
-	// Linux refuses a directory with EPERM, as POSIX allows.
-	return e == EISDIR ? EPERM : e;
+	return radix::at2(olddirfd, old_path, newdirfd, new_path,
+			[&](const radix::Path &from, const radix::Path &to) {
+		int e = radix::to_errno(radix_directory_link(from.dir, from.text, from.len, link_flags,
+				to.dir, to.text, to.len));
+		// Linux refuses a directory with EPERM, as POSIX allows.
+		return e == EISDIR ? EPERM : e;
+	});
 }
 
 int Sysdeps<Symlink>::operator()(const char *target_path, const char *link_path) {
@@ -1295,11 +1304,10 @@ int Sysdeps<Symlinkat>::operator()(const char *target_path, int dirfd, const cha
 		return ENOENT;
 	if(len >= radix::PATH_MAX_BYTES)
 		return ENAMETOOLONG;
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, link_path, &resolved); e)
-		return e;
-	return radix::to_errno(radix_directory_make_link(resolved.dir, resolved.text, resolved.len,
-			target_path, len));
+	return radix::at(dirfd, link_path, [&](const radix::Path &resolved) {
+		return radix::to_errno(radix_directory_make_link(resolved.dir, resolved.text,
+				resolved.len, target_path, len));
+	});
 }
 
 int Sysdeps<Chmod>::operator()(const char *pathname, mode_t mode) {
@@ -1346,11 +1354,10 @@ int Sysdeps<Fchmod>::operator()(int fd, mode_t mode) {
 int Sysdeps<Fchmodat>::operator()(int fd, const char *pathname, mode_t mode, int flags) {
 	if(flags & ~AT_SYMLINK_NOFOLLOW)
 		return EINVAL;
-	radix::Path resolved;
-	if(int e = radix::resolve(fd, pathname, &resolved); e)
-		return e;
-	return set_access_path(resolved, flags, RADIX_DIRECTORY_KEEP, RADIX_DIRECTORY_KEEP,
-			mode_bits(mode));
+	return radix::at(fd, pathname, [&](const radix::Path &resolved) {
+		return set_access_path(resolved, flags, RADIX_DIRECTORY_KEEP, RADIX_DIRECTORY_KEEP,
+				mode_bits(mode));
+	});
 }
 
 int Sysdeps<Fchownat>::operator()(int dirfd, const char *pathname, uid_t owner, gid_t group,
@@ -1359,11 +1366,10 @@ int Sysdeps<Fchownat>::operator()(int dirfd, const char *pathname, uid_t owner, 
 		return EINVAL;
 	if((flags & AT_EMPTY_PATH) && pathname && !*pathname)
 		return set_access_fd(dirfd, kept_id(owner), kept_id(group), RADIX_DIRECTORY_KEEP);
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, pathname, &resolved); e)
-		return e;
-	return set_access_path(resolved, flags, kept_id(owner), kept_id(group),
-			RADIX_DIRECTORY_KEEP);
+	return radix::at(dirfd, pathname, [&](const radix::Path &resolved) {
+		return set_access_path(resolved, flags, kept_id(owner), kept_id(group),
+				RADIX_DIRECTORY_KEEP);
+	});
 }
 
 namespace {
@@ -1409,11 +1415,10 @@ int Sysdeps<Utimensat>::operator()(int dirfd, const char *pathname, const struct
 			status = radix_directory_set_times(slot, ".", 1, accessed, modified, 0);
 		return radix::to_errno(status);
 	}
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, pathname, &resolved); e)
-		return e;
-	return radix::to_errno(radix_directory_set_times(resolved.dir, resolved.text, resolved.len,
-			accessed, modified, path_flags(flags)));
+	return radix::at(dirfd, pathname, [&](const radix::Path &resolved) {
+		return radix::to_errno(radix_directory_set_times(resolved.dir, resolved.text,
+				resolved.len, accessed, modified, path_flags(flags)));
+	});
 }
 
 int Sysdeps<Umask>::operator()(mode_t mode, mode_t *old) {
@@ -1457,11 +1462,10 @@ int Sysdeps<Mknodat>::operator()(int dirfd, const char *path, int mode, int dev)
 	default:
 		return EINVAL;
 	}
-	radix::Path resolved;
-	if(int e = radix::resolve(dirfd, path, &resolved); e)
-		return e;
-	return radix::to_errno(radix_directory_make_node(resolved.dir, resolved.text, resolved.len,
-			kind, device, mode_bits(mode)));
+	return radix::at(dirfd, path, [&](const radix::Path &resolved) {
+		return radix::to_errno(radix_directory_make_node(resolved.dir, resolved.text,
+				resolved.len, kind, device, mode_bits(mode)));
+	});
 }
 
 int Sysdeps<Pipe>::operator()(int *fds, int flags) {

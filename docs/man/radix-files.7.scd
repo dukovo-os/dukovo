@@ -38,7 +38,12 @@ A *symbolic link* holds a path, its target, which the walk follows in
 its place. A relative target goes on from the link's directory; one that
 starts with */* goes on from the directory the walk started from, as if
 that were the root, so a link never leads out of what a program holds
-(Linux's *RESOLVE_IN_ROOT*). *..* steps back along the names the walk
+(Linux's *RESOLVE_IN_ROOT*). A directory capability opened with the
+*absolute_links_leave* flag fails such a walk with *outside* instead, as
+it does for a *..* above it, and leaves it to the program to follow the
+link from a root of its own: the C library goes on from the root it
+holds (ADR 0498, *radix-posix*(7)). The root capability Spark and the loader give a
+program has no such flag. *..* steps back along the names the walk
 took, never along the text of a target. A walk follows at most 40 links
 and then fails with *too_many_links*. A link that is a path's last name
 is followed too, unless the call is told not to (*no_follow*), or a */*

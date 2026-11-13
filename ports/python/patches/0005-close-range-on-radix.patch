@@ -1,0 +1,33 @@
+SPDX-FileCopyrightText: 2001-present Python Software Foundation
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Python-2.0
+
+close_range for the child of a subprocess, on Radix
+
+A child that subprocess starts closes every descriptor but those it was
+asked to keep. CPython does that with close_range only where it knows the
+function to be async-signal-safe, which it takes to be so on Linux and
+FreeBSD; elsewhere it lists /proc/self/fd, which Radix does not have, and
+then closes each number up to sysconf(_SC_OPEN_MAX), the soft
+RLIMIT_NOFILE. A descriptor above a limit that was lowered stays open in
+the child (test_close_fds_when_max_fd_is_lowered). Radix's close_range
+takes no lock and allocates nothing: it clears bits of the C library's
+table of descriptors and calls the kernel for each descriptor it closes,
+so it is as safe between fork and exec as close is.
+
+--- a/Modules/_posixsubprocess.c
++++ b/Modules/_posixsubprocess.c
+@@ -562,9 +562,12 @@
+  *
+  * On Linux, glibc explicitly documents it to be a thin wrapper over
+  * the system call, and other C libraries are likely to follow glibc.
++ * Radix's C library does it with atomic operations on its table of
++ * descriptors and a kernel call for each one it closes: no lock, no
++ * allocation.
+  */
+ #if defined(HAVE_CLOSE_RANGE) && \
+-    (defined(__linux__) || defined(__FreeBSD__))
++    (defined(__linux__) || defined(__FreeBSD__) || defined(__radix__))
+ #define HAVE_ASYNC_SAFE_CLOSE_RANGE
+ 
+ static int

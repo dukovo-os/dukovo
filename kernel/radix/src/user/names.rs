@@ -112,6 +112,7 @@ impl Identity {
             groups: self.groups(),
             bypass,
             file_mask: 0,
+            absolute_links_leave: false,
         })
     }
 

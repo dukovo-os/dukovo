@@ -163,9 +163,30 @@ fn tmpfs_times_are_set() {
 
 /// The users the gate's tests act for: alice, also in group 100, bob, and
 /// carol with the bypass right.
-const ALICE: Who = Who { user: 1000, group: 1000, groups: &[100], bypass: false, file_mask: 0 };
-const BOB: Who = Who { user: 1001, group: 1001, groups: &[], bypass: false, file_mask: 0 };
-const CAROL: Who = Who { user: 1002, group: 1002, groups: &[], bypass: true, file_mask: 0 };
+const ALICE: Who = Who {
+    user: 1000,
+    group: 1000,
+    groups: &[100],
+    bypass: false,
+    file_mask: 0,
+    absolute_links_leave: false,
+};
+const BOB: Who = Who {
+    user: 1001,
+    group: 1001,
+    groups: &[],
+    bypass: false,
+    file_mask: 0,
+    absolute_links_leave: false,
+};
+const CAROL: Who = Who {
+    user: 1002,
+    group: 1002,
+    groups: &[],
+    bypass: true,
+    file_mask: 0,
+    absolute_links_leave: false,
+};
 
 fn owned(who: &Who, mode: u16) -> Access {
     Access { owner: who.user, group: who.group, mode }
@@ -521,6 +542,113 @@ fn files_are_made_and_names_changed_through_links() {
     assert_eq!(vfs.stat_link(&K, &root, "dir/made").unwrap().kind, Kind::Symlink);
     vfs.make_link(&K, &root, "other", "x", LINK).unwrap();
     assert_eq!(vfs.rename(&K, &root, "other", &K, &root, "dir").err(), Some(Error::IsDirectory));
+}
+
+/// The kernel acting through a directory opened with
+/// `absolute_links_leave`: an absolute symbolic link met by its walks
+/// ends them with `Outside`.
+const LEAVING: Who = Who { absolute_links_leave: true, ..K };
+
+/// `/tmp/t`, holding the file `f` of 4 bytes, and `/tmp/d`, where the
+/// links of the next tests are made. Returns the tree and `d`'s place.
+fn directories_with_links() -> (Vfs, Location) {
+    let vfs = vfs();
+    let root = vfs.root();
+    for path in ["tmp", "tmp/t", "tmp/d"] {
+        vfs.make_directory(&K, &root, path, DIR).unwrap();
+    }
+    write(&vfs, &root, "tmp/t/f", b"data").unwrap();
+    let d = vfs.resolve(&K, &root, "tmp/d").unwrap();
+    (vfs, d)
+}
+
+#[test]
+fn an_absolute_link_leaves_a_directory_that_asks_it_to() {
+    let (vfs, d) = directories_with_links();
+    let root = vfs.root();
+    vfs.make_link(&K, &root, "tmp/d/abs", "/tmp/t", LINK).unwrap();
+    // Without the flag the target goes on from `d`, as if it were the
+    // root, where there is no /tmp.
+    assert_eq!(vfs.stat(&K, &d, "abs").err(), Some(Error::NotFound));
+    // With it the walk leaves, whichever name it ends with.
+    assert_eq!(vfs.stat(&LEAVING, &d, "abs").err(), Some(Error::Outside));
+    assert_eq!(vfs.stat(&LEAVING, &d, "abs/f").err(), Some(Error::Outside));
+    assert_eq!(vfs.stat(&LEAVING, &d, "abs/").err(), Some(Error::Outside));
+    assert_eq!(vfs.open(&LEAVING, &d, "abs/f", OpenFlags::default()).err(), Some(Error::Outside));
+    let mut out = [0u8; 64];
+    assert_eq!(
+        vfs.real_path(&LEAVING, &d, "abs", &mut SliceMut(&mut out[..])),
+        Err(Error::Outside)
+    );
+    // The same from another base: the walk is what leaves, not the place
+    // it started.
+    assert_eq!(vfs.stat(&LEAVING, &root, "tmp/d/abs/f").err(), Some(Error::Outside));
+    // The link itself, never followed, is there to read, stat and remove.
+    assert_eq!(vfs.stat_link(&LEAVING, &d, "abs").unwrap().kind, Kind::Symlink);
+    assert_eq!(link_text(&vfs, &d, "abs").unwrap(), "/tmp/t");
+    let no_follow = OpenFlags { no_follow: true, ..OpenFlags::default() };
+    assert_eq!(vfs.open(&LEAVING, &d, "abs", no_follow).err(), Some(Error::Loop));
+    // The root capability asks for no such thing: the same link leads
+    // there.
+    assert_eq!(vfs.stat(&K, &root, "tmp/d/abs/f").unwrap().size, 4);
+    vfs.remove(&LEAVING, &d, "abs").unwrap();
+    assert_eq!(vfs.stat(&K, &root, "tmp/t/f").unwrap().size, 4);
+}
+
+#[test]
+fn a_relative_link_still_resolves_beneath_such_a_directory() {
+    let (vfs, d) = directories_with_links();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "tmp/d/sub", DIR).unwrap();
+    write(&vfs, &root, "tmp/d/sub/g", b"xy").unwrap();
+    vfs.make_link(&K, &root, "tmp/d/down", "sub/g", LINK).unwrap();
+    vfs.make_link(&K, &root, "tmp/d/up", "../t", LINK).unwrap();
+    assert_eq!(vfs.stat(&LEAVING, &d, "down").unwrap().size, 2);
+    // A link that climbs goes on from the directory above it, as long as
+    // the walk began there.
+    let tmp = vfs.resolve(&K, &root, "tmp").unwrap();
+    assert_eq!(vfs.stat(&LEAVING, &tmp, "d/up/f").unwrap().size, 4);
+    // A `..` above the directory the walk began at leaves it, flag or no.
+    assert_eq!(vfs.stat(&LEAVING, &d, "up/f").err(), Some(Error::Outside));
+    assert_eq!(vfs.stat(&K, &d, "up/f").err(), Some(Error::Outside));
+}
+
+#[test]
+fn creating_through_an_absolute_link_leaves_too() {
+    let (vfs, d) = directories_with_links();
+    let root = vfs.root();
+    vfs.make_link(&K, &root, "tmp/d/dangling", "/tmp/t/made", LINK).unwrap();
+    let before = names(&vfs, &vfs.resolve(&K, &root, "tmp/t").unwrap());
+    assert_eq!(vfs.open(&LEAVING, &d, "dangling", create()).err(), Some(Error::Outside));
+    assert_eq!(names(&vfs, &vfs.resolve(&K, &root, "tmp/t").unwrap()), before);
+    // From the root, where the target is, the file is made where the link
+    // points.
+    write(&vfs, &root, "tmp/d/dangling", b"xyz").unwrap();
+    assert_eq!(vfs.stat(&K, &root, "tmp/t/made").unwrap().size, 3);
+    // An absolute link in the directory part of the path leaves too.
+    vfs.make_link(&K, &root, "tmp/d/abs", "/tmp/t", LINK).unwrap();
+    assert_eq!(vfs.open(&LEAVING, &d, "abs/new", create()).err(), Some(Error::Outside));
+    assert_eq!(vfs.stat(&K, &root, "tmp/t/new").err(), Some(Error::NotFound));
+}
+
+#[test]
+fn creating_a_path_that_ends_in_a_slash_is_a_directory_error() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "dir", DIR).unwrap();
+    write(&vfs, &root, "file", b"x").unwrap();
+    let before = names(&vfs, &root);
+    // Whether the name is missing, a file or a directory, and before the
+    // directory it is in is looked at.
+    for path in ["none/", "file/", "dir/", "dir//", "missing/none/"] {
+        assert_eq!(vfs.open(&K, &root, path, create()).err(), Some(Error::IsDirectory), "{path}");
+    }
+    assert_eq!(names(&vfs, &root), before);
+    // Without `create` a directory opens by a name with a `/` after it.
+    assert!(vfs.open(&K, &root, "dir/", OpenFlags::default()).is_ok());
+    // And a path without the `/` makes the file.
+    write(&vfs, &root, "none", b"y").unwrap();
+    assert_eq!(vfs.stat(&K, &root, "none").unwrap().size, 1);
 }
 
 #[test]
@@ -2568,7 +2696,14 @@ fn access_lists_are_read_and_checked_as_linux_has_them() {
     // In a matching group whose entries do not give it, the others'
     // bits do not count either.
     shared.node.set_access(&AccessChange { mode: Some(0o674), ..AccessChange::default() }).unwrap();
-    let in_100 = Who { user: 2000, group: 2000, groups: &[100], bypass: false, file_mask: 0 };
+    let in_100 = Who {
+        user: 2000,
+        group: 2000,
+        groups: &[100],
+        bypass: false,
+        file_mask: 0,
+        absolute_links_leave: false,
+    };
     assert_eq!(in_100.check(&*shared.node, want::WRITE), Err(Error::Denied));
     // A list the mode says all of goes, and sets the mode.
     let same = acl_value(&[(tag::USER_OBJ, 7, U), (tag::GROUP_OBJ, 5, U), (tag::OTHER, 0, U)]);
