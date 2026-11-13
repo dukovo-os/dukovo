@@ -14,12 +14,16 @@
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::protocol::{Alert, Done, Refusal, Request, SOCKET};
 
 /// The longest a call waits for alertd to take a request.
 pub const PATIENCE: Duration = Duration::from_secs(2);
+
+/// What a call says when nothing answers on alertd's socket.
+const NOT_RUNNING: &str = "alertd is not running";
 
 /// Raises `alert`: alertd tells the owner when it is new, or when it
 /// goes from warning to critical, and keeps it active until it is
@@ -40,6 +44,32 @@ pub fn raise(alert: &Alert) -> Result<(), String> {
 /// As [`raise`].
 pub fn event(alert: &Alert) -> Result<(), String> {
     send(&Request { ask: "event".into(), alert: Some(alert.clone()), ..Request::default() })
+}
+
+/// Tells of `alert` as [`event`] does, from a program that runs as the
+/// machine starts, perhaps before alertd: while alertd is not running,
+/// it tries again each second for up to `within`.
+///
+/// # Errors
+///
+/// As [`raise`], once `within` has passed.
+pub fn event_at_start(alert: &Alert, within: Duration) -> Result<(), String> {
+    let request = Request { ask: "event".into(), alert: Some(alert.clone()), ..Request::default() };
+    patiently(Path::new(SOCKET), &request, within)
+}
+
+/// Sends `request` as [`send_to`] does, again each second for up to
+/// `within` while alertd is not running.
+fn patiently(socket: &Path, request: &Request, within: Duration) -> Result<(), String> {
+    let until = Instant::now() + within;
+    loop {
+        match send_to(socket, request) {
+            Err(why) if why == NOT_RUNNING && Instant::now() < until => {
+                thread::sleep(Duration::from_secs(1));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// Clears the caller's alert `key`, if it is active.
@@ -69,9 +99,7 @@ fn send(request: &Request) -> Result<(), String> {
 /// Sends `request` to the alertd answering at `socket`.
 fn send_to(socket: &Path, request: &Request) -> Result<(), String> {
     let answer = exchange(socket, request).map_err(|err| match err.kind() {
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
-            "alertd is not running".to_string()
-        }
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => NOT_RUNNING.to_string(),
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
             format!("alertd did not answer within {} seconds", PATIENCE.as_secs())
         }
@@ -194,5 +222,27 @@ mod tests {
         let request = Request { ask: "clear".into(), key: Some("k".into()), ..Request::default() };
         assert_eq!(send_to(&path, &request), Err("alertd answered \"{\\\"ok\\\":false}\"".into()));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn an_event_at_start_waits_for_alertd_to_come() {
+        let path = socket("later");
+        let request = Request { ask: "event".into(), alert: Some(full()), ..Request::default() };
+        // Nothing comes: it gives up once the time has passed.
+        let started = std::time::Instant::now();
+        assert_eq!(
+            patiently(&path, &request, Duration::from_millis(1500)),
+            Err("alertd is not running".into())
+        );
+        assert!(started.elapsed() >= Duration::from_millis(1500));
+        // alertd comes a moment later: the event reaches it.
+        let later = path.clone();
+        let server = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(1200));
+            alertd(&later, Some("{\"ok\":true}\n")).join().unwrap()
+        });
+        assert_eq!(patiently(&path, &request, Duration::from_secs(5)), Ok(()));
+        let sent: Request = serde_json::from_str(&server.join().unwrap()).unwrap();
+        assert_eq!(sent, request);
     }
 }

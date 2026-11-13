@@ -72,6 +72,20 @@ pub struct Alert {
 }
 
 impl Alert {
+    /// An alert of `key` with `title` cut to one line of [`TITLE_MAX`]
+    /// characters and `detail` to [`DETAIL_MAX`], so that nothing a
+    /// producer reads from a disk or a log makes alertd refuse it. The
+    /// key is the caller's to make right ([`key_part`]).
+    pub fn new(key: String, severity: Severity, title: &str, detail: &str) -> Alert {
+        let line = title.lines().next().unwrap_or_default().trim();
+        Alert {
+            key,
+            severity,
+            title: clip(line, TITLE_MAX),
+            detail: clip(detail.trim_end(), DETAIL_MAX),
+        }
+    }
+
     /// What is wrong with it for alertd to refuse it, if anything.
     pub fn invalid(&self) -> Option<String> {
         let key_char =
@@ -99,6 +113,29 @@ impl Alert {
         }
         None
     }
+}
+
+/// `text`, cut to `most` characters, the last of them `…` when cut.
+fn clip(text: &str, most: usize) -> String {
+    if text.chars().count() <= most {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(most - 1).collect();
+    cut.push('…');
+    cut
+}
+
+/// `text` as part of a key: lower case, with each character a key may
+/// not have, a space or a `+`, made `-`. A disk's serial number or a
+/// destination's name becomes part of a key this way.
+pub fn key_part(text: &str) -> String {
+    text.trim()
+        .chars()
+        .map(|c| match c.to_ascii_lowercase() {
+            c @ ('a'..='z' | '0'..='9' | '.' | '_' | ':' | '/' | '-') => c,
+            _ => '-',
+        })
+        .collect()
 }
 
 /// A request to alertd: a line of JSON.
@@ -250,5 +287,27 @@ mod tests {
     fn severities_order_from_warning_to_critical() {
         assert!(Severity::Warning < Severity::Critical);
         assert_eq!(serde_json::to_string(&State::Cleared).unwrap(), r#""cleared""#);
+    }
+
+    #[test]
+    fn a_new_alert_is_cut_to_what_alertd_takes() {
+        let long = "x".repeat(TITLE_MAX + 10);
+        let made = Alert::new("k".into(), Severity::Warning, &format!("{long}\nmore"), "d\n");
+        assert_eq!(made.title.chars().count(), TITLE_MAX);
+        assert!(made.title.ends_with('…'));
+        assert_eq!(made.detail, "d");
+        assert_eq!(made.invalid(), None);
+        let made = Alert::new("k".into(), Severity::Warning, "t", &"y".repeat(DETAIL_MAX * 2));
+        assert_eq!(made.detail.chars().count(), DETAIL_MAX);
+        assert_eq!(made.invalid(), None);
+    }
+
+    #[test]
+    fn any_text_becomes_a_key_part() {
+        assert_eq!(key_part("WD-WCC4E1234567"), "wd-wcc4e1234567");
+        assert_eq!(key_part(" QM00001 "), "qm00001");
+        assert_eq!(key_part("Off Site+2"), "off-site-2");
+        let alert = Alert::new(format!("smart:{}", key_part("S/N ÄB")), Severity::Warning, "t", "");
+        assert_eq!(alert.invalid(), None);
     }
 }

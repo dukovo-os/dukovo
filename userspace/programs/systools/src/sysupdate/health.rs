@@ -30,6 +30,8 @@ use spark_api::show::{self, HealthState::Failing, State};
 use super::place::{self, BUILDING, Root};
 use super::starts::{self, Item, Outcome};
 use super::{devices, firmware};
+use crate::alerts::client as alerts;
+use crate::alerts::protocol::{Alert, Severity};
 use crate::power;
 use crate::subvolume;
 use crate::util::Fail;
@@ -57,6 +59,10 @@ const RESTARTS: u64 = 3;
 /// How long the health check waits for a stage that holds the slot
 /// state's lock, in seconds.
 const STAGE_WAIT: u64 = 30 * 60;
+
+/// How long the check waits for alertd, which may start after it, to tell
+/// it of a failed start.
+const ALERTD_WAIT: Duration = Duration::from_secs(60);
 
 /// health.toml(5).
 #[derive(Debug, Deserialize)]
@@ -286,6 +292,7 @@ pub fn run() -> Result<i32, Fail> {
     let (next, checked) = state.checked(root.running, passed);
     if let Some(text) = failure_notice(&starts::all(), this.as_ref(), checked, &named) {
         tell(&text);
+        tell_alertd(&failure_alert(checked, &named, &text));
     }
     if let Some(next) = next {
         place::write(&copies, next)?;
@@ -311,6 +318,18 @@ pub fn run() -> Result<i32, Fail> {
             );
             if let Err(why) = power::request("reboot") {
                 println!("sysupdate: cannot ask Spark to restart: {}", why.message);
+                let title =
+                    format!("An update failed its health check, and {before} could not be started");
+                let detail = format!(
+                    "Spark did not restart the machine: {}\n`elevate reboot` starts {before}.",
+                    why.message
+                );
+                tell_alertd(&Alert::new(
+                    "update-failed".into(),
+                    Severity::Critical,
+                    &title,
+                    &detail,
+                ));
             }
         }
         Checked::FellBack(slot) => {
@@ -595,6 +614,32 @@ fn failure_notice(
     Some(text)
 }
 
+/// The alert that tells the owner of a failed start, as `text`, the
+/// sign-in notice, does (ADR 0501): an update that fell back is critical,
+/// and a start that failed its check and goes on a warning.
+fn failure_alert(checked: Checked, named: &str, text: &str) -> Alert {
+    let (key, severity, title) = match checked {
+        Checked::FellBack(_) => (
+            "update-fell-back",
+            Severity::Critical,
+            format!("An update failed its health check, and Dukovo went back to {named}"),
+        ),
+        _ => (
+            "start-failed",
+            Severity::Warning,
+            format!("This start of {named} failed its health check, and goes on"),
+        ),
+    };
+    Alert::new(key.into(), severity, &title, text)
+}
+
+/// Tells alertd of `alert` as an event, waiting for it to start.
+fn tell_alertd(alert: &Alert) {
+    if let Err(why) = alerts::event_at_start(alert, ALERTD_WAIT) {
+        println!("sysupdate: cannot tell alertd of it: {why}");
+    }
+}
+
 /// Shows `text` on the sign-in screens until the next start, in
 /// [`NOTICE`], and tells whoever is signed in, in a notification shown
 /// until a key is pressed.
@@ -787,5 +832,20 @@ mod tests {
         // A good start that follows no failure says nothing.
         assert_eq!(failure_notice(&records, Some(&this), Checked::Start, named), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_start_is_told_to_alertd_as_its_notice_says() {
+        let text = "Start 7 failed its health check: netd did not start\n";
+        let fell = failure_alert(Checked::FellBack(slots::Slot::B), "Dukovo 0.16.0 (slot A)", text);
+        assert_eq!((fell.key.as_str(), fell.severity), ("update-fell-back", Severity::Critical));
+        assert_eq!(
+            fell.title,
+            "An update failed its health check, and Dukovo went back to Dukovo 0.16.0 (slot A)"
+        );
+        assert_eq!(fell.detail, text.trim_end());
+        assert_eq!(fell.invalid(), None);
+        let goes_on = failure_alert(Checked::Start, "Dukovo 0.16.0 (slot A)", text);
+        assert_eq!((goes_on.key.as_str(), goes_on.severity), ("start-failed", Severity::Warning));
     }
 }

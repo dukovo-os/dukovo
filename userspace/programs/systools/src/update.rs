@@ -39,6 +39,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use crate::alerts::protocol::{Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
 use crate::sysupdate::online::{self, Apps, Check, Metered, Plan, Settings};
@@ -497,6 +498,24 @@ fn weekly_verify() {
         if let Err(why) = notifyd::send("updated", &text, "", Urgency::Critical) {
             println!("updated: cannot tell the consoles: {}", why.message);
         }
+        let detail = format!(
+            "{}\n`elevate sysupdate verify` checks again, and Rescue reinstalls the release.",
+            why.message
+        );
+        tell_alertd(&Alert::new(
+            "update-not-verified".into(),
+            Severity::Critical,
+            "The system's files are not the release's",
+            &detail,
+        ));
+    }
+}
+
+/// Tells alertd of `alert`, an event; what keeps it from alertd goes in
+/// the log.
+fn tell_alertd(alert: &Alert) {
+    if let Err(why) = crate::alerts::client::event(alert) {
+        println!("updated: cannot tell alertd: {why}");
     }
 }
 
@@ -627,6 +646,15 @@ fn system_round(settings: &Settings, metered: bool) -> bool {
             Ok(None) => false,
             Err(why) => {
                 tell(&format!("the update could not be staged: {}", why.message));
+                tell_alertd(&Alert::new(
+                    "update-not-staged".into(),
+                    Severity::Warning,
+                    "An update could not be staged",
+                    &format!(
+                        "{}\n`log updated` says more; the next check tries again.",
+                        why.message
+                    ),
+                ));
                 false
             }
         };

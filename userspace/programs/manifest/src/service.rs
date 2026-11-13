@@ -518,7 +518,9 @@ pub struct Place {
 /// What every service's view holds without asking (ADR 0217): the
 /// system's programs, libraries, resources and settings, the processes'
 /// and the kernel's files, read-only; the devices every program uses;
-/// notifyd's folder, as notifications are always allowed; and resolved's,
+/// notifyd's folder, as notifications are always allowed; alertd's, so
+/// that the system's services raise alerts (ADR 0485), which alertd takes
+/// from root's processes alone; and resolved's,
 /// whose resolv.conf `/etc/resolv.conf` leads to (ADR 0193), and netd's,
 /// which an `/etc/resolv.conf` from before resolved leads to (ADR 0191).
 /// Its program,
@@ -530,6 +532,7 @@ pub const ALWAYS: &[(&str, bool)] = &[
     ("/system/resources", false),
     ("/system/settings", false),
     ("/system/live/notify", false),
+    ("/system/live/alerts", false),
     ("/system/live/resolved", false),
     ("/system/live/netd", false),
     ("/processes", false),

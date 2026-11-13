@@ -97,7 +97,9 @@ A _name_ is a file's name as *list* shows it, without the folder.
 # SAVING
 
 The service runs *dumps save* right after *logd*(8), so that the line it
-logs is in the log. The file is named by the time of the panic, in UTC,
+logs is in the log. After saving a new dump it tells *alertd*(8) of the
+panic, as the critical event *kernel-panic*, waiting up to a minute for
+alertd to start. The file is named by the time of the panic, in UTC,
 and the boot's number:
 
 ```
@@ -193,4 +195,4 @@ elevate dumps test
 # SEE ALSO
 
 *radix-debug*(7), *dukovo-boot*(7), *service*(8), *logd*(8), *log*(1),
-*elevate*(8), *spark*(8), *serial-console*(8), *systools*(1)
+*elevate*(8), *spark*(8), *serial-console*(8), *systools*(1), *alerts*(8)

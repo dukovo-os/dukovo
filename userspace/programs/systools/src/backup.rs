@@ -60,6 +60,7 @@ use self::layout::{Listing, Next};
 use self::restic::{Keep, Repo};
 use self::store::{Address, Folder, Joined, Parts, Ssh, Store};
 use self::tag::TagKey;
+use crate::alerts::protocol::{Alert, Severity, key_part};
 use crate::args::{Arg, Args};
 use crate::snap::{self, Place};
 use crate::subvolume::{self, is_top};
@@ -827,20 +828,93 @@ fn sign_in_line(dest: &Destination, state: &State, added: u64, now: u64) -> Opti
     })
 }
 
+/// The alerts that tell the owner of `dest` at `now` (ADR 0485), beside
+/// its sign-in line: `backup-failed:NAME` while its last backup or check
+/// failed, and `backup-overdue:NAME` from the day the sign-in says it is
+/// overdue, critical once it is overdue twice over.
+fn alerts_of(dest: &Destination, state: &State, added: u64, now: u64) -> Vec<Alert> {
+    let name = &dest.name;
+    let part = key_part(name);
+    let mut alerts = Vec::new();
+    if !state.failed.is_empty() {
+        let title = format!("The last backup to {name} failed");
+        alerts.push(Alert::new(
+            format!("backup-failed:{part}"),
+            Severity::Warning,
+            &title,
+            &failed_detail(&state.failed),
+        ));
+    } else if !state.verify_failed.is_empty() {
+        let title = format!("Restoring {name}'s newest backups to check them failed");
+        alerts.push(Alert::new(
+            format!("backup-failed:{part}"),
+            Severity::Warning,
+            &title,
+            &failed_detail(&state.verify_failed),
+        ));
+    }
+    let (allowed, how) = match dest.every {
+        Every::Hand => return alerts,
+        Every::Day => (OVERDUE_DAILY, "every day"),
+        Every::Week => (OVERDUE_WEEKLY, "every week"),
+    };
+    let since = if state.done == 0 { added } else { state.done };
+    let days = now.saturating_sub(since) / (86_400 * NANOS);
+    if days >= allowed {
+        let severity = if days >= 2 * allowed { Severity::Critical } else { Severity::Warning };
+        let title = if state.done == 0 {
+            format!("Nothing has been backed up to {name} in the {days} days since it was added")
+        } else {
+            format!("The last backup to {name} was {days} days ago")
+        };
+        let detail = format!(
+            "{name} is backed up {how}. `backup show {name}` says what it last did, and \
+             `elevate backup run {name}` backs it up now."
+        );
+        alerts.push(Alert::new(format!("backup-overdue:{part}"), severity, &title, &detail));
+    }
+    alerts
+}
+
+fn failed_detail(why: &str) -> String {
+    format!("{why}\n`backup show` and `log backup` say more.")
+}
+
+/// When `dest` was added, at `now` if that cannot be read: its settings
+/// file's time.
+fn added_at(dest: &Destination, now: u64) -> u64 {
+    fs::metadata(settings_file(&dest.name))
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(now, |since| since.as_secs() * NANOS)
+}
+
+/// Sets the service's alerts to what the destinations need at `now`; a
+/// failure to reach alertd is logged once, until it is reached again.
+fn tell_alerts(now: u64, unreached: &mut bool) {
+    let Ok(dests) = Destination::all() else { return };
+    let alerts: Vec<Alert> = dests
+        .iter()
+        .flat_map(|dest| alerts_of(dest, &State::read(&dest.name), added_at(dest, now), now))
+        .collect();
+    match crate::alerts::client::set(&alerts) {
+        Ok(()) => *unreached = false,
+        Err(why) if !*unreached => {
+            *unreached = true;
+            println!("backup: cannot tell alertd: {why}");
+        }
+        Err(_) => {}
+    }
+}
+
 /// Keeps what the next sign-in should say of the destinations, and tells
 /// the consoles when that changes to something.
 fn tell_sign_in(now: u64) {
     let Ok(dests) = Destination::all() else { return };
     let lines: Vec<String> = dests
         .iter()
-        .filter_map(|dest| {
-            let added = fs::metadata(settings_file(&dest.name))
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(now, |since| since.as_secs() * NANOS);
-            sign_in_line(dest, &State::read(&dest.name), added, now)
-        })
+        .filter_map(|dest| sign_in_line(dest, &State::read(&dest.name), added_at(dest, now), now))
         .collect();
     if crate::sign_in_notices::put("backup", &lines) {
         let body = format!("{}\nbackup list shows each destination", lines.join("\n"));
@@ -2108,14 +2182,21 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             tell_sign_in(util::now_ns());
             Ok(if good { 0 } else { 1 })
         }
-        ("auto", []) => loop {
-            let good = auto(&mut out);
-            tell_sign_in(util::now_ns());
-            if !watch {
-                return Ok(if good { 0 } else { 1 });
+        ("auto", []) => {
+            // The service alone raises alerts, so that they have one
+            // source: `backup run` from a shell changes the sign-in line,
+            // and the service's next round the alerts.
+            let mut unreached = false;
+            loop {
+                let good = auto(&mut out);
+                tell_sign_in(util::now_ns());
+                if !watch {
+                    return Ok(if good { 0 } else { 1 });
+                }
+                tell_alerts(util::now_ns(), &mut unreached);
+                std::thread::sleep(ROUND);
             }
-            std::thread::sleep(ROUND);
-        },
+        }
         ("verify", [name]) => {
             let dest = Destination::read(name)?;
             let checked = verify(&dest, check_restore, &mut out);
@@ -2307,6 +2388,51 @@ mod tests {
         let unchecked =
             State { done: now, verify_failed: "a chain is short".into(), ..State::default() };
         assert!(line(Every::Day, &unchecked, 0).unwrap().contains("to check them failed: a chain"));
+    }
+
+    #[test]
+    fn the_alerts_tell_of_a_failed_or_overdue_backup_as_the_sign_in_does() {
+        let dest = |every| Destination {
+            every,
+            ..Destination::parse("Off_Site", "to = \"/v\"\n").unwrap()
+        };
+        let day = 86_400 * NANOS;
+        let now = 20_000 * day;
+        let done = |done| State { done, ..State::default() };
+        let alerts = |every, state: &State, added| alerts_of(&dest(every), state, added, now);
+        let keys =
+            |found: Vec<Alert>| found.into_iter().map(|a| (a.key, a.severity)).collect::<Vec<_>>();
+        assert_eq!(alerts(Every::Day, &done(now - 2 * day), 0), []);
+        let late = alerts(Every::Day, &done(now - 3 * day), 0);
+        assert_eq!(late[0].title, "The last backup to Off_Site was 3 days ago");
+        assert!(late[0].detail.contains("every day") && late[0].invalid().is_none());
+        assert_eq!(keys(late), [("backup-overdue:off_site".to_string(), Severity::Warning)]);
+        // Overdue twice over is critical.
+        assert_eq!(
+            keys(alerts(Every::Day, &done(now - 6 * day), 0)),
+            [("backup-overdue:off_site".to_string(), Severity::Critical)]
+        );
+        assert_eq!(alerts(Every::Week, &done(now - 13 * day), 0), []);
+        assert_eq!(alerts(Every::Hand, &done(1), 0), []);
+        assert!(
+            alerts(Every::Day, &done(0), now - 5 * day)[0].title.contains("since it was added")
+        );
+        // A failure and lateness are told apart.
+        let failed =
+            State { done: now - 4 * day, failed: "the disk is full".into(), ..State::default() };
+        let found = alerts(Every::Day, &failed, 0);
+        assert_eq!(found[0].title, "The last backup to Off_Site failed");
+        assert!(found[0].detail.starts_with("the disk is full\n"));
+        assert_eq!(
+            keys(found),
+            [
+                ("backup-failed:off_site".to_string(), Severity::Warning),
+                ("backup-overdue:off_site".to_string(), Severity::Warning)
+            ]
+        );
+        let unchecked =
+            State { done: now, verify_failed: "a chain is short".into(), ..State::default() };
+        assert!(alerts(Every::Day, &unchecked, 0)[0].title.contains("to check them failed"));
     }
 
     #[test]

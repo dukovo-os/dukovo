@@ -65,12 +65,28 @@ diskhealth: nvme0n1: PASSED, 50 °C, 0 hours on
 diskhealth: sda: WARNING: 8 sectors were reallocated
 ```
 
+	After each look the service keeps the disks' alerts (*alerts*(8)):
+	*smart:*_serial_ while a disk's verdict is WARNING, as a warning, or
+	FAILING, as critical; and the early warning *smart-rising:*_serial_
+	for a week after a count rises from one look to the next
+	(reallocated sectors, sectors waiting to be reallocated, offline
+	uncorrectable sectors, an NVMe drive's media errors), and while an
+	NVMe drive has used 90% or more of its rated endurance. Disks
+	often fail within weeks of these counts starting to rise. A disk
+	with no serial number is named by its device name.
+
 # EXIT STATUS
 
 The bits of smartctl's that apply: 0 if every disk passed or keeps no
 record; 1 for a mistake in the command line; with 2 if a disk could not
 be read, 4 if one warns and 8 if one is failing.
 
+# FILES
+
+_/system/state/diskhealth/serial_
+	What a disk counted at the service's last look, and its last rise,
+	so that a rise across a restart is seen too.
+
 # SEE ALSO
 
-*spark*(8), *radix-sysfs*(5), *systools*(1), *scrub*(8)
+*spark*(8), *radix-sysfs*(5), *systools*(1), *scrub*(8), *alerts*(8)

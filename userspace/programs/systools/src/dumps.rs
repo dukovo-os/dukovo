@@ -23,8 +23,9 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
+use crate::alerts::protocol::{Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::logd;
 use crate::prompt::{self, Answer};
@@ -36,6 +37,9 @@ const DEVICE: &str = "/devices/crashdump";
 
 /// Where the dumps are saved.
 const FOLDER: &str = "/system/state/crash";
+/// How long `dumps save` waits for alertd, which starts after it, to
+/// tell it of the panic.
+const ALERTD_WAIT: Duration = Duration::from_secs(60);
 
 /// How many saved dumps are kept, and the most bytes they take together.
 const KEEP_DUMPS: usize = 10;
@@ -442,6 +446,17 @@ fn save(folder: &Path) -> Result<i32, Fail> {
          {FOLDER}/{name} (dumps show)"
     );
     prune(folder, &name)?;
+    let detail = format!("{panic}\nThe dump is {FOLDER}/{name}; `elevate dumps show` shows it.");
+    let alert = Alert::new(
+        "kernel-panic".into(),
+        Severity::Critical,
+        "The machine restarted after a kernel panic",
+        &detail,
+    );
+    // This runs early in the start, before alertd: it waits for it.
+    if let Err(why) = crate::alerts::client::event_at_start(&alert, ALERTD_WAIT) {
+        eprintln!("dumps: cannot tell alertd: {why}");
+    }
     Ok(0)
 }
 

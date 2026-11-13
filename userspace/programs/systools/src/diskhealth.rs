@@ -8,15 +8,26 @@
 //! Spark's diskhealth service, it looks again every half hour and writes
 //! a line, which Spark puts in the kernel log, whenever a disk's verdict
 //! or its reasons change.
+//!
+//! The service also keeps alertd's alerts of the disks (ADR 0485):
+//! `smart:SERIAL` while a disk's verdict is not PASSED, and the early
+//! warning `smart-rising:SERIAL` for a week after a count that tells of
+//! a failure to come rises (reallocated, pending and offline
+//! uncorrectable sectors, an NVMe drive's media errors), or while an NVMe
+//! drive has used 90% of its rated endurance. What each disk counted at
+//! the last look is kept in `/system/state/diskhealth`, a file a disk,
+//! so that a rise across a restart is seen too.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::time::Duration;
 
 use radix_abi::errors::Kernel;
 use radix_abi::{block, file};
 
+use crate::alerts::protocol::{Alert, Severity, key_part};
 use crate::args::{Arg, Args};
 use crate::sys::{self, SYS};
 use crate::util::{self, Fail};
@@ -25,6 +36,13 @@ use crate::util::{self, Fail};
 const BLOCKS: &str = "/kernel/block";
 /// How long `--watch` waits between looks: smartd(8)'s default.
 const WATCH_EVERY: Duration = Duration::from_mins(30);
+/// Where `--watch` keeps what each disk counted at its last look.
+const KEPT: &str = "/system/state/diskhealth";
+/// How long a rise is told of after the count stopped rising.
+const RISE_TOLD: u64 = 7 * 86_400;
+/// The share of its rated endurance, in percent, from which an NVMe
+/// drive's use is told of before it is used up.
+const USED_TOLD: u8 = 90;
 /// The bits of the exit status: a disk could not be read, one warns,
 /// and one is failing, as smartctl's bit 3 says a disk is failing; a
 /// mistake in the command line is 1.
@@ -453,6 +471,205 @@ fn table(out: &mut impl Write, rows: &[(String, Option<Record>)]) -> io::Result<
     Ok(())
 }
 
+/// The counts of a disk whose rise tells of a failure to come, and an
+/// NVMe drive's share of its rated endurance used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Counts {
+    reallocated: u64,
+    pending: u64,
+    offline: u64,
+    media_errors: u64,
+    used: Option<u8>,
+}
+
+impl Counts {
+    /// The counts `record` gives; none from a SATA disk whose SMART is
+    /// off.
+    fn of(record: &Record) -> Option<Counts> {
+        match record {
+            Record::Ata(attributes) => {
+                let count = |id: u8| {
+                    attributes.iter().find(|a| a.id == id).map_or(0, |a| a.raw & 0xffff_ffff)
+                };
+                Some(Counts {
+                    reallocated: count(5),
+                    pending: count(197),
+                    offline: count(198),
+                    ..Counts::default()
+                })
+            }
+            Record::AtaOff => None,
+            Record::Nvme(log) => Some(Counts {
+                media_errors: u64::try_from(log.media_errors).unwrap_or(u64::MAX),
+                used: Some(log.used),
+                ..Counts::default()
+            }),
+        }
+    }
+
+    /// What rose from `before` to these, as "8 more reallocated sectors".
+    fn rises_from(&self, before: &Counts) -> Vec<String> {
+        let counted = [
+            (before.reallocated, self.reallocated, "reallocated sector", "reallocated sectors"),
+            (
+                before.pending,
+                self.pending,
+                "sector waiting to be reallocated",
+                "sectors waiting to be reallocated",
+            ),
+            (
+                before.offline,
+                self.offline,
+                "sector that could not be read offline",
+                "sectors that could not be read offline",
+            ),
+            (before.media_errors, self.media_errors, "media error", "media errors"),
+        ];
+        counted
+            .into_iter()
+            .filter(|(was, now, ..)| now > was)
+            .map(|(was, now, one, many)| {
+                let more = now - was;
+                format!("{more} more {}", if more == 1 { one } else { many })
+            })
+            .collect()
+    }
+}
+
+/// What `--watch` keeps of a disk: its counts at the last look and when
+/// that was, in seconds since 1970, and the newest rise, when it was seen
+/// and the title that tells of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Kept {
+    counts: Counts,
+    checked: u64,
+    rose: Option<(u64, String)>,
+}
+
+impl Kept {
+    /// The file's text: a `name value` line each.
+    fn text(&self) -> String {
+        let c = &self.counts;
+        let mut text = format!(
+            "reallocated {}\npending {}\noffline {}\nmedia-errors {}\nchecked {}\n",
+            c.reallocated, c.pending, c.offline, c.media_errors, self.checked
+        );
+        if let Some(used) = c.used {
+            text += &format!("used {used}\n");
+        }
+        if let Some((at, title)) = &self.rose {
+            text += &format!("rose {at}\nrise {title}\n");
+        }
+        text
+    }
+
+    /// What a file's `text` keeps, if it is whole.
+    fn parse(text: &str) -> Option<Kept> {
+        let value =
+            |name: &str| text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' '));
+        let number = |name: &str| value(name)?.parse::<u64>().ok();
+        let counts = Counts {
+            reallocated: number("reallocated")?,
+            pending: number("pending")?,
+            offline: number("offline")?,
+            media_errors: number("media-errors")?,
+            used: value("used").and_then(|used| used.parse().ok()),
+        };
+        let rose = number("rose").zip(value("rise").map(String::from));
+        Some(Kept { counts, checked: number("checked")?, rose })
+    }
+}
+
+/// The early warning of a disk at a look at `now` that found `counts`,
+/// after the look that left `before`: what to keep, and the alert to
+/// raise, if any. `disk` names the disk for people, `id` for the key.
+fn early_warning(
+    before: Option<&Kept>,
+    counts: Counts,
+    now: u64,
+    disk: &str,
+    id: &str,
+) -> (Kept, Option<Alert>) {
+    let rises = before.map_or_default(|before| counts.rises_from(&before.counts));
+    let rose = if rises.is_empty() {
+        before.and_then(|before| before.rose.clone())
+    } else {
+        let since = before.map_or(now, |before| before.checked);
+        let since = util::time_text(i64::try_from(since).unwrap_or(0), "%F %R", false);
+        Some((now, format!("Disk {disk} has {} since {since}", rises.join(", "))))
+    };
+    let rising = rose.as_ref().filter(|(at, _)| now.saturating_sub(*at) < RISE_TOLD);
+    let worn = counts.used.filter(|&used| used >= USED_TOLD);
+    let worn_line = worn.map(|used| format!("Disk {disk} has used {used}% of its rated endurance"));
+    let title = rising.map(|(_, title)| title.clone()).or_else(|| worn_line.clone());
+    let alert = title.map(|title| {
+        let mut detail = String::new();
+        if let (Some(_), Some(line)) = (rising, &worn_line) {
+            detail = format!("{line}.\n");
+        }
+        detail.push_str(
+            "Disks often fail within weeks of these counts starting to rise. Make sure what is \
+             on it is backed up (backup list), and plan to replace it.",
+        );
+        Alert::new(format!("smart-rising:{id}"), Severity::Warning, &title, &detail)
+    });
+    (Kept { counts, checked: now, rose }, alert)
+}
+
+/// The alert of a disk whose verdict is not PASSED, if it has one.
+fn verdict_alert(report: &Report, disk: &str, name: &str, id: &str) -> Option<Alert> {
+    let (severity, title) = match report.verdict {
+        Verdict::Passed => return None,
+        Verdict::Warning => (Severity::Warning, format!("Disk {disk} needs a look")),
+        Verdict::Failing => (Severity::Critical, format!("Disk {disk} is failing")),
+    };
+    let detail = format!("{}\n`diskhealth {name}` shows its record.", report.reasons.join("\n"));
+    Some(Alert::new(format!("smart:{id}"), severity, &title, &detail))
+}
+
+/// How a disk is named in alerts, and the part of their keys and of the
+/// kept file's name that stands for it: its model and serial number,
+/// else its name.
+fn identity(name: &str) -> (String, String) {
+    let (model, serial) = (device_text(name, "model"), device_text(name, "serial"));
+    let disk = match (model.is_empty(), serial.is_empty()) {
+        (false, false) => format!("{model} ({name}, serial {serial})"),
+        (false, true) => format!("{model} ({name})"),
+        _ => name.to_string(),
+    };
+    let id = key_part(if serial.is_empty() { name } else { &serial });
+    (disk, id)
+}
+
+/// The kept file of the disk `id` stands for.
+fn kept_path(id: &str) -> String {
+    format!("{KEPT}/{}", id.replace(['/', '.'], "-"))
+}
+
+/// Writes `kept` to its file, by a new file renamed over it.
+fn keep(path: &str, kept: &Kept) -> io::Result<()> {
+    fs::create_dir_all(KEPT)?;
+    let new = format!("{path}.new");
+    fs::write(&new, kept.text())?;
+    fs::rename(&new, path)
+}
+
+/// The alerts of a disk at a look at `now`, keeping its counts.
+fn disk_alerts(name: &str, record: &Record, report: &Report, now: u64) -> Vec<Alert> {
+    let (disk, id) = identity(name);
+    let mut alerts: Vec<Alert> = verdict_alert(report, &disk, name, &id).into_iter().collect();
+    if let Some(counts) = Counts::of(record) {
+        let path = kept_path(&id);
+        let before = fs::read_to_string(&path).ok().and_then(|text| Kept::parse(&text));
+        let (kept, rising) = early_warning(before.as_ref(), counts, now, &disk, &id);
+        if let Err(err) = keep(&path, &kept) {
+            eprintln!("diskhealth: {}", util::failed(&Path::new(&path).display(), err).message);
+        }
+        alerts.extend(rising);
+    }
+    alerts
+}
+
 /// The line `--watch` writes of a disk: its verdict and reasons, or what
 /// it rests on when it passed.
 fn watch_line(name: &str, report: &Report) -> String {
@@ -472,16 +689,31 @@ fn watch_line(name: &str, report: &Report) -> String {
     line
 }
 
-/// `--watch`: looks at every disk now and every half hour, and writes a
-/// line of each whose verdict or reasons changed. Runs until stopped.
+/// `--watch`: looks at every disk now and every half hour, writes a
+/// line of each whose verdict or reasons changed, and sets the disks'
+/// alerts. Runs until stopped.
 fn watch() -> Result<i32, Fail> {
     let mut last: Vec<(String, Report)> = Vec::new();
+    // Each disk's alerts at its last look, kept for a look that cannot
+    // read it, so that they are not cleared for that.
+    let mut alerts: Vec<(String, Vec<Alert>)> = Vec::new();
+    let mut unreached = false;
     loop {
         let names = disks().map_err(|e| util::failed(&BLOCKS, e))?;
+        let now = util::now_ns() / 1_000_000_000;
+        alerts.retain(|(disk, _)| names.contains(disk));
         let mut out = io::stdout().lock();
         for name in names {
             let report = match read(&name) {
-                Ok(Some(record)) => report(&record).1,
+                Ok(Some(record)) => {
+                    let report = report(&record).1;
+                    let found = disk_alerts(&name, &record, &report, now);
+                    match alerts.iter_mut().find(|(disk, _)| *disk == name) {
+                        Some((_, held)) => *held = found,
+                        None => alerts.push((name.clone(), found)),
+                    }
+                    report
+                }
                 Ok(None) => continue,
                 Err(fail) => {
                     eprintln!("diskhealth: {}", fail.message);
@@ -503,6 +735,15 @@ fn watch() -> Result<i32, Fail> {
         }
         out.flush()?;
         drop(out);
+        let all: Vec<Alert> = alerts.iter().flat_map(|(_, held)| held.iter().cloned()).collect();
+        match crate::alerts::client::set(&all) {
+            Ok(()) => unreached = false,
+            Err(why) if !unreached => {
+                unreached = true;
+                eprintln!("diskhealth: cannot tell alertd: {why}");
+            }
+            Err(_) => {}
+        }
         std::thread::sleep(WATCH_EVERY);
     }
 }
@@ -659,5 +900,115 @@ mod tests {
         assert_eq!(grouped(0), "0");
         assert_eq!(grouped(999), "999");
         assert_eq!(grouped(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn a_disk_that_is_not_passed_has_an_alert_of_its_verdict() {
+        let mut report = Report::new();
+        assert_eq!(verdict_alert(&report, "WDC (sda)", "sda", "wd-1"), None);
+        report.add(Verdict::Warning, "8 sectors were reallocated".into());
+        let alert = verdict_alert(&report, "WDC (sda)", "sda", "wd-1").unwrap();
+        assert_eq!((alert.key.as_str(), alert.severity), ("smart:wd-1", Severity::Warning));
+        assert_eq!(alert.title, "Disk WDC (sda) needs a look");
+        assert_eq!(alert.detail, "8 sectors were reallocated\n`diskhealth sda` shows its record.");
+        report.add(Verdict::Failing, "it has gone read-only".into());
+        let alert = verdict_alert(&report, "WDC (sda)", "sda", "wd-1").unwrap();
+        assert_eq!(
+            (alert.severity, alert.title.as_str()),
+            (Severity::Critical, "Disk WDC (sda) is failing")
+        );
+    }
+
+    #[test]
+    fn the_counts_come_from_either_kind_of_disk() {
+        let (data, thresholds) = pages(&[
+            (5, 3, 100, 100, 8, 36),
+            (197, 2, 100, 100, 2, 0),
+            (198, 2, 100, 100, 0x1_0000_0001, 0),
+        ]);
+        let counts = Counts::of(&Record::Ata(attributes(&data, &thresholds))).unwrap();
+        assert_eq!(counts, Counts { reallocated: 8, pending: 2, offline: 1, ..Counts::default() });
+        assert_eq!(Counts::of(&Record::AtaOff), None);
+        let log = NvmeLog { media_errors: 3, used: 91, ..NvmeLog::default() };
+        assert_eq!(
+            Counts::of(&Record::Nvme(log)),
+            Some(Counts { media_errors: 3, used: Some(91), ..Counts::default() })
+        );
+    }
+
+    #[test]
+    fn a_rise_is_an_early_warning_for_a_week() {
+        const DAY: u64 = 86_400;
+        let start = 1_800_000_000;
+        let counts = |reallocated, pending| Counts { reallocated, pending, ..Counts::default() };
+        // The first look keeps the counts and says nothing.
+        let (kept, alert) = early_warning(None, counts(8, 0), start, "WDC (sda)", "wd-1");
+        assert_eq!((kept.checked, &kept.rose, alert), (start, &None, None));
+        // The same counts later: still nothing.
+        let (kept, alert) =
+            early_warning(Some(&kept), counts(8, 0), start + 1800, "WDC (sda)", "wd-1");
+        assert_eq!(alert, None);
+        // A rise is told of, from the look before.
+        let now = start + 3600;
+        let (kept, alert) = early_warning(Some(&kept), counts(16, 2), now, "WDC (sda)", "wd-1");
+        let alert = alert.unwrap();
+        let since = util::time_text(i64::try_from(start + 1800).unwrap(), "%F %R", false);
+        assert_eq!((alert.key.as_str(), alert.severity), ("smart-rising:wd-1", Severity::Warning));
+        assert_eq!(
+            alert.title,
+            format!(
+                "Disk WDC (sda) has 8 more reallocated sectors, 2 more sectors waiting to be reallocated since {since}"
+            )
+        );
+        assert_eq!(kept.rose.as_ref().map(|(at, _)| *at), Some(now));
+        // It stays, with the same title, through a restart, for a week.
+        let kept = Kept::parse(&kept.text()).unwrap();
+        let (kept, again) =
+            early_warning(Some(&kept), counts(16, 2), now + 6 * DAY, "WDC (sda)", "wd-1");
+        assert_eq!(again.unwrap().title, alert.title);
+        let (_, gone) =
+            early_warning(Some(&kept), counts(16, 2), now + 7 * DAY, "WDC (sda)", "wd-1");
+        assert_eq!(gone, None);
+        // A count that falls, as after a disk is wiped, is no rise.
+        let (_, fell) =
+            early_warning(Some(&kept), counts(0, 0), now + 8 * DAY, "WDC (sda)", "wd-1");
+        assert_eq!(fell, None);
+    }
+
+    #[test]
+    fn an_nvme_drive_near_its_rated_endurance_is_told_of() {
+        let worn = |used| Counts { used: Some(used), ..Counts::default() };
+        assert_eq!(early_warning(None, worn(89), 100, "nvme0", "s1").1, None);
+        let alert = early_warning(None, worn(90), 100, "nvme0", "s1").1.unwrap();
+        assert_eq!(alert.title, "Disk nvme0 has used 90% of its rated endurance");
+        // With a rise as well, the rise is the title and the wear is said.
+        let kept = Kept { counts: worn(95), checked: 50, rose: None };
+        let both = Counts { media_errors: 1, used: Some(95), ..Counts::default() };
+        let alert = early_warning(Some(&kept), both, 100, "nvme0", "s1").1.unwrap();
+        assert!(alert.title.starts_with("Disk nvme0 has 1 more media error since"));
+        assert!(alert.detail.starts_with("Disk nvme0 has used 95% of its rated endurance.\n"));
+    }
+
+    #[test]
+    fn what_is_kept_reads_back_and_a_torn_file_is_none() {
+        let kept = Kept {
+            counts: Counts {
+                reallocated: 1,
+                pending: 2,
+                offline: 3,
+                media_errors: 4,
+                used: Some(5),
+            },
+            checked: 6,
+            rose: Some((
+                7,
+                "Disk sda has 1 more reallocated sectors since 2026-11-13 10:00".into(),
+            )),
+        };
+        assert_eq!(Kept::parse(&kept.text()), Some(kept.clone()));
+        let plain = Kept { counts: Counts::default(), checked: 9, rose: None };
+        assert_eq!(Kept::parse(&plain.text()), Some(plain));
+        assert_eq!(Kept::parse("reallocated 1\npending 2\n"), None);
+        assert_eq!(kept_path("../x/y"), format!("{KEPT}/---x-y"));
     }
 }
