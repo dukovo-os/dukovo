@@ -147,7 +147,7 @@ pub async fn check(shared: &Shared, peer: IpAddr, token: Token) -> Result<TokenC
             // Counted whether or not the table has room: a full table
             // refuses every address it does not hold already.
             let _ = shared.wrong_tokens.borrow_mut().take(address, Instant::now());
-            return Err(Failure::new(Kind::NoTokens, why));
+            return Err(Failure::new(Kind::TokenRefused, why));
         }
     };
     let (owner, name, scopes) = given(&text)
@@ -206,7 +206,7 @@ pub async fn worker(shared: &Shared, call: &TokenCall) -> Result<Link, Failure> 
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;
     drop(theirs);
     if let Answer::Refused(why) = answer {
-        return Err(Failure::new(Kind::NoTokens, why));
+        return Err(Failure::new(Kind::TokenRefused, why));
     }
     let link = Link::new(ours).map_err(internal)?;
     // Another request of the same token may have started one meanwhile:

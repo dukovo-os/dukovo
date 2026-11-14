@@ -45,7 +45,7 @@ pub enum Kind {
     WrongHost,
     /// ADM-115: an API token came that is not one: unknown, ended, or of
     /// an account that may not sign in.
-    NoTokens,
+    TokenRefused,
     /// ADM-116: there is nothing at that address.
     NoRoute,
     /// ADM-117: the route does not take that method.
@@ -87,7 +87,7 @@ impl Kind {
         Kind::WorkerSilent,
         Kind::TooBig,
         Kind::WrongHost,
-        Kind::NoTokens,
+        Kind::TokenRefused,
         Kind::NoRoute,
         Kind::NoMethod,
         Kind::SecondStepOnly,
@@ -117,7 +117,7 @@ impl Kind {
             Kind::WorkerSilent => "ADM-112",
             Kind::TooBig => "ADM-113",
             Kind::WrongHost => "ADM-114",
-            Kind::NoTokens => "ADM-115",
+            Kind::TokenRefused => "ADM-115",
             Kind::NoRoute => "ADM-116",
             Kind::NoMethod => "ADM-117",
             Kind::SecondStepOnly => "ADM-118",
@@ -143,7 +143,7 @@ impl Kind {
             | Kind::WrongCode
             | Kind::PasskeyRefused
             | Kind::SessionEnded
-            | Kind::NoTokens => 401,
+            | Kind::TokenRefused => 401,
             Kind::NotAllowed
             | Kind::Locked
             | Kind::ForeignRequest
@@ -184,7 +184,7 @@ impl Kind {
             Kind::WorkerSilent => "The session's worker did not answer",
             Kind::TooBig => "That is too big",
             Kind::WrongHost => "This is not the name of this machine",
-            Kind::NoTokens => "The API token is not accepted",
+            Kind::TokenRefused => "The API token is not accepted",
             Kind::NoRoute => "There is nothing at that address",
             Kind::NoMethod => "That method is not used here",
             Kind::SecondStepOnly => "This session may only add a second step",
@@ -212,7 +212,7 @@ impl Kind {
             Kind::AuthdSilent => Some("Try again in a moment."),
             Kind::WorkerSilent => Some("Sign out and sign in again."),
             Kind::WrongHost => Some("Open the console by this machine's name or its address."),
-            Kind::NoTokens => Some("Check the token, or make a new one: a token ends on its date."),
+            Kind::TokenRefused => Some("Check the token, or make a new one: a token ends on its date."),
             Kind::NotAdmin => {
                 Some("Ask an administrator to make the change, or to make this account one.")
             }

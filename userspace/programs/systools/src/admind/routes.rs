@@ -523,7 +523,7 @@ where
     let reply = match answer(&shared, peer, &head, body).await {
         Ok(reply) => reply,
         Err(failure) => {
-            let said = [Kind::ForeignRequest, Kind::WrongHost, Kind::Wait, Kind::NoTokens];
+            let said = [Kind::ForeignRequest, Kind::WrongHost, Kind::Wait, Kind::TokenRefused];
             if said.contains(&failure.kind) {
                 shared.refused_request(peer, &format!("{}: {}", failure.kind.id(), failure.detail));
             }
