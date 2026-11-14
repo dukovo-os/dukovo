@@ -33,6 +33,10 @@ pub struct Session<W> {
     pub seen: Instant,
     /// The tabs whose event streams are open now.
     pub tabs: u32,
+    /// When the last tab's stream closed, while none is open: what locks
+    /// an unlocked session a minute on. A request is no tab, and does not
+    /// move it.
+    pub closed: Option<Instant>,
     /// The token a request that changes anything carries.
     pub csrf: [u8; 32],
     /// Until when it is unlocked, in Unix seconds, as authd answered.
@@ -61,6 +65,7 @@ impl<W> Session<W> {
             started: now,
             seen: now,
             tabs: 0,
+            closed: None,
             csrf,
             unlocked_until: None,
             needs_step,

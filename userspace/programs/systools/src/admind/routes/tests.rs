@@ -1172,6 +1172,18 @@ fn a_tab_that_goes_is_counted_out_and_the_last_one_to_go_has_an_unlocked_session
         events::left(shared, &session.cookie, &authd, after).await;
         assert_eq!(tabs(), Some(1));
         assert_ne!(shared.with_session(&session.cookie, |s| s.unlocked_until), Some(None));
+        // Requests while no tab is open, as a script polling the session
+        // makes, do not keep it unlocked.
+        let (asking, world_cookie) = (Rc::clone(shared), session.cookie.clone());
+        tokio::task::spawn_local(async move {
+            for _ in 0..6 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                asking.with_session(&world_cookie, |s| s.seen = std::time::Instant::now());
+            }
+        });
+        events::left(shared, &session.cookie, &authd, after).await;
+        assert_eq!(tabs(), Some(0));
+        assert_eq!(shared.with_session(&session.cookie, |s| s.unlocked_until), Some(None));
     });
 }
 
