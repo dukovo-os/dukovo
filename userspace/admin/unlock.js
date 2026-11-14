@@ -176,8 +176,8 @@ export function askToUnlock(session, action) {
 
 /**
  * The header's control: what the console may do now, with the minutes left
- * while it is unlocked, and the buttons to lock it, to add 15 minutes, or
- * to unlock it. It follows the unlock's state for as long as it is on the
+ * while it is unlocked, and the buttons to lock it, to keep it unlocked for
+ * 15 minutes from now, or to unlock it. It follows the unlock's state for as long as it is on the
  * page.
  */
 export function accessControl(session) {
@@ -219,7 +219,7 @@ export function accessControl(session) {
       element.replaceChildren(
         icon('unlock'),
         h('span', {}, 'Unlocked · ', minutes),
-        button('+15 min', () => change('/api/1/unlock/extend'), 'Add 15 minutes'),
+        button('Reset to 15 min', () => change('/api/1/unlock/extend')),
         button('Lock', () => change('/api/1/lock')));
     } else {
       element.replaceChildren(

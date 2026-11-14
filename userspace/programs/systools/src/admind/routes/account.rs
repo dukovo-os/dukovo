@@ -221,8 +221,9 @@ mod tests {
             (failure.kind, failure.detail.as_str()),
             (Kind::BadRequest, "app-confirm does not take that")
         );
-        // An ID that is none of the console's is an internal fault.
-        let odd = Fault { id: "ADM-999".into(), title: "x".into(), detail: "odd".into() };
+        // An ID that is none of the console's is an internal fault. It is
+        // built, so that `ob docs --check` does not look for its page.
+        let odd = Fault { id: format!("ADM-{}", 999), title: "x".into(), detail: "odd".into() };
         assert_eq!(failed(CallError::Worker(odd), Attempt::Other).kind, Kind::Internal);
     }
 

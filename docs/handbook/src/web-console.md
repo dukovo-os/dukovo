@@ -112,8 +112,8 @@ What happens next depends on the account:
 - With no second step, you are in after the password.
 - With one, the page asks for it: **Enter the code from your app**,
   **Use your passkey** or **Enter a recovery code**, with links to the
-  others you have. The box **Trust this browser for 30 days** starts
-  ticked. Untick it on a computer that is not yours.
+  others you have. Tick **Trust this browser for 30 days** on a computer
+  that only you use, so that it skips the step next time.
 - With a passkey, you may skip the password: **Sign in with a passkey**
   asks the passkey, which checks you with its PIN, fingerprint or face,
   and signs you in with nothing typed.
@@ -214,7 +214,7 @@ administrator. Only an administrator unlocks it:
    code does not unlock.
 3. The header shows **Unlocked** and the minutes left, from 15.
 
-**+15 min** sets the end to 15 minutes from now, and **Lock** locks at
+**Reset to 15 min** sets the end to 15 minutes from now, and **Lock** locks at
 once. It locks itself when the 15 minutes run out, when you sign out, and
 a minute after the last console page of the session is closed. This is as
 `elevate` unlocks a terminal for 15 minutes at the machine's own console.
@@ -261,12 +261,12 @@ Each person's second steps are in one file kept by authd, which only root
 reads, and which holds no secret in a form that signs anyone in: the
 recovery codes, trusted browsers and tokens are kept as hashes. Removing an
 account removes its file. Each console sign-in is in the sign-in
-records, so `last` shows it, on the terminal `web?console`, with the
+records, so `last` shows it, on the terminal `web`, with the
 browser's address:
 
 ```
 $ elevate last
-alice    web?console  192.0.2.7        Sat Oct 31 12:50   still logged in
+alice    web          192.0.2.7        Sat Oct 31 12:50   still logged in
 ```
 
 `elevate lastb` shows the wrong passwords and codes typed at the

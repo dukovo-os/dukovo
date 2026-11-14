@@ -110,9 +110,9 @@ passkey*.
 If the account has a second step, the page asks for it next: the code
 from the account's authenticator app, or a recovery code, or the
 account's passkey. It must come within 5 minutes of the password, from the
-same address. *Trust this browser for 30 days*, which the page ticks to
-start with, lets this browser skip the second step the next times
-(Trusted browsers, below).
+same address. *Trust this browser for 30 days*, unticked until the person
+ticks it, lets this browser skip the second step the next times (Trusted
+browsers, below).
 
 A passkey alone signs in with no password and no code, if the passkey
 checks the person with its PIN, fingerprint or face. It is the password
@@ -219,8 +219,8 @@ see and runs nothing as an administrator.
 *elevate*(8) asks for the password at a terminal: with a passkey that checks the
 person, with the code of the authenticator app, or with the password. A
 recovery code is not enough. authd then unlocks the session for 15
-minutes, and the header shows the minutes left. *+15 min* sets the end
-15 minutes from now; *Lock* locks it at once. It also locks when the
+minutes, and the header shows the minutes left. *Reset to 15 min* sets the
+end 15 minutes from now; *Lock* locks it at once. It also locks when the
 time runs out, when the person signs out, and a minute after the last
 console page of the session closed. A session past *session-hours* does
 not unlock.
@@ -295,7 +295,7 @@ The pages are in _/system/resources/admin_, each with its SHA-256 in
 _manifest.txt_, and admind serves only the files that match.
 
 Each console sign-in and a wrong password or code at one are in
-the sign-in records on the terminal *web?console*, from the browser's
+the sign-in records on the terminal *web*, from the browser's
 address, so *last*(1) and *lastb*(1) show them with the rest. authd's audit
 log (*log --audit*) has a line for each sign-in and how it was proved
 (password, an app's code, a recovery code with how many are left, a

@@ -87,7 +87,7 @@ pub const FOLDER: &str = "/system/state/authd/console";
 
 /// The terminal a console session's sign-in records name, as last(1)
 /// shows them.
-pub const TERMINAL: &str = "web console";
+pub const TERMINAL: &str = "web";
 
 /// What the audit log names an API token's worker by.
 const API: &str = "web console API";
@@ -1458,6 +1458,12 @@ impl Authd {
             Ok(live) => (live.name.clone(), live.from.clone()),
             Err(why) => return no(why, now),
         };
+        // An unlock is for running commands as an administrator, which
+        // elevate refuses anyone else: the session would show unlocked and
+        // still make no change.
+        if !files.user(&name).is_some_and(|user| accounts::is_admin(user, &files.groups)) {
+            return no(format!("{name} is not an administrator, and makes no changes"), now);
+        }
         let how = match proof {
             Proof::Password(password) => {
                 let source = web_source(&from);

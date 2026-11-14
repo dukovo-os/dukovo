@@ -255,6 +255,10 @@ pub enum Attempt {
 const NOT_ALLOWED: [&str; 3] =
     ["does not sign in to the web console", "may not use the web console", "is disabled"];
 
+/// How authd ends its refusal of a session when it holds as many as it
+/// may, which is the console being full as much as admind's own limit.
+const FULL: &str = "web console sessions are signed in already";
+
 /// The failure that authd's refusal `why` is, for what `attempt` was. authd
 /// words every refusal for a person, so the detail is its own sentence; the
 /// kind is what the page tells apart.
@@ -269,6 +273,8 @@ pub fn refusal(attempt: Attempt, why: &str) -> Failure {
         Kind::SessionEnded
     } else if NOT_ALLOWED.iter().any(|phrase| why.contains(phrase)) {
         Kind::NotAllowed
+    } else if why.ends_with(FULL) {
+        Kind::Busy
     } else {
         match attempt {
             Attempt::Code if why.contains("code") || why.contains("digits") => Kind::WrongCode,
@@ -289,8 +295,12 @@ mod tests {
             assert_eq!(kind.id(), format!("ADM-{}", 101 + at));
             assert_eq!(Kind::of(kind.id()), Some(kind));
         }
-        assert_eq!(Kind::of("ADM-100"), None);
-        assert_eq!(Kind::of("ADM-122"), None);
+        // Built, not written, so that `ob docs --check` finds no ID here
+        // that has no page.
+        let before = format!("ADM-{}", 101 - 1);
+        let after = format!("ADM-{}", 101 + Kind::ALL.len());
+        assert_eq!(Kind::of(&before), None);
+        assert_eq!(Kind::of(&after), None);
         assert_eq!(Kind::of(""), None);
     }
 
@@ -384,7 +394,8 @@ mod tests {
                 "this session may only add a second step: sign in again once it is added",
                 Kind::SecondStepOnly,
             ),
-            (Attempt::Other, "64 web console sessions are signed in already", Kind::Refused),
+            (Attempt::Other, "64 web console sessions are signed in already", Kind::Busy),
+            (Attempt::Other, "chase is not an administrator, and makes no changes", Kind::Refused),
         ];
         for (attempt, why, kind) in cases {
             let failure = refusal(attempt, why);
@@ -398,6 +409,7 @@ mod tests {
         // there would turn its kind into a plain refusal here, quietly.
         let authd = include_str!("../authd/console.rs");
         for phrase in NOT_ALLOWED.into_iter().chain([
+            FULL,
             "may only add a second step",
             "the session is locked",
             ": sign in again",

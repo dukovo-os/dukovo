@@ -499,16 +499,15 @@ none:
 - *failed*: a wrong password was typed at a sign-in, with the name
   typed.
 
-A web console session (WEB CONSOLE) is recorded on the terminal
-*web?console* (a space in a field shows as *?*), from the browser's
-address, with its worker's process as the session, and a wrong password
-or app code at its sign-in as *failed* there. A share session (SESSIONS)
-is recorded on the terminal *smb*, from the PC's address, and a wrong
-sharing password as *failed* there. An SSH
+A web console session (WEB CONSOLE) is recorded on the terminal *web*,
+from the browser's address, with its worker's process as the session,
+and a wrong password or app code at its sign-in as *failed* there. A
+share session (SESSIONS) is recorded on the terminal *smb*, from the
+PC's address, and a wrong sharing password as *failed* there. An SSH
 session on a terminal is recorded on it, from the client's address; one
 without a terminal is not, as on Linux. A wrong password over SSH is
-recorded as *failed* on the terminal *ssh*, from the client's address;
-a key that does not sign in is not, as Linux's sshd records only
+recorded as *failed* on the terminal *ssh*, from the client's address; a
+key that does not sign in is not, as Linux's sshd records only
 passwords.
 
 The starts and stops are in _system_, which everyone reads. Each

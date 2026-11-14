@@ -51,8 +51,8 @@ function fingerprintNote(fingerprint) {
       h('p', {},
         h('b', {}, 'First visit to this server?'),
         ' Until it has a domain, it uses its own certificate, so the browser warns once. ',
-        'Check that the fingerprint the browser shows matches the one printed at the server\'s ',
-        'console when it starts, or by ', h('span', { class: 'mono' }, 'admin fingerprint'), ':'),
+        'Check that the fingerprint the browser shows matches the one on the server\'s own ',
+        'sign-in screen, or the one ', h('span', { class: 'mono' }, 'cert show this-machine'), ' prints:'),
       h('span', { class: 'mono fingerprint' }, fingerprint)));
 }
 
@@ -158,7 +158,9 @@ export function showSignIn(page, { notice, onSignedIn }) {
       kinds.includes('passkey') && canUsePasskeys() && 'passkey',
       kinds.includes('recovery') && 'recovery',
     ].filter(Boolean);
-    let trust = true;
+    // Unticked until the person ticks it: a browser others use should not
+    // skip the step.
+    let trust = false;
 
     function showWay(way) {
       const { title, label, hint } = WAYS[way];
