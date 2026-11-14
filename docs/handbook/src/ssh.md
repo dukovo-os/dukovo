@@ -148,8 +148,9 @@ it for 10 minutes. If it comes back and guesses again within a day, the
 next block lasts twice as long, and so on up to a day. A right password
 from the address clears its count. Counted as one wrong password each
 are a wrong sharing password, which a Windows PC types when it signs in
-to the shared folders, and an SSH connection that tried to sign in,
-was refused every time, and ended. An IPv6 address counts as its whole
+to the shared folders, a wrong help-session code, a wrong password,
+code or API token at the web console, and an SSH connection that tried
+to sign in, was refused every time, and ended. An IPv6 address counts as its whole
 network of 64 bits, since one computer holds all of it, so a guesser
 cannot step through the addresses of its own network.
 
@@ -163,7 +164,7 @@ password is refused unread, and sshd ends it.
 
 These addresses are never blocked: the computer itself, the networks
 you name, and, while the session lasts, the address an administrator is
-signed in from over SSH, so that a mistyped password cannot lock out the
+signed in from over SSH or at the web console, so that a mistyped password cannot lock out the
 person who is fixing the computer. The console and the serial port are
 not on the network, so they cannot be blocked: an administrator signed
 in there can always lift a block.

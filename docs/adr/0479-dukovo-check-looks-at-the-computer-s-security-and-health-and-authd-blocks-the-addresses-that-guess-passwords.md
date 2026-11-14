@@ -83,10 +83,12 @@ changes, and need setting up before they do anything.
 6. **authd counts failed sign-ins by address, across names and services.**
    One failure is counted for the client's address for each of: a wrong
    password over SSH, a wrong sharing password (smbd passes the PC's
-   address), a wrong help-session code (ADR 0540), and an SSH connection
-   that tried to sign in, was refused every time, and ended, which sshd
-   tells authd once as it ends with `ssh-failed`, unless authd counted a
-   password of it already. An address is an IPv4 address or an IPv6
+   address), a wrong help-session code (ADR 0540), a wrong password,
+   second-step code or API token at the web console (admind passes the
+   browser's address, ADR 0514), and an SSH connection that tried to sign
+   in, was refused every time, and ended, which sshd tells authd once as
+   it ends with `ssh-failed`, unless authd counted a password of it
+   already. An address is an IPv4 address or an IPv6
    network of 64 bits, since one computer holds a whole /64, so a guesser
    cannot step through its own network; an IPv4 address written as IPv6 is
    the IPv4 one. The count is in memory, bounded at 4096 addresses with
@@ -95,7 +97,9 @@ changes, and need setting up before they do anything.
 7. **Five failures in ten minutes block an address for ten minutes, and
    each block that comes within a day of the end of the one before lasts
    twice as long, up to a day.** A right password from an address clears
-   its count but not its record of blocks. `/system/settings/blocking.toml`
+   its count but not its record of blocks; at the web console, the whole
+   sign-in must be right, the second step too, so that someone who knows
+   a password and guesses at its codes is still counted. `/system/settings/blocking.toml`
    (`on`, `tries`, `within`, `first`, `longest` and `never`) sets the
    numbers, and the default file is on with an empty `never`. authd reads
    it again when its time of change or length changes, before the next
@@ -122,8 +126,9 @@ changes, and need setting up before they do anything.
    address is blocked, `admit` asks nothing.
 10. **Never blocked:** loopback and this computer's own addresses; the
     networks in `never`; and, while the session lasts, the address an
-    administrator is signed in from over SSH, so that a mistyped password
-    cannot lock out the person fixing the machine. A network in `never`
+    administrator is signed in from over SSH or at the web console, so
+    that a mistyped password cannot lock out the person fixing the
+    machine. A network in `never`
     that meets a source spares it in the count and in the kernel's list,
     so adding one lifts a block at once. The console and the serial port
     are not on the network and are never blocked.
@@ -152,9 +157,10 @@ changes, and need setting up before they do anything.
 
 ## What it is not
 
-- A failed sign-in at the web console does not count yet: the console's
-  sign-in passes the browser's address to authd once it is built, and
-  counts from then. Its address is not spared either.
+- A wrong password or code when unlocking a web console session is not
+  counted for its address, only for the account's waits: only an
+  administrator unlocks a session, and their address is spared while it
+  lasts.
 - No "fix it for me" mode: each fix is one command the line gives, and the
   console's buttons run them.
 - A block does not close a port that no sign-in service listens on, and

@@ -75,6 +75,7 @@ use ring::rand::{SecureRandom, SystemRandom};
 use serde::Deserialize;
 use serde_json::json;
 
+use super::blocking::Failed;
 use super::proofs::{self, Ceremony, CodeRefusal, Expected};
 use super::{
     Authd, Files, Peer, Session, Wrong, record, replace, shown, signal_command, wait_after,
@@ -1030,11 +1031,16 @@ impl Authd {
         let Some(from) = address(from) else {
             return no("admind gives the browser's address", now);
         };
+        // Unread from a blocked address (ADR 0479), as over SSH.
+        if let Some(why) = self.blocked_why(from) {
+            return no(why, now);
+        }
         if let Err(refused) =
             self.check_password_from(files, name, password, web_source(from), peer, now)
         {
             if matches!(&refused.0, Answer::Refused(why) if why == request::WRONG_PASSWORD) {
                 failed(files, name, from);
+                self.sign_in_failed(files, from, Failed::ConsolePassword, Some(name));
             }
             return refused;
         }
@@ -1116,6 +1122,9 @@ impl Authd {
             Some(_) => return no(NO_STEP_NEEDED, now),
             None => return no(NO_SIGN_IN, now),
         };
+        if let Some(why) = self.blocked_why(&from) {
+            return no(why, now);
+        }
         let not_a_code = "a code is the app's 6 digits, or a recovery code's 16 letters and digits";
         let Ok(typed) = std::str::from_utf8(code) else { return no(not_a_code, now) };
         let mut store = match Store::read(&name) {
@@ -1144,6 +1153,7 @@ impl Authd {
                     shown(&from)
                 );
                 failed(files, &name, &from);
+                self.sign_in_failed(files, &from, Failed::ConsoleCode, Some(&name));
                 let why = match refusal {
                     CodeRefusal::Used => "that code was used already: give the app's next one",
                     _ => "that code is not right",
@@ -1389,6 +1399,10 @@ impl Authd {
                 Err(why) => eprintln!("authd: the browser is not trusted: {why}"),
             }
         }
+        // Its address's count of failed sign-ins is cleared once the whole
+        // sign-in is right, not at the password, so that a guesser of
+        // second-step codes who knows the password keeps being counted.
+        self.sign_in_right(&sign_in.from);
         let from = shown(&sign_in.from);
         audit!(
             "{} signed in to the web console from {from} ({how}): session {}, worker process \
@@ -1642,6 +1656,9 @@ impl Authd {
         let Some(from) = address(from) else {
             return no("admind gives the caller's address", now);
         };
+        if let Some(why) = self.blocked_why(from) {
+            return no(why, now);
+        }
         match find_token(token, unix_now()) {
             Ok(given) => {
                 let owner = files.user(&given.owner).cloned();
@@ -1661,6 +1678,8 @@ impl Authd {
                     shown(owner),
                     shown(from)
                 );
+                let named = (!owner.is_empty()).then_some(owner);
+                self.sign_in_failed(files, from, Failed::ConsoleToken, named);
                 (Answer::Refused(why), next)
             }
         }

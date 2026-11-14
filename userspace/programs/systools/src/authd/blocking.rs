@@ -46,7 +46,7 @@ use radix_abi::firewall::{
 use radix_abi::startup::SLOT_FIREWALL;
 use serde::Deserialize;
 
-use super::{Authd, Files, Notices, Peer, read_text, replace, shown};
+use super::{Authd, Files, Notices, Peer, console, read_text, replace, shown};
 use crate::servicefiles;
 use crate::sys::SYS;
 
@@ -422,6 +422,13 @@ pub(super) enum Failed {
     SharePassword,
     /// A wrong help-session code, from a helper signing in (ADR 0540).
     HelpCode,
+    /// A wrong password at the web console's sign-in (ADR 0514).
+    ConsolePassword,
+    /// A wrong second-step code at the web console's sign-in: an app's
+    /// code or a recovery code.
+    ConsoleCode,
+    /// A wrong API token, from a program calling the web console's API.
+    ConsoleToken,
 }
 
 impl Failed {
@@ -432,6 +439,9 @@ impl Failed {
             Failed::SshRefused => "refused SSH sign-ins",
             Failed::SharePassword => "wrong sharing passwords",
             Failed::HelpCode => "wrong help-session codes",
+            Failed::ConsolePassword => "wrong passwords at the web console",
+            Failed::ConsoleCode => "wrong second-step codes at the web console",
+            Failed::ConsoleToken => "wrong API tokens",
         }
     }
 }
@@ -897,12 +907,12 @@ impl Authd {
         }
     }
 
-    /// The addresses administrators are signed in from over SSH, while
-    /// their sessions last: never blocked.
+    /// The addresses administrators are signed in from over SSH or at the
+    /// web console, while their sessions last: never blocked.
     fn spared(&self, files: &Files) -> Vec<IpAddr> {
         self.sessions
             .values()
-            .filter(|session| session.remote)
+            .filter(|session| session.remote || session.terminal == console::TERMINAL)
             .filter(|session| {
                 files.user(&session.name).is_some_and(|u| accounts::is_admin(u, &files.groups))
             })
@@ -1232,6 +1242,17 @@ mod tests {
             made = blocking.failed(other, failed[n % 3], None, &[], n as u64 * 60);
         }
         assert_eq!(made.unwrap().1.why, "5 failed sign-ins in 4 minutes");
+        // The web console's, as admind gives the browser's address.
+        let browser = ip("203.0.113.11");
+        let mut made = None;
+        for (n, name) in ["admin", "test", "guest", "oracle", "ubuntu"].iter().enumerate() {
+            made = blocking.failed(browser, Failed::ConsolePassword, Some(name), &[], n as u64);
+        }
+        assert_eq!(
+            made.unwrap().1.why,
+            "5 wrong passwords at the web console in 4 seconds, for admin, test, guest and \
+             others"
+        );
     }
 
     #[test]

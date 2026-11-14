@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# An address that guesses passwords is blocked from SSH (ADR 0479,
-# blocking.toml(5)). The attacker, on the range's private network, guesses
+# An address that guesses passwords is blocked from SSH and the web
+# console (ADR 0479, blocking.toml(5)). The attacker, on the range's private network, guesses
 # wrong passwords at the machine with ssh, as a person would who tried
 # names at random, and the machine must turn it away at the firewall
 # once the fifth is wrong. The lab controller signs in from another
@@ -15,7 +15,7 @@
 # passwords in 10 minutes block for 10 minutes), which this test must not
 # change except for `never`, with firewall never-block, which it takes
 # out again.
-about = "Five wrong SSH passwords from the attacker block its address: firewall blocked lists it with the reason, its connections to port 22 time out and the kernel logs them as blocked; firewall unblock lets it in at once; with its address in never-block six more wrong passwords block nothing; authd's audit log tells of all of it (ADR 0479)"
+about = "Five wrong SSH passwords from the attacker block its address: firewall blocked lists it with the reason, its connections to port 22 time out and the kernel logs them as blocked; firewall unblock lets it in at once; five wrong passwords at the web console block it again, from port 9090 too; with its address in never-block six more wrong passwords block nothing; authd's audit log tells of all of it (ADR 0479)"
 time = "10m"
 fresh = true
 
@@ -116,6 +116,38 @@ expect = [
 # The attacker reaches SSH again, without a wait.
 [[step]]
 attack = "nc -z -w3 {target} 22"
+
+# The web console's sign-in counts as SSH's does: five wrong passwords at
+# it, each for another name, block the attacker again, and the firewall
+# then drops what it starts on the console's port 9090 as on 22. The
+# attacker calls the sign-in as the console's own page does, with its
+# Origin and Sec-Fetch-Site, and curl takes the machine's certificate,
+# which no authority signed, with -k. A wrong password is 401.
+[[step]]
+attack = "sh -c 'for name in admin test guest oracle ubuntu; do code=$(curl -sk -o /dev/null -w \"%{http_code}\" --max-time 30 -H \"Origin: https://{target}:9090\" -H \"Sec-Fetch-Site: same-origin\" -H \"Content-Type: application/json\" --data \"{\\\"name\\\": \\\"$name\\\", \\\"password\\\": \\\"not-the-password\\\"}\" https://{target}:9090/api/1/sign-in); echo \"web guess $name: $code\"; done'"
+expect = ["web guess admin: 401", "web guess test: 401", "web guess guest: 401", "web guess oracle: 401", "web guess ubuntu: 401"]
+[[step]]
+attack = "nc -z -w3 {target} 9090"
+exit = 1
+[[step]]
+attack = "nc -z -w3 {target} 22"
+exit = 1
+
+# The table gives the console's reason, and unblock lets the attacker in
+# again.
+[[step]]
+run = "sh"
+root = true
+input = '''
+address=$(cat /tmp/blocked-address)
+firewall blocked
+firewall unblock "$address"
+echo "web-unblock-status: $?"
+echo "web-end"
+'''
+expect = ["5 wrong passwords at the web console in ", " is no longer blocked", "web-unblock-status: 0", "web-end"]
+[[step]]
+attack = "nc -z -w3 {target} 9090"
 
 # Its address in never: the machine says so, the line is in blocking.toml,
 # and authd, which reads the file again when it changes and needs no

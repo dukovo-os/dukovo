@@ -518,15 +518,20 @@ address that guesses at many accounts is blocked: see BLOCKING.
 authd counts each failed sign-in from the network for the address it
 came from, whatever account it named, and blocks an address that keeps
 failing (ADR 0479). A failure is a wrong password over SSH, a wrong
-sharing password, or an SSH connection that tried to sign in, was
-refused every time, and ended (*ssh-failed*). An address is an IPv4
+sharing password, a wrong help-session code (*help-session*(1)), a wrong
+password, second-step code or API token at the web console (*admind*(8)
+gives the browser's address), or an SSH connection that tried to sign
+in, was refused every time, and ended (*ssh-failed*). An address is an IPv4
 address or an IPv6 network of 64 bits, since one computer holds a whole
 /64; an IPv4 address written as IPv6 is the IPv4 one.
 
 By default, 5 failures from an address within 10 minutes block it for 10
 minutes, and each block that comes within a day of the end of the one
 before lasts twice as long, up to a day. A right password from an
-address clears its count, but not its record of blocks. The count is in
+address clears its count, but not its record of blocks; at the web
+console the whole sign-in must be right, with its second step, so that
+someone who knows a password and guesses at its codes is still counted.
+The count is in
 memory only, and is bounded: past 4096 addresses authd forgets the
 oldest.
 
@@ -537,7 +542,7 @@ either changed, so a change needs no restart; a file it cannot read is
 logged with its reason and the settings stay as they were. Never
 blocked, besides those networks, are loopback, this computer's own
 addresses, and the address an administrator is signed in from over SSH
-while their session lasts, so that a mistyped password cannot lock out
+or at the web console while their session lasts, so that a mistyped password cannot lock out
 the person who is fixing the computer. The console and the serial port
 are not on the network, so they are never blocked.
 

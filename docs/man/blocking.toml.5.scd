@@ -83,6 +83,10 @@ Each of these is one failure for the address the client came from:
 - a wrong password over SSH (*sshd*(8));
 - a wrong sharing password, which a Windows PC signs in to the shares
   with (*smbd*(8));
+- a wrong help-session code, from a helper signing in to a help session
+  (*help-session*(1));
+- a wrong password, second-step code or API token at the web console
+  (*admind*(8)), for the browser's address;
 - an SSH connection that tried to sign in, was refused every time, and
   ended: *sshd* says so once, as it ends, only if it made a try and did
   not sign in. A wrong password is not counted twice.
@@ -90,7 +94,8 @@ Each of these is one failure for the address the client came from:
 An address is an IPv4 address, or an IPv6 network of 64 bits, since one
 computer holds a whole /64 and a guesser could otherwise step through
 it. An IPv4 address written as IPv6 is the IPv4 one. A right password
-from an address clears its count, but not its record of blocks. The
+from an address clears its count, but not its record of blocks; at the
+web console, only a whole sign-in does, its second step too. The
 counts are kept in memory only, and authd forgets the oldest past 4096
 addresses, so a scan from many addresses cannot fill it.
 
@@ -132,8 +137,8 @@ by itself when its time is up, in the kernel too if authd is late.
 - Loopback, and this computer's own addresses, which the firewall never
   filters.
 - The networks in *never*.
-- An address an administrator is signed in from over SSH, while that
-  session lasts, so that a mistyped password from a laptop on a network
+- An address an administrator is signed in from over SSH or at the web
+  console, while that session lasts, so that a mistyped password from a laptop on a network
   that *never* does not list cannot lock out the person who is fixing
   the computer. It counts nothing and blocks nothing for that address
   until the session ends.
