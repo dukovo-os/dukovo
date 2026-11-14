@@ -774,6 +774,11 @@ fn admin_manifest(ctx: &Ctx, pages: &[(String, PathBuf)]) -> Result<String> {
     Ok(lines.concat())
 }
 
+/// Where to get a Node new enough: some distributions' own package is
+/// older (Ubuntu 24.04's is 18).
+const NODE_HINT: &str = "install Node 20 or later, from the nodejs package where it is new enough or from \
+     https://nodejs.org/, then run ./ob doctor";
+
 /// Runs the script tests of the console's pages with Node's own test
 /// runner. They are plain ES modules, so there is nothing to install.
 pub fn test_admin_scripts(ctx: &Ctx) -> Result<()> {
@@ -782,13 +787,13 @@ pub fn test_admin_scripts(ctx: &Ctx) -> Result<()> {
             return Err(Error::new(
                 "the console's script tests need Node 20 or later, and node is not installed",
             )
-            .hint("install Node 20 or later (package nodejs), then run ./ob doctor"));
+            .hint(NODE_HINT));
         }
         Some(version) if !doctor::node_is_new_enough(&version) => {
             return Err(Error::new(format!(
                 "the console's script tests need Node 20 or later, and this node is {version}"
             ))
-            .hint("install Node 20 or later (package nodejs), then run ./ob doctor"));
+            .hint(NODE_HINT));
         }
         Some(_) => {}
     }

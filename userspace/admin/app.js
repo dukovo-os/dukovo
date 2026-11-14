@@ -84,8 +84,11 @@ async function signOut(notice) {
   try {
     await post('/api/1/sign-out');
   } catch (error) {
-    showFailure(error);
-    return;
+    // A session that has ended already is as good as signed out.
+    if (error.status !== 401) {
+      showFailure(error);
+      return;
+    }
   }
   showSignInPage(notice);
 }
