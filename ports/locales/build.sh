@@ -7,8 +7,9 @@
 # it), into the directories of files mlibc reads. Each directory is
 # named with the codeset normalized, as glibc names them,
 # /system/libraries/locale/C.utf8 and en_US.utf8: the C library finds
-# them for C.UTF-8, C.utf8 and C.UTF8 alike. `ob` runs it (ob(1), PORTS)
-# with PORT_SRC, PORT_BUILD and SYSROOT set.
+# them for C.UTF-8, C.utf8 and C.UTF8 alike, and a file VERSION beside
+# them with the version of the data. `ob` runs it (ob(1), PORTS) with
+# PORT_SRC, PORT_BUILD and SYSROOT set.
 set -eu
 
 # English's countries with a UTF-8 locale in glibc's localedata/SUPPORTED.
@@ -48,4 +49,16 @@ find . -type f | sed 's|^\./||' | LC_ALL=C sort | while read -r file; do
 		echo "$sum $file" >>"$sums"
 	fi
 done
+
+# The version of the data, one line, in a file of its own: PostgreSQL
+# takes it for the version of the C library's collations (patch 0003 of its
+# port), as it takes glibc's version on Linux, and warns of an index sorted
+# by rules that have changed since. The data is glibc's, so its version is
+# the source's.
+version=$(sed -n 's/^#define VERSION "\(.*\)"$/\1/p' "$PORT_SRC/version.h")
+if [ -z "$version" ]; then
+	echo "locales: no version in glibc's version.h" >&2
+	exit 1
+fi
+echo "glibc-$version" >"$out/VERSION"
 echo "locales: C.UTF-8 and $(echo "$english" | wc -w) English locales in /system/libraries/locale, $(du -sk . | cut -f 1) KiB"
