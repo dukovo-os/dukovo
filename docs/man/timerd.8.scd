@@ -52,7 +52,10 @@ timerd sleeps until the next time, and for a minute at most. On each wake
 it compares the clock with the monotonic clock. When the clock has moved
 forward, each timer whose time it passed runs once, whatever the number
 of times it passed. When it has moved back, no time that already ran runs
-again, and each timer's next time is worked out from its last run.
+again, and each timer's next time is worked out from its last run. Either
+way, a time counted from the machine's start (*every* for a timer that
+has not run yet, and *after_boot*) moves with the clock, so it comes as
+long after the start as the timer says.
 
 *spread* puts a time off by up to as long as the setting says. How long
 is worked out from the timer's name and a random number timerd keeps in

@@ -51,7 +51,8 @@ turns logs over by a file of its own and runs from a cron job.
    with 5 seconds of leeway. A clock that moved forward leaves the times
    it passed due, and each timer runs once for them, however many it
    passed; one that moved back runs no time that already ran again, and
-   each timer's next time is worked out from its last run. The minute
+   each timer's next time is worked out from its last run. A time
+   counted from the machine's start moves with the clock. The minute
    between readings of the files is the monotonic clock's, which a clock
    set back does not stretch. `spread` is
    worked out from the timer's name and a random number timerd keeps in

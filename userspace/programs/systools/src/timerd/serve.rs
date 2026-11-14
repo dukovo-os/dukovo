@@ -184,6 +184,7 @@ impl Daemon {
         // for the timers once they changed a file that has one.
         let (now, monotonic) = clocks();
         let mut inner = self.lock();
+        self.check_clock(&mut inner, now, monotonic);
         self.scan_services(&mut inner, now, monotonic, false);
         let timers = inner
             .entries

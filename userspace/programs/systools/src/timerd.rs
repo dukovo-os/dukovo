@@ -44,7 +44,7 @@ use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -142,8 +142,10 @@ struct Inner {
 pub struct Daemon {
     store: Store,
     seed: String,
-    /// When the machine started, seconds since 1970.
-    boot: i64,
+    /// When the machine started, seconds since 1970 by the clock as it
+    /// reads now: a move of the clock moves it too, so that a time counted
+    /// from the start (`every`, `after_boot`) stays where it was.
+    boot: AtomicI64,
     host: String,
     inner: Mutex<Inner>,
     /// The two ends of a socket pair: a byte written to the first wakes
@@ -262,7 +264,7 @@ impl Daemon {
         Daemon {
             store,
             seed,
-            boot: wall - monotonic,
+            boot: AtomicI64::new(wall - monotonic),
             host: util::hostname(),
             inner: Mutex::new(Inner {
                 entries: Vec::new(),
@@ -275,6 +277,11 @@ impl Daemon {
             }),
             waker: waker(),
         }
+    }
+
+    /// When the machine started, by the clock as it reads now.
+    fn boot(&self) -> i64 {
+        self.boot.load(Ordering::Relaxed)
     }
 
     /// Wakes the loop, so that it works out its sleep again.
@@ -329,11 +336,11 @@ impl Daemon {
         if self
             .store
             .reboot_run()
-            .is_some_and(|boot| (boot - self.boot).abs() <= plan::STEP_TOLERANCE * 2)
+            .is_some_and(|boot| (boot - self.boot()).abs() <= plan::STEP_TOLERANCE * 2)
         {
             return;
         }
-        if let Err(err) = self.store.save_reboot_run(self.boot) {
+        if let Err(err) = self.store.save_reboot_run(self.boot()) {
             log(3, &format!("cannot keep that the lines of @reboot ran: {err}"));
         }
         let lines: Vec<(String, usize)> = {
@@ -377,7 +384,7 @@ impl Daemon {
                 zone: zone.clone(),
             };
             let last_run = key.record().and_then(|r| self.store.run(&r)).and_then(|run| run.start);
-            let next = timing.next(last_run, now, self.boot, loading);
+            let next = timing.next(last_run, now, self.boot(), loading);
             inner.entries.push(Entry { key, timing: Some(timing), last_run, next, running: false });
         }
         inner.crontabs.insert(user.to_string(), crontab);
@@ -411,12 +418,12 @@ impl Daemon {
             let last_run = inner.last_runs.get(&name).copied();
             if let Some(entry) = inner.entries.iter_mut().find(|e| e.key == key) {
                 if entry.timing.as_ref() != Some(&timing) {
-                    entry.next = timing.next(entry.last_run, now, self.boot, false);
+                    entry.next = timing.next(entry.last_run, now, self.boot(), false);
                     entry.timing = Some(timing);
                 }
                 continue;
             }
-            let next = timing.next(last_run, now, self.boot, loading);
+            let next = timing.next(last_run, now, self.boot(), loading);
             if next.is_none() {
                 log(4, &format!("{name}: no time of its timer comes within five years"));
             }
@@ -441,9 +448,7 @@ impl Daemon {
     fn due_at(&self, wall: i64, monotonic: i64) -> (Vec<(Key, i64)>, Duration) {
         let mut due = Vec::new();
         let mut inner = self.lock();
-        if let Some(moved) = inner.watch.check(wall, monotonic) {
-            self.clock_moved(&mut inner, moved, wall);
-        }
+        self.check_clock(&mut inner, wall, monotonic);
         if monotonic - inner.scanned >= RESCAN {
             self.scan_services(&mut inner, wall, monotonic, false);
         }
@@ -458,8 +463,10 @@ impl Daemon {
                         entry.key.label()
                     ),
                 );
-                entry.next =
-                    entry.timing.as_ref().and_then(|t| t.next(Some(time), wall, self.boot, false));
+                entry.next = entry
+                    .timing
+                    .as_ref()
+                    .and_then(|t| t.next(Some(time), wall, self.boot(), false));
             } else {
                 entry.running = true;
                 due.push((entry.key.clone(), time));
@@ -470,11 +477,20 @@ impl Daemon {
         (due, Duration::from_secs(u64::try_from(wait).unwrap_or(1)))
     }
 
-    /// What a move of the clock by `moved` seconds does to the timers: a
-    /// move forward leaves the times it passed due, and each runs once;
-    /// a move back works out each next time again, from the last run, so
-    /// that no time already run runs again.
+    /// Compares the clock, `wall`, with the monotonic clock, and handles a
+    /// move of it.
+    fn check_clock(&self, inner: &mut Inner, wall: i64, monotonic: i64) {
+        if let Some(moved) = inner.watch.check(wall, monotonic) {
+            self.clock_moved(inner, moved, wall);
+        }
+    }
+
+    /// What a move of the clock by `moved` seconds does to the timers: the
+    /// machine's start moves with it; a move forward leaves the times it
+    /// passed due, and each runs once; a move back works out each next time
+    /// again, from the last run, so that no time already run runs again.
     fn clock_moved(&self, inner: &mut Inner, moved: i64, wall: i64) {
+        self.boot.fetch_add(moved, Ordering::Relaxed);
         if moved > 0 {
             log(
                 4,
@@ -494,7 +510,7 @@ impl Daemon {
         );
         for entry in &mut inner.entries {
             if let (Some(timing), false) = (&entry.timing, entry.running) {
-                entry.next = timing.next(entry.last_run, wall, self.boot, false);
+                entry.next = timing.next(entry.last_run, wall, self.boot(), false);
             }
         }
     }
@@ -559,7 +575,7 @@ impl Daemon {
         }
         let fence = entry.last_run.map_or(time, |last| last.max(time.min(wall)));
         entry.next =
-            entry.timing.as_ref().and_then(|t| t.next(Some(fence), wall, self.boot, false));
+            entry.timing.as_ref().and_then(|t| t.next(Some(fence), wall, self.boot(), false));
         if let (Key::Service(name), Some(ran)) = (key, ran) {
             inner.last_runs.insert(name.clone(), ran);
             if let Err(err) = self.store.save_last_runs(&inner.last_runs) {
@@ -742,7 +758,7 @@ mod tests {
     /// A daemon on a folder of its own, whose machine started at 1000.
     fn daemon(dir: &Temp) -> Daemon {
         let mut daemon = Daemon::new(Store::open(&dir.0).unwrap());
-        daemon.boot = 1000;
+        daemon.boot = AtomicI64::new(1000);
         let mut inner = daemon.lock();
         inner.scanned = i64::MAX / 2;
         inner.watch = Watch::new(2000, 1000);
@@ -862,6 +878,20 @@ mod tests {
         let next = daemon.lock().entries[0].next;
         assert_eq!(next, Some(2000 - 3600 + 30 + 3600));
         assert_eq!(wait, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_clock_set_back_years_moves_the_start_and_an_every_counted_from_it() {
+        let dir = Temp::new();
+        let daemon = daemon(&dir);
+        daemon.lock().entries.push(service_entry("tick", every(20), None, Some(1020)));
+        // Years back, as a clock set by hand to 2020 goes: the machine
+        // started 1000 seconds ago by the clock as it reads now, so a timer
+        // of every 20 seconds that never ran is due.
+        let back = 200_000_000;
+        let (due, _) = daemon.due_at(2000 - back + 30, 1030);
+        assert_eq!(daemon.boot(), 1000 - back);
+        assert_eq!(keys(&due), ["tick"]);
     }
 
     #[test]
