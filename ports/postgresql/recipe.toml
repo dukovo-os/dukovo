@@ -3,13 +3,14 @@
 
 # PostgreSQL, the relational database server, with its client and
 # administration programs, its contrib modules and its test suites: a
-# bundle of the Dukovo catalog, not of the image (ADRs 0370 and 0521).
-# The server loads its modules (PL/pgSQL, the encoding conversions, the
-# Snowball dictionaries and the contrib modules) with dlopen, so its
-# programs are linked dynamically (ADR 0071) and the modules are shared
-# libraries in lib/postgresql. The time zones are the system's, read from
-# /system/resources/zoneinfo when the programs run: tzdata is not built
-# against, so it is not in depends.
+# bundle of the Dukovo catalog, not of the image (ADRs 0370, 0521 and
+# 0522). Its service, postgresql, runs the server as the account postgres
+# once an administrator enables it. The server loads its modules (PL/pgSQL,
+# the encoding conversions, the Snowball dictionaries and the contrib
+# modules) with dlopen, so its programs are linked dynamically (ADR 0071)
+# and the modules are shared libraries in lib/postgresql. The time zones
+# are the system's, read from /system/resources/zoneinfo when the programs
+# run: tzdata is not built against, so it is not in depends.
 name = "postgresql"
 version = "19.0"
 summary = "the PostgreSQL database server and its client programs"
@@ -101,4 +102,62 @@ commands = [
 	"vacuumdb",
 	"vacuumlo",
 ]
+# pg_isready and psql, which the service's health check and its backup hook
+# run, are commands above, and so programs of the manifest.
+programs = ["postgresql-service"]
 links = ["mlibc", "openssl", "zlib", "lz4", "zstd", "libxml2", "libedit", "ncurses"]
+
+# postgresql-service makes the cluster at its first start and runs the
+# server in the foreground, as Spark's service (ADR 0522).
+# - It is ready once pg_isready says the server takes connections, which
+#   also holds with every connection in use. Spark checks such a service
+#   as it starts and each second until a check passes, so it is ready
+#   about a second after the server is, not a check interval later. The
+#   ready time is the longest allowed, 3600 seconds: a start after a crash
+#   replays the log first, with pg_isready failing meanwhile, and must not
+#   be ended half way (the upstream unit has TimeoutSec=infinity).
+# - It names no health socket. The server's is .s.PGSQL.5432, which a
+#   name in a manifest cannot be (it starts with a letter or a digit), and
+#   a socket named in health must be one the service provides to others,
+#   which waits for the sockets a bundle offers (docs/deferred.md). After
+#   an update, bundled therefore asks Spark: the new version must be
+#   running with its last pg_isready passed, within 60 seconds, or the
+#   version before comes back with its data (ADR 0386, 0522). Started
+#   after a clean stop the server takes connections in a few seconds.
+# - It stops on SIGINT, the fast shutdown that ends the sessions, rolls
+#   back what they had open and writes a checkpoint; SIGTERM, which the
+#   other services stop on, would wait for every client to leave. The
+#   checkpoint writes every changed buffer, which can take minutes, so it
+#   has 300 seconds in place of 5 (PostgreSQL's own unit says
+#   TimeoutSec=infinity, and Debian's gives an hour).
+# - Before a backup it checkpoints, so that the snapshot of /shared holds
+#   the cluster a moment after one and a restored copy starts with a short
+#   recovery.
+# - No memory limit: the database is the machine's main tenant and sizes
+#   its own memory, and an administrator who wants a limit sets one in an
+#   override file.
+[[bundle.services]]
+name = "postgresql"
+program = "postgresql-service"
+account = "postgres"
+restart = "on-failure"
+start = "when-enabled"
+ready = { when = "healthy", timeout = 3600 }
+health = { command = { program = "pg_isready", arguments = ["-q"], every = 30, timeout = 10, failures = 3 } }
+stop = { signal = "SIGINT", timeout = 300 }
+backup = { before = { program = "psql", arguments = ["-X", "-q", "-c", "CHECKPOINT"] } }
+
+[bundle.permissions."network.listen"]
+ports = [5432]
+need = "required"
+why = "Takes connections from programs on this computer, and from other machines once an administrator allows them"
+
+[bundle.permissions."network.outbound"]
+need = "optional"
+why = "Lets the database reach other database servers: postgres_fdw, dblink and replication"
+
+# The cluster, with the settings it keeps in its folder (postgresql.conf,
+# pg_hba.conf), is the account's data folder's.
+[bundle.data]
+settings = true
+data = true

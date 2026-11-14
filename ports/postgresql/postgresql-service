@@ -1,0 +1,65 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# PostgreSQL's service (ADR 0522): runs as the account postgres, with its
+# cluster in $HOME/data, and keeps the server in the foreground, as
+# Spark's services are, its log on its standard error output, which the
+# system's log keeps. The server is the service's process, so that the
+# signal Spark stops it with, SIGINT (the fast shutdown), reaches the
+# postmaster, which ends the sessions and its other processes itself.
+#
+# The first start makes the cluster with initdb. It is made in a folder of
+# its own and moved into place once it is whole, so that a start that
+# stopped half way through starts over. The cluster's settings stay in its
+# folder: postgresql.conf, which initdb sizes for the machine,
+# postgresql.auto.conf, which ALTER SYSTEM writes, and the pg_hba.conf and
+# pg_ident.conf copied from the bundle's conf folder, as Red Hat's and
+# upstream's packages keep theirs. An update of the bundle never changes
+# them. This is not how Valkey's and PHP-FPM's services keep their
+# settings, in a conf folder that an update refreshes, because PostgreSQL
+# writes its own, and a refreshed copy would take away what ALTER SYSTEM
+# and the administrator changed.
+#
+# A cluster of another major version is refused by the server itself, with
+# a message that says so in the log.
+set -eu
+
+bundle=$(cd "$(dirname "$0")/.." && pwd)
+data="$HOME/data"
+
+# The server's socket is in the live folder, which Spark makes for the
+# account and opens to no one else. The server decides who connects, by
+# the account the kernel says is at the other end (pg_hba.conf), as it
+# does on Debian, where /var/run/postgresql is open to everyone: so the
+# folder is opened to everyone here, and Spark's default for every other
+# service stays as it is.
+chmod 0755 "$RUNTIME_DIRECTORY"
+
+if [ ! -e "$data/PG_VERSION" ]; then
+	rm -rf "$data.new"
+	# The builtin provider's C.UTF-8 sorts by code point, which is the
+	# same on every machine, and the cluster's own databases need no
+	# locale of the C library. A database that sorts as a language does
+	# is made with CREATE DATABASE ... TEMPLATE template0 and a locale
+	# of the C library.
+	"$bundle/bin/initdb" -D "$data.new" -U postgres --no-instructions \
+		--locale-provider=builtin --builtin-locale=C.UTF-8 --locale=C -E UTF8 \
+		--auth-local=peer --auth-host=scram-sha-256
+	# In place of the files initdb wrote, which name no administrator.
+	for file in pg_hba.conf pg_ident.conf; do
+		rm -f "$data.new/$file"
+		cp "$bundle/conf/$file" "$data.new/$file"
+		chmod 0600 "$data.new/$file"
+	done
+	# An empty folder is replaced; one that holds files and is no cluster
+	# is left as it is, and the start stops.
+	rmdir "$data" 2>/dev/null || :
+	if [ -e "$data" ]; then
+		echo "postgresql: $data holds files and is no cluster; the new one is in $data.new" >&2
+		exit 1
+	fi
+	mv "$data.new" "$data"
+fi
+
+exec "$bundle/bin/postgres" -D "$data"
