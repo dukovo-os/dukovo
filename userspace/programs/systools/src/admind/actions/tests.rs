@@ -237,6 +237,37 @@ fn the_list_says_each_action_s_method_and_address() {
     );
 }
 
+#[test]
+fn the_list_gives_each_action_s_examples_and_what_puts_back_the_first() {
+    let lab = listed(LAB);
+    assert_eq!(
+        lab[0]["examples"],
+        json!({ "good": [{ "name": "lab-web", "wait": null }], "undo": null })
+    );
+    assert_eq!(lab[1]["examples"], json!({ "good": [{}], "undo": null }));
+
+    let console = listed(REGISTRY);
+    let console = console.as_array().unwrap();
+    let find = |id: &str| console.iter().find(|action| action["id"] == id).unwrap();
+    assert_eq!(
+        find("service.start")["examples"],
+        json!({
+            "good": [{ "name": "diskhealth" }],
+            "undo": { "action": "service.stop", "args": { "name": "diskhealth" } },
+        })
+    );
+    assert_eq!(find("service.restart")["examples"]["undo"], Value::Null);
+    assert_eq!(find("service.list")["examples"], json!({ "good": [{}], "undo": null }));
+    assert_eq!(
+        find("certificate.show")["examples"],
+        json!({ "good": [{ "name": "this-machine" }], "undo": null })
+    );
+    for action in console {
+        assert!(action["examples"].as_object().is_some_and(|examples| examples.len() == 2));
+        assert!(action["examples"].get("bad").is_none(), "the bad examples are the unit tests'");
+    }
+}
+
 /// The rules every action of [`REGISTRY`] keeps, and these tests' own.
 fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
     let mut ids = HashSet::new();
@@ -264,7 +295,16 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
         assert!(!action.title().is_empty(), "{id}'s title");
         let (good, _, undo) = action.example_values();
         assert!(!good.is_empty(), "{id} has an example the tests can run");
-        for args in good.iter().chain(&undo) {
+        if let Some(undo) = &undo {
+            assert!(action.changes(), "{id}: only a change is put back");
+            let other = actions
+                .iter()
+                .find(|other| other.id() == undo.action)
+                .unwrap_or_else(|| panic!("{id}'s undo, {}, is not in the list", undo.action));
+            assert!(other.changes() && other.id() != id, "{id}'s undo is another change");
+            assert!(other.prepare(undo.args.clone()).is_ok(), "{id}'s undo takes its arguments");
+        }
+        for args in &good {
             let prepared =
                 action.prepare(args.clone()).unwrap_or_else(|f| panic!("{id}: {}", f.detail));
             assert!(!prepared.argv.is_empty());

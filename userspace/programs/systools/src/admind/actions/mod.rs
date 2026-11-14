@@ -141,9 +141,19 @@ pub struct Examples<A> {
     /// Arguments that cannot work, each refused by `check` or by the
     /// command: the refusal's field and words are in the unit test.
     pub bad: Vec<Value>,
-    /// For a change, the arguments that put back what `good[0]` did, so a
-    /// test leaves the machine as it found it.
-    pub undo: Option<A>,
+    /// For a change, what puts back what `good[0]` did, so a test leaves
+    /// the machine as it found it.
+    pub undo: Option<Undo>,
+}
+
+/// The action that puts back what an example did, and the arguments it
+/// takes to.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Undo {
+    /// The id of the action, which is another change of the list.
+    pub action: &'static str,
+    /// Its arguments, as its route takes them.
+    pub args: Value,
 }
 
 /// One action of the console.
@@ -234,7 +244,7 @@ pub trait Registered: Sync + fmt::Debug {
     /// value cannot work.
     fn prepare(&'static self, args: Value) -> Result<Prepared, Failure>;
     /// The examples, as JSON.
-    fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Value>);
+    fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>);
 }
 
 /// [`Registered`] for the action `A`.
@@ -299,10 +309,10 @@ impl<A: Action> Registered for Entry<A> {
         Ok(Prepared { action: self, args, argv, ansible, files })
     }
 
-    fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Value>) {
+    fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>) {
         let examples = A::examples();
         let json = |args: &A::Args| serde_json::to_value(args).unwrap_or(Value::Null);
-        (examples.good.iter().map(json).collect(), examples.bad, examples.undo.as_ref().map(json))
+        (examples.good.iter().map(json).collect(), examples.bad, examples.undo)
     }
 }
 
@@ -330,13 +340,16 @@ registry![
 
 /// The list `GET /api/1/actions` answers and `admin actions` prints: each
 /// action's id, title, area, whether it changes anything, its method and
-/// address, who runs it, whether it is a task, its error IDs and the names
-/// of its five tests.
+/// address, who runs it, whether it is a task, its error IDs, the names of
+/// its five tests, and its examples: the arguments that work, and for a
+/// change the action and arguments that put back what the first did (null
+/// when nothing does). The bad examples are in the unit tests alone.
 pub fn listed(actions: &[&dyn Registered]) -> Value {
     Value::Array(
         actions
             .iter()
             .map(|action| {
+                let (good, _, undo) = action.example_values();
                 serde_json::json!({
                     "id": action.id(),
                     "title": action.title(),
@@ -348,6 +361,7 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "long": action.long(),
                     "errors": action.errors(),
                     "tests": action.tests(),
+                    "examples": { "good": good, "undo": undo },
                 })
             })
             .collect(),

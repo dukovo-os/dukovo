@@ -18,7 +18,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Action, Args, Bad, Examples, Nothing, Runs, Tests};
+use super::{Action, Args, Bad, Examples, Nothing, Runs, Tests, Undo};
 
 /// The area of these actions: the scope a token needs, `services`.
 const AREA: &str = "services";
@@ -191,12 +191,12 @@ fn bad_names_and_the_console() -> Vec<Value> {
 
 /// Declares the action that runs `service NAME VERB` as an administrator,
 /// for the arguments `$args`, with `$bad` for its bad examples. `$undo` is
-/// whether its example has another action that puts back what it did,
-/// which takes the same arguments.
+/// the other action that puts back what its example did, if there is one:
+/// it takes the same arguments.
 macro_rules! change {
     (
         $(#[$doc:meta])*
-        $action:ident, $verb:literal, $title:literal, $args:ident, $bad:expr, undo: $undo:literal
+        $action:ident, $verb:literal, $title:literal, $args:ident, $bad:expr, undo: $undo:expr
     ) => {
         $(#[$doc])*
         pub struct $action;
@@ -223,7 +223,7 @@ macro_rules! change {
                 Examples {
                     good: vec![$args { name: EXAMPLE.into() }],
                     bad: $bad,
-                    undo: $undo.then(|| $args { name: EXAMPLE.into() }),
+                    undo: $undo.map(|action| Undo { action, args: json!({ "name": EXAMPLE }) }),
                 }
             }
         }
@@ -233,32 +233,32 @@ macro_rules! change {
 change! {
     /// `service NAME start`: starts a service. `service.stop` puts back
     /// what its example did.
-    Start, "start", "Start a service", Named, bad_names(), undo: true
+    Start, "start", "Start a service", Named, bad_names(), undo: Some("service.stop")
 }
 
 change! {
     /// `service NAME stop`: stops a service, unless it is the console's.
     /// `service.start` puts back what its example did.
-    Stop, "stop", "Stop a service", Guarded, bad_names_and_the_console(), undo: true
+    Stop, "stop", "Stop a service", Guarded, bad_names_and_the_console(), undo: Some("service.start")
 }
 
 change! {
     /// `service NAME restart`: stops a service and starts it again, unless
     /// it is the console's. Nothing puts back what it did.
-    Restart, "restart", "Restart a service", Guarded, bad_names_and_the_console(), undo: false
+    Restart, "restart", "Restart a service", Guarded, bad_names_and_the_console(), undo: None
 }
 
 change! {
     /// `service NAME enable`: starts a service now and at each boot.
     /// `service.disable` puts back what its example did.
-    Enable, "enable", "Enable a service", Named, bad_names(), undo: true
+    Enable, "enable", "Enable a service", Named, bad_names(), undo: Some("service.disable")
 }
 
 change! {
     /// `service NAME disable`: stops a service and keeps it from starting
     /// at boot, unless it is the console's. `service.enable` puts back what
     /// its example did.
-    Disable, "disable", "Disable a service", Guarded, bad_names_and_the_console(), undo: true
+    Disable, "disable", "Disable a service", Guarded, bad_names_and_the_console(), undo: Some("service.enable")
 }
 
 #[cfg(test)]
@@ -456,17 +456,16 @@ mod tests {
 
     #[test]
     fn what_a_change_puts_back_is_the_change_the_examples_name() {
-        // The undo arguments of each pair are the same as the good ones: the
-        // other action of the pair takes them.
+        // The other action of each pair takes the arguments the first
+        // took.
         for (verb, back) in
             [("start", "stop"), ("stop", "start"), ("enable", "disable"), ("disable", "enable")]
         {
             let (good, _, undo) = registered(&format!("service.{verb}")).example_values();
-            assert_eq!(undo.as_ref(), good.first(), "{verb}");
-            assert!(
-                registered(&format!("service.{back}")).prepare(undo.unwrap()).is_ok(),
-                "{back}"
-            );
+            let undo = undo.unwrap();
+            assert_eq!(undo.action, format!("service.{back}"), "{verb}");
+            assert_eq!(Some(&undo.args), good.first(), "{verb}");
+            assert!(registered(undo.action).prepare(undo.args).is_ok(), "{back}");
         }
         assert!(registered("service.restart").example_values().2.is_none());
     }

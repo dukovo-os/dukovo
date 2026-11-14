@@ -82,9 +82,20 @@ button, the API call and the command typed at a terminal do the same.
 	answers it: an array with an object for each action, with *id*,
 	*title*, *area*, *changes*, *method*, *path*, *runs* (*as-the-person*
 	or *as-administrator*), *long* (whether it runs as a task), *errors*
-	(the error IDs its command can end a line with) and *tests* (the five
-	tests that cover it). The area is also the scope a token needs: *services*
-	for all of the area, *services:read* for reading it.
+	(the error IDs its command can end a line with), *tests* (the five
+	tests that cover it) and *examples*. The area is also the scope a token
+	needs: *services* for all of the area, *services:read* for reading it.
+
+	*examples* is an object with *good*, a list of arguments that work on a
+	machine as it is installed, which a test or a script can try, and
+	*undo*: for a change that something puts back, an object with the
+	*action* that does and the *args* it takes, so that a script that
+	tries the change leaves the machine as it found it; for any other
+	action, *null*. The examples of *service.stop* are:
+
+	```
+	{"good":[{"name":"diskhealth"}],"undo":{"action":"service.start","args":{"name":"diskhealth"}}}
+	```
 
 *show* _action_ [_name_=_value_ | _name_:=_json_]...
 	Prints what *POST /api/1/show* answers for _action_ with the
