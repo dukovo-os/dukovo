@@ -158,8 +158,15 @@ fn startup(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             "settled",
             "The services whose time changed most, from started to ready:",
             "lingers",
-            "+6.",
         ],
+    )?;
+    // lingers sleeps 6 s longer than in the good starts; the rest of its
+    // start takes a tenth or two more or less on a busy host.
+    run(
+        vm,
+        "echo \"grew: $(startup --compare | grep -c -e '^ *lingers .* [+]5[.][5-9] s' -e \
+         '^ *lingers .* [+]6[.][0-4] s')\"",
+        &["grew: 1"],
     )?;
     power_off(vm)
 }
