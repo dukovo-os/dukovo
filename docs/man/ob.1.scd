@@ -1878,7 +1878,7 @@ _target/userspace/_).
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
 	the first root in _catalog/metadata/_, and fetches every bundle.
 
-*release* *server* *setup* [*--dukovo*] | *deploy* _repository_ | *check* [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*)
+*release* *server* *setup* [*--dukovo*] | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*)
 	Deploy the system's releases to the update server and check what it
 	serves (ADR 0467), over the same SSH login as *catalog*.
 	*server setup* is *catalog server setup*, which sets up both; it
@@ -1902,7 +1902,18 @@ _target/userspace/_).
 	hours, and the snapshot when it has two days left. *check* reads the
 	releases served at _url_, by default
 	_https://updates.dukovo.org/system/_, as a computer online would, from
-	that first root: every release list and channel.
+	that first root: every release list and channel. With *--root*, it
+	reads from the first root in _file_ instead, for the update server of
+	a test or of the lab.
+
+	*send* does what *deploy* does to the server *$OB_UPDATE_SSH* names,
+	for any repository whatever its first root is, and reads nothing back
+	from the project's address: for the update server of a test or of the
+	lab (_lab/tests/updates/server-on-dukovo.toml_), which
+	*$OB_UPDATE_SSH_OPTIONS* may reach at a port with a key of its own.
+	With *--copy-only* it stops once the files are in the server's incoming
+	folder, before it says the deploy is *ready*: the server publishes
+	nothing of it until a later *send* does.
 
 	*rollout* holds or frees the waves on the server (ADR 0469), with no
 	release key: it runs the server's _system-rollout.sh_ as its user,
@@ -2269,6 +2280,12 @@ fails the build.
 	The update server as *ssh*(1) names it, such as
 	_user@updates.dukovo.org_ or a host in _~/.ssh/config_, for *catalog
 	server setup* and *catalog deploy*; _updates.dukovo.org_ by default.
+
+*OB_UPDATE_SSH_OPTIONS*
+	More options for the *ssh*(1) and *scp*(1) that reach the update
+	server, as words set apart by blanks, such as *-o Port=2222 -i*
+	_key_: for a server that is not at the usual port or takes a key of
+	its own, as the lab's is. Empty by default.
 
 *SOURCE_DATE_EPOCH*
 	Timestamp for files in the image. By default *ob* uses the time of the

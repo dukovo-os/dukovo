@@ -698,7 +698,8 @@ catalog, by default https://updates.dukovo.org/catalog/, as a client would."
         "release" => {
             "Usage: ./ob release server setup [--dukovo]
        ./ob release deploy <repository>
-       ./ob release check [<url>]
+       ./ob release send [--copy-only] <repository>
+       ./ob release check [--root <file>] [<url>]
        ./ob release rollout (pause <version> <reason> | resume <version>
                              | canary <name> red|green)
 
@@ -715,9 +716,16 @@ files, signs a snapshot and
 timestamp with its online key, and reads it all back before serving it. The
 repository's first root must be releases/metadata/1.root.json, which the key
 ceremony signs on the hardware keys (ADR 0457): until then nothing is
-deployed. `check` reads the releases served at <url>, by default
+deployed. `send` does what `deploy` does to the server $OB_UPDATE_SSH names,
+whatever the repository's first root is, and reads nothing back: for a server
+of a test or a lab, which `$OB_UPDATE_SSH_OPTIONS`, ssh's own options as words
+set apart by blanks, may reach at a port with a key of its own; with
+--copy-only it stops once the files are in the server's incoming folder, before
+it says the deploy is ready, so that the server publishes nothing of it. `check`
+reads the releases served at <url>, by default
 https://updates.dukovo.org/system/, as a computer online would, from that
-first root. `rollout` holds or frees a release's waves, or marks a canary,
+first root; with --root, from the first root in <file>, for a server of a test
+or a lab. `rollout` holds or frees a release's waves, or marks a canary,
 on the server, and signs the rollouts again (ADR 0469)."
         }
         "signoff" => {

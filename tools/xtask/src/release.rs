@@ -91,18 +91,25 @@ pub fn tool_for(ctx: &Ctx, release: bool) -> Result<PathBuf> {
 }
 
 /// `ob release`: sets up the update server, deploys an update repository
-/// to it, or checks what it serves.
+/// to it, or checks what it serves. `send` is `deploy` for a server that is
+/// not the project's, a test's or a lab's: any first root, and no read-back
+/// from updates.dukovo.org; with `--copy-only` it stops before it says the
+/// deploy is ready, which the lab's test of the move shows is never published.
 pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["server", "setup"] => crate::catalog::server_setup(ctx, false),
         ["server", "setup", "--dukovo"] => crate::catalog::server_setup(ctx, true),
         ["deploy", dir] => deploy(ctx, Path::new(dir)),
-        ["check"] => check(ctx, URL),
-        ["check", url] => check(ctx, url),
+        ["send", dir] => publish_to(ctx, &Server::from_environment(), Path::new(dir)),
+        ["send", "--copy-only", dir] => copy_to(ctx, &Server::from_environment(), Path::new(dir)),
+        ["check"] => check(ctx, None, URL),
+        ["check", url] => check(ctx, None, url),
+        ["check", "--root", root, url] => check(ctx, Some(Path::new(root)), url),
         ["rollout", rest @ ..] if !rest.is_empty() => rollout(ctx, rest),
         _ => bail!(
-            "usage: ./ob release server setup [--dukovo] | deploy <repository> | check [<url>] | rollout \
-             (pause <version> <reason> | resume <version> | canary <name> red|green)"
+            "usage: ./ob release server setup [--dukovo] | deploy <repository> \
+             | send [--copy-only] <repository> | check [--root <file>] [<url>] \
+             | rollout (pause <version> <reason> | resume <version> | canary <name> red|green)"
         ),
     }
 }
@@ -153,7 +160,7 @@ fn deploy(ctx: &Ctx, dir: &Path) -> Result<()> {
         Err(_) => bail!("{} is not an update repository: it has no first root", dir.display()),
     }
     publish_to(ctx, &Server::from_environment(), dir)?;
-    check(ctx, URL)
+    check(ctx, None, URL)
 }
 
 /// Copies the update repository at `dir` to `server` and has it publish
@@ -200,11 +207,16 @@ pub fn copy_to(ctx: &Ctx, server: &Server, dir: &Path) -> Result<()> {
 }
 
 /// `ob release check`: reads the repository `url` serves as a computer
-/// online would, from the production first root: every release list and
-/// channel.
-fn check(ctx: &Ctx, url: &str) -> Result<()> {
-    production_root(ctx)?;
-    let root = ctx.root.join(REPO).join("metadata/1.root.json");
+/// online would, from the production first root, or from the first root in
+/// `root` for a server of a test or a lab: every release list and channel.
+fn check(ctx: &Ctx, root: Option<&Path>, url: &str) -> Result<()> {
+    let root = match root {
+        Some(root) => root.to_path_buf(),
+        None => {
+            production_root(ctx)?;
+            ctx.root.join(REPO).join("metadata/1.root.json")
+        }
+    };
     let mut cmd = Command::new(tool(ctx)?);
     cmd.arg("served").arg("--root").arg(root).arg(url);
     process::run(ctx, &mut cmd)

@@ -44,7 +44,8 @@ impl Server {
             .ok()
             .filter(|dest| !dest.is_empty())
             .unwrap_or_else(|| crate::catalog::HOST.into());
-        Self { dest, options: Vec::new() }
+        let options = std::env::var("OB_UPDATE_SSH_OPTIONS").map(|text| words(&text));
+        Self { dest, options: options.unwrap_or_default() }
     }
 
     /// The server `dest` names, reached with `options` more for ssh and
@@ -82,6 +83,13 @@ impl Server {
         cmd.arg(format!("{}:{to}", self.dest));
         cmd
     }
+}
+
+/// The words of `text`, set apart by blanks, as the options
+/// `$OB_UPDATE_SSH_OPTIONS` gives ssh and scp: a lab's server is at a port
+/// and takes a key of its own.
+fn words(text: &str) -> Vec<OsString> {
+    text.split_whitespace().map(OsString::from).collect()
 }
 
 /// Quotes `word` for the server's shell.
@@ -349,6 +357,13 @@ mod tests {
     use super::*;
 
     const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn options_are_the_words_set_apart_by_blanks() {
+        let options = words(" -o Port=2222  -i /keys/lab ");
+        assert_eq!(options, ["-o", "Port=2222", "-i", "/keys/lab"].map(OsString::from));
+        assert!(words("").is_empty());
+    }
 
     #[test]
     fn a_sha256_name_is_sixty_four_lowercase_hex_digits() {
