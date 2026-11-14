@@ -214,12 +214,12 @@ administrator. Only an administrator unlocks it:
    code does not unlock.
 3. The header shows **Unlocked** and the minutes left, from 15.
 
-**Reset to 15 min** sets the end to 15 minutes from now, and **Lock** locks at
-once. It locks itself when the 15 minutes run out, when you sign out, and
-a minute after the last console page of the session is closed. This is as
-`elevate` unlocks a terminal for 15 minutes at the machine's own console.
-Every command the console runs as an administrator, and every unlock, is
-in the audit log: `elevate log --audit`.
+**Reset to 15 min** sets the end to 15 minutes from now, and **Lock**
+locks at once. It locks itself when the 15 minutes run out, when you sign
+out, and a minute after the last console page of the session is closed.
+This is as `elevate` unlocks a terminal for 15 minutes at the machine's
+own console. Every command the console runs as an administrator, and every
+unlock, is in the audit log: `elevate log --audit`.
 
 A change that needs an unlocked console, tried while it is locked, says
 **The console is locked** (ADM-106).

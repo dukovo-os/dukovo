@@ -123,5 +123,5 @@ command line.
 
 # SEE ALSO
 
-*lastlog*(8), *who*(1), *w*(1), *authd*(8), *login*(1), *dukovo-admin*(7), *elevate*(8),
-*systools*(1)
+*lastlog*(8), *who*(1), *w*(1), *authd*(8), *login*(1),
+*dukovo-admin*(7), *elevate*(8), *systools*(1)

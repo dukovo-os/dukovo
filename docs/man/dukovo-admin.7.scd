@@ -97,7 +97,7 @@ out of the console at once.
 
 An account that is not an administrator may look at the console and
 change its own second steps. The page gives it no *Unlock*, and authd
-refuses it any command as an administrator.
+refuses it an unlock and any command as an administrator.
 
 # SIGNING IN
 
@@ -205,9 +205,9 @@ last second step removes the codes.
 
 *Trust this browser for 30 days* at a second step gives the browser a
 second cookie, *\_\_Host-dukovo-trust*, whose SHA-256 authd keeps with a
-description of the browser. At a later sign-in the browser gives the password and skips the second
-step. An account keeps 16 browsers, the oldest going first. *Forget trusted
-browsers* forgets them all.
+description of the browser. At a later sign-in the browser gives the
+password and skips the second step. An account keeps 16 browsers, the
+oldest going first. *Forget trusted browsers* forgets them all.
 
 # UNLOCKING THE CONSOLE
 
@@ -216,18 +216,18 @@ administrator offers *Unlock*. A locked console shows what the account may
 see and runs nothing as an administrator.
 
 *Unlock* asks the administrator to prove again that it is them, as
-*elevate*(8) asks for the password at a terminal: with a passkey that checks the
-person, with the code of the authenticator app, or with the password. A
-recovery code is not enough. authd then unlocks the session for 15
-minutes, and the header shows the minutes left. *Reset to 15 min* sets the
-end 15 minutes from now; *Lock* locks it at once. It also locks when the
-time runs out, when the person signs out, and a minute after the last
-console page of the session closed. A session past *session-hours* does
-not unlock.
+*elevate*(8) asks for the password at a terminal: with a passkey that
+checks the person, with the code of the authenticator app, or with the
+password. A recovery code is not enough. authd then unlocks the session
+for 15 minutes, and the header shows the minutes left. *Reset to 15 min*
+sets the end 15 minutes from now; *Lock* locks it at once. It also locks
+when the time runs out, when the person signs out, and a minute after
+the last console page of the session closed. A session past
+*session-hours* does not unlock.
 
 Only authd decides whether a session is unlocked; the browser's page
-only shows it. A request that needs an unlocked console, made while it is locked, is
-refused (ADM-106).
+only shows it. A request that needs an unlocked console, made while it
+is locked, is refused (ADM-106).
 
 ## Commands as an administrator
 

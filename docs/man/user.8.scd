@@ -57,12 +57,12 @@ Someone who knows the password of a disabled account is told it is
 disabled when they sign in; anyone else is told the password is wrong.
 
 *user remove* removes the account _name_: it disables it and ends what
-it runs, then takes it out of the account files, with its own group,
-and removes its own _/tmp_ (*authd*(8)); its sign-in records stay, for
-root to read. Its number is never given to an account again, so the files it leaves
-are no one else's. At a terminal it asks what becomes of the account's
-home, _/users/_*name*: whether to keep it, archive it or delete it;
-a script says so with an option. A home elsewhere is kept.
+it runs, then takes it out of the account files, with its own group, and
+removes its own _/tmp_ (*authd*(8)); its sign-in records stay, for root
+to read. Its number is never given to an account again, so the files it
+leaves are no one else's. At a terminal it asks what becomes of the
+account's home, _/users/_*name*: whether to keep it, archive it or
+delete it; a script says so with an option. A home elsewhere is kept.
 
 *user rename* gives the account _name_ the name _new-name_, and its own
 group too, and moves its home if it is _/users/_*name*. It waits until
@@ -215,4 +215,5 @@ saying why.
 
 # SEE ALSO
 
-*passwd*(1), *login*(1), *authd*(8), *admind*(8), *dukovo-admin*(7), *elevate*(8), *id*(1), *tar*(1), *systools*(1)
+*passwd*(1), *login*(1), *authd*(8), *admind*(8), *dukovo-admin*(7),
+*elevate*(8), *id*(1), *tar*(1), *systools*(1)
