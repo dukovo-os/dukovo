@@ -18,11 +18,12 @@
 // ended, and the journal has the action's row with the task's number, as
 // the first account's console change.
 //
-// The lab's action is in a build made with admind's `lab` feature. An
-// image built without it, which is what a shipped console is, has no
-// `lab.long`, and the test only asks what the console says of tasks then:
-// the list is a list, a task that is not there is ADM-127, and stopping
-// one is too. The task routes are called either way.
+// The lab's action is in a build made with systools' `lab` feature, which
+// `ob image --lab` turns on for the lab image and no other image has. The
+// test needs it: a console that does not offer `lab.long` is a lab image
+// built without the feature, and a failure, not a reason to skip. The
+// routes of a task that is not there are asked of the console too, as
+// ADM-127.
 
 import { ensure, look, mustHaveCalled, openConsole, fetchAsPage, signInDone, signOut, sleep } from "./console.mjs";
 
@@ -98,14 +99,12 @@ function taskEvents(page, milliseconds) {
   );
 }
 
-/** What the console says of tasks where there is no `lab.long` to run. */
-async function noTasks(page) {
+/** What the console says of a task that is not there: the list is a list, and the task and its stop are ADM-127. */
+async function absentTask(page) {
   const list = await fetchAsPage(page, "GET", "/api/1/tasks");
   ensure(list.status === 200 && Array.isArray(list.json?.tasks), `GET /api/1/tasks was answered ${list.text}`);
   mustBe(await fetchAsPage(page, "GET", `/api/1/tasks/${ABSENT}`), 404, "ADM-127", "a task that is not there");
   mustBe(await fetchAsPage(page, "POST", `/api/1/tasks/${ABSENT}/stop`, {}), 404, "ADM-127", "its stop");
-  mustBe(await fetchAsPage(page, "POST", "/api/1/lab/long", {}), 404, "ADM-116", "the lab's route");
-  console.log("this image does not offer lab.long: no task was run");
 }
 
 export default async function check(t) {
@@ -119,13 +118,12 @@ export default async function check(t) {
   const listed = await fetchAsPage(first.page, "GET", "/api/1/actions");
   ensure(listed.status === 200 && Array.isArray(listed.json), `GET /api/1/actions was answered ${listed.text}`);
   const action = listed.json.find((each) => each.id === "lab.long");
-  if (action === undefined) {
-    await noTasks(first.page);
-    mustHaveCalled(first.seen, [ROUTES.tasks, routeOf(ROUTES.task, ABSENT), routeOf(ROUTES.stop, ABSENT)]);
-    await signOut(t, first.page);
-    return;
-  }
+  ensure(
+    action !== undefined,
+    "the console does not offer lab.long: this lab image was built without systools' lab feature, which `ob image --lab` turns on",
+  );
   ensure(action.changes && action.long, `lab.long is listed as ${JSON.stringify(action)}, a long change`);
+  await absentTask(first.page);
 
   // The action answers at once with the task's number.
   const asked = await fetchAsPage(first.page, "POST", action.path, { seconds: SECONDS });

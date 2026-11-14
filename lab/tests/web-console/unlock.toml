@@ -10,8 +10,9 @@
 # account in group console that is no administrator is offered no unlock
 # and refused one. Each engine has an administrator of its own, which this
 # test makes and removes, so no script needs the lab's password. The
-# lab's build of admind has one more route that runs a command as the
-# unlocked session; the script tries it where the image has it.
+# lab image's admind has one more route that runs a command as the
+# unlocked session, which `ob image --lab` builds it with; the script
+# needs it, and fails on an image built without.
 about = "Browsers unlock the web console with a password and an app's code, watch its minutes count down, lock it, and see it lock on sign-out and when the last page closes"
 time = "30m"
 host_needs = ["curl"]

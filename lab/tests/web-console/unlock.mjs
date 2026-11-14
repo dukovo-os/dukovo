@@ -179,17 +179,18 @@ async function unlockWithCode(t, page, app) {
 
 /**
  * The route that only the lab's build has runs a command as an
- * administrator for an unlocked session, and not for a locked one. An
- * image built without it has no such route, which is what a shipped
- * console is, and the check is left for one that has it.
+ * administrator for an unlocked session, and not for a locked one. The
+ * lab image has it, since `ob image --lab` builds systools with its `lab`
+ * feature; a 404 here is a lab image built without the feature, and a
+ * failure.
  */
 async function elevatedCommand(t, page) {
   const command = { command: ["/system/commands/echo", "hello"] };
   const ran = await postAsPage(page, "/api/1/test/elevate", command);
-  if (ran.status() === 404) {
-    console.log("this image has no POST /api/1/test/elevate: the elevated command is not tried");
-    return;
-  }
+  ensure(
+    ran.status() !== 404,
+    "POST /api/1/test/elevate is not there (404): this lab image was built without systools' lab feature, which `ob image --lab` turns on",
+  );
   const result = await ran.json();
   ensure(
     ran.status() === 200 && result.status === 0 && result.output.includes("hello"),

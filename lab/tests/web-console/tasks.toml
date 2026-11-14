@@ -9,9 +9,9 @@
 # browser closes, and its session locks a minute later, while the task goes
 # on; the second browser's administrator stops it, and the journal has the
 # action's row with the task's number. admind is the service that answers.
-# The lab's action is in a build made with admind's `lab` feature; an image
-# without it is checked for what the console says of tasks, and the routes
-# are called either way. Each engine has two administrators of its own,
+# The lab's action is in a build made with systools' `lab` feature, which
+# `ob image --lab` turns on for the lab image; the test needs it, and fails
+# on an image built without. Each engine has two administrators of its own,
 # which this test makes and removes, so no script needs the lab's password.
 about = "A long action of the web console runs as a task that outlives the browser that asked for it, shows from a second browser with its steps, log and events, and is stopped by another administrator"
 time = "30m"
