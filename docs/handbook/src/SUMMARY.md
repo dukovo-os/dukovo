@@ -45,6 +45,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
   - [What each alert means](alert-meanings.md)
 - [Reporting a problem](reporting-a-problem.md)
 - [SSH and remote access](ssh.md)
+- [Getting help from someone](getting-help.md)
 - [Kerberos](kerberos.md)
 - [Power, laptops and desktops]()
 - [Privacy and security reporting](privacy.md)

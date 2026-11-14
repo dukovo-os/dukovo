@@ -261,6 +261,32 @@ A key's passphrase, asked for once, is kept in your keyring, and
 `ssh-add`, `ssh` and `ssh-keygen` take it from there
 ([Your keyring](keyring.md)).
 
+## Letting a helper in
+
+A person who needs help can let someone with no account sign in as `help`,
+with a one-time code, and work in their own screen while they watch
+(`help-session start`). `help` is no account, and no account may be named
+it; sshd offers passwords for it only while a help session waits for its
+code, even when `PasswordAuthentication` is `no`, and for no other name. A
+helper gets one terminal and one shell, no commands, no SFTP and no
+forwarding. Wrong codes count against the address as wrong passwords do.
+[Getting help from someone](getting-help.md) tells the owner's side and
+the helper's.
+
+## When the system will not start
+
+When a system that had SSH on fails to start, Rescue turns SSH on too, so
+that its administrators can repair it over SSH from where they reached it
+before (ADR 0540). It signs in the same administrators with the same keys,
+by the same `AllowUsers`, `AllowGroups`, `DenyUsers` and `DenyGroups`, and
+with passwords only if `sshd_config` let them in; the computer has the same
+host key, so `ssh` shows no warning; and addresses that guess are blocked
+as above. What an administrator gets is Rescue's menu, as root, and not a
+shell of their own: there is no command to run, no `sftp` or `scp`, and no
+forwarding in Rescue. A system that had SSH off stays off in Rescue.
+[Updates, snapshots, backups and recovery](updates.md#ssh-in-rescue) says
+what Rescue does and shows.
+
 ## When something goes wrong
 
 sshd logs each connection: who signed in, from where and with which
@@ -279,6 +305,7 @@ the client says what it tried.
 ## Limitations
 
 - Options in `authorized_keys`, RSA keys and certificates.
+- SFTP in Rescue, to copy files off over the network.
 - X11 and agent forwarding, forwarding Unix sockets, and
   `PermitOpen` and `PermitListen`.
 - `Match` blocks and the other keywords of OpenSSH's sshd_config.
