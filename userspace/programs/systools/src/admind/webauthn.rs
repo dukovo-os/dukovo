@@ -278,15 +278,15 @@ mod tests {
     fn a_credential_that_does_not_read_is_refused_in_words() {
         let mut broken = credential(&[1], None);
         broken.response.signature = "!!".into();
-        assert_eq!(assertion(&broken, "o", "r").unwrap_err().detail, "the signature is not base64url");
+        assert_eq!(assertion(&broken, "o", "r").err().unwrap().detail, "the signature is not base64url");
         let mut broken = credential(&[1], None);
         broken.response.client_data = b64(b"not json");
-        let why = assertion(&broken, "o", "r").unwrap_err();
+        let why = assertion(&broken, "o", "r").err().unwrap();
         assert_eq!(why.kind, Kind::BadRequest);
         assert!(why.detail.contains("client data"), "{}", why.detail);
         let mut broken = credential(&[1], None);
         broken.response.client_data = b64(br#"{"challenge": "!!"}"#);
-        assert!(assertion(&broken, "o", "r").unwrap_err().detail.contains("the challenge"));
+        assert!(assertion(&broken, "o", "r").err().unwrap().detail.contains("the challenge"));
         // The browser's own JSON is what is read: a credential with no
         // response is no credential.
         assert!(serde_json::from_value::<Credential>(json!({"id": "AQ"})).is_err());

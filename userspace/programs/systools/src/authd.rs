@@ -346,7 +346,7 @@ macro_rules! audit {
     ($($arg:tt)*) => { println!("<86>authd: {}", format_args!($($arg)*)) };
 }
 
-mod console;
+pub(crate) mod console;
 mod keyring;
 pub(crate) mod proofs;
 

@@ -112,8 +112,8 @@ const TRUSTED_FOR: i64 = 30 * DAY;
 
 /// The most of each an account keeps.
 const TRUSTED_MAX: usize = 16;
-const PASSKEYS_MAX: usize = 16;
-const TOKENS_MAX: usize = 32;
+pub(crate) const PASSKEYS_MAX: usize = 16;
+pub(crate) const TOKENS_MAX: usize = 32;
 
 /// The longest an API token lasts, in days.
 const TOKEN_DAYS_MAX: u32 = 366;

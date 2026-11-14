@@ -34,6 +34,7 @@ use super::authd;
 use super::errors::Kind;
 use super::link::{self, Ended, Fault};
 use super::log;
+use super::who::{self, Account, Who};
 use crate::util::{self, Fail, fail};
 
 /// How long the worker waits for a call before it ends.
@@ -81,7 +82,7 @@ async fn handle(method: String, params: Value) -> Result<Value, Fault> {
     }
     let (console, shape) = request(&method, params)?;
     let (answer, _) =
-        authd::ask(console, &[]).await.map_err(|why| Fault::new(Kind::AuthdSilent, why))?;
+        authd::ask(accounts::SOCKET, console, &[]).await.map_err(|why| Fault::new(Kind::AuthdSilent, why))?;
     match answer {
         Answer::Done(text) => result(&shape, &text, whoami),
         Answer::Refused(why) => Err(Fault::new(Kind::Refused, why)),
@@ -109,7 +110,7 @@ enum Shape {
 }
 
 /// The parameters of the calls that have any, which must be all there is.
-mod params {
+mod takes {
     use serde::Deserialize;
 
     #[derive(Deserialize)]
@@ -209,7 +210,7 @@ fn passkey_id(text: &str) -> Result<Vec<u8>, Fault> {
 /// The request to authd that `method` with `params` is, and how its
 /// answer is told.
 fn request(method: &str, params: Value) -> Result<(Console, Shape), Fault> {
-    use params as p;
+    use takes as p;
     Ok(match method {
         "steps" => (nothing(&params).map(|()| Console::Steps)?, Shape::Steps),
         "trusted-forget" => (nothing(&params).map(|()| Console::TrustedForget)?, Shape::Forgotten),
@@ -327,56 +328,9 @@ fn creation(text: &str, who: &Who) -> Result<Value, Fault> {
     }))
 }
 
-/// The person whose worker this is.
-#[derive(Debug, PartialEq, Eq)]
-struct Who {
-    name: String,
-    full_name: String,
-    admin: bool,
-    groups: Vec<String>,
-}
-
-impl Who {
-    fn json(&self) -> Value {
-        json!({
-            "name": self.name,
-            "full_name": self.full_name,
-            "admin": self.admin,
-            "groups": self.groups,
-        })
-    }
-}
-
-/// The account of user number `uid` in the files `passwd` and `group`.
-fn who_from(passwd: &str, group: &str, uid: u32) -> Result<Who, String> {
-    let users = accounts::users(passwd);
-    let groups = accounts::groups(group);
-    let user = users
-        .entries()
-        .find(|user| user.uid == uid)
-        .ok_or_else(|| format!("no account has the number {uid}"))?;
-    let theirs = groups
-        .entries()
-        .filter(|g| g.gid == user.gid || g.members.contains(&user.name))
-        .map(|g| g.name.clone())
-        .collect();
-    Ok(Who {
-        name: user.name.clone(),
-        full_name: user.full_name.clone(),
-        admin: accounts::is_admin(user, &groups),
-        groups: theirs,
-    })
-}
-
 /// Who this worker acts for, by its own user number.
 fn whoami() -> Result<Who, Fault> {
-    let read = |path: &str| {
-        std::fs::read_to_string(path)
-            .map_err(|err| format!("cannot read {path}: {}", util::strip_os_error(&err)))
-    };
-    let who = read(accounts::PASSWD)
-        .and_then(|passwd| who_from(&passwd, &read(accounts::GROUP)?, util::own_user()));
-    who.map_err(|why| Fault::new(Kind::Refused, why))
+    who::read(Account::Number(util::own_user())).map_err(|why| Fault::new(Kind::Refused, why))
 }
 
 #[cfg(test)]
@@ -538,26 +492,5 @@ mod tests {
         assert_eq!(creation("0a 0b", &plain).unwrap()["user"]["displayName"], "chase");
         assert!(creation("0a", &plain).is_err());
         assert!(creation("0a 0b zz", &plain).is_err());
-    }
-
-    #[test]
-    fn the_worker_knows_whose_it_is_from_the_files_and_its_number() {
-        let passwd = "root:x:0:0:root:/system/root:/system/commands/nukesh\n\
-                      chase:x:1000:1000:Chase Y:/users/chase:/system/commands/nukesh\n\
-                      bob:x:1001:1001::/users/bob:/system/commands/nukesh\n";
-        let group = "root:x:0:\nchase:x:1000:\nbob:x:1001:\nadmins:x:10:chase\nconsole:x:12:bob\n";
-        let chase = who_from(passwd, group, 1000).unwrap();
-        assert_eq!(chase.name, "chase");
-        assert_eq!(chase.full_name, "Chase Y");
-        assert!(chase.admin);
-        assert_eq!(chase.groups, ["chase", "admins"]);
-        let bob = who_from(passwd, group, 1001).unwrap();
-        assert!(!bob.admin);
-        assert_eq!(bob.groups, ["bob", "console"]);
-        assert_eq!(
-            chase.json(),
-            json!({"name": "chase", "full_name": "Chase Y", "admin": true, "groups": ["chase", "admins"]})
-        );
-        assert_eq!(who_from(passwd, group, 4242), Err("no account has the number 4242".to_string()));
     }
 }

@@ -162,5 +162,10 @@ smoltcp = { version = "=0.14.0", default-features = false, features = [
     "socket-udp",
 ] }
 
+[features]
+# admind's `POST /api/1/test/elevate`, which the lab tests use to run an
+# elevated command; a build for people leaves it out (ADR 0514).
+lab = []
+
 [lints]
 workspace = true

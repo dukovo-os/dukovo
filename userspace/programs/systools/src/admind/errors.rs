@@ -9,6 +9,7 @@
 //! so the page sees one shape whichever of them said no:
 //! `{"error": {"id", "title", "detail", "fix"}}`.
 
+use accounts::request::WRONG_PASSWORD;
 use serde_json::{Value, json};
 
 /// A kind of error.
@@ -50,11 +51,18 @@ pub enum Kind {
     NoMethod,
     /// ADM-118: the session may only add a second step.
     SecondStepOnly,
+    /// ADM-119: the request has a body that is not JSON.
+    NotJson,
+    /// ADM-120: the console holds as many sessions as it may.
+    Busy,
+    /// ADM-121: the console could not do what it is for, for a reason of
+    /// its own.
+    Internal,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 18] = [
+    pub const ALL: [Kind; 21] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -73,6 +81,9 @@ impl Kind {
         Kind::NoRoute,
         Kind::NoMethod,
         Kind::SecondStepOnly,
+        Kind::NotJson,
+        Kind::Busy,
+        Kind::Internal,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -96,6 +107,9 @@ impl Kind {
             Kind::NoRoute => "ADM-116",
             Kind::NoMethod => "ADM-117",
             Kind::SecondStepOnly => "ADM-118",
+            Kind::NotJson => "ADM-119",
+            Kind::Busy => "ADM-120",
+            Kind::Internal => "ADM-121",
         }
     }
 
@@ -124,6 +138,9 @@ impl Kind {
             Kind::WrongHost => 421,
             Kind::NoRoute => 404,
             Kind::NoMethod => 405,
+            Kind::NotJson => 415,
+            Kind::Busy => 503,
+            Kind::Internal => 500,
         }
     }
 
@@ -148,6 +165,9 @@ impl Kind {
             Kind::NoRoute => "There is nothing at that address",
             Kind::NoMethod => "That method is not used here",
             Kind::SecondStepOnly => "This session may only add a second step",
+            Kind::NotJson => "The request is not JSON",
+            Kind::Busy => "The console is full",
+            Kind::Internal => "The console could not do that",
         }
     }
 
@@ -167,7 +187,10 @@ impl Kind {
             Kind::WrongHost => Some("Open the console by this machine's name or its address."),
             Kind::NoTokens => Some("Sign in with a name and a password."),
             Kind::SecondStepOnly => Some("Add a second step: you sign in again once it is added."),
-            Kind::BadRequest
+            Kind::Busy => Some("Try again when someone has signed out."),
+            Kind::Internal => Some("Try again; if it keeps happening, look in the log of admind."),
+            Kind::NotJson
+            | Kind::BadRequest
             | Kind::Refused
             | Kind::TooBig
             | Kind::NoRoute
@@ -212,6 +235,50 @@ impl Failure {
     }
 }
 
+/// What a person was doing when authd refused them, which says what kind
+/// of error its refusal is when its words do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attempt {
+    /// Giving a password.
+    Password,
+    /// Giving an app's code or a recovery code.
+    Code,
+    /// Giving a passkey.
+    Passkey,
+    /// Anything else.
+    Other,
+}
+
+/// The sentences authd refuses with when an account may not use the
+/// console: root's, a disabled account's, and one that is neither an
+/// administrator nor in the `console` group.
+const NOT_ALLOWED: [&str; 3] =
+    ["does not sign in to the web console", "may not use the web console", "is disabled"];
+
+/// The failure that authd's refusal `why` is, for what `attempt` was. authd
+/// words every refusal for a person, so the detail is its own sentence; the
+/// kind is what the page tells apart.
+pub fn refusal(attempt: Attempt, why: &str) -> Failure {
+    let kind = if why == WRONG_PASSWORD {
+        Kind::WrongPassword
+    } else if why.contains("may only add a second step") {
+        Kind::SecondStepOnly
+    } else if why.contains("is locked") {
+        Kind::Locked
+    } else if why.ends_with("sign in again") {
+        Kind::SessionEnded
+    } else if NOT_ALLOWED.iter().any(|phrase| why.contains(phrase)) {
+        Kind::NotAllowed
+    } else {
+        match attempt {
+            Attempt::Code if why.contains("code") || why.contains("digits") => Kind::WrongCode,
+            Attempt::Passkey => Kind::PasskeyRefused,
+            Attempt::Password | Attempt::Code | Attempt::Other => Kind::Refused,
+        }
+    };
+    Failure::new(kind, why)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +290,7 @@ mod tests {
             assert_eq!(Kind::of(kind.id()), Some(kind));
         }
         assert_eq!(Kind::of("ADM-100"), None);
-        assert_eq!(Kind::of("ADM-119"), None);
+        assert_eq!(Kind::of("ADM-122"), None);
         assert_eq!(Kind::of(""), None);
     }
 
@@ -266,6 +333,34 @@ mod tests {
         for kind in Kind::ALL {
             assert!(kind.title().len() > 10, "{}", kind.id());
             assert!((400..600).contains(&kind.status()), "{}", kind.id());
+        }
+    }
+
+    #[test]
+    fn authds_refusals_are_told_apart_by_what_they_say_and_what_was_tried() {
+        // The sentences are the ones in authd/console.rs.
+        let cases = [
+            (Attempt::Password, WRONG_PASSWORD, Kind::WrongPassword),
+            (Attempt::Other, WRONG_PASSWORD, Kind::WrongPassword),
+            (Attempt::Password, "bob may not use the web console: an administrator lets them with `elevate user set --console bob`", Kind::NotAllowed),
+            (Attempt::Password, "root does not sign in to the web console: sign in as an administrator", Kind::NotAllowed),
+            (Attempt::Passkey, "the account bob is disabled", Kind::NotAllowed),
+            (Attempt::Code, "that code is not right", Kind::WrongCode),
+            (Attempt::Code, "that code was used already: give the app's next one", Kind::WrongCode),
+            (Attempt::Code, "unlocking takes the app's 6 digits", Kind::WrongCode),
+            (Attempt::Code, "authd cannot write /system/state/authd", Kind::Refused),
+            (Attempt::Passkey, "that passkey challenge is not one authd gave, or was used: try again", Kind::PasskeyRefused),
+            (Attempt::Other, "that passkey challenge is not one authd gave, or was used: try again", Kind::Refused),
+            (Attempt::Other, "the session is locked: unlock it to make changes", Kind::Locked),
+            (Attempt::Other, "the session is locked: unlock it again", Kind::Locked),
+            (Attempt::Code, "that web console session has ended: sign in again", Kind::SessionEnded),
+            (Attempt::Code, "that sign-in is not one under way, or began more than 5 minutes ago: sign in again", Kind::SessionEnded),
+            (Attempt::Other, "this session may only add a second step: sign in again once it is added", Kind::SecondStepOnly),
+            (Attempt::Other, "64 web console sessions are signed in already", Kind::Refused),
+        ];
+        for (attempt, why, kind) in cases {
+            let failure = refusal(attempt, why);
+            assert_eq!((failure.kind, failure.detail.as_str()), (kind, why), "{why}");
         }
     }
 }

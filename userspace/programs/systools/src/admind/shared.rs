@@ -10,7 +10,9 @@
 //! This is also where sessions end. Whatever ends one (sign-out, the
 //! hours or idle time of the sign-in rules, its worker going, admind
 //! stopping) gives it to [`Shared::finish`], which notes why, closes the
-//! worker's link, which ends the worker, and tells authd.
+//! worker's link, which ends the worker, and tells authd. A tab's event
+//! stream learns of it, and of an unlock that changed, from
+//! [`Shared::changes`].
 
 use std::cell::RefCell;
 use std::net::IpAddr;
@@ -18,9 +20,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use accounts::console::Console;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use super::authd;
+use super::errors::{Failure, Kind};
 use super::files::Files;
 use super::limits::{Connections, Endings, Quiet, Tickets, Tries};
 use super::link::Link;
@@ -83,18 +87,34 @@ pub fn ending_reason(started: Instant, now: Instant, lasts: Duration) -> &'stati
     if now.saturating_duration_since(started) >= lasts { "expired" } else { "idle" }
 }
 
-/// Tells authd that its session `authd` ended. authd has forgotten a
-/// session whose worker ended, and then says so, which is no trouble.
-pub async fn tell_end(authd: String) {
-    if let Err(why) = authd::ask(Console::End { session: authd }, &[]).await {
+/// The seconds left of an unlock that ends at Unix time `until`, at Unix
+/// time `now`; `None` when there is none or it is over.
+pub fn seconds_left(until: Option<i64>, now: i64) -> Option<i64> {
+    until.map(|until| until.saturating_sub(now)).filter(|left| *left > 0)
+}
+
+/// Tells the authd at `socket` that its session `session` ended. authd
+/// has forgotten a session whose worker ended, and then says so, which is
+/// no trouble.
+async fn tell_end(socket: String, session: String) {
+    if let Err(why) = authd::ask(&socket, Console::End { session }, &[]).await {
         log(4, &why);
     }
+}
+
+/// Writes the log line for a refusal that `table` says is due.
+fn say_refusal(table: &RefCell<Quiet>, what: &str, address: IpAddr, why: &str) {
+    let Some(count) = table.borrow_mut().note(address, Instant::now()) else { return };
+    let times = if count > 1 { format!(" ({count} since the last line)") } else { String::new() };
+    log(6, &format!("refused {what} from {address}: {why}{times}"));
 }
 
 /// Everything the connections share.
 pub struct Shared {
     /// The port admind listens on, which a restart changes.
     pub port: u16,
+    /// authd's socket.
+    pub authd: String,
     /// admin.toml as last read.
     pub settings: RefCell<Settings>,
     /// The machine's names and addresses.
@@ -109,27 +129,35 @@ pub struct Shared {
     pub tickets: RefCell<Tickets>,
     /// The sign-in requests of each address.
     pub tries: RefCell<Tries>,
-    /// What the log has said of each refused address.
+    /// What the log has said of each address whose connections were
+    /// refused.
     pub quiet: RefCell<Quiet>,
+    /// What it has said of each address whose requests were refused.
+    pub refused: RefCell<Quiet>,
     /// The connections held.
     pub connections: Rc<RefCell<Connections>>,
     /// Why sessions ended.
     pub endings: RefCell<Endings>,
+    /// Sent to when a session ends or its unlock changes, which the event
+    /// streams of the session's tabs wait for.
+    pub changes: watch::Sender<()>,
     /// The elevated commands of the test route running now.
     #[cfg(feature = "lab")]
     pub elevating: std::cell::Cell<usize>,
 }
 
 impl Shared {
-    /// What admind starts with.
+    /// What admind starts with, asking the authd at `authd`.
     pub fn new(
         settings: Settings,
         identity: Identity,
         certificate: Certificate,
         files: Files,
+        authd: &str,
     ) -> Rc<Shared> {
         Rc::new(Shared {
             port: settings.console.listen,
+            authd: authd.to_string(),
             settings: RefCell::new(settings),
             identity: RefCell::new(identity),
             certificate: RefCell::new(certificate),
@@ -138,8 +166,10 @@ impl Shared {
             tickets: RefCell::default(),
             tries: RefCell::default(),
             quiet: RefCell::default(),
+            refused: RefCell::default(),
             connections: Rc::default(),
             endings: RefCell::default(),
+            changes: watch::channel(()).0,
             #[cfg(feature = "lab")]
             elevating: std::cell::Cell::new(0),
         })
@@ -160,16 +190,59 @@ impl Shared {
         self.sessions.borrow_mut().get(cookie).map(with)
     }
 
+    /// Notes that the session of `cookie` is unlocked until the Unix time
+    /// `until`, or locked, as authd answered, and tells its tabs.
+    pub fn set_unlocked(&self, cookie: &str, until: Option<i64>) {
+        if self.with_session(cookie, |session| session.unlocked_until = until).is_some() {
+            self.changes.send_replace(());
+        }
+    }
+
     /// Ends `session` for `reason`, one of the words the page is told:
     /// `signed-out`, `expired`, `idle`, `restarted` or `worker`. Its link
     /// closes, which ends its worker, and the task returned tells authd;
     /// most callers let it go.
+    ///
+    /// # Panics
+    ///
+    /// Outside a `LocalSet`.
     pub fn finish(&self, session: Session<Link>, reason: &'static str) -> JoinHandle<()> {
         log(6, &format!("{}'s console session from {} ended: {reason}", session.name, session.from));
         self.endings.borrow_mut().note(&session.authd, reason);
         let authd = session.authd.clone();
         drop(session);
-        tokio::task::spawn_local(tell_end(authd))
+        self.changes.send_replace(());
+        tokio::task::spawn_local(tell_end(self.authd.clone(), authd))
+    }
+
+    /// Keeps `session` and gives the cookie that names it. When the
+    /// console holds as many sessions as it may, the session ends again.
+    ///
+    /// # Errors
+    ///
+    /// With [`Kind::Busy`], when it holds no more.
+    ///
+    /// # Panics
+    ///
+    /// Outside a `LocalSet`.
+    pub fn admit(&self, session: Session<Link>) -> Result<String, Failure> {
+        let authd = session.authd.clone();
+        let added = self.sessions.borrow_mut().add(session);
+        added.map_err(|why| {
+            tokio::task::spawn_local(tell_end(self.authd.clone(), authd));
+            Failure::new(Kind::Busy, why)
+        })
+    }
+
+    /// Says in the log that a connection from `address` was refused for
+    /// `why`, the first time and then once a minute with how many came.
+    pub fn refused_connection(&self, address: IpAddr, why: &str) {
+        say_refusal(&self.quiet, "a connection", address, why);
+    }
+
+    /// Says the same of a request, which was answered with an error.
+    pub fn refused_request(&self, address: IpAddr, why: &str) {
+        say_refusal(&self.refused, "a request", address, why);
     }
 
     /// Ends the session `authd` once its worker's `link` is closed.
@@ -207,14 +280,23 @@ impl Shared {
     /// Ends every session, as admind stops, waiting a moment for authd to
     /// be told.
     pub async fn end_all(&self) {
+        if self.sessions.borrow().is_empty() {
+            return;
+        }
         let all = self.sessions.borrow_mut().take_where(|_| true);
         let told: Vec<_> = all.into_iter().map(|session| self.finish(session, "restarted")).collect();
-        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let waiting = async {
             for task in told {
-                let _ = task.await;
+                // A task that failed told no one, which authd finds out
+                // for itself when the session's worker ends.
+                if task.await.is_err() {
+                    log(4, "a session's end was not told to authd");
+                }
             }
-        })
-        .await;
+        };
+        if tokio::time::timeout(Duration::from_secs(5), waiting).await.is_err() {
+            log(4, "authd was not told of every session before admind stopped");
+        }
     }
 }
 
