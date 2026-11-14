@@ -185,7 +185,7 @@ a person's own `~/applications` (ADR 0223), with only the command's name as
   a bundle of its own is built with it.
 - Both JITs are off: PHP and opcache run at the speed of their
   interpreters.
-- The bundle takes 38 MB to download and has 20,235 files of 116 MB (175 MB
+- The bundle takes 38 MB to download and has 20,240 files of 116 MB (175 MB
   on a disk), of which PHP's test suite is 103 MB and `bin` 69 MB: `php`
   and `php-fpm` (ADR 0520) are 36 MB each, as each has every extension
   built in. Installing it on a machine of 2 GiB first stopped with
