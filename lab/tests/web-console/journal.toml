@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's journal of what changed, as a hand edit goes through it,
+# in each engine (ADR 0516): the service file of diskhealth is changed at
+# the machine as root, which no console change explains, and the console's
+# round that looks every 30 seconds finds it and shows it as a row made by
+# hand, with its diff and the person whose elevated command named the file.
+# An administrator signs in, reads the row and marks it seen with Keep it,
+# which a locked session may not do and a second Keep it leaves as it was,
+# and puts it back, which runs `admin put-back` as root, says that Spark
+# reads the file when the service next starts, and has a row of its own that
+# Keep it refuses. A change that is not there is refused by all three
+# routes. admind is the service that answers.
+#
+# A browser script cannot run commands on the machine, so the steps
+# alternate: a root step saves a copy of the file, once, and adds a comment
+# line that names the engine; the engine's browser step reads, keeps and
+# puts back; and the next root step starts from the copy again, so that an
+# engine the lab PC lacks, which the runner skips, leaves nothing for the
+# next to find. A step at the end leaves the file as the image has it and
+# removes the copy. The account is one this test makes and removes, so no
+# script needs the lab's password.
+about = "A service file changed by hand shows in the web console's journal with its diff and who changed it, is marked seen with Keep it and put back, in each engine"
+time = "20m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-journal'"
+root = true
+expect = "Made wc-journal"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+run = "sh -c 'cp /system/settings/spark/services/diskhealth.toml /tmp/lab-journal.toml && echo \"# lab journal chromium\" >> /system/settings/spark/services/diskhealth.toml'"
+root = true
+[[step]]
+browser = "journal.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; echo \"# lab journal firefox\" >> /system/settings/spark/services/diskhealth.toml'"
+root = true
+[[step]]
+browser = "journal.mjs"
+engines = ["firefox"]
+port = 9090
+[[step]]
+run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; echo \"# lab journal webkit\" >> /system/settings/spark/services/diskhealth.toml'"
+root = true
+[[step]]
+browser = "journal.mjs"
+engines = ["webkit"]
+port = 9090
+[[step]]
+run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; rm /tmp/lab-journal.toml'"
+root = true
+[[step]]
+run = "user remove --delete-home --yes wc-journal"
+root = true
+expect = "wc-journal is removed"
