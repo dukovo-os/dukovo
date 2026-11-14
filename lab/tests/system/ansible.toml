@@ -28,13 +28,15 @@ fresh = true
 host_needs = ["python3", "ssh", "ssh-keyscan", "sha256sum", "scp"]
 
 # The update server, which the lab PC serves as online.toml's does, and the
-# machine pointed at it, with a start proved in 10 seconds.
+# machine pointed at it, with a start proved in 10 seconds. The release is
+# paused on its first day, so the machine is a canary, which takes it
+# (ADR 0469).
 [[step]]
 host = "sh {here}/../updates/update-server.sh serve {port:updates}"
 background = true
 ready = "serving updates"
 [[step]]
-run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
 root = true
 expect = "set: 42"
 

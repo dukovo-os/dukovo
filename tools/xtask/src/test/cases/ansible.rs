@@ -122,8 +122,9 @@ fn prepared(vm: &mut Vm) -> Result<(), String> {
         vm,
         "$",
         &format!(
-            "clear; {}; service --status-all | grep discoverd",
-            as_root("service discoverd disable")
+            "clear; {}; {} | grep discoverd",
+            as_root("service discoverd disable"),
+            as_root("service --status-all")
         ),
     )?;
     vm.expect_screen(&[" [ - ]  discoverd"])
