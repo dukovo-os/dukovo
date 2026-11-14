@@ -77,7 +77,13 @@ cd "$PORT_BUILD/radix"
 #   configure leaves it out and the settings *_flush_after are 0 as on
 #   any system without it. posix_fadvise(2) is there and checks its
 #   arguments only (radix-posix(7)), which PostgreSQL's prefetching of
-#   pages (effective_io_concurrency) tolerates.
+#   pages (effective_io_concurrency) tolerates;
+# - the C library's backtrace(3) looks for libgcc_s, which a program of the
+#   bundle does not have, and writes that to the standard error output each
+#   time PostgreSQL asks for a backtrace (backtrace_functions, or an
+#   internal error with backtrace_on_internal_error). Without execinfo.h,
+#   and with no backtrace_symbols, PostgreSQL leaves the backtrace out, as
+#   it does on a system that has none.
 # Left at configure's answer for a cross build, which is right for Radix:
 # no __int128 alignment bug, and no -Wl,--as-needed in LDFLAGS (the compiler
 # wrapper puts it in the link of a dynamic program and a library).
@@ -101,6 +107,7 @@ LDFLAGS_EX="-dynamic -Wl,-rpath,'\$\$ORIGIN/../lib'" \
 	LDFLAGS_SL="-Wl,-rpath,'\$\$ORIGIN/..' -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a" \
 	pgac_cv_prog_cc_LDFLAGS_EX_BE__Wl___export_dynamic=yes \
 	ac_cv_header_sys_epoll_h=no ac_cv_header_sys_signalfd_h=no \
+	ac_cv_header_execinfo_h=no ac_cv_func_backtrace_symbols=no \
 	PREFIX="$prefix" \
 	x86_64-radix-configure "$PORT_SRC" --with-template=linux \
 	--bindir="$prefix/bin" --libdir="$prefix/lib" --datarootdir="$prefix/share" \
@@ -128,9 +135,9 @@ for feature in USE_OPENSSL HAVE_LIBZ USE_LZ4 USE_ZSTD USE_LIBXML HAVE_LIBREADLIN
 	}
 done
 # No epoll or signalfd, no ICU (collations are libc's and the builtin
-# provider's), no JIT or io_uring, and no sync_file_range.
+# provider's), no JIT or io_uring, no sync_file_range, and no backtraces.
 for feature in HAVE_SYS_EPOLL_H HAVE_SYS_SIGNALFD_H USE_ICU USE_LLVM USE_LIBURING \
-	HAVE_SYNC_FILE_RANGE; do
+	HAVE_SYNC_FILE_RANGE HAVE_EXECINFO_H HAVE_BACKTRACE_SYMBOLS; do
 	if grep -q "^#define $feature" src/include/pg_config.h; then
 		echo "postgresql's configure set $feature" >&2
 		exit 1
