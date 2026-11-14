@@ -47,6 +47,13 @@ impl Server {
         Self { dest, options: Vec::new() }
     }
 
+    /// The server `dest` names, reached with `options` more for ssh and
+    /// scp, each as one of both's `-o` words: the boot tests' machine, a
+    /// port of QEMU's away.
+    pub fn with_options(dest: &str, options: Vec<OsString>) -> Self {
+        Self { dest: dest.into(), options }
+    }
+
     /// Where ssh reaches it, for messages.
     pub fn dest(&self) -> &str {
         &self.dest
@@ -324,7 +331,7 @@ pub fn publish(
         "published" => Ok(()),
         "waiting" => bail!(
             "the server did not publish in {wait_seconds} seconds: `systemctl status {job}` on \
-             an Ubuntu server, or `service status {job}` and `service list --timers` on a Dukovo \
+             an Ubuntu server, or `service {job} status` and `service list --timers` on a Dukovo \
              one, says why"
         ),
         _ => bail!(

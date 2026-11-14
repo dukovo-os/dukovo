@@ -164,6 +164,26 @@ fn deploy(ctx: &Ctx, dir: &Path) -> Result<()> {
 ///
 /// If the server does not take the repository or could not publish it.
 pub fn publish_to(ctx: &Ctx, server: &Server, dir: &Path) -> Result<()> {
+    copy_to(ctx, server, dir)?;
+    deploy::publish(
+        ctx,
+        server,
+        INCOMING,
+        PUBLISH_WAIT_SECONDS,
+        "system releases",
+        "dukovo-system-publish",
+    )
+}
+
+/// Copies the update repository at `dir` into the server's incoming
+/// folder, which [`publish_to`] does before it says the deploy is ready:
+/// the boot tests leave a deploy there, to see that the server publishes
+/// nothing of it.
+///
+/// # Errors
+///
+/// If the server does not take the repository.
+pub fn copy_to(ctx: &Ctx, server: &Server, dir: &Path) -> Result<()> {
     step(&format!("Copying the repository to {}", server.dest()));
     deploy::replace(ctx, server, dir, &["metadata", "targets"], INCOMING, INCOMING)?;
     // Files are named by their SHA-256, so one the server holds is not
@@ -176,14 +196,6 @@ pub fn publish_to(ctx: &Ctx, server: &Server, dir: &Path) -> Result<()> {
         INCOMING,
         &format!("{INCOMING}/files"),
         &SERVED_FILES,
-    )?;
-    deploy::publish(
-        ctx,
-        server,
-        INCOMING,
-        PUBLISH_WAIT_SECONDS,
-        "system releases",
-        "dukovo-system-publish",
     )
 }
 

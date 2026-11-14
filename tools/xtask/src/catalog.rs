@@ -124,11 +124,7 @@ pub fn server_setup(ctx: &Ctx, dukovo: bool) -> Result<()> {
     let server = Server::from_environment();
     let staging = if dukovo { stage_dukovo(ctx)? } else { stage_ubuntu(ctx)? };
 
-    // With scp, which every server with SSH has: setup.sh installs the
-    // rsync that deploys used to need.
-    step(&format!("Copying the server's files to {}", server.dest()));
-    process::run(ctx, &mut server.ssh("rm -rf dukovo-update-server"))?;
-    process::run(ctx, &mut server.scp(&staging, "dukovo-update-server"))?;
+    copy_staging(ctx, &server, &staging)?;
 
     let setup = if dukovo {
         // A full path, as elevate runs the file from a folder of its own.
@@ -156,6 +152,19 @@ pub fn server_setup(ctx: &Ctx, dukovo: bool) -> Result<()> {
     )
 }
 
+/// Copies the folder `staging` to `dukovo-update-server` in the login's
+/// home on the server, with scp, which every server with ssh has: no
+/// rsync is needed.
+///
+/// # Errors
+///
+/// If the server cannot be reached or does not take the files.
+pub fn copy_staging(ctx: &Ctx, server: &Server, staging: &Path) -> Result<()> {
+    step(&format!("Copying the server's files to {}", server.dest()));
+    process::run(ctx, &mut server.ssh("rm -rf dukovo-update-server"))?;
+    process::run(ctx, &mut server.scp(staging, "dukovo-update-server"))
+}
+
 /// Makes the folder an Ubuntu server's setup runs from, `out/update-server`:
 /// the files of tools/update-server/, and catalog-repo and system-release
 /// built for this machine, as the server is a Linux of its own.
@@ -178,7 +187,11 @@ fn stage_ubuntu(ctx: &Ctx) -> Result<PathBuf> {
 /// systools' commands, but not catalog-repo, which is a program of the
 /// build machine's: building it here keeps the server from needing a
 /// compiler.
-fn stage_dukovo(ctx: &Ctx) -> Result<PathBuf> {
+///
+/// # Errors
+///
+/// If catalog-repo cannot be built for Radix or the files cannot be copied.
+pub fn stage_dukovo(ctx: &Ctx) -> Result<PathBuf> {
     let program = crate::userspace::std_program(ctx, "catalog-repo")?;
     let staging = fresh_staging(ctx)?;
     let source = ctx.root.join("tools/update-server");
@@ -360,6 +373,65 @@ pub fn test_site(ctx: &Ctx, bundles: &[PathBuf], advisories: Option<&str>) -> Re
     std::fs::copy(repo.join("metadata/1.root.json"), &root)
         .context(|| format!("writing {}", root.display()))?;
     Ok(dir)
+}
+
+/// Makes a catalog repository for a boot test that deploys it to an
+/// update server of its own, in `dir`: `repo/`, whose keys and metadata
+/// throwaway keys signed and whose root names the server's online key,
+/// the public half of which is the file `online`, and `store/`, which
+/// holds `bundles` as signed. Nothing is published: the server does that
+/// with its own key, as it does for [`deploy`]. The repository and the
+/// store.
+///
+/// # Errors
+///
+/// If catalog-repo cannot be built or run, or the files cannot be written.
+pub fn test_repo(
+    ctx: &Ctx,
+    dir: &Path,
+    bundles: &[PathBuf],
+    online: &Path,
+) -> Result<(PathBuf, PathBuf)> {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).context(|| format!("removing {}", dir.display()))?;
+    }
+    std::fs::create_dir_all(dir).context(|| format!("making {}", dir.display()))?;
+    let program = build(ctx, false)?;
+    step("Signing a test catalog for the update server");
+    let (repo, store, test_key) = (dir.join("repo"), dir.join("store"), dir.join("test.key"));
+    let run = |args: &[&std::ffi::OsStr]| {
+        let mut cmd = Command::new(&program);
+        cmd.arg("--repo").arg(&repo).args(args);
+        process::output(ctx, &mut cmd).map(drop)
+    };
+    let os = |text: &'static str| std::ffi::OsStr::new(text);
+    run(&[os("key"), os("new"), test_key.as_os_str(), os("test"), os("root"), os("targets")])?;
+    // The root lists the server's key where `key new online` would have
+    // put one.
+    let keys = repo.join("keys/online.json");
+    std::fs::copy(online, &keys).context(|| format!("copying {}", online.display()))?;
+    run(&[os("root"), os("--key"), test_key.as_os_str()])?;
+    let mut sign = vec![os("sign"), os("--yes"), os("--key"), test_key.as_os_str()];
+    sign.extend([os("--store"), store.as_os_str()]);
+    sign.extend(bundles.iter().map(|b| b.as_os_str()));
+    run(&sign)?;
+    Ok((repo, store))
+}
+
+/// Runs `catalog-repo check` for the catalog in `repo`, built for this
+/// machine, against `url`, as a client reads it from the repository's first
+/// root, and gives what it said.
+///
+/// # Errors
+///
+/// If catalog-repo cannot be built, or the client refuses what `url`
+/// serves.
+pub fn check_test_repo(ctx: &Ctx, repo: &Path, url: &str) -> Result<String> {
+    let program = build(ctx, false)?;
+    let mut cmd = Command::new(program);
+    cmd.arg("--repo").arg(repo).args(["check", url]);
+    let output = process::output(ctx, &mut cmd)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// `ob catalog check`: reads the catalog `url` serves as a client would,
