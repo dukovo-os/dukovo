@@ -23,9 +23,9 @@
 //! [`REGISTRY`] is the one list. The route table, `GET /api/1/actions`,
 //! `admin actions` and `lab/actions.toml` are all made from it.
 
-// The list is empty until the areas' actions are added in this same
-// change; until then only the tests use what this module offers.
-#![cfg_attr(not(test), allow(dead_code))]
+mod certificate;
+mod service;
+pub mod show;
 
 use std::fmt;
 
@@ -177,11 +177,21 @@ pub trait Action: 'static {
     /// The command, as words: the program first. A read's has `--json`.
     fn argv(args: &Self::Args) -> Vec<String>;
 
+    /// What the action is done to, which the name of its Ansible task adds
+    /// to the title: the service's name. None for an action that takes
+    /// none.
+    fn subject(_args: &Self::Args) -> Option<String> {
+        None
+    }
+
     /// The Ansible task that does the same.
     fn ansible(args: &Self::Args) -> Ansible {
-        let changes = Self::CHANGES;
+        let name = match Self::subject(args) {
+            Some(subject) => format!("{}: {subject}", Self::TITLE),
+            None => Self::TITLE.to_string(),
+        };
         let elevated = Self::RUNS == Runs::AsAdministrator;
-        Ansible::command(Self::TITLE, &Self::argv(args), elevated, changes)
+        Ansible::command(name, &Self::argv(args), elevated, Self::CHANGES)
     }
 
     /// The files a change writes, for the Files tab and the journal.
@@ -305,11 +315,23 @@ macro_rules! registry {
     };
 }
 
-registry![];
+registry![
+    service::List,
+    service::Explain,
+    service::Start,
+    service::Stop,
+    service::Restart,
+    service::Enable,
+    service::Disable,
+    certificate::List,
+    certificate::Show,
+    certificate::Renew,
+];
 
 /// The list `GET /api/1/actions` answers and `admin actions` prints: each
 /// action's id, title, area, whether it changes anything, its method and
-/// address, who runs it, whether it is a task, and its error IDs.
+/// address, who runs it, whether it is a task, its error IDs and the names
+/// of its five tests.
 pub fn listed(actions: &[&dyn Registered]) -> Value {
     Value::Array(
         actions
@@ -325,6 +347,7 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "runs": action.runs(),
                     "long": action.long(),
                     "errors": action.errors(),
+                    "tests": action.tests(),
                 })
             })
             .collect(),
@@ -444,6 +467,23 @@ pub enum Caller<'a> {
     Token { name: &'a str, scopes: &'a Scopes },
 }
 
+/// Whether the token `name` with `scopes` may read, or with `changes`
+/// change, what the area `area` holds.
+///
+/// # Errors
+///
+/// ADM-124, naming the scope the token needs.
+pub fn token_may(name: &str, scopes: &Scopes, area: &str, changes: bool) -> Result<(), Failure> {
+    if scopes.allow(area, changes) {
+        return Ok(());
+    }
+    let needed = Needed { area, changes };
+    Err(Failure::new(
+        Kind::OutOfScope,
+        format!("the API token \"{name}\" may not do this: it needs the scope {needed}"),
+    ))
+}
+
 /// Whether `caller` may ask for `action`, before anything runs. authd
 /// checks again for an elevated command (an unlocked session of an
 /// administrator, or a token whose owner is one and whose scopes name the
@@ -458,16 +498,7 @@ pub enum Caller<'a> {
 pub fn authorize(caller: &Caller<'_>, action: &dyn Registered) -> Result<(), Failure> {
     let elevated = action.runs() == Runs::AsAdministrator;
     match *caller {
-        Caller::Token { name, scopes } => {
-            if scopes.allow(action.area(), action.changes()) {
-                return Ok(());
-            }
-            let needed = Needed { area: action.area(), changes: action.changes() };
-            Err(Failure::new(
-                Kind::OutOfScope,
-                format!("the API token \"{name}\" may not do this: it needs the scope {needed}"),
-            ))
-        }
+        Caller::Token { name, scopes } => token_may(name, scopes, action.area(), action.changes()),
         Caller::Session { name, admin, unlocked } => {
             if !elevated {
                 Ok(())

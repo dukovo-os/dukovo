@@ -14,8 +14,8 @@
 //!    only as one `Authorization: Bearer` header ([`caller`]);
 //! 4. its address is a route's, an action's ([`actions`]), or a file's,
 //!    or there is none;
-//! 5. a token is only for the actions and the action list, and authd must
-//!    take it (401 for a token it does not);
+//! 5. a token is only for the actions, the action list and the showing of
+//!    an action, and authd must take it (401 for a token it does not);
 //! 6. the route's access: a route for the signed in wants a session (401
 //!    with the cookie cleared, once it has ended), and one that is not for a
 //!    session that may only add a second step wants one that may do more;
@@ -28,7 +28,9 @@
 //!    allowed to send, is JSON and at most 64 KiB before sign-in and 1 MiB
 //!    after;
 //! 9. for an action, its arguments are checked, then whether the caller may
-//!    ask for it ([`actions::authorize`]), before its command runs.
+//!    ask for it ([`actions::authorize`]), before its command runs; for the
+//!    showing of one, which runs nothing, the same arguments are checked,
+//!    and a token needs the scope that reads the action's area.
 //!
 //! Every answer carries [`guard::headers`] and no `Server` header; an answer
 //! of the API is `no-store`, a file `no-cache`. [`sign_in`] holds the
@@ -68,7 +70,7 @@ use serde_json::{Value, json};
 
 use super::actions::{self, Found, Params, Registered};
 use super::authd;
-use super::caller;
+use super::caller::{self, TokenCall};
 use super::errors::{self, Attempt, Failure, Kind};
 use super::files::File;
 use super::guard::{self, SESSION_COOKIE};
@@ -198,8 +200,8 @@ enum Access {
     Limited,
     /// A signed-in session that may do all that is a person's.
     Full,
-    /// What [`Access::Full`] allows, or an API token: the actions and
-    /// their list.
+    /// What [`Access::Full`] allows, or an API token: the actions, their
+    /// list and the showing of one.
     Api,
 }
 
@@ -233,6 +235,7 @@ enum Route {
     TokenAdd,
     TokenRemove,
     Actions,
+    Show,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -307,6 +310,7 @@ const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/account/tokens/add", Route::TokenAdd, Access::Full),
     entry(Verb::Post, "/api/1/account/tokens/remove", Route::TokenRemove, Access::Full),
     entry(Verb::Get, "/api/1/actions", Route::Actions, Access::Api),
+    entry(Verb::Post, "/api/1/show", Route::Show, Access::Api),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
@@ -582,7 +586,7 @@ where
         user_agent: single(&head.headers, &header::USER_AGENT).unwrap_or_default().to_string(),
     };
     match target {
-        Target::Route(entry) => dispatch(&cx, entry.route, live).await,
+        Target::Route(entry) => dispatch(&cx, entry.route, live, token).await,
         Target::Action(action, params) => act::action(&cx, action, params, live, token).await,
     }
 }
@@ -664,8 +668,14 @@ fn check(
     }
 }
 
-/// Has the handler of `route` answer, for the session `live` if it has one.
-async fn dispatch(cx: &Context<'_>, route: Route, live: Option<Live>) -> Outcome {
+/// Has the handler of `route` answer, for the session `live` if it has one,
+/// or the API token `token`.
+async fn dispatch(
+    cx: &Context<'_>,
+    route: Route,
+    live: Option<Live>,
+    token: Option<TokenCall>,
+) -> Outcome {
     match (route, live) {
         (Route::File, _) => file(cx),
         (Route::Health, _) => Ok(Reply::json(json!({ "ok": true }))),
@@ -695,6 +705,7 @@ async fn dispatch(cx: &Context<'_>, route: Route, live: Option<Live>) -> Outcome
         (Route::TokenRemove, Some(live)) => account::token_remove(cx, &live).await,
         // For a session or a token, which `check` has let through.
         (Route::Actions, _) => Ok(Reply::json(actions::listed(cx.shared.actions.get()))),
+        (Route::Show, _) => act::show(cx, token.as_ref()),
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which

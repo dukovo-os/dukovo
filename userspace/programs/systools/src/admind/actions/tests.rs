@@ -55,6 +55,10 @@ impl Action for Restart {
         vec!["service".into(), args.name.clone(), "restart".into()]
     }
 
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.name.clone())
+    }
+
     fn examples() -> Examples<Named> {
         Examples {
             good: vec![Named { name: "lab-web".into(), wait: None }],
@@ -152,6 +156,7 @@ fn prepare_checks_the_arguments_and_makes_the_command() {
     let prepared = RESTART.prepare(json!({ "name": "nginx" })).unwrap();
     assert_eq!(prepared.argv, ["service", "nginx", "restart"]);
     assert_eq!(prepared.args, json!({ "name": "nginx", "wait": null }));
+    assert_eq!(prepared.ansible.name, "Restart a lab service: nginx");
     assert_eq!(prepared.ansible.module, "ansible.builtin.command");
     assert_eq!(prepared.ansible.params["argv"], json!(["service", "nginx", "restart"]));
     assert!(prepared.ansible.become_root);
@@ -159,6 +164,7 @@ fn prepare_checks_the_arguments_and_makes_the_command() {
     assert!(prepared.files.is_empty(), "the action writes no file it names");
 
     let read = LIST.prepare(json!({})).unwrap();
+    assert_eq!(read.ansible.name, "List the lab services");
     assert!(!read.ansible.become_root);
     assert_eq!(read.ansible.changed_when.as_deref(), Some("false"));
 }
@@ -218,6 +224,16 @@ fn the_list_says_each_action_s_method_and_address() {
     assert_eq!(listed[0]["runs"], "as-administrator");
     assert_eq!(listed[1]["method"], "GET");
     assert_eq!(listed[1]["runs"], "as-the-person");
+    assert_eq!(
+        listed[0]["tests"],
+        json!({
+            "checks": "admind::actions::tests",
+            "route": "admin-actions",
+            "same_as_command": "admin-actions",
+            "browser": "web-console/actions",
+            "ansible": "web-console/ansible",
+        })
+    );
 }
 
 /// The rules every action of [`REGISTRY`] keeps, and these tests' own.
@@ -251,6 +267,12 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
             let prepared =
                 action.prepare(args.clone()).unwrap_or_else(|f| panic!("{id}: {}", f.detail));
             assert!(!prepared.argv.is_empty());
+            let in_address = action.path().split('/').filter_map(|part| {
+                part.strip_prefix('{').and_then(|inner| inner.strip_suffix('}'))
+            });
+            for name in in_address {
+                assert!(prepared.args.get(name).is_some(), "{id}: its address names {name}");
+            }
             if !action.changes() {
                 assert!(prepared.argv.iter().any(|w| w == "--json"), "{id}: a read asks for JSON");
             }

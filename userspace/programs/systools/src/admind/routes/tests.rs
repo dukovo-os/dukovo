@@ -122,9 +122,11 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
 }
 
 /// The API tokens the test authd knows: chase's `ci`, which may do
-/// anything, and `reader`, which may read services.
+/// anything, `reader`, which may read services, and `other`, which may read
+/// the firewall.
 const TOKEN_ALL: &str = "dkv_chase_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TOKEN_READ: &str = "dkv_chase_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const TOKEN_OTHER: &str = "dkv_chase_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 /// What authd answers for the token whose hex is `hex`.
 fn token_answer(hex: &str) -> Option<&'static str> {
@@ -133,6 +135,8 @@ fn token_answer(hex: &str) -> Option<&'static str> {
         Some("chase ci * 1800000000")
     } else if is(TOKEN_READ) {
         Some("chase reader services:read 1800000000")
+    } else if is(TOKEN_OTHER) {
+        Some("chase other firewall:read 1800000000")
     } else {
         None
     }
@@ -325,7 +329,7 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_each_address_is_one_rou
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 26 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 27 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -384,6 +388,9 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
             Route::TrustedForget,
         ]
     );
+    for api in [Route::Actions, Route::Show] {
+        assert_eq!(access(api), Access::Api, "{api:?}");
+    }
     for full in [
         Route::Unlock,
         Route::UnlockPasskeyOptions,

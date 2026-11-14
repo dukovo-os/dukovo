@@ -3,7 +3,8 @@
 
 //! The actions' routes, with the actions of `actions::tests`: a read that
 //! runs in the person's worker, and a change that runs as an
-//! administrator, each asked for by a session and by an API token.
+//! administrator, each asked for by a session and by an API token; and the
+//! showing of an action, which runs neither.
 
 use super::*;
 use crate::admind::actions::tests::LAB;
@@ -208,5 +209,169 @@ fn a_wrong_token_is_refused_and_ten_in_a_minute_stop_the_address_before_authd_he
         let elsewhere =
             send_from(&world, "192.0.2.99", with_token(get("/api/1/lab"), TOKEN_READ)).await;
         assert_eq!(elsewhere.status, 200, "{}", elsewhere.body);
+    });
+}
+
+/// The answer a restart of nginx is shown as, at the console's address.
+fn shown_restart() -> Value {
+    json!({
+        "command": "elevate service nginx restart",
+        "api": "curl -sS -X POST -H \"Authorization: Bearer $DUKOVO_TOKEN\" \
+                -H \"Content-Type: application/json\" -d '{\"wait\":null}' \
+                https://nas.example:9090/api/1/lab/nginx/restart",
+        "ansible": "- name: \"Restart a lab service: nginx\"\n  ansible.builtin.command:\n    \
+                    argv:\n      - \"service\"\n      - \"nginx\"\n      - \"restart\"\n  \
+                    become: true\n",
+        "files": [],
+    })
+}
+
+/// Asks to see a restart of nginx.
+fn show_restart() -> Req {
+    post("/api/1/show", &json!({ "action": "lab.restart", "args": { "name": "nginx" } }))
+}
+
+#[test]
+fn any_signed_in_session_is_shown_an_action_locked_or_not_and_nothing_is_run() {
+    run(async {
+        let world = lab_world("show-session");
+        // An administrator whose session is locked, and a person who is no
+        // administrator at all: neither could run the change.
+        for name in ["chase", "dave"] {
+            let session = sign_in(&world, name).await;
+            let shown = send(&world, show_restart().by(&session)).await;
+            assert_eq!(shown.status, 200, "{name}: {}", shown.body);
+            assert_eq!(shown.json(), shown_restart(), "{name}");
+        }
+        let session = sign_in(&world, "dave").await;
+        let read = post("/api/1/show", &json!({ "action": "lab.list" })).by(&session);
+        let shown = send(&world, read).await;
+        assert_eq!(shown.status, 200, "{}", shown.body);
+        assert_eq!(shown.json()["command"], "service list --json");
+        assert_eq!(
+            shown.json()["api"],
+            "curl -sS -H \"Authorization: Bearer $DUKOVO_TOKEN\" https://nas.example:9090/api/1/lab"
+        );
+        assert!(called(&world).iter().all(|(method, _)| method != "run"), "{:?}", called(&world));
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn a_token_is_shown_an_action_of_an_area_it_may_read_even_if_it_may_not_change_it() {
+    run(async {
+        let world = lab_world("show-token");
+        for token in [TOKEN_ALL, TOKEN_READ] {
+            let shown = send(&world, with_token(show_restart(), token)).await;
+            assert_eq!(shown.status, 200, "{}", shown.body);
+            assert_eq!(shown.json(), shown_restart());
+        }
+        // The token's own request needs no cookie and no CSRF token, and
+        // nothing was asked of a worker or of authd to run.
+        assert!(called(&world).iter().all(|(method, _)| method != "run"));
+        assert!(elevations(&world).is_empty());
+        assert_eq!(
+            world.console.authd.verbs().iter().filter(|verb| *verb == "token-start").count(),
+            0
+        );
+    });
+}
+
+#[test]
+fn a_token_of_another_area_is_refused_with_the_scope_it_needs() {
+    run(async {
+        let world = lab_world("show-other-area");
+        let refused = send(&world, with_token(show_restart(), TOKEN_OTHER)).await;
+        assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-124"));
+        assert_eq!(
+            refused.json()["error"]["detail"],
+            "the API token \"other\" may not do this: it needs the scope services:read, services or *"
+        );
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn an_action_that_is_not_in_the_list_is_adm_125_for_the_field_action() {
+    run(async {
+        let world = lab_world("show-unknown");
+        let session = sign_in(&world, "dave").await;
+        let body = json!({ "action": "lab.explode", "args": {} });
+        let refused = send(&world, post("/api/1/show", &body).by(&session)).await;
+        assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-125"));
+        let error = &refused.json()["error"];
+        assert_eq!(error["field"], "action");
+        assert_eq!(
+            error["detail"],
+            "There is no action lab.explode: admin actions lists them. Nothing was done."
+        );
+        let by_token = send(&world, with_token(post("/api/1/show", &body), TOKEN_READ)).await;
+        assert_eq!(by_token.error(), "ADM-125");
+    });
+}
+
+#[test]
+fn arguments_are_checked_as_the_action_checks_them() {
+    run(async {
+        let world = lab_world("show-arguments");
+        let session = sign_in(&world, "dave").await;
+        let ask = |body: Value| post("/api/1/show", &body).by(&session);
+        let bad =
+            send(&world, ask(json!({ "action": "lab.restart", "args": { "name": "-x" } }))).await;
+        assert_eq!((bad.status, bad.error().as_str()), (400, "ADM-125"));
+        assert_eq!(bad.json()["error"]["field"], "name");
+        assert_eq!(bad.json()["error"]["detail"], "A name does not start with -.");
+        let wait = json!({ "action": "lab.restart", "args": { "name": "nginx", "wait": 61 } });
+        assert_eq!(send(&world, ask(wait)).await.json()["error"]["field"], "wait");
+        for body in [
+            json!({ "action": "lab.restart", "args": { "name": "nginx", "force": true } }),
+            json!({ "action": "lab.restart", "args": { "name": 7 } }),
+            json!({ "action": "lab.restart", "args": {} }),
+            json!({ "action": "lab.restart", "args": [] }),
+            json!({ "action": "lab.restart" }),
+            json!({ "action": "lab.list", "args": { "name": "nginx" } }),
+            json!({ "args": {} }),
+            json!({ "action": 7 }),
+            json!({ "action": "lab.list", "more": true }),
+            json!([]),
+        ] {
+            let refused = send(&world, ask(body.clone())).await;
+            assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-108"), "{body}");
+        }
+        let empty = Req { body: Vec::new(), ..ask(json!({})) };
+        assert_eq!(send(&world, empty).await.error(), "ADM-108");
+        // An action that takes nothing takes its arguments left out.
+        let list = send(&world, ask(json!({ "action": "lab.list" }))).await;
+        assert_eq!(list.status, 200, "{}", list.body);
+        assert!(called(&world).iter().all(|(method, _)| method != "run"));
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn a_showing_is_a_post_that_a_session_makes_as_every_change_is_made() {
+    run(async {
+        let world = lab_world("show-guards");
+        let session = sign_in(&world, "dave").await;
+        let forged = show_restart().by(&session).with("x-dukovo-csrf", Some("forged"));
+        let refused = send(&world, forged).await;
+        assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-109"));
+        let foreign = show_restart().by(&session).with("origin", Some("https://evil.example"));
+        assert_eq!(send(&world, foreign).await.error(), "ADM-109");
+        let nobody = send(&world, show_restart()).await;
+        assert_eq!((nobody.status, nobody.error()), (401, Kind::SessionEnded.id().to_string()));
+        let mut got = show_restart().by(&session);
+        got.method = "GET";
+        got.body = Vec::new();
+        assert_eq!(send(&world, got).await.error(), "ADM-117");
+        // A session that may only add a second step may not.
+        let eve = sign_in(&world, "eve").await;
+        assert_eq!(send(&world, show_restart().by(&eve)).await.error(), "ADM-118");
+        // A token and a cookie together are refused.
+        let both = with_token(show_restart(), TOKEN_ALL)
+            .with("cookie", Some(&format!("{SESSION_COOKIE}={}", session.cookie)));
+        assert_eq!(send(&world, both).await.error(), "ADM-108");
+        assert!(called(&world).iter().all(|(method, _)| method != "run"));
+        assert!(elevations(&world).is_empty());
     });
 }

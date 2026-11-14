@@ -5,14 +5,19 @@
 //! body, checked; whether the caller may ask for it; its command, run as
 //! the person or as an administrator; and the answer.
 //!
+//! The showing of an action, which runs nothing, is here too: [`show`].
+//!
 //! The log has a line for each change asked for, and for each read that
 //! was refused or failed: who asked, from where, the action and how it
 //! ended. Arguments that do not read are refused before anyone is asked,
 //! and have no line.
 
 use accounts::console::Elevator;
+use serde::Deserialize;
+use serde_json::Value;
 
-use super::{Context, Live, Outcome, Reply, shown};
+use super::{Context, Live, Outcome, Reply, Text, shown};
+use crate::admind::actions::show;
 use crate::admind::actions::{self, Caller, Params, Prepared, Registered, Runs};
 use crate::admind::caller::{self, TokenCall};
 use crate::admind::errors::{Failure, Kind};
@@ -98,4 +103,33 @@ fn said(cx: &Context<'_>, action: &dyn Registered, whose: &str, ran: &Result<Ran
         Err(failure) => format!("was not run: {}", failure.kind.id()),
     };
     log(6, &format!("{whose} from {}: {} {ended}", cx.peer, action.id()));
+}
+
+/// What `POST /api/1/show` takes: the action, and the arguments its route
+/// would take, in one object.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Showing {
+    action: Text,
+    #[serde(default = "no_arguments")]
+    args: Value,
+}
+
+/// The arguments of a showing that gives none.
+fn no_arguments() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+/// Answers `POST /api/1/show`: the command, the API call, the Ansible task
+/// and the files of the action with the arguments, for any session that is
+/// signed in, locked or not, or for the API token `token` when its scopes
+/// let it read the action's area. Nothing is run.
+pub fn show(cx: &Context<'_>, token: Option<&TokenCall>) -> Outcome {
+    let showing: Showing = cx.json()?;
+    let action = show::lookup(cx.shared.actions.get(), &showing.action)?;
+    let prepared = action.prepare(showing.args)?;
+    if let Some(token) = token {
+        actions::token_may(&token.name, &token.scopes, action.area(), false)?;
+    }
+    Ok(Reply::json(show::shown(&prepared, &cx.origin)))
 }
