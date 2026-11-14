@@ -911,9 +911,9 @@ mod tests {
     #[test]
     fn a_session_is_warned_five_minutes_and_one_minute_before_its_end() {
         let start = Instant::now();
-        let ends = start + Duration::from_secs(60 * 60);
-        assert_eq!(due(ends, 0), ends - Duration::from_secs(5 * 60));
-        assert_eq!(due(ends, 1), ends - Duration::from_secs(60));
+        let ends = start + Duration::from_hours(1);
+        assert_eq!(due(ends, 0), ends - Duration::from_mins(5));
+        assert_eq!(due(ends, 1), ends - Duration::from_mins(1));
         // With both given, only the end is left.
         assert_eq!(due(ends, 2), ends);
     }
