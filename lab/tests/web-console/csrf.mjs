@@ -143,12 +143,15 @@ async function stillStanding(t, page, before) {
 }
 
 /**
- * A page of another origin, open in the same browser, posts to each
- * route. The browser sends its own Origin and withholds the session's
- * cookie, which the cookie's SameSite attribute asks of it, so a route of
- * the signed in finds no session, and a route that signs in finds a
- * foreign Origin. `localhost` is another origin than the console's
- * address, and one that the console knows by name.
+ * A page of another origin, open in the same browser, posts a form to each
+ * route, as a site that tries a request on someone's behalf does. The
+ * browser sends its own Origin and withholds the session's cookie, which
+ * the cookie's SameSite attribute asks of it, so a route of the signed in
+ * finds no session, and a route that signs in finds a foreign Origin.
+ * `localhost` is another origin than the console's address, and one that
+ * the console knows by name. A form is a navigation, so the browser shows
+ * the answer whatever headers it carries, where a script's request of
+ * another origin would have its answer withheld.
  */
 async function fromAnotherOrigin(page) {
   const { hostname, port } = new URL(page.url());
@@ -160,8 +163,7 @@ async function fromAnotherOrigin(page) {
   const attackerOrigin = `https://localhost:${port}`;
   // The other site's page, which the browser is handed without asking the
   // machine: a page the console served would carry the console's content
-  // security policy, which lets a page connect to its own origin alone, so
-  // the browser would block the requests before they were sent.
+  // security policy, which sends forms to its own origin alone.
   const attackerPage = `${attackerOrigin}/lab-another-site.html`;
   await attacker.route(attackerPage, (route) =>
     route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Another site</title>" }),
@@ -175,23 +177,25 @@ async function fromAnotherOrigin(page) {
     .context()
     .grantPermissions(["local-network-access"], { origin: attackerOrigin })
     .catch(() => undefined);
-  await attacker.goto(attackerPage);
   for (const [route, body] of [...SIGN_IN_ROUTES, ...SESSION_ROUTES]) {
     const url = `${originOf(page)}${pathOf(route)}`;
-    // A request that needs no preflight, so that it is sent, and that the
-    // page may not read the answer to: the browser still reports the
-    // answer, which is what is looked at here.
+    await attacker.goto(attackerPage);
+    // A form of plain text, which needs no preflight, holding the body.
     const [answer] = await Promise.all([
       attacker.waitForResponse((reply) => reply.url() === url && reply.request().method() === "POST"),
       attacker.evaluate(
-        ({ url: target, text }) =>
-          fetch(target, {
-            method: "POST",
-            mode: "no-cors",
-            credentials: "include",
-            headers: { "Content-Type": "text/plain" },
-            body: text,
-          }).catch(() => null),
+        ({ url: target, text }) => {
+          const form = document.createElement("form");
+          form.method = "POST";
+          form.action = target;
+          form.enctype = "text/plain";
+          const field = document.createElement("input");
+          field.type = "hidden";
+          field.name = text;
+          form.append(field);
+          document.body.append(form);
+          form.submit();
+        },
         { url, text: JSON.stringify(body) },
       ),
     ]);
