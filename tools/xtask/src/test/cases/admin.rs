@@ -246,7 +246,9 @@ fn issue_file(vm: &mut Vm, console: &Console) -> Result<String, String> {
 /// consoled's sign-in screen shows where the console is and its
 /// certificate's fingerprint, in whole bytes on each line, all of them in
 /// order. The screen tty1 showed first was drawn before admind wrote the
-/// file, so alice signs out to see the next, and signs in again.
+/// file, and alice has typed on it since, so consoled leaves it as it is
+/// (a screen nobody has typed on is drawn again): she signs out to see the
+/// next, and signs in again.
 fn sign_in_screen(vm: &mut Vm, address: &str, fingerprint: &str) -> Result<(), String> {
     answer_prompt(vm, "$", "exit")?;
     vm.expect("authd: alice signed out on pts/")?;

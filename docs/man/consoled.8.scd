@@ -78,10 +78,20 @@ says where the web console is and which certificate it presents, once
 A person who opens that address compares the fingerprint with the one
 in the browser's warning before going on. The fingerprint is broken
 between bytes to fit the screen, and the banner leaves the rows it takes.
-consoled reads the file each time a sign-in screen is drawn, so a new
-certificate shows from the next one. A file that is missing, or is not an
-address and a SHA-256 fingerprint, adds nothing to the screen and is not
-logged.
+consoled reads the file each time a sign-in screen is drawn. admind
+writes it only once it runs, which is after consoled has drawn the first
+screen on tty1, and again when its certificate changes, so a sign-in
+screen that nobody has typed on is drawn again when the address or the
+fingerprint it shows is no longer the file's. While such a screen is
+shown, consoled looks at the file every 2 seconds. When it has changed,
+consoled ends the sign-in program with SIGHUP, as a modem's hang-up
+would, and starts the sign-in again at once; it logs *tty1: drawing the
+sign-in screen again for the web console's address*, and the end does not
+count as one that ended at once (below). A screen that someone has typed
+on, or has signed in on, is never drawn again, so that nobody is
+interrupted: the next sign-in screen on that console shows the new lines.
+A file that is missing, or is not an address and a SHA-256 fingerprint,
+adds nothing to the screen and is not logged.
 
 Below that, until the next start, each shows what the health check said
 of a failed start, _/system/live/sysupdate/failure_ (*sysupdate*(8), ADR

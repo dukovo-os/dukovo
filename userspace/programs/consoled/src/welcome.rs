@@ -10,10 +10,15 @@
 //! two lines of words are shown. Under it, once admind(8) has written them,
 //! come the web console's address and its certificate's fingerprint, so
 //! that a person at the machine knows where to open the console and can
-//! compare the fingerprint with the browser's warning.
+//! compare the fingerprint with the browser's warning. admind writes them
+//! once it runs, after the first screens are drawn, and again when the
+//! certificate changes, so consoled looks at their file every few seconds
+//! (`WebConsoleWatch`) while a sign-in screen nobody has typed on could
+//! use a change, and `session` draws that screen again.
 
 use std::fmt::Write as _;
 use std::io::Read as _;
+use std::time::{Duration, Instant, SystemTime};
 
 /// The banner's settings.
 pub const SETTINGS: &str = "/system/settings/console/welcome.toml";
@@ -31,6 +36,10 @@ pub const WEB_CONSOLE: &str = "/system/live/admind/issue";
 /// admind, which parses what anyone sends it, writes it: consoled runs as
 /// root and does not read without a bound what a service put at that path.
 const WEB_CONSOLE_MAX: u64 = 1024;
+
+/// How often consoled looks at that file while a sign-in screen could be
+/// drawn again for a change in it.
+const WEB_CONSOLE_EVERY: Duration = Duration::from_secs(2);
 
 /// The bytes of a SHA-256 fingerprint, each shown as two hex digits.
 const FINGERPRINT_BYTES: usize = 32;
@@ -292,6 +301,55 @@ fn web_console_lines(text: &str, cols: usize) -> Option<String> {
     Some(out)
 }
 
+/// The web console's file, looked at every [`WEB_CONSOLE_EVERY`] by `stat`
+/// alone, so that consoled reads it only after admind has written it again.
+/// admind replaces the file as a whole, so a write shows in the time the
+/// file was modified, or in its length.
+pub struct WebConsoleWatch {
+    path: String,
+    /// The file's modified time and length as the last look found them;
+    /// `None` while it is missing.
+    seen: Option<(SystemTime, u64)>,
+    looked: Instant,
+}
+
+impl WebConsoleWatch {
+    /// A watch on the file at `path`, which has not been looked at yet:
+    /// the first look is due [`WEB_CONSOLE_EVERY`] after `now`.
+    pub fn new(path: &str, now: Instant) -> WebConsoleWatch {
+        WebConsoleWatch { path: path.to_string(), seen: None, looked: now }
+    }
+
+    /// When the next look is due, while a screen is `wanted` that it could
+    /// draw again. With none there is no deadline, so that consoled sleeps
+    /// until something else wakes it.
+    pub fn deadline(&self, wanted: bool) -> Option<Instant> {
+        wanted.then(|| self.looked + WEB_CONSOLE_EVERY)
+    }
+
+    /// Looks at the file if a look is due at `now`, and says whether it
+    /// was written, or removed, or made, since the look before.
+    pub fn changed(&mut self, now: Instant) -> bool {
+        if now < self.looked + WEB_CONSOLE_EVERY {
+            return false;
+        }
+        self.looked = now;
+        let seen = stamp(&self.path);
+        if seen == self.seen {
+            return false;
+        }
+        self.seen = seen;
+        true
+    }
+}
+
+/// When the file at `path` was modified and how long it is, or nothing
+/// while it is missing.
+fn stamp(path: &str) -> Option<(SystemTime, u64)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
 /// Whether the banner shows on this boot: by welcome.toml's `show`, and
 /// for `first-boot`, whether `shown` says it has been shown already, which
 /// it then records.
@@ -504,5 +562,53 @@ mod tests {
         std::fs::write(path, long).unwrap();
         assert_eq!(web_console(path, 80), "");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_file_is_looked_at_only_every_two_seconds() {
+        let dir = std::env::temp_dir().join(format!("web-console-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("issue");
+        let path = path.to_str().unwrap();
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut watch = WebConsoleWatch::new(path, start);
+        std::fs::write(path, "one").unwrap();
+        assert!(!watch.changed(at(1)), "a look is not due");
+        assert!(watch.changed(at(2)), "the file was made");
+        std::fs::write(path, "other").unwrap();
+        assert!(!watch.changed(at(3)), "a look is not due");
+        assert!(watch.changed(at(4)), "the file was written again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_that_is_as_it_was_is_not_a_change() {
+        let dir = std::env::temp_dir().join(format!("web-console-same-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("issue");
+        let path = path.to_str().unwrap();
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut watch = WebConsoleWatch::new(path, start);
+        assert!(!watch.changed(at(2)), "a file that is missing is as it was");
+        std::fs::write(path, "one").unwrap();
+        assert!(watch.changed(at(4)));
+        assert!(!watch.changed(at(6)), "unchanged: nothing to read");
+        assert!(!watch.changed(at(8)), "unchanged: nothing to read");
+        std::fs::write(path, "longer").unwrap();
+        assert!(watch.changed(at(10)));
+        std::fs::remove_file(path).unwrap();
+        assert!(watch.changed(at(12)), "admind removes the file when it stops");
+        assert!(!watch.changed(at(14)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn nothing_wakes_consoled_while_no_screen_waits_for_the_file() {
+        let start = Instant::now();
+        let watch = WebConsoleWatch::new("/nowhere", start);
+        assert_eq!(watch.deadline(false), None);
+        assert_eq!(watch.deadline(true), Some(start + WEB_CONSOLE_EVERY));
     }
 }

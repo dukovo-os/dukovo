@@ -26,7 +26,11 @@
 //! (ADRs 0318, 0480 and 0481). Notifications from
 //! notifyd(8) show on the bottom line (`notices`, ADR 0212). A braille
 //! display reads the shown console, and types on it, through BRLTTY
-//! (`braille`, ADR 0326). When
+//! (`braille`, ADR 0326). A sign-in screen shows the web console's address
+//! and fingerprint (`welcome`); one nobody has typed on is drawn again when
+//! admind(8) writes them after it was drawn, as it does once it starts, or
+//! writes new ones, and the log says "ttyN: drawing the sign-in screen
+//! again for the web console's address". When
 //! consoled ends, the screen is the kernel log's again. Spark starts it as
 //! a service (spark(8)).
 
@@ -340,6 +344,9 @@ struct Consoled {
     slow: SlowKeys,
     /// The braille display's connection, through BRLTTY (ADR 0326).
     braille: Braille,
+    /// admind's file of the web console's address and fingerprint, which
+    /// sign-in screens are drawn again for when it changes.
+    web_console: welcome::WebConsoleWatch,
 }
 
 impl Consoled {
@@ -437,7 +444,7 @@ impl Consoled {
             Action::Send(bytes) => {
                 let console = &mut self.consoles[self.active];
                 console.term.reset_view();
-                console.write(&bytes);
+                console.type_keys(&bytes);
             }
             Action::Switch(index) => self.switch(index),
             Action::Page(direction) => {
@@ -712,6 +719,45 @@ impl Consoled {
         }
     }
 
+    /// Whether some console has a sign-in screen that may be drawn again
+    /// for a change in admind's file of the web console's lines.
+    fn any_console_may_redraw(&self) -> bool {
+        self.consoles.iter().any(Console::may_redraw)
+    }
+
+    /// Draws again each sign-in screen nobody has typed on whose lines
+    /// about the web console differ from what admind's file holds, as when
+    /// admind writes the file after boot or the certificate is renewed.
+    /// The file is read only after a look at it finds it written again, and
+    /// each console is compared in its own width, as the lines are wrapped
+    /// to it.
+    fn redraw_sign_ins(&mut self, now: Instant) {
+        if !self.any_console_may_redraw() || !self.web_console.changed(now) {
+            return;
+        }
+        for console in &mut self.consoles {
+            if !console.may_redraw() {
+                continue;
+            }
+            let lines = welcome::web_console(welcome::WEB_CONSOLE, console.term.cols());
+            if !console.web_console_differs(&lines) {
+                continue;
+            }
+            match console.redraw() {
+                Ok(()) => eprintln!(
+                    "consoled: tty{}: drawing the sign-in screen again for the web console's \
+                     address",
+                    console.number
+                ),
+                Err(err) => eprintln!(
+                    "consoled: tty{}: cannot end the sign-in program to draw its screen again: \
+                     {err}",
+                    console.number
+                ),
+            }
+        }
+    }
+
     fn run(&mut self, wake: &mut File) -> io::Result<()> {
         let mut events = vec![0u8; Event::SIZE * 32];
         loop {
@@ -747,6 +793,7 @@ impl Consoled {
                 .chain(self.prompts.as_ref().and_then(Prompts::deadline))
                 .chain(self.reader.deadline())
                 .chain(self.slow.deadline())
+                .chain(self.web_console.deadline(self.any_console_may_redraw()))
                 .min();
             let timeout =
                 next.map_or(-1, |at| at.saturating_duration_since(now).as_millis() as i32);
@@ -831,6 +878,7 @@ impl Consoled {
             if let Some(prompts) = self.prompts.as_mut() {
                 prompts.tick(now);
             }
+            self.redraw_sign_ins(now);
             self.speak(now);
             // Only the cells that changed are drawn.
             let bottom = self.bottom();
@@ -949,6 +997,7 @@ fn main() -> ExitCode {
         access,
         slow,
         braille: Braille::listen(braille::SOCKET),
+        web_console: welcome::WebConsoleWatch::new(welcome::WEB_CONSOLE, Instant::now()),
     };
     consoled.lights();
     consoled.switch(0);
