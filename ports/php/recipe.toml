@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# PHP, the language for web applications, as its command-line program and
+# PHP-FPM, the FastCGI process manager that runs PHP pages for a web
+# server: a bundle of the Dukovo catalog, not of the image (ADRs 0370,
+# 0499 and 0520). Its extensions are built into both programs, and its
+# test suite is in the bundle. The service php-fpm runs as the account php
+# once an administrator enables it; its settings are in its data folder.
+# PHP-FPM is under the BSD 2-Clause license of its author, Andrei
+# Nigmatulin, which the license expression has already.
+name = "php"
+version = "8.5.12"
+summary = "the PHP language for web applications"
+# PHP's own code is under the PHP License 3.01 and the Zend Engine
+# License 2.00. README.REDIST.BINS in its tree lists what it bundles, and
+# the files named beside it what those are under: PCRE2 (BSD-3-Clause
+# with the PCRE2 exception), libmagic (BSD-2-Clause), libmbfl and
+# libbcmath (LGPL 2.1 or later, as the files of each say), Lexbor
+# (Apache-2.0), uriparser, the crypt and random number code and
+# Alliance for Open Media's avifinfo (BSD-3-Clause and BSD-2-Clause),
+# xxHash (BSD-2-Clause), timelib (MIT), the Boost.Context assembly that
+# switches fibers (BSL-1.0), crypt_blowfish (public domain, with a
+# permissive fallback), scanf from Tcl (TCL), snprintf from the Apache
+# Group's first license (Apache-1.0), the string functions of the
+# University of California (BSD-4-Clause), strnatcmp (Zlib) and tables
+# derived from OpenLDAP (OLDAP-2.8). Linked in from other ports: libxml2
+# (MIT), OpenSSL (Apache-2.0), curl, zlib and bzip2, each under what its
+# own port says. A few files, among them md5.c, Drepper's SHA-256 and
+# SHA-512 crypt and the MurmurHash code, are in the public domain and
+# ask for no notice.
+license = "PHP-3.01 AND Zend-2.0 AND BSD-2-Clause AND BSD-3-Clause AND BSD-3-Clause WITH PCRE2-exception AND BSD-4-Clause AND LGPL-2.1-or-later AND Apache-2.0 AND MIT AND BSL-1.0 AND LicenseRef-crypt-blowfish-public-domain AND TCL AND Apache-1.0 AND Zlib AND OLDAP-2.8 AND curl AND bzip2-1.0.6"
+homepage = "https://www.php.net"
+depends = ["mlibc", "openssl", "zlib", "bzip2", "curl", "rustls-ffi", "zstd", "libxml2"]
+# Several of the bundled libraries keep a LICENSE of the same name in
+# their folders: ob names the later ones by their folder.
+notices = [
+	"LICENSE",
+	"Zend/LICENSE",
+	"TSRM/LICENSE",
+	"README.REDIST.BINS",
+	"Zend/asm/LICENSE",
+	"ext/bcmath/libbcmath/LICENSE",
+	"ext/date/lib/LICENSE.rst",
+	"ext/fileinfo/libmagic/LICENSE",
+	"ext/lexbor/LICENSE",
+	"ext/lexbor/NOTICE",
+	"ext/mbstring/libmbfl/LICENSE",
+	"ext/standard/libavifinfo/LICENSE",
+	"ext/uri/uriparser/COPYING.BSD-3-Clause",
+	"ext/uri/uriparser/src/COPYING",
+	"sapi/fpm/LICENSE",
+]
+
+# From git, as php.net, which serves PHP's release archives, is not
+# reachable from the build machines; a tree from git has no generated
+# configure, parsers or scanners (see build.sh). The tag php-8.5.12 is an
+# annotated tag: this is the commit it points to.
+[source]
+git = "https://github.com/php/php-src.git"
+commit = "136e049ac10b032c83018e65b63b6df858943750"
+tag = "php-8.5.12"
+
+# re2c 4.6, which writes PHP's scanners and runs only on the build
+# machine: the scanners it writes are PHP's code, under PHP's licenses.
+# Its LICENSE says it is in the public domain.
+[[extra]]
+path = "re2c"
+git = "https://github.com/skvadrik/re2c.git"
+commit = "e485c5d572ab8a9f895b2a3c98e5239bf59254c8"
+license = "LicenseRef-re2c-public-domain"
+
+[bundle]
+id = "net.php.php"
+name = "PHP"
+commands = ["php", "php-fpm"]
+programs = ["php-fpm-service"]
+links = ["mlibc", "openssl", "zlib", "bzip2", "curl", "rustls-ffi", "zstd", "libxml2"]
+
+# php-fpm-service sets the data folder up and runs PHP-FPM in the
+# foreground, as Spark's services are.
+[[bundle.services]]
+name = "php-fpm"
+program = "php-fpm-service"
+account = "php"
+restart = "on-failure"
+start = "when-enabled"
+limits = { memory = "1G" }
+
+[bundle.permissions."network.listen"]
+ports = [9000]
+need = "required"
+why = "Takes PHP pages from the web server, such as nginx, on this computer"
+
+[bundle.permissions."network.outbound"]
+need = "optional"
+why = "Lets PHP pages reach databases and other servers"
+
+# Read-write, narrowed by the owners and modes of the files, as a person's
+# access is (ADR 0385): what an administrator puts in /shared/www is the
+# administrator's and pages cannot change it, and a folder the
+# administrator gives to the account php takes what pages upload (ADR
+# 0520).
+[bundle.permissions."files.shared"]
+folders = { www = "read-write" }
+need = "required"
+why = "Runs the PHP pages of the sites in /shared/www, and stores what they upload where the sites let it"
+
+[bundle.data]
+settings = true
+data = true

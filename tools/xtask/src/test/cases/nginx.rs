@@ -8,18 +8,18 @@
 //! /shared/www, which its service reads, and the service waits until she
 //! enables it. Enabled, it starts as nginx, with its log in the system's,
 //! and serves its welcome page, then the page she puts in /shared/www, and
-//! a 404 for a page that is not there. `elevate nginx -t` asks, in her
-//! pane, whether nginx may run with root's access, then checks the
-//! settings. Settings that do not read fail it, and leave nginx as it was
-//! on a reload, serving, with the wrong line in its log, and it
-//! serves again after a restart, over the settings it copied. With a
-//! certificate of its own made with openssl and the HTTPS
-//! server of its settings turned on, `service nginx reload` has it serve
-//! HTTPS too; three more reloads while 300 requests come over HTTP and
-//! HTTPS lose none of them. `log nginx` holds a line for each request, and
-//! its process number's file is the account's; set to log requests to a
-//! file of its data folder's logs folder, it does. The power button ends
-//! it.
+//! a 404 for a page that is not there; a PHP page's URL is a 404 as well,
+//! its code never sent as text, until PHP is set up (ADR 0520). `elevate
+//! nginx -t` asks, in her pane, whether nginx may run with root's access,
+//! then checks the settings. Settings that do not read fail it, and leave
+//! nginx as it was on a reload, serving, with the wrong line in its log,
+//! and it serves again after a restart, over the settings it copied. With a
+//! certificate of its own made with openssl and the HTTPS server of its
+//! settings turned on, `service nginx reload` has it serve HTTPS too; three
+//! more reloads while 300 requests come over HTTP and HTTPS lose none of
+//! them. `log nginx` holds a line for each request, and its process
+//! number's file is the account's; set to log requests to a file of its
+//! data folder's logs folder, it does. The power button ends it.
 
 use super::super::*;
 
@@ -47,7 +47,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "nginx",
-    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www; elevate nginx -t asks in her pane and checks its settings; settings that do not read fail it and leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests, and a file of its own does when its settings say",
+    about: "nginx, the catalog's web server, serves (ADR 0491): installed for everyone from its .dkv file and enabled, it runs as its own account and serves its welcome page, then a page in /shared/www, and a 404 for a PHP page, never its code; elevate nginx -t asks in her pane and checks its settings; settings that do not read fail it and leave it serving, with the wrong line in its log; it serves after a restart; with a certificate of its own it serves HTTPS too, and reloads while 300 requests come over HTTP and HTTPS lose none; log nginx holds the requests, and a file of its own does when its settings say",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -92,8 +92,15 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&["drwxr-xr-x", "enable 0"])?;
     vm.expect_anywhere("start worker processes")?;
     // Its welcome page, until /shared/www has a page of its own.
-    answer_prompt(vm, "$", "clear; curl -s http://localhost/ | grep -o 'Welcome to nginx!'")?;
-    vm.expect_screen(&["Welcome to nginx!"])?;
+    // It answers 200 as for any front page, though the folder has no index
+    // file (its settings hand the index module's 403 to the welcome page).
+    answer_prompt(
+        vm,
+        "$",
+        "clear; curl -s -w 'front %{http_code}\\n' http://localhost/ | grep -o -e 'Welcome to \
+         nginx!' -e 'front [0-9]*'",
+    )?;
+    vm.expect_screen(&["Welcome to nginx!", "front 200"])?;
     answer_prompt(
         vm,
         "$",
@@ -102,6 +109,17 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
          http://localhost/missing.html",
     )?;
     vm.expect_screen(&["<p>Hello from Dukovo</p>", "missing 404"])?;
+    // Its settings pass no PHP page to anything until the administrator
+    // turns that on: a page's URL is 404 and its code never comes as text
+    // (ADR 0520).
+    answer_prompt(
+        vm,
+        "$",
+        "clear; elevate sh -c 'echo \"<?php echo 1; ?>php-code\" > /shared/www/x.php'; curl -s \
+         -o /dev/null -w 'php %{http_code}\\n' http://localhost/x.php; echo \"php-code shown \
+         $(curl -s http://localhost/x.php | grep -c php-code)\"; elevate rm /shared/www/x.php",
+    )?;
+    vm.expect_screen(&["php 404", "php-code shown 0"])?;
     // nginx -t checks the settings as root: run through elevate, it is
     // asked about in her pane, with a warning, and she allows it always
     // (ADR 0493).

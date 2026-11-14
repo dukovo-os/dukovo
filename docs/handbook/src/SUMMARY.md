@@ -30,6 +30,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [The Dukovo Admin web console]()
 - [Running services: web, databases and certificates](services.md)
 - [Python](python.md)
+- [PHP](php.md)
 - [Cloud and virtual machines](cloud.md)
 - [Server hardening]()
 - [Logs, monitoring and troubleshooting](logs.md)

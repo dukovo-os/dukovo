@@ -2065,9 +2065,11 @@ _recipe.toml_
 	never reaches an image; the files of the sysroot it puts in the boot
 	archive (*image*, a path ending in _/_ meaning a whole directory);
 	for a source without a LICENSE or COPYING file, the files that hold
-	its *notices*; and code from other projects the port keeps in its
-	own directory (*bundled*: name, version, license, home page and
-	notice files), each a package of its own in the license manifest;
+	its *notices* (one with the name of an earlier one goes by its
+	folder's name and its own, as _Zend-LICENSE_); and code from other
+	projects the port keeps in its own directory (*bundled*: name,
+	version, license, home page and notice files), each a package of its
+	own in the license manifest;
 	and for a port the catalog carries rather than the image, its
 	*[bundle]*: the bundle's *id*, *name* and *commands* (ADR 0370), and
 	for a service bundle (ADR 0491) its other *programs*, the ports it
@@ -2128,7 +2130,8 @@ recipe's services, permissions and data folder. It writes
 _sbom.spdx_, listing every component the port builds in as the image's
 manifest does, and _licenses/_ with their texts and notices, after
 checking them against the ports' allow-list, MPL-2.0, PCRE2's license
-with its exception and the Boost license. It then signs the folder and packs it into
+with its exception, the Boost license and those of PHP and what it
+bundles. It then signs the folder and packs it into
 _out/bundles/ID-VERSION.dkv_ with the code *bundle*(1) packs with. The
 key is the file *OB_BUNDLE_KEY* names, or the build's own,
 _out/bundles/build.key_, made the first time; Dukovo trusts neither, and

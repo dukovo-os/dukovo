@@ -289,8 +289,9 @@ change:
 $ elevate cp -R mysite/. /shared/www/
 ```
 
-`/shared/www/index.html` is then the home page. Files are served as they
-are; a new file needs no reload.
+`/shared/www/index.html` is then the home page, or `index.php` once PHP is
+set up (see [Websites with PHP](php.md#websites-with-php)). Files are served
+as they are; a new file needs no reload.
 
 nginx starts after the network and the resolver, since it looks up the
 names in its `proxy_pass` lines as it starts, and Spark counts it ready

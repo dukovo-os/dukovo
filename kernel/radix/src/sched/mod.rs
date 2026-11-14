@@ -76,6 +76,12 @@ pub use thread::{Name, Policy, Run, Thread, ThreadRef};
 /// Pages of stack a kernel thread gets unless it asks otherwise: 16 KiB.
 pub const STACK_PAGES: usize = 4;
 
+/// Pages of kernel stack a program's thread gets: 32 KiB. Its system calls
+/// run on it, and one that copies from the program's memory may fault
+/// there and read the page in from its file on the spot, which through a
+/// compressed Btrfs extent takes about 10 KiB on its own (ADR 0523).
+pub const USER_STACK_PAGES: usize = 8;
+
 /// The kernel stack a thread should still have when it sleeps: deep calls
 /// end waiting for a disk, and what they call while they run must fit
 /// below.
@@ -1221,23 +1227,62 @@ enum Switch {
     Exit,
 }
 
-/// With the lock checker on, warns once, with a backtrace, when thread
-/// `me` sleeps at `here` with less than [`STACK_MARGIN`] of its kernel
-/// stack left, so that the tests that run with it find a call that comes
-/// near its stack's guard page before one goes past it.
+/// A thread that slept with less than [`STACK_MARGIN`] of its kernel
+/// stack left, as [`check_stack`] found it.
+struct NearStackEnd {
+    thread: Name,
+    left: usize,
+    size: usize,
+    backtrace: crate::symbols::Backtrace,
+}
+
+/// The first thread found near the end of its stack. Printing the warning
+/// takes more stack than such a thread has left (the log, the serial port
+/// and the lock checker's own frames), so the next sleep with room for it
+/// prints it.
+static NEAR_STACK_END: Once<NearStackEnd> = Once::new();
+
+/// Whether [`NEAR_STACK_END`] has been printed.
+static NEAR_STACK_END_TOLD: AtomicBool = AtomicBool::new(false);
+
+/// With the lock checker on, warns once, with a backtrace, when a thread
+/// sleeps with less than [`STACK_MARGIN`] of its kernel stack left, so
+/// that the tests that run with it find a call that comes near its
+/// stack's guard page before one goes past it. `me` sleeps at `here`.
 #[inline(never)]
 fn check_stack(me: &Thread, here: usize) {
-    static WARNED: AtomicBool = AtomicBool::new(false);
     let stack = Arch::stack(&me.context);
-    let left = here.wrapping_sub(stack.start);
-    if stack.contains(&here) && left < STACK_MARGIN && !WARNED.swap(true, Ordering::Relaxed) {
-        warn!(
-            "Threads: `{}` sleeps with {left} bytes of its {} KiB kernel stack left",
-            me.name(),
-            stack.len() / 1024
-        );
-        crate::symbols::Backtrace::here().write(&mut |line| warn!("{line}"));
+    if !stack.contains(&here) {
+        return;
     }
+    let left = here - stack.start;
+    if left < STACK_MARGIN {
+        // Only the first is told, so a later one's backtrace is not taken.
+        if NEAR_STACK_END.get().is_none() {
+            let _ = NEAR_STACK_END.set(NearStackEnd {
+                thread: me.name(),
+                left,
+                size: stack.len(),
+                backtrace: crate::symbols::Backtrace::here(),
+            });
+        }
+    } else if let Some(found) = NEAR_STACK_END.get()
+        && !NEAR_STACK_END_TOLD.swap(true, Ordering::Relaxed)
+    {
+        tell_near_stack_end(found);
+    }
+}
+
+/// Prints what [`check_stack`] found, from a thread with room to.
+#[inline(never)]
+fn tell_near_stack_end(found: &NearStackEnd) {
+    warn!(
+        "Threads: `{}` slept with {} bytes of its {} KiB kernel stack left, at:",
+        found.thread,
+        found.left,
+        found.size / 1024
+    );
+    found.backtrace.write(&mut |line| warn!("{line}"));
 }
 
 /// Lets this CPU run whatever should run now. See the module comment.

@@ -1,0 +1,39 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+The php.ini beside the program's folder
+
+php_init_config looks for php.ini in the folder of the program and then in
+the folder PHP was configured with. A bundle's program is in its bin
+folder and its settings in the etc folder beside it, wherever the bundle
+is installed, for everyone in /applications or for a person in their own
+applications folder, which a folder fixed when PHP is configured cannot
+name for both. This puts the sibling etc folder between the two, so the
+configured folder stays the last place, as upstream has it.
+
+diff --git a/main/php_ini.c b/main/php_ini.c
+index c040e9a2..46a442e2 100644
+--- a/main/php_ini.c
++++ b/main/php_ini.c
+@@ -513,6 +513,20 @@ void php_init_config(void)
+ 			}
+ 			append_ini_path(php_ini_search_path, search_path_size, binary_location);
+ 
++#ifdef __radix__
++			/* A bundle keeps its php.ini in etc, beside the bin folder that
++			 * the program is in, wherever the bundle is installed. */
++			separator_location = strrchr(binary_location, DEFAULT_SLASH);
++			if (separator_location) {
++				char *etc_location;
++
++				*(separator_location) = 0;
++				spprintf(&etc_location, 0, "%s%cetc", binary_location, DEFAULT_SLASH);
++				append_ini_path(php_ini_search_path, search_path_size, etc_location);
++				efree(etc_location);
++			}
++#endif
++
+ 			efree(binary_location);
+ 		}
+ 

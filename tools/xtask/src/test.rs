@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader, Read, Seek, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -469,6 +469,12 @@ const UPDATE_RELEASES: u8 = 30;
 /// file of the test update server's bridge release ([`update_file_disk`],
 /// ADR 0466).
 const UPDATE_FILE: u8 = 31;
+
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the `php`
+/// test's script and list of PHP's own tests ([`cases::php::make_disk`]):
+/// files a case would otherwise type, a key at a time. Not 32, which is
+/// FAT32.
+const PHP_FILES: u8 = 33;
 
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
@@ -1580,7 +1586,7 @@ fn case_seconds(case: &Case) -> u32 {
 /// Whether `case` installs the catalog's bundles, which ob packs before
 /// the first such test of a run.
 fn needs_packing(case: &Case) -> bool {
-    case.disks.iter().any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE))
+    case.disks.iter().any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE | PHP_FILES))
 }
 
 /// About how long packing the catalog's bundles takes on CI, in seconds,
@@ -4952,6 +4958,11 @@ fn make_disks(
         }
         if disk.fat == BUNDLE_FILES {
             make_bundle_files(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == PHP_FILES {
+            cases::php::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
@@ -10951,6 +10962,60 @@ fn answer_prompt_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> 
             ));
         }
         std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Types `command` after the prompt, and waits for up to `seconds` until it
+/// has run: the shell then prints a line of its own, `ran-` and a number
+/// that the typed text spells with a command, so that the echo of the typed
+/// text cannot be taken for it. Waiting for the prompt alone is not enough
+/// after a long command: the echo of what was typed is slow under
+/// emulation, and the line it has reached can end in a `$`, as the prompt
+/// does, before the whole of it is there.
+fn run_within(vm: &mut Vm, command: &str, seconds: u64) -> Result<(), String> {
+    static RUNS: AtomicU32 = AtomicU32::new(0);
+    let n = RUNS.fetch_add(1, Ordering::Relaxed);
+    answer_prompt(vm, "$", &format!("{command}; echo ran-$(echo {n})"))?;
+    let marker = format!("ran-{n}");
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        let screen = vm.screen()?;
+        if screen.iter().any(|line| line.trim() == marker) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return screen_shows(&screen, &[&marker]);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Types `command`, which runs a command of a catalog bundle, and answers
+/// the question that the first run of such a command asks, if it asks it,
+/// with `a` for always, until the screen shows `needle`, for up to
+/// `seconds`.
+fn run_answering_until(
+    vm: &mut Vm,
+    command: &str,
+    needle: &str,
+    seconds: u64,
+) -> Result<(), String> {
+    answer_prompt(vm, "$", command)?;
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let mut answered = false;
+    loop {
+        let screen = vm.screen()?;
+        if screen.iter().any(|line| line.contains(needle)) {
+            return Ok(());
+        }
+        if !answered && screen.iter().any(|line| line.contains("A: always")) {
+            vm.type_text("a")?;
+            answered = true;
+        }
+        if Instant::now() >= deadline {
+            return screen_shows(&screen, &[needle]);
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 

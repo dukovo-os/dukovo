@@ -509,6 +509,12 @@ reports, as soon as the code runs:
   allowed: with a spin lock held, with interrupts off or in an interrupt
   handler (*sleeping where it is not allowed*).
 
+With it on, the scheduler also warns, once, when a thread sleeps with
+less than 4 KiB of its kernel stack left: "Threads: `php` slept with
+_N_ bytes of its 32 KiB kernel stack left, at:" and a backtrace of the
+sleeping call. The next sleep with room prints it, by any thread, since
+printing takes more stack than such a thread has left (ADR 0523).
+
 It is on by default in debug builds and off in release builds; the
 *lockdep* kernel flag (*dukovo-boot*(7)) overrides either. *ob test*
 boots *bios-usb* and every self-test since Phase 4 with it on. A report is

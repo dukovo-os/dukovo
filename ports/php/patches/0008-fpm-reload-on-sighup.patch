@@ -1,0 +1,83 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+PHP-FPM reloads on SIGHUP
+
+A service manager that has a service read its settings again sends it
+SIGHUP: service(8)'s reload does, and nginx and most daemons take it so.
+PHP-FPM reloads on SIGUSR2 and leaves SIGHUP at its default, which ends
+it, with every request in flight, so a reload of the service would be
+a stop. The master now handles SIGHUP as it does SIGUSR2, and logs it as
+SIGHUP; a worker takes it as the default, as it does the other signals the
+master handles, and the early-start mask holds it back with them, so that
+one that comes between a reload's exec and the handlers does not end the
+new master. The manual page names it. Not for Radix alone: it is what
+SIGHUP means to a service manager anywhere.
+
+diff --git a/sapi/fpm/fpm/fpm_events.c b/sapi/fpm/fpm/fpm_events.c
+index 1ccf2c9c..b8709f96 100644
+--- a/sapi/fpm/fpm/fpm_events.c
++++ b/sapi/fpm/fpm/fpm_events.c
+@@ -131,6 +131,11 @@ static void fpm_got_signal(struct fpm_event_s *ev, short which, void *arg) /* {{
+ 				zlog(ZLOG_NOTICE, "Reloading in progress ...");
+ 				fpm_pctl(FPM_PCTL_STATE_RELOADING, FPM_PCTL_ACTION_SET);
+ 				break;
++			case 'H' :                  /* SIGHUP, as SIGUSR2 */
++				zlog(ZLOG_DEBUG, "received SIGHUP");
++				zlog(ZLOG_NOTICE, "Reloading in progress ...");
++				fpm_pctl(FPM_PCTL_STATE_RELOADING, FPM_PCTL_ACTION_SET);
++				break;
+ 		}
+ 
+ 		if (fpm_globals.is_child) {
+diff --git a/sapi/fpm/fpm/fpm_signals.c b/sapi/fpm/fpm/fpm_signals.c
+index aca7c9ed..079c8fe8 100644
+--- a/sapi/fpm/fpm/fpm_signals.c
++++ b/sapi/fpm/fpm/fpm_signals.c
+@@ -160,6 +160,7 @@ static void sig_handler(int signo) /* {{{ */
+ 		[SIGINT]  = 'I',
+ 		[SIGUSR1] = '1',
+ 		[SIGUSR2] = '2',
++		[SIGHUP]  = 'H',
+ 		[SIGQUIT] = 'Q',
+ 		[SIGCHLD] = 'C'
+ 	};
+@@ -209,6 +210,7 @@ int fpm_signals_init_main(void)
+ 	    0 > sigaction(SIGINT,   &act, 0) ||
+ 	    0 > sigaction(SIGUSR1,  &act, 0) ||
+ 	    0 > sigaction(SIGUSR2,  &act, 0) ||
++	    0 > sigaction(SIGHUP,   &act, 0) ||
+ 	    0 > sigaction(SIGCHLD,  &act, 0) ||
+ 	    0 > sigaction(SIGQUIT,  &act, 0)) {
+ 
+@@ -242,6 +244,7 @@ int fpm_signals_init_child(void)
+ 	    0 > sigaction(SIGINT,   &act_dfl,  0) ||
+ 	    0 > sigaction(SIGUSR1,  &act_dfl,  0) ||
+ 	    0 > sigaction(SIGUSR2,  &act_dfl,  0) ||
++	    0 > sigaction(SIGHUP,   &act_dfl,  0) ||
+ 	    0 > sigaction(SIGCHLD,  &act_dfl,  0) ||
+ 	    0 > sigaction(SIGQUIT,  &act,      0)) {
+ 
+@@ -267,7 +270,7 @@ int fpm_signals_init_mask(void)
+ 	/* Subset of signals from fpm_signals_init_main() and fpm_got_signal()
+ 		blocked to avoid unexpected death during early init
+ 		or during reload just after execvp() or fork */
+-	static const int init_signal_array[] = { SIGUSR1, SIGUSR2, SIGCHLD };
++	static const int init_signal_array[] = { SIGUSR1, SIGUSR2, SIGHUP, SIGCHLD };
+ 	size_t size = sizeof(init_signal_array)/sizeof(init_signal_array[0]);
+ 	size_t i = 0;
+ 	if (0 > sigemptyset(&block_sigset) ||
+diff --git a/sapi/fpm/php-fpm.8.in b/sapi/fpm/php-fpm.8.in
+index 941b911e..113f3ae8 100644
+--- a/sapi/fpm/php-fpm.8.in
++++ b/sapi/fpm/php-fpm.8.in
+@@ -166,7 +166,7 @@ If your installation has no appropriate init script, launch php-fpm with no argu
+ .TP
+ .B SIGUSR1 			\fPre-open log file
+ .TP
+-.B SIGUSR2 			\fPgraceful reload of all workers + reload of fpm conf/binary
++.B SIGUSR2,SIGHUP 	\fPgraceful reload of all workers + reload of fpm conf/binary
+ .RE
+ .PD 1
+ .P

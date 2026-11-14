@@ -781,6 +781,7 @@ impl ProcessObject {
             .domain(process.account.domain().clone())
             .user(user.clone())
             .policy(scheduling.policy())
+            .stack_pages(sched::USER_STACK_PAGES)
             .held();
         if let Some(cpu) = cpu {
             options = options.pinned(cpu);
