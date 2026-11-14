@@ -808,7 +808,8 @@ mod tests {
         let store = dir.join("store");
         repo.sign_targets(&changes, &files, &store, &signers, 30).unwrap();
         if let Some(plans) = plans {
-            let signed = repo.sign_rollouts(&store, &signers, plans, tuf::time::now()).unwrap();
+            let signed =
+                repo.sign_rollouts(&store, &signers, Some(plans), tuf::time::now()).unwrap();
             assert!(signed.is_some());
         }
         repo.publish(&store, &dir.join("site"), &signers, (30, 30)).unwrap();
