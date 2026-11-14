@@ -138,8 +138,8 @@ areas'. Besides the routes of the actions there are two:
 	The list: a JSON array with an object for each action, with its *id*,
 	*title*, *area*, *changes*, *method*, *path*, *runs*, *long*,
 	*compares*, *errors*, *tests*, *input* and *examples*. *compares* is
-	true for a change whose *changed* is found by comparing a read before
-	and after it, and false for any other action. *input* is the JSON
+	true for a change whose *changed* is found by comparing what it moves
+	before and after it, and false for any other action. *input* is the JSON
 	Schema of the action's arguments. *admin actions --json* prints the
 	same. A session or a token of any scope may ask.
 
@@ -179,8 +179,12 @@ person or the token's owner and so as that person, before the command
 and again after it, and *changed* is whether the part of the two outputs
 that the action picks differs; the services' start, stop, enable and
 disable read *service list --json*, and the console's reach reads *admin
-reach*. *changed* is *true* when admind cannot tell: the read failed, or
-the action finds nothing in what it printed. A change whose action does
+reach*. An action that writes files, as enable and disable write the
+service's file, also has the journal read each before and after, and
+changed nothing only when each reads the same: a service's file, not
+Spark's copy of it, says whether it starts at boot. *changed* is *true*
+when admind cannot tell: the read failed, the action finds nothing in
+what it printed, or a file cannot be read. A change whose action does
 not compare, such as a restart or *cert renew*, which makes the
 certificate anew whether or not it is due, always answers *true*. A
 command runs 30 seconds at most (ADM-121 for one that has not ended), a

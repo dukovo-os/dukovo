@@ -129,7 +129,11 @@ which belong to them, not to the machine.
   admind starts it ends the tasks the last admind left as `stopped`, "the
   console restarted", since authd hangs up an admind's commands when it
   goes. A task is kept 30 days; the journal keeps its change, with the
-  task's number, when it ends.
+  task's number, when it ends. A task that is `done` says whether it
+  changed anything, as a short change's answer does (ADR 0515): `changed`
+  is false only when its action names files and each reads the same after
+  it as before. A task runs no probe, so one whose action names no files
+  always says true.
 - **A person's preferences are their own file.** `GET` and `POST
   /api/1/account/preferences` read and change `theme` (`dark`, `light`,
   `high-contrast` or `device`), `text` (100, 112, 125 or 150 percent),

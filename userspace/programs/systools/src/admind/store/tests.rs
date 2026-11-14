@@ -403,11 +403,14 @@ fn a_task_is_made_waiting_and_saved_as_it_goes() {
     task.log = vec!["one".into(), "two".into()];
     store.save_task(&task).unwrap();
     assert_eq!(store.task(id).unwrap().unwrap(), task);
+    assert_eq!(task.changed, None);
     task.state = State::Done;
     task.ended = Some(130);
     task.status = Some(0);
+    task.changed = Some(false);
     store.save_task(&task).unwrap();
     assert_eq!(store.task(id).unwrap().unwrap(), task);
+    assert_eq!(task.summary()["changed"], json!(false));
     assert_eq!(store.task(id + 1).unwrap(), None);
 }
 

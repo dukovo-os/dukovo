@@ -97,6 +97,10 @@ pub struct Task {
     pub note: Option<String>,
     /// The last lines of what the command wrote.
     pub log: Vec<String>,
+    /// Whether it changed anything, once it is done: false only when it
+    /// names files and the journal found each the same after it as before
+    /// (ADR 0515). None until it is done, and for one that is not.
+    pub changed: Option<bool>,
 }
 
 impl Task {
@@ -118,6 +122,7 @@ impl Task {
             "ended": self.ended,
             "status": self.status,
             "note": self.note,
+            "changed": self.changed,
         })
     }
 
@@ -135,6 +140,7 @@ impl Task {
             "ended": self.ended,
             "status": self.status,
             "note": self.note,
+            "changed": self.changed,
         })
     }
 
@@ -177,13 +183,14 @@ impl Task {
             } else {
                 log.split('\n').map(String::from).collect()
             },
+            changed: row.get(16)?,
         })
     }
 }
 
 /// The columns of a row, in the order [`Task::read`] takes them.
 const COLUMNS: &str = "id, action, args, argv, who, how, started, state, step, steps, words, \
-                       percent, ended, status, note, log";
+                       percent, ended, status, note, log, changed";
 
 impl Store {
     /// Adds a task for the action `action`, waiting, and gives its
@@ -219,7 +226,7 @@ impl Store {
         let skip = task.log.len().saturating_sub(LOG_MAX);
         self.conn.execute(
             "UPDATE tasks SET state = ?2, step = ?3, steps = ?4, words = ?5, percent = ?6,
-                 ended = ?7, status = ?8, note = ?9, log = ?10 WHERE id = ?1",
+                 ended = ?7, status = ?8, note = ?9, log = ?10, changed = ?11 WHERE id = ?1",
             params![
                 task.id,
                 task.state.word(),
@@ -231,6 +238,7 @@ impl Store {
                 task.status,
                 task.note,
                 task.log[skip..].join("\n"),
+                task.changed,
             ],
         )?;
         Ok(())

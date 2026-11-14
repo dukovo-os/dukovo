@@ -119,7 +119,8 @@ const SCHEMA: &[&[&str]] = &[&[
         ended INTEGER,
         status INTEGER,
         note TEXT,
-        log TEXT NOT NULL DEFAULT ''
+        log TEXT NOT NULL DEFAULT '',
+        changed INTEGER
     ) STRICT",
     "CREATE INDEX tasks_ended ON tasks (ended)",
 ]];

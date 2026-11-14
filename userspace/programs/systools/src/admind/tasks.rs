@@ -418,6 +418,7 @@ impl Tasks {
             entry.task.state = end.state;
             entry.task.status = end.status;
             entry.task.note.clone_from(&end.note);
+            entry.task.changed = end.changed;
             entry.task.ended = Some(unix_now());
             entry.over = Some(Instant::now());
             entry.unsaved = true;
@@ -564,6 +565,8 @@ struct End {
     state: State,
     status: Option<i32>,
     note: Option<String>,
+    /// Whether a task that is done changed anything; None for any other.
+    changed: Option<bool>,
 }
 
 /// What a task is made of, besides its number.
@@ -622,6 +625,7 @@ pub fn start(
         status: None,
         note: None,
         log: Vec::new(),
+        changed: None,
     });
     let job = Job { prepared, who: who.to_string(), how: how.to_string(), by };
     tokio::task::spawn_local(run(Rc::clone(shared), id, job));
@@ -639,6 +643,7 @@ async fn run(shared: Rc<Shared>, id: i64, job: Job) {
             state: State::Stopped,
             status: None,
             note: Some(format!("stopped by {by} before it began")),
+            changed: None,
         };
         tasks.end(store, id, &end);
         log(6, &format!("task {id} was stopped by {by} before it began"));
@@ -648,7 +653,7 @@ async fn run(shared: Rc<Shared>, id: i64, job: Job) {
     let begun = shared.journal.begin(Some(store), &job.prepared.files, unix_now());
     tasks.running(store, id);
     let started = run::start(&shared, job.by, argv).await;
-    let (end, row) = match started {
+    let (mut end, row) = match started {
         Ok(started) => {
             let done = follow(&shared, id, started).await;
             let program = argv.first().map_or("the command", String::as_str);
@@ -659,7 +664,12 @@ async fn run(shared: Rc<Shared>, id: i64, job: Job) {
         Err(failure) => {
             let row = run::ending_failure(&failure)
                 .map(|(status, note)| (status, note.map(str::to_string)));
-            let end = End { state: State::Failed, status: None, note: Some(failure.detail) };
+            let end = End {
+                state: State::Failed,
+                status: None,
+                note: Some(failure.detail),
+                changed: None,
+            };
             (end, row)
         }
     };
@@ -674,7 +684,10 @@ async fn run(shared: Rc<Shared>, id: i64, job: Job) {
                 task: Some(id),
                 note: note.as_deref(),
             };
-            begun.end(Some(store), &ended, unix_now());
+            let files_same = begun.end(Some(store), &ended, unix_now()).same;
+            if end.state == State::Done {
+                end.changed = Some(task_changed(&job.prepared.files, files_same));
+            }
         }
         None => begun.cancel(),
     }
@@ -731,12 +744,19 @@ struct Done {
     last_error: Option<String>,
 }
 
+/// Whether a task that is done changed anything, given whether the files
+/// its action names read the same after it (`files_same`): a task runs no
+/// probe, so one that names no files always did something (ADR 0515).
+fn task_changed(files: &[String], files_same: bool) -> bool {
+    files.is_empty() || !files_same
+}
+
 /// How a task whose command came to `done` ends. A command that was sent
 /// SIGTERM to stop is `stopped`, whatever its status: one that puts back
 /// what it did ends well. A command that ended before the signal was sent
 /// is not stopped, and is `done` or `failed` as its status says.
 fn conclude(done: &Done, program: &str, limits: Limits) -> End {
-    let end = |state, status, note: Option<String>| End { state, status, note };
+    let end = |state, status, note: Option<String>| End { state, status, note, changed: None };
     match (done.status, &done.stopped_by) {
         (Some(code), Some(by)) => end(State::Stopped, Some(code), Some(format!("stopped by {by}"))),
         (None, Some(by)) => end(

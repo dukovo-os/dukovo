@@ -362,9 +362,11 @@ curl -sS -X POST -H "Authorization: Bearer $DUKOVO_TOKEN" -H "Content-Type: appl
 It answers `{"done": true, "changed": true, "output": [...]}` with the
 lines the command printed. `changed` is `false` when the change moved
 nothing, as when a service that runs is started. The console reads what the
-change moves, as you, before the command and after it, and says `true`
+change moves, as you, before the command and after it, and the files it
+writes, such as a service's file for enable and disable, and says `true`
 when it cannot tell, as for a restart; the list's `compares` says which
-actions can tell. A command that fails is answered as an error, with the
+actions can tell. A long action's task says `changed` when it is done, from
+its files alone. A command that fails is answered as an error, with the
 command's own words (ADM-123).
 
 ### An Ansible task

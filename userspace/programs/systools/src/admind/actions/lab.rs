@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Action, Args, Bad, Examples, Runs, Tests};
+use super::{Action, Args, Bad, Examples, Field, Runs, Tests};
 
 /// How long the command runs when the request does not say, in seconds.
 pub const SECONDS_DEFAULT: u32 = 20;
@@ -39,6 +39,14 @@ impl Seconds {
 }
 
 impl Args for Seconds {
+    const FIELDS: &'static [Field] = &[Field::number(
+        "seconds",
+        "How long the command runs, in seconds: 20 when it is not given.",
+        1,
+        SECONDS_MAX as i64,
+    )
+    .optional()];
+
     fn check(&self) -> Result<(), Bad> {
         if self.seconds.is_some_and(|seconds| !(1..=SECONDS_MAX).contains(&seconds)) {
             return Err(Bad {

@@ -24,6 +24,7 @@ fn task(id: i64) -> Task {
         status: None,
         note: None,
         log: Vec::new(),
+        changed: None,
     }
 }
 
@@ -217,7 +218,11 @@ fn a_task_that_ended_is_told_once_and_forgotten_after_a_minute() {
     let mut told = Told::default();
     let now = Instant::now();
     tasks.events(&mut told, now);
-    tasks.end(&store, id, &End { state: State::Done, status: Some(0), note: None });
+    tasks.end(
+        &store,
+        id,
+        &End { state: State::Done, status: Some(0), note: None, changed: Some(true) },
+    );
     let (due, _) = tasks.events(&mut told, now + EVENT_SPACE);
     assert_eq!(due.len(), 1);
     assert!(String::from_utf8(due[0].to_vec()).unwrap().contains("\"state\":\"done\""));
@@ -319,6 +324,15 @@ fn a_command_ends_a_task_by_how_it_ended() {
 }
 
 #[test]
+fn a_task_that_is_done_changed_nothing_only_when_its_files_read_the_same() {
+    let file = ["/system/settings/a.toml".to_string()];
+    assert!(!task_changed(&file, true));
+    assert!(task_changed(&file, false));
+    // With no files there is nothing to compare: it did something.
+    assert!(task_changed(&[], true));
+}
+
+#[test]
 fn a_time_is_said_in_the_unit_that_is_whole() {
     assert_eq!(lasting(Duration::from_hours(12)), "12 hours");
     assert_eq!(lasting(Duration::from_hours(1)), "1 hour");
@@ -340,7 +354,11 @@ fn only_a_task_that_waits_or_runs_is_stopped_and_once_is_enough() {
     let store = Store::in_memory();
     let id = store.add_task("lab.long", &json!({}), &[], "chase", "console", 1).unwrap();
     tasks.add(task(id));
-    tasks.end(&store, id, &End { state: State::Done, status: Some(0), note: None });
+    tasks.end(
+        &store,
+        id,
+        &End { state: State::Done, status: Some(0), note: None, changed: Some(true) },
+    );
     assert_eq!(tasks.stop(id, "alice").unwrap_err().kind, Kind::Cannot);
     assert_eq!(tasks.stop(99, "alice").unwrap_err().kind, Kind::Cannot);
 }

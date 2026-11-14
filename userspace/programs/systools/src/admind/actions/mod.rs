@@ -104,8 +104,8 @@ pub enum Type {
     /// One of these words.
     OneOf(&'static [&'static str]),
     /// A whole number from `min` to `max`, both included.
-    // Kept for the actions that take a number. None in the list does, so
-    // only the tests make one.
+    // Kept for the actions that take a number. None in the list that ships
+    // does: only the lab's long action and the tests make one.
     #[cfg_attr(not(test), allow(dead_code))]
     Number {
         /// The least.

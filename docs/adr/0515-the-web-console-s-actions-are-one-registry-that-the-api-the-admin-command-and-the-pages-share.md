@@ -109,22 +109,30 @@ must be no more than its owner.
   registry's own form: `service list --json` for a service's start, stop,
   enable and disable, and `admin reach` for the console's reach. The probe
   is run before the change and again after it, and `changed` is whether the
-  part of the two outputs that the action picks differs. Start and stop
-  pick the state Spark says of the service, one of its nine words; enable
-  and disable pick the state and whether it starts at boot; reach picks
-  its word. A pick leaves out what moves by itself, such as a process
+  part of the two outputs that the action picks differs. Start, stop,
+  enable and disable pick the state Spark says of the service, one of its
+  nine words, and reach picks its word. Enable and disable also write the
+  service's file, which is what says whether it starts at boot: Spark
+  reads the file again only as it starts a service, so what its document
+  says of that does not follow a `disable` of a service that is stopped.
+  A change that names files, the ones its Files tab shows, has the
+  journal read each before the change and after it (ADR 0516), and it
+  changed nothing only when its probe, if it has one, and each file read
+  the same. A pick leaves out what moves by itself, such as a process
   number or a time. A probe runs in the worker of the person who asked, as
   the person, for a session and for a token alike (the token owner's
   worker), and never as an administrator, so it can read only what that
   person can; a change that only an administrator can see the effect of
   has no probe. When the console cannot tell, `changed` is true, as Ansible's
   command module says it: a probe that fails, an output the action finds
-  nothing in, and a change without a probe all give it. A restart always does
+  nothing in, a file the journal cannot read, and a change that compares
+  nothing all give it. A restart always does
   something, and so does `cert renew`, which makes the certificate anew
   whether or not it is due, so neither has one. The list says which is
   which: an action's `compares` is true when its `changed` is a
-  comparison, and false when it is always true, as for every read, which
-  has none. A command that fails is ADM-123 and has no `changed`.
+  comparison, of its probe, its files or both, and false when it is
+  always true, as for every read, which has none. A long action's task
+  (ADR 0516) runs no probe, and compares its files alone. A command that fails is ADM-123 and has no `changed`.
 - **Show the command.** `POST /api/1/show` with `{"action", "args"}`
   checks the arguments as the action's own route does and runs nothing.
   It answers four forms of the one prepared action. The Command is the
@@ -291,9 +299,10 @@ must be no more than its owner.
 - Every request with a token is a call to authd, and a read that runs as
   the person starts a worker of its owner. A script that makes many calls
   pays the call to authd for each, and the worker's start once.
-- Nothing runs longer than 30 seconds. The list marks an action that may
-  take longer (`long`), and none does yet; a command that does not end in
-  that time is hung up.
+- A command that runs in the request is hung up after 30 seconds. An
+  action that may take longer is marked `long` in the list and runs as a
+  task (ADR 0516), whose number the answer gives at once; none of the
+  first actions is long.
 - An address that is not on `reach` still gets nothing, with a token or
   without. An address on it that guesses tokens is stopped after 10 in a
   minute, and so is every other client behind the same address.
