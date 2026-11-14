@@ -18,7 +18,7 @@ password, whether an update waits, whether the clock was ever set, whether
 a service gave up. Each answer lives in a different tool (`firewall`,
 `sshd -T`, `service list`, `update`, `hardware check`, the early warnings
 of metricsd), and nothing said which of them matter. The web console's
-health score (thread C) needs one such answer to read, kept where it can.
+health score needs one such answer to read, kept where it can.
 
 The second is a stop to password guessing. authd slowed wrong passwords
 (ADR 0218), but only for one account from one address, so a program that
@@ -153,8 +153,8 @@ changes, and need setting up before they do anything.
 ## What it is not
 
 - A failed sign-in at the web console does not count yet: the console's
-  sign-in (thread C) passes the browser's address to authd when it is
-  built. Its address is not spared either.
+  sign-in passes the browser's address to authd once it is built, and
+  counts from then. Its address is not spared either.
 - No "fix it for me" mode: each fix is one command the line gives, and the
   console's buttons run them.
 - A block does not close a port that no sign-in service listens on, and
