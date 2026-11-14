@@ -85,9 +85,15 @@ const DEVICE_SLOTS: u32 = 4;
 const SLOT_FIREWALL: u32 = 54;
 /// The slot of the program's kernel settings capability
 /// (radix-kernel-settings(2)), if it was given one: what the permission
-/// admin.tune grants. It stays through `fork` and `exec`. The slots a
-/// program takes for its own use start after it.
+/// admin.tune grants. It stays through `fork` and `exec`.
 const SLOT_SETTINGS: u32 = 55;
+/// The slot of a capability to the program's own resource domain
+/// (radix-resource-domain(2)), with the read and control rights, if it
+/// was given one: what the permission `domain` grants, so that it makes
+/// domains below its own and stops them, as authd does for help sessions
+/// (ADR 0540). It stays through `fork` and `exec`. The slots a program
+/// takes for its own use start after it.
+const SLOT_DOMAIN: u32 = 56;
 /// The number of slots of a program's capability space.
 const SLOTS: u32 = 256;
 /// The first slot of a POSIX program's file descriptors: descriptor `n`

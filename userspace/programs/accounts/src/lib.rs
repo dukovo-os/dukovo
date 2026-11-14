@@ -342,7 +342,8 @@ pub fn passwords(text: &str) -> Table<Password> {
 /// Why `name` cannot be an account's name, if it cannot: from 1 to
 /// [`NAME_MAX`] bytes of lowercase letters, digits, `_`, `-` and `.`,
 /// starting with a letter or `_`, as Debian's adduser takes them, since
-/// mail, shells and `chown name:group` misread others.
+/// mail, shells and `chown name:group` misread others; and not
+/// [`request::HELP_NAME`], which help sessions' helpers sign in as.
 pub fn check_name(name: &str) -> Result<(), String> {
     let mut chars = name.chars();
     let first_fits = chars.next().is_some_and(|c| c.is_ascii_lowercase() || c == '_');
@@ -355,6 +356,11 @@ pub fn check_name(name: &str) -> Result<(), String> {
         Err(format!(
             "`{name}` cannot be a name: use lowercase letters, digits, `_`, `-` and `.`, \
              starting with a letter"
+        ))
+    } else if name == request::HELP_NAME {
+        Err(format!(
+            "`{name}` is kept for the helpers who sign in to help sessions (help-session(1)): \
+             choose another name"
         ))
     } else {
         Ok(())

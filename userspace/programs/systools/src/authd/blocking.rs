@@ -420,6 +420,8 @@ pub(super) enum Failed {
     SshRefused,
     /// A wrong sharing password, from a PC signing in to the shares.
     SharePassword,
+    /// A wrong help-session code, from a helper signing in (ADR 0540).
+    HelpCode,
 }
 
 impl Failed {
@@ -429,6 +431,7 @@ impl Failed {
             Failed::SshPassword => "wrong passwords over SSH",
             Failed::SshRefused => "refused SSH sign-ins",
             Failed::SharePassword => "wrong sharing passwords",
+            Failed::HelpCode => "wrong help-session codes",
         }
     }
 }

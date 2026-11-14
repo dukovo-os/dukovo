@@ -36,6 +36,10 @@ runs-with-your-access = true
 # The names capability: it starts each session as the person who signs
 # in (ADR 0250). No other service holds it.
 names = true
+# A capability to its own domain: it runs each help session in a domain
+# below its own, and stops the domain as the session ends, with all the
+# helper started (ADR 0540).
+domain = true
 # The platform capability, which it hands to an administrator's command
 # inside elevate (ADR 0219), so that ectool(8) works there as at root's
 # shell.

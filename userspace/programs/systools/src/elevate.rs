@@ -46,7 +46,7 @@ use accounts::User;
 use accounts::request::{self, Answer, Mode, NEEDS_PASSWORD, Request, WRONG_PASSWORD};
 use radix_abi::capability::{self, ObjectKind, Rights};
 use radix_abi::directory::{self, OpenFlags};
-use radix_abi::{Status, process, startup};
+use radix_abi::{Status, process, resource_domain, startup};
 
 use crate::args::{Arg, Args};
 use crate::sys::{self, SYS};
@@ -245,9 +245,15 @@ pub fn root_account(users: impl Iterator<Item = User>) -> User {
 /// source, the log, the platform, clock and firewall capabilities if
 /// authd holds them, authd's
 /// network capabilities, and `fds` as its descriptors 0 to 2. It runs [`HELPER`], which makes the
-/// command's terminal its own and runs `plan`'s program. Returns the
-/// process's number.
-pub fn start(fds: &[OwnedFd], plan: &Plan, env: &[String]) -> Result<u64, String> {
+/// command's terminal its own and runs `plan`'s program. It runs in the
+/// resource domain in slot `domain` when one is given: a help screen's
+/// (ADR 0540), whose end ends it. Returns the process's number.
+pub fn start(
+    fds: &[OwnedFd],
+    plan: &Plan,
+    env: &[String],
+    domain: Option<u32>,
+) -> Result<u64, String> {
     let failed = |what: &'static str| {
         move |status: Status| format!("cannot elevate: {what}: {}", sys::status_name(status.0))
     };
@@ -265,8 +271,13 @@ pub fn start(fds: &[OwnedFd], plan: &Plan, env: &[String]) -> Result<u64, String
         0,
     )
     .map_err(failed("opening elevate"))?;
-    process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, signin::SLOTS, child)
-        .map_err(failed("making its process"))?;
+    match domain {
+        Some(domain) => resource_domain::create_process(&SYS, domain, signin::SLOTS, child),
+        None => {
+            process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, signin::SLOTS, child)
+        }
+    }
+    .map_err(failed("making its process"))?;
     let mut shares = vec![
         (startup::SLOT_ROOT, startup::SLOT_ROOT),
         (startup::SLOT_RANDOM, startup::SLOT_RANDOM),

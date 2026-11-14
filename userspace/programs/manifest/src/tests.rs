@@ -248,6 +248,18 @@ fn only_authd_holds_the_names_capability() {
 }
 
 #[test]
+fn only_authd_holds_its_own_domain() {
+    // authd runs each help session in a domain below its own (ADR 0540).
+    for (name, text) in SHIPPED {
+        let service = service::from_toml(text).unwrap();
+        assert_eq!(service.permissions.domain, *name == "authd", "{name}");
+    }
+    assert!(!service::from_toml(&file("")).unwrap().permissions.domain);
+    let asked = service::from_toml(&file("[permissions]\ndomain = true\n")).unwrap();
+    assert!(asked.permissions.domain);
+}
+
+#[test]
 fn devices_name_the_cards_a_driver_drives() {
     // Of the shipped services only e1000d drives cards (ADR 0198).
     for (name, text) in SHIPPED {
