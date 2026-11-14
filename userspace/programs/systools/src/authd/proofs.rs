@@ -260,7 +260,10 @@ fn origin_host(origin: &str) -> Option<&str> {
 
 /// Checks the client data (WebAuthn §7.1 steps 5 to 12, §7.2 steps 10 to
 /// 15) and returns its SHA-256, which the signature covers.
-fn check_client_data(expected: &Expected<'_>, client_data: &[u8]) -> Result<[u8; 32], String> {
+pub(crate) fn check_client_data(
+    expected: &Expected<'_>,
+    client_data: &[u8],
+) -> Result<[u8; 32], String> {
     if client_data.len() > CLIENT_DATA_MAX {
         return Err("the browser's client data is longer than 4 KiB".into());
     }
@@ -304,7 +307,7 @@ const EXTENSIONS: u8 = 0x80;
 
 /// Authenticator data, read: its flags, its count, and on a passkey's
 /// creation the credential's ID and key.
-struct AuthenticatorData<'a> {
+pub(crate) struct AuthenticatorData<'a> {
     flags: u8,
     count: u32,
     credential: Option<(&'a [u8], &'a [u8])>,
@@ -314,7 +317,7 @@ struct AuthenticatorData<'a> {
 /// (WebAuthn §7.1 steps 13 to 16, §7.2 steps 15 to 18): the relying
 /// party's hash, the person's presence, and their verification when it
 /// was asked for.
-fn read_authenticator_data<'a>(
+pub(crate) fn read_authenticator_data<'a>(
     expected: &Expected<'_>,
     data: &'a [u8],
 ) -> Result<AuthenticatorData<'a>, String> {
@@ -391,7 +394,7 @@ pub const RS256: i64 = -257;
 
 /// A passkey's public key, from its COSE_Key (RFC 9053).
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Key {
+pub(crate) enum Key {
     /// A P-256 point, as `04 ‖ x ‖ y`.
     P256(Vec<u8>),
     /// An Ed25519 key.
@@ -435,7 +438,7 @@ fn integer_at(pairs: &[(Item<'_>, Item<'_>)], at: i64, what: &str) -> Result<i64
 
 /// Reads a COSE_Key: one of the three kinds in [`ALGORITHMS`], with the
 /// curve and sizes that kind has, and returns its algorithm and key.
-fn read_key(cose: &[u8]) -> Result<(i64, Key), String> {
+pub(crate) fn read_key(cose: &[u8]) -> Result<(i64, Key), String> {
     let item = cbor::decode_whole(cose)
         .map_err(|err| format!("the passkey's key does not read: {}", err.words()))?;
     let Item::Map(pairs) = item else {

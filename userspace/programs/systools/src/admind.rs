@@ -62,19 +62,23 @@
 pub(crate) mod actions;
 mod audit;
 mod authd;
-mod caller;
+pub(crate) mod caller;
 mod diff;
 pub(crate) mod errors;
 mod files;
-#[cfg(test)]
-mod fixture;
+// The console the tests of the routes use, which the console of a fuzz
+// target (`crate::fuzz`) is made from too. Outside the tests, that is all
+// it is for, and most of the rest goes unused.
+#[cfg(any(test, feature = "fuzz"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod fixture;
 mod guard;
 pub(crate) mod journal;
 mod limits;
 mod link;
-mod preferences;
+pub(crate) mod preferences;
 mod reach;
-mod routes;
+pub(crate) mod routes;
 mod run;
 pub(crate) mod scopes;
 mod serve;
@@ -83,7 +87,7 @@ mod shared;
 pub(crate) mod store;
 mod tasks;
 mod tls;
-mod webauthn;
+pub(crate) mod webauthn;
 mod who;
 mod worker;
 
@@ -92,8 +96,17 @@ pub(crate) use serve::ISSUE;
 use crate::args::{Arg, Args};
 use crate::util::Fail;
 
+/// Whether [`log`] says nothing, which the console of a fuzz target asks
+/// for: it answers millions of requests and no one reads its log.
+#[cfg(feature = "fuzz")]
+pub(crate) static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Says `text` in the log at syslog level `level`.
 fn log(level: u8, text: &str) {
+    #[cfg(feature = "fuzz")]
+    if QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     eprintln!("<{level}>admind: {text}");
 }
 

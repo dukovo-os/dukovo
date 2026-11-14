@@ -647,7 +647,7 @@ const PART_MAX: usize = 255;
 /// A part of an address with its `%XX` escapes decoded, if it is one
 /// argument: not empty, at most 255 bytes, UTF-8, and no NUL, `/` or
 /// control character, decoded or not.
-fn decode(part: &str) -> Option<String> {
+pub(crate) fn decode(part: &str) -> Option<String> {
     let bytes = part.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;

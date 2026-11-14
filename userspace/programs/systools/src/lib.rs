@@ -10,7 +10,8 @@
 //!
 //! The program is a library with a `main` of its own and a binary that
 //! calls it, so that a host program can link the same code. Every module
-//! is private: the library gives that one function.
+//! is private: the library gives that one function, and, when built with
+//! the `fuzz` feature, the module `fuzz` (ADR 0515).
 //!
 //! The process tools read the kernel's `/processes` (radix-proc(5)); `lsof`
 //! lists the capabilities each process holds; `rtrace` reads a trace of
@@ -130,6 +131,8 @@ mod findmnt;
 mod firewall;
 mod floppy;
 mod fstrim;
+#[cfg(feature = "fuzz")]
+pub mod fuzz;
 mod git_credential;
 mod guest_agent;
 mod hardware;

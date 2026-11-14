@@ -24,7 +24,11 @@
 
 pub mod acme;
 mod add;
-#[cfg(test)]
+// The certificates the tests of `cert` build on, which the console of a fuzz
+// target (`crate::fuzz`) uses too. Outside the tests, that is all they are
+// for, and most of the rest goes unused.
+#[cfg(any(test, feature = "fuzz"))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod fixtures;
 pub mod inspect;
 pub mod machine;

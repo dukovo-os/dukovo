@@ -84,7 +84,7 @@ impl Preferences {
     /// What `document` says, a key that is not there or is not right
     /// reading as its default. `is_zone` says which zones are the
     /// machine's.
-    fn of(document: &DocumentMut, is_zone: impl Fn(&str) -> bool) -> Preferences {
+    pub(crate) fn of(document: &DocumentMut, is_zone: impl Fn(&str) -> bool) -> Preferences {
         let default = Preferences::default();
         let word = |key: &str, allowed: &[&str], default: String| {
             document
@@ -182,7 +182,7 @@ impl Change {
     }
 
     /// Puts what it holds into `document`, where the file keeps it.
-    fn apply(&self, document: &mut DocumentMut) {
+    pub(crate) fn apply(&self, document: &mut DocumentMut) {
         let table = document.as_table_mut();
         if let Some(theme) = &self.theme {
             settings_edit::set_string(table, "theme", theme);

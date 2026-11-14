@@ -179,6 +179,10 @@ smoltcp = { version = "=0.14.0", default-features = false, features = [
 # image has it: the boot tests' images and every image for people are built
 # without it, and the lab tests that need it fail on an image that has not.
 lab = []
+# The entry points a fuzz target links to (ADR 0515): admind's request
+# handling on a console with no socket, and the parsers of what a client
+# sends. A build for people leaves it out.
+fuzz = []
 
 [lints]
 workspace = true

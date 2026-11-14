@@ -682,7 +682,7 @@ fn verb_of(head: &Parts) -> Result<Verb, Failure> {
 }
 
 /// The value of the cookie `name`, if the request has it once.
-fn cookie_of<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie_of<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     guard::cookie(
         headers.get_all(header::COOKIE).iter().filter_map(|value| value.to_str().ok()),
         name,
