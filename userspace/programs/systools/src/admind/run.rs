@@ -420,7 +420,9 @@ mod tests {
             assert_eq!(failed.kind, Kind::CommandFailed, "status {status}");
         }
         // Every other action answers only after 0.
-        for action in crate::admind::actions::REGISTRY.iter().filter(|a| a.id() != "service.explain") {
+        for action in
+            crate::admind::actions::REGISTRY.iter().filter(|a| a.id() != "service.explain")
+        {
             assert_eq!(action.answers(), [0], "{}", action.id());
         }
     }
