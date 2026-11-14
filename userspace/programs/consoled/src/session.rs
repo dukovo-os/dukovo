@@ -186,6 +186,12 @@ impl Console {
         self.sign_in_screen.may_redraw(self.signed_in())
     }
 
+    /// When the sign-in screen was drawn, if it may be drawn again for a
+    /// change of the web console's lines.
+    pub fn redrawable_since(&self) -> Option<Instant> {
+        self.may_redraw().then_some(self.started)
+    }
+
     /// Whether the sign-in screen was drawn with other lines about the web
     /// console than `lines`.
     pub fn web_console_differs(&self, lines: &str) -> bool {

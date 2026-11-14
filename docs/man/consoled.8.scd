@@ -82,8 +82,9 @@ consoled reads the file each time a sign-in screen is drawn. admind
 writes it only once it runs, which is after consoled has drawn the first
 screen on tty1, and again when its certificate changes, so a sign-in
 screen that nobody has typed on is drawn again when the address or the
-fingerprint it shows is no longer the file's. While such a screen is
-shown, consoled looks at the file every 2 seconds. When it has changed,
+fingerprint it shows is no longer the file's. consoled looks at the
+file every 2 seconds in the 5 minutes after such a screen is drawn, and
+then once a minute until someone types on it. When the file has changed,
 consoled ends the sign-in program with SIGHUP, as a modem's hang-up
 would, and starts the sign-in again at once; it logs *tty1: drawing the
 sign-in screen again for the web console's address*, and the end does not

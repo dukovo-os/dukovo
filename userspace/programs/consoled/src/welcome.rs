@@ -12,9 +12,9 @@
 //! that a person at the machine knows where to open the console and can
 //! compare the fingerprint with the browser's warning. admind writes them
 //! once it runs, after the first screens are drawn, and again when the
-//! certificate changes, so consoled looks at their file every few seconds
-//! (`WebConsoleWatch`) while a sign-in screen nobody has typed on could
-//! use a change, and `session` draws that screen again.
+//! certificate changes, so consoled looks at their file (`WebConsoleWatch`)
+//! while a sign-in screen nobody has typed on could use a change, and
+//! `session` draws that screen again.
 
 use std::fmt::Write as _;
 use std::io::Read as _;
@@ -38,8 +38,13 @@ pub const WEB_CONSOLE: &str = "/system/live/admind/issue";
 const WEB_CONSOLE_MAX: u64 = 1024;
 
 /// How often consoled looks at that file while a sign-in screen could be
-/// drawn again for a change in it.
-const WEB_CONSOLE_EVERY: Duration = Duration::from_secs(2);
+/// drawn again for a change in it: every 2 seconds in the 5 minutes after
+/// the newest such screen was drawn, as admind writes the file soon after
+/// boot, and then once a minute, for a certificate that is renewed, so
+/// that a machine nobody signs in to is not woken often for nothing.
+const LOOK_OFTEN: Duration = Duration::from_secs(2);
+const LOOK_OFTEN_FOR: Duration = Duration::from_mins(5);
+const LOOK_SELDOM: Duration = Duration::from_secs(60);
 
 /// The bytes of a SHA-256 fingerprint, each shown as two hex digits.
 const FINGERPRINT_BYTES: usize = 32;
@@ -301,8 +306,8 @@ fn web_console_lines(text: &str, cols: usize) -> Option<String> {
     Some(out)
 }
 
-/// The web console's file, looked at every [`WEB_CONSOLE_EVERY`] by `stat`
-/// alone, so that consoled reads it only after admind has written it again.
+/// The web console's file, looked at by `stat` alone (see [`LOOK_OFTEN`]),
+/// so that consoled reads it only after admind has written it again.
 /// admind replaces the file as a whole, so a write shows in the time the
 /// file was modified, or in its length.
 pub struct WebConsoleWatch {
@@ -314,23 +319,33 @@ pub struct WebConsoleWatch {
 }
 
 impl WebConsoleWatch {
-    /// A watch on the file at `path`, which has not been looked at yet:
-    /// the first look is due [`WEB_CONSOLE_EVERY`] after `now`.
+    /// A watch on the file at `path`, which has not been looked at yet.
     pub fn new(path: &str, now: Instant) -> WebConsoleWatch {
         WebConsoleWatch { path: path.to_string(), seen: None, looked: now }
     }
 
-    /// When the next look is due, while a screen is `wanted` that it could
-    /// draw again. With none there is no deadline, so that consoled sleeps
-    /// until something else wakes it.
-    pub fn deadline(&self, wanted: bool) -> Option<Instant> {
-        wanted.then(|| self.looked + WEB_CONSOLE_EVERY)
+    /// How long after the last look the next is due, when the newest
+    /// screen that could be drawn again was drawn at `drawn`.
+    fn every(&self, drawn: Instant) -> Duration {
+        if self.looked.saturating_duration_since(drawn) < LOOK_OFTEN_FOR {
+            LOOK_OFTEN
+        } else {
+            LOOK_SELDOM
+        }
     }
 
-    /// Looks at the file if a look is due at `now`, and says whether it
-    /// was written, or removed, or made, since the look before.
-    pub fn changed(&mut self, now: Instant) -> bool {
-        if now < self.looked + WEB_CONSOLE_EVERY {
+    /// When the next look is due, when the newest screen that could be
+    /// drawn again was drawn at `drawn`. With no such screen there is no
+    /// deadline, so that consoled sleeps until something else wakes it.
+    pub fn deadline(&self, drawn: Option<Instant>) -> Option<Instant> {
+        drawn.map(|drawn| self.looked + self.every(drawn))
+    }
+
+    /// Looks at the file if a look is due at `now` for screens the newest
+    /// of which was drawn at `drawn`, and says whether it was written, or
+    /// removed, or made, since the look before.
+    pub fn changed(&mut self, now: Instant, drawn: Instant) -> bool {
+        if now < self.looked + self.every(drawn) {
             return false;
         }
         self.looked = now;
@@ -565,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn the_file_is_looked_at_only_every_two_seconds() {
+    fn the_file_is_looked_at_every_two_seconds_after_a_screen_is_drawn() {
         let dir = std::env::temp_dir().join(format!("web-console-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("issue");
@@ -574,11 +589,11 @@ mod tests {
         let at = |seconds: u64| start + Duration::from_secs(seconds);
         let mut watch = WebConsoleWatch::new(path, start);
         std::fs::write(path, "one").unwrap();
-        assert!(!watch.changed(at(1)), "a look is not due");
-        assert!(watch.changed(at(2)), "the file was made");
+        assert!(!watch.changed(at(1), start), "a look is not due");
+        assert!(watch.changed(at(2), start), "the file was made");
         std::fs::write(path, "other").unwrap();
-        assert!(!watch.changed(at(3)), "a look is not due");
-        assert!(watch.changed(at(4)), "the file was written again");
+        assert!(!watch.changed(at(3), start), "a look is not due");
+        assert!(watch.changed(at(4), start), "the file was written again");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -591,24 +606,37 @@ mod tests {
         let start = Instant::now();
         let at = |seconds: u64| start + Duration::from_secs(seconds);
         let mut watch = WebConsoleWatch::new(path, start);
-        assert!(!watch.changed(at(2)), "a file that is missing is as it was");
+        assert!(!watch.changed(at(2), start), "a file that is missing is as it was");
         std::fs::write(path, "one").unwrap();
-        assert!(watch.changed(at(4)));
-        assert!(!watch.changed(at(6)), "unchanged: nothing to read");
-        assert!(!watch.changed(at(8)), "unchanged: nothing to read");
+        assert!(watch.changed(at(4), start));
+        assert!(!watch.changed(at(6), start), "unchanged: nothing to read");
+        assert!(!watch.changed(at(8), start), "unchanged: nothing to read");
         std::fs::write(path, "longer").unwrap();
-        assert!(watch.changed(at(10)));
+        assert!(watch.changed(at(10), start));
         std::fs::remove_file(path).unwrap();
-        assert!(watch.changed(at(12)), "admind removes the file when it stops");
-        assert!(!watch.changed(at(14)));
+        assert!(watch.changed(at(12), start), "admind removes the file when it stops");
+        assert!(!watch.changed(at(14), start));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn five_minutes_after_the_newest_screen_the_file_is_looked_at_once_a_minute() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut watch = WebConsoleWatch::new("/nowhere", start);
+        assert!(!watch.changed(at(300), start));
+        assert_eq!(watch.deadline(Some(start)), Some(at(360)));
+        assert!(!watch.changed(at(359), start), "a look is not due");
+        assert!(!watch.changed(at(360), start), "a look, and nothing changed");
+        // A screen drawn now is looked for every two seconds again.
+        assert_eq!(watch.deadline(Some(at(361))), Some(at(362)));
     }
 
     #[test]
     fn nothing_wakes_consoled_while_no_screen_waits_for_the_file() {
         let start = Instant::now();
         let watch = WebConsoleWatch::new("/nowhere", start);
-        assert_eq!(watch.deadline(false), None);
-        assert_eq!(watch.deadline(true), Some(start + WEB_CONSOLE_EVERY));
+        assert_eq!(watch.deadline(None), None);
+        assert_eq!(watch.deadline(Some(start)), Some(start + LOOK_OFTEN));
     }
 }

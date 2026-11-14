@@ -34,10 +34,12 @@
 //! it can, shows the seconds left and locks again. The route that lab builds add, _POST
 //! /api/1/test/elevate_, is not in this image, which is 404: no case can
 //! ask for the lab build, so what an unlocked session runs as an
-//! administrator is the lab test web-console/unlock's. *service admind
-//! restart* ends the sessions, so the old cookie is ADM-107; the console
-//! serves the same certificate and signs people in again. The power
-//! button ends it.
+//! administrator is the lab test web-console/unlock's. Stopping and
+//! starting admind ends the sessions, so the old cookie is ADM-107; the
+//! console serves the same certificate and signs people in again, and
+//! consoled draws tty2's sign-in screen, which nobody has typed on, again
+//! when admind removes its file and when it writes it. The power button
+//! ends it.
 
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream};
@@ -690,9 +692,13 @@ fn unlocking(console: &Console, alice: &mut Browser, app: &mut App) -> Result<()
     Ok(())
 }
 
-/// A restart of admind ends the sessions: the cookie that was good is
-/// ADM-107, and the answer clears it. The certificate is the same one,
-/// the address in the issue file is back, and alice signs in again.
+/// A restart of admind, stopped and started again, ends the sessions: the
+/// cookie that was good is ADM-107, and the answer clears it. The
+/// certificate is the same one, the address in the issue file is back,
+/// and alice signs in again. tty2's sign-in screen, drawn before the stop
+/// and typed on by nobody, is drawn again when admind removes its file as
+/// it stops, and again when it writes it as it starts, so that it shows
+/// the address again.
 fn restart(
     vm: &mut Vm,
     console: &Console,
@@ -701,10 +707,22 @@ fn restart(
 ) -> Result<(), String> {
     let old = alice.cookie.clone();
     elevated(vm)?;
-    let before = vm.log().matches("admind: answers at ").count();
-    answer_prompt(vm, "$", "clear; elevate service admind restart; echo \"restart $?\"")?;
-    vm.expect_screen(&["restart 0"])?;
+    vm.press(&["alt-f2"])?;
+    vm.expect_screen(&["Web console:", address])?;
+    vm.press(&["alt-f1"])?;
+    let redrawn = "consoled: tty2: drawing the sign-in screen again for the web console's address";
+    let (before, drawn) =
+        (vm.log().matches("admind: answers at ").count(), vm.log().matches(redrawn).count());
+    answer_prompt(vm, "$", "clear; elevate service admind stop; echo \"stop $?\"")?;
+    vm.expect_screen(&["stop 0"])?;
+    wait_for_lines(vm, redrawn, drawn + 1, 30)?;
+    answer_prompt(vm, "$", "clear; elevate service admind start; echo \"start $?\"")?;
+    vm.expect_screen(&["start 0"])?;
     wait_for_lines(vm, "admind: answers at ", before + 1, 60)?;
+    wait_for_lines(vm, redrawn, drawn + 2, 30)?;
+    vm.press(&["alt-f2"])?;
+    vm.expect_screen(&["Web console:", address])?;
+    vm.press(&["alt-f1"])?;
     // The new admind is listening: it answers once the port's forwarding
     // reaches it.
     let deadline = Instant::now() + Duration::from_secs(30);

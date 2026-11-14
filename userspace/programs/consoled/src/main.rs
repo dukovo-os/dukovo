@@ -719,10 +719,10 @@ impl Consoled {
         }
     }
 
-    /// Whether some console has a sign-in screen that may be drawn again
-    /// for a change in admind's file of the web console's lines.
-    fn any_console_may_redraw(&self) -> bool {
-        self.consoles.iter().any(Console::may_redraw)
+    /// When the newest sign-in screen that may be drawn again for a change
+    /// in admind's file of the web console's lines was drawn, if one is.
+    fn newest_redrawable(&self) -> Option<Instant> {
+        self.consoles.iter().filter_map(Console::redrawable_since).max()
     }
 
     /// Draws again each sign-in screen nobody has typed on whose lines
@@ -732,7 +732,8 @@ impl Consoled {
     /// each console is compared in its own width, as the lines are wrapped
     /// to it.
     fn redraw_sign_ins(&mut self, now: Instant) {
-        if !self.any_console_may_redraw() || !self.web_console.changed(now) {
+        let Some(drawn) = self.newest_redrawable() else { return };
+        if !self.web_console.changed(now, drawn) {
             return;
         }
         for console in &mut self.consoles {
@@ -793,7 +794,7 @@ impl Consoled {
                 .chain(self.prompts.as_ref().and_then(Prompts::deadline))
                 .chain(self.reader.deadline())
                 .chain(self.slow.deadline())
-                .chain(self.web_console.deadline(self.any_console_may_redraw()))
+                .chain(self.web_console.deadline(self.newest_redrawable()))
                 .min();
             let timeout =
                 next.map_or(-1, |at| at.saturating_duration_since(now).as_millis() as i32);
