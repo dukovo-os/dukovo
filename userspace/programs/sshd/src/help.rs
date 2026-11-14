@@ -44,7 +44,8 @@ const LINE_ROOM: u64 = 256;
 /// What the helper reads first, before the owner's screen.
 const GREETING: &str = "\r\nYou are in a help session: you see and type in its owner's screen, \
                         as them. They see everything, and can end it at any time. What you type \
-                        is kept.\r\n\r\n";
+                        is kept. The screen shows what changes from now on: Ctrl-L redraws \
+                        it.\r\n\r\n";
 
 /// What the helper is told as the session ends. authd closes the help
 /// screen's socket as it ends the session, so help-session(1) cannot tell

@@ -55,6 +55,16 @@ const TRIES: u32 = 3;
 /// help screen.
 const OWNER_OUT: RawFd = libc::STDOUT_FILENO;
 
+/// The most of the help screen's output kept for a helper whose
+/// connection takes it slower than the screen writes it. Past it, what is
+/// kept is dropped, so that the owner's screen never waits for the
+/// helper's, and they are told [`FELL_BEHIND`].
+const BEHIND_MAX: usize = 256 * 1024;
+
+/// What a helper whose connection fell behind is told.
+const FELL_BEHIND: &str =
+    "Your connection fell behind the screen, and some of it was skipped: Ctrl-L redraws it.";
+
 /// The text of `--help`, and of a usage error.
 fn usage_text() -> String {
     format!(
@@ -230,9 +240,7 @@ fn key_from_file(path: &OsStr) -> Result<Vec<u8>, Fail> {
 /// Starts a help session and shares the terminal until it ends.
 fn start(options: &Start) -> Result<i32, Fail> {
     if util::own_user() == 0 {
-        return Err(fail(
-            "help-session shares your own screen: run it as yourself, not as root".into(),
-        ));
+        return Err(fail("it shares your own screen: run it as yourself, not as root".into()));
     }
     if !util::is_terminal(0) || !util::is_terminal(1) {
         return Err(fail(
@@ -259,8 +267,8 @@ fn start(options: &Start) -> Result<i32, Fail> {
         },
         &sent,
     )?;
-    // authd and sshd hold the ends now. Without this one's own copy of the
-    // slave side, the master would not report the end of the shell's.
+    // authd holds them now. Without this one's own copy of the slave side,
+    // the master would not report the end of the shell's.
     screen.slave = None;
     drop(for_sshd);
     let started = HelpStarted::from_words(&text)
@@ -512,6 +520,7 @@ fn share(
         master_open: true,
         socket_open: true,
         helper_came: false,
+        to_helper: Vec::new(),
         buffer: [0; 4096],
     };
     let why = joined.run(&mut authd, &wake);
@@ -527,7 +536,10 @@ struct Joined<'a> {
     /// each is let alone once it reports its end.
     master_open: bool,
     socket_open: bool,
+    /// Whether a helper signed in: the screen goes to them from then on.
     helper_came: bool,
+    /// What the helper's socket has not taken yet.
+    to_helper: Vec<u8>,
     buffer: [u8; 4096],
 }
 
@@ -539,18 +551,21 @@ impl Joined<'_> {
         authd: &mut BufReader<UnixStream>,
         wake: &OwnedFd,
     ) -> Result<HelpEnded, Fail> {
-        let watch = |fd: RawFd, open: bool| libc::pollfd {
-            fd: if open { fd } else { -1 },
-            events: libc::POLLIN,
+        let watch = |fd: RawFd, events: libc::c_short| libc::pollfd {
+            fd: if events == 0 { -1 } else { fd },
+            events,
             revents: 0,
         };
+        let when = |open: bool, events: libc::c_short| if open { events } else { 0 };
         loop {
+            let to_socket = when(self.socket_open, libc::POLLIN)
+                | when(!self.to_helper.is_empty(), libc::POLLOUT);
             let mut fds = [
-                watch(authd.get_ref().as_raw_fd(), true),
-                watch(wake.as_raw_fd(), true),
-                watch(self.master.as_raw_fd(), self.master_open),
-                watch(0, true),
-                watch(self.socket.as_raw_fd(), self.socket_open),
+                watch(authd.get_ref().as_raw_fd(), libc::POLLIN),
+                watch(wake.as_raw_fd(), libc::POLLIN),
+                watch(self.master.as_raw_fd(), when(self.master_open, libc::POLLIN)),
+                watch(0, libc::POLLIN),
+                watch(self.socket.as_raw_fd(), to_socket),
             ];
             // A line of authd's already read is taken before waiting.
             let buffered = !authd.buffer().is_empty();
@@ -575,7 +590,10 @@ impl Joined<'_> {
             if fds[3].revents != 0 && self.owner_typed() {
                 return Ok(HelpEnded::Owner);
             }
-            if fds[4].revents != 0 {
+            if fds[4].revents & libc::POLLOUT != 0 {
+                self.send_helper();
+            }
+            if self.socket_open && fds[4].revents & !libc::POLLOUT != 0 {
                 self.helper_typed();
             }
             if fds[2].revents != 0 {
@@ -653,7 +671,38 @@ impl Joined<'_> {
             return;
         }
         elevate::write_all(OWNER_OUT, &self.buffer[..count]);
-        tell_helper(self.socket, &self.buffer[..count]);
+        let output = self.buffer;
+        self.tell_helper(&output[..count]);
+    }
+
+    /// Sends `bytes` to the helper, once one has signed in: what the
+    /// socket does not take now waits for it, up to [`BEHIND_MAX`].
+    fn tell_helper(&mut self, bytes: &[u8]) {
+        if !self.helper_came {
+            return;
+        }
+        if self.to_helper.len() + bytes.len() > BEHIND_MAX {
+            self.to_helper.clear();
+            self.to_helper.extend_from_slice(framed(FELL_BEHIND).as_bytes());
+        }
+        self.to_helper.extend_from_slice(bytes);
+        self.send_helper();
+    }
+
+    /// Sends the helper as much of what waits for them as the socket takes
+    /// now, which never blocks. A socket that takes nothing more, as when
+    /// the helper's connection is gone, has what waits dropped.
+    fn send_helper(&mut self) {
+        let mut socket = self.socket;
+        while !self.to_helper.is_empty() {
+            match socket.write(&self.to_helper) {
+                Ok(0) => return self.to_helper.clear(),
+                Ok(count) => drop(self.to_helper.drain(..count)),
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return,
+                Err(_) => return self.to_helper.clear(),
+            }
+        }
     }
 
     /// Takes one line of authd's events and shows it. Why the session
@@ -676,28 +725,17 @@ impl Joined<'_> {
             return Ok(None);
         };
         let text = framed(&event_sentence(&event));
-        if matches!(event, HelpEvent::Left { .. } | HelpEvent::Ended(_)) {
-            tell_helper(self.socket, text.as_bytes());
-        }
         match event {
-            // The owner's screen says it after the terminal is put back.
+            // The owner's screen says it after the terminal is put back;
+            // sshd tells the helper, as authd has closed their socket.
             HelpEvent::Ended(why) => return Ok(Some(why)),
             HelpEvent::Helper { .. } => self.helper_came = true,
+            HelpEvent::Left { .. } => self.tell_helper(text.as_bytes()),
             _ => {}
         }
         elevate::write_all(OWNER_OUT, text.as_bytes());
         Ok(None)
     }
-}
-
-/// Sends `bytes` to the helper, as far as the socket takes them now. The
-/// socket never blocks, and what it cannot take is dropped: a helper who
-/// is slow, or who has not signed in yet, must not stop the owner's
-/// screen.
-fn tell_helper(socket: &UnixStream, bytes: &[u8]) {
-    let mut socket = socket;
-    // A full or closed socket loses what it cannot take, as said above.
-    let _ = socket.write(bytes);
 }
 
 /// `help-session end`: ends the owner's session from another terminal.
@@ -1140,6 +1178,67 @@ mod tests {
              t160  end     owner\n\
              odd line\n"
         );
+    }
+
+    #[test]
+    fn the_helper_sees_the_screen_from_their_sign_in_and_a_slow_one_is_told_what_was_skipped() {
+        let (socket, helper) = UnixStream::pair().unwrap();
+        socket.set_nonblocking(true).unwrap();
+        helper.set_nonblocking(true).unwrap();
+        let master = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
+        let mut joined = Joined {
+            master: &master,
+            socket: &socket,
+            master_open: true,
+            socket_open: true,
+            helper_came: false,
+            to_helper: Vec::new(),
+            buffer: [0; 4096],
+        };
+        let read = |helper: &UnixStream| {
+            let mut got = Vec::new();
+            let mut buffer = [0; 16384];
+            let mut helper = helper;
+            while let Ok(count) = helper.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buffer[..count]);
+            }
+            got
+        };
+        // Before a helper signs in, nothing goes to the socket.
+        joined.tell_helper(b"before");
+        assert!(read(&helper).is_empty());
+        joined.helper_came = true;
+        joined.tell_helper(b"after");
+        assert_eq!(read(&helper), b"after");
+        // A helper who reads nothing: the socket fills, and what it cannot
+        // take waits, up to the most kept; then that is dropped for a note.
+        let chunk = [b'x'; 4096];
+        while joined.to_helper.is_empty() {
+            joined.tell_helper(&chunk);
+        }
+        while joined.to_helper.len() + chunk.len() <= BEHIND_MAX {
+            joined.tell_helper(&chunk);
+        }
+        joined.tell_helper(b"latest");
+        let note = framed(FELL_BEHIND);
+        assert!(joined.to_helper.starts_with(note.as_bytes()));
+        assert!(joined.to_helper.ends_with(b"latest"));
+        // As the helper reads, the rest goes, the note among it.
+        let mut got = Vec::new();
+        while !joined.to_helper.is_empty() {
+            got.extend(read(&helper));
+            joined.send_helper();
+        }
+        got.extend(read(&helper));
+        let text = String::from_utf8_lossy(&got);
+        assert!(text.contains(FELL_BEHIND) && text.ends_with("latest"));
+        // A helper who is gone takes nothing more, and nothing piles up.
+        drop(helper);
+        joined.tell_helper(b"to no one");
+        assert!(joined.to_helper.is_empty());
     }
 
     #[test]

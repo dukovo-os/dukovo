@@ -155,6 +155,13 @@ no commands of their own, no SFTP and no port forwarding. The size of
 their window is ignored, as the screen keeps the owner's. Ctrl-] from the
 helper is a key like any other: only the owner's ends the session.
 
+The helper's screen shows what changes from the moment they sign in, so
+it starts blank; Ctrl-L redraws it, in a shell or an editor. The owner's
+screen never waits for the helper's connection: when it falls more than
+256 KiB behind, what it has not taken is skipped, and the helper is told
+to redraw. When the session ends, for any reason, the helper's screen
+says so and *ssh* closes.
+
 SSH must reach the computer. The helper must be on the same network, or
 connected by a VPN, or the router must forward a port to the computer;
 reaching a computer behind a home router from anywhere is not what
