@@ -48,8 +48,9 @@ pub const SERVER: &str = "https://updates.dukovo.org/system/";
 pub const DEFAULT_CHANNEL: &str = "stable";
 
 /// sysupdate's state: the trusted metadata, the lists read, and the
-/// files fetched for the next stage.
-const STATE: &str = "/system/state/sysupdate";
+/// files fetched for the next stage. Rescue reads and keeps the root's
+/// own, in its `@state` (ADR 0543).
+pub(crate) const STATE: &str = "/system/state/sysupdate";
 
 /// How many times a file is asked for before the fetch gives up, the
 /// waits between growing from [`WAIT`].
@@ -85,7 +86,13 @@ pub(crate) fn kept_list(version: &str) -> Option<Vec<u8>> {
 /// Where the files fetched for the next stage are kept, by SHA-256.
 #[must_use]
 pub fn downloads() -> PathBuf {
-    Path::new(STATE).join("files")
+    downloads_in(Path::new(STATE))
+}
+
+/// Where the files fetched are kept in the state folder `state`.
+#[must_use]
+pub(crate) fn downloads_in(state: &Path) -> PathBuf {
+    state.join("files")
 }
 
 /// Removes the files fetched, once a stage no longer needs them.
@@ -341,6 +348,9 @@ pub fn check_channel(name: &str) -> Result<(), String> {
 pub struct Client {
     updater: tuf::Updater,
     base: tuf::Url,
+    /// The state folder it keeps what it reads in: [`STATE`], or in
+    /// Rescue the root's.
+    state: PathBuf,
     /// The settings it was made from.
     pub settings: Settings,
 }
@@ -355,7 +365,23 @@ impl Client {
     /// by keys this system trusts, has expired, or is older than what
     /// this system has read before.
     pub fn connect(settings: Settings) -> Result<Client, Fail> {
-        let dir = metadata_dir();
+        let mut client = Client::open_in(settings, Path::new(STATE))?;
+        client.refresh()?;
+        Ok(client)
+    }
+
+    /// A client of the update server that keeps what it reads in the
+    /// state folder `state`, as [`STATE`] is laid out: from the trusted
+    /// metadata kept there, or, when there is none, from the root this
+    /// system was built with, which in Rescue is Rescue's release's. It
+    /// reads nothing from the server until [`Client::refresh`].
+    ///
+    /// # Errors
+    ///
+    /// If the trusted metadata kept there does not read, or the root it
+    /// starts from cannot be read or written there.
+    pub(crate) fn open_in(settings: Settings, state: &Path) -> Result<Client, Fail> {
+        let dir = state.join("metadata");
         if !dir.join("root.json").is_file() {
             let root =
                 std::fs::read(TRUSTED_ROOT).map_err(|err| util::failed(&TRUSTED_ROOT, err))?;
@@ -366,11 +392,21 @@ impl Client {
                 .map_err(|err| fail(format!("{}: {err}", settings.server)))
         };
         let base = url("")?;
-        let mut updater = tuf::Updater::new(&dir, &url("metadata/")?, Some(&url("targets/")?))
+        let updater = tuf::Updater::new(&dir, &url("metadata/")?, Some(&url("targets/")?))
             .map_err(|err| fail(format!("the trusted metadata in {}: {err}", dir.display())))?
-            .keeping_roots(&roots_dir());
-        updater.refresh().map_err(|err| refused(&settings.server, &err))?;
-        Ok(Client { updater, base, settings })
+            .keeping_roots(&state.join("roots"));
+        Ok(Client { updater, base, state: state.to_path_buf(), settings })
+    }
+
+    /// Reads the server's newest metadata: each root after the one
+    /// trusted, signed by the one before, then the timestamp, snapshot
+    /// and targets, none older than what was read before.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::connect`].
+    pub(crate) fn refresh(&mut self) -> Result<(), Fail> {
+        self.updater.refresh().map_err(|err| refused(&self.settings.server, &err))
     }
 
     /// The target `path`'s bytes, checked against the signed targets, or
@@ -392,7 +428,7 @@ impl Client {
                 target.length
             )));
         }
-        let file = lists_dir().join(path.replace('/', "-"));
+        let file = self.state.join("lists").join(path.replace('/', "-"));
         if !tuf::Updater::cached(&file, &target) {
             self.updater
                 .download_target(path, &target, &file)
@@ -744,22 +780,39 @@ pub struct Needed {
 ///
 /// If the slot cannot be read.
 pub fn needed(slot: &Path, release: &Release) -> Result<Needed, Fail> {
+    needed_in(Some(slot), release, &downloads())
+}
+
+/// [`needed`] of a slot at `slot`, or of none, with the files fetched
+/// before kept in `fetched`.
+///
+/// # Errors
+///
+/// If the slot cannot be read.
+pub(crate) fn needed_in(
+    slot: Option<&Path>,
+    release: &Release,
+    fetched: &Path,
+) -> Result<Needed, Fail> {
     let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
-    index(slot, &mut by_size)?;
+    if let Some(slot) = slot {
+        index(slot, &mut by_size)?;
+    }
     let mut hashes: HashMap<PathBuf, Option<String>> = HashMap::new();
     let mut hash = |path: &Path| -> Option<String> {
         hashes.entry(path.to_path_buf()).or_insert_with(|| sha256_file(path).ok()).clone()
     };
-    let fetched = downloads();
     let mut needed = Needed::default();
     let mut wanted: HashSet<&str> = HashSet::new();
     for entry in &release.files {
         let Some((sha256, size)) = entry.file() else { continue };
-        let at = slot.join(&entry.path);
         let same_size = |path: &Path| {
             std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
         };
-        if same_size(&at) && hash(&at).as_deref() == Some(sha256) {
+        if let Some(at) = slot.map(|slot| slot.join(&entry.path))
+            && same_size(&at)
+            && hash(&at).as_deref() == Some(sha256)
+        {
             continue;
         }
         if !wanted.insert(sha256) || same_size(&fetched.join(sha256)) {
@@ -814,8 +867,16 @@ pub struct Fetched {
 /// If a file cannot be fetched after [`TRIES`] tries, is not the file
 /// the list names, or cannot be written.
 pub fn fetch(client: &Client, needed: &Needed) -> Result<Fetched, Fail> {
-    let dir = downloads();
-    std::fs::create_dir_all(&dir).map_err(|err| util::failed(&dir.display(), err))?;
+    fetch_into(client, needed, &downloads())
+}
+
+/// [`fetch`] into `dir`.
+///
+/// # Errors
+///
+/// As [`fetch`].
+pub(crate) fn fetch_into(client: &Client, needed: &Needed, dir: &Path) -> Result<Fetched, Fail> {
+    std::fs::create_dir_all(dir).map_err(|err| util::failed(&dir.display(), err))?;
     let mut done = Fetched::default();
     for (sha256, from) in &needed.copy {
         let partial = dir.join(format!(".{sha256}.partial"));
@@ -826,7 +887,7 @@ pub fn fetch(client: &Client, needed: &Needed) -> Result<Fetched, Fail> {
     }
     for (sha256, size) in &needed.fetch {
         let url = client.file_url(sha256)?;
-        fetch_file(&url, sha256, *size, &dir)?;
+        fetch_file(&url, sha256, *size, dir)?;
         done.fetched += 1;
         done.bytes += size;
     }
@@ -1054,6 +1115,25 @@ mod tests {
         assert_eq!(needed.bytes, 4 + 9);
         assert_eq!(needed.copy.len(), 1);
         assert_eq!(needed.copy[0].1, dir.join("slot/moved/from"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn with_no_slot_every_file_not_fetched_before_is_needed() {
+        let dir = std::env::temp_dir().join(format!("sysupdate-afresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        let release = release(
+            "0.16.0",
+            "0.15.0",
+            &[("kept", b"fetched before"), ("new", b"brand new"), ("twice", b"brand new")],
+        );
+        let kept = release.files.iter().find(|e| e.path == "kept").unwrap().file().unwrap().0;
+        std::fs::write(dir.join("files").join(kept), b"fetched before").unwrap();
+        let needed = needed_in(None, &release, &dir.join("files")).unwrap();
+        assert_eq!(needed.fetch.len(), 1);
+        assert_eq!(needed.bytes, 9);
+        assert!(needed.copy.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

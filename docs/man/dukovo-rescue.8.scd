@@ -211,16 +211,36 @@ that died. The line it holds names the person, what they do and where.
 
 *3 Reinstall Dukovo*
 	Builds the system into the default slot, or slot A when no slot is
-	left, from Rescue's own copy of the release, or from an update folder
-	or update file on a disk (*sysupdate stage* reads the same), signed
-	by the root that Rescue trusts. It starts from a snapshot of the
+	left, from Rescue's own copy of the release (press Enter), from the
+	update server (type *server*), or from an update folder or update
+	file on a disk (type its path; *sysupdate stage* reads the same),
+	signed by the root that Rescue trusts. It starts from a snapshot of the
 	slot, so that only what differs is written, and afresh when that
 	fails, reads every file back against the signed list, and seals the
 	slot read-only. The slot state then names the slot the default, with
 	no previous version and no update, and the count of starts not seen
 	through goes back to 0. The settings, the state, every user's files
 	and apps, and shared files are not written. Rescue reinstalls its own
-	version; the system then updates as usual.
+	version, which is the newest the system proved (ADR 0543); the
+	system then updates as usual.
+
+	From the update server (ADR 0543), Rescue reads the server and
+	channel from the root's _updates.toml_ (*updates.toml*(5)) and turns
+	networking on, unless it is on, with the root's network and firewall
+	settings, as SSH into Rescue does; it waits up to 20 seconds for a
+	card to have an address. It trusts what the root's own updater kept,
+	in the root's _/system/state/sysupdate/metadata_, and when that is
+	missing or does not read, which it sets aside as _metadata.unread-_
+	*time*, the root Rescue's release trusts; each newer root the server
+	signed is read from that one, as an update reads it. It offers the
+	channel's release, or, when the release the slot held (or Rescue's
+	own copy, when the slot is gone) does not update to it directly, the
+	bridge that comes first, and refuses one older than the slot's. It
+	says how much it fetches before it asks, fetches only the files the
+	slot lacks, onto the root's disk in _/system/state/sysupdate/files_,
+	removes them once the slot is built, and turns networking off again
+	if it turned it on. Waves and holds do not apply: they are for
+	updates, and this is asked for.
 
 *4 Put back the settings*
 	Runs the fallback's steps (ADR 0454) on the last update's snapshot,
@@ -285,8 +305,10 @@ that died. The line it holds names the person, what they do and where.
 _boot/rescue_ on each EFI system partition
 	Rescue: _startup/_ with the kernel, _system_, the boot archive of
 	the rest of the release, and _release/_, its signed metadata and
-	list. _boot/rescue.new_ and _boot/rescue.old_ are there only while a
-	new copy is switched in.
+	list and _version_, the release it is. _boot/rescue.new_ and
+	_boot/rescue.old_ are there only while a new copy is switched in,
+	as *sysupdate*(8) writes one each time a newer release proves itself
+	(ADR 0543).
 
 _/system/live/rescue/root_
 	In Rescue, with SSH on, the link to the root that Rescue mounted,
@@ -310,4 +332,4 @@ _boot/grub/rescue.cfg_, _boot/grub/rescue.env_ on each EFI system partition
 
 *sysupdate*(8), *system-release*(8), *spark*(8), *consoled*(8), *authd*(8), *sshd*(8), *blocking.toml*(5),
 *dukovo-install*(8), *dukovo-boot*(7), *fsck-btrfs*(8), *changes*(1),
-*hardware*(8), *netcheck*(8)
+*hardware*(8), *netcheck*(8), *updates.toml*(5)

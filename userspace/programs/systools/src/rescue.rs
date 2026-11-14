@@ -10,8 +10,8 @@
 //! It mounts the Dukovo root the boot menu named, asks for an
 //! administrator's name and password when the root's settings can be
 //! read, and offers the repairs: reinstalling the system from Rescue's
-//! own copy of the release or from an update folder, keeping the
-//! settings, apps and files; putting back the settings from before the
+//! own copy of the release, from the update server or from an update
+//! folder, keeping the settings, apps and files; putting back the settings from before the
 //! last update; checking the root's disk; copying the users' and shared
 //! files to another disk; checking the hardware and the network, which
 //! run `hardware check` and `netcheck` (ADRs 0488 and 0489); turning
@@ -54,6 +54,7 @@ use crate::changes;
 use crate::ip;
 use crate::prompt::{self, Answer};
 use crate::sysupdate::bisect;
+use crate::sysupdate::online::{self, Plan};
 use crate::sysupdate::place::{self, BUILDING, Root};
 use crate::sysupdate::stage::{self, Files, TRUSTED_ROOT};
 use crate::sysupdate::starts::{self, Outcome};
@@ -73,6 +74,9 @@ const COPIED: [&str; 2] = ["@users", "@shared"];
 
 /// The services that make up networking, in the order they start.
 const NETWORKING: [&str; 4] = ["e1000d", "netd", "resolved", "timed"];
+
+/// What the owner types to reinstall from the update server.
+const FROM_SERVER: &str = "server";
 
 /// How many times a wrong name or password may be typed before Rescue
 /// waits and asks again.
@@ -549,6 +553,15 @@ fn start_ssh(root: &Root) -> Result<(), String> {
     make_live()?;
     link_root(root)?;
     copy_for_sshd(root)?;
+    take_root_network(root)?;
+    networking_on()?;
+    start_sign_ins()
+}
+
+/// Takes the root's network settings in place of Rescue's own
+/// ([`NETWORK_SETTINGS`]), so that the machine is on the network as the
+/// installed system was, and loads the root's firewall rules.
+fn take_root_network(root: &Root) -> Result<(), String> {
     for path in NETWORK_SETTINGS {
         let Some(from) = accounts::rescue::place(&root.path(""), path) else { continue };
         if from.is_file() {
@@ -567,7 +580,11 @@ fn start_ssh(root: &Root) -> Result<(), String> {
             String::from_utf8_lossy(&loaded.stderr).trim()
         ));
     }
-    networking_on()?;
+    Ok(())
+}
+
+/// Starts authd and sshd, for [`start_ssh`].
+fn start_sign_ins() -> Result<(), String> {
     for name in ["authd", "sshd"] {
         let started = Command::new("/system/commands/service")
             .args([name, "start"])
@@ -585,10 +602,15 @@ fn start_ssh(root: &Root) -> Result<(), String> {
 
 /// Whether Spark runs sshd, or is starting it.
 fn sshd_runs() -> bool {
+    runs("sshd")
+}
+
+/// Whether Spark runs service `name`, or is starting it.
+fn runs(name: &str) -> bool {
     use spark_api::show::State;
-    service::shown(Some("sshd")).is_ok_and(|show| {
+    service::shown(Some(name)).is_ok_and(|show| {
         show.services.iter().any(|service| {
-            service.name == "sshd"
+            service.name == name
                 && matches!(service.state, State::Running | State::Starting | State::Pending)
         })
     })
@@ -769,50 +791,22 @@ fn settings_to_put_back(root: &Root) -> Option<String> {
 }
 
 /// Reinstalls the system into the default slot from Rescue's own copy of
-/// the release, or from an update folder the owner names, keeping the
-/// settings, the state and every user's files and apps.
+/// the release, from the update server, or from an update folder the
+/// owner names, keeping the settings, the state and every user's files
+/// and apps.
 fn reinstall(root: &Root) -> Result<String, String> {
-    println!("Reinstall from Rescue's own copy, or from an update folder or file on a disk?");
-    let from = ask("Press Enter for Rescue's copy, or type the folder or file: ", true)
-        .ok_or("nothing was reinstalled")?;
+    // Each line fits 80 columns, so that a test finds the prompt whole.
+    println!("Reinstall Dukovo from Rescue's own copy, from the update server, or from an");
+    println!("update folder or file on a disk?");
+    let from = ask(
+        &format!("Press Enter for Rescue's copy, or type {FROM_SERVER}, or the folder or file: "),
+        true,
+    )
+    .ok_or("nothing was reinstalled")?;
     let from = from.trim();
     let esps = place::partitions(root).map_err(|why| why.message)?;
-    let trusted = std::fs::read(TRUSTED_ROOT).map_err(|err| format!("{TRUSTED_ROOT}: {err}"))?;
-    let mounted = if from.is_empty() { Some(mount_rescue(&esps)?) } else { None };
-    let mut archive = None;
-    let opened = match &mounted {
-        Some(esp) => system_release::rescue::open(&esp.join(system_release::rescue::DIR), &trusted),
-        None if Path::new(from).is_file() => {
-            system_release::updates::open_file(Path::new(from), &trusted, None).map(
-                |(published, opened)| {
-                    archive = Some(opened);
-                    published
-                },
-            )
-        }
-        None => system_release::repo::open(Path::new(from), &trusted, None),
-    };
-    let result = opened.and_then(|published| {
-        let release = published.release;
-        let slot = root.running.letter().to_ascii_uppercase();
-        println!("Reinstall Dukovo {} into slot {slot}?", release.version);
-        println!("Settings, apps and every user's files stay as they are.");
-        match ask("Type yes to reinstall: ", true) {
-            Some(answer) if answer.trim() == "yes" => {}
-            _ => return Err("nothing was reinstalled".into()),
-        }
-        let rescue_dir = mounted.as_ref().map(|esp| esp.join(system_release::rescue::DIR));
-        let files = match (&rescue_dir, archive.take()) {
-            (Some(dir), _) => Files::Rescue { rescue: dir, system: Path::new("/system") },
-            (None, Some(archive)) => Files::Archive(archive),
-            (None, None) => Files::Store(Store::at(&Path::new(from).join("files"))),
-        };
-        build_slot(root, &release, &files).map(|()| release)
-    });
-    if mounted.is_some() {
-        let _ = run("umount", &[ESP]);
-    }
-    let release = result?;
+    let release =
+        if from == FROM_SERVER { from_server(root, &esps)? } else { from_disk(root, from, &esps)? };
     let state = State {
         generation: 0,
         default: root.running,
@@ -831,6 +825,248 @@ fn reinstall(root: &Root) -> Result<String, String> {
         release.version,
         root.running.letter().to_ascii_uppercase()
     ))
+}
+
+/// Asks before a reinstall of Dukovo `version` into the default slot,
+/// saying where it comes from, `from`, when that is not Rescue's copy:
+/// each on a line of its own, so that the question fits 80 columns.
+fn confirm(root: &Root, version: &str, from: Option<&str>) -> Result<(), String> {
+    let slot = root.running.letter().to_ascii_uppercase();
+    if let Some(from) = from {
+        println!("It comes from {from}.");
+    }
+    println!("Reinstall Dukovo {version} into slot {slot}?");
+    println!("Settings, apps and every user's files stay as they are.");
+    match ask("Type yes to reinstall: ", true) {
+        Some(answer) if answer.trim() == "yes" => Ok(()),
+        _ => Err("nothing was reinstalled".into()),
+    }
+}
+
+/// Builds the default slot from Rescue's own copy of the release, when
+/// `from` is empty, or from the update folder or file `from` names.
+fn from_disk(root: &Root, from: &str, esps: &[String]) -> Result<Release, String> {
+    let trusted = std::fs::read(TRUSTED_ROOT).map_err(|err| format!("{TRUSTED_ROOT}: {err}"))?;
+    let mounted = if from.is_empty() { Some(mount_rescue(esps)?) } else { None };
+    let mut archive = None;
+    let opened = match &mounted {
+        Some(esp) => system_release::rescue::open(&esp.join(system_release::rescue::DIR), &trusted),
+        None if Path::new(from).is_file() => {
+            system_release::updates::open_file(Path::new(from), &trusted, None).map(
+                |(published, opened)| {
+                    archive = Some(opened);
+                    published
+                },
+            )
+        }
+        None => system_release::repo::open(Path::new(from), &trusted, None),
+    };
+    let result = opened.and_then(|published| {
+        let release = published.release;
+        confirm(root, &release.version, None)?;
+        let rescue_dir = mounted.as_ref().map(|esp| esp.join(system_release::rescue::DIR));
+        let files = match (&rescue_dir, archive.take()) {
+            (Some(dir), _) => Files::Rescue { rescue: dir, system: Path::new("/system") },
+            (None, Some(archive)) => Files::Archive(archive),
+            (None, None) => Files::Store(Store::at(&Path::new(from).join("files"))),
+        };
+        build_slot(root, &release, &files, &|| Ok(())).map(|()| release)
+    });
+    if mounted.is_some() {
+        let _ = run("umount", &[ESP]);
+    }
+    result
+}
+
+/// Builds the default slot from the update server the root's settings
+/// name, with the newest release of the channel the root follows, or
+/// the bridge the root's release needs first (ADR 0543). Networking is on
+/// for the while, with the root's settings; trust starts from the
+/// metadata the root keeps, or from the root Rescue's own release
+/// trusts when it keeps none, and each newer root is signed by the one
+/// before. Only the files the slot lacks are fetched, onto the root's
+/// disk, and they go once the slot is built.
+fn from_server(root: &Root, esps: &[String]) -> Result<Release, String> {
+    let top = root.path("");
+    let in_root = |path: &str| {
+        accounts::rescue::place(&top, path)
+            .ok_or_else(|| format!("{path} is in none of the root's subvolumes"))
+    };
+    let state = in_root(online::STATE)?;
+    let settings = root_update_settings(&in_root(online::SETTINGS)?)?;
+    let ran = root_version(root, esps)?;
+    let _network = Networking::on(root)?;
+    println!(
+        "Rescue: reading the {} channel from {}, against what the root trusts",
+        settings.channel, settings.server
+    );
+    let mut client = connect(settings, &state)?;
+    let release = newest_for(&mut client, &ran)?;
+    let server = client.settings.server.clone();
+    let slot = root.slot(root.running);
+    let downloads = online::downloads_in(&state);
+    let needed = online::needed_in(slot.is_dir().then_some(slot.as_path()), &release, &downloads)
+        .map_err(|why| why.message)?;
+    println!(
+        "Rescue: the slot lacks {} files of Dukovo {}, {}, which are fetched; it holds the rest",
+        needed.fetch.len(),
+        release.version,
+        online::mib(needed.bytes)
+    );
+    confirm(root, &release.version, Some(&server))?;
+    let fetched = online::fetch_into(&client, &needed, &downloads).map_err(|why| why.message)?;
+    println!("Rescue: fetched {} files, {}", fetched.fetched, online::mib(fetched.bytes));
+    let afresh = || -> Result<(), String> {
+        let all = online::needed_in(None, &release, &downloads).map_err(|why| why.message)?;
+        println!("Rescue: fetching the {} files the slot no longer gives", all.fetch.len());
+        online::fetch_into(&client, &all, &downloads).map(|_| ()).map_err(|why| why.message)
+    };
+    build_slot(root, &release, &Files::Store(Store::at(&downloads)), &afresh)?;
+    let _ = fs::remove_dir_all(&downloads);
+    Ok(release)
+}
+
+/// The root's update settings, in the file at `path`, or the defaults
+/// when it has none.
+fn root_update_settings(path: &Path) -> Result<online::Settings, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => {
+            online::Settings::parse(&text).map_err(|why| format!("{}: {why}", path.display()))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(online::Settings::default()),
+        Err(err) => Err(format!("{}: {err}", path.display())),
+    }
+}
+
+/// The release the root's default slot held, as the slot says, or else
+/// the one of Rescue's own copy on the EFI system partitions `esps`,
+/// which follows each release that proves itself: the server's plan
+/// starts from it.
+fn root_version(root: &Root, esps: &[String]) -> Result<String, String> {
+    if let Some(about) = root.about(root.running) {
+        return Ok(about.version);
+    }
+    let trusted = fs::read(TRUSTED_ROOT).map_err(|err| format!("{TRUSTED_ROOT}: {err}"));
+    let copy = trusted.and_then(|trusted| {
+        let esp = mount_rescue(esps)?;
+        let opened = system_release::rescue::open(&esp.join(system_release::rescue::DIR), &trusted);
+        let _ = run("umount", &[ESP]);
+        opened.map(|published| published.release.version)
+    });
+    copy.map_err(|why| {
+        format!(
+            "the slot does not say which release it held, and Rescue's own copy does not either \
+             ({why}), so the update server cannot say which release reaches it: reinstall from \
+             an update folder or file"
+        )
+    })
+}
+
+/// A client of the update server that reads trust from, and keeps what
+/// it reads in, the root's sysupdate state `state`, as the installed
+/// system does. Metadata kept there that does not read is set aside, and
+/// trust starts again from the root Rescue's own release trusts.
+fn connect(settings: online::Settings, state: &Path) -> Result<online::Client, String> {
+    let mut client = match online::Client::open_in(settings.clone(), state) {
+        Ok(client) => client,
+        Err(why) => {
+            let kept = state.join("metadata");
+            let aside = state.join(format!("metadata.unread-{}", util::now_ns() / 1_000_000_000));
+            fs::rename(&kept, &aside).map_err(|err| format!("{}: {err}", kept.display()))?;
+            println!(
+                "Rescue: {}; it is kept as {}, and trust starts again from the root Rescue's \
+                 release trusts",
+                why.message,
+                aside.display()
+            );
+            online::Client::open_in(settings, state).map_err(|why| why.message)?
+        }
+    };
+    client.refresh().map_err(|why| why.message)?;
+    Ok(client)
+}
+
+/// The release to reinstall on a root that ran Dukovo `ran`: the
+/// channel's, when `ran` updates to it directly or is it, else the
+/// bridge it needs first. Waves and holds are for updates, and the owner
+/// asked for this one; a channel that offers an older release than `ran`
+/// is refused, as a stage refuses one.
+fn newest_for(client: &mut online::Client, ran: &str) -> Result<Release, String> {
+    let channel = client.settings.channel.clone();
+    let offered = client.channel().map_err(|why| why.message)?.version;
+    let version = match online::plan(client, ran, Some(&offered)).map_err(|why| why.message)? {
+        Plan::Update { offered, from, release } => {
+            if release.version != offered {
+                println!(
+                    "Rescue: Dukovo {offered} updates only from {from} on, and the root ran \
+                     Dukovo {ran}: Dukovo {} comes first, and the system updates on from there",
+                    release.version
+                );
+            }
+            return Ok(release);
+        }
+        Plan::Current { offered } if offered == ran => offered,
+        Plan::Current { offered } => {
+            return Err(format!(
+                "the {channel} channel offers Dukovo {offered}, older than the Dukovo {ran} the \
+                 root ran: reinstall from Rescue's own copy, or from an update folder"
+            ));
+        }
+        Plan::Withdrawn { offered, reason } => {
+            return Err(format!("Dukovo {offered} was withdrawn: {reason}"));
+        }
+        Plan::Waiting { offered, .. } | Plan::Held { offered, .. } => {
+            return Err(format!("the update server does not offer Dukovo {offered} here yet"));
+        }
+    };
+    let server = client.settings.server.clone();
+    client
+        .release(&version)
+        .map_err(|why| why.message)?
+        .ok_or_else(|| format!("{server} does not offer Dukovo {version}"))
+}
+
+/// Networking, on for a reinstall from the update server with the
+/// root's settings, as SSH into Rescue has it (ADR 0540), and off again
+/// when it goes, unless it was on before.
+struct Networking {
+    /// Whether it was off before.
+    turned_on: bool,
+}
+
+impl Networking {
+    /// Turns networking on, unless it is, and waits up to
+    /// [`ADDRESS_WAIT`] seconds for a card to have an address.
+    fn on(root: &Root) -> Result<Networking, String> {
+        let networking = Networking { turned_on: !runs("netd") };
+        if networking.turned_on {
+            take_root_network(root)?;
+            networking_on()?;
+        }
+        println!("Rescue: waiting up to {ADDRESS_WAIT} seconds for an address");
+        for _ in 0..ADDRESS_WAIT {
+            if has_address() {
+                return Ok(networking);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        Err(format!(
+            "no network card has an address after {ADDRESS_WAIT} seconds: check the cable, or \
+             choose Check the network"
+        ))
+    }
+}
+
+impl Drop for Networking {
+    fn drop(&mut self) {
+        if !self.turned_on {
+            return;
+        }
+        for name in NETWORKING.iter().rev() {
+            let _ = Command::new("/system/commands/service").args([name, "stop"]).output();
+        }
+        println!("Rescue: networking is off again");
+    }
 }
 
 /// Mounts, read-only, the first of the EFI system partitions `esps` that
@@ -852,9 +1088,15 @@ fn mount_rescue(esps: &[String]) -> Result<PathBuf, String> {
 
 /// Builds `release` into the slot `root.running` from `files`: from a
 /// writable snapshot of what the slot holds, so that only what differs
-/// is written, or afresh when that fails; then reads it back against the
-/// signed list and seals it read-only in the slot's place.
-fn build_slot(root: &Root, release: &Release, files: &Files<'_>) -> Result<(), String> {
+/// is written, or afresh when that fails, `afresh` first making `files`
+/// whole; then reads it back against the signed list and seals it
+/// read-only in the slot's place.
+fn build_slot(
+    root: &Root,
+    release: &Release,
+    files: &Files<'_>,
+    afresh: &dyn Fn() -> Result<(), String>,
+) -> Result<(), String> {
     let building = root.path(BUILDING);
     let slot = root.slot(root.running);
     let fresh = |from: Option<&Path>| -> Result<usize, String> {
@@ -873,6 +1115,7 @@ fn build_slot(root: &Root, release: &Release, files: &Files<'_>) -> Result<(), S
         Ok(written) => written,
         Err(why) => {
             println!("Rescue: the slot could not be mended ({why}); building it afresh");
+            afresh()?;
             fresh(None)?
         }
     };
@@ -1109,6 +1352,38 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reinstall_from_the_server_reads_the_root_s_update_settings() {
+        let dir = std::env::temp_dir().join(format!("rescue-settings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("updates.toml");
+        assert_eq!(root_update_settings(&file), Ok(online::Settings::default()));
+        fs::write(&file, "channel = \"beta\"\nserver = \"http://10.0.2.2:8080/system/\"\n")
+            .unwrap();
+        let settings = root_update_settings(&file).unwrap();
+        assert_eq!(
+            (settings.channel.as_str(), settings.server.as_str()),
+            ("beta", "http://10.0.2.2:8080/system/")
+        );
+        fs::write(&file, "channel = 7\n").unwrap();
+        assert!(root_update_settings(&file).unwrap_err().starts_with(&file.display().to_string()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_slot_that_does_not_say_its_release_needs_rescue_s_copy_to() {
+        let root = Root {
+            disk: format!("no-such-disk-{}", std::process::id()),
+            uuid: String::new(),
+            partitions: Vec::new(),
+            running: Slot::A,
+        };
+        let why = root_version(&root, &[]).unwrap_err();
+        assert!(why.starts_with("the slot does not say which release it held"), "{why}");
+        assert!(why.ends_with("reinstall from an update folder or file"), "{why}");
+    }
 
     #[test]
     fn rescue_has_ssh_on_only_when_the_installed_system_did() {

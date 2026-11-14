@@ -458,11 +458,14 @@ next section.
 
 ## Rescue
 
-Rescue is a small, whole Dukovo kept on the EFI system partition, the
-release the system was installed from, for a computer whose system will
-not start at all: both slots broken, or a root that will not mount. It
-needs nothing from the root to start, and changes nothing until you
-choose.
+Rescue is a small, whole Dukovo kept on the EFI system partition, for a
+computer whose system will not start at all: both slots broken, or a
+root that will not mount. It needs nothing from the root to start, and
+changes nothing until you choose. It holds the newest release the system
+has proved: once an update starts well, the system writes Rescue again
+from it while you go on working, at the lowest disk priority, and
+`sysupdate status` says which release Rescue holds (`Rescue: Dukovo
+0.16.0`). A rollback leaves Rescue on the newer release.
 
 The boot menu starts Rescue by itself when three starts in a row did not
 finish, or when it finds no slot to start; you can also choose it from
@@ -497,10 +500,15 @@ What would you like to do?
 **Find the likely cause** says what `troubleshoot` would, from what Rescue
 can read, even when the root does not mount, and **Find the change that
 broke the start** says how to find it, as above.
-**Reinstall** builds the system again from Rescue's own copy, or from an
-update folder or update file on a USB stick, every file checked against
-the signed list. Settings, apps and everyone's files are not touched. Once it says
-the system is back, choose Restart. **Put back the settings** undoes
+**Reinstall** builds the system again from Rescue's own copy (press
+Enter), from the update server (type `server`), or from an update folder
+or update file on a USB stick (type its path), every file checked
+against the signed list. From the update server, Rescue turns networking
+on with the system's own network settings, takes the newest release of
+the channel the system follows, or the release it must update through
+first, and fetches only the files the slot lacks; it turns networking
+off again afterwards. Settings, apps and everyone's files are not
+touched. Once it says the system is back, choose Restart. **Put back the settings** undoes
 the settings of the last update, as a fallback would. **Check the disk**
 looks for damage to the root's filesystem; if it finds any, copy your
 files off first, with **Copy files off**, onto another disk or stick.
@@ -760,6 +768,5 @@ in `/snapshots/machine-restore` until `subvolume delete` removes it.
 
 A staged update that is withdrawn before its restart being unstaged by
 itself; firmware for the cards that need their own; one `update`
-command for the system, firmware and apps, which
-also keeps Rescue up to date; and repairing GRUB and the EFI system
-partition from an install stick. This chapter grows with each.
+command for the system, firmware and apps; and repairing GRUB and the
+EFI system partition from an install stick. This chapter grows with each.
