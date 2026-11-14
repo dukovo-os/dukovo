@@ -3737,6 +3737,21 @@ fn build_installed_test_image(
     std::fs::read(&output).map_err(|err| Error::new(format!("reading {}: {err}", output.display())))
 }
 
+/// Writes `bytes` to a new file at `path`, leaving each MiB of zeros a
+/// hole: an installed system's image is mostly its empty EFI system
+/// partition, which each case would otherwise write out whole.
+fn write_with_holes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::File::create(path)?;
+    file.set_len(bytes.len() as u64)?;
+    for (n, piece) in bytes.chunks(1 << 20).enumerate() {
+        if piece.iter().any(|byte| *byte != 0) {
+            file.write_all_at(piece, (n as u64) << 20)?;
+        }
+    }
+    Ok(())
+}
+
 /// The placeholder for the kernel command line in the test images.
 fn cmdline_slot() -> String {
     format!("{:-<CMDLINE_SLOT$}", "ob-test-cmdline")
@@ -4429,7 +4444,7 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
         let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
         let path = dir.join(format!("{}.{}", case.name, if iso { "iso" } else { "img" }));
         let image = with_cmdline(base, case.cmdline).map_err(Error::new)?;
-        std::fs::write(&path, image)
+        write_with_holes(&path, &image)
             .map_err(|err| Error::new(format!("writing {}: {err}", path.display())))?;
         let root = roots.of(case).map(|root| root.path.as_path());
         append_own(case, &path, root, live.as_deref()).map_err(Error::new)?;
@@ -4966,7 +4981,7 @@ fn run_case(
         if again && first_disk {
             bytes = booting_first_disk(bytes)?;
         }
-        std::fs::write(&image, bytes)
+        write_with_holes(&image, &bytes)
             .map_err(|err| format!("writing {}: {err}", image.display()))?;
         append_own(case, &image, root, live)?;
         run(&machine, name, script)
@@ -11685,6 +11700,23 @@ mod tests {
         let lines = failure_lines(&log);
         assert_eq!((lines.len(), lines[0]), (100, "line 20"));
         assert!(lines[10].starts_with(PANIC_BANNER));
+    }
+
+    #[test]
+    fn an_image_written_with_holes_reads_back_as_its_bytes() {
+        let dir = std::env::temp_dir().join(format!("ob-holes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("image");
+        // A MiB of data, two of zeros, and a short tail of data.
+        let mut bytes = vec![7u8; 1 << 20];
+        bytes.extend(vec![0u8; 2 << 20]);
+        bytes.extend(b"tail");
+        write_with_holes(&path, &bytes).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        // Written again over a longer file, it is no longer.
+        write_with_holes(&path, b"short").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"short");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

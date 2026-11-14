@@ -814,6 +814,10 @@ const BIOS_BOOT_SECTORS: u64 = 2048;
 /// The label of an image's EFI system partition.
 const ESP_LABEL: &str = "DUKOVO";
 
+/// The EFI system partition of an installed system's test image: the
+/// installer's (`EFI_BYTES`, installer/src/plan.rs).
+const INSTALLED_ESP_BYTES: u64 = 512 << 20;
+
 /// Makes the disk image `spec.output` from the staging directory (ADR
 /// 0306): a GPT with GRUB's `core.img` in its first partition, a BIOS
 /// boot partition, and an EFI system partition second, FAT32, holding
@@ -829,9 +833,13 @@ fn make_stick(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result
     let (boot, core) = (read(&images.boot)?, read(&images.core)?);
 
     // Room for what the staging tree holds, a little more, and a
-    // filesystem of at least 64 MiB, which FAT32's clusters need.
+    // filesystem of at least 64 MiB, which FAT32's clusters need. An
+    // installed system's is the installer's 512 MiB, which Rescue is
+    // written to as each update proves itself (ADR 0543).
     let content = tree_bytes(&spec.staging)?;
-    let esp_bytes = (content + content / 8 + (16 << 20)).max(64 << 20).next_multiple_of(1 << 20);
+    let least =
+        if matches!(spec.menu, Menu::Installed(_)) { INSTALLED_ESP_BYTES } else { 64 << 20 };
+    let esp_bytes = (content + content / 8 + (16 << 20)).max(least).next_multiple_of(1 << 20);
     let esp_sectors = esp_bytes / SECTOR as u64;
     // The table and a MiB's gap before the partitions, and a MiB after
     // them, which the backup table is at the end of.

@@ -190,12 +190,23 @@ pub fn write_current(root: &Root) -> Result<(), Fail> {
         );
     }
     let trusted = std::fs::read(TRUSTED_ROOT).map_err(|err| util::failed(&TRUSTED_ROOT, err))?;
+    let partitions = place::partitions(root)?;
+    // A Rescue of this release, as the installer writes, needs only the
+    // record: no metadata to find, and nothing to write.
+    let holds = |name: &String| held_on(name, &trusted).ok().flatten().as_ref() == Some(&version);
+    if !partitions.is_empty() && partitions.iter().all(holds) {
+        for name in &partitions {
+            stage::say(&format!("Rescue on {name} holds Dukovo {version} already"));
+        }
+        std::fs::write(HOLDS, format!("{version}\n")).map_err(|err| util::failed(&HOLDS, err))?;
+        return Ok(());
+    }
     let (repo, published) = metadata(&version, &trusted)?;
     let slot = root.slot(root.running);
     let file = |entry: &Entry| slot.join(&entry.path);
     let read_back = || stage::check(&slot, &published.release).map_err(|why| why.message);
     let mut problems = Vec::new();
-    for name in place::partitions(root)? {
+    for name in partitions {
         match write_on(&name, &repo, &published, &trusted, &file, &read_back) {
             Ok(Some(written)) => stage::say(&format!(
                 "Rescue on {name} holds Dukovo {version} now: {} files of {} MiB, each matching \
@@ -268,19 +279,8 @@ fn write_on(
     file: &dyn Fn(&Entry) -> PathBuf,
     read_back: &dyn Fn() -> Result<(), String>,
 ) -> Result<Option<Written>, String> {
-    let at = Path::new(MOUNTS).join(name);
-    std::fs::create_dir_all(&at).map_err(|err| format!("{}: {err}", at.display()))?;
-    let device = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(format!("/devices/{name}"))
-        .map_err(|err| format!("/devices/{name}: {}", util::strip_os_error(&err)))?;
-    if let Err(why) = mount(&at, &device) {
-        let _ = std::fs::remove_dir(&at);
-        return Err(format!("cannot mount it: {why}"));
-    }
     let release = &published.release;
-    let result = (|| {
+    on_partition(name, |at| {
         let current = at.join(rescue::DIR);
         if rescue::open(&current, trusted).is_ok_and(|held| held.name == published.name) {
             return Ok(None);
@@ -299,7 +299,7 @@ fn write_on(
                     rescue::OLD
                 ));
             }
-            return rescue::write(&at, repo, release, file).map(Some);
+            return rescue::write(at, repo, release, file).map(Some);
         }
         let held = size_of(&current);
         if free + held < needed {
@@ -317,13 +317,38 @@ fn write_on(
              minute that takes it holds no Rescue"
         ));
         read_back()?;
-        rescue::replace(&at, repo, release, file).map(Some)
-    })();
+        rescue::replace(at, repo, release, file).map(Some)
+    })
+}
+
+/// The version of the release Rescue holds on the EFI system partition
+/// `name`, if it holds one that reads from the root `trusted`.
+fn held_on(name: &str, trusted: &[u8]) -> Result<Option<String>, String> {
+    on_partition(name, |at| {
+        Ok(rescue::open(&at.join(rescue::DIR), trusted).ok().map(|held| held.release.version))
+    })
+}
+
+/// Runs `work` on the EFI system partition `name`, mounted for the while
+/// at a folder of its own, and unmounts it after.
+fn on_partition<T>(name: &str, work: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
+    let at = Path::new(MOUNTS).join(name);
+    std::fs::create_dir_all(&at).map_err(|err| format!("{}: {err}", at.display()))?;
+    let device = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("/devices/{name}"))
+        .map_err(|err| format!("/devices/{name}: {}", util::strip_os_error(&err)))?;
+    if let Err(why) = mount(&at, &device) {
+        let _ = std::fs::remove_dir(&at);
+        return Err(format!("cannot mount it: {why}"));
+    }
+    let result = work(&at);
     let unmounted = unmount(&at);
     let _ = std::fs::remove_dir(&at);
     match (result, unmounted) {
         (Err(why), _) => Err(why),
-        (Ok(_), Err(why)) => Err(format!("cannot unmount it once written: {why}")),
+        (Ok(_), Err(why)) => Err(format!("cannot unmount it after: {why}")),
         (Ok(done), Ok(())) => Ok(done),
     }
 }
