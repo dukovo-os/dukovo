@@ -8,13 +8,15 @@
 //! their bytes waiting to be published in `out/catalog/store/`, and what
 //! a server serves laid out in `out/catalog/site/`.
 //!
-//! It also sets up the update server and deploys to it (ADR 0382), over
-//! the signer's own SSH login: the signed bundles exist only on the
-//! machine that signed them, so they go from there.
+//! It also sets up the update server, an Ubuntu one or a Dukovo one, and
+//! deploys to it (ADR 0382), over the signer's own SSH login: the signed
+//! bundles exist only on the machine that signed them, so they go from
+//! there, with the copying `deploy.rs` does.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::deploy::{self, Server};
 use crate::process::{self, step};
 use crate::{Context, Ctx, Result, bail};
 
@@ -31,25 +33,37 @@ pub const HOST: &str = "updates.dukovo.org";
 /// Where the server serves the catalog.
 pub const URL: &str = "https://updates.dukovo.org/catalog/";
 
-/// The server's folder a deploy copies into (tools/update-server/).
+/// The server's folder a deploy copies into (tools/update-server/): the
+/// same on an Ubuntu server and a Dukovo one, where `/var` is the
+/// system's state.
 const INCOMING: &str = "/var/lib/dukovo-catalog-incoming";
 
-/// The online key's public half, as the server's setup leaves it.
-const SERVER_ONLINE_KEY: &str = "/usr/local/share/dukovo-catalog/online.json";
+/// The folder of the bundles the server's store holds, whose names a
+/// deploy skips; only an Ubuntu server's login may not read it, and then
+/// the incoming folder's own copies are what is skipped.
+const SERVED_BUNDLES: &str = "/var/lib/dukovo-catalog/store/bundles";
 
-/// How long a deploy waits for the server to publish.
-const PUBLISH_WAIT_SECONDS: u32 = 120;
+/// The online key's public half, as the server's setup leaves it: an
+/// Ubuntu server's and a Dukovo server's.
+const SERVER_ONLINE_KEYS: [&str; 2] =
+    ["/usr/local/share/dukovo-catalog/online.json", "/var/lib/dukovo-catalog/online.json"];
+
+/// How long a deploy waits for the server to publish: a Dukovo server
+/// starts its publish job once a minute, and the job reads every bundle
+/// back.
+const PUBLISH_WAIT_SECONDS: u32 = 300;
 
 /// Runs catalog-repo with `args`, after the source tree's paths, or sets
 /// up the server or deploys to it.
 pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["server", "setup"] => return server_setup(ctx),
+        ["server", "setup"] => return server_setup(ctx, false),
+        ["server", "setup", "--dukovo"] => return server_setup(ctx, true),
         ["deploy"] => return deploy(ctx),
         ["check"] => return check(ctx, URL),
         ["check", url] => return check(ctx, url),
         ["server" | "deploy" | "check", ..] => {
-            bail!("usage: ./ob catalog server setup | deploy | check [<url>]")
+            bail!("usage: ./ob catalog server setup [--dukovo] | deploy | check [<url>]")
         }
         _ => {}
     }
@@ -98,92 +112,123 @@ fn build(ctx: &Ctx, release: bool) -> Result<PathBuf> {
     Ok(ctx.target.join("programs-host").join(profile).join("catalog-repo"))
 }
 
-/// The server as `ssh` names it: `$OB_UPDATE_SSH`, such as
-/// `user@updates.dukovo.org` or a name in ~/.ssh/config, or [`HOST`].
-pub fn ssh_destination() -> String {
-    std::env::var("OB_UPDATE_SSH")
-        .ok()
-        .filter(|dest| !dest.is_empty())
-        .unwrap_or_else(|| HOST.into())
-}
-
-/// `ssh` to the server, running `script` with sh.
-pub fn ssh(dest: &str, script: &str) -> Command {
-    let mut cmd = Command::new("ssh");
-    cmd.args(["--", dest, script]);
-    cmd
-}
-
-/// Quotes `word` for the server's shell.
-pub fn quote(word: &str) -> String {
-    format!("'{}'", word.replace('\'', r"'\''"))
-}
-
 /// `ob catalog server setup` and `ob release server setup`: copies
-/// tools/update-server/, catalog-repo and system-release to the server and
-/// runs its setup.sh there through sudo, which asks for the password;
-/// then keeps the public halves of the online keys it made, the
-/// catalog's in catalog/keys/online.json and the system releases' in
+/// tools/update-server/ and the programs it runs to the server and runs
+/// its setup there as root, which asks for the password: setup.sh through
+/// sudo on an Ubuntu server, and with `dukovo` the files of
+/// tools/update-server/dukovo/ through elevate on a Dukovo one. Then it
+/// keeps the public halves of the online keys it made, the catalog's in
+/// catalog/keys/online.json and the system releases' in
 /// releases/keys/online.json, for the next roots.
-pub fn server_setup(ctx: &Ctx) -> Result<()> {
-    let dest = ssh_destination();
-    let program = build(ctx, true)?;
-    let system_release = crate::release::tool_for(ctx, true)?;
-    let staging = ctx.out.join("update-server");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))?;
-    }
-    std::fs::create_dir_all(&staging).context(|| format!("making {}", staging.display()))?;
-    let source = ctx.root.join("tools/update-server");
-    for entry in std::fs::read_dir(&source).context(|| format!("reading {}", source.display()))? {
-        let entry = entry.context(|| format!("reading {}", source.display()))?;
-        std::fs::copy(entry.path(), staging.join(entry.file_name()))
-            .context(|| format!("copying {}", entry.path().display()))?;
-    }
-    std::fs::copy(&program, staging.join("catalog-repo"))
-        .context(|| format!("copying {}", program.display()))?;
-    std::fs::copy(&system_release, staging.join("system-release"))
-        .context(|| format!("copying {}", system_release.display()))?;
+pub fn server_setup(ctx: &Ctx, dukovo: bool) -> Result<()> {
+    let server = Server::from_environment();
+    let staging = if dukovo { stage_dukovo(ctx)? } else { stage_ubuntu(ctx)? };
 
     // With scp, which every server with SSH has: setup.sh installs the
-    // rsync that deploys use.
-    step(&format!("Copying the server's files to {dest}"));
-    process::run(ctx, &mut ssh(&dest, "rm -rf dukovo-update-server"))?;
-    let mut cmd = Command::new("scp");
-    cmd.args(["-q", "-r", "-p", "--"]).arg(&staging).arg(format!("{dest}:dukovo-update-server"));
-    process::run(ctx, &mut cmd)?;
+    // rsync that deploys used to need.
+    step(&format!("Copying the server's files to {}", server.dest()));
+    process::run(ctx, &mut server.ssh("rm -rf dukovo-update-server"))?;
+    process::run(ctx, &mut server.scp(&staging, "dukovo-update-server"))?;
 
-    step(&format!("Setting up {HOST} on {dest}: sudo asks for your password there"));
-    let mut cmd = Command::new("ssh");
-    cmd.args([
-        "-t",
-        "--",
-        &dest,
-        &format!("sudo sh dukovo-update-server/setup.sh {}", quote(HOST)),
-    ]);
-    process::run(ctx, &mut cmd)?;
+    let setup = if dukovo {
+        // A full path, as elevate runs the file from a folder of its own.
+        format!("elevate sh \"$PWD/dukovo-update-server/dukovo/setup\" {}", deploy::quote(HOST))
+    } else {
+        format!("sudo sh dukovo-update-server/setup.sh {}", deploy::quote(HOST))
+    };
+    let asker = if dukovo { "elevate" } else { "sudo" };
+    step(&format!("Setting up {HOST} on {}: {asker} asks for your password there", server.dest()));
+    process::run(ctx, &mut server.ssh_terminal(&setup))?;
 
     keep_online_key(
         ctx,
-        &dest,
-        SERVER_ONLINE_KEY,
+        &server,
+        &SERVER_ONLINE_KEYS,
         REPO,
         "sign a root that lists it with `./ob catalog root`",
     )?;
     keep_online_key(
         ctx,
-        &dest,
-        crate::release::SERVER_ONLINE_KEY,
+        &server,
+        &crate::release::SERVER_ONLINE_KEYS,
         crate::release::REPO,
         "the release keys' next root names it, as releases/README.md says",
     )
 }
 
-/// Keeps the public half of an online key the server made, `server_path`
-/// there, in `repo`/keys/online.json, or fails if another is there;
-/// `then` says what the next root does with it.
-fn keep_online_key(ctx: &Ctx, dest: &str, server_path: &str, repo: &str, then: &str) -> Result<()> {
-    let output = process::output(ctx, &mut ssh(dest, &format!("cat {server_path}")))?;
+/// Makes the folder an Ubuntu server's setup runs from, `out/update-server`:
+/// the files of tools/update-server/, and catalog-repo and system-release
+/// built for this machine, as the server is a Linux of its own.
+fn stage_ubuntu(ctx: &Ctx) -> Result<PathBuf> {
+    let program = build(ctx, true)?;
+    let system_release = crate::release::tool_for(ctx, true)?;
+    let staging = fresh_staging(ctx)?;
+    copy_files(&ctx.root.join("tools/update-server"), &staging)?;
+    let copied = staging.join("catalog-repo");
+    std::fs::copy(&program, &copied).context(|| format!("copying {}", program.display()))?;
+    let copied = staging.join("system-release");
+    std::fs::copy(&system_release, &copied)
+        .context(|| format!("copying {}", system_release.display()))?;
+    Ok(staging)
+}
+
+/// Makes the folder a Dukovo server's setup runs from, `out/update-server`:
+/// the files of tools/update-server/ and of its `dukovo/`, and catalog-repo
+/// built for Radix. Dukovo's image has system-release already, as one of
+/// systools' commands, but not catalog-repo, which is a program of the
+/// build machine's: building it here keeps the server from needing a
+/// compiler.
+fn stage_dukovo(ctx: &Ctx) -> Result<PathBuf> {
+    let program = crate::userspace::std_program(ctx, "catalog-repo")?;
+    let staging = fresh_staging(ctx)?;
+    let source = ctx.root.join("tools/update-server");
+    copy_files(&source, &staging)?;
+    let own = staging.join("dukovo");
+    std::fs::create_dir_all(&own).context(|| format!("making {}", own.display()))?;
+    copy_files(&source.join("dukovo"), &own)?;
+    let copied = staging.join("catalog-repo");
+    std::fs::copy(&program, &copied).context(|| format!("copying {}", program.display()))?;
+    Ok(staging)
+}
+
+/// An empty `out/update-server`.
+fn fresh_staging(ctx: &Ctx) -> Result<PathBuf> {
+    let staging = ctx.out.join("update-server");
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))?;
+    }
+    std::fs::create_dir_all(&staging).context(|| format!("making {}", staging.display()))?;
+    Ok(staging)
+}
+
+/// Copies the files of `from`, not its folders, into `to`, with their
+/// modes.
+fn copy_files(from: &Path, to: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(from).context(|| format!("reading {}", from.display()))? {
+        let entry = entry.context(|| format!("reading {}", from.display()))?;
+        if entry.file_type().context(|| format!("reading {}", entry.path().display()))?.is_file() {
+            std::fs::copy(entry.path(), to.join(entry.file_name()))
+                .context(|| format!("copying {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Keeps the public half of an online key the server made, at the first
+/// of `server_paths` that is there, in `repo`/keys/online.json, or fails
+/// if another is there; `then` says what the next root does with it.
+fn keep_online_key(
+    ctx: &Ctx,
+    server: &Server,
+    server_paths: &[&str; 2],
+    repo: &str,
+    then: &str,
+) -> Result<()> {
+    let [ubuntu, dukovo] = server_paths;
+    let output = process::output(
+        ctx,
+        &mut server.ssh(&format!("cat {ubuntu} 2>/dev/null || cat {dukovo}")),
+    )?;
     let path = ctx.root.join(repo).join("keys/online.json");
     match std::fs::read(&path) {
         Ok(kept) if kept == output.stdout => {
@@ -192,7 +237,7 @@ fn keep_online_key(ctx: &Ctx, dest: &str, server_path: &str, repo: &str, then: &
         Ok(_) => bail!(
             "the server's online key is not {repo}/keys/online.json: the server was set up anew, \
              or the file was changed. A new root must list the server's key ({repo}/README.md \
-             says how); it is {server_path} on the server"
+             says how); it is {ubuntu} on an Ubuntu server and {dukovo} on a Dukovo one"
         ),
         Err(_) => {
             let keys = ctx.root.join(repo).join("keys");
@@ -211,57 +256,53 @@ fn keep_online_key(ctx: &Ctx, dest: &str, server_path: &str, repo: &str, then: &
 /// signed bundles to the server, which publishes them with its online key
 /// and says whether that worked; then reads them back over https.
 fn deploy(ctx: &Ctx) -> Result<()> {
-    let dest = ssh_destination();
     let repo = ctx.root.join(REPO);
     if !repo.join("metadata/root.json").is_file() {
         bail!("catalog/ has no root yet: sign one with `./ob catalog root` first");
     }
-    let store = ctx.out.join("catalog/store");
-    step(&format!("Copying the catalog to {dest}"));
-    // Made first, so that the server's user may read them, whatever the
-    // login's umask.
-    let folders = format!("mkdir -p -m 2770 {INCOMING}/catalog {INCOMING}/store");
-    process::run(ctx, &mut ssh(&dest, &folders))?;
-    let mut cmd = Command::new("rsync");
-    cmd.args(["-rtp", "--delete", "--chmod=D2770,F0660"])
-        .arg(repo.join("keys"))
-        .arg(repo.join("metadata"))
-        .arg(format!("{dest}:{INCOMING}/catalog/"));
-    process::run(ctx, &mut cmd)?;
-    if store.join("bundles").is_dir() {
+    publish_to(ctx, &Server::from_environment(), &repo, &ctx.out.join("catalog/store"))?;
+    check(ctx, URL)
+}
+
+/// Copies the catalog repository `repo` and the bundles of `store` to
+/// `server` and has it publish them: [`deploy`] copies this tree's, and
+/// the boot tests those of a catalog of their own.
+///
+/// # Errors
+///
+/// If the server does not take them or could not publish them.
+pub fn publish_to(ctx: &Ctx, server: &Server, repo: &Path, store: &Path) -> Result<()> {
+    step(&format!("Copying the catalog to {}", server.dest()));
+    deploy::replace(
+        ctx,
+        server,
+        repo,
+        &["keys", "metadata"],
+        INCOMING,
+        &format!("{INCOMING}/catalog"),
+    )?;
+    let bundles = store.join("bundles");
+    if bundles.is_dir() {
         // Bundles are never taken away from the server's store: a target
         // a client was told of stays there to be fetched.
-        let mut cmd = Command::new("rsync");
-        cmd.args(["-rtp", "--chmod=D2770,F0660"])
-            .arg(store.join("bundles"))
-            .arg(format!("{dest}:{INCOMING}/store/"));
-        process::run(ctx, &mut cmd)?;
+        deploy::add_missing(
+            ctx,
+            server,
+            &bundles,
+            deploy::is_bundle_name,
+            INCOMING,
+            &format!("{INCOMING}/store/bundles"),
+            &[SERVED_BUNDLES],
+        )?;
     }
-
-    step("Publishing it on the server");
-    let script = format!(
-        "rm -f {INCOMING}/result && touch {INCOMING}/ready && \
-         i=0; while [ ! -e {INCOMING}/result ] && [ $i -lt {PUBLISH_WAIT_SECONDS} ]; do \
-         sleep 1; i=$((i + 1)); done; \
-         if [ -e {INCOMING}/result ]; then cat {INCOMING}/result; else echo waiting; fi"
-    );
-    let output = process::output(ctx, &mut ssh(&dest, &script))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let (status, rest) = text.split_once('\n').unwrap_or((text.trim_end(), ""));
-    if !rest.trim().is_empty() {
-        println!("{}", rest.trim_end());
-    }
-    match status {
-        "published" => {}
-        "waiting" => bail!(
-            "the server did not publish in {PUBLISH_WAIT_SECONDS} seconds: \
-             `systemctl status dukovo-catalog-publish` on the server says why"
-        ),
-        _ => bail!(
-            "the server could not publish the catalog, as the output above says; it serves what it did before"
-        ),
-    }
-    check(ctx, URL)
+    deploy::publish(
+        ctx,
+        server,
+        INCOMING,
+        PUBLISH_WAIT_SECONDS,
+        "catalog",
+        "dukovo-catalog-publish",
+    )
 }
 
 /// Makes a catalog signed with throwaway keys, for a boot test, in

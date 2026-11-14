@@ -15,6 +15,7 @@ mod bundles;
 mod catalog;
 mod config;
 mod corpus;
+mod deploy;
 mod disc_drive;
 mod docs;
 mod doctor;
@@ -663,7 +664,7 @@ Formats every Rust source file in the repository with rustfmt."
                          [<bundle>]...
        ./ob catalog publish --key <file>
        ./ob catalog status
-       ./ob catalog server setup
+       ./ob catalog server setup [--dukovo]
        ./ob catalog deploy
        ./ob catalog check [<url>]
 
@@ -681,19 +682,25 @@ test's. The YubiKeys need yubikey-manager (`sudo apt install
 yubikey-manager`).
 
 The update server (ADR 0382) is reached over SSH as `$OB_UPDATE_SSH`, by
-default updates.dukovo.org. `server setup` copies tools/update-server/,
-catalog-repo and system-release there and runs its setup through sudo, then
-writes the server's online keys to catalog/keys/online.json, which `sign`
-needs, and releases/keys/online.json (see ./ob help release): the
-targets delegate the daily list of the bundles' known flaws to it (ADR
-0389). `deploy` copies the catalog and the signed bundles there for the
-server to publish, then checks what it serves. `check` reads a served catalog, by default
-https://updates.dukovo.org/catalog/, as a client would."
+default updates.dukovo.org, and needs only ssh, sh and tar: it may be an
+Ubuntu server or a Dukovo one. `server setup` copies tools/update-server/,
+catalog-repo and system-release there and runs its setup.sh through sudo;
+`server setup --dukovo` copies tools/update-server/dukovo/, the scripts and
+catalog-repo built for Radix there instead, and runs its setup through
+elevate. Either then writes the server's online keys to
+catalog/keys/online.json, which `sign` needs, and releases/keys/online.json
+(see ./ob help release): the targets delegate the daily list of the
+bundles' known flaws to it (ADR 0389). `deploy` sends the catalog's keys and
+metadata whole, and the signed bundles the server does not hold, then has the
+server publish them, and checks what it serves. `check` reads a served
+catalog, by default https://updates.dukovo.org/catalog/, as a client would."
         }
         "release" => {
-            "Usage: ./ob release server setup
+            "Usage: ./ob release server setup [--dukovo]
        ./ob release deploy <repository>
        ./ob release check [<url>]
+       ./ob release rollout (pause <version> <reason> | resume <version>
+                             | canary <name> red|green)
 
 Deploys the system's releases to the update server (ADR 0467), reached over
 SSH as `$OB_UPDATE_SSH` (default updates.dukovo.org), as `ob catalog` deploys
@@ -701,15 +708,17 @@ the catalog. `server setup` is `ob catalog server setup`: it sets up both, and
 writes the server's online key for the system's releases to
 releases/keys/online.json, for the release keys' next root to name beside
 their own snapshot and timestamp keys (`system-release keys --online`).
-`deploy` copies an update repository that system-release's add and channel
-signed to the server, skipping the files its store holds; the server takes
-the roots, targets, lists, channels and files, signs a snapshot and
+`deploy` sends an update repository that system-release's add and channel
+signed to the server: the metadata and targets whole, and the files its store
+does not hold; the server takes the roots, targets, lists, channels and
+files, signs a snapshot and
 timestamp with its online key, and reads it all back before serving it. The
 repository's first root must be releases/metadata/1.root.json, which the key
 ceremony signs on the hardware keys (ADR 0457): until then nothing is
 deployed. `check` reads the releases served at <url>, by default
 https://updates.dukovo.org/system/, as a computer online would, from that
-first root."
+first root. `rollout` holds or frees a release's waves, or marks a canary,
+on the server, and signs the rollouts again (ADR 0469)."
         }
         "signoff" => {
             "Usage: ./ob signoff [<base>]
