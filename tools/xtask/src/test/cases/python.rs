@@ -7,9 +7,11 @@
 //! herself, in her own applications folder; python3 asks, with a
 //! warning, whether it may run with her access, then says it is 3.15.2
 //! on radix, having found its library there. Its modules in C import,
-//! TLS finds the system's root certificates, and the interactive
-//! interpreter answers, as does a script that names it on its `#!`
-//! line. A virtual environment has a pip of its own, and pip3 runs. A
+//! and TLS finds the system's root certificates. It writes every page of
+//! a mapping of a compressed file of the root to a pipe, each read in by
+//! the write's copy, and the kernel stack holds (ADR 0523). The
+//! interactive interpreter answers, as does a script that names it on
+//! its `#!` line. A virtual environment has a pip of its own, and pip3 runs. A
 //! part of CPython's test suite passes; the lab's test runs the whole of
 //! it.
 
@@ -78,6 +80,21 @@ fn python(vm: &mut Vm, case: &Case) -> Result<(), String> {
          > 100)'",
     )?;
     vm.expect_screen(&["roots True"])?;
+    // Writes from a mapping of a file of the root that nothing has read,
+    // smb(1), which the test never runs, compressed like every file of the
+    // root: each write's copy faults, and the fault reads the page in
+    // through the compressed extent on the thread's kernel stack, below the
+    // system call (ADR 0523). The lock checker fails the test if a thread
+    // sleeps near the end of its stack.
+    answer_prompt(
+        vm,
+        "$",
+        "clear; python3 -c 'import mmap, os; m = mmap.mmap(os.open(\"/system/commands/smb\", 0), \
+         0, prot=mmap.PROT_READ); r, w = os.pipe(); v = memoryview(m); print(\"copied\", \
+         all(os.write(w, v[i:i + 4096]) and os.read(r, 4096) == m[i:i + 4096] for i in range(0, \
+         len(m), 4096)))'",
+    )?;
+    vm.expect_screen(&["copied True"])?;
     // The interactive interpreter.
     answer_prompt(vm, "$", "clear; python3")?;
     vm.expect_screen(&[">>>"])?;

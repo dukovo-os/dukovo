@@ -3,6 +3,8 @@
 
 //! What the memory manager needs from the machine.
 
+use crate::context::AllocError;
+
 /// Most CPUs the memory manager keeps per-CPU caches for. Equal to
 /// `radix_hal::MAX_CPUS`, which checks it.
 pub const MAX_CPUS: usize = 256;
@@ -12,8 +14,8 @@ pub const MAX_CPUS: usize = 256;
 const _: () = assert!(radix_sync::cpu::CPUS >= MAX_CPUS);
 
 /// The machine, as the memory manager sees it. The architecture implements
-/// it and registers it with [`crate::Frames::set_platform`] and
-/// [`crate::Heap::set_platform`] before the first allocation.
+/// it and registers it with [`crate::Frames::set_platform`], whose
+/// platform the heap uses too, before the first allocation.
 ///
 /// # Safety
 ///
@@ -48,7 +50,58 @@ pub unsafe trait Platform: Sync {
 
     /// Virtual address of physical address 0 in the direct map.
     fn direct_map(&self) -> usize;
+
+    /// Whether the caller may wait for the other CPUs, as flushing their
+    /// TLBs does: it runs with interrupts on, outside an interrupt
+    /// handler, holding no spin lock. A CPU spinning with interrupts off
+    /// for a lock the caller holds could not answer.
+    fn may_wait(&self) -> bool {
+        false
+    }
+
+    /// Reserves an area of `pages` pages in the kernel's mapping window,
+    /// with an unmapped guard page below it, maps none of it, and returns
+    /// its address; `None` if the window has no room, or the machine maps
+    /// no areas for the heap. [`Platform::map_page`] maps its pages, and
+    /// [`Platform::release_area`] gives it back.
+    fn reserve_area(&self, _pages: usize) -> Option<usize> {
+        None
+    }
+
+    /// Maps the page at `virt`, in an area [`Platform::reserve_area`]
+    /// reserved, to the frame at `phys`, writable and not executable.
+    /// Fails if a page table was needed and there was no memory for it.
+    fn map_page(&self, _virt: usize, _phys: u64) -> Result<(), AllocError> {
+        Err(AllocError)
+    }
+
+    /// The frame the page at `virt` maps, if `virt` is in the kernel's
+    /// mapping window and its page is mapped. Takes no lock, so any
+    /// caller may ask.
+    fn area_frame(&self, _virt: usize) -> Option<u64> {
+        None
+    }
+
+    /// Gives back the area of `pages` pages at `virt`, which
+    /// [`Platform::reserve_area`] reserved: unmaps those of its pages that
+    /// are mapped, flushes them from every CPU's TLB, hands the frame of
+    /// each to `freed`, and releases the area and its guard page. Call it
+    /// only where [`Platform::may_wait`] holds. Fails, changing nothing,
+    /// if the area and its guard page are not all reserved.
+    fn release_area(
+        &self,
+        _virt: usize,
+        _pages: usize,
+        _freed: &mut dyn FnMut(u64),
+    ) -> Result<(), AreaError> {
+        Err(AreaError)
+    }
 }
+
+/// [`Platform::release_area`] was given pages of the mapping window that
+/// are not all reserved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AreaError;
 
 /// Interrupts disabled until dropped (no-op without a platform, which
 /// only happens before the machine is set up, with interrupts off).

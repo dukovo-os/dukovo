@@ -43,6 +43,10 @@ const TESTS: &str = "lab/tests";
 /// Each Phase 16 item and its tests.
 const COVERAGE: &str = "lab/coverage.toml";
 
+/// The lab's categories, which dukovo-lab refuses to load with a name
+/// twice.
+const CATEGORIES: &str = "lab/tests/categories.toml";
+
 /// What there was before Phase 16.
 const BEFORE: &str = "lab/before-phase-16.txt";
 
@@ -145,7 +149,12 @@ pub fn command(ctx: &Ctx, check: bool) -> Result<()> {
     let entries: Entries =
         toml::from_str(&text).map_err(|err| Error::new(format!("{COVERAGE}: {err}")))?;
     let tests = ctx.root.join(TESTS);
-    let audit = audit(&found, &before, &entries, &|id| test_text(&tests, id));
+    let mut audit = audit(&found, &before, &entries, &|id| test_text(&tests, id));
+    let categories = std::fs::read_to_string(ctx.root.join(CATEGORIES))
+        .context(|| format!("reading {CATEGORIES}"))?;
+    audit.problems.extend(named_twice(&categories).into_iter().map(|name| {
+        format!("{CATEGORIES}: category \"{name}\" is named twice, and dukovo-lab loads no test")
+    }));
     if !check {
         for (item, tests) in &audit.rows {
             println!("{:<8} {:<30} {}", item.kind.word(), item.name, tests.join(", "));
@@ -172,6 +181,20 @@ pub fn command(ctx: &Ctx, check: bool) -> Result<()> {
         "{problems} in the lab's coverage of Phase 16: {COVERAGE} lists each item with the tests \
          that cover it (the handbook's Lab tests chapter, Coverage)"
     )))
+}
+
+/// The names of `categories.toml`'s categories that it gives twice.
+fn named_twice(text: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut twice = Vec::new();
+    for line in text.lines() {
+        let Some(value) = line.trim().strip_prefix("name = ") else { continue };
+        let name = value.trim_matches('"').to_string();
+        if !seen.insert(name.clone()) && !twice.contains(&name) {
+            twice.push(name);
+        }
+    }
+    twice
 }
 
 /// Holds `entries` to the items `found` in the tree, less those there
@@ -366,6 +389,14 @@ fn parse_before(text: &str) -> std::result::Result<BTreeSet<Item>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_category_named_twice_is_a_problem() {
+        let one = "[[category]]\nname = \"time\"\n\n[[category]]\nname = \"monitoring\"\n";
+        assert!(named_twice(one).is_empty());
+        let two = format!("{one}\n[[category]]\nname = \"monitoring\"\ntitle = \"Monitoring\"\n");
+        assert_eq!(named_twice(&two), ["monitoring"]);
+    }
 
     fn items(list: &[(Kind, &str)]) -> BTreeSet<Item> {
         list.iter().map(|&(kind, name)| Item::new(kind, name)).collect()

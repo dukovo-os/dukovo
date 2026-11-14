@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# PHP-FPM from the catalog, on the machine's own network card (ADR 0520):
+# nginx and PHP installed for everyone and both services enabled, and
+# nginx's PHP location turned on, as its settings' comments say. A site in
+# /shared/www has a front page that PHP prints, and a page that finds the
+# FastCGI interface, the account php, opcache, a session, a POST field, a
+# file written into a folder the account owns and none into the site's own;
+# a PHP page that is not there is a 404. The lab PC then keeps 50 requests
+# at a time coming for 20 seconds while the machine has PHP-FPM reload its
+# settings five times, and no request may go without its page, nor PHP-FPM
+# change its process. PHP-FPM's program runs by its path, as a script runs
+# it, so no question is asked.
+about = "PHP-FPM from the catalog runs a site's PHP pages for nginx on the lab PC, and reloads under load lose no request (ADR 0520)"
+time = "15m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+host = "sh {here}/copy-bundle.sh net.php.php {machine} {machine-port:22}"
+expect = "copied: net.php.php"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/php-fpm-front.php {machine} {machine-port:22}"
+expect = "copied: php-fpm-front.php"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/php-fpm-info.php {machine} {machine-port:22}"
+expect = "copied: php-fpm-info.php"
+# From nothing: a run before may have left either installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/net.php.php.dkv | tail -1'"
+root = true
+expect = "installed net.php.php"
+[[step]]
+run = "sh -c 'service nginx enable; service php-fpm enable'"
+root = true
+# Spark starts both at once; each shows as running when its process does,
+# which takes seconds on a slow machine.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service php-fpm status > /dev/null; do sleep 1; i=$((i + 1)); done; service php-fpm status'"
+root = true
+expect = "Active: active (running)"
+# Its settings, checked as root.
+[[step]]
+run = "sh -c '/applications/net.php.php/bin/php-fpm -t 2>&1 | tail -n 1'"
+root = true
+expect = "test is successful"
+# The site, and the folder the account php may write in. The folder the
+# pages are in is not the account's.
+[[step]]
+run = "sh -c 'cp /users/lab/php-fpm-front.php /shared/www/index.php && cp /users/lab/php-fpm-info.php /shared/www/info.php && mkdir -p /shared/www/uploads && chown php /shared/www/uploads && echo site'"
+root = true
+expect = "site"
+# nginx's PHP location turned on: the line that returns 404 is commented
+# out, and the three after it are not.
+[[step]]
+run = '''sh -c 'cd /shared/services/org.nginx.nginx/nginx/conf && sed -i -e "s/^ *return 404;/#&/" -e "s/^ *#\(try_files\|fastcgi_pass\|include fastcgi\)/    \1/" nginx.conf && service nginx reload && echo reloaded' '''
+root = true
+expect = "reloaded"
+[[step]]
+wait = "2s"
+[[step]]
+host = "sh {here}/php-fpm-checks.sh front {machine} {machine-port:80}"
+expect = "php-front"
+[[step]]
+host = "sh {here}/php-fpm-checks.sh info {machine} {machine-port:80}"
+expect = "ok-sapi ok-user ok-opcache ok-session ok-method ok-post ok-upload ok-readonly n=1"
+[[step]]
+host = "sh {here}/php-fpm-checks.sh missing {machine} {machine-port:80}"
+expect = "missing 404"
+# Five reloads, two seconds apart, by a shell of the machine's own so that
+# the step returns, while the lab PC asks; PHP-FPM's process, which Spark
+# runs, is the same after them. The shell ignores the hangup that ends the
+# step's elevate, and counts the reloads in a file for a step to check.
+[[step]]
+run = "sh -c 'service php-fpm status -n 0 | grep -o \"as process [0-9]*\" > /users/lab/php-fpm-before'"
+root = true
+[[step]]
+run = "sh -c 'trap \"\" HUP; rm -f /users/lab/php-fpm-reloads; (for i in 1 2 3 4 5; do sleep 2; service php-fpm reload && echo reloaded >> /users/lab/php-fpm-reloads; done) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+host = "sh {here}/php-fpm-load.sh {machine} {machine-port:80}"
+expect = "lost 0"
+[[step]]
+run = "sh -c 'echo reloads $(grep -c reloaded /users/lab/php-fpm-reloads)'"
+root = true
+expect = "reloads 5"
+[[step]]
+run = "sh -c 'service php-fpm status -n 0 | grep -o \"as process [0-9]*\" > /users/lab/php-fpm-after; cmp -s /users/lab/php-fpm-before /users/lab/php-fpm-after && echo same-process'"
+root = true
+expect = "same-process"
+# Its log is the system's.
+[[step]]
+run = "sh -c 'log php-fpm | grep -q \"ready to handle connections\" && echo started-logged'"
+root = true
+expect = "started-logged"
+[[step]]
+run = "sh -c 'rm -rf /shared/www/index.php /shared/www/info.php /shared/www/uploads /users/lab/php-fpm-*; bundle remove --for-everyone --purge net.php.php; bundle remove --for-everyone --purge org.nginx.nginx'"
+root = true
+expect = "removed org.nginx.nginx"

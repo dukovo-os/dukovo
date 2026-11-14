@@ -21,7 +21,7 @@ run = '''sh -c 'for o in $(ls /devices/audio | grep "^usb"); do audio info "$o" 
 expect = "outputs-checked"
 expect_not = "plays neither"
 [[step]]
-run = '''sh -c 'dmesg | grep -E "Audio: usb|sound output"; [ ! -e /devices/audio/usb0 ] || dmesg | grep -q "Audio: usb0 is a USB" && echo "device"-logged' '''
+run = '''sh -c 'log -k | grep -E "Audio: usb|sound output"; [ ! -e /devices/audio/usb0 ] || log -k | grep -q "Audio: usb0 is a USB" && echo "device"-logged' '''
 root = true
 expect = "device-logged"
 expect_not = "its sound output cannot be used"

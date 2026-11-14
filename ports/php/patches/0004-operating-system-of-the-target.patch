@@ -1,0 +1,28 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+The operating system's name, given to configure
+
+configure writes PHP_OS, which the constant PHP_OS gives at run time,
+from the build machine's uname. In a cross build that is not the system
+PHP runs on: a PHP built on Linux for Dukovo would say it runs on Linux,
+and the tests of PHP's suite that are for Linux alone would run on it.
+configure takes PHP_UNAME from the environment already; this lets it
+take PHP_OS, with uname's output still the default.
+
+diff --git a/configure.ac b/configure.ac
+index 359f22c2..0916b65d 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1423,7 +1423,9 @@ AC_ARG_VAR([PHP_UNAME],
+ AS_VAR_IF([PHP_UNAME],, [PHP_UNAME=$(uname -a | xargs)])
+ AC_DEFINE_UNQUOTED([PHP_UNAME], ["$PHP_UNAME"], [The 'uname -a' output.])
+ 
+-PHP_OS=$(uname | xargs)
++AC_ARG_VAR([PHP_OS],
++  [Operating system name (defaults to the 'uname' output)])
++AS_VAR_IF([PHP_OS],, [PHP_OS=$(uname | xargs)])
+ AC_DEFINE_UNQUOTED([PHP_OS], ["$PHP_OS"], [The 'uname' output.])
+ 
+ AC_ARG_VAR([PHP_BUILD_SYSTEM],

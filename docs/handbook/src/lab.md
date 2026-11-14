@@ -255,7 +255,10 @@ a client of its own in Python, and find them all after a restart, and
 `services/python` runs CPython's whole test suite, leaving out only the
 tests `lab/tests/services/python-skips.txt` lists, each with the reason
 it fails on Dukovo, which `lab/tests/services/copy-file.sh` copies over
-too. With an image given by `--image`, `./ob lab` packs no bundles but
+too, and `services/php` does the same with PHP's, and its
+`php-skips.txt`. `services/php-fpm` has nginx pass the pages of a PHP site
+to PHP-FPM, and reload PHP-FPM's settings while the lab PC keeps requests
+coming. With an image given by `--image`, `./ob lab` packs no bundles but
 names the ones this tree packed already, if any. Without the bundles
 those tests are skipped too.
 

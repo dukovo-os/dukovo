@@ -22,10 +22,12 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use radix_acpi::{Slit, Srat, SratEntry};
 use radix_hal::{MemoryKind, MemoryRegion, Reservation};
-use radix_mm::{FRAMES, Flags, MAX_NODES, Owner, PageInfo, Region, SetupError};
+use radix_mm::{
+    AllocError, AreaError, FRAMES, Flags, MAX_NODES, Owner, PageInfo, Region, SetupError,
+};
 use radix_sync::{Once, SpinLock};
 
-use crate::{cpu, kaslr, percpu};
+use crate::{cpu, kaslr, paging, percpu};
 
 /// Where the kernel image is linked: `KERNEL_OFFSET` + its physical
 /// address. It runs [`kaslr::slide`] bytes higher.
@@ -452,6 +454,31 @@ unsafe impl radix_mm::Platform for MmPlatform {
 
     fn direct_map(&self) -> usize {
         direct_map() as usize
+    }
+
+    fn may_wait(&self) -> bool {
+        cpu::interrupts_enabled() && percpu::preempt_count() == 0 && percpu::interrupt_depth() == 0
+    }
+
+    fn reserve_area(&self, pages: usize) -> Option<usize> {
+        paging::reserve_area(pages)
+    }
+
+    fn map_page(&self, virt: usize, phys: u64) -> Result<(), AllocError> {
+        paging::map_area_page(virt, phys)
+    }
+
+    fn area_frame(&self, virt: usize) -> Option<u64> {
+        paging::area_frame(virt)
+    }
+
+    fn release_area(
+        &self,
+        virt: usize,
+        pages: usize,
+        freed: &mut dyn FnMut(u64),
+    ) -> Result<(), AreaError> {
+        paging::release_area(virt, pages, freed)
     }
 }
 

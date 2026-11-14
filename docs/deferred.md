@@ -74,6 +74,7 @@ machine with AMT, an AMD machine and a laptop; see
 | A lab test of a keyring entry set and read back | Needs a console sign-in with a password, which tests cannot type yet | Lab harness |
 | A lab test of `whois` | Needs a reachable whois server | Lab harness |
 | Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | 10 GbE in the lab: two Intel X520, X540 or X550 cards and a cable |
+| `services/log-forward` on the Mint lab PC, where it skips: AppArmor's profile for rsyslogd lets it read no configuration outside /etc; a local rule in `/etc/apparmor.d/local/usr.sbin.rsyslogd` allowing `/run/user/*/dukovo-lab/** rw,` lets it run | AppArmor's rules are the lab PC owner's to change, never a test's | A local AppArmor rule on the lab PC |
 
 ### Installer, boot and cloud (Phase 14)
 
@@ -176,6 +177,7 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | `service status` for an ordinary user: Spark's control socket is root's, so status and `--status-all` need root, where Linux's `systemctl status` needs none; a read-only way to ask what Spark knows | The lab test install/cloud-setup asks as root meanwhile | 16a |
+| `update` (and `update check`, `update history`) for an ordinary user, which update(8) says anyone may run: it finds the system's root by reading the disk's Btrfs UUID from `/devices`, which only root may read, so it says "this system did not start from a Dukovo root on a disk"; it could ask updated(8) instead, or take the UUID from the kernel's command line | Found on the OptiPlex 7040 by `updates/updater`, which fails at step 3 until then | 16a |
 | Timers: a service started at set times or intervals (ADR 0216) | Production service management; dependencies, readiness and health checks came first (ADR 0470) | 16a |
 | The system's own service files using service_version 2's keys: `requires`, `wants`, `after`, `[ready]` and `[health]` for the system's services, and `service new`'s template writing version 2 (ADR 0470) | A release writes only what the one before it reads (ADR 0454), and 0.15 reads service_version 1 alone; the system's services start by `order` meanwhile, as before | The release after 1.0.0-alpha.1 |
 | bundled refusing a bundle whose `requires_os` is newer than the system, with a message to update (ADR 0470) | `requires_os` is informational; a bundle whose service uses version 2's keys says 1.0, and alpha.1 is the first release any machine runs | Before the first release after 1.0.0-alpha.1 |
@@ -265,6 +267,15 @@ These come from finished work; the releases themselves are in the
 | Python's modules that need a library Dukovo has no port of: `ctypes` (libffi), `sqlite3` (SQLite), `dbm.gnu` and `dbm.ndbm` (GDBM, Berkeley DB), `readline` (GNU Readline or libedit), `uuid`'s C part (libuuid), `tkinter` and IDLE (Tk) (ADR 0495) | Each module is built into `python3` when its library is | A port of each library |
 | Python packages with code in C, from PyPI (ADR 0495) | Radix loads no library at run time; Python's own modules in C are built in | Loading libraries, or a bundle that builds a package in |
 | The kernel's gaps CPython's suite finds (ADR 0495, `lab/tests/services/python-skips.txt`): `mmap(2)` of tmpfs files; Unix-domain datagram sockets, and Unix-domain sockets passed with `SCM_RIGHTS`, which multiprocessing's suites need; RFC 3542 IPv6 ancillary data, and urgent data sent with `MSG_OOB` (ftplib's `abort()`), which smoltcp does not carry (ADR 0496); `scandir` results | Found by the suite, not by a program that needs them yet | Kernel work, each removing its lines from the skip list |
+| PHP's extensions that need a library Dukovo has no port of: `gd` (libgd, with libpng, libjpeg-turbo, libwebp and FreeType), `intl` (ICU), `zip` (libzip), `sodium` (libsodium), `gmp` (GMP), `iconv` (the C library has no `iconv(3)`) and mbstring's regular expressions, `mb_ereg` (Oniguruma) (ADR 0499) | Each is built into `php` when its library is | A port of each library, and `iconv(3)` in the C library |
+| PHP's `pgsql` and `pdo_pgsql`, and `sqlite3` and `pdo_sqlite` (ADR 0499) | They need libpq and SQLite | The PostgreSQL port, and a port of SQLite |
+| PHP's JIT, for PCRE and for opcache (ADR 0499) | Both want memory that is writable and executable at once, which a program's pages never are on Radix; nginx's PCRE2 is built without JIT as well (ADR 0491) | A decision to allow such mappings, or a JIT that does without |
+| PHP's `dl()`, and extensions from PECL (ADR 0499) | `php` is a static program that loads no library at run time | Loading libraries, or building PHP with `-dynamic` (ADR 0071) for a catalog that needs extensions of its own |
+| PHP's `dns_get_record`, `dns_check_record` (`checkdnsrr`) and `dns_get_mx` (`getmxrr`) (ADR 0499) | They need `res_search(3)`, which the C library lacks | `res_search(3)` in the C library, or a resolver of PHP's own |
+| The system's gaps PHP's suite finds (ADR 0499, `lab/tests/services/php-skips.txt`): the C library's `gethostbyname_r(3)` finds nothing (PHP is built to use `gethostbyname(3)`, which does), nor do its `getprotobyname(3)` and `getprotobynumber(3)`; its `getservbyport(3)` ignores the protocol, `wait3(2)` is not implemented and `sysconf(3)` lacks some names; Unix-domain datagram sockets; the socket options `TCP_CONGESTION`, `SO_ZEROCOPY`, `IPV6_PKTINFO` and `IPV6_RECVPKTINFO`; the ioctl that gives an interface's address by its number; a SIGCHLD's sender's user number; a tmpfs folder of more than 32,768 entries; `fsync(2)` of a descriptor that is not a file; a slash after a file's name, which Linux refuses; `utimes(2)` of a time before 1970; `getcwd(3)` in a removed folder | Found by the suite, not by a program that needs them yet | Kernel and C library work, each removing its lines from the skip list |
+| PHP-FPM's slow log, `request_slowlog_timeout` (ADR 0520) | It reads a worker's stack with `ptrace` or `/proc/PID/mem`, which Radix does not offer | `ptrace` or `/proc/PID/mem` |
+| Installing a service bundle's commands for one person, without its services: PHP's `php` now, PostgreSQL's `psql` next (ADR 0385, ADR 0520) | A bundle with services installs only for everyone, so a person who is not an administrator cannot have PHP's command line for themselves | A decision by the maintainers on how a bundle offers its commands alone |
+| PHP-FPM pools that run as different accounts (ADR 0520) | PHP-FPM must start as root to give a pool another account, and a bundle's service never runs as root (ADR 0385); every pool runs as `php` | A decision to let a service start as root and drop to accounts of its own |
 | A cap on the memory a user's pipes hold (Linux's `pipe-user-pages-soft`) (ADR 0497) | Pipe buffers are kernel memory, not yet charged to a resource domain | Charging kernel memory to resource domains |
 | The RTS5260 card reader; UHS-I, MultiMediaCards and Memory Sticks on Realtek readers (ADR 0448) | Only GPL drivers describe them | Realtek's documentation or a BSD driver |
 | AML fixes reach Dukovo when uACPI is vendored again (ADR 0200) | `aml=off` works around a firmware table uACPI cannot run until then | Upstream |
@@ -281,6 +292,7 @@ machine asks for them.
 | Spark's pet of the hardware watchdog came more than 10 s late while nginx served the lab PC's load on the OptiPlex 7040: what holds Spark's loop up (nginx's access log copied into the system's log is the first suspect) | Lab, services/nginx on the OptiPlex, 2026-11-13 |
 | Transparent huge pages for anonymous memory | ADR 0121 |
 | Batched and lazy TLB shootdowns | ADR 0020 |
+| Frames grouped by how long they live, and compaction that moves pages to join free blocks, so that large blocks stay likely as memory breaks up: for the heap's slabs, blocks of up to 32 KiB, and for devices' memory; the heap's large requests already fall back to areas | ADR 0524 |
 | A lazy IOMMU mode | ADR 0164 |
 | Memory hot-plug; NUMA tested beyond QEMU's emulated nodes | memory design note |
 | Swap files; zram or zswap; read-ahead on swap-in; reading the dirty bit so clean pages are not written | ADR 0152, memory design note |
@@ -293,7 +305,7 @@ machine asks for them.
 | The tree lock under heavy capability passing on many CPUs | ipc design note |
 | Queued messages charged to a resource domain | ipc design note |
 | A process's handles freed before its parent is told it ended | ADR 0309 |
-| System V message queues (`msgget`, `msgsnd`, `msgrcv`); libc-test's `ipc_msg` | ADR 0490 |
+| System V message queues (`msgget`, `msgsnd`, `msgrcv`), which PHP's `sysvmsg` extension needs; libc-test's `ipc_msg` | ADR 0490, ADR 0499 |
 | Folders and symbolic links in `/dev/shm` | ADR 0490 |
 | A memory filesystem, and so System V keys, for each account or view, as Linux's IPC namespaces | ADR 0490 |
 | `ipcs` and `ipcrm`; `IPC_INFO`, `SHM_INFO`, `SEM_INFO` and the `*_STAT` commands that take an index | ADR 0490 |
@@ -394,7 +406,7 @@ machine asks for them.
 | Sign-in records kept for a time; notices of a failed sign-in streak | ADRs 0253, 0254 |
 | The administrator set split into named areas for delegation | ADR 0219 |
 | A user's own services and their lines in their log; a group that reads the whole log | ADR 0252 |
-| A Unix socket of one bundle's service that another bundle's services reach, as Valkey's and PHP-FPM's are on Linux: a service's data folder is its account's alone, so they talk over TCP on the machine itself | ADR 0492 |
+| A Unix socket of one bundle's service that another bundle's services reach, as Valkey's and PHP-FPM's are on Linux: a service's data folder is its account's alone, so they talk over TCP on the machine itself, nginx and PHP-FPM on 127.0.0.1:9000, where any program on the machine may connect | ADR 0492, ADR 0520 |
 | Rich and NFSv4 access lists; Btrfs properties | ADR 0256 |
 | Bundles: grants before install (`--grant`), resource limits for the sandbox, programs for other architectures, read-only subvolumes and reflink sharing for sealed bundles, asking people about their data when a bundle is removed for everyone | ADRs 0223 to 0225 |
 | Views: detaching an entry; devices attached one by one | ADR 0215 |

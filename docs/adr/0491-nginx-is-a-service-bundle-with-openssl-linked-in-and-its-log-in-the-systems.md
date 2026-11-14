@@ -87,11 +87,13 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   keeps them within the log's room; nothing has to turn log files over.
 - **Sites in `/shared/www`.** The default server answers on port 80
   for any name, from `/shared/www`, and shows nginx's welcome page from
-  the bundle until the folder has an index page. Its HTTPS server is in
-  the settings, turned off, with the commands that make a certificate
-  with openssl until certd gives them. Each worker raises its open files
-  to 4096, the hard limit, as Spark does not set a service's
-  `open_files` yet.
+  the bundle until the folder has an index file, `index.html` or, once
+  PHP is set up (ADR 0520), `index.php`. Until then its settings answer
+  every `.php` URL with 404, so a PHP page's code is never sent as text.
+  Its HTTPS server is in the settings, turned off, with the commands
+  that make a certificate with openssl until certd gives them. Each
+  worker raises its open files to 4096, the hard limit, as Spark does
+  not set a service's `open_files` yet.
 
 ## Consequences
 
@@ -99,12 +101,12 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   --for-everyone org.nginx.nginx` and `elevate service nginx enable`.
   The bundle is about 3.5 MB.
 - The boot test `nginx` installs the bundle from its `.dkv` file,
-  enables it, and checks its welcome page, a page in `/shared/www`, a
-  reload with settings that do not read, which leaves it serving and
-  logs the wrong line, a restart, HTTPS with a certificate of its own,
-  three reloads during 300 requests that lose none, its log, the
-  account that owns its files, and requests logged to a file of its
-  data folder's `logs` folder instead. The lab test `services/nginx`
+  enables it, and checks its welcome page, a page in `/shared/www`, the
+  404 of a PHP page, a reload with settings that do not read, which
+  leaves it serving and logs the wrong line, a restart, HTTPS with a
+  certificate of its own, three reloads during 300 requests that lose
+  none, its log, the account that owns its files, and requests logged to
+  a file of its data folder's `logs` folder instead. The lab test `services/nginx`
   serves the lab PC over the machine's own card, with five reloads
   during 20 seconds of requests 16 at a time; `./ob lab` packs the
   catalog's bundles for it.

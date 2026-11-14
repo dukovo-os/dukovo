@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# PHP from the catalog runs PHP's whole test suite on real hardware (ADR
+# 0499): installed for everyone, its program runs the suite with a worker
+# for each processor, leaving out only the tests that php-skips.txt lists,
+# each with the reason it fails on Dukovo. The bundle's files are sealed,
+# and run-tests.php writes beside each test it runs, so the suite runs on
+# a writable copy in /tmp, by the program's path, as a script does; -q
+# keeps it from asking questions, and --offline leaves out the tests that
+# need the network, as PHP's own continuous integration does for the ones
+# that need a service of the internet.
+about = "PHP from the catalog passes its own test suite, but for the tests php-skips.txt lists with their reasons (ADR 0499)"
+time = "120m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh net.php.php {machine} {machine-port:22}"
+expect = "copied: net.php.php"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/php-skips.txt {machine} {machine-port:22}"
+expect = "copied: php-skips.txt"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/net.php.php.dkv | tail -1'"
+root = true
+expect = "installed net.php.php"
+[[step]]
+run = "/applications/net.php.php/bin/php -v"
+expect = "PHP 8.5.12 (cli)"
+# The copy of the suite, and the list of its tests without the ones the
+# skip list names: a line is a file's path from the top of the suite, or
+# a folder's, which ends in a slash, and grep reads each, put after the
+# copy's own path and without the list's comments, as a fixed string.
+[[step]]
+run = '''sh -c 'rm -rf /tmp/php-tests && cp -R /applications/net.php.php/tests /tmp/php-tests && chmod -R u+w /tmp/php-tests && grep -v -e "^#" -e "^$" /users/lab/php-skips.txt | sed "s|^|/tmp/php-tests/|" > /tmp/php-skips && find /tmp/php-tests -name "*.phpt" | sort | grep -v -F -f /tmp/php-skips > /tmp/php-list && test $(wc -l < /tmp/php-list) -gt 15000 && echo listed' '''
+expect = "listed"
+[[step]]
+run = '''sh -c 'cd /tmp/php-tests && TEST_PHP_EXECUTABLE=/applications/net.php.php/bin/php /applications/net.php.php/bin/php run-tests.php -j$(nproc) -q --offline -r /tmp/php-list > /tmp/php-suite.log 2>&1; grep "^Tests failed" /tmp/php-suite.log' '''
+expect = "Tests failed    :     0 ("
+[[step]]
+run = "sh -c 'rm -rf /tmp/php-tests; bundle remove --for-everyone --purge net.php.php'"
+root = true
+expect = "removed net.php.php"

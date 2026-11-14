@@ -1,0 +1,79 @@
+SPDX-FileCopyrightText: The PHP Group
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PHP-3.01
+
+sockets: multicast without RFC 3678's names or SIOCGIFADDR
+
+The sockets extension joins and leaves a multicast group by the calls of
+RFC 3678 when the C library has MCAST_JOIN_GROUP, and takes
+MCAST_LEAVE_GROUP to be there with it. Radix's C library has the first,
+among Linux's constants, and not the second, and the kernel does what
+IPv4 has: IP_ADD_MEMBERSHIP and IP_DROP_MEMBERSHIP, which the extension
+uses when the RFC's names are not all there. Turning the index of a
+multicast interface into its address asks SIOCGIFADDR, which Radix's
+ioctl does not know; getifaddrs, which it has, tells the same.
+
+diff --git a/ext/sockets/multicast.c b/ext/sockets/multicast.c
+index 6ccaf5fd..f99f2815 100644
+--- a/ext/sockets/multicast.c
++++ b/ext/sockets/multicast.c
+@@ -30,6 +30,9 @@
+ #ifdef HAVE_SYS_SOCKIO_H
+ #include <sys/sockio.h>
+ #endif
++#ifndef SIOCGIFADDR
++#include <ifaddrs.h>
++#endif
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
+ #endif
+@@ -752,6 +755,7 @@ zend_result php_if_index_to_addr4(unsigned if_index, php_socket *php_sock, struc
+ 		return FAILURE;
+ 	}
+ 
++#ifdef SIOCGIFADDR
+ 	if (ioctl(php_sock->bsd_socket, SIOCGIFADDR, &if_req) == -1) {
+ 		php_error_docref(NULL, E_WARNING,
+ 			"Failed obtaining address for interface %u: error %d", if_index, errno);
+@@ -761,6 +765,28 @@ zend_result php_if_index_to_addr4(unsigned if_index, php_socket *php_sock, struc
+ 	memcpy(out_addr, &((struct sockaddr_in *) &if_req.ifr_addr)->sin_addr,
+ 		sizeof *out_addr);
+ 	return SUCCESS;
++#else
++	struct ifaddrs *list, *item;
++
++	if (getifaddrs(&list) == -1) {
++		php_error_docref(NULL, E_WARNING,
++			"Failed obtaining address for interface %u: error %d", if_index, errno);
++		return FAILURE;
++	}
++	for (item = list; item != NULL; item = item->ifa_next) {
++		if (item->ifa_addr != NULL && item->ifa_addr->sa_family == AF_INET
++				&& strcmp(item->ifa_name, if_req.ifr_name) == 0) {
++			memcpy(out_addr, &((struct sockaddr_in *) item->ifa_addr)->sin_addr,
++				sizeof *out_addr);
++			freeifaddrs(list);
++			return SUCCESS;
++		}
++	}
++	freeifaddrs(list);
++	php_error_docref(NULL, E_WARNING,
++		"Failed obtaining address for interface %u: it has no IPv4 address", if_index);
++	return FAILURE;
++#endif
+ }
+ 
+ zend_result php_add4_to_if_index(struct in_addr *addr, php_socket *php_sock, unsigned *if_index)
+diff --git a/ext/sockets/multicast.h b/ext/sockets/multicast.h
+index f2232921..09a61950 100644
+--- a/ext/sockets/multicast.h
++++ b/ext/sockets/multicast.h
+@@ -15,7 +15,7 @@
+  */
+ 
+ // TODO using setsourcefilter api on freebsd to support both ipv4/ipv6.
+-#if defined(MCAST_JOIN_GROUP) && !defined(__APPLE__) && !defined(__FreeBSD__)
++#if defined(MCAST_JOIN_GROUP) && defined(MCAST_LEAVE_GROUP) && !defined(__APPLE__) && !defined(__FreeBSD__)
+ # define RFC3678_API 1
+ /* has block/unblock and source membership, in this case for both IPv4 and IPv6 */
+ # define HAS_MCAST_EXT 1

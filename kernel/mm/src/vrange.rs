@@ -112,6 +112,35 @@ impl<const N: usize> RangeTable<N> {
 
     /// Gives back `bytes` (rounded up to pages) at `start`.
     pub fn release(&mut self, start: u64, bytes: u64) -> Result<(), RangeError> {
+        let (end, index) = self.taken(start, bytes)?;
+        let before = index.checked_sub(1).map(|i| self.free[i]);
+        let after = (index < self.len).then(|| self.free[index]);
+        match (before.filter(|b| b.end == start), after.filter(|a| a.start == end)) {
+            (Some(_), Some(a)) => {
+                self.free[index - 1].end = a.end;
+                self.remove(index);
+            }
+            (Some(_), None) => self.free[index - 1].end = end,
+            (None, Some(_)) => self.free[index].start = start,
+            (None, None) => {
+                if self.len == N {
+                    return Err(RangeError::TooFragmented);
+                }
+                self.insert(index, Extent { start, end });
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks, changing nothing, that all of `bytes` (rounded up to pages)
+    /// at `start` is taken, as [`RangeTable::release`] does first.
+    pub fn check_taken(&self, start: u64, bytes: u64) -> Result<(), RangeError> {
+        self.taken(start, bytes).map(drop)
+    }
+
+    /// The end of `bytes` (rounded up to pages) at `start`, if all of it is
+    /// taken, and the index of the first free extent after it.
+    fn taken(&self, start: u64, bytes: u64) -> Result<(u64, usize), RangeError> {
         let page = PAGE_SIZE as u64;
         let end = bytes
             .checked_next_multiple_of(page)
@@ -128,21 +157,7 @@ impl<const N: usize> RangeTable<N> {
         if before.is_some_and(|b| b.end > start) || after.is_some_and(|a| a.start < end) {
             return Err(RangeError::AlreadyFree);
         }
-        match (before.filter(|b| b.end == start), after.filter(|a| a.start == end)) {
-            (Some(_), Some(a)) => {
-                self.free[index - 1].end = a.end;
-                self.remove(index);
-            }
-            (Some(_), None) => self.free[index - 1].end = end,
-            (None, Some(_)) => self.free[index].start = start,
-            (None, None) => {
-                if self.len == N {
-                    return Err(RangeError::TooFragmented);
-                }
-                self.insert(index, Extent { start, end });
-            }
-        }
-        Ok(())
+        Ok((end, index))
     }
 
     fn remove(&mut self, index: usize) {
@@ -194,7 +209,11 @@ mod tests {
         let b = ranges.alloc(3 * P, 4 * P).unwrap();
         assert_eq!(a, 0x1000_0000);
         assert_eq!(b, 0x1000_4000);
+        assert_eq!(ranges.check_taken(b, 3 * P), Ok(()));
+        assert_eq!(ranges.check_taken(b, 4 * P), Err(RangeError::AlreadyFree));
+        assert_eq!(ranges.check_taken(b - P, 3 * P), Err(RangeError::AlreadyFree));
         assert_eq!(ranges.release(a, P), Ok(()));
+        assert_eq!(ranges.check_taken(a, P), Err(RangeError::AlreadyFree));
         assert_eq!(ranges.release(a, P), Err(RangeError::AlreadyFree));
         assert_eq!(ranges.release(a + P, P), Err(RangeError::AlreadyFree));
         assert_eq!(ranges.release(b, 3 * P), Ok(()));
@@ -225,6 +244,9 @@ mod tests {
                     prop_assert_eq!(ranges.release(start, end - start), Ok(()));
                 }
                 ranges.check().unwrap();
+                for &(start, end) in &taken {
+                    prop_assert_eq!(ranges.check_taken(start, end - start), Ok(()));
+                }
                 let used: u64 = taken.iter().map(|(s, e)| e - s).sum();
                 prop_assert_eq!(ranges.free_bytes() + used, 256 * P);
             }

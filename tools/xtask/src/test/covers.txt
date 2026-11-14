@@ -446,6 +446,15 @@ optical-ide kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/ide.rs k
 optical-ide userspace/programs/systools/src/eject.rs userspace/programs/systools/src/volumed.rs
 page-fault kernel/mm/
 pci-serial kernel/drivers/uart/ kernel/radix/src/serial/
+php ports/bzip2/ ports/curl/ ports/libxml2/ ports/openssl/ ports/php/ ports/rustls-ffi/
+php ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs
+php tools/xtask/src/ports.rs userspace/programs/dkv/ userspace/programs/manifest/
+php userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
+php-fpm ports/bzip2/ ports/curl/ ports/libxml2/ ports/nginx/ ports/openssl/ ports/php/
+php-fpm ports/rustls-ffi/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs
+php-fpm tools/xtask/src/licenses.rs tools/xtask/src/ports.rs userspace/programs/dkv/
+php-fpm userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
+php-fpm userspace/programs/systools/src/bundles/ userspace/programs/systools/src/authd.rs
 posix docs/man/ kernel/lib/posix/ ports/7zip/ ports/bc/ ports/bzip2/ ports/curl/ ports/db1/
 posix ports/diffutils/ ports/file/ ports/git/ ports/grep/ ports/gzip/ ports/iperf3/ ports/jq/
 posix ports/less/ ports/libarchive/ ports/libc-test/ ports/libevent/ ports/libpcap/ ports/locales/

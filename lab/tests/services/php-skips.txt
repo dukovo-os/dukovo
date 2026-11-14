@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The tests of PHP's suite that the lab's test services/php leaves out,
+# each group with the reason it fails on Dukovo. A line is a test file's
+# path from the top of the suite (`ext/standard/tests/file/fgets.phpt`), or
+# a folder's, which ends in a slash (`ext/sockets/tests/`): the lab test
+# runs the tests of the suite whose paths start with none of them. When
+# a gap closes, its lines go: the gaps waiting on work are in
+# docs/deferred.md.
+#
+# The list is made from a run, under emulation, of the tests that ask the
+# system for something: those of tests/ and sapi/cli/tests/, of
+# ext/standard/tests/ for files, the network, general functions and
+# streams, and of the sockets, posix, pcntl, sysvsem, sysvshm, shmop,
+# session, openssl, curl and ftp extensions (ADR 0499). Each test that
+# failed there, or ran for longer than its time, was read for its reason
+# before its line was added. The rest of the suite, the language's own tests
+# among them, is for the lab test to run on hardware, which adds a line for
+# each that fails there.
+
+# mlibc's getprotobyname(3) and getprotobynumber(3) find no protocol, and
+# its getservbyport(3) ignores the protocol it is given (it names "http"
+# for UDP port 80 as well).
+ext/standard/tests/network/getprotobyname_basic.phpt
+ext/standard/tests/network/getprotobynumber_basic.phpt
+ext/standard/tests/general_functions/getservbyport_variation1.phpt
+
+# The C library has no res_search(3), so the build has no dns_get_record(),
+# dns_check_record() or dns_get_mx(), which these tests call (deferred.md).
+ext/standard/tests/network/ghsa-www2-q4fc-65wf.phpt
+ext/standard/tests/network/dns_check_record_error_conditions.phpt
+ext/standard/tests/network/dns_get_record_error_conditions.phpt
+
+# Unix-domain sockets of the datagram type are not there: socket(2) answers
+# ESOCKTNOSUPPORT (94) for AF_UNIX with SOCK_DGRAM, and the tests that send
+# descriptors or credentials in a message start from one.
+ext/sockets/tests/bug76839.phpt
+ext/sockets/tests/mcast_sockettype_error.phpt
+ext/sockets/tests/socket_recv_overflow.phpt
+ext/sockets/tests/socket_sendto_unix_addr_too_long.phpt
+ext/sockets/tests/socket_sentto_recvfrom_unix.phpt
+ext/sockets/tests/socket_sendmsg_scm_rights_object.phpt
+ext/sockets/tests/socket_cmsg_credentials.phpt
+ext/sockets/tests/socket_cmsg_rights.phpt
+ext/standard/tests/network/udgloop.phpt
+
+# Socket options the kernel does not offer answer ENOPROTOOPT (92):
+# TCP_CONGESTION, SO_ZEROCOPY and IPV6_PKTINFO and IPV6_RECVPKTINFO; the
+# test of an option that must be refused for a different reason expects
+# EACCES.
+ext/sockets/tests/socket_tcp_congestion.phpt
+ext/sockets/tests/socket_sendto_zerocopy.phpt
+ext/sockets/tests/socket_set_option_in6_pktinfo.phpt
+ext/sockets/tests/socket_sendrecvmsg_multi_msg.phpt
+ext/sockets/tests/socket_sendrecvmsg_multi_msg-unix.phpt
+ext/sockets/tests/socket_set_option_error_socket_option.phpt
+
+# The ioctl that gives the address of a network interface by its number
+# (the multicast options' interface argument) answers ENOTTY (25).
+ext/sockets/tests/socket_getopt.phpt
+ext/sockets/tests/mcast_ipv4_send.phpt
+ext/sockets/tests/mcast_ipv4_send_error.phpt
+
+# The kernel takes what Linux refuses: sendmsg(2) with flags it has no
+# meaning for succeeds, and socketpair(2) for AF_INET answers "Address
+# family not supported by protocol" where PHP's test expects the C library's
+# "not supported" message.
+ext/sockets/tests/socket_sendrecvmsg_error.phpt
+ext/sockets/tests/socket_create_pair-wrongparams.phpt
+
+# mlibc's wait3() is not implemented (it says so on the standard error
+# output), which pcntl_wait() and pcntl_waitpid() with a resource usage
+# call, and a SIGCHLD's siginfo has no sender's user number (pcntl/002).
+ext/pcntl/tests/002.phpt
+ext/pcntl/tests/bug72154.phpt
+ext/pcntl/tests/pcntl_wait.phpt
+ext/pcntl/tests/pcntl_wait_rusage1.phpt
+
+# mlibc's sysconf() has no number for some names posix_sysconf() asks
+# (it answers -1 and says so).
+ext/posix/tests/posix_sysconf.phpt
+
+# Files: a tmpfs folder takes 32,768 entries, and the test makes 70,000
+# (ENOMEM); fsync(2) and fdatasync(2) of a descriptor that is not a file
+# succeed where Linux answers EINVAL; a path with a slash after a file
+# names the file, where Linux answers ENOTDIR; utimes(2) refuses a time
+# before 1970 and an access time with a modification time (EINVAL); a
+# process whose working folder was removed still gets its path from getcwd().
+ext/standard/tests/file/bug36365.phpt
+ext/standard/tests/file/fsync.phpt
+ext/standard/tests/file/fdatasync.phpt
+ext/standard/tests/file/filegroup_variation3.phpt
+ext/standard/tests/file/fileinode_variation3.phpt
+ext/standard/tests/file/fileowner_variation3.phpt
+ext/standard/tests/file/fileperms_variation3.phpt
+ext/standard/tests/file/is_file_variation4.phpt
+ext/standard/tests/file/rename_variation.phpt
+ext/standard/tests/file/unlink_variation8.phpt
+ext/standard/tests/file/touch.phpt
+ext/standard/tests/file/realpath_bug77484.phpt
+
+# The program loads no libraries (ADR 0499): dl() says that dynamic modules
+# are not supported, where the first test expects the message about a path,
+# and the start with -d extension=NAME does not warn of a module that cannot
+# be loaded, which the second expects.
+ext/standard/tests/general_functions/dl-full-path-not-supported.phpt
+tests/basic/bug71273.phpt
+
+# curl's TLS is rustls's, which does not take the client certificates of
+# this test (curl error 58, a problem with the local certificate) and has no
+# CURLOPT_CA_CACHE_TIMEOUT; and php.ini gives openssl.cafile the system's
+# root certificates, where the test expects it empty.
+ext/curl/tests/curl_setopt_ssl.phpt
+ext/curl/tests/curl_basic_030.phpt
+ext/openssl/tests/openssl_get_cert_locations_basic.phpt

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# libxml2, the XML parser and toolkit library (ADR 0499): a static
+# library, its headers and libxml-2.0.pc in the sysroot, for the ports
+# built on it. PHP's dom, simplexml, xml, xmlreader and xmlwriter
+# extensions are the first. Nothing of it reaches an image.
+name = "libxml2"
+version = "2.15.4"
+summary = "XML parser and toolkit library"
+license = "MIT"
+homepage = "https://gitlab.gnome.org/GNOME/libxml2"
+depends = ["mlibc", "zlib"]
+
+# GNOME's mirror on GitHub: gitlab.gnome.org is not reachable from the
+# build machines.
+[source]
+git = "https://github.com/GNOME/libxml2.git"
+commit = "96498992efa48d52b0e8b83058bd88dbdaf153c1"
+tag = "v2.15.4"
