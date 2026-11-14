@@ -6,7 +6,7 @@
 //! tasks run, since no real action is long yet.
 //!
 //! It prints `step N of 4: WORDS` and `progress P%` lines over SECONDS
-//! seconds (20 when it is not said, up to 120), with a log line each
+//! seconds (20 when it is not said, up to 600), with a log line each
 //! second, and changes nothing. When it is sent SIGTERM it says it stops
 //! and ends well at once, as a command that puts back what it did does.
 
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn the_seconds_are_one_number_in_range() {
-        for bad in [&["0"][..], &["121"], &["x"], &["1", "2"], &["--now"]] {
+        for bad in [&["0"][..], &["601"], &["x"], &["1", "2"], &["--now"]] {
             let items = bad.iter().map(Into::into).collect();
             let failed = main(&mut Args::new("admin", items)).unwrap_err();
             assert!(failed.usage || failed.message.contains("usage"), "{bad:?}");

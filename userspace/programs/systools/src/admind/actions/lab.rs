@@ -20,13 +20,13 @@ use super::{Action, Args, Bad, Examples, Field, Runs, Tests};
 pub const SECONDS_DEFAULT: u32 = 20;
 
 /// The longest it may be asked to run, in seconds.
-pub const SECONDS_MAX: u32 = 120;
+pub const SECONDS_MAX: u32 = 600;
 
 /// How long the command should run.
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Seconds {
-    /// In seconds, 1 to 120; 20 when it is not said.
+    /// In seconds, 1 to 600; 20 when it is not said.
     #[serde(default)]
     pub seconds: Option<u32>,
 }
@@ -89,7 +89,7 @@ impl Action for Long {
     fn examples() -> Examples<Seconds> {
         Examples {
             good: vec![Seconds { seconds: Some(SECONDS_DEFAULT) }],
-            bad: vec![serde_json::json!({ "seconds": 0 }), serde_json::json!({ "seconds": 121 })],
+            bad: vec![serde_json::json!({ "seconds": 0 }), serde_json::json!({ "seconds": 601 })],
             undo: None,
         }
     }
