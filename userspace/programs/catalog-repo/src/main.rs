@@ -230,18 +230,29 @@ fn run(options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// Signs the rollouts of the plans in `--plan`, if it was given, and
-/// gives the plans as they are then, to keep once what they say is
-/// published.
+/// Signs the rollouts of the plans in `--plan`, and gives the plans as
+/// they are then, to keep once what they say is published. Without
+/// `--plan`, targets that delegate the rollouts still get them, with
+/// every wave open, so that computers read the catalog.
 fn sign_rollouts(
     repo: &Repo,
     options: &Options,
     signers: &Signers,
 ) -> Result<Option<Plans>, String> {
-    let Some(path) = &options.plan else { return Ok(None) };
+    let Some(path) = &options.plan else {
+        if let Some(store) = &options.store
+            && repo.sign_rollouts(store, signers, None, tuf::time::now())?.is_some()
+        {
+            eprintln!(
+                "catalog-repo: the targets delegate rollouts and no --plan was given: every \
+                 bundle's newest version is signed with every wave open"
+            );
+        }
+        return Ok(None);
+    };
     let store = options.store.as_ref().ok_or("--store is needed")?;
     let mut plans = Plans::load(path)?;
-    repo.sign_rollouts(store, signers, &mut plans, tuf::time::now())?;
+    repo.sign_rollouts(store, signers, Some(&mut plans), tuf::time::now())?;
     Ok(Some(plans))
 }
 
@@ -309,7 +320,7 @@ fn rollout(
                 .into());
         }
     };
-    if repo.sign_rollouts(store, signers, &mut plans, tuf::time::now())?.is_none() {
+    if repo.sign_rollouts(store, signers, Some(&mut plans), tuf::time::now())?.is_none() {
         return Err("the targets delegate no rollouts: sign the targets again".into());
     }
     let days = (expires_days("snapshot"), expires_days("timestamp"));

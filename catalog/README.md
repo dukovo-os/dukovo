@@ -108,9 +108,9 @@ server's key for the paths `rollout/ID/VERSION.json`, which the next
 computer takes its updates at once. The server signs each rollout when
 it publishes and every six hours, keeping its plan in
 `/var/lib/dukovo-catalog/rollout.json`, which is never served. A version
-counts from the day the server first sees it, so the first publish after
-the server runs this starts the waves of every bundle's newest version
-then.
+counts from the day the server first sees it; the versions listed when
+the server first signs rollouts have every wave open, since every
+computer could take them already.
 
 If a new version misbehaves, hold its waves, with a reason computers
 show, and free them when it is fixed or known to be fine:

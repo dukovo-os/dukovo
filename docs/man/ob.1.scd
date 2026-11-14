@@ -1900,8 +1900,9 @@ _target/userspace/_).
 	version: the canaries first, then on days 1, 3, 5 and 7 the
 	computers numbered below 10, 100, 500 and 1000. Its plan, in
 	_rollout.json_ beside the online key, is never served. A version
-	the server first sees counts from that day, so after the server
-	first runs this, every bundle's newest version starts its waves then.
+	the server first sees counts from that day; the versions listed when
+	the server first signs rollouts have every wave open, since every
+	computer could take them already.
 
 	*rollout* holds or frees the waves on the server, with no key of
 	the signer's: it runs the server's _catalog-rollout.sh_ as its user,

@@ -442,6 +442,9 @@ impl Repo {
     /// [`Repo::publish`] to serve. Returns the role's version, or none
     /// when the targets delegate no rollouts, as those of a catalog signed
     /// before them do not: every machine then takes its updates as it did.
+    /// Without `plans`, every version has every wave open: targets that
+    /// delegate the rollouts need them signed, or no computer reads the
+    /// catalog, and a server not yet given a plan must not stop it.
     ///
     /// # Errors
     ///
@@ -452,7 +455,7 @@ impl Repo {
         &self,
         store: &Path,
         signers: &Signers,
-        plans: &mut Plans,
+        plans: Option<&mut Plans>,
         now: i64,
     ) -> Result<Option<u64>, String> {
         let root = self.root()?.ok_or("there is no root yet")?;
@@ -462,13 +465,24 @@ impl Repo {
         }
         let keys = keys::read_all(&self.keys_dir())?;
         let signer = online_signer(&root, &keys, signers, "timestamp")?;
+        let role = store.join(ROLLOUT_METADATA);
+        let old = read::<Targets>(&role)?;
+        // Before the first rollouts every version reached every computer
+        // the day it was listed: those listed then start with every wave
+        // open, and only the versions listed later go through the waves.
+        let mut unplanned = Plans::default();
+        let (plans, first) = match plans {
+            Some(plans) if old.is_some() => (plans, 0),
+            Some(plans) => (plans, rollout::LAST),
+            None => (&mut unplanned, rollout::LAST),
+        };
         let mut listed = BTreeMap::new();
         let mut newest = Vec::new();
         for (id, version) in newest_versions(&targets.signed.signed) {
             let release = format!("{id}/{version}");
             let plan = plans.releases.entry(release.clone()).or_insert(Plan {
                 released: now,
-                open: 0,
+                open: first,
                 paused: None,
             });
             let signed = rollout::next(&release, plan, &plans.red, now);
@@ -481,8 +495,6 @@ impl Repo {
             newest.push(release);
         }
         plans.releases.retain(|release, _| newest.contains(release));
-        let role = store.join(ROLLOUT_METADATA);
-        let old = read::<Targets>(&role)?;
         if let Some(old) = &old {
             // The role is kept only while it follows from these targets: a
             // new online key makes the delegation another.
@@ -1140,23 +1152,32 @@ mod tests {
         let dir = scratch("rollouts");
         let older = bundle(&dir, "org.dukovo.ripgrep", "14.1.0", b"rg, older");
         let newer = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
-        let bat = bundle(&dir, "org.dukovo.bat", "0.25.0", b"bat");
-        let (repo, store, both, online) = catalog_of(&dir, &[older, newer, bat]);
+        let bat_file = bundle(&dir, "org.dukovo.bat", "0.25.0", b"bat");
+        let (repo, store, both, online) = catalog_of(&dir, std::slice::from_ref(&older));
         let (out, first) = (dir.join("site"), std::fs::read(repo.metadata("1.root.json")).unwrap());
         let (now, day) = (tuf::time::now(), 86_400);
         let mut plans = Plans::default();
         let rolled = |when: i64, plans: &mut Plans| {
-            assert!(repo.sign_rollouts(&store, &online, plans, when).unwrap().is_some());
+            assert!(repo.sign_rollouts(&store, &online, Some(plans), when).unwrap().is_some());
             repo.refresh(&store, &out, &online, (7, 1)).unwrap()
         };
         let (ripgrep, bat) = ("org.dukovo.ripgrep/14.1.1", "org.dukovo.bat/0.25.0");
         let read = |release: &str| read_rollout(&out, &first, &rollout::target_path(release));
-
-        // The newest version of each bundle opens to the canaries on its
-        // first day, and an older one has no rollout.
-        assert_eq!(rolled(now, &mut plans), Refreshed::All { snapshot: 1, timestamp: 1 });
         let at =
             |release: &str, wave| rollout::Rollout { release: release.into(), wave, held: None };
+
+        // A version listed before the first rollouts reached every
+        // computer the day it was listed: every wave is open.
+        assert_eq!(rolled(now, &mut plans), Refreshed::All { snapshot: 1, timestamp: 1 });
+        let listed_before = "org.dukovo.ripgrep/14.1.0";
+        assert_eq!(read(listed_before), Some(at(listed_before, rollout::LAST)));
+        let added = [newer, bat_file];
+        let changes = repo.changes(&added, &[]).unwrap();
+        repo.sign_targets(&changes, &added, &store, &both, 182).unwrap();
+
+        // The newest version of each bundle listed after them opens to the
+        // canaries on its first day, and an older one has no rollout.
+        assert_eq!(rolled(now, &mut plans), Refreshed::All { snapshot: 2, timestamp: 2 });
         assert_eq!(read(ripgrep), Some(at(ripgrep, 0)));
         assert_eq!(read(bat), Some(at(bat, 0)));
         assert_eq!(plans.releases[ripgrep].released, now);
@@ -1170,12 +1191,12 @@ mod tests {
         assert_eq!(read("org.dukovo.ripgrep/9.9.9"), None);
 
         // With nothing new to sign, a refresh signs a timestamp alone.
-        assert!(repo.sign_rollouts(&store, &online, &mut plans, now).unwrap().is_some());
-        assert_eq!(repo.refresh(&store, &out, &online, (7, 1)), Ok(Refreshed::Timestamp(2)));
+        assert!(repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap().is_some());
+        assert_eq!(repo.refresh(&store, &out, &online, (7, 1)), Ok(Refreshed::Timestamp(3)));
 
         // Wave 1 on the second day; a pause holds it there while the
         // schedule goes on for the other bundle.
-        assert_eq!(rolled(now + day, &mut plans), Refreshed::All { snapshot: 2, timestamp: 3 });
+        assert_eq!(rolled(now + day, &mut plans), Refreshed::All { snapshot: 3, timestamp: 4 });
         assert_eq!(read(ripgrep), Some(at(ripgrep, 1)));
         plans.releases.get_mut(ripgrep).unwrap().paused = Some("disk errors".into());
         rolled(now + 3 * day, &mut plans);
@@ -1188,9 +1209,9 @@ mod tests {
 
         // The role is signed anew once it has less than twelve hours left,
         // and not before.
-        let version = repo.sign_rollouts(&store, &online, &mut plans, now + 5 * day).unwrap();
+        let version = repo.sign_rollouts(&store, &online, Some(&mut plans), now + 5 * day).unwrap();
         let later = now + 6 * day - 11 * 3600;
-        assert_ne!(repo.sign_rollouts(&store, &online, &mut plans, later).unwrap(), version);
+        assert_ne!(repo.sign_rollouts(&store, &online, Some(&mut plans), later).unwrap(), version);
 
         // A newer version takes the place of the newest: the plan of the
         // one before goes, and the new one opens to the canaries.
@@ -1213,11 +1234,35 @@ mod tests {
         let (repo, store, _, online) = catalog_of(&dir, &[node]);
         let (out, first) = (dir.join("site"), std::fs::read(repo.metadata("1.root.json")).unwrap());
         let mut plans = Plans::default();
-        repo.sign_rollouts(&store, &online, &mut plans, tuf::time::now()).unwrap().unwrap();
+        repo.sign_rollouts(&store, &online, Some(&mut plans), tuf::time::now()).unwrap().unwrap();
         repo.publish(&store, &out, &online, (7, 1)).unwrap();
         let release = "org.nodejs.node@22/22.1.0+b5";
         let found = read_rollout(&out, &first, &rollout::target_path(release));
-        assert_eq!(found, Some(rollout::Rollout { release: release.into(), wave: 0, held: None }));
+        let wave = rollout::LAST;
+        assert_eq!(found, Some(rollout::Rollout { release: release.into(), wave, held: None }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn without_a_plan_a_new_version_has_every_wave_open() {
+        let dir = scratch("unplanned");
+        let older = bundle(&dir, "org.dukovo.ripgrep", "14.1.0", b"rg, older");
+        let (repo, store, both, online) = catalog_of(&dir, std::slice::from_ref(&older));
+        let (out, first) = (dir.join("site"), std::fs::read(repo.metadata("1.root.json")).unwrap());
+        let now = tuf::time::now();
+        let mut plans = Plans::default();
+        repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap().unwrap();
+        // A version listed after the first rollouts, signed by a server
+        // that was given no plan.
+        let newer = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let changes = repo.changes(std::slice::from_ref(&newer), &[]).unwrap();
+        repo.sign_targets(&changes, &[newer], &store, &both, 182).unwrap();
+        repo.sign_rollouts(&store, &online, None, now).unwrap().unwrap();
+        repo.publish(&store, &out, &online, (7, 1)).unwrap();
+        let release = "org.dukovo.ripgrep/14.1.1";
+        let found = read_rollout(&out, &first, &rollout::target_path(release));
+        let wave = rollout::LAST;
+        assert_eq!(found, Some(rollout::Rollout { release: release.into(), wave, held: None }));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1228,7 +1273,7 @@ mod tests {
         let (repo, store, _, online) = catalog_of(&dir, &[ripgrep]);
         let mut plans = Plans::default();
         let now = tuf::time::now();
-        assert!(repo.sign_rollouts(&store, &online, &mut plans, now).unwrap().is_some());
+        assert!(repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap().is_some());
         // Targets as an older catalog signed them, with the flaws alone.
         let path = repo.metadata("targets.json");
         let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1236,7 +1281,7 @@ mod tests {
         roles.retain(|role| role["name"] == FLAWS_ROLE);
         std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
         let mut plans = Plans::default();
-        assert_eq!(repo.sign_rollouts(&store, &online, &mut plans, now), Ok(None));
+        assert_eq!(repo.sign_rollouts(&store, &online, Some(&mut plans), now), Ok(None));
         assert!(plans.releases.is_empty());
         let targets = repo.targets().unwrap().unwrap();
         let kept = online_role(&store, ROLLOUT_METADATA, rollout::ROLE, &targets.signed.signed);

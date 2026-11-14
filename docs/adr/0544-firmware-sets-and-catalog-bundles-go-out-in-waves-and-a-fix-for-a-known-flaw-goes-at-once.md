@@ -35,14 +35,20 @@ from the machines that run the flawed version.
    stage` without a version refuses it until then; with `--version` it
    takes it at once, as `sysupdate stage --version` does a release.
 2. **Catalog bundles.** The catalog's targets delegate the paths
-   `rollout/ID/VERSION` alone to the role `rollout`, held by the catalog
-   server's online key, as they delegate the list of flaws. The catalog
-   server keeps a plan, never served, and signs a rollout of each
-   bundle's newest version at each publish and refresh, with the waves,
-   days, pauses and canaries of ADR 0469; `ob catalog rollout pause ID
-   VERSION REASON`, `resume ID VERSION` and `canary NAME red|green` run
-   its `catalog-rollout.sh` over SSH. A catalog whose targets delegate no
-   rollouts reaches every machine at once, as before.
+   `rollout/ID/VERSION.json` alone (the pattern `rollout/*/*.json`, which
+   the TUF client matches part by part) to the role `rollout`, held by
+   the catalog server's online key, as they delegate the list of flaws.
+   The catalog server keeps a plan, never served, and signs a rollout of
+   each bundle's newest version at each publish and refresh, with the
+   waves, days, pauses and canaries of ADR 0469; `ob catalog rollout
+   pause ID VERSION REASON`, `resume ID VERSION` and `canary NAME
+   red|green` run its `catalog-rollout.sh` over SSH. A catalog whose
+   targets delegate no rollouts reaches every machine at once, as
+   before. The versions listed when the server first signs rollouts
+   have every wave open, since every machine could take them already;
+   so does every version a server signs without a plan, since targets
+   that delegate the rollouts need them signed for a machine to read the
+   catalog at all.
 3. **One number per machine.** bundled uses the machine's number and
    canary of ADR 0469, `/system/state/sysupdate/wave` and `canary` in
    `updates.toml`, so that a machine is in the same wave for its system,
