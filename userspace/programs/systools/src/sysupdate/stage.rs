@@ -55,7 +55,18 @@ pub struct Asked<'a> {
 
 /// Says what the stage is doing.
 pub(crate) fn say(what: &str) {
-    println!("sysupdate: {what}");
+    let line = format!("sysupdate: {what}");
+    println!("{line}");
+    super::request::record(&line);
+}
+
+/// Keeps the troubleshoot signatures an update file or repository
+/// carries, if they are newer than those in use (ADR 0474): a release
+/// brought on a stick brings them as a daily check would.
+fn keep_signatures(offered: Option<&[u8]>) {
+    if let Some(said) = offered.and_then(crate::troubleshoot::signatures::offered) {
+        say(&said);
+    }
 }
 
 /// Stages the release `asked` names in the spare slot.
@@ -83,10 +94,12 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
                 let (published, archive) =
                     system_release::updates::open_file(repo, &trusted, asked.version)
                         .map_err(fail)?;
+                keep_signatures(published.signatures.as_deref());
                 (published.release, Files::Archive(archive))
             } else {
                 let published =
                     system_release::repo::open(repo, &trusted, asked.version).map_err(fail)?;
+                keep_signatures(published.signatures.as_deref());
                 (published.release, Files::Store(Store::at(&repo.join("files"))))
             }
         }

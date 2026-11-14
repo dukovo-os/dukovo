@@ -28,6 +28,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ("authd", include_str!("../../../defaults/spark/services/authd.toml")),
     ("firewall", include_str!("../../../defaults/spark/services/firewall.toml")),
     ("sysupdate", include_str!("../../../defaults/spark/services/sysupdate.toml")),
+    ("sysupdate-stage", include_str!("../../../defaults/spark/services/sysupdate-stage.toml")),
     ("snap", include_str!("../../../defaults/spark/services/snap.toml")),
     ("updated", include_str!("../../../defaults/spark/services/updated.toml")),
     ("logforward", include_str!("../../../defaults/spark/services/logforward.toml")),
@@ -82,6 +83,72 @@ fn every_shipped_file_reads() {
         service::from_toml(SHIPPED[SHIPPED.len() - 1].1).unwrap().permissions,
         netd.permissions
     );
+}
+
+/// The shipped service `name`, read.
+fn shipped(name: &str) -> service::Service {
+    let (_, text) = SHIPPED.iter().find(|(shipped, _)| *shipped == name).unwrap();
+    service::from_toml(text).unwrap()
+}
+
+#[test]
+fn the_services_that_manage_disks_hold_the_disks_and_nothing_else_of_devices() {
+    use service::DeviceAccess::{Read, ReadWrite};
+    let volumed = shipped("volumed").permissions;
+    assert_eq!(volumed.files.disks, Some(ReadWrite));
+    assert_eq!(shipped("diskhealth").permissions.files.disks, Some(Read));
+    for permissions in [volumed, shipped("diskhealth").permissions] {
+        assert!(!permissions.runs_with_your_access);
+        let devices = permissions.places().into_iter().filter(|p| p.path.starts_with("/devices"));
+        assert_eq!(devices.count(), 0);
+    }
+}
+
+#[test]
+fn the_updater_holds_the_roots_system_names_and_no_owner_s_files() {
+    let health = shipped("sysupdate").permissions;
+    let stage = shipped("sysupdate-stage").permissions;
+    for permissions in [&health, &stage] {
+        assert!(!permissions.runs_with_your_access);
+        assert_eq!(permissions.files.efi_system, Some(service::DeviceAccess::ReadWrite));
+        assert_eq!(permissions.files.disks, None);
+        let names = &permissions.files.root_subvolumes;
+        for owner in service::OWNERS_SUBVOLUMES {
+            assert!(!names.iter().any(|name| name == owner), "{owner}");
+        }
+        for slot in ["@system.a", "@system.b", "@system.new", "@firmware"] {
+            assert!(names.iter().any(|name| name == slot), "{slot}");
+        }
+        // The lock's holder may be the other one, in another domain.
+        assert!(permissions.files.read.iter().any(|place| place == service::PROCESSES));
+    }
+    // Only the stage reaches the network and the snapshots it takes for a
+    // fallback; the health check removes a half-built slot and no more.
+    assert!(stage.network.outbound && !health.network.outbound);
+    assert_eq!(health.files.root_subvolumes.len(), 4);
+    for name in ["@settings", "@state", "@snapshots"] {
+        assert!(stage.files.root_subvolumes.iter().any(|held| held == name), "{name}");
+    }
+    let stage = shipped("sysupdate-stage");
+    assert_eq!(stage.arguments, ["stage", "--request", "/system/live/sysupdate/request"]);
+    assert!(!stage.enabled);
+    assert_eq!(stage.restart, Restart::Never);
+}
+
+#[test]
+fn snap_holds_the_snapshots_of_the_root_and_reads_the_places_it_snapshots() {
+    let snap = shipped("snap").permissions;
+    assert!(!snap.runs_with_your_access);
+    assert_eq!(snap.files.root_subvolumes, ["@snapshots"]);
+    for place in ["/users", "/shared", "/snapshots"] {
+        assert!(snap.files.read.iter().any(|held| held == place), "{place}");
+    }
+    assert!(snap.files.read_write.is_empty());
+}
+
+#[test]
+fn updated_stages_through_the_stage_and_keeps_the_whole_tree_for_the_apps() {
+    assert!(shipped("updated").permissions.runs_with_your_access);
 }
 
 #[test]
@@ -303,6 +370,25 @@ fn what_a_view_holds_and_the_secrets() {
     assert!(whole.permissions.runs_with_your_access && whole.permissions.places().is_empty());
     // Nothing named, nothing beyond what every service reads.
     assert!(service::from_toml(&file("")).unwrap().permissions.places().is_empty());
+    // Disks by class and the root's subvolumes by name (ADR 0473): kept
+    // apart from the places, which Spark attaches as they are.
+    let classes = service::from_toml(&file(
+        "[permissions]\nfiles.disks = \"read\"\n\
+         files.root-subvolumes = [\"@snapshots\", \"@system.new\", \"@system-a\"]",
+    ))
+    .unwrap();
+    let files = &classes.permissions.files;
+    assert_eq!(files.disks, Some(service::DeviceAccess::Read));
+    assert!(files.efi_system.is_none() && classes.permissions.places().is_empty());
+    assert_eq!(files.root_subvolumes, ["@snapshots", "@system.new", "@system-a"]);
+    let efi = service::from_toml(&file("[permissions]\nfiles.efi-system = \"read-write\""));
+    assert!(efi.unwrap().permissions.files.efi_system.is_some_and(service::DeviceAccess::write));
+    let many: Vec<String> = (0..17).map(|n| format!("\"@{n}\"")).collect();
+    let many = file(&format!("[permissions]\nfiles.root-subvolumes = [{}]", many.join(", ")));
+    assert_eq!(error(&many), "line 4: files.root-subvolumes names at most 16 subvolumes");
+    // Every process, by naming the place.
+    let every = service::from_toml(&file("[permissions]\nfiles.read = [\"/processes\"]"));
+    assert_eq!(every.unwrap().permissions.places(), [place("/processes", false)]);
     let mounts = file("[permissions]\nfiles.mount = [\"/a\", \"/b\", \"/c\", \"/d\", \"/e\"]");
     assert_eq!(error(&mounts), "line 3: files.mount names at most 4 places");
     for (secret, fits) in [("api-token", true), ("_x.1", true), ("", false), ("a/b", false)] {
@@ -442,6 +528,48 @@ fn errors_name_their_line_in_plain_words() {
         (
             "[permissions]\nruns-with-your-access = true\nfiles.read = [\"/devices\"]",
             "line 3: runs-with-your-access holds every file already: leave out files.*",
+        ),
+        (
+            "[permissions]\nfiles.disks = \"write\"",
+            "line 4: unknown variant `write`, expected `read` or `read-write`",
+        ),
+        (
+            "[permissions]\nfiles.disks = \"read\"\nfiles.efi-system = \"read\"",
+            "line 3: files.disks holds the EFI system partitions already: leave out \
+             files.efi-system",
+        ),
+        (
+            "[permissions]\nfiles.efi-system = \"read-write\"\nfiles.read = [\"/devices/sda\"]",
+            "line 3: files.disks and files.efi-system make its /devices, so its view cannot hold \
+             /devices/sda apart: leave it out",
+        ),
+        (
+            "[permissions]\nruns-with-your-access = true\nfiles.root-subvolumes = [\"@snapshots\"]",
+            "line 3: runs-with-your-access holds every file already: leave out files.*",
+        ),
+        (
+            "[permissions]\nfiles.root-subvolumes = [\"@snapshots\", \"@users\"]",
+            "line 4: files.root-subvolumes cannot name @users, which holds the owner's files: an \
+             update or a snapshot never needs them",
+        ),
+        (
+            "[permissions]\nfiles.root-subvolumes = [\"@shared/media\"]",
+            "line 4: files.root-subvolumes takes names at the top of the root, such as \
+             \"@snapshots\": letters, digits, `@`, `.`, `-` and `_`, not `@shared/media`",
+        ),
+        (
+            "[permissions]\nfiles.root-subvolumes = [\"..\"]",
+            "line 4: files.root-subvolumes takes names at the top of the root, such as \
+             \"@snapshots\": letters, digits, `@`, `.`, `-` and `_`, not `..`",
+        ),
+        (
+            "[permissions]\nfiles.root-subvolumes = [\"@state\", \"@state\"]",
+            "line 4: files.root-subvolumes names @state twice",
+        ),
+        (
+            "[permissions]\nfiles.read = [\"/processes/1\"]",
+            "line 3: a service sees its own processes at /processes already, so its view cannot \
+             hold /processes/1 apart; name /processes with files.read to see every process",
         ),
         (
             "[permissions]\nfiles.shared = [\"../users\"]",

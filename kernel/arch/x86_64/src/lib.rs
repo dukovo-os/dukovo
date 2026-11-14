@@ -568,6 +568,10 @@ impl Devices for Arch {
         acpi::firmware_console()
     }
 
+    fn firmware_boot_times() -> Option<radix_hal::FirmwareBootTimes> {
+        acpi::firmware_boot_times()
+    }
+
     fn start_power_button(pressed: fn()) -> Option<&'static str> {
         sci::start(pressed)
     }

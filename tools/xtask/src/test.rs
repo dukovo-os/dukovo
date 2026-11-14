@@ -1981,7 +1981,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "service-graph",
-        about: "services wait for what they name (ADR 0470): one that requires another starts once that one listens, one whose requirement ends or is stopped by a request is stopped too, one that keeps failing its health check is restarted until Spark gives up on it and starts again once fixed, two that wait for each other never start, a setup step is done before what requires it starts, and shutting down stops a service before the one it requires; service start waits, showing Spark's lines as they come, or fails saying why, four waits run at once, and Ctrl-C leaves a start going, and service explain says why a service is in its state, following what it waits for or what stopped it to the root, and what to do (ADR 0471); a change tried with service try is undone at once when the service fails with it, or when its time is up unless it is kept, and a linked file is not tried (ADR 0472); service check says where a service file is wrong as a compiler does, with the line, the place in it and a fix, and what a file that reads would do once it is put to use: what restarts, what starts with it, and when a change applies (ADR 0471)",
+        about: "services wait for what they name (ADR 0470): one that requires another starts once that one listens, one whose requirement ends or is stopped by a request is stopped too, one that keeps failing its health check is restarted until Spark gives up on it and starts again once fixed, two that wait for each other never start, a setup step is done before what requires it starts, and shutting down stops a service before the one it requires; service start waits, showing Spark's lines as they come, or fails saying why, four waits run at once, and Ctrl-C leaves a start going, and service explain says why a service is in its state, following what it waits for or what stopped it to the root, and what to do (ADR 0471); a change tried with service try is undone at once when the service fails with it, or when its time is up unless it is kept, and a linked file is not tried (ADR 0472); service check says where a service file is wrong as a compiler does, with the line, the place in it and a fix, and what a file that reads would do once it is put to use: what restarts, what starts with it, and when a change applies (ADR 0471); a service that holds the disks lists them and the four devices every service has and no keyboard, a service sees its own processes and no others unless its file names /processes, and service status says what a service holds (ADR 0473)",
         firmware: Firmware::Bios,
         media: Media::Usb,
         cmdline: "lockdep -- --services --posix /system/tests/posix/graphtest",
@@ -6787,7 +6787,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 34 services in /system/settings/spark/services, 30 enabled")?;
+    vm.expect("spark: 35 services in /system/settings/spark/services, 30 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -10418,7 +10418,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 34 services in /system/settings/spark/services, 30 enabled")?;
+    vm.expect_anywhere("spark: 35 services in /system/settings/spark/services, 30 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();
@@ -11157,11 +11157,12 @@ fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
     Ok(())
 }
 
-/// The `service-graph` test (ADR 0470, ADR 0471, ADR 0472): graphtest
-/// (userspace/posix/graphtest.c) writes services that name each other
-/// and checks what `service` says of them, how it waits and how a change
-/// is tried with an undo; the log holds Spark's side of each step, and
-/// shutting down stops g-web before g-db, which it requires.
+/// The `service-graph` test (ADR 0470, ADR 0471, ADR 0472, ADR 0473):
+/// graphtest (userspace/posix/graphtest.c) writes services that name each
+/// other and checks what `service` says of them, how it waits and how a
+/// change is tried with an undo, and what the view of a service holds of
+/// the disks and the processes; the log holds Spark's side of each step,
+/// and shutting down stops g-web before g-db, which it requires.
 fn service_graph(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect_ahead("spark: started /system/tests/posix/graphtest as process ")?;

@@ -34,6 +34,7 @@ use crate::alerts::client::{self as alerts, Screen};
 use crate::alerts::protocol::{Alert, Severity};
 use crate::power;
 use crate::subvolume;
+use crate::troubleshoot::Hit;
 use crate::util::Fail;
 
 /// health.toml(5), in the settings.
@@ -63,6 +64,11 @@ const STAGE_WAIT: u64 = 30 * 60;
 /// How long the check waits for alertd, which may start after it, to tell
 /// it of a failed start.
 const ALERTD_WAIT: Duration = Duration::from_secs(60);
+
+/// The longest a start seen through waits for its services to settle
+/// before its times are kept: a service that is not ready by then is
+/// kept as not ready.
+const SETTLE_WAIT: Duration = Duration::from_secs(120);
 
 /// health.toml(5).
 #[derive(Debug, Deserialize)]
@@ -155,13 +161,28 @@ impl Config {
     }
 
     /// The settings' health.toml, or the defaults, with a word why.
-    fn load() -> Config {
+    pub fn load() -> Config {
+        let (config, why) = Config::read();
+        if let Some(why) = why {
+            println!("sysupdate: {why}");
+        }
+        config
+    }
+
+    /// The settings' health.toml, or the defaults and why, which a caller
+    /// with output of its own, `troubleshoot --json` say, reports as it
+    /// reports the rest. A file that is not there is no fault: the
+    /// defaults are the settings then.
+    #[must_use]
+    pub fn read() -> (Config, Option<String>) {
         match std::fs::read_to_string(CONFIG) {
-            Ok(text) => Config::parse(&text).unwrap_or_else(|why| {
-                println!("sysupdate: {CONFIG}: {why}; going by the defaults");
-                Config::default()
-            }),
-            Err(_) => Config::default(),
+            Ok(text) => match Config::parse(&text) {
+                Ok(config) => (config, None),
+                Err(why) => {
+                    (Config::default(), Some(format!("{CONFIG}: {why}; going by the defaults")))
+                }
+            },
+            Err(_) => (Config::default(), None),
         }
     }
 }
@@ -247,6 +268,7 @@ pub fn run() -> Result<i32, Fail> {
     remove_half_built(&root);
     let begun = starts::begin_in(
         Path::new(starts::DIR),
+        Path::new(starts::LIVE),
         root.running.letter(),
         start_items(&root),
         i64::try_from(crate::util::now_ns() / 1_000_000_000).unwrap_or(0),
@@ -270,29 +292,93 @@ pub fn run() -> Result<i32, Fail> {
         .and_then(|()| hardware(&root, trying));
     let passed = result.is_ok();
     if passed {
-        match devices::present(&root) {
-            Ok(present) => devices::record(&present),
-            Err(why) => println!("sysupdate: cannot list the devices: {}", why.message),
-        }
+        devices::record(&devices::present(&root));
     }
     if let Err(why) = &result {
         println!("sysupdate: {named} failed its health check: {why}");
     }
     record(&named, &result);
+    // The verdict is kept at once, with the times so far: the notice of a
+    // failed start, the slot state and Rescue's count follow from it, and
+    // a restart soon after must not find the start unfinished.
     let this = begun.ok().and_then(|start| {
         let outcome = if passed { Outcome::Good } else { Outcome::Failed };
         let why = result.as_ref().err().map(String::as_str);
-        starts::finish_in(Path::new(starts::DIR), start, outcome, why)
-            .inspect_err(|err| println!("sysupdate: cannot keep the record of this start: {err}"))
-            .ok()
+        finish(start, outcome, why, starts::Times::now(starts::signed_in()))
     });
+    verdict(&root, &named, passed, this.as_ref())?;
+    // A start seen through is timed again once its services settle, which
+    // can take two minutes: after the verdict, with the slot state's lock
+    // let go, so that neither the verdict nor a stage waits for it.
+    if let Some(this) = this.filter(|_| passed)
+        && let Some(this) = finish(this, Outcome::Good, None, starts::Times::settled(SETTLE_WAIT))
+    {
+        println!("sysupdate: kept the times of start {}, which startup shows", this.number);
+        // A start that settled later than starting usually does, is told.
+        if let Some(text) = crate::startup::slow_notice(&starts::all(), &this) {
+            println!("sysupdate: {text}");
+            let more = "startup says more";
+            if let Err(why) =
+                crate::notifyd::send("sysupdate", &text, more, crate::notifyd::Urgency::Normal)
+            {
+                println!("sysupdate: cannot tell the consoles: {}", why.message);
+            }
+        }
+    }
+    Ok(0)
+}
+
+/// Keeps `start`'s record finished with `outcome`, why it failed and
+/// `times`, saying what went wrong.
+fn finish(
+    start: starts::Start,
+    outcome: Outcome,
+    why: Option<&str>,
+    times: Result<starts::Times, String>,
+) -> Option<starts::Start> {
+    let times = times
+        .inspect_err(|why| println!("sysupdate: cannot take the times of this start: {why}"))
+        .ok();
+    starts::finish_in(Path::new(starts::DIR), start, outcome, why, times)
+        .inspect_err(|err| println!("sysupdate: cannot keep the record of this start: {err}"))
+        .ok()
+}
+
+/// Follows the health check's result, `passed`, for the slot that runs,
+/// `named`, whose start's record is `this`: tells of a failed start,
+/// writes the slot state, sets Rescue's count back, and restarts into the
+/// other slot when an update gives up its tries.
+///
+/// # Errors
+///
+/// If the slot state cannot be read or written.
+fn verdict(
+    root: &Root,
+    named: &str,
+    passed: bool,
+    this: Option<&starts::Start>,
+) -> Result<(), Fail> {
+    // Naming a failed start's likely cause reads its log and can take
+    // seconds, so it is done before the lock, which a stage waits on, for
+    // the start the notice would be of as the slot state is now.
+    let records = starts::all();
+    let (_, now) = place::state(root)?;
+    let (_, would) = now.checked(root.running, passed);
+    let cause = noticed(&records, this, would)
+        .map(|failed| (failed.number, crate::troubleshoot::likely_cause(&records, failed)));
     // A stage takes minutes at most.
     let _lock = place::lock_within(Duration::from_secs(STAGE_WAIT))?;
-    let (copies, state) = place::state(&root)?;
+    let (copies, state) = place::state(root)?;
     let (next, checked) = state.checked(root.running, passed);
-    if let Some(text) = failure_notice(&starts::all(), this.as_ref(), checked, &named) {
+    let likely = |failed: &starts::Start| {
+        cause
+            .as_ref()
+            .filter(|(number, _)| *number == failed.number)
+            .and_then(|(_, hit)| hit.clone())
+    };
+    if let Some(text) = failure_notice(&records, this, checked, named, &likely) {
         tell(&text);
-        tell_alertd(&failure_alert(checked, &named, &text), Screen::Shown);
+        tell_alertd(&failure_alert(checked, named, &text), Screen::Shown);
     }
     if let Some(next) = next {
         place::write(&copies, next)?;
@@ -305,14 +391,14 @@ pub fn run() -> Result<i32, Fail> {
     }
     match checked {
         Checked::Proved(slot) => {
-            let before = place::named(&root, slot.other());
+            let before = place::named(root, slot.other());
             println!(
                 "sysupdate: {named} proved itself: it is now the default, and {before} the \
                  previous version"
             );
         }
         Checked::Failed(slot) => {
-            let before = place::named(&root, slot.other());
+            let before = place::named(root, slot.other());
             println!(
                 "sysupdate: the update gives up its tries; restarting into {before} (UPD-101)"
             );
@@ -329,7 +415,7 @@ pub fn run() -> Result<i32, Fail> {
             }
         }
         Checked::FellBack(slot) => {
-            let update = place::named(&root, slot);
+            let update = place::named(root, slot);
             println!(
                 "sysupdate: the update in {update} did not prove itself; {named} runs, with the \
                  settings from before the update (UPD-101)"
@@ -337,7 +423,7 @@ pub fn run() -> Result<i32, Fail> {
         }
         Checked::Start => println!("sysupdate: this start of {named} is seen through"),
     }
-    Ok(0)
+    Ok(())
 }
 
 /// Removes a slot a stage left half built, as a power cut can (ADR
@@ -421,19 +507,15 @@ fn checks(config: &Config) -> Result<(), String> {
 /// only logged, as a machine that lost a card has to start all the same.
 fn hardware(root: &Root, trying: bool) -> Result<(), String> {
     let mut problems: Vec<String> = firmware_problem(root).into_iter().collect();
-    match (devices::recorded(), devices::present(root)) {
-        (Some(before), Ok(now)) => {
-            problems.extend(devices::missing(&before, &now).into_iter().map(|device| {
+    if let Some(before) = devices::recorded() {
+        problems.extend(devices::missing(&before, &devices::present(root)).into_iter().map(
+            |device| {
                 format!(
                     "{}, there at the last good start, is missing (BOOT-101)",
                     device.described()
                 )
-            }));
-        }
-        (None, _) => {}
-        (Some(_), Err(why)) => {
-            problems.push(format!("the devices cannot be listed: {}", why.message));
-        }
+            },
+        ));
     }
     if trying {
         return problems.into_iter().next().map_or(Ok(()), Err);
@@ -540,10 +622,8 @@ fn start_items(root: &Root) -> Vec<Item> {
         .filter(|word| !word.starts_with("slot=") && !word.starts_with("fallback="))
         .collect();
     items.push(Item::new("options", "boot options", &options.join(" "), None));
-    if let Ok(present) = devices::present(root) {
-        for device in present {
-            items.push(Item::new(&device.kind, &device.key, &device.about, None));
-        }
+    for device in devices::present(root) {
+        items.push(Item::new(&device.kind, &device.key, &device.about, None));
     }
     let registry =
         Path::new(crate::bundles::registry::STATE).join(crate::bundles::registry::INSTALLED);
@@ -561,28 +641,22 @@ fn start_items(root: &Root) -> Vec<Item> {
 /// start is one or follows one: the update that fell back, of `records`,
 /// or `this` start, which failed its check and goes on; what Dukovo did;
 /// what changed since the last good start; and where to read more. A
-/// failed try says nothing: the start after it does.
+/// failed try says nothing: the start after it does. `likely` gives the
+/// likely cause of the failed start, if the signatures name one
+/// (troubleshoot(8), ADR 0474), as a line after what changed.
 fn failure_notice(
     records: &[starts::Start],
     this: Option<&starts::Start>,
     checked: Checked,
     named: &str,
+    likely: &dyn Fn(&starts::Start) -> Option<Hit>,
 ) -> Option<String> {
     let this_failed = this.filter(|start| start.outcome == Outcome::Failed);
-    let (failed, did) = match checked {
-        Checked::Failed(_) => return None,
-        Checked::FellBack(_) => {
-            let before = this.map_or(u64::MAX, |start| start.number);
-            let failed = records
-                .iter()
-                .rev()
-                .find(|start| start.number < before && start.outcome == Outcome::Failed)?;
-            (
-                failed,
-                format!("Dukovo went back to {named}, with the settings from before the update."),
-            )
-        }
-        _ => (this_failed?, "As this start is no update's try, it goes on.".to_string()),
+    let failed = noticed(records, this, checked)?;
+    let did = if matches!(checked, Checked::FellBack(_)) {
+        format!("Dukovo went back to {named}, with the settings from before the update.")
+    } else {
+        "As this start is no update's try, it goes on.".to_string()
     };
     let mut text = format!(
         "Start {} failed its health check: {}\n{did}\n",
@@ -599,13 +673,12 @@ fn failure_notice(
     for line in crate::changes::report(records, None, failed) {
         let _ = writeln!(text, "{line}");
     }
+    if let Some(hit) = likely(failed) {
+        let _ = writeln!(text, "{}", hit.line());
+    }
     text.push_str("More: changes --failed, and log -b -1 for the failed start's log.\n");
     if let Some(id) = &failed.error {
-        let _ = writeln!(
-            text,
-            "Help: https://dukovo.org/support/{}/errors/{id}.html",
-            env!("CARGO_PKG_VERSION")
-        );
+        let _ = writeln!(text, "Help: {}", crate::troubleshoot::help_url(id));
     }
     Some(text)
 }
@@ -634,6 +707,28 @@ fn failure_alert(checked: Checked, named: &str, text: &str) -> Alert {
 fn tell_alertd(alert: &Alert, screen: Screen) {
     if let Err(why) = alerts::event_at_start(alert, screen, ALERTD_WAIT) {
         println!("sysupdate: cannot tell alertd of it: {why}");
+    }
+}
+
+/// The failed start a notice is of, when the health check decided
+/// `checked` for `this` start, of `records`: the update's try it went
+/// back from, or this start; none when the machine restarts into the
+/// version before, whose start tells.
+fn noticed<'a>(
+    records: &'a [starts::Start],
+    this: Option<&'a starts::Start>,
+    checked: Checked,
+) -> Option<&'a starts::Start> {
+    match checked {
+        Checked::Failed(_) => None,
+        Checked::FellBack(_) => {
+            let before = this.map_or(u64::MAX, |start| start.number);
+            records
+                .iter()
+                .rev()
+                .find(|start| start.number < before && start.outcome == Outcome::Failed)
+        }
+        _ => this.filter(|start| start.outcome == Outcome::Failed),
     }
 }
 
@@ -809,26 +904,41 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("notice-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let set = |value: &str| vec![Item::new("firmware", "set", value, Some(200))];
-        let good = starts::begin_in(&dir, "b", set("2026.1.1"), 1000).unwrap();
-        starts::finish_in(&dir, good, Outcome::Good, None).unwrap();
-        let tried = starts::begin_in(&dir, "a", set("2026.2.1"), 2000).unwrap();
+        let good = starts::begin_in(&dir, &dir.join("live"), "b", set("2026.1.1"), 1000).unwrap();
+        starts::finish_in(&dir, good, Outcome::Good, None, None).unwrap();
+        let tried = starts::begin_in(&dir, &dir.join("live"), "a", set("2026.2.1"), 2000).unwrap();
         let why = "the network card vio0 (52:54:00:15:0c:01), there at the last good start, \
                    is missing (BOOT-101)";
-        starts::finish_in(&dir, tried, Outcome::Failed, Some(why)).unwrap();
-        let this = starts::begin_in(&dir, "b", set("2026.1.1"), 3000).unwrap();
-        let this = starts::finish_in(&dir, this, Outcome::Good, None).unwrap();
+        starts::finish_in(&dir, tried, Outcome::Failed, Some(why), None).unwrap();
+        let this = starts::begin_in(&dir, &dir.join("live"), "b", set("2026.1.1"), 3000).unwrap();
+        let this = starts::finish_in(&dir, this, Outcome::Good, None, None).unwrap();
         let records = starts::all_in(&dir);
         let named = "slot B (Dukovo 0.15.0, firmware 2026.1.1)";
         // A failed try says nothing; the start after it does.
-        assert_eq!(failure_notice(&records, None, Checked::Failed(slots::Slot::A), named), None);
-        let text = failure_notice(&records, Some(&this), Checked::FellBack(slots::Slot::A), named)
-            .unwrap();
+        let unknown = |_: &starts::Start| None;
+        let failed = Checked::Failed(slots::Slot::A);
+        assert_eq!(failure_notice(&records, None, failed, named, &unknown), None);
+        let fell_back = Checked::FellBack(slots::Slot::A);
+        let text = failure_notice(&records, Some(&this), fell_back, named, &unknown).unwrap();
+        assert!(!text.contains("Likely cause"), "{text}");
         assert!(text.starts_with(&format!("Start 2 failed its health check: {why}\n")), "{text}");
         assert!(text.contains(&format!("Dukovo went back to {named}")), "{text}");
         assert!(text.contains("  firmware set: 2026.1.1 to 2026.2.1;"), "{text}");
         assert!(text.contains("/errors/BOOT-101.html"), "{text}");
         // A good start that follows no failure says nothing.
-        assert_eq!(failure_notice(&records, Some(&this), Checked::Start, named), None);
+        assert_eq!(failure_notice(&records, Some(&this), Checked::Start, named, &unknown), None);
+        // The likely cause is a line after what changed, for the failed start.
+        let hit = |failed: &starts::Start| {
+            assert_eq!(failed.number, 2);
+            Some(Hit {
+                id: "BOOT-101".into(),
+                cause: "A card is gone.".into(),
+                fix: "Plug it in.".into(),
+            })
+        };
+        let text = failure_notice(&records, Some(&this), fell_back, named, &hit).unwrap();
+        let line = "Likely cause: A card is gone (BOOT-101). Fix: Plug it in.\n";
+        assert!(text.contains(&format!("{line}More: changes --failed")), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

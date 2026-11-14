@@ -11,10 +11,15 @@
 //! the snapshot fails, as her and as root through */volumes*; bob's
 //! folder in it stays unreadable to her; *subvolume show* gives the
 //! snapshot */users*' UUID as its parent. An app she installs sees no
-//! */snapshots* and no */volumes*. Then, with the clock moved through 40
-//! days and a round of *snap auto* on each, exactly the retention set is
-//! left: the seven latest days, the Sundays of the two weeks before them,
-//! and the named one. The power button ends it.
+//! */snapshots* and no */volumes*. The service holds only what its file
+//! names (ADR 0473): *service status* says it changes *@snapshots* at
+//! the top of the root and nothing else there, and a place of
+//! *snap.toml* that its view lacks, */applications* here, is skipped and
+//! logged as such by the service, which *snap list* says too. Then, with
+//! the clock moved through 40 days and a round of *snap auto* on each,
+//! exactly the retention set is left: the seven latest days, the Sundays
+//! of the two weeks before them, and the named one. The power button
+//! ends it.
 
 use super::super::*;
 
@@ -26,7 +31,7 @@ const DISKS: &[Disk] =
 /// The test.
 pub const CASE: Case = Case {
     name: "snapshots",
-    about: "the snap service makes the day's snapshots, which /snapshots shows read-only (ADR 0461); a deleted file comes back with snap restore without an administrator, a write into a snapshot fails, another's folder in it stays unreadable, an app sees no snapshot, and 40 days of snap auto leave exactly the retention set",
+    about: "the snap service makes the day's snapshots, which /snapshots shows read-only (ADR 0461); a deleted file comes back with snap restore without an administrator, a write into a snapshot fails, another's folder in it stays unreadable, an app sees no snapshot, the service holds @snapshots at the top of the root and nothing else there and skips and logs a place its view lacks (ADR 0473), and 40 days of snap auto leave exactly the retention set",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, snap among them.
@@ -52,6 +57,15 @@ const FIRST: &[&str] = &[
     "echo secret > /users/bob/diary.txt",
     "chown -R 1001:1001 /users/bob",
     "snap create --name before-delete /users",
+];
+
+/// A place the snap service's view lacks, in snap.toml: the service starts
+/// again and skips it, and `snap list` says which places the view lacks.
+const OUTSIDE: &[&str] = &[
+    "cp /users/alice/snap.toml /system/settings/snap.toml",
+    "service snap restart > /dev/null",
+    "sleep 3",
+    "snap list 2>&1",
 ];
 
 /// Forty days of the service's rounds, with only /users to snapshot:
@@ -166,6 +180,30 @@ fn snapshots(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "cannot access '/snapshots': No such file or directory",
         "cannot access '/volumes': No such file or directory",
         "peeked",
+    ])?;
+
+    // What the service holds of the root, and a place it does not hold.
+    // Spark answers root alone, and elevate asks for no password again.
+    answer_prompt(vm, "$", "clear; elevate service snap status | grep -A3 Holds")?;
+    vm.expect_screen(&[
+        "reads /users, /shared, /snapshots",
+        "changes @snapshots at the top of the root, and nothing else there",
+    ])?;
+    answer_prompt(
+        vm,
+        "$",
+        &format!(
+            "clear; echo 'places = [\"/users\", \"/applications\"]' > snap.toml; {}; elevate sh \
+             /users/alice/outside.sh; true",
+            script("outside.sh", OUTSIDE)
+        ),
+    )?;
+    vm.expect_anywhere(
+        "snap: /applications is not in the snap service's view: add it with `service edit \
+         snap`; skipped",
+    )?;
+    vm.expect_screen(&[
+        "snap: /applications is not in the snap service's view: add it with `service edit snap`",
     ])?;
 
     // Forty days of rounds leave exactly the retention set.

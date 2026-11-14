@@ -21,10 +21,14 @@ restart = "on-failure"
 [limits]
 memory = "32M"
 
-# What it holds beyond what every service reads (service.toml(5)): the
-# whole tree, past the owners and modes of files, since snap.toml may
-# name any subvolume, and @snapshots is reached through the top of each
-# filesystem in /volumes. A narrower view comes with the updater's (ADR
-# 0455).
+# What it holds beyond what every service reads (service.toml(5)), and why
+# (ADR 0473): the places snap.toml names by default, which it reads and
+# snapshots (a snapshot needs the place's subvolume, not the right to
+# change it); /snapshots, where it reads the snapshots made; and
+# @snapshots alone at the top of the root, where it makes and removes them.
+# A place of snap.toml that is not here is skipped and logged: add it with
+# `service edit snap`, and for one on another disk, that disk's top as
+# files.read-write = ["/volumes/LABEL"] (snap.toml(5)).
 [permissions]
-runs-with-your-access = true
+files.root-subvolumes = ["@snapshots"]
+files.read = ["/users", "/shared", "/snapshots"]

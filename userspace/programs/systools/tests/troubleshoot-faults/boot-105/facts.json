@@ -1,0 +1,45 @@
+{
+  "start": {
+    "number": 0,
+    "started": 1793395500,
+    "slot": "a",
+    "stage": "services",
+    "outcome": "failed",
+    "items": [
+      {
+        "kind": "system",
+        "name": "Dukovo",
+        "value": "0.15.0",
+        "installed": 1793000000
+      },
+      {
+        "kind": "kernel",
+        "name": "Radix",
+        "value": "3f9c2a71d0e4b856"
+      },
+      {
+        "kind": "options",
+        "name": "boot options",
+        "value": "quiet"
+      }
+    ]
+  },
+  "changed": [],
+  "log": [
+    {
+      "level": 3,
+      "from": "program",
+      "name": "dukovo-rescue",
+      "text": "the Dukovo root 6fd3a1c2-8f1e-4b0a-9a55-0d6a2c4e7b11 cannot be used: no disk here holds it"
+    }
+  ],
+  "failed": [],
+  "essential": [
+    "logd",
+    "authd",
+    "consoled",
+    "netd",
+    "sshd"
+  ],
+  "full": []
+}

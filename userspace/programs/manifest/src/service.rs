@@ -525,7 +525,59 @@ pub struct Files {
     /// name.
     #[serde(default, deserialize_with = "folders")]
     pub shared: Vec<String>,
+    /// `files.disks`: every disk and partition at `/devices`, as they come
+    /// and go, with the devices every service has and nothing else of
+    /// `/devices` (ADR 0473).
+    #[serde(default)]
+    pub disks: Option<DeviceAccess>,
+    /// `files.efi-system`: the EFI system partitions alone at `/devices`,
+    /// by partition type, in the same way.
+    #[serde(default, rename = "efi-system")]
+    pub efi_system: Option<DeviceAccess>,
+    /// `files.root-subvolumes`: names at the top of the Btrfs this system
+    /// started from, which its view holds at `/volumes/<disk>` with no
+    /// other name there (ADR 0473).
+    #[serde(default, rename = "root-subvolumes", deserialize_with = "subvolumes")]
+    pub root_subvolumes: Vec<String>,
 }
+
+/// How a service holds the disks it is given: `files.disks` and
+/// `files.efi-system`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceAccess {
+    /// It may read them.
+    Read,
+    /// It may read and write them.
+    ReadWrite,
+}
+
+impl DeviceAccess {
+    /// Whether it may write them.
+    pub fn write(self) -> bool {
+        self == DeviceAccess::ReadWrite
+    }
+
+    /// Its name in a service file.
+    pub fn name(self) -> &'static str {
+        match self {
+            DeviceAccess::Read => "read",
+            DeviceAccess::ReadWrite => "read-write",
+        }
+    }
+}
+
+/// The names at the top of the root's Btrfs that hold the owner's files,
+/// which no service's view holds by name: an update or a snapshot never
+/// needs them (ADR 0455).
+pub const OWNERS_SUBVOLUMES: [&str; 3] = ["@users", "@shared", "@applications"];
+
+/// The most names `files.root-subvolumes` takes, as many as the kernel
+/// attaches a directory with (radix-directory(2)).
+pub const ROOT_SUBVOLUMES_MAX: usize = 16;
+
+/// The longest name `files.root-subvolumes` takes.
+const SUBVOLUME_NAME_MAX: usize = 64;
 
 /// A place of the tree in a service's view: a directory or a file, at its
 /// real path.
@@ -538,16 +590,17 @@ pub struct Place {
 }
 
 /// What every service's view holds without asking (ADR 0217): the
-/// system's programs, libraries, resources and settings, the processes'
-/// and the kernel's files, read-only; the devices every program uses;
-/// notifyd's folder, as notifications are always allowed; alertd's, so
-/// that the system's services raise alerts (ADR 0485), which alertd takes
-/// from root's processes alone; and resolved's,
+/// system's programs, libraries, resources and settings and the kernel's
+/// files, read-only; the devices every program uses; notifyd's folder, as
+/// notifications are always allowed; alertd's, so that the system's
+/// services raise alerts (ADR 0485), which alertd takes from root's
+/// processes alone; and resolved's,
 /// whose resolv.conf `/etc/resolv.conf` leads to (ADR 0193), and netd's,
 /// which an `/etc/resolv.conf` from before resolved leads to (ADR 0191).
 /// Its program,
-/// its own `/tmp`, the root's links and its secrets come on top. A place
-/// a file names that is one of these takes its place.
+/// its own `/tmp`, its own processes at [`PROCESSES`], the root's links
+/// and its secrets come on top. A place a file names that is one of these
+/// takes its place.
 pub const ALWAYS: &[(&str, bool)] = &[
     ("/system/commands", false),
     ("/system/libraries", false),
@@ -557,13 +610,17 @@ pub const ALWAYS: &[(&str, bool)] = &[
     ("/system/live/alerts", false),
     ("/system/live/resolved", false),
     ("/system/live/netd", false),
-    ("/processes", false),
     ("/kernel", false),
     ("/devices/null", true),
     ("/devices/zero", false),
     ("/devices/random", false),
     ("/devices/urandom", false),
 ];
+
+/// Where a service sees its processes: those of its own domain alone
+/// (ADR 0473), unless its file names this place, which holds every
+/// process.
+pub const PROCESSES: &str = "/processes";
 
 /// Where Spark keeps its own files: no service holds them, or what is
 /// in them, the secrets among them.
@@ -687,8 +744,24 @@ impl TryFrom<RawPermissions> for Permissions {
             ));
         }
         let places = permissions.places();
-        if permissions.runs_with_your_access && !places.is_empty() {
+        let files = &permissions.files;
+        let devices = files.disks.is_some() || files.efi_system.is_some();
+        let by_name = !files.root_subvolumes.is_empty();
+        if permissions.runs_with_your_access && (!places.is_empty() || devices || by_name) {
             return Err("runs-with-your-access holds every file already: leave out files.*".into());
+        }
+        if files.disks.is_some() && files.efi_system.is_some() {
+            return Err("files.disks holds the EFI system partitions already: leave out \
+                        files.efi-system"
+                .into());
+        }
+        if let Some(place) = places.iter().find(|place| devices && within(&place.path, "/devices"))
+        {
+            return Err(format!(
+                "files.disks and files.efi-system make its /devices, so its view cannot hold {} \
+                 apart: leave it out",
+                place.path
+            ));
         }
         if permissions.files.mount.len() > MOUNT_MAX {
             return Err(format!("files.mount names at most {MOUNT_MAX} places"));
@@ -714,6 +787,12 @@ impl TryFrom<RawPermissions> for Permissions {
                 return Err(format!(
                     "no service holds {CERTIFICATE_COPIES}, where Spark keeps each service's \
                      copies of its certificates' keys, so it cannot hold {path}"
+                ));
+            }
+            if path != PROCESSES && within(path, PROCESSES) {
+                return Err(format!(
+                    "a service sees its own processes at {PROCESSES} already, so its view cannot \
+                     hold {path} apart; name {PROCESSES} with files.read to see every process"
                 ));
             }
             if let Some((always, _)) = ALWAYS.iter().find(|(a, _)| path != *a && within(path, a)) {
@@ -1846,6 +1925,41 @@ pub(crate) fn memory<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::
         }
     }
     d.deserialize_any(Memory)
+}
+
+/// `files.root-subvolumes`: plain names, none twice and none of the
+/// owner's ([`OWNERS_SUBVOLUMES`]), at most [`ROOT_SUBVOLUMES_MAX`].
+fn subvolumes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let names = Vec::<String>::deserialize(d)?;
+    if names.len() > ROOT_SUBVOLUMES_MAX {
+        return Err(de::Error::custom(format!(
+            "files.root-subvolumes names at most {ROOT_SUBVOLUMES_MAX} subvolumes"
+        )));
+    }
+    for (i, name) in names.iter().enumerate() {
+        let plain = !name.is_empty()
+            && name.len() <= SUBVOLUME_NAME_MAX
+            && name != "."
+            && name != ".."
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"@._-".contains(&b));
+        if !plain {
+            return Err(de::Error::custom(format!(
+                "files.root-subvolumes takes names at the top of the root, such as \"@snapshots\": \
+                 letters, digits, `@`, `.`, `-` and `_`, not `{}`",
+                name.escape_debug()
+            )));
+        }
+        if OWNERS_SUBVOLUMES.contains(&name.as_str()) {
+            return Err(de::Error::custom(format!(
+                "files.root-subvolumes cannot name {name}, which holds the owner's files: an \
+                 update or a snapshot never needs them"
+            )));
+        }
+        if names[..i].contains(name) {
+            return Err(de::Error::custom(format!("files.root-subvolumes names {name} twice")));
+        }
+    }
+    Ok(names)
 }
 
 /// `files.read`, `files.read-write` and `files.mount`: absolute paths of

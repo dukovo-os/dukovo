@@ -451,6 +451,18 @@ pub struct FirmwareConsole {
     pub rate: Option<u32>,
 }
 
+/// How long the firmware and the boot loader took before the kernel ran
+/// ([`Devices::firmware_boot_times`], ADR 0474), in nanoseconds, each
+/// where the firmware took the times it needs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FirmwareBootTimes {
+    /// From the firmware's start to its starting the boot loader.
+    pub firmware_ns: Option<u64>,
+    /// From the boot loader's start to the end of the firmware's boot
+    /// services, when the kernel runs alone.
+    pub loader_ns: Option<u64>,
+}
+
 /// The firmware's SMBIOS tables (Phase 11e, ADR 0231), as
 /// [`Platform::smbios`] finds them, where the firmware keeps them.
 #[derive(Clone, Copy, Debug)]
@@ -708,6 +720,13 @@ pub trait Devices {
     /// ACPI's SPCR names (ADR 0481). It may be asked before
     /// [`Platform::init`], which reads the firmware's tables then.
     fn firmware_console() -> Option<FirmwareConsole> {
+        None
+    }
+
+    /// How long the firmware and the boot loader took before the kernel
+    /// ran: on a PC, from ACPI's FPDT (ADR 0474). Asked after
+    /// [`Platform::init`].
+    fn firmware_boot_times() -> Option<FirmwareBootTimes> {
         None
     }
 

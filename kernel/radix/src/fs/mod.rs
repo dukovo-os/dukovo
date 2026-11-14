@@ -813,6 +813,9 @@ pub fn make(kind: &str, source: Option<&NodeRef>, flags: Flags) -> radix_vfs::Re
         "proc" => procfs::make()?,
         "sys" => sysfs::make()?,
         "dev" => devfs::make()?,
+        // A `/devices` of one class, for a service's view (ADR 0473).
+        "dev_disks" => devfs::make_class(devfs::Class::Disks)?,
+        "dev_efi_system" => devfs::make_class(devfs::Class::EfiSystem)?,
         "bootfs" => boot_system()?,
         _ => return Err(Error::UnknownFilesystem),
     };

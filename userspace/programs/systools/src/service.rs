@@ -491,6 +491,18 @@ fn holds_lines(holds: &Holds, seen: &Seen) -> Vec<String> {
     if !holds.mounts.is_empty() {
         lines.push(format!("mounts beneath {}", holds.mounts.join(", ")));
     }
+    if let Some(class) = &holds.devices {
+        let verb = if holds.devices_write { "reads and writes" } else { "reads" };
+        let what = if class == "efi-system" { "the EFI system partitions" } else { "the disks" };
+        lines.push(format!("{verb} {what}, as /devices"));
+    }
+    if !holds.root_subvolumes.is_empty() {
+        let names = and_list(&holds.root_subvolumes);
+        lines.push(format!("changes {names} at the top of the root, and nothing else there"));
+    }
+    if holds.every_process && !holds.whole_tree {
+        lines.push(String::from("sees every process"));
+    }
     if !holds.secrets.is_empty() {
         lines.push(format!("secrets {}", holds.secrets.join(", ")));
     }
@@ -580,15 +592,21 @@ fn explain(name: &str, options: &[String]) -> Result<i32, Fail> {
     let clock = Clock { now_ms: document.now_ms, wall: (util::now_ns() / 1_000_000_000) as i64 };
     let when = |ms| clock.since(ms);
     let context = spark_api::explain::Context { when: &when, user_name: &util::user_name };
-    let Some(explanation) = spark_api::explain::explain(&document, name, &context) else {
+    let Some(mut explanation) = spark_api::explain::explain(&document, name, &context) else {
         return Err(fail_with(4, format!("{name}: unrecognized service")));
     };
+    let well = document.services.iter().any(|s| s.name == name && runs_well(s));
+    // A fix the signatures know for the service at the root of the chain
+    // replaces the generic one (ADR 0474).
+    if !well && let Some(hit) = crate::troubleshoot::best_for_service(&explanation.root) {
+        explanation.fix = Some(format!("{} ({}, `troubleshoot` says more)", hit.fix, hit.id));
+    }
     if json {
         println!("{}", serde_json::to_string(&explanation).map_err(|e| fail(e.to_string()))?);
     } else {
         println!("{}", explanation.text());
     }
-    Ok(if document.services.iter().any(|s| s.name == name && runs_well(s)) { 0 } else { 3 })
+    Ok(if well { 0 } else { 3 })
 }
 
 /// Whether `service` is done, or runs with its health check not failing.
@@ -769,6 +787,33 @@ mod tests {
         for line in expected {
             assert!(text.contains(line), "{line:?} in\n{text}");
         }
+    }
+
+    /// The disks by class, the root's subvolumes by name and every
+    /// process, each on its line (ADR 0473).
+    #[test]
+    fn status_says_which_disks_subvolumes_and_processes_a_service_holds() {
+        let mut updater = nginx();
+        updater.holds = Holds {
+            devices: Some("efi-system".into()),
+            devices_write: true,
+            root_subvolumes: vec!["@snapshots".into(), "@state".into()],
+            every_process: true,
+            ..Holds::default()
+        };
+        let text = status_text(&updater, &CLOCK, &seen_with(&[], &|_, _| false));
+        for line in [
+            "           reads and writes the EFI system partitions, as /devices",
+            "           changes @snapshots and @state at the top of the root, and nothing else \
+             there",
+            "           sees every process",
+        ] {
+            assert!(text.contains(line), "{line:?} in\n{text}");
+        }
+        updater.holds = Holds { devices: Some("disks".into()), ..Holds::default() };
+        let text = status_text(&updater, &CLOCK, &seen_with(&[], &|_, _| false));
+        assert!(text.contains("           reads the disks, as /devices"), "{text}");
+        assert!(!text.contains("every process") && !text.contains("top of the root"), "{text}");
     }
 
     #[test]

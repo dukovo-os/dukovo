@@ -19,8 +19,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use super::place::{self, Root};
-use crate::util::Fail;
+use super::place::Root;
 
 /// Where the record of the last good start is kept.
 pub const RECORD: &str = "/system/state/sysupdate/devices";
@@ -104,11 +103,8 @@ fn card(card: &str, address: &str) -> Option<Device> {
 }
 
 /// The devices this start has.
-///
-/// # Errors
-///
-/// If the root's disks cannot be listed.
-pub fn present(root: &Root) -> Result<Vec<Device>, Fail> {
+#[must_use]
+pub fn present(root: &Root) -> Vec<Device> {
     let mut devices = Vec::new();
     let mut names: Vec<String> = std::fs::read_dir(NET).map_or_else(
         |_| Vec::new(),
@@ -127,10 +123,10 @@ pub fn present(root: &Root) -> Result<Vec<Device>, Fail> {
             devices.push(device);
         }
     }
-    for partition in place::root_partitions(root)? {
-        devices.push(Device { kind: "root".into(), key: partition, about: String::new() });
+    for partition in &root.partitions {
+        devices.push(Device { kind: "root".into(), key: partition.clone(), about: String::new() });
     }
-    Ok(devices)
+    devices
 }
 
 /// The record of the last good start.

@@ -485,7 +485,10 @@ pub fn directory_method(
             if let Some(node) = stands_for(&at, kind, wanted, description.non_blocking)? {
                 at.node = node;
                 known = None;
-            } else if object_kind == ObjectKind::File && wanted.contains(Rights::WRITE) {
+            } else if object_kind == ObjectKind::File
+                && wanted.contains(Rights::WRITE)
+                && !writes_go_nowhere(&at)
+            {
                 at.writable().map_err(fs::status)?;
             }
             // The bypass right covers what is opened beneath.
@@ -959,9 +962,10 @@ pub fn directory_method(
             }
             answer(label, 0, [0; 8])
         }
-        directory::MAKE_VIEW | directory::ATTACH | directory::ATTACH_LINK => {
-            view_method(user, found, label, args)
-        }
+        directory::MAKE_VIEW
+        | directory::ATTACH
+        | directory::ATTACH_LINK
+        | directory::ATTACH_NAMES => view_method(user, found, label, args),
         file::LOCK | file::LOCK_HOLDER => {
             lock_method(user, found, ObjectKind::Directory, label, args)
         }
@@ -1542,6 +1546,38 @@ fn view_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -> Re
                 .map_err(view_status)?;
             answer(label, 0, [0; 8])
         }
+        directory::ATTACH_NAMES => {
+            let a = directory::AttachNamesArgs::decode(args)?;
+            let dir = directory_of(found, Rights::CONTROL)?;
+            let (what_cap, what) = objects::directory(cspace, a.what, Rights::READ)?;
+            let mut path = Path::Empty;
+            let path = path.copy(a.path)?;
+            let bytes = view_names(a.names)?;
+            let mut names = [""; radix_vfs::named::NAMES_MAX];
+            let mut count = 0;
+            for name in bytes.split(|&b| b == 0).filter(|name| !name.is_empty()) {
+                let slot = names.get_mut(count).ok_or(error(Kernel::InvalidArgument))?;
+                *slot = core::str::from_utf8(name)
+                    .map_err(|_| fs::status(radix_vfs::Error::BadName))?;
+                count += 1;
+            }
+            // Each name ends with a NUL: a last one without is cut short.
+            if bytes.last().is_some_and(|&b| b != 0) {
+                return Err(error(Kernel::InvalidArgument));
+            }
+            let read_only = !what_cap.rights().contains(Rights::WRITE);
+            vfs()?
+                .attach_names(
+                    &dir.at,
+                    path.as_str()?,
+                    &what.at,
+                    &who(what_cap.rights(), &what)?,
+                    read_only,
+                    &names[..count],
+                )
+                .map_err(view_status)?;
+            answer(label, 0, [0; 8])
+        }
         directory::ATTACH_LINK => {
             let a = directory::AttachLinkArgs::decode(args)?;
             let dir = directory_of(found, Rights::CONTROL)?;
@@ -1698,6 +1734,25 @@ impl AttributeName {
 
 /// An extended attribute's value, copied in from the caller:
 /// arguments_too_long past ATTRIBUTE_VALUE_MAX, as Linux's E2BIG.
+/// The names `attach_names` takes, copied in: at most
+/// [`radix_vfs::named::NAMES_MAX`] names of [`radix_vfs::NAME_MAX`]
+/// bytes, each with its NUL.
+fn view_names(buffer: UserBuffer) -> Result<alloc::vec::Vec<u8, radix_mm::Kmalloc>> {
+    const MOST: u64 = (radix_vfs::named::NAMES_MAX * (radix_vfs::NAME_MAX + 1)) as u64;
+    if buffer.len == 0 || buffer.len > MOST {
+        return Err(error(Kernel::InvalidArgument));
+    }
+    if !radix_ipc::range::user_bytes(buffer.address, buffer.len) {
+        return Err(error(Kernel::BadAddress));
+    }
+    let mut names = radix_mm::bytes::zeroed(buffer.len as usize, HEAP.with(Flags::MAY_SLEEP))
+        .map_err(|_| error(Kernel::NoMemory))?;
+    if !Arch::copy_from_user(&mut names, buffer.address) {
+        return Err(error(Kernel::BadAddress));
+    }
+    Ok(names)
+}
+
 fn attribute_value(buffer: UserBuffer) -> Result<alloc::vec::Vec<u8, radix_mm::Kmalloc>> {
     if buffer.len > directory::ATTRIBUTE_VALUE_MAX {
         return Err(error(Kernel::ArgumentsTooLong));
@@ -2941,6 +2996,17 @@ fn seek(file: &FileObject, offset: i64, whence: Whence) -> Result<u64> {
 /// device, which the kernel must have) or socket's name (which no open
 /// takes: no_device, ENXIO); none for any other node. `kind` is the
 /// node's.
+/// Whether `at` is `/devices/null` or `/devices/zero`, which take writes
+/// on a read-only place too: what is written to them goes nowhere, so a
+/// service that holds its `/devices` read-only, as one with `files.disks
+/// = "read"` does, still sends its output to the null device (ADR 0473),
+/// as a read-only mount's on Linux would.
+fn writes_go_nowhere(at: &Location) -> bool {
+    use radix_vfs::synthetic::{Null, Zero};
+    let node = at.node.as_any();
+    at.mount.fs.kind() == FsKind::Dev && (node.is::<Null>() || node.is::<Zero>())
+}
+
 fn stands_for(
     at: &Location,
     kind: Kind,

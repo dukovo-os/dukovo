@@ -41,10 +41,14 @@ use alloc::vec::Vec;
 use libradix::abi::capability::Rights;
 use libradix::abi::errors::File as FileError;
 use libradix::abi::resource_domain::OomClass;
-use manifest::service::{self, Health, OVERRIDES, Oom, Override, PciId, Place, Ready};
+use manifest::service::{
+    self, DeviceAccess, Health, OVERRIDES, Oom, Override, PciId, Place, Ready,
+};
 use radix_rt::fs::Dir;
 use radix_rt::println;
 use spark_api::graph::Link;
+
+use crate::views;
 
 pub use manifest::service::{Restart, check_name};
 
@@ -92,6 +96,11 @@ pub struct Spec {
     /// Whether it runs with Spark's root, the whole tree, in place of a
     /// view.
     pub whole_tree: bool,
+    /// Its `/devices` of one class, `files.disks` or `files.efi-system`,
+    /// and how it holds them (ADR 0473).
+    pub device_class: Option<(views::DeviceClass, DeviceAccess)>,
+    /// The names at the top of the root its view holds (ADR 0473).
+    pub root_subvolumes: Vec<String>,
     /// Whether it gets the names capability (ADR 0218).
     pub names: bool,
     /// The names of its secrets.
@@ -183,6 +192,12 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         places: file.permissions.places(),
         mounts: file.permissions.files.mount.clone(),
         whole_tree: file.permissions.runs_with_your_access,
+        device_class: {
+            let files = &file.permissions.files;
+            let disks = files.disks.map(|access| (views::DeviceClass::Disks, access));
+            disks.or(files.efi_system.map(|access| (views::DeviceClass::EfiSystem, access)))
+        },
+        root_subvolumes: file.permissions.files.root_subvolumes.clone(),
         names: file.permissions.names,
         secrets: file.secrets,
         certificates: file.certificates,

@@ -30,7 +30,7 @@ use serde::Deserialize;
 use slots::version::Version;
 use system_release::firmware::{self, Set};
 use system_release::list::{Release, hex, sha256_file};
-use system_release::repo::target_path;
+use system_release::repo::{SIGNATURES_MAX, target_path};
 use system_release::rollout::{self, Rollout, Withdrawal};
 use system_release::updates::{CHANNELS, Channel, channel_path};
 
@@ -361,10 +361,22 @@ impl Client {
     /// The target `path`'s bytes, checked against the signed targets, or
     /// `None` if the server does not list it.
     fn target(&mut self, path: &str) -> Result<Option<Vec<u8>>, Fail> {
+        self.target_up_to(path, u64::MAX)
+    }
+
+    /// [`Client::target`], refusing one of more than `most` bytes before
+    /// it is fetched.
+    fn target_up_to(&mut self, path: &str, most: u64) -> Result<Option<Vec<u8>>, Fail> {
         let server = self.settings.server.clone();
         let Some(target) = self.updater.target(path).map_err(|err| refused(&server, &err))? else {
             return Ok(None);
         };
+        if target.length > most {
+            return Err(fail(format!(
+                "{server}: {path} is {} bytes, and at most {most} are read",
+                target.length
+            )));
+        }
         let file = lists_dir().join(path.replace('/', "-"));
         if !tuf::Updater::cached(&file, &target) {
             self.updater
@@ -372,6 +384,18 @@ impl Client {
                 .map_err(|err| refused(&server, &err))?;
         }
         std::fs::read(&file).map(Some).map_err(|err| util::failed(&file.display(), err))
+    }
+
+    /// The signatures troubleshoot(8) matches, as the server signs them,
+    /// or `None` if it offers none (ADR 0474). Their format is not read
+    /// here.
+    ///
+    /// # Errors
+    ///
+    /// If the file does not check, or is more than [`SIGNATURES_MAX`]
+    /// bytes.
+    pub fn signatures(&mut self) -> Result<Option<Vec<u8>>, Fail> {
+        self.target_up_to(system_release::repo::SIGNATURES_TARGET, SIGNATURES_MAX)
     }
 
     /// The channel this system follows: the release it offers.
@@ -469,6 +493,19 @@ impl Client {
     /// As [`fetch`].
     pub fn fetch_file(&self, sha256: &str, size: u64, dir: &Path) -> Result<(), Fail> {
         fetch_file(&self.file_url(sha256)?, sha256, size, dir)
+    }
+}
+
+/// Keeps the troubleshoot signatures the server offers, when they are
+/// newer than those in use (ADR 0474), as the daily check and `check` do.
+/// What is worth saying, if anything, comes back as a line: a missing
+/// file, an older one and a refused one seen before say nothing, and a
+/// server that cannot be read from is the check's to report.
+pub fn keep_signatures(client: &mut Client) -> Option<String> {
+    match client.signatures() {
+        Ok(Some(bytes)) => crate::troubleshoot::signatures::offered(&bytes),
+        Ok(None) => None,
+        Err(why) => Some(format!("cannot read the troubleshoot signatures: {}", why.message)),
     }
 }
 
@@ -828,18 +865,23 @@ fn fetch_once(url: &tuf::Url, sha256: &str, size: u64, partial: &Path) -> Result
     };
     let mut context = ring::digest::Context::new(&ring::digest::SHA256);
     let mut written = 0;
+    let mut buffer = vec![0; 256 * 1024];
     let mut file = if part {
-        let mut kept = Vec::new();
-        std::fs::File::open(partial)
-            .and_then(|mut f| f.read_to_end(&mut kept))
-            .map_err(|err| again(&err))?;
-        context.update(&kept);
-        written = kept.len() as u64;
+        // What came before is hashed a buffer at a time: a file of the
+        // release can be larger than the stage's memory limit.
+        let mut kept = std::fs::File::open(partial).map_err(|err| again(&err))?;
+        loop {
+            let n = kept.read(&mut buffer).map_err(|err| again(&err))?;
+            if n == 0 {
+                break;
+            }
+            context.update(&buffer[..n]);
+            written += n as u64;
+        }
         std::fs::OpenOptions::new().append(true).open(partial).map_err(|err| again(&err))?
     } else {
         std::fs::File::create(partial).map_err(|err| again(&err))?
     };
-    let mut buffer = vec![0; 256 * 1024];
     loop {
         let n = match body.read(&mut buffer) {
             Ok(0) => break,

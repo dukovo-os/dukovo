@@ -11,9 +11,10 @@
 use core::fmt;
 
 use radix_acpi::{
-    Fadt, GenericAddress, Hpet, Madt, MadtEntry, Memory, Rsdp, Sdt, Slit, Spcr, Srat, SratEntry,
-    Tables, mcfg_entries,
+    BootTimes, FBPT_HEADER_LEN, Fadt, Fpdt, GenericAddress, Hpet, Madt, MadtEntry, Memory, Rsdp,
+    Sdt, Slit, Spcr, Srat, SratEntry, Tables, mcfg_entries,
 };
+use radix_bootinfo::efi_memory_type;
 use radix_sync::Once;
 
 use crate::memory;
@@ -273,6 +274,53 @@ fn describe_spcr(spcr: &Spcr, line: &mut dyn FnMut(fmt::Arguments<'_>)) {
             spcr.interface
         )),
     }
+}
+
+/// The firmware's and the boot loader's times, read once.
+static BOOT_TIMES: Once<Option<radix_hal::FirmwareBootTimes>> = Once::new();
+
+/// How long the firmware and the boot loader took, from the FPDT's
+/// Firmware Basic Boot Performance Table (ADR 0474).
+pub fn firmware_boot_times() -> Option<radix_hal::FirmwareBootTimes> {
+    *BOOT_TIMES.call_once(read_boot_times)
+}
+
+/// Reads the FBPT the FPDT points to, where the firmware's memory map
+/// says the firmware keeps it for itself: never memory the kernel may
+/// have given out since, nor a device's registers, which a wrong pointer
+/// could name.
+fn read_boot_times() -> Option<radix_hal::FirmwareBootTimes> {
+    let acpi = get()?;
+    let memory = PhysicalMemory;
+    let fpdt = acpi.tables.find(&memory, b"FPDT").and_then(|sdt| Fpdt::parse(&sdt).ok())?;
+    let address = fpdt.basic_boot?;
+    let header = firmware_kept(address, FBPT_HEADER_LEN).then(|| memory.bytes(address, 8))??;
+    let len = BootTimes::fbpt_len(header).ok()?;
+    let table = firmware_kept(address, len).then(|| memory.bytes(address, len))??;
+    let times = BootTimes::parse_fbpt(table).ok()??;
+    Some(radix_hal::FirmwareBootTimes {
+        firmware_ns: times.firmware_ns(),
+        loader_ns: times.loader_ns(),
+    })
+}
+
+/// Whether the `len` bytes at `address` are all in one range the UEFI
+/// memory map gives the firmware's own data: memory it reserved, its
+/// runtime data, or ACPI's memory. Without a UEFI memory map, as on a
+/// BIOS, which has no FPDT, none are.
+fn firmware_kept(address: u64, len: usize) -> bool {
+    const KEPT: [u32; 4] = [
+        efi_memory_type::RESERVED,
+        efi_memory_type::RUNTIME_SERVICES_DATA,
+        efi_memory_type::ACPI_RECLAIM,
+        efi_memory_type::ACPI_NVS,
+    ];
+    let Some(end) = address.checked_add(len as u64) else { return false };
+    let Some(map) = crate::entry::EFI_MEMORY_MAP.get() else { return false };
+    map.descriptors().any(|descriptor| {
+        KEPT.contains(&descriptor.kind)
+            && descriptor.range().is_some_and(|range| range.start <= address && end <= range.end)
+    })
 }
 
 /// The serial port the firmware sends its console to, from the SPCR, when

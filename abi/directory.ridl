@@ -152,6 +152,13 @@ enum FilesystemKind: u8 {
     /// Memory files that programs map shared, and System V IPC's objects
     /// (ADR 0490): `shm`, which Spark mounts on `/devices/shm`.
     shm = 14;
+    /// The disks and partitions of `dev`, as they come and go, with the
+    /// devices every program has and nothing else (ADR 0473):
+    /// `dev_disks`, which Spark attaches as a service's `/devices`.
+    dev_disks = 15;
+    /// The EFI system partitions of `dev` alone, by partition type, with
+    /// the devices every program has (ADR 0473): `dev_efi_system`.
+    dev_efi_system = 16;
 }
 
 /// How `open` opens.
@@ -569,7 +576,7 @@ struct ScrubProgress {
 }
 
 /// A directory.
-interface directory = 0x000b version 10 {
+interface directory = 0x000b version 11 {
     kind = directory;
     /// Opens the file or directory at `path` (`.` for this one) and puts
     /// a capability to it with `rights` in slot `to`. Returns what it is.
@@ -1220,4 +1227,19 @@ interface directory = 0x000b version 10 {
                 bad_address, not_found, not_directory, read_only, no_space, name_too_long,
                 bad_name, outside, too_many_links, denied, not_permitted, not_supported, io,
                 corrupt];
+    /// Attaches the directory the capability in slot `what` holds at
+    /// `path` in this view, as `attach` does, but with only the entries
+    /// `names` lists in it (ADR 0473): `names` is up to 16 plain names,
+    /// each followed by a NUL. Through the view, any other name in it is
+    /// not found by a lookup, a listing or a removal, and making or
+    /// renaming one there is not permitted; beneath each name, the
+    /// directory's entries are reached as through `attach`. Its top is
+    /// never a snapshot's source or a comparison's parent
+    /// (not_permitted). Fails with not_directory if `what` holds no
+    /// directory, invalid_argument for no names or more than 16, and
+    /// bad_name for one that is not a plain name; otherwise as `attach`.
+    method attach_names = 54 (path: in bytes, what: slot, names: in bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                no_memory, bad_address, exists, not_directory, no_space, name_too_long, bad_name,
+                in_use, not_permitted, not_supported];
 }

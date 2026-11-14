@@ -29,6 +29,7 @@ use radix_sync::Mutex;
 
 use crate::mem::{self, KVec};
 use crate::mount::{Location, Mount};
+use crate::named::Named;
 use crate::path::{self, Component};
 use crate::tmpfs::Tmpfs;
 use crate::{Access, Error, FsRef, Kind, NodeRef, Result, Who, address};
@@ -103,37 +104,28 @@ impl crate::mount::Vfs {
         who: &Who,
         read_only: bool,
     ) -> Result<()> {
-        let view = dir.mount.view.as_ref().ok_or(Error::NotSupported)?;
-        let kind @ (Kind::Directory | Kind::File | Kind::CharDevice | Kind::BlockDevice) =
-            what.node.kind()
-        else {
-            return Err(Error::NotSupported);
-        };
-        if what.in_view() || what.mount.is_detached() {
-            return Err(Error::NotSupported);
-        }
-        if !view.same_name(who) || (view.bypass && !who.bypass) {
-            return Err(Error::NotPermitted);
-        }
-        let mode = if kind == Kind::Directory { 0o555 } else { 0o444 };
-        let mut attached = view.attached.lock();
-        attached.try_reserve(1).map_err(|_| Error::NoMemory)?;
-        let on = place(&attached, dir, path, |at, name| {
-            let access = Access { owner: 0, group: 0, mode };
-            match kind {
-                // A device's place is a node of its kind with no device:
-                // were it ever opened rather than crossed, no_device.
-                Kind::CharDevice | Kind::BlockDevice => at.make_node(name, kind, 0, access),
-                _ => at.create(name, kind, access),
-            }
-        })?;
-        let mut at = what.clone();
-        at.read_only = at.read_only || read_only;
-        // The bit first, as for a mount: a walk that finds it clear has
-        // not seen the place either.
-        dir.mount.cover(address(&on));
-        let _ = attached.push_within_capacity((on, at));
-        Ok(())
+        attach_as(dir, path, what, who, read_only, None)
+    }
+
+    /// Attaches `what`, a directory, at `path` beneath `dir` as
+    /// [`Vfs::attach`] does, but with only `names` in it ([`Named`],
+    /// ADR 0473): nothing else in it is reached through the view. Fails
+    /// with [`Error::NotDirectory`] if `what` is not a directory, and
+    /// with [`Error::InvalidArgument`] for no names or more than
+    /// [`NAMES_MAX`](crate::named::NAMES_MAX), or [`Error::BadName`] for
+    /// one that is not a plain name.
+    ///
+    /// [`Vfs::attach`]: crate::mount::Vfs::attach
+    pub fn attach_names(
+        &self,
+        dir: &Location,
+        path: &str,
+        what: &Location,
+        who: &Who,
+        read_only: bool,
+        names: &[&str],
+    ) -> Result<()> {
+        attach_as(dir, path, what, who, read_only, Some(names))
     }
 
     /// Syncs the filesystem of each place attached to the view `dir` is
@@ -183,6 +175,58 @@ impl crate::mount::Vfs {
         })
         .map(drop)
     }
+}
+
+/// [`Vfs::attach`], or with `names` [`Vfs::attach_names`].
+///
+/// [`Vfs::attach`]: crate::mount::Vfs::attach
+/// [`Vfs::attach_names`]: crate::mount::Vfs::attach_names
+fn attach_as(
+    dir: &Location,
+    path: &str,
+    what: &Location,
+    who: &Who,
+    read_only: bool,
+    names: Option<&[&str]>,
+) -> Result<()> {
+    let view = dir.mount.view.as_ref().ok_or(Error::NotSupported)?;
+    let kind @ (Kind::Directory | Kind::File | Kind::CharDevice | Kind::BlockDevice) =
+        what.node.kind()
+    else {
+        return Err(Error::NotSupported);
+    };
+    if what.in_view() || what.mount.is_detached() {
+        return Err(Error::NotSupported);
+    }
+    if !view.same_name(who) || (view.bypass && !who.bypass) {
+        return Err(Error::NotPermitted);
+    }
+    // Wrapped before anything is made, so that a refusal leaves the
+    // view as it was.
+    let node = match names {
+        Some(names) => Named::make(what.node.clone(), names)?,
+        None => what.node.clone(),
+    };
+    let mode = if kind == Kind::Directory { 0o555 } else { 0o444 };
+    let mut attached = view.attached.lock();
+    attached.try_reserve(1).map_err(|_| Error::NoMemory)?;
+    let on = place(&attached, dir, path, |at, name| {
+        let access = Access { owner: 0, group: 0, mode };
+        match kind {
+            // A device's place is a node of its kind with no device:
+            // were it ever opened rather than crossed, no_device.
+            Kind::CharDevice | Kind::BlockDevice => at.make_node(name, kind, 0, access),
+            _ => at.create(name, kind, access),
+        }
+    })?;
+    let mut at = what.clone();
+    at.node = node;
+    at.read_only = at.read_only || read_only;
+    // The bit first, as for a mount: a walk that finds it clear has
+    // not seen the place either.
+    dir.mount.cover(address(&on));
+    let _ = attached.push_within_capacity((on, at));
+    Ok(())
 }
 
 /// Makes the last name of `path` beneath `dir` with `make`, and the

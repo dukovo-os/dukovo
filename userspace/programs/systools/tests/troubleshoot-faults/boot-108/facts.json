@@ -1,0 +1,86 @@
+{
+  "start": {
+    "number": 12,
+    "started": 1793402700,
+    "slot": "a",
+    "stage": "services",
+    "outcome": "failed",
+    "error": "BOOT-103",
+    "why": "the required check dns failed: it ended with exit status: 1 (BOOT-103)",
+    "items": [
+      {
+        "kind": "system",
+        "name": "Dukovo",
+        "value": "0.15.0"
+      },
+      {
+        "kind": "options",
+        "name": "boot options",
+        "value": "quiet nomodeset noapic"
+      }
+    ]
+  },
+  "changed": [
+    "options"
+  ],
+  "log": [
+    {
+      "level": 6,
+      "from": "kernel",
+      "name": "kernel",
+      "text": "Radix 0.15.0 starting"
+    },
+    {
+      "level": 6,
+      "from": "kernel",
+      "name": "kernel",
+      "text": "Disk: vda: 20 GiB, virtio"
+    },
+    {
+      "level": 6,
+      "from": "service",
+      "name": "logd",
+      "text": "logd: listening on /system/live/log/query"
+    },
+    {
+      "level": 6,
+      "from": "service",
+      "name": "sshd",
+      "text": "sshd: listening on port 22"
+    },
+    {
+      "level": 6,
+      "from": "service",
+      "name": "sysupdate",
+      "text": "sysupdate: this start of Slot A is seen through"
+    },
+    {
+      "level": 3,
+      "from": "service",
+      "name": "sysupdate",
+      "text": "sysupdate: Slot A failed its health check: the required check dns failed: it ended with exit status: 1 (BOOT-103)"
+    }
+  ],
+  "failed": [],
+  "essential": [
+    "logd",
+    "authd",
+    "consoled",
+    "netd",
+    "sshd"
+  ],
+  "full": [
+    {
+      "path": "/",
+      "percent": 3
+    },
+    {
+      "path": "/system/state",
+      "percent": 41
+    },
+    {
+      "path": "/users",
+      "percent": 41
+    }
+  ]
+}

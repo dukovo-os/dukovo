@@ -57,6 +57,24 @@ today gets one, and then each is pruned. By default the places are
 */users*, */shared* and */system/settings*. A place that is not there,
 as a disk not plugged in, is skipped, and the log says so once.
 
+The service holds only what its file gives it (*service.toml*(5), ADR
+0473): the places of the default *snap.toml*, which it reads and
+snapshots, _/snapshots_, and *@snapshots* alone at the top of the root,
+where it makes and removes the snapshots, and no one's other files. A
+place of *snap.toml* that the service's view lacks, such as a data
+disk's, is skipped, and the log says so once, in these words:
+
+```
+snap: /volumes/sdb1/@data is not in the snap service's view: add it with `service edit snap`; skipped
+```
+
+and *snap list* tells of each place the service lacks, as the service
+would. *service edit snap* adds it to the service's file: a place on
+another disk needs that disk's top in the file, as
+*files.read-write = ["/volumes/sdb1"]*, as its snapshots go to that
+disk's own *@snapshots* (*snap.toml*(5)). Run from a shell, *snap* has
+the whole tree and needs nothing of the kind.
+
 # RETENTION
 
 Of the snapshots of a place named by their time, a prune keeps the

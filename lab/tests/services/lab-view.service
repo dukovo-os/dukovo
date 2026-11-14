@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The views lab test's service: it says what its view holds, in lines the
+# test reads in the log. It holds the disks, and not /processes (ADR
+# 0473).
+
+service_version = 2
+description = "Reports what its view holds"
+program = "/system/commands/nukesh"
+arguments = ["/system/settings/lab-view.sh"]
+enabled = false
+restart = "never"
+
+[permissions]
+files.disks = "read"

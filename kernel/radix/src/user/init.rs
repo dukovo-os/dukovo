@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 
 use radix_abi::errors::Kernel;
 use radix_cap::{ObjectKind, SlotRef};
-use radix_hal::BootModule;
+use radix_hal::{BootModule, Timer};
 use radix_klog::{error, info};
 use radix_mm::{Flags, HEAP, MAX_ORDER};
 use radix_sync::Once;
@@ -179,5 +179,16 @@ fn start_spark(path: &str, image: &[u8], args: impl Iterator<Item = &'static str
         on_exit: Some(spark_exited),
     };
     let process = loader::start(at, &program)?;
+    let _ = SPARK_STARTED_NS.set(<crate::Arch as Timer>::now_ns());
     Ok(process.number())
+}
+
+/// When the kernel started Spark, by its monotonic clock.
+static SPARK_STARTED_NS: Once<u64> = Once::new();
+
+/// When the kernel started Spark, by its monotonic clock, in nanoseconds
+/// since the kernel started (`/kernel/boot/times`, ADR 0474); `None`
+/// before it has.
+pub fn spark_started_ns() -> Option<u64> {
+    SPARK_STARTED_NS.get().copied()
 }
