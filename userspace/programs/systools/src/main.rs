@@ -190,6 +190,10 @@ mod service;
 mod servicefiles;
 mod servicetry;
 mod sessions;
+// Its first callers, the console's preferences and journal, are being
+// written; until they land only its tests use it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod settings_edit;
 mod share;
 mod sign_in_notices;
 mod signals;
