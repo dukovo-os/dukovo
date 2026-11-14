@@ -1512,6 +1512,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 // a file of its own, so that two pull requests do not add theirs at the
 // same place in CASES. They run after CASES, in the order of the phases.
 mod affected;
+mod console_client;
 mod phase11;
 mod phase12;
 mod phase13;
