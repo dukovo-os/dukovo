@@ -172,7 +172,9 @@ which belong to them, not to the machine.
   action that undoes an action (ADR 0515's examples) is the way to change
   what runs.
 - Up to 64 MiB of settings history and up to 30 days of tasks live in one
-  file in `/system/state`, which a whole-machine backup carries.
+  file in `/system/state`. A whole-machine backup carries the settings,
+  not their history: a machine restored from one starts its journal
+  again.
 - The tests of tasks need a long action, and no action people use is long
   yet. A lab build has one, `lab.long`, which runs `admin lab-steps`;
   the lab's images are lab builds, and the boot test images and releases
