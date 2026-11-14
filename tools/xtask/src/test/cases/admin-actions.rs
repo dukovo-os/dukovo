@@ -562,7 +562,8 @@ fn the_list(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
 /// Who may: reads for bob and alice, changes refused for bob and for alice
 /// locked, a name that is none refused before anyone is asked.
 fn who_may(test: &mut Test) -> Result<(), String> {
-    // Signing in leaves a session locked, but the test says so.
+    // Signing in leaves a session locked; locking it here as well keeps
+    // the refusals below from resting on that.
     test.console.post(&mut test.alice, "/api/1/lock", &json!({}))?.must("lock", 200)?;
     let mut problems = Problems::default();
     for action in test.actions.clone() {
@@ -658,7 +659,7 @@ fn tokens(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     let result = test.run_with_token(&read_token, None, read, &read.args);
     problems.note("ci-read reads the services", outcome(result, "ci-read reading services", 200, None));
     let result = test.run_with_token(&read_token, None, other, &other.args);
-    problems.note("ci-read reads another area", outcome(result, "ci-read reading certificates", 403, Some("ADM-124")));
+    problems.note("ci-read reads another area", outcome(result, &format!("ci-read reading {}", other.area), 403, Some("ADM-124")));
     test.said("alice (API token ci-read)", &other.id, "was not run: ADM-124");
     let result = test.run_with_token(&read_token, None, change, &change.args);
     problems.note("ci-read changes the services", outcome(result, "ci-read changing services", 403, Some("ADM-124")));
@@ -680,7 +681,7 @@ fn tokens(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
 
     // A token for every scope changes, and reads any area.
     let result = test.run_with_token(&all_token, None, other, &other.args);
-    problems.note("ci-all reads another area", outcome(result, "ci-all reading certificates", 200, None));
+    problems.note("ci-all reads another area", outcome(result, &format!("ci-all reading {}", other.area), 200, None));
     let result = test.run_with_token(&all_token, None, change, &change.args);
     problems.note("ci-all changes the services", outcome(result, "ci-all changing services", 200, None));
     test.said("alice (API token ci-all)", &change.id, "ended with status 0");

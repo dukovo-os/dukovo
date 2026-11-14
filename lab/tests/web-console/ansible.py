@@ -41,6 +41,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -174,13 +175,23 @@ def address(template, args):
     return "/".join(parts), rest
 
 
+# The states a service passes through on its way to another.
+PASSING = {"starting", "stopping", "pending", "waiting"}
+
+
 def service_state(console, name):
-    """What the console lists of the service `name`: its state and whether it starts at boot."""
-    listed = console.ask("GET", "/api/1/services")
-    for service in listed.get("services", []):
-        if service.get("name") == name:
-            return (service.get("state"), service.get("enabled"))
-    raise Failure(f"the list of services has no {name}")
+    """What the console lists of the service `name` once it has settled, for up to 30 seconds: its
+    state and whether it starts at boot."""
+    deadline = time.monotonic() + 30
+    while True:
+        listed = console.ask("GET", "/api/1/services")
+        found = [service for service in listed.get("services", []) if service.get("name") == name]
+        if not found:
+            raise Failure(f"the list of services has no {name}")
+        state = (found[0].get("state"), found[0].get("enabled"))
+        if state[0] not in PASSING or time.monotonic() >= deadline:
+            return state
+        time.sleep(0.5)
 
 
 class Round:
