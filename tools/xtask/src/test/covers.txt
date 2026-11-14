@@ -615,6 +615,8 @@ runbook-update-server-move tools/xtask/src/release.rs userspace/programs/catalog
 runbook-update-server-move userspace/programs/systools/src/timerd.rs userspace/programs/systools/src/timerd/
 runbook-update-server-move userspace/programs/systools/src/service.rs userspace/programs/systools/src/servicefiles.rs
 runbook-update-server-move userspace/programs/sshd/ userspace/programs/tuf/ userspace/spark/src/
+runbook-update-server-move userspace/defaults/spark/services/certd.toml userspace/programs/systools/src/cert.rs
+runbook-update-server-move userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs
 sched-balance kernel/sched/
 sched-fair kernel/sched/
 sched-mutex kernel/lib/sync/ kernel/sched/
