@@ -493,6 +493,11 @@ const WAVES_SITE: u8 = 34;
 /// this reason.
 const WAVES_PAUSE: (&str, &str, &str) = ("org.example.diary", "1.1.0", "bad logs");
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the
+/// `postgresql` test's scripts ([`cases::postgresql::make_disk`]), which
+/// the case would otherwise type.
+const POSTGRESQL_FILES: u8 = 35;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1750,7 +1755,9 @@ fn case_budget(case: &Case, timeout: Duration) -> Duration {
 /// Whether `case` installs the catalog's bundles, which ob packs before
 /// the first such test of a run.
 fn needs_packing(case: &Case) -> bool {
-    case.disks.iter().any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE | PHP_FILES))
+    case.disks
+        .iter()
+        .any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE | PHP_FILES | POSTGRESQL_FILES))
 }
 
 /// About how long packing the catalog's bundles takes on CI, in seconds,
@@ -5329,6 +5336,11 @@ fn make_disks(
         }
         if disk.fat == PHP_FILES {
             cases::php::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == POSTGRESQL_FILES {
+            cases::postgresql::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
@@ -11478,6 +11490,21 @@ fn run_within(vm: &mut Vm, command: &str, seconds: u64) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// Runs one step of a script on a test's disk of bundles, `sh script name`,
+/// which prints the checks it makes, `ok-<name>` for each that held, and
+/// then a line `name N of M`, N of its M checks having held, and waits up to
+/// `seconds` for the step to end with all `checks` of them holding.
+fn run_step(
+    vm: &mut Vm,
+    script: &str,
+    name: &str,
+    checks: usize,
+    seconds: u64,
+) -> Result<(), String> {
+    run_within(vm, &format!("clear; sh {script} {name}"), seconds)?;
+    vm.expect_screen(&[&format!("{name} {checks} of {checks}")])
 }
 
 /// Unlocks elevate in the pane, or keeps it unlocked for 15 minutes more,
