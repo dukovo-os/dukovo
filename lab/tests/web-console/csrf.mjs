@@ -166,6 +166,15 @@ async function fromAnotherOrigin(page) {
   await attacker.route(attackerPage, (route) =>
     route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Another site</title>" }),
   );
+  // A browser that asks before a page reaches the machine's own addresses
+  // (local network access, which a handed-in page counts as public) is
+  // told yes for this page: that check is the browser's own, and what is
+  // tested here is the console's refusal. An engine that has no such
+  // check has no such permission either, and refuses to be given it.
+  await page
+    .context()
+    .grantPermissions(["local-network-access"], { origin: attackerOrigin })
+    .catch(() => undefined);
   await attacker.goto(attackerPage);
   for (const [route, body] of [...SIGN_IN_ROUTES, ...SESSION_ROUTES]) {
     const url = `${originOf(page)}${pathOf(route)}`;
