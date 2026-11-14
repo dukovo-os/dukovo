@@ -88,15 +88,17 @@ cd "$PORT_BUILD/radix"
 #   beside the program's bin, where libpq is;
 # - LDFLAGS_SL is every shared library's: the run path of a module in
 #   lib/postgresql, which is lib, where libpq is, and what keeps the
-#   static libraries of OpenSSL, zlib and libxml2 from exporting their
-#   symbols out of the library they are linked into. libpq, pgcrypto and
-#   sslinfo have a copy of OpenSSL each, as the server does, and without
-#   this the dynamic linker would take a module's call of a function that
-#   the server also has from the server, and one that only the module has
-#   from the module, which then calls the server's others with what its
-#   own copy knows nothing of.
+#   static libraries of OpenSSL from exporting their symbols out of libpq.
+#   libpq has an OpenSSL of its own, as it is loaded into programs that
+#   have none (psql) and into the server (libpqwalreceiver, dblink and
+#   postgres_fdw), which has its own and exports it. libpq only touches
+#   the objects it makes itself, so the two copies stay apart as long as
+#   neither is taken for the other's: exported, libpq's functions would
+#   be the ones the dynamic linker finds first for the server's calls, and
+#   the server's for libpq's. The modules that work on the server's own
+#   OpenSSL objects, pgcrypto and sslinfo, have no copy at all (below).
 LDFLAGS_EX="-dynamic -Wl,-rpath,'\$\$ORIGIN/../lib'" \
-	LDFLAGS_SL="-Wl,-rpath,'\$\$ORIGIN/..' -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a -Wl,--exclude-libs=libz.a -Wl,--exclude-libs=libxml2.a" \
+	LDFLAGS_SL="-Wl,-rpath,'\$\$ORIGIN/..' -Wl,--exclude-libs=libssl.a -Wl,--exclude-libs=libcrypto.a" \
 	pgac_cv_prog_cc_LDFLAGS_EX_BE__Wl___export_dynamic=yes \
 	ac_cv_header_sys_epoll_h=no ac_cv_header_sys_signalfd_h=no \
 	PREFIX="$prefix" \
@@ -178,6 +180,24 @@ pg_make -C src/test/regress >>make.log 2>&1 || {
 	exit 1
 }
 pg_make -C src/test/isolation >>make.log 2>&1 || {
+	tail -n 60 make.log >&2
+	exit 1
+}
+
+# pgcrypto and sslinfo link no OpenSSL and no zlib. sslinfo is handed the
+# connection's SSL and X509 objects, which only the OpenSSL that made them
+# may touch, and a second copy in the process would be one that does not
+# know them; pgcrypto has no need of a copy of its own either. Their calls
+# are the server's at load (it exports its static libraries with the rest,
+# --export-dynamic), as every call of a module into the server is. The
+# modules of world-bin have libraries linked in by SHLIB_LINK, which is
+# emptied for these two alone.
+rm -f contrib/pgcrypto/pgcrypto.so contrib/sslinfo/sslinfo.so
+pg_make -C contrib/pgcrypto SHLIB_LINK= >>make.log 2>&1 || {
+	tail -n 60 make.log >&2
+	exit 1
+}
+pg_make -C contrib/sslinfo SHLIB_LINK= >>make.log 2>&1 || {
 	tail -n 60 make.log >&2
 	exit 1
 }
@@ -308,14 +328,44 @@ for module in "$PORT_BUNDLE"/lib/postgresql/*.so "$PORT_BUNDLE/lib/libpq.so.5" \
 	check_elf "$module" '$ORIGIN/..'
 done
 # The server exports what its modules call (palloc, which every one does),
-# and a module's copy of OpenSSL is its own: no function of it is in the
-# module's symbols that other files link to.
-if ! $readelf --dyn-syms --wide "$PORT_BUNDLE/bin/postgres" | grep -q ' palloc$'; then
+# and pgcrypto and sslinfo have no OpenSSL: no function of OpenSSL's is
+# defined in them, and each they call is defined in the server's dynamic
+# symbols, where the dynamic linker finds it when they load. What else they
+# call is the server's too, or libc.so's.
+dynamic_symbols() {
+	file=$1
+	status=$2
+	$readelf --dyn-syms --wide "$file" | awk -v status="$status" '
+		$1 ~ /^[0-9]+:$/ && $8 != "" {
+			if (status == "undefined" && ($7 != "UND" || $5 == "WEAK")) next
+			if (status == "defined" && $7 == "UND") next
+			name = $8
+			sub(/@.*/, "", name)
+			print name
+		}' | LC_ALL=C sort -u
+}
+if ! dynamic_symbols "$PORT_BUNDLE/bin/postgres" defined | grep -qx palloc; then
 	echo "postgresql: bin/postgres does not export palloc" >&2
 	exit 1
 fi
-if $readelf --dyn-syms --wide "$PORT_BUNDLE/lib/postgresql/pgcrypto.so" |
-	awk '$7 != "UND" && $8 ~ /^(EVP_|SSL_|OPENSSL_|CRYPTO_)/ { found = 1 } END { exit !found }'; then
-	echo "postgresql: pgcrypto.so exports OpenSSL's functions" >&2
-	exit 1
-fi
+dynamic_symbols "$PORT_BUNDLE/bin/postgres" defined >"$PORT_BUILD/server-symbols"
+dynamic_symbols "$SYSROOT/system/libraries/libc.so" defined >"$PORT_BUILD/libc-symbols"
+LC_ALL=C sort -u "$PORT_BUILD/server-symbols" "$PORT_BUILD/libc-symbols" >"$PORT_BUILD/known-symbols"
+for module in pgcrypto sslinfo; do
+	file="$PORT_BUNDLE/lib/postgresql/$module.so"
+	if dynamic_symbols "$file" defined | grep -q '^\(EVP_\|SSL_\|X509_\|OPENSSL_\|CRYPTO_\)'; then
+		echo "postgresql: $module.so has an OpenSSL of its own" >&2
+		exit 1
+	fi
+	dynamic_symbols "$file" undefined >"$PORT_BUILD/$module-symbols"
+	grep -q '^\(EVP_\|SSL_\|X509_\|OPENSSL_\|CRYPTO_\)' "$PORT_BUILD/$module-symbols" || {
+		echo "postgresql: $module.so calls no function of OpenSSL's" >&2
+		exit 1
+	}
+	missing=$(LC_ALL=C comm -23 "$PORT_BUILD/$module-symbols" "$PORT_BUILD/known-symbols")
+	if [ -n "$missing" ]; then
+		echo "postgresql: $module.so calls what neither bin/postgres nor libc.so has:" >&2
+		echo "$missing" >&2
+		exit 1
+	fi
+done
