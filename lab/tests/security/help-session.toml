@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A help session lets a helper with no account work in the owner's screen
+# over SSH (ADR 0540, help-session(1)). The lab PC plays both: the owner,
+# whom it signs in with the lab key as the lab account, to start the
+# session in a terminal of sshd's, and the helper, who signs in as help
+# with the code and no key, as a person on another computer would. The
+# script beside the test says what each step saw, and stops at the first
+# that was not as it should be: the owner's screen shows the address,
+# sshd's host key as the lab PC read it, and a code of 16 characters; a
+# wrong code is refused; the right one signs the helper in, and a file
+# the helper makes is the lab account's, in its home; the same code is
+# refused again; elevate is refused in the help screen until the owner,
+# signed in a second time, allows it with the password; a sleep left
+# running is gone when the owner ends the session with Ctrl-], and the
+# helper is told. The machine's own steps then read the list, the
+# transcript and authd's audit log. A session that ends at its deadline
+# is left to authd's unit tests, since the test would wait five minutes.
+about = "help-session: the lab PC as owner and helper over SSH: help-session start shows the address, sshd's host key and a code; a wrong code and a used code are refused; the helper's file is the owner's; elevate is refused until help-session allow-elevate, then runs as root; a sleep left running is gone when Ctrl-] ends the session; help-session log lists it and its ID prints what was typed; authd's audit log tells of each step (ADR 0540)"
+time = "10m"
+host_needs = ["ssh", "ssh-keygen", "ssh-keyscan"]
+fresh = true
+
+# Nothing of an earlier run is left in the lab account's home.
+[[step]]
+run = "rm -f /users/lab/proof"
+
+# Both terminals, over ssh from the lab PC, then what is left on the
+# machine once the session has ended: the file is the lab account's, no
+# sleep the helper left runs, the list holds the session, and its
+# transcript what the helper typed and when elevate was allowed. The
+# password is for the owner's second sign-in, which allows elevate.
+[[step]]
+host = "sh {here}/help-session.sh {machine} {machine-port:22}"
+input = "{password}\n"
+expect = [
+    "started",
+    "host key: the same",
+    "code: 16 characters",
+    "wrong code: refused",
+    "helper: signed in",
+    "typed: the file is the owner's",
+    "same code again: refused",
+    "elevate: refused",
+    "elevate: allowed",
+    "elevate: runs as root",
+    "sleep: left running",
+    "end: the helper was told",
+    "id: ",
+    "Ended your help session.",
+    "second: ended from another terminal",
+    "proof helped lab",
+    "sleepers 0",
+    "ID Owner Started Ended",
+    " lab ",
+    "typed echo helped > ~/proof",
+    "helper signed in from ",
+    "elevate lab let elevate run until ",
+    "end owner",
+    "help-session-end",
+]
+
+# authd's audit log: the start, the wrong code, the helper's sign-in, the
+# allowing of elevate and the end. logd reads the log a moment after
+# authd writes it, so the step waits that moment first.
+[[step]]
+run = "sh -c 'sleep 2; log -s authd'"
+root = true
+expect = [
+    "authd: lab started help session ",
+    ", for a helper with a code: shell process ",
+    "authd: a wrong help-session code from ",
+    "authd: a helper signed in to lab's help session ",
+    "authd: lab let elevate run in help session ",
+    "authd: help session ",
+    " of lab ended (owner); the helper from ",
+]
+
+# As it was: the helper's file gone.
+[[step]]
+run = "rm -f /users/lab/proof"

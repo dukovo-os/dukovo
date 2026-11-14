@@ -85,6 +85,17 @@ keeps no password: authd answers a right one with a ticket for that
 connection alone, which starts the person's sessions on it and goes
 when it ends.
 
+An address that keeps guessing is blocked: authd counts each wrong
+password for the client's address, whatever account it names, and 5
+within 10 minutes have the firewall drop that address's new connections
+to the sign-in ports for 10 minutes, for twice as long each time it
+comes back within a day, up to a day (*blocking.toml*(5), ADR 0479). A
+connection that tried to sign in, was refused every time, and ended is
+told to authd as it ends, and counts as one wrong password. A connection
+that was open when its address was blocked has its next password refused
+unread, and sshd ends it. An administrator signed in over SSH is never
+blocked while the session lasts.
+
 *AllowUsers*, *AllowGroups*, *DenyUsers* and *DenyGroups* in
 sshd_config say who may sign in at all, with a key or a password.
 
@@ -143,6 +154,62 @@ once the firewall lets them, as for anything a person runs:
 client that asks for port 0 is told the port chosen. A connection
 forwards 128 connections at once, and 16 ports; forwarding Unix
 sockets is refused.
+
+# HELP SESSIONS
+
+A person who is stuck may let a helper who has no account sign in with
+*help-session*(1) (ADR 0540). The helper signs in as *help*, which is no
+account and which no account may be named, with the code the owner gave
+them, typed at the client's password prompt, or with the key the owner
+named:
+
+```
+$ ssh help@dukovo
+help@dukovo's password:
+```
+
+authd(8) checks the code or the key's signature. *help* passes
+*AllowUsers* and *AllowGroups*, and while a help session waits for a code
+(_/system/live/authd/help-waiting_ is there) sshd offers passwords for
+*help*, and for no other name, even when *sshd_config* turns passwords
+off. A code that is wrong counts against the client's address as a wrong
+password does.
+
+A helper's connection has one session channel, with a terminal and a
+shell, which is the help screen: what the owner sees and types in, at
+the owner's size, whatever the size of the helper's window. The helper
+gets no command, no SFTP, no subsystem and no forwarding, and sshd says
+so in its log. sshd passes the helper's bytes to the help screen and its
+output back, and writes each line the helper types, with its time, to the
+session's transcript, which authd gave it and which only root reads,
+before the line goes on. It ends the connection when the transcript
+would pass 1 MiB. The helper's screen starts when they sign in and shows
+what changes from then on; Ctrl-L redraws it. When the help session
+ends, sshd tells the helper, "The help session ended.", and closes the
+connection; when the helper's connection ends first, sshd tells authd,
+which ends the session.
+
+With _/system/live/authd/help-only_ there, which authd makes when
+*help-session start* with *--open-ssh* starts sshd for one session, sshd
+signs in *help* and no one else, whatever *sshd_config* says, until it is stopped
+at the session's end.
+
+# RESCUE
+
+In Rescue (*dukovo-rescue*(8)) *sshd* runs only when the installed system
+had it on, and signs in that system's administrators (ADR 0540). It
+reads the installed system's _sshd_config_, _passwd_, _group_ and host
+key, but not from the root, which it cannot see: *dukovo-rescue* copies
+those five files into _/system/state/sshd/rescue_, in Rescue's memory,
+so that the program that faces the network never sees the password
+hashes or a home. Rescue's *sshd* makes no host key, so a client sees
+the fingerprint it knew. *authd*(8) checks the keys, passwords and
+accounts, against the root's, and signs in the administrators alone.
+
+A session in Rescue is *dukovo-rescue*'s menu, on the terminal sshd
+made, as root, which authd starts. A command, SFTP, a subsystem and port
+forwarding are refused, and a helper's sign-in fails, since Rescue starts
+no help session.
 
 # HOW IT WORKS
 
@@ -211,6 +278,21 @@ _/system/state/sshd/ssh_host_ed25519_key_
 _/system/state/sshd/ssh_host_ed25519_key.pub_
 	Its public half, which anyone reads.
 
+_/system/state/sshd/rescue/_
+	In Rescue only: the five files of the installed system that sshd
+	reads, laid out as the root's subvolumes are (_@settings/passwd_,
+	_@settings/group_, _@settings/ssh/sshd_config_ and
+	_@state/sshd/ssh_host_ed25519_key_ with its _.pub_), mode 0600, which
+	*dukovo-rescue*(8) copies.
+
+_/system/live/authd/help-waiting_, _/system/live/authd/help-only_
+	Present while a help session waits for a helper with a code, and while
+	sshd runs for help sessions alone (see HELP SESSIONS).
+
+_/system/state/help/_*id*_.log_
+	A help session's transcript, which authd opens and sshd writes the
+	helper's lines to.
+
 _/system/settings/spark/services/sshd.toml_
 	sshd's service file (*service.toml*(5)), whose *enabled* *service
 	sshd enable* and *disable* set; the system's own is
@@ -227,5 +309,5 @@ with its connection, and *sshd --forward* as sshd closes its input.
 # SEE ALSO
 
 *ssh*(1), *sftp*(1), *scp*(1), *ssh-keygen*(1), *sshd_config*(5),
-*sftp-server*(8), *authd*(8), *login*(1), *service*(8),
-*service.toml*(5), *last*(1), *firewall*(8)
+*sftp-server*(8), *authd*(8), *help-session*(1), *dukovo-rescue*(8), *login*(1), *service*(8),
+*service.toml*(5), *blocking.toml*(5), *last*(1), *firewall*(8)

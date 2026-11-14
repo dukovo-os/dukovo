@@ -337,10 +337,13 @@ private port never shows up in another test. The first `attack` step
 gives each side its address, as root, so the lab needs its password (as
 a root step does). The first scans check that only SSH answers, of the
 ports services usually offer, and that nothing but sshd listens for
-other machines; that SSH turns away a password sign-in; and that its key
+other machines; that SSH turns away a password sign-in; that its key
 exchange, host key and cipher are modern, and the server offers nothing
-with SHA-1, CBC or MD5. The lab's `docs/test-files.md` describes the
-`attack` step in full.
+with SHA-1, CBC or MD5; and that five wrong passwords from the attacker
+block its address from SSH, which `firewall blocked` shows, while
+`firewall unblock` lifts the block and `firewall never-block` keeps it
+from being made. The lab's `docs/test-files.md` describes the `attack`
+step in full.
 
 ## Tests with the lab PC as a peer
 

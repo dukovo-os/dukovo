@@ -516,6 +516,63 @@ The installer puts Rescue on each disk that starts the system; it takes
 about 230 MiB of the 512 MiB EFI system partition the guided layout
 makes. See dukovo-rescue(8) for the details.
 
+### SSH in Rescue
+
+A computer with no screen, or one far away, can be repaired over SSH when
+the system had it on. If the system's `sshd` service was enabled, its
+accounts can be read and name an administrator, and its host key is
+there, Rescue turns networking and SSH on by itself, before it asks for
+anyone at the screen; otherwise nothing listens, as before, and Rescue
+says why in one line:
+
+```
+The Dukovo root is 5f0c2d1e-..., on sda4.
+SSH is on, as it was on this computer: its administrators can reach Rescue over it.
+```
+
+```
+The Dukovo root is 5f0c2d1e-..., on sda4.
+Networking is off until you turn it on, and SSH stays off: this computer had it off.
+```
+
+Rescue takes the system's own network, DNS, firewall and blocking
+settings, so the computer is at the address where you reached it before,
+and `sshd` has the system's host key, so `ssh` shows no warning. The
+system's administrators sign in with the keys of their `authorized_keys`,
+and with their passwords only if the system's `sshd_config` let passwords
+in; its `AllowUsers` and `AllowGroups` apply, and root never signs in.
+Addresses that keep guessing are blocked as they are on the running
+system.
+
+```
+$ ssh alice@dukovo
+Dukovo Rescue 0.15.0
+Rescue repairs this computer's Dukovo. Files, apps and settings stay as they are
+unless you choose otherwise.
+
+The Dukovo root is 5f0c2d1e-..., on sda4.
+alice signed in over SSH from 192.168.1.5.
+```
+
+What you get is Rescue's menu, as root, with no password asked again;
+**Open a shell** is the shell. There is no command to run over SSH, no
+`sftp` or `scp`, and no port forwarding in Rescue: to copy files off, use
+the menu's **Copy files off** to another disk. Rescue changes no account
+and writes nothing to the system but what you choose.
+
+Two people at once may look around, but only one may repair: reinstalling,
+putting back settings, checking the disk, copying files off, starting
+normally, restarting and powering off take a lock, and a second person who
+chooses one is told who holds it:
+
+```
+Rescue: alice is reinstalling Dukovo, over SSH from 192.168.1.5: wait for it to finish, then choose again
+```
+
+**Turn networking on** never starts SSH: it comes up only when Rescue
+starts. A system that had SSH off stays unreachable over the network in
+Rescue.
+
 ## Snapshots
 
 A snapshot holds a folder as it was at a moment, read-only, and takes

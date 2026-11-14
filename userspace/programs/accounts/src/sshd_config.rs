@@ -32,6 +32,13 @@ use crate::{Group, Table, User};
 /// The file: Linux's `/etc/ssh/sshd_config`.
 pub const PATH: &str = "/system/settings/ssh/sshd_config";
 
+/// sshd's host key, which it makes the first time it starts: Linux's
+/// `/etc/ssh/ssh_host_ed25519_key`.
+pub const HOST_KEY: &str = "/system/state/sshd/ssh_host_ed25519_key";
+
+/// Its public half, whose fingerprint a client checks.
+pub const HOST_KEY_PUBLIC: &str = "/system/state/sshd/ssh_host_ed25519_key.pub";
+
 /// The settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -275,14 +282,16 @@ pub fn parse(text: &str) -> Result<Settings, Vec<Mistake>> {
     Ok(settings)
 }
 
-/// The settings in [`PATH`]: the defaults when there is no file; what is
-/// wrong otherwise, a line each.
+/// The settings in [`PATH`], in Rescue the installed system's, as sshd
+/// reads them: the defaults when there is no file; what is wrong
+/// otherwise, a line each.
 ///
 /// # Errors
 ///
 /// When the file cannot be read, or has mistakes.
 pub fn read() -> Result<Settings, String> {
-    read_from(PATH)
+    // In Rescue, the installed system's (ADR 0540).
+    read_from(&crate::rescue::for_sshd(PATH).to_string_lossy())
 }
 
 /// The settings in the file at `path`, as [`read`] reads them.

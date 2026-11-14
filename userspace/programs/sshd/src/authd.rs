@@ -3,17 +3,19 @@
 
 //! What sshd asks authd(8) (ADRs 0347 and 0348): whether a key may sign
 //! someone in, whether a password is right, and to start their session,
-//! which it then waits on for its end.
+//! which it then waits on for its end; and to sign a helper in to a help
+//! session (ADR 0540), whose answer brings the help screen's pipes and
+//! transcript.
 //! authd may be busy with another's password for a second or two, so the
 //! connection waits for its answer without holding the others up.
 
 use std::io;
 use std::net::Shutdown;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::time::Duration;
 
 use accounts::request::{Answer, Request};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader, Interest};
 use tokio::net::UnixStream;
 
 use crate::sys;
@@ -90,4 +92,44 @@ pub async fn ask(request: &Request, fds: &[RawFd]) -> Result<(Answer, Asked), St
         Err(_) => return Err(format!("authd did not answer in {} seconds", ANSWER_TIME.as_secs())),
     };
     Ok((Answer::decode(&line), asked))
+}
+
+/// Sends authd `request` and reads its answer, with the descriptors that
+/// come with its first bytes: for `ssh-help`, whose right answer brings
+/// the help session's pipes and transcript. Nothing more is read.
+pub async fn ask_for_fds(request: &Request) -> Result<(Answer, Vec<OwnedFd>), String> {
+    let unreachable = |err: io::Error| format!("cannot ask authd at {}: {err}", accounts::SOCKET);
+    let stream = std::os::unix::net::UnixStream::connect(accounts::SOCKET).map_err(unreachable)?;
+    sys::send_with_fds(&stream, &request.encode(), &[]).map_err(unreachable)?;
+    stream.shutdown(Shutdown::Write).map_err(unreachable)?;
+    stream.set_nonblocking(true).map_err(unreachable)?;
+    let stream = UnixStream::from_std(stream).map_err(unreachable)?;
+    let read = async {
+        let (mut line, mut fds) = (Vec::new(), Vec::new());
+        let mut buffer = [0u8; 512];
+        while !line.contains(&b'\n') && (line.len() as u64) < LINE_MAX {
+            stream.readable().await?;
+            let fd = stream.as_raw_fd();
+            match stream.try_io(Interest::READABLE, || sys::receive(fd, &mut buffer, &mut fds)) {
+                Ok(0) => break,
+                Ok(n) => line.extend_from_slice(&buffer[..n]),
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(err) => return Err(err),
+            }
+        }
+        Ok((line, fds))
+    };
+    let (line, fds) = match tokio::time::timeout(ANSWER_TIME, read).await {
+        Ok(Ok(read)) => read,
+        Ok(Err(err)) => return Err(unreachable(err)),
+        Err(_) => return Err(format!("authd did not answer in {} seconds", ANSWER_TIME.as_secs())),
+    };
+    let Some(end) = line.iter().position(|&b| b == b'\n') else {
+        return Err("authd closed the connection without an answer".into());
+    };
+    Ok((Answer::decode(&String::from_utf8_lossy(&line[..end])), fds))
 }

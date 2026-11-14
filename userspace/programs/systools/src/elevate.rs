@@ -46,7 +46,7 @@ use accounts::User;
 use accounts::request::{self, Answer, Mode, NEEDS_PASSWORD, Request, WRONG_PASSWORD};
 use radix_abi::capability::{self, ObjectKind, Rights};
 use radix_abi::directory::{self, OpenFlags};
-use radix_abi::{Status, process, startup};
+use radix_abi::{Status, process, resource_domain, startup};
 
 use crate::args::{Arg, Args};
 use crate::sys::{self, SYS};
@@ -245,9 +245,15 @@ pub fn root_account(users: impl Iterator<Item = User>) -> User {
 /// source, the log, the platform, clock and firewall capabilities if
 /// authd holds them, authd's
 /// network capabilities, and `fds` as its descriptors 0 to 2. It runs [`HELPER`], which makes the
-/// command's terminal its own and runs `plan`'s program. Returns the
-/// process's number.
-pub fn start(fds: &[OwnedFd], plan: &Plan, env: &[String]) -> Result<u64, String> {
+/// command's terminal its own and runs `plan`'s program. It runs in the
+/// resource domain in slot `domain` when one is given: a help screen's
+/// (ADR 0540), whose end ends it. Returns the process's number.
+pub fn start(
+    fds: &[OwnedFd],
+    plan: &Plan,
+    env: &[String],
+    domain: Option<u32>,
+) -> Result<u64, String> {
     let failed = |what: &'static str| {
         move |status: Status| format!("cannot elevate: {what}: {}", sys::status_name(status.0))
     };
@@ -265,8 +271,13 @@ pub fn start(fds: &[OwnedFd], plan: &Plan, env: &[String]) -> Result<u64, String
         0,
     )
     .map_err(failed("opening elevate"))?;
-    process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, signin::SLOTS, child)
-        .map_err(failed("making its process"))?;
+    match domain {
+        Some(domain) => resource_domain::create_process(&SYS, domain, signin::SLOTS, child),
+        None => {
+            process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, signin::SLOTS, child)
+        }
+    }
+    .map_err(failed("making its process"))?;
     let mut shares = vec![
         (startup::SLOT_ROOT, startup::SLOT_ROOT),
         (startup::SLOT_RANDOM, startup::SLOT_RANDOM),
@@ -579,7 +590,10 @@ fn connect() -> Result<UnixStream, Fail> {
 
 /// Asks authd `request`, with the descriptors `fds`; the answer, and the
 /// connection to read more from.
-fn ask_with(request: &Request, fds: &[RawFd]) -> Result<(Answer, BufReader<UnixStream>), Fail> {
+pub(crate) fn ask_with(
+    request: &Request,
+    fds: &[RawFd],
+) -> Result<(Answer, BufReader<UnixStream>), Fail> {
     let stream = connect()?;
     let mut bytes = request.encode();
     let sent = if fds.is_empty() {
@@ -603,7 +617,7 @@ fn ask(request: &Request, fds: &[RawFd]) -> Result<Answer, Fail> {
 }
 
 /// What an answer said, or the refusal as a failure.
-fn done(answer: Answer) -> Result<String, Fail> {
+pub(crate) fn done(answer: Answer) -> Result<String, Fail> {
     match answer {
         Answer::Done(text) => Ok(text),
         Answer::Refused(why) => Err(fail(why)),
@@ -696,9 +710,9 @@ fn tool_name() -> String {
 }
 
 /// The write end of the pipe the signal handler wakes the loop with.
-static WAKE: AtomicI32 = AtomicI32::new(-1);
+pub(crate) static WAKE: AtomicI32 = AtomicI32::new(-1);
 
-extern "C" fn on_signal(signal: libc::c_int) {
+pub(crate) extern "C" fn on_signal(signal: libc::c_int) {
     let byte = signal as u8;
     // SAFETY: write(2) is async-signal-safe; a full pipe only loses a
     // repeat of a signal.
@@ -711,7 +725,7 @@ const PASSED_ON: [libc::c_int; 5] =
     [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP, libc::SIGTSTP];
 
 /// A pipe, its ends closed on exec: (read, write).
-fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+pub(crate) fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0; 2];
     // SAFETY: pipe2 writes two descriptors.
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -723,13 +737,13 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 
 /// The command's own terminal: a pseudo-terminal with the settings and
 /// size of `like`, one of elevate's.
-struct Pty {
-    master: OwnedFd,
-    slave: Option<OwnedFd>,
+pub(crate) struct Pty {
+    pub(crate) master: OwnedFd,
+    pub(crate) slave: Option<OwnedFd>,
 }
 
 impl Pty {
-    fn open(like: RawFd) -> io::Result<Pty> {
+    pub(crate) fn open(like: RawFd) -> io::Result<Pty> {
         // SAFETY: all zeros is a valid termios and winsize: numbers.
         let (mut settings, mut size): (libc::termios, libc::winsize) =
             unsafe { (util::zeroed(), util::zeroed()) };
@@ -767,17 +781,17 @@ impl Pty {
 
 /// The terminal's settings from before it was made raw, put back when it
 /// is dropped, whatever ends elevate's copying.
-struct Raw {
+pub(crate) struct Raw {
     fd: RawFd,
     saved: Option<libc::termios>,
 }
 
 impl Raw {
-    fn new(fd: RawFd) -> Raw {
+    pub(crate) fn new(fd: RawFd) -> Raw {
         Raw { fd, saved: None }
     }
 
-    fn on(&mut self) {
+    pub(crate) fn on(&mut self) {
         // SAFETY: all zeros is a valid termios: numbers.
         let mut settings: libc::termios = unsafe { util::zeroed() };
         // SAFETY: tcgetattr fills `settings`.
@@ -796,7 +810,7 @@ impl Raw {
         }
     }
 
-    fn off(&mut self) {
+    pub(crate) fn off(&mut self) {
         if let Some(saved) = self.saved.take() {
             // SAFETY: `saved` is the termios read before.
             unsafe { libc::tcsetattr(self.fd, libc::TCSADRAIN, &raw const saved) };
@@ -811,7 +825,7 @@ impl Drop for Raw {
 }
 
 /// Writes all of `data` to `fd`, as far as it takes it.
-fn write_all(fd: RawFd, mut data: &[u8]) {
+pub(crate) fn write_all(fd: RawFd, mut data: &[u8]) {
     while !data.is_empty() {
         // SAFETY: writes from our buffer.
         let n = unsafe { libc::write(fd, data.as_ptr().cast(), data.len()) };
@@ -827,7 +841,7 @@ fn write_all(fd: RawFd, mut data: &[u8]) {
 
 /// Reads what `fd` has into `buffer`: the count, 0 at its end or on an
 /// error other than an interrupted read.
-fn read_some(fd: RawFd, buffer: &mut [u8]) -> usize {
+pub(crate) fn read_some(fd: RawFd, buffer: &mut [u8]) -> usize {
     loop {
         // SAFETY: reads into our buffer.
         let n = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };

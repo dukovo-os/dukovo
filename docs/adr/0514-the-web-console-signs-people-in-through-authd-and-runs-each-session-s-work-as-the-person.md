@@ -278,9 +278,10 @@ own record.
   administrator who sets `reach = "any"` is told in admin.toml(5) to ask
   administrators for a second step first. A later part of the console
   makes that one choice in a page.
-- Blocking an address at the firewall after failed sign-ins is a deferred
-  row for the console's Security page; authd's waits and admind's limits
-  slow guessing until it exists.
+- An address that keeps failing to sign in is blocked at the firewall by
+  authd, which counts the console's wrong passwords, codes and API tokens
+  with SSH's (ADR 0479). The console's page that lists and lifts blocks
+  is a deferred row for its Security page.
 - A token has an owner, scopes and an end. ADR 0515 says what it is taken
   for: the API's actions, and the `admin` command that makes one.
 - The error IDs are part of what a person can quote; each page in

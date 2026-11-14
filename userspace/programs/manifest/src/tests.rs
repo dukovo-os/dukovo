@@ -38,6 +38,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ("timerd", include_str!("../../../defaults/spark/services/timerd.toml")),
     ("logturn", include_str!("../../../defaults/spark/services/logturn.toml")),
     ("dumps", include_str!("../../../defaults/spark/services/dumps.toml")),
+    ("dukovo-check", include_str!("../../../defaults/spark/services/dukovo-check.toml")),
     ("sockets-echo", include_str!("../../../spark/tests/services/sockets/sockets-echo.toml")),
     ("netd", include_str!("../../../spark/tests/services/serve/netd.toml")),
     ("timed", include_str!("../../../spark/tests/services/serve/timed.toml")),
@@ -245,6 +246,18 @@ fn only_authd_holds_the_names_capability() {
     assert!(!service::from_toml(&file("")).unwrap().permissions.names);
     let asked = service::from_toml(&file("[permissions]\nnames = true\n")).unwrap();
     assert!(asked.permissions.names);
+}
+
+#[test]
+fn only_authd_holds_its_own_domain() {
+    // authd runs each help session in a domain below its own (ADR 0540).
+    for (name, text) in SHIPPED {
+        let service = service::from_toml(text).unwrap();
+        assert_eq!(service.permissions.domain, *name == "authd", "{name}");
+    }
+    assert!(!service::from_toml(&file("")).unwrap().permissions.domain);
+    let asked = service::from_toml(&file("[permissions]\ndomain = true\n")).unwrap();
+    assert!(asked.permissions.domain);
 }
 
 #[test]

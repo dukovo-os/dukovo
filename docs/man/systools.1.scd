@@ -116,6 +116,8 @@ error that starts with the tool's name.
 :  the kernel's log
 |  *dukofetch*(1)
 :  the system at a glance, beside Duke
+|  *dukovo-check*(8)
+:  look at the computer's security and health, and keep what it finds
 |  *dumps*(8)
 :  save, list, show and delete the kernel's crash dumps
 |  *ectool*(8)
@@ -129,7 +131,7 @@ error that starts with the tool's name.
 |  *findmnt*(8)
 :  the mounts, as a tree, or the one sought
 |  *firewall*(8)
-:  the firewall's rules, and what listens
+:  the firewall's rules, what listens, and the addresses blocked for guessing passwords
 |  *floppy*(1)
 :  list floppy drives, look for a disk in one, and format its disk
 |  *fstrim*(8)

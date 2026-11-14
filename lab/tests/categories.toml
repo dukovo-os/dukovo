@@ -108,7 +108,7 @@ about = "Power cut mid-write and mid-boot, resets in a row, a full disk, many pr
 [[category]]
 name = "security"
 title = "Security"
-about = "Probing the machine from a private network only an attacker shares with it: open ports, and SSH's sign-in and crypto"
+about = "Probing the machine from a private network only an attacker shares with it: open ports, SSH's sign-in and crypto, and the block on an address that guesses passwords"
 
 [[category]]
 name = "performance"

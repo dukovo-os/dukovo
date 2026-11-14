@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::request::{
-    Answer, CONTINUE, Choice, JOB_TEXT_MAX, KeepRunning, Mode, PROMPT_SHOWN_MAX, Prompt, Prompted,
-    Question, REQUEST_MAX, Relay, Request, SSH_COMMAND_MAX, SshProof, SshRun, ended, ended_status,
-    signal, stopped, stopped_signal,
+    Answer, BlockedEntry, CONTINUE, Choice, HelpEnded, HelpEvent, HelpKept, HelpProof, HelpStarted,
+    JOB_TEXT_MAX, KeepRunning, Mode, PROMPT_SHOWN_MAX, Prompt, Prompted, Question, REQUEST_MAX,
+    Relay, Request, SSH_COMMAND_MAX, SshProof, SshRun, ended, ended_status, signal, stopped,
+    stopped_signal,
 };
 use super::*;
 
@@ -261,7 +262,7 @@ fn names() {
     for good in ["alice", "_build", "x", "mary-jane", "j.r", "user2"] {
         assert_eq!(check_name(good), Ok(()), "{good}");
     }
-    for bad in ["", "Alice", "2fast", "-x", "a b", "a:b", "été", "a/b", &"a".repeat(33)] {
+    for bad in ["", "Alice", "2fast", "-x", "a b", "a:b", "été", "a/b", &"a".repeat(33), "help"] {
         assert!(check_name(bad).is_err(), "{bad}");
     }
     assert!(check_full_name("Alice Liddell, Room 2").is_ok());
@@ -280,7 +281,7 @@ fn passwords_get_warnings_and_no_rules() {
 
 #[test]
 fn requests_go_and_come_back() {
-    let requests = [
+    let requests = vec![
         Request::Check { name: "alice".into(), password: b"s3cret".to_vec() },
         Request::Passwd { name: "alice".into(), current: Vec::new(), new: b"new".to_vec() },
         Request::Add {
@@ -434,6 +435,46 @@ fn requests_go_and_come_back() {
         Request::SetKeepRunning { chosen: Some(true) },
         Request::SetKeepRunning { chosen: Some(false) },
         Request::SetKeepRunning { chosen: None },
+        Request::SshFailed {
+            connection: "2001:db8::7 51234 2001:db8::1 22".into(),
+            name: "root".into(),
+        },
+        Request::SshFailed {
+            connection: "192.0.2.7 51234 192.0.2.1 22".into(),
+            name: String::new(),
+        },
+        Request::Blocked,
+        Request::Unblock { address: "2001:db8:4:7::/64".into() },
+        Request::NeverBlock { network: "192.168.1.0/24".into(), remove: false },
+        Request::NeverBlock { network: "192.168.1.0/24".into(), remove: true },
+        Request::HelpStart {
+            minutes: 60,
+            key: None,
+            open_ssh: false,
+            term: "xterm-256color".into(),
+            password: Vec::new(),
+        },
+        Request::HelpStart {
+            minutes: 30,
+            key: Some(b"\0\0\0\x0bssh-ed25519".to_vec()),
+            open_ssh: true,
+            term: "linux".into(),
+            password: b"her secret".to_vec(),
+        },
+        Request::HelpEnd,
+        Request::HelpLog { id: None },
+        Request::HelpLog { id: Some("k7q2mx".into()) },
+        Request::HelpAllowElevate { password: b"her secret".to_vec() },
+        Request::SshHelpKey { key: b"\0\0\0\x0bssh-ed25519".to_vec() },
+        Request::SshHelpEnded { id: "k7q2mx".into() },
+        Request::SshHelp {
+            connection: "192.0.2.7 51234 192.0.2.1 22".into(),
+            proof: HelpProof::Code("KQ7RM2XW9HTP4BZE".into()),
+        },
+        Request::SshHelp {
+            connection: "192.0.2.7 51234 192.0.2.1 22".into(),
+            proof: HelpProof::Key { signed: vec![0, 0, 0, 32, 0xff], signature: vec![1, 2] },
+        },
         Request::SharePassword {
             name: "alice".into(),
             current: b"s3cret".to_vec(),
@@ -802,6 +843,105 @@ fn keep_running_says_its_words_and_reads_them_back() {
     );
     for bad in ["", "on", "on off", "yes off allowed", "on off maybe", "on off allowed x"] {
         assert_eq!(KeepRunning::from_words(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn a_help_code_is_read_however_it_is_typed() {
+    let code = "KQ7RM2XW9HTP4BZE";
+    for typed in [code, "KQ7R-M2XW-9HTP-4BZE", "kq7r m2xw 9htp 4bze", "kq7rM2XW9htp4bze"] {
+        assert_eq!(request::help_code(typed).as_deref(), Some(code), "{typed}");
+    }
+    // Too short or long, or with a look-alike that is not in the code's
+    // letters.
+    for wrong in ["", "KQ7R-M2XW-9HTP", "KQ7RM2XW9HTP4BZEA", "KQ7RM2XW9HTP4BZO", "KQ7RM2XW9HTP4BZ1"]
+    {
+        assert_eq!(request::help_code(wrong), None, "{wrong}");
+    }
+    assert_eq!(request::help_code_shown(code), "KQ7R-M2XW-9HTP-4BZE");
+    assert_eq!(request::HELP_CODE_LETTERS.len(), 32);
+}
+
+#[test]
+fn a_transcript_keeps_one_line_for_each_and_shows_what_is_not_printable() {
+    assert_eq!(request::help_transcript_line(12, "typed", b"ls -l"), "12 typed ls -l\n");
+    assert_eq!(request::help_printable(b"a\tb\x1b[A\x7f\\\xc3\xa9"), "a^Ib^[[A^?\\\\\\xc3\\xa9");
+    assert_eq!(request::help_printable(b"line\r\nnext"), "line^M^Jnext");
+}
+
+#[test]
+fn a_helper_s_typing_is_kept_a_line_for_each_however_it_ends() {
+    let mut lines = request::HelpLines::default();
+    assert_eq!(lines.take(b"ls -l\r"), [b"ls -l".to_vec()]);
+    // The line feed after a carriage return ends nothing more.
+    assert_eq!(lines.take(b"\ncd /tmp\r\n"), [b"cd /tmp".to_vec()]);
+    // An empty line is one too: Enter alone.
+    assert_eq!(lines.take(b"\r"), [Vec::new()]);
+    assert_eq!(lines.take(b"vi notes\n\x1b[A"), [b"vi notes".to_vec()]);
+    assert_eq!(lines.rest(), b"\x1b[A");
+    assert_eq!(lines.end(), Some(b"\x1b[A".to_vec()));
+    assert_eq!(lines.end(), None);
+    // A long line, as a paste, is kept in parts.
+    let ended = lines.take(&[b'x'; request::HELP_LINE_MAX + 10]);
+    assert_eq!(ended, [vec![b'x'; request::HELP_LINE_MAX]]);
+    assert_eq!(lines.rest().len(), 10);
+}
+
+#[test]
+fn help_answers_and_events_say_their_words_and_read_them_back() {
+    let started = HelpStarted {
+        id: "k7q2mx".into(),
+        until: 1_794_652_320,
+        code: Some("KQ7RM2XW9HTP4BZE".into()),
+        host_key: Some("SHA256:Ab3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5bC7dE9f".into()),
+    };
+    assert_eq!(HelpStarted::from_words(&started.words()), Some(started.clone()));
+    let keyed = HelpStarted { code: None, host_key: None, ..started };
+    assert_eq!(keyed.words(), "k7q2mx 1794652320 - -");
+    assert_eq!(HelpStarted::from_words(&keyed.words()), Some(keyed));
+    let events = [
+        HelpEvent::Helper { address: "192.0.2.7".into(), key: "code".into() },
+        HelpEvent::Left { minutes: 5 },
+        HelpEvent::Elevate { minutes: 15 },
+        HelpEvent::Spent,
+        HelpEvent::Ended(HelpEnded::Deadline),
+        HelpEvent::Ended(HelpEnded::Spent),
+        HelpEvent::Ended(HelpEnded::Owner),
+    ];
+    for event in events {
+        assert!(event.line().ends_with('\n'));
+        assert_eq!(HelpEvent::parse(&event.line()), Some(event));
+    }
+    assert_eq!(HelpEvent::parse("ended soon"), None);
+    let kept = HelpKept { id: "k7q2mx".into(), owner: "alice".into(), started: 10, ended: 0 };
+    assert_eq!(HelpKept::from_words(&kept.words()), Some(kept));
+}
+
+#[test]
+fn a_list_of_blocks_says_its_words_and_reads_them_back() {
+    let entries = [
+        BlockedEntry {
+            address: "203.0.113.9".into(),
+            until: 1_794_652_320,
+            times: 2,
+            why: "5 wrong passwords over SSH in 2 minutes, for root, admin and test".into(),
+        },
+        BlockedEntry {
+            address: "2001:db8:4:7::/64".into(),
+            until: 1_794_650_000,
+            times: 1,
+            why: "5 refused SSH sign-ins in 4 minutes".into(),
+        },
+    ];
+    let answer = BlockedEntry::list(&entries);
+    assert!(!answer.contains('\n'));
+    assert_eq!(BlockedEntry::parse_list(&answer), entries);
+    assert!(BlockedEntry::parse_list("").is_empty());
+    // A reason is kept to its line, whatever it holds.
+    let odd = BlockedEntry { why: "a\tb\nc".into(), ..entries[0].clone() };
+    assert_eq!(BlockedEntry::parse_list(&BlockedEntry::list(&[odd]))[0].why, "a b c");
+    for bad in ["203.0.113.9", "203.0.113.9 soon 1 why", "203.0.113.9 1 -1 why"] {
+        assert_eq!(BlockedEntry::from_words(bad), None, "{bad}");
     }
 }
 

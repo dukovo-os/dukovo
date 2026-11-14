@@ -31,7 +31,7 @@ use std::path::Path;
 
 use radix_abi::capability::{self, ObjectKind, Rights};
 use radix_abi::directory::{self, OpenFlags};
-use radix_abi::{Status, names, network, process, startup};
+use radix_abi::{Status, names, network, process, resource_domain, startup};
 
 use accounts::User;
 
@@ -361,6 +361,41 @@ pub fn start(
         descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
         network: true,
         shares: None,
+        domain: None,
+    };
+    launch(names, user, groups, &program)
+}
+
+/// The environment variable that names the help session a help screen's
+/// shell runs in (ADR 0540).
+pub const HELP_SESSION: &str = "HELP_SESSION";
+
+/// Starts `user`'s shell in the help screen of the help session `id`, on
+/// `terminal`, in the resource domain in slot `domain`, acting for them
+/// and the groups `groups`, as [`start`] starts a session. Returns the
+/// number of its first process, a child of authd's.
+pub fn start_help(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    terminal: &OwnedFd,
+    term: &str,
+    domain: u32,
+    id: &str,
+) -> Result<u64, String> {
+    let tty = terminal.as_raw_fd();
+    let mut env = environment(user, term);
+    env.push(format!("{HELP_SESSION}={id}"));
+    let program = Program {
+        what: "the help screen",
+        path: FIRST_PROGRAM,
+        args: &[b"login", b"--session"],
+        folder: b"/",
+        env,
+        descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
+        network: true,
+        shares: None,
+        domain: Some(domain),
     };
     launch(names, user, groups, &program)
 }
@@ -438,6 +473,7 @@ pub fn start_ssh(
         descriptors: &descriptors,
         network: true,
         shares: None,
+        domain: None,
     };
     launch(names, user, groups, &program)
 }
@@ -468,6 +504,7 @@ pub fn start_forwarder(
         descriptors: &[(input.as_raw_fd(), 0), (output.as_raw_fd(), 1), (error.as_raw_fd(), 2)],
         network: true,
         shares: None,
+        domain: None,
     };
     launch(names, user, groups, &program)
 }
@@ -509,6 +546,7 @@ pub fn start_job(
         descriptors: &[(null, 0), (output, 1), (output, 2)],
         network: true,
         shares: None,
+        domain: None,
     };
     launch(names, user, groups, &program)
 }
@@ -552,6 +590,7 @@ pub fn start_share(
         ],
         network: false,
         shares: None,
+        domain: None,
     };
     launch(names, user, groups, &program)
 }
@@ -589,6 +628,7 @@ pub fn start_console(
         ],
         network: true,
         shares: None,
+        domain: None,
     };
     launch(names, user, groups, &program)
 }
@@ -648,6 +688,7 @@ pub fn start_nfs(
         ],
         network: false,
         shares: Some(folders),
+        domain: None,
     };
     launch(names, user, groups, &program)
 }
@@ -672,6 +713,9 @@ struct Program<'a> {
     /// For an NFS worker, the shares' folders, by their keys, which its
     /// view holds alone.
     shares: Option<&'a [(u64, String)]>,
+    /// The resource domain it runs in, a capability in this slot, rather
+    /// than authd's own: a help screen's (ADR 0540).
+    domain: Option<u32>,
 }
 
 /// Starts `program` as `user`, acting for them and the groups `groups`,
@@ -699,8 +743,11 @@ fn launch(names: u32, user: &User, groups: &[u32], program: &Program) -> Result<
     let path = program.path.trim_start_matches('/');
     directory::open(&SYS, root, path.as_bytes(), OpenFlags::NONE, Rights::READ, opened, 0)
         .map_err(failed("opening its program"))?;
-    process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, SLOTS, child)
-        .map_err(failed("making its process"))?;
+    match program.domain {
+        Some(domain) => resource_domain::create_process(&SYS, domain, SLOTS, child),
+        None => process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, SLOTS, child),
+    }
+    .map_err(failed("making its process"))?;
     names::name_process(&SYS, names, child, user.uid, user.gid, &others)
         .map_err(failed("naming its process"))?;
     // A person's root is a view with their own /tmp; root's, the tree;

@@ -3,7 +3,7 @@
 
 //! The program's free capability slots.
 //!
-//! The slots radix-startup(2) gives a meaning (up to SLOT_SETTINGS) are
+//! The slots radix-startup(2) gives a meaning (up to SLOT_DOMAIN) are
 //! the program's; the rest of its capability space is handed out here,
 //! one slot at a time, for the capabilities the runtime and the program
 //! make.
@@ -12,11 +12,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use radix_abi::startup;
 
-/// The first slot handed out: the one after the kernel settings', which
-/// come after the firewall's and the cards'.
-pub const FIRST: u32 = startup::SLOT_SETTINGS + 1;
+/// The first slot handed out: the one after the domain's, which comes
+/// after the kernel settings', the firewall's and the cards'.
+pub const FIRST: u32 = startup::SLOT_DOMAIN + 1;
 const _: () = assert!(startup::SLOT_FIREWALL >= startup::SLOT_DEVICE + startup::DEVICE_SLOTS);
 const _: () = assert!(startup::SLOT_SETTINGS > startup::SLOT_FIREWALL);
+const _: () = assert!(startup::SLOT_DOMAIN > startup::SLOT_SETTINGS);
+const _: () = assert!(FIRST < startup::SLOT_FD_BASE);
 
 const WORDS: usize = startup::SLOTS as usize / 64;
 

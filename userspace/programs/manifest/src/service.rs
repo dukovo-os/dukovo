@@ -84,6 +84,7 @@ pub const KEYS: &[&str] = &[
     "admin.firewall",
     "admin.tune",
     "names",
+    "domain",
     "devices.pci",
     "backup",
     "backup.before",
@@ -756,6 +757,10 @@ pub struct Permissions {
     /// gives processes and capabilities another user's name: authd's, to
     /// build sessions with.
     pub names: bool,
+    /// `domain`: a capability to its own resource domain, with which it
+    /// makes domains below it and stops them: authd's, for help sessions
+    /// (ADR 0540).
+    pub domain: bool,
     /// `devices.*`: the cards it drives, as a driver program.
     pub devices: Devices,
 }
@@ -1103,6 +1108,8 @@ struct RawPermissions {
     #[serde(default)]
     names: bool,
     #[serde(default)]
+    domain: bool,
+    #[serde(default)]
     devices: Devices,
 }
 
@@ -1116,6 +1123,7 @@ impl TryFrom<RawPermissions> for Permissions {
             runs_with_your_access: raw.runs_with_your_access,
             admin: raw.admin,
             names: raw.names,
+            domain: raw.domain,
             devices: raw.devices,
         };
         let grants = permissions.network.grants() + usize::from(permissions.admin.network);
@@ -1399,6 +1407,9 @@ admin.tune = false
 # Giving processes and files another user's name: only for authd, which
 # signs people in.
 names = false
+# Making resource domains below its own and stopping them: only for
+# authd, which runs each help session in one.
+domain = false
 # The cards it drives, as a driver program does, by their PCI vendor and
 # device IDs, such as "8086:100e", or "8086:*" for any of the vendor's.
 devices.pci = []

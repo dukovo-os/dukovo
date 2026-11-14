@@ -360,6 +360,35 @@ fn host(client: &Client) -> Result<(), String> {
     if ran.status != Some(3) || !ran.out().contains("shell-42") {
         return Err(format!("the shell said {:?} and ended with {:?}", ran.out(), ran.status));
     }
+    // Two terminals at once are two: each session gets one of its own,
+    // which it controls, while the other's lasts.
+    let (first, second) = std::thread::scope(|scope| {
+        let first =
+            scope.spawn(|| client.ssh("alice", "alice", &["-tt"], &["tty; sleep 10"], b"", &dumb));
+        std::thread::sleep(Duration::from_secs(3));
+        let second = client.ssh("alice", "alice", &["-tt"], &["tty"], b"", &dumb);
+        let first = first.join().unwrap_or_else(|_| Err("the first client's thread failed".into()));
+        (first, second)
+    });
+    let (first, second) = (first?, second?);
+    let terminal = |ran: &Ran| {
+        let out = ran.out();
+        out.lines().map(str::trim).find(|line| line.starts_with("/devices/pts/")).map(String::from)
+    };
+    match (terminal(&first), terminal(&second)) {
+        (Some(one), Some(two))
+            if one != two && first.status == Some(0) && second.status == Some(0) => {}
+        _ => {
+            return Err(format!(
+                "two terminals at once said {:?} ({:?}) and {:?} ({:?}): {}",
+                first.out(),
+                first.status,
+                second.out(),
+                second.status,
+                second.err.trim()
+            ));
+        }
+    }
     // A client with no TERM of its own, as one cron runs, gets a terminal
     // too, a dumb one.
     let none = [("TERM", "")];

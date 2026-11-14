@@ -286,6 +286,12 @@ matches decides. Changing them needs an administrator, through
 Firewall: dropped a TCP connection from 192.168.1.7:51514 to port 8000 on net0: process 212 listens for this machine alone
 ```
 
+Before the rules, the firewall also drops what an address starts on the
+sign-in ports when authd(8) saw it guess passwords, for a while, with
+the reason `the address is blocked`. `firewall blocked` lists those
+addresses and `firewall unblock ADDRESS` lets one in; see
+[SSH and remote access](ssh.md#blocking-addresses-that-guess-passwords).
+
 ## Bridges and VLANs
 
 A bridge joins cards into one network, as a switch does, for virtual

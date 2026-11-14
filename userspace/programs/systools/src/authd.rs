@@ -77,6 +77,7 @@ use accounts::request::{
     self, Answer, Mode, Prompt, Prompted, Question, REQUEST_MAX, Relay, Request, SSH_TICKET_LENGTH,
     SshProof, SshRun,
 };
+use accounts::rescue;
 use accounts::signins::{self, Event, Latest, Place, Record, Seat};
 use accounts::{DISABLED, Group, Password, Table, User};
 use radix_abi::names;
@@ -175,6 +176,11 @@ struct Client {
     prompter: bool,
     /// Its request, while the password for it is asked on a console.
     asked: Option<Asked>,
+    /// The help session it started, while it runs: its connection stays
+    /// open for the session's events (ADR 0540).
+    help: Option<String>,
+    /// The descriptors sent with its answer.
+    answer_fds: Vec<OwnedFd>,
     done: bool,
 }
 
@@ -251,6 +257,11 @@ struct Authd {
     keyrings: HashMap<u32, keyring::Keyring>,
     /// The web console's sign-ins under way and sessions (ADR 0514).
     console: console::State,
+    /// The counts of failed sign-ins from the network, and the addresses
+    /// blocked for them (ADR 0479).
+    blocking: blocking::Blocking,
+    /// The help sessions that run (ADR 0540).
+    helps: Vec<help::Help>,
 }
 
 /// What a ticket for a password over SSH holds (ADR 0348).
@@ -349,10 +360,14 @@ macro_rules! audit {
     ($($arg:tt)*) => { println!("<86>authd: {}", format_args!($($arg)*)) };
 }
 
+// dukovo-check(8) reads blocking.toml(5) with the code authd does.
+pub(crate) mod blocking;
 pub(crate) mod console;
+mod help;
 mod jobs;
 mod keyring;
 pub(crate) mod proofs;
+mod rescue_mode;
 
 /// The longest name a line of authd's shows.
 const SHOWN_MAX: usize = 64;
@@ -400,7 +415,12 @@ struct Files {
 
 impl Files {
     fn read() -> Result<Files, String> {
-        let read = |path: &str| read_text(path).map_err(|e| format!("cannot read {path}: {e}"));
+        // In Rescue, the installed system's, in the root Rescue mounted
+        // (ADR 0540).
+        let read = |path: &str| {
+            let path = rescue::installed(path).to_string_lossy().into_owned();
+            read_text(&path).map_err(|e| format!("cannot read {path}: {e}"))
+        };
         Ok(Files {
             users: accounts::users(&read(accounts::PASSWD)?),
             groups: accounts::groups(&read(accounts::GROUP)?),
@@ -585,6 +605,8 @@ impl Authd {
                 relay: None,
                 prompter: false,
                 asked: None,
+                help: None,
+                answer_fds: Vec::new(),
                 done: false,
             };
             if held >= most {
@@ -663,6 +685,9 @@ impl Authd {
             Request::SshPassword { connection, name, .. } => {
                 ssh_from(connection).map(|from| (name.clone(), ssh_source(from)))
             }
+            Request::SshHelp { connection, proof: request::HelpProof::Code(_) } => {
+                ssh_from(connection).map(|from| (request::HELP_NAME.to_string(), ssh_source(from)))
+            }
             // The web console's, for its browser's address, or the
             // person's own requests that carry their password.
             Request::Console(asked) => self.console.turn(asked, peer, &util::user_name(peer.user)),
@@ -687,9 +712,19 @@ impl Authd {
     /// Carries out client `i`'s request.
     fn run(&mut self, i: usize, mut request: Request, now: Instant) {
         let peer = self.clients[i].peer;
-        let (answer, at) = match Files::read() {
-            Err(why) => (Answer::Refused(why), now),
-            Ok(files) => match &request {
+        let files = Files::read();
+        if let Ok(files) = &files {
+            self.check_blocking_settings(files);
+        }
+        // Inside a help screen, nothing asks for a password; in Rescue,
+        // authd answers only SSH's sign-ins (ADR 0540).
+        let in_help = match &files {
+            Ok(files) if rescue::is_rescue() => rescue_mode::refuses(&request, files),
+            _ => self.help_refuses(&request, peer),
+        };
+        let (answer, at) = match (files, in_help) {
+            (Err(why), _) | (Ok(_), Some(why)) => (Answer::Refused(why), now),
+            (Ok(files), None) => match &request {
                 Request::Check { name, password } => self.check(&files, name, password, peer, now),
                 Request::Passwd { name, current, new } => {
                     self.passwd(&files, name, current, new, peer, now)
@@ -815,6 +850,35 @@ impl Authd {
                 Request::SetKeepRunning { chosen } => {
                     (jobs::keep_running(&files, Some(*chosen), peer), now)
                 }
+                Request::SshFailed { connection, name } => {
+                    (self.ssh_failed(&files, connection, name, peer), now)
+                }
+                Request::Blocked => (self.blocked_list(&files, peer), now),
+                Request::Unblock { address } => (self.unblock(&files, address, peer), now),
+                Request::NeverBlock { network, remove } => {
+                    (self.never_block(&files, network, *remove, peer), now)
+                }
+                Request::HelpStart { minutes, key, open_ssh, term, password } => self.help_start(
+                    i,
+                    &files,
+                    *minutes,
+                    key.as_deref(),
+                    *open_ssh,
+                    term,
+                    password,
+                    peer,
+                    now,
+                ),
+                Request::HelpEnd => (self.help_end(peer, now), now),
+                Request::HelpLog { id } => (help::help_log(&files, id.as_deref(), peer), now),
+                Request::HelpAllowElevate { password } => {
+                    self.help_allow_elevate(&files, password, peer, now)
+                }
+                Request::SshHelpKey { key } => (self.ssh_help_key(key, peer), now),
+                Request::SshHelp { connection, proof } => {
+                    self.ssh_help(i, &files, connection, proof, peer, now)
+                }
+                Request::SshHelpEnded { id } => (self.ssh_help_ended(id, peer, now), now),
                 Request::EndShares => {
                     if peer.is_root() {
                         let ended = self.end_shares(None);
@@ -1246,6 +1310,9 @@ impl Authd {
                 }
                 continue;
             }
+            if self.help_shell_ended(process, now) {
+                continue;
+            }
             if let Some(session) = self.sessions.remove(&process) {
                 if session.terminal == console::TERMINAL && !session.elevated {
                     self.console.worker_ended(process);
@@ -1374,7 +1441,20 @@ impl Authd {
             let why = "an elevate request comes with the command's three descriptors and a pipe";
             return (Answer::Refused(why.into()), now);
         }
-        let typed = match self.authorize(files, &user, pane.as_ref(), password, ask, peer, now) {
+        // From a help screen whose owner allows it, with no password; its
+        // command runs in the screen's domain, which the session's end
+        // stops (ADR 0540).
+        let help_domain = match self.elevate_domain(peer) {
+            Ok(domain) => domain,
+            Err(why) => return (Answer::Refused(why), now),
+        };
+        let in_help = help_domain.is_some();
+        let authorized = if in_help {
+            Ok(false)
+        } else {
+            self.authorize(files, &user, pane.as_ref(), password, ask, peer, now)
+        };
+        let typed = match authorized {
             Ok(typed) => typed,
             Err(answer) => {
                 // Asked on a console: the request keeps its descriptors
@@ -1388,14 +1468,17 @@ impl Authd {
         };
         let relay = descriptors.pop();
         let env = elevate::environment(&root, &user, asked.term, asked.language, &plan.shown);
-        let process = match elevate::start(&descriptors, &plan, &env) {
+        let process = match elevate::start(&descriptors, &plan, &env, help_domain) {
             Ok(process) => process as i32,
             Err(why) => return (Answer::Refused(why), now),
         };
-        if let Some(pane) = pane {
+        if let Some(pane) = pane
+            && !in_help
+        {
             self.unlocked.insert(pane, now + elevate::UNLOCKED_FOR);
         }
         let how = match typed {
+            false if in_help => "allowed in a help session",
             true => "password typed",
             false if accounts::elevates_without_password(&user, &files.groups) => {
                 "no password needed"
@@ -1655,6 +1738,9 @@ impl Authd {
                  needs `names = true`",
             );
         };
+        if let Some(why) = self.blocked_why(from) {
+            return refused(&why);
+        }
         let [negotiate, challenge, authenticate] = messages;
         let typed = match ntlm::Authenticate::parse(authenticate) {
             Ok(message) => message.user,
@@ -1689,11 +1775,13 @@ impl Authd {
                     terminal: SHARE_TERMINAL.into(),
                     from: shown(from),
                 };
+                let next = wrong.next;
                 match &user {
                     Some(user) => record(&signins::of(user.uid), user.gid, 0o640, failed),
                     None => record(signins::UNKNOWN, 0, 0o600, failed),
                 }
-                return (Answer::Refused(request::WRONG_PASSWORD.into()), wrong.next);
+                self.sign_in_failed(files, from, blocking::Failed::SharePassword, Some(&typed));
+                return (Answer::Refused(request::WRONG_PASSWORD.into()), next);
             }
             Err(why) => {
                 audit!("refused a share sign-in as {} from {}: {why}", shown(&typed), shown(from));
@@ -1701,6 +1789,7 @@ impl Authd {
             }
         };
         self.wrong.remove(&key);
+        self.sign_in_right(from);
         // A right password is an account's.
         let Some(user) = user else {
             return refused(request::WRONG_PASSWORD);
@@ -1839,6 +1928,41 @@ impl Authd {
                 }
             }
         };
+        // In Rescue, an administrator's session is Rescue's menu, as root,
+        // on a terminal (ADR 0540).
+        if rescue::is_rescue() {
+            let Some(tty) = terminal.as_ref().filter(|_| matches!(asked.run, SshRun::Shell)) else {
+                return refused(
+                    "in Rescue, SSH gives Rescue's menu alone, on a terminal: no command, SFTP or \
+                     forwarding"
+                        .into(),
+                );
+            };
+            let process = match rescue_mode::start_menu(user, tty, asked.connection, asked.term) {
+                Ok(process) => process as i32,
+                Err(why) => return refused(why),
+            };
+            let tty = signin::terminal_name(tty);
+            audit!(
+                "{} signed in to Rescue over SSH from {from} with {with}: its menu on {tty}, \
+                 session process {process}",
+                user.name
+            );
+            let session = Session {
+                name: user.name.clone(),
+                terminal: tty,
+                from: shown(from),
+                number: user.uid,
+                group: user.gid,
+                elevated: false,
+                remote: true,
+                recorded: false,
+                job: None,
+            };
+            self.sessions.insert(process, session);
+            self.clients[i].session = Some(process);
+            return Answer::Done(process.to_string());
+        }
         let (command, what): (Option<&[u8]>, &str) = match asked.run {
             SshRun::Shell => (None, "a shell"),
             SshRun::Command(command) => (Some(command), "a command"),
@@ -1962,6 +2086,9 @@ impl Authd {
         if password.is_empty() {
             return refused("an empty password signs no one in over SSH".into());
         }
+        if let Some(why) = self.blocked_why(from) {
+            return refused(why);
+        }
         if let Err((answer, at)) =
             self.check_password_from(files, name, password, ssh_source(from), peer, now)
         {
@@ -1975,9 +2102,11 @@ impl Authd {
                     Some(user) => record(&signins::of(user.uid), user.gid, 0o640, failed),
                     None => record(signins::UNKNOWN, 0, 0o600, failed),
                 }
+                self.sign_in_failed(files, from, blocking::Failed::SshPassword, Some(name));
             }
             return (answer, at);
         }
+        self.sign_in_right(from);
         let user = match ssh_password_person(files, name) {
             Ok(user) => user,
             Err(why) => {
@@ -2778,6 +2907,20 @@ impl Notices {
         self.0.push((name.to_string(), text));
     }
 
+    /// Counts one more address blocked in `name`'s notice of blocks
+    /// (ADR 0479), adding it if they have none.
+    fn count_block(&mut self, name: &str) {
+        for (whose, text) in &mut self.0 {
+            if whose == name
+                && let Some(count) = blocking::notice_count(text)
+            {
+                *text = blocking::notice(count.saturating_add(1));
+                return;
+            }
+        }
+        self.add(name, &blocking::notice(1));
+    }
+
     /// `name`'s, oldest first.
     fn of(&self, name: &str) -> Vec<String> {
         self.0.iter().filter(|(n, _)| n == name).map(|(_, text)| text.clone()).collect()
@@ -3085,7 +3228,18 @@ impl Client {
             return;
         }
         let mut sent = true;
-        while !bytes.is_empty() {
+        // Descriptors go with the first bytes of the answer, which is
+        // short enough to go whole.
+        if !self.answer_fds.is_empty() {
+            let fds: Vec<i32> = self.answer_fds.iter().map(AsRawFd::as_raw_fd).collect();
+            match signin::send_with_fds(&self.stream, bytes, &fds) {
+                Ok(()) => bytes.clear(),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => return,
+                Err(_) => sent = false,
+            }
+            self.answer_fds.clear();
+        }
+        while sent && !bytes.is_empty() {
             match self.stream.write(bytes) {
                 Ok(0) => {
                     sent = false;
@@ -3103,9 +3257,10 @@ impl Client {
             }
         }
         self.answer = None;
-        // One whose session runs waits for its end, and consoled's
-        // prompts connection for the next prompt; the rest are done.
-        if sent && (self.session.is_some() || self.prompter) {
+        // One whose session runs waits for its end, consoled's prompts
+        // connection for the next prompt, and help-session's for its
+        // session's events; the rest are done.
+        if sent && (self.session.is_some() || self.prompter || self.help.is_some()) {
             self.deadline = now + SESSION_TIME;
         } else {
             self.done = true;
@@ -3131,6 +3286,7 @@ impl Authd {
             for client in &mut self.clients {
                 client.send(now);
             }
+            self.help_tick(now);
             self.wrong.retain(|_, wrong| now.saturating_duration_since(wrong.next) < FORGET);
             self.unlocked.retain(|_, until| *until > now);
             self.console.tidy(now);
@@ -3140,6 +3296,7 @@ impl Authd {
                 }
             }
             self.hang_up_orphans();
+            self.end_orphaned_helps(now);
             self.tidy_prompts(now);
             self.clients.retain(|c| !c.done);
             let listening = self.clients.len() < CLIENTS_MAX;
@@ -3181,6 +3338,7 @@ impl Authd {
                     ]
                 })
                 .flatten()
+                .chain(self.helps.iter().map(help::Help::next))
                 .min();
             let timeout = next.map_or(-1, |at| {
                 at.saturating_duration_since(now).as_millis().min(60_000) as libc::c_int + 1
@@ -3304,10 +3462,18 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .map_err(|e| util::failed(&accounts::SOCKET, e))?;
     listener.set_nonblocking(true).map_err(|e| util::failed(&accounts::SOCKET, e))?;
     // An account with no home gets one: one `ob image --user` made, as
-    // every file in an image is root's, or one whose home went.
+    // every file in an image is root's, or one whose home went. Not in
+    // Rescue, whose accounts are the installed system's (ADR 0540).
     let people: Vec<User> = Files::read()
         .map_or_default(|files| files.users.entries().filter(|u| u.is_person()).cloned().collect());
-    for user in people.iter().filter(|u| fs::symlink_metadata(&u.home).is_err()) {
+    if rescue::is_rescue() {
+        eprintln!(
+            "authd: Rescue: answering SSH's sign-ins alone, by the accounts of the root at {}",
+            rescue::ROOT
+        );
+    }
+    let homeless = |u: &&User| !rescue::is_rescue() && fs::symlink_metadata(&u.home).is_err();
+    for user in people.iter().filter(homeless) {
         match make_home(user) {
             Ok(_) => eprintln!("authd: made the home {} of {}", user.home, user.name),
             Err(why) => eprintln!("authd: {why}"),
@@ -3332,7 +3498,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         tickets: HashMap::new(),
         keyrings: HashMap::new(),
         console: console::State::default(),
+        blocking: blocking::Blocking::default(),
+        helps: Vec::new(),
     };
+    authd.start_blocking();
     authd.run_loop().map_err(|e| util::failed(&"authd", e))?;
     let _ = fs::remove_file(accounts::SOCKET);
     // Asked to end: the computer is stopping, as Spark asks each service
