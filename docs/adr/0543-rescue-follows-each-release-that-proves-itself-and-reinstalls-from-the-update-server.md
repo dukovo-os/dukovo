@@ -44,7 +44,9 @@ followed.
    `release/version`, the release's name. Rescue therefore trusts the
    update server's keys after a rotation, as the running system does.
 3. **How.** At idle disk priority, on each EFI system partition of the
-   root's disks, with the stage's lock held. The copy is read back in
+   root's disks, with the stage's lock held, since the slot state is kept
+   on those partitions too; a rollback or a stage asked meanwhile waits
+   for the write and says so, rather than failing. The copy is read back in
    1 MiB pieces, within the stage's 256 MiB memory limit, before it takes
    Rescue's place. A partition with room for two copies gets the new one
    beside the old, switched in by the renames of ADR 0460; one without,

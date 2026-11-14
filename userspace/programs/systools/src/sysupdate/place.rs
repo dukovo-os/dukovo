@@ -322,29 +322,56 @@ impl Drop for Lock {
     }
 }
 
-/// Takes the lock on the slot state, or says who holds it. A lock whose
-/// process is gone is taken over. The holder may be the stage, which runs
-/// in a resource domain of its own, so a service that takes the lock
-/// names `/processes` in its file, which shows it every process.
-///
-/// # Errors
-///
-/// If another sysupdate holds it.
-pub fn lock() -> Result<Lock, Fail> {
+/// The word after the process in the lock's file of a write of Rescue.
+const RESCUE_MARK: &str = "rescue";
+
+/// Who holds the lock, as its file says.
+struct Held {
+    /// The holder's process.
+    pid: String,
+    /// Whether the holder is a write of Rescue (ADR 0543).
+    rescue: bool,
+}
+
+impl Held {
+    /// What the lock's file `text` says: the process, then
+    /// [`RESCUE_MARK`] for a write of Rescue.
+    fn read(text: &str) -> Held {
+        let mut words = text.split_whitespace();
+        let pid = words.next().unwrap_or_default().to_string();
+        Held { pid, rescue: words.next() == Some(RESCUE_MARK) }
+    }
+
+    /// What a command that cannot wait says of the holder.
+    fn refusal(&self) -> Fail {
+        fail(format!("another sysupdate is at work, process {}", self.pid))
+    }
+}
+
+/// Takes the lock on the slot state, marked as a write of Rescue's if
+/// `rescue`, or says who holds it. A lock whose process is gone is taken
+/// over. The holder may be the stage, which runs in a resource domain of
+/// its own, so a service that takes the lock names `/processes` in its
+/// file, which shows it every process.
+fn take(rescue: bool) -> Result<Result<Lock, Held>, Fail> {
     if let Some(folder) = Path::new(LOCK).parent() {
         std::fs::create_dir_all(folder).map_err(|err| util::failed(&folder.display(), err))?;
     }
     for _ in 0..2 {
         match OpenOptions::new().write(true).create_new(true).open(LOCK) {
             Ok(mut file) => {
-                let _ = writeln!(file, "{}", std::process::id());
-                return Ok(Lock);
+                let pid = std::process::id();
+                let _ = if rescue {
+                    writeln!(file, "{pid} {RESCUE_MARK}")
+                } else {
+                    writeln!(file, "{pid}")
+                };
+                return Ok(Ok(Lock));
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                let holder = std::fs::read_to_string(LOCK).unwrap_or_default();
-                let pid = holder.trim();
-                if !pid.is_empty() && Path::new("/processes").join(pid).exists() {
-                    return Err(fail(format!("another sysupdate is at work, process {pid}")));
+                let held = Held::read(&std::fs::read_to_string(LOCK).unwrap_or_default());
+                if !held.pid.is_empty() && Path::new("/processes").join(&held.pid).exists() {
+                    return Ok(Err(held));
                 }
                 let _ = std::fs::remove_file(LOCK);
             }
@@ -354,21 +381,83 @@ pub fn lock() -> Result<Lock, Fail> {
     Err(fail(format!("cannot take the lock {LOCK}")))
 }
 
-/// Takes the lock on the slot state once a stage running now lets it go,
-/// waiting up to `most`: the health check waits out a stage started
-/// soon after the system came up.
+/// Takes the lock on the slot state for a command, or says who holds it.
+/// A write of Rescue, which holds it for a minute or more once an update
+/// proves itself (ADR 0543), is waited out, and that is said, so that a
+/// rollback or a stage asked meanwhile goes ahead once it ends; it writes
+/// the EFI system partitions the slot state is kept on, which only one
+/// writer may have at a time.
+///
+/// # Errors
+///
+/// If another sysupdate holds it.
+pub fn lock() -> Result<Lock, Fail> {
+    let mut said = false;
+    loop {
+        match take(false)? {
+            Ok(lock) => return Ok(lock),
+            Err(held) if held.rescue => {
+                if !said {
+                    println!(
+                        "sysupdate: Rescue is being written, by process {}; waiting for it to \
+                         finish",
+                        held.pid
+                    );
+                    said = true;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            Err(held) => return Err(held.refusal()),
+        }
+    }
+}
+
+/// Takes the lock on the slot state if nobody holds it, a write of Rescue
+/// included: for work the next start does if it cannot now.
+///
+/// # Errors
+///
+/// If another sysupdate holds it.
+pub fn lock_now() -> Result<Lock, Fail> {
+    take(false)?.map_err(|held| held.refusal())
+}
+
+/// Takes the lock on the slot state once its holder lets it go, waiting
+/// up to `most`: the health check waits out a stage started soon after
+/// the system came up.
 ///
 /// # Errors
 ///
 /// If it is held all that time.
 pub fn lock_within(most: std::time::Duration) -> Result<Lock, Fail> {
+    within(most, false)
+}
+
+/// Takes the lock on the slot state for a write of Rescue, as
+/// [`lock_within`] does, marked so that a command asking for it meanwhile
+/// waits for the write rather than fails ([`lock`]).
+///
+/// # Errors
+///
+/// If it is held all that time.
+pub fn lock_for_rescue(most: std::time::Duration) -> Result<Lock, Fail> {
+    within(most, true)
+}
+
+/// Takes the lock, marked as a write of Rescue's if `rescue`, waiting up
+/// to `most` for its holder.
+fn within(most: std::time::Duration, rescue: bool) -> Result<Lock, Fail> {
     let start = std::time::Instant::now();
     loop {
-        match lock() {
-            Ok(lock) => return Ok(lock),
-            Err(why) if start.elapsed() >= most => return Err(why),
-            Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
+        let why = match take(rescue) {
+            Ok(Ok(lock)) => return Ok(lock),
+            Ok(Err(held)) => held.refusal(),
+            Err(why) => why,
+        };
+        if start.elapsed() >= most {
+            return Err(why);
         }
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 }
 
@@ -389,6 +478,19 @@ mod tests {
     use super::*;
 
     const UUID: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+    #[test]
+    fn the_lock_says_whether_a_write_of_rescue_holds_it() {
+        let rescue = Held::read("79 rescue\n");
+        assert_eq!((rescue.pid.as_str(), rescue.rescue), ("79", true));
+        let stage = Held::read("80\n");
+        assert_eq!((stage.pid.as_str(), stage.rescue), ("80", false));
+        let other = Held::read("81 something\n");
+        assert_eq!((other.pid.as_str(), other.rescue), ("81", false));
+        let none = Held::read("");
+        assert_eq!((none.pid.as_str(), none.rescue), ("", false));
+        assert_eq!(stage.refusal().message, "another sysupdate is at work, process 80");
+    }
 
     fn root(partitions: &[&str]) -> Root {
         Root {

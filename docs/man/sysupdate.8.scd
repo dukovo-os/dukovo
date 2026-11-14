@@ -246,7 +246,9 @@ the newer release it holds. A partition without room for the new copy
 beside the old, as the default 512 MiB one, gets it in the old one's
 place, once the copy in the slot has read back whole. One without room
 even for that, or whose write fails, keeps the copy it has, and the
-stage's log says why with UPD-102; the next start tries again.
+stage's log says why with UPD-102; the next start tries again. While
+Rescue is being written, *rollback*, *stage* and the other commands
+that change the slot state wait for the write to finish, and say so.
 
 A start that fails its check and goes on leaves a notice on the sign-in
 screens (ADR 0501), which, when the changes since the last good start

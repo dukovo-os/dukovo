@@ -550,13 +550,14 @@ fn restart_for(number: u8) {
 }
 
 /// Removes a slot a stage left half built, as a power cut can (ADR
-/// 0451). A stage running now holds the lock, and cleans up for itself.
+/// 0451). A stage running now holds the lock, and cleans up for itself;
+/// while a write of Rescue holds it, the next start removes the slot.
 fn remove_half_built(root: &Root) {
     let building = root.path(BUILDING);
     if !building.exists() {
         return;
     }
-    let Ok(_lock) = place::lock() else { return };
+    let Ok(_lock) = place::lock_now() else { return };
     match subvolume::remove(&building) {
         Ok(()) => println!(
             "sysupdate: removed {BUILDING}, a slot left half built by a stage that did not finish"

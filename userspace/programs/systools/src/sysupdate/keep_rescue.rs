@@ -67,7 +67,10 @@ const LAID_OUT: &str = "/system/state/sysupdate/release.laid-out";
 pub const MOUNTS: &str = "/system/live/sysupdate-esp";
 
 /// How long the write waits for the slot state's lock, which the health
-/// check holds for a moment and `changes bisect` for longer.
+/// check holds for a moment and `changes bisect` for longer. The write
+/// holds it while it writes the EFI system partitions, which the slot
+/// state is kept on; a command that changes the slot state meanwhile
+/// waits for it, and says so ([`place::lock`]).
 const LOCK_WAIT: Duration = Duration::from_secs(600);
 
 /// Whether Rescue is to be written: [`HOLDS`] names an older version
@@ -183,7 +186,7 @@ pub fn keep(source: &Source<'_>, release: &Release) {
 /// release's metadata cannot be had.
 pub fn write_current(root: &Root) -> Result<(), Fail> {
     let version = stage::running_version(root)?;
-    let _lock = place::lock_within(LOCK_WAIT)?;
+    let _lock = place::lock_for_rescue(LOCK_WAIT)?;
     if !crate::priority::idle_io() {
         stage::say(
             "the kernel did not put this write at idle disk priority; it goes on at the usual",
