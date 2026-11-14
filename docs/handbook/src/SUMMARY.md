@@ -36,7 +36,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Python](python.md)
 - [PHP](php.md)
 - [Cloud and virtual machines](cloud.md)
-- [Server hardening]()
+- [Hardening a server](hardening.md)
 - [Logs, monitoring and troubleshooting](logs.md)
 - [Metrics and early warnings](metrics.md)
 - [Checking the hardware](hardware-check.md)

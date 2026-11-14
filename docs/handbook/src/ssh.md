@@ -115,8 +115,9 @@ $ sshd -t && sudo service sshd reload
 
 A wrong password waits as one at the console does, longer with each from
 the same address, up to a minute; `lastb` shows it, and the person is
-told at their next sign-in. An empty password never signs anyone in
-over SSH. Root never signs in over SSH at all: an administrator signs
+told at their next sign-in. Too many from one address block the address
+for a while ([below](#blocking-addresses-that-guess-passwords)). An
+empty password never signs anyone in over SSH. Root never signs in over SSH at all: an administrator signs
 in as themselves and uses `elevate` or `sudo`, which asks on the
 terminal.
 
@@ -133,6 +134,75 @@ mistake rather than a line passed over, so a line meant to keep people
 out never does nothing: `sshd -t` names the line, sshd does not start
 with it, and a reload keeps the settings it had. `sshd -T` shows every
 setting the file makes.
+
+## Blocking addresses that guess passwords
+
+Waiting slows a guesser down, but a program can guess at many accounts
+at once, from one address, for as long as it likes. So authd(8) counts
+the wrong passwords that come from each address, whatever account they
+name, and blocks an address that keeps guessing. This is on from the
+first start, and needs nothing set up (ADR 0479).
+
+By default, 5 wrong passwords from one address within 10 minutes block
+it for 10 minutes. If it comes back and guesses again within a day, the
+next block lasts twice as long, and so on up to a day. A right password
+from the address clears its count. Counted as one wrong password each
+are a wrong sharing password, which a Windows PC types when it signs in
+to the shared folders, and an SSH connection that tried to sign in,
+was refused every time, and ended. An IPv6 address counts as its whole
+network of 64 bits, since one computer holds all of it, so a guesser
+cannot step through the addresses of its own network.
+
+A block closes the ports people sign in at, and only those: port 22 for
+SSH, and the ports of the sharing service and the web console. Other
+machines still reach the rest of the computer, so a phone network that
+shares one address among many people does not lose a web site because of
+one guesser on it. The firewall drops the new connections before any of
+its rules. A connection that was open already is not cut, but its next
+password is refused unread, and sshd ends it.
+
+These addresses are never blocked: the computer itself, the networks
+you name, and, while the session lasts, the address an administrator is
+signed in from over SSH, so that a mistyped password cannot lock out the
+person who is fixing the computer. The console and the serial port are
+not on the network, so they cannot be blocked: an administrator signed
+in there can always lift a block.
+
+An administrator sees the blocks, lifts one and names the networks that
+are never blocked with `firewall`:
+
+```
+$ elevate firewall blocked
+Blocked            Until  Times today  Why
+203.0.113.9        14:32  2            5 wrong passwords over SSH in 2 minutes, for root, admin and test
+2001:db8:4:7::/64  14:05  1            5 refused SSH sign-ins in 4 minutes
+$ elevate firewall unblock 203.0.113.9
+firewall: 203.0.113.9 is no longer blocked
+$ elevate firewall never-block 192.168.1.0/24
+firewall: 192.168.1.0/24 is never blocked
+```
+
+`never-block remove NETWORK` takes a network out of the list again. Each
+block is a line in the audit log, `log -s authd`, with its reason, and
+each administrator's next sign-in is told how many addresses were
+blocked since their last.
+
+The numbers are in `/system/settings/blocking.toml`, which holds these
+defaults. authd reads the file again when it changes, so there is
+nothing to restart:
+
+```
+on = true
+tries = 5
+within = "10m"
+first = "10m"
+longest = "24h"
+never = []
+```
+
+`dukovo-check` warns when `on` is `false`. The references are
+blocking.toml(5), firewall(8) and authd(8); [Hardening a
+server](hardening.md) says where blocking fits among the other steps.
 
 ## Copying files
 

@@ -129,7 +129,7 @@ error that starts with the tool's name.
 |  *findmnt*(8)
 :  the mounts, as a tree, or the one sought
 |  *firewall*(8)
-:  the firewall's rules, and what listens
+:  the firewall's rules, what listens, and the addresses blocked for guessing passwords
 |  *floppy*(1)
 :  list floppy drives, look for a disk in one, and format its disk
 |  *fstrim*(8)

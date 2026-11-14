@@ -35,6 +35,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `authd(8)`, `user(8)`, `passwd(1)`, `login(1)` | Accounts: the service that keeps them, checks passwords and starts sessions, making and listing accounts, changing a password, signing in at a console, and who may sign in to the web console |
 | `admind(8)`, `admin.toml(5)`, `dukovo-admin(7)` | The web console: reaching it and the first visit, who signs in and how, the sign-in rules, second steps, unlocking, sessions, what the server checks and limits, and the errors it gives |
 | `elevate(8)`, `sudo(8)` | Running a command as an administrator, after the password once in each terminal pane every 15 minutes |
+| `firewall(8)`, `blocking.toml(5)` | The firewall's rules and what listens, and blocking the addresses that guess passwords: when one is blocked and for how long, the networks that never are, what a block stops, listing and lifting blocks |
 | `bundle(1)`, `bundled(8)`, `manifest.json(5)` | Bundles: making and checking a bundle's manifest, each field and permission it may hold, signing, packing and unpacking bundles, the service that installs, seals and removes them, and running them in their sandbox |
 | `nukesh(1)` | Nukesh, the shell: options, start-up files, scripts, the line editor, history, completion, job control, POSIX mode and its limits |
 | `coreutils(1)`, `7zz(1)` | What the ported core utilities and 7-Zip do on Dukovo |

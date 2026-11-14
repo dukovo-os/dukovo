@@ -85,6 +85,17 @@ keeps no password: authd answers a right one with a ticket for that
 connection alone, which starts the person's sessions on it and goes
 when it ends.
 
+An address that keeps guessing is blocked: authd counts each wrong
+password for the client's address, whatever account it names, and 5
+within 10 minutes have the firewall drop that address's new connections
+to the sign-in ports for 10 minutes, for twice as long each time it
+comes back within a day, up to a day (*blocking.toml*(5), ADR 0479). A
+connection that tried to sign in, was refused every time, and ended is
+told to authd as it ends, and counts as one wrong password. A connection
+that was open when its address was blocked has its next password refused
+unread, and sshd ends it. An administrator signed in over SSH is never
+blocked while the session lasts.
+
 *AllowUsers*, *AllowGroups*, *DenyUsers* and *DenyGroups* in
 sshd_config say who may sign in at all, with a key or a password.
 
@@ -228,4 +239,4 @@ with its connection, and *sshd --forward* as sshd closes its input.
 
 *ssh*(1), *sftp*(1), *scp*(1), *ssh-keygen*(1), *sshd_config*(5),
 *sftp-server*(8), *authd*(8), *login*(1), *service*(8),
-*service.toml*(5), *last*(1), *firewall*(8)
+*service.toml*(5), *blocking.toml*(5), *last*(1), *firewall*(8)

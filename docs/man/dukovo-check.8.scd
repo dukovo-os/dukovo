@@ -46,7 +46,7 @@ network  firewall on           passed   the firewall service loaded its rules
 ssh      passwords             warning  passwords sign in over SSH (sshd_config: PasswordAuthentication yes)
          SEC-110: Add your SSH key, then set PasswordAuthentication no in /system/settings/ssh/sshd_config.
 ssh      who may sign in       passed   only group admins may sign in
-ssh      blocking              passed   on: an address that keeps guessing passwords is blocked for a while
+ssh      blocking              passed   on: 5 wrong tries in 10 minutes block an address for 10 minutes, doubling up to 1 day
 accounts empty passwords       passed   every person's account has a password
 accounts administrators        passed   1 administrator: alice
 updates  waiting               passed   none: the last check, today at 06:12, found Dukovo 1.0.0 current
@@ -98,7 +98,7 @@ its result in the same way.
 :  *sshd* is on, passwords sign in, and neither *AllowUsers* nor *AllowGroups* is set (*SEC-111*)
 |  ssh
 :  blocking
-:  Blocking of addresses that guess passwords is turned off, *on = false* in _/system/settings/blocking.toml_ (*SEC-112*)
+:  Blocking of addresses that guess passwords is turned off, *on = false* in _/system/settings/blocking.toml_ (*SEC-112*). The file is read as *authd*(8) reads it, so that the line says the settings authd holds; a file authd cannot read skips the check, and says why
 |  accounts
 :  empty passwords
 :  A person's account that is not disabled has an empty password (*SEC-120*)
@@ -295,7 +295,7 @@ _/system/settings/spark/services/dukovo-check.toml_
 _/system/settings/firewall_, _/system/settings/ssh/sshd_config_,
 _/system/settings/blocking.toml_, _/system/settings/snap.toml_
 	The settings the checks read (*firewall*(8), *sshd_config*(5),
-	*snap.toml*(5)).
+	*blocking.toml*(5), *snap.toml*(5)).
 
 _/system/settings/passwd_, _/system/settings/group_,
 _/system/state/authd/passwords_
@@ -339,6 +339,6 @@ elevate dukovo-check
 
 # SEE ALSO
 
-*hardware*(8), *firewall*(8), *sshd*(8), *sshd_config*(5), *authd*(8),
+*hardware*(8), *firewall*(8), *sshd*(8), *sshd_config*(5), *blocking.toml*(5), *authd*(8),
 *update*(8), *updated*(8), *timed*(8), *service*(8), *snap*(1),
 *metricsd*(8), *alertd*(8), *elevate*(8), *log*(1), *systools*(1)
