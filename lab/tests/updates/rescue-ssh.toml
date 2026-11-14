@@ -1,0 +1,134 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Rescue turns SSH on when the installed system had it on, and signs in
+# the system's administrators with their keys, over the host key the
+# system had (ADR 0540). The lab machine has sshd on and the lab key in
+# the lab account's authorized_keys, so that three starts in a row cut
+# short bring a Rescue that says SSH is on. The lab PC reads the host key
+# first, then signs in to Rescue with the lab key: the menu comes, told
+# who signed in and from where, with no password asked; the host key is
+# the one the installed system had; a password and a command are
+# refused. Over SSH the lab account chooses to copy the files off, which
+# waits at its question for the disk and holds Rescue's lock; at the
+# screen, where the lab account signs in too, the choice to check the
+# disk says who holds it and from where, and takes it once the SSH side
+# has answered. Starting Dukovo normally ends it, as rescue-after-cuts does.
+about = "Rescue with SSH on because the installed system had it on (ADR 0540): after three starts cut short, Rescue's screen says SSH is on; the lab PC signs the lab account in with the lab key, sees the host key the installed system had, gets the menu told who signed in, and is refused a password and a command; copying the files off over SSH holds the lock, so that the same choice at the screen says who holds it and from where, and takes it once the SSH side has answered"
+time = "25m"
+host_needs = ["ssh", "ssh-keygen", "ssh-keyscan", "timeout"]
+fresh = true
+
+# A health check that never ends, so that no start is seen through, and
+# the cuts below never race it.
+[[step]]
+run = '''printf '[[check]]\nname = "wait"\ncommand = ["sleep", "600"]\nrequired = true\ntimeout = 600\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
+[[step]]
+run = "sync"
+
+# The host key sshd made, as the lab PC reads it before anything is cut.
+[[step]]
+host = "sh {here}/rescue-ssh.sh scan {machine} {machine-port:22}"
+expect = "host key: SHA256:"
+[[step]]
+power = "reset"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+# The fourth start is Rescue's, with SSH on.
+[[step]]
+serial = "did not finish starting three times in a row"
+[[step]]
+serial = "spark: this is Rescue"
+[[step]]
+screen = "SSH is on, as it was on this computer: its administrators can reach Rescue over it."
+
+# The lab PC signs the lab account in with its key, to the host key the
+# installed system had, and is refused a password and a command.
+[[step]]
+host = "sh {here}/rescue-ssh.sh menu {machine} {machine-port:22}"
+expect = [
+    "menu: signed in with the key",
+    "host key: the installed system's",
+    "password: refused",
+    "command: refused",
+]
+
+# Copying the files off over SSH waits at its question, and holds the lock.
+[[step]]
+host = "sh {here}/rescue-ssh.sh hold {machine} {machine-port:22}"
+background = true
+ready = "hold ready"
+
+# The screen, where the lab account signs in too.
+[[step]]
+screen = "Rescue needs one of this computer's administrators."
+[[step]]
+type = "lab\n"
+[[step]]
+screen = "Password:"
+[[step]]
+type = "{password}\n"
+[[step]]
+screen = ["Rescue: lab is an administrator of this computer.", "Choose 0 to 13:"]
+
+# The choice to check the disk says who holds the lock, and from where.
+[[step]]
+type = "5\n"
+[[step]]
+screen = ["lab is copying the users' and shared files off, over SSH from ", "wait for it to finish, then choose again"]
+
+# Once the SSH side has answered, the lock is free and the choice takes it.
+[[step]]
+host = "sh {here}/rescue-ssh.sh release"
+expect = "released"
+[[step]]
+type = "5\n"
+[[step]]
+screen = "is sound."
+
+# The never-ending check goes, from Rescue's shell, and Dukovo starts
+# normally again.
+[[step]]
+type = "10\n"
+[[step]]
+type = "rm /volumes/*/@settings/sysupdate/health.toml && echo \"gone\"\": $((40 + 2))\"\n"
+[[step]]
+screen = "gone: 42"
+[[step]]
+type = "exit\n"
+[[step]]
+screen = "Back in Rescue."
+[[step]]
+type = "11\n"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = "Next start: slot A"
+expect_not = "Not seen through"
+[[step]]
+run = "rm /users/lab/health.toml"
