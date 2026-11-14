@@ -26,7 +26,7 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use accounts::request::{self, HELP_ONLY, HELP_TRANSCRIPT_MAX, HELP_WAITING, HelpLines};
 use accounts::sshd_config::Settings;
@@ -54,6 +54,10 @@ const GREETING: &str = "\r\nYou are in a help session: you see and type in its o
 /// ends or authd closes its own, which help-session(1) cannot tell them;
 /// its owner is told why.
 const ENDED: &str = "\r\n[help-session] The help session ended.\r\n";
+
+/// How long a helper's client has, once the channel is closed, to end
+/// the connection itself before sshd does.
+const CLOSE_TIME: Duration = Duration::from_secs(5);
 
 /// Whether sshd runs for a help session alone.
 pub fn only() -> bool {
@@ -225,6 +229,11 @@ async fn end(
     let _ = handle.data(id, ENDED.as_bytes().to_vec()).await;
     let _ = handle.eof(id).await;
     let _ = handle.close(id).await;
+    // The client ends the connection itself once its only channel is
+    // closed. With a disconnect sent right after them, OpenSSH's ssh
+    // ended without printing the last words, in a boot test; so the
+    // disconnect waits.
+    tokio::time::sleep(CLOSE_TIME).await;
     let reason = "the help session ended".to_string();
     let _ = handle.disconnect(Disconnect::ByApplication, reason, String::new()).await;
 }
