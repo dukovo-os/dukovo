@@ -6,7 +6,9 @@
 // private library it finds next to it (lib/libgreet.so, through its run
 // path, $ORIGIN/lib), with that library's constructor, data and
 // thread-local storage; a library opened with dlopen, and its symbols
-// found with dlsym; fork and threads in such a program.
+// found with dlsym; fork and threads in such a program; and a library that
+// calls a function of the program that opens it, and changes its data,
+// as PostgreSQL's modules do the server's.
 
 #include <dlfcn.h>
 #include <link.h>
@@ -16,6 +18,7 @@
 
 #include "check.h"
 #include "greet.h"
+#include "program.h"
 
 // Where the test's libraries are.
 #define LIBRARIES "/system/tests/posix/lib/"
@@ -26,6 +29,14 @@ struct seen {
 	int greet;
 	int count;
 };
+
+int program_shared = 7;
+
+// Nothing in the program calls this: only the plugin does, through the
+// program's dynamic symbols.
+int program_answer(int number) {
+	return number * 3 + program_shared;
+}
 
 static int ends_with(const char *name, const char *end) {
 	size_t length = strlen(name), size = strlen(end);
@@ -137,6 +148,18 @@ static void opens(void) {
 	CHECK(dlsym(RTLD_DEFAULT, "plugin_answer") == NULL);
 	CHECK(dlsym(plugin, "no_such_symbol") == NULL);
 	CHECK(dlerror() != NULL);
+	// The program's own function and data, which the plugin finds in the
+	// program's dynamic symbols.
+	int (*ask_program)(int) = (int (*)(int))dlsym(plugin, "plugin_ask_program");
+	int (*change_program)(void) = (int (*)(void))dlsym(plugin, "plugin_change_program");
+	CHECK(ask_program && change_program);
+	if(ask_program && change_program) {
+		CHECK(ask_program(5) == 5 * 3 + 7);
+		CHECK(change_program() == 8);
+		CHECK(program_shared == 8);
+		CHECK(ask_program(5) == 5 * 3 + 8);
+	}
+	CHECK(dlsym(RTLD_DEFAULT, "program_answer") == (void *)program_answer);
 	CHECK(dlclose(plugin) == 0);
 	// A library that is not there.
 	CHECK(dlopen(LIBRARIES "missing.so", RTLD_NOW) == NULL);
