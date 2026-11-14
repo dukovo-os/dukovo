@@ -100,15 +100,27 @@ fn found(cx: &Context<'_>) -> Result<Task, Failure> {
 ///
 /// ADM-127 for a task there is not, ADM-122 for a person who is neither
 /// its own nor an administrator, ADM-124 for a token that may not change
-/// the action's area, ADM-128 for a task that has ended.
+/// the action's area, or for a task of an action the console no longer has,
+/// whose area there is none to check, ADM-128 for a task that has ended.
 pub fn stop(cx: &Context<'_>, live: Option<&Live>, token: Option<&TokenCall>) -> Outcome {
     let task = found(cx)?;
     let person = match (live, token) {
         (Some(live), None) => live.name.as_str(),
         (None, Some(token)) => {
-            if let Some(area) = area_of(cx.shared, &task) {
-                actions::token_may(&token.name, &token.scopes, area, true)?;
-            }
+            // A task of an action the console no longer has has no area
+            // for the token's scopes to be checked against, so a token
+            // may not stop it.
+            let Some(area) = area_of(cx.shared, &task) else {
+                return Err(Failure::new(
+                    Kind::OutOfScope,
+                    format!(
+                        "the API token \"{}\" may not stop task {}: the console no longer has its \
+                         action, {}, and so no scope to check the token against",
+                        token.name, task.id, task.action
+                    ),
+                ));
+            };
+            actions::token_may(&token.name, &token.scopes, area, true)?;
             token.owner.as_str()
         }
         _ => return Err(super::ended()),

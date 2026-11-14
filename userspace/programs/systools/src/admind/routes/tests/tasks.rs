@@ -385,6 +385,30 @@ fn a_token_stops_a_task_if_its_scopes_change_the_area_and_its_owner_is_the_perso
 }
 
 #[test]
+fn a_token_may_not_stop_a_task_whose_action_the_console_no_longer_has() {
+    run(async {
+        let world = lab_world("tasks-token-stop-gone");
+        // A task the store has of an action that is not registered now, as
+        // after an update that took the action away: its area is not known,
+        // so no scope of a token can be checked against it.
+        let id = store(&world)
+            .add_task("gone.action", &json!({}), &[], "chase", "console", unix_now())
+            .unwrap();
+        let before = store(&world).task(id).unwrap().unwrap();
+        let stop =
+            |token: &str| with_token(post(&format!("/api/1/tasks/{id}/stop"), &json!({})), token);
+        for token in [TOKEN_READ, TOKEN_ALL] {
+            let refused = send(&world, stop(token)).await;
+            assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-124"), "{token}");
+            let detail = refused.json()["error"]["detail"].as_str().unwrap().to_string();
+            assert!(detail.contains("gone.action"), "{detail}");
+        }
+        // Nothing was stopped.
+        assert_eq!(store(&world).task(id).unwrap().unwrap(), before);
+    });
+}
+
+#[test]
 fn every_signed_in_session_reads_the_tasks_and_no_one_who_is_not_does() {
     run(async {
         let world = lab_world("tasks-read");
