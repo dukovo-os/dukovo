@@ -19,8 +19,11 @@
 # puts back; and the next root step starts from the copy again, so that an
 # engine the lab PC lacks, which the runner skips, leaves nothing for the
 # next to find. A step at the end leaves the file as the image has it and
-# removes the copy. The account is one this test makes and removes, so no
-# script needs the lab's password.
+# removes the copy. Each edit waits a second after its command starts, so
+# that the file's time is never before the second authd's audit gives the
+# command, which is how the row knows the command named the file. The
+# account is one this test makes and removes, so no script needs the lab's
+# password.
 about = "A service file changed by hand shows in the web console's journal with its diff and who changed it, is marked seen with Keep it and put back, in each engine"
 time = "20m"
 host_needs = ["curl"]
@@ -36,21 +39,21 @@ expect = "Made wc-journal"
 host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 [[step]]
-run = "sh -c 'cp /system/settings/spark/services/diskhealth.toml /tmp/lab-journal.toml && echo \"# lab journal chromium\" >> /system/settings/spark/services/diskhealth.toml'"
+run = "sh -c 'cp /system/settings/spark/services/diskhealth.toml /tmp/lab-journal.toml && sleep 1 && echo \"# lab journal chromium\" >> /system/settings/spark/services/diskhealth.toml'"
 root = true
 [[step]]
 browser = "journal.mjs"
 engines = ["chromium"]
 port = 9090
 [[step]]
-run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; echo \"# lab journal firefox\" >> /system/settings/spark/services/diskhealth.toml'"
+run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; sleep 1; echo \"# lab journal firefox\" >> /system/settings/spark/services/diskhealth.toml'"
 root = true
 [[step]]
 browser = "journal.mjs"
 engines = ["firefox"]
 port = 9090
 [[step]]
-run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; echo \"# lab journal webkit\" >> /system/settings/spark/services/diskhealth.toml'"
+run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; sleep 1; echo \"# lab journal webkit\" >> /system/settings/spark/services/diskhealth.toml'"
 root = true
 [[step]]
 browser = "journal.mjs"
