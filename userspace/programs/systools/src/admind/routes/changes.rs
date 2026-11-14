@@ -306,7 +306,7 @@ async fn put_back_run(
                 task: None,
                 note: Some(note.unwrap_or(&puts)),
             };
-            row = begun.end(shared.store.as_ref(), &ended, unix_now());
+            row = begun.end(shared.store.as_ref(), &ended, unix_now()).row;
         }
         None => begun.cancel(),
     }

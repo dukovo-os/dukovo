@@ -254,7 +254,10 @@ fn a_console_change_has_a_row_with_the_files_before_and_after_and_no_hand_edit()
         task: None,
         note: None,
     };
-    let id = begun.end(Some(&machine.store), &ended, 1_020).unwrap();
+    let ending = begun.end(Some(&machine.store), &ended, 1_020);
+    // The file moved, so the change changed something.
+    assert!(!ending.same);
+    let id = ending.row.unwrap();
     let row = machine.store.change(id).unwrap().unwrap();
     assert_eq!((row.who.as_str(), row.how.as_str(), row.at), ("alice", "console", 1_020));
     assert_eq!((row.action.as_deref(), row.status), (Some("service.enable"), Some(0)));
@@ -281,7 +284,9 @@ fn a_command_that_changed_nothing_still_names_its_files_and_one_not_run_has_no_r
         note,
     };
     let begun = machine.journal.begin(Some(&machine.store), std::slice::from_ref(&path), 1);
-    let id = begun.end(Some(&machine.store), &ended(Some("it failed")), 2).unwrap();
+    let ending = begun.end(Some(&machine.store), &ended(Some("it failed")), 2);
+    assert!(ending.same);
+    let id = ending.row.unwrap();
     let row = machine.store.change(id).unwrap().unwrap();
     assert_eq!((row.status, row.task, row.note.as_deref()), (Some(1), Some(4), Some("it failed")));
     assert_eq!(row.files[0].before, row.files[0].after);
@@ -313,7 +318,7 @@ fn a_file_a_console_change_takes_while_the_person_is_looked_for_is_left_to_it() 
         task: None,
         note: None,
     };
-    begun.end(Some(&machine.store), &ended, 1_033).unwrap();
+    begun.end(Some(&machine.store), &ended, 1_033).row.unwrap();
     let made = machine.journal.record(&machine.store, &scan, &BTreeMap::new(), 1_034).unwrap();
     assert_eq!(made, 0);
     // The console's change is the only row, and its state is the one noted.
@@ -350,7 +355,7 @@ fn a_change_with_no_store_is_not_kept_and_the_files_are_still_let_go() {
         task: None,
         note: None,
     };
-    assert_eq!(begun.end(None, &ended, 2), None);
+    assert_eq!(begun.end(None, &ended, 2), Ending { row: None, same: false });
     assert!(journal.pending.borrow().is_empty());
 }
 
@@ -378,7 +383,7 @@ fn a_folder_an_action_named_a_file_in_is_watched_too() {
         note: None,
     };
     let begun = machine.journal.begin(Some(&machine.store), std::slice::from_ref(&named), 1_040);
-    begun.end(Some(&machine.store), &ended, 1_041).unwrap();
+    begun.end(Some(&machine.store), &ended, 1_041).row.unwrap();
     // Now its folder is watched: the sibling that was there is not a
     // change, one made after is, and so is one changed after.
     assert!(machine.round(1_060, &[]).is_empty());

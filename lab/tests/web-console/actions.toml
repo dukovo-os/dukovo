@@ -7,14 +7,15 @@
 # policy, reads the list of actions that GET /api/1/actions gives and calls
 # the route of each with the arguments of its first good example, as the
 # page's buttons do, with the session's cookie and token. A read is
-# answered 200 with JSON; a change is answered 200 and done, and the action
-# that its examples name puts back what it did. The list is the one that
-# `admin actions --json` prints at a terminal, so a new action is tried
-# here once it is registered. certificate.renew is left to the boot test
-# admin-actions: it makes the certificate that admind serves anew, and the
-# browser accepted the old one. admind is the service that answers. Each
-# engine has an administrator of its own, which this test makes and
-# removes, so no script needs the lab's password.
+# answered 200 with JSON; a change is answered 200 and done, saying whether
+# it changed anything, and the action that its examples name puts back what
+# it did. The list is the one that `admin actions --json` prints at a
+# terminal, so a new action is tried here once it is registered.
+# certificate.renew is left to the boot test admin-actions: it makes the
+# certificate that admind serves anew, and the browser accepted the old
+# one. admind is the service that answers. Each engine has an administrator
+# of its own, which this test makes and removes, so no script needs the
+# lab's password.
 about = "Browsers call every action of the web console from its own page, under its content security policy: each read is answered with JSON, each change is done and its undo puts it back"
 time = "15m"
 host_needs = ["curl"]

@@ -273,15 +273,16 @@ pub async fn read_up_to(mut pipe: Receiver, max: usize) -> std::io::Result<Vec<u
 }
 
 /// The API's answer for `prepared`, which ran as `ran`: a read's JSON as
-/// its command printed it, a change's `{done, output}`, or ADM-123 with
-/// the command's own words.
+/// its command printed it, a change's `{done, changed, output}` with the
+/// `changed` it is given (ADR 0515), or ADM-123 with the command's own
+/// words.
 ///
 /// # Errors
 ///
 /// ADM-123, or the command's own error ID when the last line of its error
 /// output ends with one its action names, when the command failed;
 /// ADM-121 when a read's output is not JSON.
-pub fn answer(prepared: &Prepared, ran: &Ran) -> Result<Value, Failure> {
+pub fn answer(prepared: &Prepared, ran: &Ran, changed: bool) -> Result<Value, Failure> {
     let action = prepared.action;
     if ran.status != 0 {
         return Err(failed(prepared, ran));
@@ -295,7 +296,7 @@ pub fn answer(prepared: &Prepared, ran: &Ran) -> Result<Value, Failure> {
         });
     }
     let lines: Vec<&str> = ran.output.lines().take(LINES_MAX).collect();
-    Ok(json!({ "done": true, "output": lines }))
+    Ok(json!({ "done": true, "changed": changed, "output": lines }))
 }
 
 /// What the journal says of how a command ended, when it was run: its

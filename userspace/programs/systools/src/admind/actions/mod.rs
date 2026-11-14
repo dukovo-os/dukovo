@@ -20,6 +20,13 @@
 //! unlocked or a token whose scopes name the area; otherwise it runs in
 //! the worker as the person, whose own rights decide.
 //!
+//! A change's answer says whether it changed anything. An action with a
+//! probe, a read of what the change moves, has it run in the person's
+//! worker before the change and again after, and `changed` is whether the
+//! part of the two outputs that [`Action::probed`] picks differs, so a
+//! probe can read only what the person can. An action without a probe
+//! always did something. The list says which are which, as `compares`.
+//!
 //! [`REGISTRY`] is the one list. The route table, `GET /api/1/actions`,
 //! `admin actions` and `lab/actions.toml` are all made from it.
 
@@ -213,6 +220,25 @@ pub trait Action: 'static {
         Vec::new()
     }
 
+    /// A read that says whether a change moved what it changes: the
+    /// command, as words, which runs as the person before the change and
+    /// again after it (ADR 0515). The change's `changed` is whether the
+    /// two outputs differ in the part [`Action::probed`] picks.
+    ///
+    /// None, the default, is for a change that always does something, as
+    /// a restart does: its `changed` is always true. A probe is there for
+    /// all of an action's arguments or for none of them.
+    fn probe(_args: &Self::Args) -> Option<Vec<String>> {
+        None
+    }
+
+    /// The part of the probe's `output` that this change moves, as text to
+    /// compare. The default is the whole output, trimmed. None when the
+    /// output does not say: the thing is not in it, or it does not read.
+    fn probed(_args: &Self::Args, output: &str) -> Option<String> {
+        Some(output.trim().to_string())
+    }
+
     /// Arguments for the tests that take every action from the list.
     fn examples() -> Examples<Self::Args>;
 }
@@ -226,6 +252,9 @@ pub struct Prepared {
     pub argv: Vec<String>,
     pub ansible: Ansible,
     pub files: Vec<String>,
+    /// The command that reads what a change moves, for `changed`: None for
+    /// a read, and for a change that always does something.
+    pub probe: Option<Vec<String>>,
 }
 
 /// An action in the list, whatever its arguments' type.
@@ -239,6 +268,10 @@ pub trait Registered: Sync + fmt::Debug {
     fn errors(&self) -> &'static [&'static str];
     fn tests(&self) -> Tests;
     fn title(&self) -> &'static str;
+    /// Whether a change's `changed` comes from comparing, its probe's
+    /// reads or the files it names (the journal's), and not from being
+    /// always true. A read has none, so it is false.
+    fn compares(&self) -> bool;
     /// Reads and checks `args` and makes the command and the rest of
     /// them.
     ///
@@ -247,6 +280,10 @@ pub trait Registered: Sync + fmt::Debug {
     /// ADM-108 when `args` is not what the action takes, ADM-125 when a
     /// value cannot work.
     fn prepare(&'static self, args: Value) -> Result<Prepared, Failure>;
+    /// The part of the probe's `output` that the change with the prepared
+    /// `args` moves, as text to compare. None when the output does not say,
+    /// or `args` do not read as the action's.
+    fn probed(&self, args: &Value, output: &str) -> Option<String>;
     /// The examples, as JSON.
     fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>);
 }
@@ -294,6 +331,15 @@ impl<A: Action> Registered for Entry<A> {
     fn title(&self) -> &'static str {
         A::TITLE
     }
+    fn compares(&self) -> bool {
+        // An action has a probe, and files, for all its arguments or for
+        // none, which its tests keep, so its first example tells.
+        A::CHANGES
+            && A::examples()
+                .good
+                .first()
+                .is_some_and(|args| A::probe(args).is_some() || !A::files(args).is_empty())
+    }
 
     fn prepare(&'static self, args: Value) -> Result<Prepared, Failure> {
         let typed: A::Args = serde_json::from_value(args).map_err(|err| {
@@ -308,9 +354,15 @@ impl<A: Action> Registered for Entry<A> {
         let argv = A::argv(&typed);
         let ansible = A::ansible(&typed);
         let files = A::files(&typed);
+        let probe = if A::CHANGES { A::probe(&typed) } else { None };
         let args = serde_json::to_value(&typed)
             .map_err(|err| Failure::new(Kind::Internal, format!("{} arguments: {err}", A::ID)))?;
-        Ok(Prepared { action: self, args, argv, ansible, files })
+        Ok(Prepared { action: self, args, argv, ansible, files, probe })
+    }
+
+    fn probed(&self, args: &Value, output: &str) -> Option<String> {
+        let typed: A::Args = serde_json::from_value(args.clone()).ok()?;
+        A::probed(&typed, output)
     }
 
     fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>) {
@@ -363,8 +415,9 @@ pub fn offered() -> &'static [&'static dyn Registered] {
 
 /// The list `GET /api/1/actions` answers and `admin actions` prints: each
 /// action's id, title, area, whether it changes anything, its method and
-/// address, who runs it, whether it is a task, its error IDs, the names of
-/// its five tests, and its examples: the arguments that work, and for a
+/// address, who runs it, whether it is a task, whether its `changed` is
+/// compared from a probe (`compares`), its error IDs, the names of its
+/// five tests, and its examples: the arguments that work, and for a
 /// change the action and arguments that put back what the first did (null
 /// when nothing does). The bad examples are in the unit tests alone.
 pub fn listed(actions: &[&dyn Registered]) -> Value {
@@ -382,6 +435,7 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "path": action.path(),
                     "runs": action.runs(),
                     "long": action.long(),
+                    "compares": action.compares(),
                     "errors": action.errors(),
                     "tests": action.tests(),
                     "examples": { "good": good, "undo": undo },

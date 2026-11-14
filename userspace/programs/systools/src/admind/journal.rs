@@ -327,6 +327,17 @@ pub struct Begun<'a> {
     files: Vec<(String, Seen)>,
 }
 
+/// What the end of a console change found.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Ending {
+    /// The number of its row in the journal, when the store kept one.
+    pub row: Option<i64>,
+    /// Whether each file the change names reads as it did before the
+    /// change: true when it names none, false when the journal cannot
+    /// tell (no store, a secret, a file it may not read).
+    pub same: bool,
+}
+
 /// How a console change ended.
 #[derive(Debug)]
 pub struct Ended<'a> {
@@ -598,15 +609,20 @@ impl Begun<'_> {
     /// Ends the change: looks at each file again, adds the row for the
     /// command that ran (`ended`), and notes what the files are now, so
     /// that the round does not take the change for a hand edit. Gives
-    /// the row's number. The files are free to the round again.
-    pub fn end(self, store: Option<&Store>, ended: &Ended<'_>, now: i64) -> Option<i64> {
-        let store = store?;
+    /// the row's number, and whether the files read as they did. The files
+    /// are free to the round again.
+    pub fn end(self, store: Option<&Store>, ended: &Ended<'_>, now: i64) -> Ending {
+        let Some(store) = store else {
+            return Ending { row: None, same: self.files.is_empty() };
+        };
+        let mut same = true;
         let made = store.atomically(|| {
             let fresh =
                 self.journal.fresh_folders(store, self.files.iter().map(|(path, _)| path))?;
             let mut files = Vec::with_capacity(self.files.len());
             for (path, before) in &self.files {
                 let (after, stamp) = look(store, path, now)?;
+                same &= before.same_as(&after);
                 match stamp {
                     Some(stamp) => store.set_watched(
                         path,
@@ -634,13 +650,13 @@ impl Begun<'_> {
             })
         });
         match made {
-            Ok(id) => Some(id),
+            Ok(id) => Ending { row: Some(id), same },
             Err(why) => {
                 super::log(
                     4,
                     &format!("the journal could not keep {}'s change: {why}", ended.action),
                 );
-                None
+                Ending { row: None, same: false }
             }
         }
     }

@@ -8,6 +8,10 @@
 //!
 //! A certificate's name is checked by the rule certd and `cert` check it
 //! by, which is also the rule a service file's `certificates` follows.
+//!
+//! A renewal has no probe (ADR 0515): `cert renew` makes the certificate
+//! anew whenever it is asked to, due or not, so it always changed
+//! something and a comparison could only say so.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -173,6 +177,15 @@ mod tests {
             argv("certificate.show", json!({ "name": "this-machine" })),
             ["cert", "show", "this-machine", "--json"]
         );
+    }
+
+    #[test]
+    fn a_renewal_always_changed_something_so_it_has_no_probe() {
+        let renew = registered("certificate.renew");
+        assert!(!renew.compares());
+        let prepared = renew.prepare(json!({ "name": "this-machine" })).unwrap();
+        assert_eq!(prepared.probe, None);
+        assert!(!registered("certificate.show").compares());
     }
 
     #[test]

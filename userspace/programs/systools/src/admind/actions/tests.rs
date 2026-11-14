@@ -91,12 +91,53 @@ impl Action for List {
     }
 }
 
+/// A change for the tests alone, which has a probe: `probe NAME`, which
+/// prints what the change moves, a semicolon, and what moves by itself.
+struct Set;
+
+impl Action for Set {
+    const ID: &'static str = "lab.set";
+    const AREA: &'static str = "services";
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/lab/{name}/set";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const ERRORS: &'static [&'static str] = &["SVC-104"];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Set a lab service";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        vec!["service".into(), args.name.clone(), "set".into()]
+    }
+
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.name.clone())
+    }
+
+    fn probe(args: &Named) -> Option<Vec<String>> {
+        Some(vec!["probe".into(), args.name.clone()])
+    }
+
+    fn probed(_: &Named, output: &str) -> Option<String> {
+        output.split_once(';').map(|(moved, _)| moved.trim().to_string())
+    }
+
+    fn examples() -> Examples<Named> {
+        Examples {
+            good: vec![Named { name: "lab-web".into(), wait: None }],
+            bad: vec![],
+            undo: None,
+        }
+    }
+}
+
 static RESTART: Entry<Restart> = Entry::new();
 static LIST: Entry<List> = Entry::new();
+static SET: Entry<Set> = Entry::new();
 /// The lab's long action, whose own module is also in lab builds.
 static LONG: Entry<lab::Long> = Entry::new();
 /// These tests' actions, which the route tests use too.
-pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG];
+pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG, &SET];
 
 #[test]
 fn an_address_finds_its_action_and_gives_its_arguments() {
@@ -240,6 +281,62 @@ fn the_list_says_each_action_s_method_and_address() {
 }
 
 #[test]
+fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
+    let lab = listed(LAB);
+    let compares: Vec<(&str, &Value)> = lab
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| (a["id"].as_str().unwrap(), &a["compares"]))
+        .collect();
+    assert_eq!(
+        compares,
+        [
+            ("lab.restart", &json!(false)),
+            ("lab.list", &json!(false)),
+            ("lab.long", &json!(false)),
+            ("lab.set", &json!(true))
+        ]
+    );
+    let console = listed(REGISTRY);
+    let comparing: Vec<&str> = console
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|action| action["compares"] == true)
+        .map(|action| action["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        comparing,
+        ["service.start", "service.stop", "service.enable", "service.disable", "console.reach"]
+    );
+    for action in console.as_array().unwrap() {
+        assert!(action["compares"].is_boolean(), "{}", action["id"]);
+        if action["changes"] == false {
+            assert_eq!(action["compares"], false, "{}: a read has no `changed`", action["id"]);
+        }
+    }
+}
+
+#[test]
+fn a_probe_is_the_command_that_reads_what_a_change_moves_and_the_action_picks_from_it() {
+    let prepared = SET.prepare(json!({ "name": "nginx" })).unwrap();
+    assert_eq!(prepared.probe, Some(vec!["probe".to_string(), "nginx".to_string()]));
+    assert!(SET.compares());
+    assert_eq!(SET.probed(&prepared.args, "on; 12\n").as_deref(), Some("on"));
+    assert_eq!(SET.probed(&prepared.args, "on").as_deref(), None);
+    // Without a probe a change has no command to read, and the default
+    // picks the whole output, trimmed.
+    let restart = RESTART.prepare(json!({ "name": "nginx" })).unwrap();
+    assert_eq!(restart.probe, None);
+    assert!(!RESTART.compares());
+    assert_eq!(RESTART.probed(&restart.args, "  on; 3 \n").as_deref(), Some("on; 3"));
+    // A read has none either.
+    assert_eq!(LIST.prepare(json!({})).unwrap().probe, None);
+    assert!(!LIST.compares());
+}
+
+#[test]
 fn the_list_gives_each_action_s_examples_and_what_puts_back_the_first() {
     let lab = listed(LAB);
     assert_eq!(
@@ -326,6 +423,12 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
             if !action.changes() {
                 assert!(prepared.argv.iter().any(|w| w == "--json"), "{id}: a read asks for JSON");
             }
+            // An action has a probe for every example or for none, which
+            // `compares` says, and a read has none.
+            assert_eq!(prepared.probe.is_some(), action.compares(), "{id}: its probe");
+            if let Some(probe) = &prepared.probe {
+                assert!(!probe.is_empty() && action.changes(), "{id}: its probe");
+            }
         }
     }
 }
@@ -362,7 +465,7 @@ fn golden(actions: &[&dyn Registered]) -> String {
         let tests = &action["tests"];
         text.push_str(&format!(
             "\n[[action]]\nid = {}\ntitle = {}\narea = {}\nmethod = {}\npath = {}\nruns = {}\n\
-             long = {}\ntests = {{ checks = {}, route = {}, same_as_command = {}, browser = {}, \
+             long = {}\ncompares = {}\ntests = {{ checks = {}, route = {}, same_as_command = {}, browser = {}, \
              ansible = {} }}\n",
             action["id"],
             action["title"],
@@ -371,6 +474,7 @@ fn golden(actions: &[&dyn Registered]) -> String {
             action["path"],
             action["runs"],
             action["long"],
+            action["compares"],
             tests["checks"],
             tests["route"],
             tests["same_as_command"],
@@ -411,6 +515,7 @@ fn the_golden_list_is_toml_that_says_what_the_registry_says() {
         assert_eq!(table["method"].as_str(), Some(if action.changes() { "POST" } else { "GET" }));
         assert_eq!(table["path"].as_str(), Some(action.path()));
         assert_eq!(table["long"].as_bool(), Some(action.long()));
+        assert_eq!(table["compares"].as_bool(), Some(action.compares()));
         let runs = serde_json::to_value(action.runs()).unwrap();
         assert_eq!(table["runs"].as_str(), runs.as_str());
         let named = table["tests"].as_table().unwrap();

@@ -552,7 +552,8 @@ mod tests {
             "ID           KIND    RUNS AS        ROUTE\n\
              lab.restart  change  administrator  POST /api/1/lab/{name}/restart  e.g. elevate service lab-web restart\n\
              lab.list     read    the person     GET /api/1/lab                  e.g. service list --json\n\
-             lab.long     change  administrator  POST /api/1/lab/long            e.g. elevate admin lab-steps 20\n"
+             lab.long     change  administrator  POST /api/1/lab/long            e.g. elevate admin lab-steps 20\n\
+             lab.set      change  administrator  POST /api/1/lab/{name}/set      e.g. elevate service lab-web set\n"
         );
     }
 

@@ -42,7 +42,10 @@ fn the_list_of_actions_is_for_a_session_or_a_token_and_no_one_else() {
         assert_eq!(listed.status, 200, "{}", listed.body);
         let ids: Vec<Value> =
             listed.json().as_array().unwrap().iter().map(|a| a["id"].clone()).collect();
-        assert_eq!(ids, [json!("lab.restart"), json!("lab.list"), json!("lab.long")]);
+        assert_eq!(
+            ids,
+            [json!("lab.restart"), json!("lab.list"), json!("lab.long"), json!("lab.set")]
+        );
         let by_token = send(&world, with_token(get("/api/1/actions"), TOKEN_READ)).await;
         assert_eq!(by_token.json(), listed.json());
         let nobody = send(&world, get("/api/1/actions")).await;
@@ -90,7 +93,10 @@ fn an_administrator_s_change_needs_an_administrator_whose_session_is_unlocked() 
         unlock(&world, &chase).await;
         let done = send(&world, restart(&chase)).await;
         assert_eq!(done.status, 200, "{}", done.body);
-        assert_eq!(done.json(), json!({ "done": true, "output": ["nginx restart"] }));
+        assert_eq!(
+            done.json(),
+            json!({ "done": true, "changed": true, "output": ["nginx restart"] })
+        );
         let ran = elevations(&world);
         assert_eq!(ran.len(), 1);
         assert!(ran[0].starts_with("elevate session "), "{}", ran[0]);
@@ -126,6 +132,199 @@ fn a_command_that_fails_answers_with_its_own_error_id_and_words() {
                 "errors": "starting broken\nbroken.conf did not load (SVC-104)\n",
             })
         );
+    });
+}
+
+/// The commands run so far, in order: `person: ...` for each the worker
+/// ran as the person, `administrator: ...` for each authd ran.
+fn ran(world: &World) -> Vec<String> {
+    let words = |list: &Value| {
+        let words: Vec<&str> = list.as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        words.join(" ")
+    };
+    called(world)
+        .iter()
+        .filter_map(|(method, params)| match method.as_str() {
+            "run" => Some(format!("person: {}", words(&params["argv"]))),
+            "elevate" => Some(format!("administrator: {}", words(params))),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_change_whose_probe_reads_the_same_twice_answers_changed_false() {
+    run(async {
+        let world = lab_world("changed-same");
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        let done = send(&world, post("/api/1/lab/steady/set", &json!({})).by(&chase)).await;
+        assert_eq!(done.status, 200, "{}", done.body);
+        // What the probe prints after its semicolon moved, 1 and then 2,
+        // and the action does not compare it.
+        assert_eq!(
+            done.json(),
+            json!({ "done": true, "changed": false, "output": ["steady set"] })
+        );
+        // The probe ran in the person's worker, the command through authd,
+        // and the probe again: the change itself ran once.
+        assert_eq!(
+            ran(&world),
+            ["person: probe steady", "administrator: service steady set", "person: probe steady"]
+        );
+        assert_eq!(elevations(&world).len(), 1);
+    });
+}
+
+#[test]
+fn a_change_whose_probe_reads_differently_answers_changed_true() {
+    run(async {
+        let world = lab_world("changed-moved");
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        let done = send(&world, post("/api/1/lab/moving/set", &json!({})).by(&chase)).await;
+        assert_eq!(done.status, 200, "{}", done.body);
+        assert_eq!(done.json(), json!({ "done": true, "changed": true, "output": ["moving set"] }));
+        assert_eq!(
+            ran(&world),
+            ["person: probe moving", "administrator: service moving set", "person: probe moving"]
+        );
+        // Asked again, it reads the same as it did the second time.
+        let again = send(&world, post("/api/1/lab/moving/set", &json!({})).by(&chase)).await;
+        assert_eq!(again.json()["changed"], false);
+    });
+}
+
+#[test]
+fn a_probe_that_fails_or_finds_nothing_says_changed_and_the_change_still_succeeds() {
+    run(async {
+        let world = lab_world("changed-cannot-tell");
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        // Failing before and after, failing after only, and an output the
+        // action finds what it moves nowhere in.
+        for name in ["fails", "fails-after", "unreadable"] {
+            let done =
+                send(&world, post(&format!("/api/1/lab/{name}/set"), &json!({})).by(&chase)).await;
+            assert_eq!(done.status, 200, "{name}: {}", done.body);
+            assert_eq!(
+                done.json(),
+                json!({ "done": true, "changed": true, "output": [format!("{name} set")] }),
+                "{name}"
+            );
+        }
+        // Each ran its probe twice, and the command between them.
+        let probe = |name: &str| format!("person: probe {name}");
+        let command = |name: &str| format!("administrator: service {name} set");
+        let expected: Vec<String> = ["fails", "fails-after", "unreadable"]
+            .iter()
+            .flat_map(|name| [probe(name), command(name), probe(name)])
+            .collect();
+        assert_eq!(ran(&world), expected);
+    });
+}
+
+#[test]
+fn a_change_without_a_probe_always_says_changed_and_a_read_says_nothing_of_it() {
+    run(async {
+        let world = lab_world("changed-always");
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        let restart = || post("/api/1/lab/nginx/restart", &json!({})).by(&chase);
+        for _ in 0..2 {
+            let done = send(&world, restart()).await;
+            assert_eq!(
+                done.json(),
+                json!({ "done": true, "changed": true, "output": ["nginx restart"] })
+            );
+        }
+        let read = send(&world, get("/api/1/lab").by(&chase)).await;
+        assert_eq!(read.json(), json!([{ "name": "nginx" }]));
+        assert_eq!(
+            ran(&world),
+            [
+                "administrator: service nginx restart",
+                "administrator: service nginx restart",
+                "person: service list --json",
+            ]
+        );
+    });
+}
+
+#[test]
+fn a_change_that_fails_runs_no_second_probe_and_answers_its_failure_as_before() {
+    run(async {
+        let world = lab_world("changed-failed");
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        let failed = send(&world, post("/api/1/lab/broken/set", &json!({})).by(&chase)).await;
+        assert_eq!(failed.status, 422, "{}", failed.body);
+        let error = &failed.json()["error"];
+        assert_eq!(error["id"], "SVC-104");
+        assert_eq!(error["detail"], "broken.conf did not load (SVC-104)");
+        assert_eq!(error["command"]["argv"], json!(["service", "broken", "set"]));
+        assert!(failed.json().get("changed").is_none());
+        assert_eq!(ran(&world), ["person: probe broken", "administrator: service broken set"]);
+    });
+}
+
+#[test]
+fn a_change_that_is_refused_runs_no_probe() {
+    run(async {
+        let world = lab_world("changed-refused");
+        let set = |token: Option<&str>, session: Option<&Session>| {
+            let req = post("/api/1/lab/steady/set", &json!({}));
+            match (token, session) {
+                (Some(token), _) => with_token(req, token),
+                (None, Some(session)) => req.by(session),
+                (None, None) => req,
+            }
+        };
+        let dave = sign_in(&world, "dave").await;
+        let not_admin = send(&world, set(None, Some(&dave))).await;
+        assert_eq!(not_admin.error(), "ADM-122");
+        let chase = sign_in(&world, "chase").await;
+        let locked = send(&world, set(None, Some(&chase))).await;
+        assert_eq!(locked.error(), "ADM-106");
+        let read_only = send(&world, set(Some(TOKEN_READ), None)).await;
+        assert_eq!(read_only.error(), "ADM-124");
+        let other_area = send(&world, set(Some(TOKEN_OTHER), None)).await;
+        assert_eq!(other_area.error(), "ADM-124");
+        let bad = send(&world, post("/api/1/lab/-x/set", &json!({})).by(&chase)).await;
+        assert_eq!(bad.error(), "ADM-125");
+        assert!(ran(&world).is_empty(), "{:?}", ran(&world));
+        assert_eq!(world.console.authd.verbs().iter().filter(|v| *v == "token-start").count(), 0);
+    });
+}
+
+#[test]
+fn a_token_s_change_reads_its_probe_in_the_owner_s_worker_started_once() {
+    run(async {
+        let world = lab_world("changed-token");
+        let set =
+            |name: &str| with_token(post(&format!("/api/1/lab/{name}/set"), &json!({})), TOKEN_ALL);
+        let same = send(&world, set("steady")).await;
+        assert_eq!(same.status, 200, "{}", same.body);
+        assert_eq!(
+            same.json(),
+            json!({ "done": true, "changed": false, "output": ["steady set"] })
+        );
+        let moved = send(&world, set("moving")).await;
+        assert_eq!(moved.json()["changed"], true);
+        assert_eq!(
+            ran(&world),
+            [
+                "person: probe steady",
+                "administrator: service steady set",
+                "person: probe steady",
+                "person: probe moving",
+                "administrator: service moving set",
+                "person: probe moving",
+            ]
+        );
+        let verbs = world.console.authd.verbs();
+        assert_eq!(verbs.iter().filter(|verb| *verb == "token-start").count(), 1, "{verbs:?}");
+        assert_eq!(elevations(&world).len(), 2);
     });
 }
 

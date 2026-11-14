@@ -18,6 +18,7 @@ method = "GET"
 path = "/api/1/services"
 runs = "as-the-person"
 long = false
+compares = false
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -28,6 +29,7 @@ method = "GET"
 path = "/api/1/services/{name}/explain"
 runs = "as-the-person"
 long = false
+compares = false
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -38,6 +40,7 @@ method = "POST"
 path = "/api/1/services/{name}/start"
 runs = "as-administrator"
 long = false
+compares = true
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -48,6 +51,7 @@ method = "POST"
 path = "/api/1/services/{name}/stop"
 runs = "as-administrator"
 long = false
+compares = true
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -58,6 +62,7 @@ method = "POST"
 path = "/api/1/services/{name}/restart"
 runs = "as-administrator"
 long = false
+compares = false
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -68,6 +73,7 @@ method = "POST"
 path = "/api/1/services/{name}/enable"
 runs = "as-administrator"
 long = false
+compares = true
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -78,6 +84,7 @@ method = "POST"
 path = "/api/1/services/{name}/disable"
 runs = "as-administrator"
 long = false
+compares = true
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -88,6 +95,7 @@ method = "GET"
 path = "/api/1/certificates"
 runs = "as-the-person"
 long = false
+compares = false
 tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -98,6 +106,7 @@ method = "GET"
 path = "/api/1/certificates/{name}"
 runs = "as-the-person"
 long = false
+compares = false
 tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -108,6 +117,7 @@ method = "POST"
 path = "/api/1/certificates/{name}/renew"
 runs = "as-administrator"
 long = false
+compares = false
 tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
@@ -118,4 +128,5 @@ method = "POST"
 path = "/api/1/console/reach"
 runs = "as-administrator"
 long = false
+compares = true
 tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }

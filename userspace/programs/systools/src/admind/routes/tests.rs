@@ -51,8 +51,9 @@ fn preferences(change: &Value) -> Value {
     all
 }
 
-/// What the test worker answers.
-fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
+/// What the test worker answers. `calls` holds what it has been asked,
+/// this call the last of them.
+fn worker_answers(method: &str, params: &Value, calls: &Calls) -> Result<Value, Fault> {
     match method {
         "steps" => Ok(json!({
             "app": { "added": 1 }, "passkeys": [], "recovery": null, "trusted": 0,
@@ -81,9 +82,37 @@ fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
         "run" if params["argv"] == json!(["service", "list", "--json"]) => {
             Ok(json!({ "status": 0, "output": "[{\"name\":\"nginx\"}]\n", "errors": "" }))
         }
+        "run" if params["argv"][0] == "probe" => {
+            Ok(probe_answer(params["argv"][1].as_str().unwrap_or_default(), calls))
+        }
         "run" => Err(Fault::new(Kind::BadRequest, "there is no command that")),
         _ => Ok(json!({ "done": true })),
     }
+}
+
+/// What the test worker prints for `probe NAME`, which a change's probe
+/// runs: a part that the change moves, a semicolon, and a part that moves
+/// by itself, the number of times the probe has been asked for. By its
+/// name, `moving` says `off` the first time and `on` after, `unreadable`
+/// says something that is not what the change moves, `fails` ends with
+/// status 1, `fails-after` does from its second time, and any other name
+/// says `on` every time.
+fn probe_answer(name: &str, calls: &Calls) -> Value {
+    let asked = json!({ "argv": ["probe", name] });
+    let nth = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(method, params)| method == "run" && *params == asked)
+        .count();
+    let (status, output) = match (name, nth) {
+        ("moving", 1) => (0, format!("off; {nth}")),
+        ("unreadable", _) => (0, "?".to_string()),
+        ("fails", _) | ("fails-after", 2..) => (1, String::new()),
+        _ => (0, format!("on; {nth}")),
+    };
+    let errors = if status == 0 { "" } else { "probe: cannot read\n" };
+    json!({ "status": status, "output": format!("{output}\n"), "errors": errors })
 }
 
 /// What the test authd answers: four accounts that sign in, as
@@ -92,6 +121,10 @@ fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
 /// the password `right`; the code `123456`;
 /// the trusted browser `aa55bb66`.
 fn script(calls: Calls) -> Arc<fixture::Script> {
+    let answers: Arc<fixture::Answer> = {
+        let calls = Arc::clone(&calls);
+        Arc::new(move |method: &str, params: &Value| worker_answers(method, params, &calls))
+    };
     Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| -> Vec<String> {
         let no = |why: &str| vec![format!("no {why}")];
         let ok = || vec![String::from("ok")];
@@ -112,11 +145,7 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
             "start" => {
                 let session = format!("{:0<32}", asked.text(0));
                 let trust = if asked.text(1) == "trust" { " aa55bb66" } else { "" };
-                fixture::worker(
-                    fixture::ends(&mut fds),
-                    Arc::clone(&calls),
-                    Arc::new(worker_answers),
-                );
+                fixture::worker(fixture::ends(&mut fds), Arc::clone(&calls), Arc::clone(&answers));
                 vec![format!("ok 4242 {session}{trust}")]
             }
             "unlock" => match (asked.text(1).as_str(), asked.text(2).as_str()) {
@@ -131,14 +160,10 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 None => no("that API token is not known"),
             },
             "token-start" => {
-                fixture::worker(
-                    fixture::ends(&mut fds),
-                    Arc::clone(&calls),
-                    Arc::new(worker_answers),
-                );
+                fixture::worker(fixture::ends(&mut fds), Arc::clone(&calls), Arc::clone(&answers));
                 ok()
             }
-            "elevate" => elevated(asked, fds),
+            "elevate" => elevated(asked, fds, &calls),
             _ => no("the test's authd does not answer that"),
         }
     })
@@ -171,11 +196,13 @@ fn token_answer(hex: &str) -> Option<&'static str> {
 /// refused as authd refuses one its scopes do not name; `broken` fails
 /// with a service's error ID; `/system/commands/echo` writes its words
 /// and ends with the status 3; anything else writes its words and ends
-/// well.
-fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>) -> Vec<String> {
+/// well. The command is noted in `calls` as a call of `elevate`, so that a
+/// test sees it among the worker's.
+fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
     use std::io::Write;
     let fields: Vec<String> = (0..asked.fields.len()).map(|at| asked.text(at)).collect();
     let command = &fields[fields.iter().position(|field| field == "--").unwrap() + 1..];
+    calls.lock().unwrap().push(("elevate".into(), json!(command)));
     if command[0] == "/system/commands/locked" {
         return vec!["no the session is locked: unlock it to make changes".into()];
     }
@@ -1100,11 +1127,11 @@ fn authd_answering_a_time_that_does_not_read_is_not_an_unlock() {
             Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| match asked.verb.as_str() {
                 "begin" => vec!["ok done 0a0b01".into()],
                 "start" => {
-                    fixture::worker(
-                        fixture::ends(&mut fds),
-                        Arc::clone(&shared_calls),
-                        Arc::new(worker_answers),
-                    );
+                    let calls = Arc::clone(&shared_calls);
+                    let answers = Arc::new(move |method: &str, params: &Value| {
+                        worker_answers(method, params, &calls)
+                    });
+                    fixture::worker(fixture::ends(&mut fds), Arc::clone(&shared_calls), answers);
                     vec![format!("ok 1 {:0<32}", asked.text(0))]
                 }
                 "unlock" => vec!["ok soon".into()],

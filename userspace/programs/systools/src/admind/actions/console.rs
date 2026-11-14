@@ -14,6 +14,9 @@
 //! settings would share: a token that may change the reach may open the
 //! console to every address, which no token for something else should
 //! carry with it.
+//!
+//! The reach says whether it changed anything by reading `admin reach`
+//! before and after (ADR 0515).
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -88,6 +91,16 @@ impl Action for SetReach {
         vec![admin_settings::PATH.into()]
     }
 
+    /// `admin reach` with no word, which prints the reach the console has.
+    fn probe(_: &Reaching) -> Option<Vec<String>> {
+        Some(["admin", "reach"].map(String::from).to_vec())
+    }
+
+    /// The reach it printed, if it is one.
+    fn probed(_: &Reaching, output: &str) -> Option<String> {
+        Reach::parse(output.trim()).map(|reach| reach.word().to_string())
+    }
+
     fn examples() -> Examples<Reaching> {
         let word = EXAMPLE.word();
         Examples {
@@ -136,6 +149,28 @@ mod tests {
             assert_eq!((failure.kind, failure.field), (Kind::BadValue, Some("reach")), "{reach:?}");
             assert_eq!(failure.detail, words, "{reach:?}");
         }
+    }
+
+    #[test]
+    fn the_probe_reads_the_reach_the_console_has_and_compares_the_word() {
+        let action = registered();
+        assert!(action.compares());
+        for word in ["private", "any"] {
+            let prepared = action.prepare(json!({ "reach": word })).unwrap();
+            assert_eq!(prepared.probe.as_deref(), Some(&["admin".into(), "reach".into()][..]));
+            // `admin reach` prints the word and a line end.
+            let probed = |output: &str| action.probed(&prepared.args, output);
+            assert_eq!(probed("private\n").as_deref(), Some("private"));
+            assert_eq!(probed("any\n").as_deref(), Some("any"));
+            assert_eq!(probed(" any \n\n").as_deref(), Some("any"));
+        }
+        // Anything else is not a reach, and the change then says it changed.
+        let args = json!({ "reach": "any" });
+        for output in ["", "\n", "Any\n", "everyone", "any private", "The reach is any.\n"] {
+            assert_eq!(action.probed(&args, output), None, "{output:?}");
+        }
+        // The reach asked for has no part in what the probe picks.
+        assert_eq!(action.probed(&json!({ "reach": "private" }), "any\n").as_deref(), Some("any"));
     }
 
     #[test]

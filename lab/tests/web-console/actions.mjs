@@ -9,11 +9,11 @@
 // security policy stays on), reads the list of actions from
 // GET /api/1/actions and calls the route of each with the arguments of
 // its first good example, with the session's cookie and token. A read is
-// answered 200 with JSON. A change is answered 200 and done, and the
-// action that its examples name puts back what it did: the service the
-// examples use is as it was at the end, by the change itself where the
-// undo left it elsewhere (a service that runs is started, and an undo
-// stops it).
+// answered 200 with JSON. A change is answered 200 and done, and says
+// whether it changed anything; the action that its examples name puts back
+// what it did: the service the examples use is as it was at the end, by
+// the change itself where the undo left it elsewhere (a service that runs
+// is started, and an undo stops it).
 //
 // The list is the one admin actions --json prints in a terminal, which the
 // boot test admin-actions holds to the route's; this test takes what the
@@ -104,6 +104,7 @@ export default async function check(t) {
     const answer = await call(action, args);
     ensure(answer.status === 200, `${id} from the page was answered ${answer.status}: ${answer.text}`);
     ensure(answer.json?.done === true, `${id} from the page was answered ${answer.text}, which does not say it is done`);
+    ensure(typeof answer.json?.changed === "boolean", `${id} from the page was answered ${answer.text}, which does not say whether it changed anything`);
   }
 
   // The service the examples of the services' actions use, if there is one,

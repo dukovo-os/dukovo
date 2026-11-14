@@ -62,6 +62,8 @@ struct Action {
     runs: String,
     #[allow(dead_code)] // As above.
     long: bool,
+    #[allow(dead_code)] // As above.
+    compares: bool,
     tests: Tests,
 }
 
@@ -297,7 +299,7 @@ mod tests {
         let [checks, route, same, browser, ansible] = tests;
         format!(
             "[[action]]\nid = \"{id}\"\ntitle = \"T\"\narea = \"services\"\nmethod = \"GET\"\n\
-             path = \"/api/1/x\"\nruns = \"as-the-person\"\nlong = false\n\
+             path = \"/api/1/x\"\nruns = \"as-the-person\"\nlong = false\ncompares = false\n\
              tests = {{ checks = \"{checks}\", route = \"{route}\", same_as_command = \"{same}\", \
              browser = \"{browser}\", ansible = \"{ansible}\" }}\n"
         )

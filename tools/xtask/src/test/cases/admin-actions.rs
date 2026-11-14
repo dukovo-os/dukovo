@@ -27,7 +27,11 @@
 //! that one elevate unlocked with her password, leaves the example service
 //! as the route does; the route's undo, which examples.undo names, puts
 //! back what the change did, and the log has a line for each change asked
-//! for and none for a read that worked. console.reach changes admin.toml,
+//! for and none for a read that worked. Every change's answer says whether
+//! it changed anything: always true for a change that compares no probe, as
+//! a restart and a renewal do not, and false for the second run of one that
+//! does (the list's compares), from the state the first left, whose log line
+//! then ends with "changed nothing". console.reach changes admin.toml,
 //! the first change of a settings file through the console: the route sets
 //! the other reach, the file keeps every comment it shipped with, admind's
 //! log says it read its settings again, and the undo, then the shown
@@ -58,7 +62,7 @@ const PEER: &str = "10.0.2.2";
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-actions",
-    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, a change ADM-122 for bob and ADM-106 for alice locked, a name that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
+    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, a change ADM-122 for bob and ADM-106 for alice locked, a name that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; each change's answer says changed, which is true for a restart and a renewal, which compare nothing, and false for the second run of each change whose compares is true, from the state the first left, with changed nothing at the end of its log line; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -86,6 +90,7 @@ fn admin_actions(vm: &mut Vm, case: &Case) -> Result<(), String> {
         actions: Vec::new(),
         commands: BTreeMap::new(),
         said: Vec::new(),
+        twice: Vec::new(),
     };
 
     // alice's password once for this pane, then bob, who is in group
@@ -113,6 +118,7 @@ fn admin_actions(vm: &mut Vm, case: &Case) -> Result<(), String> {
     service_changes(vm, &mut test)?;
     console_changes(vm, &mut test)?;
     renewing(vm, &mut test)?;
+    every_probe_was_compared(&test)?;
     the_log(vm, &test)?;
 
     vm.press_power_button()?;
@@ -133,6 +139,9 @@ struct Test {
     commands: BTreeMap<String, String>,
     /// The lines the log must have, each without its `admind: `.
     said: Vec<String>,
+    /// The changes whose good example was run twice, for the second
+    /// answer to say it changed nothing.
+    twice: Vec<String>,
 }
 
 /// Who asks the console.
@@ -223,16 +232,34 @@ impl Test {
     }
 
     /// Calls the change `id` as alice, unlocked: it is done, and the log
-    /// will say so.
-    fn change(&mut self, id: &str, args: &Value) -> Result<(), String> {
+    /// will say so. Gives what the answer says of whether it changed
+    /// anything, which is always true for a change that compares no probe.
+    fn change(&mut self, id: &str, args: &Value) -> Result<bool, String> {
         let action = self.action(id)?;
         self.unlocked()?;
         let reply = self.run(Who::Alice, &action, args)?;
         let reply = reply.must(&format!("{id} by the route, alice unlocked"), 200)?;
-        if reply.json()?["done"] != json!(true) {
-            return Err(format!("{id} was answered {}, which does not say it is done", reply.body));
+        let changed = changed_of(&reply.json()?)
+            .map_err(|why| format!("{id} was answered {}, which {why}", reply.body))?;
+        if !changed && !action.compares {
+            return Err(format!("{id} says it changed nothing, and compares no probe"));
         }
-        self.said("alice", id, "ended with status 0");
+        let ended = if changed { "ended with status 0" } else { "ended with status 0, changed nothing" };
+        self.said("alice", id, ended);
+        Ok(changed)
+    }
+
+    /// Calls the change `id` again with the same `args`, which it has
+    /// just been called with: its answer must say it changed nothing. The
+    /// action's `compares` says its answer can.
+    fn again(&mut self, id: &str, args: &Value) -> Result<(), String> {
+        if !self.action(id)?.compares {
+            return Err(format!("{id} does not compare, so a second run cannot say it changed nothing"));
+        }
+        if self.change(id, args)? {
+            return Err(format!("{id}, run a second time with {args}, says it changed something"));
+        }
+        self.twice.push(id.to_string());
         Ok(())
     }
 
@@ -275,6 +302,9 @@ struct Action {
     id: String,
     area: String,
     changes: bool,
+    /// Whether the change's `changed` is compared from a probe, and not
+    /// always true.
+    compares: bool,
     /// The route's address, with `{name}` parts.
     path: String,
     args: Value,
@@ -305,10 +335,15 @@ fn actions_of(list: &Value) -> Result<Vec<Action>, String> {
             }
         };
         let changes = row["changes"].as_bool().ok_or_else(|| format!("{id} has no changes"))?;
+        let compares = row["compares"].as_bool().ok_or_else(|| format!("{id} has no compares"))?;
+        if compares && !changes {
+            return Err(format!("{id} is a read, and says it compares a probe"));
+        }
         if actions.iter().any(|have| have.id == id) {
             return Err(format!("{id} is in the list twice"));
         }
-        actions.push(Action { area: text("area")?, path: text("path")?, changes, args, undo, id });
+        let (area, path) = (text("area")?, text("path")?);
+        actions.push(Action { area, path, changes, compares, args, undo, id });
     }
     for action in &actions {
         if let Some((undo, _)) = &action.undo
@@ -747,8 +782,16 @@ fn service_change(
     };
     test.change(&undo, &undo_args)?;
     let before = test.settled(name, Some(!runs))?;
-    test.change(id, &action.args)?;
+    if !test.change(id, &action.args)? {
+        return Err(format!("{id} says it changed nothing, and {undo} had just left the service as {before:?}"));
+    }
     let after = test.settled(name, Some(runs))?;
+    // Done again, from the state the change left, it changes nothing.
+    test.again(id, &action.args)?;
+    let twice = test.settled(name, Some(runs))?;
+    if !twice.as_before(&after) {
+        return Err(format!("{id} again left {twice:?}, and the first left {after:?}"));
+    }
     test.change(&undo, &undo_args)?;
     let again = test.settled(name, Some(!runs))?;
     if !again.as_before(&before) {
@@ -872,7 +915,9 @@ fn console_changes(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     let mut read_again = reloads(&vm.log());
 
     // The route: the file says the other reach, with its comments, and admind read it again.
-    test.change(&reach.id, &other)?;
+    if !test.change(&reach.id, &other)? {
+        return Err(format!("console.reach says it changed nothing in setting {OTHER_REACH} over {example}"));
+    }
     let said = reach_printed(vm, test)?;
     if said != OTHER_REACH {
         return Err(format!("admin reach says {said:?} after the route set {OTHER_REACH}"));
@@ -908,9 +953,10 @@ fn console_changes(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     read_again += 1;
     reloaded(vm, read_again)?;
 
-    // A reach that is set already: done, and nothing is written or read again.
+    // A reach that is set already: done, it says it changed nothing, and
+    // nothing is written or read again.
     let before = reloads(&vm.log());
-    test.change(&reach.id, &reach.args)?;
+    test.again(&reach.id, &reach.args)?;
     std::thread::sleep(Duration::from_secs(3));
     if reloads(&vm.log()) != before {
         return Err("admind read its settings again for a reach that was set already".into());
@@ -992,6 +1038,47 @@ fn agree(vm: &mut Vm, test: &mut Test, name: &str, new: &str, old: &str) -> Resu
     Ok(())
 }
 
+/// What a change's answer says of whether it changed anything: it is done
+/// and has `changed`, a boolean. Otherwise, what the answer lacks.
+fn changed_of(answer: &Value) -> Result<bool, String> {
+    if answer["done"] != json!(true) {
+        return Err("does not say it is done".into());
+    }
+    answer["changed"].as_bool().ok_or_else(|| "has no changed, true or false".into())
+}
+
+/// The changes in `actions` that compare a probe and are not in `twice`,
+/// those run a second time.
+fn not_run_twice<'a>(actions: &'a [Action], twice: &[String]) -> Vec<&'a str> {
+    actions
+        .iter()
+        .filter(|action| action.compares && !twice.contains(&action.id))
+        .map(|action| action.id.as_str())
+        .collect()
+}
+
+/// Every change that compares a probe was run twice, and the second
+/// answer said it changed nothing: a change added to the list with a probe
+/// is held to it, and so is one whose probe the test has no state for.
+fn every_probe_was_compared(test: &Test) -> Result<(), String> {
+    let missing = not_run_twice(&test.actions, &test.twice);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!("{} compares a probe, and the test did not run it twice", missing.join(", ")))
+}
+
+/// How many lines of `log` have `line`. The line of a change that ended
+/// well and has `, changed nothing` after it is another line than the one
+/// without, though the one is the start of the other.
+fn lines_of(log: &str, line: &str) -> usize {
+    let nothing = ", changed nothing";
+    let longer = format!("{line}{nothing}");
+    log.lines()
+        .filter(|have| have.contains(line) && (line.ends_with(nothing) || !have.contains(&longer)))
+        .count()
+}
+
 /// The log has a line for each change asked for, however it ended, and for
 /// no read that worked, and none for arguments that do not read.
 fn the_log(vm: &mut Vm, test: &Test) -> Result<(), String> {
@@ -1000,7 +1087,7 @@ fn the_log(vm: &mut Vm, test: &Test) -> Result<(), String> {
         *wanted.entry(format!("admind: {line}")).or_default() += 1;
     }
     let deadline = Instant::now() + Duration::from_secs(20);
-    while wanted.iter().any(|(line, &times)| vm.log().matches(line.as_str()).count() < times)
+    while wanted.iter().any(|(line, &times)| lines_of(&vm.log(), line) < times)
         && Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(500));
@@ -1008,7 +1095,7 @@ fn the_log(vm: &mut Vm, test: &Test) -> Result<(), String> {
     let log = vm.log();
     let mut problems = Problems::default();
     for (line, times) in &wanted {
-        let have = log.matches(line.as_str()).count();
+        let have = lines_of(&log, line);
         if have != *times {
             problems.note(line, Err(format!("the log has it {have} times, not {times}")));
         }
@@ -1031,14 +1118,17 @@ mod tests {
 
     fn list() -> Value {
         json!([
-            {"id": "service.list", "area": "services", "changes": false, "path": "/api/1/services",
-             "examples": {"good": [{}], "undo": null}},
-            {"id": "service.start", "area": "services", "changes": true,
+            {"id": "service.list", "area": "services", "changes": false, "compares": false,
+             "path": "/api/1/services", "examples": {"good": [{}], "undo": null}},
+            {"id": "service.start", "area": "services", "changes": true, "compares": true,
              "path": "/api/1/services/{name}/start",
              "examples": {"good": [{"name": "diskhealth"}],
                           "undo": {"action": "service.stop", "args": {"name": "diskhealth"}}}},
-            {"id": "service.stop", "area": "services", "changes": true,
+            {"id": "service.stop", "area": "services", "changes": true, "compares": true,
              "path": "/api/1/services/{name}/stop",
+             "examples": {"good": [{"name": "diskhealth"}], "undo": null}},
+            {"id": "service.restart", "area": "services", "changes": true, "compares": false,
+             "path": "/api/1/services/{name}/restart",
              "examples": {"good": [{"name": "diskhealth"}], "undo": null}},
         ])
     }
@@ -1069,8 +1159,10 @@ mod tests {
     #[test]
     fn the_list_gives_each_action_its_first_example_and_what_puts_it_back() {
         let actions = actions_of(&list()).unwrap();
-        assert_eq!(actions.len(), 3);
+        assert_eq!(actions.len(), 4);
         assert_eq!(actions[1].args, json!({"name": "diskhealth"}));
+        let compares: Vec<bool> = actions.iter().map(|action| action.compares).collect();
+        assert_eq!(compares, [false, true, true, false]);
         let (undo, args) = actions[1].undo.clone().unwrap();
         assert_eq!((undo.as_str(), args), ("service.stop", json!({"name": "diskhealth"})));
         assert!(actions[0].undo.is_none() && !actions[0].changes && actions[2].changes);
@@ -1090,6 +1182,12 @@ mod tests {
         let mut twice = list();
         twice[2]["id"] = json!("service.start");
         assert!(actions_of(&twice).unwrap_err().contains("twice"));
+        let mut no_compares = list();
+        no_compares[1].as_object_mut().unwrap().remove("compares");
+        assert!(actions_of(&no_compares).unwrap_err().contains("service.start has no compares"));
+        let mut read_that_compares = list();
+        read_that_compares[0]["compares"] = json!(true);
+        assert!(actions_of(&read_that_compares).unwrap_err().contains("is a read"));
         assert!(actions_of(&json!([])).is_err());
     }
 
@@ -1140,6 +1238,40 @@ mod tests {
             projection("service.explain", &explained("a ran for 9 s."))
         );
         assert_eq!(projection("certificate.list", &json!([1])), json!([1]));
+    }
+
+    #[test]
+    fn a_change_s_answer_says_it_is_done_and_whether_it_changed_anything() {
+        let said = |changed: Value| changed_of(&json!({"done": true, "changed": changed, "output": []}));
+        assert_eq!(said(json!(true)), Ok(true));
+        assert_eq!(said(json!(false)), Ok(false));
+        assert!(said(json!("no")).unwrap_err().contains("no changed"));
+        assert!(said(Value::Null).is_err());
+        assert!(changed_of(&json!({"done": true, "output": []})).unwrap_err().contains("no changed"));
+        assert!(changed_of(&json!({"done": false, "changed": true})).unwrap_err().contains("done"));
+    }
+
+    #[test]
+    fn a_change_that_compares_is_held_to_a_second_run_that_said_it_changed_nothing() {
+        let actions = actions_of(&list()).unwrap();
+        assert_eq!(not_run_twice(&actions, &[]), ["service.start", "service.stop"]);
+        let twice = ["service.stop".to_string(), "service.start".to_string()];
+        assert!(not_run_twice(&actions, &twice).is_empty());
+        assert_eq!(not_run_twice(&actions, &twice[..1]), ["service.start"]);
+    }
+
+    #[test]
+    fn a_line_of_the_log_that_changed_nothing_is_counted_apart_from_the_same_that_did() {
+        let log = "admind: alice from 10.0.2.2: service.start ended with status 0\n\
+                   admind: alice from 10.0.2.2: service.start ended with status 0, changed nothing\n\
+                   admind: alice from 10.0.2.2: service.start ended with status 0, changed nothing\n\
+                   admind: alice from 10.0.2.2: service.stop ended with status 0\n";
+        let line = |id: &str, ended: &str| format!("admind: alice from 10.0.2.2: {id} {ended}");
+        assert_eq!(lines_of(log, &line("service.start", "ended with status 0")), 1);
+        assert_eq!(lines_of(log, &line("service.start", "ended with status 0, changed nothing")), 2);
+        assert_eq!(lines_of(log, &line("service.stop", "ended with status 0")), 1);
+        assert_eq!(lines_of(log, &line("service.restart", "ended with status 0")), 0);
+        assert_eq!(lines_of("", "admind: x"), 0);
     }
 
     #[test]
