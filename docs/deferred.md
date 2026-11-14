@@ -282,6 +282,7 @@ These come from finished work; the releases themselves are in the
 | The C and C++ batches: make, bash, zsh, fish, Vim, Perl, GnuPG, htop, btop with a Radix collector, ncdu 1.x, mosh, an IRC or Matrix client | Follow the Rust batch | Approval to continue |
 | delta in the catalog | Needs libgit2; its xdiff is LGPL, to be checked | License review |
 | yazi in the catalog | Needs tokio support | Port work |
+| socket2's Radix patch to offer TCP keep-alive's interval and count, then admind's own setsockopt for TCP_KEEPINTVL (`probe_every` in admind/serve.rs) removed | The patch predates the kernel's TCP_KEEPINTVL and TCP_KEEPCNT (#360) and leaves them out for Radix; changing it rebuilds the toolchain's crates | The next change to ports/rust-crates |
 | nmap in the catalog | NPSL license | Legal review |
 | Advisories for ecosystems other than crates.io; bundles over 4 GiB (ADRs 0222, 0389) | npm's export and large bundles need ZIP64 in `dkv` | A need |
 | mlibc functions with no code, which end the program (posix design note) | Each is written when a port needs it, upstream where general | A port |

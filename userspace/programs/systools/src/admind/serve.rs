@@ -58,8 +58,15 @@ use crate::util::{self, Fail, fail};
 /// first request together.
 const HEAD_TIME: Duration = Duration::from_secs(10);
 
-/// How long a connection may wait for the head of its next request.
+/// How long a connection may wait for the head of its next request, and
+/// how long a quiet one waits before the network's first probe.
 const KEEP_ALIVE: Duration = Duration::from_secs(60);
+
+/// How long apart the network's probes of a quiet connection go when
+/// none is answered: a browser that went away without a word is found
+/// out by them, which also frees the place of an event stream no one
+/// reads.
+const PROBE_EVERY: Duration = Duration::from_secs(15);
 
 /// The most bytes a request's head may have, and the most headers.
 const HEAD_MAX: usize = 16 << 10;
@@ -301,6 +308,39 @@ async fn head_in_time<F: Future>(
     .await
 }
 
+/// Sets the network's probes on `stream`: the first after [`KEEP_ALIVE`]
+/// of quiet, and then every [`PROBE_EVERY`].
+fn set_probes(stream: &TcpStream) -> io::Result<()> {
+    let probes = TcpKeepalive::new().with_time(KEEP_ALIVE);
+    #[cfg(not(target_os = "radix"))]
+    let probes = probes.with_interval(PROBE_EVERY);
+    SockRef::from(stream).set_tcp_keepalive(&probes)?;
+    #[cfg(target_os = "radix")]
+    probe_every(stream)?;
+    Ok(())
+}
+
+/// Sets the time between probes on Radix, whose socket2 leaves
+/// TCP_KEEPINTVL out although the kernel takes it.
+#[cfg(target_os = "radix")]
+fn probe_every(stream: &TcpStream) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let seconds = libc::c_int::try_from(PROBE_EVERY.as_secs()).unwrap_or(libc::c_int::MAX);
+    let size = libc::socklen_t::try_from(size_of::<libc::c_int>()).unwrap_or_default();
+    // SAFETY: setsockopt reads `size` bytes of `seconds`, which lives
+    // through the call, on a socket `stream` holds open.
+    let done = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_KEEPINTVL,
+            (&raw const seconds).cast(),
+            size,
+        )
+    };
+    if done < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
 /// Serves one connection, which holds `slot` until it ends. `head_time`
 /// is how long its handshake and first head have.
 async fn connection(
@@ -311,11 +351,8 @@ async fn connection(
     slot: Slot,
 ) {
     let deadline = Instant::now() + head_time;
-    // A browser that went away without a word is found out by the
-    // network's own probes, which also frees the place of an event stream
-    // that no one reads. A socket that cannot be set so is still a socket.
-    let probes = TcpKeepalive::new().with_time(KEEP_ALIVE).with_interval(Duration::from_secs(15));
-    if SockRef::from(&stream).set_tcp_keepalive(&probes).is_err() {
+    // A socket whose probes cannot be set is still a socket.
+    if set_probes(&stream).is_err() {
         log(7, "a connection's keep-alive probes could not be set");
     }
     let acceptor = TlsAcceptor::from(Arc::clone(&shared.certificate.borrow().config));
