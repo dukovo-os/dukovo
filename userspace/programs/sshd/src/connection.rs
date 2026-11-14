@@ -66,7 +66,7 @@ use russh::server::{
 use russh::{Channel, ChannelId, ChannelOpenFailure, Disconnect, MethodSet, Preferred, SshId, kex};
 
 use crate::forward::Forwarding;
-use crate::help::{self, Helping};
+use crate::help::{self, HelpPipes, Helping};
 use crate::session::{self, SignedIn, WINDOW};
 use crate::{authd, hostkey, pty};
 
@@ -969,15 +969,16 @@ impl Connection {
         let answer = authd::ask_for_fds(&request).await;
         drop(request);
         match answer {
-            Ok((Answer::Done(id), fds)) => match <[OwnedFd; 2]>::try_from(fds) {
-                Ok([socket, transcript]) => {
+            Ok((Answer::Done(id), fds)) => match <[OwnedFd; 4]>::try_from(fds) {
+                Ok([screen, typing, cut, transcript]) => {
                     self.signed(HELP_NAME, &format!("{how}, to help session {id}"));
-                    self.helping = Some(Helping::new(id, socket, File::from(transcript)));
+                    let pipes = HelpPipes { screen, typing, cut };
+                    self.helping = Some(Helping::new(id, pipes, File::from(transcript)));
                     Ok(Auth::Accept)
                 }
                 Err(_) => {
                     eprintln!(
-                        "sshd: authd signed a helper in to help session {id} without its socket \
+                        "sshd: authd signed a helper in to help session {id} without its pipes \
                          and transcript"
                     );
                     let _ = authd::ask(&Request::SshHelpEnded { id }, &[]).await;

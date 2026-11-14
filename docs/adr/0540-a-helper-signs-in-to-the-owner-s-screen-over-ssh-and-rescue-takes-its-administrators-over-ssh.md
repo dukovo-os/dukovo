@@ -53,18 +53,21 @@ and 0348), and Spark gives a service the capabilities its file asks for.
    passwords off. `help` passes AllowUsers and AllowGroups.
 3. **The helper shares the owner's screen.** help-session makes a
    terminal pair, the help screen, shows it in the owner's terminal, and
-   hands authd the terminal and one end of a socket pair. authd starts the
+   hands authd the terminal and sshd's ends of two pipes, one that carries
+   the screen to the helper and one that brings their typing back: pipes,
+   as a socket cannot be sent in a message (ADR 0091). authd starts the
    owner's login shell on the terminal, as the owner, with `HELP_SESSION`
-   set; when the helper signs in, authd gives sshd the socket and a
-   transcript, and sshd passes the helper's channel to and from the
-   socket. The helper gets one terminal and one shell: no command, no SFTP
+   set; when the helper signs in, authd gives sshd the pipes' ends, the
+   read end of a pipe whose write end authd keeps, and a transcript, and
+   sshd passes the helper's channel to and from the pipes. The helper
+   gets one terminal and one shell: no command, no SFTP
    and no forwarding, and the screen keeps the owner's size whatever the
    helper's window is. The owner may type too.
 4. **The helper's screen starts at their sign-in and never holds the
    owner's back.** It shows what changes from then on, and Ctrl-L redraws
    it. The output waits for a slow connection up to 256 KiB; past that,
    what is waiting is skipped and the helper is told to redraw. sshd tells
-   the helper when the session ends, since authd closes the socket as it
+   the helper when the session ends, since authd closes its pipe as it
    ends it.
 5. **The session ends in one key, or when its time is up.** Ctrl-] in the
    owner's terminal, `help-session end` from another of theirs, the

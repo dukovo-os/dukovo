@@ -4,7 +4,7 @@
 //! What sshd asks authd(8) (ADRs 0347 and 0348): whether a key may sign
 //! someone in, whether a password is right, and to start their session,
 //! which it then waits on for its end; and to sign a helper in to a help
-//! session (ADR 0540), whose answer brings the help screen's socket and
+//! session (ADR 0540), whose answer brings the help screen's pipes and
 //! transcript.
 //! authd may be busy with another's password for a second or two, so the
 //! connection waits for its answer without holding the others up.
@@ -96,7 +96,7 @@ pub async fn ask(request: &Request, fds: &[RawFd]) -> Result<(Answer, Asked), St
 
 /// Sends authd `request` and reads its answer, with the descriptors that
 /// come with its first bytes: for `ssh-help`, whose right answer brings
-/// the help session's socket and transcript. Nothing more is read.
+/// the help session's pipes and transcript. Nothing more is read.
 pub async fn ask_for_fds(request: &Request) -> Result<(Answer, Vec<OwnedFd>), String> {
     let unreachable = |err: io::Error| format!("cannot ask authd at {}: {err}", accounts::SOCKET);
     let stream = std::os::unix::net::UnixStream::connect(accounts::SOCKET).map_err(unreachable)?;

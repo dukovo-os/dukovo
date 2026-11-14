@@ -4,14 +4,16 @@
 //! help-session(1): lets a helper who needs no account work in a shell of
 //! the owner's, on the owner's own screen (ADR 0540).
 //!
-//! `start` makes the help screen, a pseudo-terminal pair, and a socket
-//! pair, and asks authd(8) for a session with the pair's slave side and
-//! one end of the socket: authd starts the owner's shell on the terminal
-//! in a resource domain of its own, and hands sshd(8) the socket end when
-//! the helper signs in as `help` (`authd/help.rs`, and `sshd/src/help.rs`
-//! on the other side of the socket). help-session then joins the help
-//! screen's output to the owner's terminal and to the socket, and the
-//! owner's keys and the helper's to the help screen, until the session
+//! `start` makes the help screen, a pseudo-terminal pair, and two pipes,
+//! and asks authd(8) for a session with the pair's slave side and one end
+//! of each pipe: authd starts the owner's shell on the terminal in a
+//! resource domain of its own, and hands sshd(8) the pipes' ends when the
+//! helper signs in as `help` (`authd/help.rs`, and `sshd/src/help.rs` on
+//! the other side of the pipes). One pipe carries the help screen to the
+//! helper, the other the helper's typing back: pipes, as a socket cannot
+//! be sent in a message (ADR 0091). help-session then joins the help
+//! screen's output to the owner's terminal and to the helper's pipe, and
+//! the owner's keys and the helper's to the help screen, until the session
 //! ends. Its connection to authd is the session's life line: authd
 //! tells the owner's terminal what happens (a helper signed in, time
 //! running out, the end) as event lines on it, and ends the session when
@@ -26,6 +28,7 @@
 //! helper typed. The boot test `help-session` covers the tool.
 
 use std::ffi::OsStr;
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -251,10 +254,17 @@ fn start(options: &Start) -> Result<i32, Fail> {
     // The help screen has the owner's settings and size, taken before the
     // terminal goes raw.
     let mut screen = Pty::open(0).map_err(|err| util::failed(&"a pseudo-terminal", err))?;
-    let (socket, for_sshd) =
-        UnixStream::pair().map_err(|err| util::failed(&"a socket pair", err))?;
-    let sent: Vec<RawFd> =
-        screen.slave.iter().map(AsRawFd::as_raw_fd).chain([for_sshd.as_raw_fd()]).collect();
+    let pipe = || elevate::pipe().map_err(|err| util::failed(&"a pipe", err));
+    // sshd reads the screen from the one, and writes the helper's typing
+    // to the other.
+    let (sshd_reads, screen_out) = pipe()?;
+    let (typing_in, sshd_writes) = pipe()?;
+    let sent: Vec<RawFd> = screen
+        .slave
+        .iter()
+        .map(AsRawFd::as_raw_fd)
+        .chain([sshd_reads.as_raw_fd(), sshd_writes.as_raw_fd()])
+        .collect();
     let term = std::env::var("TERM").unwrap_or_default();
     let (text, authd) = ask_with_password(
         options.open_ssh,
@@ -270,12 +280,13 @@ fn start(options: &Start) -> Result<i32, Fail> {
     // authd holds them now. Without this one's own copy of the slave side,
     // the master would not report the end of the shell's.
     screen.slave = None;
-    drop(for_sshd);
+    drop((sshd_reads, sshd_writes));
     let started = HelpStarted::from_words(&text)
         .ok_or_else(|| fail(format!("authd answered `ok {text}`")))?;
     show_start(options, &started);
-    socket.set_nonblocking(true).map_err(|err| util::failed(&"the helper's socket", err))?;
-    let finished = share(&screen.master, &socket, authd).map_err(|fail| Fail {
+    let helper = HelperPipes::new(screen_out, typing_in)
+        .map_err(|err| util::failed(&"the helper's pipes", err))?;
+    let finished = share(&screen.master, &helper, authd).map_err(|fail| Fail {
         message: format!("{}; help-session log {} shows what was kept", fail.message, started.id),
         ..fail
     })?;
@@ -487,13 +498,39 @@ fn password_typed() -> Result<Vec<u8>, Fail> {
     }
 }
 
-/// Joins the help screen to the owner's terminal and the helper's socket
+/// help-session's ends of the two pipes to sshd, both non-blocking.
+struct HelperPipes {
+    /// What the helper sees of the help screen goes in here.
+    screen_out: File,
+    /// What the helper types comes out of here.
+    typing_in: File,
+}
+
+impl HelperPipes {
+    fn new(screen_out: OwnedFd, typing_in: OwnedFd) -> io::Result<HelperPipes> {
+        set_nonblocking(&screen_out)?;
+        set_nonblocking(&typing_in)?;
+        Ok(HelperPipes { screen_out: screen_out.into(), typing_in: typing_in.into() })
+    }
+}
+
+/// Makes `fd` non-blocking.
+fn set_nonblocking(fd: &OwnedFd) -> io::Result<()> {
+    // SAFETY: fcntl reads and sets the status flags of our own descriptor.
+    let set = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) == 0
+    };
+    if set { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Joins the help screen to the owner's terminal and the helper's pipes
 /// until the session ends: the terminal is raw meanwhile, and put back
 /// whatever ends the loop. Dropping `authd` at the end closes the
 /// connection, which is what ends a session its owner ended.
 fn share(
     master: &OwnedFd,
-    socket: &UnixStream,
+    helper: &HelperPipes,
     mut authd: BufReader<UnixStream>,
 ) -> Result<Finished, Fail> {
     let (wake, wake_write) = elevate::pipe().map_err(|err| util::failed(&"a pipe", err))?;
@@ -516,9 +553,9 @@ fn share(
     raw.on();
     let mut joined = Joined {
         master,
-        socket,
+        helper,
         master_open: true,
-        socket_open: true,
+        typing_open: true,
         helper_came: false,
         to_helper: Vec::new(),
         buffer: [0; 4096],
@@ -531,14 +568,14 @@ fn share(
 /// The sources [`share`] reads, and what it has seen.
 struct Joined<'a> {
     master: &'a OwnedFd,
-    socket: &'a UnixStream,
-    /// Whether the help screen and the helper's socket can still be read:
+    helper: &'a HelperPipes,
+    /// Whether the help screen and the helper's typing can still be read:
     /// each is let alone once it reports its end.
     master_open: bool,
-    socket_open: bool,
+    typing_open: bool,
     /// Whether a helper signed in: the screen goes to them from then on.
     helper_came: bool,
-    /// What the helper's socket has not taken yet.
+    /// What the helper's pipe has not taken yet.
     to_helper: Vec<u8>,
     buffer: [u8; 4096],
 }
@@ -558,14 +595,16 @@ impl Joined<'_> {
         };
         let when = |open: bool, events: libc::c_short| if open { events } else { 0 };
         loop {
-            let to_socket = when(self.socket_open, libc::POLLIN)
-                | when(!self.to_helper.is_empty(), libc::POLLOUT);
             let mut fds = [
                 watch(authd.get_ref().as_raw_fd(), libc::POLLIN),
                 watch(wake.as_raw_fd(), libc::POLLIN),
                 watch(self.master.as_raw_fd(), when(self.master_open, libc::POLLIN)),
                 watch(0, libc::POLLIN),
-                watch(self.socket.as_raw_fd(), to_socket),
+                watch(self.helper.typing_in.as_raw_fd(), when(self.typing_open, libc::POLLIN)),
+                watch(
+                    self.helper.screen_out.as_raw_fd(),
+                    when(!self.to_helper.is_empty(), libc::POLLOUT),
+                ),
             ];
             // A line of authd's already read is taken before waiting.
             let buffered = !authd.buffer().is_empty();
@@ -590,10 +629,11 @@ impl Joined<'_> {
             if fds[3].revents != 0 && self.owner_typed() {
                 return Ok(HelpEnded::Owner);
             }
-            if fds[4].revents & libc::POLLOUT != 0 {
+            // Room, or the helper's end closed, which the write tells.
+            if fds[5].revents != 0 {
                 self.send_helper();
             }
-            if self.socket_open && fds[4].revents & !libc::POLLOUT != 0 {
+            if fds[4].revents != 0 {
                 self.helper_typed();
             }
             if fds[2].revents != 0 {
@@ -649,14 +689,15 @@ impl Joined<'_> {
     /// Passes what the helper typed to the help screen. Ctrl-] from them
     /// is a key like any other: only the owner's ends the session.
     fn helper_typed(&mut self) {
-        let mut socket = self.socket;
-        match socket.read(&mut self.buffer) {
-            Ok(0) => self.socket_open = false,
+        let mut typing = &self.helper.typing_in;
+        match typing.read(&mut self.buffer) {
+            // Every write end is closed: sshd's connection, or the session
+            // before a helper came, ended.
+            Ok(0) => self.typing_open = false,
             Ok(count) => elevate::write_all(self.master.as_raw_fd(), &self.buffer[..count]),
-            // Nothing to read yet is no end; a reset connection is as ended
-            // as a closed one.
+            // Nothing to read yet is no end; any other failure is.
             Err(err) => {
-                self.socket_open =
+                self.typing_open =
                     matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted);
             }
         }
@@ -676,7 +717,7 @@ impl Joined<'_> {
     }
 
     /// Sends `bytes` to the helper, once one has signed in: what the
-    /// socket does not take now waits for it, up to [`BEHIND_MAX`].
+    /// pipe does not take now waits for it, up to [`BEHIND_MAX`].
     fn tell_helper(&mut self, bytes: &[u8]) {
         if !self.helper_came {
             return;
@@ -689,13 +730,14 @@ impl Joined<'_> {
         self.send_helper();
     }
 
-    /// Sends the helper as much of what waits for them as the socket takes
-    /// now, which never blocks. A socket that takes nothing more, as when
-    /// the helper's connection is gone, has what waits dropped.
+    /// Sends the helper as much of what waits for them as the pipe takes
+    /// now, which never blocks. A pipe that takes nothing more, as when
+    /// the helper's connection is gone and its read end with it, has what
+    /// waits dropped.
     fn send_helper(&mut self) {
-        let mut socket = self.socket;
+        let mut out = &self.helper.screen_out;
         while !self.to_helper.is_empty() {
-            match socket.write(&self.to_helper) {
+            match out.write(&self.to_helper) {
                 Ok(0) => return self.to_helper.clear(),
                 Ok(count) => drop(self.to_helper.drain(..count)),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
@@ -727,7 +769,7 @@ impl Joined<'_> {
         let text = framed(&event_sentence(&event));
         match event {
             // The owner's screen says it after the terminal is put back;
-            // sshd tells the helper, as authd has closed their socket.
+            // sshd tells the helper, as authd has cut their connection.
             HelpEvent::Ended(why) => return Ok(Some(why)),
             HelpEvent::Helper { .. } => self.helper_came = true,
             HelpEvent::Left { .. } => self.tell_helper(text.as_bytes()),
@@ -1182,20 +1224,22 @@ mod tests {
 
     #[test]
     fn the_helper_sees_the_screen_from_their_sign_in_and_a_slow_one_is_told_what_was_skipped() {
-        let (socket, helper) = UnixStream::pair().unwrap();
-        socket.set_nonblocking(true).unwrap();
-        helper.set_nonblocking(true).unwrap();
+        let (helper, screen_out) = elevate::pipe().unwrap();
+        let (typing_in, _typing) = elevate::pipe().unwrap();
+        set_nonblocking(&helper).unwrap();
+        let helper = File::from(helper);
+        let pipes = HelperPipes::new(screen_out, typing_in).unwrap();
         let master = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
         let mut joined = Joined {
             master: &master,
-            socket: &socket,
+            helper: &pipes,
             master_open: true,
-            socket_open: true,
+            typing_open: true,
             helper_came: false,
             to_helper: Vec::new(),
             buffer: [0; 4096],
         };
-        let read = |helper: &UnixStream| {
+        let read = |helper: &File| {
             let mut got = Vec::new();
             let mut buffer = [0; 16384];
             let mut helper = helper;
@@ -1207,13 +1251,13 @@ mod tests {
             }
             got
         };
-        // Before a helper signs in, nothing goes to the socket.
+        // Before a helper signs in, nothing goes to the pipe.
         joined.tell_helper(b"before");
         assert!(read(&helper).is_empty());
         joined.helper_came = true;
         joined.tell_helper(b"after");
         assert_eq!(read(&helper), b"after");
-        // A helper who reads nothing: the socket fills, and what it cannot
+        // A helper who reads nothing: the pipe fills, and what it cannot
         // take waits, up to the most kept; then that is dropped for a note.
         let chunk = [b'x'; 4096];
         while joined.to_helper.is_empty() {

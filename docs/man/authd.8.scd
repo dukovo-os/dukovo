@@ -343,8 +343,9 @@ closes the connection, but for a session (below):
 *help-start* _minutes_ _key_ _open-ssh_ _term_ _password_
 	Starts a help session (HELP SESSIONS) for the asker, a person, for
 	_minutes_, 5 to 480, with their shell on the terminal that comes
-	with the request, and the help screen's end of a socket pair that
-	comes with it. _key_ is a public key as *ssh-key* gives it, or empty
+	with the request, and the ends of two pipes that come with it, which
+	sshd is given: the one it reads the help screen from and the one it
+	writes the helper's typing to. _key_ is a public key as *ssh-key* gives it, or empty
 	for a code. _open-ssh_ is *open-ssh* or empty; with it, and *sshd*
 	off, an administrator's _password_ is checked and sshd is started for
 	help sign-ins alone. _term_ is the asker's terminal type. authd
@@ -380,9 +381,10 @@ closes the connection, but for a session (below):
 *ssh-help* _connection_ *key* _signed_ _signature_
 	Signs a helper in to the help session whose code _code_ is, typed as
 	a person types it, or whose key signed the request, checked as for
-	*ssh-session*. *ok* and the session's ID, with two descriptors, the
-	help screen's socket and the transcript, for sshd to relay to the
-	helper and to write what they type in. A wrong code is counted and
+	*ssh-session*. *ok* and the session's ID, with four descriptors: the
+	help screen's two pipes' ends, for sshd to relay to and from the
+	helper; the read end of a pipe of authd's, whose end tells sshd the
+	session ended; and the transcript, to write what they type in. A wrong code is counted and
 	answered as a wrong password is; an address that is blocked is
 	refused unread. Only root may, as sshd runs.
 
@@ -575,8 +577,8 @@ authd: 192.168.1.0/24 is never blocked, for process 413 (user 0)
 A help session lets a helper who has no account sign in over SSH as
 *help* and work in a shell of the owner's, on the owner's screen, which
 the owner watches and ends with one key (ADR 0540). *help-session*(1)
-asks for it with *help-start*, sending the help screen's terminal and one
-end of a socket pair.
+asks for it with *help-start*, sending the help screen's terminal and the
+ends of two pipes for sshd.
 
 authd makes a resource domain *help-*_id_ below its own, which Spark gives
 it a capability to because its service file asks for one (*domain =
@@ -607,8 +609,8 @@ closes first, authd ends the session.
 A session ends when its owner asks (*help-end*, or the key Ctrl-] in
 *help-session*), when its time is up, when the helper's connection or the
 shell ends, and when authd or *sshd* restarts. authd then stops the domain,
-which ends every process the helper started, closes the socket, which
-ends the helper's connection, writes the end to the transcript and to the
+which ends every process the helper started, closes its pipe to sshd,
+which ends the helper's connection, writes the end to the transcript and to the
 audit log. What the helper changed in the owner's files stays.
 
 Nothing in a help screen asks for a password, since the helper could draw

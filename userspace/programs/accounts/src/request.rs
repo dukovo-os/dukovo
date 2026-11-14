@@ -60,14 +60,17 @@
 //! The web console's requests, `console` and a verb, are in
 //! [`console`](crate::console) (ADR 0514).
 //!
-//! A `help-start` request (ADR 0540) comes with two descriptors: the help
-//! screen's terminal, where authd starts the owner's shell, and the end of
-//! a socket pair that authd hands sshd once the helper signs in. Its
-//! answer is `ok` and [`HelpStarted`]'s words, and its connection then
-//! stays open: authd writes it [`HelpEvent`] lines until the session
-//! ends, and ends the session when it closes. A right `ssh-help` is
-//! answered `ok` and the session's ID with two descriptors: that socket
-//! end and the transcript.
+//! A `help-start` request (ADR 0540) comes with three descriptors: the
+//! help screen's terminal, where authd starts the owner's shell, and the
+//! read end of the pipe that carries the screen to the helper and the
+//! write end of the one that brings their typing back, which authd hands
+//! sshd once the helper signs in (pipes, as a socket cannot be sent,
+//! ADR 0091). Its answer is `ok` and [`HelpStarted`]'s words, and its
+//! connection then stays open: authd writes it [`HelpEvent`] lines until
+//! the session ends, and ends the session when it closes. A right
+//! `ssh-help` is answered `ok` and the session's ID with four
+//! descriptors: those two pipes' ends, the read end of a pipe whose end
+//! tells sshd the session ended, and the transcript.
 //!
 //! An answer is `ok`, maybe with words after it, or `no` and why, then a
 //! newline. authd tells who asks by the user its connection gives

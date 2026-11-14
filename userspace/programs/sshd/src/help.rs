@@ -5,9 +5,11 @@
 //! in as [`HELP_NAME`], which is no account, with the code the session's
 //! owner gave them, typed at the client's password or keyboard-interactive
 //! prompt, or with the key the owner named; authd(8) checks either and
-//! answers with the help screen's socket and the session's transcript.
-//! The connection then has one session channel, a terminal and a shell:
-//! its bytes go to and from the help screen through the socket, where the
+//! answers with the help screen's pipes, one that brings the screen and
+//! one that takes the helper's typing, the read end of a pipe of authd's
+//! whose end ends the connection, and the session's transcript. The
+//! connection then has one session channel, a terminal and a shell: its
+//! bytes go to and from the help screen through the pipes, where the
 //! owner sees them, and each line the helper types is written to the
 //! transcript before it goes, so that nothing the helper typed goes
 //! unkept. The helper gets no command, SFTP or forwarding, and the screen
@@ -19,7 +21,7 @@
 //! ([`HELP_ONLY`]), only [`HELP_NAME`] signs in.
 
 use std::fs::File;
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
@@ -30,7 +32,8 @@ use accounts::request::{self, HELP_ONLY, HELP_TRANSCRIPT_MAX, HELP_WAITING, Help
 use accounts::sshd_config::Settings;
 use russh::server::Handle;
 use russh::{ChannelId, Disconnect, MethodKind};
-use tokio::net::unix::OwnedWriteHalf;
+use tokio::io::AsyncReadExt;
+use tokio::net::unix::pipe;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -47,9 +50,9 @@ const GREETING: &str = "\r\nYou are in a help session: you see and type in its o
                         is kept. The screen shows what changes from now on: Ctrl-L redraws \
                         it.\r\n\r\n";
 
-/// What the helper is told as the session ends. authd closes the help
-/// screen's socket as it ends the session, so help-session(1) cannot tell
-/// them itself; its owner is told why.
+/// What the helper is told as the session ends, as the help screen's pipe
+/// ends or authd closes its own, which help-session(1) cannot tell them;
+/// its owner is told why.
 const ENDED: &str = "\r\n[help-session] The help session ended.\r\n";
 
 /// Whether sshd runs for a help session alone.
@@ -81,12 +84,22 @@ pub fn methods(settings: &Settings) -> Vec<MethodKind> {
     methods
 }
 
+/// The pipes' ends authd hands sshd for a helper.
+pub struct HelpPipes {
+    /// The read end of the pipe that brings the help screen.
+    pub screen: OwnedFd,
+    /// The write end of the pipe that takes the helper's typing.
+    pub typing: OwnedFd,
+    /// The read end of authd's pipe, whose end says the session ended.
+    pub cut: OwnedFd,
+}
+
 /// A helper signed in to a help session.
 pub struct Helping {
     /// The session's ID.
     pub id: String,
-    /// The help screen's socket, until the shell runs on it.
-    socket: Option<OwnedFd>,
+    /// The help screen's pipes, until the shell runs on them.
+    pipes: Option<HelpPipes>,
     /// The transcript.
     transcript: Arc<Mutex<Transcript>>,
     /// Whether the connection opened its one session channel.
@@ -95,11 +108,11 @@ pub struct Helping {
 
 impl Helping {
     /// The helper signed in to the session `id`, whose help screen's
-    /// `socket` and `transcript` authd handed over.
-    pub fn new(id: String, socket: OwnedFd, transcript: File) -> Helping {
+    /// `pipes` and `transcript` authd handed over.
+    pub fn new(id: String, pipes: HelpPipes, transcript: File) -> Helping {
         Helping {
             id,
-            socket: Some(socket),
+            pipes: Some(pipes),
             transcript: Arc::new(Mutex::new(Transcript::new(transcript))),
             opened: false,
         }
@@ -115,20 +128,26 @@ impl Helping {
     }
 
     /// Runs the help screen on `channel`, the session channel `id`: its
-    /// bytes pass between the channel and the socket, the helper's
+    /// bytes pass between the channel and the pipes, the helper's
     /// written to the transcript before they go. When the help screen
-    /// ends, so does the connection.
+    /// ends, or authd ends the session, so does the connection.
     pub fn start(
         &mut self,
         channel: &mut session::Channel,
         id: ChannelId,
         handle: Handle,
     ) -> Result<(), String> {
-        let socket = self.socket.take().ok_or("the help screen is shown on one channel only")?;
-        let failed = |err: std::io::Error| format!("cannot use the help screen's socket: {err}");
-        sys::set_nonblocking(&socket).map_err(failed)?;
-        let socket = std::os::unix::net::UnixStream::from(socket);
-        let (from, to) = tokio::net::UnixStream::from_std(socket).map_err(failed)?.into_split();
+        let pipes = self.pipes.take().ok_or("the help screen is shown on one channel only")?;
+        let failed = |err: io::Error| format!("cannot use the help screen's pipes: {err}");
+        // tokio's pipes, unchecked, as the session's own are (session.rs).
+        let reader = |fd: OwnedFd| {
+            sys::set_nonblocking(&fd).and_then(|()| pipe::Receiver::from_owned_fd_unchecked(fd))
+        };
+        let from = reader(pipes.screen).map_err(failed)?;
+        let mut cut = reader(pipes.cut).map_err(failed)?;
+        let to = sys::set_nonblocking(&pipes.typing)
+            .and_then(|()| pipe::Sender::from_owned_fd_unchecked(pipes.typing))
+            .map_err(failed)?;
         let output = {
             let handle = handle.clone();
             tokio::spawn(async move {
@@ -142,7 +161,16 @@ impl Helping {
         let taken = Taken::new(Arc::clone(&queued), handle.clone(), id);
         let transcript = Arc::clone(&self.transcript);
         let writer = tokio::spawn(write_in(to, input, taken, transcript, handle.clone()));
-        let mut tasks = vec![output.abort_handle(), writer.abort_handle()];
+        // authd's pipe ends as the session does: the output stops, and
+        // the connection ends as when the screen ends.
+        let stop_output = output.abort_handle();
+        let watch_cut = tokio::spawn(async move {
+            let mut byte = [0u8; 1];
+            while matches!(cut.read(&mut byte).await, Ok(1..)) {}
+            stop_output.abort();
+        });
+        let mut tasks =
+            vec![output.abort_handle(), writer.abort_handle(), watch_cut.abort_handle()];
         let end = tokio::spawn(end(output, Arc::clone(&self.transcript), handle.clone(), id));
         tasks.push(end.abort_handle());
         channel.running = Some(Running::of(input_sender, queued, tasks, handle, id));
@@ -154,7 +182,7 @@ impl Helping {
 /// kept in the transcript before it goes; a transcript that cannot keep
 /// them ends the connection, and they do not go.
 async fn write_in(
-    mut to: OwnedWriteHalf,
+    mut to: pipe::Sender,
     mut input: mpsc::UnboundedReceiver<Vec<u8>>,
     taken: Taken,
     transcript: Arc<Mutex<Transcript>>,
@@ -181,8 +209,9 @@ async fn write_in(
     }
 }
 
-/// Waits for the help screen to end, which its socket's end says, keeps
-/// the helper's last line, tells the helper, and ends the connection.
+/// Waits for the help screen to end, which its pipe's end says, or for
+/// authd to end the session, which stops the output; then keeps the
+/// helper's last line, tells the helper, and ends the connection.
 async fn end(
     output: JoinHandle<()>,
     transcript: Arc<Mutex<Transcript>>,

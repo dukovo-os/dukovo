@@ -6,19 +6,23 @@
 //! which they watch and end with one key.
 //!
 //! help-session(1) asks with `help-start`, sending the help screen's
-//! terminal and one end of a socket pair. authd makes a resource domain
+//! terminal and sshd's ends of two pipes: one carries the help screen to
+//! the helper, the other the helper's typing back (pipes, as a socket
+//! cannot be sent in a message, ADR 0091). authd makes a resource domain
 //! `help-ID` below its own, which Spark gives it the capability to
 //! (`domain = true`), starts the owner's shell on the terminal in that
 //! domain, and keeps the transcript, `/system/state/help/ID.log`, which
 //! only root reads. When the helper signs in with the session's code, used
-//! once, or with the key the owner named, authd hands sshd the socket end
-//! and the transcript; sshd relays the helper's typing through the socket
-//! to help-session and writes it to the transcript.
+//! once, or with the key the owner named, authd hands sshd the pipes'
+//! ends, the read end of a pipe of its own whose write end it keeps, and
+//! the transcript; sshd relays the helper's typing through the pipes to
+//! help-session and writes it to the transcript.
 //!
 //! The session ends when its owner ends it, its time is up, the helper's
 //! connection or the shell ends, or help-session's connection closes.
 //! The end stops the domain, so that nothing the helper started goes on,
-//! and shuts the socket, which ends the helper's connection.
+//! and closes authd's own pipe, whose end sshd reads as the end of the
+//! helper's connection.
 //!
 //! Inside the help screen, which authd tells by a process's place in the
 //! domain's `/processes`, nothing asks for a password, as the helper
@@ -128,8 +132,12 @@ pub(super) struct Help {
     key: Option<Vec<u8>>,
     /// The wrong codes typed for it.
     wrong_codes: u32,
-    /// sshd's end of the socket pair, kept so that the end can shut it.
-    socket: OwnedFd,
+    /// sshd's ends of help-session's pipes, the help screen's read end and
+    /// the typing's write end, until a helper signs in and they go to sshd.
+    for_sshd: Option<[OwnedFd; 2]>,
+    /// The write end of the pipe whose read end sshd has once a helper
+    /// signs in: closing it, as the session ends, ends their connection.
+    cut: Option<OwnedFd>,
     /// The transcript, written at its end.
     transcript: File,
     /// Its domain, the domain's `/processes`, and a slot to look in it
@@ -225,6 +233,15 @@ fn host_key() -> Option<String> {
     let text = fs::read_to_string(accounts::sshd_config::HOST_KEY_PUBLIC).ok()?;
     let key = sshkeys::public_line(text.lines().next()?)?;
     Some(sshkeys::fingerprint(&key))
+}
+
+/// Whether `fd` is a pipe's end, as help-session sends authd for sshd.
+fn is_pipe(fd: &OwnedFd) -> bool {
+    // SAFETY: all zeros is a valid stat: numbers.
+    let mut status: libc::stat = unsafe { util::zeroed() };
+    // SAFETY: fstat writes the descriptor's status to `status`.
+    let read = unsafe { libc::fstat(fd.as_raw_fd(), &raw mut status) } == 0;
+    read && status.st_mode & libc::S_IFMT == libc::S_IFIFO
 }
 
 /// Whether Spark runs sshd, or is starting it.
@@ -409,11 +426,13 @@ impl Authd {
         {
             return refused("the helper's key is not one sshd takes");
         }
-        let socket = (descriptors.len() == 2).then(|| descriptors.remove(1));
+        let pipes = (descriptors.len() == 3)
+            .then(|| [descriptors.remove(1), descriptors.remove(1)])
+            .filter(|pipes| pipes.iter().all(is_pipe));
         let terminal = descriptors.pop().filter(signin::is_terminal);
-        let (Some(terminal), Some(socket)) = (terminal, socket) else {
+        let (Some(terminal), Some(pipes)) = (terminal, pipes) else {
             return refused(
-                "a help-start request comes with the help screen's terminal and a socket",
+                "a help-start request comes with the help screen's terminal and two pipes' ends",
             );
         };
         let Some(names) = self.names else {
@@ -455,7 +474,7 @@ impl Authd {
         let groups =
             accounts::other_groups(&user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
         let asked = Asked { minutes, key, term, opened_ssh };
-        match self.make_help(&user, &groups, names, &terminal, socket, &asked, now) {
+        match self.make_help(&user, &groups, names, &terminal, pipes, &asked, now) {
             Ok(started) => {
                 self.clients[i].help = Some(started.id.clone());
                 (Answer::Done(started.words()), now)
@@ -477,7 +496,7 @@ impl Authd {
         groups: &[u32],
         names: u32,
         terminal: &OwnedFd,
-        socket: OwnedFd,
+        pipes: [OwnedFd; 2],
         asked: &Asked<'_>,
         now: Instant,
     ) -> Result<HelpStarted, String> {
@@ -534,7 +553,8 @@ impl Authd {
             code: code.clone(),
             key: key.map(<[u8]>::to_vec),
             wrong_codes: 0,
-            socket,
+            for_sshd: Some(pipes),
+            cut: None,
             transcript,
             slots,
             shell: shell as i32,
@@ -583,7 +603,9 @@ impl Authd {
 
     /// Signs a helper in, as `ssh-help` asks: sshd's to ask, for its
     /// process serving `connection`. A right one is answered with the
-    /// session's ID, the socket end and the transcript.
+    /// session's ID, the help screen's read end, the typing's write end,
+    /// the read end of the pipe that tells sshd the session ended, and the
+    /// transcript.
     pub(super) fn ssh_help(
         &mut self,
         i: usize,
@@ -646,12 +668,19 @@ impl Authd {
         self.wrong.remove(&(HELP_NAME.to_string(), ssh_source(&from)));
         self.sign_in_right(&from);
         let help = &mut self.helps[at];
-        let copies =
-            help.socket.try_clone().and_then(|socket| Ok((socket, help.transcript.try_clone()?)));
-        let (socket, transcript) = match copies {
-            Ok(copies) => copies,
+        let made = crate::elevate::pipe()
+            .and_then(|(cut_read, cut)| Ok((cut_read, cut, help.transcript.try_clone()?)));
+        let (cut_read, cut, transcript) = match made {
+            Ok(made) => made,
             Err(err) => return refused(format!("cannot hand the help session over: {err}")),
         };
+        // A session takes one helper, so the ends go to sshd, which then
+        // holds the only copies: help-session reads the end of the typing
+        // when the helper's connection ends.
+        let Some([screen, typing]) = help.for_sshd.take() else {
+            return refused("the help session has handed its screen over already".into());
+        };
+        help.cut = Some(cut);
         help.code = None;
         help.helper =
             Some(Helper { address: from.clone(), with: with.clone(), process: peer.process });
@@ -669,7 +698,7 @@ impl Authd {
         );
         self.mark_waiting();
         self.tell_owner(&id, &HelpEvent::Helper { address: from, key: with }, now);
-        self.clients[i].answer_fds = vec![socket, transcript.into()];
+        self.clients[i].answer_fds = vec![screen, typing, cut_read, transcript.into()];
         (Answer::Done(id), now)
     }
 
@@ -821,9 +850,9 @@ impl Authd {
     pub(super) fn end_help(&mut self, at: usize, why: HelpEnded, now: Instant) {
         let mut help = self.helps.remove(at);
         let _ = resource_domain::stop(&SYS, help.domain());
-        // SAFETY: shutting down our own descriptor's socket, which sshd's
-        // copy shares: its relay reads the end.
-        unsafe { libc::shutdown(help.socket.as_raw_fd(), libc::SHUT_RDWR) };
+        // sshd reads the end of the pipe as the end of the helper's
+        // connection; help-session's own pipes close with it.
+        drop((help.cut.take(), help.for_sshd.take()));
         help.note("end", why.word());
         let id = help.id.clone();
         let helped = match &help.helper {
