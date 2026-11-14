@@ -428,15 +428,25 @@ jobs:
           fi
 
       # Oracle's signing key, checked by the fingerprint Oracle publishes
-      # on virtualbox.org's Linux downloads page.
+      # on virtualbox.org's Linux downloads page. Taken from virtualbox.org,
+      # else from beside the repository, else from Ubuntu's key server by
+      # that fingerprint: whichever answers, the fingerprint must match.
       - name: Add Oracle's VirtualBox repository
+        env:
+          FINGERPRINT: B9F8D658297AF3EFC18D5CDFA2F683C52980AECF
         run: |
-          curl -fsSL --retry 5 -o "$RUNNER_TEMP/oracle_vbox_2016.asc" \
-            https://www.virtualbox.org/download/oracle_vbox_2016.asc
-          gpg --show-keys --with-colons "$RUNNER_TEMP/oracle_vbox_2016.asc" \
-            | grep -qx 'fpr:::::::::B9F8D658297AF3EFC18D5CDFA2F683C52980AECF:'
-          sudo gpg --dearmor -o /usr/share/keyrings/oracle-virtualbox-2016.gpg \
-            "$RUNNER_TEMP/oracle_vbox_2016.asc"
+          key="$RUNNER_TEMP/oracle_vbox_2016.asc"
+          if ! curl -fsSL --retry 5 -o "$key" \
+              https://www.virtualbox.org/download/oracle_vbox_2016.asc \
+            && ! curl -fsSL --retry 5 -o "$key" \
+              https://download.virtualbox.org/virtualbox/debian/oracle_vbox_2016.asc; then
+            export GNUPGHOME="$RUNNER_TEMP/gnupg"
+            mkdir -m 0700 -p "$GNUPGHOME"
+            gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$FINGERPRINT"
+            gpg --batch --armor --export "$FINGERPRINT" > "$key"
+          fi
+          gpg --show-keys --with-colons "$key" | grep -qx "fpr:::::::::$FINGERPRINT:"
+          sudo gpg --dearmor -o /usr/share/keyrings/oracle-virtualbox-2016.gpg "$key"
           echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox-2016.gpg] https://download.virtualbox.org/virtualbox/debian $(lsb_release -cs) contrib" \
             | sudo tee /etc/apt/sources.list.d/virtualbox.list
 
