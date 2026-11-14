@@ -30,6 +30,7 @@ use spark_api::graph::Link;
 use spark_api::show;
 
 use crate::service::shown;
+use crate::timerd::protocol::TimerRow;
 use crate::util::{self, Fail, fail, usage};
 use crate::{power, prompt, servicetry, timerd};
 
@@ -763,19 +764,15 @@ pub fn enable(name: &str, on: bool) -> Result<i32, Fail> {
 /// What `service NAME enable` says of a service with a timer: when timerd
 /// starts it next, as timerd says.
 fn timer_words(name: &str) -> String {
-    let next = timerd::show::timers()
-        .map(|rows| rows.into_iter().find(|row| row.name == name).and_then(|row| row.next));
-    match next {
-        Ok(Some(next)) => format!(
-            "{name} is not started now: timerd starts it at the times its timer names, the next at {}.",
-            util::local_time(next, "%Y-%m-%d %H:%M:%S")
-        ),
-        Ok(None) => format!(
-            "{name} is not started now, and no time its timer names comes within five years."
-        ),
-        Err(why) => format!(
-            "{name} is not started now: timerd starts it at the times its timer names ({why})."
-        ),
+    let said = format!("{name} is enabled: timerd starts it at the times its timer names");
+    let row = timerd::show::timers().map(|rows| rows.into_iter().find(|row| row.name == name));
+    match row {
+        Ok(Some(row)) if row.running => format!("{said}, and runs it now."),
+        Ok(Some(TimerRow { next: Some(next), .. })) => {
+            format!("{said}, the next at {}.", util::local_time(next, "%Y-%m-%d %H:%M:%S"))
+        }
+        Ok(_) => format!("{said}, but none comes within five years."),
+        Err(why) => format!("{said} ({why})."),
     }
 }
 

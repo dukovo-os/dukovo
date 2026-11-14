@@ -81,8 +81,12 @@ pub struct TimerRow {
     pub name: String,
     /// When Spark last started it for the timer, seconds since 1970.
     pub last: Option<i64>,
-    /// When it next starts; none when no time comes within five years.
+    /// When it next starts; none while it runs, or when no time comes
+    /// within five years.
     pub next: Option<i64>,
+    /// Whether its timer started it and it has not ended yet.
+    #[serde(default)]
+    pub running: bool,
 }
 
 /// A line of a crontab, and how its runs went.

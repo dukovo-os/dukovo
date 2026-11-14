@@ -190,9 +190,12 @@ impl Daemon {
             .entries
             .iter()
             .filter_map(|e| match &e.key {
-                Key::Service(name) => {
-                    Some(TimerRow { name: name.clone(), last: e.last_run, next: e.next })
-                }
+                Key::Service(name) => Some(TimerRow {
+                    name: name.clone(),
+                    last: e.last_run,
+                    next: e.next,
+                    running: e.running,
+                }),
                 _ => None,
             })
             .collect();

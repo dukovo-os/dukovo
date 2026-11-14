@@ -27,13 +27,19 @@ fn when(seconds: Option<i64>, clock: &dyn Fn(i64) -> String, missing: &str) -> S
     seconds.map_or_else(|| missing.to_string(), clock)
 }
 
+/// When the timer starts the service next, as `service` shows it: it is
+/// running now, at a time, or none.
+fn next_words(row: &TimerRow, clock: &dyn Fn(i64) -> String, missing: &str) -> String {
+    if row.running { "running now".into() } else { when(row.next, clock, missing) }
+}
+
 /// The words of `service NAME status`'s `Timer:` line.
 #[must_use]
 pub fn status_line(row: &TimerRow, clock: &dyn Fn(i64) -> String) -> String {
     format!(
         "last start {}, next {}",
         when(row.last, clock, "never"),
-        when(row.next, clock, "none within five years")
+        next_words(row, clock, "none within five years")
     )
 }
 
@@ -45,7 +51,7 @@ pub fn table(rows: &[TimerRow], clock: &dyn Fn(i64) -> String, header: bool) -> 
     let cells: Vec<[String; 3]> = rows
         .iter()
         .map(|row| {
-            [row.name.clone(), when(row.next, clock, "none"), when(row.last, clock, "never")]
+            [row.name.clone(), next_words(row, clock, "none"), when(row.last, clock, "never")]
         })
         .collect();
     let mut widths = [0; 2];
@@ -75,8 +81,9 @@ mod tests {
 
     fn rows() -> Vec<TimerRow> {
         vec![
-            TimerRow { name: "backup".into(), last: Some(5), next: Some(9) },
-            TimerRow { name: "logturn".into(), last: None, next: None },
+            TimerRow { name: "backup".into(), last: Some(5), next: Some(9), running: false },
+            TimerRow { name: "logturn".into(), last: None, next: None, running: false },
+            TimerRow { name: "scrub".into(), last: Some(7), next: None, running: true },
         ]
     }
 
@@ -87,13 +94,15 @@ mod tests {
             status_line(&rows()[1], &clock),
             "last start never, next none within five years"
         );
+        assert_eq!(status_line(&rows()[2], &clock), "last start t7, next running now");
     }
 
     #[test]
     fn the_table_has_a_line_a_timer() {
         assert_eq!(
             table(&rows(), &clock, true),
-            "SERVICE  NEXT RUN  LAST START\nbackup   t9        t5\nlogturn  none      never\n"
+            "SERVICE  NEXT RUN     LAST START\nbackup   t9           t5\nlogturn  none         \
+             never\nscrub    running now  t7\n"
         );
         assert!(!table(&rows(), &clock, false).contains("SERVICE"));
     }

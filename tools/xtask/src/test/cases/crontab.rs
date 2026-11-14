@@ -31,6 +31,24 @@ fn waited(vm: &mut Vm, command: &str, shown: &[&str]) -> Result<(), String> {
     vm.expect_screen(shown)
 }
 
+/// Checks that the log, from alice's last sign-out to her sign-in after
+/// it, says her line did not run because `why`, and shows no job of hers
+/// started. A line that runs once she is back, before the test looks, is
+/// not counted, as a count of the file's lines would count it.
+fn no_run_while_out(vm: &Vm, why: &str) -> Result<(), String> {
+    let log = vm.log();
+    let out = log.rfind("authd: alice signed out on pts/").ok_or("alice never signed out")?;
+    let back = log[out..].find("authd: alice signed in on pts/").map_or(log.len(), |at| out + at);
+    let away = &log[out..back];
+    if !away.contains(&format!("crontab alice (line 1): did not run: {why}")) {
+        return Err(format!("while alice was signed out, the log does not say her line did not run: {why}"));
+    }
+    if away.contains("authd: alice's job crontab alice, for process ") {
+        return Err("alice's line ran while she was signed out".into());
+    }
+    Ok(())
+}
+
 /// Signs alice out and in again, `seconds` apart.
 fn out_and_in(vm: &mut Vm, seconds: u32) -> Result<(), String> {
     answer_prompt(vm, "$", "clear; exit")?;
@@ -102,20 +120,20 @@ fn crontab(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
     // Off, which is the system's default, she is signed out and the line
     // does not run; the status says why.
-    answer_prompt(vm, "$", "clear; crontab --keep-running off; wc -l < ~/cron.out > ~/before")?;
+    answer_prompt(vm, "$", "clear; crontab --keep-running off")?;
     vm.expect_screen(&["do not run while you are signed out"])?;
     out_and_in(vm, 70)?;
     vm.expect_screen(&[
         "of yours did not run while you were signed out",
         "crontab --keep-running on lets them run then.",
     ])?;
+    no_run_while_out(vm, "its owner is signed out")?;
     answer_prompt(
         vm,
         "$",
-        "clear; echo \"grew $(( $(wc -l < ~/cron.out) - $(cat ~/before) ))\"; crontab --status | \
-         grep -c 'is signed out'",
+        "clear; crontab --status | grep -q 'is signed out' && echo \"status says why\"",
     )?;
-    vm.expect_screen(&["grew 0"])?;
+    vm.expect_screen(&["status says why"])?;
 
     // On, it runs while she is signed out.
     answer_prompt(vm, "$", "clear; crontab --keep-running on; wc -l < ~/cron.out > ~/before")?;
@@ -136,16 +154,11 @@ fn crontab(vm: &mut Vm, case: &Case) -> Result<(), String> {
     )?;
     answer_prompt(vm, "alice:", "queen of hearts")?;
     vm.expect_screen(&["barred 0"])?;
-    answer_prompt(vm, "$", "clear; wc -l < ~/cron.out > ~/before")?;
     out_and_in(vm, 70)?;
     vm.expect_screen(&["An administrator barred your jobs from running then."])?;
-    answer_prompt(
-        vm,
-        "$",
-        "clear; echo \"grew $(( $(wc -l < ~/cron.out) - $(cat ~/before) ))\"; crontab \
-         --keep-running",
-    )?;
-    vm.expect_screen(&["grew 0", "An administrator barred it for your account."])?;
+    no_run_while_out(vm, "an administrator barred its owner's jobs")?;
+    answer_prompt(vm, "$", "clear; crontab --keep-running")?;
+    vm.expect_screen(&["An administrator barred it for your account."])?;
 
     // Root's crontab runs, and keeps what its line printed. The second
     // elevate is in the same session, so it asks for no password.

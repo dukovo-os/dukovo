@@ -85,7 +85,7 @@ fn first_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         run(
             vm,
             &format!("service check {name} | grep -c ': ok'; service {name} enable; echo \"{name} $?\""),
-            &["1", "is not started now: timerd starts it", &format!("{name} 0")],
+            &["1", "is enabled: timerd starts it at the times its timer names", &format!("{name} 0")],
         )?;
     }
     run(
