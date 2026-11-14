@@ -180,6 +180,20 @@ fn refuses_what_it_must() {
     assert!(open(&[]).unwrap().is_empty());
 }
 
+#[test]
+fn holds_as_many_entries_as_it_says_and_no_more() {
+    // `count` empty files, named in order.
+    let archive = |count: usize| {
+        let mut w = Writer::new();
+        for i in 0..count {
+            w.file(&format!("f{i:05}"), 0o644, 1, b"").unwrap();
+        }
+        w.finish()
+    };
+    assert_eq!(open(&archive(MAX_ENTRIES)).unwrap().len(), MAX_ENTRIES);
+    assert_eq!(open(&archive(MAX_ENTRIES + 1)).err(), Some(Error::TooMany));
+}
+
 proptest! {
     /// Garbage gives an error, never a panic.
     #[test]

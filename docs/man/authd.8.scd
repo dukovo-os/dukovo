@@ -146,12 +146,15 @@ closes the connection, but for a session (below):
 	_/users/_*name*. Refused while any process acts for it, as
 	_/processes_ shows. Only root may.
 
-*set* _name_ [*full-name* _text_] [*admin* *yes*|*no*]
-	Changes the account's full name, or whether it is an
-	administrator's. Root changes either; anyone changes their own full
-	name, as Linux's chfn lets them. Someone made no longer an
-	administrator keeps nothing of the admin set: their elevated
-	commands end and their panes lock.
+*set* _name_ [*full-name* _text_] [*admin* *yes*|*no*] [*console* *yes*|*no*]
+	Changes the account's full name, whether it is an administrator's,
+	or whether it is in the group *console*, whose members sign in to
+	the web console without being administrators (WEB CONSOLE). Root
+	changes any; anyone changes their own full name, as Linux's chfn
+	lets them. Someone made no longer an administrator keeps nothing of
+	the admin set: their elevated commands end and their panes lock.
+	Someone who may no longer sign in to the web console is signed out
+	of it.
 
 *session* _name_ _password_ _term_ [_command_]
 	Starts _name_'s session, if _password_ is theirs, on the terminal
@@ -309,6 +312,17 @@ closes the connection, but for a session (below):
 	Open the asker's keyring with their password, which waits after a
 	wrong one as a sign-in does, or close it now.
 
+*console* _verb_ _field_...
+	A request of the web console (ADR 0514): *begin*, *trusted*, *code*,
+	*challenge*, *passkey*, *start*, *unlock*, *extend*, *lock*, *end*,
+	*elevate*, *token* and *token-start*, which only *admind*(8) asks, as
+	root, and *steps*, *app-begin*, *app-confirm*, *app-remove*,
+	*passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*,
+	*codes*, *trusted-forget*, *token-add* and *token-remove*, which a
+	person asks about their own account, from a process that runs as
+	them. Binary fields, such as a ticket or a signature, are in
+	hexadecimal. WEB CONSOLE says what each does.
+
 authd knows who asks by the connection: the kernel gives it the process
 at the other end, and the user and group it acted for when it connected
 (*SO_PEERCRED*, *radix-posix*(7)). An administrator is root inside
@@ -327,7 +341,8 @@ authd opens a keyring when its person signs in with their password, at
 a console or over SSH, or asks *keyring-unlock*, and makes it then if
 they have none; an account with no password has none. It holds it open
 in its own memory while one of their sessions runs, and closes it,
-wiping the key, when the last one ends.
+wiping the key, when the last one ends. A sign-in to the web console
+(WEB CONSOLE) opens none.
 
 A change of password seals the keyring's key under the new one. When
 root sets a password without the old one, or the startup-trouble menu
@@ -347,15 +362,18 @@ authd: keyring of alice: closed
 A wrong password is answered only after a wait: 2 seconds for each of
 the first three in a row, then twice as long each time, up to a minute,
 for that account asked by that user, or, for a Windows PC's sign-in to
-the shares and an SSH client's password, from that address. A try made while one waits waits
+the shares, an SSH client's password and a browser at the web console,
+from that address. A try made while one waits waits
 its turn, so tries at once do not go faster. A right password ends the
 run; one forgotten after 15 minutes with no try ends it too. A name
 there is not is checked against a hash all the same, and answered the
 same way after the same wait, so that neither the answer nor the time
 says whether the account is there.
 
-authd answers 64 connections at a time and 4 from one process; one that
-sends no whole request in 10 seconds is closed.
+authd answers 64 connections at a time, 4 from one process and 32 from a
+process that runs as root, as admind does, which holds one for each
+command of the console's that runs; one that sends no whole request in
+10 seconds is closed.
 
 # SESSIONS
 
@@ -481,12 +499,15 @@ none:
 - *failed*: a wrong password was typed at a sign-in, with the name
   typed.
 
-A share session (SESSIONS) is recorded on the terminal *smb*, from the
+A web console session (WEB CONSOLE) is recorded on the terminal *web*,
+from the browser's address, with its worker's process as the session,
+and a wrong password or app code at its sign-in as *failed* there. A
+share session (SESSIONS) is recorded on the terminal *smb*, from the
 PC's address, and a wrong sharing password as *failed* there. An SSH
 session on a terminal is recorded on it, from the client's address; one
 without a terminal is not, as on Linux. A wrong password over SSH is
-recorded as *failed* on the terminal *ssh*, from the client's address;
-a key that does not sign in is not, as Linux's sshd records only
+recorded as *failed* on the terminal *ssh*, from the client's address; a
+key that does not sign in is not, as Linux's sshd records only
 passwords.
 
 The starts and stops are in _system_, which everyone reads. Each
@@ -497,6 +518,133 @@ no account's are in _unknown_, root's alone. The directory is 0711, so
 no one but root lists it. A file that grew past 512 KiB keeps its
 newest 4096 lines, and its newest sign-in with its sign-out and its
 newest start if they are older.
+
+# WEB CONSOLE
+
+*admind*(8) is the web console's server (ADR 0514), and holds no secret:
+authd checks each password, code, passkey and token, decides who signs
+in and what a session may do, starts each session's worker and runs the
+commands that an administrator's session runs. The requests are the
+*console* ones (THE SOCKET). admind's, which only root may send, are
+refused to anyone else; a person's own, about their own account, are
+answered for the user the connection gives.
+
+*begin* _address_ _name_ _password_
+	Checks the password of _name_ as *check* does, for a browser at
+	_address_: the wait after a wrong one is counted for the account
+	from that address, and a wrong one is recorded (SIGN-IN RECORDS).
+	Then it checks the account's right to the console, and refuses
+	root, a disabled account, and one that is neither an administrator's
+	nor in the group *console*, saying so only to someone who gave the
+	right password. The answer is *ok done* _ticket_, when the sign-in needs no more, *ok
+	step* _ticket_ _kinds_, when a second step comes, _kinds_ being
+	*app*, *passkey* and *recovery*, joined by commas, or *ok needs-step*
+	_ticket_, when the sign-in rules (*admin.toml*(5)) ask for a step the
+	account has not got, so that its session may only add one. A ticket
+	is 32 random bytes, in hexadecimal, that only the process it was given to
+	may use, once, for 5 minutes; authd keeps 128, and lets the oldest go
+	first.
+
+*trusted* _ticket_ _token_, *code* _ticket_ _code_
+	Give the second step of a sign-in: a browser's token, from "Trust
+	this browser", which skips it, or a code. A code is the app's 6
+	digits, taken from the step before, now or after, each step once
+	(RFC 6238), or a recovery code, taken once; a wrong one waits as a
+	wrong password does and is recorded.
+
+*challenge* _purpose_ _value_ _relying-party_, *passkey* _purpose_ _value_ _answer_...
+	A passkey's second step, a passkey alone and a passkey that unlocks
+	a session (WebAuthn). *challenge* gives 32 random bytes to be signed,
+	for 5 minutes and once, for the account's passkeys at that name;
+	*passkey* checks the answer: that the challenge is the one given for
+	this purpose, that the browser's page is the console's own, that
+	the key is one of the account's for that name, its signature, and
+	that its count rises unless it and the one kept are both 0. A
+	passkey alone, and one that unlocks, must have checked the person
+	(PIN, fingerprint or face). The keys are ES256, EdDSA and RS256, the
+	last of 2048 to 4096 bits. A new passkey's attestation is not
+	checked. A name that is an address is refused, since no browser
+	makes a passkey for one. authd keeps 128 challenges.
+
+*start* _ticket_ *trust*|*once* _browser_
+	Starts the session of a sign-in that is done, once, and answers
+	*ok* _process_ _session_, and, with *trust*, the token that the
+	browser keeps for 30 days. The request comes with three
+	descriptors: the pipe of admind's calls, the pipe of the replies,
+	and the log. Pipes, since a socket cannot be sent (ADR 0091). authd
+	starts the session's worker, *admind --worker*, as the person, with
+	their groups and the network of a session and nothing else of one's,
+	no shell, its 0 the calls' pipe, its 3 the replies' pipe and its 1
+	and 2 the log, as a child of its own; the worker's calls to authd are the person's own requests. The
+	session is 16 random bytes, in hexadecimal. A sign-in that needs a
+	second step the account has not got starts a session that may only
+	add one. authd keeps 64 sessions, and audits and records each
+	(SIGN-IN RECORDS).
+
+*unlock* _session_ *password*|*code*|*passkey* _proof_
+	Unlocks the session for 15 minutes after the person proves again
+	that it is them, with their password, an app's code or a passkey
+	that checked them; a recovery code does not do. *extend* sets the
+	end to 15 minutes from now, while it is unlocked; *lock* locks it at once;
+	*end* ends the session, which the worker's end does too. A session
+	past *session-hours* does not unlock, and an end by *idle-minutes*
+	is admind's to say. Unlocked sessions are kept in memory only.
+
+*elevate* *session*|*token* _by_ [_language_...] *--* _command_...
+	Runs _command_ as an administrator for an unlocked session, or for
+	a token that has the scope *\**, as *elevate* does for a pane
+	(ELEVATE), with its four descriptors, and answers as it does. The
+	account must be an administrator's, and one that may sign in. The
+	command is found in _/system/commands_ and _/applications/commands_
+	only, by a path with no *.*, *..* or empty part, and is never a
+	shell (*nukesh*, *sh*, *bash*, *dash*, *zsh*, *ksh* or *fish*); a
+	command has at most 64 arguments and 32 KiB. The command's
+	environment, as *elevate*(8)'s, has *DUKOVO\_CONSOLE\_SESSION* too: the
+	first 8 characters of the session's ID, or *token* and the token's
+	name. The audit log says whose right ran it.
+
+*token* _token_ _address_, *token-start* _token_
+	Check an API token, which has the form dkv_ACCOUNT_SECRET, with
+	SECRET 64 hexadecimal digits, and start a worker for its owner as
+	*start* does. A wrong token waits as a wrong password does. admind takes no
+	token in this release (ADM-115), so the console asks neither.
+
+*steps*, *app-begin*, *app-confirm*, *app-remove*, *passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*, *codes*, *trusted-forget*, *token-add*, *token-remove*
+	The person's own second steps and tokens (below). *app-begin*,
+	*app-remove*, *passkey-begin*, *passkey-remove*, *codes* and
+	*token-add* take the person's password as _proof_, or nothing, from
+	the worker of their own console session while it is unlocked.
+	*steps* lists them with none of their secrets.
+
+Each account's second steps and tokens are kept in one file,
+_/system/state/authd/console/_*name*.toml, in a folder of mode 0700,
+which only root reads and which no other service's view holds. authd
+writes it anew beside the old and renames it, and an account that has
+none has no file. It holds the app's secret (base32), each passkey's ID,
+public key, name, count, and the name it was made for, recovery codes
+as SHA-256 hashes, trusted browsers as SHA-256 hashes of their tokens
+with their ends and descriptions, API tokens as SHA-256 hashes with their
+scopes and ends, and the handle its passkeys carry. Removing the
+account removes the file; renaming it moves the file and ends the
+account's tokens.
+
+An account has one authenticator app, 16 passkeys, 10 recovery codes,
+16 trusted browsers and 32 tokens. An app is added with *app-begin*,
+which makes the secret and keeps it for 10 minutes, and *app-confirm*,
+which takes a code of it; the first second step an account adds also
+makes the recovery codes. *codes* makes new ones, which end the old.
+Removing the last step removes the codes. When the sign-in rules ask the
+account for a second step, its last one is not removed. A token is made
+with a name of 1 to 32 letters, digits and *-*, scopes, and 1 to 366 days,
+and the answer shows it once.
+
+A session, a sign-in under way, a challenge and an app being added are
+in memory only: authd starting again ends them, and the workers, its
+children, end with it. The sign-in rules are in
+_/system/settings/admin.toml_, which authd reads at each request that
+needs them. Each sign-in with how it was proved, each refusal, each wrong
+proof, each unlock, end and command, and each change to a second step or
+a token is in the audit log; no secret is.
 
 # ELEVATE
 
@@ -638,6 +786,13 @@ _/system/state/authd/notices_
 _/system/state/authd/keyrings/_*number*
 	Each person's keyring, sealed (see KEYRINGS).
 
+_/system/state/authd/console/_*name*.toml
+	Each account's second steps for the web console, and its API
+	tokens (see WEB CONSOLE).
+
+_/system/settings/admin.toml_
+	The web console's sign-in rules, which authd reads (*admin.toml*(5)).
+
 _/system/state/sign-ins_
 	The sign-in records (see SIGN-IN RECORDS).
 
@@ -658,6 +813,6 @@ exits with 1 if it cannot start.
 # SEE ALSO
 
 *login*(1), *sshd*(8), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *keyring*(1), *id*(1), *last*(1),
-*lastlog*(8), *consoled*(8), *service*(8),
+*lastlog*(8), *consoled*(8), *admind*(8), *admin.toml*(5), *dukovo-admin*(7), *service*(8),
 *service.toml*(5), *spark*(8), *logd*(8), *radix-names*(2), *radix-posix*(7),
 *systools*(1)

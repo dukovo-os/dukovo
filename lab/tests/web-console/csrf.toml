@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's defence against other sites (ADR 0514): a browser is
+# signed in as an administrator, and every route of admind that changes
+# anything is asked for as a forger would, with no Origin, another site's
+# Origin, a Sec-Fetch-Site that says another site, no token or a wrong one,
+# once with the console locked and once unlocked. Each is refused, and the
+# session stands as it was. A page of another origin in the same browser
+# then posts to the same routes. The account is one this test makes and
+# removes, so no script needs the lab's password.
+about = "Every route of the web console that changes anything refuses a request that another site makes, and the session is as it was after"
+time = "20m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-csrf'"
+root = true
+expect = "Made wc-csrf"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "csrf.mjs"
+port = 9090
+[[step]]
+run = "user remove --delete-home --yes wc-csrf"
+root = true
+expect = "wc-csrf is removed"

@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The web console's settings (admin.toml(5), admind(8), ADR 0514). Every
+# setting below is at its default, as a comment: take the `#` off the lines
+# you want to change. authd(8) reads the sign-in rules each time someone
+# signs in; admind reads them and `reach` every 30 seconds, and its
+# certificate again at `service admind reload`. A setting with a mistake
+# in it is refused, and `log admind` says which, so that a typo never
+# loosens a rule unnoticed.
+
+# How people sign in.
+#
+# [sign-in]
+# Who must give a second step, an authenticator app's code or a passkey,
+# after the password: "if-set" (those who have added one), "administrators"
+# (them, and those who have added one) or "everyone". An account the rule
+# makes give one and that has none may only add one, then signs in again.
+# second-step = "if-set"
+# The hours a session lasts after it signed in, from 1 to 168.
+# session-hours = 12
+# The minutes a session lasts with no console page open, from 5 to 1440.
+# idle-minutes = 30
+
+# Where the console answers, and whom.
+#
+# [console]
+# The port: 443, or 1024 to 65535. The service file lets admind listen on
+# 9090 only, so change `network.listen` there too (`service edit admind`),
+# and `service admind restart` after.
+# listen = 9090
+# Whom admind answers: "private" (this machine, the networks of its cards,
+# and the ranges no one reaches from the internet: 10.0.0.0/8,
+# 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7 and the
+# link-local ones) or "any". A connection from anywhere else is closed
+# with no word. "any" asks for care: give administrators a second step
+# first, with second-step = "administrators" above.
+# reach = "private"
+# The certificate it serves, by certd's name for it (cert(8) `list`):
+# "this-machine", which a browser warns about once, or one from an
+# authority for the console's own name. The service file's `certificates`
+# must name it too.
+# certificate = "this-machine"

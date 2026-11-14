@@ -1,0 +1,857 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! admind's server (ADR 0514): what listens, whom it lets in, and what it
+//! keeps up while it runs.
+//!
+//! A connection is looked at before anything is said to it. It counts
+//! against the 512 connections at once and the 32 from one address; then
+//! the address must be one admind answers (`reach`), and if it is not the
+//! connection is closed without a byte and the log says so once a minute
+//! for the address, never once per try. What passes gets its TLS handshake
+//! and then its first request's head within 10 seconds, so that a client
+//! that says nothing holds a place for no longer than that; hyper reads
+//! the heads (16 KiB and 64 headers at most) and closes a connection that
+//! sends none for 60 seconds, which is the keep-alive.
+//!
+//! One thread does all of it, on tokio's current-thread runtime, so that
+//! the sessions and the counts are plain data (see [`Shared`]). Every 30
+//! seconds the server ends the sessions whose time is up, reads the sign-in
+//! rules and `reach` again, and looks at the machine's name and networks.
+//! SIGHUP, which Spark sends when the certificate changed, reads the
+//! certificate again for the connections that come after it; one that does
+//! not read leaves the old in use, and the log says why. SIGTERM ends the
+//! sessions, which tells authd, and stops.
+
+use std::cell::Cell;
+use std::fs;
+use std::future::{Future, poll_fn};
+use std::io;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::Path;
+use std::pin::pin;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
+use std::time::Duration;
+
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use socket2::{Domain, Protocol, SockRef, Socket, TcpKeepalive, Type};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Instant;
+use tokio_rustls::TlsAcceptor;
+
+use super::files::{self, Files};
+use super::limits::Slot;
+use super::log;
+use super::reach;
+use super::routes;
+use super::shared::{Identity, Shared};
+use super::tls::{self, Certificate};
+use crate::admin_settings::{Reach, Settings};
+use crate::util::{self, Fail, fail};
+
+/// How long a connection has for its TLS handshake and the head of its
+/// first request together.
+const HEAD_TIME: Duration = Duration::from_secs(10);
+
+/// How long a connection may wait for the head of its next request, and
+/// how long a quiet one waits before the network's first probe.
+const KEEP_ALIVE: Duration = Duration::from_secs(60);
+
+/// How long apart the network's probes of a quiet connection go when
+/// none is answered: a browser that went away without a word is found
+/// out by them, which also frees the place of an event stream no one
+/// reads.
+const PROBE_EVERY: Duration = Duration::from_secs(15);
+
+/// The most bytes a request's head may have, and the most headers.
+const HEAD_MAX: usize = 16 << 10;
+const HEADERS_MAX: usize = 64;
+
+/// How often the server looks after itself.
+const UPKEEP_EVERY: Duration = Duration::from_secs(30);
+
+/// How often it looks at the signals that came.
+const SIGNALS_EVERY: Duration = Duration::from_millis(500);
+
+/// The file consoled shows at its sign-in prompt: where to open the console.
+const ISSUE: &str = "/system/live/admind/issue";
+
+/// Set by SIGTERM: admind stops. Set by SIGHUP: it reads its certificate
+/// again.
+static STOP: AtomicBool = AtomicBool::new(false);
+static RELOAD: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_term(_: libc::c_int) {
+    STOP.store(true, Ordering::Relaxed);
+}
+
+extern "C" fn on_hangup(_: libc::c_int) {
+    RELOAD.store(true, Ordering::Relaxed);
+}
+
+/// Has the signals admind answers set the flags above, and a browser that
+/// goes away not end it: the write to it fails instead.
+fn install_signals() {
+    // SAFETY: setting a signal's disposition touches no memory.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    for (signal, handler) in [
+        (libc::SIGTERM, on_term as extern "C" fn(libc::c_int)),
+        (libc::SIGHUP, on_hangup as extern "C" fn(libc::c_int)),
+    ] {
+        // SAFETY: all zeros is a valid sigaction: numbers, a signal set
+        // and a function address.
+        let mut action: libc::sigaction = unsafe { util::zeroed() };
+        action.sa_sigaction = handler as *const () as usize;
+        // SAFETY: the handlers only store to atomics.
+        unsafe { libc::sigaction(signal, &raw const action, std::ptr::null_mut()) };
+    }
+}
+
+/// The certificate that `admin.toml` names.
+///
+/// # Errors
+///
+/// In plain words, if Spark gave admind no folder for it or it does not read.
+fn certificate_named(name: &str) -> Result<Certificate, String> {
+    tls::load(&tls::folder(name)?)
+}
+
+/// The settings to use once `new` has been read while `old` ran: the
+/// sign-in rules and `reach` take effect as they are, and the port never
+/// does, since a port is a restart's. The certificate's name does only when
+/// `certificate_read`, which says the new one was read.
+fn merged(old: &Settings, new: Settings, certificate_read: bool) -> Settings {
+    let mut settings = new;
+    settings.console.listen = old.console.listen;
+    if !certificate_read {
+        settings.console.certificate.clone_from(&old.console.certificate);
+    }
+    settings
+}
+
+/// The address the issue file gives: the first name of the certificate
+/// that is a name with dots, such as `duke-nas.local` or an authority's, and
+/// otherwise the machine's.
+fn address_for(host: &str, certificate: &[String], port: u16) -> String {
+    let named =
+        certificate.iter().find(|name| name.contains('.') && name.parse::<IpAddr>().is_err());
+    let name = named.map_or(host, String::as_str);
+    if port == 443 { format!("https://{name}") } else { format!("https://{name}:{port}") }
+}
+
+/// What the issue file holds: the address, and the certificate's
+/// fingerprint to compare with the browser's warning.
+fn issue_text(address: &str, fingerprint: &str) -> String {
+    format!("{address}\nSHA-256 fingerprint {fingerprint}\n")
+}
+
+/// Writes `text` to the issue file, so that a reader never sees half.
+fn write_issue(text: &str) -> io::Result<()> {
+    let place = Path::new(ISSUE);
+    if let Some(folder) = place.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    let temporary = format!("{ISSUE}.new");
+    fs::write(&temporary, text)?;
+    fs::rename(&temporary, place)
+}
+
+/// What the server keeps up with, and has said already.
+#[derive(Default)]
+struct Upkeep {
+    /// The issue file as last written.
+    issue: String,
+    /// The last words the settings gave when they did not read, so that
+    /// the log says them once and not every 30 seconds.
+    complained: Option<String>,
+}
+
+impl Upkeep {
+    /// Writes the issue file if what it should hold has changed.
+    fn issue(&mut self, shared: &Shared) {
+        let certificate = shared.certificate.borrow();
+        let identity = shared.identity.borrow();
+        let address = address_for(&identity.host, &certificate.names, shared.port);
+        let text = issue_text(&address, &certificate.fingerprint);
+        if text == self.issue {
+            return;
+        }
+        match write_issue(&text) {
+            Ok(()) => self.issue = text,
+            Err(err) => log(4, &format!("cannot write {ISSUE}: {}", util::strip_os_error(&err))),
+        }
+    }
+
+    /// What is done every 30 seconds.
+    fn tick(&mut self, shared: &Shared) {
+        match Settings::read() {
+            Ok(new) => {
+                self.complained = None;
+                let old = shared.settings.borrow().clone();
+                if new.console.listen != old.console.listen {
+                    log(4, "a new port in admin.toml takes a restart of admind");
+                }
+                *shared.settings.borrow_mut() = merged(&old, new, false);
+            }
+            Err(why) => {
+                if self.complained.as_ref() != Some(&why) {
+                    log(4, &format!("{why}: admind goes on with the settings it has"));
+                    self.complained = Some(why);
+                }
+            }
+        }
+        let names = shared.certificate.borrow().names.clone();
+        *shared.identity.borrow_mut() = Identity::read(&names);
+        shared.maintain(std::time::Instant::now());
+        self.issue(shared);
+    }
+
+    /// What SIGHUP does: reads the settings and the certificate again, and
+    /// keeps what was in use for any that does not read.
+    fn reload(&mut self, shared: &Shared) {
+        let old = shared.settings.borrow().clone();
+        let read = Settings::read().unwrap_or_else(|why| {
+            log(4, &format!("{why}: admind goes on with the settings it has"));
+            old.clone()
+        });
+        match certificate_named(&read.console.certificate) {
+            Ok(certificate) => {
+                log(6, &format!("the certificate {} is read again", read.console.certificate));
+                *shared.settings.borrow_mut() = merged(&old, read, true);
+                let names = certificate.names.clone();
+                *shared.certificate.borrow_mut() = certificate;
+                *shared.identity.borrow_mut() = Identity::read(&names);
+            }
+            Err(why) => {
+                log(4, &format!("{why}: admind goes on with the certificate it has"));
+                *shared.settings.borrow_mut() = merged(&old, read, false);
+            }
+        }
+        self.issue(shared);
+    }
+}
+
+/// A socket that listens on `address`, and for IPv6 only on IPv6, since
+/// the IPv4 address has its own.
+///
+/// # Errors
+///
+/// If the address cannot be listened on.
+///
+/// # Panics
+///
+/// Outside a tokio runtime.
+fn listener(address: SocketAddr) -> io::Result<TcpListener> {
+    let socket = Socket::new(Domain::for_address(address), Type::STREAM, Some(Protocol::TCP))?;
+    if address.is_ipv6() {
+        socket.set_only_v6(true)?;
+    }
+    socket.set_reuse_address(true)?;
+    socket.bind(&address.into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    TcpListener::from_std(socket.into())
+}
+
+/// The sockets to listen on at `port`: IPv6 and IPv4, as many as the
+/// machine has.
+///
+/// # Errors
+///
+/// In plain words, if neither can be listened on.
+fn listen(port: u16) -> Result<Vec<TcpListener>, String> {
+    let wanted = [
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
+    ];
+    let mut listening = Vec::new();
+    let mut failed = Vec::new();
+    for address in wanted {
+        match listener(address) {
+            Ok(socket) => listening.push(socket),
+            Err(err) => failed.push(format!("{address}: {}", util::strip_os_error(&err))),
+        }
+    }
+    if listening.is_empty() {
+        return Err(format!("cannot listen: {}", failed.join("; ")));
+    }
+    for why in failed {
+        log(4, &format!("does not listen on {why}"));
+    }
+    Ok(listening)
+}
+
+/// Polls `work` to its end, unless `seen` is still false once `deadline`
+/// comes, which is `None`: the head of a connection's first request has
+/// not come in time. After it has, hyper's own timer watches the heads.
+async fn head_in_time<F: Future>(
+    work: F,
+    seen: &Cell<bool>,
+    deadline: Instant,
+) -> Option<F::Output> {
+    let mut work = pin!(work);
+    let mut late = pin!(tokio::time::sleep_until(deadline));
+    poll_fn(|cx| {
+        if let Poll::Ready(done) = work.as_mut().poll(cx) {
+            return Poll::Ready(Some(done));
+        }
+        if !seen.get() && late.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(None);
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Sets the network's probes on `stream`: the first after [`KEEP_ALIVE`]
+/// of quiet, and then every [`PROBE_EVERY`].
+fn set_probes(stream: &TcpStream) -> io::Result<()> {
+    let probes = TcpKeepalive::new().with_time(KEEP_ALIVE);
+    #[cfg(not(target_os = "radix"))]
+    let probes = probes.with_interval(PROBE_EVERY);
+    SockRef::from(stream).set_tcp_keepalive(&probes)?;
+    #[cfg(target_os = "radix")]
+    probe_every(stream)?;
+    Ok(())
+}
+
+/// Sets the time between probes on Radix, whose socket2 leaves
+/// TCP_KEEPINTVL out although the kernel takes it.
+#[cfg(target_os = "radix")]
+fn probe_every(stream: &TcpStream) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let seconds = libc::c_int::try_from(PROBE_EVERY.as_secs()).unwrap_or(libc::c_int::MAX);
+    let size = libc::socklen_t::try_from(size_of::<libc::c_int>()).unwrap_or_default();
+    // SAFETY: setsockopt reads `size` bytes of `seconds`, which lives
+    // through the call, on a socket `stream` holds open.
+    let done = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_KEEPINTVL,
+            (&raw const seconds).cast(),
+            size,
+        )
+    };
+    if done < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+/// Serves one connection, which holds `slot` until it ends. `head_time`
+/// is how long its handshake and first head have.
+async fn connection(
+    shared: Rc<Shared>,
+    stream: TcpStream,
+    peer: IpAddr,
+    head_time: Duration,
+    slot: Slot,
+) {
+    let deadline = Instant::now() + head_time;
+    // A socket whose probes cannot be set is still a socket.
+    if set_probes(&stream).is_err() {
+        log(7, "a connection's keep-alive probes could not be set");
+    }
+    let acceptor = TlsAcceptor::from(Arc::clone(&shared.certificate.borrow().config));
+    let tls = match tokio::time::timeout_at(deadline, acceptor.accept(stream)).await {
+        Ok(Ok(tls)) => tls,
+        Ok(Err(err)) => {
+            shared.refused_connection(peer, &format!("its TLS handshake failed: {err}"));
+            return;
+        }
+        Err(_) => {
+            shared.refused_connection(peer, "its TLS handshake did not finish in time");
+            return;
+        }
+    };
+    let seen = Rc::new(Cell::new(false));
+    let service = {
+        let (shared, seen) = (Rc::clone(&shared), Rc::clone(&seen));
+        service_fn(move |request| {
+            seen.set(true);
+            routes::handle(Rc::clone(&shared), peer, request)
+        })
+    };
+    let served = http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(KEEP_ALIVE)
+        .max_buf_size(HEAD_MAX)
+        .max_headers(HEADERS_MAX)
+        .keep_alive(true)
+        .serve_connection(TokioIo::new(tls), service);
+    // A connection that ends badly is a browser that went away: nothing
+    // to say about it.
+    if head_in_time(served, &seen, deadline).await.is_none() {
+        shared.refused_connection(peer, "it sent no request in time");
+    }
+    drop(slot);
+}
+
+/// The place a connection from `peer` holds if it is served, or why it is
+/// not: there are as many connections as it takes, or the address is not
+/// one admind answers.
+fn admission(shared: &Shared, peer: IpAddr) -> Result<Slot, &'static str> {
+    let slot = Slot::take(&shared.connections, reach::counted(peer))
+        .ok_or("there are as many connections as it takes")?;
+    let kind: Reach = shared.settings.borrow().console.reach;
+    if reach::answers(kind, peer, &shared.identity.borrow().networks) {
+        Ok(slot)
+    } else {
+        Err("it is not on a network admind answers")
+    }
+}
+
+/// Serves a connection from `peer`, or closes it with no word and notes
+/// why.
+fn admit(shared: &Rc<Shared>, stream: TcpStream, peer: SocketAddr) {
+    let peer = reach::plain(peer.ip());
+    match admission(shared, peer) {
+        Ok(slot) => {
+            tokio::task::spawn_local(connection(Rc::clone(shared), stream, peer, HEAD_TIME, slot));
+        }
+        Err(why) => shared.refused_connection(peer, why),
+    }
+}
+
+/// Accepts connections on `socket` as long as admind runs.
+async fn accepting(shared: Rc<Shared>, socket: TcpListener) {
+    loop {
+        match socket.accept().await {
+            Ok((stream, peer)) => admit(&shared, stream, peer),
+            Err(err) => {
+                // Out of descriptors, most likely; a moment's wait lets
+                // some connections end.
+                log(4, &format!("cannot accept a connection: {}", util::strip_os_error(&err)));
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// The text of the log line that says admind is up.
+fn start_line(address: &str, fingerprint: &str, kind: Reach) -> String {
+    let reach = match kind {
+        Reach::Private => "private networks",
+        Reach::Any => "any network",
+    };
+    format!(
+        "answers at {address} to {reach}; the certificate's SHA-256 fingerprint is {fingerprint}"
+    )
+}
+
+/// Serves until SIGTERM.
+async fn serve(shared: Rc<Shared>) -> Result<(), String> {
+    let sockets = listen(shared.port)?;
+    let mut upkeep = Upkeep::default();
+    upkeep.issue(&shared);
+    {
+        let (certificate, identity) = (shared.certificate.borrow(), shared.identity.borrow());
+        let address = address_for(&identity.host, &certificate.names, shared.port);
+        let kind = shared.settings.borrow().console.reach;
+        log(6, &start_line(&address, &certificate.fingerprint, kind));
+    }
+    for socket in sockets {
+        tokio::task::spawn_local(accepting(Rc::clone(&shared), socket));
+    }
+    let mut last = Instant::now();
+    while !STOP.load(Ordering::Relaxed) {
+        tokio::time::sleep(SIGNALS_EVERY).await;
+        if RELOAD.swap(false, Ordering::Relaxed) {
+            upkeep.reload(&shared);
+        }
+        if last.elapsed() >= UPKEEP_EVERY {
+            last = Instant::now();
+            upkeep.tick(&shared);
+        }
+    }
+    log(6, &format!("stops: it ends {} sessions", shared.sessions.borrow().len()));
+    shared.end_all().await;
+    // A console that is no more has no address to show.
+    if let Err(err) = fs::remove_file(ISSUE)
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        log(4, &format!("cannot remove {ISSUE}: {}", util::strip_os_error(&err)));
+    }
+    Ok(())
+}
+
+/// `admind`: reads what it needs, listens, and serves.
+///
+/// # Errors
+///
+/// If `admin.toml` or the certificate does not read, or admind cannot
+/// listen.
+pub fn run() -> Result<i32, Fail> {
+    install_signals();
+    let settings = Settings::read().map_err(fail)?;
+    let certificate = certificate_named(&settings.console.certificate).map_err(fail)?;
+    let mut said = Vec::new();
+    // A console with no files still answers its API, and says why the
+    // pages are missing.
+    let files = Files::read(Path::new(files::FOLDER), &mut said).unwrap_or_else(|why| {
+        log(3, &why);
+        Files::default()
+    });
+    for line in said {
+        log(4, &line);
+    }
+    log(6, &format!("serves {} files of the console", files.len()));
+    let identity = Identity::read(&certificate.names);
+    let shared = Shared::new(settings, identity, certificate, files, accounts::SOCKET);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| util::failed(&"the runtime", err))?;
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, serve(shared)).map_err(fail)?;
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::admin_settings::SecondStep;
+    use crate::admind::fixture::{Console, run};
+    use crate::admind::limits::CONNECTIONS_MAX;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn the_rules_and_reach_take_effect_and_a_port_waits_for_a_restart() {
+        let old =
+            Settings::parse("[console]\nlisten = 9090\ncertificate = \"this-machine\"\n").unwrap();
+        let new = Settings::parse(
+            "[sign-in]\nsecond-step = \"everyone\"\nsession-hours = 2\n\
+             [console]\nlisten = 8443\nreach = \"any\"\ncertificate = \"admin.example.org\"\n",
+        )
+        .unwrap();
+        let kept = merged(&old, new.clone(), false);
+        assert_eq!(kept.console.listen, 9090);
+        assert_eq!(kept.console.reach, Reach::Any);
+        assert_eq!(kept.console.certificate, "this-machine");
+        assert_eq!(kept.sign_in.second_step, SecondStep::Everyone);
+        assert_eq!(kept.sign_in.session_hours, 2);
+        let read = merged(&old, new, true);
+        assert_eq!(
+            (read.console.listen, read.console.certificate.as_str()),
+            (9090, "admin.example.org")
+        );
+    }
+
+    #[test]
+    fn the_console_is_opened_at_the_first_name_with_dots_the_certificate_has() {
+        let names = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let this = names(&["duke-nas", "duke-nas.local", "localhost"]);
+        assert_eq!(address_for("duke-nas", &this, 9090), "https://duke-nas.local:9090");
+        assert_eq!(
+            address_for("duke-nas", &names(&["admin.example.org", "10.0.0.5"]), 443),
+            "https://admin.example.org"
+        );
+        // A certificate with no such name leaves the machine's own, and an
+        // address is no name.
+        assert_eq!(
+            address_for("duke-nas", &names(&["10.0.0.5", "localhost"]), 9090),
+            "https://duke-nas:9090"
+        );
+        assert_eq!(address_for("duke-nas", &[], 8443), "https://duke-nas:8443");
+        assert_eq!(
+            issue_text("https://duke-nas.local:9090", "AB:CD"),
+            "https://duke-nas.local:9090\nSHA-256 fingerprint AB:CD\n"
+        );
+    }
+
+    #[test]
+    fn the_start_line_says_where_whom_and_which_certificate() {
+        let line = start_line("https://duke-nas.local:9090", "AB:CD", Reach::Private);
+        assert_eq!(
+            line,
+            "answers at https://duke-nas.local:9090 to private networks; \
+             the certificate's SHA-256 fingerprint is AB:CD"
+        );
+        assert!(start_line("x", "y", Reach::Any).contains("to any network"));
+    }
+
+    #[test]
+    fn a_head_that_has_not_come_by_the_deadline_ends_the_connection_and_one_that_has_does_not() {
+        run(async {
+            let never = std::future::pending::<()>();
+            let soon = Instant::now() + Duration::from_millis(30);
+            assert_eq!(head_in_time(never, &Cell::new(false), soon).await, None);
+            // Once a request came, the deadline no longer matters.
+            let seen = Cell::new(true);
+            let later = async {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                7
+            };
+            assert_eq!(head_in_time(later, &seen, Instant::now()).await, Some(7));
+            // Work that ends first is its own end.
+            let quick = async { 1 };
+            assert_eq!(
+                head_in_time(quick, &Cell::new(false), Instant::now() + HEAD_TIME).await,
+                Some(1)
+            );
+        });
+    }
+
+    #[test]
+    fn a_crowd_from_many_addresses_holds_512_places_at_most_and_leaves_the_console_answering() {
+        // The crowd and admind's side of it take about 1,200 descriptors,
+        // more than some systems let a process have unless it asks.
+        enough_descriptors(4096);
+        run(async {
+            let console = console("serve-crowd");
+            let shared = &console.shared;
+            let socket = listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+            let port = socket.local_addr().unwrap().port();
+            tokio::task::spawn_local(accepting(Rc::clone(shared), socket));
+            let console_address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+
+            // 600 connections that say nothing, 30 from each of 20
+            // addresses of the loopback network: fewer than one address
+            // may hold, more than there are places in all.
+            let mut crowd = Vec::new();
+            for n in 0..600u16 {
+                let from = Ipv4Addr::new(127, 0, 0, 2 + u8::try_from(n / 30).unwrap());
+                let socket = tokio::net::TcpSocket::new_v4().unwrap();
+                socket.bind(SocketAddr::from((from, 0))).unwrap();
+                crowd.push(socket.connect(console_address).await.unwrap());
+            }
+            let full = Instant::now() + Duration::from_secs(10);
+            while shared.connections.borrow().total() < CONNECTIONS_MAX && Instant::now() < full {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // admind has taken them all by now, and holds no more than its
+            // places: the rest it closed at once.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(shared.connections.borrow().total(), CONNECTIONS_MAX);
+            let closed = crowd
+                .into_iter()
+                .map(|stream| {
+                    let mut stream = stream.into_std().unwrap();
+                    stream.set_nonblocking(true).unwrap();
+                    (matches!(std::io::Read::read(&mut stream, &mut [0u8; 8]), Ok(0)), stream)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(closed.iter().filter(|(closed, _)| *closed).count(), 600 - CONNECTIONS_MAX);
+
+            // Meanwhile another address, which holds nothing, is closed at
+            // once too: there is no place for it.
+            let mut late = TcpStream::connect(console_address).await.unwrap();
+            let read = tokio::time::timeout(Duration::from_secs(5), late.read(&mut [0u8; 8])).await;
+            assert!(matches!(read, Ok(Ok(0) | Err(_))), "{read:?}");
+
+            // Once the crowd goes, every place is given back, and the
+            // console answers.
+            drop(closed);
+            let empty = Instant::now() + Duration::from_secs(10);
+            while shared.connections.borrow().total() > 0 && Instant::now() < empty {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(shared.connections.borrow().total(), 0);
+            let health =
+                "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\nConnection: close\r\n\r\n";
+            assert!(exchange(&console, port, health).await.starts_with("HTTP/1.1 200"));
+        });
+    }
+
+    /// Raises the limit of open descriptors to `wanted`, or as far as the
+    /// hard limit lets.
+    fn enough_descriptors(wanted: libc::rlim_t) {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: getrlimit and setrlimit read and write only `limit`.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit), 0);
+            if limit.rlim_cur < wanted {
+                limit.rlim_cur = wanted.min(limit.rlim_max);
+                assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_port_is_listened_on_by_the_ipv4_address_and_by_the_ipv6_one_apart() {
+        run(async {
+            let first = listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+            let port = first.local_addr().unwrap().port();
+            // The same port, again, is refused.
+            assert!(listener(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_err());
+            // A machine with no IPv6 has nothing to try.
+            if let Ok(six) = listener(SocketAddr::from((Ipv6Addr::LOCALHOST, 0))) {
+                let six_port = six.local_addr().unwrap().port();
+                // The IPv6 socket takes no IPv4 connection, which the
+                // IPv4 one does.
+                assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, six_port)).await.is_err());
+            }
+            assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.is_ok());
+        });
+    }
+
+    /// Serves each connection to a loopback port as the server does,
+    /// with `head_time` for its first head, and gives the port.
+    fn serve_on_loopback(shared: &Rc<Shared>, head_time: Duration) -> u16 {
+        let socket = listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let shared = Rc::clone(shared);
+        tokio::task::spawn_local(async move {
+            loop {
+                let (stream, peer) = socket.accept().await.unwrap();
+                let slot = admission(&shared, peer.ip()).unwrap();
+                tokio::task::spawn_local(connection(
+                    Rc::clone(&shared),
+                    stream,
+                    peer.ip(),
+                    head_time,
+                    slot,
+                ));
+            }
+        });
+        port
+    }
+
+    /// A TLS connection to the console on `port`, as a browser that trusts
+    /// its authority makes it.
+    async fn connect(console: &Console, port: u16) -> tokio_rustls::client::TlsStream<TcpStream> {
+        let config = rustls::ClientConfig::builder_with_provider(crate::tls::provider())
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .unwrap()
+            .with_root_certificates(console.roots.clone())
+            .with_no_client_auth();
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from("nas.example").unwrap();
+        tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream).await.unwrap()
+    }
+
+    /// What the console answers to `request`, written to a connection
+    /// that it then reads to its end.
+    async fn exchange(console: &Console, port: u16, request: &str) -> String {
+        let mut stream = connect(console, port).await;
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        let read =
+            tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+        // A connection that was closed without the alert, as a server that
+        // hangs up on a request it refuses does, is an end too.
+        let _ = read.expect("an answer in 5 seconds");
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    fn console(what: &str) -> Console {
+        Console::new(what, Arc::new(|_, _| vec!["no the test's authd answers nothing".into()]))
+    }
+
+    #[test]
+    fn a_browser_gets_the_health_answer_over_tls_and_requests_may_follow_one_another() {
+        run(async {
+            let console = console("serve-health");
+            let port = serve_on_loopback(&console.shared, Duration::from_secs(10));
+            let one = "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\n\r\n";
+            let two =
+                "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\nConnection: close\r\n\r\n";
+            let answer = exchange(&console, port, &format!("{one}{two}")).await;
+            assert_eq!(answer.matches("HTTP/1.1 200 OK").count(), 2, "{answer}");
+            assert_eq!(answer.matches("{\"ok\":true}").count(), 2);
+            let lower = answer.to_ascii_lowercase();
+            assert!(lower.contains("content-security-policy: default-src 'self'"));
+            assert!(!lower.contains("\r\nserver:"), "{answer}");
+            // Another name is another machine's.
+            let rebound =
+                "GET /api/1/health HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n";
+            assert!(exchange(&console, port, rebound).await.starts_with("HTTP/1.1 421"));
+        });
+    }
+
+    #[test]
+    fn a_head_of_more_than_16_kib_or_64_headers_is_refused_with_431() {
+        run(async {
+            let console = console("serve-heads");
+            let port = serve_on_loopback(&console.shared, Duration::from_secs(10));
+            let head = |extra: &str| {
+                format!("GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\n{extra}\r\n")
+            };
+            let large = head(&format!("X-Pad: {}\r\n", "a".repeat(20 << 10)));
+            assert!(exchange(&console, port, &large).await.starts_with("HTTP/1.1 431"));
+            let headers = |count: u32| "X-1: 1\r\n".repeat(count as usize);
+            let many = headers(70);
+            assert!(exchange(&console, port, &head(&many)).await.starts_with("HTTP/1.1 431"));
+            let few = headers(40);
+            let closing = head(&format!("{few}Connection: close\r\n"));
+            assert!(exchange(&console, port, &closing).await.starts_with("HTTP/1.1 200"));
+        });
+    }
+
+    #[test]
+    fn a_client_that_sends_no_head_in_time_is_cut_off_with_or_without_a_handshake() {
+        run(async {
+            let console = console("serve-slow");
+            let port = serve_on_loopback(&console.shared, Duration::from_millis(300));
+            let started = std::time::Instant::now();
+            // No handshake at all.
+            let mut quiet = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+            let mut buffer = [0u8; 64];
+            let read = tokio::time::timeout(Duration::from_secs(5), quiet.read(&mut buffer)).await;
+            assert!(matches!(read, Ok(Ok(0) | Err(_))), "{read:?}");
+            assert!(started.elapsed() >= Duration::from_millis(250));
+            // A handshake and then a head that never ends.
+            let mut slow = connect(&console, port).await;
+            slow.write_all(b"GET /api/1/health HTTP/1.1\r\nHost: nas.exa").await.unwrap();
+            let mut rest = Vec::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut rest)).await;
+            assert!(read.is_ok(), "not closed in time");
+            assert!(!String::from_utf8_lossy(&rest).contains("200 OK"));
+            // Nothing holds a place once they are gone.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(console.shared.connections.borrow().total(), 0);
+        });
+    }
+
+    #[test]
+    fn a_connection_is_served_only_within_the_limits_and_from_an_address_that_is_answered() {
+        run(async {
+            let console = console("serve-admission");
+            let shared = &console.shared;
+            let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+            // 32 from one address; the 33rd waits for one to end.
+            let held: Vec<Slot> =
+                (0..32).map(|_| admission(shared, ip("192.168.1.5")).unwrap()).collect();
+            let refused = admission(shared, ip("192.168.1.5")).err();
+            assert_eq!(refused, Some("there are as many connections as it takes"));
+            assert!(admission(shared, ip("192.168.1.6")).is_ok());
+            drop(held);
+            assert!(admission(shared, ip("192.168.1.5")).is_ok());
+            // Private networks only: this one's, and the ranges no one
+            // reaches from the internet.
+            for private in [
+                "127.0.0.1",
+                "10.1.2.3",
+                "172.16.0.9",
+                "192.168.9.9",
+                "100.64.1.1",
+                "fd12::1",
+                "fe80::1",
+                "::ffff:192.168.1.9",
+            ] {
+                assert!(admission(shared, ip(private)).is_ok(), "{private}");
+            }
+            for public in ["203.0.113.9", "8.8.8.8", "2001:db8::1", "::ffff:8.8.8.8", "100.128.0.1"]
+            {
+                assert_eq!(
+                    admission(shared, ip(public)).err(),
+                    Some("it is not on a network admind answers"),
+                    "{public}"
+                );
+            }
+            // The count is of the /64 for IPv6, and a refused one holds no place.
+            shared.settings.borrow_mut().console.reach = Reach::Any;
+            let six: Vec<Slot> = (0..32)
+                .map(|n| admission(shared, ip(&format!("2001:db8::{n:x}"))).unwrap())
+                .collect();
+            assert!(admission(shared, ip("2001:db8::ffff")).is_err());
+            assert!(admission(shared, ip("2001:db8:1::1")).is_ok());
+            drop(six);
+            assert_eq!(shared.connections.borrow().total(), 0);
+        });
+    }
+}

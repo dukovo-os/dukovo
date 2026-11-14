@@ -76,6 +76,8 @@
 //! repair a system that will not start (ADR 0460).
 
 mod account;
+mod admin_settings;
+mod admind;
 mod alertd;
 mod alerts;
 mod args;
@@ -235,6 +237,7 @@ type Tool = fn(&mut Args) -> Result<i32, Fail>;
 /// The tools, by name, in order.
 const TOOLS: &[(&str, Tool)] = &[
     ("acme-answer", cert::acme::answer::main),
+    ("admind", admind::main),
     ("alertd", alertd::main),
     ("alerts", alerts::command::main),
     ("audio", sound::main),

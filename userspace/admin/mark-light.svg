@@ -1,0 +1,17 @@
+<!--
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+The mark of the logo in docs/images/dukovo-logo-light.svg, for the console's dialogs and tab icon.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="44 12 128 176" width="128" height="176">
+<path d="M48 62 L54 12 L88 58 Z" fill="#44596B"/>
+<path d="M92 58 L120 12 L130 66 Z" fill="#44596B"/>
+<path d="M78 58 L84 34 L94 52 L102 28 L110 56 Z" fill="#44596B"/>
+<path d="M44 56 L100 56 C148 56 172 88 172 122 C172 158 146 188 100 188 L44 188 Z" fill="#44596B"/>
+<path d="M72 84 L100 84 C130 84 144 102 144 122 C144 144 130 160 100 160 L72 160 Z" fill="#C8873A"/>
+<path d="M98 100 L128 110 L126 116 L96 106 Z" fill="#44596B"/>
+<path d="M102 112 L126 118 Q122 130 112 128 Q103 125 102 112 Z" fill="#44596B"/>
+<ellipse cx="135" cy="138" rx="9" ry="7" fill="#44596B"/>
+<path d="M134 146 Q128 154 116 149" fill="none" stroke="#44596B" stroke-width="4" stroke-linecap="round"/>
+</svg>

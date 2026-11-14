@@ -105,7 +105,14 @@ x509-cert = { version = "0.3.0", default-features = false, features = ["std"] }
 instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "time"] }
 http = "1.4.0"
 http-body-util = "0.1.3"
-tokio = { version = "1.54.1", features = ["rt", "time"] }
+tokio = { version = "1.54.1", features = ["rt", "time", "net", "io-util", "sync"] }
+# admind(8), the web console's server (ADR 0514): hyper's HTTP/1.1 server
+# alone, on tokio, with tokio-rustls over the rustls above; http-body for
+# the event streams' bodies.
+http-body = "1.0.1"
+hyper = { version = "1.12.0", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 # discoverd(8)'s multicast DNS and DNS-SD (ADR 0338), without the async
 # half of its channels, and the machine's addresses for its own name;
 # ob patches if-addrs in from the rust-crates port.
@@ -154,6 +161,11 @@ smoltcp = { version = "=0.14.0", default-features = false, features = [
     "proto-dhcpv4",
     "socket-udp",
 ] }
+
+[features]
+# admind's `POST /api/1/test/elevate`, which the lab tests use to run an
+# elevated command; a build for people leaves it out (ADR 0514).
+lab = []
 
 [lints]
 workspace = true

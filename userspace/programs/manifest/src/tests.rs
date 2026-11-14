@@ -40,6 +40,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ("timed", include_str!("../../../spark/tests/services/serve/timed.toml")),
     ("metricsd", include_str!("../../../defaults/spark/services/metricsd.toml")),
     ("alertd", include_str!("../../../defaults/spark/services/alertd.toml")),
+    ("admind", include_str!("../../../defaults/spark/services/admind.toml")),
     ("netd", include_str!("../../../defaults/spark/services/netd.toml")),
     ("netd", include_str!("../../../spark/tests/services/dhcp/netd.toml")),
 ];

@@ -36,7 +36,11 @@
 //! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0ticket\09f86d081...\0\0\0subsystem\0sftp\0
 //! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0key\000000020...\0000000b...\0\0forward\0\0
 //! ssh-ended\09f86d081...\0
+//! console\0begin\0192.0.2.7\0chase\0secret\0
 //! ```
+//!
+//! The web console's requests, `console` and a verb, are in
+//! [`console`](crate::console) (ADR 0514).
 //!
 //! An answer is `ok`, maybe with words after it, or `no` and why, then a
 //! newline. authd tells who asks by the user its connection gives
@@ -73,6 +77,7 @@
 //! with. On any other terminal, or with no consoled, `ask` is answered
 //! as `none` is.
 
+use crate::console::Console;
 use crate::wipe;
 
 /// The hexadecimal of `bytes`.
@@ -249,6 +254,9 @@ pub enum Request {
         admin: Option<bool>,
         /// Whether it is to elevate without a password (ADR 0328).
         without_password: Option<bool>,
+        /// Whether it may sign in to the web console without being an
+        /// administrator, in the console group (ADR 0514).
+        console: Option<bool>,
     },
     /// Run a command as an administrator, with the admin set (ADR 0219):
     /// an administrator's to ask, and after their password unless their
@@ -457,6 +465,8 @@ pub enum Request {
         /// The person's number.
         uid: u32,
     },
+    /// The web console's requests (ADR 0514), in [`console`](crate::console).
+    Console(Console),
 }
 
 /// The longest name of an entry in a keyring, in bytes.
@@ -648,6 +658,16 @@ fn password_of(kind: &[u8], password: &[u8]) -> Option<(Option<Vec<u8>>, bool)> 
 impl Request {
     /// What is sent.
     pub fn encode(&self) -> Vec<u8> {
+        if let Request::Console(console) = self {
+            let mut fields = console.fields();
+            let mut bytes = b"console\0".to_vec();
+            for field in &mut fields {
+                bytes.extend_from_slice(field);
+                bytes.push(0);
+                wipe(field);
+            }
+            return bytes;
+        }
         let id_text;
         let hexed;
         let number;
@@ -683,7 +703,7 @@ impl Request {
                 vec![b"service", name.as_bytes(), whose.as_bytes(), home.as_bytes()]
             }
             Request::Rename { name, new } => vec![b"rename", name.as_bytes(), new.as_bytes()],
-            Request::Set { name, full_name, admin, without_password } => {
+            Request::Set { name, full_name, admin, without_password, console } => {
                 let mut fields: Vec<&[u8]> = vec![b"set", name.as_bytes()];
                 if let Some(full_name) = full_name {
                     fields.extend([b"full-name".as_slice(), full_name.as_bytes()]);
@@ -694,6 +714,9 @@ impl Request {
                 }
                 if let Some(without) = without_password {
                     fields.extend([b"without-password".as_slice(), yes(*without)]);
+                }
+                if let Some(console) = console {
+                    fields.extend([b"console".as_slice(), yes(*console)]);
                 }
                 fields
             }
@@ -807,6 +830,7 @@ impl Request {
                 number = uid.to_string();
                 vec![b"kerberos-tickets", number.as_bytes()]
             }
+            Request::Console(_) => unreachable!("sent above"),
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -854,6 +878,7 @@ impl Request {
             [b"rename", name, new] => Ok(Request::Rename { name: text(name)?, new: text(new)? }),
             [b"set", name, ref settings @ ..] => {
                 let (mut full_name, mut admin, mut without_password) = (None, None, None);
+                let mut console = None;
                 let (pairs, rest) = settings.as_chunks::<2>();
                 if !rest.is_empty() || pairs.is_empty() {
                     return Err(malformed());
@@ -871,10 +896,13 @@ impl Request {
                         {
                             without_password = Some(value == b"yes");
                         }
+                        (b"console", value @ (b"yes" | b"no")) if console.is_none() => {
+                            console = Some(value == b"yes");
+                        }
                         _ => return Err(malformed()),
                     }
                 }
-                Ok(Request::Set { name: text(name)?, full_name, admin, without_password })
+                Ok(Request::Set { name: text(name)?, full_name, admin, without_password, console })
             }
             [b"owner", name, full_name, password] => Ok(Request::Owner {
                 name: text(name)?,
@@ -1058,6 +1086,9 @@ impl Request {
                 let uid = std::str::from_utf8(uid).ok().and_then(|u| u.parse().ok());
                 Ok(Request::KerberosTickets { uid: uid.ok_or_else(malformed)? })
             }
+            [b"console", ref rest @ ..] => {
+                Console::decode(rest).map(Request::Console).ok_or_else(malformed)
+            }
             _ => Err(malformed()),
         }
     }
@@ -1099,6 +1130,8 @@ impl Request {
             | Request::KeyringRemove { .. }
             | Request::KeyringLock
             | Request::KerberosTickets { .. }
+            // Its own Drop wipes it.
+            | Request::Console(_)
             | Request::Prompts
             | Request::Prompted { .. }
             | Request::Choose { .. }
@@ -1142,10 +1175,10 @@ impl std::fmt::Debug for Request {
             Request::Rename { name, new } => {
                 write!(f, "Rename {{ name: {name:?}, new: {new:?} }}")
             }
-            Request::Set { name, full_name, admin, without_password } => write!(
+            Request::Set { name, full_name, admin, without_password, console } => write!(
                 f,
                 "Set {{ name: {name:?}, full_name: {full_name:?}, admin: {admin:?}, \
-                 without_password: {without_password:?} }}"
+                 without_password: {without_password:?}, console: {console:?} }}"
             ),
             Request::Owner { name, full_name, .. } => {
                 write!(f, "Owner {{ name: {name:?}, full_name: {full_name:?} }}")
@@ -1216,6 +1249,7 @@ impl std::fmt::Debug for Request {
             Request::KeyringUnlock { .. } => write!(f, "KeyringUnlock"),
             Request::KeyringLock => write!(f, "KeyringLock"),
             Request::KerberosTickets { uid } => write!(f, "KerberosTickets {{ uid: {uid} }}"),
+            Request::Console(console) => write!(f, "{console:?}"),
         }
     }
 }

@@ -323,24 +323,35 @@ fn requests_go_and_come_back() {
             full_name: Some("Bob Smith".into()),
             admin: None,
             without_password: None,
+            console: None,
         },
         Request::Set {
             name: "bob".into(),
             full_name: Some(String::new()),
             admin: Some(true),
             without_password: None,
+            console: None,
         },
         Request::Set {
             name: "bob".into(),
             full_name: None,
             admin: Some(false),
             without_password: None,
+            console: None,
         },
         Request::Set {
             name: "bob".into(),
             full_name: None,
             admin: None,
             without_password: Some(true),
+            console: None,
+        },
+        Request::Set {
+            name: "bob".into(),
+            full_name: None,
+            admin: None,
+            without_password: None,
+            console: Some(true),
         },
         Request::SharePassword {
             name: "alice".into(),
@@ -471,9 +482,21 @@ fn requests_go_and_come_back() {
             full_name: Some("Bob".into()),
             admin: Some(false),
             without_password: None,
+            console: None,
         }
         .encode(),
         b"set\0bob\0full-name\0Bob\0admin\0no\0"
+    );
+    assert_eq!(
+        Request::Set {
+            name: "bob".into(),
+            full_name: None,
+            admin: None,
+            without_password: None,
+            console: Some(false),
+        }
+        .encode(),
+        b"set\0bob\0console\0no\0"
     );
     assert_eq!(
         Request::Prompted { id: 12, typed: Prompted::Password(b"pw".to_vec()) }.encode(),

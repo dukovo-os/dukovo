@@ -735,6 +735,7 @@ fn set_account(account: &Account, dry_run: bool) -> bool {
             full_name: None,
             admin: None,
             without_password: Some(true),
+            console: None,
         })
     {
         return false;

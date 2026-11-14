@@ -45,4 +45,22 @@ RUN if ! curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors --re
     fi \
     && mdbook --version
 
+# Node runs the tests of the web console's scripts in `./ob test unit`;
+# Ubuntu's own is 18, older than the 20 they need. The release is pinned
+# with its checksums, for the two machines the container runs on.
+ARG NODE_VERSION=22.23.4
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) machine=x64; sum=1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce ;; \
+      arm64) machine=arm64; sum=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b ;; \
+      *) echo "no Node release for this machine" >&2; exit 1 ;; \
+    esac \
+    && curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors --retry-delay 10 \
+        -o /tmp/node.tar.xz \
+        "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${machine}.tar.xz" \
+    && echo "${sum}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
+        --wildcards 'node-*/bin' 'node-*/lib' 'node-*/include' \
+    && rm /tmp/node.tar.xz \
+    && node --version
+
 WORKDIR /src

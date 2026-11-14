@@ -31,6 +31,13 @@ one that ran when the computer started again without stopping, in
 *reboot*, on *system boot*, with the kernel's release; with *-x*, each
 stop is one of *shutdown*, on *system down*.
 
+A session of the web console (*dukovo-admin*(7)) has the terminal
+*web* and, as where from, the browser's address; *last web* shows
+those sessions alone. A session begins
+when the person signs in and ends when they sign out, or when the session
+does. A wrong password, or a wrong code of the second step, at the web
+console's sign-in is a line of *lastb* on the same terminal.
+
 With names or terminals, only their lines show; *last reboot* shows
 the starts alone.
 
@@ -82,6 +89,7 @@ _-2h_, _2026-10-31_, _2026-10-31 12:40_ or _12:40_.
 
 ```
 $ last
+alice    web          192.0.2.7        Sat Oct 31 12:50   still logged in
 bob      pts/1                         Sat Oct 31 12:46   still logged in
 bob      pts/1                         Sat Oct 31 12:41 - 12:45  (00:04)
 reboot   system boot  0.15.0           Sat Oct 31 12:39   still running
@@ -115,5 +123,5 @@ command line.
 
 # SEE ALSO
 
-*lastlog*(8), *who*(1), *w*(1), *authd*(8), *login*(1), *elevate*(8),
-*systools*(1)
+*lastlog*(8), *who*(1), *w*(1), *authd*(8), *login*(1),
+*dukovo-admin*(7), *elevate*(8), *systools*(1)

@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The web console, Dukovo Admin: admind(8) serves the console's pages and
+# answers their calls over HTTPS, on port 9090 and to this network alone
+# unless /system/settings/admin.toml says otherwise (admin.toml(5), ADR
+# 0514). It holds no password, code, passkey or token of anyone's: authd(8)
+# checks each, signs the person in as them, and decides what an unlocked
+# session may run as an administrator. The first time a browser opens the
+# console it warns that this machine's certificate is its own; the fingerprint
+# it shows is the one the screen's sign-in text gives.
+#
+# The port is in two places: `listen` in admin.toml, which is what admind
+# listens on, and `network.listen` below, which is all Spark lets it
+# listen on. To move the console, change both, then `service admind
+# restart`. The firewall (firewall(8)) opens a running service's ports to
+# everyone, so admind itself answers only the private networks, whatever
+# the firewall says; `reach = "any"` in admin.toml turns that off.
+#
+# service.toml(5) explains each setting. `service check admind` checks
+# this file, and `service edit admind` checks it as you save.
+
+service_version = 2
+description = "The web console, Dukovo Admin"
+program = "/system/commands/admind"
+# After the network and authd, with the services people add.
+order = 45
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+# The certificate it serves, which certd keeps and Spark copies for it and
+# has it read again when it changes. `certificate` in admin.toml picks one
+# of these: name an authority's certificate here too before it does.
+certificates = ["this-machine"]
+# Not started until authd can sign people in and certd has made its
+# certificate.
+requires = ["authd", "certd"]
+
+# Ready once it listens, which is when a browser can open the console.
+[ready]
+when = "listening"
+timeout = 60
+
+[limits]
+memory = "64M"
+
+# What it holds beyond what every service reads, which includes the
+# console's own files in /system/resources/admin (service.toml(5)): its
+# port, authd's socket, its state folder, which holds nothing yet, and the
+# folder where it writes the address and fingerprint that the screen's
+# sign-in text shows.
+[permissions]
+network.listen = [9090]
+files.read = ["/system/live/authd"]
+files.read-write = ["/system/state/admind", "/system/live/admind"]

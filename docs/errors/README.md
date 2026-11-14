@@ -39,6 +39,7 @@ table and say what the area is, in two to five capitals.
 
 | Letters | Area | Since |
 | --- | --- | --- |
+| `ADM` | The web console, Dukovo Admin: its sign-in, second steps, unlock and requests | 0.16.0 |
 | `BOOT` | Starting the computer: the health check of each start | 0.15.0 |
 | `FW` | Firmware sets and the firmware the kernel loads | 0.15.0 |
 | `HW` | Hardware: the checks of `hardware check` | 0.16.0 |

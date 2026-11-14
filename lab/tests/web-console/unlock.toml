@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's unlock in the lab PC's browsers (ADR 0514): an
+# administrator unlocks the console, which asks admind for 15 minutes of
+# changes as an administrator, with a password and with an authenticator
+# app's code; the header counts the minutes down and one press makes them
+# 15 again; "Lock" locks every page of the session; a session locks when
+# it is signed out and, a minute later, when its last page closes. An
+# account in group console that is no administrator is offered no unlock
+# and refused one. Each engine has an administrator of its own, which this
+# test makes and removes, so no script needs the lab's password. The
+# lab's build of admind has one more route that runs a command as the
+# unlocked session; the script tries it where the image has it.
+about = "Browsers unlock the web console with a password and an app's code, watch its minutes count down, lock it, and see it lock on sign-out and when the last page closes"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-unlock-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-unlock-chromium", "Made wc-unlock-firefox", "Made wc-unlock-webkit"]
+# An account that signs in to the console without being an administrator.
+[[step]]
+run = "sh -c 'echo lab-console-password | user add wc-unlock-viewer && user set --console --yes wc-unlock-viewer'"
+root = true
+expect = ["Made wc-unlock-viewer", "wc-unlock-viewer is changed"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "unlock.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for name in wc-unlock-chromium wc-unlock-firefox wc-unlock-webkit wc-unlock-viewer; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-unlock-chromium is removed", "wc-unlock-viewer is removed"]

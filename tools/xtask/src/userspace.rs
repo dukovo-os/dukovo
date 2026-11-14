@@ -20,7 +20,7 @@ use std::process::Command;
 use crate::config::Profile;
 use crate::ports::{self, Ports};
 use crate::process::{self, step};
-use crate::{Context, Ctx, Result};
+use crate::{Context, Ctx, Error, Result, doctor};
 
 /// The user programs' target specification, relative to the repository
 /// root.
@@ -131,6 +131,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/bash", "nukesh"),
     ("system/commands/sh", "nukesh"),
     ("system/commands/rnukesh", "nukesh"),
+    ("system/commands/admind", "systools"),
     ("system/commands/alertd", "systools"),
     ("system/commands/alerts", "systools"),
     ("system/commands/audio", "systools"),
@@ -327,6 +328,14 @@ pub const FEATURES_DIR: &str = "system/resources/features";
 /// boot archive they go, beside the rest of the signed system.
 pub const TROUBLESHOOT: &str = "userspace/troubleshoot";
 pub const TROUBLESHOOT_DIR: &str = "system/resources/troubleshoot";
+
+/// The console's pages (admind(8), ADR 0514), and where in the boot
+/// archive they go: the folder admind serves. Its `manifest.txt` lists
+/// the SHA-256 of each file, and the folder `tests` beside the pages,
+/// with the script tests, is left out.
+pub const ADMIN: &str = "userspace/admin";
+pub const ADMIN_DIR: &str = "system/resources/admin";
+const ADMIN_TESTS: &str = "tests";
 
 /// The service files of the boot tests that Spark is pointed at with
 /// `--service-dir` (spark(8)), and where in the boot archive they go.
@@ -598,14 +607,15 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     install_headers(ctx)?;
     let ports = ports::build_all(ctx, &[])?;
     let mut files = build_posix(ctx, &ports.toolchain)?;
-    install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &mut files)?;
-    install_tree(ctx, FEATURES, FEATURES_DIR, &mut files)?;
-    install_tree(ctx, TROUBLESHOOT, TROUBLESHOOT_DIR, &mut files)?;
+    install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &[], &mut files)?;
+    install_tree(ctx, FEATURES, FEATURES_DIR, &[], &mut files)?;
+    install_tree(ctx, TROUBLESHOOT, TROUBLESHOOT_DIR, &[], &mut files)?;
+    install_admin(ctx, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
     // The root this system trusts its releases by (ADR 0308).
     files.push(crate::release::trusted_root(ctx)?);
-    install_tree(ctx, TEST_SERVICES, TEST_SERVICES_DIR, &mut files)?;
-    install_tree(ctx, TEST_INSTALL, TEST_INSTALL_DIR, &mut files)?;
+    install_tree(ctx, TEST_SERVICES, TEST_SERVICES_DIR, &[], &mut files)?;
+    install_tree(ctx, TEST_INSTALL, TEST_INSTALL_DIR, &[], &mut files)?;
     for port in &ports.ports {
         files.extend(ports::image_files(ctx, &port.recipe, &ctx.out.join("sysroot"))?);
     }
@@ -700,11 +710,13 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
 
 /// Copies the files beneath `source`, a directory of the repository,
 /// into `out/sysroot` at `dir`, in name order, and adds each one's place
-/// in the boot archive and file to `files`.
+/// in the boot archive and file to `files`. A directory whose name is in
+/// `skip` is left out, wherever it is.
 fn install_tree(
     ctx: &Ctx,
     source: &str,
     dir: &str,
+    skip: &[&str],
     files: &mut Vec<(String, PathBuf)>,
 ) -> Result<()> {
     let from = ctx.root.join(source);
@@ -719,7 +731,10 @@ fn install_tree(
     entries.sort();
     for (name, is_dir) in entries {
         if is_dir {
-            install_tree(ctx, &format!("{source}/{name}"), &format!("{dir}/{name}"), files)?;
+            if !skip.contains(&name.as_str()) {
+                let (source, dir) = (format!("{source}/{name}"), format!("{dir}/{name}"));
+                install_tree(ctx, &source, &dir, skip, files)?;
+            }
             continue;
         }
         let installed = ctx.out.join("sysroot").join(dir).join(&name);
@@ -727,6 +742,74 @@ fn install_tree(
         files.push((format!("{dir}/{name}"), installed));
     }
     Ok(())
+}
+
+/// Installs the console's pages like [`install_tree`], less their tests,
+/// and writes `manifest.txt` beside them, which admind checks the files
+/// against when it starts (`systools/src/admind/files.rs`).
+fn install_admin(ctx: &Ctx, files: &mut Vec<(String, PathBuf)>) -> Result<()> {
+    let first = files.len();
+    install_tree(ctx, ADMIN, ADMIN_DIR, &[ADMIN_TESTS], files)?;
+    let manifest = admin_manifest(ctx, &files[first..])?;
+    let path = ctx.out.join("sysroot").join(ADMIN_DIR).join("manifest.txt");
+    std::fs::write(&path, manifest).context(|| format!("writing {}", path.display()))?;
+    files.push((format!("{ADMIN_DIR}/manifest.txt"), path));
+    Ok(())
+}
+
+/// The text of the console's `manifest.txt` for `pages`, the files of
+/// [`ADMIN_DIR`] as [`install_tree`] listed them: a line for each in the
+/// order of their paths, the SHA-256 in hexadecimal, two spaces and the
+/// path inside the folder, as `sha256sum` writes it.
+fn admin_manifest(ctx: &Ctx, pages: &[(String, PathBuf)]) -> Result<String> {
+    let mut lines = Vec::with_capacity(pages.len());
+    for (place, file) in pages {
+        let inside = place.strip_prefix(ADMIN_DIR).and_then(|rest| rest.strip_prefix('/'));
+        let inside =
+            inside.expect("install_tree lists each file beneath the folder it installs into");
+        lines.push((inside.to_string(), process::sha256(ctx, file)?));
+    }
+    lines.sort();
+    let lines: Vec<String> = lines.iter().map(|(path, sum)| format!("{sum}  {path}\n")).collect();
+    Ok(lines.concat())
+}
+
+/// Where to get a Node new enough: some distributions' own package is
+/// older (Ubuntu 24.04's is 18).
+const NODE_HINT: &str = "install Node 20 or later, from the nodejs package where it is new enough or from \
+     https://nodejs.org/, then run ./ob doctor";
+
+/// Runs the script tests of the console's pages with Node's own test
+/// runner. They are plain ES modules, so there is nothing to install.
+pub fn test_admin_scripts(ctx: &Ctx) -> Result<()> {
+    match doctor::node_installed() {
+        None => {
+            return Err(Error::new(
+                "the console's script tests need Node 20 or later, and node is not installed",
+            )
+            .hint(NODE_HINT));
+        }
+        Some(version) if !doctor::node_is_new_enough(&version) => {
+            return Err(Error::new(format!(
+                "the console's script tests need Node 20 or later, and this node is {version}"
+            ))
+            .hint(NODE_HINT));
+        }
+        Some(_) => {}
+    }
+    let dir = ctx.root.join(ADMIN).join(ADMIN_TESTS);
+    let mut tests = Vec::new();
+    for entry in std::fs::read_dir(&dir).context(|| format!("reading {}", dir.display()))? {
+        let path = entry.context(|| format!("reading {}", dir.display()))?.path();
+        if path.to_string_lossy().ends_with(".test.mjs") {
+            tests.push(path);
+        }
+    }
+    tests.sort();
+    // Node 22 does not take a folder, so each file is named.
+    let mut cmd = Command::new("node");
+    cmd.arg("--test").args(&tests).current_dir(&ctx.root);
+    process::run(ctx, &mut cmd)
 }
 
 /// Builds the programs of [`STD_ARCHIVE`] into `out/sysroot`, with their
@@ -933,7 +1016,13 @@ fn write_archive(files: &[(String, PathBuf)], epoch: Option<String>) -> Result<V
         };
         written.map_err(|err| crate::Error::new(format!("the boot archive: {path}: {err}")))?;
     }
-    Ok(writer.finish())
+    let archive = writer.finish();
+    // The kernel checks the archive before it uses any of it, and stops
+    // the boot when it does not pass: check it as the kernel will.
+    radix_bootfs::open(&archive).map_err(|err| {
+        crate::Error::new(format!("the boot archive of {} entries: {err}", entries.len()))
+    })?;
+    Ok(archive)
 }
 
 /// The startup archive (ADR 0307): Spark at [`STARTUP_PROGRAM`] and the
@@ -1065,6 +1154,55 @@ mod tests {
         assert_eq!(write_archive(&files, None).ok(), None, "the programs are gone");
         let under_a_link = [("system/bin/ls".to_string(), dir.join("ls"))];
         assert!(write_archive(&under_a_link, None).is_err(), "a file under /system/bin");
+    }
+
+    #[test]
+    fn the_consoles_pages_are_installed_with_a_manifest_and_without_their_tests() {
+        let root = std::env::temp_dir().join(format!("ob-admin-test-{}", std::process::id()));
+        let pages = root.join(ADMIN);
+        std::fs::create_dir_all(pages.join("css")).unwrap();
+        std::fs::create_dir_all(pages.join("tests")).unwrap();
+        std::fs::write(pages.join("index.html"), "<html>").unwrap();
+        std::fs::write(pages.join("app.js"), "console.log(1)").unwrap();
+        std::fs::write(pages.join("css/console.css"), "body{}").unwrap();
+        std::fs::write(pages.join("tests/app.test.mjs"), "a test").unwrap();
+        let ctx = Ctx {
+            out: root.join("out"),
+            target: root.join("target"),
+            root: root.clone(),
+            config: crate::config::Config::default(),
+            verbose: false,
+        };
+        let other = PathBuf::from("a file that is not a page");
+        let mut files = vec![("system/commands/spark".to_string(), other.clone())];
+        let installed = install_admin(&ctx, &mut files);
+        let placed: Vec<&str> = files.iter().map(|(place, _)| place.as_str()).collect();
+        let manifest =
+            std::fs::read_to_string(root.join("out/sysroot").join(ADMIN_DIR).join("manifest.txt"));
+        let left_out = root.join("out/sysroot").join(ADMIN_DIR).join(ADMIN_TESTS).exists();
+        std::fs::remove_dir_all(&root).unwrap();
+        installed.unwrap();
+        assert_eq!(
+            placed,
+            [
+                "system/commands/spark",
+                "system/resources/admin/app.js",
+                "system/resources/admin/css/console.css",
+                "system/resources/admin/index.html",
+                "system/resources/admin/manifest.txt",
+            ]
+        );
+        assert!(!left_out, "the tests folder is not installed");
+        // The sums are `sha256sum`'s, for the three files' contents; the line of
+        // a file in a folder names its path inside the pages' folder, and the
+        // manifest does not list itself or files that are not pages.
+        assert_eq!(
+            manifest.unwrap(),
+            "0a286891c11c056e1ab5bfc25bf5d6b2f5b06d38eac10944f678fd8a2e70c393  app.js\n\
+             7c98040a541657584690ae2a1cc3b42a8b53b159cc60c5d3abbfecbaeac6c94a  css/console.css\n\
+             b7d082ee12e91b756ea22e8513b8594eebcf5d39fab813da3cb55794dc888ad7  index.html\n"
+        );
+        assert_eq!(files[0].1, other);
     }
 
     #[test]

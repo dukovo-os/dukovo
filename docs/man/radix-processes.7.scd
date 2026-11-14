@@ -134,7 +134,7 @@ The kernel checks the whole archive before it uses any of it, and Spark
 checks it again when it mounts it: every header's checksum, every number
 and size, every path relative, at most 255 bytes and free of *.* and
 *..*, the paths in order with each directory before what is in it, at
-most 4,096 entries, and only regular files and directories. radix-rt
+most 16,384 entries, and only regular files and directories. radix-rt
 serves it as a read-only file system to Spark. The full file system
 layer comes in Phase 7.
 

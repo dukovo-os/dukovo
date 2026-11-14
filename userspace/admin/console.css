@@ -1,0 +1,221 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The console's look: the rules of the approved mock-ups' console.css that
+ * the sign-in, unlock and second-step pages use, with the classes that
+ * stand in for the mock-ups' inline styles (the console's content security
+ * policy allows none). The theme is a class on the root element, chosen by
+ * theme.js: light is the base, and dark and hc (high contrast) swap the
+ * tokens. Nothing loads from outside the console: the font stacks name the
+ * typefaces the mock-ups use and fall back to the viewer's own.
+ */
+
+.dk {
+  --page: #F2F5F9; --bg: #FFFFFF; --pane: #F5F8FC; --sunken: #ECF1F6; --border: #D4DDE7; --control: #6B7989;
+  --text: #1B1F24; --muted: #4E5966; --accent: #1C62B0; --on-accent: #FFFFFF; --link: #0E59AD; --instr: #173E7A;
+  --focus: #1C62B0; --ok: #1D6A31; --ok-soft: #E2F3E6; --warn: #7C5009; --warn-soft: #FBF0D9; --bad: #B0281F; --bad-soft: #FBE3E0;
+  --btn-1: #FDFEFF; --btn-2: #EEF1F5; --btn-3: #DFE4EB; --btn-4: #E9EDF2; --btn-b: #7D8A99;
+  --hot-1: #F3FAFF; --hot-2: #DCEFFC; --hot-3: #C2E4FB; --hot-4: #ADD9F6; --hot-b: #3D7DB5;
+  --sel-1: #E7F1FC; --sel-2: #CEE2F8; --sel-b: #7FA7D9; --hov-1: #F6FAFE; --hov-2: #E9F2FC;
+  --cmd-1: #F9FBFE; --cmd-2: #E6EEF7; --cmd-b: #C3D1E1; --field-b: #7D8A99; --field-top: #6F7C8B;
+  --side-1: #E7F1FC; --side-2: #F6FAFE; --chart-fill: rgba(28,98,176,.12); --code-bg: #0A1220; --code-text: #CFE0F5;
+  --scrim: rgba(16,26,40,.42); --shadow: 0 2px 6px rgba(20,40,70,.12), 0 14px 34px rgba(20,40,70,.14);
+  --font-ui: "Noto Sans", "Open Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Noto Sans Mono", ui-monospace, monospace;
+  --font-brand: "Sora", "Noto Sans", system-ui, sans-serif;
+  font: 14px/1.45 var(--font-ui); color: var(--text); background: var(--page);
+  min-height: 100%; box-sizing: border-box;
+}
+.dk.dark {
+  --page: #141C28; --bg: #1A2433; --pane: #202C3F; --sunken: #111823; --border: #34465F; --control: #8299B6;
+  --text: #EAF1FA; --muted: #CCD8E7; --accent: #7AB9FF; --on-accent: #06121F; --link: #8FC7FF; --instr: #A8D6FF;
+  --focus: #9AD6FF; --ok: #86DBA0; --ok-soft: #173826; --warn: #F2C878; --warn-soft: #3A2E14; --bad: #FFB3AB; --bad-soft: #43201F;
+  --btn-1: #3F5B7C; --btn-2: #2A4565; --btn-3: #1F3654; --btn-4: #253F60; --btn-b: #5F82AB;
+  --hot-1: #3F6DA0; --hot-2: #2F5F94; --hot-3: #1F4C80; --hot-4: #2A5C96; --hot-b: #7DBBFF;
+  --sel-1: #24456F; --sel-2: #1F3C62; --sel-b: #64A2E6; --hov-1: #24395A; --hov-2: #1F3150;
+  --cmd-1: #26364D; --cmd-2: #1D2B3F; --cmd-b: #34465F; --field-b: #6F8CB3; --field-top: #8199BC;
+  --side-1: #1E3150; --side-2: #172234; --chart-fill: rgba(108,178,255,.16); --code-bg: #0B111B;
+  --scrim: rgba(2,6,14,.62); --shadow: 0 2px 6px rgba(0,0,0,.5), 0 14px 34px rgba(0,0,0,.6);
+  color-scheme: dark;
+}
+.dk.hc {
+  --page: #000; --bg: #000; --pane: #000; --sunken: #000; --border: #FFF; --control: #FFF;
+  --text: #FFF; --muted: #FFF; --accent: #FFD166; --on-accent: #000; --link: #FFD166; --instr: #FFF;
+  --focus: #00E5FF; --ok: #7CFF9B; --ok-soft: #000; --warn: #FFB86B; --warn-soft: #000; --bad: #FF8C8C; --bad-soft: #000;
+  --btn-1: #000; --btn-2: #000; --btn-3: #000; --btn-4: #000; --btn-b: #FFF;
+  --hot-1: #1A1400; --hot-2: #1A1400; --hot-3: #1A1400; --hot-4: #1A1400; --hot-b: #FFD166;
+  --sel-1: #000; --sel-2: #000; --sel-b: #FFD166; --hov-1: #000; --hov-2: #000;
+  --cmd-1: #000; --cmd-2: #000; --cmd-b: #FFF; --field-b: #FFF; --field-top: #FFF;
+  --side-1: #000; --side-2: #000; --chart-fill: rgba(255,209,102,.18); --code-bg: #000; --code-text: #FFF;
+  --scrim: rgba(0,0,0,.8); --shadow: none; color-scheme: dark;
+}
+.dk *, .dk *::before, .dk *::after { box-sizing: border-box; }
+.dk a { color: var(--link); }
+.dk a:hover { text-decoration-thickness: 2px; }
+.dk :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.dk h1, .dk h2, .dk h3, .dk p { margin: 0; }
+.dk .mono, .dk code { font-family: var(--font-mono); font-size: 12px; }
+.dk .muted { color: var(--muted); }
+.dk .small { font-size: 12px; }
+.dk .ok { color: var(--ok); } .dk .warn { color: var(--warn); } .dk .bad { color: var(--bad); }
+
+
+html, body { margin: 0; }
+.dk [hidden] { display: none !important; }
+.dk button, .dk input { font: inherit; }
+
+/* Icons: one stroke set, drawn in the text colour through a mask. */
+.ic { display: inline-block; width: 16px; height: 16px; flex: none; background: currentColor;
+  -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat; }
+.ic-lock { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'%3E%3Cpath d='M3.5 7.5h9v6.5h-9zM5.5 7.5V5a2.5 2.5 0 0 1 5 0v2.5'/%3E%3C/svg%3E"); }
+.ic-unlock { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'%3E%3Cpath d='M3.5 7.5h9v6.5h-9zM5.5 7.5V5a2.5 2.5 0 0 1 4.9-.7'/%3E%3C/svg%3E"); }
+.ic-copy { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Cpath d='M5.5 5.5h8v8h-8zM10.5 5.5v-3h-8v8h3'/%3E%3C/svg%3E"); }
+.ic-check { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 8.5l3.2 3L13 4.5'/%3E%3C/svg%3E"); }
+.ic-warn { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 1.8l6.5 12H1.5zM8 6.3v3.4M8 11.8h.01'/%3E%3C/svg%3E"); }
+.ic-info { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6.2'/%3E%3Cpath d='M8 7.3v4M8 4.8h.01'/%3E%3C/svg%3E"); }
+.ic-key { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='5' cy='11' r='3'/%3E%3Cpath d='M7.2 8.8L13.5 2.5M11.2 4.8l1.8 1.8M9.6 6.4l1.4 1.4'/%3E%3C/svg%3E"); }
+.ic-plus { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round'%3E%3Cpath d='M8 3v10M3 8h10'/%3E%3C/svg%3E"); }
+
+/* The mark has a colouring for each background. */
+.dk .mark-dark { display: none; }
+.dk.dark .mark-dark, .dk.hc .mark-dark { display: block; }
+.dk.dark .mark-light, .dk.hc .mark-light { display: none; }
+
+/* The top bar and the page frame */
+.top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 7px 14px;
+  background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-bottom: 1px solid var(--cmd-b); }
+.brand { display: flex; align-items: center; gap: 8px; font: 600 14px var(--font-brand); color: var(--text); text-decoration: none; }
+.spacer { flex: 1; }
+.access { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 13px; }
+.access.open { color: var(--bad); font-weight: 600; }
+.access-box { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.topbtn { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 8px; border: 1px solid transparent; border-radius: 3px;
+  background: none; color: var(--text); font: inherit; cursor: pointer; }
+.topbtn:hover { border-color: var(--sel-b); background: linear-gradient(var(--hov-1), var(--hov-2)); }
+#app { min-height: 100vh; display: flex; flex-direction: column; }
+.shell { flex: 1; display: flex; flex-wrap: wrap; align-items: stretch; }
+.main { --gap: 16px; flex: 999 1 560px; min-width: 0; padding: 18px 24px 28px; background: var(--bg); display: flex; flex-direction: column; gap: var(--gap); }
+.ph { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.ph h1 { font: 400 21px/1.3 var(--font-ui); color: var(--instr); }
+.ph .lead { flex-basis: 100%; color: var(--muted); }
+.crumb { font-size: 12px; color: var(--muted); }
+.crumb a { color: var(--muted); }
+.title { display: flex; flex-direction: column; gap: 2px; }
+
+/* Buttons and fields */
+.btn { font: inherit; min-height: 30px; min-width: 76px; padding: 0 12px; border-radius: 3px; cursor: pointer; color: var(--text);
+  border: 1px solid var(--btn-b); display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none;
+  background: linear-gradient(var(--btn-1), var(--btn-2) 49%, var(--btn-3) 50%, var(--btn-4)); box-shadow: inset 0 0 0 1px rgba(255,255,255,.5); }
+.dark .btn, .hc .btn { box-shadow: inset 0 1px 0 rgba(200,225,255,.18); }
+.btn:hover { border-color: var(--hot-b); background: linear-gradient(var(--hot-1), var(--hot-2) 49%, var(--hot-3) 50%, var(--hot-4)); }
+.btn:disabled { cursor: default; opacity: .6; }
+.btn:disabled:hover { border-color: var(--btn-b); background: linear-gradient(var(--btn-1), var(--btn-2) 49%, var(--btn-3) 50%, var(--btn-4)); }
+.btn.default { border-color: var(--hot-b); box-shadow: 0 0 0 1px var(--hot-b) inset; }
+.btn.danger { color: var(--bad); }
+.btn.small { min-height: 26px; min-width: 0; padding: 0 9px; font-size: 12px; }
+.btn.link { border-color: transparent; background: none; box-shadow: none; color: var(--link); min-width: 0; padding: 0 6px; }
+.btn.link:hover { background: none; text-decoration: underline; }
+.btn.block { width: 100%; }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btns.apart { justify-content: space-between; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label, .field .label { font-weight: 600; font-size: 13px; }
+.field .hint, .hint { font-size: 12px; color: var(--muted); }
+.input { font: inherit; height: 30px; padding: 0 8px; border: 1px solid var(--field-b); border-top-color: var(--field-top); border-radius: 2px;
+  background: var(--bg); color: var(--text); width: 100%; }
+.input.mono { font-family: var(--font-mono); font-size: 12px; }
+.input.code { font-size: 18px; letter-spacing: .2em; height: 38px; }
+.input.bad { border-color: var(--bad); border-top-color: var(--bad); box-shadow: 0 0 0 1px var(--bad); }
+.msg { display: flex; gap: 6px; align-items: flex-start; color: var(--bad); font-size: 13px; }
+.msg:empty { display: none; }
+/* A live region has to stay on the page to be announced, so an empty one is
+   kept, and the gap its container puts before it is taken back. */
+.dk [role="status"]:empty { margin-top: calc(var(--gap) * -1); }
+.msg .ic { margin-top: 2px; flex: none; }
+.msg:focus { outline: none; }
+.msg:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.check { display: flex; gap: 8px; align-items: flex-start; }
+.check input { margin: 2px 0 0; accent-color: var(--accent); width: 15px; height: 15px; }
+
+/* Cards, rows and tables */
+.cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; }
+.card { --gap: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--pane); padding: 14px 16px; display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
+.card h2 { font: 600 14px var(--font-ui); display: flex; align-items: center; gap: 8px; }
+.tbl-box { overflow-x: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+.tbl { width: 100%; border-collapse: collapse; min-width: 0; }
+.tbl th { text-align: left; font-weight: 600; font-size: 12px; color: var(--muted); padding: 7px 12px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(var(--cmd-1), var(--cmd-2)); white-space: nowrap; }
+.tbl td { padding: 7px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.tbl tr:last-child td { border-bottom: 0; }
+.tbl td small { display: block; color: var(--muted); font-size: 12px; }
+.tbl td.end { text-align: right; white-space: nowrap; }
+
+/* States and banners */
+.pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.pill.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.banner { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 5px; border: 1px solid var(--border); background: var(--pane); }
+.banner .ic { margin-top: 2px; }
+.banner > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.banner.warn { border-color: rgba(201,138,27,.6); background: var(--warn-soft); }
+.banner.warn > .ic { color: var(--warn); }
+.banner.info { border-color: var(--sel-b); background: var(--sel-1); }
+.banner.info > .ic { color: var(--accent); }
+.dark .banner.info { background: var(--hov-2); }
+.banner.ok { border-color: rgba(29,106,49,.45); background: var(--ok-soft); }
+.banner.ok > .ic { color: var(--ok); }
+.fingerprint { overflow-wrap: anywhere; user-select: all; }
+
+/* Dialogs: the sign-in boxes on the page, and the unlock dialog, a modal <dialog>. */
+.dialog { width: 100%; max-width: 620px; border: 1px solid var(--btn-b); border-radius: 7px; background: var(--bg); box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.dialog.narrow { max-width: 360px; }
+.dialog.medium { max-width: 400px; }
+dialog.dialog { padding: 0; margin: 70px auto 16px; color: var(--text); }
+dialog.dialog:not([open]) { display: none; }
+dialog.dialog::backdrop { background: var(--scrim); }
+.dialog-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-radius: 7px 7px 0 0; }
+.dialog-head h2 { font: 400 17px var(--font-ui); color: var(--instr); }
+.dialog-head .ic { color: var(--bad); }
+.dialog-body { --gap: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: var(--gap); }
+.dialog-body.roomy { --gap: 14px; padding: 24px; }
+.dialog-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--pane); border-radius: 0 0 7px 7px; }
+.dialog-title { font: 400 19px var(--font-ui); color: var(--instr); }
+.lockup { display: flex; align-items: center; gap: 10px; }
+.lockup b { font: 600 17px var(--font-brand); }
+
+/* The sign-in page: dialogs in the middle, the note on the certificate below. */
+.sign-in { flex: 1; display: flex; flex-direction: column; }
+.sign-in-dialogs { flex: 1; display: flex; flex-wrap: wrap; gap: 28px; justify-content: center; align-items: flex-start; padding: 64px 16px 32px; }
+.sign-in-note { display: flex; justify-content: center; padding: 0 16px 32px; }
+.sign-in-note .banner { max-width: 820px; }
+.sign-in-dialogs .banner { flex-basis: 100%; }
+
+/* The second step's pages */
+.panel { --gap: 10px; display: flex; flex-direction: column; gap: var(--gap); padding: 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); }
+.panel h3 { font-size: 14px; }
+.qr-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.qr { width: 200px; height: 200px; flex: none; border: 1px solid var(--border); border-radius: 4px; forced-color-adjust: none; }
+.qr-text { flex: 1 1 220px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.secret { font: 600 15px/1.5 var(--font-mono); letter-spacing: .04em; overflow-wrap: anywhere; user-select: all; }
+.codes { list-style: none; margin: 0; padding: 10px 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 6px 16px;
+  border: 1px dashed var(--sel-b); border-radius: 5px; background: var(--sunken); font: 14px/1.4 var(--font-mono); user-select: all; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+@media (max-width: 480px) {
+  .sign-in-dialogs { padding-top: 24px; }
+  .dialog-body.roomy { padding: 18px; }
+  .main { padding: 14px 16px 24px; }
+}
+
+/* The operating system's own accessibility settings win over the console's
+   look: Windows contrast themes get system colours, with an outline for
+   every state that a tinted background alone would show, and the icons
+   keep a colour that is drawn on the page's. "Reduce motion" turns off
+   movement. */
+@media (forced-colors: active) {
+  .dk .ic { forced-color-adjust: none; background: CanvasText; }
+  .dk .btn.default, .dk .input.bad { outline: 2px solid Highlight; outline-offset: -2px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dk *, .dk *::before, .dk *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}
