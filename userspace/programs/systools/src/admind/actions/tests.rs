@@ -93,8 +93,10 @@ impl Action for List {
 
 static RESTART: Entry<Restart> = Entry::new();
 static LIST: Entry<List> = Entry::new();
+/// The lab's long action, whose own module is also in lab builds.
+static LONG: Entry<lab::Long> = Entry::new();
 /// These tests' actions, which the route tests use too.
-pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST];
+pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG];
 
 #[test]
 fn an_address_finds_its_action_and_gives_its_arguments() {
@@ -293,6 +295,11 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
             assert!(!name.is_empty(), "{id} names each of its five tests");
         }
         assert!(!action.title().is_empty(), "{id}'s title");
+        assert!(
+            !action.long() || (action.changes() && action.runs() == Runs::AsAdministrator),
+            "{id}: a long action is a change that runs as an administrator, which is all a task \
+             runs as"
+        );
         let (good, _, undo) = action.example_values();
         assert!(!good.is_empty(), "{id} has an example the tests can run");
         if let Some(undo) = &undo {

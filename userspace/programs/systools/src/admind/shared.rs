@@ -25,7 +25,7 @@ use accounts::console::Console;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use super::actions::{REGISTRY, Registered};
+use super::actions::{self, Registered};
 use super::authd;
 use super::caller::TokenWorkers;
 use super::errors::{Failure, Kind};
@@ -157,7 +157,7 @@ pub struct Shared {
     pub token_workers: RefCell<TokenWorkers>,
     /// The elevated commands running now, of every session and token.
     pub elevating: Cell<usize>,
-    /// The actions the API offers: [`REGISTRY`], or a test's own.
+    /// The actions the API offers: [`actions::offered`], or a test's own.
     pub actions: Cell<&'static [&'static dyn Registered]>,
     /// The store of the journal and the tasks; none when it would not
     /// open, which the log says.
@@ -195,7 +195,7 @@ impl Shared {
             wrong_tokens: RefCell::default(),
             token_workers: RefCell::default(),
             elevating: Cell::new(0),
-            actions: Cell::new(REGISTRY),
+            actions: Cell::new(actions::offered()),
             store,
             journal: Journal::new(Path::new(SETTINGS)),
         })

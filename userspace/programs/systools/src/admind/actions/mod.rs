@@ -25,6 +25,8 @@
 
 mod certificate;
 mod console;
+#[cfg(any(test, feature = "lab"))]
+pub mod lab;
 mod service;
 pub mod show;
 
@@ -340,6 +342,24 @@ registry![
     certificate::Renew,
     console::SetReach,
 ];
+
+/// The actions the console offers: [`REGISTRY`], and in a lab build the
+/// lab's own, which the tests of tasks run ([`lab`]).
+pub fn offered() -> &'static [&'static dyn Registered] {
+    #[cfg(feature = "lab")]
+    {
+        static ALL: std::sync::LazyLock<Vec<&'static dyn Registered>> =
+            std::sync::LazyLock::new(|| {
+                static LONG: Entry<lab::Long> = Entry::new();
+                let mut all: Vec<&'static dyn Registered> = REGISTRY.to_vec();
+                all.push(&LONG);
+                all
+            });
+        &ALL
+    }
+    #[cfg(not(feature = "lab"))]
+    REGISTRY
+}
 
 /// The list `GET /api/1/actions` answers and `admin actions` prints: each
 /// action's id, title, area, whether it changes anything, its method and

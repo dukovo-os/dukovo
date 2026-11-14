@@ -77,6 +77,8 @@
 
 mod account;
 mod admin;
+#[cfg(feature = "lab")]
+mod admin_lab;
 mod admin_put_back;
 mod admin_settings;
 mod admind;

@@ -86,6 +86,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("reach") => reach(args),
         Some("token") => token(args),
         Some("put-back") => admin_put_back::main(args),
+        // A lab build's long command, for the lab's long action.
+        #[cfg(feature = "lab")]
+        Some("lab-steps") => crate::admin_lab::main(args),
         _ => Err(usage(format!("no such command: {}\n{USAGE}", subcommand.to_string_lossy()))),
     }
 }
@@ -546,7 +549,8 @@ mod tests {
             actions_table(LAB),
             "ID           KIND    RUNS AS        ROUTE\n\
              lab.restart  change  administrator  POST /api/1/lab/{name}/restart  e.g. elevate service lab-web restart\n\
-             lab.list     read    the person     GET /api/1/lab                  e.g. service list --json\n"
+             lab.list     read    the person     GET /api/1/lab                  e.g. service list --json\n\
+             lab.long     change  administrator  POST /api/1/lab/long            e.g. elevate admin lab-steps 20\n"
         );
     }
 

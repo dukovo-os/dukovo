@@ -42,7 +42,7 @@ fn the_list_of_actions_is_for_a_session_or_a_token_and_no_one_else() {
         assert_eq!(listed.status, 200, "{}", listed.body);
         let ids: Vec<Value> =
             listed.json().as_array().unwrap().iter().map(|a| a["id"].clone()).collect();
-        assert_eq!(ids, [json!("lab.restart"), json!("lab.list")]);
+        assert_eq!(ids, [json!("lab.restart"), json!("lab.list"), json!("lab.long")]);
         let by_token = send(&world, with_token(get("/api/1/actions"), TOKEN_READ)).await;
         assert_eq!(by_token.json(), listed.json());
         let nobody = send(&world, get("/api/1/actions")).await;
