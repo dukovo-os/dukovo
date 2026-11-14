@@ -23,14 +23,16 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin token remove* _name_
 
+*admin put-back* _id_
+
 # DESCRIPTION
 
 *admin* is the command that goes with the web console, Dukovo Admin
 (*admind*(8), *dukovo-admin*(7), ADR 0515). It says where the console is
 and which certificate it serves, lists what the console's API does, shows
 what an action runs in the forms a person copies, says or sets whom the
-console answers, and makes, lists and removes the API tokens of the person
-who types it.
+console answers, makes, lists and removes the API tokens of the person who
+types it, and, as root, puts a change back.
 
 An _action_ is one read or change that the console and its API offer, such
 as *service.restart*. Each has an _id_ of its area and a verb. The
@@ -199,6 +201,39 @@ remove another's.
 	Removes the token _name_ at once. A script that still brings it is
 	refused with ADM-115.
 
+*put-back* _id_
+	Writes back the earlier text of each file that change _id_ of the
+	console's journal, "What changed", changed (ADR 0516). Only root runs
+	it, which the console's *Put back* button does as *elevate admin
+	put-back* _id_, so that the command the console shows is the command
+	that ran. It opens the console's store read-only, finds the change,
+	and writes the earlier text of each of its files as *admind*(8)
+	keeps it, keeping the file's owner and mode (a file that is made again
+	is mode 0644). A file that holds the earlier text already is left
+	alone and said so. A file that was changed again after the change is
+	written over, and it says that the later text is gone.
+
+	The service a file belongs to is asked to read it again, as *service*
+	_name_ *reload* does: a service file in
+	_/system/settings/spark/services_, or its override in _settings.d_, is
+	the service of its name, and a file in a bundle service's data folder
+	is that bundle's service. A service that does not run reads its file
+	when it starts. When Spark cannot be asked, the files stay written, it
+	says so, and it exits 1.
+
+	A change cannot be put back if a file in it was made by it, which has
+	no earlier text; is a secret or a file that not everyone may read,
+	which the console never keeps; is longer than 1 MiB; or is one whose
+	earlier text is among the versions the console has forgotten, as it
+	keeps the last 20 of a file. It says which, and writes nothing.
+
+	```
+	$ elevate admin put-back 41
+	put back /system/settings/spark/services/diskhealth.toml
+	asked diskhealth to reload
+	change 41 is put back: 1 file
+	```
+
 There is no *admin run*. The command that an action runs is the command
 *show* prints, and a person runs it as it is, with *elevate*(8) where it
 says so. A second way to run an action would be a second interface to
@@ -219,13 +254,19 @@ _/system/state/authd/console/_*name*.toml
 	The account's second steps and tokens, as hashes, which only root
 	reads. *admin token* reaches them only through *authd*(8).
 
+_/system/state/admind/store.db_
+	The console's store, mode 0600, which holds the journal and the
+	earlier versions of the settings files. *admin put-back* opens it
+	read-only. It waits up to 5 seconds for a write of *admind*(8) to end.
+
 # EXIT STATUS
 
 0 when it did what was asked; 1 when it did not, saying why, which
 includes a mistake in the command line, a refusal of *authd*(8), the
-console not running for *fingerprint*, and for *reach* a change that was
-not made by root, a settings file that is not right and a Spark that
-did not take the reload.
+console not running for *fingerprint*, for *reach* a change that was not
+made by root, a settings file that is not right and a Spark that did not
+take the reload, and a change that cannot be put back or a store that
+cannot be opened for *put-back*.
 
 # EXAMPLES
 
@@ -267,6 +308,13 @@ $ elevate admin reach any
 The console's reach is now any: admind has read it again.
 $ elevate admin reach private
 The console's reach is now private: admind has read it again.
+```
+
+Put back a change that someone made by hand to a service's file, which
+the console's "What changed" page shows as change 41:
+
+```
+$ elevate admin put-back 41
 ```
 
 Remove the token when the script no longer runs:

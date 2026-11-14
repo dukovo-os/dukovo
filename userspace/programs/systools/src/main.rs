@@ -77,6 +77,7 @@
 
 mod account;
 mod admin;
+mod admin_put_back;
 mod admin_settings;
 mod admind;
 mod alertd;

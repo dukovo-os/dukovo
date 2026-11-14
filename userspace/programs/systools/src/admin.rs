@@ -4,8 +4,10 @@
 //! admin(8): the web console from a terminal (ADR 0515). It says where the
 //! console is and which certificate it serves, lists the actions the API
 //! offers, shows an action as the command, the API call and the Ansible
-//! task that do it, says or sets whom the console answers, and makes,
-//! lists and removes the API tokens of the person who runs it.
+//! task that do it, says or sets whom the console answers, makes, lists
+//! and removes the API tokens of the person who runs it, and, for root,
+//! puts back a change of the console's journal (`admin_put_back`, ADR
+//! 0516).
 //!
 //! The list and the forms an action shows as are those of the console
 //! itself, from `admind::actions`, so that what is printed here is what the
@@ -36,6 +38,7 @@ use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
 use crate::account::{self, Input};
+use crate::admin_put_back;
 use crate::admin_settings::{self, Reach, Settings};
 use crate::admind::ISSUE;
 use crate::admind::actions::{self, REGISTRY, Registered, show};
@@ -51,7 +54,8 @@ const USAGE: &str = "usage: admin fingerprint\n       admin actions [--json]\n  
                      admin show ACTION [NAME=VALUE | NAME:=JSON]...\n       \
                      admin reach [private | any]\n       \
                      admin token add NAME --scope SCOPE... [--days N]\n       \
-                     admin token list\n       admin token remove NAME";
+                     admin token list\n       admin token remove NAME\n       \
+                     admin put-back ID";
 
 /// The most of the issue file that is read, as consoled reads it: it holds
 /// two short lines.
@@ -81,6 +85,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("show") => show_action(args),
         Some("reach") => reach(args),
         Some("token") => token(args),
+        Some("put-back") => admin_put_back::main(args),
         _ => Err(usage(format!("no such command: {}\n{USAGE}", subcommand.to_string_lossy()))),
     }
 }
