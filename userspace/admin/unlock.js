@@ -224,8 +224,8 @@ export function accessControl(session) {
     } else {
       element.replaceChildren(
         icon('lock'),
-        'Limited access',
-        ...(session.admin ? ['·', button('Unlock', unlock)] : []));
+        h('span', {}, session.admin ? 'Limited access ·' : 'Limited access'),
+        session.admin && button('Unlock', unlock));
     }
   }
 

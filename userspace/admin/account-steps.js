@@ -181,7 +181,7 @@ export function secondStepView({ session, signInAgain }) {
   const heading = h('h1', { tabindex: '-1' }, 'Second step');
   const status = h('p', { class: 'small', role: 'status' });
   const failure = errorSlot('steps-error');
-  const codesPlace = h('div');
+  let codesShown = null;
   const cards = h('div', { class: 'cards' }, h('p', { class: 'muted' }, 'Loading…'));
 
   async function load() {
@@ -204,9 +204,11 @@ export function secondStepView({ session, signInAgain }) {
         account: session.name,
         host: session.host,
         needsStep,
-        finished: () => (needsStep ? signInAgain() : codesPlace.replaceChildren()),
+        finished: () => (needsStep ? signInAgain() : codesShown.remove()),
       });
-      codesPlace.replaceChildren(section);
+      codesShown?.remove();
+      codesShown = section;
+      cards.before(section);
       codesHeading.focus();
     } else if (needsStep) {
       signInAgain();
@@ -419,7 +421,6 @@ export function secondStepView({ session, signInAgain }) {
           ' Add one below. The console then asks you to sign in again, with the new step.')))
       : h('p', { class: 'muted' }, 'After the password, a second step proves that it is you, so that a password that leaks is not enough.'),
     status,
-    codesPlace,
     failure,
     cards,
   ];
