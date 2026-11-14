@@ -260,6 +260,7 @@ pub mod msr {
     pub const GS_BASE: u32 = 0xc000_0101;
     pub const KERNEL_GS_BASE: u32 = 0xc000_0102;
     pub const TSC_DEADLINE: u32 = 0x6e0;
+    pub const POWER_CTL: u32 = 0x1fc;
     pub const XFD: u32 = 0x1c4;
     pub const XFD_ERR: u32 = 0x1c5;
 }
@@ -642,4 +643,30 @@ pub fn sti_mwait() {
 pub fn sti_hlt() {
     // SAFETY: HLT only waits; the interrupt handlers are installed.
     unsafe { asm!("sti", "hlt", options(nostack)) };
+}
+
+/// MSR_POWER_CTL's bit that lets an Intel processor turn an MWAIT for C1
+/// into C1E, which also lowers the core's voltage and clock.
+const POWER_CTL_C1E: u64 = 1 << 1;
+
+/// Keeps this CPU's MWAIT for C1 in C1, as Linux's intel_idle does on
+/// the processors where it lists C1E as a state of its own: firmware
+/// often lets the processor promote C1 to C1E, whose exit takes about
+/// 10 us rather than 2 us and leaves the core at its lowest clock, so
+/// every short wait for another CPU then costs a climb back to speed.
+/// Returns whether the firmware had promotion on.
+pub fn keep_c1() -> bool {
+    if !is_intel() || !feature::monitor() || feature::hypervisor() {
+        return false;
+    }
+    // SAFETY: reading MSR_POWER_CTL has no side effect; a processor
+    // without it faults, which `rdmsr_safe` catches.
+    let Some(control) = (unsafe { rdmsr_safe(msr::POWER_CTL) }) else { return false };
+    let promoting = control & POWER_CTL_C1E != 0;
+    if promoting {
+        // SAFETY: the register exists (it was just read); clearing the
+        // promotion bit changes only which idle state MWAIT enters.
+        unsafe { wrmsr(msr::POWER_CTL, control & !POWER_CTL_C1E) };
+    }
+    promoting
 }

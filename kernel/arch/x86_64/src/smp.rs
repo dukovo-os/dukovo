@@ -403,6 +403,8 @@ extern "C" fn ap_entry(index: usize) -> ! {
     fpu::init_cpu();
     microcode::load(false);
     mce::init_cpu();
+    // The boot CPU's log line speaks for every CPU.
+    let _ = cpu::keep_c1();
     let madt = acpi::get().and_then(|acpi| acpi.madt.as_ref());
     apic::init_cpu(madt, acpi_uid(index));
     mce::init_cpu_interrupt();

@@ -1259,6 +1259,9 @@ impl Platform for Arch {
         // Under a hypervisor MWAIT is usually not passed through, and when
         // it is emulated it may spin; HLT lets the host run something else.
         IDLE_MWAIT.store(cpu::feature::monitor() && !cpu::feature::hypervisor(), Ordering::Relaxed);
+        if cpu::keep_c1() {
+            radix_klog::info!("Idle: C1 stays C1; the firmware let the CPUs promote it to C1E");
+        }
         // Before any driver starts a device.
         iommu::init(flags.value("iommu") == Some("off"));
     }
