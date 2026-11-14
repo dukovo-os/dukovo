@@ -290,7 +290,9 @@ fn start(options: &Start) -> Result<i32, Fail> {
         message: format!("{}; help-session log {} shows what was kept", fail.message, started.id),
         ..fail
     })?;
-    println!("{}", end_message(&started.id, &finished));
+    // The help screen's last line may stop part way, at its prompt: the
+    // end goes on a line of its own below it.
+    println!("\n{}", end_message(&started.id, &finished));
     Ok(i32::from(finished.why == HelpEnded::Refused))
 }
 
