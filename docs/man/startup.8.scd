@@ -14,10 +14,11 @@ startup - why starting the computer took as long as it did
 # DESCRIPTION
 
 startup shows how long a start took, step by step and service by service
-(ADR 0474). Each start's record (*changes*(1)) keeps its times, which the
-health check writes as it finishes the record, once no service that
-starts at boot is still on its way to ready, or two minutes after it saw
-the start through, whichever is first: how long the firmware and
+(ADR 0474). Each start's record (*changes*(1)) keeps its times. The
+health check writes them with its verdict, and again, whole, once no
+service that starts at boot is still on its way to ready, or two minutes
+after it saw the start through, whichever is first; the log then says
+"kept the times of start _N_". The times are how long the firmware and
 the boot loader took, where the firmware says (ACPI's FPDT, which the
 kernel reads at _/kernel/boot/times_, *radix-sysfs*(5)); when the kernel
 started Spark; when each service started and was ready, and which it

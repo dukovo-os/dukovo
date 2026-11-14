@@ -74,11 +74,14 @@ and nothing notices that starting got slower than it was.
    when the kernel started Spark, each service's start and ready times
    and what it started after, when the services settled, and the first
    sign-in. The health check sees a start through once the essential
-   services run, which is often before the last service is ready, so it
-   takes the times once no service started at boot is pending or
-   starting, waiting at most two minutes. `startup` prints each step from firmware to sign-in, the
-   chain of services that set the total, and the ten slowest; `--compare`
-   puts a start beside the last good one.
+   services run, which is often before the last service is ready. It
+   keeps its verdict at once, with the times so far, so that the notice
+   of a failed start, the slot state and Rescue's count never wait; it
+   then takes the times again once no service started at boot is pending
+   or starting, waiting at most two minutes, and says so in the log.
+   `startup` prints each step from firmware to sign-in, the chain of
+   services that set the total, and the ten slowest; `--compare` puts a
+   start beside the last good one.
 7. **A slow start is noticed.** When the services settle more than 20%
    and at least two seconds later than the median of the last five good
    starts, the health check logs and notifies which step grew and which

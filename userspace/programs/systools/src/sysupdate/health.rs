@@ -298,46 +298,77 @@ pub fn run() -> Result<i32, Fail> {
         println!("sysupdate: {named} failed its health check: {why}");
     }
     record(&named, &result);
+    // The verdict is kept at once, with the times so far: the notice of a
+    // failed start, the slot state and Rescue's count follow from it, and
+    // a restart soon after must not find the start unfinished.
     let this = begun.ok().and_then(|start| {
         let outcome = if passed { Outcome::Good } else { Outcome::Failed };
         let why = result.as_ref().err().map(String::as_str);
-        // A start seen through is timed once its services settle; a failed
-        // one, as it is, since what follows it waits on its record.
-        let times = if passed {
-            starts::Times::settled(SETTLE_WAIT)
-        } else {
-            starts::Times::now(starts::signed_in())
-        };
-        let times = times
-            .inspect_err(|why| println!("sysupdate: cannot take the times of this start: {why}"))
-            .ok();
-        starts::finish_in(Path::new(starts::DIR), start, outcome, why, times)
-            .inspect_err(|err| println!("sysupdate: cannot keep the record of this start: {err}"))
-            .ok()
+        finish(start, outcome, why, starts::Times::now(starts::signed_in()))
     });
-    // A start that settled later than starting usually does, is told.
-    if let Some(this) = this.as_ref().filter(|_| passed)
-        && let Some(text) = crate::startup::slow_notice(&starts::all(), this)
+    verdict(&root, &named, passed, this.as_ref())?;
+    // A start seen through is timed again once its services settle, which
+    // can take two minutes: after the verdict, with the slot state's lock
+    // let go, so that neither the verdict nor a stage waits for it.
+    if let Some(this) = this.filter(|_| passed)
+        && let Some(this) = finish(this, Outcome::Good, None, starts::Times::settled(SETTLE_WAIT))
     {
-        println!("sysupdate: {text}");
-        let more = "startup says more";
-        if let Err(why) =
-            crate::notifyd::send("sysupdate", &text, more, crate::notifyd::Urgency::Normal)
-        {
-            println!("sysupdate: cannot tell the consoles: {}", why.message);
+        println!("sysupdate: kept the times of start {}, which startup shows", this.number);
+        // A start that settled later than starting usually does, is told.
+        if let Some(text) = crate::startup::slow_notice(&starts::all(), &this) {
+            println!("sysupdate: {text}");
+            let more = "startup says more";
+            if let Err(why) =
+                crate::notifyd::send("sysupdate", &text, more, crate::notifyd::Urgency::Normal)
+            {
+                println!("sysupdate: cannot tell the consoles: {}", why.message);
+            }
         }
     }
+    Ok(0)
+}
+
+/// Keeps `start`'s record finished with `outcome`, why it failed and
+/// `times`, saying what went wrong.
+fn finish(
+    start: starts::Start,
+    outcome: Outcome,
+    why: Option<&str>,
+    times: Result<starts::Times, String>,
+) -> Option<starts::Start> {
+    let times = times
+        .inspect_err(|why| println!("sysupdate: cannot take the times of this start: {why}"))
+        .ok();
+    starts::finish_in(Path::new(starts::DIR), start, outcome, why, times)
+        .inspect_err(|err| println!("sysupdate: cannot keep the record of this start: {err}"))
+        .ok()
+}
+
+/// Follows the health check's result, `passed`, for the slot that runs,
+/// `named`, whose start's record is `this`: tells of a failed start,
+/// writes the slot state, sets Rescue's count back, and restarts into the
+/// other slot when an update gives up its tries.
+///
+/// # Errors
+///
+/// If the slot state cannot be read or written.
+fn verdict(
+    root: &Root,
+    named: &str,
+    passed: bool,
+    this: Option<&starts::Start>,
+) -> Result<(), Fail> {
     // Naming a failed start's likely cause reads its log and can take
     // seconds, so it is done before the lock, which a stage waits on, for
     // the start the notice would be of as the slot state is now.
     let records = starts::all();
-    let (_, now) = place::state(&root)?;
+    let (_, now) = place::state(root)?;
     let (_, would) = now.checked(root.running, passed);
-    let cause = noticed(&records, this.as_ref(), would)
+    let cause = noticed(&records, this, would)
         .map(|failed| (failed.number, crate::troubleshoot::likely_cause(&records, failed)));
     // A stage takes minutes at most.
     let _lock = place::lock_within(Duration::from_secs(STAGE_WAIT))?;
-    let (copies, state) = place::state(&root)?;
+    let (copies, state) = place::state(root)?;
     let (next, checked) = state.checked(root.running, passed);
     let likely = |failed: &starts::Start| {
         cause
@@ -345,9 +376,9 @@ pub fn run() -> Result<i32, Fail> {
             .filter(|(number, _)| *number == failed.number)
             .and_then(|(_, hit)| hit.clone())
     };
-    if let Some(text) = failure_notice(&records, this.as_ref(), checked, &named, &likely) {
+    if let Some(text) = failure_notice(&records, this, checked, named, &likely) {
         tell(&text);
-        tell_alertd(&failure_alert(checked, &named, &text), Screen::Shown);
+        tell_alertd(&failure_alert(checked, named, &text), Screen::Shown);
     }
     if let Some(next) = next {
         place::write(&copies, next)?;
@@ -360,14 +391,14 @@ pub fn run() -> Result<i32, Fail> {
     }
     match checked {
         Checked::Proved(slot) => {
-            let before = place::named(&root, slot.other());
+            let before = place::named(root, slot.other());
             println!(
                 "sysupdate: {named} proved itself: it is now the default, and {before} the \
                  previous version"
             );
         }
         Checked::Failed(slot) => {
-            let before = place::named(&root, slot.other());
+            let before = place::named(root, slot.other());
             println!(
                 "sysupdate: the update gives up its tries; restarting into {before} (UPD-101)"
             );
@@ -384,7 +415,7 @@ pub fn run() -> Result<i32, Fail> {
             }
         }
         Checked::FellBack(slot) => {
-            let update = place::named(&root, slot);
+            let update = place::named(root, slot);
             println!(
                 "sysupdate: the update in {update} did not prove itself; {named} runs, with the \
                  settings from before the update (UPD-101)"
@@ -392,7 +423,7 @@ pub fn run() -> Result<i32, Fail> {
         }
         Checked::Start => println!("sysupdate: this start of {named} is seen through"),
     }
-    Ok(0)
+    Ok(())
 }
 
 /// Removes a slot a stage left half built, as a power cut can (ADR

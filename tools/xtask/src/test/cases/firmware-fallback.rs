@@ -201,7 +201,16 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &[],
     )?;
     vm.expect(&format!("Booting `Dukovo Server {VERSION} (the firmware update to {broken} failed)'"))?;
-    started(vm, 'b')?;
+    // As after the first: the health check and tty1 come in either order,
+    // and the bottom line tells of the failed try until a key is pressed.
+    vm.expect("spark: started slot b, @system.b")?;
+    vm.expect_ahead(&format!(
+        "sysupdate: the update in slot A (Dukovo {VERSION}, firmware {broken}) did not prove \
+         itself; slot B (Dukovo {VERSION}, firmware {good}) runs"
+    ))?;
+    vm.expect("; tty1 is shown")?;
+    vm.expect_screen(&["sysupdate: Start ", " failed its health check: the CPU microcode "])?;
+    vm.press(&["ret"])?;
     run(
         vm,
         "sysupdate firmware; ls /volumes/*/@firmware/sets",

@@ -66,11 +66,15 @@ fn write(vm: &mut Vm, file: &str, lines: &[&str]) -> Result<(), String> {
     run(vm, &format!("{} && echo \"written: $((6 * 7))\"", script(file, lines)), &["written: 42"])
 }
 
-/// Waits for an installed system's start, and for the health check to see
-/// it through.
+/// The health check's line once a start's record has its times.
+const TIMES_KEPT: &str = "sysupdate: kept the times of start ";
+
+/// Waits for an installed system's start, for the health check to see it
+/// through, and for its times, which it takes once the services settle.
 fn seen_through(vm: &mut Vm) -> Result<(), String> {
     started(vm, 'a')?;
-    vm.expect("is seen through")
+    vm.expect("is seen through")?;
+    vm.expect(TIMES_KEPT)
 }
 
 fn startup(vm: &mut Vm, _case: &Case) -> Result<(), String> {
@@ -142,11 +146,10 @@ fn startup(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     restart(vm)?;
 
     // The start after them settles later, and the health check says so.
-    started(vm, 'a')?;
+    seen_through(vm)?;
     vm.expect("sysupdate: This start took ")?;
     vm.expect(" longer than usual: the services grew by ")?;
     vm.expect(", most in lingers (BOOT-106)")?;
-    vm.expect("is seen through")?;
     run(
         vm,
         "startup --compare | tail -15",

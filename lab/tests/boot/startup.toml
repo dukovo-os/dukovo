@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # startup (ADR 0474): once the health check has seen the first start
-# through, its record has the times, and startup says each step from the
+# through and its services have settled, its record has the times, and
+# startup says each step from the
 # kernel to the services settling, the chain of services that set when
 # they settled and the slowest, in words and as JSON. A fresh disk has
 # no earlier good start, so --compare says there is none to compare with.
@@ -14,6 +15,8 @@ fresh = true
 serial = "spark: started slot a, @system.a"
 [[step]]
 serial = "is seen through"
+[[step]]
+serial = "sysupdate: kept the times of start "
 [[step]]
 run = "startup"
 expect = [
