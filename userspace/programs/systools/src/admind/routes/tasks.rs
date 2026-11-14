@@ -26,8 +26,9 @@ use crate::admind::shared::{Shared, unix_now};
 use crate::admind::store::tasks::Task;
 use crate::admind::who::{self, Account};
 
-/// How many tasks a list gives when it is not told, and at most.
+/// How many tasks a list gives when it is not told.
 const LIMIT_DEFAULT: usize = 50;
+/// The most tasks a list gives.
 const LIMIT_MAX: usize = 200;
 
 /// How far back a list reaches for tasks that ended, when it is not told.

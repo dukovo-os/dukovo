@@ -52,9 +52,10 @@ const TREE: &str = "system/settings";
 /// The file in `DIR` that lists what was left out.
 const LEFT_OUT: &str = "SECRETS.md";
 
-/// The mode of a copy and of a folder made for it: the settings' own, which
-/// everyone may read; the person's umask can take from them.
+/// The mode of a copy: the settings' own, which everyone may read; the
+/// person's umask can take from it.
 const FILE_MODE: u32 = 0o644;
+/// The mode of a folder made for the copies, as a person's own are.
 const DIR_MODE: u32 = 0o755;
 
 /// `admin export DIR`.

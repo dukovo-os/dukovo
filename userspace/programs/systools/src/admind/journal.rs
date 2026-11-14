@@ -56,9 +56,10 @@ pub const SETTINGS: &str = "/system/settings";
 /// Where Spark keeps the services' secrets.
 pub const SECRETS: &str = "/system/state/spark/secrets";
 
-/// How deep the round goes into the folders it watches: the settings'
-/// are a few levels, and a folder an action named is a service's own.
+/// How deep the round goes into the settings: they are a few levels.
 const DEPTH_SETTINGS: usize = 8;
+/// How deep it goes into a folder an action named, which is a service's
+/// own.
 const DEPTH_NAMED: usize = 4;
 
 /// The most files a round looks at, so that a folder of thousands that an
@@ -181,6 +182,7 @@ fn hash_file(path: &str) -> std::io::Result<(String, u64)> {
 /// A file the round found changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Edited {
+    /// Its path.
     pub path: String,
     /// What it was at the last look.
     pub before: Seen,
@@ -194,6 +196,7 @@ pub struct Edited {
 /// recorded.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Scan {
+    /// The files, in the order of their paths.
     pub edits: Vec<Edited>,
 }
 

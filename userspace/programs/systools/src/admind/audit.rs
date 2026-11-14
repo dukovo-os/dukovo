@@ -30,9 +30,10 @@ use crate::logd::{self, Record, Request};
 /// How long before a file's change a command that named it counts.
 pub const WINDOW: i64 = 600;
 
-/// How long logd has to answer, and the most it is read for: a window of
-/// a few minutes holds a few lines.
+/// How long logd has to answer: the whole answer, which is a few lines.
 const ASK_TIME: Duration = Duration::from_secs(5);
+/// The most lines of the answer that are read: a window of a few minutes
+/// holds a few.
 const LINES_MAX: usize = 10_000;
 
 /// What the journal says of a change it cannot name a person for.

@@ -89,15 +89,26 @@ pub struct NewChange<'a> {
 /// A row of the journal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Change {
+    /// Its number, which grows with each row.
     pub id: i64,
+    /// The Unix time it ended, or was found.
     pub at: i64,
+    /// The person, or "outside the console".
     pub who: String,
+    /// `console`, `token NAME` or `by hand`.
     pub how: String,
+    /// The action's ID, for a console change.
     pub action: Option<String>,
+    /// The command it ran.
     pub argv: Option<Vec<String>>,
+    /// The command's exit status, if it ran to its end.
     pub status: Option<i32>,
+    /// The task it ran as, for a long action.
     pub task: Option<i64>,
+    /// What else there is to say: why a command did not end, what was put
+    /// back.
     pub note: Option<String>,
+    /// The files it named or changed, each as it was before and after.
     pub files: Vec<FileChange>,
     /// Who marked a hand edit seen, and when.
     pub seen: Option<Marked>,
@@ -106,7 +117,9 @@ pub struct Change {
 /// Who marked a row seen, and when.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Marked {
+    /// The person.
     pub by: String,
+    /// The Unix time.
     pub at: i64,
 }
 

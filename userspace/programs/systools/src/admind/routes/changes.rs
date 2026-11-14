@@ -39,17 +39,18 @@ use crate::admind::store::Store;
 use crate::admind::store::changes::{Change, FileChange, Seen};
 use crate::admind::who::{self, Account};
 
-/// How many changes a list gives when it is not told, and at most.
+/// How many changes a list gives when it is not told.
 const LIMIT_DEFAULT: usize = 50;
+/// The most changes a list gives.
 const LIMIT_MAX: usize = 200;
 
 /// The most lines of diff one change's answer holds, all its files'
 /// together.
 const DIFF_LINES_MAX: usize = 2000;
 
-/// The ID and title a put back has in the journal, as an action has its
-/// own.
+/// The ID a put back has in the journal, as an action has its own.
 pub const PUT_BACK_ID: &str = "changes.put-back";
+/// The title a put back has in the journal.
 const PUT_BACK_TITLE: &str = "Put a change back";
 
 /// The store, or ADM-126 when it did not open.

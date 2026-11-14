@@ -16,6 +16,11 @@
 //! KiB; what comes after is read and dropped, so the command never blocks
 //! on a full pipe. At most 32 elevated commands run at once, every session
 //! and token together.
+//!
+//! A long action's command runs the same way, as a task
+//! ([`tasks`](super::tasks), ADR 0516): [`start`] gives it its descriptors
+//! and its place among the 32, and the task reads its output as it comes,
+//! without the time limit of a short command.
 
 use std::fs::File;
 use std::io::{PipeWriter, pipe};
