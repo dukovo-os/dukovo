@@ -85,18 +85,18 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Ok(0)
         }
         ["hostname" | "set-hostname", name] => set_hostname(name),
-        ["set-hostname", ..] => Err(usage(
-            "set-hostname takes one name, `hostnamectl set-hostname NAME`".into(),
-        )),
+        ["set-hostname", ..] => {
+            Err(usage("set-hostname takes one name, `hostnamectl set-hostname NAME`".into()))
+        }
         [verb @ ("set-icon-name" | "set-chassis" | "set-deployment" | "set-location"), ..] => {
             Err(usage(format!(
                 "{verb}: Dukovo keeps only the host name; `hostnamectl \
                  set-hostname NAME` sets it"
             )))
         }
-        [other, ..] => Err(usage(format!(
-            "no command '{other}': status, hostname or set-hostname"
-        ))),
+        [other, ..] => {
+            Err(usage(format!("no command '{other}': status, hostname or set-hostname")))
+        }
     }
 }
 
