@@ -51,6 +51,7 @@ mod events;
 mod lab;
 mod session;
 mod sign_in;
+mod tasks;
 
 use std::convert::Infallible;
 use std::net::IpAddr;
@@ -244,6 +245,9 @@ enum Route {
     Change,
     Keep,
     PutBack,
+    Tasks,
+    Task,
+    StopTask,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -327,6 +331,9 @@ const TABLE: &[Entry] = &[
     entry(Verb::Get, "/api/1/changes/{id}", Route::Change, Access::Full),
     entry(Verb::Post, "/api/1/changes/{id}/keep", Route::Keep, Access::Full),
     entry(Verb::Post, "/api/1/changes/{id}/put-back", Route::PutBack, Access::Full),
+    entry(Verb::Get, "/api/1/tasks", Route::Tasks, Access::Api),
+    entry(Verb::Get, "/api/1/tasks/{id}", Route::Task, Access::Api),
+    entry(Verb::Post, "/api/1/tasks/{id}/stop", Route::StopTask, Access::Api),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
@@ -778,6 +785,9 @@ async fn dispatch(
         (Route::Change, _) => changes::one(cx),
         (Route::Keep, Some(live)) => changes::keep(cx, &live),
         (Route::PutBack, Some(live)) => changes::put_back(cx, &live).await,
+        (Route::Tasks, _) => tasks::list(cx, token.as_ref()),
+        (Route::Task, _) => tasks::one(cx, token.as_ref()),
+        (Route::StopTask, live) => tasks::stop(cx, live.as_ref(), token.as_ref()),
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which

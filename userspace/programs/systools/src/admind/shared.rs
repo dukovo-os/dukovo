@@ -37,6 +37,7 @@ use super::log;
 use super::reach::{self, Network};
 use super::sessions::{Session, Sessions};
 use super::store::Store;
+use super::tasks::Tasks;
 use super::tls::Certificate;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -164,6 +165,8 @@ pub struct Shared {
     pub store: Option<Store>,
     /// What the journal keeps in memory.
     pub journal: Journal,
+    /// The tasks that wait, run or ended lately.
+    pub tasks: Tasks,
 }
 
 impl Shared {
@@ -198,6 +201,7 @@ impl Shared {
             actions: Cell::new(actions::offered()),
             store,
             journal: Journal::new(Path::new(SETTINGS)),
+            tasks: Tasks::new(),
         })
     }
 

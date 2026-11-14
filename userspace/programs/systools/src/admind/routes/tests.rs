@@ -25,6 +25,7 @@ use crate::admind::shared::unix_now;
 
 mod act;
 mod changes;
+mod tasks;
 
 /// The browser's address, and what it asks for.
 const PEER: &str = "192.0.2.7";
@@ -187,9 +188,75 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>) -> Vec<String> {
         errors.write_all(b"starting broken\nbroken.conf did not load (SVC-104)\n").unwrap();
         return vec!["ok 4321".into(), "ended 256".into()];
     }
+    if command[0] == "admin" && command.get(1).is_some_and(|word| word == "lab-steps") {
+        let mode = command.get(2).and_then(|word| word.parse().ok()).unwrap_or(0);
+        return lab_steps(mode, output, errors, fds);
+    }
     output.write_all(format!("{}\n", command[1..].join(" ")).as_bytes()).unwrap();
     let status = if command[0] == "/system/commands/echo" { 768 } else { 0 };
     vec!["ok 4321".into(), format!("ended {status}")]
+}
+
+/// What `admin lab-steps N` does in the test authd, by `mode` N, which
+/// is not the seconds it means: 1 runs well and ends at once, 2 writes an
+/// error and fails, 3 runs until SIGTERM and ends well, 4 ignores SIGTERM
+/// and ends when its relay is closed, as hung up, and 5 writes 2,500
+/// lines and ends well. `fds` are its input and its relay.
+fn lab_steps(
+    mode: u32,
+    mut output: std::fs::File,
+    mut errors: std::fs::File,
+    mut fds: Vec<OwnedFd>,
+) -> Vec<String> {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    let mut relay = std::fs::File::from(fds.remove(1));
+    let ended = |status: u32| vec!["ok 4321".to_string(), format!("ended {status}")];
+    match mode {
+        1 => {
+            output
+                .write_all(b"step 1 of 2: One\nprogress 50%\na log line\nstep 2 of 2: Two\nprogress 100%\n")
+                .unwrap();
+            ended(0)
+        }
+        2 => {
+            output.write_all(b"step 1 of 3: Begin\n").unwrap();
+            errors.write_all(b"lab-steps: it broke\n").unwrap();
+            ended(256)
+        }
+        5 => {
+            for line in 0..2500 {
+                writeln!(output, "line {line}").unwrap();
+            }
+            ended(0)
+        }
+        _ => {
+            output.write_all(b"step 1 of 4: Getting ready\nprogress 10%\nworking\n").unwrap();
+            fixture::then(move || {
+                let (mut got, mut buffer) = (String::new(), [0u8; 64]);
+                for _ in 0..1500 {
+                    let mut poll =
+                        libc::pollfd { fd: relay.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                    // SAFETY: one pollfd, which lives through the call.
+                    let ready = unsafe { libc::poll(&raw mut poll, 1, 20) };
+                    if ready <= 0 {
+                        continue;
+                    }
+                    match relay.read(&mut buffer).unwrap_or(0) {
+                        // The relay was closed: authd hangs the command up.
+                        0 => return vec!["ended 1".to_string()],
+                        n => got.push_str(&String::from_utf8_lossy(&buffer[..n])),
+                    }
+                    if mode == 3 && got.contains("signal 15\n") {
+                        output.write_all(b"stopping\n").unwrap();
+                        return vec!["ended 0".to_string()];
+                    }
+                }
+                vec!["ended 2".to_string()]
+            });
+            vec!["ok 4321".to_string()]
+        }
+    }
 }
 
 fn world(what: &str) -> World {
@@ -372,10 +439,12 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::Actions,
             Route::Changes,
             Route::Change,
+            Route::Tasks,
+            Route::Task,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 33 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 36 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));

@@ -51,6 +51,7 @@ use super::reach;
 use super::routes;
 use super::shared::{Identity, Shared, unix_now};
 use super::store::{self, Store};
+use super::tasks;
 use super::tls::{self, Certificate};
 use crate::admin_settings::{Reach, Settings};
 use crate::logd;
@@ -175,6 +176,9 @@ struct Upkeep {
     /// The last words the settings gave when they did not read, so that
     /// the log says them once and not every 30 seconds.
     complained: Option<String>,
+    /// The Unix time old tasks were last forgotten, which is done once a
+    /// day.
+    forgot: i64,
 }
 
 impl Upkeep {
@@ -214,6 +218,13 @@ impl Upkeep {
         let names = shared.certificate.borrow().names.clone();
         *shared.identity.borrow_mut() = Identity::read(&names);
         shared.maintain(std::time::Instant::now());
+        shared.tasks.prune(tokio::time::Instant::now());
+        if let Some(store) = &shared.store
+            && unix_now() - self.forgot >= 24 * 3600
+        {
+            self.forgot = unix_now();
+            tasks::forget_old(store);
+        }
         self.issue(shared);
     }
 
@@ -273,7 +284,12 @@ async fn journal_round(shared: &Shared) {
 /// depend on it.
 fn open_store() -> Option<Store> {
     match Store::open(Path::new(store::PATH)) {
-        Ok(store) => Some(store),
+        Ok(store) => {
+            // The commands of the tasks an admind left running were hung up
+            // with it.
+            tasks::restarted(&store);
+            Some(store)
+        }
         Err(why) => {
             log(3, &format!("{why}: the console keeps no journal and runs no tasks"));
             None

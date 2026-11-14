@@ -35,7 +35,12 @@
 //!   reads and writes (ADR 0516);
 //! - [`errors`] is the table of error IDs, `ADM-101` and on, each with its
 //!   status; [`files`], [`tls`] and [`webauthn`] read the console's files,
-//!   the certificate and a browser's passkey JSON.
+//!   the certificate and a browser's passkey JSON;
+//! - [`store`] is the one SQLite file that keeps what a restart must not
+//!   lose (ADR 0516): [`journal`] with [`audit`] and [`diff`] makes "What
+//!   changed" from the console's own changes and the files changed by
+//!   hand, and [`tasks`] runs the long actions, their progress and their
+//!   logs.
 //!
 //! When something is wrong, `log admind` has a line for each start, sign-in,
 //! sign-out and refusal, with the browser's address and never a password,
@@ -45,13 +50,14 @@
 //!
 //! SIGHUP (`service admind reload`) reads admin.toml and the certificate
 //! again, for the connections that come after. SIGTERM ends the sessions
-//! and stops. The tests of what the console must refuse are in
+//! and stops; a task that runs then is hung up with admind, and ends as
+//! stopped, "the console restarted", when admind starts again. The tests of what the console must refuse are in
 //! `lab/tests/web-console`.
 //!
 //! Only the lab's build, made with the `lab` feature of systools, has
 //! `POST /api/1/test/elevate`, which runs a command in an unlocked session
-//! so that the lab can see what an elevated session does. The build that
-//! ships has no such route.
+//! so that the lab can see what an elevated session does, and `lab.long`,
+//! a long action for the tests of tasks. The build that ships has neither.
 
 pub(crate) mod actions;
 mod audit;
@@ -75,6 +81,7 @@ mod serve;
 mod sessions;
 mod shared;
 pub(crate) mod store;
+mod tasks;
 mod tls;
 mod webauthn;
 mod who;

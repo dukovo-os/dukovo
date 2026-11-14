@@ -64,6 +64,7 @@ impl State {
 /// A task, as the table keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Task {
+    /// Its number.
     pub id: i64,
     /// The action's ID.
     pub action: String,
@@ -77,10 +78,12 @@ pub struct Task {
     pub how: String,
     /// The Unix time it was asked for.
     pub started: i64,
+    /// Where it is.
     pub state: State,
-    /// The step the command is at, and how many it says there are: 0 and 0
-    /// until it says.
+    /// The step the command is at, from 1, and how many it says there
+    /// are: 0 and 0 until it says.
     pub step: u32,
+    /// How many steps there are.
     pub steps: u32,
     /// What the step is, in the command's words.
     pub words: String,
@@ -107,6 +110,23 @@ impl Task {
             "who": self.who,
             "how": self.how,
             "started": self.started,
+            "state": self.state,
+            "step": self.step,
+            "steps": self.steps,
+            "words": self.words,
+            "percent": self.percent,
+            "ended": self.ended,
+            "status": self.status,
+            "note": self.note,
+        })
+    }
+
+    /// What an `event: task` says of the task: where it is and how far,
+    /// and not its command, its arguments or its log.
+    pub fn event(&self) -> Value {
+        json!({
+            "id": self.id,
+            "action": self.action,
             "state": self.state,
             "step": self.step,
             "steps": self.steps,

@@ -139,6 +139,29 @@ fn answer(stream: &UnixStream, script: &Script, record: &Mutex<Vec<String>>) {
             return;
         }
     }
+    // What the script left for after its answer: a command's end.
+    if let Some(later) = LATER.take() {
+        for line in later() {
+            if stream.write_all(format!("{line}\n").as_bytes()).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// What a script has left to say after its lines are written.
+type Later = Box<dyn FnOnce() -> Vec<String> + Send>;
+
+thread_local! {
+    /// The connection's thread runs its script and then this.
+    static LATER: std::cell::Cell<Option<Later>> = const { std::cell::Cell::new(None) };
+}
+
+/// For a script: has `later` run after the script's own lines are
+/// written, and writes the lines it gives. That is how a command that
+/// takes time ends after authd has answered that it started.
+pub fn then(later: impl FnOnce() -> Vec<String> + Send + 'static) {
+    LATER.set(Some(Box::new(later)));
 }
 
 /// The worker's ends of a link, as authd is sent them: the first two of

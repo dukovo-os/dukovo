@@ -18,7 +18,7 @@
 //! and token together.
 
 use std::fs::File;
-use std::io::pipe;
+use std::io::{PipeWriter, pipe};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::task::Poll;
 use std::time::Duration;
@@ -31,7 +31,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe::Receiver;
 
 use super::actions::Prepared;
-use super::authd;
+use super::authd::{self, Asked};
 use super::errors::{Attempt, Failure, Kind, refusal};
 use super::link::{CallError, Link};
 use super::shared::Shared;
@@ -79,6 +79,7 @@ impl<'a> Place<'a> {
 impl Drop for Place<'_> {
     fn drop(&mut self) {
         self.0.elevating.set(self.0.elevating.get().saturating_sub(1));
+        self.0.tasks.place_given_back();
     }
 }
 
@@ -98,19 +99,46 @@ pub async fn elevated(
 ) -> Result<Ran, Failure> {
     let _place = Place::take(shared)
         .ok_or_else(|| Failure::wait("too many elevated commands at once", 1))?;
+    start(shared, by, argv).await?.finish(limit).await
+}
+
+/// A command authd has started as an administrator: what admind holds of
+/// it until it ends. The caller holds the [`Place`] it runs in.
+pub struct Started {
+    /// What the command writes to its standard output.
+    pub output: Receiver,
+    /// What it writes to its error output.
+    pub errors: Receiver,
+    /// authd's connection, on which the command's end comes.
+    pub asked: Asked,
+    /// The write end of the relay: a line written to it is a signal for
+    /// the command ([`request::signal`]), and closing it hangs the command
+    /// up.
+    pub relay: PipeWriter,
+}
+
+/// Has authd run `argv` as an administrator by `by`'s right, with its four
+/// descriptors from admind, and gives what admind holds of it. The caller
+/// has a [`Place`] for it.
+///
+/// # Errors
+///
+/// authd's refusal (a locked session, a token that may not, a command that
+/// is not one), ADM-111 when authd is silent.
+pub async fn start(shared: &Shared, by: Elevator, argv: &[String]) -> Result<Started, Failure> {
     let internal = |err: std::io::Error| Failure::new(Kind::Internal, format!("no pipe: {err}"));
     let (input, typed) = pipe().map_err(internal)?;
     drop(typed);
     let (output, output_end) = pipe().map_err(internal)?;
     let (errors, errors_end) = pipe().map_err(internal)?;
     // authd takes the last of the four as the relay, whose closing hangs
-    // the command up: ours stays open until this function returns.
-    let (relay, _hang_up) = pipe().map_err(internal)?;
+    // the command up: ours stays open until the command has ended.
+    let (relay, relay_end) = pipe().map_err(internal)?;
     let fds =
         [input.as_raw_fd(), output_end.as_raw_fd(), errors_end.as_raw_fd(), relay.as_raw_fd()];
     let command = argv.iter().map(|word| word.as_bytes().to_vec()).collect();
     let console = Console::Elevate { by, language: Vec::new(), command };
-    let (answer, mut asked) = authd::ask(&shared.authd, console, &fds)
+    let (answer, asked) = authd::ask(&shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;
     // authd has its own copies now; ours would keep the pipes open.
@@ -120,31 +148,51 @@ pub async fn elevated(
     }
     let output = Receiver::from_file(File::from(OwnedFd::from(output))).map_err(internal)?;
     let errors = Receiver::from_file(File::from(OwnedFd::from(errors))).map_err(internal)?;
-    let run = async {
-        let (output, errors) = read_both(output, errors).await?;
-        let status = loop {
-            match asked.line().await? {
-                Some(line) => {
-                    if let Some(status) = request::ended_status(&line) {
-                        break status;
-                    }
-                }
-                None => break 1 << 8,
-            }
+    Ok(Started { output, errors, asked, relay: relay_end })
+}
+
+impl Started {
+    /// Waits `limit` for the command to end, keeping its output and its
+    /// error output as [`read_both`] does.
+    ///
+    /// # Errors
+    ///
+    /// ADM-121 when the command does not end in `limit`, and is hung up.
+    pub async fn finish(self, limit: Duration) -> Result<Ran, Failure> {
+        let Started { output, errors, mut asked, relay: _hang_up } = self;
+        let run = async {
+            let (output, errors) = read_both(output, errors).await?;
+            let status = ended_status(&mut asked).await?;
+            Ok::<_, std::io::Error>(Ran {
+                status: exit_code(status),
+                output: String::from_utf8_lossy(&output).into_owned(),
+                errors: String::from_utf8_lossy(&errors).into_owned(),
+            })
         };
-        Ok::<_, std::io::Error>(Ran {
-            status: exit_code(status),
-            output: String::from_utf8_lossy(&output).into_owned(),
-            errors: String::from_utf8_lossy(&errors).into_owned(),
-        })
-    };
-    match tokio::time::timeout(limit, run).await {
-        Ok(Ok(ran)) => Ok(ran),
-        Ok(Err(err)) => Err(Failure::new(Kind::Internal, format!("the command's end: {err}"))),
-        Err(_) => Err(Failure::new(
-            Kind::Internal,
-            format!("the command did not end in {} seconds, and was hung up", limit.as_secs()),
-        )),
+        match tokio::time::timeout(limit, run).await {
+            Ok(Ok(ran)) => Ok(ran),
+            Ok(Err(err)) => Err(Failure::new(Kind::Internal, format!("the command's end: {err}"))),
+            Err(_) => Err(Failure::new(
+                Kind::Internal,
+                format!("the command did not end in {} seconds, and was hung up", limit.as_secs()),
+            )),
+        }
+    }
+}
+
+/// Reads authd's lines until the one that says how the command ended, and
+/// gives its wait status; a connection that closes first is a status of
+/// 1.
+pub async fn ended_status(asked: &mut Asked) -> std::io::Result<i32> {
+    loop {
+        match asked.line().await? {
+            Some(line) => {
+                if let Some(status) = request::ended_status(&line) {
+                    return Ok(status);
+                }
+            }
+            None => return Ok(1 << 8),
+        }
     }
 }
 
@@ -254,11 +302,15 @@ pub fn answer(prepared: &Prepared, ran: &Ran) -> Result<Value, Failure> {
 pub fn ending(ran: &Result<Ran, Failure>) -> Option<(Option<i32>, Option<&str>)> {
     match ran {
         Ok(ran) => Some((Some(ran.status), None)),
-        Err(failure) if matches!(failure.kind, Kind::Internal | Kind::WorkerSilent) => {
-            Some((None, Some(failure.detail.as_str())))
-        }
-        Err(_) => None,
+        Err(failure) => ending_failure(failure),
     }
+}
+
+/// [`ending`] for a command that did not end as [`Ran`] says: the failure
+/// of starting it or of waiting for it.
+pub fn ending_failure(failure: &Failure) -> Option<(Option<i32>, Option<&str>)> {
+    matches!(failure.kind, Kind::Internal | Kind::WorkerSilent)
+        .then_some((None, Some(failure.detail.as_str())))
 }
 
 /// The failure of a command that ended with a status other than 0.
