@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use spark_api::show;
 
-use super::{Action, Args, Bad, Examples, Nothing, Runs, Tests, Undo};
+use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
 
 /// The area of these actions: the scope a token needs, `services`.
 const AREA: &str = "services";
@@ -46,11 +46,12 @@ const TESTS: Tests = Tests {
 
 /// The services the console is made of. Stopping, restarting or disabling
 /// one ends the console or its sign-in, so it is done at a terminal.
-const CONSOLE: [&str; 2] = ["admind", "authd"];
+pub(super) const CONSOLE: [&str; 2] = ["admind", "authd"];
 
 /// The words `service` takes as commands of its own where a service's name
 /// would be (service.rs).
-const OWN_COMMANDS: [&str; 7] = ["check", "new", "edit", "try", "keep", "undo", "secret"];
+pub(super) const OWN_COMMANDS: [&str; 7] =
+    ["check", "new", "edit", "try", "keep", "undo", "secret"];
 
 /// The service the examples use: every image runs it, nothing needs it,
 /// and neither the console nor the tests depend on it, so that stopping
@@ -88,6 +89,25 @@ fn picked(pick: Pick, name: &str, output: &str) -> Option<String> {
     let document: show::Show = serde_json::from_str(output).ok()?;
     let service = document.services.iter().find(|service| service.name == name)?;
     Some(pick?(service))
+}
+
+/// The most characters of a service's name: a resource domain's.
+const NAME_MAX: usize = radix_abi::resource_domain::NAME_MAX as usize;
+
+/// What a service's name matches, as `check_name` checks it, apart from its
+/// length: one letter, digit or underscore, then more of them, and hyphens
+/// and dots; and none of `OWN_COMMANDS`.
+const NAME_PATTERN: &str =
+    "^(?!(check|new|edit|try|keep|undo|secret)$)[A-Za-z0-9_][A-Za-z0-9_.-]*$";
+
+/// [`NAME_PATTERN`] without the console's own services, which [`Guarded`]
+/// refuses too.
+const GUARDED_PATTERN: &str =
+    "^(?!(check|new|edit|try|keep|undo|secret|admind|authd)$)[A-Za-z0-9_][A-Za-z0-9_.-]*$";
+
+/// The field of a service's name.
+const fn name_field(pattern: &'static str) -> Field {
+    Field::text("name", "The service's name, as service list shows it.", 1, NAME_MAX, Some(pattern))
 }
 
 /// A service, by its name.
@@ -138,12 +158,16 @@ fn check_name(name: &str) -> Result<(), Bad> {
 }
 
 impl Args for Named {
+    const FIELDS: &'static [Field] = &[name_field(NAME_PATTERN)];
+
     fn check(&self) -> Result<(), Bad> {
         check_name(&self.name)
     }
 }
 
 impl Args for Guarded {
+    const FIELDS: &'static [Field] = &[name_field(GUARDED_PATTERN)];
+
     fn check(&self) -> Result<(), Bad> {
         check_name(&self.name)?;
         if CONSOLE.contains(&self.name.as_str()) {

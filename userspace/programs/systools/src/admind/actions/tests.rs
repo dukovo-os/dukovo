@@ -10,6 +10,8 @@ use serde_json::json;
 use super::*;
 use crate::admind::run::error_id;
 
+mod validate;
+
 /// An action for the tests alone: restarting a lab service.
 struct Restart;
 
@@ -17,14 +19,22 @@ struct Restart;
 #[serde(deny_unknown_fields)]
 struct Named {
     name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     wait: Option<u32>,
 }
 
 impl Args for Named {
+    const FIELDS: &'static [Field] = &[
+        Field::text("name", "A lab service's name.", 0, 255, Some("^(?!-)")),
+        Field::number("wait", "Seconds to wait, up to 60.", 0, 60).optional(),
+    ];
+
     fn check(&self) -> Result<(), Bad> {
         if self.name.starts_with('-') {
             return Err(Bad { field: "name", why: "A name does not start with -.".into() });
+        }
+        if self.name.chars().count() > 255 {
+            return Err(Bad { field: "name", why: "A name has up to 255 characters.".into() });
         }
         if self.wait.is_some_and(|wait| wait > 60) {
             return Err(Bad { field: "wait", why: "Waits go up to 60 seconds.".into() });
@@ -199,7 +209,7 @@ fn arguments_come_from_the_address_and_the_body_and_never_both() {
 fn prepare_checks_the_arguments_and_makes_the_command() {
     let prepared = RESTART.prepare(json!({ "name": "nginx" })).unwrap();
     assert_eq!(prepared.argv, ["service", "nginx", "restart"]);
-    assert_eq!(prepared.args, json!({ "name": "nginx", "wait": null }));
+    assert_eq!(prepared.args, json!({ "name": "nginx" }));
     assert_eq!(prepared.ansible.name, "Restart a lab service: nginx");
     assert_eq!(prepared.ansible.module, "ansible.builtin.command");
     assert_eq!(prepared.ansible.params["argv"], json!(["service", "nginx", "restart"]));
@@ -339,10 +349,7 @@ fn a_probe_is_the_command_that_reads_what_a_change_moves_and_the_action_picks_fr
 #[test]
 fn the_list_gives_each_action_s_examples_and_what_puts_back_the_first() {
     let lab = listed(LAB);
-    assert_eq!(
-        lab[0]["examples"],
-        json!({ "good": [{ "name": "lab-web", "wait": null }], "undo": null })
-    );
+    assert_eq!(lab[0]["examples"], json!({ "good": [{ "name": "lab-web" }], "undo": null }));
     assert_eq!(lab[1]["examples"], json!({ "good": [{}], "undo": null }));
 
     let console = listed(REGISTRY);
@@ -525,5 +532,316 @@ fn the_golden_list_is_toml_that_says_what_the_registry_says() {
         assert_eq!(named["same_as_command"].as_str(), Some(tests.same_as_command));
         assert_eq!(named["browser"].as_str(), Some(tests.browser));
         assert_eq!(named["ansible"].as_str(), Some(tests.ansible));
+    }
+}
+
+/// The schema of an action's input, from the list.
+fn input_of(actions: &[&dyn Registered], id: &str) -> Value {
+    let listed = listed(actions);
+    let action = listed.as_array().unwrap().iter().find(|action| action["id"] == id);
+    action.unwrap_or_else(|| panic!("no {id}"))["input"].clone()
+}
+
+#[test]
+fn a_schema_says_each_kind_of_field_and_which_are_required() {
+    let fields = [
+        Field::text("name", "A name.", 1, 23, Some("^[a-z]+$")),
+        Field::text("note", "A note.", 0, 80, None).optional(),
+        Field::one_of("reach", "Whom.", &["private", "any"]),
+        Field::number("port", "A port.", 1, 65535),
+        Field::flag("force", "Whether to."),
+    ];
+    assert_eq!(
+        schema(&fields),
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string", "description": "A name.",
+                    "minLength": 1, "maxLength": 23, "pattern": "^[a-z]+$",
+                },
+                "note": { "type": "string", "description": "A note.", "minLength": 0, "maxLength": 80 },
+                "reach": { "type": "string", "description": "Whom.", "enum": ["private", "any"] },
+                "port": { "type": "integer", "description": "A port.", "minimum": 1, "maximum": 65535 },
+                "force": { "type": "boolean", "description": "Whether to." },
+            },
+            "required": ["name", "reach", "port", "force"],
+            "additionalProperties": false,
+        })
+    );
+    // An action that takes nothing takes an empty object.
+    assert_eq!(
+        schema(&[]),
+        json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
+    );
+    // A field is required unless it says otherwise, and says so once.
+    assert!(fields[0].required && !fields[1].required);
+    assert_eq!(fields[1].optional(), fields[1]);
+}
+
+#[test]
+fn what_a_schema_says_is_held_to_by_the_validator_for_each_kind() {
+    let fields = [
+        Field::text("name", "A name.", 1, 5, Some("^[a-z]+$")),
+        Field::one_of("reach", "Whom.", &["private", "any"]),
+        Field::number("port", "A port.", 1, 65535),
+        Field::flag("force", "Whether to."),
+        Field::flag("quiet", "Whether not to.").optional(),
+    ];
+    let schema = schema(&fields);
+    let good = json!({ "name": "abc", "reach": "any", "port": 80, "force": false });
+    assert_eq!(validate::validate(&schema, &good), Ok(()));
+    assert_eq!(
+        validate::validate(
+            &schema,
+            &json!({ "quiet": true, "name": "a", "reach": "any", "port": 1, "force": true })
+        ),
+        Ok(())
+    );
+    let refused = |change: Value| {
+        let mut args = good.clone();
+        for (key, value) in change.as_object().unwrap() {
+            args[key] = value.clone();
+        }
+        validate::validate(&schema, &args).unwrap_err()
+    };
+    assert!(refused(json!({ "name": "" })).contains("minLength"));
+    assert!(refused(json!({ "name": "abcdef" })).contains("maxLength"));
+    assert!(refused(json!({ "name": "ABC" })).contains("does not match"));
+    assert!(refused(json!({ "reach": "all" })).contains("not one of the words"));
+    assert!(refused(json!({ "port": 0 })).contains("minimum"));
+    assert!(refused(json!({ "port": 65536 })).contains("maximum"));
+    assert!(refused(json!({ "port": "80" })).contains("not a whole number"));
+    assert!(refused(json!({ "force": "yes" })).contains("not true or false"));
+    assert!(refused(json!({ "more": 1 })).contains("more is not one of the arguments"));
+    assert!(
+        validate::validate(&schema, &json!({ "name": "abc" })).unwrap_err().contains("is required")
+    );
+}
+
+#[test]
+fn the_list_gives_each_action_the_schema_of_what_it_takes() {
+    assert_eq!(
+        input_of(REGISTRY, "service.list"),
+        json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
+    );
+    assert_eq!(
+        input_of(REGISTRY, "console.reach"),
+        json!({
+            "type": "object",
+            "properties": {
+                "reach": {
+                    "type": "string",
+                    "description": "Whom the console answers: private for machines on private networks, any for every machine.",
+                    "enum": ["private", "any"],
+                },
+            },
+            "required": ["reach"],
+            "additionalProperties": false,
+        })
+    );
+    let name = input_of(REGISTRY, "service.restart");
+    assert_eq!(name["required"], json!(["name"]));
+    assert_eq!(name["properties"]["name"]["minLength"], 1);
+    assert_eq!(name["properties"]["name"]["maxLength"], 23);
+    assert_eq!(
+        name["properties"]["name"]["pattern"],
+        "^(?!(check|new|edit|try|keep|undo|secret|admind|authd)$)[A-Za-z0-9_][A-Za-z0-9_.-]*$"
+    );
+    let certificate = input_of(REGISTRY, "certificate.show");
+    assert_eq!(certificate["properties"]["name"]["maxLength"], 64);
+    assert_eq!(certificate["properties"]["name"]["pattern"], "^(?!.*\\.\\.)[a-z0-9][a-z0-9.-]*$");
+    // An address's part is an argument like any other.
+    assert_eq!(input_of(LAB, "lab.list")["properties"], json!({}));
+    assert_eq!(input_of(LAB, "lab.restart")["required"], json!(["name"]));
+    for action in listed(REGISTRY).as_array().unwrap() {
+        assert!(action["input"].is_object(), "{}", action["id"]);
+    }
+}
+
+/// Values to try a text field with, for the checks and the schema to
+/// agree on.
+fn texts() -> Vec<Value> {
+    let named = [
+        "",
+        "a",
+        "nginx",
+        "this-machine",
+        "example.org",
+        "my-app_2",
+        "a.b",
+        "_x",
+        "0",
+        ".hidden",
+        "-x",
+        "-",
+        ".",
+        "..",
+        "a b",
+        "a/b",
+        "../x",
+        "a@b",
+        "a\u{e9}",
+        "\u{e9}",
+        "a\nb",
+        "nginx\n",
+        "\nnginx",
+        "A",
+        "UPPER",
+        "x..y",
+        "a..",
+        "a-",
+        "a.",
+        "1.2.3",
+        "admind",
+        "authd",
+        "admind2",
+        "Admind",
+        "list",
+        "diskhealth",
+        "any",
+        "private",
+    ];
+    let mut values: Vec<Value> = named.iter().map(|text| json!(text)).collect();
+    values.extend(service::OWN_COMMANDS.iter().map(|word| json!(word)));
+    values.extend(service::CONSOLE.iter().map(|word| json!(word)));
+    for length in [22, 23, 24, 63, 64, 65, 254, 255, 256] {
+        values.push(json!("a".repeat(length)));
+        values.push(json!(format!("a{}", "-".repeat(length - 1))));
+        values.push(json!("\u{e9}".repeat(length)));
+    }
+    // What is not text at all.
+    values.extend([json!(7), json!(null), json!(true), json!(["a"]), json!({})]);
+    values
+}
+
+/// Values to try a number field with, from `min` and `max`.
+fn numbers(min: i64, max: i64) -> Vec<Value> {
+    let mut values =
+        vec![json!(min), json!(max), json!(0), json!(1), json!(-1), json!(60), json!(61)];
+    values.extend([min.checked_sub(1), max.checked_add(1)].into_iter().flatten().map(|n| json!(n)));
+    values.extend([json!("5"), json!(null), json!(true), json!(1.5), json!([1])]);
+    values
+}
+
+/// Values to try a field of one of `words` with.
+fn words(words: &[&str]) -> Vec<Value> {
+    let mut values: Vec<Value> = words.iter().map(|word| json!(word)).collect();
+    for word in words {
+        values.extend([
+            json!(word.to_uppercase()),
+            json!(format!(" {word}")),
+            json!(format!("{word} ")),
+            json!(format!("{word}\n")),
+            json!(format!("{word}s")),
+        ]);
+    }
+    values.extend([json!(""), json!("everyone"), json!(0), json!(null), json!(true)]);
+    values
+}
+
+/// What each field of every action in `actions` says is what the action
+/// takes: its good examples are what the schema describes, its bad ones are
+/// not, an argument of its address is one of its required fields, and, for
+/// each field, the schema and the action agree on whether each of the
+/// values the tests try is acceptable.
+fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
+    for action in actions {
+        let id = action.id();
+        let schema = schema(action.fields());
+        let properties = schema["properties"].as_object().unwrap();
+        let required: Vec<&str> =
+            schema["required"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        let (good, bad, _) = action.example_values();
+        for args in &good {
+            let given = args.as_object().unwrap_or_else(|| panic!("{id}: {args} is no object"));
+            for name in &required {
+                assert!(given.contains_key(*name), "{id}: its example {args} lacks {name}");
+            }
+            for name in given.keys() {
+                assert!(properties.contains_key(name), "{id}: its example has {name}, no field");
+            }
+            validate::validate(&schema, args).unwrap_or_else(|why| panic!("{id}: {why}"));
+        }
+        for args in &bad {
+            // A bad example is one `check` or the types refuse, and the schema
+            // says it cannot be. If a rule is one a schema cannot say, list
+            // the example here with why.
+            assert!(
+                validate::validate(&schema, args).is_err(),
+                "{id}: the schema accepts the bad example {args}"
+            );
+        }
+        for name in action
+            .path()
+            .split('/')
+            .filter_map(|part| part.strip_prefix('{').and_then(|inner| inner.strip_suffix('}')))
+        {
+            assert!(
+                required.contains(&name),
+                "{id}: {name} of its address is not a required field"
+            );
+        }
+        for field in action.fields() {
+            let name = field.name;
+            let candidates = match field.kind {
+                Type::Text { .. } => texts(),
+                Type::OneOf(list) => words(list),
+                Type::Number { min, max } => numbers(min, max),
+                Type::Flag => vec![json!(true), json!(false), json!(0), json!("true"), json!(null)],
+            };
+            for candidate in candidates {
+                // A `null` is an optional argument left out, which the
+                // schema does not say (`Field::optional`).
+                if candidate.is_null() && !field.required {
+                    continue;
+                }
+                let mut args = good[0].clone();
+                args[name] = candidate.clone();
+                let accepted = action.prepare(args.clone()).is_ok();
+                let described = validate::validate(&schema, &args);
+                assert_eq!(
+                    accepted,
+                    described.is_ok(),
+                    "{id}: {name} {candidate}: the action {} it and the schema says {described:?}",
+                    if accepted { "takes" } else { "refuses" }
+                );
+            }
+        }
+        // A field the action does not have is refused by both.
+        let mut more = good[0].clone();
+        more["unknown_field"] = json!(1);
+        assert!(action.prepare(more.clone()).is_err(), "{id}");
+        assert!(validate::validate(&schema, &more).is_err(), "{id}");
+        // So is leaving out each one that is required.
+        for name in &required {
+            let mut less = good[0].clone();
+            less.as_object_mut().unwrap().remove(*name);
+            assert!(action.prepare(less.clone()).is_err(), "{id}: without {name}");
+            assert!(validate::validate(&schema, &less).is_err(), "{id}: without {name}");
+        }
+    }
+}
+
+#[test]
+fn every_action_s_fields_are_true_to_its_types() {
+    fields_are_true_to_the_types(LAB);
+    fields_are_true_to_the_types(REGISTRY);
+}
+
+#[test]
+fn the_service_patterns_are_made_of_the_words_the_checks_refuse() {
+    let own = service::OWN_COMMANDS.join("|");
+    let and_the_console = [&service::OWN_COMMANDS[..], &service::CONSOLE[..]].concat().join("|");
+    let pattern = |words: &str| format!("^(?!({words})$)[A-Za-z0-9_][A-Za-z0-9_.-]*$");
+    for (id, words) in [
+        ("service.explain", &own),
+        ("service.start", &own),
+        ("service.enable", &own),
+        ("service.stop", &and_the_console),
+        ("service.restart", &and_the_console),
+        ("service.disable", &and_the_console),
+    ] {
+        assert_eq!(input_of(REGISTRY, id)["properties"]["name"]["pattern"], pattern(words), "{id}");
     }
 }

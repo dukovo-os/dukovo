@@ -85,8 +85,149 @@ pub struct Bad {
     pub why: String,
 }
 
+/// What an argument's value is, and the limits it has, as the schema of
+/// the action's input says it (ADR 0515).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Type {
+    /// Text of `min` to `max` characters. When there is a `pattern`, the
+    /// text matches it: a regular expression of the kind JSON Schema takes,
+    /// which finds a match anywhere in the text, so it says `^` and `$`
+    /// where it means the whole.
+    Text {
+        /// The fewest characters.
+        min: usize,
+        /// The most characters.
+        max: usize,
+        /// What the text matches, written as `check` enforces it.
+        pattern: Option<&'static str>,
+    },
+    /// One of these words.
+    OneOf(&'static [&'static str]),
+    /// A whole number from `min` to `max`, both included.
+    // Kept for the actions that take a number. None in the list does, so
+    // only the tests make one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Number {
+        /// The least.
+        min: i64,
+        /// The greatest.
+        max: i64,
+    },
+    /// `true` or `false`.
+    // As `Number`: none in the list takes one.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Flag,
+}
+
+/// One argument of an action, as its input's schema describes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Field {
+    /// The argument, as the API names it.
+    pub name: &'static str,
+    /// What its value is.
+    pub kind: Type,
+    /// Whether the action cannot be asked for without it.
+    pub required: bool,
+    /// What a person reads under it: one line, in plain words.
+    pub about: &'static str,
+}
+
+impl Field {
+    /// A required argument that is text of `min` to `max` characters,
+    /// matching `pattern` if there is one.
+    pub const fn text(
+        name: &'static str,
+        about: &'static str,
+        min: usize,
+        max: usize,
+        pattern: Option<&'static str>,
+    ) -> Field {
+        Field { name, kind: Type::Text { min, max, pattern }, required: true, about }
+    }
+
+    /// A required argument that is one of `words`.
+    pub const fn one_of(
+        name: &'static str,
+        about: &'static str,
+        words: &'static [&'static str],
+    ) -> Field {
+        Field { name, kind: Type::OneOf(words), required: true, about }
+    }
+
+    /// A required argument that is a whole number from `min` to `max`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn number(name: &'static str, about: &'static str, min: i64, max: i64) -> Field {
+        Field { name, kind: Type::Number { min, max }, required: true, about }
+    }
+
+    /// A required argument that is `true` or `false`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn flag(name: &'static str, about: &'static str) -> Field {
+        Field { name, kind: Type::Flag, required: true, about }
+    }
+
+    /// The same argument, which the action can be asked for without. A
+    /// client leaves it out; a `null` in its place is read as left out too,
+    /// which the schema does not say, since it only holds what a client
+    /// ought to send.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn optional(self) -> Field {
+        Field { required: false, ..self }
+    }
+}
+
+/// The JSON Schema (draft 2020-12, the part with `type`, `description`,
+/// `minLength`, `maxLength`, `pattern`, `enum`, `minimum`, `maximum`,
+/// `required` and `additionalProperties`) of the arguments `fields`
+/// describe: an object that has these and no others, so that a client can
+/// check what it is about to send.
+pub fn schema(fields: &[Field]) -> Value {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for field in fields {
+        let mut property = Map::new();
+        let kind = match field.kind {
+            Type::Text { min, max, pattern } => {
+                property.insert("minLength".into(), min.into());
+                property.insert("maxLength".into(), max.into());
+                if let Some(pattern) = pattern {
+                    property.insert("pattern".into(), pattern.into());
+                }
+                "string"
+            }
+            Type::OneOf(words) => {
+                property.insert("enum".into(), Value::from(words.to_vec()));
+                "string"
+            }
+            Type::Number { min, max } => {
+                property.insert("minimum".into(), min.into());
+                property.insert("maximum".into(), max.into());
+                "integer"
+            }
+            Type::Flag => "boolean",
+        };
+        property.insert("type".into(), kind.into());
+        property.insert("description".into(), field.about.into());
+        properties.insert(field.name.into(), Value::Object(property));
+        if field.required {
+            required.push(field.name);
+        }
+    }
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
 /// An action's arguments: JSON in, checked before anything runs.
 pub trait Args: DeserializeOwned + Serialize {
+    /// Each argument it takes, which the schema of the action's input
+    /// says. They say what [`Args::check`] and the types enforce, no more
+    /// and no less.
+    const FIELDS: &'static [Field];
+
     /// Whether the arguments can work, beyond their types.
     ///
     /// # Errors
@@ -101,6 +242,8 @@ pub trait Args: DeserializeOwned + Serialize {
 pub struct Nothing {}
 
 impl Args for Nothing {
+    const FIELDS: &'static [Field] = &[];
+
     fn check(&self) -> Result<(), Bad> {
         Ok(())
     }
@@ -272,6 +415,8 @@ pub trait Registered: Sync + fmt::Debug {
     /// reads or the files it names (the journal's), and not from being
     /// always true. A read has none, so it is false.
     fn compares(&self) -> bool;
+    /// The arguments it takes.
+    fn fields(&self) -> &'static [Field];
     /// Reads and checks `args` and makes the command and the rest of
     /// them.
     ///
@@ -330,6 +475,9 @@ impl<A: Action> Registered for Entry<A> {
     }
     fn title(&self) -> &'static str {
         A::TITLE
+    }
+    fn fields(&self) -> &'static [Field] {
+        A::Args::FIELDS
     }
     fn compares(&self) -> bool {
         // An action has a probe, and files, for all its arguments or for
@@ -417,9 +565,10 @@ pub fn offered() -> &'static [&'static dyn Registered] {
 /// action's id, title, area, whether it changes anything, its method and
 /// address, who runs it, whether it is a task, whether its `changed` is
 /// compared from a probe (`compares`), its error IDs, the names of its
-/// five tests, and its examples: the arguments that work, and for a
-/// change the action and arguments that put back what the first did (null
-/// when nothing does). The bad examples are in the unit tests alone.
+/// five tests, the JSON Schema of its arguments (`input`), and its
+/// examples: the arguments that work, and for a change the action and
+/// arguments that put back what the first did (null when nothing does).
+/// The bad examples are in the unit tests alone.
 pub fn listed(actions: &[&dyn Registered]) -> Value {
     Value::Array(
         actions
@@ -438,6 +587,7 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "compares": action.compares(),
                     "errors": action.errors(),
                     "tests": action.tests(),
+                    "input": schema(action.fields()),
                     "examples": { "good": good, "undo": undo },
                 })
             })

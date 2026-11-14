@@ -416,7 +416,7 @@ fn shown_restart() -> Value {
     json!({
         "command": "elevate service nginx restart",
         "api": "curl -sS -X POST -H \"Authorization: Bearer $DUKOVO_TOKEN\" \
-                -H \"Content-Type: application/json\" -d '{\"wait\":null}' \
+                -H \"Content-Type: application/json\" -d '{}' \
                 https://nas.example:9090/api/1/lab/nginx/restart",
         "ansible": "- name: \"Restart a lab service: nginx\"\n  ansible.builtin.command:\n    \
                     argv:\n      - \"service\"\n      - \"nginx\"\n      - \"restart\"\n  \

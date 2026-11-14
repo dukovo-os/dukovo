@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Action, Args, Bad, Examples, Nothing, Runs, Tests};
+use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests};
 use crate::cert::machine;
 use manifest::service::{CERTIFICATE_NAME_MAX, check_certificate};
 
@@ -32,6 +32,11 @@ const TESTS: Tests = Tests {
     ansible: "web-console/ansible",
 };
 
+/// What a certificate's name matches, as `check` checks it, apart from its
+/// length: a lowercase letter or a digit, then more of them, and hyphens
+/// and dots, with no two dots in a row.
+const NAME_PATTERN: &str = "^(?!.*\\.\\.)[a-z0-9][a-z0-9.-]*$";
+
 /// A certificate, by its name.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +46,14 @@ pub struct Named {
 }
 
 impl Args for Named {
+    const FIELDS: &'static [Field] = &[Field::text(
+        "name",
+        "The certificate's name, as cert list shows it: this-machine, or a domain's name.",
+        1,
+        CERTIFICATE_NAME_MAX,
+        Some(NAME_PATTERN),
+    )];
+
     fn check(&self) -> Result<(), Bad> {
         if check_certificate(&self.name).is_ok() {
             return Ok(());

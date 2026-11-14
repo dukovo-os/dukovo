@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Action, Args, Bad, Examples, Runs, Tests, Undo};
+use super::{Action, Args, Bad, Examples, Field, Runs, Tests, Undo};
 use crate::admin_settings::{self, Reach};
 
 /// The area of these actions: the scope a token needs, `console`.
@@ -45,6 +45,12 @@ pub struct Reaching {
 }
 
 impl Args for Reaching {
+    const FIELDS: &'static [Field] = &[Field::one_of(
+        "reach",
+        "Whom the console answers: private for machines on private networks, any for every machine.",
+        &["private", "any"],
+    )];
+
     fn check(&self) -> Result<(), Bad> {
         if Reach::parse(&self.reach).is_some() {
             return Ok(());
