@@ -60,7 +60,7 @@ struct MadeResponse {
     attestation: String,
 }
 
-/// What authd's `passkey-begin` is told of a new passkey, from the page.
+/// What the worker's `passkey-add` is told of a new passkey, from the page.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Registration {
     /// The challenge it answers, in base64url.

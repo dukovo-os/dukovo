@@ -141,9 +141,9 @@ challenge.
 
 # EXIT STATUS
 
-As a service, admind does not exit but when it is stopped with SIGTERM,
-with 0; it exits with 1 if it cannot start, as when *admin.toml* or the
-certificate does not read or it cannot listen.
+admind runs until it is stopped, and SIGTERM ends it with 0. It exits
+with 1 when it cannot start: when *admin.toml* or the certificate does
+not read, or it cannot listen.
 
 # SEE ALSO
 

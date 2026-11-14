@@ -283,6 +283,7 @@ impl Shared {
         self.tries.borrow_mut().tidy(now);
         self.tickets.borrow_mut().tidy(now);
         self.quiet.borrow_mut().tidy(now);
+        self.refused.borrow_mut().tidy(now);
     }
 
     /// Ends every session, as admind stops, waiting a moment for authd to

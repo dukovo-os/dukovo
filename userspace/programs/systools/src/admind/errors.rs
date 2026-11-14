@@ -391,4 +391,18 @@ mod tests {
             assert_eq!((failure.kind, failure.detail.as_str()), (kind, why), "{why}");
         }
     }
+
+    #[test]
+    fn the_words_told_apart_are_still_authds() {
+        // authd words its refusals in authd/console.rs; a sentence changed
+        // there would turn its kind into a plain refusal here, quietly.
+        let authd = include_str!("../authd/console.rs");
+        for phrase in NOT_ALLOWED.into_iter().chain([
+            "may only add a second step",
+            "the session is locked",
+            ": sign in again",
+        ]) {
+            assert!(authd.contains(phrase), "authd no longer says {phrase:?}");
+        }
+    }
 }
