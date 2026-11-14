@@ -280,11 +280,13 @@ pub async fn read_up_to(mut pipe: Receiver, max: usize) -> std::io::Result<Vec<u
 /// # Errors
 ///
 /// ADM-123, or the command's own error ID when the last line of its error
-/// output ends with one its action names, when the command failed;
+/// output ends with one its action names, when the command ended with a
+/// status its action does not answer with
+/// ([`Action::ANSWERS`](crate::admind::actions::Action::ANSWERS));
 /// ADM-121 when a read's output is not JSON.
 pub fn answer(prepared: &Prepared, ran: &Ran, changed: bool) -> Result<Value, Failure> {
     let action = prepared.action;
-    if ran.status != 0 {
+    if !action.answers().contains(&ran.status) {
         return Err(failed(prepared, ran));
     }
     if !action.changes() {
@@ -389,6 +391,38 @@ mod tests {
         assert_eq!(shared.elevating.get(), 0);
         assert!(Place::take(shared).is_some());
         assert_eq!(shared.elevating.get(), 0);
+    }
+
+    #[test]
+    fn a_read_answers_with_its_output_after_each_status_it_names_and_fails_after_others() {
+        let prepared = |id: &str| {
+            let action = crate::admind::actions::REGISTRY
+                .iter()
+                .find(|action| action.id() == id)
+                .unwrap_or_else(|| panic!("no {id}"));
+            action.prepare(serde_json::json!({ "name": "nginx" })).unwrap()
+        };
+        let ran = |status: i32| Ran {
+            status,
+            output: r#"{"state": "stopped"}"#.into(),
+            errors: "nginx does not run".into(),
+        };
+        // service explain exits 3 for a service that does not run, and its
+        // explanation is the answer then too.
+        let explain = prepared("service.explain");
+        assert_eq!(explain.action.answers(), [0, 3]);
+        for status in [0, 3] {
+            let answered = answer(&explain, &ran(status), false).unwrap();
+            assert_eq!(answered, serde_json::json!({ "state": "stopped" }), "status {status}");
+        }
+        for status in [1, 4] {
+            let failed = answer(&explain, &ran(status), false).unwrap_err();
+            assert_eq!(failed.kind, Kind::CommandFailed, "status {status}");
+        }
+        // Every other action answers only after 0.
+        for action in crate::admind::actions::REGISTRY.iter().filter(|a| a.id() != "service.explain") {
+            assert_eq!(action.answers(), [0], "{}", action.id());
+        }
     }
 
     #[test]

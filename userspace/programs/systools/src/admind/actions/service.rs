@@ -218,6 +218,9 @@ impl Action for Explain {
     const AREA: &'static str = AREA;
     const CHANGES: bool = false;
     const PATH: &'static str = "/api/1/services/{name}/explain";
+    /// 3 is a service that does not run, is not ready yet or fails its
+    /// health check: the explanation is what is asked for then most.
+    const ANSWERS: &'static [i32] = &[0, 3];
     const RUNS: Runs = Runs::AsThePerson;
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Explain a service";

@@ -119,7 +119,8 @@ fn percent_encode(text: &str) -> String {
 
 /// `task` as the YAML of a play's task list with the one task: its name,
 /// its module with the parameters, `become: true` when it runs as root,
-/// and `changed_when` when the task says. Each string is written as a JSON
+/// and `register`, `changed_when` and `failed_when` when the task says.
+/// Each string is written as a JSON
 /// string, which YAML reads as the same string; a list is a block list,
 /// and a list or mapping inside one is written as JSON, which is YAML's
 /// flow style.
@@ -131,12 +132,18 @@ pub fn yaml(task: &Ansible) -> String {
     if task.become_root {
         out.push_str("  become: true\n");
     }
+    if let Some(name) = task.register {
+        out.push_str(&format!("  register: {name}\n"));
+    }
     if let Some(when) = &task.changed_when {
         let when = match when.as_str() {
             "true" | "false" => when.clone(),
             condition => Value::from(condition).to_string(),
         };
         out.push_str(&format!("  changed_when: {when}\n"));
+    }
+    if let Some(when) = &task.failed_when {
+        out.push_str(&format!("  failed_when: {}\n", Value::from(when.as_str())));
     }
     out
 }
@@ -334,7 +341,7 @@ mod tests {
         let read = show("service.explain", json!({ "name": "nginx" }));
         assert_eq!(
             read["ansible"],
-            "- name: \"Explain a service: nginx\"\n  ansible.builtin.command:\n    argv:\n      - \"service\"\n      - \"nginx\"\n      - \"explain\"\n      - \"--json\"\n  changed_when: false\n"
+            "- name: \"Explain a service: nginx\"\n  ansible.builtin.command:\n    argv:\n      - \"service\"\n      - \"nginx\"\n      - \"explain\"\n      - \"--json\"\n  register: answer\n  changed_when: false\n  failed_when: \"answer.rc not in [0, 3]\"\n"
         );
     }
 
@@ -371,10 +378,12 @@ mod tests {
             params,
             become_root: true,
             changed_when: Some("result.rc != 0".into()),
+            register: Some("result"),
+            failed_when: Some("result.rc not in [0, 3]".into()),
         };
         assert_eq!(
             yaml(&task),
-            "- name: \"Do\"\n  dukovo.system.service:\n    empty: []\n    enabled: true\n    limits:\n      memory: \"64M\"\n      nested:\n        - [1]\n        - {\"a\":2}\n    name: \"nginx\"\n    none: null\n    \"odd key\": \"x\"\n    ports:\n      - 80\n      - 443\n    wait: 30\n  become: true\n  changed_when: \"result.rc != 0\"\n"
+            "- name: \"Do\"\n  dukovo.system.service:\n    empty: []\n    enabled: true\n    limits:\n      memory: \"64M\"\n      nested:\n        - [1]\n        - {\"a\":2}\n    name: \"nginx\"\n    none: null\n    \"odd key\": \"x\"\n    ports:\n      - 80\n      - 443\n    wait: 30\n  become: true\n  register: result\n  changed_when: \"result.rc != 0\"\n  failed_when: \"result.rc not in [0, 3]\"\n"
         );
     }
 

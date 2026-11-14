@@ -199,7 +199,11 @@ action marked *long* is a task, below), a worker runs 8 at once, and admind
 runs 32 at once as an administrator, for all sessions and tokens together,
 the commands of tasks among them (ADM-105 for the next short command; a
 task waits for a place instead). A command
-that ends with a status other than 0 is ADM-123 (422): the *detail* is
+that ends with a status other than 0 is ADM-123 (422), except a read
+that answers with other statuses too: *service explain*, which ends
+with 3 for a service that does not run, is not ready or fails its
+health check, answers with its explanation after 0 and 3 alike, and its
+Ansible task fails only after other statuses. For ADM-123, the *detail* is
 the last line it wrote as an error, the *command* member has its words,
 its status and its error output, and when that line ends with an error
 ID in parentheses that the action lists, such as *(SVC-104)*, the

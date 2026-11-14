@@ -346,10 +346,11 @@ fn long(
 
 /// What the log says an action asked for came to, which is the end of its
 /// line: for a change always, with "changed nothing" when it ended well and
-/// moved nothing; for a read only when it was refused or failed.
+/// moved nothing; for a read only when it was refused or failed, which a
+/// status it answers with ([`Action::ANSWERS`](crate::admind::actions::Action::ANSWERS)) is not.
 fn told(action: &dyn Registered, done: &Result<Done, Failure>) -> Option<String> {
     match done {
-        Ok(Done { ran, .. }) if ran.status == 0 && !action.changes() => None,
+        Ok(Done { ran, .. }) if !action.changes() && action.answers().contains(&ran.status) => None,
         Ok(Done { ran, changed }) if ran.status == 0 && !changed => {
             Some(String::from("ended with status 0, changed nothing"))
         }
@@ -427,6 +428,14 @@ mod tests {
         assert_eq!(told(list, &done(1, false)).as_deref(), Some("ended with status 1"));
         let refused = Err(Failure::new(Kind::NotAdmin, "no"));
         assert_eq!(told(list, &refused).as_deref(), Some("was not run: ADM-122"));
+        // service explain answers after 3 as after 0, and fails after 4.
+        let explain = crate::admind::actions::REGISTRY
+            .iter()
+            .copied()
+            .find(|action| action.id() == "service.explain")
+            .unwrap();
+        assert_eq!(told(explain, &done(3, false)), None);
+        assert_eq!(told(explain, &done(4, false)).as_deref(), Some("ended with status 4"));
     }
 
     /// `id` of the lab's actions, prepared with `args`, naming `files`.

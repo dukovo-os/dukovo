@@ -263,6 +263,11 @@ pub struct Ansible {
     pub become_root: bool,
     /// `changed_when`, when the module does not say: `false` for a read.
     pub changed_when: Option<String>,
+    /// The name the task's result is kept under, for `failed_when`.
+    pub register: Option<&'static str>,
+    /// `failed_when`, for a command whose answer comes with a status other
+    /// than 0 as well ([`Action::ANSWERS`]).
+    pub failed_when: Option<String>,
 }
 
 impl Ansible {
@@ -282,9 +287,28 @@ impl Ansible {
             params,
             become_root: elevated,
             changed_when: (!changes).then(|| "false".into()),
+            register: None,
+            failed_when: None,
         }
     }
+
+    /// The task, failed only when its command ends with a status that is
+    /// none of `answers`: the statuses after which its output is the
+    /// answer. A task whose command answers only with 0 is left as it is.
+    #[must_use]
+    pub fn answering(mut self, answers: &[i32]) -> Ansible {
+        if answers != [0] {
+            let statuses: Vec<String> = answers.iter().map(i32::to_string).collect();
+            self.register = Some(RESULT);
+            self.failed_when = Some(format!("{RESULT}.rc not in [{}]", statuses.join(", ")));
+        }
+        self
+    }
 }
+
+/// The name an Ansible task keeps its result under when its failure is
+/// told by [`Ansible::failed_when`].
+const RESULT: &str = "answer";
 
 /// Arguments to try an action with, for the boot and lab tests that take
 /// every action from the list.
@@ -329,6 +353,11 @@ pub trait Action: 'static {
     const LONG: bool = false;
     /// The error IDs its command can give, besides the console's own.
     const ERRORS: &'static [&'static str] = &[];
+    /// The exit statuses after which its command's output is the answer:
+    /// 0, and for a read whose command also tells a state by its status,
+    /// as `service NAME explain` exits 3 for a service that does not run,
+    /// those statuses too. Any other status is ADM-123.
+    const ANSWERS: &'static [i32] = &[0];
     /// Its five tests.
     const TESTS: Tests;
     /// What a person reads as its name in the palette and in the journal:
@@ -355,7 +384,7 @@ pub trait Action: 'static {
             None => Self::TITLE.to_string(),
         };
         let elevated = Self::RUNS == Runs::AsAdministrator;
-        Ansible::command(name, &Self::argv(args), elevated, Self::CHANGES)
+        Ansible::command(name, &Self::argv(args), elevated, Self::CHANGES).answering(Self::ANSWERS)
     }
 
     /// The files a change writes, for the Files tab and the journal.
@@ -409,6 +438,8 @@ pub trait Registered: Sync + fmt::Debug {
     fn runs(&self) -> Runs;
     fn long(&self) -> bool;
     fn errors(&self) -> &'static [&'static str];
+    /// [`Action::ANSWERS`].
+    fn answers(&self) -> &'static [i32];
     fn tests(&self) -> Tests;
     fn title(&self) -> &'static str;
     /// Whether a change's `changed` comes from comparing, its probe's
@@ -469,6 +500,9 @@ impl<A: Action> Registered for Entry<A> {
     }
     fn errors(&self) -> &'static [&'static str] {
         A::ERRORS
+    }
+    fn answers(&self) -> &'static [i32] {
+        A::ANSWERS
     }
     fn tests(&self) -> Tests {
         A::TESTS

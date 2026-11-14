@@ -396,7 +396,10 @@ Ansible
 Put it in a play's `tasks`. Ansible needs Python on the machine: see
 [Python](python.md). That module cannot tell a change from none, so a
 change task reports "changed" each time it runs, and a read has
-`changed_when: false`. A module of Dukovo's own that tells a change from
+`changed_when: false`. A read whose command answers with another status
+too, such as `service NAME explain`, which ends with 3 for a service that
+does not run well, registers its result and has a `failed_when` that names
+the statuses it answers with. A module of Dukovo's own that tells a change from
 none is a later addition.
 
 ### Your tokens
