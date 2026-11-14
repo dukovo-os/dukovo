@@ -341,7 +341,8 @@ authd opens a keyring when its person signs in with their password, at
 a console or over SSH, or asks *keyring-unlock*, and makes it then if
 they have none; an account with no password has none. It holds it open
 in its own memory while one of their sessions runs, and closes it,
-wiping the key, when the last one ends.
+wiping the key, when the last one ends. A sign-in to the web console
+(WEB CONSOLE) opens none.
 
 A change of password seals the keyring's key under the new one. When
 root sets a password without the old one, or the startup-trouble menu

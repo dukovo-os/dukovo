@@ -110,8 +110,9 @@ passkey*.
 If the account has a second step, the page asks for it next: the code
 from the account's authenticator app, or a recovery code, or the
 account's passkey. It must come within 5 minutes of the password, from the
-same address. *Trust this browser for 30 days*, ticked here, lets this
-browser skip the second step the next times (Trusted browsers, below).
+same address. *Trust this browser for 30 days*, which the page ticks to
+start with, lets this browser skip the second step the next times
+(Trusted browsers, below).
 
 A passkey alone signs in with no password and no code, if the passkey
 checks the person with its PIN, fingerprint or face. It is the password

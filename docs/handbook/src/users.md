@@ -200,7 +200,9 @@ running ends, or once it is disabled. `user set` changes an account's
 full name, which anyone changes for themselves, or whether it is an
 administrator's: `elevate user set --admin bob`. Someone who is no
 longer an administrator keeps nothing of it, not an elevated shell they
-left open.
+left open. `elevate user set --console bob` lets bob sign in to the web
+console without being an administrator (see [The Dukovo Admin web
+console](web-console.md)).
 
 You do not disable, remove or rename the account you are signed in
 with: another administrator does, so that your own session does not end
