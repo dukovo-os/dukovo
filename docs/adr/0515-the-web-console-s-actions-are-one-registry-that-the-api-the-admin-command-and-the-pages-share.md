@@ -44,8 +44,9 @@ must be no more than its owner.
   anything (a read is a `GET`, a change a `POST`); its path
   (`/api/1/services/{name}/restart`); who runs its command; the arguments
   it takes, with their checks; the command; its Ansible task; the files a
-  change writes; the error IDs its command can give; its examples, good
-  and bad, and for a change the action that puts it back; and its five
+  change writes; for a change, the probe that tells whether it moved
+  anything; the error IDs its command can give; its examples, good and
+  bad, and for a change the action that puts it back; and its five
   tests. The routes of the actions, `GET /api/1/actions`,
   `admin actions` and the golden file `lab/actions.toml` are made from
   this list, so none of them can say what another does not. The actions
@@ -58,8 +59,9 @@ must be no more than its owner.
   command has `--json`, and the API answers the JSON as the command
   printed it, checked to parse: a command's JSON is its documented
   interface, and the API does not reshape it, so the two cannot drift. A
-  change answers `{"done": true, "output": [...]}`, with at most the
-  first 200 lines of the command's output. A command that ends with a
+  change answers `{"done": true, "changed": true, "output": [...]}`, with
+  at most the first 200 lines of the command's output, and `changed` as
+  the next paragraph says. A command that ends with a
   status other than 0 is ADM-123 (422): the detail is the last line of its
   error output, and the answer's `command` holds its words, its status and
   its error output. When that line ends with an ID in parentheses, as
@@ -73,6 +75,18 @@ must be no more than its owner.
   Spark's for a service, certd's for a certificate. Stopping, restarting
   or disabling admind or authd is refused, since the console is made of
   them and the answer would never arrive.
+- **The list says what each action takes, as a JSON Schema.** An action's
+  `input` in `GET /api/1/actions` is a schema (draft 2020-12, the part with
+  `type`, `description`, `minLength`, `maxLength`, `pattern`, `enum`,
+  `minimum`, `maximum`, `required` and `additionalProperties: false`) of
+  its arguments, so that a client can check what it is about to send and a
+  page can make its form without asking the console. The action's fields,
+  one table of name, kind, limits and words, make both the schema and the
+  checks, and say what the console enforces, no more and no less. A host
+  test holds each action's schema to its checks with a validator of that
+  part of JSON Schema, on the action's examples and on values at and just
+  outside each limit, and fails for a schema that says what the checks do
+  not.
 - **Every action runs as the person, or as an administrator through
   `console-elevate`.** An action that runs as the person runs in the
   person's worker (ADR 0514) with the person's own rights: no terminal,
@@ -88,6 +102,29 @@ must be no more than its owner.
   a token whose owner is not one, which authd refuses; a locked session is
   ADM-106. Every read of the first actions runs as the person, and every
   change as an administrator.
+- **A change says whether it changed anything.** The answer's `changed` is
+  true or false, so that a script that asks for what is so already learns
+  that nothing was done, as an Ansible task's report says it. A change
+  whose effect a read can see has a *probe*, that read, as a command in the
+  registry's own form: `service list --json` for a service's start, stop,
+  enable and disable, and `admin reach` for the console's reach. The probe
+  is run before the change and again after it, and `changed` is whether the
+  part of the two outputs that the action picks differs. Start and stop
+  pick the state Spark says of the service, one of its nine words; enable
+  and disable pick the state and whether it starts at boot; reach picks
+  its word. A pick leaves out what moves by itself, such as a process
+  number or a time. A probe runs in the worker of the person who asked, as
+  the person, for a session and for a token alike (the token owner's
+  worker), and never as an administrator, so it can read only what that
+  person can; a change that only an administrator can see the effect of
+  has no probe. When the console cannot tell, `changed` is true, as Ansible's
+  command module says it: a probe that fails, an output the action finds
+  nothing in, and a change without a probe all give it. A restart always does
+  something, and so does `cert renew`, which makes the certificate anew
+  whether or not it is due, so neither has one. The list says which is
+  which: an action's `compares` is true when its `changed` is a
+  comparison, and false when it is always true, as for every read, which
+  has none. A command that fails is ADM-123 and has no `changed`.
 - **Show the command.** `POST /api/1/show` with `{"action", "args"}`
   checks the arguments as the action's own route does and runs nothing.
   It answers four forms of the one prepared action. The Command is the
@@ -146,7 +183,8 @@ must be no more than its owner.
   session is ADM-106 as before. Each has a page in `docs/errors`.
 - **The log.** admind writes one line for each change asked for, whether
   it ran, was refused or failed: who asked (the person, or the person and
-  the token's name), from which address, the action, and how it ended.
+  the token's name), from which address, the action, and how it ended,
+  with "changed nothing" for a change that ended well and moved nothing.
   For a read it writes a line only when the read was refused or failed.
   Arguments that do not read are refused before anyone is asked and have
   none, and a read that worked has none, since a page asks for them
@@ -185,10 +223,33 @@ must be no more than its owner.
   shown task against the machine twice. The boot test and the two lab
   tests take the list from `GET /api/1/actions` and the arguments from
   each action's examples, so that a new action with examples is tried as
-  soon as it is registered. The lab also scans the console with ZAP's
+  soon as it is registered. The boot test also runs the good example of
+  each change whose `compares` is true a second time, from the state the
+  first left, and expects `changed: false` and "changed nothing" in the
+  log. The lab also scans the console with ZAP's
   baseline (`web-console/zap`) and with testssl.sh (`web-console/testssl`),
   each failing on a finding that its list of accepted ones does not name
   with a reason.
+- **What a client sends can be fuzzed.** systools is a library and a
+  binary: `src/lib.rs` has the modules and the dispatch, and `src/main.rs`
+  calls it, so that a program on the host can link the same code. Its
+  `fuzz` feature, which a build for people leaves out, adds a module
+  `fuzz` with a `Console` and a function for each parser of what a client
+  sends. A `Console` is admind's request handling on a console made from
+  the tests' fixture, with an authd that refuses every request, no socket
+  and no TLS; `request` takes the bytes of a method, an address, headers
+  and a body and gives the status and the body, and one console answers
+  millions of them. The functions read an action's address and its `%XX`
+  escapes, an address's arguments with a body, each action's arguments,
+  the bearer header, the cookie, a token's scopes, the preferences body
+  and the settings text it is made to, and a passkey's client data,
+  authenticator data, key, attestation and assertion, each from bytes or
+  text and giving a simple answer, so that admind's own types stay
+  private. A fuzz target is a crate of its own that calls them. The
+  module has host tests of its own, with each function on an input that is
+  right and one that is not, and a loop of a few thousand inputs from a
+  generator with a fixed seed through all of them, which must not panic.
+  No image has the module.
 - **Ansible tasks are `ansible.builtin.command` for now.** The task has
   `argv:`, never a string for a shell, `become: true` for what runs as an
   administrator, and `changed_when: false` for a read. That module cannot
@@ -213,6 +274,10 @@ must be no more than its owner.
   five tests; the gate fails until the tests are in the tree. A page that
   adds a button adds an action, and gets the API route, the list entry,
   the shown command and the Ansible task with it.
+- A change with a probe costs two reads, run as the person before and
+  after it, besides the command. Its `changed` is as good as what the
+  probe picks: when the probe cannot say, `changed` is true, and the list
+  says which actions can say at all.
 - A command's JSON is an interface that the API depends on. A change to
   what `service list --json` prints changes the API's answer, which the
   boot test that compares the route with the command shows.
@@ -268,6 +333,10 @@ must be no more than its owner.
   API would be a second thing to keep right, and a machine could be
   administered only while the console ran. The commands come first, and
   the API runs them.
+- **A `changed` that each command prints.** Every command would need a way
+  to say it, and several would have to learn it, for a fact that the state
+  they change already says. A read before and after, with the command that
+  already prints the state, changes none of them.
 - **An `admin run` that sends an action's call.** It would be a second way
   to run an action beside the shown command, with its own rules to keep
   the same. A person runs the command as shown.
