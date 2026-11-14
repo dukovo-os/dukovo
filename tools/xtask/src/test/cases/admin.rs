@@ -33,7 +33,7 @@
 //! step; a wrong code is ADM-102, the right one signs in, the same code
 //! again is refused as used, and a recovery code signs in once and not
 //! twice. Carol, in group console and no administrator, signs in and has
-//! nothing to unlock: authd refuses it, ADM-110. A locked session cannot
+//! nothing to unlock: authd refuses it, ADM-122. A locked session cannot
 //! change second steps without the password; unlocked with the app's code
 //! it can, shows the seconds left and locks again. The route that lab builds add, _POST
 //! /api/1/test/elevate_, is not in this image, which is 404: no case can
@@ -376,7 +376,7 @@ fn signing_in(vm: &mut Vm, console: &Console, alice: &mut Browser) -> Result<(),
     let refused = console.post(&mut carol, "/api/1/unlock", &unlock)?.refused(
         "carol's unlock",
         403,
-        "ADM-110",
+        "ADM-122",
     )?;
     if !refused.detail().contains("is not an administrator") {
         return Err(format!("carol's unlock was refused for {:?}", refused.detail()));

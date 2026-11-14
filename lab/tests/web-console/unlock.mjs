@@ -252,7 +252,7 @@ async function viewer(t, page) {
   await look(t, page, "viewer");
 
   const refused = await postAsPage(page, "/api/1/unlock", { kind: "password", password: PASSWORD });
-  const error = await mustRefuse(refused, 403, "ADM-110");
+  const error = await mustRefuse(refused, 403, "ADM-122");
   ensure(error.detail.includes("is not an administrator"), `a viewer's unlock was refused as: ${error.detail}`);
   ensure((await sessionOf(page)).unlock_seconds === null, "a viewer is unlocked");
   await signOut(t, page);

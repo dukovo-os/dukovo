@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The console's errors (ADR 0514), all in this one place. Each has an ID
-//! a person can quote, a title, the HTTP status it is answered with, and
-//! a fix the person can try. The detail is the sentence for this one
-//! time: where authd refused, its own words, which are written for people
-//! already. Both admind's routes and the worker's methods fail with these,
-//! so the page sees one shape whichever of them said no:
+//! The console's errors (ADRs 0514 and 0515), all in this one place. Each
+//! has an ID a person can quote, a title, the HTTP status it is answered
+//! with, and a fix the person can try. The detail is the sentence for this
+//! one time: where authd refused, its own words, which are written for
+//! people already. Both admind's routes and the worker's methods fail with
+//! these, so the page sees one shape whichever of them said no:
 //! `{"error": {"id", "title", "detail", "fix"}}`.
 
 use accounts::request::WRONG_PASSWORD;
@@ -212,7 +212,9 @@ impl Kind {
             Kind::AuthdSilent => Some("Try again in a moment."),
             Kind::WorkerSilent => Some("Sign out and sign in again."),
             Kind::WrongHost => Some("Open the console by this machine's name or its address."),
-            Kind::TokenRefused => Some("Check the token, or make a new one: a token ends on its date."),
+            Kind::TokenRefused => {
+                Some("Check the token, or make a new one: a token ends on its date.")
+            }
             Kind::NotAdmin => {
                 Some("Ask an administrator to make the change, or to make this account one.")
             }
@@ -336,6 +338,12 @@ const NOT_ALLOWED: [&str; 3] =
 /// may, which is the console being full as much as admind's own limit.
 const FULL: &str = "web console sessions are signed in already";
 
+/// How authd refuses an unlock, or a command as an administrator, to an
+/// account that is no administrator: for a session's unlock and for an API
+/// token whose owner is not one, as admind itself refuses a session's
+/// change, ADM-122.
+const NOT_ADMIN: &str = "is not an administrator, and makes no changes";
+
 /// The failure that authd's refusal `why` is, for what `attempt` was. authd
 /// words every refusal for a person, so the detail is its own sentence; the
 /// kind is what the page tells apart.
@@ -348,6 +356,8 @@ pub fn refusal(attempt: Attempt, why: &str) -> Failure {
         Kind::Locked
     } else if why.ends_with("sign in again") {
         Kind::SessionEnded
+    } else if why.ends_with(NOT_ADMIN) {
+        Kind::NotAdmin
     } else if NOT_ALLOWED.iter().any(|phrase| why.contains(phrase)) {
         Kind::NotAllowed
     } else if why.ends_with(FULL) {
@@ -472,7 +482,7 @@ mod tests {
                 Kind::SecondStepOnly,
             ),
             (Attempt::Other, "64 web console sessions are signed in already", Kind::Busy),
-            (Attempt::Other, "chase is not an administrator, and makes no changes", Kind::Refused),
+            (Attempt::Other, "chase is not an administrator, and makes no changes", Kind::NotAdmin),
         ];
         for (attempt, why, kind) in cases {
             let failure = refusal(attempt, why);
@@ -487,6 +497,7 @@ mod tests {
         let authd = include_str!("../authd/console.rs");
         for phrase in NOT_ALLOWED.into_iter().chain([
             FULL,
+            NOT_ADMIN,
             "may only add a second step",
             "the session is locked",
             ": sign in again",
