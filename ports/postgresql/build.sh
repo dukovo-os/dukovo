@@ -8,7 +8,8 @@
 # loads with dlopen in lib/postgresql (PL/pgSQL, the encoding conversions,
 # the Snowball dictionaries, pgoutput, libpqwalreceiver and the contrib
 # modules), the files the server reads in share, and the test suites in
-# tests, with the programs that run them.
+# tests, with the programs that run them. libpq goes into the sysroot too,
+# as a static library with its headers, for the ports built on it (PHP).
 #
 # Radix's ABI is Linux's (radix-posix(7)), so the build takes PostgreSQL's
 # linux template: unnamed POSIX semaphores, -fPIC for shared code, the
@@ -216,6 +217,47 @@ pg_make install-world-bin DESTDIR="$stage" >install.log 2>&1 || {
 	exit 1
 }
 installed="$stage$prefix"
+
+# libpq for the ports built on it, PHP's pgsql and pdo_pgsql: libpq.a and
+# its headers in the sysroot, with a libpq.pc, as a library's port installs
+# them. A static program links libpq.a with libpgcommon_shlib.a and
+# libpgport_shlib.a, which PostgreSQL builds for libpq.so, and not with
+# libpgcommon.a and libpgport.a: libpq's objects call the encoding
+# functions by their public names (pg_char_to_encoding), which only the
+# first of each pair defines, while the others name them for the programs
+# (pg_char_to_encoding_private, src/include/mb/pg_wchar.h).
+# The libpq.pc is not the tree's: that one has the paths of this build in
+# its Libs.private and asks for the pkg-config files of OpenSSL, which the
+# sysroot does not have. It does not say where OpenSSL's libraries are
+# either, as the openssl port keeps them for bundles in a folder of its
+# own, and the port that links libpq gives that folder, as PHP's does for
+# its own use of OpenSSL.
+sysroot_libraries="$SYSROOT$PREFIX/libraries"
+sysroot_include="$SYSROOT$PREFIX/include"
+mkdir -p "$sysroot_libraries/pkgconfig" "$sysroot_include/libpq"
+for archive in libpq.a libpgcommon_shlib.a libpgport_shlib.a; do
+	install -m 0644 "$installed/lib/$archive" "$sysroot_libraries/$archive"
+done
+for header in libpq-fe.h libpq-events.h postgres_ext.h; do
+	install -m 0644 "$installed/include/$header" "$sysroot_include/$header"
+done
+install -m 0644 "$installed/include/libpq/libpq-fs.h" "$sysroot_include/libpq/libpq-fs.h"
+version=$(sed -n 's/^Version: //p' "$PORT_BUILD/radix/src/interfaces/libpq/libpq.pc")
+cat >"$sysroot_libraries/pkgconfig/libpq.pc" <<EOF
+prefix=$PREFIX
+exec_prefix=\${prefix}
+libdir=\${prefix}/libraries
+includedir=\${prefix}/include
+
+Name: libpq
+Description: PostgreSQL libpq library
+URL: https://www.postgresql.org/
+Version: $version
+Requires:
+Cflags: -I\${includedir}
+Libs: -L\${libdir} -lpq
+Libs.private: -lpgcommon_shlib -lpgport_shlib -lssl -lcrypto -lm
+EOF
 
 # Every program, without its symbols (ecpg, the embedded SQL compiler, needs
 # its headers and libraries, which no bundle keeps), and every module.
