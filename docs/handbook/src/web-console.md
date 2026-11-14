@@ -281,9 +281,10 @@ certificate.renew  change  administrator  POST /api/1/certificates/{name}/renew 
 ```
 
 `admin actions --json` prints the same list as JSON, with each action's
-area, its error IDs and its examples, for a script to read. A read runs as
-the person who asks, with their own rights. A change runs as an
-administrator.
+area, its error IDs, its examples, its `compares` (see "A call") and its
+`input`, a JSON Schema of the arguments it takes, which a script can check
+what it is about to send against. A read runs as the person who asks, with
+their own rights. A change runs as an administrator.
 
 ### Making a token
 
@@ -358,9 +359,13 @@ curl -sS -X POST -H "Authorization: Bearer $DUKOVO_TOKEN" -H "Content-Type: appl
 ...
 ```
 
-It answers `{"done": true, "output": [...]}` with the lines the command
-printed. A command that fails is answered as an error, with the command's
-own words (ADM-123).
+It answers `{"done": true, "changed": true, "output": [...]}` with the
+lines the command printed. `changed` is `false` when the change moved
+nothing, as when a service that runs is started. The console reads what the
+change moves, as you, before the command and after it, and says `true`
+when it cannot tell, as for a restart; the list's `compares` says which
+actions can tell. A command that fails is answered as an error, with the
+command's own words (ADM-123).
 
 ### An Ansible task
 

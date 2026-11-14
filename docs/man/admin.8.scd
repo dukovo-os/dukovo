@@ -92,10 +92,13 @@ remove another's.
 	With *--json* it prints one JSON value, the list as *GET /api/1/actions*
 	answers it: an array with an object for each action, with *id*,
 	*title*, *area*, *changes*, *method*, *path*, *runs* (*as-the-person*
-	or *as-administrator*), *long* (whether it runs as a task), *errors*
-	(the error IDs its command can end a line with), *tests* (the five
-	tests that cover it) and *examples*. The area is also the scope a token
-	needs: *services* for all of the area, *services:read* for reading it.
+	or *as-administrator*), *long* (whether it runs as a task), *compares*
+	(whether a change's *changed* is found by comparing a read before
+	and after it, and false for a read), *errors* (the error IDs its
+	command can end a line with), *tests* (the five tests that cover it),
+	*input* (the JSON Schema of the arguments it takes) and *examples*.
+	The area is also the scope a token needs: *services* for all of the
+	area, *services:read* for reading it.
 
 	*examples* is an object with *good*, a list of arguments that work on a
 	machine as it is installed, which a test or a script can try, and

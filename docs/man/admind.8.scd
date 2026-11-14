@@ -136,9 +136,12 @@ areas'. Besides the routes of the actions there are two:
 
 *GET /api/1/actions*
 	The list: a JSON array with an object for each action, with its *id*,
-	*title*, *area*, *changes*, *method*, *path*, *runs*, *long*, *errors*,
-	*tests* and *examples*. *admin actions --json* prints the same. A
-	session or a token of any scope may ask.
+	*title*, *area*, *changes*, *method*, *path*, *runs*, *long*,
+	*compares*, *errors*, *tests*, *input* and *examples*. *compares* is
+	true for a change whose *changed* is found by comparing a read before
+	and after it, and false for any other action. *input* is the JSON
+	Schema of the action's arguments. *admin actions --json* prints the
+	same. A session or a token of any scope may ask.
 
 *POST /api/1/show*
 	Takes *{"action": "service.restart", "args": {"name": "nginx"}}* and
@@ -155,22 +158,39 @@ and the members of the JSON object in its body, which may be empty,
 together. A name in both, a member the action does not have, or a body
 that is not an object is ADM-108; a value that cannot work, such as a
 service's name that starts with *-*, is ADM-125, with the *field* it is
-in, before anything is run.
+in, before anything is run. An action's *input* in the list says the same
+as a JSON Schema (draft 2020-12): an object with a property for each
+argument, with its *type* and its limits (*minLength*, *maxLength*,
+*pattern*, *enum*, *minimum* or *maximum*), a list of the *required*
+ones, and *additionalProperties* set to false. A script or a page can
+check what it is about to send against it.
 
 A read runs its command in the worker of the person or the token's owner,
 as that person, and answers the JSON the command printed with *--json*,
 as it printed it. A change that runs as the person runs in the worker
 too. A change that runs as an administrator goes through *authd*(8), for
 an unlocked session of an administrator, or for a token whose owner is an
-administrator. A change answers *{"done": true, "output": [...]}* with
-the first 200 lines the command printed. A command runs 30 seconds at
-most (ADM-121 for one that has not ended), a worker runs 8 at once, and
-admind runs 32 at once as an administrator, for all sessions and tokens
-together (ADM-105 for the next). A command that ends
-with a status other than 0 is ADM-123 (422): the *detail* is the last line
-it wrote as an error, the *command* member has its words, its status and
-its error output, and when that line ends with an error ID in parentheses
-that the action lists, such as *(SVC-104)*, the answer's *id* is that ID.
+administrator. A change answers *{"done": true, "changed": true,
+"output": [...]}* with the first 200 lines the command printed.
+*changed* says whether the change moved anything, so that asking for
+what is so already answers *false*. For an action whose *compares* is
+true, admind runs a read of what the change moves, in the worker of the
+person or the token's owner and so as that person, before the command
+and again after it, and *changed* is whether the part of the two outputs
+that the action picks differs; the services' start, stop, enable and
+disable read *service list --json*, and the console's reach reads *admin
+reach*. *changed* is *true* when admind cannot tell: the read failed, or
+the action finds nothing in what it printed. A change whose action does
+not compare, such as a restart or *cert renew*, which makes the
+certificate anew whether or not it is due, always answers *true*. A
+command runs 30 seconds at most (ADM-121 for one that has not ended), a
+worker runs 8 at once, and admind runs 32 at once as an administrator,
+for all sessions and tokens together (ADM-105 for the next). A command
+that ends with a status other than 0 is ADM-123 (422): the *detail* is
+the last line it wrote as an error, the *command* member has its words,
+its status and its error output, and when that line ends with an error
+ID in parentheses that the action lists, such as *(SVC-104)*, the
+answer's *id* is that ID.
 
 A person who is not an administrator is ADM-122 for a change that runs as
 an administrator, and a session that is locked is ADM-106: *Unlock* in the
@@ -286,12 +306,14 @@ It has a line for each change an action was asked for, whether it ran, was
 refused or failed, and for a read only when it was refused or failed. The
 line says who asked, as *alice* or, for a call with a token, as *alice
 (API token monitor)*, then the address, the action's id and how it ended:
-*ended with status* and the command's exit status, or *was not run:* and
-the error's ID. It has the action and not its arguments. A read that worked
-has no line, and nor has a request whose arguments did not read (ADM-108,
-ADM-125), which is refused before anyone is asked. *authd*(8)'s audit log
-(*log --audit*) has each command run as an administrator, with the
-session's first 8 characters or the token's name and area.
+*ended with status* and the command's exit status, with *, changed
+nothing* after it for a change that ended well and moved nothing, or *was
+not run:* and the error's ID. It has the action and not its arguments. A
+read that worked has no line, and nor has a request whose arguments did
+not read (ADM-108, ADM-125), which is refused before anyone is asked.
+*authd*(8)'s audit log (*log --audit*) has each command run as an
+administrator, with the session's first 8 characters or the token's name
+and area.
 
 # EXIT STATUS
 
