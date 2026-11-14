@@ -46,6 +46,11 @@ const GREETING: &str = "\r\nYou are in a help session: you see and type in its o
                         as them. They see everything, and can end it at any time. What you type \
                         is kept.\r\n\r\n";
 
+/// What the helper is told as the session ends. authd closes the help
+/// screen's socket as it ends the session, so help-session(1) cannot tell
+/// them itself; its owner is told why.
+const ENDED: &str = "\r\n[help-session] The help session ended.\r\n";
+
 /// Whether sshd runs for a help session alone.
 pub fn only() -> bool {
     Path::new(HELP_ONLY).exists()
@@ -176,7 +181,7 @@ async fn write_in(
 }
 
 /// Waits for the help screen to end, which its socket's end says, keeps
-/// the helper's last line, and ends the connection.
+/// the helper's last line, tells the helper, and ends the connection.
 async fn end(
     output: JoinHandle<()>,
     transcript: Arc<Mutex<Transcript>>,
@@ -187,6 +192,7 @@ async fn end(
     if let Err(why) = transcript.lock().unwrap_or_else(PoisonError::into_inner).end_line() {
         eprintln!("sshd: {why}");
     }
+    let _ = handle.data(id, ENDED.as_bytes().to_vec()).await;
     let _ = handle.eof(id).await;
     let _ = handle.close(id).await;
     let reason = "the help session ended".to_string();
