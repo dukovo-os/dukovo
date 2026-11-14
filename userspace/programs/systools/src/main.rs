@@ -58,6 +58,8 @@
 //! `hardware` checks the memory, the disks, the processors, the sensors,
 //! the battery and the network cards for faults, and keeps what it found
 //! (ADR 0488).
+//! `help-session` shares the owner's screen with a helper who signs in over
+//! SSH as `help`, and ends at a key (ADR 0540).
 //! `dukovo-check` looks at the computer's security and health, a line for
 //! each check, and keeps what it found, every day by its service's timer
 //! (ADR 0479).
@@ -133,6 +135,7 @@ mod fstrim;
 mod git_credential;
 mod guest_agent;
 mod hardware;
+mod help_session;
 mod hexdump;
 mod hostnamectl;
 mod hwinfo;
@@ -317,6 +320,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("halt", power::halt),
     ("hardware", hardware::main),
     ("hd", hexdump::hd),
+    ("help-session", help_session::main),
     ("hexdump", hexdump::main),
     ("host", dig::host),
     ("hostnamectl", hostnamectl::main),
