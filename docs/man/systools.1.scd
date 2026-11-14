@@ -114,6 +114,8 @@ error that starts with the tool's name.
 :  the kernel's log
 |  *dukofetch*(1)
 :  the system at a glance, beside Duke
+|  *dukovo-check*(8)
+:  look at the computer's security and health, and keep what it finds
 |  *dumps*(8)
 :  save, list, show and delete the kernel's crash dumps
 |  *ectool*(8)
