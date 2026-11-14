@@ -729,7 +729,7 @@ const fn lighthouse(version: &'static str, script: &'static str) -> crate::bundl
         permissions: "{}",
         services: "{\"name\": \"lighthouse\", \"program\": \"lighthouse\", \"start\": \"at-boot\", \
                    \"restart\": \"on-failure\", \"health\": {\"socket\": \"ready\"}}",
-        provides: "{\"socket\": \"ready\", \"to\": \"system\"}",
+        provides: "",
         line: "",
         add_ons: "",
         feed: "",
@@ -11294,7 +11294,10 @@ fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
             return Err(format!("the log does not show \"{line}\""));
         }
     }
-    if log.contains("starting leaver again") || log.matches("starting stubborn again").count() != 1
+    // Spark's own lines: `service restart` waits, and the driver passes on
+    // what Spark tells it, so its log has the same words after `driver:`.
+    if log.contains("spark: starting leaver again")
+        || log.matches("spark: starting stubborn again").count() != 1
     {
         return Err("a service was started again that should not have been".into());
     }

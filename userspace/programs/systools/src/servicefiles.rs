@@ -705,8 +705,14 @@ pub fn turn(name: &str, on: bool) -> Result<(), Fail> {
         let _ = fs::remove_file(&new);
         return Err(util::failed(&path, e));
     }
-    let verb = if on { "start" } else { "stop" };
-    let answer = power::request(&format!("{verb} {name}"))?;
+    // An on-connection service waits for its first connection, as it does
+    // from boot (ADR 0477), rather than running at once.
+    let (verb, request) = if on {
+        ("start", format!("start {name} --listen"))
+    } else {
+        ("stop", format!("stop {name}"))
+    };
+    let answer = power::request(&request)?;
     if let Some(why) = answer.strip_prefix("error: ") {
         return Err(fail(format!("cannot {verb} {name}: {}", why.trim_end())));
     }
@@ -727,7 +733,13 @@ pub fn enable(name: &str, on: bool) -> Result<i32, Fail> {
         )));
     }
     turn(name, on)?;
-    if on {
+    let waits = || {
+        service::from_toml(&text(name).unwrap_or_default())
+            .is_ok_and(|file| file.start == service::Start::OnConnection)
+    };
+    if on && waits() {
+        println!("{name} waits for a connection, which starts it, now and from each boot.");
+    } else if on {
         println!("{name} is running, and starts at each boot.");
     } else {
         println!("{name} is stopped, and no longer starts at boot.");

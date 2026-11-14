@@ -11,6 +11,7 @@
   "programs": {
     "postgres": { "path": { "x86_64": "bin/postgres" } },
     "psql": { "path": { "x86_64": "bin/psql" } },
+    "pg_isready": { "path": { "x86_64": "bin/pg_isready" } },
     "pg_dump": { "path": { "x86_64": "bin/pg_dump" } }
   },
   "commands": [
@@ -25,7 +26,7 @@
     "restart": "on-failure",
     "limits": { "memory": "4G" },
     "sockets": [ { "path": "postgresql" } ],
-    "health": { "socket": "postgresql" }
+    "health": { "command": { "program": "pg_isready", "arguments": ["-q"] } }
   } ],
   "permissions": {
     "network.listen": { "ports": [5432], "need": "optional", "why": "Accepts connections from other machines" }

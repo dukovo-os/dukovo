@@ -244,8 +244,10 @@ The command line is Debian's.
 
 *enable* turns a service on: it sets *enabled = true* in its file, so
 that it starts at each boot, and starts it now, as
-*systemctl enable --now* does; *disable* stops it and sets
-*enabled = false*, so that it no longer starts at boot. Only root may.
+*systemctl enable --now* does; a service of *start = "on-connection"*
+waits for its first connection instead, now and at each boot.
+*disable* stops it and sets *enabled = false*, so that it no longer
+starts at boot. Only root may.
 A service whose file is not in _/system/settings/spark/services_ yet
 gets a copy of the system's own there first, and the change is written
 only if Spark still reads the file after it. This is how *sshd*(8) is

@@ -76,7 +76,8 @@ reader, its schema and a fuzzer to this part.
   the bundle asks for; commands and services run programs it has, under
   names of their own; a service without `account` has a name that can be
   an account's, and one that starts on a connection provides a socket; a
-  health check's socket is one it provides; nothing is named twice in
+  health check's socket is one the service makes itself, not one Spark
+  holds (ADR 0477); nothing is named twice in
   `needs`, `uses` or `apps`; each `provides` names a socket or an
   interface, one of the two; a GNU
   license (GPL, LGPL, AGPL) needs `source`; the icon is an SVG;

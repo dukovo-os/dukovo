@@ -405,7 +405,13 @@ impl Manifest {
                 );
             }
         }
-        let sockets: Vec<&Name> = self.provides.iter().filter_map(|p| p.socket.as_ref()).collect();
+        // The sockets Spark makes and holds for the services, by their names.
+        let made: Vec<&str> = self
+            .services
+            .iter()
+            .flat_map(|svc| svc.sockets.iter())
+            .filter_map(|socket| socket.path.as_deref())
+            .collect();
         let listen = if failed.contains(&"network.listen") {
             None
         } else {
@@ -478,14 +484,18 @@ impl Manifest {
             }
             if let Some(health) = &svc.health {
                 let at = [Key("services"), Index(i), Key("health")];
+                // Spark takes connections at the sockets it holds before the
+                // service runs, so only one the service makes itself tells
+                // that it works (ADRs 0386 and 0477).
                 if let Some(socket) = &health.socket
-                    && !sockets.contains(&socket)
+                    && made.contains(&socket.0.as_str())
                 {
                     fail(
                         &at,
                         format!(
-                            "service {} is checked through the socket {socket}, which provides \
-                             does not name",
+                            "service {} is checked through the socket {socket}, which Spark \
+                             holds and so answers before the service does: check through a \
+                             socket the service makes itself, or with health.command",
                             svc.name
                         ),
                     );
@@ -511,12 +521,6 @@ impl Manifest {
                 );
             }
         }
-        let made: Vec<&str> = self
-            .services
-            .iter()
-            .flat_map(|svc| svc.sockets.iter())
-            .filter_map(|socket| socket.path.as_deref())
-            .collect();
         for (i, provide) in self.provides.iter().enumerate() {
             let same = |p: &Provide| p.socket == provide.socket && p.interface == provide.interface;
             if self.provides[..i].iter().any(same) {
@@ -2063,8 +2067,9 @@ impl JsonSchema for Limits {
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Health {
-    /// A socket it provides, which answers once it works: bundled tries
-    /// it as it installs the bundle (ADR 0386).
+    /// A socket the service makes itself in its live folder, which
+    /// answers once it works: bundled tries it as it installs the bundle
+    /// (ADR 0386). Never one of its `sockets`, which Spark holds.
     #[serde(default)]
     pub socket: Option<Name>,
     /// A command Spark runs while the service runs, which passes when it

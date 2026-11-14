@@ -651,7 +651,7 @@ sockets kernel/net/ userspace/sockets/
 spark userspace/hello/
 spark-network userspace/posix/netgrant.c userspace/spark/tests/services/network/
 spark-oom kernel/mm/ userspace/posix/hog.c userspace/spark/tests/services/hog.toml
-spark-stop userspace/spark/tests/services/stop/
+spark-stop userspace/spark/tests/services/stop/ userspace/spark/src/supervisor.rs userspace/spark/src/supervisor/watch.rs userspace/programs/systools/src/service.rs
 sqlite kernel/fs/block/ kernel/fs/btrfs/ ports/sqlite/ userspace/programs/sqlite-test/
 ssh kernel/net/ ports/openssh/ userspace/posix/sshtest.c
 ssh-keyring ports/openssh/ userspace/programs/systools/src/authd.rs

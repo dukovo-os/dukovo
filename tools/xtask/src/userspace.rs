@@ -134,12 +134,16 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/admind", "systools"),
     ("system/commands/alertd", "systools"),
     ("system/commands/alerts", "systools"),
+    ("system/commands/at", "systools"),
+    ("system/commands/atq", "systools"),
+    ("system/commands/atrm", "systools"),
     ("system/commands/audio", "systools"),
     ("system/commands/audiocd", "systools"),
     ("system/commands/audiod", "systools"),
     ("system/commands/authd", "systools"),
     ("system/commands/backup", "systools"),
     ("system/commands/balance", "systools"),
+    ("system/commands/batch", "systools"),
     ("system/commands/blkid", "systools"),
     ("system/commands/braille", "systools"),
     ("system/commands/brailled", "systools"),
@@ -155,6 +159,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/chown", "systools"),
     ("system/commands/cloud-setup", "systools"),
     ("system/commands/column", "systools"),
+    ("system/commands/crontab", "systools"),
     ("system/commands/df", "systools"),
     ("system/commands/device", "systools"),
     ("system/commands/dig", "systools"),
@@ -211,6 +216,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/logger", "systools"),
     ("system/commands/login", "systools"),
     ("system/commands/logtrim", "systools"),
+    ("system/commands/logturn", "systools"),
     ("system/commands/lsblk", "systools"),
     ("system/commands/lscpu", "systools"),
     ("system/commands/lsmem", "systools"),
@@ -286,6 +292,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/taskset", "systools"),
     ("system/commands/timed", "systools"),
     ("system/commands/timedatectl", "systools"),
+    ("system/commands/timerd", "systools"),
     ("system/commands/top", "systools"),
     ("system/commands/traceroute", "systools"),
     ("system/commands/traceroute6", "systools"),
@@ -1075,6 +1082,29 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    /// Every tool in systools' table has a link in /system/commands, so a
+    /// new one is in the image; a tool left out is not found at boot.
+    #[test]
+    fn each_systools_tool_has_its_command() {
+        let main = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../userspace/programs/systools/src/main.rs");
+        let text = std::fs::read_to_string(&main).unwrap();
+        let start = text.find("const TOOLS: &[(&str, Tool)] = &[").expect("systools' table");
+        let table = &text[start..start + text[start..].find("\n];").expect("the table's end")];
+        let tools: Vec<&str> = table
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("(\"")?.split('"').next())
+            .collect();
+        assert!(tools.len() > 100, "read {} tools", tools.len());
+        let missing: Vec<&str> = tools
+            .into_iter()
+            .filter(|tool| {
+                !STD_LINKS.contains(&(format!("system/commands/{tool}").as_str(), "systools"))
+            })
+            .collect();
+        assert!(missing.is_empty(), "add these to STD_LINKS: {missing:?}");
+    }
 
     #[test]
     fn programs_on_std_link_the_sysroots_sqlite() {

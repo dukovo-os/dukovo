@@ -253,10 +253,13 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	*health* = { *socket* = _"name"_, *command* = {...} }
 		How to tell it works, with one or both:
 
-		*socket*, a socket it provides, which answers once it does. The
-		service makes it in *RUNTIME_DIRECTORY*; after an update, a new
-		version that does not answer on it within 60 seconds goes back
-		to the version before, with its data (*bundled*(8), ADR 0386).
+		*socket*, a socket the service makes itself in its
+		*RUNTIME_DIRECTORY*, which answers once it works; after an
+		update, a new version that does not answer on it within 60
+		seconds goes back to the version before, with its data
+		(*bundled*(8), ADR 0386). Not one of its *sockets*: Spark holds
+		those and takes connections before the service runs, so they
+		tell nothing.
 
 		*command* = { *program*, *arguments*, *every*, *timeout*,
 		*failures* }, a check Spark runs while it runs, as a service

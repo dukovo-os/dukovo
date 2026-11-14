@@ -596,6 +596,13 @@ presses.
 	does not enable a service, and boot leaves a service with a timer
 	off: *timerd*(8) starts the ones that are enabled, at their times.
 
+*start* _name_ *--listen*
+	The start that *service enable* asks for. A service of *start =
+	"on-connection"* that is not running waits for a connection at its
+	sockets, as it does at boot, and the first connection starts it
+	(ADR 0477); the answer is *ok:* _name_ *waits for a connection*.
+	Any other service starts as it does for *start*.
+
 *reopen* _name_
 	Have a service open its log files again, as its file's *logs.reopen*
 	says (*service.toml*(5)): send it that signal, restart it, or do

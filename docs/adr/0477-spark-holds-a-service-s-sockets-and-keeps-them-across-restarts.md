@@ -119,7 +119,10 @@ allows.
    the service file, so the checks of the file and of the manifest are the
    same ones. A service of `start: "on-connection"` needs a socket of its
    own, and a socket a bundle provides must be a `path` socket of one of
-   its services.
+   its services. A health check's socket (ADR 0386) is one the service
+   makes itself, never one of these: Spark takes connections at the
+   sockets it holds before the service runs, so a check through one
+   would pass a version that never works.
 10. **bundled waits for a stop as long as the services do.** Its wait for
     the services to stop is the longest `stop.timeout` among the services
     being stopped, 5 seconds where a file says nothing, and 10 seconds

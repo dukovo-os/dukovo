@@ -87,7 +87,7 @@ fn the_worked_examples_read() {
     assert_eq!(nginx.data, Data { settings: true, data: false, cache: true });
 
     let postgres = from_json(EXAMPLES[1].1).unwrap();
-    assert_eq!(postgres.programs.len(), 3);
+    assert_eq!(postgres.programs.len(), 4);
     assert_eq!(postgres.provides[0].socket.as_ref().map(|s| s.0.as_str()), Some("postgresql"));
     assert_eq!(postgres.provides[0].to, To::Approved);
 
@@ -277,17 +277,17 @@ fn commands_and_services_run_its_programs() {
         ",\n  \"services\": [ {\n    \"name\": \"app\",\n    \"program\": \"app\",\n    \
          \"health\": { \"socket\": \"app\" }\n  } ]",
     );
-    assert_eq!(
-        error(&service),
-        "line 15: service app is checked through the socket app, which provides does not name"
-    );
-    let provided =
+    // A socket Spark holds answers before the service runs, so a health
+    // check through it would pass a service that never works.
+    let held =
         service.replace("\"health\":", "\"sockets\": [ { \"path\": \"app\" } ], \"health\":");
-    let provided = provided.replace(
-        "\n}\n",
-        ",\n  \"provides\": [ { \"socket\": \"app\", \"to\": \"anyone\" } ]\n}\n",
+    assert_eq!(
+        error(&held),
+        "line 15: service app is checked through the socket app, which Spark holds and so \
+         answers before the service does: check through a socket the service makes itself, or \
+         with health.command"
     );
-    let manifest = from_json(&provided).unwrap();
+    let manifest = from_json(&service).unwrap();
     let svc = &manifest.services[0];
     assert_eq!(
         (svc.restart, svc.start, svc.account.clone()),
