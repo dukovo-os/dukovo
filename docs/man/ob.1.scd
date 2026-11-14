@@ -331,7 +331,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--image-only*] [*--debug* | *--release*] | *--list*
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list*
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -1493,7 +1493,7 @@ _target/userspace/_).
 		test takes on CI; a test it does not name counts as 40 seconds.
 		Tests that install the catalog's bundles tend to land together,
 		as the first of them in a run packs the bundles. CI runs the boot
-		tests in five jobs this way. It needs *boot*.
+		tests in up to ten jobs this way. It needs *boot*.
 
 	*--affected* _commit_
 		Run only the boot tests that the changes since _commit_ reach, as
@@ -1513,7 +1513,7 @@ _target/userspace/_).
 	*--plan*
 		With *--affected*, run nothing: print how many of CI's machines
 		the chosen tests need, one for each ten minutes of them by
-		_times.txt_ and at most five, as _parts=_ and _shards=_ lines
+		_times.txt_ and at most ten, as _parts=_ and _shards=_ lines
 		for _$GITHUB_OUTPUT_.
 
 	*--list*
@@ -1523,6 +1523,15 @@ _target/userspace/_).
 	*--timeout* _seconds_
 		Fail a boot test that has not finished after this long. The
 		default is 300.
+
+	*--retry*
+		Run a boot test that fails once more, and fail it only if it
+		fails again. A test that passes the second time is flaky: the
+		run passes, the test is shown as *FLAKY*, and
+		_out/test/flaky.txt_ names it with why it failed, its first
+		serial log kept as _out/test/boot-_name_-first.log_. CI runs
+		the boot tests this way and shows each flaky test as a warning
+		on the run. It needs *boot*.
 
 *lab* [*--no-build* | *--image* _file_] [*--lab-key* _file_] [*--lab-password* _file_] [*--debug* | *--release*] [_command_ [_options_]]
 	Run *dukovo-lab*, the Dukovo Lab's harness (from

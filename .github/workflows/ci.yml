@@ -38,9 +38,117 @@ env:
   TLA_VERSION: 1.7.4
 
 jobs:
+  # The ports, built once for the whole run (ADR 0560): every job below
+  # that builds on them restores what this one leaves, instead of each
+  # building the ports a stale cache lacks. A change to the system call
+  # interface or the C library builds every port again, about 30
+  # minutes, and before this job each of seven jobs did that at once on
+  # every run until main's next run had saved the ports.
+  #
+  # The cache holds every folder a port installs into: out/toolchain
+  # too, where Rust's standard library, the patched crates and the C++
+  # headers go, or a stamp would call a port built whose files are
+  # missing. Its key names the ports, abi/ and the toolchain first, so
+  # that a run takes a cache of the same ports over a newer one of
+  # others; ob's stamps then decide what to build again. A pull request
+  # whose ports are built here saves them for its own next push and
+  # re-runs. The nightly run builds them from scratch, so that a port
+  # that builds only on top of an older build of itself is found.
+  ports:
+    name: Ports
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      key: ${{ steps.chosen.outputs.key }}
+      prefix: ${{ steps.name.outputs.prefix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host packages
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            gcc flex gawk scdoc mandoc
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Name the ports' cache
+        id: name
+        env:
+          PORTS: ${{ hashFiles('ports/**', 'abi/**', 'rust-toolchain.toml') }}
+          TOOLS: ${{ hashFiles('tools/**') }}
+        run: |
+          prefix="ports-host-$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)-"
+          {
+            echo "prefix=$prefix"
+            echo "ports=$prefix$PORTS-"
+            echo "key=$prefix$PORTS-$TOOLS"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the ports built last
+        id: restore
+        if: github.event_name != 'schedule'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ${{ steps.name.outputs.key }}
+          restore-keys: |
+            ${{ steps.name.outputs.ports }}
+            ${{ steps.name.outputs.prefix }}
+
+      - name: Note the ports' stamps
+        id: before
+        run: echo "stamps=$(cat out/ports/*.stamp 2>/dev/null | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: ./ob ports
+        timeout-minutes: 45
+        run: ./ob ports
+
+      # A restored cache whose ports were all up to date is the one the
+      # jobs below take; one that had to change, or none, is saved anew.
+      - name: Choose the cache the jobs below restore
+        id: chosen
+        env:
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+          MATCHED: ${{ steps.restore.outputs.cache-matched-key }}
+          BEFORE: ${{ steps.before.outputs.stamps }}
+          KEY: ${{ steps.name.outputs.key }}
+        run: |
+          after=$(cat out/ports/*.stamp 2>/dev/null | sha256sum | cut -c1-16)
+          if [ -n "$MATCHED" ] && [ "$after" = "$BEFORE" ]; then
+            printf 'key=%s\nsave=false\n' "$MATCHED" | tee -a "$GITHUB_OUTPUT"
+          elif [ "$HIT" = true ]; then
+            echo "::warning::The ports changed under the cache $KEY, which already exists; each job below builds them again"
+            printf 'key=%s\nsave=false\n' "$KEY" | tee -a "$GITHUB_OUTPUT"
+          else
+            printf 'key=%s\nsave=true\n' "$KEY" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save the built ports
+        if: steps.chosen.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ${{ steps.name.outputs.key }}
+
   build:
     name: Lint, build, docs and image
-    needs: scope
+    needs: [scope, ports]
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -96,19 +204,8 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      # The ports' builds come from main's last run, so a pull request
-      # rebuilds only the ports its changes reach: ob's stamps decide, as
-      # they do in a local tree. Main always builds them from scratch, and
-      # saves them for the pull requests after it. The cache holds every
-      # folder a port installs into: out/toolchain too, where Rust's
-      # standard library, the patched crates and the C++ headers go, or a
-      # stamp would call a port built whose files are missing.
-      - name: Note the port toolchain's version
-        id: ports-key
-        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
-
+      # The ports as the ports job left them for this run.
       - name: Restore the built ports
-        if: github.event_name != 'push'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -116,8 +213,8 @@ jobs:
             out/toolchain
             out/ports
             target/ports/sources
-          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
-          restore-keys: ports-host-${{ steps.ports-key.outputs.clang }}-
+          key: ${{ needs.ports.outputs.key }}
+          restore-keys: ${{ needs.ports.outputs.prefix }}
 
       - name: ./ob setup
         run: ./ob setup
@@ -136,17 +233,6 @@ jobs:
 
       - name: ./ob image
         run: ./ob image
-
-      - name: Save the built ports
-        if: github.event_name == 'push' && success()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            out/sysroot
-            out/toolchain
-            out/ports
-            target/ports/sources
-          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
 
       # `ob image` already refuses components outside their area's
       # allow-list; this checks the SPDX document itself (ADR 0021).
@@ -233,7 +319,7 @@ jobs:
   # takes the time of its slowest job rather than of all of them in turn.
   unit:
     name: Unit tests
-    needs: scope
+    needs: [scope, ports]
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -298,13 +384,8 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      # The ports main built last, as in the build job.
-      - name: Note the port toolchain's version
-        id: ports-key
-        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
-
+      # The ports as the ports job left them for this run.
       - name: Restore the built ports
-        if: github.event_name != 'push'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -312,8 +393,8 @@ jobs:
             out/toolchain
             out/ports
             target/ports/sources
-          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
-          restore-keys: ports-host-${{ steps.ports-key.outputs.clang }}-
+          key: ${{ needs.ports.outputs.key }}
+          restore-keys: ${{ needs.ports.outputs.prefix }}
 
       - name: ./ob setup
         run: ./ob setup
@@ -484,7 +565,7 @@ jobs:
   # tools/xtask/src/test/times.txt.
   boot:
     name: Boot tests (${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }})
-    needs: scope
+    needs: [scope, ports]
     if: needs.scope.outputs.boot-parts != '0'
     runs-on: ubuntu-24.04
     strategy:
@@ -564,13 +645,7 @@ jobs:
           shared-key: boot
           save-if: ${{ matrix.shard == 1 }}
 
-      # The ports main built last, as in the build job.
-      - name: Note the port toolchain's version
-        id: ports-key
-        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
-
-      # On main too: this job saves nothing, so the build job's rule that
-      # main builds the ports from scratch does not need it to.
+      # The ports as the ports job left them for this run.
       - name: Restore the built ports
         uses: actions/cache/restore@v4
         with:
@@ -579,15 +654,16 @@ jobs:
             out/toolchain
             out/ports
             target/ports/sources
-          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
-          restore-keys: ports-host-${{ steps.ports-key.outputs.clang }}-
+          key: ${{ needs.ports.outputs.key }}
+          restore-keys: ${{ needs.ports.outputs.prefix }}
 
       - name: ./ob setup
         run: ./ob setup
 
-      # The ports, on their own: a change to one that every port builds
-      # on, such as the C library, builds them all again, which takes
-      # about 25 minutes and must not count against the shard's timeout.
+      # The ports, on their own: the ports job left them built, so this
+      # packs the catalog's bundles, which the cache does not hold. Should
+      # the cache not restore, the ports build here, in about 30 minutes
+      # that must not count against the shard's timeout.
       - name: ./ob ports
         timeout-minutes: 45
         run: ./ob ports
@@ -595,17 +671,31 @@ jobs:
       - name: ./ob test boot --shard ${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }}
         # A shard takes about 30 minutes once the ports are built: some 8
         # of them building the system, and at most a tenth of the boot
-        # tests by times.txt. One that hangs fails here, with its logs,
-        # instead of running until the job's six hours.
+        # tests by times.txt, which leaves room for a failed test to run
+        # once more (--retry, ADR 0560). One that hangs fails here, with
+        # its logs, instead of running until the job's six hours.
         timeout-minutes: 45
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            ./ob test boot --affected HEAD^1 --shard "$SHARD"
+            ./ob test boot --affected HEAD^1 --shard "$SHARD" --retry
           else
-            ./ob test boot --shard "$SHARD"
+            ./ob test boot --shard "$SHARD" --retry
           fi
+
+      # A test that failed once and passed when run again (--retry) fails
+      # nothing, but each is named on the run's page, with its first
+      # serial log among the logs below, so that a flaky test is fixed
+      # rather than lived with.
+      - name: Name the flaky boot tests
+        if: ${{ !cancelled() && hashFiles('out/test/flaky.txt') != '' }}
+        run: |
+          echo '### Boot tests that failed once, then passed' >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r line; do
+            echo "::warning title=Flaky boot test::$line"
+            echo "- $line" >> "$GITHUB_STEP_SUMMARY"
+          done < out/test/flaky.txt
 
       - name: Show the host's processes and kernel log
         if: failure()
@@ -614,7 +704,7 @@ jobs:
           sudo dmesg | tail -n 60 || true
 
       - name: Upload boot test logs and screenshots
-        if: failure()
+        if: ${{ failure() || hashFiles('out/test/flaky.txt') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: boot-test-logs-${{ matrix.shard }}
@@ -630,16 +720,19 @@ jobs:
   # workflow leaves it out.
   bench:
     name: Benchmarks
-    needs: scope
+    needs: [scope, ports]
     if: github.event_name != 'schedule' && needs.scope.outputs.code == 'true'
     uses: ./.github/workflows/bench.yml
+    with:
+      ports-key: ${{ needs.ports.outputs.key }}
+      ports-prefix: ${{ needs.ports.outputs.prefix }}
 
   # Instructions per operation, counted by QEMU (`ob bench --instructions`,
   # ADR 0045): the same on every runner, so a hot path that grows fails
   # here even when the timings above are within their noise.
   instructions:
     name: Instruction budgets
-    needs: scope
+    needs: [scope, ports]
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
@@ -678,14 +771,7 @@ jobs:
         with:
           workspaces: ". -> target"
 
-      # The ports main built last, as in the build job.
-      - name: Note the port toolchain's version
-        id: ports-key
-        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
-
-      # On main too: this job saves nothing, so the build job's rule that
-      # main builds the ports from scratch does not need it to. Building
-      # them there made this job 38 minutes long, as it did the benchmarks.
+      # The ports as the ports job left them for this run.
       - name: Restore the built ports
         uses: actions/cache/restore@v4
         with:
@@ -694,8 +780,8 @@ jobs:
             out/toolchain
             out/ports
             target/ports/sources
-          key: ports-host-${{ steps.ports-key.outputs.clang }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
-          restore-keys: ports-host-${{ steps.ports-key.outputs.clang }}-
+          key: ${{ needs.ports.outputs.key }}
+          restore-keys: ${{ needs.ports.outputs.prefix }}
 
       - name: ./ob bench --instructions
         run: ./ob bench --instructions --gate --summary "$GITHUB_STEP_SUMMARY"
@@ -961,14 +1047,17 @@ jobs:
           "$engine" pull "$base"
           "$engine" build -t "$base" "$context"
 
-      # The ports main built last, as in the build job, keyed by the
-      # container's definition, which holds its Clang.
+      # The container's own ports, keyed by its definition, which holds
+      # its Clang.
       - name: Note the build container's version
         id: ports-key
         run: echo "toolchain=$(sha256sum tools/container/Containerfile | cut -c1-12)" >> "$GITHUB_OUTPUT"
 
+      # As in the ports job (ADR 0560): restored on main too, since
+      # container.yml builds every port from nothing each night, and saved
+      # whenever a port was built, on a pull request too, for its next push.
       - name: Restore the built ports
-        if: github.event_name != 'push'
+        id: restore
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -978,6 +1067,10 @@ jobs:
             target/container/ports/sources
           key: ports-container-${{ steps.ports-key.outputs.toolchain }}-${{ hashFiles('ports/**', 'abi/**', 'tools/**', 'rust-toolchain.toml') }}
           restore-keys: ports-container-${{ steps.ports-key.outputs.toolchain }}-
+
+      - name: Note the ports' stamps
+        id: before
+        run: echo "stamps=$(cat out/ports/*.stamp 2>/dev/null | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       - name: ./ob --container doctor
         run: ./ob --container doctor
@@ -993,8 +1086,16 @@ jobs:
       - name: ./ob --container image
         run: ./ob --container image
 
+      - name: See whether a port was built
+        id: built
+        env:
+          BEFORE: ${{ steps.before.outputs.stamps }}
+        run: |
+          after=$(cat out/ports/*.stamp 2>/dev/null | sha256sum | cut -c1-16)
+          if [ "$after" = "$BEFORE" ]; then echo "ports=false"; else echo "ports=true"; fi | tee -a "$GITHUB_OUTPUT"
+
       - name: Save the built ports
-        if: github.event_name == 'push' && success()
+        if: steps.built.outputs.ports == 'true' && steps.restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -1089,7 +1190,7 @@ jobs:
   passed:
     name: CI passed
     if: always()
-    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, scope, kani, tla, corpus, container, checks]
+    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, scope, ports, kani, tla, corpus, container, checks]
     runs-on: ubuntu-24.04
     steps:
       - name: Check that every job passed or was skipped
