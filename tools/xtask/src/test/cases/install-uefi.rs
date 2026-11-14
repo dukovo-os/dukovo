@@ -198,10 +198,15 @@ fn preset(vm: &mut Vm) -> Result<(), String> {
         "restart = \"03:30\"",
         "enabled = true",
     ])?;
-    // tune reads its file, and Spark and timerd have the daily check.
+    // tune reads its file, and Spark and timerd have the daily check,
+    // which only root sees among the services' timers.
     answer_prompt(vm, "$", "clear; tune | head -1")?;
     vm.expect_screen(&["Profile: vm-guest, chosen by an administrator"])?;
-    answer_prompt(vm, "$", "clear; service list --timers | grep 'dukovo-chec[k]'")?;
+    answer_prompt(
+        vm,
+        "$",
+        &format!("clear; echo '{PASSWORD}' | elevate -S service list --timers | grep 'dukovo-chec[k]'"),
+    )?;
     vm.expect_screen(&["dukovo-check"])
 }
 
