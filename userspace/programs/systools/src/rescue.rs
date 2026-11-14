@@ -22,17 +22,34 @@
 //! Nothing is formatted, and `@users`, `@shared` and `@applications` are
 //! never written.
 //!
+//! When the installed system had SSH on, Rescue turns it on too, before
+//! it asks at the screen for an administrator (ADR 0540): with the root's
+//! network, firewall and blocking settings, so that the machine is where
+//! its owner reached it before, and with authd(8) and sshd(8) signing in
+//! the root's administrators alone, by its accounts, keys and host key.
+//! authd starts this menu for each of them, as root, with `--ssh NAME`.
+//! The choices that change something take a lock, so that one repair
+//! runs at a time, and a second person is told who holds it, and from
+//! where; the choices that only read run side by side.
+//!
 //! Each repair says what it did, or why it could not, in one line;
 //! `/system/state/log` keeps Rescue's log until it restarts.
 
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read as _, Write as _};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use accounts::rescue::{ROOT, SSHD_COPIES, SSHD_FILES};
+use accounts::{Group, Password, Table, User};
+use manifest::service as service_file;
 use slots::{Slot, State};
 use system_release::list::Release;
 use system_release::store::Store;
 
-use crate::args::Args;
+use crate::args::{Arg, Args};
 use crate::changes;
 use crate::ip;
 use crate::prompt::{self, Answer};
@@ -41,7 +58,7 @@ use crate::sysupdate::place::{self, BUILDING, Root};
 use crate::sysupdate::stage::{self, Files, TRUSTED_ROOT};
 use crate::sysupdate::starts::{self, Outcome};
 use crate::util::{self, Fail, fail};
-use crate::{power, probe, service, subvolume};
+use crate::{authd, firewall, netd, power, probe, resolved, service, subvolume};
 
 /// Where Rescue mounts the EFI system partition it reads its own copy
 /// from.
@@ -71,6 +88,62 @@ const PASSWD: &str = "@settings/passwd";
 const GROUP: &str = "@settings/group";
 const PASSWORDS: &str = "@state/authd/passwords";
 
+/// Rescue's folder in memory, root's alone: the link to the root that
+/// authd reads ([`ROOT`]) and the lock a repair holds.
+const LIVE: &str = "/system/live/rescue";
+
+/// The lock a repair holds while it runs: the line [`holder_line`] writes
+/// says who holds it, and from where.
+const LOCK: &str = "/system/live/rescue/lock";
+
+/// The root's settings Rescue takes in place of its own when it turns SSH
+/// on, so that the machine is where its owner reached it before: its
+/// cards' addresses, its DNS, its firewall's rules, and the addresses it
+/// never blocks. Rescue's own stay where the root has none.
+const NETWORK_SETTINGS: [&str; 4] =
+    [netd::SETTINGS, resolved::SETTINGS, firewall::SETTINGS, authd::blocking::SETTINGS];
+
+/// sshd's service file, among the root's settings and a slot's defaults.
+const SSHD_SERVICE: &str = "spark/services/sshd.toml";
+
+/// Who uses this screen of Rescue's, and from where.
+struct Person {
+    /// The administrator's name, once known: none when Rescue asked for
+    /// no password.
+    name: Option<String>,
+    /// Where they are: `None` at the console, or the address they came
+    /// over SSH from.
+    over_ssh: Option<String>,
+}
+
+impl Person {
+    /// Where they are, as the lock's line says it.
+    fn place(&self) -> String {
+        match &self.over_ssh {
+            Some(from) => format!("over SSH from {from}"),
+            None => "at the console".into(),
+        }
+    }
+}
+
+/// How the sign-in at the screen went.
+enum SignIn {
+    /// An administrator of the root's signed in.
+    Admin(String),
+    /// Rescue asked for no password: the root's accounts do not read, or
+    /// name no administrator.
+    NotAsked,
+    /// No administrator's name and password were given.
+    Refused,
+}
+
+/// The root's accounts.
+struct Accounts {
+    users: Table<User>,
+    groups: Table<Group>,
+    hashes: Table<Password>,
+}
+
 /// What Rescue knows of the root it rescues.
 struct Rescued {
     /// The root's Btrfs UUID, as the boot menu named it.
@@ -81,8 +154,14 @@ struct Rescued {
 
 /// dukovo-rescue(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    if let Some(arg) = args.next()? {
-        return Err(args.unknown(&arg));
+    let mut ssh_name = None;
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(ref name) if name == "ssh" => {
+                ssh_name = Some(args.value()?.to_string_lossy().into_owned());
+            }
+            other => return Err(args.unknown(&other)),
+        }
     }
     let Some(uuid) = util::kernel_word("rescue=") else {
         return Err(fail(
@@ -91,21 +170,43 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 .into(),
         ));
     };
+    // authd starts the menu, as root, for an administrator it signed in
+    // over SSH; no one else may skip the sign-in.
+    if ssh_name.is_some() && util::own_user() != 0 {
+        return Err(fail(
+            "--ssh is authd's, which starts Rescue's menu as root for an administrator it signed \
+             in over SSH"
+                .into(),
+        ));
+    }
+    let over_ssh = ssh_name
+        .is_some()
+        .then(|| ssh_client(&std::env::var("SSH_CONNECTION").unwrap_or_default()).to_string());
+    let mut me = Person { name: ssh_name, over_ssh };
     println!("\x1b[H\x1b[2J\x1b[?25hDukovo Rescue {}", env!("CARGO_PKG_VERSION"));
     println!("Rescue repairs this computer's Dukovo. Files, apps and settings stay as they are");
-    println!("unless you choose otherwise. Networking is off until you turn it on.");
+    println!("unless you choose otherwise.");
     println!();
     let rescued = Rescued { root: mount_root(&uuid), uuid };
     match &rescued.root {
         Ok(root) => println!("The Dukovo root is {}, on {}.", rescued.uuid, root.disk),
         Err(why) => println!("The Dukovo root {} cannot be used: {why}.", rescued.uuid),
     }
-    if let Ok(root) = &rescued.root
-        && !signed_in(root)
-    {
-        // consoled starts Rescue again, which asks again.
-        std::thread::sleep(std::time::Duration::from_secs(10));
-        return Ok(1);
+    match (&rescued.root, &me.name) {
+        (_, Some(name)) => println!("{name} signed in {}.", me.place()),
+        (Ok(root), None) => {
+            println!("{}", ssh_line(root));
+            match signed_in(root) {
+                SignIn::Admin(name) => me.name = Some(name),
+                SignIn::NotAsked => {}
+                SignIn::Refused => {
+                    // consoled starts Rescue again, which asks again.
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    return Ok(1);
+                }
+            }
+        }
+        (Err(_), None) => println!("Networking is off until you turn it on."),
     }
     if let Ok(root) = &rescued.root {
         println!();
@@ -142,6 +243,15 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         let Some(choice) = ask(&format!("Choose 0 to {}: ", choices.len() - 1), true) else {
             return Ok(0);
         };
+        // One repair at a time: its lock goes when it is done, or when this
+        // program ends, however it ends.
+        let held = match repair(choice.trim()).map(|doing| hold(&me, doing)).transpose() {
+            Ok(held) => held,
+            Err(why) => {
+                println!("Rescue: {why}");
+                continue;
+            }
+        };
         let done = match (choice.trim(), &rescued.root) {
             ("0", Ok(root)) => Ok(why_it_failed(root).join("\n")),
             ("1", _) => Ok(likely_cause(&rescued)),
@@ -159,6 +269,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             ("13", _) => end("poweroff"),
             (other, _) => Err(format!("{other} is not one of the choices here")),
         };
+        drop(held);
         match done {
             Ok(said) => println!("{said}"),
             Err(why) => println!("Rescue: {why}"),
@@ -298,37 +409,47 @@ fn mount_root(uuid: &str) -> Result<Root, String> {
     Ok(root)
 }
 
-/// Asks for an administrator's name and password, checked against the
-/// root's accounts, when its settings can be read; whether they were
-/// right.
-fn signed_in(root: &Root) -> bool {
-    let read = |name: &str| std::fs::read_to_string(root.path(name));
-    let (Ok(passwd), Ok(group), Ok(passwords)) = (read(PASSWD), read(GROUP), read(PASSWORDS))
-    else {
-        println!("The root's accounts cannot be read, so Rescue asks for no password.");
-        return true;
-    };
-    let users = accounts::users(&passwd);
-    let groups = accounts::groups(&group);
-    let hashes = accounts::passwords(&passwords);
-    let admins: Vec<String> = groups
+/// The root's accounts, if they read.
+fn accounts_of(root: &Root) -> Option<Accounts> {
+    let read = |name: &str| fs::read_to_string(root.path(name)).ok();
+    Some(Accounts {
+        users: accounts::users(&read(PASSWD)?),
+        groups: accounts::groups(&read(GROUP)?),
+        hashes: accounts::passwords(&read(PASSWORDS)?),
+    })
+}
+
+/// The names of the root's administrators, as authd's Rescue mode takes
+/// them: those in `admins`, root aside.
+fn admins(accounts: &Accounts) -> Vec<String> {
+    accounts
+        .users
         .entries()
-        .filter(|g| g.name == accounts::ADMINS)
-        .flat_map(|g| g.members.iter().cloned())
-        .filter(|name| users.entries().any(|user| user.name == *name))
-        .collect();
+        .filter(|user| user.uid != 0 && accounts::is_admin(user, &accounts.groups))
+        .map(|user| user.name.clone())
+        .collect()
+}
+
+/// Asks for an administrator's name and password, checked against the
+/// root's accounts, when its settings can be read.
+fn signed_in(root: &Root) -> SignIn {
+    let Some(accounts) = accounts_of(root) else {
+        println!("The root's accounts cannot be read, so Rescue asks for no password.");
+        return SignIn::NotAsked;
+    };
+    let admins = admins(&accounts);
     if admins.is_empty() {
         println!("This system has no administrator, so Rescue asks for no password.");
-        return true;
+        return SignIn::NotAsked;
     }
     println!("Rescue needs one of this computer's administrators.");
     for _ in 0..TRIES {
-        let Some(name) = ask("Name: ", true) else { return false };
-        let Some(password) = ask("Password: ", false) else { return false };
+        let Some(name) = ask("Name: ", true) else { return SignIn::Refused };
+        let Some(password) = ask("Password: ", false) else { return SignIn::Refused };
         let mut password = password.into_bytes();
         let name = name.trim();
         let right = admins.iter().any(|admin| admin == name)
-            && hashes.entries().find(|entry| entry.name == name).is_some_and(|entry| {
+            && accounts.hashes.entries().find(|entry| entry.name == name).is_some_and(|entry| {
                 !entry.is_disabled()
                     && if entry.hash.is_empty() {
                         password.is_empty()
@@ -339,11 +460,290 @@ fn signed_in(root: &Root) -> bool {
         accounts::wipe(&mut password);
         if right {
             println!("Rescue: {name} is an administrator of this computer.");
-            return true;
+            return SignIn::Admin(name.to_string());
         }
         println!("That is not an administrator's name and password.");
     }
-    false
+    SignIn::Refused
+}
+
+/// The one line Rescue says of SSH, having turned it on if the installed
+/// system had it on (ADR 0540).
+fn ssh_line(root: &Root) -> String {
+    let started = ssh_refused(root).map_or_else(|| start_ssh(root), Err);
+    match started {
+        Ok(()) => "SSH is on, as it was on this computer: its administrators can reach Rescue \
+                   over it."
+            .into(),
+        Err(why) => format!("Networking is off until you turn it on, and SSH stays off: {why}."),
+    }
+}
+
+/// Why SSH stays off in Rescue, if it does: unless the installed system
+/// had sshd on, its accounts read and name an administrator, and its host
+/// key is there, as sshd made it.
+fn ssh_refused(root: &Root) -> Option<String> {
+    match sshd_enabled(root) {
+        Ok(true) => {}
+        Ok(false) => return Some("this computer had it off".into()),
+        Err(why) => return Some(why),
+    }
+    match accounts_of(root) {
+        None => return Some("the root's accounts cannot be read".into()),
+        Some(accounts) if admins(&accounts).is_empty() => {
+            return Some("this computer has no administrator".into());
+        }
+        Some(_) => {}
+    }
+    let key = root.path("@state/sshd").join("ssh_host_ed25519_key");
+    match File::open(&key) {
+        Ok(_) => None,
+        Err(err) => Some(format!("the root's host key cannot be read: {err}")),
+    }
+}
+
+/// Whether the installed system starts sshd: its service file among the
+/// root's settings, or the default slot's own when the settings have
+/// none, with the settings' override set over it.
+fn sshd_enabled(root: &Root) -> Result<bool, String> {
+    let settings = root.path("@settings").join(SSHD_SERVICE);
+    let defaults = root.slot(root.running).join("resources/default-settings").join(SSHD_SERVICE);
+    let file = match read_if_there(&settings)? {
+        Some(text) => text,
+        None => read_if_there(&defaults)?.ok_or("this computer has no sshd")?,
+    };
+    let over_path = settings.with_file_name(service_file::OVERRIDES).join("sshd.toml");
+    enabled_in(&file, read_if_there(&over_path)?.as_deref())
+}
+
+/// Whether the service file `file`, with the override `over` set over it,
+/// starts its service at boot.
+fn enabled_in(file: &str, over: Option<&str>) -> Result<bool, String> {
+    let unread =
+        |err: manifest::Error| format!("the root's sshd service file does not read: {err}");
+    let over = over.map(service_file::Override::from_toml).transpose().map_err(unread)?;
+    service_file::from_toml_over(file, over.as_ref()).map(|service| service.enabled).map_err(unread)
+}
+
+/// The text of the file at `path`; `None` when there is none.
+fn read_if_there(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("{}: {err}", path.display())),
+    }
+}
+
+/// Turns SSH on in Rescue's mode: links the root for authd, copies sshd
+/// what it reads of the root, takes the root's network settings, turns
+/// networking on, and starts authd and sshd. Nothing, when it is on
+/// already, as it is when Rescue starts again on a console, or on another
+/// console first.
+fn start_ssh(root: &Root) -> Result<(), String> {
+    if sshd_runs() {
+        return Ok(());
+    }
+    make_live()?;
+    link_root(root)?;
+    copy_for_sshd(root)?;
+    for path in NETWORK_SETTINGS {
+        let Some(from) = accounts::rescue::place(&root.path(""), path) else { continue };
+        if from.is_file() {
+            replace_with_copy(&from, Path::new(path), None)?;
+        }
+    }
+    let loaded = Command::new("/system/commands/firewall")
+        .arg("load")
+        .output()
+        .map_err(|err| format!("firewall: {err}"))?;
+    if !loaded.status.success() {
+        return Err(format!(
+            "the root's firewall rules did not load: {}",
+            String::from_utf8_lossy(&loaded.stderr).trim()
+        ));
+    }
+    networking_on()?;
+    for name in ["authd", "sshd"] {
+        let started = Command::new("/system/commands/service")
+            .args([name, "start"])
+            .output()
+            .map_err(|err| format!("service: {err}"))?;
+        if !started.status.success() {
+            return Err(format!(
+                "{name} did not start: {}",
+                String::from_utf8_lossy(&started.stderr).trim()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether Spark runs sshd, or is starting it.
+fn sshd_runs() -> bool {
+    use spark_api::show::State;
+    service::shown(Some("sshd")).is_ok_and(|show| {
+        show.services.iter().any(|service| {
+            service.name == "sshd"
+                && matches!(service.state, State::Running | State::Starting | State::Pending)
+        })
+    })
+}
+
+/// Makes [`LIVE`], root's alone, unless it is there: and refuses one that
+/// is not root's own folder, closed to others.
+fn make_live() -> Result<(), String> {
+    match fs::DirBuilder::new().mode(0o700).create(LIVE) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(format!("{LIVE}: {err}")),
+    }
+    let made = fs::symlink_metadata(LIVE).map_err(|err| format!("{LIVE}: {err}"))?;
+    if !made.is_dir() || made.uid() != 0 || made.mode() & 0o077 != 0 {
+        return Err(format!("{LIVE} is not root's own folder"));
+    }
+    Ok(())
+}
+
+/// Links the root at [`ROOT`], for authd: in place of a link there, at
+/// once, so that authd reads one root or the other, never none.
+fn link_root(root: &Root) -> Result<(), String> {
+    let new = format!("{LIVE}/.root.{}", std::process::id());
+    let _ = fs::remove_file(&new);
+    symlink(root.path(""), &new)
+        .and_then(|()| fs::rename(&new, ROOT))
+        .map_err(|err| format!("{ROOT}: {err}"))
+}
+
+/// Copies sshd the installed system's files it reads ([`SSHD_FILES`]),
+/// which it cannot reach in the root, into its own folder, root's alone;
+/// a file the root lacks has no copy, as sshd_config(5) when the system
+/// keeps the defaults.
+fn copy_for_sshd(root: &Root) -> Result<(), String> {
+    for path in SSHD_FILES {
+        let (Some(from), Some(to)) = (
+            accounts::rescue::place(&root.path(""), path),
+            accounts::rescue::place(Path::new(SSHD_COPIES), path),
+        ) else {
+            return Err(format!("{path} is in none of the root's subvolumes"));
+        };
+        if let Some(folder) = to.parent() {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(folder)
+                .map_err(|err| format!("{}: {err}", folder.display()))?;
+        }
+        if from.is_file() {
+            replace_with_copy(&from, &to, Some(0o600))?;
+        } else {
+            let _ = fs::remove_file(&to);
+        }
+    }
+    Ok(())
+}
+
+/// Puts a copy of the file at `from` at `to`, in place of what is there,
+/// at once, with the mode `mode`, or `from`'s.
+fn replace_with_copy(from: &Path, to: &Path, mode: Option<u32>) -> Result<(), String> {
+    let new = to.with_file_name(format!(
+        ".{}.{}",
+        to.file_name().map_or_default(|name| name.to_string_lossy().into_owned()),
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&new);
+    let copied = fs::copy(from, &new)
+        .and_then(|_| match mode {
+            Some(mode) => fs::set_permissions(&new, fs::Permissions::from_mode(mode)),
+            None => Ok(()),
+        })
+        .and_then(|()| fs::rename(&new, to));
+    copied.map_err(|err| {
+        let _ = fs::remove_file(&new);
+        format!("{} cannot be copied to {}: {err}", from.display(), to.display())
+    })
+}
+
+/// The address an SSH client came from, the first of `SSH_CONNECTION`'s
+/// words: `client-address client-port server-address server-port`.
+fn ssh_client(connection: &str) -> &str {
+    connection
+        .split_whitespace()
+        .next()
+        .filter(|address| {
+            !address.is_empty()
+                && address.bytes().all(|b| b.is_ascii_hexdigit() || b".:".contains(&b))
+        })
+        .unwrap_or("an unknown address")
+}
+
+/// What choice `choice` does that changes something, as the lock's line
+/// says it; `None` for a choice that only reads.
+fn repair(choice: &str) -> Option<&'static str> {
+    Some(match choice {
+        "3" => "reinstalling Dukovo",
+        "4" => "putting back the settings from before the last update",
+        "5" => "checking the root's disk",
+        "6" => "copying the users' and shared files off",
+        "11" => "starting Dukovo normally",
+        "12" => "restarting",
+        "13" => "powering off",
+        _ => return None,
+    })
+}
+
+/// The lock a repair holds: the kernel lets it go when the file is
+/// closed, as the repair ends or its program does, however it ends.
+struct Held(File);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // No one holds it: the next to look reads no holder.
+        let _ = self.0.set_len(0);
+    }
+}
+
+/// Takes the lock for `me`, `doing` a repair; why not, when someone else
+/// holds it.
+fn hold(me: &Person, doing: &str) -> Result<Held, String> {
+    make_live()?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(LOCK)
+        .map_err(|err| format!("{LOCK}: {err}"))?;
+    // SAFETY: flock takes a descriptor `file` owns; the lock goes when it
+    // is closed.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let mut line = String::new();
+        let _ = file.read_to_string(&mut line);
+        return Err(held_by(&line));
+    }
+    let line = holder_line(me, doing);
+    file.set_len(0)
+        .and_then(|()| file.write_all(line.as_bytes()))
+        .map_err(|err| format!("{LOCK}: {err}"))?;
+    Ok(Held(file))
+}
+
+/// The lock's line for `me`, `doing` a repair: name, what and where, a tab
+/// between each.
+fn holder_line(me: &Person, doing: &str) -> String {
+    format!("{}\t{doing}\t{}\n", me.name.as_deref().unwrap_or("someone"), me.place())
+}
+
+/// What a second person is told of the lock's holder, by its `line`.
+fn held_by(line: &str) -> String {
+    let mut words = line.trim_end().splitn(3, '\t');
+    match (words.next(), words.next(), words.next()) {
+        (Some(name), Some(doing), Some(place)) if !name.is_empty() => {
+            format!("{name} is {doing}, {place}: wait for it to finish, then choose again")
+        }
+        _ => "another repair is under way: wait for it to finish, then choose again".into(),
+    }
 }
 
 /// What the last update was, when its settings from before it can still
@@ -698,5 +1098,83 @@ fn run(program: &str, args: &[&str]) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{program} {} failed ({status})", args.join(" ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rescue_has_ssh_on_only_when_the_installed_system_did() {
+        let file = "service_version = 1\ndescription = \"Sign-in over SSH\"\n\
+                    program = \"/system/commands/sshd\"\nenabled = false\n";
+        assert_eq!(enabled_in(file, None), Ok(false));
+        let on = file.replace("enabled = false", "enabled = true");
+        assert_eq!(enabled_in(&on, None), Ok(true));
+        // An administrator's override has the last word.
+        assert_eq!(enabled_in(file, Some("enabled = true\n")), Ok(true));
+        assert_eq!(enabled_in(&on, Some("enabled = false\n")), Ok(false));
+        let unread = enabled_in("enabled = maybe\n", None).unwrap_err();
+        assert!(unread.starts_with("the root's sshd service file does not read"), "{unread}");
+    }
+
+    #[test]
+    fn the_shipped_sshd_file_leaves_ssh_off() {
+        let shipped = include_str!("../../../defaults/spark/services/sshd.toml");
+        assert_eq!(enabled_in(shipped, None), Ok(false));
+    }
+
+    #[test]
+    fn administrators_are_those_in_admins_but_root() {
+        let accounts = Accounts {
+            users: accounts::users(
+                "root:x:0:0:root:/users/root:/system/commands/nukesh\n\
+                 alice:x:1000:1000:Alice:/users/alice:/system/commands/nukesh\n\
+                 bob:x:1001:1001:Bob:/users/bob:/system/commands/nukesh\n\
+                 carol:x:1002:10:Carol:/users/carol:/system/commands/nukesh\n",
+            ),
+            groups: accounts::groups("admins:x:10:root,alice\nbob:x:1001:\n"),
+            hashes: accounts::passwords(""),
+        };
+        // carol is one by her own group, as authd counts her.
+        assert_eq!(admins(&accounts), ["alice", "carol"]);
+    }
+
+    #[test]
+    fn the_lock_says_who_holds_it_and_from_where() {
+        let alice = Person { name: Some("alice".into()), over_ssh: Some("192.168.1.5".into()) };
+        let line = holder_line(&alice, repair("3").unwrap());
+        assert_eq!(
+            held_by(&line),
+            "alice is reinstalling Dukovo, over SSH from 192.168.1.5: wait for it to finish, \
+             then choose again"
+        );
+        let console = Person { name: None, over_ssh: None };
+        assert_eq!(
+            held_by(&holder_line(&console, repair("13").unwrap())),
+            "someone is powering off, at the console: wait for it to finish, then choose again"
+        );
+        // Taken, and not yet written: no holder to name.
+        assert!(held_by("").starts_with("another repair is under way"));
+    }
+
+    #[test]
+    fn only_the_choices_that_change_something_take_the_lock() {
+        for choice in ["3", "4", "5", "6", "11", "12", "13"] {
+            assert!(repair(choice).is_some(), "{choice}");
+        }
+        for choice in ["0", "1", "2", "7", "8", "9", "10", "", "x"] {
+            assert!(repair(choice).is_none(), "{choice}");
+        }
+    }
+
+    #[test]
+    fn the_client_s_address_is_ssh_connection_s_first_word() {
+        assert_eq!(ssh_client("192.168.1.5 50122 192.168.1.9 22"), "192.168.1.5");
+        assert_eq!(ssh_client("fd00::5 50122 fd00::9 22"), "fd00::5");
+        // Nothing else is shown as one.
+        assert_eq!(ssh_client(""), "an unknown address");
+        assert_eq!(ssh_client("\x1b[2J 1 2 3"), "an unknown address");
     }
 }

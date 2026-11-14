@@ -418,7 +418,7 @@ impl Files {
         // In Rescue, the installed system's, in the root Rescue mounted
         // (ADR 0540).
         let read = |path: &str| {
-            let path = rescue::path(path).to_string_lossy().into_owned();
+            let path = rescue::installed(path).to_string_lossy().into_owned();
             read_text(&path).map_err(|e| format!("cannot read {path}: {e}"))
         };
         Ok(Files {

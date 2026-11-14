@@ -294,7 +294,7 @@ fn admitted(settings: &Settings, name: &str) -> Result<(), String> {
 fn groups_of(name: &str) -> Result<Vec<String>, String> {
     // In Rescue, the installed system's accounts (ADR 0540).
     let read = |path: &str| {
-        let path = rescue::path(path);
+        let path = rescue::for_sshd(path);
         std::fs::read_to_string(&path)
             .map_err(|err| format!("cannot read {}: {err}", path.display()))
     };

@@ -48,10 +48,6 @@ use super::{Authd, Files, Peer, Wrong, shown, ssh_from, ssh_source, wait_after};
 use crate::sys::{self, SYS};
 use crate::{power, signin, sshkeys, util};
 
-/// The public half of sshd's host key, whose fingerprint the owner gives
-/// the helper to check.
-const HOST_KEY: &str = "/system/state/sshd/ssh_host_ed25519_key.pub";
-
 /// The list of the transcripts kept: a [`HelpKept`] line each.
 const INDEX: &str = "/system/state/help/index";
 
@@ -214,7 +210,7 @@ fn random(count: usize) -> Result<Vec<u8>, String> {
 
 /// The fingerprint of sshd's host key, if it has made one.
 fn host_key() -> Option<String> {
-    let text = fs::read_to_string(HOST_KEY).ok()?;
+    let text = fs::read_to_string(accounts::sshd_config::HOST_KEY_PUBLIC).ok()?;
     let key = sshkeys::public_line(text.lines().next()?)?;
     Some(sshkeys::fingerprint(&key))
 }

@@ -11,7 +11,7 @@ use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
-use accounts::rescue;
+use accounts::{rescue, sshd_config};
 use russh::keys::PrivateKey;
 use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
 use russh::keys::ssh_key::{HashAlg, LineEnding};
@@ -22,15 +22,15 @@ use crate::sys;
 const FOLDER: &str = "/system/state/sshd";
 
 /// Where the key is.
-pub const KEY: &str = "/system/state/sshd/ssh_host_ed25519_key";
+pub const KEY: &str = sshd_config::HOST_KEY;
 
 /// Where its public half is.
-pub const PUBLIC: &str = "/system/state/sshd/ssh_host_ed25519_key.pub";
+pub const PUBLIC: &str = sshd_config::HOST_KEY_PUBLIC;
 
 /// The key, read from [`KEY`]: in Rescue, the installed system's, so
 /// that a client sees the host key it knows (ADR 0540).
 pub fn load() -> Result<PrivateKey, String> {
-    let path = rescue::path(KEY);
+    let path = rescue::for_sshd(KEY);
     let text = fs::read(&path)
         .map_err(|err| format!("cannot read the host key {}: {err}", path.display()))?;
     let key = PrivateKey::from_openssh(&text)

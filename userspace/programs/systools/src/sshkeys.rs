@@ -285,7 +285,7 @@ fn safe(fd: &OwnedFd, user: &User, what: &str) -> Result<std::fs::Metadata, Stri
 pub fn read_authorized(user: &User) -> Result<Option<String>, String> {
     let absent = |err: &io::Error| err.kind() == io::ErrorKind::NotFound;
     // In Rescue, the home in the installed system's root (ADR 0540).
-    let home = accounts::rescue::path(&user.home);
+    let home = accounts::rescue::installed(&user.home);
     let home = match open_at(None, &home, true) {
         Ok(fd) => fd,
         Err(err) if absent(&err) => return Ok(None),
