@@ -34,6 +34,7 @@ use system_release::repo::{SIGNATURES_MAX, target_path};
 use system_release::rollout::{self, Rollout, Withdrawal};
 use system_release::updates::{CHANNELS, Channel, channel_path};
 
+use super::checked::Checked;
 use super::stage::TRUSTED_ROOT;
 use crate::util::{self, Fail, fail};
 
@@ -567,6 +568,17 @@ pub enum Plan {
 /// If a version cannot be compared, a release the way needs is not on
 /// the server, or the bridges go round.
 pub fn plan(client: &mut Client, running: &str, version: Option<&str>) -> Result<Plan, Fail> {
+    let plan = choose(client, running, version)?;
+    if version.is_none() {
+        // A record that cannot be kept, because this is not root, must not
+        // fail the check it records.
+        let _ = Checked::of(&plan, running, util::now_ns() / 1_000_000_000).keep();
+    }
+    Ok(plan)
+}
+
+/// [`plan`] without the record of the look.
+fn choose(client: &mut Client, running: &str, version: Option<&str>) -> Result<Plan, Fail> {
     let offered = match version {
         Some(version) => version.to_string(),
         None => client.channel()?.version,

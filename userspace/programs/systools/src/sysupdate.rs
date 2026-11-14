@@ -24,6 +24,7 @@
 //! are kept in `@snapshots/update/settings-failed`.
 
 pub(crate) mod bisect;
+pub(crate) mod checked;
 mod devices;
 pub(crate) mod firmware;
 pub mod health;
