@@ -12,9 +12,10 @@
 //! headers every answer has and no HSTS, which a certificate that is no
 //! authority's must not ask for; another name in Host is ADM-114; TLS 1.1
 //! is refused and 1.2 served. A silent connection is cut off in about
-//! ten seconds, a request head of 20 KiB is 431, and 600 connections at
-//! once leave admind running, the surplus refused and said in its log, and
-//! health answered after.
+//! ten seconds, a request head of 20 KiB is 431, 32 connections kept
+//! alive from one address leave a 33rd refused and said in the log, and
+//! 600 connections at once leave admind running and health answered
+//! after.
 //!
 //! Alice signs in: the cookie is __Host-dukovo with Secure, HttpOnly and
 //! SameSite=Strict and nothing else, and the session names her. A wrong
@@ -41,10 +42,11 @@
 //! when admind removes its file and when it writes it. The power button
 //! ends it.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -78,10 +80,14 @@ const CSRF_HEADER: &str = "X-Dukovo-CSRF";
 /// holds from one address.
 const CROWD: usize = 600;
 
+/// The connections the console holds from one address at once, as
+/// admind's limits say.
+const PLACES: usize = 32;
+
 /// The test.
 pub const CASE: Case = Case {
     name: "admin",
-    about: "The web console, Dukovo Admin, answers the host's curl over HTTPS through a port QEMU forwards, with the machine's own certificate, whose fingerprint consoled shows at sign-in: its headers, another name refused, TLS 1.1 refused; sign-in with the cookie's attributes, a wrong password, an account that may not use the console; changes refused from another origin, another site or without the token; an authenticator app added from its otpauth URI, its code asked at sign-in, a wrong code, a replayed code, a recovery code used once; unlock and lock; a silent connection cut off, a 20 KiB head refused, 600 connections at once survived; a restart that ends the sessions (ADR 0514)",
+    about: "The web console, Dukovo Admin, answers the host's curl over HTTPS through a port QEMU forwards, with the machine's own certificate, whose fingerprint consoled shows at sign-in: its headers, another name refused, TLS 1.1 refused; sign-in with the cookie's attributes, a wrong password, an account that may not use the console; changes refused from another origin, another site or without the token; an authenticator app added from its otpauth URI, its code asked at sign-in, a wrong code, a replayed code, a recovery code used once; unlock and lock; 32 connections from one address held and a 33rd refused, a silent connection cut off, a 20 KiB head refused, 600 connections at once survived; a restart that ends the sessions (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -150,14 +156,38 @@ fn elevated(vm: &mut Vm) -> Result<(), String> {
     vm.expect_screen(&["elevated 0"])
 }
 
-/// What a crowd does to the console: one connection that sends nothing is
-/// cut off after about ten seconds, while 600 are made at once, of which
-/// the console holds 32 from one address and refuses the rest, saying so
-/// once in its log; held for a few seconds and let go, they leave it
-/// answering. A request head of 20 KiB is 431. This comes first, so that
-/// no refusal from this address has been said in the last minute: the log
-/// says the first, and then once a minute (admind(8)).
+/// What a crowd does to the console. 32 connections from one address, each
+/// answered once and kept alive, hold all the places the console gives an
+/// address, so a 33rd is refused at once, which its log says: this comes
+/// first, so that no refusal from this address has been said in the last
+/// minute (the log says the first, and then once a minute, admind(8)).
+/// Then one connection that sends nothing is cut off after about ten
+/// seconds, while 600 are made at once; held for a few seconds and let go,
+/// they leave it answering. A request head of 20 KiB is 431.
+///
+/// The limit is shown with connections that stay, not with the crowd, as
+/// the crowd reaches the guest only as fast as QEMU's network hands it on:
+/// without KVM, slower than the ten seconds each silent one is held.
 fn under_load(vm: &mut Vm, console: &Console) -> Result<(), String> {
+    let held = hold_every_place(console)?;
+    let mut extra = TcpStream::connect(("127.0.0.1", console.port))
+        .map_err(|err| format!("the 33rd connection to the console: {err}"))?;
+    extra
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .map_err(|err| format!("the 33rd connection's timeout: {err}"))?;
+    // The console closes it before a byte is sent: QEMU then ends the
+    // host's side, with an end or a reset.
+    match extra.read(&mut [0u8; 1]) {
+        Ok(0) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::ConnectionReset => {}
+        Ok(_) => return Err("the console sent the 33rd connection a byte".into()),
+        Err(err) => return Err(format!("the 33rd connection was not closed in 60 s: {err}")),
+    }
+    vm.expect_anywhere(
+        "admind: refused a connection from 10.0.2.2: there are as many connections as it takes",
+    )?;
+    drop(held);
+
     let silent = silent_connection(console.port)?;
     let crowd = (0..CROWD)
         .map(|n| {
@@ -167,14 +197,11 @@ fn under_load(vm: &mut Vm, console: &Console) -> Result<(), String> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     std::thread::sleep(Duration::from_secs(5));
-    vm.expect_anywhere(
-        "admind: refused a connection from 10.0.2.2: there are as many connections as it takes",
-    )?;
     drop(crowd);
     // The places the crowd held are given back as the guest sees them
     // close.
     let mut browser = Browser::default();
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let health = loop {
         match console.get(&mut browser, "/api/1/health") {
             Ok(reply) if reply.status == 200 => break reply,
@@ -793,6 +820,74 @@ fn silent_connection(
             Err(err) => Err(format!("a silent connection was not closed in 60 s: {err}")),
         }
     }))
+}
+
+/// HTTPS connections that each hold one of the places the console gives an
+/// address: the host's openssl, which keeps its connection open, asks each
+/// for health once, and the connection is kept alive after the answer
+/// for a minute (admind(8)). They end when dropped.
+struct Held(Vec<Child>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        for child in &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Holds all [`PLACES`] places of the host's address, each connection
+/// answered before this returns. They are made at once, so that the first
+/// is still kept alive when the last is answered.
+fn hold_every_place(console: &Console) -> Result<Held, String> {
+    let mut held = Held(Vec::with_capacity(PLACES));
+    let (answered, answers) = mpsc::channel();
+    let request = format!("GET /api/1/health HTTP/1.1\r\nHost: localhost:{PORT}\r\n\r\n");
+    for n in 0..PLACES {
+        let mut child = Command::new("openssl")
+            .args(["s_client", "-quiet", "-servername", "localhost", "-connect"])
+            .arg(format!("127.0.0.1:{}", console.port))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|err| format!("the admin test needs the host's openssl: {err}"))?;
+        let (Some(mut input), Some(mut output)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err("openssl s_client has no input or output".into());
+        };
+        held.0.push(child);
+        // -quiet goes on after its input ends, so the input can close.
+        input
+            .write_all(request.as_bytes())
+            .map_err(|err| format!("asking through connection {n}: {err}"))?;
+        drop(input);
+        let answered = answered.clone();
+        std::thread::spawn(move || {
+            let mut status = [0u8; 12];
+            let read = output.read_exact(&mut status).map(|()| status);
+            // The test may have given up on this answer already.
+            let _ = answered.send((n, read));
+            // The rest of the answer stays unread in the pipe.
+            drop(output);
+        });
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for _ in 0..PLACES {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        let (n, read) = answers
+            .recv_timeout(wait)
+            .map_err(|_| format!("the {PLACES} held connections were not all answered in 120 s"))?;
+        match read {
+            Ok(status) if status == *b"HTTP/1.1 200" => {}
+            Ok(status) => {
+                let status = String::from_utf8_lossy(&status);
+                return Err(format!("held connection {n} was answered {status}"));
+            }
+            Err(err) => return Err(format!("held connection {n} got no answer: {err}")),
+        }
+    }
+    Ok(held)
 }
 
 /// The console as the host reaches it: port 9090 of the guest, through the
