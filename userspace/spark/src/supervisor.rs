@@ -38,8 +38,9 @@
 //! sockets, unless asked to keep them (`--keep-sockets`, as bundled's
 //! update asks), and so does giving up on a service. A service with a
 //! `[timer]` is not started at boot either: timerd(8) starts it (`start
-//! NAME --by timer`, ADR 0478). Enabling an on-connection service has it
-//! wait, as at boot (`start NAME --listen`, which `service enable` sends).
+//! NAME --by timer`, ADR 0478). Enabling a service does for it what boot
+//! does (`start NAME --as-at-boot`, which `service enable` sends): an
+//! on-connection service waits, and one with a timer is left to timerd.
 //!
 //! Spark hears of its children's ends from a notification the kernel
 //! signals (radix-process(2)'s `notify_children`), and waits in `poll`
@@ -2170,8 +2171,8 @@ impl Supervisor {
     /// it until the service settles, unless WATCHES_MAX run already. A
     /// stop may keep the service's sockets open (`--keep-sockets`, as
     /// bundled's update asks), a start may be timerd's (`--by timer`), and
-    /// one that `service enable` sends has an on-connection service listen
-    /// rather than run (`--listen`).
+    /// one that `service enable` sends does what boot does for the service
+    /// (`--as-at-boot`).
     fn answer_service(
         &mut self,
         verb: Verb,
@@ -2183,17 +2184,17 @@ impl Supervisor {
             return (format!("error: {word} needs a service's name\n"), None);
         };
         let name = *name;
-        let (mut wait, mut keep, mut by_timer, mut listen) = (false, false, false, false);
+        let (mut wait, mut keep, mut by_timer, mut as_at_boot) = (false, false, false, false);
         let mut flags = flags.iter();
         while let Some(&flag) = flags.next() {
             match (verb, flag) {
                 (_, "--wait") => wait = true,
                 (Verb::Stop, "--keep-sockets") => keep = true,
                 (Verb::Start, "--by") if flags.next() == Some(&"timer") => by_timer = true,
-                (Verb::Start, "--listen") => listen = true,
+                (Verb::Start, "--as-at-boot") => as_at_boot = true,
                 _ => {
                     let takes = match verb {
-                        Verb::Start => "--wait, --listen and --by timer",
+                        Verb::Start => "--wait, --as-at-boot and --by timer",
                         Verb::Stop => "--wait and --keep-sockets",
                         Verb::Restart => "--wait",
                     };
@@ -2219,7 +2220,7 @@ impl Supervisor {
         let watch = if wait { self.watch(index, verb) } else { None };
         let unwatched = wait && watch.is_none();
         let mut answer = match verb {
-            Verb::Start if listen => self.answer_listen(index),
+            Verb::Start if as_at_boot => self.answer_as_at_boot(index),
             Verb::Start => {
                 self.answer_start(index, if by_timer { Wanted::Timer } else { Wanted::Request })
             }
@@ -2309,11 +2310,12 @@ impl Supervisor {
         self.started(index)
     }
 
-    /// The answer to `start NAME --listen`, which `service enable` sends:
-    /// an enabled on-connection service that is not running waits for a
-    /// connection at its sockets, as it does at boot (ADR 0477), and any
-    /// other service starts.
-    fn answer_listen(&mut self, index: usize) -> String {
+    /// The answer to `start NAME --as-at-boot`, which `service enable`
+    /// sends: for an enabled service that is not running, what boot does.
+    /// An on-connection service waits for a connection at its sockets
+    /// (ADR 0477), one with a timer is left off for timerd to start at its
+    /// times (ADR 0478), and any other service starts.
+    fn answer_as_at_boot(&mut self, index: usize) -> String {
         let idle = matches!(
             self.services[index].state,
             State::Stopped | State::Failed | State::Done | State::Waiting(_) | State::Listening(_)
@@ -2324,7 +2326,26 @@ impl Supervisor {
         // Its file was just changed to enable it: read it as a start would.
         self.reread(index);
         let spec = &self.services[index].spec;
-        if !(spec.on_connection && spec.enabled) {
+        if !spec.enabled {
+            return self.answer_start(index, Wanted::Request);
+        }
+        if spec.timer {
+            let name = spec.name.clone();
+            // As at boot: stopped, holding no sockets, until its time.
+            let service = &mut self.services[index];
+            service.held = false;
+            service.failures = 0;
+            service.restarting = false;
+            if !matches!(service.state, State::Stopped | State::Done) {
+                service.set(State::Stopped);
+            }
+            if let Some(held) = service.sockets.take() {
+                held.close(&self.root);
+            }
+            service.leave_off(String::from("timerd starts it at the times its file names"));
+            return format!("ok: {name} is left for its timer\n");
+        }
+        if !spec.on_connection {
             return self.answer_start(index, Wanted::Request);
         }
         let service = &mut self.services[index];

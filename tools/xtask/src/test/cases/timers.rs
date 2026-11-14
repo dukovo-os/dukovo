@@ -80,13 +80,19 @@ fn first_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     )?;
     type_command(vm, &format!("cp {TESTS}/*.toml {FILES}/; echo \"copied $?\""))?;
     vm.expect_screen(&["copied 0"])?;
+    // Enabled, a service with a timer is not started: timerd starts it.
     for name in SERVICES {
         run(
             vm,
             &format!("service check {name} | grep -c ': ok'; service {name} enable; echo \"{name} $?\""),
-            &["1", &format!("{name} 0")],
+            &["1", "is not started now: timerd starts it", &format!("{name} 0")],
         )?;
     }
+    run(
+        vm,
+        &format!("echo \"enabled-ran $(cat {MARKS}/hourly-mark {MARKS}/hourly-catch | wc -l)\""),
+        &["enabled-ran 0"],
+    )?;
 
     // Each timer is listed.
     type_command(vm, "service list --timers | grep -c -e tick20 -e slow -e minute-mark -e hourly")?;
@@ -107,7 +113,7 @@ fn first_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     run(vm, &format!("{}; {}; echo \"kept $?\"", save("hourly-mark", "mark-before"), save("hourly-catch", "catch-before")), &["kept 0"])?;
     run(vm, "timedatectl set-time '2020-01-01 13:30:00'; echo \"moved $?\"", &["moved 0"])?;
     vm.expect_anywhere("timerd: the clock moved forward by ")?;
-    type_command(
+    run(
         vm,
         &format!(
             "for i in $(seq 1 90); do [ {} -ge 1 ] && break; sleep 1; done; sleep 5; {}; {}",
@@ -115,8 +121,8 @@ fn first_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             show_grown("hourly-mark", "mark-before"),
             show_grown("hourly-catch", "catch-before"),
         ),
+        &["hourly-mark grew 1", "hourly-catch grew 1"],
     )?;
-    vm.expect_screen(&["hourly-mark grew 1", "hourly-catch grew 1"])?;
 
     // What the files hold now reaches the disk for the second start.
     run(
@@ -132,14 +138,14 @@ fn second_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     started(vm, 'a')?;
     // The catch-up comes 20 seconds after timerd starts.
     vm.expect_anywhere("timerd: hourly-catch: started by its timer")?;
-    type_command(
+    run(
         vm,
         &format!(
             "sleep 10; {}; {}",
             show_grown("hourly-catch", "catch-before"),
             show_grown("hourly-mark", "mark-before"),
         ),
+        &["hourly-catch grew 1", "hourly-mark grew 0"],
     )?;
-    vm.expect_screen(&["hourly-catch grew 1", "hourly-mark grew 0"])?;
     power_off(vm)
 }

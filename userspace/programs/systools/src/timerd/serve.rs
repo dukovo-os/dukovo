@@ -97,6 +97,9 @@ fn serve(daemon: &Daemon, stream: &UnixStream) {
         },
     };
     let _ = write_reply(&mut out, &reply); // the asker may be gone
+    // The request may have changed a time: the loop works out its sleep
+    // again.
+    daemon.wake();
 }
 
 fn error(message: impl Into<String>) -> Reply {
@@ -177,7 +180,11 @@ impl Daemon {
     }
 
     fn timers(&self) -> Reply {
-        let inner = self.lock();
+        // The files as they are now: `service enable` and `disable` ask
+        // for the timers once they changed a file that has one.
+        let (now, monotonic) = clocks();
+        let mut inner = self.lock();
+        self.scan_services(&mut inner, now, monotonic, false);
         let timers = inner
             .entries
             .iter()

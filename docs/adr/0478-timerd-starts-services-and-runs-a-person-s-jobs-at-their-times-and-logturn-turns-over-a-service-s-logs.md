@@ -42,15 +42,18 @@ turns logs over by a file of its own and runs from a cron job.
    service with a timer, and asks Spark for a start with `start NAME
    --by timer`, which Spark treats as any other start: it checks what the
    service needs and runs it as its file says. A timer does not enable a
-   service, and boot leaves a service with a timer off between its times.
-   One that is starting or running when its time comes is skipped, and
-   the log says so.
+   service, and boot leaves a service with a timer off between its times,
+   as `service enable` does, which has timerd read the files at once
+   rather than at its next minute's reading. One that is starting or
+   running when its time comes is skipped, and the log says so.
 3. **The clock may move.** timerd sleeps until the next time, a minute at
    most, and compares the clock with the monotonic clock on each wake,
    with 5 seconds of leeway. A clock that moved forward leaves the times
    it passed due, and each timer runs once for them, however many it
    passed; one that moved back runs no time that already ran again, and
-   each timer's next time is worked out from its last run. `spread` is
+   each timer's next time is worked out from its last run. The minute
+   between readings of the files is the monotonic clock's, which a clock
+   set back does not stretch. `spread` is
    worked out from the timer's name and a random number timerd keeps in
    `/system/state/timerd/seed`: the machine has no identifier of its own
    to use, and the number keeps a timer's delay the same for that

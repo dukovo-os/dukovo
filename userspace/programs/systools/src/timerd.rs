@@ -40,8 +40,9 @@ pub(crate) mod state;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -132,6 +133,8 @@ struct Inner {
     /// Service files already said to be wrong, so that the log says it
     /// once and not at each reading.
     complained: BTreeSet<String>,
+    /// When the service files were last read, by the monotonic clock, so
+    /// that a clock set back does not put the next reading off.
     scanned: i64,
 }
 
@@ -143,6 +146,24 @@ pub struct Daemon {
     boot: i64,
     host: String,
     inner: Mutex<Inner>,
+    /// The two ends of a socket pair: a byte written to the first wakes
+    /// the loop ([`Daemon::wake`]), which then works out its sleep again
+    /// from the timers as a request left them. Without it, the loop wakes
+    /// a minute at most after a request.
+    waker: Option<(UnixStream, UnixStream)>,
+}
+
+/// The socket pair of [`Daemon::waker`], or none when it cannot be made.
+fn waker() -> Option<(UnixStream, UnixStream)> {
+    let made = UnixStream::pair().and_then(|(tell, hear)| {
+        tell.set_nonblocking(true)?;
+        hear.set_nonblocking(true)?;
+        Ok((tell, hear))
+    });
+    made.inspect_err(|err| {
+        log(4, &format!("requests change the timers within a minute, not at once: {err}"));
+    })
+    .ok()
 }
 
 /// The wall clock and the monotonic clock, in seconds.
@@ -199,21 +220,33 @@ fn listen() -> Result<UnixListener, Fail> {
     Ok(listener)
 }
 
-/// Waits for connections and for the next time, and runs what is due.
+/// Waits for connections, for a request's end and for the next time, and
+/// runs what is due.
 fn serve_loop(daemon: &Arc<Daemon>, listener: &UnixListener) -> std::io::Result<()> {
     let serving = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // A negative descriptor is one poll does not wait on.
+    let woken = daemon.waker.as_ref().map_or(-1, |(_, hear)| hear.as_raw_fd());
     while !STOP.load(Ordering::Relaxed) {
         let wait = daemon.tick();
-        let mut fds = [libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
+        let mut fds = [
+            libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: woken, events: libc::POLLIN, revents: 0 },
+        ];
         let ms = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
-        // SAFETY: `fds` holds one valid pollfd.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, ms) };
+        // SAFETY: `fds` holds two valid pollfds, and its length is 2.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, ms) };
         if ready < 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
             return Err(err);
+        }
+        if fds[1].revents != 0
+            && let Some((_, hear)) = &daemon.waker
+        {
+            let (mut hear, mut bytes): (&UnixStream, _) = (hear, [0; 64]);
+            while hear.read(&mut bytes).is_ok_and(|read| read > 0) {}
         }
         while let Ok((stream, _)) = listener.accept() {
             serve::accept(daemon, &serving, CONNECTIONS_MAX, stream);
@@ -240,6 +273,16 @@ impl Daemon {
                 complained: BTreeSet::new(),
                 scanned: 0,
             }),
+            waker: waker(),
+        }
+    }
+
+    /// Wakes the loop, so that it works out its sleep again.
+    fn wake(&self) {
+        if let Some((tell, _)) = &self.waker {
+            let mut tell: &UnixStream = tell;
+            // A full socket already holds a wake that is not yet read.
+            let _ = tell.write(&[1]);
         }
     }
 
@@ -251,7 +294,7 @@ impl Daemon {
 
     /// Reads what the state folder holds, and the service files.
     fn load(self: &Arc<Self>) {
-        let (now, _) = clocks();
+        let (now, monotonic) = clocks();
         {
             let mut inner = self.lock();
             inner.last_runs = self.store.last_runs();
@@ -275,7 +318,7 @@ impl Daemon {
                     running: false,
                 });
             }
-            self.scan_services(&mut inner, now, true);
+            self.scan_services(&mut inner, now, monotonic, true);
         }
         self.run_reboot_lines(now);
     }
@@ -340,11 +383,12 @@ impl Daemon {
         inner.crontabs.insert(user.to_string(), crontab);
     }
 
-    /// Reads the service files again: a service with a timer has an
+    /// Reads the service files again, at `now` by the clock and
+    /// `monotonic` by the monotonic clock: a service with a timer has an
     /// entry, which keeps its last run; one without, or whose file does
     /// not read, has none.
-    fn scan_services(&self, inner: &mut Inner, now: i64, loading: bool) {
-        inner.scanned = now;
+    fn scan_services(&self, inner: &mut Inner, now: i64, monotonic: i64, loading: bool) {
+        inner.scanned = monotonic;
         let (services, wrong) = read_services(Path::new(crate::servicefiles::DIR));
         for (name, why) in wrong {
             if inner.complained.insert(format!("{name}: {why}")) {
@@ -400,8 +444,8 @@ impl Daemon {
         if let Some(moved) = inner.watch.check(wall, monotonic) {
             self.clock_moved(&mut inner, moved, wall);
         }
-        if wall - inner.scanned >= RESCAN {
-            self.scan_services(&mut inner, wall, false);
+        if monotonic - inner.scanned >= RESCAN {
+            self.scan_services(&mut inner, wall, monotonic, false);
         }
         for entry in &mut inner.entries {
             let Some(time) = entry.next.filter(|next| *next <= wall) else { continue };
@@ -704,6 +748,19 @@ mod tests {
         inner.watch = Watch::new(2000, 1000);
         drop(inner);
         daemon
+    }
+
+    #[test]
+    fn a_wake_is_heard_by_the_loop() {
+        let dir = Temp::new();
+        let daemon = daemon(&dir);
+        let (_, hear) = daemon.waker.as_ref().unwrap();
+        let mut hear: &UnixStream = hear;
+        let mut bytes = [0; 8];
+        assert!(hear.read(&mut bytes).is_err(), "nothing to hear before a wake");
+        daemon.wake();
+        daemon.wake();
+        assert_eq!(hear.read(&mut bytes).unwrap(), 2);
     }
 
     fn every(seconds: u64) -> Timing {

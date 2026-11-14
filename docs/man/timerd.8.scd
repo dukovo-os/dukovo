@@ -27,7 +27,10 @@ service on. A service whose file has a timer, and that is enabled, is
 off between its times, and a time that comes while it runs is skipped,
 with a line in the log. *service status* shows when it last started and
 when its timer starts it next, and *service list --timers* lists every
-timer.
+timer. timerd reads the service files when it starts, once a minute
+after, and again when it is asked for the timers, which *service
+enable* and *disable* ask for once they have changed a file that has a
+timer: the change counts from then, not from the next minute.
 
 A job of a person is run for them by *authd*(8), as their account, with
 _/bin/sh_ and the environment their crontab or *at* gave it. Whether it

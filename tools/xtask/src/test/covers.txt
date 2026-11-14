@@ -692,7 +692,7 @@ swap kernel/mm/ userspace/posix/swaptest.c userspace/programs/systools/src/swap.
 timers userspace/programs/systools/src/timerd.rs userspace/programs/systools/src/timerd/
 timers userspace/spark/tests/services/timers/ userspace/programs/manifest/
 timers userspace/defaults/spark/services/timerd.toml userspace/programs/systools/src/service.rs
-timers userspace/spark/src/
+timers userspace/spark/src/ userspace/programs/systools/src/servicefiles.rs
 tlb kernel/arch/ kernel/mm/
 tls kernel/net/ ports/ca-certificates/ userspace/programs/tls-test/
 troubleshoot userspace/defaults/spark/services/sysupdate.toml userspace/programs/systools/src/changes.rs
