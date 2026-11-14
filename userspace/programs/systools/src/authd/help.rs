@@ -60,6 +60,20 @@ const WRONG_CODES: u32 = 5;
 /// The minutes before its end at which both screens are told.
 const WARNINGS: [u32; 2] = [5, 1];
 
+/// How many of [`WARNINGS`] a session of `minutes` has behind it from its
+/// start: one as long before the end as the session lasts is never given.
+fn warnings_passed(minutes: u32) -> usize {
+    WARNINGS.iter().take_while(|&&warning| warning >= minutes).count()
+}
+
+/// When a session that ends at `ends` and has given `warned` of
+/// [`WARNINGS`] next has something to do: the next warning, or its end.
+fn due(ends: Instant, warned: usize) -> Instant {
+    WARNINGS.get(warned).map_or(ends, |&minutes| {
+        ends.checked_sub(Duration::from_secs(u64::from(minutes) * 60)).unwrap_or(ends)
+    })
+}
+
 /// The letters of a session's ID: lowercase letters and digits, without
 /// the `i`, `l` and `o` that look like `1` and `0`, nor `1`.
 const ID_LETTERS: &[u8; 32] = b"abcdefghjkmnpqrstuvwxyz023456789";
@@ -164,9 +178,7 @@ impl Help {
 
     /// When it next has something to do: a warning, or its end.
     pub(super) fn next(&self) -> Instant {
-        WARNINGS.get(self.warned).map_or(self.ends, |&minutes| {
-            self.ends.checked_sub(Duration::from_secs(u64::from(minutes) * 60)).unwrap_or(self.ends)
-        })
+        due(self.ends, self.warned)
     }
 
     /// Writes a line to its transcript.
@@ -527,9 +539,7 @@ impl Authd {
             slots,
             shell: shell as i32,
             helper: None,
-            // A warning as long before the end as the session lasts is
-            // never given.
-            warned: WARNINGS.iter().take_while(|&&warning| warning >= minutes).count(),
+            warned: warnings_passed(minutes),
             elevate_until: None,
             opened_ssh,
         };
@@ -896,6 +906,25 @@ mod tests {
         assert!(request::help_code(&letters_from(&all[..16], HELP_CODE_LETTERS)).is_some());
         let id = letters_from(&all[..ID_LENGTH], ID_LETTERS);
         assert!(id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
+    }
+
+    #[test]
+    fn a_session_is_warned_five_minutes_and_one_minute_before_its_end() {
+        let start = Instant::now();
+        let ends = start + Duration::from_secs(60 * 60);
+        assert_eq!(due(ends, 0), ends - Duration::from_secs(5 * 60));
+        assert_eq!(due(ends, 1), ends - Duration::from_secs(60));
+        // With both given, only the end is left.
+        assert_eq!(due(ends, 2), ends);
+    }
+
+    #[test]
+    fn a_warning_that_would_come_before_the_start_is_left_out() {
+        assert_eq!(warnings_passed(60), 0);
+        // As long as the first warning: it would come at the start.
+        assert_eq!(warnings_passed(5), 1);
+        assert_eq!(warnings_passed(4), 1);
+        assert_eq!(warnings_passed(1), 2);
     }
 
     fn kept(id: &str, owner: &str, started: i64, ended: i64) -> HelpKept {
