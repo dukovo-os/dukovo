@@ -517,3 +517,28 @@ test unit` rewrites it. An action's tests are:
 not in the tree, once, naming the first three actions that name it and
 how many more do. Boot test cases are looked for by name, and lab tests
 by category and name in `lab/tests`.
+
+### The console's scans
+
+Two lab tests in `lab/tests/web-console` scan the console's HTTPS port
+instead of using it as a person does. Both fail on a finding that their
+accepted list does not name, and each name in the list has its reason on
+the same line.
+
+- `zap` runs ZAP's baseline scan, which only watches, against the console
+  signed out and against its API with an API token for every scope.
+  `zap-rules.tsv` lists the rules that are no fault, as ZAP's own
+  configuration file does. ZAP is pinned to a release by the digest of its
+  image, which the lab PC pulls through Docker the first time.
+- `testssl` runs testssl.sh, pinned to a release tag, and checks that the
+  console offers TLS 1.2 and 1.3 only, forward secrecy only and no weak
+  cipher, and that its certificate names `localhost` and is valid now. It
+  also fails on any finding of severity MEDIUM or worse that
+  `testssl-accepted.txt` does not list; the certificate being self-signed
+  is listed.
+
+The console's actions have a third kind of test beside these: `ansible`
+runs the Ansible task that the console shows for each action, against the
+machine over SSH, with a token the test makes. Its change tasks report
+"changed" on every run, because `ansible.builtin.command` cannot tell a
+change from none.

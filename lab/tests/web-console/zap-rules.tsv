@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The rules of ZAP's baseline scan that web-console/zap lets pass, each with
+# its reason. A line is the rule's number, a tab, IGNORE, a tab and the
+# reason, which has no tab in it (zap-baseline.py reads the file with
+# that format: a line with less than three tab-separated parts is
+# refused). A rule that warns or fails and is not here fails the test:
+# fix the console, or add the rule with the reason it is no fault. The
+# rule numbers are those of ZAP's passive scan rules, as the scan's report
+# gives them in square brackets.
+10035	IGNORE	Strict-Transport-Security Header Not Set: admind asks for HSTS only when it serves a certificate an authority signed, since HSTS would keep a browser from passing the one-time warning for the machine's own certificate (ADR 0514)

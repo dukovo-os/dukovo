@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# ZAP's baseline scan of the web console (ADR 0514): it only watches, as it
+# spiders the page it is given and runs its passive rules over every
+# answer, and it is run twice, as an outsider with no sign-in and with an
+# API token for every scope, which `admin token add` makes and ZAP's
+# replacer sets on every request as `Authorization: Bearer`. admind is what
+# answers. The scan fails on any rule that warns or fails and that
+# zap-rules.tsv does not list, each listed rule with its reason (no HSTS,
+# for one: a browser would then refuse to pass the warning of the machine's
+# own certificate). The first run on the lab PC says what else warns; each
+# such rule gets a fix or a line there.
+#
+# ZAP is pinned to release 2.17.0 by the digest of its image, in
+# zap-run.sh. The lab PC installs it by having Docker (`host_needs`): the
+# script pulls the pinned image on the first run, about a gigabyte, and
+# the lab PC keeps it. A lab PC that cannot pull it skips the test. No
+# account is made: the token is the lab account's, made over SSH with the
+# lab password, which no step shows, and taken away at the end.
+about = "ZAP's baseline scan of the web console, signed out and with an API token, finds no rule that warns or fails besides those zap-rules.tsv lists with their reasons"
+time = "20m"
+host_needs = ["docker", "curl", "ssh"]
+
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+host = "sh {here}/zap-run.sh {here}/zap-rules.tsv {machine} {machine-port:22} {machine-port:9090}"
+expect = [
+    "zap: the console signed out: no rule warns or fails that zap-rules.tsv does not ignore",
+    "zap: the API's actions with a token: no rule warns or fails that zap-rules.tsv does not ignore",
+    "zap: the API's services with a token: no rule warns or fails that zap-rules.tsv does not ignore",
+    "zap: the API's certificates with a token: no rule warns or fails that zap-rules.tsv does not ignore",
+]

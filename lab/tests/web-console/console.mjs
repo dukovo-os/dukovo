@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// What the web console's four browser tests share (sign-in, passkeys,
-// unlock and csrf): opening the console, pressing a button through the
-// console's limit on sign-in tries, the one-time codes of an authenticator
-// app (computed here from the secret the page shows, as an app on a phone
-// does), the certificate the console serves, and the check of a page in
-// dark and light. The scripts import it from beside themselves: the lab's
-// runner starts each script in the test's own folder.
+// What the web console's five browser tests share (sign-in, passkeys,
+// unlock, csrf and actions): opening the console, pressing a button
+// through the console's limit on sign-in tries, the one-time codes of an
+// authenticator app (computed here from the secret the page shows, as an
+// app on a phone does), the certificate the console serves, a call made
+// from the page with fetch(), and the check of a page in dark and light.
+// The scripts import it from beside themselves: the lab's runner starts
+// each script in the test's own folder.
 
 import { createHash, createHmac } from "node:crypto";
 import net from "node:net";
@@ -224,6 +225,38 @@ export async function postAsPage(page, route, body) {
     headers: { Origin: originOf(page), "X-Dukovo-CSRF": csrf },
     data: body,
   });
+}
+
+/**
+ * A request as the console's own page makes it with fetch(): run in the
+ * page, so that its origin, its cookie and its content security policy
+ * (`connect-src 'self'`) decide what is sent and whether it may be, and
+ * carrying the session's token. `body` is sent as JSON when it is not
+ * null. Gives `{status, text, json}`, `json` being null when the answer is
+ * not JSON.
+ */
+export async function fetchAsPage(page, method, route, body = null) {
+  const { csrf } = await sessionOf(page);
+  return page.evaluate(
+    async ({ method, route, body, csrf }) => {
+      const headers = { "X-Dukovo-CSRF": csrf };
+      const init = { method, headers, credentials: "same-origin" };
+      if (body !== null) {
+        headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
+      const answer = await fetch(route, init);
+      const text = await answer.text();
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        // Not JSON: the caller sees the text.
+      }
+      return { status: answer.status, text, json };
+    },
+    { method, route, body, csrf },
+  );
 }
 
 // --- The certificate ---
