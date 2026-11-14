@@ -425,17 +425,23 @@ fn rollout(options: &Options) -> Result<(), String> {
     let said = match operands.as_slice() {
         ["pause", version, reason] => {
             let plan = plans.releases.get_mut(*version).ok_or_else(|| {
-                format!("no channel has offered Dukovo {version} since the rollouts began")
+                format!(
+                    "no channel has offered {} since the rollouts began",
+                    crate::rollout::named(version)
+                )
             })?;
             plan.paused = Some((*reason).to_string());
-            format!("Dukovo {version} is paused: {reason}")
+            format!("{} is paused: {reason}", crate::rollout::named(version))
         }
         ["resume", version] => {
             let plan = plans.releases.get_mut(*version).ok_or_else(|| {
-                format!("no channel has offered Dukovo {version} since the rollouts began")
+                format!(
+                    "no channel has offered {} since the rollouts began",
+                    crate::rollout::named(version)
+                )
             })?;
             plan.paused = None;
-            format!("Dukovo {version} goes on")
+            format!("{} goes on", crate::rollout::named(version))
         }
         ["canary", name, colour @ ("red" | "green")] => {
             plans.red.retain(|red| red != name);
@@ -456,7 +462,8 @@ fn rollout(options: &Options) -> Result<(), String> {
     println!("system-release: {said}; {} {}", dir.display(), say_signed(&refreshed));
     for (version, plan) in &plans.releases {
         let held = plan.paused.as_ref().map_or_else(String::new, |why| format!(", paused: {why}"));
-        println!("system-release: Dukovo {version}: wave {} open{held}", plan.open);
+        let named = crate::rollout::named(version);
+        println!("system-release: {named}: wave {} open{held}", plan.open);
     }
     Ok(())
 }

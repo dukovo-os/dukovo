@@ -4140,7 +4140,7 @@ fn test_update_server(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> 
 /// the release keys' own timestamp key, so that a machine walks from the
 /// first root to the third. The repository offers
 /// [`TEST_SERVER_RELEASES`], with the stable channel on `year` and the
-/// beta channel on `old`. It is deployed to the server as `ob release
+/// [`TEST_FIRMWARE`] set `good`, and the beta channel on `old`. It is deployed to the server as `ob release
 /// deploy` deploys, and published, signed again after a timestamp was
 /// kept to replay, its stable release paused, refused a damaged deploy
 /// and then given the release keys' withdrawal of the stable release by
@@ -4264,6 +4264,25 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         let version = test_server_version(name);
         crate::release::system_release(ctx, &repo_args(&["channel", channel, &version]))?;
     }
+    // The stable channel's firmware set, which goes out in waves of its
+    // own (ADR 0544).
+    let microcode = staging.join("intel-ucode.bin");
+    write(microcode.clone(), &test_microcode())?;
+    let set = test_firmware_version("good");
+    let microcode = microcode.display().to_string();
+    crate::release::system_release(
+        ctx,
+        &repo_args(&[
+            "firmware",
+            "--version",
+            set,
+            "--microcode",
+            &microcode,
+            "--license",
+            "LicenseRef-Test",
+        ]),
+    )?;
+    crate::release::system_release(ctx, &repo_args(&["channel", "--firmware", set, "stable"]))?;
     deploy_to_test_server(ctx, &repo, &incoming)?;
     server_script(ctx, &server, "system-publish.sh", &[], true)?;
     let served = out.join("system");

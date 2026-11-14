@@ -28,7 +28,10 @@
 //!
 //! The stable channel's release is paused on its first day (ADR 0469):
 //! the machine, which is no canary and whose wave opens on day 7, is told
-//! so and waits; as a canary it takes it. Once the bridge runs, update(8)
+//! so and waits; as a canary it takes it. The channel's firmware set has
+//! waves of its own (ADR 0544): `update check` says it waits for its
+//! wave, and `sysupdate firmware stage` refuses it, until the machine is
+//! a canary. Once the bridge runs, update(8)
 //! holds the release back and lets it go, lists the bridge by the start
 //! that first ran it, and updated(8) says the release is ready (ADR
 //! 0502). The release is staged by update apply, through the
@@ -48,7 +51,7 @@ use super::update_stage::{power_off, restart, run, started};
 
 pub const CASE: Case = Case {
     name: "update-online",
-    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, and stages nothing once the release is withdrawn, which updated unstages once staged (ADR 0469); Rescue is written again from the bridge it proved, from the metadata its client kept (ADR 0543); update holds it back and lets it go, and updated says it is ready (ADR 0502)",
+    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, as it does the channel's firmware set (ADR 0544), and stages nothing once the release is withdrawn, which updated unstages once staged (ADR 0469); Rescue is written again from the bridge it proved, from the metadata its client kept (ADR 0543); update holds it back and lets it go, and updated says it is ready (ADR 0502)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -279,7 +282,16 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &format!("sysupdate: the waves are held: paused: {TEST_PAUSE}"),
         &format!("sysupdate: `sysupdate stage --version {year}` takes it now"),
     ])?;
-    // A canary takes it on its first day.
+    // The channel's firmware set has waves of its own, not paused, whose
+    // first is the canaries' (ADR 0544).
+    let set = test_firmware_version("good");
+    // Each needle within a row of the screen.
+    run(vm, "update check", &[&format!("firmware {set} is offered, waiting for its wave")])?;
+    run(vm, "sysupdate firmware stage; echo \"stage $?\"", &[
+        &format!("firmware {set}: it reaches machines in waves; this machine's opens on day 7"),
+        "stage 1",
+    ])?;
+    // A canary takes both on their first day.
     run(
         vm,
         &format!("echo 'canary = true' >> {settings}/updates.toml && sysupdate check"),
@@ -289,6 +301,9 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             &format!("Dukovo {bridge} needs {bridge_files} files this system lacks"),
         ],
     )?;
+    run(vm, "update check", &[&format!(
+        "firmware {set} is offered; this system runs no firmware set"
+    )])?;
 
     // A changed byte in a file of the store, then in a release list; a
     // replayed timestamp.

@@ -494,7 +494,7 @@ impl Client {
         let rollout: Rollout =
             serde_json::from_slice(&bytes).map_err(|err| fail(format!("{path}: {err}")))?;
         if rollout.release != version || rollout.wave > rollout::LAST {
-            return Err(fail(format!("{path} is not a rollout of Dukovo {version}")));
+            return Err(fail(format!("{path} is not a rollout of {}", rollout::named(version))));
         }
         Ok(Some(rollout))
     }
@@ -685,6 +685,28 @@ fn choose(client: &mut Client, running: &str, version: Option<&str>) -> Result<P
         release = next;
     }
     Err(fail(format!("Dukovo {offered} is more than {MOST_BRIDGES} bridges away")))
+}
+
+/// Why the firmware set `set` does not reach this machine yet, if it
+/// does not, in lines as [`waiting`] says them, when the server signs a rollout
+/// of it whose wave for this machine is not open (ADR 0544). A set with no
+/// rollout reaches every machine.
+///
+/// # Errors
+///
+/// If the rollout does not check.
+pub fn firmware_waiting(client: &mut Client, set: &str) -> Result<Option<Vec<String>>, Fail> {
+    let Some(rollout) = client.rollout(&rollout::firmware_name(set))? else { return Ok(None) };
+    let number = wave_number();
+    if rollout::reaches(&rollout, number, client.settings.canary) {
+        return Ok(None);
+    }
+    let day = rollout::day_for(number);
+    let mut lines =
+        vec![format!("it reaches machines in waves; this machine's opens on day {day}")];
+    lines.extend(rollout.held.map(|why| format!("the waves are held: {why}")));
+    lines.push(format!("`sysupdate firmware stage --version {set}` takes it now"));
+    Ok(Some(lines))
 }
 
 /// The lines that say the release `offered` reaches this machine in a

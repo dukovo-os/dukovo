@@ -304,8 +304,8 @@ struct RolloutRole {
 /// it as it is: two refreshes.
 const ROLLOUT_MARGIN: i64 = 12 * 3600;
 
-/// Signs the rollout of each release a channel of the repository at `dir`
-/// offers, as `plans` hold it at `now`, with the online key of `keys`
+/// Signs the rollout of each release and firmware set a channel of the
+/// repository at `dir` offers, as `plans` hold it at `now`, with the online key of `keys`
 /// (ADR 0469), and the rollout role that lists them, if the targets
 /// delegate one: anew when what it lists changed or it expires within
 /// twelve hours. Without `plans`, it lists none, which holds back no
@@ -333,12 +333,15 @@ fn sign_rollout(
     }
     let mut listed = BTreeMap::new();
     if let Some(plans) = plans {
+        // Each release and firmware set a channel offers (ADR 0544).
         let mut offered = Vec::new();
         for name in CHANNELS {
-            if let Some(channel) = held_channel(dir, &current, name)?
-                && !offered.contains(&channel.version)
-            {
-                offered.push(channel.version);
+            let Some(channel) = held_channel(dir, &current, name)? else { continue };
+            let set = channel.firmware.as_deref().map(rollout::firmware_name);
+            for name in std::iter::once(channel.version).chain(set) {
+                if !offered.contains(&name) {
+                    offered.push(name);
+                }
             }
         }
         for version in offered {
@@ -1454,6 +1457,16 @@ mod tests {
         let held = rollout_at(now + 3 * 86_400, &mut plans);
         assert_eq!((held.wave, held.held.as_deref()), (1, Some("paused: disk errors")));
         assert_eq!(delegated(&server, &first, "rollout/0.14.0.json"), None);
+        // The channel's firmware set has its own rollout, beside the
+        // release's, which the release's pause does not hold (ADR 0544).
+        let set = rollout::firmware_name("2026.11.12");
+        let bytes = delegated(&server, &first, &rollout::target_path(&set)).unwrap();
+        let firmware: rollout::Rollout = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            (firmware.release.as_str(), firmware.wave, firmware.held),
+            (set.as_str(), 2, None)
+        );
+        assert_eq!(rollout::named(&set), "firmware 2026.11.12");
 
         // Refused: another first root, a file that is not what its name
         // says, and a key the root does not name.

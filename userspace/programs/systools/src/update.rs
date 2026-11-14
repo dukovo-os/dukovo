@@ -160,8 +160,20 @@ fn firmware_offer() -> Result<FirmwareOffer, Fail> {
         system_release::firmware::compare(&offered, held) != std::cmp::Ordering::Greater
     });
     let now = running.map_or_else(|| "no firmware set".into(), |set| format!("firmware {set}"));
+    // A set held back waits whatever its wave; one not held waits for its
+    // wave (ADR 0544).
+    let waiting =
+        if newer && !held { online::firmware_waiting(&mut client, &offered)? } else { None };
     Ok(if !newer {
         FirmwareOffer { take: None, said: format!("this system runs {now}, the newest offered") }
+    } else if let Some(lines) = waiting {
+        FirmwareOffer {
+            take: None,
+            said: format!(
+                "firmware {offered} is offered, waiting for its wave: {}; this system runs {now}",
+                lines.join("; ")
+            ),
+        }
     } else if held {
         FirmwareOffer {
             take: None,

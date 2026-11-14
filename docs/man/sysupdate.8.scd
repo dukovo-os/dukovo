@@ -289,8 +289,10 @@ names; only *sysupdate firmware stage* changes it.
 *sysupdate firmware stage* [*--version* _version_] [_repository_]
 	Stages the set _version_, or the newest, of the repository folder
 	_repository_; with no folder, the set the update server's channel
-	offers, or _version_ from the server. The set must be newer than the
-	running slot's. The spare slot becomes a snapshot of the running one
+	offers, once its wave reaches this machine, or _version_ from the
+	server at once. A firmware set goes out in waves of its own, as a
+	release does, which a pause of the release does not hold (ADR 0544).
+	The set must be newer than the running slot's. The spare slot becomes a snapshot of the running one
 	that names the set, staged as an update: its first start is a try,
 	and if it does not prove itself, the slot before it starts again,
 	with the set before it.

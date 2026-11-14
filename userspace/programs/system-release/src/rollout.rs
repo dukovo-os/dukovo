@@ -10,7 +10,9 @@
 //! opens on schedule only while every canary is green and no one has
 //! paused the release; a pause closes no wave already open. A
 //! withdrawal, signed by the release keys, takes a release out of every
-//! channel, and a machine that staged it unstages it.
+//! channel, and a machine that staged it unstages it. The firmware set a
+//! channel offers goes out in waves the same way, its rollout named
+//! [`firmware_name`] beside the releases' (ADR 0544).
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +31,23 @@ const DAY: i64 = 24 * 60 * 60;
 #[must_use]
 pub fn target_path(version: &str) -> String {
     format!("rollout/{version}.json")
+}
+
+/// The name a firmware set's rollout and plan go by, `firmware-VERSION`,
+/// beside the releases': no release's version starts with a letter.
+#[must_use]
+pub fn firmware_name(version: &str) -> String {
+    format!("firmware-{version}")
+}
+
+/// What `name`, a release's version or a [`firmware_name`], is in words:
+/// `Dukovo 0.16.0`, or `firmware 2026.2.1`.
+#[must_use]
+pub fn named(name: &str) -> String {
+    match name.strip_prefix("firmware-") {
+        Some(set) => format!("firmware {set}"),
+        None => format!("Dukovo {name}"),
+    }
 }
 
 /// The path of the withdrawal of release `version` among the targets.
