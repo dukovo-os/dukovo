@@ -10,8 +10,9 @@
 //! redirect is followed to http or https alike, five at most.
 //!
 //! [`exchange`] sends any other request, with its own headers and body,
-//! for a client of an interface such as S3's (backup(8), ADR 0465),
-//! which signs each request and reads every status itself.
+//! for a client of an interface such as S3's (backup(8), ADR 0465) or an
+//! ACME authority's (cert(8), ADR 0513), which signs each request and reads
+//! every status and header itself.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -244,6 +245,9 @@ fn read_line<R: BufRead>(reader: &mut R) -> io::Result<String> {
 struct Head {
     status: u16,
     location: Option<String>,
+    /// Every header, its name in lowercase, in the order they came; a
+    /// name sent twice is here twice.
+    headers: Vec<(String, String)>,
     framing: Framing,
 }
 
@@ -258,6 +262,7 @@ fn read_head<R: BufRead>(reader: &mut R) -> io::Result<Head> {
     let status: u16 =
         parts.next().and_then(|code| code.parse().ok()).ok_or_else(|| malformed("status"))?;
     let mut location = None;
+    let mut headers = Vec::new();
     let mut length = None;
     let mut chunked = false;
     let mut total = status_line.len();
@@ -274,7 +279,9 @@ fn read_head<R: BufRead>(reader: &mut R) -> io::Result<Head> {
             return Err(malformed("header"));
         };
         let value = value.trim();
-        match name.trim().to_ascii_lowercase().as_str() {
+        let name = name.trim().to_ascii_lowercase();
+        headers.push((name.clone(), value.to_string()));
+        match name.as_str() {
             "location" => location = Some(value.to_string()),
             "content-length" => {
                 length = Some(value.parse::<u64>().map_err(|_| malformed("Content-Length"))?);
@@ -298,7 +305,7 @@ fn read_head<R: BufRead>(reader: &mut R) -> io::Result<Head> {
     } else {
         Framing::Close
     };
-    Ok(Head { status, location, framing })
+    Ok(Head { status, location, headers, framing })
 }
 
 /// The TLS settings, made once: ring's provider and the system's roots.
@@ -423,12 +430,15 @@ pub fn get_https(url: &Url) -> Result<Body, Error> {
     fetch(url, true, 0).map(|(body, _)| body)
 }
 
-/// An answer to [`exchange`]: its status, and its body to read as it
-/// arrives.
+/// An answer to [`exchange`]: its status, its headers, and its body to
+/// read as it arrives.
 #[derive(Debug)]
 pub struct Answer {
     /// The status, such as 200 or 404.
     pub status: u16,
+    /// Every header, its name in lowercase, in the order the server sent
+    /// them; a name sent twice is here twice.
+    pub headers: Vec<(String, String)>,
     /// The body; none for a HEAD request.
     pub body: Body,
 }
@@ -473,7 +483,7 @@ pub fn exchange(
         BufReader::with_capacity(64 * 1024, Box::new(connection));
     let answer = read_head(&mut reader)?;
     let framing = if method == "HEAD" { Framing::Length(0) } else { answer.framing };
-    Ok(Answer { status: answer.status, body: Body::new(reader, framing) })
+    Ok(Answer { status: answer.status, headers: answer.headers, body: Body::new(reader, framing) })
 }
 
 /// Whether `url` may be fetched: any http or https address, or only an
@@ -546,7 +556,15 @@ mod tests {
     #[test]
     fn heads_say_how_bodies_end() {
         let ok = head("HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n").unwrap();
-        assert_eq!(ok, Head { status: 200, location: None, framing: Framing::Length(12) });
+        assert_eq!(
+            ok,
+            Head {
+                status: 200,
+                location: None,
+                headers: vec![("content-length".into(), "12".into())],
+                framing: Framing::Length(12),
+            }
+        );
         let chunked = head(
             "HTTP/1.1 200 OK\r\ncontent-length: 3\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
         )
@@ -560,6 +578,31 @@ mod tests {
         assert!(head("HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\n").is_err());
         assert!(head("HTTP/1.1 200 OK\r\nno colon\r\n\r\n").is_err());
         assert!(head("HTTP/1.1 200 OK\r\n").is_err());
+    }
+
+    #[test]
+    fn every_header_is_kept_in_order_with_its_name_in_lowercase() {
+        let found = head(
+            "HTTP/1.1 200 OK\r\nReplay-Nonce: abc\r\nLink: <a>;rel=\"up\"\r\n\
+             link:  <b>;rel=\"alternate\" \r\nRetry-After: 3\r\nContent-Length: 0\r\n\r\n",
+        )
+        .unwrap();
+        let names: Vec<&str> = found.headers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["replay-nonce", "link", "link", "retry-after", "content-length"]);
+        assert_eq!(found.headers[0].1, "abc");
+        // A value is kept whole, without the spaces around it.
+        assert_eq!(found.headers[1].1, "<a>;rel=\"up\"");
+        assert_eq!(found.headers[2].1, "<b>;rel=\"alternate\"");
+    }
+
+    #[test]
+    fn headers_that_make_the_head_longer_than_the_cap_are_refused() {
+        let line = format!("X-Padding: {}\r\n", "a".repeat(1000));
+        let lines = HEAD / line.len();
+        let within = format!("HTTP/1.1 200 OK\r\n{}\r\n", line.repeat(lines - 1));
+        assert_eq!(head(&within).unwrap().headers.len(), lines - 1);
+        let over = format!("HTTP/1.1 200 OK\r\n{}\r\n", line.repeat(lines + 1));
+        assert!(head(&over).unwrap_err().to_string().contains("too long"));
     }
 
     #[test]
@@ -660,6 +703,7 @@ mod tests {
         let mut text = String::new();
         answer.body.read_to_string(&mut text).unwrap();
         assert_eq!((answer.status, text.as_str()), (403, "denied!"));
+        assert_eq!(answer.headers, [("content-length".to_string(), "7".to_string())]);
         let (head, body) = server.join().unwrap();
         assert!(head.starts_with("PUT /bucket/a%20b?x-id=1 HTTP/1.1\r\n"), "{head}");
         assert!(head.contains(&format!("\r\nHost: {address}\r\n")), "{head}");

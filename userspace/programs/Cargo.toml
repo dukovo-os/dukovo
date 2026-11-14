@@ -10,7 +10,7 @@
 
 [workspace]
 resolver = "3"
-members = ["accounts", "acl", "audio", "catalog-repo", "consoled", "disk", "dkv", "fuse-test", "git-https-test", "installer", "kerberos", "keymap", "manifest", "monitoring-test", "netproto", "netservices-test", "nfs", "nfsd", "nukesh", "report-test", "slots", "smb", "smbd", "spark-api", "sshd", "std-test", "system-release", "systools", "tls-test", "tuf"]
+members = ["accounts", "acl", "audio", "catalog-repo", "consoled", "disk", "dkv", "fuse-test", "git-https-test", "installer", "kerberos", "keymap", "manifest", "monitoring-test", "netproto", "netservices-test", "nfs", "nfsd", "nukesh", "report-test", "slots", "smb", "smbd", "spark-api", "sqlite-test", "sshd", "std-test", "system-release", "systools", "tls-test", "tuf"]
 
 [workspace.package]
 # Keep in step with the root Cargo.toml (a unit test of ob checks it).

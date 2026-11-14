@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# SQLite, the embedded SQL database engine, as a library that programs and
+# ports link statically (ADR 0511). Nothing of it goes into the image by
+# itself: the programs that link it carry it. The port also builds SQLite's
+# own test program, testfixture, with the Tcl of the tcl port, and packs it
+# with the test scripts for the lab's tests (lab/tests/services/sqlite-suite).
+# The shell, sqlite3, is the catalog's, built from the source this port
+# generates by ports/sqlite-cli. SQLite is in the public domain; its
+# license is a blessing in place of a license.
+name = "sqlite"
+version = "3.54.1"
+summary = "the SQLite database engine, as a library programs link"
+license = "blessing"
+homepage = "https://sqlite.org"
+depends = ["mlibc", "zlib", "tcl"]
+notices = ["LICENSE.md"]
+
+[source]
+git = "https://github.com/sqlite/sqlite.git"
+commit = "57520227c95396ce39ba6ecaac8d475b78dd3964"
+tag = "version-3.54.1"

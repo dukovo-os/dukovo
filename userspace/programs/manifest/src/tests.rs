@@ -31,6 +31,9 @@ const SHIPPED: &[(&str, &str)] = &[
     ("snap", include_str!("../../../defaults/spark/services/snap.toml")),
     ("updated", include_str!("../../../defaults/spark/services/updated.toml")),
     ("logforward", include_str!("../../../defaults/spark/services/logforward.toml")),
+    ("certd", include_str!("../../../defaults/spark/services/certd.toml")),
+    ("certtest", include_str!("../../../spark/tests/services/certificates/certtest.toml")),
+    ("certtest2", include_str!("../../../spark/tests/services/certificates/certtest2.toml")),
     ("dumps", include_str!("../../../defaults/spark/services/dumps.toml")),
     ("netd", include_str!("../../../spark/tests/services/serve/netd.toml")),
     ("timed", include_str!("../../../spark/tests/services/serve/timed.toml")),
@@ -308,6 +311,59 @@ fn what_a_view_holds_and_the_secrets() {
 }
 
 #[test]
+fn the_certificates_a_service_names() {
+    let service =
+        service::from_toml(&file("certificates = [\"this-machine\", \"example.com\"]")).unwrap();
+    assert_eq!(service.certificates, ["this-machine", "example.com"]);
+    assert!(service::from_toml(&file("")).unwrap().certificates.is_empty());
+    assert_eq!(service::certificates_dir("nginx"), "/system/live/certificates/nginx");
+    let long = "a".repeat(64);
+    for name in ["this-machine", "example.com", "a", "9", "mail.example.org", long.as_str()] {
+        assert!(service::check_certificate(name).is_ok(), "{name}");
+    }
+    let too_long = "a".repeat(65);
+    for name in ["", too_long.as_str(), ".x", "-x", "a..b", "A", "a/b", "a b", "\u{e9}", "a_b"] {
+        assert_eq!(
+            service::check_certificate(name),
+            Err(format!(
+                "`{}` is not a certificate's name: it has 1 to 64 lowercase letters, digits, \
+                 `-` and `.`, starts with a letter or a digit, and has no `..`",
+                name.escape_debug()
+            )),
+            "{name}"
+        );
+    }
+    // certd makes them, and names none; any other service may.
+    let certd = service::from_toml(&file("certificates = [\"this-machine\"]")).unwrap();
+    assert_eq!(
+        certd.check_certificates("certd"),
+        Err("certd keeps the certificates and names none: leave out certificates".into())
+    );
+    assert!(certd.check_certificates("nginx").is_ok());
+    assert!(service::from_toml(&file("")).unwrap().check_certificates("certd").is_ok());
+    // A version 2 file names them too.
+    assert!(service::from_toml(&file_2("certificates = [\"this-machine\"]")).is_ok());
+    // A generation's folder is hidden, and no certificate's name.
+    assert_eq!(service::certificate_generation("this-machine", 7), ".this-machine.7");
+    assert_eq!(service::generation_of(".this-machine.7"), Some(("this-machine", 7)));
+    assert_eq!(service::generation_of(".a.1.12"), Some(("a.1", 12)));
+    for entry in [
+        "this-machine",
+        ".this-machine",
+        ".this-machine.",
+        ".x.07",
+        ".x.0",
+        ".x.+7",
+        ".x.new",
+        ".lock",
+        "..x.1",
+        ".X.1",
+    ] {
+        assert_eq!(service::generation_of(entry), None, "{entry}");
+    }
+}
+
+#[test]
 fn errors_name_their_line_in_plain_words() {
     let cases: &[(&str, &str)] = &[
         (
@@ -393,6 +449,26 @@ fn errors_name_their_line_in_plain_words() {
              `../users`",
         ),
         ("secrets = [\"api-token\", \"api-token\"]", "line 3: secrets names api-token twice"),
+        (
+            "certificates = [\"this-machine\", \"this-machine\"]",
+            "line 3: certificates names this-machine twice",
+        ),
+        (
+            "certificates = [\"../key\"]",
+            "line 3: `../key` is not a certificate's name: it has 1 to 64 lowercase letters, \
+             digits, `-` and `.`, starts with a letter or a digit, and has no `..`",
+        ),
+        (
+            "[permissions]\nfiles.read = [\"/system/live\"]",
+            "line 3: no service holds /system/live/certificates, where Spark keeps each \
+             service's copies of its certificates' keys, so it cannot hold /system/live",
+        ),
+        (
+            "[permissions]\nfiles.read-write = [\"/system/live/certificates/web\"]",
+            "line 3: no service holds /system/live/certificates, where Spark keeps each \
+             service's copies of its certificates' keys, so it cannot hold \
+             /system/live/certificates/web",
+        ),
         (
             "secrets = [\"../key\"]",
             "line 3: `../key` is not a secret's name: it has 1 to 23 letters, digits, `-`, `_` \

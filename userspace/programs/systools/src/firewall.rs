@@ -276,6 +276,29 @@ fn text_of(lines: &[Line]) -> String {
     text
 }
 
+/// Whether other machines may start a TCP connection to `port`, by the
+/// settings `text` says, for a socket that listens there: `with_inbound`,
+/// when its network capability has the inbound right, as a service's has
+/// for the ports its file names (ADR 0334); not when it is a command's of
+/// an administrator.
+///
+/// The first rule that matches decides, as the kernel reads them. A rule
+/// that names a network, an interface or a program is passed over, since
+/// none of those is known before a connection comes: only a rule for every
+/// source decides.
+pub fn lets_tcp_in(text: &str, port: u16, with_inbound: bool) -> bool {
+    let (lines, _) = parse_settings(text);
+    let deciding = rules(&lines).find(|rule| {
+        let protocol = matches!(rule.protocol, Protocol::Any | Protocol::Tcp);
+        let ports = rule.ports.is_none_or(|(first, last)| (first..=last).contains(&port));
+        protocol && ports && rule.from.is_none() && rule.on.is_none() && rule.program.is_none()
+    });
+    match deciding {
+        Some(rule) => rule.action == Action::Allow,
+        None => with_inbound,
+    }
+}
+
 /// A program, by its file: its mount's and its own numbers.
 type Program = (u64, u64);
 
@@ -782,6 +805,25 @@ mod tests {
         }
         assert_eq!(rule("allow 22 tcp").unwrap().to_string(), "allow tcp 22");
         assert_eq!(rule("allow any 1-65535").unwrap().to_string(), "allow 1-65535");
+    }
+
+    #[test]
+    fn a_connection_to_a_port_is_let_in_by_the_first_rule_for_every_source() {
+        let rules = "# kept\nallow tcp 8000-8100\ndeny tcp 80 from 10.0.0.0/8\n\
+                     deny tcp 80 program /x\nallow tcp 80\ndeny tcp 80\n";
+        assert!(lets_tcp_in(rules, 80, false));
+        assert!(lets_tcp_in(rules, 8080, false));
+        assert!(!lets_tcp_in(rules, 443, false));
+        assert!(lets_tcp_in(rules, 443, true));
+        // A rule for a network, an interface or a program does not decide.
+        assert!(lets_tcp_in("deny 80 on net0\n", 80, true));
+        assert!(!lets_tcp_in("deny tcp 80\nallow tcp 80\n", 80, true));
+        assert!(!lets_tcp_in("allow udp 80\n", 80, false));
+        assert!(!lets_tcp_in("allow ping\n", 80, false));
+        assert!(lets_tcp_in("allow\n", 80, false));
+        assert!(!lets_tcp_in("", 80, false));
+        assert!(lets_tcp_in("", 80, true));
+        assert!(!lets_tcp_in("not a rule\n", 80, false));
     }
 
     #[test]

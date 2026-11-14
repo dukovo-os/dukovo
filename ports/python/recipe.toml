@@ -15,7 +15,7 @@ summary = "the Python programming language"
 # its dist-info folder in the bundle.
 license = "Python-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND Apache-2.0 AND ISC AND MPL-2.0"
 homepage = "https://www.python.org"
-depends = ["mlibc", "openssl", "zlib", "xz", "bzip2", "zstd", "ncurses"]
+depends = ["mlibc", "openssl", "zlib", "xz", "bzip2", "zstd", "ncurses", "sqlite"]
 notices = ["LICENSE", "Doc/license.rst", "Modules/expat/COPYING"]
 
 [source]
@@ -28,4 +28,4 @@ id = "org.python.python"
 name = "Python"
 commands = ["python3", "pip3"]
 aliases = { python = "python3", pip = "pip3" }
-links = ["mlibc", "openssl", "zlib", "xz", "bzip2", "zstd", "ncurses"]
+links = ["mlibc", "openssl", "zlib", "xz", "bzip2", "zstd", "ncurses", "sqlite"]

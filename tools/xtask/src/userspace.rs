@@ -116,6 +116,7 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/tests/posix/git-https-test", "git-https-test"),
     ("system/tests/posix/monitoring-test", "monitoring-test"),
     ("system/tests/posix/netservices-test", "netservices-test"),
+    ("system/tests/posix/sqlite-test", "sqlite-test"),
     ("system/tests/posix/std-test", "std-test"),
     ("system/tests/posix/tls-test", "tls-test"),
     ("system/tests/report/crash-test", "report-test"),
@@ -145,6 +146,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/bundle", "systools"),
     ("system/commands/bundled", "systools"),
     ("system/commands/burn", "systools"),
+    ("system/commands/cert", "systools"),
+    ("system/commands/certd", "systools"),
     ("system/commands/changes", "systools"),
     ("system/commands/chgrp", "systools"),
     ("system/commands/chmod", "systools"),
@@ -375,13 +378,30 @@ pub fn cargo(ctx: &Ctx, subcommand: &str) -> std::process::Command {
 /// library, writing to `target/programs`: the toolchain's Cargo for
 /// Radix, which builds for their own target against the sysroot the
 /// rust-std port builds, with the crates the ports patch for Radix in
-/// place of crates.io's, linked by the Radix C compiler (ADR 0070).
+/// place of crates.io's, linked by the Radix C compiler (ADR 0070). It
+/// points libsqlite3-sys at the sqlite port's library ([`sqlite_env`]).
 pub fn std_cargo(ctx: &Ctx, subcommand: &str, toolchain: &ports::Toolchain) -> Command {
     let mut cmd = Command::new(toolchain.cargo());
     cmd.current_dir(&ctx.root)
         .args([subcommand, "--manifest-path", STD_MANIFEST])
-        .env("CARGO_TARGET_DIR", ctx.target.join("programs"));
+        .env("CARGO_TARGET_DIR", ctx.target.join("programs"))
+        .envs(sqlite_env(&ctx.out.join("sysroot")));
     cmd
+}
+
+/// The variables that make libsqlite3-sys, without its `bundled` feature,
+/// link the sqlite port's `libsqlite3.a` from the sysroot `sysroot` and
+/// read its `sqlite3.h` there, so that a program and the system's other
+/// SQLite users have one library to update (ADR 0511). `SQLITE3_STATIC`
+/// makes the link static, which every program on Radix is. The crate
+/// asks pkg-config first, which a build for another target does not take
+/// an answer from, and then links `sqlite3` from `SQLITE3_LIB_DIR`.
+pub fn sqlite_env(sysroot: &Path) -> [(&'static str, PathBuf); 3] {
+    [
+        ("SQLITE3_LIB_DIR", sysroot.join("system/libraries")),
+        ("SQLITE3_INCLUDE_DIR", sysroot.join("system/include")),
+        ("SQLITE3_STATIC", PathBuf::from("1")),
+    ]
 }
 
 /// Forgets what `target/programs` built for Radix against an older build
@@ -949,6 +969,20 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn programs_on_std_link_the_sysroots_sqlite() {
+        let env = sqlite_env(Path::new("/build/out/sysroot"));
+        assert_eq!(
+            env,
+            [
+                ("SQLITE3_LIB_DIR", PathBuf::from("/build/out/sysroot/system/libraries")),
+                ("SQLITE3_INCLUDE_DIR", PathBuf::from("/build/out/sysroot/system/include")),
+                ("SQLITE3_STATIC", PathBuf::from("1")),
+            ]
+        );
+        assert!(STD_ARCHIVE.contains(&("system/tests/posix/sqlite-test", "sqlite-test")));
+    }
 
     #[test]
     fn the_archive_holds_the_programs_under_their_directories() {

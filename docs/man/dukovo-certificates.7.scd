@@ -64,6 +64,73 @@ link once more:
 ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt
 ```
 
+# THE MACHINE'S OWN CERTIFICATES
+
+The certificates above are the ones this machine trusts when it connects
+to others. The ones it presents when others connect to it, such as a
+browser to the web console or to *nginx*, are kept by *certd*(8) and
+listed by *cert*(8), each under a name, in _/system/state/certd_ (ADR
+0512). A service's file names the ones it serves
+(*service.toml*(5)), and Spark gives it a copy of the chain and the key,
+read-only, and has it read them again when one changes.
+
+*this-machine* is the machine's own: a certificate certd makes for the
+machine's name, its name with _.local_ and _localhost_, valid for 800
+days and made again 30 days before it runs out, or when the machine is
+renamed. Nothing but the machine vouches for it, so a browser warns of
+it, as it does of any certificate of one's own. To trust it, compare
+what the browser shows with what the machine says, so that nobody
+between can have put a certificate of their own in its place:
+
+```
+cert show this-machine
+```
+
+shows its SHA-256 fingerprint, as _AB:CD:..._, as browsers do. Trust it
+in the browser once they agree. A remade certificate has a new
+fingerprint, which the machine's sign-in notice tells of, and the
+browser asks again.
+
+*cert show this-machine --pem* prints the certificate itself, which a
+program takes as the only authority it trusts, as in
+*curl --cacert* _file_ _https://name/_. It checks that the server is
+this machine, whose names the certificate holds, and no other.
+
+A certificate from an authority, for a name the internet knows, goes in
+with *cert add*, which refuses what the machine's authorities above
+would not vouch for, and says which intermediate certificate a chain
+lacks. The authorities it checks against are the settings' file of this
+page's first section, so an authority of your own, added as above, is
+trusted there too.
+
+# LET'S ENCRYPT
+
+*cert get* gets a certificate from Let's Encrypt, or from any authority
+that speaks ACME, without a person adding it, and *certd*(8) renews it
+before it runs out:
+
+```
+elevate firewall allow tcp 80
+elevate cert get example.com --name example.com --name www.example.com
+```
+
+The authority checks that the names are the machine's. By default it
+fetches a file from port 80 of each name's address, so each name must
+lead to this machine from the internet (a router needs port 80
+forwarded to it) and the firewall must let it in, which *cert get* says
+before it asks the authority anything. With *--dns* it looks a TXT record
+up, which the command shows and a person adds at the name's DNS
+provider, and which also proves a wildcard name. A certificate got that
+way is not renewed by certd, which warns before it runs out.
+
+The certificate from Let's Encrypt is vouched for by the authorities
+above; one from another authority is vouched for only if its authority
+is among them, and *cert show* says if not. A certificate from an
+authority of your own, such as a company's, is got from its ACME
+address with *--directory*, and trusted by adding its root as above.
+*cert*(8) describes the command, and the handbook's Certificates chapter
+the steps for a site.
+
 # TLS
 
 Dukovo's programs in Rust use rustls on ring for TLS, each linked into
@@ -82,4 +149,4 @@ _/system/resources/licenses_
 
 # SEE ALSO
 
-*network*(5), *netd*(8), *spark*(8)
+*cert*(8), *certd*(8), *network*(5), *netd*(8), *spark*(8)

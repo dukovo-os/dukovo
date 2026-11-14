@@ -79,7 +79,10 @@ const FIRMWARE_ALLOW: &[&str] = &["LicenseRef-Intel-Microcode"];
 /// BRLTTY and its tables are under the LGPL, as a program of its own with
 /// the project's screen driver built in (ADR 0326). CPython is under the
 /// PSF's license and those before it, `Python-2.0`, which are permissive
-/// (ADR 0495).
+/// (ADR 0495). SQLite is in the public domain: its files carry a blessing
+/// in place of a license, which SPDX names `blessing` (ADR 0511). Tcl,
+/// whose license is BSD-style, is a toolchain port that builds SQLite's
+/// tests only and is in no manifest, so its license is not here.
 const PORT_EXTRA_ALLOW: &[&str] = &[
     "CC0-1.0",
     "GPL-2.0-only",
@@ -113,6 +116,7 @@ const PORT_EXTRA_ALLOW: &[&str] = &[
     "LicenseRef-tcpdump-notices",
     "Unicode-DFS-2016",
     "Python-2.0",
+    "blessing",
 ];
 
 /// Crates from crates.io that compile another project's C code into what

@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The test files of SQLite's veryquick suite that the lab's test
+# services/sqlite-suite leaves out, each group with the reason it fails on
+# Radix. A line is a test file as the test runner names it (its path from
+# the folder that holds test/, such as test/wal.test); lines that start with
+# '#' are comments, which sqlite-suite.sh strips before it compares the list
+# with the files that failed. When a gap closes, its lines go: the script
+# says which files on the list pass; the gaps waiting on work are in
+# docs/deferred.md. A line that starts with '~' is a file the suite does not
+# run at all, as the test runner's anti-pattern: one that would never end.
+# Its gap's fix must take its line out by hand, as no run says it passes.
+
+# WAL shared between connections: needs shared writable mappings of disk
+# files (docs/deferred.md, Files and storage). SQLite keeps the index of a
+# WAL database in the -shm file beside it, mapped shared by every
+# connection, and Radix refuses that mapping of a file outside /dev/shm, so
+# the first read of a WAL database that is not in exclusive locking mode
+# fails with SQLITE_IOERR_SHMMAP, "disk I/O error". With the index in
+# /dev/shm all of these files pass but the ones that read the -shm file
+# beside the database (delete_db, e_wal, e_walauto, pager1, wal2, wal64k,
+# wal9, waliter, walpersist, walro, walro2 and walsetlk). walsetlk_recover
+# waits for a second process, which fails at once for the same reason and
+# has finished before the test waits for it, so it would wait for good: it
+# is not run.
+ext/recover/recover1.test
+test/attach4.test
+test/busy2.test
+test/chunksize.test
+test/cksumvfs.test
+test/corruptL.test
+test/dbpage.test
+test/dbstatus2.test
+test/delete_db.test
+test/e_vacuum.test
+test/e_wal.test
+test/e_walauto.test
+test/e_walckpt.test
+test/e_walhook.test
+test/exclusive.test
+test/exists.test
+test/expridx2.test
+test/external_reader.test
+test/fallocate.test
+test/incrvacuum2.test
+test/incrvacuum3.test
+test/memdb1.test
+test/nockpt.test
+test/nolock.test
+test/pager1.test
+test/pragma3.test
+test/resetdb.test
+test/rowallock.test
+test/shmlock.test
+test/superlock.test
+test/symlink.test
+test/sync2.test
+test/syscall.test
+test/tkt-2d1a5c67d.test
+test/tkt-313723c356.test
+test/tkt-5d863f876e.test
+test/vacuum-into.test
+test/wal.test
+test/wal2.test
+test/wal3.test
+test/wal4.test
+test/wal5.test
+test/wal6.test
+test/wal64k.test
+test/wal7.test
+test/wal8.test
+test/wal9.test
+test/walbak.test
+test/walbig.test
+test/walckptnoop.test
+test/walcksum.test
+test/walcrash4.test
+test/walhook.test
+test/waliter.test
+test/walmode.test
+test/waloverwrite.test
+test/walpersist.test
+test/walprotocol2.test
+test/walrestart.test
+test/walro.test
+test/walro2.test
+test/walseh1.test
+test/walsetlk.test
+~test/walsetlk_recover.test
+test/walshared.test
+test/walvfs.test

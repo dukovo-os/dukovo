@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# SQLite's own test suite runs on Radix (ADR 0511): testfixture, SQLite's
+# test program built by the sqlite port with the options of the library
+# Dukovo's programs link, runs the veryquick suite with a process for each
+# processor, leaving out only the test files that sqlite-skips.txt lists,
+# each with the reason it fails on Dukovo. The port builds the test
+# archive, which ./ob lab names to the lab in DUKOVO_LAB_PORTS; without it
+# the test is skipped.
+about = "SQLite's own veryquick test suite passes on Radix, but for the test files sqlite-skips.txt lists with their reasons (ADR 0511)"
+# The suite takes 63 minutes under QEMU without KVM, where a test's limit is
+# four times its time. The quarter of an hour the suite waits for a test
+# file that never finishes is not scaled by that, so a fast machine needs
+# the room.
+time = "40m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-port-file.sh sqlite sqlite-tests.tar.gz {machine} {machine-port:22}"
+expect = "copied: sqlite-tests.tar.gz"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/sqlite-suite.sh {machine} {machine-port:22}"
+expect = "copied: sqlite-suite.sh"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/sqlite-skips.txt {machine} {machine-port:22}"
+expect = "copied: sqlite-skips.txt"
+[[step]]
+run = "sh /users/lab/sqlite-suite.sh"
+expect = "every file passed but the"
+expect_not = ["unexpected failures", "passes now", "not in the run"]

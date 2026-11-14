@@ -96,6 +96,8 @@ pub struct Spec {
     pub names: bool,
     /// The names of its secrets.
     pub secrets: Vec<String>,
+    /// The names of the certificates Spark copies for it (ADR 0512).
+    pub certificates: Vec<String>,
     /// The PCI cards it drives: devices.pci.
     pub devices: Vec<PciId>,
     /// The account it runs as, a bundle's service's own (ADR 0385); when
@@ -142,7 +144,17 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
     check_name(name)?;
     let file = service::from_toml_over(text, over).map_err(|err| err.to_string())?;
     file.check_links(name)?;
+    file.check_certificates(name)?;
     let network = &file.permissions.network;
+    // A service that names certificates starts after certd, which makes
+    // this machine's and keeps the rest, when certd is starting too.
+    let mut after = file.after;
+    let linked = [&file.requires, &file.wants, &after]
+        .iter()
+        .any(|names| names.iter().any(|name| name == service::CERTD));
+    if !file.certificates.is_empty() && !linked {
+        after.push(service::CERTD.to_string());
+    }
     Ok(Spec {
         name: name.to_string(),
         description: file.description,
@@ -173,6 +185,7 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         whole_tree: file.permissions.runs_with_your_access,
         names: file.permissions.names,
         secrets: file.secrets,
+        certificates: file.certificates,
         devices: file.permissions.devices.pci,
         account: file.account,
         hook_before: file.backup.before,
@@ -180,7 +193,7 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         hook_seconds: u64::from(file.backup.time_limit),
         requires: file.requires,
         wants: file.wants,
-        after: file.after,
+        after,
         give_up_after: file.give_up_after,
         ready: file.ready,
         health: file.health,

@@ -236,10 +236,11 @@ done
 # not in the bundle, as php-cgi's and PHP-FPM's helpers and the loadable
 # extension the dl() tests need: the test's own checks then skip it, saying
 # why, where a missing file would stop it as broken. (Found by a search of
-# the tests for the paths they build from __DIR__ and dirname.)
-for file in ext/dl_test/tests/skip.inc sapi/cgi/tests/include.inc sapi/fpm/tests/skipif.inc \
-	sapi/fpm/tests/tester.inc ext/xsl/tests/53965/collection.xml \
-	ext/xsl/tests/53965/collection.xsl; do
+# the tests for the paths they build from __DIR__ and dirname.) PHP-FPM's
+# helpers go in whole: its tester includes the others.
+for file in ext/dl_test/tests/skip.inc sapi/cgi/tests/include.inc \
+	ext/xsl/tests/53965/collection.xml ext/xsl/tests/53965/collection.xsl \
+	$(cd "$PORT_SRC" && echo sapi/fpm/tests/*.inc); do
 	mkdir -p "$tests/${file%/*}"
 	cp "$PORT_SRC/$file" "$tests/$file"
 done

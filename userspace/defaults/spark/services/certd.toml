@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Keeps the machine's certificates: certd(8) makes this-machine, the
+# certificate for the machine's own name, and makes it again before it runs
+# out; it keeps the certificates `cert add` and `cert get` store, renews the
+# ones an ACME authority such as Let's Encrypt issued, tells a person when
+# one is about to run out, and tells Spark, which copies each certificate
+# for the services that name it (ADR 0512, ADR 0513). `cert list` shows
+# them.
+#
+# service.toml(5) explains each setting. `service check certd` checks this
+# file, and `service edit certd` checks it as you save.
+
+service_version = 2
+description = "Certificates for the machine's services"
+program = "/system/commands/certd"
+# After timed, which sets the clock a certificate's dates come from.
+order = 24
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+# Ready once this-machine reads, which is when a service that names it can
+# be given it. Without a right clock certd makes nothing and checks the
+# clock each minute; the 120 seconds leave time for timed to set it.
+[ready]
+when = "healthy"
+timeout = 120
+
+# Whether the clock is right and this-machine reads with more than 30 days
+# left (cert(8) `check`); certd makes it again at 30.
+[health]
+command = ["/system/commands/cert", "check"]
+every = 3600
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# folder of its socket to Spark, which it only reads, as Spark makes the
+# socket there; the store of the certificates and the accounts at
+# authorities; the sign-in notices, where it says what needs a person's
+# attention; and the folder where it puts the answers to an authority's
+# checks when nginx holds port 80 (nginx's file reads it, as the handbook's
+# Certificates chapter says).
+#
+# To renew a certificate from an authority it connects out to the
+# authority, and it listens on port 80 while it answers the authority's
+# check, which is the only time anything answers there: Spark gives the
+# capability to listen, which opens nothing until a socket is bound, and the
+# firewall (firewall(8)) still decides whether other machines get through.
+# Close it with `firewall deny tcp 80`, and certd renews through nginx or
+# not at all.
+[permissions]
+network.outbound = true
+network.listen = [80]
+files.read = ["/system/live/spark/certd"]
+files.read-write = ["/system/state/certd", "/system/live/sign-in", "/system/live/certd"]

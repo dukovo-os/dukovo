@@ -57,14 +57,22 @@ so Python's own modules in C are part of `python3` itself.
 The standard library is all there, with its modules in C built in:
 `ssl` and `hashlib` with OpenSSL, `zlib`, `bz2`, `lzma` and
 `compression.zstd`, `decimal`, `curses`, `socket`, `select`,
-`multiprocessing`, `pyexpat` and the rest. TLS checks certificates
-against the system's root certificates (dukovo-certificates(7)).
+`multiprocessing`, `pyexpat`, `sqlite3` and the rest. TLS checks
+certificates against the system's root certificates
+(dukovo-certificates(7)). `sqlite3` is built on the SQLite that Dukovo's
+own programs link, with its FTS5, R-Tree and JSON functions but no
+loadable extensions. The default rollback journal works between any
+number of programs. WAL mode works only in exclusive locking mode, by one
+connection (`PRAGMA locking_mode=EXCLUSIVE` before `PRAGMA
+journal_mode=WAL`): SQLite shares a WAL database's index between
+connections through a shared writable mapping of a file, which Radix does
+not give yet (ADR 0511).
 
 These modules are missing, as Dukovo does not have the library each
-needs yet: `ctypes` (libffi), `sqlite3` (SQLite), `dbm.gnu` and
-`dbm.ndbm`, `readline` (the interactive interpreter edits lines without
-it) and `tkinter`, with IDLE and `turtle`. `uuid` makes its identifiers
-in Python instead of with libuuid.
+needs yet: `ctypes` (libffi), `dbm.gnu` and `dbm.ndbm`, `readline` (the
+interactive interpreter edits lines without it) and `tkinter`, with IDLE
+and `turtle`. `uuid` makes its identifiers in Python instead of with
+libuuid.
 
 ## Its test suite
 

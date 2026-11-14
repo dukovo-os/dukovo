@@ -9,7 +9,8 @@
 //! read-only but for the devices; the places the file names under
 //! `files`, read-only or not as it says, each of the second kind made if
 //! it is not there yet; the service's program; the folder of its
-//! secrets, read-only; a `/tmp` of its own, which is
+//! secrets, read-only; the folder of its copies of the certificates it
+//! names (`certificates`), read-only; a `/tmp` of its own, which is
 //! `/system/live/spark/tmp/NAME`; and the links of the root and of
 //! `/system`, so that `/bin/sh` and `/usr/bin/env` lead where they do. The
 //! service acts for root without the bypass right, so the owners and modes
@@ -26,7 +27,8 @@
 //! that acts for that account: the places in it are opened as the account,
 //! so that the owners and modes of their files narrow it as they would a
 //! person, and what it makes is the account's. Its `/tmp`, the places it
-//! may change that Spark makes, and its secrets are the account's.
+//! may change that Spark makes, its secrets and its certificates' copies
+//! are the account's.
 
 use alloc::format;
 use alloc::string::String;
@@ -153,6 +155,12 @@ pub fn build(root: &Dir, account: Option<&Account>, spec: &Spec) -> Result<View,
             }
         }
         attach(&base, &view, &dir[1..], false)?;
+    }
+
+    // Its copies of its certificates, which Spark made as it started,
+    // read-only (ADR 0512).
+    if !spec.certificates.is_empty() {
+        attach(&base, &view, &service::certificates_dir(&spec.name)[1..], false)?;
     }
 
     let tmp = format!("{TMP}/{}", spec.name);

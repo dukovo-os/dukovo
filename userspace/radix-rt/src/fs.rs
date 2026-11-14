@@ -294,7 +294,15 @@ impl Dir {
     /// Opens the directory at `path` with `rights` (of read, write and
     /// control).
     pub fn open_dir(&self, path: &str, rights: Rights) -> Result<Dir> {
-        let (held, _) = self.open_raw(path, OpenFlags::DIRECTORY, rights)?;
+        self.open_dir_with(path, OpenFlags::NONE, rights)
+    }
+
+    /// Opens the directory at `path` with `rights`, as `flags` say too:
+    /// `no_follow` to refuse a symbolic link as its last name, and
+    /// `absolute_links_leave` for a directory beneath which a link with
+    /// an absolute target leads nowhere.
+    pub fn open_dir_with(&self, path: &str, flags: OpenFlags, rights: Rights) -> Result<Dir> {
+        let (held, _) = self.open_raw(path, flags.union(OpenFlags::DIRECTORY), rights)?;
         Ok(Dir { held })
     }
 
@@ -486,6 +494,15 @@ impl Dir {
     pub fn stat(&self, path: &str) -> Result<Stat> {
         let mut status = [0u8; FileStatus::SIZE];
         directory::stat(&SYS, self.held.slot, path.as_bytes(), PathFlags::NONE, &mut status)?;
+        Ok(Stat::from(&status))
+    }
+
+    /// What the file at `path` is: a symbolic link there is itself, as
+    /// lstat(2) says.
+    pub fn stat_link(&self, path: &str) -> Result<Stat> {
+        let mut status = [0u8; FileStatus::SIZE];
+        let flags = PathFlags::NO_FOLLOW;
+        directory::stat(&SYS, self.held.slot, path.as_bytes(), flags, &mut status)?;
         Ok(Stat::from(&status))
     }
 

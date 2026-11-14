@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Tcl, the scripting language that SQLite's own test suite is written in.
+# A toolchain port that exists only to build the suite's program,
+# testfixture, for the lab's tests of the sqlite port (ADR 0511): what it
+# installs is used to build and never reaches an image or a bundle.
+name = "tcl"
+version = "9.1.0"
+summary = "the Tcl language, to build SQLite's test program"
+license = "TCL"
+homepage = "https://www.tcl-lang.org"
+depends = ["mlibc", "zlib"]
+toolchain = true
+notices = ["license.terms"]
+
+[source]
+git = "https://github.com/tcltk/tcl.git"
+commit = "0c6bad08d91fa2ad51f05a50a41f8c1ea82ce985"
+tag = "core-9-1-0"

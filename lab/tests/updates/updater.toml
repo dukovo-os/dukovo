@@ -8,6 +8,8 @@
 # apply` stages the bridge release, which proves itself at the restart;
 # `update history` then lists it by the start that first ran it, and
 # `update undo system` makes the version before the default again.
+# The release is paused on its first day, so the machine is a canary,
+# which takes it (ADR 0469).
 about = "update says what waits for the system, firmware and apps, holds and unholds the system, updated tells of the release, update apply stages the bridge, history lists it after the restart, and update undo system goes back (ADR 0502)"
 time = "20m"
 fresh = true
@@ -18,7 +20,7 @@ host = "sh {here}/update-server.sh serve {port:updates}"
 background = true
 ready = "serving updates"
 [[step]]
-run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
 root = true
 expect = "set: 42"
 [[step]]
