@@ -69,6 +69,12 @@ bisect userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/
 bisect userspace/spark/src/supervisor/starting.rs
 bitlocker kernel/fs/bitlocker/ userspace/programs/systools/src/nvme.rs
 bitlocker userspace/programs/systools/src/unlock.rs userspace/programs/systools/src/volumed.rs
+blocking kernel/net/ kernel/radix/src/net/firewall.rs ports/openssh/
+blocking userspace/defaults/blocking.toml userspace/defaults/spark/services/netd.toml
+blocking userspace/posix/blockingtest.c userspace/programs/accounts/ userspace/programs/sshd/
+blocking userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+blocking userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/netd.rs
+blocking userspace/spark/tests/services/blocking/
 braille kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/usb/ kernel/radix/src/fs/sysfs/usb.rs ports/brltty/
 braille userspace/defaults/spark/services/brailled.toml userspace/programs/consoled/ userspace/programs/systools/src/braille.rs
 btrfs kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs

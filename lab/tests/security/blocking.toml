@@ -1,0 +1,185 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# An address that guesses passwords is blocked from SSH (ADR 0479,
+# blocking.toml(5)). The attacker, on the range's private network, guesses
+# wrong passwords at the machine with ssh, as a person would who tried
+# names at random, and the machine must turn it away at the firewall
+# once the fifth is wrong. The lab controller signs in from another
+# address, so the block never touches the steps that read the machine's
+# side. Each guess names another account, so that authd's wait for a wrong
+# password, which grows for one name from one address, does not make
+# the test slow, and none of the names needs to be an account: authd
+# counts the guesses at names that no account has, as an attacker's
+# first tries are. The settings are the ones the system ships (5 wrong
+# passwords in 10 minutes block for 10 minutes), which this test must not
+# change except for `never`, with firewall never-block, which it takes
+# out again.
+about = "Five wrong SSH passwords from the attacker block its address: firewall blocked lists it with the reason, its connections to port 22 time out and the kernel logs them as blocked; firewall unblock lets it in at once; with its address in never-block six more wrong passwords block nothing; authd's audit log tells of all of it (ADR 0479)"
+time = "10m"
+fresh = true
+
+# Nothing is blocked on a machine just started.
+[[step]]
+run = "firewall blocked"
+root = true
+expect = "No address is blocked."
+
+# Passwords on for SSH, as the lab's ssh/passwords test does it, so that a
+# wrong password is a guess authd counts. sshd -t checks the file first.
+[[step]]
+run = "sh"
+root = true
+input = '''
+cp /system/settings/ssh/sshd_config /tmp/sshd_config.kept
+printf 'PasswordAuthentication yes\n' >> /system/settings/ssh/sshd_config
+sshd -t && service sshd reload && sleep 2
+sshd -T | grep -i '^passwordauthentication'
+echo "passwords-end"
+'''
+expect = ["PasswordAuthentication yes", "passwords-end"]
+
+# The attacker's askpass program answers every prompt with a wrong
+# password, so that ssh asks no one.
+[[step]]
+attack = "sh -c 'printf \"#!/bin/sh\\necho not-the-password\\n\" > /tmp/lab-askpass && chmod 700 /tmp/lab-askpass && echo askpass-ready'"
+expect = "askpass-ready"
+
+# Five wrong passwords, each for another name: every one is refused (ssh
+# exits with 255), and the fifth gives the address the block.
+[[step]]
+attack = "sh -c 'for name in admin test guest oracle ubuntu; do SSH_ASKPASS=/tmp/lab-askpass SSH_ASKPASS_REQUIRE=force ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 $name@{target} true < /dev/null > /dev/null 2>&1; echo \"guess $name: $?\"; done'"
+expect = ["guess admin: 255", "guess test: 255", "guess guest: 255", "guess oracle: 255", "guess ubuntu: 255"]
+
+# The firewall now drops what the attacker starts on port 22: a
+# connection gets no answer, so nc gives up, with status 1.
+[[step]]
+attack = "nc -z -w3 {target} 22"
+exit = 1
+
+# The machine's side: the table names the address, what it is blocked
+# for and why, the kernel logged what it dropped as blocked, and the
+# address is kept for the steps after this one.
+[[step]]
+run = "sh"
+root = true
+input = '''
+firewall blocked > /tmp/blocked.txt
+cat /tmp/blocked.txt
+awk 'NR == 2 { print $1 }' /tmp/blocked.txt > /tmp/blocked-address
+address=$(cat /tmp/blocked-address)
+echo "address: $address."
+dmesg | grep -F "from $address:" | grep -F "the address is blocked" | head -n 1
+echo "table-end"
+'''
+expect = [
+    "Blocked",
+    "Until",
+    "Times today",
+    "Why",
+    "5 wrong passwords over SSH in ",
+    "Firewall: dropped a TCP connection from ",
+    " to port 22 on ",
+    "the address is blocked",
+    "table-end",
+]
+expect_not = ["address: .", "No address is blocked."]
+
+# A name that is no address is a mistake in the command, and says what to
+# write; a lifted block lets the attacker in at once, and a second
+# unblock says there is none.
+[[step]]
+run = "sh"
+root = true
+input = '''
+address=$(cat /tmp/blocked-address)
+firewall unblock banana 2>&1
+echo "banana-status: $?"
+firewall unblock "$address"
+echo "unblock-status: $?"
+firewall unblock "$address" 2>&1
+echo "again-status: $?"
+firewall blocked
+echo "unblock-end"
+'''
+expect = [
+    "is not an address that is blocked",
+    "banana-status: 1",
+    " is no longer blocked",
+    "unblock-status: 0",
+    " is not blocked",
+    "again-status: 1",
+    "No address is blocked.",
+    "unblock-end",
+]
+
+# The attacker reaches SSH again, without a wait.
+[[step]]
+attack = "nc -z -w3 {target} 22"
+
+# Its address in never: the machine says so, the line is in blocking.toml,
+# and authd, which reads the file again when it changes and needs no
+# restart, lets six more wrong passwords come without a block.
+[[step]]
+run = "sh"
+root = true
+input = '''
+address=$(cat /tmp/blocked-address)
+firewall never-block "$address"
+echo "never-status: $?"
+grep -F "$address" /system/settings/blocking.toml
+echo "never-end"
+'''
+expect = [" is never blocked", "never-status: 0", "never-end"]
+expect_not = "never-status: 1"
+[[step]]
+attack = "sh -c 'for name in postgres mysql git deploy www jenkins; do SSH_ASKPASS=/tmp/lab-askpass SSH_ASKPASS_REQUIRE=force ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 $name@{target} true < /dev/null > /dev/null 2>&1; echo \"guess $name: $?\"; done'"
+expect = ["guess postgres: 255", "guess mysql: 255", "guess git: 255", "guess deploy: 255", "guess www: 255", "guess jenkins: 255"]
+[[step]]
+attack = "nc -z -w3 {target} 22"
+
+# Nothing was blocked, and the network can be taken out of never.
+[[step]]
+run = "sh"
+root = true
+input = '''
+address=$(cat /tmp/blocked-address)
+firewall blocked
+firewall never-block remove "$address"
+echo "remove-status: $?"
+if grep -q -F "$address" /system/settings/blocking.toml; then echo "file: still named"; else echo "file: clear"; fi
+echo "remove-end"
+'''
+expect = ["No address is blocked.", " may be blocked again", "remove-status: 0", "file: clear", "remove-end"]
+expect_not = "file: still named"
+
+# authd's audit log: the block, with its length and reason, the lifted
+# block, the network put in never and taken out, and the new settings
+# read from the file. logd reads the kernel's log a moment after authd
+# writes to it, so the step waits that moment first.
+[[step]]
+run = "sh -c 'sleep 2; log -s authd'"
+root = true
+expect = [
+    "authd: blocked ",
+    " for 10 minutes: 5 wrong passwords over SSH in ",
+    "authd: unblocked ",
+    " is never blocked, for process ",
+    " may be blocked again, for process ",
+    "authd: blocking addresses that guess passwords: on: 5 tries within 10 minutes block for 10 minutes, doubling to 1 day, never ",
+]
+
+# As it was: the file back, and the attacker's files gone.
+[[step]]
+run = "sh"
+root = true
+input = '''
+cp /tmp/sshd_config.kept /system/settings/ssh/sshd_config
+sshd -t && service sshd reload && sleep 2
+sshd -T | grep -i '^passwordauthentication'
+rm -f /tmp/sshd_config.kept /tmp/blocked.txt /tmp/blocked-address
+echo "restored-end"
+'''
+expect = ["PasswordAuthentication no", "restored-end"]
+[[step]]
+attack = "rm -f /tmp/lab-askpass"

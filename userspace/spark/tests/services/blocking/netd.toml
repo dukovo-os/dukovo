@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A service of the blocking boot test: machine b's netd(8) as the system's
+# own file has it, which asks machine a for an address by DHCP. Machine a
+# runs the system's own services, its netd among them.
+
+service_version = 1
+description = "Network setup"
+program = "/system/commands/netd"
+order = 20
+restart = "always"
+
+[limits]
+memory = "16M"
+
+[permissions]
+network.outbound = true
+network.listen = [67, 68, 546]
+admin.network = true
+files.read-write = ["/system/state/netd", "/system/live/netd"]
