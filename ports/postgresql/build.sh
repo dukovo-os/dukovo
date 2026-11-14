@@ -311,6 +311,20 @@ done
 # PL/pgSQL's, and each contrib module's. Which modules there are is what
 # the folder contrib/ has in SUBDIRS (the one for this configuration), as
 # the build has made them.
+#
+# The main and the isolation suite have a schedule in the tree. The others
+# have the list of their tests in their makefile, REGRESS, which the
+# makefiles give to pg_regress one test after another: it becomes the
+# folder's schedule, a test to a line, as the schedule of the main suite
+# has several on one line to run them at once. A module with isolation
+# tests, which its makefile lists in ISOLATION, has their schedule the same
+# way, in isolation_schedule, and in isolation-options the extensions its
+# ISOLATION_OPTS has pg_isolation_regress load (--load-extension). A module
+# whose tests need a server with settings of its own (NO_INSTALLCHECK in
+# its makefile, which is why `make installcheck` leaves it out) has them in
+# a file beside its tests, which own-server names: its tests run in a
+# server that pg_regress starts with those settings (--temp-instance), not
+# in a running one.
 tests="$PORT_BUNDLE/tests"
 mkdir -p "$tests/regress" "$tests/isolation" "$tests/plpgsql" "$tests/contrib"
 build="$PORT_BUILD/radix"
@@ -326,10 +340,20 @@ isolation="$PORT_SRC/src/test/isolation"
 for item in specs expected isolation_schedule; do
 	cp -R "$isolation/$item" "$tests/isolation/$item"
 done
+make_variable() {
+	make -s -C "$1" --eval='print-%: ; @echo $($*)' "print-$2"
+}
+# Writes $3, a schedule of the tests the makefile in $1 lists in $2.
+write_schedule() {
+	for test in $(make_variable "$1" "$2"); do
+		echo "test: $test"
+	done >"$3"
+}
 for item in sql expected; do
 	cp -R "$PORT_SRC/src/pl/plpgsql/src/$item" "$tests/plpgsql/$item"
 done
-contrib=$(make -s -C "$build/contrib" --eval='print-%: ; @echo $($*)' print-SUBDIRS)
+write_schedule "$build/src/pl/plpgsql/src" REGRESS "$tests/plpgsql/schedule"
+contrib=$(make_variable "$build/contrib" SUBDIRS)
 for name in $contrib; do
 	if [ "$name" = xml2 ]; then
 		continue
@@ -340,6 +364,35 @@ for name in $contrib; do
 			cp -R "$PORT_SRC/contrib/$name/$item" "$tests/contrib/$name/$item"
 		fi
 	done
+	# A module whose tests are TAP tests alone has none of these.
+	regress_tests=$(make_variable "$build/contrib/$name" REGRESS)
+	isolation_tests=$(make_variable "$build/contrib/$name" ISOLATION)
+	if [ -d "$tests/contrib/$name" ] && [ -n "$regress_tests$isolation_tests" ]; then
+		if [ -n "$regress_tests" ]; then
+			write_schedule "$build/contrib/$name" REGRESS "$tests/contrib/$name/schedule"
+		fi
+		# The isolation tests: a schedule of their own, and the extensions
+		# pg_isolation_regress loads before them. Their other switches are
+		# the settings of own-server, or the database's name, which the lab
+		# test gives.
+		if [ -n "$isolation_tests" ]; then
+			write_schedule "$build/contrib/$name" ISOLATION "$tests/contrib/$name/isolation_schedule"
+			for option in $(make_variable "$build/contrib/$name" ISOLATION_OPTS); do
+				case $option in
+				--load-extension=*) echo "$option" ;;
+				esac
+			done >"$tests/contrib/$name/isolation-options"
+		fi
+		# dblink's test reads a service file from its own folder.
+		for conf in "$PORT_SRC/contrib/$name"/*.conf; do
+			if [ -f "$conf" ]; then
+				cp "$conf" "$tests/contrib/$name/"
+			fi
+		done
+		if [ -n "$(make_variable "$build/contrib/$name" NO_INSTALLCHECK)" ]; then
+			(cd "$PORT_SRC/contrib/$name" && ls *.conf) >"$tests/contrib/$name/own-server"
+		fi
+	fi
 done
 
 # Where each file finds the libraries it needs, as the build made it: a
