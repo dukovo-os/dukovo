@@ -133,6 +133,23 @@ fn names_labels_and_scopes() {
 }
 
 #[test]
+fn a_token_changes_as_an_administrator_only_what_its_scopes_name() {
+    let scopes = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert!(may_change(&scopes(&["*"]), "services"));
+    assert!(may_change(&scopes(&["services"]), "services"));
+    assert!(may_change(&scopes(&["firewall", "services"]), "services"));
+    // Reading an area is not changing it, another area is not this one,
+    // and the area asked for is a name, never a scope that means more.
+    assert!(!may_change(&scopes(&["services:read"]), "services"));
+    assert!(!may_change(&scopes(&["firewall"]), "services"));
+    assert!(!may_change(&scopes(&["services"]), "services:read"));
+    assert!(!may_change(&scopes(&["*"]), "*"));
+    assert!(!may_change(&scopes(&["*"]), ""));
+    assert!(!may_change(&scopes(&["*"]), "Services"));
+    assert!(!may_change(&[], "services"));
+}
+
+#[test]
 fn an_api_token_names_its_owner() {
     let secret = "0123456789abcdef".repeat(4);
     let token = format!("dkv_chase_{secret}");

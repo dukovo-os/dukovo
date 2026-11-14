@@ -131,6 +131,16 @@ impl Tries {
         Ok(())
     }
 
+    /// Whether `address` has made [`TRIES_MAX`] in the minute since its
+    /// first, without counting another: the seconds after which it may
+    /// try again.
+    pub fn waits(&self, address: IpAddr, now: Instant) -> Option<u64> {
+        let &(start, count) = self.windows.get(&address)?;
+        let gone = now.saturating_duration_since(start);
+        (gone < TRIES_WINDOW && count >= TRIES_MAX)
+            .then(|| TRIES_WINDOW.saturating_sub(gone).as_secs() + 1)
+    }
+
     /// Forgets the addresses whose minute is over.
     pub fn tidy(&mut self, now: Instant) {
         self.windows.retain(|_, (start, _)| now.saturating_duration_since(*start) < TRIES_WINDOW);

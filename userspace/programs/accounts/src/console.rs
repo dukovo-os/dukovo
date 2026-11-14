@@ -83,8 +83,14 @@ pub enum Proof {
 pub enum Elevator {
     /// An unlocked session's, by its ID.
     Session(String),
-    /// An API token's.
-    Token(Vec<u8>),
+    /// An API token's, for an action of one area of the console.
+    Token {
+        /// The token, as the request brought it.
+        token: Vec<u8>,
+        /// The action's area, which the token's scopes must name, or be
+        /// `*`.
+        area: String,
+    },
 }
 
 /// A request of the web console's.
@@ -395,7 +401,9 @@ impl Console {
                     Elevator::Session(session) => {
                         words(&[b"elevate", b"session", session.as_bytes()])
                     }
-                    Elevator::Token(token) => words(&[b"elevate", b"token", hex(token).as_bytes()]),
+                    Elevator::Token { token, area } => {
+                        words(&[b"elevate", b"token", hex(token).as_bytes(), area.as_bytes()])
+                    }
                 };
                 fields.extend(language.iter().map(|s| s.as_bytes().to_vec()));
                 fields.push(b"--".to_vec());
@@ -489,9 +497,12 @@ impl Console {
             [b"lock", session] => Console::Lock { session: text(session)? },
             [b"end", session] => Console::End { session: text(session)? },
             [b"elevate", kind, by, ref rest @ ..] => {
-                let by = match kind {
-                    b"session" => Elevator::Session(text(by)?),
-                    b"token" => Elevator::Token(from_hex(by)?),
+                let (by, rest) = match kind {
+                    b"session" => (Elevator::Session(text(by)?), rest),
+                    b"token" => {
+                        let (area, rest) = rest.split_first()?;
+                        (Elevator::Token { token: from_hex(by)?, area: text(area)? }, rest)
+                    }
                     _ => return None,
                 };
                 let split = rest.iter().position(|field| *field == b"--")?;
@@ -585,7 +596,7 @@ impl Console {
             | Console::Passkey { purpose: Purpose::SignIn(ticket), .. }
             | Console::Start { ticket, .. } => wipe(ticket),
             Console::Unlock { proof: Proof::Password(secret) | Proof::Code(secret), .. }
-            | Console::Elevate { by: Elevator::Token(secret), .. }
+            | Console::Elevate { by: Elevator::Token { token: secret, .. }, .. }
             | Console::Token { token: secret, .. }
             | Console::TokenStart { token: secret }
             | Console::AppBegin { proof: secret, .. }
@@ -737,7 +748,7 @@ mod tests {
                 command: vec![b"service".to_vec(), b"restart".to_vec(), b"--".to_vec()],
             },
             Console::Elevate {
-                by: Elevator::Token(vec![5; 40]),
+                by: Elevator::Token { token: vec![5; 40], area: "services".into() },
                 language: vec![],
                 command: vec![b"id".to_vec()],
             },

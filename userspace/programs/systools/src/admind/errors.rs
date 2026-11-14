@@ -43,7 +43,8 @@ pub enum Kind {
     TooBig,
     /// ADM-114: the request names a host that is not this machine's.
     WrongHost,
-    /// ADM-115: an API token came, and the console takes none yet.
+    /// ADM-115: an API token came that is not one: unknown, ended, or of
+    /// an account that may not sign in.
     NoTokens,
     /// ADM-116: there is nothing at that address.
     NoRoute,
@@ -58,11 +59,20 @@ pub enum Kind {
     /// ADM-121: the console could not do what it is for, for a reason of
     /// its own.
     Internal,
+    /// ADM-122: the person may read what an area holds, and the change
+    /// needs an administrator.
+    NotAdmin,
+    /// ADM-123: an action's command ran and did not work.
+    CommandFailed,
+    /// ADM-124: an API token's scopes do not name what it asked for.
+    OutOfScope,
+    /// ADM-125: an argument's value cannot work.
+    BadValue,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 21] = [
+    pub const ALL: [Kind; 25] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -84,6 +94,10 @@ impl Kind {
         Kind::NotJson,
         Kind::Busy,
         Kind::Internal,
+        Kind::NotAdmin,
+        Kind::CommandFailed,
+        Kind::OutOfScope,
+        Kind::BadValue,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -110,6 +124,10 @@ impl Kind {
             Kind::NotJson => "ADM-119",
             Kind::Busy => "ADM-120",
             Kind::Internal => "ADM-121",
+            Kind::NotAdmin => "ADM-122",
+            Kind::CommandFailed => "ADM-123",
+            Kind::OutOfScope => "ADM-124",
+            Kind::BadValue => "ADM-125",
         }
     }
 
@@ -130,9 +148,14 @@ impl Kind {
             | Kind::Locked
             | Kind::ForeignRequest
             | Kind::Refused
-            | Kind::SecondStepOnly => 403,
+            | Kind::SecondStepOnly
+            | Kind::NotAdmin
+            | Kind::OutOfScope => 403,
             Kind::Wait => 429,
-            Kind::BadRequest => 400,
+            Kind::BadRequest | Kind::BadValue => 400,
+            // The command was asked for and ran: what it said is the
+            // answer, and nothing about the request was wrong.
+            Kind::CommandFailed => 422,
             Kind::AuthdSilent | Kind::WorkerSilent => 502,
             Kind::TooBig => 413,
             Kind::WrongHost => 421,
@@ -161,13 +184,17 @@ impl Kind {
             Kind::WorkerSilent => "The session's worker did not answer",
             Kind::TooBig => "That is too big",
             Kind::WrongHost => "This is not the name of this machine",
-            Kind::NoTokens => "API tokens are not accepted yet",
+            Kind::NoTokens => "The API token is not accepted",
             Kind::NoRoute => "There is nothing at that address",
             Kind::NoMethod => "That method is not used here",
             Kind::SecondStepOnly => "This session may only add a second step",
             Kind::NotJson => "The request is not JSON",
             Kind::Busy => "The console is full",
             Kind::Internal => "The console could not do that",
+            Kind::NotAdmin => "This account can look but not change",
+            Kind::CommandFailed => "The command did not work",
+            Kind::OutOfScope => "The API token may not do this",
+            Kind::BadValue => "A value cannot work",
         }
     }
 
@@ -185,7 +212,12 @@ impl Kind {
             Kind::AuthdSilent => Some("Try again in a moment."),
             Kind::WorkerSilent => Some("Sign out and sign in again."),
             Kind::WrongHost => Some("Open the console by this machine's name or its address."),
-            Kind::NoTokens => Some("Sign in with a name and a password."),
+            Kind::NoTokens => Some("Check the token, or make a new one: a token ends on its date."),
+            Kind::NotAdmin => {
+                Some("Ask an administrator to make the change, or to make this account one.")
+            }
+            Kind::OutOfScope => Some("Make a token whose scopes name this area."),
+            Kind::BadValue => Some("Change the value, then try again."),
             Kind::SecondStepOnly => Some("Add a second step: you sign in again once it is added."),
             Kind::Busy => Some("Try again when someone has signed out."),
             Kind::Internal => Some("Try again; if it keeps happening, look in the log of admind."),
@@ -194,7 +226,8 @@ impl Kind {
             | Kind::Refused
             | Kind::TooBig
             | Kind::NoRoute
-            | Kind::NoMethod => None,
+            | Kind::NoMethod
+            | Kind::CommandFailed => None,
         }
     }
 }
@@ -208,28 +241,72 @@ pub struct Failure {
     pub detail: String,
     /// For [`Kind::Wait`], the seconds after which to try again.
     pub retry_after: Option<u64>,
+    /// For [`Kind::BadValue`], the argument whose value cannot work, which
+    /// the page shows the detail under.
+    pub field: Option<&'static str>,
+    /// For [`Kind::CommandFailed`], the ID the command gave, when its
+    /// action names it: the answer's `id` instead of ADM-123.
+    pub own_id: Option<String>,
+    /// For [`Kind::CommandFailed`], the command, its status and its error
+    /// output, for the page's "the program's own words".
+    pub command: Option<Value>,
 }
 
 impl Failure {
     /// A failure of `kind`, with `detail`.
     pub fn new(kind: Kind, detail: impl Into<String>) -> Failure {
-        Failure { kind, detail: detail.into(), retry_after: None }
+        Failure {
+            kind,
+            detail: detail.into(),
+            retry_after: None,
+            field: None,
+            own_id: None,
+            command: None,
+        }
+    }
+
+    /// A [`Kind::CommandFailed`] failure: `argv` ended with `status`,
+    /// saying `errors`; `detail` is its last line, and `id` the error ID
+    /// that line gave, if the action names it.
+    pub fn command(
+        id: Option<&str>,
+        detail: String,
+        argv: &[String],
+        status: i32,
+        errors: &str,
+    ) -> Failure {
+        Failure {
+            own_id: id.map(str::to_string),
+            command: Some(json!({ "argv": argv, "status": status, "errors": errors })),
+            ..Failure::new(Kind::CommandFailed, detail)
+        }
+    }
+
+    /// A [`Kind::BadValue`] failure of the argument `field`, saying `why`.
+    pub fn bad_value(field: &'static str, why: impl Into<String>) -> Failure {
+        Failure { field: Some(field), ..Failure::new(Kind::BadValue, why) }
     }
 
     /// A [`Kind::Wait`] failure that says to try again in `seconds`.
     pub fn wait(detail: impl Into<String>, seconds: u64) -> Failure {
-        Failure { kind: Kind::Wait, detail: detail.into(), retry_after: Some(seconds) }
+        Failure { retry_after: Some(seconds), ..Failure::new(Kind::Wait, detail) }
     }
 
     /// The answer's JSON.
     pub fn body(&self) -> Value {
         let mut error = json!({
-            "id": self.kind.id(),
+            "id": self.own_id.as_deref().unwrap_or(self.kind.id()),
             "title": self.kind.title(),
             "detail": self.detail,
         });
         if let Some(fix) = self.kind.fix() {
             error["fix"] = fix.into();
+        }
+        if let Some(field) = self.field {
+            error["field"] = field.into();
+        }
+        if let Some(command) = &self.command {
+            error["command"] = command.clone();
         }
         json!({ "error": error })
     }

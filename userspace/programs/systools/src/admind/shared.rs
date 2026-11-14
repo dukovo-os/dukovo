@@ -14,7 +14,7 @@
 //! stream learns of it, and of an unlock that changed, from
 //! [`Shared::changes`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -23,7 +23,9 @@ use accounts::console::Console;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use super::actions::{REGISTRY, Registered};
 use super::authd;
+use super::caller::TokenWorkers;
 use super::errors::{Failure, Kind};
 use super::files::Files;
 use super::limits::{Connections, Endings, Quiet, Tickets, Tries};
@@ -145,9 +147,14 @@ pub struct Shared {
     /// Sent to when a session ends or its unlock changes, which the event
     /// streams of the session's tabs wait for.
     pub changes: watch::Sender<()>,
-    /// The elevated commands of the test route running now.
-    #[cfg(feature = "lab")]
-    pub elevating: std::cell::Cell<usize>,
+    /// The wrong API tokens each address gave in the last minute.
+    pub wrong_tokens: RefCell<Tries>,
+    /// The workers of the API tokens in use.
+    pub token_workers: RefCell<TokenWorkers>,
+    /// The elevated commands running now, of every session and token.
+    pub elevating: Cell<usize>,
+    /// The actions the API offers: [`REGISTRY`], or a test's own.
+    pub actions: Cell<&'static [&'static dyn Registered]>,
 }
 
 impl Shared {
@@ -175,8 +182,10 @@ impl Shared {
             connections: Rc::default(),
             endings: RefCell::default(),
             changes: watch::channel(()).0,
-            #[cfg(feature = "lab")]
-            elevating: std::cell::Cell::new(0),
+            wrong_tokens: RefCell::default(),
+            token_workers: RefCell::default(),
+            elevating: Cell::new(0),
+            actions: Cell::new(REGISTRY),
         })
     }
 
@@ -281,9 +290,11 @@ impl Shared {
             drop(self.finish(session, reason));
         }
         self.tries.borrow_mut().tidy(now);
+        self.wrong_tokens.borrow_mut().tidy(now);
         self.tickets.borrow_mut().tidy(now);
         self.quiet.borrow_mut().tidy(now);
         self.refused.borrow_mut().tidy(now);
+        self.token_workers.borrow_mut().tidy(now);
     }
 
     /// Ends every session, as admind stops, waiting a moment for authd to

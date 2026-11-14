@@ -342,6 +342,11 @@ impl Link {
         }
     }
 
+    /// Whether the worker's end has gone.
+    pub fn is_closed(&self) -> bool {
+        *self.0.state.closed.borrow()
+    }
+
     /// A future that is ready once the worker's end has gone, or this
     /// link has been dropped. It holds no part of the link, so that
     /// waiting for it does not keep the worker alive.

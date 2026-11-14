@@ -23,6 +23,8 @@ use crate::admind::link::Fault;
 use crate::admind::sessions;
 use crate::admind::shared::unix_now;
 
+mod act;
+
 /// The browser's address, and what it asks for.
 const PEER: &str = "192.0.2.7";
 const HOST: &str = "nas.example:9090";
@@ -57,13 +59,18 @@ fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
         "passkey-add" => Ok(json!({ "codes": [] })),
         "trusted-forget" => Ok(json!({ "forgotten": 2 })),
         "token-add" => Ok(json!({ "token": "dkv_chase_aa" })),
+        "run" if params["argv"] == json!(["service", "list", "--json"]) => {
+            Ok(json!({ "status": 0, "output": "[{\"name\":\"nginx\"}]\n", "errors": "" }))
+        }
+        "run" => Err(Fault::new(Kind::BadRequest, "there is no command that")),
         _ => Ok(json!({ "done": true })),
     }
 }
 
-/// What the test authd answers: three accounts that sign in, as
-/// `chase` (an administrator), `alice` (who has a second step) and `eve`
-/// (who needs to add one), with the password `right`; the code `123456`;
+/// What the test authd answers: four accounts that sign in, as
+/// `chase` (an administrator), `alice` (who has a second step), `eve`
+/// (who needs to add one) and `dave` (who is not an administrator), with
+/// the password `right`; the code `123456`;
 /// the trusted browser `aa55bb66`.
 fn script(calls: Calls) -> Arc<fixture::Script> {
     Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| -> Vec<String> {
@@ -75,6 +82,7 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 ("chase", "right") => vec!["ok done 0a0b01".into()],
                 ("alice", "right") => vec!["ok step 0a0b02 app,recovery".into()],
                 ("eve", "right") => vec!["ok needs-step 0a0b03".into()],
+                ("dave", "right") => vec!["ok done 0a0b04".into()],
                 ("bob", "right") => no("bob may not use the web console"),
                 _ => no(WRONG_PASSWORD),
             },
@@ -99,23 +107,63 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
             },
             "extend" => in_15_minutes(),
             "lock" | "end" => ok(),
-            // The lab's elevated command: the four descriptors are its
-            // input, its output, its error output and its relay. It
-            // writes to the output and ends with the status 3.
-            #[cfg(feature = "lab")]
-            "elevate" if asked.text(3) == "/system/commands/locked" => {
-                no("the session is locked: unlock it to make changes")
+            "token" => match token_answer(&asked.text(0)) {
+                Some(answer) => vec![format!("ok {answer}")],
+                None => no("that API token is not known"),
+            },
+            "token-start" => {
+                fixture::worker(fds.remove(0), Arc::clone(&calls), Arc::new(worker_answers));
+                ok()
             }
-            #[cfg(feature = "lab")]
-            "elevate" => {
-                use std::io::Write;
-                let mut output = std::fs::File::from(fds.remove(1));
-                output.write_all(format!("{}\n", asked.text(4)).as_bytes()).unwrap();
-                vec!["ok 4321".into(), "ended 768".into()]
-            }
+            "elevate" => elevated(asked, fds),
             _ => no("the test's authd does not answer that"),
         }
     })
+}
+
+/// The API tokens the test authd knows: chase's `ci`, which may do
+/// anything, and `reader`, which may read services.
+const TOKEN_ALL: &str = "dkv_chase_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TOKEN_READ: &str = "dkv_chase_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/// What authd answers for the token whose hex is `hex`.
+fn token_answer(hex: &str) -> Option<&'static str> {
+    let is = |token: &str| accounts::request::hex(token.as_bytes()) == hex;
+    if is(TOKEN_ALL) {
+        Some("chase ci * 1800000000")
+    } else if is(TOKEN_READ) {
+        Some("chase reader services:read 1800000000")
+    } else {
+        None
+    }
+}
+
+/// The test authd's elevated command, whose four descriptors are its
+/// input, its output, its error output and its relay. `.../locked` is
+/// refused as a locked session's; a token's command for `guarded` is
+/// refused as authd refuses one its scopes do not name; `broken` fails
+/// with a service's error ID; `/system/commands/echo` writes its words
+/// and ends with the status 3; anything else writes its words and ends
+/// well.
+fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>) -> Vec<String> {
+    use std::io::Write;
+    let fields: Vec<String> = (0..asked.fields.len()).map(|at| asked.text(at)).collect();
+    let command = &fields[fields.iter().position(|field| field == "--").unwrap() + 1..];
+    if command[0] == "/system/commands/locked" {
+        return vec!["no the session is locked: unlock it to make changes".into()];
+    }
+    if fields[0] == "token" && command.get(1).is_some_and(|word| word == "guarded") {
+        return vec![format!("no the API token may not change {} as an administrator", fields[2])];
+    }
+    let mut output = std::fs::File::from(fds.remove(1));
+    let mut errors = std::fs::File::from(fds.remove(1));
+    if command.get(1).is_some_and(|word| word == "broken") {
+        errors.write_all(b"starting broken\nbroken.conf did not load (SVC-104)\n").unwrap();
+        return vec!["ok 4321".into(), "ended 256".into()];
+    }
+    output.write_all(format!("{}\n", command[1..].join(" ")).as_bytes()).unwrap();
+    let status = if command[0] == "/system/commands/echo" { 768 } else { 0 };
+    vec!["ok 4321".into(), format!("ended {status}")]
 }
 
 fn world(what: &str) -> World {
@@ -267,11 +315,17 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_each_address_is_one_rou
         let other = if entry.verb == Verb::Get { Verb::Post } else { Verb::Get };
         assert!(matches!(lookup(other, entry.path), Lookup::WrongVerb), "{}", entry.path);
         // What only reads is a GET, and what changes anything is a POST.
-        let reads =
-            [Route::Health, Route::Fingerprint, Route::Session, Route::Events, Route::Steps];
+        let reads = [
+            Route::Health,
+            Route::Fingerprint,
+            Route::Session,
+            Route::Events,
+            Route::Steps,
+            Route::Actions,
+        ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 25 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 26 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -340,26 +394,6 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
     ] {
         assert_eq!(access(full), Access::Full, "{full:?}");
     }
-}
-
-#[test]
-fn an_api_token_is_a_bearer_of_dkv_and_nothing_else_is() {
-    let with = |value: &str| {
-        let mut headers = HeaderMap::new();
-        headers.append(header::AUTHORIZATION, HeaderValue::from_str(value).unwrap());
-        offers_token(&headers)
-    };
-    assert!(with("Bearer dkv_chase_00ff"));
-    assert!(with("bearer   dkv_chase_00ff"));
-    assert!(!with("Bearer abc"));
-    assert!(!with("Basic dkv_chase_00ff"));
-    assert!(!with("dkv_chase_00ff"));
-    assert!(!offers_token(&HeaderMap::new()));
-    // A second header cannot hide a token behind a first that is none.
-    let mut two = HeaderMap::new();
-    two.append(header::AUTHORIZATION, HeaderValue::from_static("Basic abc"));
-    two.append(header::AUTHORIZATION, HeaderValue::from_static("Bearer dkv_a_00"));
-    assert!(offers_token(&two));
 }
 
 #[test]
@@ -502,25 +536,31 @@ fn a_host_that_is_not_this_machines_is_not_answered_whatever_it_asks_for() {
 }
 
 #[test]
-fn an_api_token_is_refused_and_a_token_with_a_session_is_a_bad_request() {
+fn an_api_token_is_for_the_actions_alone_and_never_with_a_session() {
     run(async {
         let world = world("tokens");
-        let token = get("/api/1/health").with("authorization", Some("Bearer dkv_chase_00ff"));
-        let answered = send(&world, token).await;
-        assert_eq!((answered.status, answered.error().as_str()), (401, "ADM-115"));
-        let both = get("/api/1/health")
-            .with("authorization", Some("Bearer dkv_chase_00ff"))
+        let bearer = format!("Bearer {TOKEN_ALL}");
+        // A route of the table is for the console's pages.
+        let health = get("/api/1/health").with("authorization", Some(&bearer));
+        let answered = send(&world, health).await;
+        assert_eq!((answered.status, answered.error().as_str()), (403, "ADM-124"));
+        let session = get("/api/1/session").with("authorization", Some(&bearer));
+        assert_eq!(send(&world, session).await.error(), "ADM-124");
+        let both = get("/api/1/actions")
+            .with("authorization", Some(&bearer))
             .with("cookie", Some("__Host-dukovo=abc"));
         let answered = send(&world, both).await;
         assert_eq!((answered.status, answered.error().as_str()), (400, "ADM-108"));
-        // Another kind of authorization is no token.
+        // Another kind of authorization is no token, and is let be.
         let basic = get("/api/1/health").with("authorization", Some("Basic YTpi"));
         assert_eq!(send(&world, basic).await.status, 200);
         // The host is checked before the token is.
-        let elsewhere = get("/api/1/health")
+        let elsewhere = get("/api/1/actions")
             .with("host", Some("evil.example"))
-            .with("authorization", Some("Bearer dkv_chase_00ff"));
+            .with("authorization", Some(&bearer));
         assert_eq!(send(&world, elsewhere).await.status, 421);
+        // None of it asked authd about the token.
+        assert!(!world.console.authd.verbs().contains(&"token".to_string()));
     });
 }
 
@@ -1245,10 +1285,7 @@ fn the_lab_route_runs_a_command_for_an_unlocked_session_and_gives_its_output_and
         };
         let done = send(&world, run(json!(["/system/commands/echo", "hello there"]))).await;
         assert_eq!(done.status, 200, "{}", done.body);
-        assert_eq!(
-            done.json(),
-            json!({ "process": "4321", "output": "hello there\n", "status": 3 })
-        );
+        assert_eq!(done.json(), json!({ "output": "hello there\n", "errors": "", "status": 3 }));
         // One line of words is the same command.
         let line = send(&world, run(json!("/system/commands/echo hi"))).await;
         assert_eq!(line.json()["output"], "hi\n");

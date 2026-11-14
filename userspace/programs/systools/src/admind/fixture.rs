@@ -187,15 +187,17 @@ pub struct Console {
     pub _folder: Scratch,
 }
 
-/// The accounts the tests sign in: an administrator, a person who is
-/// not, and the account of the second step.
+/// The accounts the tests sign in: administrators, people who are not,
+/// and the account of the second step.
 pub const PASSWD: &str = "root:x:0:0:root:/system/root:/system/commands/nukesh\n\
                           chase:x:1000:1000:Chase Y,,:/users/chase:/system/commands/nukesh\n\
                           bob:x:1001:1001::/users/bob:/system/commands/nukesh\n\
                           alice:x:1002:1002:Alice,,:/users/alice:/system/commands/nukesh\n\
-                          eve:x:1003:1003::/users/eve:/system/commands/nukesh\n";
+                          eve:x:1003:1003::/users/eve:/system/commands/nukesh\n\
+                          dave:x:1004:1004::/users/dave:/system/commands/nukesh\n";
 /// Their groups.
 pub const GROUP: &str = "root:x:0:\nchase:x:1000:\nbob:x:1001:\nalice:x:1002:\neve:x:1003:\n\
+                         dave:x:1004:\n\
                          admins:x:10:chase,alice\n";
 
 /// The page the test console serves.

@@ -10,19 +10,25 @@
 //!    KiB, before anything looks at what it asks for;
 //! 2. its `Host` names this machine, or it is not answered (421: no other
 //!    name's DNS may point a browser here);
-//! 3. it brings no API token, and not a token and a session cookie both;
-//!    tokens are not taken yet;
-//! 4. its address is a route's, or a file's, or there is none;
-//! 5. the route's access: a route for the signed in wants a session (401
+//! 3. it brings an API token or a session cookie, not both, and a token
+//!    only as one `Authorization: Bearer` header ([`caller`]);
+//! 4. its address is a route's, an action's ([`actions`]), or a file's,
+//!    or there is none;
+//! 5. a token is only for the actions and the action list, and authd must
+//!    take it (401 for a token it does not);
+//! 6. the route's access: a route for the signed in wants a session (401
 //!    with the cookie cleared, once it has ended), and one that is not for a
 //!    session that may only add a second step wants one that may do more;
-//! 6. a request that changes anything passes the checks of [`guard`]:
+//! 7. a request that changes anything passes the checks of [`guard`]:
 //!    the session's three for the signed in, `Origin` and `Sec-Fetch-Site`
 //!    for the sign-in routes, which also take their share of the ten an
-//!    address may make in a minute;
-//! 7. its body, which only a request that passed the checks above is
+//!    address may make in a minute; a token's request needs none, since a
+//!    browser sends no token by itself;
+//! 8. its body, which only a request that passed the checks above is
 //!    allowed to send, is JSON and at most 64 KiB before sign-in and 1 MiB
-//!    after.
+//!    after;
+//! 9. for an action, its arguments are checked, then whether the caller may
+//!    ask for it ([`actions::authorize`]), before its command runs.
 //!
 //! Every answer carries [`guard::headers`] and no `Server` header; an answer
 //! of the API is `no-store`, a file `no-cache`. [`sign_in`] holds the
@@ -35,6 +41,7 @@
 //! browser's address.
 
 mod account;
+mod act;
 mod events;
 #[cfg(feature = "lab")]
 mod lab;
@@ -59,7 +66,9 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use super::actions::{self, Found, Params, Registered};
 use super::authd;
+use super::caller;
 use super::errors::{self, Attempt, Failure, Kind};
 use super::files::File;
 use super::guard::{self, SESSION_COOKIE};
@@ -189,6 +198,9 @@ enum Access {
     Limited,
     /// A signed-in session that may do all that is a person's.
     Full,
+    /// What [`Access::Full`] allows, or an API token: the actions and
+    /// their list.
+    Api,
 }
 
 /// The routes of the API, and the files.
@@ -220,6 +232,7 @@ enum Route {
     TrustedForget,
     TokenAdd,
     TokenRemove,
+    Actions,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -293,9 +306,58 @@ const TABLE: &[Entry] = &[
     ),
     entry(Verb::Post, "/api/1/account/tokens/add", Route::TokenAdd, Access::Full),
     entry(Verb::Post, "/api/1/account/tokens/remove", Route::TokenRemove, Access::Full),
+    entry(Verb::Get, "/api/1/actions", Route::Actions, Access::Api),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
+
+/// What a request asks for: a route of the table, or an action with the
+/// arguments its address gives.
+enum Target {
+    Route(&'static Entry),
+    Action(&'static dyn Registered, Params),
+}
+
+impl Target {
+    fn access(&self) -> Access {
+        match self {
+            Target::Route(entry) => entry.access,
+            Target::Action(..) => Access::Api,
+        }
+    }
+}
+
+/// What a request with `verb` for `path` asks for: a route of the table,
+/// or else an action's address. An action is a `GET` or a `POST`, never a
+/// `HEAD`, which would run a read for nothing.
+fn target(
+    actions: &'static [&'static dyn Registered],
+    verb: Verb,
+    path: &str,
+) -> Result<Target, Failure> {
+    let method = || no_method_of(verb);
+    match lookup(verb, path) {
+        Lookup::Found(entry) => return Ok(Target::Route(entry)),
+        Lookup::WrongVerb => return Err(method()),
+        Lookup::Missing => {}
+    }
+    match actions::find(actions, verb == Verb::Post, path) {
+        Found::Action(_, _) if verb == Verb::Head => Err(method()),
+        Found::Action(action, params) => Ok(Target::Action(action, params)),
+        Found::WrongMethod => Err(method()),
+        Found::None => Err(Failure::new(Kind::NoRoute, "the console has no such route")),
+    }
+}
+
+/// The failure for a verb that the address does not take.
+fn no_method_of(verb: Verb) -> Failure {
+    let name = match verb {
+        Verb::Get => "GET",
+        Verb::Post => "POST",
+        Verb::Head => "HEAD",
+    };
+    Failure::new(Kind::NoMethod, format!("{name} is not used here"))
+}
 
 /// What the table makes of a request.
 #[derive(Debug)]
@@ -318,16 +380,6 @@ fn lookup(verb: Verb, path: &str) -> Lookup {
         Some(_) => Lookup::WrongVerb,
         None => Lookup::Missing,
     }
-}
-
-/// Whether `authorization` offers an API token, which is `Bearer` and the
-/// name of a token, `dkv_`.
-fn offers_token(headers: &HeaderMap) -> bool {
-    headers.get_all(header::AUTHORIZATION).iter().any(|value| {
-        value.to_str().ok().and_then(|text| text.split_once(' ')).is_some_and(|(scheme, token)| {
-            scheme.eq_ignore_ascii_case("bearer") && token.trim_start().starts_with("dkv_")
-        })
-    })
 }
 
 /// Whether `content_type` is JSON, as `application/json` with parameters
@@ -496,17 +548,24 @@ where
     let verb = verb_of(head)?;
     let (host, origin) = host_of(shared, &head.headers)?;
     let cookie = cookie_of(&head.headers, SESSION_COOKIE);
-    refuse_token(&head.headers, cookie.is_some())?;
-    let entry = match lookup(verb, head.uri.path()) {
-        Lookup::Found(entry) => entry,
-        Lookup::WrongVerb => return Err(no_method(&head.method)),
-        Lookup::Missing => {
-            return Err(Failure::new(Kind::NoRoute, "the console has no such route"));
+    let token = caller::bearer(&head.headers)?;
+    if token.is_some() && cookie.is_some() {
+        let why = "a request brings an API token or a session, not both";
+        return Err(Failure::new(Kind::BadRequest, why));
+    }
+    let target = target(shared.actions.get(), verb, head.uri.path())?;
+    let access = target.access();
+    let token = match token {
+        Some(_) if access != Access::Api => {
+            let why = "an API token is for the actions and their list, not for this route";
+            return Err(Failure::new(Kind::OutOfScope, why));
         }
+        Some(token) => Some(caller::check(shared, peer, token).await?),
+        None => None,
     };
     let live = cookie.and_then(|cookie| live(shared, cookie));
-    check(shared, peer, head, entry, live.as_ref(), &origin)?;
-    let signed_in = matches!(entry.access, Access::Limited | Access::Full);
+    check(shared, peer, head, access, live.as_ref(), token.is_some(), &origin)?;
+    let signed_in = matches!(access, Access::Limited | Access::Full | Access::Api);
     let body = if verb == Verb::Post {
         read_body(&head.headers, body, signed_in).await?
     } else {
@@ -522,7 +581,10 @@ where
         trust: cookie_of(&head.headers, guard::TRUST_COOKIE).map(str::to_string),
         user_agent: single(&head.headers, &header::USER_AGENT).unwrap_or_default().to_string(),
     };
-    dispatch(&cx, entry.route, live).await
+    match target {
+        Target::Route(entry) => dispatch(&cx, entry.route, live).await,
+        Target::Action(action, params) => act::action(&cx, action, params, live, token).await,
+    }
 }
 
 /// The failure for a method that the route does not take.
@@ -559,33 +621,24 @@ fn brings_cookie(headers: &HeaderMap, name: &str) -> bool {
     })
 }
 
-/// Refuses a request that brings an API token, which the console takes
-/// from no one yet: `session` says whether it has a session cookie too.
-fn refuse_token(headers: &HeaderMap, session: bool) -> Result<(), Failure> {
-    if !offers_token(headers) {
-        return Ok(());
-    }
-    Err(if session {
-        Failure::new(Kind::BadRequest, "a request brings an API token or a session, not both")
-    } else {
-        Failure::new(Kind::NoTokens, "this console does not take an API token yet")
-    })
-}
-
 /// The checks of a request for `entry` that come before its body is read,
 /// as the module says; `live` is its session, if it has one.
 fn check(
     shared: &Shared,
     peer: IpAddr,
     head: &Parts,
-    entry: &Entry,
+    access: Access,
     live: Option<&Live>,
+    token: bool,
     origin: &str,
 ) -> Result<(), Failure> {
     let fetch_site = single(&head.headers, &HeaderName::from_static("sec-fetch-site"));
     let given_origin = single(&head.headers, &header::ORIGIN);
-    match (entry.access, live) {
+    match (access, live) {
         (Access::Anyone, _) => Ok(()),
+        // authd took the token; a browser never sends one by itself, so a
+        // request that brings one was made on purpose.
+        (Access::Api, None) if token => Ok(()),
         (Access::SignIn, _) => {
             if let Some(why) = guard::sign_in_refusal(given_origin, fetch_site, origin) {
                 return Err(Failure::new(Kind::ForeignRequest, why));
@@ -595,12 +648,12 @@ fn check(
                 Failure::wait("too many sign-in requests from this address", seconds)
             })
         }
-        (Access::Limited | Access::Full, None) => Err(ended()),
-        (Access::Full, Some(live)) if live.needs_step => Err(Failure::new(
+        (Access::Limited | Access::Full | Access::Api, None) => Err(ended()),
+        (Access::Full | Access::Api, Some(live)) if live.needs_step => Err(Failure::new(
             Kind::SecondStepOnly,
             "this session may add a second step and sign out, and nothing else yet",
         )),
-        (Access::Limited | Access::Full, Some(live)) => {
+        (Access::Limited | Access::Full | Access::Api, Some(live)) => {
             let token = single(&head.headers, &HeaderName::from_static(guard::CSRF_HEADER));
             let method = head.method.as_str();
             match guard::csrf_refusal(method, given_origin, fetch_site, token, origin, &live.csrf) {
@@ -640,6 +693,8 @@ async fn dispatch(cx: &Context<'_>, route: Route, live: Option<Live>) -> Outcome
         (Route::TrustedForget, Some(live)) => account::trusted_forget(&live).await,
         (Route::TokenAdd, Some(live)) => account::token_add(cx, &live).await,
         (Route::TokenRemove, Some(live)) => account::token_remove(cx, &live).await,
+        // For a session or a token, which `check` has let through.
+        (Route::Actions, _) => Ok(Reply::json(actions::listed(cx.shared.actions.get()))),
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which

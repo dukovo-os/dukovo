@@ -47,7 +47,9 @@
 //! so that the lab can see what an elevated session does. The build that
 //! ships has no such route.
 
+mod actions;
 mod authd;
+mod caller;
 mod errors;
 mod files;
 #[cfg(test)]
@@ -57,6 +59,8 @@ mod limits;
 mod link;
 mod reach;
 mod routes;
+mod run;
+mod scopes;
 mod serve;
 mod sessions;
 mod shared;
