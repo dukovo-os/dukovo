@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# PostgreSQL from the catalog runs its own test suites on real hardware, and
+# runs as a service (ADRs 0521 and 0522). It is installed for everyone. Every
+# program of the bundle starts, a server the lab account runs by hand has a
+# cluster on the disk, not in the memory of /tmp, for the suites' writes to
+# be real ones, and its programs for backups, checks and maintenance work on
+# it. Then the core's suite, PL/pgSQL's, the isolation tests and each contrib
+# module's, with the isolation tests of the modules that have them, run on
+# it, leaving out only the tests that postgresql-skips.txt lists, each with
+# the reason it fails on Dukovo: pg_regress has no list of tests to leave
+# out, so the script makes each suite's schedule without them
+# (postgresql-suites.sh). The server stops and its cluster goes.
+#
+# The service then starts for the first time and makes its own cluster. The
+# administrator reaches it as root and the lab account as itself, by the
+# accounts the kernel names; the service stops with a session open, within
+# 10 seconds, and starts again without recovering; Spark runs its backup
+# hook, which checkpoints. PHP's own tests of its PostgreSQL extensions run
+# against it, expecting what php-skips.txt lists to be all that fails, and
+# pgbench loads it with 8 clients for a minute as a role of its own. The
+# tps line it prints stays in the results, to compare with Linux.
+about = "PostgreSQL from the catalog passes its own test suites but for the tests postgresql-skips.txt lists, and its service keeps a cluster, stops quickly and runs PHP's PostgreSQL tests and pgbench (ADRs 0521 and 0522)"
+time = "90m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.postgresql.postgresql {machine} {machine-port:22}"
+expect = "copied: org.postgresql.postgresql"
+[[step]]
+host = "sh {here}/copy-bundle.sh net.php.php {machine} {machine-port:22}"
+expect = "copied: net.php.php"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/postgresql-suites.sh {machine} {machine-port:22}"
+expect = "copied: postgresql-suites.sh"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/postgresql-service.sh {machine} {machine-port:22}"
+expect = "copied: postgresql-service.sh"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/postgresql-skips.txt {machine} {machine-port:22}"
+expect = "copied: postgresql-skips.txt"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/php-skips.txt {machine} {machine-port:22}"
+expect = "copied: php-skips.txt"
+# From nothing: a run before may have left either installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.postgresql.postgresql > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.postgresql.postgresql.dkv | tail -1'"
+root = true
+expect = "installed org.postgresql.postgresql"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge net.php.php > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/net.php.php.dkv | tail -1'"
+root = true
+expect = "installed net.php.php"
+[[step]]
+run = "/applications/org.postgresql.postgresql/bin/postgres --version"
+expect = "postgres (PostgreSQL) 19"
+
+# The suites run as the lab account, from the programs' paths, as a script
+# runs them, so no question is asked. Each step of the script prints what
+# it found: a suite its summary, the others the checks that held.
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh commands"
+expect = "commands 36 of 36"
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh cluster"
+expect = "ok-cluster"
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh tools"
+expect = "tools 13 of 13"
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh core"
+expect = "regress: All "
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh plpgsql"
+expect = "plpgsql: All "
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh isolation"
+expect = "isolation: All "
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh contrib"
+expect = "contrib: 0 failed of"
+[[step]]
+run = "sh /users/lab/postgresql-suites.sh finish"
+expect = "finish 3 of 3"
+
+# The service. Its first start makes the cluster, and the service is
+# ready once the server takes connections. The administrator makes the
+# lab account's role, and the account connects by peer authentication.
+[[step]]
+run = "service postgresql enable"
+root = true
+[[step]]
+run = "sh /users/lab/postgresql-service.sh ready"
+root = true
+expect = "ready 3 of 3"
+[[step]]
+run = "/applications/org.postgresql.postgresql/bin/psql -d postgres -X -A -t -c 'SELECT current_user'"
+expect = "lab"
+[[step]]
+run = "sh /users/lab/postgresql-service.sh prepare"
+root = true
+expect = "prepare 4 of 4"
+[[step]]
+run = "sh /users/lab/postgresql-service.sh stop"
+root = true
+expect = "stop 5 of 5"
+[[step]]
+run = "sh /users/lab/postgresql-service.sh hook"
+root = true
+expect = "hook 1 of 1"
+
+# PHP's tests of its PostgreSQL extensions, on a writable copy of the suite
+# as php.toml runs it, against the database `test`. The list holds only
+# those of ext/pgsql and ext/pdo_pgsql, without the ones php-skips.txt
+# names; the tests share the database, as they do on PHP's own continuous
+# integration, with 4 workers.
+[[step]]
+run = '''sh -c 'rm -rf /tmp/php-tests && cp -R /applications/net.php.php/tests /tmp/php-tests && chmod -R u+w /tmp/php-tests && grep -v -e "^#" -e "^$" /users/lab/php-skips.txt | sed "s|^|/tmp/php-tests/|" > /tmp/php-skips && find /tmp/php-tests/ext/pgsql/tests /tmp/php-tests/ext/pdo_pgsql/tests -name "*.phpt" | sort | grep -v -F -f /tmp/php-skips > /tmp/php-list && test $(wc -l < /tmp/php-list) -gt 100 && echo listed' '''
+expect = "listed"
+[[step]]
+run = '''sh -c 'cd /tmp/php-tests && PGSQL_TEST_CONNSTR="host=127.0.0.1 dbname=test user=phptest password=phptest-pw" PDO_PGSQL_TEST_DSN="pgsql:host=127.0.0.1 dbname=test user=phptest password=phptest-pw" TEST_PHP_EXECUTABLE=/applications/net.php.php/bin/php /applications/net.php.php/bin/php run-tests.php -j4 -q -r /tmp/php-list > /tmp/php-pgsql.log 2>&1; grep "^Tests failed" /tmp/php-pgsql.log' '''
+expect = "Tests failed    :     0 ("
+
+# pgbench as the role bench, over the network as an application connects:
+# the tables of scale 20, then 8 clients on 4 threads for a minute. It
+# prints how many transactions failed and its rate, which stays in the
+# results.
+[[step]]
+run = '''sh -c 'PGPASSWORD=bench-pw /applications/org.postgresql.postgresql/bin/pgbench -h 127.0.0.1 -U bench -i -s 20 bench 2>&1 | tail -n 1' '''
+expect = "done in"
+[[step]]
+run = '''sh -c 'PGPASSWORD=bench-pw /applications/org.postgresql.postgresql/bin/pgbench -h 127.0.0.1 -U bench -c 8 -j 4 -T 60 -P 10 bench > /tmp/pgbench.log 2>&1; grep -e "number of failed transactions" -e "^tps" /tmp/pgbench.log' '''
+expect = "number of failed transactions: 0 (0.000%)"
+
+# The service's cluster goes with the bundle: the purge removes its data.
+[[step]]
+run = "rm -rf /tmp/php-tests"
+[[step]]
+run = "bundle remove --for-everyone --purge net.php.php"
+root = true
+expect = "removed net.php.php"
+[[step]]
+run = "bundle remove --for-everyone --purge org.postgresql.postgresql"
+root = true
+expect = "removed org.postgresql.postgresql"
