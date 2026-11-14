@@ -18,9 +18,9 @@
 //! and the HTTPS server of its settings turned on, a restart has it serve
 //! HTTPS too, to a client that trusts that certificate and no other; three
 //! reloads while 300 requests come over HTTP and HTTPS lose none of them.
-//! `log nginx` holds a line for each request, and its process number's
-//! file is the account's; set to log requests to a file of its data
-//! folder's logs folder, it does. The power button ends it.
+//! Its log, `log nginx`, holds a line for each request, and its process
+//! number's file is the account's; set to log requests to a file of its
+//! data folder's logs folder, it does. The power button ends it.
 
 use super::super::*;
 
