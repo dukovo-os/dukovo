@@ -45,6 +45,7 @@
 
 mod account;
 mod act;
+mod changes;
 mod events;
 #[cfg(feature = "lab")]
 mod lab;
@@ -78,7 +79,7 @@ use super::guard::{self, SESSION_COOKIE};
 use super::link::Link;
 use super::log;
 use super::reach;
-use super::shared::Shared;
+use super::shared::{Shared, unix_now};
 
 /// The longest address a request may ask for, with its query.
 const ADDRESS_MAX: usize = 2048;
@@ -239,6 +240,10 @@ enum Route {
     PreferencesChange,
     Actions,
     Show,
+    Changes,
+    Change,
+    Keep,
+    PutBack,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -259,8 +264,10 @@ const fn entry(verb: Verb, path: &'static str, route: Route, access: Access) -> 
 /// What a file is answered with, whoever asks.
 const FILE: Entry = entry(Verb::Get, "", Route::File, Access::Anyone);
 
-/// Every route of the API. The second-step routes, `session`, `sign-out`
-/// and `events` are those a session that may only add a second step uses.
+/// Every route of the API; a `{name}` in an address is one part of it that
+/// the handler reads as an argument. The second-step routes, `session`,
+/// `sign-out` and `events` are those a session that may only add a second
+/// step uses.
 const TABLE: &[Entry] = &[
     entry(Verb::Get, "/api/1/health", Route::Health, Access::Anyone),
     entry(Verb::Get, "/api/1/fingerprint", Route::Fingerprint, Access::Anyone),
@@ -316,6 +323,10 @@ const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/account/preferences", Route::PreferencesChange, Access::Full),
     entry(Verb::Get, "/api/1/actions", Route::Actions, Access::Api),
     entry(Verb::Post, "/api/1/show", Route::Show, Access::Api),
+    entry(Verb::Get, "/api/1/changes", Route::Changes, Access::Full),
+    entry(Verb::Get, "/api/1/changes/{id}", Route::Change, Access::Full),
+    entry(Verb::Post, "/api/1/changes/{id}/keep", Route::Keep, Access::Full),
+    entry(Verb::Post, "/api/1/changes/{id}/put-back", Route::PutBack, Access::Full),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
@@ -323,14 +334,15 @@ const TABLE: &[Entry] = &[
 /// What a request asks for: a route of the table, or an action with the
 /// arguments its address gives.
 enum Target {
-    Route(&'static Entry),
+    /// A route of the table, with the arguments its address gives.
+    Route(&'static Entry, Params),
     Action(&'static dyn Registered, Params),
 }
 
 impl Target {
     fn access(&self) -> Access {
         match self {
-            Target::Route(entry) => entry.access,
+            Target::Route(entry, _) => entry.access,
             Target::Action(..) => Access::Api,
         }
     }
@@ -346,7 +358,7 @@ fn target(
 ) -> Result<Target, Failure> {
     let method = || no_method_of(verb);
     match lookup(verb, path) {
-        Lookup::Found(entry) => return Ok(Target::Route(entry)),
+        Lookup::Found(entry, params) => return Ok(Target::Route(entry, params)),
         Lookup::WrongVerb => return Err(method()),
         Lookup::Missing => {}
     }
@@ -371,7 +383,7 @@ fn no_method_of(verb: Verb) -> Failure {
 /// What the table makes of a request.
 #[derive(Debug)]
 enum Lookup {
-    Found(&'static Entry),
+    Found(&'static Entry, Params),
     /// The address is a route's, which takes another verb.
     WrongVerb,
     /// No route has the address.
@@ -379,15 +391,20 @@ enum Lookup {
 }
 
 /// The route for `verb` and `path`: an address of the API must be in the
-/// table, once for each verb it takes; any other is a file's, which `GET`
-/// and `HEAD` ask for.
+/// table, once for each verb it takes, whose `{name}` parts each take one
+/// part of it; any other is a file's, which `GET` and `HEAD` ask for.
 fn lookup(verb: Verb, path: &str) -> Lookup {
     if path != "/api" && !path.starts_with("/api/") {
-        return if verb == Verb::Post { Lookup::WrongVerb } else { Lookup::Found(&FILE) };
+        return if verb == Verb::Post {
+            Lookup::WrongVerb
+        } else {
+            Lookup::Found(&FILE, Params::new())
+        };
     }
-    let here = || TABLE.iter().filter(|entry| entry.path == path);
-    match here().find(|entry| entry.verb == verb) {
-        Some(entry) => Lookup::Found(entry),
+    let here =
+        || TABLE.iter().filter_map(|entry| Some((entry, actions::matches(entry.path, path)?)));
+    match here().find(|(entry, _)| entry.verb == verb) {
+        Some((entry, params)) => Lookup::Found(entry, params),
         None if here().next().is_some() => Lookup::WrongVerb,
         None => Lookup::Missing,
     }
@@ -429,6 +446,10 @@ struct Context<'a> {
     peer: IpAddr,
     /// The address the request asks for, without its query.
     path: String,
+    /// What a `{name}` in the route's address stands for.
+    params: Params,
+    /// The query of the address: what follows its `?`.
+    query: String,
     /// The name or address the browser asked for, in lower case: the
     /// relying party of a passkey.
     host: String,
@@ -441,6 +462,32 @@ struct Context<'a> {
 }
 
 impl Context<'_> {
+    /// The value of `name` in the address's query, if it is given and not
+    /// empty. A value is not decoded: the routes that take one want
+    /// numbers.
+    fn query(&self, name: &str) -> Option<&str> {
+        self.query
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value)
+            .filter(|value| !value.is_empty())
+    }
+
+    /// The number the address gives as `{id}`, for a change or a task.
+    ///
+    /// # Errors
+    ///
+    /// ADM-127 for what is not a number the console could have given.
+    fn id(&self) -> Result<i64, Failure> {
+        self.params
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<i64>().ok())
+            .filter(|id| *id > 0)
+            .ok_or_else(|| Failure::new(Kind::NotKept, "that is not a number the console gave"))
+    }
+
     /// The body as the JSON `T`, or `T`'s default for a request with no
     /// body.
     fn optional_json<T: DeserializeOwned + Default>(&self) -> Result<T, Failure> {
@@ -503,6 +550,12 @@ fn live(shared: &Shared, cookie: &str) -> Option<Live> {
             link: session.worker.clone(),
         }
     })
+}
+
+/// Whether the session of `cookie` is unlocked now.
+fn unlocked(shared: &Shared, cookie: &str) -> bool {
+    let until = shared.with_session(cookie, |session| session.unlocked_until);
+    until.flatten().is_some_and(|until| until > unix_now())
 }
 
 /// The value of the only header `name`, if there is exactly one and it
@@ -582,10 +635,16 @@ where
     } else {
         Bytes::new()
     };
+    let params = match &target {
+        Target::Route(_, params) => params.clone(),
+        Target::Action(..) => Params::new(),
+    };
     let cx = Context {
         shared,
         peer,
         path: head.uri.path().to_string(),
+        params,
+        query: head.uri.query().unwrap_or_default().to_string(),
         host,
         origin,
         body,
@@ -593,7 +652,7 @@ where
         user_agent: single(&head.headers, &header::USER_AGENT).unwrap_or_default().to_string(),
     };
     match target {
-        Target::Route(entry) => dispatch(&cx, entry.route, live, token).await,
+        Target::Route(entry, _) => dispatch(&cx, entry.route, live, token).await,
         Target::Action(action, params) => act::action(&cx, action, params, live, token).await,
     }
 }
@@ -715,6 +774,10 @@ async fn dispatch(
         // For a session or a token, which `check` has let through.
         (Route::Actions, _) => Ok(Reply::json(actions::listed(cx.shared.actions.get()))),
         (Route::Show, _) => act::show(cx, token.as_ref()),
+        (Route::Changes, _) => changes::list(cx),
+        (Route::Change, _) => changes::one(cx),
+        (Route::Keep, Some(live)) => changes::keep(cx, &live),
+        (Route::PutBack, Some(live)) => changes::put_back(cx, &live).await,
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which

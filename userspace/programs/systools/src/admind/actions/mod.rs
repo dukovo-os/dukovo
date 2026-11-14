@@ -398,8 +398,9 @@ pub fn find(actions: &'static [&'static dyn Registered], post: bool, path: &str)
     if wrong_method { Found::WrongMethod } else { Found::None }
 }
 
-/// The arguments `path` gives when it is an address of `template`.
-fn matches(template: &str, path: &str) -> Option<Params> {
+/// The arguments `path` gives when it is an address of `template`, whose
+/// `{name}` parts are each one argument.
+pub fn matches(template: &str, path: &str) -> Option<Params> {
     let mut params = Params::new();
     let mut given = path.split('/');
     for part in template.split('/') {
@@ -517,19 +518,38 @@ pub fn authorize(caller: &Caller<'_>, action: &dyn Registered) -> Result<(), Fai
     match *caller {
         Caller::Token { name, scopes } => token_may(name, scopes, action.area(), action.changes()),
         Caller::Session { name, admin, unlocked } => {
-            if !elevated {
-                Ok(())
-            } else if !admin {
-                Err(Failure::new(
-                    Kind::NotAdmin,
-                    format!("{name}'s account can look at {} but not change it", action.area()),
-                ))
-            } else if !unlocked {
-                Err(Failure::new(Kind::Locked, "unlock the console to make this change"))
+            if elevated {
+                session_may_elevate(name, admin, unlocked, action.area())
             } else {
                 Ok(())
             }
         }
+    }
+}
+
+/// Whether the session of `name`, an administrator's or not and unlocked
+/// or not, may make a change that runs as an administrator to what `area`
+/// holds: only an administrator's unlocked session.
+///
+/// # Errors
+///
+/// ADM-122 for a person who is not an administrator, ADM-106 for an
+/// administrator's locked session.
+pub fn session_may_elevate(
+    name: &str,
+    admin: bool,
+    unlocked: bool,
+    area: &str,
+) -> Result<(), Failure> {
+    if !admin {
+        Err(Failure::new(
+            Kind::NotAdmin,
+            format!("{name}'s account can look at {area} but not change it"),
+        ))
+    } else if !unlocked {
+        Err(Failure::new(Kind::Locked, "unlock the console to make this change"))
+    } else {
+        Ok(())
     }
 }
 

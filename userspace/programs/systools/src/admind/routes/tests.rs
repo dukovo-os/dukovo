@@ -24,6 +24,7 @@ use crate::admind::sessions;
 use crate::admind::shared::unix_now;
 
 mod act;
+mod changes;
 
 /// The browser's address, and what it asks for.
 const PEER: &str = "192.0.2.7";
@@ -356,7 +357,7 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
         );
         assert!(entry.path.starts_with("/api/1/"), "{}", entry.path);
         assert!(
-            matches!(lookup(entry.verb, entry.path), Lookup::Found(found) if found.route == entry.route)
+            matches!(lookup(entry.verb, entry.path), Lookup::Found(found, _) if found.route == entry.route)
         );
         // No verb that the table does not give the address finds it.
         assert!(matches!(lookup(Verb::Head, entry.path), Lookup::WrongVerb), "{}", entry.path);
@@ -369,17 +370,19 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::Steps,
             Route::Preferences,
             Route::Actions,
+            Route::Changes,
+            Route::Change,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 29 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 33 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/2/health"), Lookup::Missing));
     // A path that only starts like the API's is a file's.
     assert!(
-        matches!(lookup(Verb::Get, "/apiary"), Lookup::Found(entry) if entry.route == Route::File)
+        matches!(lookup(Verb::Get, "/apiary"), Lookup::Found(entry, _) if entry.route == Route::File)
     );
 }
 
@@ -388,7 +391,7 @@ fn files_are_for_get_and_head_alone_and_a_post_to_a_page_is_the_wrong_verb() {
     for path in ["/", "/app.js", "/accounts/users", "/x.png"] {
         for verb in [Verb::Get, Verb::Head] {
             assert!(
-                matches!(lookup(verb, path), Lookup::Found(entry) if entry.route == Route::File),
+                matches!(lookup(verb, path), Lookup::Found(entry, _) if entry.route == Route::File),
                 "{path}"
             );
         }

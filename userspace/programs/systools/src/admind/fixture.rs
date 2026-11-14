@@ -26,6 +26,7 @@ use super::files::Files;
 use super::link::{self, Fault};
 use super::reach::Network;
 use super::shared::{Identity, Shared, unix_now};
+use super::store::Store;
 use super::tls;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -237,8 +238,14 @@ impl Console {
         let loopback = Network { ip: [127, 0, 0, 1].into(), prefix: 8 };
         let identity = Identity::new("nas", vec![loopback], &certificate.names);
         let authd = Authd::start(what, script);
-        let mut shared =
-            Shared::new(Settings::default(), identity, certificate, files, &authd.path);
+        let mut shared = Shared::new(
+            Settings::default(),
+            identity,
+            certificate,
+            files,
+            &authd.path,
+            Some(Store::in_memory()),
+        );
         let passwd = folder.0.join("passwd");
         let group = folder.0.join("group");
         std::fs::write(&passwd, PASSWD).unwrap();

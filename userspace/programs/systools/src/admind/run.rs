@@ -245,16 +245,39 @@ pub fn answer(prepared: &Prepared, ran: &Ran) -> Result<Value, Failure> {
     Ok(json!({ "done": true, "output": lines }))
 }
 
+/// What the journal says of how a command ended, when it was run: its
+/// status, or why its end was not seen. ADM-121 and ADM-112 can come after
+/// the command was started, which may have changed what it names, so they
+/// have a row. `None` when it was not run, because the caller's rights or
+/// authd refused it, or authd or the worker could not be asked: nothing
+/// changed then.
+pub fn ending(ran: &Result<Ran, Failure>) -> Option<(Option<i32>, Option<&str>)> {
+    match ran {
+        Ok(ran) => Some((Some(ran.status), None)),
+        Err(failure) if matches!(failure.kind, Kind::Internal | Kind::WorkerSilent) => {
+            Some((None, Some(failure.detail.as_str())))
+        }
+        Err(_) => None,
+    }
+}
+
 /// The failure of a command that ended with a status other than 0.
 fn failed(prepared: &Prepared, ran: &Ran) -> Failure {
+    command_failed(&prepared.argv, prepared.action.errors(), ran)
+}
+
+/// The failure of the command `argv`, which ended as `ran` says with a
+/// status other than 0: its last line of error output, and its own error
+/// ID when the line ends with one of `named`.
+pub fn command_failed(argv: &[String], named: &[&str], ran: &Ran) -> Failure {
     let last = ran.errors.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or_default();
     let detail = if last.is_empty() {
-        format!("{} ended with status {}", prepared.argv[0], ran.status)
+        format!("{} ended with status {}", argv[0], ran.status)
     } else {
         last.trim().to_string()
     };
-    let id = error_id(last).filter(|id| prepared.action.errors().contains(id));
-    Failure::command(id, detail, &prepared.argv, ran.status, &ran.errors)
+    let id = error_id(last).filter(|id| named.contains(id));
+    Failure::command(id, detail, argv, ran.status, &ran.errors)
 }
 
 /// The error ID a line ends with, as `(SVC-104)`: two to five capitals, a

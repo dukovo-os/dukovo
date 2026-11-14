@@ -68,11 +68,20 @@ pub enum Kind {
     OutOfScope,
     /// ADM-125: an argument's value cannot work.
     BadValue,
+    /// ADM-126: the console's store is not open, so it keeps no journal
+    /// and no tasks.
+    NoStore,
+    /// ADM-127: the change or the task asked for is not one the console
+    /// keeps.
+    NotKept,
+    /// ADM-128: what was asked cannot be done to this change or task as
+    /// it is.
+    Cannot,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 25] = [
+    pub const ALL: [Kind; 28] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -98,6 +107,9 @@ impl Kind {
         Kind::CommandFailed,
         Kind::OutOfScope,
         Kind::BadValue,
+        Kind::NoStore,
+        Kind::NotKept,
+        Kind::Cannot,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -128,6 +140,9 @@ impl Kind {
             Kind::CommandFailed => "ADM-123",
             Kind::OutOfScope => "ADM-124",
             Kind::BadValue => "ADM-125",
+            Kind::NoStore => "ADM-126",
+            Kind::NotKept => "ADM-127",
+            Kind::Cannot => "ADM-128",
         }
     }
 
@@ -156,13 +171,15 @@ impl Kind {
             // The command was asked for and ran: what it said is the
             // answer, and nothing about the request was wrong.
             Kind::CommandFailed => 422,
+            // What was asked is not now what it can be done to.
+            Kind::Cannot => 409,
             Kind::AuthdSilent | Kind::WorkerSilent => 502,
             Kind::TooBig => 413,
             Kind::WrongHost => 421,
-            Kind::NoRoute => 404,
+            Kind::NoRoute | Kind::NotKept => 404,
             Kind::NoMethod => 405,
             Kind::NotJson => 415,
-            Kind::Busy => 503,
+            Kind::Busy | Kind::NoStore => 503,
             Kind::Internal => 500,
         }
     }
@@ -195,6 +212,9 @@ impl Kind {
             Kind::CommandFailed => "The command did not work",
             Kind::OutOfScope => "The API token may not do this",
             Kind::BadValue => "A value cannot work",
+            Kind::NoStore => "The console keeps no journal or tasks now",
+            Kind::NotKept => "The console has no such change or task",
+            Kind::Cannot => "That cannot be done to this one",
         }
     }
 
@@ -223,12 +243,15 @@ impl Kind {
             Kind::SecondStepOnly => Some("Add a second step: you sign in again once it is added."),
             Kind::Busy => Some("Try again when someone has signed out."),
             Kind::Internal => Some("Try again; if it keeps happening, look in the log of admind."),
+            Kind::NoStore => Some("Look in the log of admind for why its store did not open."),
             Kind::NotJson
             | Kind::BadRequest
             | Kind::Refused
             | Kind::TooBig
             | Kind::NoRoute
             | Kind::NoMethod
+            | Kind::NotKept
+            | Kind::Cannot
             | Kind::CommandFailed => None,
         }
     }

@@ -3,9 +3,10 @@
 
 //! What all of admind's connections share (ADR 0514): the sessions, the
 //! counts that keep it usable, the certificate it serves, the machine's
-//! names, and the console's files. admind runs on one thread, so the
-//! parts are `RefCell`s in an `Rc`; none is borrowed across an `await`,
-//! so that two connections never meet in one.
+//! names, the console's files, and the store of the journal and the tasks
+//! (ADR 0516). admind runs on one thread, so the parts are `RefCell`s in
+//! an `Rc`; none is borrowed across an `await`, so that two connections
+//! never meet in one.
 //!
 //! This is also where sessions end. Whatever ends one (sign-out, the
 //! hours or idle time of the sign-in rules, its worker going, admind
@@ -16,6 +17,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,11 +30,13 @@ use super::authd;
 use super::caller::TokenWorkers;
 use super::errors::{Failure, Kind};
 use super::files::Files;
+use super::journal::{Journal, SETTINGS};
 use super::limits::{Connections, Endings, Quiet, Tickets, Tries};
 use super::link::Link;
 use super::log;
 use super::reach::{self, Network};
 use super::sessions::{Session, Sessions};
+use super::store::Store;
 use super::tls::Certificate;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -155,6 +159,11 @@ pub struct Shared {
     pub elevating: Cell<usize>,
     /// The actions the API offers: [`REGISTRY`], or a test's own.
     pub actions: Cell<&'static [&'static dyn Registered]>,
+    /// The store of the journal and the tasks; none when it would not
+    /// open, which the log says.
+    pub store: Option<Store>,
+    /// What the journal keeps in memory.
+    pub journal: Journal,
 }
 
 impl Shared {
@@ -165,6 +174,7 @@ impl Shared {
         certificate: Certificate,
         files: Files,
         authd: &str,
+        store: Option<Store>,
     ) -> Rc<Shared> {
         Rc::new(Shared {
             port: settings.console.listen,
@@ -186,6 +196,8 @@ impl Shared {
             token_workers: RefCell::default(),
             elevating: Cell::new(0),
             actions: Cell::new(REGISTRY),
+            store,
+            journal: Journal::new(Path::new(SETTINGS)),
         })
     }
 
