@@ -873,6 +873,16 @@ mod tests {
     }
 
     #[test]
+    fn the_containers_node_is_new_enough() {
+        let containerfile = include_str!("../../container/Containerfile");
+        let pin = containerfile
+            .lines()
+            .find_map(|line| line.strip_prefix("ARG NODE_VERSION="))
+            .expect("tools/container/Containerfile pins no Node");
+        assert!(node_is_new_enough(pin), "the container's Node {pin} is older than {NODE_MINIMUM}");
+    }
+
+    #[test]
     fn ci_pins_the_same_kani() {
         let ci = include_str!("../../../.github/workflows/ci.yml").replace(": ", "=");
         let pin = format!("KANI_VERSION={KANI_VERSION}");
