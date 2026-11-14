@@ -44,7 +44,8 @@ and 0348), and Spark gives a service the capabilities its file asks for.
 2. **The helper needs no account.** They sign in over SSH as `help`, a name
    no account may take. The code is 16 characters from a 32-letter
    alphabet without look-alikes (80 bits), typed with or without dashes in
-   any case, and is spent by the first right sign-in or by five wrong ones.
+   any case, and is spent by the first right sign-in or by five wrong ones, which
+   ends a session that has no key to wait for.
    With `--key`, only that public key signs in and no code is made. authd
    checks the code or the key's signature; sshd offers passwords for `help`,
    and for no other name, only while a session waits for a code
