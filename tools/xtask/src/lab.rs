@@ -40,6 +40,7 @@
 //! commands, services, pages and routes to the tests that cover them
 //! ([`coverage`]).
 
+mod actions;
 mod coverage;
 
 use std::path::{Path, PathBuf};

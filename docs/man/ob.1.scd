@@ -1608,7 +1608,14 @@ _target/userspace/_).
 	test that is not in _lab/tests_; a test that never names what it
 	covers, in its file, in a script beside it that it runs as
 	_{here}/NAME_ or in the script of its *browser* step; or an entry of
-	something the tree no longer has.
+	something the tree no longer has. It also holds each action of the
+	web console's API, as _lab/actions.toml_ lists them, to its five
+	tests: a Rust module of host tests (*checks*), two boot test cases
+	(*route* and *same_as_command*) and two lab tests (*browser* and
+	*ansible*), and exits 1 for each that is not in the tree, naming
+	the actions that name it. The host test *actions_toml* writes the
+	file from the registry; *UPDATE_ACTIONS=1 ./ob test unit* rewrites
+	it.
 
 	For *run* and *ui*, also build the ports and pack the catalog's
 	bundles, for the service bundles' tests, and name their folders to

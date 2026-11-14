@@ -482,7 +482,9 @@ anything that falls short:
 - a test that never names what it covers: each word of the name, as a
   whole word, in the test's file, in a script beside it that the test
   runs as `{here}/NAME`, or in the script of a `browser` step;
-- an entry of a command or service the tree no longer has.
+- an entry of a command or service the tree no longer has;
+- an action of the console's API with a test missing, which the next
+  section says.
 
 The console's pages and the API's routes have no list in the tree to
 compare with, so their entries are held to their tests alone, and each
@@ -490,3 +492,28 @@ change that adds one adds its entry. A subcommand that does something of
 its own, as `service explain` does, gets an entry of its own as well.
 `lab/before-phase-16.txt` holds what there was before; nothing is added
 to it.
+
+### The console's actions
+
+Each action of the console's API (ADR 0514) has five tests, which
+`lab/actions.toml` names. The registry in `systools` writes the file, so
+an action is in it as soon as it is registered: its host test
+`actions_toml` fails when the file is stale, and `UPDATE_ACTIONS=1 ./ob
+test unit` rewrites it. An action's tests are:
+
+- `checks`, the Rust module of host tests that holds its examples, as
+  `admind::actions::service::tests`: a module path under
+  `userspace/programs/systools/src` that declares `mod tests` with a
+  `#[test]` in it;
+- `route`, a boot test case, which calls the action through its route;
+- `same_as_command`, a boot test case, which shows that the action
+  does what its command does at a terminal;
+- `browser`, a lab test, as `web-console/actions`, which runs the action
+  from a button in the console;
+- `ansible`, a lab test, which runs the Ansible task that the console
+  shows for the action.
+
+`./ob lab coverage --check` reads the file and fails for each test that is
+not in the tree, once, naming the first three actions that name it and
+how many more do. Boot test cases are looked for by name, and lab tests
+by category and name in `lab/tests`.

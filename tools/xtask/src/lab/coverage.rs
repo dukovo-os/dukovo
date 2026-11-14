@@ -27,6 +27,10 @@
 //! and routes have no list in the tree to compare with; their entries are
 //! checked against their tests alone. When the gate fails in CI, `./ob lab
 //! coverage` shows the whole table with the same messages.
+//!
+//! The web console's actions are held to more, in [`super::actions`]: each
+//! action in `lab/actions.toml` names five tests, and `--check` fails for
+//! each of them that is not in the tree.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -34,6 +38,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use super::actions::ACTIONS;
 use crate::ports;
 use crate::{Context as _, Ctx, Error, Result};
 
@@ -167,19 +172,24 @@ pub fn command(ctx: &Ctx, check: bool) -> Result<()> {
         "Phase 16 lab coverage: {} of {total} items have lab tests ({percent}%)",
         audit.covered
     );
-    if audit.problems.is_empty() {
+    let actions = super::actions::check(ctx)?;
+    println!("Console actions: {} of {} have all five tests", actions.covered, actions.total);
+    let mut all = audit.problems;
+    all.extend(actions.problems);
+    if all.is_empty() {
         return Ok(());
     }
-    for problem in &audit.problems {
+    for problem in &all {
         eprintln!("  {problem}");
     }
-    let problems = match audit.problems.len() {
+    let problems = match all.len() {
         1 => "a problem".to_string(),
         n => format!("{n} problems"),
     };
     Err(Error::new(format!(
         "{problems} in the lab's coverage of Phase 16: {COVERAGE} lists each item with the tests \
-         that cover it (the handbook's Lab tests chapter, Coverage)"
+         that cover it, and {ACTIONS} the five tests of each console action (the handbook's Lab \
+         tests chapter, Coverage)"
     )))
 }
 
@@ -279,7 +289,7 @@ fn names(text: &str, name: &str) -> bool {
 /// The text of test `id`, `category/name`, with the files beside it that
 /// it uses as `{here}/FILE` and the scripts of its browser steps; None if
 /// there is no such test.
-fn test_text(tests: &Path, id: &str) -> Option<String> {
+pub(super) fn test_text(tests: &Path, id: &str) -> Option<String> {
     let (category, name) = id.split_once('/')?;
     let plain = |part: &str| {
         !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
