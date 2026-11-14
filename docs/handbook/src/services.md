@@ -858,3 +858,19 @@ work; modules from files, which `MODULE LOAD` would load, do not, as
 its programs are static. It has no Unix socket yet. Without a
 `maxmemory` it grows until the machine has no memory left: for a cache,
 set one and `maxmemory-policy allkeys-lru`.
+
+## The database: PostgreSQL
+
+PostgreSQL, the relational database server, runs as a service of its
+bundle. Install it and turn its service on, and `elevate psql -U postgres`
+opens a session as its superuser:
+
+```
+$ elevate bundle install --for-everyone org.postgresql.postgresql
+$ elevate service postgresql enable
+$ elevate psql -U postgres
+```
+
+The [PostgreSQL](postgresql.md) chapter describes the roles and databases
+for people and for applications, the settings, backups, and a server of your
+own for development.

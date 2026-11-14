@@ -271,9 +271,13 @@ it fails on Dukovo, which `lab/tests/services/copy-file.sh` copies over
 too, and `services/php` does the same with PHP's, and its
 `php-skips.txt`. `services/php-fpm` has nginx pass the pages of a PHP site
 to PHP-FPM, and reload PHP-FPM's settings while the lab PC keeps requests
-coming. `services/sqlite` runs the SQLite shell and the Rust program that
-links the library, and `services/sqlite-suite` runs SQLite's own test
-suite on the machine, leaving out the test files
+coming. `services/postgresql` runs PostgreSQL's own suites on a server the
+lab account starts by hand, leaving out the tests `postgresql-skips.txt`
+lists, then has its service stop with a session open, runs PHP's tests of
+`pgsql` and `pdo_pgsql` against it, and loads it with `pgbench`.
+`services/sqlite` runs the SQLite shell and the Rust program that links
+the library, and `services/sqlite-suite` runs SQLite's own test suite on
+the machine, leaving out the test files
 `lab/tests/services/sqlite-skips.txt` lists; the suite's program and
 scripts are not a bundle but a file the sqlite port builds for the lab,
 which `./ob lab` names, with the other ports' such files, in
