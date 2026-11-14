@@ -80,7 +80,10 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    /// The stamp of a file whose status is `st`.
+    /// The stamp of a file whose status is `st`. The times are `i64` on the
+    /// 64-bit targets this builds for, and the conversions say what they
+    /// are for wherever they are not.
+    #[allow(clippy::useless_conversion)]
     fn of_stat(st: &libc::stat) -> Stamp {
         let seconds = i64::from(st.st_mtime);
         Stamp {
