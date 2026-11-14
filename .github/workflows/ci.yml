@@ -470,7 +470,7 @@ jobs:
 
   # A pull request runs the boot tests its changes reach (ADR 0421), on
   # as many machines as they need; main and the nightly run run them all
-  # on five. --shard gives each the same amount of work by the times in
+  # on ten. --shard gives each the same amount of work by the times in
   # tools/xtask/src/test/times.txt.
   boot:
     name: Boot tests (${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }})
@@ -583,9 +583,10 @@ jobs:
         run: ./ob ports
 
       - name: ./ob test boot --shard ${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }}
-        # A shard takes about 25 minutes once the ports are built, a few
-        # of them building the system; one that hangs fails here, with
-        # its logs, instead of running until the job's six hours.
+        # A shard takes about 30 minutes once the ports are built: some 8
+        # of them building the system, and at most a tenth of the boot
+        # tests by times.txt. One that hangs fails here, with its logs,
+        # instead of running until the job's six hours.
         timeout-minutes: 45
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }}
@@ -786,7 +787,7 @@ jobs:
       # A pull request's boot tests are those its changes reach, compared
       # with main's commit under the merge commit, and the number of
       # machines they need; ob lists each changed file and what it adds.
-      # Everything else runs all of them on five, and a pull request of
+      # Everything else runs all of them on ten, and a pull request of
       # documentation alone runs none.
       - name: Choose the boot tests
         id: boot
@@ -798,7 +799,7 @@ jobs:
           elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             ./ob test boot --affected HEAD^1 --plan | tee -a "$GITHUB_OUTPUT"
           else
-            printf 'parts=5\nshards=[1,2,3,4,5]\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'parts=10\nshards=[1,2,3,4,5,6,7,8,9,10]\n' | tee -a "$GITHUB_OUTPUT"
           fi
 
   kani:
