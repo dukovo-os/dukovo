@@ -232,7 +232,7 @@ or with no slot to start, the menu starts Rescue by itself
 back to 0.
 
 Rescue follows the release that runs (ADR 0543). Once a start is seen
-through while Rescue holds another release, the first being the start
+through while Rescue holds an older release, the first being the start
 that proves an update, the health check asks the stage to write Rescue
 again on each EFI system partition of the root's disks, and goes on
 without waiting. The stage writes it at idle disk priority from the
@@ -241,10 +241,12 @@ when it staged the release, each file checked against the signed list
 as it is written, and the copy read back before it replaces the one
 there; so a reinstall from Rescue puts back the release that runs, not
 the one the machine was installed with. A firmware set staged alone
-changes no release and writes nothing. A partition without room for
-the new copy beside the old, or whose write fails, keeps the copy it
-has, and the stage's log says why with UPD-102; the next start tries
-again.
+changes no release and writes nothing, and a rollback leaves Rescue on
+the newer release it holds. A partition without room for the new copy
+beside the old, as the default 512 MiB one, gets it in the old one's
+place, once the copy in the slot has read back whole. One without room
+even for that, or whose write fails, keeps the copy it has, and the
+stage's log says why with UPD-102; the next start tries again.
 
 A start that fails its check and goes on leaves a notice on the sign-in
 screens (ADR 0501), which, when the changes since the last good start
