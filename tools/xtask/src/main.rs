@@ -266,8 +266,8 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
         "test" => {
             "Usage: ./ob test [unit | boot | kani | tla | tuf | corpus | riscv | lab-writer]
                  [--case <name>]... [--shard <part>/<parts>] [--timeout <seconds>]
-                 [--debug | --release]
-       ./ob test boot --affected <commit> [--shard <part>/<parts> | --list | --plan]
+                 [--retry] [--debug | --release]
+       ./ob test boot --affected <commit> [--shard <part>/<parts> | --list | --plan] [--retry]
        ./ob test boot --case <name>... --image-only
        ./ob test --list
 
@@ -462,7 +462,9 @@ boot test; those that Phases 11 to 13 add from now on are listed only there
                    goes on with it, and takes the settings file's address
 
   --case <name>         Run only this boot test; repeat for more
-  --timeout <seconds>   Limit for each boot test (default 300)"
+  --timeout <seconds>   Limit for each boot test (default 300)
+  --retry               Run a failed boot test once more; one that then passes
+                        is flaky, named in out/test/flaky.txt, and fails nothing"
         }
         "bench" => {
             "Usage: ./ob bench [--no-linux] [--gate] [--linux-kernel <file>] [--runs <n>]
