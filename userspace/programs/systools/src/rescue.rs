@@ -470,12 +470,15 @@ fn signed_in(root: &Root) -> SignIn {
 /// The one line Rescue says of SSH, having turned it on if the installed
 /// system had it on (ADR 0540).
 fn ssh_line(root: &Root) -> String {
-    let started = ssh_refused(root).map_or_else(|| start_ssh(root), Err);
-    match started {
+    if let Some(why) = ssh_refused(root) {
+        return format!("Networking is off until you turn it on, and SSH stays off: {why}.");
+    }
+    match start_ssh(root) {
         Ok(()) => "SSH is on, as it was on this computer: its administrators can reach Rescue \
                    over it."
             .into(),
-        Err(why) => format!("Networking is off until you turn it on, and SSH stays off: {why}."),
+        // Networking may be on by then, so the line says only what failed.
+        Err(why) => format!("SSH did not come up, though this computer had it on: {why}."),
     }
 }
 

@@ -143,7 +143,8 @@ that is what tells them the machine is the owner's, and not another that
 answered for it. The password prompt then takes the code, typed with or
 without its dashes and in any case. The first right code spends it, so a
 second helper, or the same one again, needs a new session. Five wrong codes
-spend it too, and the owner is told; they can start another session. Each
+spend it too, the owner is told, and the session ends, since nothing can
+sign in to it then; they can start another. Each
 wrong code counts against the address it came from, as a wrong password
 does (*blocking.toml*(5)).
 

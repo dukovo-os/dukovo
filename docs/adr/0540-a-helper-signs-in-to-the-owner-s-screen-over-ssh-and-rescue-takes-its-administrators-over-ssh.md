@@ -114,8 +114,9 @@ and 0348), and Spark gives a service the capabilities its file asks for.
     with the override over it), that the root's accounts read and name an
     administrator, and that the root's host key is there. If so it turns
     SSH on; if not, nothing listens. Either way it prints one line: that
-    SSH is on, as it was on this computer, or that networking is off and
-    SSH stays off, with the reason. Turning networking on by hand never
+    SSH is on, as it was on this computer; that networking is off and SSH
+    stays off, with the reason; or that SSH did not come up, with what
+    failed. Turning networking on by hand never
     starts sshd. A second console finds it running and starts nothing.
 11. **Rescue links the root where only root may write.** dukovo-rescue
     links the root it mounted at `/system/live/rescue/root`, in a folder

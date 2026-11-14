@@ -117,7 +117,10 @@ Rescue says what it did in one line, whichever way it went:
 ```
 SSH is on, as it was on this computer: its administrators can reach Rescue over it.
 Networking is off until you turn it on, and SSH stays off: this computer had it off.
+SSH did not come up, though this computer had it on: sshd did not start: ...
 ```
+
+The last is a failure on the way, after which networking may be on.
 
 The reasons SSH stays off are that the computer had it off, that its
 *sshd* service file does not read or is not there, that the root's
