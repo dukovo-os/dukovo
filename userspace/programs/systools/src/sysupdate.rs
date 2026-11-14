@@ -148,7 +148,7 @@ fn status(json: bool) -> Result<i32, Fail> {
                 restored: stage::restored(&root),
             }
         }),
-        rescue: documents::rescue_kept(),
+        rescue: keep_rescue::held(),
         partitions: copies
             .iter()
             .map(|copy| documents::Partition {
