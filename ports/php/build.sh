@@ -116,7 +116,17 @@ cd "$PORT_BUILD/radix"
 # Left at configure's answer for a cross build, which is right for
 # Radix: no sched_getcpu, no pread and pwrite tested (the session files
 # handler then uses lseek and write), and no JIT.
+#
+# libpq, for pgsql and pdo_pgsql, is the postgresql port's, a static library
+# in the sysroot. PHP finds it with pkg-config, whose --libs leaves out the
+# libraries a static link needs, which libpq.pc has as Libs.private, so
+# pgsql and pdo_pgsql are given the whole of them, with the folder of
+# OpenSSL's libraries, which the sysroot has none of. libpq then links the
+# one OpenSSL of the openssl extension, and the program has no second copy.
+pgsql_cflags=$(pkg-config --cflags libpq)
+pgsql_libs="$(pkg-config --static --libs libpq) -L$openssl/libraries"
 OPENSSL_CFLAGS="-I$openssl/include" OPENSSL_LIBS="-L$openssl/libraries -lssl -lcrypto" \
+	PGSQL_CFLAGS="$pgsql_cflags" PGSQL_LIBS="$pgsql_libs" \
 	RE2C="$host/re2c" PREFIX="$prefix" \
 	PHP_OS=Dukovo PHP_UNAME="Dukovo x86_64" PHP_BUILD_PROVIDER=Dukovo \
 	ac_cv_func_dlopen=no ac_cv_lib_dl_dlopen=no ac_cv_search_dlopen=no \
@@ -134,10 +144,10 @@ OPENSSL_CFLAGS="-I$openssl/include" OPENSSL_LIBS="-L$openssl/libraries -lssl -lc
 	--enable-bcmath --with-bz2="$SYSROOT/system" --enable-calendar --enable-ctype \
 	--with-curl --enable-dom --enable-exif --enable-fileinfo --enable-filter --enable-ftp \
 	--enable-mbstring --enable-mysqlnd --with-mysqli=mysqlnd --with-openssl \
-	--enable-pcntl --enable-pdo --with-pdo-mysql=mysqlnd --enable-phar --enable-posix \
-	--enable-session --enable-shmop --enable-simplexml --enable-sockets --enable-sysvsem \
-	--enable-sysvshm --enable-tokenizer --enable-xml --enable-xmlreader --enable-xmlwriter \
-	--with-zlib --with-libxml \
+	--enable-pcntl --enable-pdo --with-pdo-mysql=mysqlnd --with-pdo-pgsql --with-pgsql \
+	--enable-phar --enable-posix --enable-session --enable-shmop --enable-simplexml \
+	--enable-sockets --enable-sysvsem --enable-sysvshm --enable-tokenizer --enable-xml \
+	--enable-xmlreader --enable-xmlwriter --with-zlib --with-libxml \
 	>configure.log 2>&1 || {
 	tail -n 40 configure.log >&2
 	exit 1
@@ -147,9 +157,10 @@ OPENSSL_CFLAGS="-I$openssl/include" OPENSSL_LIBS="-L$openssl/libraries -lssl -lc
 # extension whose library it does not find, and says so only in its log.
 # The extensions it chose are those of the list (internal_functions_cli.c
 # is the list it wrote), libxml among them, which the XML extensions need.
-for feature in HAVE_LIBXML HAVE_OPENSSL_EXT HAVE_CURL HAVE_ZLIB HAVE_BZ2 HAVE_SOCKETS \
-	HAVE_SYSVSEM HAVE_SYSVSHM HAVE_SHMOP HAVE_GETADDRINFO HAVE_FNMATCH PHP_WRITE_STDOUT \
-	HAVE_SHM_IPC HAVE_SHM_MMAP_ANON HAVE_SHM_MMAP_POSIX HAVE_POLL ZEND_CHECK_STACK_LIMIT; do
+for feature in HAVE_LIBXML HAVE_OPENSSL_EXT HAVE_CURL HAVE_ZLIB HAVE_BZ2 HAVE_PGSQL \
+	HAVE_PDO_PGSQL HAVE_SOCKETS HAVE_SYSVSEM HAVE_SYSVSHM HAVE_SHMOP HAVE_GETADDRINFO \
+	HAVE_FNMATCH PHP_WRITE_STDOUT HAVE_SHM_IPC HAVE_SHM_MMAP_ANON HAVE_SHM_MMAP_POSIX HAVE_POLL \
+	ZEND_CHECK_STACK_LIMIT; do
 	grep -q "^#define $feature 1" main/php_config.h || {
 		echo "php's configure did not set $feature" >&2
 		exit 1
@@ -166,9 +177,9 @@ for feature in HAVE_PCRE_JIT_SUPPORT HAVE_LIBDL HAVE_EPOLL HAVE_PTRACE PROC_MEM_
 	fi
 done
 extensions="bcmath bz2 calendar ctype curl date dom exif fileinfo filter ftp hash json lexbor \
-	libxml mbstring mysqli mysqlnd opcache openssl pcntl pcre pdo pdo_mysql phar posix random \
-	reflection session shmop simplexml sockets spl standard sysvsem sysvshm tokenizer uri xml \
-	xmlreader xmlwriter zlib"
+	libxml mbstring mysqli mysqlnd opcache openssl pcntl pcre pdo pdo_mysql pdo_pgsql pgsql phar \
+	posix random reflection session shmop simplexml sockets spl standard sysvsem sysvshm \
+	tokenizer uri xml xmlreader xmlwriter zlib"
 chosen=$(sed -n 's/^[[:space:]]*phpext_\([a-z0-9_]*\)_ptr,.*/\1/p' main/internal_functions_cli.c |
 	sort | tr '\n' ' ')
 wanted=$(printf '%s\n' $extensions | sort | tr '\n' ' ')

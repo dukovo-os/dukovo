@@ -25,13 +25,13 @@ summary = "the PHP language for web applications"
 # Group's first license (Apache-1.0), the string functions of the
 # University of California (BSD-4-Clause), strnatcmp (Zlib) and tables
 # derived from OpenLDAP (OLDAP-2.8). Linked in from other ports: libxml2
-# (MIT), OpenSSL (Apache-2.0), curl, zlib and bzip2, each under what its
-# own port says. A few files, among them md5.c, Drepper's SHA-256 and
-# SHA-512 crypt and the MurmurHash code, are in the public domain and
-# ask for no notice.
-license = "PHP-3.01 AND Zend-2.0 AND BSD-2-Clause AND BSD-3-Clause AND BSD-3-Clause WITH PCRE2-exception AND BSD-4-Clause AND LGPL-2.1-or-later AND Apache-2.0 AND MIT AND BSL-1.0 AND LicenseRef-crypt-blowfish-public-domain AND TCL AND Apache-1.0 AND Zlib AND OLDAP-2.8 AND curl AND bzip2-1.0.6"
+# (MIT), OpenSSL (Apache-2.0), libpq of the postgresql port (the PostgreSQL
+# License), curl, zlib and bzip2, each under what its own port says. A few
+# files, among them md5.c, Drepper's SHA-256 and SHA-512 crypt and the
+# MurmurHash code, are in the public domain and ask for no notice.
+license = "PHP-3.01 AND Zend-2.0 AND BSD-2-Clause AND BSD-3-Clause AND BSD-3-Clause WITH PCRE2-exception AND BSD-4-Clause AND LGPL-2.1-or-later AND Apache-2.0 AND MIT AND BSL-1.0 AND LicenseRef-crypt-blowfish-public-domain AND TCL AND Apache-1.0 AND Zlib AND OLDAP-2.8 AND curl AND bzip2-1.0.6 AND PostgreSQL"
 homepage = "https://www.php.net"
-depends = ["mlibc", "openssl", "zlib", "bzip2", "curl", "rustls-ffi", "zstd", "libxml2"]
+depends = ["mlibc", "openssl", "zlib", "bzip2", "curl", "rustls-ffi", "zstd", "libxml2", "postgresql"]
 # Several of the bundled libraries keep a LICENSE of the same name in
 # their folders: ob names the later ones by their folder.
 notices = [
@@ -75,7 +75,7 @@ id = "net.php.php"
 name = "PHP"
 commands = ["php", "php-fpm"]
 programs = ["php-fpm-service"]
-links = ["mlibc", "openssl", "zlib", "bzip2", "curl", "rustls-ffi", "zstd", "libxml2"]
+links = ["mlibc", "openssl", "zlib", "bzip2", "curl", "rustls-ffi", "zstd", "libxml2", "postgresql"]
 
 # php-fpm-service sets the data folder up and runs PHP-FPM in the
 # foreground, as Spark's services are.
