@@ -11,6 +11,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
 
 use crate::term::Terminal;
+use crate::welcome;
 
 /// A session that ends sooner than this after it started ended at once.
 const QUICK: Duration = Duration::from_secs(2);
@@ -147,18 +148,23 @@ impl Console {
         // shell is with no sign-in.
         let sign_in = shell.sign_in && once.is_none();
         let number = self.number;
+        let (cols, rows) = (self.term.cols(), self.term.rows());
+        // Read each time, so that a certificate admind has changed shows;
+        // the banner leaves the rows it takes.
+        let web_console =
+            if sign_in { welcome::web_console(welcome::WEB_CONSOLE, cols) } else { String::new() };
+        let banner_rows = rows.saturating_sub(web_console.lines().count());
         let issue = match &shell.welcome {
             // A program run once draws the whole screen; until it starts
             // to, no cursor blinks on the empty one.
             _ if once.is_some() => "\x1b[?25l".to_string(),
             Some(welcome) if sign_in => {
-                welcome.render(self.term.cols(), self.term.rows(), &|text: &str| {
-                    expand_issue(text, number)
-                })
+                welcome.render(cols, banner_rows, &|text: &str| expand_issue(text, number))
             }
             _ => expand_issue(&shell.issue, number),
         };
         self.term.feed(issue.replace('\n', "\r\n").as_bytes());
+        self.term.feed(web_console.replace('\n', "\r\n").as_bytes());
         // A failed start's notice, until the next start (ADR 0501).
         if once.is_none()
             && let Ok(notice) = std::fs::read_to_string(FAILURE)

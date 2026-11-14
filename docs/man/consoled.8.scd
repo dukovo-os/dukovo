@@ -63,12 +63,32 @@ Above the sign-in prompt, in issue's place, each console shows the
 welcome banner: Duke and the name in plain ASCII, the tagline, and the
 system's name and version (ADR 0261). *welcome.toml*(5) says when it
 shows and what is in it; a screen too small for Duke gets less. Consoles
-that start root's shell with no sign-in show issue's text. Under it, until
-the next start, each shows what the health check said of a failed start,
-_/system/live/sysupdate/failure_ (*sysupdate*(8), ADR 0501), and then
-the notices kept for the next sign-in in _/system/live/sign-in_, one file
-each by name: a backup that failed or is overdue (*backup*(8)) and the
-installed apps with known flaws (*bundled*(8)) (ADR 0504).
+that start root's shell with no sign-in show issue's text. Under the
+banner, or under issue's text where the banner is off, a sign-in screen
+says where the web console is and which certificate it presents, once
+*admind*(8) has written them to _/system/live/admind/issue_:
+
+```
+ Web console: https://duke-nas.local:9090
+ Certificate SHA-256 fingerprint:
+ 4F:2A:91:C3:07:5B:E8:D4:1A:6C:B2:90:3E:F7:55:0D
+ A8:12:C4:7B:69:E0:3D:F1:84:2B:9A:C6:50:17:DE:73
+```
+
+A person who opens that address compares the fingerprint with the one
+in the browser's warning before going on. The fingerprint is broken
+between bytes to fit the screen, and the banner leaves the rows it takes.
+consoled reads the file each time a sign-in screen is drawn, so a new
+certificate shows from the next one. A file that is missing, or is not an
+address and a SHA-256 fingerprint, adds nothing to the screen and is not
+logged.
+
+Below that, until the next start, each shows what the health check said
+of a failed start, _/system/live/sysupdate/failure_ (*sysupdate*(8), ADR
+0501), and then the notices kept for the next sign-in in
+_/system/live/sign-in_, one file each by name: a backup that failed or is
+overdue (*backup*(8)) and the installed apps with known flaws
+(*bundled*(8)) (ADR 0504).
 
 When the sign-in ends, because the session it started ended, as with
 *exit*, or because its input did, the console clears and the sign-in
@@ -382,6 +402,10 @@ _/system/settings/issue_
 _/system/settings/console/welcome.toml_
 	The welcome banner (*welcome.toml*(5)).
 
+_/system/live/admind/issue_
+	The web console's address and the certificate's fingerprint, which
+	*admind*(8) writes and the sign-in screens show.
+
 _/system/settings/console/accessibility.toml_
 	The text size, sticky keys and slow keys
 	(*accessibility.toml*(5)), which consoled writes as they are changed
@@ -410,7 +434,7 @@ _/system/live/consoled/braille_
 
 # SEE ALSO
 
-*login*(1), *authd*(8), *elevate*(8), *spark*(8), *reboot*(8),
+*login*(1), *authd*(8), *admind*(8), *elevate*(8), *spark*(8), *reboot*(8),
 *keymap*(1), *keymap*(5), *welcome.toml*(5), *accessibility.toml*(5),
 *nukesh*(1), *dmesg*(1),
 *notifyd*(8), *notify-send*(1), *readerd*(8), *reader*(1), *brailled*(8),
