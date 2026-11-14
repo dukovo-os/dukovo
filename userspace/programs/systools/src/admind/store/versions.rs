@@ -91,6 +91,17 @@ impl Store {
             .optional()?)
     }
 
+    /// Replaces the bytes kept under `hash` with `bytes`, as a damaged
+    /// file would, for the tests of what reads them.
+    #[cfg(test)]
+    pub fn damage_blob_for_test(&self, hash: &str, bytes: &[u8]) {
+        let changed = self
+            .conn
+            .execute("UPDATE blobs SET bytes = ?2 WHERE hash = ?1", rusqlite::params![hash, bytes])
+            .expect("a statement that applies");
+        assert_eq!(changed, 1, "the hash is kept");
+    }
+
     /// The hashes of the versions kept of `path`, newest first.
     ///
     /// # Errors

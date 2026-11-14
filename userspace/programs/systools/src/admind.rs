@@ -54,15 +54,16 @@
 //! ships has no such route.
 
 pub(crate) mod actions;
+mod audit;
 mod authd;
 mod caller;
-#[allow(dead_code)]
 mod diff;
 pub(crate) mod errors;
 mod files;
 #[cfg(test)]
 mod fixture;
 mod guard;
+pub(crate) mod journal;
 mod limits;
 mod link;
 mod preferences;
@@ -73,8 +74,6 @@ pub(crate) mod scopes;
 mod serve;
 mod sessions;
 mod shared;
-// Its callers, the journal and the tasks, come next.
-#[allow(dead_code)]
 pub(crate) mod store;
 mod tls;
 mod webauthn;
