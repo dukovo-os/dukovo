@@ -111,7 +111,7 @@ fn admin(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_anywhere("netd: net0 has 10.0.2.15/24")?;
     vm.expect_anywhere("admind: answers at ")?;
     let console = Console::open(vm)?;
-    under_load(vm, &console)?;
+    limits(vm, &console)?;
 
     // alice's password once for this pane, then bob, who is neither an
     // administrator nor in group console, and carol, who is in it.
@@ -124,6 +124,9 @@ fn admin(vm: &mut Vm, case: &Case) -> Result<(), String> {
              add carol; user set --yes --console carol'"
         ),
     )?;
+    // Each account's hash takes a few seconds without KVM: the log says
+    // when the last change is done, and the screen follows.
+    vm.expect("authd: changed the account carol")?;
     vm.expect_screen(&["Made bob", "Made carol"])?;
 
     let address = issue_file(vm, &console)?;
@@ -135,6 +138,7 @@ fn admin(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let mut app = second_step(&console, &mut alice)?;
     unlocking(&console, &mut alice, &mut app)?;
     restart(vm, &console, &mut alice, &address)?;
+    crowd(vm, &console)?;
 
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
@@ -156,19 +160,17 @@ fn elevated(vm: &mut Vm) -> Result<(), String> {
     vm.expect_screen(&["elevated 0"])
 }
 
-/// What a crowd does to the console. 32 connections from one address, each
-/// answered once and kept alive, hold all the places the console gives an
-/// address, so a 33rd is refused at once, which its log says: this comes
-/// first, so that no refusal from this address has been said in the last
-/// minute (the log says the first, and then once a minute, admind(8)).
-/// Then one connection that sends nothing is cut off after about ten
-/// seconds, while 600 are made at once; held for a few seconds and let go,
-/// they leave it answering. A request head of 20 KiB is 431.
+/// The console's limits on one address. 32 connections, each answered once
+/// and kept alive, hold all the places the console gives an address, so a
+/// 33rd is refused at once, which its log says: this comes first, so that
+/// no refusal from this address has been said in the last minute (the log
+/// says the first, and then once a minute, admind(8)). A request head of
+/// 20 KiB is 431.
 ///
-/// The limit is shown with connections that stay, not with the crowd, as
-/// the crowd reaches the guest only as fast as QEMU's network hands it on:
+/// The limit is shown with connections that stay, not with a crowd, as a
+/// crowd reaches the guest only as fast as QEMU's network hands it on:
 /// without KVM, slower than the ten seconds each silent one is held.
-fn under_load(vm: &mut Vm, console: &Console) -> Result<(), String> {
+fn limits(vm: &mut Vm, console: &Console) -> Result<(), String> {
     let held = hold_every_place(console)?;
     let mut extra = TcpStream::connect(("127.0.0.1", console.port))
         .map_err(|err| format!("the 33rd connection to the console: {err}"))?;
@@ -188,6 +190,30 @@ fn under_load(vm: &mut Vm, console: &Console) -> Result<(), String> {
     )?;
     drop(held);
 
+    // The console answers a head of 20 KiB 431 and hangs up on the rest of
+    // it. curl may be told so before it has sent all, or find the end of
+    // the connection where it looks for more, and then says it failed
+    // though the answer came: what it printed counts, and it is asked
+    // again when it printed nothing.
+    let head = [("X-Padding".to_string(), "a".repeat(20 << 10))];
+    let mut last = String::new();
+    for _ in 0..3 {
+        let out = console.run("GET", "/api/1/health", &head, None)?;
+        match parse_reply(&out.stdout) {
+            Ok(reply) if reply.status == 431 => return Ok(()),
+            Ok(reply) => return Err(format!("a head of 20 KiB was answered {}", reply.status)),
+            Err(_) => last = String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        }
+    }
+    Err(format!("a head of 20 KiB got no answer: {last}"))
+}
+
+/// What a crowd does to the console: one connection that sends nothing is
+/// cut off after about ten seconds, while 600 are made at once; held for a
+/// few seconds and let go, they leave it answering. This comes last: QEMU
+/// hands the guest the crowd's connections for minutes after they are let
+/// go when there is no KVM, and the steps before would wait on them.
+fn crowd(vm: &mut Vm, console: &Console) -> Result<(), String> {
     let silent = silent_connection(console.port)?;
     let crowd = (0..CROWD)
         .map(|n| {
@@ -227,23 +253,7 @@ fn under_load(vm: &mut Vm, console: &Console) -> Result<(), String> {
     if !(Duration::from_secs(9)..=Duration::from_secs(30)).contains(&cut) {
         return Err(format!("a connection that sent nothing was cut off after {cut:?}, not 10 s"));
     }
-
-    // The console answers a head of 20 KiB 431 and hangs up on the rest of
-    // it. curl may be told so before it has sent all, or find the end of
-    // the connection where it looks for more, and then says it failed
-    // though the answer came: what it printed counts, and it is asked
-    // again when it printed nothing.
-    let head = [("X-Padding".to_string(), "a".repeat(20 << 10))];
-    let mut last = String::new();
-    for _ in 0..3 {
-        let out = console.run("GET", "/api/1/health", &head, None)?;
-        match parse_reply(&out.stdout) {
-            Ok(reply) if reply.status == 431 => return Ok(()),
-            Ok(reply) => return Err(format!("a head of 20 KiB was answered {}", reply.status)),
-            Err(_) => last = String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        }
-    }
-    Err(format!("a head of 20 KiB got no answer: {last}"))
+    Ok(())
 }
 
 /// The issue file and the certificate agree: the fingerprint the host took
