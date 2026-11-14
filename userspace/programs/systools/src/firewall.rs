@@ -539,6 +539,50 @@ fn program_path(process: u64, program: Option<Program>) -> Option<String> {
     program.is_none().then_some(first).flatten()
 }
 
+/// A port that other machines reach, as `firewall status` lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Reached {
+    pub(crate) tcp: bool,
+    pub(crate) port: u16,
+    /// The file name of the program that listens, or `process N` when
+    /// its file is not found.
+    pub(crate) program: String,
+    /// Whether every machine reaches it, not only the machines a rule
+    /// names.
+    pub(crate) everywhere: bool,
+}
+
+/// The ports of the sockets that listen for other machines, by the
+/// rules the kernel holds, each protocol and port once, TCP first.
+pub(crate) fn reached() -> Result<Vec<Reached>, Fail> {
+    let held = kernel_rules().map_err(refused)?;
+    let mut listeners = kernel_listeners().map_err(refused)?;
+    listeners.sort_by_key(|l| (!l.tcp, l.port, l.process));
+    let mut found: Vec<Reached> = Vec::new();
+    for listener in &listeners {
+        let everywhere = match reach(listener, &held) {
+            Reach::Service | Reach::Allowed => true,
+            Reach::Some => false,
+            Reach::Local | Reach::Denied => continue,
+        };
+        if found.iter().any(|r| r.tcp == listener.tcp && r.port == listener.port) {
+            continue;
+        }
+        let program = program_path(listener.process, listener.program)
+            .and_then(|path| Path::new(&path).file_name().map(|name| name.to_string_lossy().into()))
+            .unwrap_or_else(|| format!("process {}", listener.process));
+        found.push(Reached { tcp: listener.tcp, port: listener.port, program, everywhere });
+    }
+    Ok(found)
+}
+
+/// The rules in the settings file's `text`, in order, as `firewall list`
+/// numbers them. A line that is no rule is left out, as `firewall load`
+/// leaves it out.
+pub(crate) fn rules_in(text: &str) -> Vec<Rule> {
+    rules(&parse_settings(text).0).cloned().collect()
+}
+
 const HELP: &str = "Usage: firewall [status]
        firewall list
        firewall allow|deny [tcp|udp|ping|any] [PORT[-PORT]] [from NETWORK] [on INTERFACE]

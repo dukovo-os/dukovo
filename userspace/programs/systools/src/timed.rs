@@ -67,7 +67,7 @@ pub const SETTINGS: &str = "/system/settings/timed";
 pub const STATUS: &str = "/system/live/timed/status";
 /// Its process number, while it runs, for timedatectl(1).
 pub const PID: &str = "/system/live/timed/pid";
-const LAST: &str = "/system/state/timed/last";
+pub(crate) const LAST: &str = "/system/state/timed/last";
 
 /// The NTS servers asked unless the settings name others: three run by
 /// different organizations in different countries.

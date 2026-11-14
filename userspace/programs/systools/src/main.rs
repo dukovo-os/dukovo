@@ -58,6 +58,9 @@
 //! `hardware` checks the memory, the disks, the processors, the sensors,
 //! the battery and the network cards for faults, and keeps what it found
 //! (ADR 0488).
+//! `dukovo-check` looks at the computer's security and health, a line for
+//! each check, and keeps what it found, every day by its service's timer
+//! (ADR 0479).
 //! `dumps` saves the kernel's crash dump at the boot after a panic, and
 //! lists, shows and deletes the saved ones (ADR 0483).
 //! `tune` chooses a performance profile, a few of the kernel's settings
@@ -99,6 +102,7 @@ mod burn;
 mod cert;
 mod certd;
 mod changes;
+mod check;
 mod cloud;
 mod column;
 mod crontab;
@@ -288,6 +292,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("diskhealth", diskhealth::main),
     ("dmesg", dmesg::main),
     ("dukofetch", dukofetch::main),
+    ("dukovo-check", check::main),
     ("dukovo-rescue", rescue::main),
     ("dumps", dumps::main),
     ("e1000d", e1000d::main),

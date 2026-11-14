@@ -38,6 +38,7 @@ const SHIPPED: &[(&str, &str)] = &[
     ("timerd", include_str!("../../../defaults/spark/services/timerd.toml")),
     ("logturn", include_str!("../../../defaults/spark/services/logturn.toml")),
     ("dumps", include_str!("../../../defaults/spark/services/dumps.toml")),
+    ("dukovo-check", include_str!("../../../defaults/spark/services/dukovo-check.toml")),
     ("sockets-echo", include_str!("../../../spark/tests/services/sockets/sockets-echo.toml")),
     ("netd", include_str!("../../../spark/tests/services/serve/netd.toml")),
     ("timed", include_str!("../../../spark/tests/services/serve/timed.toml")),

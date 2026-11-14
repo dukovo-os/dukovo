@@ -118,6 +118,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"updated", "the update-online boot test's service, run there with --once: it checks the update server, which this test has none of"},
 		{"snap", "the snapshots boot test's: it keeps snapshots of a Btrfs root's subvolumes, which this test's system in memory has none of"},
 		{"backup", "the backup boot test's: it backs a Btrfs root's snapshots up to a disk or a server, which this test's system in memory has none of"},
+		{"dukovo-check", "the dukovo-check boot test's: it needs an administrator, and it checks the whole system, which this test's is not"},
 		{"dukovo-rescue", "the rescue boot test's: it runs only in Rescue, started by an installed system's boot menu, and repairs the root it names"},
 		{"nc", "the network-tools boot test's: it connects to and listens for the other machine on a cable"},
 		{"iperf3", "the network-tools boot test's: it measures the cable to the other machine, which runs iperf3 -s"},
