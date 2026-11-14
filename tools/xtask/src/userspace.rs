@@ -1083,6 +1083,11 @@ mod tests {
 
     use super::*;
 
+    /// The tools systools starts itself, from its own program, and never
+    /// by a name in /system/commands: cert's responder of HTTP-01 (ADR
+    /// 0513).
+    const STARTED_BY_SYSTOOLS: [&str; 1] = ["acme-answer"];
+
     /// Every tool in systools' table has a link in /system/commands, so a
     /// new one is in the image; a tool left out is not found at boot.
     #[test]
@@ -1099,6 +1104,7 @@ mod tests {
         assert!(tools.len() > 100, "read {} tools", tools.len());
         let missing: Vec<&str> = tools
             .into_iter()
+            .filter(|tool| !STARTED_BY_SYSTOOLS.contains(tool))
             .filter(|tool| {
                 !STD_LINKS.contains(&(format!("system/commands/{tool}").as_str(), "systools"))
             })
