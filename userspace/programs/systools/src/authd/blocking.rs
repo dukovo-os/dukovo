@@ -1011,7 +1011,8 @@ impl Authd {
         }
         let Some(source) = Source::parse(address) else {
             return Answer::Refused(format!(
-                "`{}` is not an IPv4 address or an IPv6 network of 64 bits, as 203.0.113.9 or                  2001:db8:4:7::/64",
+                "`{}` is not an IPv4 address or an IPv6 network of 64 bits, as 203.0.113.9 or \
+                 2001:db8:4:7::/64",
                 shown(address)
             ));
         };

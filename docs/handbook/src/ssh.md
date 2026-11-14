@@ -173,9 +173,9 @@ are never blocked with `firewall`:
 
 ```
 $ elevate firewall blocked
-Blocked            Until  Times today  Why
-203.0.113.9        14:32  2            5 wrong passwords over SSH in 2 minutes, for root, admin and test
-2001:db8:4:7::/64  14:05  1            5 refused SSH sign-ins in 4 minutes
+Blocked            Until  In a row  Why
+203.0.113.9        14:32  2         5 wrong passwords over SSH in 2 minutes, for root, admin and test
+2001:db8:4:7::/64  14:05  1         5 refused SSH sign-ins in 4 minutes
 $ elevate firewall unblock 203.0.113.9
 firewall: 203.0.113.9 is no longer blocked
 $ elevate firewall never-block 192.168.1.0/24

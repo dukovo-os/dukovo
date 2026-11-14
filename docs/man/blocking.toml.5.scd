@@ -170,7 +170,8 @@ still blocked."
 # FILES
 
 _/system/settings/blocking.toml_
-	These settings. Mode 0644, root's.
+	These settings. Mode 0644, root's. Its default is in
+	_/system/resources/default-settings/blocking.toml_.
 
 _/system/state/authd/blocked_
 	The blocks, which only root reads.

@@ -75,7 +75,7 @@ echo "table-end"
 expect = [
     "Blocked",
     "Until",
-    "Times today",
+    "In a row",
     "Why",
     "5 wrong passwords over SSH in ",
     "Firewall: dropped a TCP connection from ",

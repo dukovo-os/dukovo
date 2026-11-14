@@ -873,14 +873,15 @@ fn blocks(words: &[&str], out: &mut dyn Write) -> Result<i32, Fail> {
 }
 
 /// The table `firewall blocked` shows: each address, until when it is
-/// blocked, how many times it has been blocked this day, and why. `now`
+/// blocked, how many blocks in a row it has had, each within a day of the
+/// one before, and why. `now`
 /// is the time in seconds since 1970, and `show` writes a time in a
 /// strftime(3) format, in the local time zone.
 fn blocked_table(entries: &[BlockedEntry], now: i64, show: impl Fn(i64, &str) -> String) -> String {
     if entries.is_empty() {
         return "No address is blocked.\n".into();
     }
-    let mut rows = vec![["Blocked", "Until", "Times today", "Why"].map(String::from)];
+    let mut rows = vec![["Blocked", "Until", "In a row", "Why"].map(String::from)];
     rows.extend(entries.iter().map(|entry| {
         [
             entry.address.clone(),
@@ -1136,9 +1137,9 @@ mod tests {
         ];
         assert_eq!(
             blocked_table(&entries, NOW, utc),
-            "Blocked            Until  Times today  Why\n\
-             203.0.113.9        14:32  2            5 wrong passwords over SSH in 2 minutes\n\
-             2001:db8:4:7::/64  14:05  1            5 refused SSH sign-ins in 4 minutes\n"
+            "Blocked            Until  In a row  Why\n\
+             203.0.113.9        14:32  2         5 wrong passwords over SSH in 2 minutes\n\
+             2001:db8:4:7::/64  14:05  1         5 refused SSH sign-ins in 4 minutes\n"
         );
     }
 
@@ -1150,9 +1151,9 @@ mod tests {
         ];
         assert_eq!(
             blocked_table(&entries, NOW, utc),
-            "Blocked       Until             Times today  Why\n\
-             203.0.113.9   2026-11-15 14:00  3            why\n\
-             198.51.100.4  14:10             1            why\n"
+            "Blocked       Until             In a row  Why\n\
+             203.0.113.9   2026-11-15 14:00  3         why\n\
+             198.51.100.4  14:10             1         why\n"
         );
     }
 
@@ -1180,9 +1181,9 @@ mod tests {
         let table = blocked_table(&BlockedEntry::parse_list(&answer), NOW, utc);
         assert_eq!(table.lines().count(), 3);
         assert!(
-            table.contains("14:01  1            5 wrong passwords over SSH in 1 minute, for root")
+            table.contains("14:01  1         5 wrong passwords over SSH in 1 minute, for root")
         );
-        assert!(table.contains("14:02  2            5 wrong sharing passwords in 3 minutes"));
+        assert!(table.contains("14:02  2         5 wrong sharing passwords in 3 minutes"));
         // An answer with no blocks, as authd gives for none, is none.
         assert_eq!(
             blocked_table(&BlockedEntry::parse_list(""), NOW, utc),

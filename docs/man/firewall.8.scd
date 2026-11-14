@@ -133,9 +133,9 @@ address, or an IPv6 network of 64 bits, since one computer holds a whole
 
 ```
 $ elevate firewall blocked
-Blocked            Until  Times today  Why
-203.0.113.9        14:32  2            5 wrong passwords over SSH in 2 minutes, for root, admin and test
-2001:db8:4:7::/64  14:05  1            5 refused SSH sign-ins in 4 minutes
+Blocked            Until  In a row  Why
+203.0.113.9        14:32  2         5 wrong passwords over SSH in 2 minutes, for root, admin and test
+2001:db8:4:7::/64  14:05  1         5 refused SSH sign-ins in 4 minutes
 $ elevate firewall blocked
 No address is blocked.
 ```
