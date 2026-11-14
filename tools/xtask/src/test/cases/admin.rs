@@ -141,7 +141,9 @@ fn admin(vm: &mut Vm, case: &Case) -> Result<(), String> {
 /// Alice's password, once, for this pane: elevate asks on the console's
 /// bottom line, and the commands after it within 15 minutes do not.
 fn elevated(vm: &mut Vm) -> Result<(), String> {
-    answer_prompt(vm, "$", "clear; elevate true; echo \"elevated $?\"")?;
+    // `-k` locks the pane first, so that the password is asked even where
+    // an earlier sign-in of alice's left it unlocked.
+    answer_prompt(vm, "$", "clear; elevate -k; elevate true; echo \"elevated $?\"")?;
     answer_prompt(vm, "to run /system/commands/true:", ALICE_PASSWORD)?;
     vm.expect_screen(&["elevated 0"])
 }
@@ -197,23 +199,22 @@ fn under_load(vm: &mut Vm, console: &Console) -> Result<(), String> {
         return Err(format!("a connection that sent nothing was cut off after {cut:?}, not 10 s"));
     }
 
-    // curl may not read the answer if the console hangs up on the rest of
-    // the head, so it is asked again before it counts as failed.
-    let padding = format!("X-Padding: {}", "a".repeat(20 << 10));
+    // The console answers a head of 20 KiB 431 and hangs up on the rest of
+    // it. curl may be told so before it has sent all, or find the end of
+    // the connection where it looks for more, and then says it failed
+    // though the answer came: what it printed counts, and it is asked
+    // again when it printed nothing.
+    let head = [("X-Padding".to_string(), "a".repeat(20 << 10))];
     let mut last = String::new();
     for _ in 0..3 {
-        match console.send(
-            "GET",
-            "/api/1/health",
-            &[("X-Padding".into(), "a".repeat(20 << 10))],
-            None,
-        ) {
+        let out = console.run("GET", "/api/1/health", &head, None)?;
+        match parse_reply(&out.stdout) {
             Ok(reply) if reply.status == 431 => return Ok(()),
             Ok(reply) => return Err(format!("a head of 20 KiB was answered {}", reply.status)),
-            Err(why) => last = why,
+            Err(_) => last = String::from_utf8_lossy(&out.stderr).trim().to_string(),
         }
     }
-    Err(format!("a head of {} bytes got no answer: {last}", padding.len() + 2))
+    Err(format!("a head of 20 KiB got no answer: {last}"))
 }
 
 /// The issue file and the certificate agree: the fingerprint the host took
@@ -259,8 +260,7 @@ fn sign_in_screen(vm: &mut Vm, address: &str, fingerprint: &str) -> Result<(), S
     }
     answer_prompt(vm, "Name:", "alice")?;
     answer_prompt(vm, "Password:", ALICE_PASSWORD)?;
-    vm.expect("authd: alice signed in on pts/")?;
-    vm.expect_screen(&["$"])
+    vm.expect("authd: alice signed in on pts/")
 }
 
 /// What every answer carries, the name a request may use, and the
@@ -379,7 +379,9 @@ fn signing_in(vm: &mut Vm, console: &Console, alice: &mut Browser) -> Result<(),
     {
         return Err(format!("the session's cookie is {text:?}"));
     }
-    let session = console.get(alice, "/api/1/session")?.must("alice's session", 200)?.json()?;
+    // The session also gives the token that her page sends back with each
+    // change.
+    let session = console.read_session(alice)?;
     for (field, want) in [
         ("name", json!("alice")),
         ("full_name", json!("Alice Liddell")),
@@ -392,9 +394,9 @@ fn signing_in(vm: &mut Vm, console: &Console, alice: &mut Browser) -> Result<(),
             return Err(format!("alice's session has {field}: {}, not {want}", session[field]));
         }
     }
-    // Reads the token that her page would, for what she changes.
-    let token = session["csrf"].as_str().filter(|token| token.len() == 43);
-    alice.token = Some(token.ok_or("the session has no 43-character token")?.to_string());
+    if alice.token.as_ref().is_none_or(|token| token.len() != 43) {
+        return Err(format!("the session's token is {:?}, not 32 bytes in base64", alice.token));
+    }
     // Without the cookie, or with another, there is no session.
     console.get(&mut Browser::default(), "/api/1/session")?.refused(
         "no session",
@@ -453,13 +455,13 @@ fn foreign_requests(console: &Console, alice: &mut Browser) -> Result<(), String
     // session, no cookie in the answer.
     let sign_in = json!({"name": "alice", "password": ALICE_PASSWORD}).to_string();
     let json_only = [("Content-Type".to_string(), "application/json".to_string())];
-    let origin = ("Origin".to_string(), "https://evil.example".to_string());
-    let site = ("Sec-Fetch-Site".to_string(), "cross-site".to_string());
-    let page_of_its_own = ("Origin".to_string(), ORIGIN.to_string());
+    let elsewhere = ("Origin".to_string(), "https://evil.example".to_string());
+    let cross_site = ("Sec-Fetch-Site".to_string(), "cross-site".to_string());
+    let own_origin = ("Origin".to_string(), ORIGIN.to_string());
     for (how, headers) in [
         ("no Origin", json_only.to_vec()),
-        ("another origin", vec![json_only[0].clone(), origin]),
-        ("another site", vec![json_only[0].clone(), page_of_its_own, site]),
+        ("another origin", vec![json_only[0].clone(), elsewhere]),
+        ("another site", vec![json_only[0].clone(), own_origin, cross_site]),
     ] {
         let reply = console.send("POST", "/api/1/sign-in", &headers, Some(&sign_in))?.refused(
             &format!("a sign-in with {how}"),
@@ -531,11 +533,17 @@ fn second_step(console: &Console, alice: &mut Browser) -> Result<App, String> {
     let (first, second) = (recovery[0].to_string(), recovery[1].to_string());
 
     // Signed out, the old cookie is no session.
+    let old = alice.cookie.clone().unwrap_or_default();
     console.post(alice, "/api/1/sign-out", &json!({}))?.must("sign-out", 200)?;
     if alice.cookie.is_some() {
         return Err("the answer to sign-out did not clear the cookie".into());
     }
-    console.get(alice, "/api/1/session")?.refused("the old session", 401, "ADM-107")?;
+    let remembered = [("Cookie".to_string(), format!("{SESSION_COOKIE}={old}"))];
+    console.send("GET", "/api/1/session", &remembered, None)?.refused(
+        "the session that signed out",
+        401,
+        "ADM-107",
+    )?;
 
     // Signed in again, the password is not enough: the console asks for
     // the app's code or a recovery code, and sets no cookie yet.
@@ -827,14 +835,15 @@ impl Console {
     }
 
     /// One request, trusting the certificate taken at first, with exactly
-    /// the headers given besides Host and curl's own.
-    fn send(
+    /// the headers given besides Host and curl's own: what curl printed,
+    /// whether or not it succeeded.
+    fn run(
         &self,
         method: &str,
         path: &str,
         headers: &[(String, String)],
         body: Option<&str>,
-    ) -> Result<Reply, String> {
+    ) -> Result<Output, String> {
         let url = format!("{ORIGIN}{path}");
         let pem = self.pem.display().to_string();
         let mut args = vec!["--include", "--cacert", &pem, "--request", method];
@@ -847,7 +856,18 @@ impl Console {
             args.extend(["--data-binary", body]);
         }
         args.push(&url);
-        let out = self.curl(&args)?;
+        self.curl(&args)
+    }
+
+    /// [`Console::run`], for a request that curl must have carried out.
+    fn send(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: Option<&str>,
+    ) -> Result<Reply, String> {
+        let out = self.run(method, path, headers, body)?;
         if !out.status.success() {
             let why = String::from_utf8_lossy(&out.stderr);
             return Err(format!("curl {method} {path} ended with {}: {}", out.status, why.trim()));
