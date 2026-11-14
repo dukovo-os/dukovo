@@ -1264,5 +1264,4 @@ mod tests {
         broken.insert(4, " 0A:0B:0C".into());
         assert_eq!(fingerprint_on_screen(&broken), None);
     }
-
 }

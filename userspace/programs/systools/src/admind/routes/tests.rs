@@ -112,7 +112,11 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 None => no("that API token is not known"),
             },
             "token-start" => {
-                fixture::worker(fds.remove(0), Arc::clone(&calls), Arc::new(worker_answers));
+                fixture::worker(
+                    fixture::ends(&mut fds),
+                    Arc::clone(&calls),
+                    Arc::new(worker_answers),
+                );
                 ok()
             }
             "elevate" => elevated(asked, fds),

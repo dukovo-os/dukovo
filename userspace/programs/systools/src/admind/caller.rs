@@ -20,8 +20,6 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use accounts::console::Console;
@@ -30,7 +28,7 @@ use http::header::{self, HeaderMap, HeaderValue};
 
 use super::authd;
 use super::errors::{Failure, Kind};
-use super::link::Link;
+use super::link::{self, Link};
 use super::reach;
 use super::scopes::Scopes;
 use super::shared::Shared;
@@ -199,11 +197,10 @@ pub async fn worker(shared: &Shared, call: &TokenCall) -> Result<Link, Failure> 
     }
     let internal =
         |err: std::io::Error| Failure::new(Kind::Internal, format!("no link to a worker: {err}"));
-    let (ours, theirs) = UnixStream::pair().map_err(internal)?;
-    ours.set_nonblocking(true).map_err(internal)?;
-    let ours = tokio::net::UnixStream::from_std(ours).map_err(internal)?;
+    let (ours, theirs) = link::pipes().map_err(internal)?;
     let console = Console::TokenStart { token: token.bytes().to_vec() };
-    let fds = [theirs.as_raw_fd(), libc::STDERR_FILENO];
+    let [calls, replies] = theirs.fds();
+    let fds = [calls, replies, libc::STDERR_FILENO];
     let (answer, _) = authd::ask(&shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;
@@ -211,7 +208,7 @@ pub async fn worker(shared: &Shared, call: &TokenCall) -> Result<Link, Failure> 
     if let Answer::Refused(why) = answer {
         return Err(Failure::new(Kind::NoTokens, why));
     }
-    let link = Link::new(ours);
+    let link = Link::new(ours).map_err(internal)?;
     // Another request of the same token may have started one meanwhile:
     // the first kept is used, and this one goes with its link.
     let mut workers = shared.token_workers.borrow_mut();
