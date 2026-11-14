@@ -121,10 +121,13 @@ a person's own `~/applications` (ADR 0223), with only the command's name as
   threads calls from one thread only; and `php_cv_shm_ipc`,
   `php_cv_shm_mmap_anon` and `php_cv_shm_mmap_posix` yes, which are the
   three ways opcache can allocate the memory its processes share, each of
-  which the kernel gives, so that opcache has some; `PHP_OS`, `PHP_UNAME`
-  and `PHP_BUILD_PROVIDER` say Dukovo. The answers left as configure takes
-  them in a cross build are right for Radix: no `sched_getcpu`, no stack
-  limit check, no JIT.
+  which the kernel gives, so that opcache has some; `php_cv_have_stack_limit`
+  yes, as the stack grows down: configure runs a program to find out, and
+  in a cross build takes it not to, which builds PHP without its check of
+  how deep calls go, so that a function calling itself without end ends the
+  process with SIGSEGV where PHP throws an Error; `PHP_OS`, `PHP_UNAME` and
+  `PHP_BUILD_PROVIDER` say Dukovo. The answers left as configure takes them
+  in a cross build are right for Radix: no `sched_getcpu`, no JIT.
 - **A `php.ini` in the bundle**, found beside the program. It is upstream's
   `php.ini-production`, kept whole in `ports/php/php.ini`, with one
   change: `openssl.cafile` and `curl.cainfo` name the system's root
@@ -138,14 +141,10 @@ a person's own `~/applications` (ADR 0223), with only the command's name as
   files are sealed and `run-tests.php` writes beside each test, and runs
   all of it with a worker for each processor, leaving out the tests that
   `lab/tests/services/php-skips.txt` lists, each with the reason it fails
-  on Dukovo. All of it is 18,941 tests, which the emulation the boot
-  tests run in is too slow for, so the list comes from a run of those that
-  ask the system for something: the tests of `tests/` and `sapi/cli/tests/`,
-  of `ext/standard/tests/` for files, the network, general functions and
-  streams, and of the sockets, posix, pcntl, sysvsem, sysvshm, shmop,
-  session, openssl, curl and ftp extensions, 3,492 in all. The rest, the
-  language's own tests among them, run on hardware in the lab test, which
-  adds a line to the list for each that fails there.
+  on Dukovo. All of it is 18,941 tests, too many for a boot test, so the
+  list comes from runs of all of them in the machine a boot test makes
+  (below), and the lab test adds a line for each test that fails on
+  hardware once its reason is known.
 - **Licenses.** PHP is under the PHP License 3.01 and the Zend Engine
   License 2.00, which, with `TCL` (scanf), `Apache-1.0` (snprintf),
   `OLDAP-2.8` (tables derived from OpenLDAP's), Solar Designer's
@@ -166,10 +165,12 @@ a person's own `~/applications` (ADR 0223), with only the command's name as
   a script of checks, one for each of twenty-four things the extensions do:
   XML, multibyte strings, hashes, OpenSSL, compression, files,
   `pcntl_fork`, `proc_open`, a socket server and client, System V and
-  shared memory, opcache and curl. It then runs sixteen tests of PHP's own
-  suite that check what the port changes: `gh8472`, of the accepted
-  socket that patch 0010 makes blocking, and the tests of host names and
-  of `socket_create_listen()` that take `gethostbyname(3)`.
+  shared memory, opcache and curl. It then runs seventeen tests of PHP's
+  own suite that check what the port changes: `gh8472`, of the accepted
+  socket that patch 0010 makes blocking; the tests of host names and of
+  `socket_create_listen()` that take `gethostbyname(3)`; and `gh18572`,
+  whose calls nested too deep end in an Error with the check of how deep
+  calls go.
 
 ## Consequences
 
@@ -184,21 +185,27 @@ a person's own `~/applications` (ADR 0223), with only the command's name as
   a bundle of its own is built with it.
 - Both JITs are off: PHP and opcache run at the speed of their
   interpreters.
-- The bundle takes 38 MB to download and has 20,235 files of 116 MB (175 MB
+- The bundle takes 38 MB to download and has 20,240 files of 116 MB (175 MB
   on a disk), of which PHP's test suite is 103 MB and `bin` 69 MB: `php`
   and `php-fpm` (ADR 0520) are 36 MB each, as each has every extension
-  built in. Installing it on a machine of 2 GiB stops with `no_memory`
-  (`docs/deferred.md`), so the boot tests give theirs 4 GiB.
+  built in. Installing it on a machine of 2 GiB first stopped with
+  `no_memory`, as the kernel's free memory was in pieces too small for a
+  table the install grew; since ADR 0524 it installs there, and the boot
+  tests give theirs 2 GiB.
 - The suite's results, and the gaps it found, are below.
 
 ## The suite on Dukovo
 
-The 3,492 tests of the folders above ran in a boot test's machine, in 12
-runs of at most 300 tests with four workers, taking 33 minutes in all: 2,760
-passed, 661 were skipped by their own `SKIPIF` sections (an extension the
-program does not have, a test that is `online`, a privilege), 2 failed as
-their files say they do (`XFAIL`), and 69 did not pass: 62 failed and 7
-were borked.
+The suite first ran in part: the 3,492 tests that ask the system for
+something, those of `tests/` and `sapi/cli/tests/`, of
+`ext/standard/tests/` for files, the network, general functions and
+streams, and of the sockets, posix, pcntl, sysvsem, sysvshm, shmop,
+session, openssl, curl and ftp extensions. They ran in a boot test's
+machine, in 12 runs of at most 300 tests with four workers, taking 33
+minutes in all: 2,760 passed, 661 were skipped by their own `SKIPIF`
+sections (an extension the program does not have, a test that is `online`,
+a privilege), 2 failed as their files say they do (`XFAIL`), and 69 did
+not pass: 62 failed and 7 were borked.
 
 Each failure was read against what it printed. Five of the seven that
 borked did so because their `SKIPIF` sections include a file of a `tests`
@@ -232,10 +239,37 @@ rustls's, and `openssl.cafile`, which `php.ini` sets. The gaps are rows in
 `dl()` and `dns_*` functions are missing for reasons given above, and
 their tests are in the list for that.
 
-The other 15,449 tests, the language's own, `Zend/tests` among them, are
-for the lab test to run on hardware. PHP's tests of PHP-FPM (`sapi/fpm`)
-and of `php-cgi` are not in the bundle, as `php-cgi` is not, and PHP-FPM is
-in `bin`, where its tests do not look for it: the boot test `php-fpm` and
-the lab test `services/php-fpm` test the service, and the two tests of
-`ext/opcache` that run it (`preload_user_004` and `preload_user_005`) skip,
-as their search finds no `sbin/php-fpm`.
+The other 15,449 tests, the language's own, `Zend/tests` among them, then
+ran in the same machine, in 14 runs of about 1,100 with four workers,
+taking an hour and a half. `run-tests.php` counts 15,580 of them, as some
+tests run others: 14,095 passed, 1,467 were skipped by their own `SKIPIF`
+sections, 5 failed as their files say they do, and 13 did not pass: 11
+failed and 2 were borked. Each was read against what it printed:
+
+- `Zend/tests/gh18572` ended the process with SIGSEGV where it expects an
+  Error, as PHP had been built without its check of how deep calls go: the
+  answer to configure above builds it in, and the boot test `php` runs the
+  test.
+- Eight are in the list: two open a file whose name is not UTF-8, which
+  Radix refuses, as its names are UTF-8 (ADR 0127), with EINVAL where they
+  expect ENOENT; two read or write XML in Windows-1251 and in SHIFT_JIS,
+  which libxml2 converts only with `iconv(3)`, which the C library does not
+  have; and four run `locale(1)`, which Radix does not have, to list the
+  locales.
+- `ext/standard/tests/directory/gh10992` makes a folder whose name is 265
+  characters less the length of the working folder's path, which is over
+  the 255 a name may have when that path is shorter than 10 characters, on
+  Linux as well; the run's was `/tmp/t`, and the lab test's,
+  `/tmp/php-tests`, leaves it 251.
+- `ext/fileinfo/tests/cve-2014-3538-nojit` times itself, and emulation is
+  too slow for the time it allows.
+- The two borked are the two tests of `ext/opcache` that run PHP-FPM,
+  `preload_user_004` and `preload_user_005`: their `SKIPIF` sections include
+  PHP-FPM's tester, which includes four more of PHP-FPM's helpers that the
+  bundle did not have. It has all of them now, and the two skip, as their
+  search finds no `sbin/php-fpm`.
+
+PHP's own tests of PHP-FPM (`sapi/fpm`) and of `php-cgi` are not in the
+bundle, as `php-cgi` is not, and PHP-FPM is in `bin`, where its tests do
+not look for it: the boot test `php-fpm` and the lab test
+`services/php-fpm` test the service.
