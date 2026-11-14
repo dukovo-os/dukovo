@@ -203,7 +203,7 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 		*sockets*, and a service that it starts is put back to waiting
 		when it is stopped by request.
 
-	*sockets* = [ { *port* | *path*, *address*, *udp*, *name*, *backlog* } ]
+	*sockets* = [ { *port* | *path*, *address*, *udp*, *name*, *backlog*, *non-blocking* } ]
 		The sockets Spark makes and holds for it, at most 16, with the
 		keys and checks of a service file's *[[sockets]]*
 		(*service.toml*(5)), and passed to it as *sd_listen_fds*(3)

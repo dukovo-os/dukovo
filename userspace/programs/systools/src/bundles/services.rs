@@ -673,6 +673,9 @@ fn write_sockets(o: &mut String, sockets: &[service_file::SocketFile]) {
         if let Some(backlog) = socket.backlog {
             let _ = writeln!(o, "backlog = {backlog}");
         }
+        if let Some(non_blocking) = socket.non_blocking {
+            let _ = writeln!(o, "non-blocking = {non_blocking}");
+        }
         match &socket.to {
             Some(SocketAccess::Anyone) => {
                 let _ = writeln!(o, "to = \"anyone\"");
@@ -878,7 +881,8 @@ mod tests {
         let m = manifest(
             r#"{"name": "web", "program": "web", "start": "on-connection",
                 "sockets": [{"port": 8080, "address": "0.0.0.0"},
-                            {"port": 8080, "address": "::", "name": "web6", "backlog": 64},
+                            {"port": 8080, "address": "::", "name": "web6", "backlog": 64,
+                             "non-blocking": true},
                             {"port": 9000, "udp": true}, {"path": "echo"}]}"#,
             r#""network.listen": {"need": "required", "ports": [8080, 9000]}"#,
         );
@@ -890,6 +894,7 @@ mod tests {
         let names: Vec<&str> = read.sockets.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["8080", "web6", "9000", "echo"]);
         assert_eq!(read.sockets[1].backlog, 64);
+        assert_eq!((read.sockets[0].non_blocking, read.sockets[1].non_blocking), (false, true));
         assert_eq!(
             read.sockets[1].kind,
             service_file::SocketKind::Stream {

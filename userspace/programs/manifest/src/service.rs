@@ -123,6 +123,7 @@ pub const KEYS: &[&str] = &[
     "sockets.path",
     "sockets.name",
     "sockets.backlog",
+    "sockets.non-blocking",
     "sockets.to",
     "sockets.group",
     "start",
@@ -302,6 +303,12 @@ pub struct Socket {
     pub name: String,
     /// How many connections may wait to be accepted, 1 to 65535.
     pub backlog: u32,
+    /// Whether Spark passes it with `O_NONBLOCK` set, as systemd's
+    /// `NonBlocking=` does, for a program that takes an inherited socket
+    /// as it is and waits for it with poll(2), nginx among them: a
+    /// blocking socket leaves each worker that loses the race for a
+    /// connection waiting in accept(2).
+    pub non_blocking: bool,
     /// Who connects to it, for a Unix socket.
     pub access: SocketAccess,
 }
@@ -1317,6 +1324,7 @@ restart = "on-failure"
 # path = "queue"
 # name = "web"
 # backlog = 4096
+# non-blocking = false
 # to = "anyone"
 # group = "web-socket"
 # start = "at-boot"
@@ -2792,6 +2800,9 @@ pub struct SocketFile {
     /// `backlog`: how many connections may wait.
     #[serde(default, deserialize_with = "socket_backlog")]
     pub backlog: Option<u32>,
+    /// `non-blocking`: passed with `O_NONBLOCK` set.
+    #[serde(rename = "non-blocking")]
+    pub non_blocking: Option<bool>,
     /// `to`: who connects to a `path` socket besides the service, in a
     /// service file alone: `anyone`, or the `system`'s programs.
     #[serde(default, deserialize_with = "socket_to")]
@@ -2926,7 +2937,8 @@ pub(crate) fn sockets_from(
             }
         };
         let backlog = file.backlog.unwrap_or(BACKLOG_DEFAULT);
-        sockets.push(Socket { kind, name, backlog, access });
+        let non_blocking = file.non_blocking.unwrap_or(false);
+        sockets.push(Socket { kind, name, backlog, non_blocking, access });
     }
     Ok(sockets)
 }

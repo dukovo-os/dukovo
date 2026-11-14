@@ -595,11 +595,18 @@ port 443 is already among the ports it may listen on:
 [[sockets]]
 port = 443
 address = "0.0.0.0"
+non-blocking = true
 
 [[sockets]]
 port = 443
 address = "::"
+non-blocking = true
 ```
+
+`non-blocking = true` is what nginx needs of a socket it is handed: it
+waits for connections with poll, and on a socket that waits, a worker
+that loses the race for a connection would wait in accept and miss the
+next stop.
 
 nginx's start-up script logs a warning, with this fix, when a `listen`
 line of its settings names an address and port that has no socket. A

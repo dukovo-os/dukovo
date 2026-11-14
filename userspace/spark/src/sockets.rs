@@ -39,7 +39,7 @@ use alloc::vec::Vec;
 use libradix::abi::capability::{self, Rights};
 use libradix::abi::directory::{self as directory_abi, FileKind};
 use libradix::abi::errors::File as FileError;
-use libradix::abi::file::{self as file_abi, SocketOption};
+use libradix::abi::file::{self as file_abi, DescriptionFlags, SocketOption};
 use libradix::abi::network::{self, Address, AddressFamily, SocketType};
 use libradix::abi::process::{self, PipeFlags};
 use libradix::abi::startup::SLOT_PROCESS;
@@ -168,6 +168,16 @@ pub fn make(
                 made
             }
         };
+        // A program that waits with poll(2) and accepts on an inherited
+        // socket as it is, as nginx does, needs it not to wait, or each
+        // process that loses the race for a connection waits in accept(2).
+        let made = made.and_then(|file| {
+            if socket.non_blocking {
+                file_abi::status_flags(&SYS, file.slot(), true, DescriptionFlags::NON_BLOCKING)
+                    .map_err(|status| format!("{:#x}", status.0))?;
+            }
+            Ok(file)
+        });
         match made {
             Ok(file) => {
                 held.files.push(file);

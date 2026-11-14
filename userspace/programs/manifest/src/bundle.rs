@@ -2594,7 +2594,8 @@ impl JsonSchema for service::SocketFile {
                 "udp": {"type": "boolean", "description": "A datagram socket; for a port"},
                 "path": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$", "description": "A plain name in the service's live folder"},
                 "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
-                "backlog": {"type": "integer", "minimum": 1, "maximum": 65535}
+                "backlog": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "non-blocking": {"type": "boolean", "description": "Passed with O_NONBLOCK set, for a program that waits for it with poll(2)"}
             },
             "oneOf": [{"required": ["port"]}, {"required": ["path"]}],
             "additionalProperties": false

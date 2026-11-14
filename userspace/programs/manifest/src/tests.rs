@@ -1564,7 +1564,7 @@ fn a_service_names_the_sockets_spark_holds() {
     let text = socket_file(
         "start = \"on-connection\"",
         "[[sockets]]\nport = 80\naddress = \"0.0.0.0\"\n\
-         [[sockets]]\nport = 80\naddress = \"::\"\nname = \"web6\"\nbacklog = 128\n\
+         [[sockets]]\nport = 80\naddress = \"::\"\nname = \"web6\"\nbacklog = 128\nnon-blocking = true\n\
          [[sockets]]\nport = 9000\nudp = true\naddress = \"192.168.1.5\"\n\
          [[sockets]]\nport = 8090\naddress = \"::1\"\n\
          [[sockets]]\nport = 9001\n\
@@ -1590,6 +1590,10 @@ fn a_service_names_the_sockets_spark_holds() {
     assert_eq!(names, ["80", "web6", "9000", "8090", "9001", "db"]);
     let backlogs: Vec<u32> = service.sockets.iter().map(|socket| socket.backlog).collect();
     assert_eq!(backlogs, [BACKLOG_DEFAULT, 128, BACKLOG_DEFAULT, BACKLOG_DEFAULT, 4096, 4096]);
+    // Blocking unless the file says, as systemd's NonBlocking= is.
+    let non_blocking: Vec<bool> =
+        service.sockets.iter().map(|socket| socket.non_blocking).collect();
+    assert_eq!(non_blocking, [false, true, false, false, false, false]);
 }
 
 #[test]

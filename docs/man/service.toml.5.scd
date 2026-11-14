@@ -211,6 +211,14 @@ override:
 		The connections the kernel keeps waiting for the service to
 		accept, 1 to 65535: 4096 unless set.
 
+	*sockets.non-blocking* = *true* | *false*
+		Whether the socket is passed with *O_NONBLOCK* set, as
+		systemd's *NonBlocking=* does; *false* unless set. A program
+		that takes a socket as it inherits it and waits for it with
+		*poll*(2), as nginx does, needs it: on a socket that waits,
+		each of its processes that loses the race for a connection
+		waits in *accept*(2), and no longer hears a request to stop.
+
 	*sockets.to* = _"anyone"_ | _"system"_
 		With *path*: who may connect besides the service. *"anyone"*
 		makes the socket root's, mode 0666; *"system"* root's, mode

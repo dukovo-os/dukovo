@@ -121,8 +121,9 @@ warn_unserved() {
 	nginx_listens | while read -r address port; do
 		if ! printf '%s\n' "$held" | grep -qxF "$address $port"; then
 			echo "nginx-service: warning: nginx listens on $address port $port, which" \
-				"Spark holds no socket for; add a [[sockets]] table with port = $port" \
-				"and address = \"$address\" to nginx's service file (service edit nginx)" \
+				"Spark holds no socket for; add a [[sockets]] table with port = $port," \
+				"address = \"$address\" and non-blocking = true to nginx's service file" \
+				"(service edit nginx)" \
 				"to keep that port open across restarts" >&2
 		fi
 	done

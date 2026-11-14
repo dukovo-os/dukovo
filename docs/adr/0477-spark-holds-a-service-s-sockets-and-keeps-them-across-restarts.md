@@ -80,7 +80,11 @@ allows.
    `LISTEN_FDS` before it runs nginx, and nginx's settings are
    unchanged. The bundle names two sockets, port 80 on `0.0.0.0` and on
    `::`, which its settings listen on, and stops with `SIGQUIT`, nginx's
-   graceful stop, for up to 30 seconds. A socket no process takes leaves
+   graceful stop, for up to 30 seconds. Its sockets are `non-blocking`,
+   a socket's key as systemd's `NonBlocking=`: nginx takes an inherited
+   socket as it is and polls it, and on a socket that waits, a worker
+   that loses the race for a connection waits in accept(2) and never
+   hears the stop. A socket no process takes leaves
    its clients waiting, so a file names only what its program listens on:
    an administrator who turns on HTTPS adds port 443 to nginx's service
    file, which keeps their change across updates (ADR 0386). The wrapper
