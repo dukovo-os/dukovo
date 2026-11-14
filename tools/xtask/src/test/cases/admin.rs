@@ -1082,8 +1082,10 @@ impl Console {
 
     /// TLS 1.1 is refused by the console itself: curl, allowed nothing
     /// above 1.1 and the old ciphers a library would refuse to offer, ends
-    /// with the server's alert for a protocol version, and not with its
-    /// own refusal to try.
+    /// with an alert the server sent, and not with its own refusal to try.
+    /// The alert is for a protocol version, or a handshake failure where
+    /// rustls first finds the hello without the signature algorithms that
+    /// a TLS 1.1 hello never has.
     fn tls_refused(&self) -> Result<(), String> {
         let pem = self.pem.display().to_string();
         let url = format!("{ORIGIN}/api/1/health");
@@ -1101,7 +1103,8 @@ impl Console {
         if out.status.success() {
             return Err("TLS 1.1 was served".into());
         }
-        if !why.contains("protocol version") {
+        let alerted = ["alert protocol version", "alert handshake failure"];
+        if !alerted.iter().any(|alert| why.contains(alert)) {
             return Err(format!(
                 "TLS 1.1 was refused, but not by the console's alert: {}",
                 why.trim()
