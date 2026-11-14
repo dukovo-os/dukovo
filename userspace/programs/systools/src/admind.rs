@@ -71,6 +71,9 @@ pub(crate) mod scopes;
 mod serve;
 mod sessions;
 mod shared;
+// Its callers, the journal and the tasks, come next.
+#[allow(dead_code)]
+pub(crate) mod store;
 mod tls;
 mod webauthn;
 mod who;
