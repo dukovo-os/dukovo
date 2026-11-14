@@ -549,7 +549,7 @@ impl Domain {
     pub fn disk_use(&self) -> DiskUse {
         let mut used = self.disk.read();
         for_each(|domain| {
-            if !core::ptr::eq(&**domain, self) && domain.is_within(self) {
+            if !core::ptr::eq(Arc::as_ptr(domain), self) && domain.is_within(self) {
                 used.add(&domain.disk.read());
             }
         });
