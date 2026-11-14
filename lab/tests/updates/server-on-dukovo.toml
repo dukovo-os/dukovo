@@ -12,9 +12,10 @@
 # are not tried here.
 #
 # The old server is the test update server `ob lab` builds, served by
-# update-server.sh. The machine reads its stable channel once, so that its
-# kept TUF metadata holds the old server's timestamp and snapshot
-# versions, which a client never takes a lower one than. The machine is
+# update-server.sh. The machine reads its stable channel once, as a canary
+# since the release is paused on its first day, so that its kept TUF
+# metadata holds the old server's timestamp and snapshot versions, which a
+# client never takes a lower one than. The machine is
 # then set up with the online keys of the old server (step 4, in a folder
 # of the lab account's own /tmp), the old server's metadata folder and the
 # plans of its rollouts are seeded (step 6), and the lab PC deploys the
@@ -49,7 +50,7 @@ host = "sh {here}/update-server.sh serve {port:updates}"
 background = true
 ready = "serving updates"
 [[step]]
-run = '''sh -c 'printf "server = \"http://{peer}:{port:updates}/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+run = '''sh -c 'printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
 root = true
 expect = "set: 42"
 [[step]]
@@ -161,10 +162,11 @@ expect = "counts on from the old server's"
 
 # The machine reads its own server: the metadata it kept from the old one
 # is not newer than what this one signed, so nothing is refused; what it
-# is offered is what the old server offered; and the pause of the stable
-# release, a rollout plan the seed carried, is held.
+# is offered, still as a canary, is what the old server offered; and the
+# pause of the stable release, a rollout plan the seed carried, is held
+# for a machine that is no canary, whose wave opens on day 7.
 [[step]]
-run = '''sh -c 'printf "server = \"http://127.0.0.1/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+run = '''sh -c 'printf "server = \"http://127.0.0.1/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
 root = true
 expect = "set: 42"
 [[step]]
@@ -182,7 +184,7 @@ run = '''sh -c 'log nginx | grep "GET /system/metadata/timestamp.json" | tail -n
 root = true
 expect = "GET /system/metadata/timestamp.json"
 [[step]]
-run = "sh -c 'echo 500 > /system/state/sysupdate/wave && sysupdate check'"
+run = '''sh -c 'printf "server = \"http://127.0.0.1/system/\"\n" > /system/settings/sysupdate/updates.toml && echo 500 > /system/state/sysupdate/wave && sysupdate check' '''
 root = true
 expect = [
     "sysupdate: it reaches machines in waves; this machine's opens on day 7",
