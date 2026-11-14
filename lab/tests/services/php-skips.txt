@@ -9,15 +9,12 @@
 # a gap closes, its lines go: the gaps waiting on work are in
 # docs/deferred.md.
 #
-# The list is made from a run, under emulation, of the tests that ask the
-# system for something: those of tests/ and sapi/cli/tests/, of
-# ext/standard/tests/ for files, the network, general functions and
-# streams, and of the sockets, posix, pcntl, sysvsem, sysvshm, shmop,
-# session, openssl, curl and ftp extensions (ADR 0499). Each test that
-# failed there, or ran for longer than its time, was read for its reason
-# before its line was added. The rest of the suite, the language's own tests
-# among them, is for the lab test to run on hardware, which adds a line for
-# each that fails there.
+# The list is made from runs of the whole suite under emulation (ADR
+# 0499). Each test that failed there, or ran for longer than its time, was
+# read for its reason before its line was added; a test that fails only
+# because emulation is slow, as one that times itself does, has no line.
+# The lab test runs the suite on hardware, and a test that fails there gets
+# a line once its reason is known.
 
 # mlibc's getprotobyname(3) and getprotobynumber(3) find no protocol, and
 # its getservbyport(3) ignores the protocol it is given (it names "http"
@@ -99,6 +96,23 @@ ext/standard/tests/file/rename_variation.phpt
 ext/standard/tests/file/unlink_variation8.phpt
 ext/standard/tests/file/touch.phpt
 ext/standard/tests/file/realpath_bug77484.phpt
+
+# Names that are not UTF-8 are refused, as Radix's names are UTF-8 (ADR
+# 0127): opening one answers EINVAL, where the tests expect ENOENT.
+ext/fileinfo/tests/bug68996.phpt
+ext/standard/tests/strings/bug68996.phpt
+
+# The C library has no iconv(3) (deferred.md), so libxml2 converts only the
+# encodings it knows itself: a document in Windows-1251 does not read, and
+# one written in SHIFT_JIS comes out without its declaration.
+ext/dom/tests/modern/xml/XMLDocument_fromString_04.phpt
+ext/xmlwriter/tests/xmlwriter_toStream_encoding_shiftjis.phpt
+
+# There is no locale(1), which these tests run to list the locales.
+ext/standard/tests/strings/setlocale_basic1.phpt
+ext/standard/tests/strings/setlocale_basic2.phpt
+ext/standard/tests/strings/setlocale_basic3.phpt
+ext/standard/tests/strings/setlocale_variation1.phpt
 
 # The program loads no libraries (ADR 0499): dl() says that dynamic modules
 # are not supported, where the first test expects the message about a path,
