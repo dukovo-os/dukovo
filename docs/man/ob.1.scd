@@ -230,7 +230,12 @@ _target/userspace/_).
 		whose password, the lab's own, lets tests run commands as root
 		through *elevate*(8); sshd turned on by an override file; and a
 		sign-in banner that says the image is a test image (ADRs 0401 and
-		0408). *lab run* tests it. Never give it to anyone as a release.
+		0408). Its systools is built with the *lab* feature, which gives
+		the web console the route the lab's tests run an elevated command
+		by, _POST /api/1/test/elevate_, and the long action *lab.long*
+		that its task tests run (ADRs 0514 and 0516); no other image,
+		the boot tests' images included, has either. *lab run* tests it.
+		Never give it to anyone as a release.
 
 	*--lab-key* _file_
 		The lab's public key, one *ssh-ed25519* line, instead of

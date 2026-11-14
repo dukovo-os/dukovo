@@ -603,8 +603,23 @@ fn dukovo_catalog(ctx: &Ctx) -> Result<Vec<(String, PathBuf)>> {
 
 /// Builds the ports, the C test programs and the user programs, installs
 /// the test image as `out/sysroot/boot/usertests`, and writes the boot
-/// archive to `out/sysroot/boot/bootfs`.
+/// archive to `out/sysroot/boot/bootfs`. The programs are the ones for
+/// people, without the lab's routes: [`build_for`] with `lab` false.
 pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
+    build_for(ctx, profile, false)
+}
+
+/// As [`build`], and with `lab` true builds systools with its `lab`
+/// feature ([`LAB_FEATURE`]), which gives admind the route the lab's tests
+/// run an elevated command by, `POST /api/1/test/elevate`, and the
+/// console the long action `lab.long` that its task tests run (ADRs 0514
+/// and 0516). Only the lab image is built so (`ob image --lab`,
+/// [`crate::image::build_release`]): a lab test runs on that image alone
+/// and needs those routes. Every other image, the boot tests' among them,
+/// is a build for people, so nothing that ships has them. A build with
+/// the feature and one without it share `target/programs`, and each puts
+/// its own systools in place.
+pub fn build_for(ctx: &Ctx, profile: Profile, lab: bool) -> Result<Programs> {
     install_headers(ctx)?;
     let ports = ports::build_all(ctx, &[])?;
     let mut files = build_posix(ctx, &ports.toolchain)?;
@@ -620,7 +635,7 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     for port in &ports.ports {
         files.extend(ports::image_files(ctx, &port.recipe, &ctx.out.join("sysroot"))?);
     }
-    files.extend(build_std(ctx, profile, &ports.toolchain)?);
+    files.extend(build_std(ctx, profile, &ports.toolchain, lab)?);
     step(&format!("Building the user programs ({profile})"));
     let mut cmd = cargo(ctx, "build");
     cmd.args(["-p", "usertests"]);
@@ -813,23 +828,44 @@ pub fn test_admin_scripts(ctx: &Ctx) -> Result<()> {
     process::run(ctx, &mut cmd)
 }
 
+/// The feature of systools that [`build_for`] turns on for the lab image,
+/// in the form Cargo takes in a workspace, `PACKAGE/FEATURE`
+/// (userspace/programs/systools/Cargo.toml).
+pub const LAB_FEATURE: &str = "systools/lab";
+
+/// The arguments, after `build` and the manifest, of the Cargo command that
+/// builds the programs of [`STD_ARCHIVE`]: each one's package, the lab
+/// feature when `lab` is true ([`LAB_FEATURE`]), and `--release` for a
+/// release.
+fn std_build_args(profile: Profile, lab: bool) -> Vec<&'static str> {
+    let mut args = Vec::new();
+    for (_, package) in STD_ARCHIVE {
+        args.extend(["-p", package]);
+    }
+    if lab {
+        args.extend(["--features", LAB_FEATURE]);
+    }
+    if profile == Profile::Release {
+        args.push("--release");
+    }
+    args
+}
+
 /// Builds the programs of [`STD_ARCHIVE`] into `out/sysroot`, with their
 /// links and the shell's test scripts, and returns each one's place in the
-/// boot archive and file.
+/// boot archive and file. With `lab` true, systools has the lab's routes
+/// ([`build_for`]).
 fn build_std(
     ctx: &Ctx,
     profile: Profile,
     toolchain: &ports::Toolchain,
+    lab: bool,
 ) -> Result<Vec<(String, PathBuf)>> {
     forget_stale_std(ctx)?;
-    step(&format!("Building the programs on Rust's standard library ({profile})"));
+    let routes = if lab { ", with the lab's routes" } else { "" };
+    step(&format!("Building the programs on Rust's standard library ({profile}{routes})"));
     let mut cmd = std_cargo(ctx, "build", toolchain);
-    for (_, package) in STD_ARCHIVE {
-        cmd.args(["-p", package]);
-    }
-    if profile == Profile::Release {
-        cmd.arg("--release");
-    }
+    cmd.args(std_build_args(profile, lab));
     process::run(ctx, &mut cmd)?;
     check_patched(ctx, toolchain)?;
     let built = ctx.target.join("programs").join(STD_TARGET_NAME).join(profile.dir());
@@ -1080,6 +1116,51 @@ mod tests {
             ]
         );
         assert!(STD_ARCHIVE.contains(&("system/tests/posix/sqlite-test", "sqlite-test")));
+    }
+
+    #[test]
+    fn the_lab_feature_is_on_the_command_line_of_a_lab_build_alone() {
+        let people = std_build_args(Profile::Debug, false);
+        assert!(!people.contains(&"--features"), "{people:?}");
+        assert!(!people.iter().any(|a| a.contains("lab")), "{people:?}");
+        let lab = std_build_args(Profile::Debug, true);
+        let at = lab.iter().position(|a| *a == "--features");
+        assert_eq!(at.map(|i| lab[i + 1]), Some("systools/lab"), "{lab:?}");
+        assert_eq!(lab.iter().filter(|a| a.contains("lab")).count(), 1, "{lab:?}");
+        // The feature's package is one of those Cargo builds, or it refuses.
+        let packages: Vec<&str> = lab.windows(2).filter(|w| w[0] == "-p").map(|w| w[1]).collect();
+        assert_eq!(packages.len(), STD_ARCHIVE.len());
+        assert!(packages.contains(&LAB_FEATURE.split('/').next().unwrap()));
+        // Nothing else changes: the same packages, in the same order.
+        let without: Vec<&str> =
+            lab.iter().copied().filter(|a| *a != "--features" && *a != LAB_FEATURE).collect();
+        assert_eq!(without, people);
+    }
+
+    #[test]
+    fn a_release_adds_its_flag_to_either_build() {
+        for lab in [false, true] {
+            let debug = std_build_args(Profile::Debug, lab);
+            let release = std_build_args(Profile::Release, lab);
+            assert!(!debug.contains(&"--release"), "{debug:?}");
+            assert_eq!(release.last(), Some(&"--release"), "{release:?}");
+            assert_eq!(release[..release.len() - 1], debug[..], "{lab}");
+        }
+    }
+
+    #[test]
+    fn systools_has_the_feature_the_lab_build_turns_on() {
+        let (package, feature) = LAB_FEATURE.split_once('/').unwrap();
+        let path =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../userspace/programs/systools/Cargo.toml");
+        let manifest = std::fs::read_to_string(path).unwrap();
+        assert_eq!(package, "systools");
+        let features = manifest.split("\n[features]\n").nth(1).expect("a [features] table");
+        let table = features.split("\n[").next().unwrap();
+        assert!(
+            table.lines().any(|line| line.trim_start().starts_with(&format!("{feature} = "))),
+            "{table}"
+        );
     }
 
     #[test]

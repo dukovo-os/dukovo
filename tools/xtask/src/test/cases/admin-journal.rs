@@ -44,7 +44,9 @@
 //! says of the lab's route, so there the test asks only that GET
 //! /api/1/tasks is a list, that stopping a task there is not is ADM-127,
 //! and that the lab's route is not there. Where the action is offered, in a
-//! lab build, it runs as a task for 60 seconds: the console answers 202
+//! lab build, which only the lab image is (`ob image --lab` builds systools
+//! with its lab feature, and the lab test web-console/tasks needs the
+//! action there), it runs as a task for 60 seconds: the console answers 202
 //! with the task's number; while it runs the task shows its step and words
 //! and a log, in the list and at its own address, and its command runs in
 //! the guest; Stop answers 200, ends the command at once as `stopped by

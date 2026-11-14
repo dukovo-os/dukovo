@@ -36,9 +36,11 @@
 //! nothing to unlock: authd refuses it, ADM-122. A locked session cannot
 //! change second steps without the password; unlocked with the app's code
 //! it can, shows the seconds left and locks again. The route that lab builds add, _POST
-//! /api/1/test/elevate_, is not in this image, which is 404: no case can
-//! ask for the lab build, so what an unlocked session runs as an
-//! administrator is the lab test web-console/unlock's. Stopping and
+//! /api/1/test/elevate_, is not in this image, which is 404: this image
+//! is a build for people, and only the lab image, which *ob image --lab*
+//! builds with systools' lab feature, has the route. So what an unlocked
+//! session runs as an administrator is the lab test web-console/unlock's,
+//! which fails on a lab image without the route. Stopping and
 //! starting admind ends the sessions, so the old cookie is ADM-107; the
 //! console serves the same certificate and signs people in again, and
 //! consoled draws tty2's sign-in screen, which nobody has typed on, again
