@@ -86,6 +86,8 @@ install -m 0755 "$PORT_DIR/nginx-service" "$PORT_BUNDLE/bin/nginx-service"
 # The settings it starts from: Dukovo's nginx.conf, and nginx's own
 # files beside it, which nginx.conf includes.
 install -m 0644 "$PORT_DIR/nginx.conf" "$PORT_BUNDLE/conf/nginx.conf"
+# The location every site includes for an ACME authority's checks (ADR 0513).
+install -m 0644 "$PORT_DIR/acme-challenge.conf" "$PORT_BUNDLE/conf/acme-challenge.conf"
 for file in mime.types fastcgi.conf fastcgi_params scgi_params uwsgi_params; do
 	install -m 0644 "conf/$file" "$PORT_BUNDLE/conf/$file"
 done

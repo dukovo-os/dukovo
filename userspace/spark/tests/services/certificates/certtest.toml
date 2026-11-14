@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The certificates boot test's service: it names this-machine, says what
+# it reads of it as it starts and each time Spark sends it SIGHUP (the
+# time, the mode of the key, and the first 16 digits of the SHA-256 of
+# the chain and of the key), and does nothing else.
+
+service_version = 1
+description = "Holds this machine's certificate"
+program = "/system/commands/nukesh"
+arguments = [
+    "-c",
+    "d=$CERTIFICATES_DIRECTORY/this-machine; trap 'echo certtest: hup $(date +%s) $(stat -c %a $d/key.pem) $(sha256sum < $d/fullchain.pem | cut -c1-16) $(sha256sum < $d/key.pem | cut -c1-16)' HUP; echo certtest: start $(date +%s) $(stat -c %a $d/key.pem) $(sha256sum < $d/fullchain.pem | cut -c1-16) $(sha256sum < $d/key.pem | cut -c1-16); while :; do sleep 1; done",
+]
+restart = "never"
+certificates = ["this-machine"]

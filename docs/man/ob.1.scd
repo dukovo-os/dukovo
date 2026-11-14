@@ -1610,6 +1610,14 @@ _target/userspace/_).
 	_{here}/NAME_ or in the script of its *browser* step; or an entry of
 	something the tree no longer has.
 
+	For *run* and *ui*, also build the ports and pack the catalog's
+	bundles, for the service bundles' tests, and name their folders to
+	the tests' host steps: *DUKOVO_LAB_BUNDLES*, _out/bundles_, and
+	*DUKOVO_LAB_PORTS*, _out/ports_, whose _PORT/for-lab_ folders hold
+	what a port builds for the lab's tests, as the sqlite port's test
+	program and scripts. A test that needs one skips when the folder
+	is not named, as with *--image*.
+
 	*dukovo-lab* is found on *PATH*, or at *OB_LAB*. The handbook's Lab
 	tests chapter shows how to write a test, and its Coverage section
 	how an entry is written.
@@ -2057,7 +2065,8 @@ _recipe.toml_
 	the pinned Rust
 	toolchain's *rust-src* component, with the crates it vendors; any
 	*extra* sources unpacked inside its tree, each with its own commit
-	and license; crates from crates.io unpacked inside it (*[[crate]]*:
+	and license (a port with no source of its own but *extra* ones builds
+	only those); crates from crates.io unpacked inside it (*[[crate]]*:
 	name, version, the SHA-256 of the _.crate_ file that Cargo.lock
 	records too, license, and a *path* other than _<name>-<version>_);
 	the ports it *depends* on; whether it belongs to the
@@ -2071,7 +2080,8 @@ _recipe.toml_
 	version, license, home page and notice files), each a package of its
 	own in the license manifest;
 	and for a port the catalog carries rather than the image, its
-	*[bundle]*: the bundle's *id*, *name* and *commands* (ADR 0370), and
+	*[bundle]*: the bundle's *id*, *name*, *description* (a paragraph
+	for the manifest) and *commands* (ADR 0370), and
 	for a service bundle (ADR 0491) its other *programs*, the ports it
 	*links* (whose packages and licenses, with the compiler's runtime,
 	go into its SBOM), and its *services*, *permissions* and *data*, as
@@ -2095,7 +2105,10 @@ _build.sh_
 	line, such as links and manual pages; and for a program in Rust,
 	_crates.txt_, the crates it links as *cargo tree -e
 	normal,no-proc-macro --prefix none --format '{p}|{l}'* lists them,
-	and its _Cargo.lock_), for a bundle's port an empty folder for the
+	and its _Cargo.lock_; and what other builds take from the port:
+	_for-bundles/_, which the ports of bundles build from, and
+	_for-lab/_, what the lab's tests use, which *lab* names in
+	*DUKOVO_LAB_PORTS*), for a bundle's port an empty folder for the
 	bundle (*PORT_BUNDLE*), *SYSROOT*, *TOOLCHAIN*, Cargo for Radix
 	(*CARGO_RADIX*), *PREFIX* (_/system_), *JOBS*, *HOST*
 	(*x86_64-radix*), the toolchain's programs as *CC*, *CXX*, *AR*,
@@ -2186,7 +2199,11 @@ links with *x86_64-radix-cc*, and gives the program the crates the
 rust-crates port patched for Radix in place of crates.io's, each one
 the workspace's Cargo.lock names (all of them when there is no
 Cargo.lock yet). Cargo warns of a patch it then finds no use for, such
-as one for another version of a crate the lock names.
+as one for another version of a crate the lock names. When *ob* builds
+the programs on Rust's standard library itself, it gives Cargo
+*SQLITE3_LIB_DIR* and *SQLITE3_INCLUDE_DIR*, the sysroot's _libraries_
+and _include_, and *SQLITE3_STATIC*, so that libsqlite3-sys links the
+sqlite port's _libsqlite3.a_ instead of building a copy (ADR 0511).
 
 After building Rust's standard library, *ob* checks its *libc* crate
 against the C library: the size and alignment of every structure and

@@ -72,7 +72,7 @@ pub struct Recipe {
     /// what it installs is used to build, and never reaches an image.
     #[serde(default)]
     pub toolchain: bool,
-    /// Its source; a port of crates alone has none.
+    /// Its source; a port of crates or of extra sources alone has none.
     #[serde(default)]
     pub source: Source,
     /// More sources, unpacked inside the port's source tree.
@@ -109,6 +109,10 @@ pub struct BundleRecipe {
     pub id: String,
     /// Its name as people see it.
     pub name: String,
+    /// More about it than the recipe's summary says, a paragraph for the
+    /// manifest's `description`: what it leaves out, say.
+    #[serde(default)]
+    pub description: Option<String>,
     /// The commands it gives, each a program `bin/<command>` that runs
     /// with the access of whoever runs it, as command-line tools do
     /// (manifest.json(5)); the install sheet says so.
@@ -141,7 +145,8 @@ pub struct BundleRecipe {
 }
 
 /// Where a source comes from: a git repository and a commit in it, a
-/// release archive, or rust-src; none of them for a port of crates alone.
+/// release archive, or rust-src; none of them for a port of crates or of
+/// extra sources alone.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
@@ -337,9 +342,10 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
     if source.rust_src && !recipe.toolchain {
         return Err(Error::new(format!("{what}: only a toolchain port builds rust-src")));
     }
-    if kinds == 0 && recipe.crates.is_empty() {
+    if kinds == 0 && recipe.crates.is_empty() && recipe.extra.is_empty() {
         return Err(Error::new(format!(
-            "{what}: a port needs a source: git and commit, url and sha256, rust-src or crates"
+            "{what}: a port needs a source: git and commit, url and sha256, rust-src, crates or \
+             extra sources"
         )));
     }
     if !git && (!source.commit.is_empty() || source.tag.is_some()) {
@@ -1686,6 +1692,45 @@ mod tests {
             let recipe: Recipe = toml::from_str(&text.replacen(from, to, 1)).unwrap();
             assert!(outside_path(&recipe).is_some(), "{to}");
         }
+    }
+
+    /// A port that is only extra sources, as sqlite-cli is (linenoise and
+    /// the shell the sqlite port generates), needs no source of its own;
+    /// one with no source of any kind is refused.
+    #[test]
+    fn a_port_of_extra_sources_alone_needs_no_source() {
+        let text = r#"
+            name = "x"
+            version = "1"
+            summary = "x"
+            license = "MIT"
+            homepage = "https://x"
+            [[extra]]
+            path = "y"
+            git = "https://y/y.git"
+            commit = "0123456789012345678901234567890123456789"
+            license = "MIT"
+        "#;
+        let root =
+            std::env::temp_dir().join(format!("ob-extra-sources-port-{}", std::process::id()));
+        let dir = root.join("ports/x");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("build.sh"), "#!/bin/sh\n").unwrap();
+        let ctx = Ctx {
+            out: root.join("out"),
+            target: root.join("target"),
+            root: root.clone(),
+            config: crate::config::Config::default(),
+            verbose: false,
+        };
+        let recipe: Recipe = toml::from_str(text).unwrap();
+        let checked = check(&ctx, &recipe, &dir);
+        let bare: Recipe = toml::from_str(&text[..text.find("[[extra]]").unwrap()]).unwrap();
+        let refused = check(&ctx, &bare, &dir);
+        std::fs::remove_dir_all(&root).unwrap();
+        checked.unwrap();
+        let err = refused.unwrap_err().to_string();
+        assert!(err.contains("a port needs a source"), "{err}");
     }
 
     #[test]

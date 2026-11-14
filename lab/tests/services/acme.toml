@@ -1,0 +1,240 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Certificates from an ACME authority (ADR 0513), against Pebble, Let's
+# Encrypt's own test authority, which the lab PC runs as acme-pebble.sh
+# beside this file starts it, from the kit in lab/pebble: `cert get` proves
+# a name by HTTP-01 with its own small server, then through nginx, which
+# holds port 80, and by DNS-01 for a name and its wildcard, with the TXT
+# records added the way a person adds them; `cert renew` makes the
+# certificate anew and Spark has the service that uses it read it again;
+# certd renews a short certificate by itself, as certd has no firewall rule
+# to open port 80 and needs none; `cert revoke` revokes one; and while the
+# firewall closes port 80 `cert get` says so before it asks the authority.
+#
+# Pebble gives a certificate whichever of its profiles it likes when an order
+# names none, so each order here names one: "default", for 90 days, or
+# "short", for 150 seconds.
+#
+# The names are made up, as acme-lab.example, so the machine resolves them
+# through its own resolver pointed at the DNS server Pebble's companion
+# runs (/system/settings/resolved: `servers = {peer}:{port:dns}`), which
+# leads every name to the machine, and not through a hosts file; Pebble
+# asks the same server for the names it checks, and reaches the machine's
+# port 80 as {machine-port:80}. The machine trusts Pebble's own authority
+# for its address, made for this test, by its list of authorities
+# (dukovo-certificates(7)). The machine's settings are put back at the end.
+about = "cert get makes a certificate from Pebble by HTTP-01, standalone and through nginx, and by DNS-01 for a name and its wildcard; cert renew and certd renew them, Spark has a service read the new one, cert revoke revokes one, and a closed firewall is told before the authority is asked (ADR 0513)"
+time = "25m"
+fresh = true
+host_needs = ["curl", "scp", "ssh", "openssl", "nc"]
+
+# What a run before may have left, put back, and a certificate and a
+# service the test makes none of.
+[[step]]
+run = '''sh -c 'service lab-acme stop > /dev/null 2>&1; rm -f /system/settings/spark/services/lab-acme.toml; for name in standalone nginx dns short; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; firewall list | grep -q "tcp 80" && echo old-rules; echo clean' '''
+root = true
+expect = "clean"
+
+# Pebble and its DNS server, on the lab PC: the ACME directory on
+# {port:acme}, the names on {port:dns}.
+[[step]]
+host = "sh {here}/acme-pebble.sh {port:acme} {port:acmeman} {port:dns} {port:chall} {machine-port:80} {peer} {machine}"
+background = true
+ready = "pebble ready"
+
+# The machine trusts Pebble's authority, which is a file of its own in place
+# of the link to the system's (dukovo-certificates(7)), and asks the lab PC's
+# DNS server, over plain DNS.
+[[step]]
+host = "sh {here}/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = '''sh -c 'cp /system/settings/resolved /users/lab/acme-resolved.orig && cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem > roots.new && mv roots.new ca-certificates.crt && echo trusted' '''
+root = true
+expect = "trusted"
+[[step]]
+run = "sh -c 'cat > /system/settings/resolved && service resolved reload && echo resolver-set'"
+root = true
+input = "servers = {peer}:{port:dns}\ndns-over-tls = no\n"
+expect = "resolver-set"
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 20 ] && ! resolvectl query standalone.acme-lab.example > /dev/null 2>&1; do sleep 1; i=$((i + 1)); done; resolvectl query standalone.acme-lab.example' '''
+expect = "standalone.acme-lab.example"
+
+# The firewall has no rule for port 80, and a command of an administrator
+# has no right to take connections without one: cert get says so, with the
+# command that opens it, and asks nothing of the authority; nothing is made.
+[[step]]
+run = "cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --profile default"
+root = true
+exit = 1
+expect = "the firewall closes port 80, which the authority must reach: open it with `elevate firewall allow tcp 80`"
+expect_not = "the names and this machine are ready"
+[[step]]
+run = "cert list"
+expect_not = "standalone.acme-lab.example"
+
+# Port 80 open to the authority: a dry run asks and installs nothing, then
+# the certificate is got, proved by the small server cert get starts for
+# the time of the check, and it is the authority's, not the machine's.
+[[step]]
+run = "firewall allow tcp 80"
+root = true
+[[step]]
+run = "cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --dry-run --profile default"
+root = true
+expect = ["the names and this machine are ready", "the dry run worked: nothing was installed, as it asked"]
+[[step]]
+run = "cert list"
+expect_not = "standalone.acme-lab.example"
+[[step]]
+run = "cert get standalone.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --email lab@acme-lab.example --profile default"
+root = true
+expect = ["the names and this machine are ready", "standalone.acme-lab.example installed: standalone.acme-lab.example, runs out ", "issued by CN=Pebble Intermediate CA", "certd renews it before it runs out"]
+[[step]]
+run = "cert list"
+expect = ["standalone.acme-lab.example", "acme"]
+# certd looks at it, when it is told to, and keeps the day it renews on.
+[[step]]
+run = '''sh -c 'service certd reload > /dev/null; i=0; while [ $i -lt 60 ] && ! cert list | grep standalone | grep -q renews; do sleep 1; i=$((i + 1)); done; cert list | grep standalone' '''
+root = true
+expect = ", renews 20"
+[[step]]
+run = "cert show standalone.acme-lab.example"
+expect = ["Kind:       acme", "Issuer:     CN=Pebble Intermediate CA", "Authority:  https://{peer}:{port:acme}/dir", "Proved by:  http-01", "Asked for:  standalone.acme-lab.example, ecdsa-p256"]
+# Nothing of the check is left, and the small server is gone: port 80
+# answers nothing.
+[[step]]
+run = "sh -c 'ls /system/live/certd/acme-challenge | wc -l; nc -z 127.0.0.1 80 && echo still-open || echo port-80-closed'"
+root = true
+expect = "0\nport-80-closed"
+
+# A service that names it is given it, and is told to read it again when
+# the certificate is made anew: its log says so.
+[[step]]
+run = "sh -c 'cat > /system/settings/spark/services/lab-acme.toml && service lab-acme start && echo started'"
+root = true
+input = """
+service_version = 1
+description = "uses a certificate from Pebble"
+program = "/system/commands/sh"
+arguments = ["-c", "trap 'echo lab-hup' HUP; echo lab-up; while :; do sleep 1; done"]
+restart = "never"
+certificates = ["standalone.acme-lab.example"]
+"""
+expect = "started"
+[[step]]
+run = "sh -c 'ls /system/live/certificates/lab-acme/standalone.acme-lab.example; cert show standalone.acme-lab.example | grep \"Used by\"'"
+root = true
+expect = ["fullchain.pem", "key.pem", "Used by:    lab-acme"]
+[[step]]
+run = "sh -c 'cert show standalone.acme-lab.example | grep SHA-256 > /users/lab/acme-before; cert renew standalone.acme-lab.example && echo renewed'"
+root = true
+expect = "standalone.acme-lab.example renewed: standalone.acme-lab.example, runs out "
+# The fingerprint is new; the service read it again, and has the new files.
+[[step]]
+run = "sh -c 'cert show standalone.acme-lab.example | grep SHA-256 | cmp -s - /users/lab/acme-before && echo same || echo new-fingerprint'"
+expect = "new-fingerprint"
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 30 ] && ! log lab-acme | grep -q lab-hup; do sleep 1; i=$((i + 1)); done; log lab-acme | grep lab-hup' '''
+root = true
+expect = "lab-hup"
+
+# A short certificate (150 seconds, a profile of Pebble's) with the rule
+# for port 80 taken away: certd, a service that names the port, does not
+# need it. certd asks about the best time to renew, and renews it itself.
+# Each reload has it look now; the poll is bounded and says what it saw.
+[[step]]
+run = "cert get short.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --profile short"
+root = true
+expect = "short.acme-lab.example installed: short.acme-lab.example, runs out "
+[[step]]
+run = '''sh -c 'cert show short.acme-lab.example | grep SHA-256 > /users/lab/acme-short-before; sed -i "/^allow tcp 80$/d" /system/settings/firewall && firewall load && firewall list | grep -c "tcp 80"; echo rule-gone' '''
+root = true
+expect = ["0", "rule-gone"]
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 24 ]; do service certd reload > /dev/null 2>&1; sleep 10; cert show short.acme-lab.example | grep SHA-256 | cmp -s - /users/lab/acme-short-before || break; i=$((i + 1)); done; echo "looks $i"; cert show short.acme-lab.example | grep -c "Renews"; log certd | grep "short.acme-lab.example" | tail -4; cert show short.acme-lab.example | grep SHA-256 | cmp -s - /users/lab/acme-short-before && echo not-renewed || echo renewed-by-certd' '''
+root = true
+expect = ["is to be renewed on", "renewed short.acme-lab.example", "renewed-by-certd"]
+
+# Without the rule, a command of an administrator is where it was: told.
+[[step]]
+run = "cert renew standalone.acme-lab.example"
+root = true
+exit = 1
+expect = "the firewall closes port 80"
+
+# nginx, which holds port 80: its service file lets it read the folder the
+# answers go in (acme-challenge.conf says so), and cert get puts them there
+# and nginx serves them, so cert get needs no rule: nginx, a service that
+# names the port, takes connections the firewall does not close.
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = '''sh -c 'sed -i "s|^files.read = \[|files.read = [\"/system/live/certd\", |" /system/settings/spark/services/nginx.toml && grep "^files.read = " /system/settings/spark/services/nginx.toml && service nginx enable' '''
+root = true
+expect = "files.read = [\"/system/live/certd\", "
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "cert get nginx.acme-lab.example --directory https://{peer}:{port:acme}/dir --agree-terms --profile default"
+root = true
+expect = ["the names and this machine are ready", "nginx.acme-lab.example installed: nginx.acme-lab.example, runs out "]
+# nginx answered the authority's check, which its log shows, and the
+# answers are gone from the folder.
+[[step]]
+run = '''sh -c 'i=0; while [ $i -lt 15 ] && ! log nginx | grep -q "GET /.well-known/acme-challenge/"; do sleep 1; i=$((i + 1)); done; log nginx | grep "GET /.well-known/acme-challenge/" | head -1; ls /system/live/certd/acme-challenge | wc -l' '''
+root = true
+expect = ["GET /.well-known/acme-challenge/", "\n0"]
+[[step]]
+run = "bundle remove --for-everyone --purge org.nginx.nginx"
+root = true
+expect = "removed org.nginx.nginx"
+
+# DNS-01 for a name and its wildcard, which want two values at one TXT name:
+# cert get shows both, with no terminal to press Enter at (--yes waits for
+# them to show), and the lab PC adds them, as a person does at a provider.
+# With no Enter to wait for, cert get looks for the records at once, before
+# they exist, and the resolver may keep its answer of none: the machine's
+# resolver is told to forget it, as service resolved reload does.
+[[step]]
+run = '''sh -c '(cert get dns.acme-lab.example --name dns.acme-lab.example --name "*.dns.acme-lab.example" --dns --yes --directory https://{peer}:{port:acme}/dir --agree-terms --profile default > /users/lab/acme-dns.out 2>&1 < /dev/null &); echo started' '''
+root = true
+expect = "started"
+[[step]]
+host = "sh {here}/acme-dns.sh {machine} {machine-port:22} {port:chall} /users/lab/acme-dns.out"
+expect = ["TXT added: _acme-challenge.dns.acme-lab.example.", "records shown: 2"]
+[[step]]
+run = '''sh -c 'service resolved reload; i=0; while [ $i -lt 90 ] && ! grep -q "installed" /users/lab/acme-dns.out; do sleep 2; i=$((i + 1)); done; cat /users/lab/acme-dns.out' '''
+root = true
+expect = ["Add these TXT records:", "_acme-challenge.dns.acme-lab.example.  TXT", "dns.acme-lab.example installed: dns.acme-lab.example, *.dns.acme-lab.example, runs out ", "certd does not renew a certificate proved by DNS by hand"]
+[[step]]
+run = "cert show dns.acme-lab.example"
+expect = ["Proved by:  dns-manual", "Asked for:  dns.acme-lab.example, *.dns.acme-lab.example, ecdsa-p256"]
+
+# Revoked at the authority: the list says so, the certificate stays for the
+# services that use it to be told, and certd renews nothing revoked.
+[[step]]
+run = "cert revoke standalone.acme-lab.example --reason superseded"
+root = true
+expect = "standalone.acme-lab.example revoked: the services keep using it until it is replaced"
+[[step]]
+run = "cert list"
+expect = ", revoked"
+[[step]]
+run = "cert show standalone.acme-lab.example"
+expect = "Revoked:    yes: get a new one with `cert get`"
+
+# The machine as it was.
+[[step]]
+run = '''sh -c 'service lab-acme stop > /dev/null 2>&1; rm -f /system/settings/spark/services/lab-acme.toml; for name in standalone nginx dns short; do cert remove $name.acme-lab.example > /dev/null 2>&1; done; sed -i "/^allow tcp 80$/d" /system/settings/firewall; firewall load; cp /users/lab/acme-resolved.orig /system/settings/resolved && service resolved reload; ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt; rm -f /users/lab/acme-* /users/lab/ca.pem; echo restored' '''
+root = true
+expect = "restored"

@@ -258,9 +258,17 @@ it fails on Dukovo, which `lab/tests/services/copy-file.sh` copies over
 too, and `services/php` does the same with PHP's, and its
 `php-skips.txt`. `services/php-fpm` has nginx pass the pages of a PHP site
 to PHP-FPM, and reload PHP-FPM's settings while the lab PC keeps requests
-coming. With an image given by `--image`, `./ob lab` packs no bundles but
-names the ones this tree packed already, if any. Without the bundles
-those tests are skipped too.
+coming. `services/sqlite` runs the SQLite shell and the Rust program that
+links the library, and `services/sqlite-suite` runs SQLite's own test
+suite on the machine, leaving out the test files
+`lab/tests/services/sqlite-skips.txt` lists; the suite's program and
+scripts are not a bundle but a file the sqlite port builds for the lab,
+which `./ob lab` names, with the other ports' such files, in
+`DUKOVO_LAB_PORTS` (the folder of the ports' builds, `out/ports`) and
+`lab/tests/services/copy-port-file.sh` copies over. With an image given
+by `--image`, `./ob lab` packs no bundles but names the ones this tree
+packed already, if any. Without the bundles or the ports' builds those
+tests are skipped too.
 
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a
@@ -360,6 +368,16 @@ ready = "samba ready"
 run = "smb ls -o user=alice,password=alice-share-pass //{peer}:{port:smb}/share"
 expect = "from-lab-pc.txt"
 ```
+
+The ACME test (`services/acme`) has the lab PC run Pebble, Let's Encrypt's
+own test authority, with its DNS server. `lab/pebble/kit.sh` builds the
+two programs from one release of Pebble, named in the script with the
+SHA-256 of the source it takes from the Go module proxy, with the lab PC's
+Go; it keeps them under `~/.cache/dukovo-lab` (or `DUKOVO_LAB_PEBBLE`) and
+skips the test where it cannot fetch or build them. The test points the
+machine's resolver at that DNS server, so the made-up names it asks
+certificates for resolve, and has the machine trust an authority of the
+test's own for Pebble's address.
 
 The scripts that set the lab PC's side up sit beside the tests that use
 them, as `lab/tests/sharing/samba.sh`, and keep everything in the

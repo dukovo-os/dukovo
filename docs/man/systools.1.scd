@@ -55,7 +55,9 @@ and runs the commands an administrator runs with *elevate*(8), or
 *sudo*(8), as root; *bundled*(8) installs, seals and removes the
 bundles *bundle*(1) makes, and *bundle run* runs them in their sandbox,
 as does a bundle's command, a link to _/system/commands/bundle_ by its
-name. The user columns show the user each
+name. *certd*(8) keeps the machine's own certificate, and *cert*(8)
+lists, adds, removes and renews the certificates that Spark copies for the
+services that name them (*spark*(8)). The user columns show the user each
 process acts for (*radix-names*(2)).
 
 A mistake in the command line makes a tool fail with exit status 2 (1
@@ -84,6 +86,10 @@ error that starts with the tool's name.
 :  install, seal and remove bundles
 |  *burn*(1)
 :  write a CD, DVD or Blu-ray disc, of files or of music
+|  *cert*(8)
+:  list, add, remove and renew the machine's certificates
+|  *certd*(8)
+:  keep the machine's own certificate, and watch those added by hand
 |  *chgrp*(1), *chmod*(1), *chown*(1)
 :  change a file's group, mode or owner
 |  *column*(1)

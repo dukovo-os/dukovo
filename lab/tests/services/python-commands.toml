@@ -23,6 +23,11 @@ expect = "installed org.python.python"
 [[step]]
 run = "/applications/org.python.python/bin/python3 -c 'print(6 * 7)'"
 expect = "42"
+# Its sqlite3 module is built on the catalog's SQLite, of which it says
+# the version and, from a JSON function, the second of two numbers.
+[[step]]
+run = '''/applications/org.python.python/bin/python3 -c "import sqlite3; print(sqlite3.sqlite_version, sqlite3.connect(':memory:').execute('select json_extract(json_array(1, 2), \'\$[1]\')').fetchone()[0])"'''
+expect = "3.54.1 2"
 [[step]]
 run = '''/applications/org.python.python/bin/python3 -c "import os; os.execv('/applications/org.python.python/bin/python3', ['python', '--version'])"'''
 expect = "Python 3.15."

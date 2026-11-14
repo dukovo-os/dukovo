@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[package]
+name = "sqlite-test"
+description = "Tests SQLite on Radix through rusqlite, in the sqlite boot test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# rusqlite on libsqlite3-sys, which links the sysroot's libsqlite3.a (the
+# sqlite port, ADR 0511) and not a copy of its own: without the `bundled`
+# feature, libsqlite3-sys reads where the library is from the
+# SQLITE3_* variables that ob sets.
+rusqlite = { version = "=0.41.1", default-features = false }
+
+[lints]
+workspace = true

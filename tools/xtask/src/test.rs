@@ -404,8 +404,15 @@ const BUNDLE_FILES: u8 = 19;
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
 /// that `ob` signs with throwaway keys ([`catalog_site_disk`], ADR 0383):
 /// `catalog/`, as a server serves it, listing ripgrep's bundle alone;
-/// `root.json`, its first root; and every `.dkv` file in out/bundles.
+/// `root.json`, its first root; and the `.dkv` files of
+/// [`CATALOG_SITE_BUNDLES`] from out/bundles.
 const CATALOG_SITE: u8 = 20;
+
+/// The bundles whose files a [`CATALOG_SITE`] disk holds, by the start of
+/// their names: ripgrep, which its catalog lists, and bat, which no
+/// catalog lists. Only these: every bundle's file is more than the disk
+/// holds since PHP's.
+const CATALOG_SITE_BUNDLES: [&str; 2] = ["io.github.burntsushi.ripgrep-", "io.github.sharkdp.bat-"];
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding a catalog
 /// that `ob` signs with throwaway keys ([`update_site_disk`], ADR 0384):
@@ -5601,15 +5608,30 @@ fn fsck(disk: &DiskImage, _log: &str) -> Result<(), String> {
 /// Makes a [`BUNDLE_FILES`] disk: FAT32 holding every `.dkv` file of
 /// out/bundles, copied in with mtools.
 fn make_bundle_files(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
+    make_bundle_disk(ctx, disk, path, |_| true)
+}
+
+/// Makes a FAT32 disk holding the `.dkv` files of out/bundles whose names
+/// `wanted` takes, copied in with mtools.
+fn make_bundle_disk(
+    ctx: &Ctx,
+    disk: &Disk,
+    path: &Path,
+    wanted: impl Fn(&str) -> bool,
+) -> Result<(), String> {
     let dir = crate::bundles::dir(ctx);
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .map_err(|err| format!("reading {}: {err} (run `./ob ports`)", dir.display()))?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().is_some_and(|e| e == dkv::EXTENSION))
+        .filter(|path| path.file_name().is_some_and(|name| wanted(&name.to_string_lossy())))
         .collect();
     files.sort();
     if files.is_empty() {
-        return Err(format!("{} holds no bundles (run `./ob ports`)", dir.display()));
+        return Err(format!(
+            "{} holds none of the bundles wanted (run `./ob ports`)",
+            dir.display()
+        ));
     }
     let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
     mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
@@ -5658,11 +5680,13 @@ const TEST_ADVISORIES: &str = r#"[
      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}]}]}]}
 ]"#;
 
-/// Makes a [`CATALOG_SITE`] disk: the bundle files, then a test catalog
-/// that lists ripgrep's alone, so that bat's is a file from no catalog,
-/// and the flaws of [`TEST_ADVISORIES`].
+/// Makes a [`CATALOG_SITE`] disk: the files of [`CATALOG_SITE_BUNDLES`],
+/// then a test catalog that lists ripgrep's alone, so that bat's is a file
+/// from no catalog, and the flaws of [`TEST_ADVISORIES`].
 fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    make_bundle_files(ctx, disk, path)?;
+    make_bundle_disk(ctx, disk, path, |name| {
+        CATALOG_SITE_BUNDLES.iter().any(|bundle| name.starts_with(bundle))
+    })?;
     let bundles = crate::bundles::dir(ctx);
     let ripgrep = std::fs::read_dir(&bundles)
         .map_err(|err| format!("reading {}: {err}", bundles.display()))?
@@ -6763,7 +6787,7 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect("spark: Spark v2 is process ")?;
     vm.expect("spark: listening at /system/live/spark/control")?;
-    vm.expect("spark: 32 services in /system/settings/spark/services, 28 enabled")?;
+    vm.expect("spark: 33 services in /system/settings/spark/services, 29 enabled")?;
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
     vm.expect("consoled: console of ")?;
     vm.expect("consoled: started /system/commands/nukesh on tty1 as process ")?;
@@ -10394,7 +10418,7 @@ fn principals(vm: &mut Vm, case: &Case) -> Result<(), String> {
 fn services(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
     vm.expect("Boot complete.")?;
-    vm.expect_anywhere("spark: 32 services in /system/settings/spark/services, 28 enabled")?;
+    vm.expect_anywhere("spark: 33 services in /system/settings/spark/services, 29 enabled")?;
     vm.expect_ahead("spark: started /system/tests/posix/servicetest as process ")?;
     let code = program_line(vm, "(/system/tests/posix/servicetest) exited with code ")?;
     let log = vm.log();

@@ -122,6 +122,11 @@ catalog-install userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-install userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-install userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
 catalog-install catalog/
+certificates userspace/defaults/spark/services/certd.toml userspace/programs/manifest/src/service.rs
+certificates userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/
+certificates userspace/programs/systools/src/certd.rs userspace/programs/systools/src/servicefiles.rs
+certificates userspace/spark/src/certificates.rs userspace/spark/src/supervisor/certd.rs userspace/spark/src/views.rs
+certificates userspace/spark/tests/services/certificates/ ports/netcat/ ports/openssl/
 cloud-config userspace/programs/systools/src/cloud.rs userspace/programs/systools/src/cloud/
 cloud-config userspace/defaults/spark/services/cloud-setup.toml tools/xtask/src/image.rs
 cloud-config userspace/programs/accounts/ userspace/programs/systools/src/account.rs
@@ -426,6 +431,8 @@ nginx ports/curl/ ports/nginx/ ports/openssl/ tools/xtask/src/bundles.rs tools/x
 nginx tools/xtask/src/ports.rs userspace/programs/dkv/ userspace/programs/manifest/
 nginx userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 nginx userspace/programs/systools/src/authd.rs
+nginx userspace/defaults/spark/services/certd.toml userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/
+nginx userspace/programs/systools/src/certd.rs userspace/spark/src/certificates.rs userspace/spark/src/supervisor/certd.rs
 ntfs kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
 ntfs userspace/programs/systools/src/nvme.rs userspace/storage/
 ntfs-power-cut kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
@@ -588,6 +595,7 @@ spark userspace/hello/
 spark-network userspace/posix/netgrant.c userspace/spark/tests/services/network/
 spark-oom kernel/mm/ userspace/posix/hog.c userspace/spark/tests/services/hog.toml
 spark-stop userspace/spark/tests/services/stop/
+sqlite kernel/fs/block/ kernel/fs/btrfs/ ports/sqlite/ userspace/programs/sqlite-test/
 ssh kernel/net/ ports/openssh/ userspace/posix/sshtest.c
 ssh-keyring ports/openssh/ userspace/programs/systools/src/authd.rs
 ssh-keyring userspace/programs/systools/src/authd/ userspace/programs/systools/src/keyring.rs
