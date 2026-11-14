@@ -254,18 +254,13 @@ fn account(
         names.ok_or("the kernel gave Spark no names capability, which runs it as its account")?;
     let (user, group) = account_numbers(root, name)?;
     let slot = slots::take().ok_or("no free slot")?;
-    let others = group_bytes(&groups);
+    let others = views::group_bytes(&groups);
     if let Err(status) = names_abi::stamp(&SYS, names, root.slot(), slot, user, group, &others) {
         slots::give_back(slot);
         return Err(format!("cannot act for {name}: {:#x}", status.0));
     }
     let root = Dir::own(slot).map_err(|err| format!("cannot act for {name}: {err}"))?;
     Ok(views::Account { root, user, group, groups, names })
-}
-
-/// Group numbers as names_process and stamp take them.
-fn group_bytes(groups: &[u32]) -> Vec<u8> {
-    groups.iter().flat_map(|group| group.to_le_bytes()).collect()
 }
 
 /// The numbers of the groups `names`, from the groups file (ADR 0477),
@@ -1612,7 +1607,7 @@ impl Supervisor {
         }
         let named = match (&account, self.names) {
             (Some(account), Some(slot)) => {
-                let groups = group_bytes(&account.groups);
+                let groups = views::group_bytes(&account.groups);
                 names_abi::name_process(&SYS, slot, child, account.user, account.group, &groups)
                     .map_err(|status| format!("cannot name its process: {:#x}", status.0))
             }
