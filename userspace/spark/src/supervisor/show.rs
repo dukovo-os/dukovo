@@ -19,10 +19,19 @@ use crate::services::Spec;
 impl Supervisor {
     /// The answer to `show`, or to `show NAME` with `name`.
     pub(super) fn answer_show(&self, name: Option<&str>) -> String {
+        match self.show_document(name) {
+            Ok(document) => json_line(&document),
+            Err(refusal) => refusal,
+        }
+    }
+
+    /// The document `show` answers with, of every service or of `name`,
+    /// or the answer that says there is no such service.
+    pub(super) fn show_document(&self, name: Option<&str>) -> Result<Show, String> {
         let mut services: Vec<&Service> = match name {
             Some(name) => match self.services.iter().find(|s| s.spec.name == name) {
                 Some(service) => alloc::vec![service],
-                None => return alloc::format!("error: no service is called {name}\n"),
+                None => return Err(alloc::format!("error: no service is called {name}\n")),
             },
             None => self.services.iter().collect(),
         };
@@ -35,21 +44,25 @@ impl Supervisor {
             }),
             _ => None,
         };
-        let document = Show {
+        Ok(Show {
             show_version: show::VERSION,
             now_ms: time / MS,
             services: services.into_iter().map(|s| described(s, self.devices)).collect(),
             shutdown,
             trials: self.shown_trials(time),
             undone: self.undone.clone(),
-        };
-        match show::to_json(&document) {
-            Ok(mut json) => {
-                json.push('\n');
-                json
-            }
-            Err(err) => alloc::format!("error: {err}\n"),
+        })
+    }
+}
+
+/// `document` as `show` answers it: a line of JSON.
+pub(super) fn json_line(document: &Show) -> String {
+    match show::to_json(document) {
+        Ok(mut json) => {
+            json.push('\n');
+            json
         }
+        Err(err) => alloc::format!("error: {err}\n"),
     }
 }
 

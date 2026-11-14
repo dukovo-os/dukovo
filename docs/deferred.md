@@ -177,7 +177,6 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| `service status` for an ordinary user: Spark's control socket is root's, so status and `--status-all` need root, where Linux's `systemctl status` needs none; a read-only way to ask what Spark knows | The lab test install/cloud-setup asks as root meanwhile | 16a |
 | `update` (and `update check`, `update history`) for an ordinary user, which update(8) says anyone may run: it finds the system's root by reading the disk's Btrfs UUID from `/devices`, which only root may read, so it says "this system did not start from a Dukovo root on a disk"; it could ask updated(8) instead, or take the UUID from the kernel's command line | Found on the OptiPlex 7040 by `updates/updater`, which fails at step 3 until then | 16a |
 | Timers: a service started at set times or intervals (ADR 0216) | Production service management; dependencies, readiness and health checks came first (ADR 0470) | 16a |
 | The system's own service files using service_version 2's keys: `requires`, `wants`, `after`, `[ready]` and `[health]` for the system's services, and `service new`'s template writing version 2 (ADR 0470) | A release writes only what the one before it reads (ADR 0454), and 0.15 reads service_version 1 alone; the system's services start by `order` meanwhile, as before | The release after 1.0.0-alpha.1 |

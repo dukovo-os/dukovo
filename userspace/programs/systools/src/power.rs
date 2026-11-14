@@ -10,7 +10,7 @@
 //! restarts it or halts it; with `--force` it skips the services. The
 //! options are systemd's and sysvinit's.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 
@@ -20,15 +20,43 @@ use crate::util::{self, Fail, fail, usage};
 /// Spark's control socket.
 pub const CONTROL: &str = "/system/live/spark/control";
 
+/// Spark's read socket, which answers `status` and `show` to anyone.
+pub const READ: &str = "/system/live/spark/read";
+
 /// Sends Spark `request` on its control socket and returns its answer.
 pub fn request(request: &str) -> Result<String, Fail> {
     request_at(CONTROL, request)
 }
 
+/// Sends Spark `request`, `status` or `show`, which only reads, on its
+/// read socket, and returns its answer. A Spark that has no read socket,
+/// one of an earlier release still running until the machine restarts,
+/// is asked on its control socket, which answers root.
+pub fn read(request: &str) -> Result<String, Fail> {
+    match UnixStream::connect(READ) {
+        Ok(stream) => exchange(stream, request),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => request_at(CONTROL, request),
+        Err(err) => Err(util::failed(&READ, err)),
+    }
+}
+
 /// Sends `request` to Spark's socket `socket`, the control socket or
-/// certd's (spark(8)), and returns its answer.
+/// certd's (spark(8)), and returns its answer. Only root may write to the
+/// control socket, which connecting takes.
 pub fn request_at(socket: &str, request: &str) -> Result<String, Fail> {
-    let mut stream = UnixStream::connect(socket).map_err(|e| util::failed(&socket, e))?;
+    let stream = UnixStream::connect(socket).map_err(|err| match err.kind() {
+        io::ErrorKind::PermissionDenied => util::fail_with(
+            4,
+            format!("only root may ask this of Spark ({socket}): run the command with elevate"),
+        ),
+        _ => util::failed(&socket, err),
+    })?;
+    exchange(stream, request)
+}
+
+/// Sends `request` on `stream`, a connection to one of Spark's sockets,
+/// and returns its answer.
+fn exchange(mut stream: UnixStream, request: &str) -> Result<String, Fail> {
     stream.write_all(format!("{request}\n").as_bytes())?;
     let _ = stream.shutdown(Shutdown::Write);
     let mut answer = String::new();

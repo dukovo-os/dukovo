@@ -62,6 +62,7 @@ macro_rules! audit {
 
 mod certd;
 mod health;
+mod read;
 mod show;
 mod starting;
 pub mod trial;
@@ -92,6 +93,7 @@ use radix_rt::{SYS, println, slots};
 use crate::services::{self, Restart, Spec};
 use crate::{certificates, views};
 use manifest::service::ReadyWhen;
+use read::Door;
 use spark_api::show::Request;
 use starting::Wanted;
 use watch::{Told, Verb, Watch, say};
@@ -672,9 +674,9 @@ struct Connection {
     written: usize,
     /// While its request waits for the service to settle.
     watch: Option<Watch>,
-    /// Whether it came to certd's socket, which answers certd alone, and
-    /// one request.
-    certd: bool,
+    /// The socket it came to, which decides what it may ask: certd's
+    /// answers certd alone, and the read socket only what reads.
+    door: Door,
 }
 
 /// The services' backup hooks a `hooks` request runs (ADR 0463), one
@@ -730,6 +732,9 @@ pub struct Supervisor {
     /// certd's socket (ADR 0512), whose one connection at a time is in
     /// `connections` too, beside the control socket's.
     certd_listener: Option<File>,
+    /// The read socket, which anyone may ask what Spark knows; its
+    /// connections are in `connections` too.
+    read_listener: Option<File>,
     connections: Vec<Connection>,
     services: Vec<Service>,
     /// What Spark said about the services in this turn of its loop, for
@@ -815,6 +820,7 @@ impl Supervisor {
             restart,
             listener: None,
             certd_listener: None,
+            read_listener: None,
             connections: Vec::new(),
             services: Vec::new(),
             told: Vec::new(),
@@ -903,15 +909,21 @@ impl Supervisor {
         }
     }
 
-    /// Opens the control socket, and certd's. The control socket's folder
-    /// may be there already: the record of a root on a disk is written
-    /// beside it first (ADR 0473).
+    /// Opens the control socket, the read socket, and certd's. The control
+    /// socket's folder may be there already: the record of a root on a disk
+    /// is written beside it first (ADR 0473).
     pub fn listen(&mut self) {
         if let Err(err) = services::make_dirs(&self.root, CONTROL_DIR) {
             println!("spark: cannot make {err}");
             return;
         }
         self.listener = self.listen_at(CONTROL, CONNECTIONS_MAX);
+        self.read_listener = self.listen_at(read::SOCKET, Door::Read.room());
+        if self.read_listener.is_some()
+            && let Err(err) = self.root.set_access(read::SOCKET, None, None, Some(read::MODE))
+        {
+            println!("spark: cannot let everyone ask at /{}: {err}", read::SOCKET);
+        }
         if let Err(err) = self.root.make_dir(certd::SOCKET_DIR) {
             println!("spark: cannot make /{}: {err}", certd::SOCKET_DIR);
             return;
@@ -1621,14 +1633,17 @@ impl Supervisor {
         }
     }
 
-    /// Takes the connections waiting at the control socket, or at certd's
-    /// if `certd`: as many as there is room for, CONNECTIONS_MAX of the
-    /// control socket's and one of certd's, so that neither keeps the
-    /// other out.
-    fn accept(&mut self, certd: bool) {
-        let listener = if certd { &self.certd_listener } else { &self.listener };
+    /// Takes the connections waiting at the socket `door`: as many as
+    /// there is room for, each socket's room apart (Door::room), so that
+    /// none keeps the others out.
+    fn accept(&mut self, door: Door) {
+        let listener = match door {
+            Door::Control => &self.listener,
+            Door::Certd => &self.certd_listener,
+            Door::Read => &self.read_listener,
+        };
         let Some(listener) = listener else { return };
-        while self.has_room(certd) {
+        while self.has_room(door) {
             let Some(slot) = slots::take() else { return };
             if file_abi::accept(&SYS, listener.slot(), slot, PipeFlags::NON_BLOCKING).is_err() {
                 slots::give_back(slot);
@@ -1648,17 +1663,16 @@ impl Supervisor {
                     out: Vec::new(),
                     written: 0,
                     watch: None,
-                    certd,
+                    door,
                 });
             }
         }
     }
 
-    /// Whether there is room for another connection to the control
-    /// socket, or to certd's if `certd`.
-    fn has_room(&self, certd: bool) -> bool {
-        let open = self.connections.iter().filter(|c| c.certd == certd).count();
-        open < if certd { 1 } else { CONNECTIONS_MAX }
+    /// Whether there is room for another connection to the socket
+    /// `door`.
+    fn has_room(&self, door: Door) -> bool {
+        self.connections.iter().filter(|c| c.door == door).count() < door.room()
     }
 
     /// Reads what connection `index` sent; once it is a whole line,
@@ -1690,8 +1704,12 @@ impl Supervisor {
         let request = String::from_utf8_lossy(&connection.request).into_owned();
         let request = request.lines().next().unwrap_or("").trim().to_string();
         let asker = (connection.peer, connection.user);
-        if connection.certd {
-            let answer = self.answer_certd(&request, asker.0);
+        let door = connection.door;
+        if door != Door::Control {
+            let answer = match door {
+                Door::Certd => self.answer_certd(&request, asker.0),
+                _ => self.answer_read(&request, asker.1),
+            };
             let connection = &mut self.connections[index];
             connection.answered = true;
             connection.out = answer.into_bytes();
@@ -2332,9 +2350,9 @@ impl Supervisor {
         self.start_watchdog();
         loop {
             // The children's notification, the power button's, the host's
-            // restarts', the control socket, certd's, the connections, the
-            // services' outputs, their health checks' and the program's
-            // terminal, in that order.
+            // restarts', the control socket, certd's, the read socket, the
+            // connections, the services' outputs, their health checks' and
+            // the program's terminal, in that order.
             let mut entries: Vec<(PollEntry, Source)> = Vec::new();
             let readable = PollEvents::READABLE.0 as u16;
             let writable = PollEvents::WRITABLE.0 as u16;
@@ -2352,12 +2370,15 @@ impl Supervisor {
             }
             // A socket whose connections are all taken waits, so that one
             // more waiting to be taken does not wake Spark again at once.
-            let rooms = [self.has_room(false), self.has_room(true)];
-            if let Some(listener) = self.listener.as_ref().filter(|_| rooms[0]) {
-                add(listener.slot(), readable, Source::Listener);
-            }
-            if let Some(listener) = self.certd_listener.as_ref().filter(|_| rooms[1]) {
-                add(listener.slot(), readable, Source::CertdListener);
+            let listeners = [
+                (&self.listener, Door::Control),
+                (&self.certd_listener, Door::Certd),
+                (&self.read_listener, Door::Read),
+            ];
+            for (listener, door) in listeners {
+                if let Some(listener) = listener.as_ref().filter(|_| self.has_room(door)) {
+                    add(listener.slot(), readable, Source::Listener(door));
+                }
             }
             for (i, connection) in self.connections.iter().enumerate() {
                 // Its request, or room for the rest of its answer; a watch
@@ -2430,8 +2451,7 @@ impl Supervisor {
                             }
                             self.host_restart();
                         }
-                        Source::Listener => self.accept(false),
-                        Source::CertdListener => self.accept(true),
+                        Source::Listener(door) => self.accept(door),
                         Source::Connection(i) => self.serve(i),
                         Source::Output(i) => {
                             let service = &mut self.services[i];
@@ -2495,8 +2515,7 @@ enum Source {
     Children,
     Button,
     Restart,
-    Listener,
-    CertdListener,
+    Listener(Door),
     Connection(usize),
     Output(usize),
     Check(usize),

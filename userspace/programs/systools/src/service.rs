@@ -83,11 +83,23 @@ pub(crate) fn ask(request: &str) -> Result<String, Fail> {
     }
 }
 
+/// Asks Spark `request`, which only reads, on its read socket (spark(8)),
+/// which answers anyone, and fails with what Spark said if it refused.
+pub(crate) fn read(request: &str) -> Result<String, Fail> {
+    let answer = power::read(request)?;
+    match answer.strip_prefix("error: ") {
+        Some(why) => Err(fail(why.trim_end().to_string())),
+        None => Ok(answer),
+    }
+}
+
 /// Spark's `show` document, of every service or of `name` alone; a name
-/// Spark does not know is LSB's unknown service, 4.
+/// Spark does not know is LSB's unknown service, 4. Anyone may read it,
+/// but only root sees what the services' output said: the last line a
+/// service wrote, and the last a failed health check wrote.
 pub(crate) fn shown(name: Option<&str>) -> Result<show::Show, Fail> {
     let request = name.map_or_else(|| String::from("show"), |name| format!("show {name}"));
-    match ask(&request) {
+    match read(&request) {
         Ok(answer) => show::parse(&answer).map_err(fail),
         Err(failed) if failed.message.starts_with("no service is called") => {
             Err(fail_with(4, format!("{}: unrecognized service", name.unwrap_or(""))))
@@ -631,7 +643,7 @@ fn list(options: &[String]) -> Result<i32, Fail> {
         }
     }
     if json {
-        print!("{}", ask("show")?);
+        print!("{}", read("show")?);
         return Ok(0);
     }
     let mut document = shown(None)?;

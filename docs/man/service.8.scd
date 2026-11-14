@@ -39,9 +39,16 @@ service - start, stop and look at the services, and check their files
 
 # DESCRIPTION
 
-service asks Spark, over its control socket _/system/live/spark/control_
-(*spark*(8)), about the services it supervises: the programs that
-_/system/settings/spark/services_ describes, a file each.
+service asks Spark about the services it supervises: the programs that
+_/system/settings/spark/services_ describes, a file each (*spark*(8)).
+Anyone may look: *list*, *status*, *explain* and *--status-all* ask
+through Spark's read socket, _/system/live/spark/read_, as Linux's
+*systemctl status* answers any user. What a service's own output said,
+its last line and the last a failed health check wrote, is root's, as
+its records in the log are (*logd*(8)). The rest asks through the
+control socket, _/system/live/spark/control_, which only root may write
+to: one who is not root runs it with *elevate*(8), and is otherwise
+told so, with status 4.
 
 *list* shows every service, by name, with its state, whether it starts
 at boot and since when it is in that state:
