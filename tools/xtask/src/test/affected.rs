@@ -100,6 +100,7 @@ const CORE: &[&str] = &[
     "userspace/programs/Cargo.toml",
     "userspace/programs/Cargo.lock",
     "userspace/programs/systools/src/main.rs",
+    "userspace/programs/systools/src/lib.rs",
     "tools/xtask/",
     "image/",
     "ob",
