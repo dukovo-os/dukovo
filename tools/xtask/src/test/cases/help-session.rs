@@ -38,7 +38,7 @@ use super::super::*;
 const DIR: &str = "out/test/help-session";
 
 /// alice's password.
-const PASSWORD: &str = "queen of hearts";
+pub const PASSWORD: &str = "queen of hearts";
 
 /// What the helper's ssh sees of the guest's address: QEMU's user
 /// network forwards from 10.0.2.2.
@@ -386,7 +386,7 @@ fn expect_squeezed(vm: &mut Vm, needles: &[&str]) -> Result<(), String> {
 }
 
 /// alice's account, made at the first start on tty1, which signs her in.
-fn make_alice(vm: &mut Vm) -> Result<(), String> {
+pub fn make_alice(vm: &mut Vm) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect_anywhere("authd: 0 accounts; answering at /system/live/authd/socket")?;
     vm.expect_anywhere("consoled: started /system/commands/login on tty1 as process ")?;
