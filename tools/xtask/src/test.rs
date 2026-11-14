@@ -1719,6 +1719,15 @@ fn case_seconds(case: &Case) -> u32 {
         .unwrap_or(UNTIMED_SECONDS)
 }
 
+/// How long each boot of `case` may take before a wait gives up:
+/// `timeout`, or three times its line in test/times.txt when that is
+/// more, for a test that must wait out minutes of the clock (`crontab`
+/// signs out three times for a minute each). Three times leaves room for
+/// a machine without KVM.
+fn case_budget(case: &Case, timeout: Duration) -> Duration {
+    timeout.max(Duration::from_secs(3 * u64::from(case_seconds(case))))
+}
+
 /// Whether `case` installs the catalog's bundles, which ob packs before
 /// the first such test of a run.
 fn needs_packing(case: &Case) -> bool {
@@ -4451,7 +4460,8 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
         let base = &images.iter().find(|(made, _)| *made == key).expect("built above").1;
         let started = Instant::now();
         let root = roots.of(case).map(|root| root.path.as_path());
-        let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, timeout);
+        let budget = case_budget(case, timeout);
+        let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, budget);
         let secs = started.elapsed().as_secs_f32();
         match outcome {
             Ok(()) => eprintln!("    PASS  {:<15} {} ({secs:.1} s)", case.name, case.about),
@@ -11651,6 +11661,19 @@ mod tests {
             assert!(!file_doc(text).is_empty(), "test/cases/{name}.rs has no `//!` description");
         }
         assert_eq!(file_doc("// SPDX\n\n//! One\n//!\n//! two\nuse x;"), "One\n\ntwo");
+    }
+
+    #[test]
+    fn a_slow_test_waits_three_times_its_line_and_others_the_timeout() {
+        let case = |name: &str| all_cases().find(|case| case.name == name).unwrap();
+        let timeout = Duration::from_secs(300);
+        // Three times its 480 seconds.
+        assert_eq!(case_budget(case("crontab"), timeout), Duration::from_mins(24));
+        assert_eq!(case_budget(case("consoles"), timeout), timeout);
+        assert_eq!(
+            case_budget(case("crontab"), Duration::from_secs(5000)),
+            Duration::from_secs(5000)
+        );
     }
 
     #[test]

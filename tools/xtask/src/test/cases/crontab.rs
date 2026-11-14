@@ -10,8 +10,10 @@
 //! *crontab --status* says why, and her next sign-in says how many did
 //! not run; with it on the line runs while she is signed out. An
 //! administrator who sets *user set --jobs-signed-out never* for her
-//! stops it again, and her sign-in says so. Root's crontab runs too.
-//! The power button ends it.
+//! stops it again, and her sign-in says so. Root's crontab runs too, as
+//! root without the bypass right, as root's sessions run, so it cannot
+//! write in her home: *crontab -u root --status* shows its output. The
+//! power button ends it.
 
 use super::super::*;
 
@@ -145,16 +147,19 @@ fn crontab(vm: &mut Vm, case: &Case) -> Result<(), String> {
     )?;
     vm.expect_screen(&["grew 0", "An administrator barred it for your account."])?;
 
-    // Root's crontab runs.
+    // Root's crontab runs, and keeps what its line printed. The second
+    // elevate is in the same session, so it asks for no password.
     answer_prompt(
         vm,
         "$",
-        "clear; printf '* * * * * echo root-ran >> /users/alice/root.out\\n' > root.cron; elevate \
-         crontab -u root root.cron; echo \"root $?\"",
+        "clear; printf '* * * * * echo root-ran\\n' > root.cron; elevate crontab -u root \
+         root.cron; echo \"root $?\"",
     )?;
     answer_prompt(vm, "root.cron:", "queen of hearts")?;
     vm.expect_screen(&["root 0"])?;
-    waited(vm, &format!("clear; {}; cat ~/root.out", wait_for("~/root.out")), &["root-ran"])?;
+    vm.expect("timerd: crontab root (line 1): ended with status 0")?;
+    answer_prompt(vm, "$", "clear; elevate crontab -u root --status")?;
+    vm.expect_screen(&["root-ran", "status 0"])?;
     let log = vm.log();
     for line in [
         "authd: alice's job crontab alice, for process ",
