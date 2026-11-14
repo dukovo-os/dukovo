@@ -158,8 +158,15 @@ async function fromAnotherOrigin(page) {
   }
   const attacker = await page.context().newPage();
   const attackerOrigin = `https://localhost:${port}`;
-  // A page that has no script of its own, in a document of its own origin.
-  await attacker.goto(`${attackerOrigin}/mark-dark.svg`);
+  // The other site's page, which the browser is handed without asking the
+  // machine: a page the console served would carry the console's content
+  // security policy, which lets a page connect to its own origin alone, so
+  // the browser would block the requests before they were sent.
+  const attackerPage = `${attackerOrigin}/lab-another-site.html`;
+  await attacker.route(attackerPage, (route) =>
+    route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Another site</title>" }),
+  );
+  await attacker.goto(attackerPage);
   for (const [route, body] of [...SIGN_IN_ROUTES, ...SESSION_ROUTES]) {
     const url = `${originOf(page)}${pathOf(route)}`;
     // A request that needs no preflight, so that it is sent, and that the
