@@ -25,6 +25,11 @@
 //! `exec`), so that a program cannot pass for another by its name.
 //! firewall(8) finds the numbers of the paths its settings name.
 //!
+//! Before the rules, [`admit`] asks the blocked addresses (ADR 0479),
+//! which radix-firewall(2)'s `set_blocked` gives: those authd saw guess
+//! passwords, each until a time, on the ports it names
+//! (radix_net::blocks).
+//!
 //! What is not let in is dropped without an answer, counted, and logged
 //! once the interface has let go of its stack: up to [`LOGGED_EACH`]
 //! packets a second, and how many more were dropped.
@@ -34,6 +39,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use radix_klog::{TextBuf, info};
 use radix_net::IpAddress;
+use radix_net::blocks::{Block, Blocks, Refused};
 use radix_net::filter::{Inbound, Protocol as Kind};
 use radix_sync::Mutex;
 
@@ -103,6 +109,31 @@ static ANY_RULES: AtomicBool = AtomicBool::new(false);
 
 /// Packets dropped since the machine started.
 static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// The blocked addresses.
+static BLOCKS: Mutex<Blocks> = Mutex::new(Blocks::new());
+
+/// Whether any address is blocked: until one is, no packet asks.
+static ANY_BLOCKS: AtomicBool = AtomicBool::new(false);
+
+/// Blocks `blocks`, in order, in place of those blocked.
+///
+/// # Errors
+///
+/// Why they were refused, when they were; those blocked stay.
+pub fn set_blocked(blocks: &[Block]) -> Result<(), Refused> {
+    let mut held = BLOCKS.lock();
+    held.set(blocks)?;
+    ANY_BLOCKS.store(!held.is_empty(), Ordering::Release);
+    Ok(())
+}
+
+/// The block in place `at`, in order, from 0 to
+/// [`radix_net::blocks::BLOCKS_MAX`], if there is one, even if its time is
+/// up.
+pub fn block(at: usize) -> Option<Block> {
+    BLOCKS.lock().get(at)
+}
 
 /// Gives the firewall `rules`, in place of those it had.
 ///
@@ -248,8 +279,13 @@ fn within(address: IpAddress, network: IpAddress, prefix: u8) -> bool {
 }
 
 /// Whether to let `packet` in on interface `number` (the kernel's), at
-/// `now_ns`: the first rule that matches decides, else the listener.
+/// `now_ns`: not if a block stops it; else the first rule that matches
+/// decides, else the listener.
 pub fn admit(number: usize, packet: &Inbound, now_ns: u64) -> bool {
+    if ANY_BLOCKS.load(Ordering::Acquire) && BLOCKS.lock().stops(packet, now_ns) {
+        dropped(number, packet, Why::Blocked, now_ns);
+        return false;
+    }
     let protocol = match packet.protocol {
         Kind::Tcp => Some(Protocol::Tcp),
         Kind::Udp => Some(Protocol::Udp),
@@ -274,9 +310,21 @@ pub fn admit(number: usize, packet: &Inbound, now_ns: u64) -> bool {
         Kind::Tcp | Kind::Udp => listener.is_some_and(|listener| listener.inbound),
     });
     if !allowed {
-        dropped(number, packet, listener.map(|listener| listener.owner), now_ns);
+        let why = listener.map_or(Why::Ruled, |listener| Why::ThisMachineAlone(listener.owner));
+        dropped(number, packet, why, now_ns);
     }
     allowed
+}
+
+/// Why a packet was dropped.
+#[derive(Clone, Copy)]
+enum Why {
+    /// A rule denied it, or nothing let it in.
+    Ruled,
+    /// The socket that listens for it has no inbound right.
+    ThisMachineAlone(Owner),
+    /// Its address is blocked.
+    Blocked,
 }
 
 /// The packets logged each second at most.
@@ -287,8 +335,7 @@ pub const LOGGED_EACH: usize = 5;
 struct Dropped {
     number: usize,
     packet: Inbound,
-    /// The socket that listened for it, without the inbound right.
-    owner: Option<Owner>,
+    why: Why,
 }
 
 /// The drops still to be logged, and those past them this second.
@@ -309,7 +356,7 @@ static DROPS: Mutex<Drops> =
 static WAITING: AtomicBool = AtomicBool::new(false);
 
 /// Counts a dropped packet, and keeps it to be logged.
-fn dropped(number: usize, packet: &Inbound, owner: Option<Owner>, now_ns: u64) {
+fn dropped(number: usize, packet: &Inbound, why: Why, now_ns: u64) {
     DROPPED.fetch_add(1, Ordering::Relaxed);
     let second = now_ns / 1_000_000_000;
     let mut drops = DROPS.lock();
@@ -321,7 +368,7 @@ fn dropped(number: usize, packet: &Inbound, owner: Option<Owner>, now_ns: u64) {
     if drops.this_second > LOGGED_EACH {
         drops.unlogged += 1;
     } else if let Some(place) = drops.waiting.iter_mut().find(|place| place.is_none()) {
-        *place = Some(Dropped { number, packet: *packet, owner });
+        *place = Some(Dropped { number, packet: *packet, why });
     }
     WAITING.store(true, Ordering::Release);
 }
@@ -361,13 +408,16 @@ pub fn log_dropped() {
                 let _ = write!(from, "{address}");
             }
         }
-        match drop.owner {
-            Some(owner) => info!(
+        match drop.why {
+            Why::ThisMachineAlone(owner) => info!(
                 "Firewall: dropped {what} from {from}{to} on {name}: process {} listens \
                  for this machine alone",
                 owner.process
             ),
-            None => info!("Firewall: dropped {what} from {from}{to} on {name}"),
+            Why::Blocked => {
+                info!("Firewall: dropped {what} from {from}{to} on {name}: the address is blocked");
+            }
+            Why::Ruled => info!("Firewall: dropped {what} from {from}{to} on {name}"),
         }
     }
     if unlogged > 0 {
