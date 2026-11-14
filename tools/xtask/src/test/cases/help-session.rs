@@ -483,9 +483,14 @@ fn help(vm: &mut Vm, dir: &Path, port: u16, code: &str) -> Result<Session, Strin
     helper.send("elevate sh -c 'echo \"elev $(id -un)\"'\r")?;
     helper.wait_for("elev root", 60)?;
 
-    // Left running, until the session ends.
+    // Left running, until the session ends. The job's process is named
+    // sleep only once it has started the program, so the count waits for
+    // it, up to 20 seconds.
     helper.send("sleep 999 &\r")?;
-    helper.send("echo \"bg $(pgrep -c -x sleep)\"\r")?;
+    helper.send(
+        "n=0; until pgrep -x sleep > /dev/null || [ $n -ge 20 ]; do n=$((n+1)); sleep 1; done; \
+         echo \"bg $(pgrep -c -x sleep)\"\r",
+    )?;
     helper.wait_for("bg 1", 60)?;
     Ok(helper)
 }

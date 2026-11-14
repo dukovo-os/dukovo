@@ -215,10 +215,12 @@ type_at helper 'elevate sh -c '\''echo "elev $(id -un)"'\''
 sees helper "elev root" 60
 echo "elevate: runs as root"
 
-# Left running, until the owner ends the session with Ctrl-].
+# Left running, until the owner ends the session with Ctrl-]. The job's
+# process is named sleep only once it has started the program, so the
+# count waits for it, up to 20 seconds.
 type_at helper 'sleep 999 &
 '
-type_at helper 'echo "bg $(pgrep -c -x sleep)"
+type_at helper 'n=0; until pgrep -x sleep > /dev/null || [ $n -ge 20 ]; do n=$((n+1)); sleep 1; done; echo "bg $(pgrep -c -x sleep)"
 '
 sees helper "bg 1" 60
 echo "sleep: left running"
