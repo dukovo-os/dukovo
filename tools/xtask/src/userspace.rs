@@ -82,15 +82,50 @@ pub const ARCHIVE_LINKS: &[(&str, &str)] =
 /// `/etc/resolv.conf` leads to the one resolved(8) writes, which names
 /// it as the server (ADR 0193), as Linux's leads to systemd-resolved's;
 /// `/etc/localtime`, the time zone, to UTC's in the time zone database,
-/// which timedatectl(1) points elsewhere (ADR 0194); and Debian's and
+/// which timedatectl(1) points elsewhere (ADR 0194); Debian's and
 /// Alpine's names for the root certificates lead to the system's (ADR
-/// 0192).
+/// 0192); and `/etc/os-release` to the file each release carries
+/// ([`OS_RELEASE`]), as Linux's does.
 pub const DEFAULT_LINKS: &[(&str, &str)] = &[
     ("system/resources/default-settings/localtime", "/system/resources/zoneinfo/UTC"),
+    ("system/resources/default-settings/os-release", "/usr/lib/os-release"),
     ("system/resources/default-settings/resolv.conf", "/system/live/resolved/resolv.conf"),
     ("system/resources/default-settings/ssl/cert.pem", CERTIFICATES),
     ("system/resources/default-settings/ssl/certs/ca-certificates.crt", CERTIFICATES),
 ];
+
+/// Where each release keeps its os-release(5): Linux's `/usr/lib/os-release`,
+/// since `/usr/lib` leads to `libraries`. It is part of the release, so it
+/// names the version that runs; `/etc/os-release` leads to it.
+pub const OS_RELEASE: &str = "system/libraries/os-release";
+
+/// The text of os-release(5) for Dukovo `version`, which scripts read to
+/// tell which system they run on: Ansible's `distribution` is its `NAME`.
+pub fn os_release_text(version: &str) -> String {
+    format!(
+        "NAME=\"Dukovo\"\n\
+         ID=dukovo\n\
+         VERSION_ID=\"{version}\"\n\
+         VERSION=\"{version}\"\n\
+         PRETTY_NAME=\"Dukovo {version}\"\n\
+         HOME_URL=\"https://dukovo.org/\"\n\
+         SUPPORT_URL=\"https://dukovo.org/support/\"\n\
+         BUG_REPORT_URL=\"https://github.com/dukovo-os/dukovo/issues\"\n"
+    )
+}
+
+/// Writes this build's os-release(5) in `out/os-release`, for the release's
+/// `libraries` folder: its path in the boot archive, and the file.
+fn os_release(ctx: &Ctx) -> Result<(String, PathBuf)> {
+    let dir = ctx.out.join("os-release");
+    std::fs::create_dir_all(&dir).context(|| format!("making {}", dir.display()))?;
+    let file = dir.join("os-release");
+    std::fs::write(&file, os_release_text(crate::VERSION))
+        .context(|| format!("writing {}", file.display()))?;
+    std::fs::set_permissions(&file, Permissions::from_mode(0o644))
+        .context(|| format!("writing {}", file.display()))?;
+    Ok((OS_RELEASE.to_string(), file))
+}
 
 /// The root certificates the system trusts, which ports/ca-certificates
 /// writes (dukovo-certificates(7)).
@@ -672,6 +707,7 @@ pub fn build_for(ctx: &Ctx, profile: Profile, lab: bool) -> Result<Programs> {
     install_tree(ctx, TUNE, TUNE_DIR, &[], &mut files)?;
     install_admin(ctx, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
+    files.push(os_release(ctx)?);
     // The root this system trusts its releases by (ADR 0308).
     files.push(crate::release::trusted_root(ctx)?);
     install_tree(ctx, TEST_SERVICES, TEST_SERVICES_DIR, &[], &mut files)?;
@@ -1377,6 +1413,7 @@ mod tests {
                 "system/resources",
                 "system/resources/default-settings",
                 "system/resources/default-settings/localtime",
+                "system/resources/default-settings/os-release",
                 "system/resources/default-settings/resolv.conf",
                 "system/resources/default-settings/ssl",
                 "system/resources/default-settings/ssl/cert.pem",
@@ -1403,6 +1440,9 @@ mod tests {
         let resolv = archive.find("/system/resources/default-settings/resolv.conf").unwrap();
         let stub = &b"/system/live/resolved/resolv.conf"[..];
         assert_eq!((resolv.kind, resolv.data), (radix_bootfs::Kind::Symlink, stub));
+        let os_release = archive.find("/system/resources/default-settings/os-release").unwrap();
+        let usr_lib = &b"/usr/lib/os-release"[..];
+        assert_eq!((os_release.kind, os_release.data), (radix_bootfs::Kind::Symlink, usr_lib));
         let localtime = archive.find("/system/resources/default-settings/localtime").unwrap();
         let utc = &b"/system/resources/zoneinfo/UTC"[..];
         assert_eq!((localtime.kind, localtime.data), (radix_bootfs::Kind::Symlink, utc));
@@ -1647,6 +1687,39 @@ mod tests {
         let adm = index.iter().find(|page| page["id"] == "ADM-129").unwrap();
         assert_eq!(adm["title"], "This server does not have that command yet");
         assert_eq!(adm["area"], "The web console, Dukovo Admin");
+    }
+
+    #[test]
+    fn os_release_names_dukovo_and_its_version_in_the_files_grammar() {
+        let text = os_release_text("0.15.0");
+        let pairs: Vec<(&str, &str)> =
+            text.lines().map(|line| line.split_once('=').expect("NAME=value")).collect();
+        let get = |name: &str| pairs.iter().find(|(n, _)| *n == name).map(|(_, v)| *v);
+        assert_eq!(get("ID"), Some("dukovo"));
+        assert_eq!(get("NAME"), Some("\"Dukovo\""));
+        assert_eq!(get("VERSION_ID"), Some("\"0.15.0\""));
+        assert_eq!(get("VERSION"), Some("\"0.15.0\""));
+        assert_eq!(get("PRETTY_NAME"), Some("\"Dukovo 0.15.0\""));
+        for name in ["HOME_URL", "SUPPORT_URL", "BUG_REPORT_URL"] {
+            assert!(get(name).is_some_and(|url| url.starts_with("\"https://")), "{name}");
+        }
+        for (name, value) in &pairs {
+            let valid_name = name.starts_with(|c: char| c.is_ascii_uppercase())
+                && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            assert!(valid_name, "{name} is not a variable name");
+            let quoted = value.starts_with('"') && value.ends_with('"');
+            assert!(quoted || !value.contains(' '), "{name}: a value with a space is quoted");
+        }
+        assert!(text.ends_with('\n'));
+    }
+
+    #[test]
+    fn the_release_carries_os_release_where_usr_lib_leads() {
+        // /usr leads to /system and /system/lib to libraries.
+        let lib = ARCHIVE_LINKS.iter().find(|(link, _)| *link == "system/lib").unwrap();
+        assert_eq!(OS_RELEASE, format!("system/{}/os-release", lib.1));
+        let link = DEFAULT_LINKS.iter().find(|(link, _)| link.ends_with("/os-release")).unwrap();
+        assert_eq!(link.1, "/usr/lib/os-release");
     }
 
     #[test]

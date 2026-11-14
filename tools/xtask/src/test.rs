@@ -1863,7 +1863,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "consoles",
-        about: "a normal boot shows a shell on consoled's virtual consoles; typing, notifications on the bottom line, Alt+F2, a German keyboard layout, poweroff",
+        about: "a normal boot shows a shell on consoled's virtual consoles; typing, /etc/os-release names Dukovo and its version, notifications on the bottom line, Alt+F2, a German keyboard layout, poweroff",
         firmware: Firmware::Uefi,
         media: Media::Usb,
         // No program: Spark starts the services, as on a normal boot.
@@ -7044,7 +7044,8 @@ fn screen_log(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
 /// A normal boot: Spark starts consoled, which takes the screen and shows
 /// a shell on tty1. Types a command on the PS/2 keyboard and reads its
-/// answer off the screen, switches to tty2, restarts consoled with
+/// answer off the screen, reads `/etc/os-release`, which scripts read to
+/// tell which system they run on, switches to tty2, restarts consoled with
 /// service(8), and powers the machine off from the shell.
 fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
@@ -7059,6 +7060,9 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
     vm.type_text("echo $((6 * 7)) consoles\n")?;
     vm.expect_screen(&["# echo $((6 * 7)) consoles", "42 consoles"])?;
+    // os-release(5): the link in /etc leads to the file the release carries.
+    vm.type_text("clear; cat /etc/os-release\n")?;
+    vm.expect_screen(&["ID=dukovo", &format!("PRETTY_NAME=\"Dukovo {VERSION}\"")])?;
     // notifyd's notifications on the bottom line (ADR 0212): one for its
     // time, a critical one until a key is pressed, and both in the list.
     vm.expect_anywhere("consoled: showing notifications from notifyd")?;
