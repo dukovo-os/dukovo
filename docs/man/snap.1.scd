@@ -11,7 +11,7 @@ snap - make, list, restore and remove snapshots of Btrfs subvolumes
 
 *snap create* [*--name* _name_] _place_
 
-*snap list* [_place_]
+*snap list* [*--json*] [_place_]
 
 *snap restore* [*--from* _snapshot_] [*--to* _path_] _path_
 
@@ -97,12 +97,13 @@ version, which *sysupdate rollback* and the boot menu start.
 	time, which snap gives its own. Needs an administrator: *elevate snap
 	create /users*.
 
-*list* [_place_]
+*list* [*--json*] [_place_]
 	With no _place_, each place *snap.toml* names: how many snapshots
 	it has, its newest, and where they are. With one, its snapshots,
 	oldest first: the name, when it was made, and why it is kept:
 	*newest*, *daily*, *weekly*, or *named* for one given a name; one
-	the next prune removes says so.
+	the next prune removes says so. *--json* prints the same as one
+	line of JSON (JSON).
 
 	```
 	$ snap list /users
@@ -145,6 +146,52 @@ version, which *sysupdate rollback* and the boot menu start.
 	names that has none from today, then each pruned. With *--watch*,
 	a round every hour until stopped, reading *snap.toml* again each
 	time. Needs an administrator.
+
+# JSON
+
+*list --json* prints one line of JSON, an object whose first member is
+*format*, 1 (ADR 0541), which scripts and Ansible's *dukovo.system*
+collection read in place of the text. A later field may be added without
+a new *format*. Names are in snake_case, times are RFC 3339 in UTC, and a
+value that is not known is *null*. An error is told to standard error as
+without *--json*, with the same exit status.
+
+With no _place_, it has *places*, a list with an object for each place
+*snap.toml* names that could be read:
+
+*place*
+	The place, as *snap.toml* names it.
+
+*snapshots*
+	How many snapshots it has.
+
+*newest*
+	The name of the newest, or *null* for none.
+
+*folder*
+	Where its snapshots are read.
+
+With a _place_, it has *place*, the top folder of its subvolume;
+*folder*, where its snapshots are read; and *snapshots*, a list with an
+object for each, oldest first:
+
+*name*
+	The snapshot's name.
+
+*made*
+	When it was made, or *null* when the filesystem does not say.
+
+*named*
+	Whether its name was given with *--name*, so that no prune
+	removes it.
+
+*kept*
+	Why a snapshot named by its time is kept, a list of *newest*,
+	*daily* and *weekly*; empty for a named one and for one the next
+	prune removes.
+
+*prunable*
+	Whether the next prune removes it.
 
 # SPACE
 

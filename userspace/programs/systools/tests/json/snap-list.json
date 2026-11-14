@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "places": [
+    {"place": "/users", "snapshots": 3, "newest": "2026-11-14-0300", "folder": "/snapshots/users"},
+    {"place": "/shared", "snapshots": 0, "newest": null, "folder": "/snapshots/shared"}
+  ]
+}

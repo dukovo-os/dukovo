@@ -30,14 +30,14 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use spark_api::show::Holds;
 
 use crate::args::{Arg, Args};
-use crate::proc;
 use crate::service::shown;
 use crate::subvolume::{self, Info, is_top};
 use crate::util::{self, Fail};
+use crate::{json, proc};
 
 use keep::Kept;
 
@@ -533,37 +533,135 @@ fn outside_the_service(places: &[String]) -> Vec<&String> {
     places.iter().filter(|place| !held(place, &service.holds)).collect()
 }
 
-/// `snap list`: each place snap.toml names, or the snapshots of one.
-fn list(place_path: Option<&Path>, settings: &Settings) -> Result<i32, Fail> {
-    let mut out = io::stdout().lock();
-    let Some(path) = place_path else {
-        let mut rows = vec![["PLACE", "SNAPSHOTS", "NEWEST", "FOLDER"].map(String::from).to_vec()];
-        let mut status = 0;
-        for path in &settings.places {
-            match place(Path::new(path)).and_then(|p| Ok((snapshots(&p)?, p))) {
-                Ok((snaps, place)) => rows.push(vec![
+/// The members of `snap list --json` after `format`, for each place
+/// snap.toml names.
+#[derive(Serialize)]
+struct Places {
+    places: Vec<PlaceRow>,
+}
+
+/// A place of snap.toml.
+#[derive(Serialize)]
+struct PlaceRow {
+    place: String,
+    snapshots: usize,
+    /// The name of the newest, or none.
+    newest: Option<String>,
+    /// Where its snapshots are read.
+    folder: String,
+}
+
+/// The members of `snap list PLACE --json` after `format`.
+#[derive(Serialize)]
+struct PlaceSnapshots {
+    place: String,
+    folder: String,
+    snapshots: Vec<SnapshotRow>,
+}
+
+/// A snapshot of a place.
+#[derive(Serialize)]
+struct SnapshotRow {
+    name: String,
+    /// When it was made, or none when the filesystem does not say.
+    made: Option<String>,
+    /// Whether it has a name its maker gave, which a prune never takes.
+    named: bool,
+    /// Why a snapshot named by its time is kept.
+    kept: Vec<&'static str>,
+    /// Whether the next prune removes it.
+    prunable: bool,
+}
+
+/// `snap list`: each place snap.toml names, or the snapshots of one; with
+/// `json`, as a document.
+fn list(place_path: Option<&Path>, settings: &Settings, json: bool) -> Result<i32, Fail> {
+    match place_path {
+        None => list_places(settings, json),
+        Some(path) => list_snapshots(path, settings, json),
+    }
+}
+
+/// `snap list` with no place: each place snap.toml names, how many
+/// snapshots it has and which is newest, and the places that cannot be
+/// read, one to a line of standard error.
+fn list_places(settings: &Settings, json: bool) -> Result<i32, Fail> {
+    let mut rows = vec![["PLACE", "SNAPSHOTS", "NEWEST", "FOLDER"].map(String::from).to_vec()];
+    let mut places = Vec::new();
+    let mut status = 0;
+    for path in &settings.places {
+        match place(Path::new(path)).and_then(|p| Ok((snapshots(&p)?, p))) {
+            Ok((snaps, place)) => {
+                let newest = snaps.last().map(|s| s.name.clone());
+                rows.push(vec![
                     path.clone(),
                     snaps.len().to_string(),
-                    snaps.last().map_or("-".into(), |s| s.name.clone()),
+                    newest.clone().unwrap_or_else(|| "-".into()),
                     place.shown.display().to_string(),
-                ]),
-                Err(fail) => {
-                    eprintln!("snap: {}", fail.message);
-                    status = 1;
-                }
+                ]);
+                places.push(PlaceRow {
+                    place: path.clone(),
+                    snapshots: snaps.len(),
+                    newest,
+                    folder: place.shown.display().to_string(),
+                });
+            }
+            Err(fail) => {
+                eprintln!("snap: {}", fail.message);
+                status = 1;
             }
         }
-        write_rows(&mut out, &rows)?;
-        for place in outside_the_service(&settings.places) {
-            eprintln!(
-                "snap: {place} is not in the snap service's view: add it with `service edit snap`"
-            );
-        }
-        return Ok(status);
-    };
+    }
+    if json {
+        json::print(&Places { places })?;
+    } else {
+        write_rows(&mut io::stdout().lock(), &rows)?;
+    }
+    for place in outside_the_service(&settings.places) {
+        eprintln!(
+            "snap: {place} is not in the snap service's view: add it with `service edit snap`"
+        );
+    }
+    Ok(status)
+}
+
+/// The rows of `snap list PLACE --json` for `snaps`, oldest first, with
+/// why `kept`, as [`retention`] gives it, keeps each named by its time.
+fn snapshot_rows(snaps: &[Snapshot], kept: &[(usize, Kept)]) -> Vec<SnapshotRow> {
+    snaps
+        .iter()
+        .enumerate()
+        .map(|(i, snap)| {
+            let why = kept.iter().find(|(at, _)| *at == i).map(|(_, why)| *why);
+            SnapshotRow {
+                name: snap.name.clone(),
+                made: (snap.info.made != 0).then(|| {
+                    json::time(i64::try_from(snap.info.made / 1_000_000_000).unwrap_or(0))
+                }),
+                named: !snap.timed(),
+                kept: why.map_or_else(Vec::new, Kept::reasons),
+                prunable: why.is_some_and(|why| !why.any()),
+            }
+        })
+        .collect()
+}
+
+/// `snap list PLACE`: the snapshots of a place, when each was made and
+/// why each is kept.
+fn list_snapshots(path: &Path, settings: &Settings, json: bool) -> Result<i32, Fail> {
     let place = place(path)?;
     let snaps = snapshots(&place)?;
     let kept = retention(&snaps, settings);
+    if json {
+        let top = place.top.display().to_string();
+        let folder = place.shown.display().to_string();
+        json::print(&PlaceSnapshots {
+            place: top,
+            folder,
+            snapshots: snapshot_rows(&snaps, &kept),
+        })?;
+        return Ok(0);
+    }
     let mut rows = vec![["NAME", "MADE", "KEPT"].map(String::from).to_vec()];
     for (i, snap) in snaps.iter().enumerate() {
         let why = match kept.iter().find(|(at, _)| *at == i) {
@@ -572,7 +670,7 @@ fn list(place_path: Option<&Path>, settings: &Settings) -> Result<i32, Fail> {
         };
         rows.push(vec![snap.name.clone(), made_text(&snap.info), why]);
     }
-    write_rows(&mut out, &rows)?;
+    write_rows(&mut io::stdout().lock(), &rows)?;
     Ok(0)
 }
 
@@ -602,6 +700,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let Some(action) = args.subcommand() else { return Err(usage()) };
     let action = action.to_str().unwrap_or("").to_string();
     let (mut name, mut from, mut to, mut watch) = (None, None, None, false);
+    let mut json = false;
     let mut operands = Vec::new();
     while let Some(arg) = args.next()? {
         match arg {
@@ -611,6 +710,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 to = Some(PathBuf::from(args.value()?));
             }
             Arg::Long(long) if long == "watch" && action == "auto" => watch = true,
+            Arg::Long(long) if long == "json" && action == "list" => json = true,
             Arg::Operand(operand) => operands.push(PathBuf::from(operand)),
             other => return Err(args.unknown(&other)),
         }
@@ -632,8 +732,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             let _ = writeln!(io::stdout(), "{}", place.shown.join(made).display());
             Ok(0)
         }
-        ("list", []) => list(None, &settings()?),
-        ("list", [path]) => list(Some(path), &settings()?),
+        ("list", []) => list(None, &settings()?, json),
+        ("list", [path]) => list(Some(path), &settings()?, json),
         ("restore", [path]) => {
             restore(path, from.as_deref(), to.as_deref())?;
             Ok(0)
@@ -702,6 +802,50 @@ mod tests {
         // The file the system ships says what the defaults are.
         let shipped = include_str!("../../../defaults/snap.toml");
         assert_eq!(Settings::parse(shipped).unwrap(), Settings::default());
+    }
+
+    #[test]
+    fn the_documents_hold_each_place_and_each_snapshot_with_its_retention() {
+        let places = Places {
+            places: vec![
+                PlaceRow {
+                    place: "/users".into(),
+                    snapshots: 3,
+                    newest: Some("2026-11-14-0300".into()),
+                    folder: "/snapshots/users".into(),
+                },
+                PlaceRow {
+                    place: "/shared".into(),
+                    snapshots: 0,
+                    newest: None,
+                    folder: "/snapshots/shared".into(),
+                },
+            ],
+        };
+        let line = json::line(&places).unwrap();
+        json::assert_golden(&line, include_str!("../tests/json/snap-list.json"));
+        let made = |seconds: u64| Info { made: seconds * 1_000_000_000, ..Info::default() };
+        let snap = |name: &str, seconds: u64| Snapshot { name: name.into(), info: made(seconds) };
+        let snaps = [
+            snap("2026-11-12-0300", 1_794_452_400),
+            snap("before-the-upgrade", 1_794_514_500),
+            snap("2026-11-13-0300", 1_794_538_800),
+            snap("2026-11-14-0300", 1_794_625_200),
+            Snapshot { name: "unknown-time".into(), info: Info::default() },
+        ];
+        let kept = [
+            (3, Kept { newest: true, daily: true, weekly: true }),
+            (2, Kept { daily: true, ..Kept::default() }),
+            (0, Kept::default()),
+        ];
+        let rows = snapshot_rows(&snaps, &kept);
+        let document = PlaceSnapshots {
+            place: "/users".into(),
+            folder: "/snapshots/users".into(),
+            snapshots: rows,
+        };
+        let line = json::line(&document).unwrap();
+        json::assert_golden(&line, include_str!("../tests/json/snap-list-place.json"));
     }
 
     #[test]
