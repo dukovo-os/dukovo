@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn an_error_id_is_read_from_the_end_of_a_line() {
         assert_eq!(error_id("nginx could not load blog.conf (SVC-104)"), Some("SVC-104"));
-        assert_eq!(error_id("the disk is full (UPD-103)  "), Some("UPD-103"));
+        assert_eq!(error_id("the update did not start (UPD-101)  "), Some("UPD-101"));
         assert_eq!(error_id("(NET-201)"), Some("NET-201"));
         for line in [
             "",
