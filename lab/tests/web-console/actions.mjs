@@ -39,6 +39,8 @@ import {
 const PASSWORD = "lab-console-password";
 
 // The actions this test leaves alone, each with its reason above.
+// A long action, which a lab build has, answers 202 and runs as a task
+// (web-console/tasks), so it is left alone too.
 const SKIPPED = new Set(["certificate.renew"]);
 
 /** `text` with every byte outside `A-Za-z0-9-._~` written as `%XX`. */
@@ -107,7 +109,7 @@ export default async function check(t) {
   // The service the examples of the services' actions use, if there is one,
   // and how the console lists it, to see it put back.
   const lister = actions.find((each) => each.id === "service.list");
-  const service = actions.find((each) => each.area === "services" && each.changes)?.examples.good[0]?.name;
+  const service = actions.find((each) => each.area === "services" && each.changes && !each.long)?.examples.good[0]?.name;
   const stateNow = async () => (lister && service ? serviceState(await call(lister, lister.examples.good[0]), service) : null);
 
   // The reads first.
@@ -119,7 +121,7 @@ export default async function check(t) {
 
   // Then each change, and what puts it back.
   const before = await stateNow();
-  for (const action of actions.filter((each) => each.changes && !SKIPPED.has(each.id))) {
+  for (const action of actions.filter((each) => each.changes && !each.long && !SKIPPED.has(each.id))) {
     const args = action.examples.good[0];
     const undo = action.examples.undo;
     if (undo === null) {
