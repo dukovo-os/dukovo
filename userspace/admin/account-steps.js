@@ -193,11 +193,22 @@ export function secondStepView({ session, signInAgain }) {
     }
   }
 
-  // Shows what a change did, makes the page match it, and shows the codes
-  // the change gave, if any.
+  // The unlock dialog offers the steps that `session` lists, which a change
+  // here alters. A session that ended is the console's to report, which
+  // the call does for itself.
+  async function refreshKinds() {
+    try {
+      session.kinds = (await get('/api/1/session')).kinds;
+    } catch {
+      // Kept as they were: the dialog says so if one is gone.
+    }
+  }
+
+  // Shows what a change did, makes the page match it and the unlock
+  // dialog's choices, and shows the codes the change gave, if any.
   async function finish(words, codes = []) {
     status.textContent = words;
-    await load();
+    await Promise.all(needsStep ? [load()] : [load(), refreshKinds()]);
     if (codes.length > 0) {
       const { section, heading: codesHeading } = recoveryCodes({
         codes,

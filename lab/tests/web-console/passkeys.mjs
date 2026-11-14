@@ -196,6 +196,15 @@ async function renamePasskey(t, page) {
   await t.see(page.getByRole("button", { name: `Remove ${RENAMED}` }));
 }
 
+/** The unlock dialog offers the passkey just added, with no page load between. */
+async function unlockOffersPasskey(t, page) {
+  await headerButton(page, "Unlock").click();
+  const dialog = page.getByRole("dialog", { name: "Unlock to make changes" });
+  await t.see(dialog.getByRole("button", { name: "Unlock with your passkey" }));
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await t.gone(dialog);
+}
+
 /** The passkey signs in without a name or a password. */
 async function signInAlone(t, page, name) {
   await signOut(t, page);
@@ -273,6 +282,7 @@ export default async function check(t) {
     await signInDone(t, page, name, PASSWORD);
     await addPasskey(t, page);
     await renamePasskey(t, page);
+    await unlockOffersPasskey(t, page);
     await signInAlone(t, page, name);
     await unlockWithPasskey(t, page);
     await removePasskey(t, page);
