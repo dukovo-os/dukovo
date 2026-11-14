@@ -59,7 +59,7 @@ disk-grow 70
 disk-health 25
 disk-raw 17
 disk-raw-4k 16
-dukovo-check 120
+dukovo-check 240
 elevate 86
 essentials 150
 exfat-write 42
