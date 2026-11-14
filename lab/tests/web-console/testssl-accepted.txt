@@ -10,3 +10,7 @@
 
 cert_chain_of_trust  The machine's own certificate, which certd makes and no authority signed, is a self-signed one: it is trusted by the fingerprint that consoled shows at sign-in and admin fingerprint prints (ADR 0514)
 cert_trust  The lab PC reaches the machine by an address that its certificate does not name, as a person does through a forward; the names it does hold, localhost among them, are checked by name in testssl-check.py
+cert_extlifeSpan  The machine's own certificate is valid for 800 days, under the 825 days that some systems allow a server certificate a person chose to trust; testssl.sh's 398 days are the limit for a certificate an authority signs, and this one is trusted by its fingerprint (ADR 0512)
+cert_revocation  The machine's own certificate has no authority, so no list or responder says it is revoked: one that is no longer trusted is made anew with cert renew, which changes the fingerprint that consoled and admin fingerprint show (ADR 0512)
+cmdline_ip-target  The lab PC reaches the console by an address, through the lab's forward, which is what testssl-run.sh is given; the names the certificate holds are checked by name in testssl-check.py
+engine_problem  The OpenSSL that testssl.sh brings has no GOST engine: a note on the lab PC's tools, not on the console, which offers no GOST cipher
