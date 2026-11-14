@@ -1441,9 +1441,11 @@ impl Supervisor {
         // Its certificates are copied anew as it starts (ADR 0512), not
         // for the processes of its health checks and hooks, which read the
         // copies it has.
+        // The copies are the account's own, so its other groups (ADR 0477)
+        // play no part.
         let account = match &spec.account {
             Some(name) if !spec.certificates.is_empty() => {
-                Some(account(&self.root, self.names, name)?)
+                Some(account(&self.root, self.names, name, Vec::new())?)
             }
             _ => None,
         };
