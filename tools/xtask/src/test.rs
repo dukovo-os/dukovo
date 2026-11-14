@@ -5984,7 +5984,7 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
         .ok_or_else(|| {
             format!("{} holds no ripgrep bundle (run `./ob ports`)", bundles.display())
         })?;
-    let dir = crate::catalog::test_site(ctx, &[ripgrep], Some(TEST_ADVISORIES), None)
+    let dir = crate::catalog::test_site(ctx, &[ripgrep], Some(TEST_ADVISORIES), None, &[])
         .map_err(|e| e.to_string())?;
     let image = path.display().to_string();
     host_tool(
@@ -6019,7 +6019,19 @@ fn make_site(
         .map(|bundle| crate::bundles::pack_test(ctx, bundle))
         .collect::<Result<Vec<PathBuf>>>()
         .map_err(|e| e.to_string())?;
-    let dir = crate::catalog::test_site(ctx, &files, None, paused).map_err(|e| e.to_string())?;
+    // Each bundle's newest version goes out in waves just begun.
+    let mut newest: Vec<&crate::bundles::TestBundle> = Vec::new();
+    for bundle in bundles {
+        match newest.iter_mut().find(|held| held.id == bundle.id) {
+            Some(held) if version_numbers(held.version) >= version_numbers(bundle.version) => {}
+            Some(held) => *held = bundle,
+            None => newest.push(bundle),
+        }
+    }
+    let begun: Vec<String> =
+        newest.iter().map(|bundle| format!("{}/{}", bundle.id, bundle.version)).collect();
+    let dir =
+        crate::catalog::test_site(ctx, &files, None, paused, &begun).map_err(|e| e.to_string())?;
     let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
     mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
         .arg(path)
@@ -6037,6 +6049,11 @@ fn make_site(
         }
     }
     Ok(())
+}
+
+/// The numbers of a test bundle's version, such as 1.1.0, to compare.
+fn version_numbers(version: &str) -> Vec<u64> {
+    version.split('.').map(|part| part.parse().unwrap_or(0)).collect()
 }
 
 /// Makes a [`SERVICE_FILES`] disk: the files of [`SERVICE_BUNDLES`].

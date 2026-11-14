@@ -351,14 +351,17 @@ pub fn publish_to(ctx: &Ctx, server: &Server, repo: &Path, store: &Path) -> Resu
 /// `advisories`, OSV advisories as JSON, it also lists the bundles' known
 /// flaws, as the update server does each day (ADR 0389). With `paused`,
 /// a bundle's ID, a version of it and a reason, it also signs the
-/// rollouts of each bundle's newest version with the waves just begun,
-/// and the waves of that one held, as the server's plan would be after
-/// `ob catalog rollout pause` (ADR 0544).
+/// rollouts of the releases `begun`, each `ID/VERSION`, with the waves
+/// just begun, and the waves of that one held, as the server's plan would
+/// be after `ob catalog rollout pause` (ADR 0544). A release the first
+/// rollouts list without a plan has every wave open, so those are planned
+/// before the first are signed.
 pub fn test_site(
     ctx: &Ctx,
     bundles: &[PathBuf],
     advisories: Option<&str>,
     paused: Option<(&str, &str, &str)>,
+    begun: &[String],
 ) -> Result<PathBuf> {
     let dir = ctx.out.join("test/catalog");
     if dir.exists() {
@@ -383,6 +386,17 @@ pub fn test_site(
     sign.extend(bundles.iter().map(|b| b.as_os_str()));
     run(&sign)?;
     let plan = dir.join("rollout.json");
+    if paused.is_some() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let releases: serde_json::Map<String, serde_json::Value> = begun
+            .iter()
+            .map(|release| (release.clone(), serde_json::json!({ "released": now, "open": 0 })))
+            .collect();
+        let text = serde_json::json!({ "releases": releases }).to_string();
+        std::fs::write(&plan, text).context(|| format!("writing {}", plan.display()))?;
+    }
     let mut publish = vec![
         os("publish"),
         os("--key"),
