@@ -46,7 +46,7 @@ run = "hostnamectl status"
 root = true
 expect = ["Static hostname:", "Operating System: Dukovo", "Kernel: Radix"]
 [[step]]
-run = "old=$(hostnamectl hostname); hostnamectl set-hostname labadmin && hostnamectl hostname; hostnamectl set-hostname $old"
+run = "sh -c 'old=$(hostnamectl hostname); hostnamectl set-hostname labadmin && hostnamectl hostname; hostnamectl set-hostname $old'"
 root = true
 expect = "labadmin"
 

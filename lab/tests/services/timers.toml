@@ -15,9 +15,11 @@ run = '''sh -c 'service lab-timer disable; cd /system/settings/spark/services &&
 root = true
 expect = "installed"
 [[step]]
-run = "sh -c 'service check lab-timer && service list --timers'"
+# The table has its header only on a terminal: the line names the
+# service and the time it starts next.
+run = """sh -c 'service check lab-timer && echo "listed $(service list --timers | grep -c "^lab-timer  *20[0-9][0-9]-")"'"""
 root = true
-expect = ["lab-timer", "NEXT RUN"]
+expect = ["lab-timer.toml: ok", "listed 1"]
 [[step]]
 run = "service timerd status"
 root = true

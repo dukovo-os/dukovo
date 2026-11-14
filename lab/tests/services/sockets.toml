@@ -42,7 +42,7 @@ expect = "80"
 run = '''sh -c '(for i in 1 2 3; do sleep 6; service nginx restart; done; sleep 6; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv) > /dev/null 2>&1 &' '''
 root = true
 [[step]]
-host = "sh {here}/nginx-load.sh {machine} {machine-port:80} {machine-port:80}"
+host = "sh {here}/nginx-load.sh {machine} {machine-port:80} -"
 expect = "lost 0"
 # Give the last of them time to finish, then it answers again.
 [[step]]

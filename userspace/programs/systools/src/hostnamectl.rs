@@ -86,16 +86,16 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         ["hostname" | "set-hostname", name] => set_hostname(name),
         ["set-hostname", ..] => Err(usage(
-            "hostnamectl: set-hostname takes one name, `hostnamectl set-hostname NAME`".into(),
+            "set-hostname takes one name, `hostnamectl set-hostname NAME`".into(),
         )),
         [verb @ ("set-icon-name" | "set-chassis" | "set-deployment" | "set-location"), ..] => {
             Err(usage(format!(
-                "hostnamectl: {verb}: Dukovo keeps only the host name; `hostnamectl \
+                "{verb}: Dukovo keeps only the host name; `hostnamectl \
                  set-hostname NAME` sets it"
             )))
         }
         [other, ..] => Err(usage(format!(
-            "hostnamectl: no command '{other}': status, hostname or set-hostname"
+            "no command '{other}': status, hostname or set-hostname"
         ))),
     }
 }
@@ -103,7 +103,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 /// Gives the machine the name `name`, which `sethostname(2)` writes to
 /// the settings for an administrator.
 fn set_hostname(name: &str) -> Result<i32, Fail> {
-    check_name(name).map_err(|why| usage(format!("hostnamectl: '{name}': {why}")))?;
+    check_name(name).map_err(|why| usage(format!("'{name}': {why}")))?;
     // SAFETY: the pointer and length are the name's own bytes.
     let set = unsafe { libc::sethostname(name.as_ptr().cast(), name.len() as _) };
     if set != 0 {
@@ -114,7 +114,7 @@ fn set_hostname(name: &str) -> Result<i32, Fail> {
                  set-hostname {name}`"
             )));
         }
-        return Err(util::failed(&"hostnamectl: set-hostname", error));
+        return Err(util::failed(&"set-hostname", error));
     }
     Ok(0)
 }

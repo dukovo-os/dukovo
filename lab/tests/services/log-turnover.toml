@@ -17,7 +17,9 @@ run = "sh -c 'for t in 1 2 3 4 5; do sleep 4; logturn --now lab-turn || exit 1; 
 root = true
 expect = "x.log x.log.1 x.log.2.zst x.log.3.zst"
 [[step]]
-run = "sh -c 'cd /system/state/lab-turn/logs; (zstd -dc x.log.3.zst; zstd -dc x.log.2.zst; cat x.log.1 x.log) > /tmp/all; sort -n -c /tmp/all && echo \"sorted $(uniq -d /tmp/all | wc -l)\"'"
+# Each file's first and last number, and any number found twice, so that
+# a failure shows where.
+run = "sh -c 'cd /system/state/lab-turn/logs; for f in x.log.3.zst x.log.2.zst; do echo \"$f: $(zstd -dc $f | head -n 1) to $(zstd -dc $f | tail -n 1)\"; done; for f in x.log.1 x.log; do echo \"$f: $(head -n 1 $f) to $(tail -n 1 $f)\"; done; (zstd -dc x.log.3.zst; zstd -dc x.log.2.zst; cat x.log.1 x.log) > /tmp/all; echo \"twice: $(uniq -d /tmp/all | tr \"\\n\" \" \")\"; sort -n -c /tmp/all && echo \"sorted $(uniq -d /tmp/all | wc -l)\"'"
 root = true
 expect = "sorted 0"
 [[step]]

@@ -10,7 +10,9 @@
 #   nginx-load.sh MACHINE HTTP-PORT HTTPS-PORT
 #
 # MACHINE is the machine's address and the ports the lab PC's that reach
-# its ports 80 and 443, as {machine} and {machine-port:N} give them.
+# its ports 80 and 443, as {machine} and {machine-port:N} give them. An
+# HTTPS-PORT of - asks over HTTP alone, for a machine whose nginx does
+# not serve HTTPS.
 set -eu
 
 machine="$1"
@@ -22,8 +24,12 @@ end=$(($(date +%s) + 20))
 while [ "$(date +%s)" -lt "$end" ]; do
 	# Each code goes to the standard error output (curl's %{stderr}),
 	# the pages to nowhere; one that never came back is 000.
-	curl -sk --parallel --parallel-max 16 -w '%{stderr}%{http_code}\n' \
-		"http://$machine:$http/?n=[1-200]" "https://$machine:$https/?n=[1-200]" \
+	if [ "$https" = - ]; then
+		set -- "http://$machine:$http/?n=[1-400]"
+	else
+		set -- "http://$machine:$http/?n=[1-200]" "https://$machine:$https/?n=[1-200]"
+	fi
+	curl -sk --parallel --parallel-max 16 -w '%{stderr}%{http_code}\n' "$@" \
 		>/dev/null 2>>codes || true
 done
 total=$(grep -c . codes || true)

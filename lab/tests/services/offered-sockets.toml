@@ -18,7 +18,7 @@ expect = "installed"
 [[step]]
 run = "sh -c 'service check lab-sock 2>&1'"
 root = true
-expect_not = "lab-sock.toml:"
+expect = "lab-sock.toml: ok"
 [[step]]
 run = "sh -c 'service check lab-sock-wrong 2>&1'"
 root = true
