@@ -199,6 +199,7 @@ update-offline 160
 update-online 240
 update-panic 120
 update-power-cut 90
+update-server 720
 update-stage 110
 usb-c 35
 usb-companions 22

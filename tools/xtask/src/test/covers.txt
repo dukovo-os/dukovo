@@ -758,6 +758,11 @@ update-panic userspace/programs/systools/src/sysupdate/ userspace/spark/src/main
 update-power-cut kernel/fs/btrfs/ userspace/programs/slots/ userspace/programs/system-release/
 update-power-cut userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/sysupdate.rs
 update-power-cut userspace/programs/systools/src/sysupdate/
+update-server ports/nginx/ tools/update-server/ tools/xtask/src/catalog.rs tools/xtask/src/deploy.rs
+update-server tools/xtask/src/release.rs userspace/programs/catalog-repo/ userspace/programs/system-release/
+update-server userspace/programs/systools/src/timerd.rs userspace/programs/systools/src/timerd/
+update-server userspace/programs/systools/src/service.rs userspace/programs/systools/src/servicefiles.rs
+update-server userspace/programs/sshd/ userspace/programs/tuf/ userspace/spark/src/
 update-stage image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/ tools/xtask/src/release.rs
 update-stage image/grub/rescue.cfg
 update-stage userspace/defaults/sysupdate/ userspace/programs/disk/src/esp.rs userspace/programs/slots/
