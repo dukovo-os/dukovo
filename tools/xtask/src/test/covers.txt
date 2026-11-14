@@ -29,6 +29,12 @@ admin userspace/programs/accounts/ userspace/programs/consoled/ userspace/progra
 admin userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin userspace/programs/systools/src/authd/ userspace/programs/systools/src/cert.rs
 admin userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs
+admin tools/xtask/src/test/console_client.rs
+admin-actions userspace/programs/systools/src/admin.rs userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
+admin-actions userspace/programs/accounts/ userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/
+admin-actions userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/ userspace/programs/systools/src/cert.rs
+admin-actions userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs userspace/programs/systools/src/service.rs
+admin-actions userspace/programs/systools/src/servicefiles.rs tools/xtask/src/test/console_client.rs ports/netcat/
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
 audio-cd kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/fs/disk/optical.rs
 audio-cd kernel/radix/src/fs/disk/removable.rs kernel/radix/src/fs/disk/usb.rs tools/xtask/src/disc_drive/
