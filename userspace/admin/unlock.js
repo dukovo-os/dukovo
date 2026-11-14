@@ -187,15 +187,22 @@ export function accessControl(session) {
   const minutes = h('span');
   let unlocked = null;
 
-  const change = (path) => busy([...element.querySelectorAll('button')], async () => {
+  // The buttons are not disabled while a call is out: that would take focus
+  // from the one a person at the keyboard pressed.
+  let pending = false;
+  async function change(path) {
+    if (pending) return;
+    pending = true;
     clearError(problem);
     try {
       const { unlock_seconds: seconds } = await post(path);
       setUnlockSeconds(seconds);
     } catch (error) {
       showError(problem, error);
+    } finally {
+      pending = false;
     }
-  });
+  }
 
   async function unlock() {
     await askToUnlock(session);
@@ -218,7 +225,7 @@ export function accessControl(session) {
       element.replaceChildren(
         icon('lock'),
         'Limited access',
-        session.admin && ['·', button('Unlock', unlock)]);
+        ...(session.admin ? ['·', button('Unlock', unlock)] : []));
     }
   }
 

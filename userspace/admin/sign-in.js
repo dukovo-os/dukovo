@@ -7,7 +7,7 @@
 // page only tells the router that it is.
 
 import { get, post } from './api.js';
-import { busy, clearError, errorSlot, h, icon, marks, showError } from './dom.js';
+import { asSentence, busy, clearError, errorSlot, h, icon, marks, showError } from './dom.js';
 import { canUsePasskeys, getAssertion, isAddress, passkeyProblem } from './webauthn.js';
 
 // What each way of finishing the second step says, and what its link says
@@ -40,7 +40,7 @@ function lockup(machine) {
 /** A banner for what the router tells the page, such as that the session ended. */
 function noticeBanner({ title, detail }) {
   return h('div', { class: 'banner warn', role: 'status' },
-    icon('warn'), h('div', {}, h('p', {}, h('b', {}, title), ' ', detail)));
+    icon('warn'), h('div', {}, h('p', {}, h('b', {}, asSentence(title)), ' ', detail)));
 }
 
 /** The note on the machine's own certificate, with the fingerprint to compare. */

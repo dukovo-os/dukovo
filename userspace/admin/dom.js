@@ -27,6 +27,11 @@ export function icon(name) {
   return h('i', { class: `ic ic-${name}`, 'aria-hidden': 'true' });
 }
 
+/** `words` as a sentence: admind's titles name what happened and carry no full stop of their own. */
+export function asSentence(words) {
+  return /[.!?:]$/.test(words) ? words : `${words}.`;
+}
+
 /** The seconds to wait that an error asks for, in words. */
 export function waitInWords(seconds) {
   if (seconds < 60) return `${seconds} ${seconds === 1 ? 'second' : 'seconds'}`;
@@ -50,7 +55,7 @@ export function showError(slot, error, input) {
   slot.replaceChildren(
     icon('warn'),
     h('span', {},
-      h('b', {}, error.title), ' ', [error.detail, error.fix, wait].filter(Boolean).join(' '),
+      h('b', {}, asSentence(error.title)), ' ', [error.detail, error.fix, wait].filter(Boolean).join(' '),
       error.id && h('span', { class: 'mono muted' }, ` ${error.id}`)),
   );
   if (input) {

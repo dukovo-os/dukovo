@@ -31,6 +31,10 @@ const STREAM_RETRY_MS = 5000;
 let session = null;
 let events = null;
 let main = null;
+// Whether this page has had a session. A 401 on the first request is a
+// person who has not signed in yet, and needs no notice; a 401 after one
+// is a session that ended where the page could not see it.
+let hadSession = false;
 
 /** Ends what belongs to the signed-in session: its stream, unlock state and open dialogs. */
 function forgetSession() {
@@ -133,12 +137,13 @@ async function start() {
     session = await get('/api/1/session');
   } catch (error) {
     if (error.status === 401) {
-      showSignInPage(error.id === 'ADM-107' ? { title: error.title, detail: error.detail } : undefined);
+      showSignInPage(hadSession ? { title: error.title, detail: error.detail } : undefined);
     } else {
       showFailure(error);
     }
     return;
   }
+  hadSession = true;
   setCsrf(session.csrf);
   setUnlockSeconds(session.unlock_seconds);
   events = followEvents();
