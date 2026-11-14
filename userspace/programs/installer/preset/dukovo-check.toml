@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The server preset: dukovo-check(8) looks at the computer's security and
+# health each morning and keeps what it finds, which `dukovo-check --last`
+# shows. `service dukovo-check disable` stops it.
+
+enabled = true

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The server preset: the jobs of crontab and at run while their owner is
+# signed out, as a server's must (authd(8)). `keep_running = false` turns
+# that off for everyone; one person chooses for their own jobs with
+# `crontab --keep-running on|off`, and an administrator bars an account with
+# `elevate user set --jobs-signed-out never NAME`.
+
+keep_running = true

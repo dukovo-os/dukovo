@@ -102,7 +102,8 @@ pub enum Profile {
     /// with nothing listening.
     #[default]
     Minimal,
-    /// Minimal and the web console, with every feature offered.
+    /// Minimal and the web console, with every feature offered, and the
+    /// settings of a machine nobody watches ([`Profile::server_preset`]).
     Server,
     /// Server, set up at first boot from the cloud's data, with the web
     /// console off.
@@ -127,6 +128,15 @@ impl Profile {
     #[must_use]
     pub fn web_console(self) -> bool {
         self == Profile::Server
+    }
+
+    /// Whether it writes the server preset's settings: jobs that run
+    /// signed out, a performance profile, updates by themselves, and the
+    /// daily check. Cloud is Server set up from the cloud's data, so it
+    /// writes them too.
+    #[must_use]
+    pub fn server_preset(self) -> bool {
+        self != Profile::Minimal
     }
 
     /// The features it starts with, ticked on the Software page. Every
@@ -972,6 +982,13 @@ pub(crate) mod tests {
         let unknown = r#""profile": "desktop""#;
         let text = EXAMPLE.replace("\"version\": 1,", &format!("\"version\": 1, {unknown},"));
         assert!(Answers::parse(text.as_bytes()).unwrap_err().contains("unknown variant"));
+    }
+
+    #[test]
+    fn a_server_or_a_cloud_machine_gets_the_server_preset_and_a_minimal_one_does_not() {
+        assert!(!Profile::Minimal.server_preset());
+        assert!(Profile::Server.server_preset());
+        assert!(Profile::Cloud.server_preset());
     }
 
     #[test]

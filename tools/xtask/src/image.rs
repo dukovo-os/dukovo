@@ -1142,9 +1142,22 @@ pub fn make_root(
     made
 }
 
+/// The server preset's files, which the installer writes into a Server or
+/// Cloud install too, from the same files (userspace/programs/installer/
+/// preset/): a cloud image has the Cloud profile's settings without going
+/// through the installer.
+const PRESET_JOBS: &str = include_str!("../../../userspace/programs/installer/preset/jobs.toml");
+const PRESET_TUNE: &str = include_str!("../../../userspace/programs/installer/preset/tune.toml");
+const PRESET_UPDATES: &str =
+    include_str!("../../../userspace/programs/installer/preset/updates.toml");
+const PRESET_CHECK: &str =
+    include_str!("../../../userspace/programs/installer/preset/dukovo-check.toml");
+
 /// Turns cloud-setup(8) and sshd(8) on in `settings`, a root's
 /// `@settings`, with override files, as `service NAME enable` does,
-/// without changing the system's files (ADR 0328).
+/// without changing the system's files (ADR 0328), and gives it the
+/// server preset's settings (ADR 0317), with the performance profile of a
+/// virtual machine: a cloud image runs in one.
 fn stage_cloud(settings: &Path) -> Result<()> {
     let overrides = settings.join("spark/services/settings.d");
     process::create_dir(&overrides)?;
@@ -1157,6 +1170,19 @@ fn stage_cloud(settings: &Path) -> Result<()> {
                     # over SSH with the keys the cloud gives (ADR 0328).
 enabled = true
 ";
+        std::fs::write(&path, text).context(|| format!("writing {}", path.display()))?;
+        set_mode(&path, 0o644)?;
+    }
+    process::create_dir(&settings.join("sysupdate"))?;
+    set_mode(&settings.join("sysupdate"), 0o755)?;
+    let vm_guest = PRESET_TUNE.replace("@PROFILE@", "vm-guest");
+    for (name, text) in [
+        ("jobs.toml", PRESET_JOBS),
+        ("tune.toml", vm_guest.as_str()),
+        ("sysupdate/updates.toml", PRESET_UPDATES),
+        ("spark/services/settings.d/dukovo-check.toml", PRESET_CHECK),
+    ] {
+        let path = settings.join(name);
         std::fs::write(&path, text).context(|| format!("writing {}", path.display()))?;
         set_mode(&path, 0o644)?;
     }
@@ -1551,6 +1577,30 @@ mod tests {
         let err = check_size(&path).unwrap_err().to_string();
         assert!(err.contains("4096 MiB, not under the 4096 MiB"), "{err}");
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_cloud_image_has_the_server_preset_for_a_virtual_machine() {
+        let settings = std::env::temp_dir().join(format!("ob-cloud-preset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&settings);
+        std::fs::create_dir_all(&settings).unwrap();
+        stage_cloud(&settings).unwrap();
+        let read = |name: &str| -> toml::Table {
+            toml::from_str(&std::fs::read_to_string(settings.join(name)).unwrap()).unwrap()
+        };
+        assert_eq!(read("jobs.toml")["keep_running"].as_bool(), Some(true));
+        assert_eq!(read("tune.toml")["profile"].as_str(), Some("vm-guest"));
+        let updates = read("sysupdate/updates.toml");
+        assert_eq!(updates["unattended"].as_bool(), Some(true));
+        assert_eq!(updates["restart"].as_str(), Some("03:30"));
+        let check = read("spark/services/settings.d/dukovo-check.toml");
+        assert_eq!(check["enabled"].as_bool(), Some(true));
+        // The overrides it already made are still there.
+        for name in ["cloud-setup", "sshd"] {
+            let file = format!("spark/services/settings.d/{name}.toml");
+            assert_eq!(read(&file)["enabled"].as_bool(), Some(true));
+        }
+        std::fs::remove_dir_all(&settings).unwrap();
     }
 
     #[test]
