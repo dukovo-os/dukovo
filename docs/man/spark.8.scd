@@ -569,8 +569,8 @@ socket's.
 
 Anyone may ask Spark what it knows, as Linux's *systemctl status*
 answers any user. Spark listens at _/system/live/spark/read_ too, mode
-0666, as *logd*(8)'s query socket is. It answers *status* and *show*
-[_name_] as the control socket does, and any other request with
+0666, as *logd*(8)'s query socket is. It answers *status* and
+*show* [_name_] as the control socket does, and any other request with
 *error: the read socket answers status and show*; those go to the
 control socket, which only root may write to. *service*(8) reads
 through it, so that *service list* and *service* _name_ *status* work
