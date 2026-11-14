@@ -100,11 +100,12 @@ ls -ln /system/state/dukovo-check/last.json
 expect = ["json-same: yes", "json-version: 1", "json-checked: 1", "json-release: 1", "json-counts: 1", "json-passwords: 1", "-rw-r-----"]
 expect_not = "json-same: no"
 
-# The timer: the service is there, and has its next run.
+# The timer: the service is there, and has its next run, a date. The
+# table has no header when it is not printed to a terminal.
 [[step]]
-run = "service list --timers"
+run = "sh -c 'service list --timers | grep -E \"^dukovo-check +20[0-9][0-9]-\" && echo has-next-run'"
 root = true
-expect = ["dukovo-check", "NEXT RUN"]
+expect = ["has-next-run"]
 
 # Passwords on in sshd_config, for the file alone: SEC-110, and SEC-111
 # with it, since no list says who may sign in. The status is 2, and the
