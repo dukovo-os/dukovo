@@ -1634,14 +1634,29 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
         .collect();
     let state = Path::new(catalogs::STATE);
     let mut lists = std::collections::HashMap::new();
+    let mut indexes = std::collections::HashMap::new();
     for i in &installed {
         let name = installed_manifest(i.place, &i.id).map_or_else(|_| "?".into(), |m| m.name.0);
-        let bound = shared.lock().catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
-        let flags = bound.map_or(Flags::Unknown, |catalog| {
+        let (bound, held) = {
+            let registry = shared.lock();
+            let bound = registry.catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
+            (bound, registry.held(i.place, &i.id).is_some())
+        };
+        let flags = bound.clone().map_or(Flags::Unknown, |catalog| {
             let list = lists
                 .entry(catalog)
                 .or_insert_with_key(|catalog| catalogs::read_flaws(state, catalog));
             catalogs::flags(list.as_ref(), &i.id, &i.version)
+        });
+        // As the catalog was when bundled last read it: `list` reaches
+        // for no network, and `bundle update --check` reads it anew.
+        let update = bound.clone().and_then(|catalog| {
+            let index = indexes
+                .entry(catalog)
+                .or_insert_with_key(|catalog| catalogs::read_index(state, catalog));
+            let newest = index.as_ref()?.newest(&i.id)?;
+            (catalogs::compare_versions(&newest.version, &i.version) == std::cmp::Ordering::Greater)
+                .then(|| newest.version.clone())
         });
         let listed = Listed {
             place: i.place,
@@ -1651,17 +1666,23 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
             when: i.when,
             name: sheet::shown(&name, 60),
             flags,
+            catalog: bound,
+            held,
+            update,
         };
         connection.send(&Answer::Listed(listed)).map_err(|e| format!("{e}"))?;
     }
     Ok(format!("{} bundles", installed.len()))
 }
 
+/// `bundle info`: the bundle's sheet, what the asker said of its
+/// permissions and where it is; with `json`, those facts as one document.
 fn info(
     shared: &Shared,
     connection: &mut Connection,
     asker: u32,
     id: &str,
+    json: bool,
 ) -> Result<String, String> {
     let (installed, trust) = {
         let registry = shared.lock();
@@ -1699,20 +1720,34 @@ fn info(
         flaws: flaws.as_ref(),
         all_flaws: true,
     };
-    connection.send(&Answer::Sheet(sheet::write(&facts))).map_err(|e| format!("{e}"))?;
-    send_grants(shared, connection, asker, id, &installed.key)?;
     let data = match installed.place {
         Place::Everyone => format!("each person's {APP_DATA}/{id}"),
         Place::User(_) => account(asker)
             .map_or_else(|_| format!("{APP_DATA}/{id}"), |u| format!("{}/{APP_DATA}/{id}", u.home)),
     };
-    let when =
-        util::time_text(i64::try_from(installed.when).unwrap_or(0), "%Y-%m-%d %H:%M UTC", true);
     let (kept, held) = {
         let registry = shared.lock();
         let kept = registry.previous(installed.place, id).map(|p| p.version.clone());
         (kept, registry.held(installed.place, id).is_some())
     };
+    if json {
+        let said = shared.grants().of(asker, id, &installed.key);
+        let installation = sheet::Installation {
+            installed: installed.when,
+            folder: &folder,
+            data: &data,
+            previous: kept.as_deref(),
+            held,
+        };
+        let document = crate::json::line(&sheet::details(&facts, &said, &installation))
+            .map_err(|fail| fail.message)?;
+        connection.send(&Answer::Document(document)).map_err(|e| format!("{e}"))?;
+        return Ok("its facts".into());
+    }
+    connection.send(&Answer::Sheet(sheet::write(&facts))).map_err(|e| format!("{e}"))?;
+    send_grants(shared, connection, asker, id, &installed.key)?;
+    let when =
+        util::time_text(i64::try_from(installed.when).unwrap_or(0), "%Y-%m-%d %H:%M UTC", true);
     let kept = kept.map_or_default(|v| format!("; it can go back to {v}"));
     let held = if held { "; held at its version" } else { "" };
     Ok(format!("installed on {when}; in {folder}; its data: {data}{kept}{held}"))
@@ -3053,7 +3088,7 @@ fn serve(shared: &Shared, stream: UnixStream) {
             set_default(shared, asker, &name, line.as_deref(), everyone)
         }
         Ok(Request::List) => list(shared, &mut connection, asker),
-        Ok(Request::Info { id }) => info(shared, &mut connection, asker, &id),
+        Ok(Request::Info { id, json }) => info(shared, &mut connection, asker, &id, json),
         Ok(Request::Remove { id, everyone, purge }) => remove(shared, asker, &id, everyone, purge),
         Ok(Request::Run { find: what }) => find(shared, &mut connection, asker, &what),
         Ok(Request::AddOns) => link_commands(&shared.lock(), add_on_place(asker))

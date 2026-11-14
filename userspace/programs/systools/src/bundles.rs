@@ -36,6 +36,7 @@
 pub(crate) use dkv::{base64, minisign, sbom, signed, sums, zip};
 pub(crate) mod catalogs;
 pub(crate) mod confine;
+pub(crate) mod documents;
 pub(crate) mod feeds;
 pub(crate) mod folder;
 pub(crate) mod grants;
@@ -89,8 +90,8 @@ const USAGE: &str =
        bundle unhold ID [--for-everyone]
        bundle history [ID]
        bundle default NAME [LINE | --clear] [--for-everyone]
-       bundle list
-       bundle info ID
+       bundle list [--json]
+       bundle info ID [--json]
        bundle remove ID [--for-everyone] [--keep-data | --purge]
        bundle run [--command NAME] ID [ARGUMENT...]
        bundle grant ID PERMISSION [FOLDER=read|read-write | APP-ID]...
@@ -143,9 +144,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut clear = false;
     let mut days = None;
     let mut unsigned = false;
+    let mut json = false;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "check" => check_only = true,
+            Arg::Long(l) if l == "json" => json = true,
             Arg::Long(l) if l == "clear" => clear = true,
             Arg::Long(l) if l == "automatic" && automatic.is_none() => {
                 automatic = Some(match args.text()?.as_str() {
@@ -192,10 +195,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let output_ok = sub == Some("pack") || output.is_none();
     let days_ok = sub == Some("feed") || days.is_none();
     let unsigned_ok = sub == Some("install") || !unsigned;
+    let json_ok = matches!(sub, Some("list" | "info")) || !json;
     if !key_ok
         || !output_ok
         || !days_ok
         || !unsigned_ok
+        || !json_ok
         || (confined && (sub != Some("unpack") || !operands.is_empty()))
     {
         return Err(usage(USAGE.into()));
@@ -242,8 +247,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("catalog"), []) => list_catalogs(),
         (Some("catalog"), [add, name, url, root]) if add == "add" => add_catalog(name, url, root),
         (Some("catalog"), [remove, name]) if remove == "remove" => remove_catalog(name),
-        (Some("list"), []) => list(),
-        (Some("info"), [id]) => info(id),
+        (Some("list"), []) => list(json),
+        (Some("info"), [id]) => info(id, json),
         (Some("remove"), [id]) => remove(id, everyone, data),
         (Some("update"), []) if let Some(on) = automatic => {
             simple(&Request::Automatic { everyone, on }, "bundle")
@@ -995,8 +1000,9 @@ pub(crate) fn installed_for_everyone() -> Result<Vec<String>, Fail> {
     }
 }
 
-/// `bundle list`: the bundles this person can run, theirs and everyone's.
-fn list() -> Result<i32, Fail> {
+/// `bundle list`: the bundles this person can run, theirs and everyone's;
+/// with `json`, as the document bundle(1) describes.
+fn list(json: bool) -> Result<i32, Fail> {
     let (_stream, mut input) = ask(&Request::List, None).map_err(fail)?;
     let mut rows = Vec::new();
     loop {
@@ -1009,6 +1015,10 @@ fn list() -> Result<i32, Fail> {
             }
             _ => return Err(fail("bundled answered out of turn".into())),
         }
+    }
+    if json {
+        crate::json::print(&documents::List::of(rows))?;
+        return Ok(0);
     }
     if rows.is_empty() {
         println!("no bundles are installed");
@@ -1167,13 +1177,16 @@ fn said_line(grant: &grants::Grant) -> String {
 }
 
 /// `bundle info ID`: an installed bundle's sheet, what you said of its
-/// permissions, where it is and when it was installed.
-fn info(id: &str) -> Result<i32, Fail> {
+/// permissions, where it is and when it was installed; with `json`, those
+/// facts as bundled's document.
+fn info(id: &str, json: bool) -> Result<i32, Fail> {
     bundle::check_full_id(id).map_err(usage)?;
-    let (_stream, mut input) = ask(&Request::Info { id: id.into() }, None).map_err(fail)?;
+    let (_stream, mut input) = ask(&Request::Info { id: id.into(), json }, None).map_err(fail)?;
     let mut said = Vec::new();
     loop {
         match answer(&mut input)? {
+            Answer::Document(text) => println!("{text}"),
+            Answer::Ok(_) if json => return Ok(0),
             Answer::Sheet(text) => print!("{text}"),
             Answer::Granted(grant) => said.push(grant),
             Answer::Ok(what) => {

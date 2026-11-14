@@ -1,0 +1,80 @@
+{
+  "format": 1,
+  "id": "org.example.notes",
+  "name": "Notes",
+  "version": "0.1.0",
+  "publisher": "Example, Inc.",
+  "summary": "What Notes does, in a few words",
+  "for_everyone": true,
+  "key": "RWQFBQUFBQUFBW56HN0psLeP0Tr0xVmP7/TvKpcWbjym8uT7/M2AUFvx",
+  "trust": {
+    "catalog": "dukovo",
+    "kind": "catalog",
+    "since": "2026-10-26T07:33:20Z"
+  },
+  "files": 3,
+  "bytes": 12345,
+  "support": "bugs@example.org",
+  "update_feed": null,
+  "flaws": {
+    "known": [
+      {
+        "component": "regex 1.10.2",
+        "fixed": "1.10.3",
+        "id": "RUSTSEC-2026-0001",
+        "severity": "high",
+        "summary": "a summary"
+      }
+    ],
+    "list_made": "2026-11-03T03:00:00Z",
+    "state": "listed"
+  },
+  "permissions": [
+    {
+      "apps": [],
+      "folders": [],
+      "lets": "Connect to the internet and to services on this computer",
+      "name": "network.outbound",
+      "need": "required",
+      "ports": [],
+      "tier": "at install",
+      "why": "To sync."
+    },
+    {
+      "apps": [],
+      "folders": [],
+      "lets": "Accept connections on these ports",
+      "name": "network.listen",
+      "need": "optional",
+      "ports": [
+        "8080"
+      ],
+      "tier": "at install",
+      "why": null
+    }
+  ],
+  "commands": [
+    "notes"
+  ],
+  "commands_with_your_access": [],
+  "services": [],
+  "grants": [
+    {
+      "given": [],
+      "permission": "network.listen",
+      "said": "never",
+      "since": "2026-10-27T11:20:00Z"
+    },
+    {
+      "given": [],
+      "permission": "network.outbound",
+      "said": "allow",
+      "since": "2026-10-26T07:33:20Z"
+    }
+  ],
+  "installed": "2026-10-26T07:33:20Z",
+  "folder": "/applications/org.example.notes",
+  "data": "each person's data",
+  "previous": "0.0.9",
+  "held": true
+}

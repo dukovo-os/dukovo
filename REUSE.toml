@@ -75,6 +75,13 @@ path = "userspace/programs/systools/notices/LICENSE-boringtun.md"
 SPDX-FileCopyrightText = "2019 Cloudflare, Inc."
 SPDX-License-Identifier = "BSD-3-Clause"
 
+# The documents the commands' --json options print, which their unit tests
+# hold against (ADR 0541). JSON has no comments.
+[[annotations]]
+path = "userspace/programs/systools/tests/json/*.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # What the shell's test scripts must write: bash's and dash's output,
 # compared byte for byte, which a header would change.
 [[annotations]]

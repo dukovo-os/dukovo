@@ -7,6 +7,9 @@
 //! of itself (its name, its publisher, why it asks) is shown as its own,
 //! with any control character taken out, so it draws nothing on the
 //! terminal.
+//!
+//! `bundle info --json` says the same facts as one typed document
+//! ([`details`]), in the manifest's own words, which serde escapes.
 
 use std::fmt::Write as _;
 
@@ -14,10 +17,12 @@ use manifest::bundle::permissions;
 use manifest::bundle::{Manifest, RunsWith};
 
 use dkv::flaws::List;
+use serde::Serialize;
 
+use super::grants::Grant;
 use super::minisign::PublicKey;
 use super::registry::{Place, Trust};
-use crate::util;
+use crate::{json, util};
 
 /// What [`Facts::replaces`] names when a version runs a service the one
 /// it replaces did not.
@@ -242,8 +247,225 @@ pub fn write(facts: &Facts<'_>) -> String {
     o
 }
 
+/// Where an installed bundle is and what is known of how it got there,
+/// which `bundle info` adds to the sheet's facts.
+pub struct Installation<'a> {
+    /// When it was installed, in seconds since 1970.
+    pub installed: u64,
+    /// Its folder.
+    pub folder: &'a str,
+    /// Where its data is, in words.
+    pub data: &'a str,
+    /// The version it replaced, if it is kept.
+    pub previous: Option<&'a str>,
+    /// Whether it is held at its version.
+    pub held: bool,
+}
+
+/// What `bundle info --json` says of an installed bundle: what
+/// [`write`] shows of it, and what the person said of its permissions.
+#[derive(Serialize)]
+pub struct Details {
+    id: String,
+    name: String,
+    version: String,
+    publisher: String,
+    summary: String,
+    for_everyone: bool,
+    key: String,
+    trust: TrustDetails,
+    files: usize,
+    bytes: u64,
+    support: Option<String>,
+    update_feed: Option<String>,
+    flaws: FlawsDetails,
+    permissions: Vec<PermissionDetails>,
+    commands: Vec<String>,
+    commands_with_your_access: Vec<String>,
+    services: Vec<String>,
+    grants: Vec<GrantDetails>,
+    installed: String,
+    folder: String,
+    data: String,
+    previous: Option<String>,
+    held: bool,
+}
+
+/// Why the bundle's key is trusted: `catalog`, `developer`, `bound`,
+/// `bound_for_everyone` or `unknown`, with the catalog and since when
+/// where there are any.
+#[derive(Serialize)]
+struct TrustDetails {
+    kind: &'static str,
+    catalog: Option<String>,
+    since: Option<String>,
+}
+
+/// What the catalog's list of flaws says: `unknown` when it says nothing
+/// of this version, `none`, or `listed` with each flaw in `known`.
+#[derive(Serialize)]
+struct FlawsDetails {
+    state: &'static str,
+    list_made: Option<String>,
+    known: Vec<FlawDetails>,
+}
+
+#[derive(Serialize)]
+struct FlawDetails {
+    id: String,
+    severity: &'static str,
+    component: String,
+    fixed: Option<String>,
+    summary: String,
+}
+
+/// A permission the bundle asks for.
+#[derive(Serialize)]
+struct PermissionDetails {
+    name: String,
+    lets: String,
+    tier: String,
+    need: String,
+    folders: Vec<FolderDetails>,
+    ports: Vec<String>,
+    apps: Vec<String>,
+    why: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FolderDetails {
+    folder: String,
+    access: String,
+}
+
+/// What the person said of a permission: `allow` or `never`.
+#[derive(Serialize)]
+struct GrantDetails {
+    permission: String,
+    said: &'static str,
+    since: String,
+    given: Vec<String>,
+}
+
+/// `seconds` since 1970 as RFC 3339.
+fn at(seconds: u64) -> String {
+    json::time(i64::try_from(seconds).unwrap_or(i64::MAX))
+}
+
+fn trust_details(trust: &Trust) -> TrustDetails {
+    let (kind, catalog, since) = match trust {
+        Trust::Catalog { name, since } => ("catalog", Some(name.clone()), *since),
+        Trust::Developer => ("developer", None, None),
+        Trust::Bound { since } => ("bound", None, Some(*since)),
+        Trust::BoundForEveryone { since } => ("bound_for_everyone", None, Some(*since)),
+        Trust::Unknown => ("unknown", None, None),
+    };
+    TrustDetails { kind, catalog, since: since.map(at) }
+}
+
+/// The flaws the catalog's list knows of the bundle, as [`flaws`] tells
+/// them.
+fn flaws_details(facts: &Facts<'_>) -> FlawsDetails {
+    let m = facts.manifest;
+    let unknown = FlawsDetails { state: "unknown", list_made: None, known: Vec::new() };
+    let (Trust::Catalog { .. }, Some(list)) = (facts.trust, facts.flaws) else {
+        return unknown;
+    };
+    if !list.checked(&m.full_id(), &m.version.0) {
+        return unknown;
+    }
+    let known: Vec<FlawDetails> = list
+        .of(&m.full_id(), &m.version.0)
+        .map(|flaw| FlawDetails {
+            id: flaw.id.clone(),
+            severity: flaw.severity.word(),
+            component: flaw.component.clone(),
+            fixed: flaw.fixed.clone(),
+            summary: flaw.summary.clone(),
+        })
+        .collect();
+    let state = if known.is_empty() { "none" } else { "listed" };
+    FlawsDetails { state, list_made: Some(list.made.clone()), known }
+}
+
+fn permission_details(manifest: &Manifest) -> Vec<PermissionDetails> {
+    manifest
+        .permissions
+        .iter()
+        .filter_map(|(name, request)| {
+            let permission = permissions::find(name)?;
+            Some(PermissionDetails {
+                name: name.to_string(),
+                lets: permission.lets.to_string(),
+                tier: permission.tier.words().to_string(),
+                need: request.need.word().to_string(),
+                folders: request
+                    .folders
+                    .iter()
+                    .map(|(folder, access)| FolderDetails {
+                        folder: folder.clone(),
+                        access: access.to_string(),
+                    })
+                    .collect(),
+                ports: request.ports.iter().map(ToString::to_string).collect(),
+                apps: request.apps.iter().map(ToString::to_string).collect(),
+                why: request.why.as_ref().map(|why| why.0.clone()),
+            })
+        })
+        .collect()
+}
+
+/// The facts of an installed bundle as `bundle info --json` says them:
+/// [`write`]'s, the person's `grants` and where the bundle is.
+pub fn details(facts: &Facts<'_>, grants: &[Grant], installation: &Installation<'_>) -> Details {
+    let m = facts.manifest;
+    let commands = |runs_with: RunsWith| -> Vec<String> {
+        m.commands.iter().filter(|c| c.runs_with == runs_with).map(|c| c.name.to_string()).collect()
+    };
+    let mut grants: Vec<&Grant> = grants.iter().collect();
+    grants.sort_by(|a, b| a.permission.cmp(&b.permission));
+    Details {
+        id: m.full_id(),
+        name: m.name.0.clone(),
+        version: m.version.0.clone(),
+        publisher: m.publisher.name.0.clone(),
+        summary: m.summary.0.clone(),
+        for_everyone: facts.place == Place::Everyone,
+        key: facts.key.encoded(),
+        trust: trust_details(facts.trust),
+        files: facts.files,
+        bytes: facts.bytes,
+        support: m.support.as_ref().map(|support| support.0.clone()),
+        update_feed: m
+            .update
+            .as_ref()
+            .filter(|_| !matches!(facts.trust, Trust::Catalog { .. }))
+            .map(|update| update.feed.0.clone()),
+        flaws: flaws_details(facts),
+        permissions: permission_details(m),
+        commands: commands(RunsWith::Sandbox),
+        commands_with_your_access: commands(RunsWith::YourAccess),
+        services: super::services::sheet_lines(m),
+        grants: grants
+            .into_iter()
+            .map(|grant| GrantDetails {
+                permission: grant.permission.clone(),
+                said: grant.said.word(),
+                since: at(grant.since),
+                given: grant.given.clone(),
+            })
+            .collect(),
+        installed: at(installation.installed),
+        folder: installation.folder.to_string(),
+        data: installation.data.to_string(),
+        previous: installation.previous.map(String::from),
+        held: installation.held,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::grants::Said;
     use super::*;
     use crate::bundles::minisign::SecretKey;
     use dkv::flaws::Severity;
@@ -411,6 +633,68 @@ mod tests {
             all_flaws: true,
         });
         assert!(!developer.contains("flaws"), "{developer}");
+    }
+
+    #[test]
+    fn the_details_say_the_sheets_facts_as_a_document() {
+        let text = manifest::bundle::template("org.example.notes", "Notes", "Example, Inc.", "MIT")
+            .replace(
+                "\"permissions\": {}",
+                "\"permissions\": {\"network.outbound\": {\"need\": \"required\", \"why\": \"To \
+             sync.\"}, \"network.listen\": {\"need\": \"optional\", \"ports\": [8080]}}, \
+             \"support\": \"bugs@example.org\"",
+            );
+        let manifest = manifest::bundle::from_json(&text).unwrap();
+        let key = SecretKey::generate(&[5u8; 40]).unwrap().public();
+        let trust = Trust::Catalog { name: "dukovo".into(), since: Some(1_793_000_000) };
+        let flaw = dkv::flaws::Flaw {
+            bundle: "org.example.notes".into(),
+            version: "0.1.0".into(),
+            id: "RUSTSEC-2026-0001".into(),
+            aliases: Vec::new(),
+            component: "regex 1.10.2".into(),
+            severity: Severity::High,
+            summary: "a summary".into(),
+            fixed: Some("1.10.3".into()),
+        };
+        let checked = vec![("org.example.notes".to_string(), "0.1.0".to_string())];
+        let list = List { made: "2026-11-03T03:00:00Z".into(), checked, flaws: vec![flaw] };
+        let facts = Facts {
+            manifest: &manifest,
+            key: &key,
+            trust: &trust,
+            place: Place::Everyone,
+            files: 3,
+            bytes: 12_345,
+            replaces: None,
+            flaws: Some(&list),
+            all_flaws: true,
+        };
+        let grants = [
+            Grant {
+                permission: "network.outbound".into(),
+                said: Said::Allow,
+                since: 1_793_000_000,
+                given: Vec::new(),
+                asked: Vec::new(),
+            },
+            Grant {
+                permission: "network.listen".into(),
+                said: Said::Never,
+                since: 1_793_100_000,
+                given: Vec::new(),
+                asked: Vec::new(),
+            },
+        ];
+        let installation = Installation {
+            installed: 1_793_000_000,
+            folder: "/applications/org.example.notes",
+            data: "each person's data",
+            previous: Some("0.0.9"),
+            held: true,
+        };
+        let line = json::line(&details(&facts, &grants, &installation)).unwrap();
+        json::assert_golden(&line, include_str!("../../tests/json/bundle-info.json"));
     }
 
     #[test]

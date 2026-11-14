@@ -33,8 +33,9 @@ pub enum Request {
     Install { everyone: bool, yes: bool },
     /// Lists the bundles the asker can run.
     List,
-    /// Shows an installed bundle's sheet.
-    Info { id: String },
+    /// Shows an installed bundle's sheet, or, with `json`, says its facts
+    /// as one JSON document (ADR 0541).
+    Info { id: String, json: bool },
     /// Removes a bundle, for everyone or the asker's; with `purge`, the
     /// asker's data of it too.
     Remove { id: String, everyone: bool, purge: bool },
@@ -178,7 +179,8 @@ impl Request {
                 format!("install\t{}\t{}\n", whose(*everyone), if *yes { "yes" } else { "ask" })
             }
             Request::List => "list\n".into(),
-            Request::Info { id } => format!("info\t{id}\n"),
+            Request::Info { id, json: false } => format!("info\t{id}\n"),
+            Request::Info { id, json: true } => format!("info\t{id}\tjson\n"),
             Request::Remove { id, everyone, purge } => {
                 let data = if *purge { "purge" } else { "keep-data" };
                 format!("remove\t{id}\t{}\t{data}\n", whose(*everyone))
@@ -301,7 +303,8 @@ impl Request {
                 Ok(Request::History { id: if *id == "-" { None } else { Some(checked_id(id)?) } })
             }
             ["list"] => Ok(Request::List),
-            ["info", id] => Ok(Request::Info { id: checked_id(id)? }),
+            ["info", id] => Ok(Request::Info { id: checked_id(id)?, json: false }),
+            ["info", id, "json"] => Ok(Request::Info { id: checked_id(id)?, json: true }),
             ["remove", id, place, data] => {
                 let purge = match *data {
                     "purge" => true,
@@ -349,6 +352,14 @@ pub struct Listed {
     pub name: String,
     /// What its catalog's list of flaws says of it.
     pub flags: Flags,
+    /// The catalog it is bound to, none for one that updates from its own
+    /// feed or from none.
+    pub catalog: Option<String>,
+    /// Whether it is held at its version.
+    pub held: bool,
+    /// The newest version the catalog listed when bundled last read it,
+    /// when that is newer than this one.
+    pub update: Option<String>,
 }
 
 /// The bundle to run, as `run` finds it: where, and what bundled
@@ -488,6 +499,8 @@ pub enum Answer {
     Question,
     /// A bundle of a list.
     Listed(Listed),
+    /// A JSON document, the answer to a request that asks for one.
+    Document(String),
     /// The bundle to run.
     Found(Found),
     /// The lines to choose the bundle to run from.
@@ -529,14 +542,18 @@ impl Answer {
                 format!("sheet {}\n{text}", text.len()).into_bytes()
             }
             Answer::Question => b"question\n".to_vec(),
+            Answer::Document(text) => format!("document {}\n{text}", text.len()).into_bytes(),
             Answer::Listed(l) => format!(
-                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 l.place,
                 l.id,
                 one_line(&l.version),
                 l.key.encoded(),
                 l.when,
                 l.flags.word(),
+                l.catalog.as_deref().unwrap_or("-"),
+                if l.held { "held" } else { "free" },
+                l.update.as_deref().map_or_else(|| "-".into(), one_line),
                 one_line(&l.name)
             )
             .into_bytes(),
@@ -627,6 +644,17 @@ impl Answer {
             return Ok(Some(Answer::Sheet(
                 text.chars().filter(|&c| c == '\n' || !c.is_control()).collect(),
             )));
+        }
+        if let Some(length) = line.strip_prefix("document ") {
+            let length: usize = length.parse().map_err(|_| bad("a document without its length"))?;
+            if length > SHEET_MAX {
+                return Err(bad("bundled's document is too long"));
+            }
+            let mut text = vec![0; length];
+            input.read_exact(&mut text)?;
+            let text =
+                String::from_utf8(text).map_err(|_| bad("bundled's document is not text"))?;
+            return Ok(Some(Answer::Document(text)));
         }
         if line == "question" {
             return Ok(Some(Answer::Question));
@@ -765,7 +793,9 @@ impl Answer {
             let permission = checked_permission(permission).map_err(|why| bad(&why))?;
             return Ok(Some(Answer::Revoked(permission)));
         }
-        if let ["listed", place_word, id, version, key, when, flags, name] = words.as_slice() {
+        if let ["listed", place_word, id, version, key, when, flags, catalog, held, update, name] =
+            words.as_slice()
+        {
             let place = place(place_word)?;
             return Ok(Some(Answer::Listed(Listed {
                 place,
@@ -775,6 +805,16 @@ impl Answer {
                 when: when.parse().map_err(|_| bad("a listed bundle's time"))?,
                 name: one_line(name),
                 flags: Flags::from_word(flags).ok_or_else(|| bad("a listed bundle's flaws"))?,
+                catalog: match *catalog {
+                    "-" => None,
+                    name => Some(checked_catalog(name).map_err(|why| bad(&why))?),
+                },
+                held: match *held {
+                    "held" => true,
+                    "free" => false,
+                    _ => return Err(bad("neither held nor free")),
+                },
+                update: (*update != "-").then(|| one_line(update)),
             })));
         }
         Err(bad("not an answer bundle knows"))
@@ -798,7 +838,8 @@ mod tests {
             Request::Install { everyone: false, yes: false },
             Request::Install { everyone: true, yes: true },
             Request::List,
-            Request::Info { id: "org.example.notes".into() },
+            Request::Info { id: "org.example.notes".into(), json: false },
+            Request::Info { id: "org.example.notes".into(), json: true },
             Request::Remove { id: "org.example.notes".into(), everyone: false, purge: true },
             Request::Remove { id: "org.example.notes".into(), everyone: true, purge: false },
             Request::DeveloperKey { key: key() },
@@ -914,11 +955,17 @@ mod tests {
             when: 1_793_000_000,
             name: "Notes".into(),
             flags: Flags::Known { count: 2, worst: Severity::High },
+            catalog: Some("dukovo".into()),
+            held: true,
+            update: Some("0.2.0".into()),
         };
+        let unbound = Listed { catalog: None, held: false, update: None, ..listed.clone() };
         let answers = [
             Answer::Sheet("Notes 0.1.0, for yourself\n  Signed by key RW...\n".into()),
             Answer::Question,
             Answer::Listed(listed),
+            Answer::Listed(unbound),
+            Answer::Document("{\"format\":1,\"id\":\"org.example.notes\"}".into()),
             Answer::Lines(Lines {
                 id: "org.nodejs.node".into(),
                 lines: vec!["20".into(), "22".into()],

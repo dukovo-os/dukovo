@@ -55,9 +55,9 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle default* _name_ [_line_ | *--clear*] [*--for-everyone*]
 
-*bundle list*
+*bundle list* [*--json*]
 
-*bundle info* _id_
+*bundle info* _id_ [*--json*]
 
 *bundle remove* _id_ [*--for-everyone*] [*--keep-data* | *--purge*]
 
@@ -265,15 +265,17 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	the working folder and why, the lines installed, the defaults, and
 	the files a project chooses with.
 
-*list*
+*list* [*--json*]
 	Lists the bundles you can run, yours and everyone's: ID, version,
-	whose, its known flaws (FLAWS), and name.
+	whose, its known flaws (FLAWS), and name. *--json* prints them as
+	one line of JSON (JSON).
 
-*info* _id_
+*info* _id_ [*--json*]
 	Shows an installed bundle's sheet, with every known flaw of its
 	version, what you said of its permissions
 	and since when, when it was installed, where, and where its data is,
-	which version it can go back to, and whether it is held.
+	which version it can go back to, and whether it is held. *--json*
+	prints the same facts as one line of JSON (JSON).
 
 *remove* _id_ [*--for-everyone*] [*--keep-data* | *--purge*]
 	Removes your bundle, or with *--for-everyone* one installed for
@@ -586,6 +588,111 @@ and the publisher's own signed version installs only once this one is
 removed. A file whose signature fails is never overridden: someone
 changed it after it was signed. A folder with no signature is signed by
 *bundle pack*, which makes its file.
+
+# JSON
+
+*list --json* and *info --json* print one line of JSON, an object whose
+first member is *format*, 1 (ADR 0541), which scripts and Ansible's
+*dukovo.system* collection read in place of the text. A later field may
+be added without a new *format*; read the members you know. Names are in
+snake_case, times are RFC 3339 in UTC, sizes are bytes, and a value that
+is not known is *null*. An error is told to standard error as without
+*--json*, with the same exit status, and prints no JSON.
+
+*bundle list --json* has *bundles*, a list with an object for each
+bundle you can run, by ID and then yours before everyone's:
+
+*id*
+	The bundle's ID, with its line when it has one (*org.nodejs.node@22*).
+
+*name*
+	Its name, as it says it.
+
+*version*
+	The version installed.
+
+*for_everyone*
+	*true* for one installed for everyone, *false* for yours.
+
+*catalog*
+	The catalog it is bound to, or *null* for one that updates from its
+	own feed or from none (UPDATES).
+
+*held*
+	Whether it is held at its version.
+
+*update*
+	The newest version its catalog listed when bundled last read it, if
+	that is newer than *version*, else *null*. The list reads no
+	network; *bundle update --check* reads the catalogs anew.
+
+*flaws*
+	What the catalog's list of known flaws says of this version
+	(FLAWS), an object: *state*, *unknown* when it says nothing, *none*,
+	or *known*; *count*, how many it knows; and *worst*, the worst
+	severity, *low*, *medium*, *high*, *critical* or *unknown*, or *null*
+	when it knows none.
+
+*bundle info* _id_ *--json* is one bundle's facts, as the sheet shows them:
+
+*id*, *name*, *version*, *publisher*, *summary*, *for_everyone*
+	As in *list*, with the publisher's name and the bundle's summary.
+
+*key*
+	The key that signed it.
+
+*trust*
+	Why the key is trusted, an object: *kind*, one of *catalog*,
+	*developer*, *bound* (its first install here), *bound_for_everyone*
+	and *unknown*; *catalog*, its name for *catalog*; and *since*, from
+	when, when that is known.
+
+*files*, *bytes*
+	How many files it has, and the bytes they take.
+
+*support*
+	Where its publisher takes problem reports, or *null*.
+
+*update_feed*
+	Its own feed, for a bundle no catalog lists, or *null*.
+
+*flaws*
+	An object: *state*, *unknown* when the catalog's list says nothing
+	of this version or there is none, *none*, or *listed*; *list_made*,
+	when the list was made; and *known*, each flaw as an object with
+	*id*, *severity*, *component*, *fixed* (the version of the
+	component that fixes it, or *null*) and *summary*.
+
+*permissions*
+	Each permission it asks for, an object: *name*; *lets*, what it
+	lets the bundle do, in the system's words; *tier*, when it is
+	asked; *need*, *required* or *optional*; *folders*, each with
+	*folder* and *access*; *ports*; *apps*; and *why*, in the bundle's
+	own words, or *null*.
+
+*commands*, *commands_with_your_access*
+	The names of the commands that run in the sandbox, and of those
+	that run with your access, outside it.
+
+*services*
+	What each of its services is, in a line, as the sheet says it.
+
+*grants*
+	What you said of its permissions, each an object: *permission*,
+	*said* (*allow* or *never*), *since*, and *given*, what it gives, in
+	words.
+
+*installed*
+	When it was installed.
+
+*folder*, *data*
+	Where it is, and where its data is, in words.
+
+*previous*
+	The version it can go back to, or *null*.
+
+*held*
+	Whether it is held at its version.
 
 # FILES
 

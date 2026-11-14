@@ -156,6 +156,7 @@ mod iostat;
 mod ip;
 mod jobs;
 mod journalctl;
+mod json;
 mod kerberos;
 mod keymaps;
 mod keyring;
