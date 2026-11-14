@@ -515,6 +515,7 @@ mod tests {
     use super::*;
     use crate::admin_settings::SecondStep;
     use crate::admind::fixture::{Console, run};
+    use crate::admind::limits::CONNECTIONS_MAX;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -592,6 +593,81 @@ mod tests {
                 Some(1)
             );
         });
+    }
+
+    #[test]
+    fn a_crowd_from_many_addresses_holds_512_places_at_most_and_leaves_the_console_answering() {
+        // The crowd and admind's side of it take about 1,200 descriptors,
+        // more than some systems let a process have unless it asks.
+        enough_descriptors(4096);
+        run(async {
+            let console = console("serve-crowd");
+            let shared = &console.shared;
+            let socket = listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+            let port = socket.local_addr().unwrap().port();
+            tokio::task::spawn_local(accepting(Rc::clone(shared), socket));
+            let console_address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+
+            // 600 connections that say nothing, 30 from each of 20
+            // addresses of the loopback network: fewer than one address
+            // may hold, more than there are places in all.
+            let mut crowd = Vec::new();
+            for n in 0..600u16 {
+                let from = Ipv4Addr::new(127, 0, 0, 2 + u8::try_from(n / 30).unwrap());
+                let socket = tokio::net::TcpSocket::new_v4().unwrap();
+                socket.bind(SocketAddr::from((from, 0))).unwrap();
+                crowd.push(socket.connect(console_address).await.unwrap());
+            }
+            let full = Instant::now() + Duration::from_secs(10);
+            while shared.connections.borrow().total() < CONNECTIONS_MAX && Instant::now() < full {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // admind has taken them all by now, and holds no more than its
+            // places: the rest it closed at once.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(shared.connections.borrow().total(), CONNECTIONS_MAX);
+            let closed = crowd
+                .into_iter()
+                .map(|stream| {
+                    let mut stream = stream.into_std().unwrap();
+                    stream.set_nonblocking(true).unwrap();
+                    (matches!(std::io::Read::read(&mut stream, &mut [0u8; 8]), Ok(0)), stream)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(closed.iter().filter(|(closed, _)| *closed).count(), 600 - CONNECTIONS_MAX);
+
+            // Meanwhile another address, which holds nothing, is closed at
+            // once too: there is no place for it.
+            let mut late = TcpStream::connect(console_address).await.unwrap();
+            let read = tokio::time::timeout(Duration::from_secs(5), late.read(&mut [0u8; 8])).await;
+            assert!(matches!(read, Ok(Ok(0) | Err(_))), "{read:?}");
+
+            // Once the crowd goes, every place is given back, and the
+            // console answers.
+            drop(closed);
+            let empty = Instant::now() + Duration::from_secs(10);
+            while shared.connections.borrow().total() > 0 && Instant::now() < empty {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert_eq!(shared.connections.borrow().total(), 0);
+            let health =
+                "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\nConnection: close\r\n\r\n";
+            assert!(exchange(&console, port, health).await.starts_with("HTTP/1.1 200"));
+        });
+    }
+
+    /// Raises the limit of open descriptors to `wanted`, or as far as the
+    /// hard limit lets.
+    fn enough_descriptors(wanted: libc::rlim_t) {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: getrlimit and setrlimit read and write only `limit`.
+        unsafe {
+            assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit), 0);
+            if limit.rlim_cur < wanted {
+                limit.rlim_cur = wanted.min(limit.rlim_max);
+                assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit), 0);
+            }
+        }
     }
 
     #[test]

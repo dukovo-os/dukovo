@@ -14,8 +14,11 @@
 //! is refused and 1.2 served. A silent connection is cut off in about
 //! ten seconds, a request head of 20 KiB is 431, 32 connections kept
 //! alive from one address leave a 33rd refused and said in the log, and
-//! 600 connections at once leave admind running and health answered
-//! after.
+//! 64 connections at once from one address leave admind running and
+//! health answered after. (A crowd of 600 from many addresses, beyond the
+//! 512 places admind has in all, is admind's own test on the host: QEMU's
+//! user network hands the guest a few connections a second without KVM,
+//! so it would never come at once here.)
 //!
 //! Alice signs in: the cookie is __Host-dukovo with Secure, HttpOnly and
 //! SameSite=Strict and nothing else, and the session names her. A wrong
@@ -76,9 +79,9 @@ const SESSION_COOKIE: &str = "__Host-dukovo";
 /// The header that carries the session's token.
 const CSRF_HEADER: &str = "X-Dukovo-CSRF";
 
-/// How many connections at once the test opens: more than the console
+/// How many connections at once the test opens: twice what the console
 /// holds from one address.
-const CROWD: usize = 600;
+const CROWD: usize = 2 * PLACES;
 
 /// The connections the console holds from one address at once, as
 /// admind's limits say.
@@ -87,7 +90,7 @@ const PLACES: usize = 32;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin",
-    about: "The web console, Dukovo Admin, answers the host's curl over HTTPS through a port QEMU forwards, with the machine's own certificate, whose fingerprint consoled shows at sign-in: its headers, another name refused, TLS 1.1 refused; sign-in with the cookie's attributes, a wrong password, an account that may not use the console; changes refused from another origin, another site or without the token; an authenticator app added from its otpauth URI, its code asked at sign-in, a wrong code, a replayed code, a recovery code used once; unlock and lock; 32 connections from one address held and a 33rd refused, a silent connection cut off, a 20 KiB head refused, 600 connections at once survived; a restart that ends the sessions (ADR 0514)",
+    about: "The web console, Dukovo Admin, answers the host's curl over HTTPS through a port QEMU forwards, with the machine's own certificate, whose fingerprint consoled shows at sign-in: its headers, another name refused, TLS 1.1 refused; sign-in with the cookie's attributes, a wrong password, an account that may not use the console; changes refused from another origin, another site or without the token; an authenticator app added from its otpauth URI, its code asked at sign-in, a wrong code, a replayed code, a recovery code used once; unlock and lock; 32 connections from one address held and a 33rd refused, a silent connection cut off, a 20 KiB head refused, 64 connections at once survived; a restart that ends the sessions (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -209,9 +212,9 @@ fn limits(vm: &mut Vm, console: &Console) -> Result<(), String> {
 }
 
 /// What a crowd does to the console: one connection that sends nothing is
-/// cut off after about ten seconds, while 600 are made at once; held for a
+/// cut off after about ten seconds, while 64 are made at once; held for a
 /// few seconds and let go, they leave it answering. This comes last: QEMU
-/// hands the guest the crowd's connections for minutes after they are let
+/// hands the guest the crowd's connections for a while after they are let
 /// go when there is no KVM, and the steps before would wait on them.
 fn crowd(vm: &mut Vm, console: &Console) -> Result<(), String> {
     let silent = silent_connection(console.port)?;
