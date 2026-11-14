@@ -464,6 +464,13 @@ override:
 		*NAMES_DESCRIPTOR* says which. Only *authd*(8) needs it, to
 		sign people in; a service that held it could act for anyone.
 
+	*domain* = *true* | *false*
+		Whether it holds a capability to its own resource domain, with
+		which it makes domains below it and stops them
+		(*radix-resource-domain*(2)); *false* unless set. Only *authd*(8)'s
+		file sets it, to run each help session in a domain of its own and
+		stop it with everything the helper started (ADR 0540).
+
 	*admin.network* = *true* | *false*
 		Whether it may set the network interfaces up, their addresses
 		and routers, as *ip*(8) does, with a network capability of only
