@@ -278,7 +278,7 @@ remove another's.
 
 	```
 	$ admin export ~/duke-nas-settings
-	37 files copied to /home/alice/duke-nas-settings
+	37 files copied to /users/alice/duke-nas-settings
 	2 secrets left out, since not everyone may read them: listed in SECRETS.md
 	committed 3f2a1bc: Settings of duke-nas at 2026-11-14 08:00:00 UTC
 	```

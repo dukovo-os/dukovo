@@ -496,9 +496,9 @@ the journal leaves out"). The diff of a file that changed from `private` to
 @@ -6,4 +6,4 @@
  [console]
  listen = 9090
- reach = "private"
--certificate = "this-machine"
-+certificate = "duke-nas"
+-reach = "private"
++reach = "any"
+ certificate = "this-machine"
 ```
 
 A diff is at most 2,000 lines in all for one change. A file that has no diff
@@ -621,7 +621,7 @@ copies the settings into a Git repository of your own:
 
 ```
 $ admin export ~/duke-nas-settings
-37 files copied to /home/alice/duke-nas-settings
+37 files copied to /users/alice/duke-nas-settings
 2 secrets left out, since not everyone may read them: listed in SECRETS.md
 committed 3f2a1bc: Settings of duke-nas at 2026-11-14 08:00:00 UTC
 ```
