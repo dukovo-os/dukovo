@@ -190,6 +190,8 @@ disk-raw kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/ kernel/fs/fa
 disk-raw userspace/programs/systools/src/nvme.rs userspace/storage/
 disk-raw-4k kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
 disk-raw-4k userspace/storage/
+disk-readers kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/
+disk-readers kernel/radix/src/fs/disk/queue.rs userspace/posix/diskread.c
 efi-boot-entries kernel/arch/ kernel/lib/bootinfo/ userspace/programs/systools/src/efiboot.rs
 elevate userspace/posix/authd.h userspace/posix/signintest.c userspace/programs/accounts/
 elevate userspace/programs/consoled/ userspace/programs/systools/src/authd.rs

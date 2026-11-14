@@ -43,13 +43,16 @@
 //! lends), and one of the page cache's or a filesystem's of more than
 //! [`MAX_SEGMENTS`], goes in requests of as many segments as the device
 //! takes: a virtio disk's take 254 pages, an AHCI disk's 32. A transfer
-//! of more goes as several requests,
-//! all in flight at once, and the device hears of them
-//! together: a controller may hold back the doorbell of a request that
-//! has another right behind it ([`Controller::submit`]'s `more`), which
-//! lets QEMU's virtio disk merge them into one read or write of its file.
-//! Its thread waits for the last request first: requests tend to end in
-//! order, so the earlier ones' completions wake no one.
+//! of more goes as several requests, up to [`PARTS`] in flight at once,
+//! and the device hears of them together: a controller may hold back the
+//! doorbell of a request that has another right behind it
+//! ([`Controller::submit`]'s `more`), which lets QEMU's virtio disk merge
+//! them into one read or write of its file. Only the first of them waits
+//! for room; the others go while there is room, and the thread collects
+//! what it started before it waits again, so that threads that each hold
+//! some of a lane's slots never wait for one another's. Its thread waits
+//! for the last request first: requests tend to end in order, so the
+//! earlier ones' completions wake no one.
 //!
 //! In a virtual machine, a thread that has its CPU to itself polls for
 //! its request before it sleeps, with the device's interrupt off, for as
@@ -850,6 +853,37 @@ impl<C: Controller> Disk<C> {
         request: &Request<'_>,
         more: bool,
     ) -> Result<usize, Error> {
+        // One that waits ends with a slot, or an error.
+        self.start(lane, rank, held, request, more, true)?.ok_or(Error::Io)
+    }
+
+    /// Starts the next part of a transfer whose earlier parts hold slots
+    /// in `lane` and have not been collected: only if there is room now,
+    /// and `None` if not, when the caller collects what it holds before it
+    /// waits for more. A thread that waited for room while holding slots
+    /// could deadlock with others doing the same: between them they hold
+    /// every slot, each waiting for one that only a waiter frees, as
+    /// sixteen threads reading a SATA disk raw, 1 MiB at a time, did.
+    fn issue_if_room(
+        &self,
+        lane: usize,
+        rank: usize,
+        request: &Request<'_>,
+        more: bool,
+    ) -> Result<Option<usize>, Error> {
+        self.start(lane, rank, None, request, more, false)
+    }
+
+    /// [`Disk::issue`], and with `waits` false, [`Disk::issue_if_room`].
+    fn start(
+        &self,
+        lane: usize,
+        rank: usize,
+        held: Option<usize>,
+        request: &Request<'_>,
+        more: bool,
+        waits: bool,
+    ) -> Result<Option<usize>, Error> {
         let this = &self.lanes[lane];
         self.waiting[rank].fetch_add(1, Ordering::AcqRel);
         let waiting = Waiting(&self.waiting[rank]);
@@ -872,9 +906,9 @@ impl<C: Controller> Disk<C> {
                         if controller.room(request.op, request.data.len()) {
                             controller.submit(slot as u8, request, more)?;
                             this.requests[slot].store(PENDING, Ordering::Release);
-                            break slot;
+                            break Some(slot);
                         }
-                        if lone.is_none() && controller.alone(request.op) {
+                        if waits && lone.is_none() && controller.alone(request.op) {
                             self.lone[rank].fetch_add(1, Ordering::AcqRel);
                             lone = Some(Waiting(&self.lone[rank]));
                         }
@@ -884,7 +918,10 @@ impl<C: Controller> Disk<C> {
             // No room, or a more urgent request comes first, or the
             // controller is being recovered: wait for a completion, or a
             // slot freed, once the device knows of what was held back
-            // for it.
+            // for it; or, for a part that may not wait, say so.
+            if !waits {
+                break None;
+            }
             self.kick(lane);
             let room = || this.events.load(Ordering::SeqCst) != seen;
             this.room_waiters.fetch_add(1, Ordering::SeqCst);
@@ -985,21 +1022,35 @@ impl<C: Controller> Disk<C> {
         self.reaching(core::slice::from_ref(request), || self.request_parts(request))
     }
 
-    /// [`Disk::request_all`], with the buffers mapped.
+    /// [`Disk::request_all`], with the buffers mapped. The first part of
+    /// each window waits for room; the rest go only while there is room,
+    /// and the window ends at the first that finds none
+    /// ([`Disk::issue_if_room`]).
     fn request_parts(&self, request: &Request<'_>) -> Result<(), Error> {
         let (lane, rank) = (self.here(), running_rank());
         let most = self.raw_segments;
+        let buffers = request.data;
         let mut result = Ok(());
         let mut at = request.sector;
-        for window in request.data.chunks(most * PARTS) {
-            // Each part's slot, buffers and first sector.
-            let mut parts = [(0usize, 0usize, 0u64); PARTS];
+        // The first buffer that no part has carried yet.
+        let mut next = 0;
+        while next < buffers.len() {
+            // Each part's slot, its first and last buffers, and its first
+            // sector.
+            let mut parts = [(0usize, 0usize, 0usize, 0u64); PARTS];
             let mut issued = 0;
-            for (i, part) in window.chunks(most).enumerate() {
-                let more = (i + 1) * most < window.len();
-                let part = Request { sector: at, data: part, ..*request };
-                match self.issue(lane, rank, None, &part, more) {
-                    Ok(slot) => parts[i] = (slot, i * most, at),
+            while issued < PARTS && next < buffers.len() {
+                let end = (next + most).min(buffers.len());
+                let more = issued + 1 < PARTS && end < buffers.len();
+                let part = Request { sector: at, data: &buffers[next..end], ..*request };
+                let started = if issued == 0 {
+                    self.issue(lane, rank, None, &part, more).map(Some)
+                } else {
+                    self.issue_if_room(lane, rank, &part, more)
+                };
+                match started {
+                    Ok(Some(slot)) => parts[issued] = (slot, next, end, at),
+                    Ok(None) => break,
                     Err(err) => {
                         result = Err(err);
                         break;
@@ -1007,12 +1058,12 @@ impl<C: Controller> Disk<C> {
                 }
                 issued += 1;
                 at += sectors(part.data);
+                next = end;
             }
             self.kick(lane);
             // The last first: the others have likely ended by then.
-            for &(slot, first, start) in parts[..issued].iter().rev() {
-                let data = &window[first..(first + most).min(window.len())];
-                let part = Request { sector: start, data, ..*request };
+            for &(slot, first, end, start) in parts[..issued].iter().rev() {
+                let part = Request { sector: start, data: &buffers[first..end], ..*request };
                 let settled = self.settle(lane, rank, slot, &part);
                 if result.is_ok() {
                     result = settled;
@@ -1030,16 +1081,27 @@ impl<C: Controller> Disk<C> {
         self.reaching(requests, || self.request_windows(requests))
     }
 
-    /// [`Disk::request_many`], with the buffers mapped.
+    /// [`Disk::request_many`], with the buffers mapped, in windows as
+    /// [`Disk::request_parts`] has them.
     fn request_windows(&self, requests: &[Request<'_>]) -> Result<(), Error> {
         let (lane, rank) = (self.here(), running_rank());
         let mut result = Ok(());
-        for window in requests.chunks(PARTS) {
+        // The first request not yet carried.
+        let mut next = 0;
+        while next < requests.len() {
+            let window = &requests[next..requests.len().min(next + PARTS)];
             let mut slots = [0usize; PARTS];
             let mut issued = 0;
             for (i, request) in window.iter().enumerate() {
-                match self.issue(lane, rank, None, request, i + 1 < window.len()) {
-                    Ok(slot) => slots[i] = slot,
+                let more = i + 1 < window.len();
+                let started = if i == 0 {
+                    self.issue(lane, rank, None, request, more).map(Some)
+                } else {
+                    self.issue_if_room(lane, rank, request, more)
+                };
+                match started {
+                    Ok(Some(slot)) => slots[i] = slot,
+                    Ok(None) => break,
                     Err(err) => {
                         result = Err(err);
                         break;
@@ -1056,6 +1118,7 @@ impl<C: Controller> Disk<C> {
                 }
             }
             result?;
+            next += issued;
         }
         Ok(())
     }
