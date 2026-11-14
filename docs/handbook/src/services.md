@@ -199,10 +199,70 @@ shop is stopped because it requires postgres, which was given up on: it failed t
 ```
 
 The service at the root, here postgres, is the one to look at; the
-last words say what to do. `service NAME explain --json` gives the
+last words say what to do. When a signature of `troubleshoot` knows the
+service at the root, its fix takes the place of the generic one, with
+the error ID that has the support page, as "Make room: ... (BOOT-104,
+`troubleshoot` says more)". `service NAME explain --json` gives the
 sentence, the services it followed, the root and the fix as one line of
 JSON, for a script. The command exits 0 for a service that is done or
 runs well, and 3 for any other.
+
+## What a service can reach
+
+Each service sees a view of the machine, built from what its file asks
+for and what every service has. Most of it is the places its file names:
+`files.read`, `files.read-write` and the rest of `[permissions]` in
+`service.toml(5)`. Three things the system keeps whole are asked for in
+other ways, so that a service takes only what it needs.
+
+**Its processes.** A service sees its own processes at `/processes`, and
+those of the services it starts, and no one else's: not Spark, not
+another service, not a person's. A service that must find another's, as
+the updater finds the one that holds the update lock, notifyd and alertd
+name who sent a notice or an alert, and metricsd counts each service's
+use, names `/processes` in `files.read`, and `service NAME status` then says it
+*sees every process*. A person's session sees every process, as on any
+desktop, though another person's details stay that person's.
+
+**Disks.** A service that manages disks asks for them as a class, since
+disks come and go after it starts. `files.disks = "read"` gives it every
+disk and partition at `/devices`, as they come and go, and the four
+devices every service has (`null`, `zero`, `random`, `urandom`), and
+nothing else: no keyboard, no screen, no kernel log. `"read-write"`
+lets it write them. `files.efi-system` gives the EFI system partitions
+alone. `volumed` holds the disks read-write and mounts what is plugged
+in; `diskhealth` reads them; the updater holds the EFI system
+partitions.
+
+**The root's own subvolumes.** The top of the root's Btrfs holds the
+system's slots, `@system.a` and `@system.b`, the snapshots, and also the
+people's files: `@users`, `@shared` and `@applications`.
+`files.root-subvolumes = ["@snapshots"]` gives a service that top, at
+`/volumes/DISK`, with the names it asks for in it and no other. It
+cannot see the others, make a new one, remove one that is not its own,
+or rename a folder to one, and a file that asks for a person's names is
+refused when it is read. The snapshot service holds `@snapshots`, and
+the updater the slots; neither can reach a home folder.
+
+`service NAME status` says all of it in its `Holds` lines:
+
+```
+$ service snap status
+snap - Snapshots
+   Active: active (running) as process 61 since 10:42:03, 2 min ago
+    Holds: its own view, acting for root
+           reads /users, /shared, /snapshots
+           changes @snapshots at the top of the root, and nothing else there
+           no network
+           memory up to 32M; CPU weight 100
+```
+
+A service that holds the whole tree, as the ones that sign people in or
+look after their apps still do, says `the whole tree, with Spark's
+access`. When a place a service needs is missing from its view, the
+service says so in the log, and the fix is to name it in its file:
+`snap`, for one, logs that the place is not in its view and names
+`service edit snap` as the way to add it.
 
 ## Checking a change
 

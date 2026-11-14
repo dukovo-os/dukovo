@@ -403,12 +403,18 @@ impl EfiMemoryDescriptor {
 
 /// The types of memory in a UEFI memory map that the kernel tells apart.
 pub mod efi_memory_type {
+    /// Memory the firmware keeps for itself, which the system leaves alone.
+    pub const RESERVED: u32 = 0;
     /// The firmware's runtime code.
     pub const RUNTIME_SERVICES_CODE: u32 = 5;
     /// The firmware's runtime data.
     pub const RUNTIME_SERVICES_DATA: u32 = 6;
     /// RAM free for the operating system.
     pub const CONVENTIONAL: u32 = 7;
+    /// ACPI's tables, which the system may take back once it has read them.
+    pub const ACPI_RECLAIM: u32 = 9;
+    /// ACPI's memory that the firmware keeps across sleep.
+    pub const ACPI_NVS: u32 = 10;
     /// Device registers the runtime services use.
     pub const MEMORY_MAPPED_IO: u32 = 11;
     /// I/O ports the runtime services reach through memory.

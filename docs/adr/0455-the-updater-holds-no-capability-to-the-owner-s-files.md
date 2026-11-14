@@ -45,9 +45,10 @@ harm.
   because nothing it holds reaches one.
 - The upgrade-path tests of ADR 0450 compare homes full of files byte
   for byte before and after every update and rollback.
-- **Not yet:** sysupdate and its health check run as services with the
-  administrator's access (`runs-with-your-access`). Reaching the root's
-  top level at `/volumes/<disk>` needs a capability to the Btrfs root
-  that does not also reach `@users`, which the view of a subvolume set
-  brings with finer views for services (Phase 16). Until then, the boundary is
-  kept by code review and the boot tests.
+- The health check and the stage run as services whose views hold the
+  root's system subvolumes by name, and no name that reaches `@users`
+  (ADR 0473), so the boundary is kept by the kernel's walk and the boot
+  tests that try to cross it, and no longer by code review alone.
+- **Not yet:** updated, which stages through the stage service, still
+  holds the whole tree to update the apps for everyone and to unstage a
+  release; narrowing it is a row of `docs/deferred.md`.

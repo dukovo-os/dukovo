@@ -102,6 +102,12 @@ and everything the server says is checked against the keys your system
 trusts, so a server, a mirror or anyone between can delay an update but
 never change one, or offer an older version as new.
 
+The daily check also fetches the file of signatures that `troubleshoot`
+goes by, which the server signs as it signs a release, and keeps it when
+it is newer than the one in use; one that does not read is refused, and
+the log says so once. So the causes `troubleshoot` knows improve between
+releases, without a system update.
+
 To follow another channel, `elevate sysupdate channel beta`. A system
 never goes back to an older version through a channel: after moving
 from beta to stable, it waits until stable passes the version it runs.
@@ -251,9 +257,13 @@ that brought it in. `changes --list` lists the starts kept.
 
 You do not have to look for a failure: the next sign-in says it, at the
 screen and on the serial port, until the next start. It names the start
-that failed and why, what Dukovo did about it, what changed, and the
-support page of its error ID. The first line also shows at the bottom of
-the screen until you press a key.
+that failed and why, what Dukovo did about it, what changed, the likely
+cause when `troubleshoot` knows it, and the support page of its error ID.
+The first line also shows at the bottom of the screen until you press a
+key. `troubleshoot` says the likely cause and what to do about it, with
+nothing sent anywhere, and `startup` says why starting took as long as
+it did (see [Logs, monitoring and
+troubleshooting](logs.md#when-a-start-failed)).
 
 ## Troubleshooting at start
 

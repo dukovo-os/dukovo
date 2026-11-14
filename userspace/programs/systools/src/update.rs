@@ -9,7 +9,9 @@
 //!   channel offers, the firmware set it offers, and the apps' updates.
 //! - `update apply` stages the system update, or the firmware set when
 //!   no system update waits, into the spare slot, to start at the next
-//!   restart the owner picks, and updates the apps.
+//!   restart the owner picks, and updates the apps. The stage is the
+//!   `sysupdate-stage` service ([`crate::sysupdate::request`]), which
+//!   holds the root's system subvolumes and no home folder.
 //! - `update undo system|firmware|ID` goes back on one thing: the system
 //!   or the firmware set by making the previous slot the default, an app
 //!   as `bundle rollback` does.
@@ -45,7 +47,7 @@ use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
 use crate::sysupdate::online::{self, Apps, Check, Metered, Plan, Settings};
 use crate::sysupdate::starts::{self, Outcome};
-use crate::sysupdate::{self, firmware, place, stage};
+use crate::sysupdate::{self, firmware, place, request, stage};
 use crate::util::{self, Fail, fail};
 use crate::{bundles, power};
 
@@ -205,7 +207,10 @@ fn withdrawn_running() -> Result<Option<(String, bool)>, Fail> {
 fn apply(yes: bool) -> Result<i32, Fail> {
     let staged = stage_offered()?;
     match &staged {
-        Some(what) => {
+        Some(Staged { what, said }) => {
+            for line in said {
+                println!("{line}");
+            }
             println!("update: {what} is staged: it starts at the next restart you choose");
         }
         None => println!("update: no system or firmware update waits"),
@@ -220,26 +225,35 @@ fn apply(yes: bool) -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// What a stage staged.
+struct Staged {
+    /// Which release or firmware set: `Dukovo 0.16.0`.
+    what: String,
+    /// What the stage printed as it went.
+    said: Vec<String>,
+}
+
 /// Stages the system update the channel offers, or else the firmware set
-/// it offers; what was staged, if anything. The two share the spare
-/// slot, so the firmware waits for a system update to prove itself.
-fn stage_offered() -> Result<Option<String>, Fail> {
+/// it offers, as the `sysupdate-stage` service, which holds the root's
+/// system subvolumes and no home folder (ADR 0473); what was staged, if
+/// anything. The two share the spare slot, so the firmware waits for a
+/// system update to prove itself.
+fn stage_offered() -> Result<Option<Staged>, Fail> {
     let root = place::root()?;
     let running = stage::running_version(&root)?;
     let mut client = online::Client::connect(Settings::load()?)?;
     if let Plan::Update { release, .. } = online::plan(&mut client, &running, None)? {
         // A bridge release, when the one offered updates only from it.
         let staged = release.version;
-        let asked = stage::Asked { repo: None, version: None, stop: None };
-        stage::stage(&root, &asked)?;
+        let said = request::ask(&request::What::System)?;
         if firmware_offer()?.take.is_some() {
             println!("update: the firmware set waits until Dukovo {staged} has proved itself");
         }
-        return Ok(Some(format!("Dukovo {staged}")));
+        return Ok(Some(Staged { what: format!("Dukovo {staged}"), said }));
     }
     if let Some(set) = firmware_offer()?.take {
-        firmware::stage(&root, None, Some(&set))?;
-        return Ok(Some(format!("firmware {set}")));
+        let said = request::ask(&request::What::Firmware(set.clone()))?;
+        return Ok(Some(Staged { what: format!("firmware {set}"), said }));
     }
     Ok(None)
 }
@@ -521,11 +535,22 @@ fn tell_alertd(alert: &Alert) {
     }
 }
 
+/// Keeps the troubleshoot signatures the server offers, when they are
+/// newer than those in use (ADR 0474).
+fn signatures_round(settings: &Settings) {
+    let Ok(mut client) = online::Client::connect(settings.clone()) else { return };
+    if let Some(said) = online::keep_signatures(&mut client) {
+        println!("updated: {said}");
+    }
+}
+
 /// One check, as `settings` say; whether an update was staged.
 fn round(settings: &Settings) -> bool {
     let metered = connection_is_metered();
     if waits(settings, metered) {
         println!("updated: the connection is metered: nothing is downloaded until it is not");
+    } else {
+        signatures_round(settings);
     }
     if let Some(Since::Withdrawn { version, reason }) = staged_since(settings) {
         unstage_withdrawn(&version, &reason);
@@ -641,7 +666,7 @@ fn system_round(settings: &Settings, metered: bool) -> bool {
     let choice = choice(settings, metered);
     if choice == Choice::Stage {
         return match stage_offered() {
-            Ok(Some(what)) => {
+            Ok(Some(Staged { what, .. })) => {
                 tell(&format!("{what} is staged: it starts at the next restart"));
                 true
             }

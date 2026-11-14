@@ -35,6 +35,11 @@
 //!
 //! A newline or a backslash in a name or a path is written the same way,
 //! so that it cannot end its line early.
+//!
+//! A `/processes` of a resource domain ([`make_scoped`], ADR 0473), which
+//! Spark attaches in each service's view, has the same files but lists
+//! and finds only the processes whose domain is that one or one below
+//! it: a service sees its own processes and no other's.
 
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
@@ -49,6 +54,7 @@ use radix_vfs::{Access, Error, FsKind, FsRef, KArc, Kind, NodeRef, Result, Text,
 
 use super::FileRef;
 use crate::acpi::devices::{self, MAX_LIDS};
+use crate::domains::DomainRef;
 use crate::net;
 use crate::sched::{self, Run, ThreadRef};
 use crate::user::UserRef;
@@ -138,12 +144,28 @@ fn heap() -> Kmalloc {
 
 /// A `proc` filesystem.
 pub fn make() -> Result<FsRef> {
-    let listing: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(Root)?;
+    let listing: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(Root { scope: None })?;
+    SyntheticFs::make(FsKind::Proc, ListedDir::make(ROOT_ID, listing)?)
+}
+
+/// A `proc` filesystem of `domain`'s processes and those of the domains
+/// below it, and no others.
+pub fn make_scoped(domain: DomainRef) -> Result<FsRef> {
+    let listing: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(Root { scope: Some(domain) })?;
     SyntheticFs::make(FsKind::Proc, ListedDir::make(ROOT_ID, listing)?)
 }
 
 /// The root: the files, then a directory per process, by number.
-struct Root;
+struct Root {
+    /// The domain whose processes it shows, with those below it; every
+    /// process if none.
+    scope: Option<DomainRef>,
+}
+
+/// Whether `process` is one `scope` shows: any for none.
+fn in_scope(scope: Option<&DomainRef>, process: &ProcessRef) -> bool {
+    scope.is_none_or(|scope| process.account().domain().is_within(scope))
+}
 
 impl Listing for Root {
     fn list(&self, f: &mut dyn FnMut(&str, Kind) -> bool) {
@@ -162,6 +184,12 @@ impl Listing for Root {
         posix::zombie_numbers(&mut numbers);
         numbers.sort_unstable();
         numbers.dedup();
+        if self.scope.is_some() {
+            numbers.retain(|&number| {
+                process_by_number(number)
+                    .is_some_and(|process| in_scope(self.scope.as_ref(), &process))
+            });
+        }
         for number in &numbers {
             let mut name = TextBuf::<24>::new();
             let _ = write!(name, "{number}");
@@ -186,13 +214,15 @@ impl Listing for Root {
                 let process = (!name.starts_with('0'))
                     .then(|| process_by_number(number))
                     .flatten()
+                    .filter(|process| in_scope(self.scope.as_ref(), process))
                     .ok_or(Error::NotFound)?;
                 // The process's user's, so that others see only its status
                 // through a capability without the bypass right (ADR 0214).
                 let identity = process.identity();
                 let (owner, group) = (identity.user, identity.group);
+                let scope = self.scope.clone();
                 let listing: radix_vfs::mem::KBox<dyn Listing> =
-                    mem::boxed(ProcessDir { number, owner, group })?;
+                    mem::boxed(ProcessDir { number, owner, group, scope })?;
                 let id = PROCESS_ID_BASE + PER_PROCESS * number;
                 return ListedDir::with_access(id, listing, Access { owner, group, mode: 0o555 });
             }
@@ -254,6 +284,9 @@ struct ProcessDir {
     number: u64,
     owner: u32,
     group: u32,
+    /// The root's scope: a file opened once the number has gone to a
+    /// process outside it reads empty.
+    scope: Option<DomainRef>,
 }
 
 impl Listing for ProcessDir {
@@ -274,12 +307,15 @@ impl Listing for ProcessDir {
             _ => threads,
         };
         let number = self.number;
-        let generate: Generator =
-            mem::boxed(move |text: &mut Text| match process_by_number(number) {
+        let scope = self.scope.clone();
+        let generate: Generator = mem::boxed(move |text: &mut Text| {
+            match process_by_number(number).filter(|process| in_scope(scope.as_ref(), process)) {
                 Some(process) => write(&process, text),
-                // It has gone since: an empty file.
+                // It has gone since, or its number is another's: an empty
+                // file.
                 None => Ok(()),
-            })?;
+            }
+        })?;
         let mode = if name == "status" { 0o444 } else { 0o400 };
         let access = Access { owner: self.owner, group: self.group, mode };
         let id = PROCESS_ID_BASE + PER_PROCESS * number + 1 + index as u64;

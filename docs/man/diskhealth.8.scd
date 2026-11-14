@@ -58,7 +58,9 @@ the disk maker's choice; the names are those most disks share.
 	Look at every disk now and every half hour, as smartd(8) does on
 	Linux, and write a line of each disk at the first look and again
 	whenever its verdict or reasons change. Spark runs it as the
-	*diskhealth* service, which puts the lines in the kernel log:
+	*diskhealth* service, which holds the disks and nothing else of
+	_/devices_, *files.disks = "read"* (*service.toml*(5)), and puts the
+	lines in the kernel log:
 
 ```
 diskhealth: nvme0n1: PASSED, 50 °C, 0 hours on

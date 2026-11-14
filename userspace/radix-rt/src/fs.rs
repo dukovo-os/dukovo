@@ -585,6 +585,20 @@ impl Dir {
         Ok(directory::attach(&SYS, self.held.slot, path.as_bytes(), what)?)
     }
 
+    /// Attaches the directory the capability in `what` holds at `path` in
+    /// this view as [`Dir::attach`] does, but with only `names` in it
+    /// (ADR 0473): nothing else in it is found, listed, made or removed
+    /// through the view.
+    pub fn attach_names(&self, path: &str, what: u32, names: &[&str]) -> Result<()> {
+        // Each name ends with a NUL, as radix-directory(2) takes them.
+        let mut list = Vec::new();
+        for name in names {
+            list.extend_from_slice(name.as_bytes());
+            list.push(0);
+        }
+        Ok(directory::attach_names(&SYS, self.held.slot, path.as_bytes(), what, &list)?)
+    }
+
     /// Makes a symbolic link at `path` in this view, to `target`.
     pub fn attach_link(&self, path: &str, target: &str) -> Result<()> {
         let (slot, path) = (self.held.slot, path.as_bytes());

@@ -21,6 +21,9 @@ memory = "16M"
 
 # What it holds beyond what every service reads (service.toml(5)): its
 # folder, where it answers on a socket. Every other service may only
-# connect there.
+# connect there. And every process, since a notice is shown with the name
+# of the program that sent it, which notifyd reads from the sender's
+# process (ADR 0473).
 [permissions]
 files.read-write = ["/system/live/notify"]
+files.read = ["/processes"]

@@ -44,6 +44,15 @@ another user sees a process's number, name and state but not its
 arguments, files or threads, unless the capability they look through
 has the bypass right (*radix-names*(2), ADR 0214).
 
+A service's _/processes_ is scoped (ADR 0473): Spark attaches in its view
+the one its resource domain gives (*radix-resource-domain*(2)), which has
+the same files but lists, and finds by a lookup, only the processes of
+that domain and the domains below it. A process of another service, or
+Spark, is not in it, and a number that went to a process outside it reads
+as no such process. The files about the machine, _meminfo_ and the rest,
+are the whole machine's. A service whose file names _/processes_, and
+one with the whole tree, has every process (*service.toml*(5)).
+
 # FILES
 
 _/processes/_*n*_/status_
@@ -360,4 +369,5 @@ vda /volumes/vda fat rw label=RADIX16
 # SEE ALSO
 
 *systools*(1), *ps*(1), *top*(1), *lsof*(8), *ss*(8), *radix-sysfs*(5),
-*radix-files*(7), *radix-processes*(7), *radix-scheduling*(7), *spark*(8)
+*radix-files*(7), *radix-processes*(7), *radix-scheduling*(7), *spark*(8),
+*service.toml*(5), *radix-resource-domain*(2)

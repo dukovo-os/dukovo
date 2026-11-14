@@ -111,9 +111,10 @@ partition by its filesystem's UUID and label, and its GPT entry's GUID
 and name (ADR 0303; *radix-files*(7)): at its start, and whenever disks
 and partitions come or go.
 
-Its service file gives it _/devices_, _/system/live/disk_, where those
-links are, and _/volumes_, and nothing else of the tree
-(*service.toml*(5)). Spark hands it _/volumes_ as descriptor 3
+Its service file gives it the disks, *files.disks = "read-write"*, which
+are every disk and partition at _/devices_ as they come and go and
+nothing else of it (ADR 0473), _/system/live/disk_, where those links
+are, and _/volumes_, and nothing else of the tree (*service.toml*(5)). Spark hands it _/volumes_ as descriptor 3
 as well, as *files.mount* says and *MOUNT_PLACES* names, since nothing
 is mounted through a service's view; volumed mounts and unmounts through
 it, and through the root when *MOUNT_PLACES* names nothing, as for

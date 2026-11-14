@@ -32,6 +32,10 @@ const FILES: &str = "/system/tests/services/certificates";
 /// The folder of the service files Spark reads.
 const SERVICES: &str = "/system/settings/spark/services";
 
+/// How long [`read_of`] waits for the end of a line whose start is in
+/// the log.
+const LINE_END_WAIT: Duration = Duration::from_secs(5);
+
 /// The test.
 pub const CASE: Case = Case {
     name: "certificates",
@@ -61,14 +65,24 @@ struct Read {
     key: String,
 }
 
-/// The last line of the log that holds `start`, as a [`Read`].
+/// The last line of the log that holds `start`, as a [`Read`]. The
+/// line's start may be in the log before its end has come over the
+/// serial port, so it waits up to [`LINE_END_WAIT`] for the line to end.
 fn read_of(vm: &Vm, start: &str) -> Result<Read, String> {
-    let log = vm.log();
-    let line = log
-        .lines()
-        .rev()
-        .find_map(|line| line.split_once(start).map(|(_, rest)| rest))
-        .ok_or_else(|| format!("the log has no line with \"{start}\""))?;
+    let waited = Instant::now();
+    let line = loop {
+        let log = vm.log();
+        let found = log
+            .split_inclusive('\n')
+            .rev()
+            .find_map(|line| line.split_once(start).map(|(_, rest)| rest.to_string()))
+            .ok_or_else(|| format!("the log has no line with \"{start}\""))?;
+        if found.ends_with('\n') || waited.elapsed() >= LINE_END_WAIT {
+            break found;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let line = line.trim_end();
     let words: Vec<&str> = line.split_whitespace().collect();
     let [time, mode, chain, key] = words.as_slice() else {
         return Err(format!("\"{start}{line}\" is not a time, a mode and two sums"));

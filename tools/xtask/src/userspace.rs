@@ -272,6 +272,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/snap", "systools"),
     ("system/commands/ss", "systools"),
     ("system/commands/ssh-askpass-keyring", "systools"),
+    ("system/commands/startup", "systools"),
     ("system/commands/subvolume", "systools"),
     ("system/commands/sudo", "systools"),
     ("system/commands/swapoff", "systools"),
@@ -285,6 +286,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/traceroute", "systools"),
     ("system/commands/traceroute6", "systools"),
     ("system/commands/tree", "systools"),
+    ("system/commands/troubleshoot", "systools"),
     ("system/commands/umount", "systools"),
     ("system/commands/unlock", "systools"),
     ("system/commands/update", "systools"),
@@ -320,6 +322,11 @@ pub const DEFAULTS_DIR: &str = "system/resources/default-settings";
 /// boot archive they go, beside the rest of the signed system.
 pub const FEATURES: &str = "userspace/features";
 pub const FEATURES_DIR: &str = "system/resources/features";
+
+/// The signatures troubleshoot(8) matches (ADR 0474), and where in the
+/// boot archive they go, beside the rest of the signed system.
+pub const TROUBLESHOOT: &str = "userspace/troubleshoot";
+pub const TROUBLESHOOT_DIR: &str = "system/resources/troubleshoot";
 
 /// The service files of the boot tests that Spark is pointed at with
 /// `--service-dir` (spark(8)), and where in the boot archive they go.
@@ -593,6 +600,7 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     let mut files = build_posix(ctx, &ports.toolchain)?;
     install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &mut files)?;
     install_tree(ctx, FEATURES, FEATURES_DIR, &mut files)?;
+    install_tree(ctx, TROUBLESHOOT, TROUBLESHOOT_DIR, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
     // The root this system trusts its releases by (ADR 0308).
     files.push(crate::release::trusted_root(ctx)?);

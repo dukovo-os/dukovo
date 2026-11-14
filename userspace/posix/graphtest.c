@@ -17,7 +17,9 @@
 // does, with the line, the place in it and a fix, and for a file that
 // reads, what putting it to use would do (ADR 0471): what the restart of a
 // service that runs changes, and when a change to one that does not run
-// applies.
+// applies. A service sees its own processes, and a service that holds
+// the disks sees them and the four devices every service has, and no
+// keyboard (ADR 0473).
 //
 // It checks how service(8) waits, too: a start shows Spark's lines about
 // the service and what it requires as they come and returns once the
@@ -29,8 +31,10 @@
 //
 // As a service, it runs in a mode: `--listen PORT DELAY_MS` listens on
 // PORT after DELAY_MS and sleeps; `--sleep` sleeps; `--exit CODE` exits
-// with CODE; `--check FILE`, a health check, passes when FILE is there.
+// with CODE; `--check FILE`, a health check, passes when FILE is there;
+// `--view` writes what its view holds to /tmp/report and sleeps.
 
+#include <dirent.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -198,6 +202,28 @@ static const char G_TRY[] = "service_version = 2\n"
 		"\n"
 		"[permissions]\n"
 		"network.listen = [7201]\n";
+
+// A service that reports what its view holds and holds the disks, and
+// one that names /processes, which holds every process.
+static const char G_VIEW[] = "service_version = 2\n"
+		"description = \"Reports its view\"\n"
+		"program = \"" SELF "\"\n"
+		"arguments = [\"--view\"]\n"
+		"enabled = false\n"
+		"restart = \"never\"\n"
+		"\n"
+		"[permissions]\n"
+		"files.disks = \"read\"\n";
+
+static const char G_VIEW_ALL[] = "service_version = 2\n"
+		"description = \"Reports its view, with every process\"\n"
+		"program = \"" SELF "\"\n"
+		"arguments = [\"--view\"]\n"
+		"enabled = false\n"
+		"restart = \"never\"\n"
+		"\n"
+		"[permissions]\n"
+		"files.read = [\"/processes\"]\n";
 
 // The file of a service that only sleeps, which g-link's file links to.
 #define G_REAL "/system/settings/g-real.toml"
@@ -428,6 +454,79 @@ static void four_waits_at_once(void) {
 	CONTAINS("g-slow0", SERVICE, "list");
 }
 
+// The report service `name` wrote of its view, in its own /tmp, which is
+// `/system/live/spark/tmp/NAME` to a program with the whole tree, once it
+// is there: false if it is not within a few seconds.
+static int report_of(const char *name, char *into, size_t size) {
+	char path[160];
+	snprintf(path, sizeof(path), "/system/live/spark/tmp/%s/report", name);
+	for(int tries = 0; tries < 50; tries++) {
+		int fd = open(path, O_RDONLY | O_CLOEXEC);
+		if(fd >= 0) {
+			ssize_t got = read(fd, into, size - 1);
+			close(fd);
+			if(got > 0) {
+				into[got] = 0;
+				return 1;
+			}
+		}
+		check_sleep_ms(200);
+	}
+	printf("graphtest: %s wrote no report of its view\n", name);
+	return 0;
+}
+
+// Whether the line of `report` that starts `label:` holds `word` as one of
+// its words.
+static int line_has(const char *report, const char *label, const char *word) {
+	char start[32];
+	snprintf(start, sizeof(start), "%s:", label);
+	const char *line = strstr(report, start);
+	if(!line)
+		return 0;
+	const char *end = strchr(line, '\n');
+	size_t length = strlen(word);
+	for(const char *at = line + strlen(start); at && at < end; at = strchr(at + 1, ' ')) {
+		const char *from = at + (*at == ' ');
+		if(!strncmp(from, word, length) && (from[length] == ' ' || from + length == end))
+			return 1;
+	}
+	return 0;
+}
+
+// A service that holds the disks lists them and the four devices every
+// service has, and no keyboard; it sees its own process and its child in
+// /processes, and not process 1; one that names /processes sees process 1.
+static void a_service_sees_its_own_processes_and_the_disks_it_holds(void) {
+	char report[2048];
+	write_service("g-view", G_VIEW);
+	STATUS(0, SERVICE, "g-view", "start");
+	CHECK(report_of("g-view", report, sizeof(report)));
+	CHECK(line_has(report, "devices", "null"));
+	CHECK(line_has(report, "devices", "zero"));
+	CHECK(line_has(report, "devices", "random"));
+	CHECK(line_has(report, "devices", "urandom"));
+	CHECK(line_has(report, "devices", "disk"));
+	// The line of the disks is not empty, and no keyboard is listed.
+	CHECK(strstr(report, "disks: ") != NULL);
+	CHECK(strstr(report, "kbd") == NULL);
+	char pid[16];
+	snprintf(pid, sizeof(pid), "%d", atoi(strstr(report, "self ") + 5));
+	CHECK(line_has(report, "processes", pid));
+	snprintf(pid, sizeof(pid), "%d", atoi(strstr(report, "child ") + 6));
+	CHECK(line_has(report, "processes", pid));
+	CHECK(!line_has(report, "processes", "1"));
+	CHECK(says("g-view", "reads the disks, as /devices", 5));
+	STATUS(0, SERVICE, "g-view", "stop");
+
+	write_service("g-view-all", G_VIEW_ALL);
+	STATUS(0, SERVICE, "g-view-all", "start");
+	CHECK(report_of("g-view-all", report, sizeof(report)));
+	CHECK(line_has(report, "processes", "1"));
+	CHECK(says("g-view-all", "sees every process", 5));
+	STATUS(0, SERVICE, "g-view-all", "stop");
+}
+
 // service check says where a file is wrong as a compiler does, and what a
 // file that reads would do once it is put to use. g-web, which an earlier
 // test started, runs; g-x is stopped, and Spark read its file when it ran.
@@ -561,7 +660,52 @@ static int listen_after(int port, long delay_ms) {
 		pause();
 }
 
+// Writes the names in directory `path` to `text` as a line `label: name
+// name`, only those of block devices if `blocks_only`, and returns the new
+// length. The macro DIR names the services' folder everywhere else, so it
+// is set aside here.
+#pragma push_macro("DIR")
+#undef DIR
+static size_t list_into(char *text, size_t size, size_t len, const char *label, const char *path, int blocks_only) {
+	len += snprintf(text + len, size - len, "%s:", label);
+	DIR *folder = opendir(path);
+	for(struct dirent *entry = folder ? readdir(folder) : NULL; entry; entry = readdir(folder)) {
+		char at[300];
+		struct stat info;
+		snprintf(at, sizeof(at), "%s/%s", path, entry->d_name);
+		if(entry->d_name[0] == '.' || (blocks_only && (lstat(at, &info) || !S_ISBLK(info.st_mode))))
+			continue;
+		len += snprintf(text + len, size - len, " %s", entry->d_name);
+	}
+	if(folder)
+		closedir(folder);
+	return len + snprintf(text + len, size - len, "\n");
+}
+#pragma pop_macro("DIR")
+
+// `--view`: writes what its view holds to /tmp/report (its own process
+// and child, the names in /devices, the block devices among them, and the
+// names in /processes), then sleeps.
+static int report_view(void) {
+	pid_t child = fork();
+	if(child == 0)
+		for(;;)
+			pause();
+	char text[2048];
+	size_t len = snprintf(text, sizeof(text), "self %d\nchild %d\n", getpid(), child);
+	len = list_into(text, sizeof(text), len, "devices", "/devices", 0);
+	len = list_into(text, sizeof(text), len, "disks", "/devices", 1);
+	list_into(text, sizeof(text), len, "processes", "/processes", 0);
+	write_file("/tmp/report.new", text);
+	if(rename("/tmp/report.new", "/tmp/report"))
+		return 1;
+	for(;;)
+		pause();
+}
+
 int main(int argc, char **argv) {
+	if(argc == 2 && !strcmp(argv[1], "--view"))
+		return report_view();
 	if(argc == 4 && !strcmp(argv[1], "--listen"))
 		return listen_after(atoi(argv[2]), atol(argv[3]));
 	if(argc == 2 && !strcmp(argv[1], "--sleep"))
@@ -586,6 +730,7 @@ int main(int argc, char **argv) {
 	RUN(explain_knows_its_names_and_options);
 	RUN(check_says_where_and_what_it_would_do);
 	RUN(four_waits_at_once);
+	RUN(a_service_sees_its_own_processes_and_the_disks_it_holds);
 	RUN(tries_with_an_undo);
 	int status = check_end();
 	fflush(stdout);

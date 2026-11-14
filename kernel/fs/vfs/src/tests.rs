@@ -2816,3 +2816,97 @@ fn user_attributes_follow_the_files_modes() {
     attributes::remove(&K, &f, b"user.big").unwrap();
     attributes::set(&K, &f, b"user.big", &big[..4000], Setting::Either).unwrap();
 }
+
+/// A directory attached with only some names (ADR 0473) shows those and
+/// nothing past them: not by a lookup, a listing, `..` from beneath one,
+/// a capability opened on it, or a name made or moved into it.
+#[test]
+fn a_view_attaches_a_directory_with_only_some_names() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "top", owned(&ALICE, 0o755)).unwrap();
+    for name in ["@system", "@snapshots", "@users"] {
+        vfs.make_directory(&ALICE, &root, &format!("top/{name}"), owned(&ALICE, 0o755)).unwrap();
+    }
+    write(&vfs, &root, "top/@users/diary", b"mine").unwrap();
+    write(&vfs, &root, "top/@system/kernel", b"k").unwrap();
+    let top = vfs.open(&ALICE, &root, "top", OpenFlags::default()).unwrap();
+    let view = vfs.make_view(&ALICE).unwrap();
+
+    // What a name is checked as, and a file is no directory.
+    let attach = |path, names: &[&str]| vfs.attach_names(&view, path, &top, &ALICE, false, names);
+    assert_eq!(attach("v1", &[]), Err(Error::InvalidArgument));
+    assert_eq!(
+        attach("v2", &["@system"; crate::named::NAMES_MAX + 1]),
+        Err(Error::InvalidArgument)
+    );
+    assert_eq!(attach("v3", &["a/b"]), Err(Error::BadName));
+    assert_eq!(attach("v4", &[".."]), Err(Error::BadName));
+    let file = vfs.open(&ALICE, &root, "top/@system/kernel", OpenFlags::default()).unwrap();
+    assert_eq!(
+        vfs.attach_names(&view, "v5", &file, &ALICE, false, &["kernel"]),
+        Err(Error::NotDirectory)
+    );
+    attach("volumes/root", &["@system", "@snapshots"]).unwrap();
+
+    // Only its names, listed and found; beneath one, all of it.
+    let mut listed =
+        names(&vfs, &vfs.open(&ALICE, &view, "volumes/root", OpenFlags::default()).unwrap());
+    listed.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        listed,
+        [("@snapshots", Kind::Directory), ("@system", Kind::Directory)]
+            .map(|(n, k)| (String::from(n), k))
+    );
+    assert_eq!(vfs.stat(&ALICE, &view, "volumes/root/@system/kernel").unwrap().size, 1);
+    assert_eq!(vfs.stat(&ALICE, &view, "volumes/root/@users").err(), Some(Error::NotFound));
+    assert_eq!(vfs.stat(&ALICE, &view, "volumes/root/@users/diary").err(), Some(Error::NotFound));
+    // `..` from beneath a name comes back to it, and finds no more.
+    assert_eq!(
+        vfs.stat(&ALICE, &view, "volumes/root/@system/../@users").err(),
+        Some(Error::NotFound)
+    );
+    // A capability opened on it is it too.
+    let cap = vfs.open(&ALICE, &view, "volumes/root", OpenFlags::default()).unwrap();
+    assert_eq!(vfs.stat(&ALICE, &cap, "@users").err(), Some(Error::NotFound));
+    assert!(vfs.stat(&ALICE, &cap, "../root").is_err());
+    let system = vfs.open(&ALICE, &cap, "@system", OpenFlags::default()).unwrap();
+    assert_eq!(vfs.stat(&ALICE, &system, "../@users").err(), Some(Error::Outside));
+
+    // Nothing else made in it, nor removed, nor moved out or in.
+    assert_eq!(
+        vfs.make_directory(&ALICE, &view, "volumes/root/@new", DIR),
+        Err(Error::NotPermitted)
+    );
+    assert_eq!(write(&vfs, &view, "volumes/root/loose", b"x"), Err(Error::NotPermitted));
+    assert_eq!(vfs.remove(&ALICE, &view, "volumes/root/@users/diary"), Err(Error::NotFound));
+    assert_eq!(
+        vfs.rename(&ALICE, &view, "volumes/root/@snapshots", &ALICE, &view, "volumes/root/@users"),
+        Err(Error::NotPermitted)
+    );
+    assert_eq!(
+        vfs.rename(&ALICE, &view, "volumes/root/@users", &ALICE, &view, "volumes/root/@old"),
+        Err(Error::NotFound)
+    );
+    // Beneath a name, as anywhere; and a name may be made again in it.
+    write(&vfs, &view, "volumes/root/@system/new", b"n").unwrap();
+    vfs.rename(
+        &ALICE,
+        &view,
+        "volumes/root/@system/new",
+        &ALICE,
+        &view,
+        "volumes/root/@system/newer",
+    )
+    .unwrap();
+    vfs.remove(&ALICE, &view, "volumes/root/@system/newer").unwrap();
+    vfs.remove(&ALICE, &view, "volumes/root/@snapshots").unwrap();
+    vfs.make_directory(&ALICE, &view, "volumes/root/@snapshots", DIR).unwrap();
+    // The rest stays as it was.
+    assert_eq!(
+        read_all(
+            &root.node.lookup("top").unwrap().lookup("@users").unwrap().lookup("diary").unwrap()
+        ),
+        b"mine"
+    );
+}

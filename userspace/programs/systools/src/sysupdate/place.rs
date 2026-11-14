@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Where the slots and the slot state are: the Dukovo root this system
-//! started from, mounted whole at `/volumes/<disk>` (spark(8)), and the
-//! EFI system partitions of the disks it is on, each with its own two
-//! copies of the slot state beside GRUB's menu (ADR 0452).
+//! started from, mounted at `/volumes/<disk>` (spark(8)), which Spark
+//! records at `/system/live/spark/root` so that nothing here reads a disk
+//! to find it (ADR 0473), and the EFI system partitions of the disks it
+//! is on, each with its own two copies of the slot state beside GRUB's
+//! menu (ADR 0452).
 //!
 //! GRUB writes the copies of the partition it started from; the system
 //! writes every partition's. So the state the system goes by is that of
@@ -21,11 +23,12 @@ use std::path::{Path, PathBuf};
 use slots::about::About;
 use slots::state::{self, COPIES, Copy};
 use slots::{Slot, State};
+use spark_api::root::{self, Root as Record};
 
 use crate::util::{self, Fail, fail};
 use crate::{blockdev, probe};
 
-/// The kernel's command line, which names the root and the slot.
+/// The kernel's command line, which names the slot that runs.
 const CMDLINE: &str = "/kernel/cmdline";
 
 /// Where the root's top level is mounted: `/volumes/<disk>`.
@@ -39,8 +42,9 @@ const EFI_SYSTEM: [&str; 2] = ["c12a7328-f81f-11d2-ba4b-00a0c93ec93b", "0xef"];
 pub const BUILDING: &str = "@system.new";
 
 /// The lock that keeps two writers of the slot state apart: the stage and
-/// the health check. It is in memory, so that a restart frees it.
-const LOCK: &str = "/system/live/sysupdate.lock";
+/// the health check. It is in memory, so that a restart frees it, and in
+/// the folder the two services hold in common (ADR 0473).
+const LOCK: &str = "/system/live/sysupdate/lock";
 
 /// The Dukovo root this system started from.
 pub struct Root {
@@ -48,6 +52,9 @@ pub struct Root {
     pub disk: String,
     /// Its Btrfs's UUID.
     pub uuid: String,
+    /// The partitions its Btrfs is on, by their names in `/kernel/block`:
+    /// one, or one a disk on a mirror.
+    pub partitions: Vec<String>,
     /// The slot that runs, which GRUB named on the kernel's command line.
     pub running: Slot,
 }
@@ -70,68 +77,28 @@ impl Root {
     }
 }
 
-/// The root this system started from: the Btrfs the kernel's command line
-/// names by its UUID, mounted at `/volumes/<disk>`, which holds the slot
-/// GRUB started.
+/// The root this system started from, as Spark recorded it when it
+/// mounted the root's Btrfs at `/volumes/<disk>`, which holds the slot GRUB
+/// started.
 ///
 /// # Errors
 ///
 /// If there is none, as on the live system.
 pub fn root() -> Result<Root, Fail> {
     let line = std::fs::read_to_string(CMDLINE).unwrap_or_default();
-    let boot = slots::cmdline::parse(&line);
-    let named = line
-        .split_whitespace()
-        .take_while(|&word| word != "--")
-        .filter_map(|word| word.strip_prefix("root=UUID="))
-        .last()
-        .map(str::to_ascii_lowercase);
-    let running = boot.system();
-    let mut disks: Vec<String> = std::fs::read_dir(VOLUMES)
-        .map_err(|err| util::failed(&VOLUMES, err))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .collect();
-    disks.sort();
-    for disk in disks {
-        let top = Path::new(VOLUMES).join(&disk);
-        if !top.join(running.subvolume()).is_dir() || !top.join("@state").is_dir() {
-            continue;
-        }
-        let Some(uuid) = btrfs_uuid(&disk) else { continue };
-        if named.as_ref().is_some_and(|named| *named != uuid) {
-            continue;
-        }
-        return Ok(Root { disk, uuid, running });
-    }
-    Err(fail(
-        "this system did not start from a Dukovo root on a disk, so it has no slots to update"
-            .into(),
-    ))
+    let text = std::fs::read_to_string(root::PATH).unwrap_or_default();
+    from_record(Record::parse(&text), slots::cmdline::parse(&line).system())
 }
 
-/// The UUID of the Btrfs on `/devices/<name>`, if it holds one.
-pub(crate) fn btrfs_uuid(name: &str) -> Option<String> {
-    let mut read = probe::reader(name)?;
-    let found = probe::filesystem(&mut read)?;
-    if found.kind == "btrfs" { found.uuid } else { None }
-}
-
-/// The partitions the root's Btrfs is on, by their names in `/devices`:
-/// one, or one a disk on a mirror.
-///
-/// # Errors
-///
-/// If the disks cannot be listed.
-pub fn root_partitions(root: &Root) -> Result<Vec<String>, Fail> {
-    let devices = probe::devices().map_err(|err| util::failed(&probe::BLOCKS, err))?;
-    Ok(devices
-        .into_iter()
-        .filter(|(name, partition)| {
-            *partition && btrfs_uuid(name).as_deref() == Some(root.uuid.as_str())
-        })
-        .map(|(name, _)| name)
-        .collect())
+/// The root `record` names, when `running` is the slot that runs.
+fn from_record(record: Option<Record>, running: Slot) -> Result<Root, Fail> {
+    let Some(Record { disk, uuid, partitions }) = record else {
+        return Err(fail(
+            "this system did not start from a Dukovo root on a disk, so it has no slots to update"
+                .into(),
+        ));
+    };
+    Ok(Root { disk, uuid, partitions, running })
 }
 
 /// The EFI system partitions of the disks the root is on, by their names
@@ -142,25 +109,27 @@ pub fn root_partitions(root: &Root) -> Result<Vec<String>, Fail> {
 /// If the disks cannot be listed.
 pub fn partitions(root: &Root) -> Result<Vec<String>, Fail> {
     let devices = probe::devices().map_err(|err| util::failed(&probe::BLOCKS, err))?;
-    let mut disks: Vec<&str> = Vec::new();
-    for (name, partition) in &devices {
-        if *partition && btrfs_uuid(name).as_deref() == Some(root.uuid.as_str()) {
-            let disk = probe::disk_of(name);
-            if !disks.contains(&disk) {
-                disks.push(disk);
-            }
-        }
-    }
+    Ok(efi_partitions(root, &devices, |name| probe::block_text(name, "parttype")))
+}
+
+/// The partitions among `devices` (each a name and whether it is a
+/// partition) that are on a disk the root is on and whose type, which
+/// `parttype` gives by name, is the EFI system partition's.
+fn efi_partitions(
+    root: &Root,
+    devices: &[(String, bool)],
+    parttype: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let disks: Vec<&str> = root.partitions.iter().map(|name| probe::disk_of(name)).collect();
     let efi = |name: &str| {
-        probe::block_text(name, "parttype")
-            .is_some_and(|kind| EFI_SYSTEM.contains(&kind.to_ascii_lowercase().as_str()))
+        parttype(name).is_some_and(|kind| EFI_SYSTEM.contains(&kind.to_ascii_lowercase().as_str()))
     };
-    Ok(devices
+    devices
         .iter()
         .filter(|(name, partition)| *partition && disks.contains(&probe::disk_of(name)))
         .filter(|(name, _)| efi(name))
         .map(|(name, _)| name.clone())
-        .collect())
+        .collect()
 }
 
 /// An EFI system partition's two copies of the slot state, as read.
@@ -354,12 +323,17 @@ impl Drop for Lock {
 }
 
 /// Takes the lock on the slot state, or says who holds it. A lock whose
-/// process is gone is taken over.
+/// process is gone is taken over. The holder may be the stage, which runs
+/// in a resource domain of its own, so a service that takes the lock
+/// names `/processes` in its file, which shows it every process.
 ///
 /// # Errors
 ///
 /// If another sysupdate holds it.
 pub fn lock() -> Result<Lock, Fail> {
+    if let Some(folder) = Path::new(LOCK).parent() {
+        std::fs::create_dir_all(folder).map_err(|err| util::failed(&folder.display(), err))?;
+    }
     for _ in 0..2 {
         match OpenOptions::new().write(true).create_new(true).open(LOCK) {
             Ok(mut file) => {
@@ -407,5 +381,74 @@ pub fn named(root: &Root, slot: Slot) -> String {
             format!("slot {letter} (Dukovo {}, firmware {})", about.version, set.set)
         }
         (None, _) => format!("slot {letter}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UUID: &str = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+
+    fn root(partitions: &[&str]) -> Root {
+        Root {
+            disk: partitions[0].into(),
+            uuid: UUID.into(),
+            partitions: partitions.iter().map(|&name| name.into()).collect(),
+            running: Slot::A,
+        }
+    }
+
+    fn devices(names: &[&str]) -> Vec<(String, bool)> {
+        names
+            .iter()
+            .map(|&name| (name.into(), name.ends_with(|c: char| c.is_ascii_digit())))
+            .collect()
+    }
+
+    #[test]
+    fn the_root_is_what_spark_recorded_and_the_slot_that_runs() {
+        let text = format!("disk vda3\nuuid {UUID}\npartitions vda3 vdb3\n");
+        let found = from_record(Record::parse(&text), Slot::B).unwrap();
+        assert_eq!(found.disk, "vda3");
+        assert_eq!(found.uuid, UUID);
+        assert_eq!(found.partitions, ["vda3", "vdb3"]);
+        assert_eq!(found.running, Slot::B);
+        assert_eq!(found.slot(Slot::B), Path::new("/volumes/vda3/@system.b"));
+    }
+
+    #[test]
+    fn a_system_without_a_record_has_no_root_to_update() {
+        for text in ["", "disk vda3\n", "disk vda3\nuuid nonsense\npartitions vda3\n"] {
+            let why = from_record(Record::parse(text), Slot::A).err().unwrap();
+            assert!(why.message.contains("no slots to update"), "{}", why.message);
+        }
+    }
+
+    #[test]
+    fn the_efi_partitions_are_those_of_the_roots_disks_by_type() {
+        let all = devices(&["sda", "sda1", "sda2", "sdb", "sdb1", "sdb2", "sdc", "sdc1"]);
+        // A mirror on sda and sdb: each one's EFI partition, by either
+        // table's type, in either case; sdc's is not the root's.
+        let kind = |name: &str| {
+            let kind = match name {
+                "sda1" | "sdc1" => "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+                "sdb1" => "0xef",
+                _ => "0x83",
+            };
+            Some(kind.to_string())
+        };
+        let found = efi_partitions(&root(&["sda2", "sdb2"]), &all, kind);
+        assert_eq!(found, ["sda1", "sdb1"]);
+        // A partition with no type is none.
+        assert!(efi_partitions(&root(&["sda2"]), &all, |_| None).is_empty());
+    }
+
+    #[test]
+    fn the_efi_partition_of_an_nvme_disk_is_found_by_its_disk() {
+        let all = devices(&["nvme0n1", "nvme0n1p1", "nvme0n1p2", "nvme1n1", "nvme1n1p1"]);
+        let efi = |name: &str| (name.ends_with("p1")).then(|| "0xef".to_string());
+        let found = efi_partitions(&root(&["nvme0n1p2"]), &all, efi);
+        assert_eq!(found, ["nvme0n1p1"]);
     }
 }

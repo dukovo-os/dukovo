@@ -118,7 +118,13 @@ Spark runs its last good copy.
 *Holds* is what its file lets it reach beyond what every service reads
 (*service.toml*(5)): its own view and the account it acts for, or *the
 whole tree, with Spark's access* for one that runs with it; the places
-it reads, changes and mounts beneath; its secrets; the ports it may
+it reads, changes and mounts beneath; the disks, or the EFI system
+partitions, it reads, or reads and writes, as _/devices_ (*reads the
+disks, as /devices*); the names at the top of the root it changes, and
+nothing else there (*changes @snapshots at the top of the root, and
+nothing else there*); *sees every process* when it is not the whole
+tree and its file names _/processes_, where one that does not sees its
+own processes alone (ADR 0473); its secrets; the ports it may
 listen on, *(open)* for those something listens on now, and whether it
 connects out, or *no network*; the machine's settings it may set, the
 cards it drives; its memory limit and CPU weight. *Processes* counts the
@@ -147,7 +153,9 @@ well, is starting, or waits for another that is on its way has nothing
 to do. The sentence also says when the service's file does not read, and
 that Spark runs its last good copy. The web console shows the same
 sentence, since both make it from Spark's *show* document
-(*spark*(8)). *--json* prints it as one line of JSON with *sentence*;
+(*spark*(8)). When a signature of *troubleshoot*(8) matches the root
+(its log lines, and whether it failed), its fix replaces the generic one,
+as "_fix_ (_ID_, `troubleshoot` says more)" (ADR 0474). *--json* prints it as one line of JSON with *sentence*;
 *chain*, the names of the services followed, from the one asked about
 to the root; *root*; and *fix*, what to do, or *null* when nothing
 needs doing.

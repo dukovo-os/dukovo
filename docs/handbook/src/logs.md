@@ -5,11 +5,13 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Logs, monitoring and troubleshooting
 
-This chapter describes the system's log and its notifications. The full
+This chapter describes the system's log and its notifications, and how to
+find the cause of a start that failed or was slow. The full
 references are logd(8), log(1), journalctl(1), logger(1), logtrim(8),
 log(5), dmesg(1), logforward(8), logforward.toml(5), netlog(8),
-notifyd(8), notify-send(1) and notifications(1). What the machine keeps of
-its own state, and its early warnings, are in
+notifyd(8), notify-send(1), notifications(1), troubleshoot(8),
+troubleshoot-signatures(5) and startup(8). What the machine keeps of its
+own state, and its early warnings, are in
 [Metrics and early warnings](metrics.md).
 
 ## What the log holds
@@ -261,6 +263,92 @@ spark: web failed its health check 3 times in a row; restarting it
 
 service.toml(5) explains each of these, and spark(8) every line Spark
 writes.
+
+## When a start failed
+
+Each start of the computer has a record, which `changes` compares with the
+last good start's, and each failure carries an error ID with a page of the
+support center. `troubleshoot` goes one step further and names the likely
+cause. It gathers what it knows of the newest start that was not good (its
+record, what changed, its log with the kernel's lines, which services
+failed and how full the disks are) and matches it against signatures,
+which are data that the release ships and the daily update check may
+renew, with nothing sent anywhere:
+
+```
+$ troubleshoot
+Start 42 on 2026-11-11 21:04, Dukovo 0.15.2, slot B: failed: sshd has restarted 3 times (BOOT-102)
+
+Likely cause: An essential service ended, kept restarting or did not start in time (BOOT-102)
+Fix: The start's message names the service: service NAME explain says why it is in its state, and service NAME logs what it wrote. changes shows what is new since the last good start.
+More: https://dukovo.org/support/0.15.2/errors/BOOT-102.html
+```
+
+It says the best three matches, `--all` every one, and `--json` one line
+for a script. The failure notice that the sign-in screens show carries
+the best match as a line, "Likely cause: ... (ID). Fix: ...", and
+Rescue's menu has "Find the likely cause", which also works when the
+root does not mount. `troubleshoot --about` says which signatures are in
+use and how many it skipped because they hold a condition this release
+cannot read yet. The format is in troubleshoot-signatures(5): a file is
+refused whole if any part of it is wrong, whatever its version.
+
+The signatures know the firmware failures (FW-101 to FW-103), an essential
+service that failed (BOOT-102), a full system disk (BOOT-104), a root that
+did not mount (BOOT-105), a disk that reports errors (BOOT-107) and a
+failure after a boot option changed (BOOT-108). A start whose cause no
+signature knows is still described by `changes --failed` and its log,
+`log -b -1`.
+
+## A start is slow
+
+Each start's record also keeps how long it took. `startup` shows each
+step, from the firmware (where the firmware says: not every computer
+does) through the boot loader and the kernel to the services settling and
+the first sign-in, then the chain of services that set the time they
+settled and the ten that took longest from started to ready:
+
+```
+$ startup
+Start 42 on 2026-11-11 21:04, Dukovo 0.15.2, slot B: good
+  firmware     not known  this computer's firmware does not say
+  boot loader  0.9 s
+  kernel       1.2 s
+  services     6.8 s      settled 8.0 s after the kernel started
+  sign-in      4.0 s      the first sign-in, 12.0 s after the kernel started
+From the computer starting to the services settling: 8.9 s
+
+The chain that set when the services settled, each waiting for the one above:
+  logd  started 1.3 s  ready 1.4 s  took 0.1 s
+  netd  started 1.5 s  ready 2.5 s  took 1.0 s
+  web   started 2.6 s  ready 8.0 s  took 5.4 s
+
+The slowest services, from started to ready:
+  web   5.4 s  started 2.6 s
+  netd  1.0 s  started 1.5 s
+  logd  0.1 s  started 1.3 s
+```
+
+To find what made it slow:
+
+1. Run `startup --compare`. It puts the start beside the last good one,
+   step by step, and lists the services whose time changed most. The step
+   that grew is where to look: a slow firmware or boot loader is the
+   computer's own, a slow kernel points at a disk or a device it waits
+   for, and slow services are the ones named.
+2. For a service that grew, `service NAME explain` and `service NAME
+   logs`. A service waits for what it needs: a slow network, a database
+   that rebuilds its index, a disk that is slow to answer.
+3. `changes` shows what is new since the last good start. An app, an
+   update or a boot option may have added a service or slowed one.
+4. A slow start can be a one-off, for example the first after an update.
+   If the next is not slow, nothing is wrong.
+
+When the services settle more than 20% and at least two seconds later
+than the median of the last five good starts, the health check says so
+in the log and as a notification, naming the step that grew and the
+service that did most (BOOT-106). It says nothing before five good
+starts with times have been kept.
 
 ## When logd is not running
 

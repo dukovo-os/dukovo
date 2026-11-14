@@ -955,3 +955,24 @@ fn swap_headers_that_mkswap_makes_read() {
     assert_eq!(header.uuid, [0x5a; 16]);
     assert_eq!(header.label(), Some("RADIXSWAP"));
 }
+
+/// An EFI system partition by either table's mark (ADR 0473): MBR's type
+/// 0xef, and GPT's C12A7328-F81F-11D2-BA4B-00A0C93EC93B in its on-disk
+/// order, whose first three fields are little-endian.
+#[test]
+fn efi_system_partitions_by_either_table() {
+    let esp = [
+        0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9,
+        0x3b,
+    ];
+    assert!(Kind::Mbr(0xef).is_efi_system());
+    assert!(Kind::Gpt(esp).is_efi_system());
+    assert!(!Kind::Mbr(0x0c).is_efi_system());
+    // The GUID as it is written, not as it is stored: not one.
+    let written = [
+        0xc1, 0x2a, 0x73, 0x28, 0xf8, 0x1f, 0x11, 0xd2, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9,
+        0x3b,
+    ];
+    assert!(!Kind::Gpt(written).is_efi_system());
+    assert!(!Kind::Gpt([0; 16]).is_efi_system());
+}

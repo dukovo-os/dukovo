@@ -240,11 +240,26 @@ override:
 	*files.read* = [_"path"_, ...]
 		Places of the tree it may read, directories or files, each at
 		its own path; none unless set. Each must be there when the
-		service starts, or Spark does not start it and says which.
+		service starts, or Spark does not start it and says which,
+		except a place in _/system/state_ or deeper in _/system/live_
+		than a folder of it: that is state or a socket another service
+		makes, which may not be there yet, and the view goes without it
+		until a later start (see below).
 
 	*files.read-write* = [_"path"_, ...]
 		Places it may read and change. Spark makes a directory for one
-		that is not there yet, as systemd's StateDirectory= does.
+		that is not there yet, as systemd's StateDirectory= does, unless
+		it is deeper in _/system/live_ than a folder of it, as a
+		service's socket is: a directory there would keep its service
+		from making the socket, so the view goes without it.
+
+	A socket either list names, such as _/system/live/log/query_, is
+	reached through its folder: a socket cannot be opened to be
+	attached, so Spark attaches the folder with only the names the
+	file gives in it, read-only unless one of them that is no socket
+	is in *files.read-write*. Connecting needs no write to the folder,
+	and a socket its service makes again, as *logd*(8) does when it
+	restarts, is found at the same name.
 
 	*files.mount* = [_"path"_, ...]
 		Places it may read, change and mount filesystems beneath, as
@@ -258,6 +273,35 @@ override:
 	*files.shared* = [_"name"_, ...]
 		Folders of _/shared_ it may read and change, by name, such as
 		*["media"]*.
+
+	*files.disks* = *"read"* | *"read-write"*
+		Every disk and partition, as _/devices_ shows them, as they
+		come and go, with the four devices every service has and
+		nothing else of _/devices_, no keyboard among it. Not set
+		unless the file says so. *volumed*(8) holds
+		it to mount the disks that are plugged in, and *diskhealth*(8)
+		reads them. Not with *files.efi-system*, and no place of
+		_/devices_ in *files.\** with it (ADR 0473).
+
+	*files.efi-system* = *"read"* | *"read-write"*
+		The EFI system partitions alone, found by their partition
+		type, as _/devices_, in the same way, and the four devices
+		every service has. *sysupdate*(8) holds it, to keep the
+		update state where the firmware finds it, and no other disk.
+
+	*files.root-subvolumes* = [_"name"_, ...]
+		Names at the top of the root's Btrfs, such as
+		*["@snapshots"]*: the top is at _/volumes/disk_, where disk is
+		the one Spark started from (_/system/live/spark/root_
+		says which), read-write, with these names in it and no other.
+		A name that is not there is made nowhere, and none of the
+		root's other names can be made, removed or renamed to. At
+		most 16, each of letters, digits, *@*, *.*, *-* and *\_*.
+		*@users*, *@shared* and *@applications* are refused: an update
+		or a snapshot never needs the owner's files. The update
+		service holds the slots, *@system.a* and *@system.b*, and
+		*snap*(1)'s holds *@snapshots* (ADR 0473). On the live
+		system and in Rescue there is no such top, and the view none.
 
 	*runs-with-your-access* = *true* | *false*
 		Whether it holds the whole tree as Spark does, past the owners
@@ -468,7 +512,10 @@ at its own path, and what every service has without asking:
 
 - _/system/commands_, _/system/libraries_, _/system/resources_ and
   _/system/settings_, read-only;
-- _/processes_ and _/kernel_, read-only;
+- _/kernel_, read-only, and _/processes_, read-only, which lists the
+  service's own processes and those of the services it starts, and no
+  others, unless its file names _/processes_ with *files.read*, or has
+  *runs-with-your-access*, and then every process (ADR 0473);
 - _/devices/null_, and _/devices/zero_, _/devices/random_ and
   _/devices/urandom_ read-only;
 - _/system/live/notify_, read-only, as notifications are always allowed
@@ -493,10 +540,22 @@ another service's files, not Spark's. It acts for root, or for its
 so a file whose mode closes it to root is closed to it too. A place its file names that is one of
 the list takes that one's place, so notifyd's
 *files.read-write = ["/system/live/notify"]* lets it change its folder.
+A file that names a place of _/devices_ with *files.disks* or
+*files.efi-system*, or a place within _/processes_, is refused: those
+are made as a whole.
+
+*service* _name_ *status* says what the view holds, in its *Holds:* lines
+(*service*(8)).
 
 A place it names that is not there, a secret that is not set, or a
-certificate that certd does not keep, keeps it from starting, and Spark says why in the log and in the answer to
-*service* _name_ *start*.
+certificate that certd does not keep, keeps it from starting, and Spark
+says why in the log and in the answer to *service* _name_ *start*. A
+folder of _/system/live_ is made instead, as is a place it may change
+elsewhere. A place held read-only in _/system/state_, and one deeper in
+_/system/live_, is left out of the view instead, and Spark says so in
+the log: the update health check's view names troubleshoot's
+signatures, which are not there until an update keeps a newer set, and
+the log's query socket, which is not there while *logd*(8) restarts.
 
 # SECRETS
 

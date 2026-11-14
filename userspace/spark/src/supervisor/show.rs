@@ -138,6 +138,11 @@ fn holds(spec: &Spec, devices: Option<u32>) -> Holds {
         reads: reads.into_iter().map(|place| place.path.clone()).collect(),
         changes: changes.into_iter().map(|place| place.path.clone()).collect(),
         mounts: spec.mounts.clone(),
+        devices: spec.device_class.map(|(class, _)| class.name().to_string()),
+        devices_write: spec.device_class.is_some_and(|(_, access)| access.write()),
+        root_subvolumes: spec.root_subvolumes.clone(),
+        every_process: spec.whole_tree
+            || spec.places.iter().any(|place| place.path == manifest::service::PROCESSES),
         secrets: spec.secrets.clone(),
         listen: spec
             .listen

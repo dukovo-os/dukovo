@@ -1,0 +1,106 @@
+{
+  "start": {
+    "number": 12,
+    "started": 1793402700,
+    "slot": "a",
+    "stage": "services",
+    "outcome": "failed",
+    "error": "BOOT-102",
+    "why": "sshd has restarted 3 times (BOOT-102)",
+    "items": [
+      {
+        "kind": "system",
+        "name": "Dukovo",
+        "value": "0.15.0",
+        "installed": 1793000000
+      },
+      {
+        "kind": "kernel",
+        "name": "Radix",
+        "value": "3f9c2a71d0e4b856"
+      },
+      {
+        "kind": "options",
+        "name": "boot options",
+        "value": "quiet"
+      }
+    ]
+  },
+  "changed": [
+    "system"
+  ],
+  "log": [
+    {
+      "level": 6,
+      "from": "kernel",
+      "name": "kernel",
+      "text": "Radix 0.15.0 starting"
+    },
+    {
+      "level": 6,
+      "from": "kernel",
+      "name": "kernel",
+      "text": "Disk: vda: 20 GiB, virtio"
+    },
+    {
+      "level": 6,
+      "from": "service",
+      "name": "logd",
+      "text": "logd: listening on /system/live/log/query"
+    },
+    {
+      "level": 6,
+      "from": "service",
+      "name": "sshd",
+      "text": "sshd: listening on port 22"
+    },
+    {
+      "level": 6,
+      "from": "service",
+      "name": "sysupdate",
+      "text": "sysupdate: this start of Slot A is seen through"
+    },
+    {
+      "level": 3,
+      "from": "service",
+      "name": "sshd",
+      "text": "sshd: cannot read /system/settings/ssh/host-key: no such file"
+    },
+    {
+      "level": 4,
+      "from": "service",
+      "name": "spark",
+      "text": "spark: sshd ended with code 1, and is started again"
+    },
+    {
+      "level": 3,
+      "from": "service",
+      "name": "sysupdate",
+      "text": "sysupdate: Slot B failed its health check: sshd has restarted 3 times (BOOT-102)"
+    }
+  ],
+  "failed": [
+    "sshd"
+  ],
+  "essential": [
+    "logd",
+    "authd",
+    "consoled",
+    "netd",
+    "sshd"
+  ],
+  "full": [
+    {
+      "path": "/",
+      "percent": 3
+    },
+    {
+      "path": "/system/state",
+      "percent": 41
+    },
+    {
+      "path": "/users",
+      "percent": 41
+    }
+  ]
+}

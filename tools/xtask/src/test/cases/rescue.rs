@@ -10,9 +10,10 @@
 //! seen through. Three starts in a row are cut short by power cuts, and
 //! the menu starts Rescue by itself: networking stays off, alice signs
 //! in with her password, and Rescue says the last three starts were not
-//! seen through (ADR 0501). Check the network turns networking on and
-//! shows what netcheck finds, until Enter is pressed (ADR 0489). From
-//! Rescue's shell the health check goes and the only slot, *@system.a*, is removed; at the restart no slot is
+//! seen through (ADR 0501), and the menu's "Find the likely cause" finds
+//! none (ADR 0474). Check the network turns networking on and shows what
+//! netcheck finds, until Enter is pressed (ADR 0489). From Rescue's shell
+//! the health check goes and the only slot, *@system.a*, is removed; at the restart no slot is
 //! left, and Rescue starts by itself again. It reinstalls Dukovo from its
 //! own copy, every file checked, and the system that then starts has
 //! alice's file and app as they were. On the host, after each boot, the
@@ -87,7 +88,7 @@ fn in_rescue(vm: &mut Vm) -> Result<usize, String> {
 
 /// Chooses `choice` in Rescue's menu.
 fn choose(vm: &mut Vm, choice: &str) -> Result<(), String> {
-    answer_prompt(vm, "Choose 0 to 11:", choice)
+    answer_prompt(vm, "Choose 0 to 12:", choice)
 }
 
 /// The second boot, from the installed disk alone.
@@ -137,6 +138,10 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     if vm.log()[at..].contains("spark: started netd") {
         return Err("Rescue started networking before anyone turned it on".into());
     }
+    // Its likely cause (ADR 0474): no start failed, so no signature the
+    // release ships matches what Rescue can see.
+    choose(vm, "12")?;
+    vm.expect_screen(&["No known cause matches what Rescue can see."])?;
 
     // Check the network turns networking on and shows what netcheck
     // finds, until a key is pressed (ADR 0489).

@@ -47,6 +47,7 @@ pub mod bootfs;
 pub mod cache;
 pub mod locks;
 pub mod mount;
+pub mod named;
 pub mod path;
 pub mod raw;
 pub mod synthetic;

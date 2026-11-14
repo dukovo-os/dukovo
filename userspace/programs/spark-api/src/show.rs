@@ -152,6 +152,17 @@ pub struct Holds {
     pub changes: Vec<String>,
     /// The places it mounts filesystems beneath.
     pub mounts: Vec<String>,
+    /// Its `/devices` of one class (ADR 0473), "disks" or "efi-system",
+    /// in place of the devices every service has.
+    pub devices: Option<String>,
+    /// Whether it may write the disks of `devices`, or only read them.
+    pub devices_write: bool,
+    /// The names at the top of the root its view holds, at
+    /// `/volumes/<disk>`.
+    pub root_subvolumes: Vec<String>,
+    /// Whether it sees every process, as its file names `/processes`,
+    /// or only those of its own domain.
+    pub every_process: bool,
     /// The names of its secrets.
     pub secrets: Vec<String>,
     /// The ports it may listen on: "80", or a range as "8000-8010".

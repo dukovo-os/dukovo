@@ -49,7 +49,7 @@ use radix_hal::{Cpu, CpuLocal, FaultTest, PageTable, Platform, Smp, Timer};
 use radix_klog::crashlog::Ending;
 use radix_klog::{error, info, warn};
 use radix_mm::stress::{self, StressReport};
-use radix_mm::{FRAMES, HEAP, Owner};
+use radix_mm::{FRAMES, HEAP, HeapStats, Owner};
 
 use crate::panic::SELFTEST_MARKER;
 use crate::{Arch, captest, crashlog, iommutest, schedtest, usertest, work};
@@ -136,6 +136,10 @@ const STRESS_AREAS: u64 = 200;
 /// memory is in pieces, three requests a round.
 const STRESS_PIECES: u64 = 40;
 
+/// Times `mm-stress` counts the heap and the frames before it says what
+/// leaked: other CPUs' kernel threads use the heap while it counts.
+const STRESS_COUNTS: u32 = 5;
+
 /// Every CPU's results, added up.
 static STRESS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 /// Every CPU's [`stress::AreaReport`], added up.
@@ -176,6 +180,37 @@ fn stress_worker() {
     }
 }
 
+/// The heap and the frames once the heap's caches are drained, counted
+/// again until two counts agree or, after the run, the count equals
+/// `before`. The kernel's other threads go on using the heap, and a count
+/// is no single moment: a thread that frees its first object after the
+/// drain makes its CPU a new magazine, which can be counted as a caller's
+/// object; another may fill its cache from a class already counted. Such
+/// a count settles 10 ms later, and a leak does not.
+fn stress_counts(frames: impl Fn() -> u64, before: Option<(HeapStats, u64)>) -> (HeapStats, u64) {
+    let count = || {
+        HEAP.drain();
+        (HEAP.stats(), frames())
+    };
+    let same = |a: &(HeapStats, u64), b: &(HeapStats, u64)| {
+        (a.0.objects, a.0.large_blocks, a.0.areas, a.1)
+            == (b.0.objects, b.0.large_blocks, b.0.areas, b.1)
+    };
+    let mut last = count();
+    for _ in 1..STRESS_COUNTS {
+        if before.as_ref().is_some_and(|before| same(&last, before)) {
+            break;
+        }
+        crate::sched::sleep_ns(10_000_000);
+        let next = count();
+        if before.is_none() && same(&next, &last) {
+            break;
+        }
+        last = next;
+    }
+    last
+}
+
 /// One CPU's large heap requests in `mm-stress`, while memory is in
 /// pieces.
 fn pieces_worker() {
@@ -205,8 +240,7 @@ fn mm_stress() {
             + FRAMES.owner_pages(Owner::PageTable)
             + FRAMES.owner_pages(Owner::PerCpu)
     };
-    HEAP.drain();
-    let before = (HEAP.stats(), frames());
+    let before = stress_counts(frames, None);
     let started = Arch::now_ns();
     work::on_all(me, stress_worker);
     let millis = (Arch::now_ns() - started) / 1_000_000;
@@ -216,8 +250,7 @@ fn mm_stress() {
     let kept = pieces.kept();
     work::on_all(me, pieces_worker);
     pieces.join();
-    HEAP.drain();
-    let after = (HEAP.stats(), frames());
+    let after = stress_counts(frames, Some(before));
     let [allocations, frees, failures, mismatches, area_errors] =
         STRESS.each_ref().map(|total| total.load(Ordering::Relaxed));
     let report = StressReport { allocations, frees, failures, mismatches };

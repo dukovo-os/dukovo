@@ -64,7 +64,8 @@ What would you like to do?
    9  Start Dukovo normally
   10  Restart
   11  Power off
-Choose 0 to 11:
+  12  Find the likely cause
+Choose 0 to 12:
 ```
 
 A choice that needs the root, or a last update to undo, says *(not here)*
@@ -146,6 +147,17 @@ install stick puts GRUB and the menu back (*dukovo-install*(8)).
 
 *10 Restart*, *11 Power off*
 	End Rescue.
+
+*12 Find the likely cause*
+	Names the likely cause of what went wrong, as *troubleshoot*(8) does
+	(ADR 0474): of the root's newest start that did not go well, from its
+	record and what changed since the last good start, or, when the root
+	does not mount, of that. Each match says its cause, its fix and the
+	support page of its error ID; with none, it says that no known cause
+	matches what Rescue can see. It works when the root is not mounted,
+	which is when the other choices that need it say *(not here)*. It goes
+	by the signatures Rescue's own copy of the release ships, or the newer
+	file the root keeps, when it mounts.
 
 # EXIT STATUS
 

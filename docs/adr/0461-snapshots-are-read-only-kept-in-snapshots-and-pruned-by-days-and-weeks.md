@@ -91,9 +91,12 @@ nothing else of `/users` or `/volumes`.
 - **`ls -l` marks a snapshot `[snapshot]`, or `[snapshot, read-only]`,**
   in place of the subvolume mark of ADR 0442: a subvolume with a parent
   UUID. Why each is kept is in `snap list`, which knows the retention.
-- **The service holds the whole tree,** as the update's health check
-  does, since `snap.toml` may name any subvolume. A view of its own
-  comes with the updater's (ADR 0455).
+- **The service holds `@snapshots` and the default places** (ADR 0473),
+  where it first held the whole tree, as the update's health check did:
+  it reads and snapshots the places of the default `snap.toml`, reads
+  `/snapshots`, and changes `@snapshots` at the top of the root and
+  nothing else there. A place of `snap.toml` outside that view is skipped
+  and logged, with the fix, and the owner adds it to the service's file.
 
 ## Consequences
 

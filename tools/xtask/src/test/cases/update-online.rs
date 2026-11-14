@@ -29,7 +29,9 @@
 //! so and waits; as a canary it takes it. Once the bridge runs, update(8)
 //! holds the release back and lets it go, lists the bridge by the start
 //! that first ran it, and updated(8) says the release is ready (ADR
-//! 0502). The release is staged; once the release keys have withdrawn
+//! 0502). The release is staged by update apply, through the
+//! sysupdate-stage service, whose view holds the system's subvolumes
+//! and no home folder (ADR 0473); once the release keys have withdrawn
 //! it and the server has published that, updated(8) unstages it, and
 //! the machine says so and stages nothing.
 
@@ -360,11 +362,14 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     run(vm, "updated --once", &[&format!(
         "updated: Dukovo {year} is ready: `elevate update apply` stages it"
     )])?;
-    // Staged, then the release keys withdraw it, and the server
+    // Staged, as the update command does, through the sysupdate-stage
+    // service, which holds the root's system subvolumes and no home folder
+    // (ADR 0473); then the release keys withdraw it, and the server
     // publishes that: updated's next check unstages it.
-    run(vm, &format!("sysupdate stage --version {year}"), &[&format!(
-        "sysupdate: staged Dukovo {year} in slot A: it starts at the next restart"
-    )])?;
+    run(vm, "update apply", &[
+        &format!("sysupdate: staged Dukovo {year} in slot A: it starts at the next restart"),
+        &format!("update: Dukovo {year} is staged: it starts at the next restart you choose"),
+    ])?;
     server.serve(&dir.join("system"));
     run(vm, "updated --once; sysupdate status", &[
         &format!("updated: Dukovo {year}, which was staged, was withdrawn: {TEST_PULL}"),

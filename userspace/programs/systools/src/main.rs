@@ -196,6 +196,7 @@ mod sound;
 mod ss;
 mod ssh_askpass;
 mod sshkeys;
+mod startup;
 mod subvolume;
 mod swap;
 mod sys;
@@ -206,6 +207,7 @@ mod tls;
 mod top;
 mod traceroute;
 mod tree;
+mod troubleshoot;
 mod unlock;
 mod update;
 mod util;
@@ -374,6 +376,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("snap", snap::main),
     ("ss", ss::main),
     ("ssh-askpass-keyring", ssh_askpass::main),
+    ("startup", startup::main),
     ("subvolume", subvolume::main),
     ("sudo", elevate::main),
     ("swapoff", swap::swapoff),
@@ -387,6 +390,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("traceroute", traceroute::main),
     ("traceroute6", traceroute::main6),
     ("tree", tree::main),
+    ("troubleshoot", troubleshoot::main),
     ("umount", mount::umount),
     ("unlock", unlock::main),
     ("update", update::update),

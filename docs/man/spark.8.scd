@@ -195,7 +195,9 @@ Init: /system/commands/spark is process 1
   as the installer makes one, the way systemd's gpt-auto-generator
   does; there is no fstab (ADR 0311). One whose first page does not end
   in *SWAPSPACE2*, as when another system's Linux hibernated into it, is
-  left off, and Spark says why.
+  left off, and Spark says why. Once the root is mounted it writes which
+  root this is to _/system/live/spark/root_ (see *WHAT A SERVICE'S VIEW
+  HOLDS*).
   With no such disk, with *--no-volumes* or with *live*, it mounts the boot archive
   read-only on _/system_ and tmpfs on _/system/settings_, _/system/state_
   and _/system/live_, which the next boot starts without. Then it makes
@@ -322,7 +324,8 @@ and *EDITOR=nano* with the file's *environment* over it, and
 its file names secrets, certificates or *files.mount*. Its root is a view of
 the tree that holds what its file declares and what every service
 reads (*service.toml*(5), ADR 0217), built at each start; one whose
-file sets *runs-with-your-access* gets Spark's own root instead. It
+file sets *runs-with-your-access* gets Spark's own root instead (see
+*WHAT A SERVICE'S VIEW HOLDS*). It
 copies what the service writes, line by line, to the kernel log, after the service's
 name and a colon unless the line starts with them already, and keeps a
 level the line starts with (*<3>* for an error, as systemd's services
@@ -449,7 +452,11 @@ presses.
 	or restart a request asked of it; and *holds*, what its view gives
 	it beyond what every service reads: *whole_tree* (it runs with
 	Spark's access), *account*, *reads*, *changes*, *mounts*,
-	*secrets*, *listen* (ports and ranges as *"80"* or
+*devices* (*disks* or *efi-system*, the one class of _/devices_ it
+	holds, and *devices_write* if it may write them),
+	*root_subvolumes* (the names at the top of the root it holds),
+	*every_process* (its file names _/processes_), *secrets*,
+	*listen* (ports and ranges as *"80"* or
 	*"8000-8010"*), *outbound*, *admin* (the rights it has, as
 	*network*), *names*, *cards* (the PCI addresses it drives),
 	*memory_bytes* and *cpu_weight*. A field may be *null* or left out where it does not
@@ -733,6 +740,50 @@ left none, as when the kernel drives them itself, is not started:
 spark: not starting e1000d: the kernel left it none of the cards it drives
 ```
 
+# WHAT A SERVICE'S VIEW HOLDS
+
+Beyond the places its file names, a view holds what its file asks of
+three kinds of thing that the tree keeps whole (ADR 0473):
+
+*Disks.* *files.disks* gives a service every disk and partition at
+_/devices_, as they come and go, with the four devices every service
+has and nothing else of _/devices_; *files.efi-system*, the EFI system
+partitions alone, found by their partition type. Each is read-only or
+read-write. A view without them has only the four devices.
+
+*Processes.* A service's _/processes_ lists its own processes and those
+of the domains below its own, and no other: not Spark, not another
+service. It has the same files as any _/processes_ (*radix-proc*(5)). A
+file that names _/processes_ with *files.read*, or sets
+*runs-with-your-access*, has every process, which a service that finds
+another's, as *sysupdate*(8) finds the one that holds the update lock,
+needs.
+
+*The root's own names.* *files.root-subvolumes* attaches the top of the
+root's Btrfs at _/volumes/_*disk*, read-write, with only the names the
+file gives, such as _@snapshots_, and no other: nothing else can be
+made, removed or renamed to there (*radix-directory*(2)). A system with
+no root on a disk, as the live system and Rescue are, has no such top,
+and the view none.
+
+Which disk is the root is in _/system/live/spark/root_, which Spark
+writes once the root is mounted, three lines of words:
+
+```
+disk sda2
+uuid 0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0
+partitions sda2 sdb1
+```
+
+*disk* is where the root is mounted, _/volumes/_*disk*; *uuid* is its
+Btrfs's, as the kernel's command line names it; *partitions* are every
+partition, or whole disk, the Btrfs is on, at most 64. The updater and
+the services that hold the root's subvolumes read it where they
+needed to read a disk raw before, and a service names it with
+*files.read* to read it; *show* gives each service's holds
+(*holds* above), and *service status* says them in words
+(*service*(8)).
+
 # NAMES
 
 Spark acts for root, and its root directory has the bypass right, which
@@ -818,6 +869,10 @@ _/system/settings/spark/services/_*name*_.service_
 
 _/system/live/spark/control_
 	The control socket (see *CONTROL SOCKET*).
+
+_/system/live/spark/root_
+	Which root this is: its disk, UUID and partitions (see *WHAT A
+	SERVICE'S VIEW HOLDS*). Not there on the live system or in Rescue.
 
 _/system/state/spark/trials/_*id*
 	A trial's copies of the files it keeps, by number, and its record,

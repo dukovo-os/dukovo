@@ -22,13 +22,46 @@ order = 90
 # It gives its result and ends.
 restart = "never"
 
+# Naming a failed start's likely cause reads up to 20,000 lines of its
+# log (ADR 0474).
 [limits]
-memory = "32M"
+memory = "64M"
 
-# What it holds beyond what every service reads (service.toml(5)): the
-# whole tree, past the owners and modes of files, to remove a half-built
-# slot from the root, write the slot state on the EFI system partitions
-# and ask Spark to restart, and to run health.toml's checks. A narrower
-# view of its own comes with the updater's (ADR 0455).
+# What it holds beyond what every service reads (service.toml(5)), and why
+# (ADR 0473); health.toml's checks run with the same view, so a check that
+# needs more is a service of its own that the check asks about with
+# `service NAME status --quiet`.
+#
+# - The root's system slots, the slot a stage left half built, which it
+#   removes, and the firmware store, which it reads for this start's
+#   record; no other name at the top of the root, so no home folder.
+# - The EFI system partitions, where the slot state is written, and no
+#   other disk: where the root is comes from Spark's record of it.
+# - Its own state and the starts' records, and /system/live/sysupdate,
+#   where the lock, the failure notice and this start's record number
+#   are.
+# - The list of installed apps, which each start's record names, and
+#   every process, since the stage that holds the lock may be a process
+#   of another service.
+# - Spark's control socket, to watch the essential services and to ask
+#   for a restart, and the log's query socket and the troubleshoot
+#   signatures, to name the likely cause of a failed start in its notice
+#   (ADR 0474). Spark leaves out of the view a socket or signatures that
+#   are not there yet (service.toml(5)), and the notice goes without the
+#   likely cause then.
 [permissions]
-runs-with-your-access = true
+files.root-subvolumes = ["@system.a", "@system.b", "@system.new", "@firmware"]
+files.efi-system = "read-write"
+files.read-write = [
+    "/system/state/sysupdate",
+    "/system/state/starts",
+    "/system/live/sysupdate",
+    "/system/live/spark/control",
+    "/system/live/log/query",
+]
+files.read = [
+    "/system/live/spark/root",
+    "/system/state/bundled/installed",
+    "/system/state/troubleshoot",
+    "/processes",
+]

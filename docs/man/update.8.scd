@@ -23,7 +23,8 @@ _item_ is *system*, *firmware* or an app's ID.
 update is the one command for every update (ADR 0502). Underneath, the
 system and its firmware set are *sysupdate*(8)'s, in the two slots, and
 the apps are *bundle*(1)'s; update asks each and says it in one place.
-*updated*(8) runs the same check once a day.
+*updated*(8) runs the same check once a day, and keeps the newer
+signatures of *troubleshoot*(8) that the update server offers.
 
 *check*, or no word at all
 	Says what waits, under three headings. *System*: the release the

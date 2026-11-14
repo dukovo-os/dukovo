@@ -15,7 +15,8 @@
 //! last update; checking the root's disk; copying the users' and shared
 //! files to another disk; checking the hardware and the network, which
 //! run `hardware check` and `netcheck` (ADRs 0488 and 0489); turning
-//! networking on; a shell; and starting the system normally. Nothing is
+//! networking on; a shell; naming the likely cause of what went wrong
+//! (troubleshoot(8)); and starting the system normally. Nothing is
 //! formatted, and `@users`, `@shared` and `@applications` are never
 //! written.
 //!
@@ -128,6 +129,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             "Start Dukovo normally".to_string(),
             "Restart".to_string(),
             "Power off".to_string(),
+            "Find the likely cause".to_string(),
         ];
         println!("What would you like to do?");
         for (number, text) in choices.iter().enumerate() {
@@ -149,6 +151,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             ("9", root) => start_normally(root.as_ref().ok()),
             ("10", _) => end("reboot"),
             ("11", _) => end("poweroff"),
+            ("12", _) => Ok(likely_cause(&rescued)),
             (other, _) => Err(format!("{other} is not one of the choices here")),
         };
         match done {
@@ -196,12 +199,22 @@ fn why_it_failed(root: &Root) -> Vec<String> {
     }
     lines.extend(changes::report(&records, None, failed));
     if let Some(id) = &failed.error {
-        lines.push(format!(
-            "Help: https://dukovo.org/support/{}/errors/{id}.html",
-            env!("CARGO_PKG_VERSION")
-        ));
+        lines.push(format!("Help: {}", crate::troubleshoot::help_url(id)));
     }
     lines
+}
+
+/// What troubleshoot(8) says of the likely cause (ADR 0474): of the
+/// root's last start that did not go well, from its records, or, when the
+/// root cannot be used, of that, which Rescue knows no more of.
+fn likely_cause(rescued: &Rescued) -> String {
+    let (records, unusable, kept) = match &rescued.root {
+        Ok(root) => {
+            (starts::all_in(&root.path("@state/starts")), None, root.path("@state/troubleshoot"))
+        }
+        Err(why) => (Vec::new(), Some(why.as_str()), PathBuf::from("/system/state/troubleshoot")),
+    };
+    crate::troubleshoot::for_rescue(&records, unusable, &rescued.uuid, &kept).join("\n")
 }
 
 /// Where starts that never began their health check stopped, by whether
@@ -226,17 +239,25 @@ fn ask(question: &str, shown: bool) -> Option<String> {
     }
 }
 
+/// The UUID of the Btrfs on `/devices/<name>`, if it holds one.
+fn btrfs_uuid(name: &str) -> Option<String> {
+    let mut read = probe::reader(name)?;
+    let found = probe::filesystem(&mut read)?;
+    if found.kind == "btrfs" { found.uuid } else { None }
+}
+
 /// Finds the root of Btrfs UUID `uuid` and mounts it whole, compressed,
 /// at `/volumes/<disk>`, unless it is there already, as it is when Rescue
-/// starts again on a console.
+/// starts again on a console. Rescue holds the whole tree and no Spark
+/// has recorded the root, so it reads the disks for it.
 fn mount_root(uuid: &str) -> Result<Root, String> {
     let devices = probe::devices().map_err(|err| format!("the disks cannot be listed: {err}"))?;
-    let disk = devices
-        .iter()
+    let partitions: Vec<String> = devices
+        .into_iter()
         .map(|(name, _)| name)
-        .find(|name| place::btrfs_uuid(name).as_deref() == Some(uuid))
-        .ok_or("no disk here holds it")?
-        .clone();
+        .filter(|name| btrfs_uuid(name).as_deref() == Some(uuid))
+        .collect();
+    let disk = partitions.first().ok_or("no disk here holds it")?.clone();
     let top = Path::new("/volumes").join(&disk);
     if !top.join("@state").is_dir() {
         std::fs::create_dir_all(&top).map_err(|err| format!("{}: {err}", top.display()))?;
@@ -246,7 +267,7 @@ fn mount_root(uuid: &str) -> Result<Root, String> {
     }
     // The slot the state names as the default is the one a reinstall
     // writes; slot A when the state cannot be read.
-    let mut root = Root { disk, uuid: uuid.to_string(), running: Slot::A };
+    let mut root = Root { disk, uuid: uuid.to_string(), partitions, running: Slot::A };
     if let Ok((_, state)) = place::state(&root) {
         root.running = state.default;
     }

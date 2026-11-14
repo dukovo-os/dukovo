@@ -190,6 +190,17 @@ path = "userspace/programs/installer/tests/install/*.json"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The facts of the faults troubleshoot's tests plant, one folder each
+# (userspace/programs/systools/src/troubleshoot.rs), and the lab test's
+# copy of one (ADR 0474). JSON has no comments.
+[[annotations]]
+path = [
+    "userspace/programs/systools/tests/troubleshoot-faults/*/facts.json",
+    "lab/tests/boot/lab-disk-errors.json",
+]
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # The test certificates, keys and signatures OpenSSL made for tls-test
 # (testdata/make.sh), the message it signed, and the sealed messages'
 # hashes (testdata/aead.py), which tls-test reads (ADR 0192).

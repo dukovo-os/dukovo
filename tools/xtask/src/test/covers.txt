@@ -536,6 +536,8 @@ rescue userspace/programs/systools/src/serial_console.rs userspace/programs/syst
 rescue userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
 rescue userspace/programs/systools/src/bundles/
 rescue userspace/programs/systools/src/netcheck.rs
+rescue userspace/programs/systools/src/troubleshoot.rs userspace/programs/systools/src/troubleshoot/
+rescue userspace/troubleshoot/
 restic-backup kernel/fs/btrfs/ kernel/net/ ports/rust-crates/patches/ userspace/programs/smb/
 restic-backup userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/
 restic-backup userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume.rs
@@ -577,6 +579,9 @@ service-update userspace/programs/installer/ userspace/programs/manifest/
 service-update userspace/programs/system-release/ userspace/programs/systools/src/bundled.rs
 service-update userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
 service-update userspace/programs/systools/src/releases.rs userspace/programs/tuf/
+service-views kernel/fs/vfs/ userspace/posix/programs.h userspace/posix/viewtest.c
+service-views userspace/programs/manifest/ userspace/programs/spark-api/
+service-views userspace/programs/systools/src/service.rs userspace/programs/systools/src/subvolume.rs
 services userspace/defaults/spark/ userspace/posix/servicetest.c userspace/programs/manifest/
 services userspace/programs/systools/src/servicefiles.rs
 signin ports/tmux/ userspace/defaults/group userspace/defaults/passwd userspace/posix/authd.h
@@ -618,6 +623,8 @@ sshd userspace/programs/systools/src/dig.rs userspace/programs/systools/src/last
 sshd userspace/programs/systools/src/netd.rs userspace/programs/systools/src/signals.rs
 stack-overflow kernel/arch/
 start-menu image/grub/installed.cfg.in image/grub/menu.cfg tools/xtask/src/grub_theme.rs
+startup userspace/defaults/spark/services/sysupdate.toml userspace/programs/spark-api/
+startup userspace/programs/systools/src/startup.rs userspace/programs/systools/src/sysupdate/
 startup-trouble userspace/programs/consoled/
 storage kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/ userspace/storage/
 storage-4k kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/ kernel/fs/fat/
@@ -643,6 +650,9 @@ storage-usb kernel/fs/block/ userspace/storage/
 swap kernel/mm/ userspace/posix/swaptest.c userspace/programs/systools/src/swap.rs
 tlb kernel/arch/ kernel/mm/
 tls kernel/net/ ports/ca-certificates/ userspace/programs/tls-test/
+troubleshoot userspace/defaults/spark/services/sysupdate.toml userspace/programs/systools/src/changes.rs
+troubleshoot userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/troubleshoot.rs
+troubleshoot userspace/programs/systools/src/troubleshoot/ userspace/troubleshoot/
 uefi-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
 uefi-cdrom kernel/lib/bootinfo/ kernel/lib/uacpi/ tools/xtask/src/grub.rs
 uefi-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/
@@ -667,6 +677,8 @@ update-online userspace/programs/system-release/ userspace/programs/systools/src
 update-online userspace/programs/systools/src/sysupdate/ userspace/programs/tuf/
 update-online tools/update-server/
 update-online userspace/programs/systools/src/update.rs
+update-online userspace/programs/systools/src/troubleshoot/ userspace/troubleshoot/
+update-online userspace/defaults/spark/services/sysupdate-stage.toml
 update-panic image/grub/installed.cfg.in image/grub/menu.cfg kernel/radix/src/panic.rs
 update-panic image/grub/rescue.cfg
 update-panic userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs

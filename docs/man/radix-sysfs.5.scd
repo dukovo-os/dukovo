@@ -37,6 +37,18 @@ _/kernel/version_
 _/kernel/cmdline_
 	The kernel command line the boot loader gave (*dukovo-boot*(7)).
 
+_/kernel/boot/times_
+	How long starting took before Spark (ADR 0474), in nanoseconds, a line
+	each, where it is known: *firmware_ns* and *loader_ns*, from the
+	firmware's Basic Boot Performance Table (ACPI's FPDT), how long the
+	firmware took to start the boot loader and how long the loader took,
+	to the end of the firmware's boot services, which the kernel reads
+	only where the UEFI memory map keeps the table for the firmware; and
+	*spark_ns*, when the kernel started Spark, by its own clock, since the
+	kernel started. A computer whose firmware keeps no such table shows
+	the last line alone. *startup*(8) reads it. Linux shows the first two
+	at _/sys/firmware/acpi/fpdt/boot/_.
+
 _/kernel/cpus_
 	The CPUs online.
 
