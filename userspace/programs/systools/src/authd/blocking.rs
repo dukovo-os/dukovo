@@ -52,7 +52,7 @@ use crate::sys::SYS;
 
 /// The settings: `on`, `tries`, `within`, `first`, `longest` and
 /// `never`, blocking.toml(5).
-pub(super) const SETTINGS: &str = "/system/settings/blocking.toml";
+pub(crate) const SETTINGS: &str = "/system/settings/blocking.toml";
 
 /// The blocks, one a line: `ADDRESS UNTIL STARTED TIMES WHY`, as
 /// `203.0.113.9 1794652320 1794651720 1 5 wrong passwords over SSH in 2
@@ -97,7 +97,7 @@ const NAMES_SHOWN: usize = 3;
 /// of an IPv6 address, its network. Ordered as the kernel keeps its
 /// blocks: the IPv4 addresses first, by number, then the IPv6 networks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(super) enum Source {
+pub(crate) enum Source {
     V4(Ipv4Addr),
     V6(u64),
 }
@@ -177,7 +177,7 @@ impl fmt::Display for Source {
 /// A network of `never`: an address and how many of its first bits name
 /// the network.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Network {
+pub(crate) struct Network {
     address: IpAddr,
     prefix: u8,
 }
@@ -286,7 +286,7 @@ fn bits_of(address: IpAddr) -> u128 {
 
 /// What blocking.toml(5) sets.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Settings {
+pub(crate) struct Settings {
     /// Whether addresses are blocked at all.
     pub on: bool,
     /// How many failed sign-ins block an address.
@@ -484,7 +484,7 @@ fn listed(names: &[String]) -> String {
 
 /// `seconds` in words, rounded to whole units: `40 seconds`, `2
 /// minutes`, `1 hour`, `3 days`.
-pub(super) fn span(seconds: u64) -> String {
+pub(crate) fn span(seconds: u64) -> String {
     let (count, unit) = match seconds {
         0..60 => (seconds, "second"),
         60..3600 => (seconds.div_ceil(60), "minute"),
@@ -1325,6 +1325,14 @@ mod tests {
         }
         let why = Settings::parse("never = [\"192.168.1.5/24\"]").unwrap_err();
         assert!(why.contains("its network is 192.168.1.0/24"), "{why}");
+    }
+
+    #[test]
+    fn the_file_the_system_ships_sets_the_defaults() {
+        // It says them out, so that a person sees what to change, and so
+        // it must say what authd does without it.
+        let shipped = include_str!("../../../../defaults/blocking.toml");
+        assert_eq!(Settings::parse(shipped).unwrap(), Settings::default());
     }
 
     #[test]

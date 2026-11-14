@@ -5,21 +5,11 @@
 //! who may, and whether guessing passwords is slowed by blocking.
 
 use accounts::sshd_config::{self, Settings};
-use serde::Deserialize;
 
 use super::context::Context;
 use super::line::{Outcome, Problem};
 use super::services::is_on;
-
-/// Where blocking is turned on and off, which authd reads (authd(8)).
-const BLOCKING: &str = "/system/settings/blocking.toml";
-
-/// What `blocking.toml` says of whether authd blocks, which is all that
-/// the check reads of it.
-#[derive(Deserialize)]
-struct Blocking {
-    on: Option<bool>,
-}
+use crate::authd::blocking as authd_blocking;
 
 /// The settings sshd signs people in by: `None` while sshd is not on,
 /// when nothing signs in over SSH whatever its file says.
@@ -89,25 +79,48 @@ pub(super) fn who_may_sign_in(context: &Context) -> Vec<Outcome> {
 }
 
 /// Warns when authd does not block an address that keeps guessing
-/// passwords. A missing file or key is blocking on, as authd has it.
+/// passwords. The file is read by the code authd reads it with, so that
+/// the check and authd cannot disagree about what it says; a missing file
+/// is the defaults, which is blocking on.
 pub(super) fn blocking(context: &Context) -> Vec<Outcome> {
-    let text = match context.read(BLOCKING) {
+    let text = match context.read(authd_blocking::SETTINGS) {
         Ok(text) => text.unwrap_or_default(),
         Err(why) => return vec![Outcome::skipped(why)],
     };
-    let on = match toml::from_str::<Blocking>(&text) {
-        Ok(blocking) => blocking.on.unwrap_or(true),
+    let settings = match authd_blocking::Settings::parse(&text) {
+        Ok(settings) => settings,
         Err(why) => {
-            let why = why.message().lines().next().unwrap_or_default();
-            return vec![Outcome::skipped(format!("{BLOCKING} does not read: {why}"))];
+            let why = why.lines().next().unwrap_or_default();
+            return vec![Outcome::skipped(format!(
+                "{} does not read: {why}",
+                authd_blocking::SETTINGS
+            ))];
         }
     };
-    let outcome = if on {
-        Outcome::passed("on: an address that keeps guessing passwords is blocked for a while")
+    let outcome = if settings.on {
+        Outcome::passed(format!("on: {}", blocks_in_words(&settings)))
     } else {
         Outcome::warning(Problem::BlockingOff, "blocking is off (blocking.toml: on = false)")
     };
     vec![outcome]
+}
+
+/// What the settings make blocking do, as `5 wrong tries in 10 minutes
+/// block an address for 10 minutes, doubling up to 1 day`. A block that
+/// cannot grow, since the first is the longest, says no doubling.
+fn blocks_in_words(settings: &authd_blocking::Settings) -> String {
+    let span = authd_blocking::span;
+    let blocks = format!(
+        "{} wrong tries in {} block an address for {}",
+        settings.tries,
+        span(settings.within),
+        span(settings.first)
+    );
+    if settings.longest > settings.first {
+        format!("{blocks}, doubling up to {}", span(settings.longest))
+    } else {
+        blocks
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +129,7 @@ mod tests {
 
     use super::super::context::planted::{System, service};
     use super::super::line::Verdict;
+    use super::authd_blocking::SETTINGS;
     use super::*;
 
     fn one(outcomes: Vec<Outcome>) -> Outcome {
@@ -210,24 +224,64 @@ mod tests {
         let system = System::new(Vec::new());
         // No file, and a file that leaves `on` out, are blocking on.
         assert_eq!(one(blocking(&system.context)).verdict, Verdict::Passed);
-        system.plant(BLOCKING, "tries = 5\nnever = [\"192.168.1.0/24\"]\n");
+        system.plant(SETTINGS, "tries = 5\nnever = [\"192.168.1.0/24\"]\n");
         assert_eq!(one(blocking(&system.context)).verdict, Verdict::Passed);
-        system.plant(BLOCKING, "on = true\n");
+        system.plant(SETTINGS, "on = true\n");
         assert_eq!(one(blocking(&system.context)).verdict, Verdict::Passed);
-        system.plant(BLOCKING, "on = false\ntries = 5\n");
+        system.plant(SETTINGS, "on = false\ntries = 5\n");
         let outcome = one(blocking(&system.context));
         assert_eq!((outcome.verdict, outcome.id.as_deref()), (Verdict::Warning, Some("SEC-112")));
         assert_eq!(outcome.detail, "blocking is off (blocking.toml: on = false)");
     }
 
     #[test]
-    fn a_blocking_file_that_does_not_read_skips_the_check() {
+    fn the_default_file_and_no_file_say_the_same_settings() {
         let system = System::new(Vec::new());
-        for text in ["on = \"yes\"\n", "on = \n"] {
-            system.plant(BLOCKING, text);
+        let none = one(blocking(&system.context));
+        assert_eq!(
+            none.detail,
+            "on: 5 wrong tries in 10 minutes block an address for 10 minutes, doubling up to 1 day"
+        );
+        system.plant(SETTINGS, include_str!("../../../../defaults/blocking.toml"));
+        assert_eq!(one(blocking(&system.context)).detail, none.detail);
+    }
+
+    #[test]
+    fn the_detail_says_the_settings_the_file_sets() {
+        let system = System::new(Vec::new());
+        system.plant(SETTINGS, "tries = 3\nwithin = \"2m\"\nfirst = \"30m\"\nlongest = \"6h\"\n");
+        assert_eq!(
+            one(blocking(&system.context)).detail,
+            "on: 3 wrong tries in 2 minutes block an address for 30 minutes, doubling up to 6 hours"
+        );
+        // A first block that is the longest never doubles, so it says so.
+        system.plant(SETTINGS, "first = \"1h\"\nlongest = \"1h\"\n");
+        assert_eq!(
+            one(blocking(&system.context)).detail,
+            "on: 5 wrong tries in 10 minutes block an address for 1 hour"
+        );
+    }
+
+    #[test]
+    fn a_blocking_file_authd_would_not_read_skips_the_check() {
+        let system = System::new(Vec::new());
+        // The file's own mistakes, then values authd refuses.
+        for text in [
+            "on = \"yes\"\n",
+            "on = \n",
+            "tries = 1\n",
+            "within = \"10 minutes\"\n",
+            "never = [\"192.168.1.5/24\"]\n",
+            "blocks = 5\n",
+        ] {
+            system.plant(SETTINGS, text);
             let outcome = one(blocking(&system.context));
             assert_eq!(outcome.verdict, Verdict::Skipped, "{text}");
-            assert!(outcome.detail.starts_with("/system/settings/blocking.toml does not read: "));
+            assert!(
+                outcome.detail.starts_with("/system/settings/blocking.toml does not read: "),
+                "{}",
+                outcome.detail
+            );
         }
     }
 }

@@ -24,6 +24,14 @@
 //! Reading needs the firewall capability's read right, and changing the
 //! rules its control right: elevate(8) gives an administrator's command
 //! the capability, and the `firewall` service holds it (admin.firewall).
+//!
+//! authd(8) blocks the addresses that guess passwords for a while, and
+//! gives the kernel's firewall the list (ADR 0479). `firewall blocked`
+//! shows it, `firewall unblock ADDRESS` lifts one block, and `firewall
+//! never-block [remove] NETWORK` keeps a network out of the list for good,
+//! or lets it in again, in blocking.toml(5). These three ask authd, which
+//! alone keeps the list and the file, so they need no capability of their
+//! own: authd answers an administrator's command inside elevate(8).
 
 use std::fmt;
 use std::fs;
@@ -32,6 +40,7 @@ use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+use accounts::request::{Answer, BlockedEntry, Request};
 use radix_abi::Status;
 use radix_abi::errors::Kernel;
 use radix_abi::firewall::{
@@ -41,9 +50,10 @@ use radix_abi::firewall::{
 use radix_abi::startup::SLOT_FIREWALL;
 
 use crate::args::{Arg, Args};
+use crate::authd::blocking::{Network, Source};
 use crate::ip;
 use crate::sys::SYS;
-use crate::util::{Fail, fail, fail_with, usage};
+use crate::util::{self, Fail, fail, fail_with, usage};
 
 /// The rules, a rule a line.
 pub const SETTINGS: &str = "/system/settings/firewall";
@@ -590,6 +600,9 @@ const HELP: &str = "Usage: firewall [status]
        firewall allow process NUMBER
        firewall remove NUMBER
        firewall load
+       firewall blocked
+       firewall unblock ADDRESS
+       firewall never-block [remove] NETWORK
 ";
 
 /// Runs firewall.
@@ -620,13 +633,15 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Ok(0)
         }
         Some((&"remove", [number])) => remove(number, &mut out),
+        Some((&("blocked" | "unblock" | "never-block"), _)) => blocks(&words, &mut out),
         Some((&"allow", ["process", number])) => allow_process(number, &mut out),
         Some((&("allow" | "deny"), _)) => {
             let rule = Rule::parse(&words).map_err(|why| usage(format!("firewall: {why}")))?;
             add(&rule, &mut out)
         }
         Some((other, _)) => Err(usage(format!(
-            "firewall: no command '{other}': status, list, allow, deny, remove or load"
+            "firewall: no command '{other}': status, list, allow, deny, remove, load, blocked, \
+             unblock or never-block"
         ))),
     }
 }
@@ -756,6 +771,152 @@ fn allow_process(number: &str, out: &mut dyn Write) -> Result<i32, Fail> {
         program: Some(path),
     };
     add(&rule, out)
+}
+
+/// What `firewall blocked`, `unblock` and `never-block` ask of authd (ADR
+/// 0479).
+#[derive(Debug, PartialEq, Eq)]
+enum Blocks {
+    /// The addresses blocked now.
+    Show,
+    /// Lift the block of a source.
+    Unblock(Source),
+    /// Keep `network` out of the blocks, or let them block it again when
+    /// `remove`.
+    NeverBlock { network: Network, remove: bool },
+}
+
+impl Blocks {
+    /// The command in `words`, `blocked`, `unblock ADDRESS` or `never-block
+    /// [remove] NETWORK`, with its address or network read the way authd
+    /// reads it, so that a mistake is told here in one plain line and
+    /// authd is asked only what it takes.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with the words.
+    fn parse(words: &[&str]) -> Result<Blocks, String> {
+        match words {
+            ["blocked"] => Ok(Blocks::Show),
+            ["unblock", address] => {
+                Source::parse(address).map(Blocks::Unblock).ok_or_else(|| not_an_address(address))
+            }
+            ["never-block", "remove", network] => {
+                Ok(Blocks::NeverBlock { network: Network::parse(network)?, remove: true })
+            }
+            // A network named `remove` is no network, so a lone `remove`
+            // is a command with its network left out.
+            ["never-block", network] if *network != "remove" => {
+                Ok(Blocks::NeverBlock { network: Network::parse(network)?, remove: false })
+            }
+            ["blocked", ..] => Err("blocked takes nothing more".into()),
+            ["unblock", ..] => Err("unblock takes one address, as `unblock 203.0.113.9`".into()),
+            _ => Err("never-block takes a network, as `never-block 192.168.1.0/24`, or remove \
+                      and a network"
+                .into()),
+        }
+    }
+
+    /// What authd is asked.
+    fn request(&self) -> Request {
+        match self {
+            Blocks::Show => Request::Blocked,
+            Blocks::Unblock(source) => Request::Unblock { address: source.to_string() },
+            Blocks::NeverBlock { network, remove } => {
+                Request::NeverBlock { network: network.to_string(), remove: *remove }
+            }
+        }
+    }
+
+    /// The line that says it is done, for a command that changes
+    /// something: none for the list.
+    fn done(&self) -> Option<String> {
+        Some(match self {
+            Blocks::Show => return None,
+            Blocks::Unblock(source) => format!("firewall: {source} is no longer blocked"),
+            Blocks::NeverBlock { network, remove: false } => {
+                format!("firewall: {network} is never blocked")
+            }
+            Blocks::NeverBlock { network, remove: true } => {
+                format!("firewall: {network} may be blocked again")
+            }
+        })
+    }
+}
+
+/// Why `word` is not an address that can be blocked.
+fn not_an_address(word: &str) -> String {
+    format!(
+        "`{}` is not an address that is blocked: write an IPv4 address, an IPv6 address, which \
+         stands for its network of 64 bits, or that network as 2001:db8:4:7::/64",
+        word.escape_debug()
+    )
+}
+
+/// `firewall blocked`, `unblock` and `never-block`: ask authd, which keeps
+/// the blocks and blocking.toml(5), and say what it answers.
+fn blocks(words: &[&str], out: &mut dyn Write) -> Result<i32, Fail> {
+    let command = Blocks::parse(words).map_err(usage)?;
+    let answer = match crate::account::ask(&command.request())? {
+        Answer::Done(answer) => answer,
+        Answer::Refused(why) => return Err(fail(why)),
+    };
+    match command.done() {
+        Some(done) => writeln!(out, "{done}")?,
+        None => {
+            let entries = BlockedEntry::parse_list(&answer);
+            let now = (util::now_ns() / 1_000_000_000) as i64;
+            write!(out, "{}", blocked_table(&entries, now, util::local_time))?;
+        }
+    }
+    Ok(0)
+}
+
+/// The table `firewall blocked` shows: each address, until when it is
+/// blocked, how many times it has been blocked this day, and why. `now`
+/// is the time in seconds since 1970, and `show` writes a time in a
+/// strftime(3) format, in the local time zone.
+fn blocked_table(entries: &[BlockedEntry], now: i64, show: impl Fn(i64, &str) -> String) -> String {
+    if entries.is_empty() {
+        return "No address is blocked.\n".into();
+    }
+    let mut rows = vec![["Blocked", "Until", "Times today", "Why"].map(String::from)];
+    rows.extend(entries.iter().map(|entry| {
+        [
+            entry.address.clone(),
+            until_text(entry.until, now, &show),
+            entry.times.to_string(),
+            entry.why.clone(),
+        ]
+    }));
+    // The last column, the reason, runs to the end of the line.
+    let width: [usize; 3] =
+        std::array::from_fn(|c| rows.iter().map(|row| row[c].chars().count()).max().unwrap_or(0));
+    let mut table = String::new();
+    for row in &rows {
+        table.push_str(&format!(
+            "{:<w0$}  {:<w1$}  {:<w2$}  {}\n",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            w0 = width[0],
+            w1 = width[1],
+            w2 = width[2]
+        ));
+    }
+    table
+}
+
+/// When a block ends, as the table says it: the local time of day, such as
+/// `14:32`, when that is today, and otherwise the date too.
+fn until_text(until: i64, now: i64, show: &impl Fn(i64, &str) -> String) -> String {
+    const DATE: &str = "%Y-%m-%d";
+    if show(until, DATE) == show(now, DATE) {
+        show(until, "%H:%M")
+    } else {
+        show(until, "%Y-%m-%d %H:%M")
+    }
 }
 
 /// `firewall status`: the rules' count, what was dropped, and each
@@ -950,5 +1111,174 @@ mod tests {
         assert_eq!(reach(&sshd, &[held("allow tcp 22 from 10.0.0.0/8", None)]), Reach::Some);
         assert_eq!(reach(&sshd, &[held("allow udp 22", None)]), Reach::Service);
         assert_eq!(reach(&sshd, &[held("deny ping", None)]), Reach::Service);
+    }
+
+    /// Times in UTC, so that the tests do not depend on the time zone of
+    /// the machine they run on.
+    fn utc(seconds: i64, format: &str) -> String {
+        util::time_text(seconds, format, true)
+    }
+
+    /// 2026-11-14 14:00:00 UTC.
+    const NOW: i64 = 1_794_664_800;
+
+    fn entry(address: &str, until: i64, times: u32, why: &str) -> BlockedEntry {
+        BlockedEntry { address: address.into(), until, times, why: why.into() }
+    }
+
+    #[test]
+    fn the_blocked_table_lines_up_its_columns_and_ends_with_the_reason() {
+        let entries = [
+            // 14:32 today.
+            entry("203.0.113.9", NOW + 32 * 60, 2, "5 wrong passwords over SSH in 2 minutes"),
+            // 14:05 today.
+            entry("2001:db8:4:7::/64", NOW + 5 * 60, 1, "5 refused SSH sign-ins in 4 minutes"),
+        ];
+        assert_eq!(
+            blocked_table(&entries, NOW, utc),
+            "Blocked            Until  Times today  Why\n\
+             203.0.113.9        14:32  2            5 wrong passwords over SSH in 2 minutes\n\
+             2001:db8:4:7::/64  14:05  1            5 refused SSH sign-ins in 4 minutes\n"
+        );
+    }
+
+    #[test]
+    fn a_block_that_ends_another_day_says_the_date() {
+        let entries = [
+            entry("203.0.113.9", NOW + 86_400, 3, "why"),
+            entry("198.51.100.4", NOW + 600, 1, "why"),
+        ];
+        assert_eq!(
+            blocked_table(&entries, NOW, utc),
+            "Blocked       Until             Times today  Why\n\
+             203.0.113.9   2026-11-15 14:00  3            why\n\
+             198.51.100.4  14:10             1            why\n"
+        );
+    }
+
+    #[test]
+    fn today_is_the_day_the_clock_shows_not_the_next_twenty_four_hours() {
+        // 23:50 to 00:10 is twenty minutes, and the next day.
+        let (late, after_midnight) = (1_794_700_200, 1_794_701_400);
+        assert_eq!(until_text(late + 300, late, &utc), "23:55");
+        assert_eq!(until_text(after_midnight, late, &utc), "2026-11-15 00:10");
+        // A block that ended a moment ago is told as the time of day too.
+        assert_eq!(until_text(late - 600, late, &utc), "23:40");
+    }
+
+    #[test]
+    fn nothing_blocked_is_one_plain_line() {
+        assert_eq!(blocked_table(&[], NOW, utc), "No address is blocked.\n");
+    }
+
+    #[test]
+    fn authds_answer_is_read_into_the_table() {
+        let answer = BlockedEntry::list(&[
+            entry("203.0.113.9", NOW + 60, 1, "5 wrong passwords over SSH in 1 minute, for root"),
+            entry("198.51.100.4", NOW + 120, 2, "5 wrong sharing passwords in 3 minutes"),
+        ]);
+        let table = blocked_table(&BlockedEntry::parse_list(&answer), NOW, utc);
+        assert_eq!(table.lines().count(), 3);
+        assert!(
+            table.contains("14:01  1            5 wrong passwords over SSH in 1 minute, for root")
+        );
+        assert!(table.contains("14:02  2            5 wrong sharing passwords in 3 minutes"));
+        // An answer with no blocks, as authd gives for none, is none.
+        assert_eq!(
+            blocked_table(&BlockedEntry::parse_list(""), NOW, utc),
+            "No address is blocked.\n"
+        );
+    }
+
+    fn parsed(text: &str) -> Result<Blocks, String> {
+        Blocks::parse(&text.split_whitespace().collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn unblock_takes_an_address_or_the_network_of_an_ipv6_one() {
+        for (text, address) in [
+            ("unblock 203.0.113.9", "203.0.113.9"),
+            ("unblock 203.0.113.9/32", "203.0.113.9"),
+            // An IPv6 address is blocked as its /64, so that is what is lifted.
+            ("unblock 2001:db8:4:7::5", "2001:db8:4:7::/64"),
+            ("unblock 2001:db8:4:7::/64", "2001:db8:4:7::/64"),
+            // An IPv4 address written as IPv6 is the IPv4 one.
+            ("unblock ::ffff:203.0.113.9", "203.0.113.9"),
+        ] {
+            let command = parsed(text).unwrap();
+            assert_eq!(command.request(), Request::Unblock { address: address.into() }, "{text}");
+            assert_eq!(
+                command.done().unwrap(),
+                format!("firewall: {address} is no longer blocked")
+            );
+        }
+    }
+
+    #[test]
+    fn unblock_refuses_what_is_no_address_that_is_blocked() {
+        for text in [
+            "unblock example.org",
+            "unblock 203.0.113.0/24",
+            "unblock 2001:db8::/48",
+            "unblock 127.0.0.1",
+            "unblock ::1",
+            "unblock 0.0.0.0",
+            "unblock 203.0.113.9/",
+        ] {
+            let why = parsed(text).unwrap_err();
+            assert!(why.contains("is not an address that is blocked"), "{text}: {why}");
+        }
+        assert!(parsed("unblock").unwrap_err().contains("takes one address"));
+        assert!(parsed("unblock 203.0.113.9 203.0.113.10").unwrap_err().contains("one address"));
+    }
+
+    #[test]
+    fn never_block_takes_a_network_and_remove_gives_it_back() {
+        let command = parsed("never-block 192.168.1.0/24").unwrap();
+        assert_eq!(
+            command.request(),
+            Request::NeverBlock { network: "192.168.1.0/24".into(), remove: false }
+        );
+        assert_eq!(command.done().unwrap(), "firewall: 192.168.1.0/24 is never blocked");
+        let command = parsed("never-block remove 192.168.1.0/24").unwrap();
+        assert_eq!(
+            command.request(),
+            Request::NeverBlock { network: "192.168.1.0/24".into(), remove: true }
+        );
+        assert_eq!(command.done().unwrap(), "firewall: 192.168.1.0/24 may be blocked again");
+        // One address is a network of its own, and is written as it was.
+        assert_eq!(
+            parsed("never-block 198.51.100.4").unwrap().request(),
+            Request::NeverBlock { network: "198.51.100.4".into(), remove: false }
+        );
+        assert_eq!(
+            parsed("never-block 2001:db8::/48").unwrap().request(),
+            Request::NeverBlock { network: "2001:db8::/48".into(), remove: false }
+        );
+    }
+
+    #[test]
+    fn never_block_says_what_is_wrong_with_its_network() {
+        let why = parsed("never-block 192.168.1.5/24").unwrap_err();
+        assert!(why.contains("its network is 192.168.1.0/24"), "{why}");
+        let why = parsed("never-block office").unwrap_err();
+        assert!(why.contains("is not a network"), "{why}");
+        // A lone `remove` is the command without its network, not a network.
+        assert!(parsed("never-block remove").unwrap_err().contains("takes a network"));
+        assert!(parsed("never-block").unwrap_err().contains("takes a network"));
+        assert!(
+            parsed("never-block 10.0.0.0/8 10.1.0.0/16").unwrap_err().contains("takes a network")
+        );
+        assert!(
+            parsed("never-block remove 10.0.0.0/8 more").unwrap_err().contains("takes a network")
+        );
+    }
+
+    #[test]
+    fn blocked_asks_for_the_list_and_nothing_more() {
+        let command = parsed("blocked").unwrap();
+        assert_eq!(command.request(), Request::Blocked);
+        assert_eq!(command.done(), None);
+        assert!(parsed("blocked now").unwrap_err().contains("takes nothing more"));
     }
 }

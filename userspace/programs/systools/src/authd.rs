@@ -359,7 +359,8 @@ macro_rules! audit {
     ($($arg:tt)*) => { println!("<86>authd: {}", format_args!($($arg)*)) };
 }
 
-mod blocking;
+// dukovo-check(8) reads blocking.toml(5) with the code authd does.
+pub(crate) mod blocking;
 pub(crate) mod console;
 mod help;
 mod jobs;
