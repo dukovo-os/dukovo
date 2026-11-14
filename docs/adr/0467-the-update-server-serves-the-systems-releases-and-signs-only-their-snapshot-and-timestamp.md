@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0467. The update server serves the system's releases and signs only their snapshot and timestamp
 
-- Status: Accepted
+- Status: Accepted; the server runs on Dukovo since [0542](0542-the-update-server-runs-on-dukovo-and-a-deploy-sends-only-what-it-lacks-without-rsync.md)
 - Date: 2026-11-12
 
 ## Context
