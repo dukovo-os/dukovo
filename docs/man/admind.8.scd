@@ -59,8 +59,8 @@ head for 60 seconds is closed.
 A request meets these checks in this order, and the first that fails
 answers it: its method is *GET*, *HEAD* or *POST* and its address at most
 2 KiB; its *Host* is this machine's name, an address of it or a name of
-its certificate, so that no other name's DNS can point a browser here
-(421); it brings no API token, which the console does not take yet
+its certificate, with any port, so that no other name's DNS can point a
+browser here (421); it brings no API token, which the console does not take yet
 (401); its address is a route or a file; a route for the signed in has a
 session (401), and one that is not for a session that may only add a
 second step has one that may do more (403); a request that changes

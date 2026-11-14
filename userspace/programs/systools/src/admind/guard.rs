@@ -56,16 +56,17 @@ pub fn clear_cookie(name: &str) -> String {
     set_cookie(name, "", Some(0))
 }
 
-/// The host a request's `Host` header names, without its port, if it is
-/// this machine on `port`: one of its `names` (its host name, that name
-/// with `.local`, `localhost`, and its certificate's names), or one of
-/// its `addresses`, loopback included. Names are compared without case.
-pub fn host<'a>(
-    header: &'a str,
-    names: &[String],
-    addresses: &[IpAddr],
-    port: u16,
-) -> Option<&'a str> {
+/// The host a request's `Host` header names, without its port, and the
+/// port it asked for (443 when it names none), if the host is this
+/// machine: one of its `names` (its host name, that name with `.local`,
+/// `localhost`, and its certificate's names), or one of its `addresses`,
+/// loopback included. Names are compared without case.
+///
+/// Any port is taken. A router's forwarded port or an SSH tunnel reaches
+/// admind from another, and the browser writes that one; what keeps
+/// another name's DNS from pointing a browser here is the name, and the
+/// origin a change must come from is made of both (`origin`).
+pub fn host<'a>(header: &'a str, names: &[String], addresses: &[IpAddr]) -> Option<(&'a str, u16)> {
     let (host, given) = if let Some(rest) = header.strip_prefix('[') {
         let (inside, after) = rest.split_once(']')?;
         (inside, if after.is_empty() { None } else { Some(after.strip_prefix(':')?) })
@@ -75,11 +76,16 @@ pub fn host<'a>(
             None => (header, None),
         }
     };
-    let port_ok = match given {
-        Some(given) => given.parse::<u16>().ok() == Some(port),
-        None => port == 443,
+    let port = match given {
+        // Digits alone: Rust would read `+80` as 80, which no browser
+        // writes and so no origin could match.
+        Some(given) if given.bytes().all(|b| b.is_ascii_digit()) => {
+            given.parse::<u16>().ok().filter(|port| *port != 0)?
+        }
+        Some(_) => return None,
+        None => 443,
     };
-    if host.is_empty() || !port_ok {
+    if host.is_empty() {
         return None;
     }
     let known = match host.parse::<IpAddr>() {
@@ -89,7 +95,7 @@ pub fn host<'a>(
                 || names.iter().any(|name| name.eq_ignore_ascii_case(host))
         }
     };
-    known.then_some(host)
+    known.then_some((host, port))
 }
 
 /// The console's origin for a request to `host` on `port`, as a browser
@@ -208,31 +214,35 @@ mod tests {
             vec!["duke-nas".to_string(), "duke-nas.local".into(), "admin.example.org".into()];
         let addresses: Vec<IpAddr> =
             vec!["192.168.1.10".parse().unwrap(), "fd00::10".parse().unwrap()];
-        let host = |header: &'static str| host(header, &names, &addresses, 9090);
-        assert_eq!(host("duke-nas.local:9090"), Some("duke-nas.local"));
-        assert_eq!(host("DUKE-NAS.LOCAL:9090"), Some("DUKE-NAS.LOCAL"));
-        assert_eq!(host("admin.example.org:9090"), Some("admin.example.org"));
-        assert_eq!(host("192.168.1.10:9090"), Some("192.168.1.10"));
-        assert_eq!(host("[fd00::10]:9090"), Some("fd00::10"));
-        assert_eq!(host("localhost:9090"), Some("localhost"));
-        assert_eq!(host("127.0.0.1:9090"), Some("127.0.0.1"));
-        assert_eq!(host("[::1]:9090"), Some("::1"));
+        let host = |header: &'static str| host(header, &names, &addresses);
+        assert_eq!(host("duke-nas.local:9090"), Some(("duke-nas.local", 9090)));
+        assert_eq!(host("DUKE-NAS.LOCAL:9090"), Some(("DUKE-NAS.LOCAL", 9090)));
+        assert_eq!(host("admin.example.org:9090"), Some(("admin.example.org", 9090)));
+        assert_eq!(host("192.168.1.10:9090"), Some(("192.168.1.10", 9090)));
+        assert_eq!(host("[fd00::10]:9090"), Some(("fd00::10", 9090)));
+        assert_eq!(host("localhost:9090"), Some(("localhost", 9090)));
+        assert_eq!(host("127.0.0.1:9090"), Some(("127.0.0.1", 9090)));
+        assert_eq!(host("[::1]:9090"), Some(("::1", 9090)));
+        // Through a forwarded port or a tunnel, the port is another, and
+        // with none it is HTTPS's.
+        assert_eq!(host("localhost:8443"), Some(("localhost", 8443)));
+        assert_eq!(host("duke-nas.local"), Some(("duke-nas.local", 443)));
+        assert_eq!(host("[fd00::10]"), Some(("fd00::10", 443)));
         for wrong in [
             "evil.example:9090",
             "duke-nas.local.evil.example:9090",
-            "duke-nas.local",
-            "duke-nas.local:443",
             "duke-nas.local:90900",
+            "duke-nas.local:0",
+            "duke-nas.local:+9090",
+            "duke-nas.local:",
             "10.9.9.9:9090",
             "[fd00::11]:9090",
-            "[fd00::10]",
             "[fd00::10]9090",
             ":9090",
             "",
         ] {
             assert_eq!(host(wrong), None, "{wrong}");
         }
-        assert_eq!(super::host("duke-nas.local", &names, &addresses, 443), Some("duke-nas.local"));
     }
 
     #[test]

@@ -172,8 +172,9 @@ own record.
   routes that sign a browser in have no token yet and keep the first two.
   A body is `application/json`; nothing takes a form. A request's `Host`
   must be this machine's name, an address of it, `localhost` or a name of
-  its certificate, or it is answered 421, so that no other name's DNS can
-  point a browser here.
+  its certificate, with any port, or it is answered 421, so that no other
+  name's DNS can point a browser here; the port is free so that a port
+  forward or an SSH tunnel works, and the `Origin` is checked against it.
 - **Every answer carries a strict content security policy** (the
   console's own files, no inline script or style, no frames), `nosniff`,
   `Referrer-Policy: no-referrer`, the same-origin policies, a permissions

@@ -138,7 +138,7 @@ export function askToUnlock(session, action) {
           h('b', { class: 'label' }, 'Stay unlocked'),
           h('span', {}, 'For 15 minutes'),
           h('span', { class: 'hint' },
-            'The header shows the minutes left, and one tap adds 15 more while you work. Locks sooner if you ',
+            'The header shows the minutes left, and one tap sets it back to 15 while you work. Locks sooner if you ',
             'sign out or close every console tab. Every change while unlocked is in the journal.'))),
       h('div', { class: 'dialog-foot' }, cancel));
 

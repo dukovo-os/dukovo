@@ -641,10 +641,10 @@ fn host_of(shared: &Shared, headers: &HeaderMap) -> Result<(String, String), Fai
     let wrong = || Failure::new(Kind::WrongHost, "this is not the name of this machine");
     let header = single(headers, &header::HOST).ok_or_else(wrong)?;
     let identity = shared.identity.borrow();
-    let host =
-        guard::host(header, &identity.names, &identity.addresses, shared.port).ok_or_else(wrong)?;
+    let (host, port) =
+        guard::host(header, &identity.names, &identity.addresses).ok_or_else(wrong)?;
     let host = host.to_ascii_lowercase();
-    let origin = guard::origin(&host, shared.port);
+    let origin = guard::origin(&host, port);
     Ok((host, origin))
 }
 

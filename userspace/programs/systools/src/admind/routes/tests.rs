@@ -465,7 +465,7 @@ fn a_method_or_address_that_is_not_answered_is_refused_before_anything_else_is_l
 fn a_host_that_is_not_this_machines_is_not_answered_whatever_it_asks_for() {
     run(async {
         let world = world("hosts");
-        for host in ["evil.example", "evil.example:9090", "nas.example:9091", "nas.example:", ""] {
+        for host in ["evil.example", "evil.example:9090", "nas.example:0", "nas.example:", ""] {
             for path in ["/api/1/health", "/", "/api/1/nothing"] {
                 let answered = send(&world, get(path).with("host", Some(host))).await;
                 assert_eq!(
@@ -487,6 +487,9 @@ fn a_host_that_is_not_this_machines_is_not_answered_whatever_it_asks_for() {
             "localhost:9090",
             "127.0.0.1:9090",
             "[::1]:9090",
+            // Through a forwarded port or a tunnel.
+            "localhost:8443",
+            "nas.local",
         ] {
             let answered = send(&world, get("/api/1/health").with("host", Some(host))).await;
             assert_eq!(answered.status, 200, "{host}");
@@ -573,11 +576,21 @@ fn a_sign_in_that_does_not_come_from_the_consoles_own_page_is_refused_before_aut
             assert_eq!((answered.status, answered.error().as_str()), (403, "ADM-109"));
             assert!(answered.cookies().is_empty());
         }
-        // The page's own request, with the header a browser adds.
+        // Through a tunnel, the browser asks for another port, and its
+        // page is at that port: the origin of the other is not its own.
+        let tunnelled = |origin| {
+            post("/api/1/sign-in", &body)
+                .with("host", Some("localhost:8443"))
+                .with("origin", Some(origin))
+        };
+        let answered = send(&world, tunnelled("https://localhost:9090")).await;
+        assert_eq!((answered.status, answered.error().as_str()), (403, "ADM-109"));
+        // The page's own requests, with the header a browser adds.
         let same = post("/api/1/sign-in", &body).with("sec-fetch-site", Some("same-origin"));
         assert_eq!(send(&world, same).await.status, 200);
+        assert_eq!(send(&world, tunnelled("https://localhost:8443")).await.status, 200);
         assert_eq!(world.console.authd.verbs().first().map(String::as_str), Some("begin"));
-        assert_eq!(world.console.authd.verbs().iter().filter(|v| *v == "begin").count(), 1);
+        assert_eq!(world.console.authd.verbs().iter().filter(|v| *v == "begin").count(), 2);
     });
 }
 

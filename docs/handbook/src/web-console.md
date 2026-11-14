@@ -310,7 +310,8 @@ center has a page for each.
 - **The certificate warning comes back.** The machine made a new
   certificate (see "The first visit"). Compare the fingerprint again.
 - **This is not the name of this machine (ADM-114).** Open the console by
-  the machine's name or an address, with the port.
+  the machine's name or one of its addresses, as its sign-in screen shows
+  them.
 - **The name or the password is wrong (ADM-101).** Check both, and wait
   for the answer.
 - **That code is not right (ADM-102).** Wait for the app's next code, check

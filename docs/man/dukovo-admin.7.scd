@@ -56,8 +56,9 @@ them when the certificate changes.
 
 The console answers only to the machine's own name, that name with
 *.local*, *localhost*, the addresses of the machine's cards and the names
-its certificate holds, each with the port; a request for another name is
-refused (ADM-114), so that no one else's DNS can point a browser at it.
+its certificate holds; a request for another name is refused (ADM-114),
+so that no one else's DNS can point a browser at it. The port may be any,
+so that a router's port forward or an SSH tunnel reaches it.
 Whom it answers by address is *reach* in *admin.toml*(5): with *private*,
 the default, this machine, the networks of its own cards and the address
 ranges no one reaches from the internet; with *any*, everyone. A
