@@ -10,8 +10,9 @@
 //! seen through. Three starts in a row are cut short by power cuts, and
 //! the menu starts Rescue by itself: networking stays off, alice signs
 //! in with her password, and Rescue says the last three starts were not
-//! seen through (ADR 0501). From Rescue's shell the health check goes
-//! and the only slot, *@system.a*, is removed; at the restart no slot is
+//! seen through (ADR 0501). Check the network turns networking on and
+//! shows what netcheck finds, until Enter is pressed (ADR 0489). From
+//! Rescue's shell the health check goes and the only slot, *@system.a*, is removed; at the restart no slot is
 //! left, and Rescue starts by itself again. It reinstalls Dukovo from its
 //! own copy, every file checked, and the system that then starts has
 //! alice's file and app as they were. On the host, after each boot, the
@@ -23,7 +24,7 @@ use super::install_uefi::{INSTALL_DISKS, PASSWORD, install, wait_for_screen};
 
 pub const CASE: Case = Case {
     name: "rescue",
-    about: "Rescue repairs a machine whose slots are both broken (ADRs 0459, 0460): after an install from the stick, three starts cut short start Rescue by itself, with networking off and an administrator's password; with the only slot removed it starts by itself again, reinstalls Dukovo from its own copy, and alice's file and app are there in the system that then starts",
+    about: "Rescue repairs a machine whose slots are both broken (ADRs 0459, 0460): after an install from the stick, three starts cut short start Rescue by itself, with networking off and an administrator's password; Check the network turns networking on and runs netcheck (ADR 0489); with the only slot removed it starts by itself again, reinstalls Dukovo from its own copy, and alice's file and app are there in the system that then starts",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // The live menu entry has its own flags before these.
@@ -46,6 +47,10 @@ const ROOT: &str = "sda4";
 /// How long a reinstall may take, in seconds: it copies and reads back
 /// the whole system.
 const REINSTALL_SECONDS: u64 = 300;
+
+/// How long Rescue may take to turn networking on, wait for an address
+/// and run netcheck, in seconds.
+const NETWORK_CHECK_SECONDS: u64 = 90;
 
 /// A health check that never ends, so that no start is seen through.
 const NEVER_HEALTHY: &str =
@@ -82,7 +87,7 @@ fn in_rescue(vm: &mut Vm) -> Result<usize, String> {
 
 /// Chooses `choice` in Rescue's menu.
 fn choose(vm: &mut Vm, choice: &str) -> Result<(), String> {
-    answer_prompt(vm, "Choose 0 to 9:", choice)
+    answer_prompt(vm, "Choose 0 to 11:", choice)
 }
 
 /// The second boot, from the installed disk alone.
@@ -133,8 +138,16 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         return Err("Rescue started networking before anyone turned it on".into());
     }
 
+    // Check the network turns networking on and shows what netcheck
+    // finds, until a key is pressed (ADR 0489).
+    choose(vm, "7")?;
+    wait_for_screen(vm, "Press Enter to go back to the choices.", NETWORK_CHECK_SECONDS)?;
+    vm.expect_screen(&["netcheck: "])?;
+    answer_prompt(vm, "Press Enter to go back to the choices.", "")?;
+    vm.expect_screen(&["Back in Rescue."])?;
+
     // Both slots broken: the health check goes, and the only slot.
-    choose(vm, "6")?;
+    choose(vm, "8")?;
     answer_prompt(
         vm,
         "#",
@@ -146,7 +159,7 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_screen(&["gone: 42"])?;
     answer_prompt(vm, "#", "exit")?;
     vm.expect_screen(&["Back in Rescue."])?;
-    choose(vm, "8")?;
+    choose(vm, "10")?;
 
     // No slot to start: Rescue starts by itself, and reinstalls.
     in_rescue(vm)?;
@@ -156,7 +169,7 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     answer_prompt(vm, "Type yes to reinstall:", "yes")?;
     wait_for_screen(vm, "is back in slot A", REINSTALL_SECONDS)?;
     vm.expect_screen(&[&format!("Dukovo {VERSION} is back in slot A, every file checked")])?;
-    choose(vm, "8")?;
+    choose(vm, "10")?;
 
     // The system starts as usual, with alice's file and app.
     vm.expect(&format!("spark: /system is Dukovo's root on {ROOT}"))?;

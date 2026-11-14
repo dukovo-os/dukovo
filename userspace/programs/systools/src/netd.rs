@@ -181,7 +181,8 @@ impl Dhcpv6 {
 }
 
 impl Setup {
-    fn dhcp(&self) -> bool {
+    /// Whether the card asks DHCP.
+    pub(crate) fn dhcp(&self) -> bool {
         self.dhcp.unwrap_or(self.addresses.is_empty())
     }
 
@@ -1098,15 +1099,21 @@ struct Netd {
     metered: Option<String>,
 }
 
+/// How `settings` have the card named `name`, with the address `mac`, set
+/// up: the first section that names it, else the defaults.
+pub(crate) fn setup_of(settings: &[(String, Setup)], name: &str, mac: &str) -> Setup {
+    let mac = mac.to_ascii_lowercase();
+    settings
+        .iter()
+        .find(|(card, _)| *card == name || *card == mac)
+        .map_or_else(Setup::default, |(_, setup)| setup.clone())
+}
+
 impl Netd {
     /// How the settings have the card named `name`, with the address
     /// `mac`, set up.
     fn setup(&self, name: &str, mac: &str) -> Setup {
-        let mac = mac.to_ascii_lowercase();
-        self.settings
-            .iter()
-            .find(|(card, _)| *card == name || *card == mac)
-            .map_or_else(Setup::default, |(_, setup)| setup.clone())
+        setup_of(&self.settings, name, mac)
     }
 
     fn read_settings(&mut self) {

@@ -37,6 +37,19 @@ pub const ALL_NAMESPACES: u32 = u32::MAX;
 pub const LOG_HEALTH: u8 = 0x02;
 /// The bytes of [`LOG_HEALTH`].
 pub const LOG_HEALTH_SIZE: usize = 512;
+/// The Device Self-test log (5.16.1.7): the operation that runs and how
+/// far it got, then the newest results first, 28 bytes each.
+pub const LOG_SELF_TEST: u8 = 0x06;
+/// The bytes of [`LOG_SELF_TEST`] read: its head and the newest 18 of
+/// its 20 results, which fit what radix-block(2)'s SELF_TEST gives.
+pub const LOG_SELF_TEST_SIZE: usize = 512;
+/// Device Self-test's codes (5.9): the short and the extended test, and
+/// an abort of the one that runs.
+pub const SHORT_SELF_TEST: u32 = 0x1;
+/// See [`SHORT_SELF_TEST`].
+pub const EXTENDED_SELF_TEST: u32 = 0x2;
+/// See [`SHORT_SELF_TEST`].
+pub const ABORT_SELF_TEST: u32 = 0xf;
 
 /// Admin command opcodes (5).
 pub mod admin {
@@ -54,6 +67,8 @@ pub mod admin {
     pub const IDENTIFY: u8 = 0x06;
     /// Set Features.
     pub const SET_FEATURES: u8 = 0x09;
+    /// Device Self-test.
+    pub const DEVICE_SELF_TEST: u8 = 0x14;
     /// Doorbell Buffer Config: shadow doorbells.
     pub const DOORBELL_BUFFER_CONFIG: u8 = 0x7c;
 }
@@ -148,6 +163,20 @@ impl Command {
             opcode: admin::GET_LOG_PAGE,
             namespace: ALL_NAMESPACES,
             prp1: buffer,
+            dwords,
+            ..Command::default()
+        }
+    }
+
+    /// Device Self-test with code `code` ([`SHORT_SELF_TEST`] and the
+    /// others) for the controller and every namespace. It ends once the
+    /// test has started; the log says how it goes.
+    pub fn self_test(code: u32) -> Command {
+        let mut dwords = [0; 6];
+        dwords[0] = code;
+        Command {
+            opcode: admin::DEVICE_SELF_TEST,
+            namespace: ALL_NAMESPACES,
             dwords,
             ..Command::default()
         }

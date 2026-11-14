@@ -13,6 +13,18 @@
 //! slot that is there start; sets the count of starts not seen through
 //! back to none; and makes Dukovo's firmware boot entry first again
 //! where the firmware has one. Nothing in the root changes.
+//!
+//! An EFI system partition whose FAT cannot be read is made again, as
+//! FAT32, and filled as an install fills it, with Rescue's files from the
+//! stick's release too; that erases it, so it is done only once the
+//! person has typed the disk's name. It is the partition with the EFI
+//! system partition's type on the disk that holds the Dukovo root, and
+//! no other. Where Dukovo is found nowhere, or Secure Boot is on, it says
+//! which firmware setting to change.
+//!
+//! When it misbehaves, read `/tmp/install/repair-startup.log`, which has
+//! every command it ran; the `repair-startup` boot test breaks a
+//! partition and mends it.
 
 use std::fs;
 use std::io::BufRead as _;
@@ -23,7 +35,7 @@ use slots::state::{self, Slot, State};
 use crate::disks;
 use crate::install::{self, BootDisk};
 use crate::log::Log;
-use crate::machine;
+use crate::machine::{self, SataMode};
 
 /// Where the kernel lists disks and partitions.
 const BLOCK: &str = "/kernel/block";
@@ -118,19 +130,77 @@ pub fn run() -> u8 {
     let kind = |name: &str| fs::read_to_string(Path::new(BLOCK).join(name).join("parttype")).ok();
     let found = find(&names, kind, stick.as_deref());
     let status = if found.is_empty() {
-        println!(
-            "No installed Dukovo was found on this computer's disks. If one is installed, the \
-             firmware may show its disks to Windows alone: in the firmware's settings, set the \
-             SATA mode to AHCI, not RAID, and try again."
-        );
+        println!("{}", nothing_found(machine::sata_mode()));
         1
     } else {
         repair_all(&found)
     };
+    if machine::secure_boot() {
+        println!("{SECURE_BOOT_ON}");
+    }
     println!("Remove the stick, then press Enter to restart.");
     let _ = std::io::stdin().lock().read_line(&mut String::new());
     let _ = std::process::Command::new("/system/commands/reboot").status();
     status
+}
+
+/// What it says when it finds no Dukovo: a SATA controller in RAID or IDE
+/// mode, when the computer has one and no controller in AHCI mode, hides
+/// the disks from every system but the one the vendor set up, so the
+/// firmware's SATA mode is the setting to change.
+fn nothing_found(mode: Option<SataMode>) -> String {
+    let advice = match mode {
+        Some(mode) => format!(
+            "The computer's SATA controller is in {} mode, which can hide its disks from every \
+             system but Windows. In the firmware's settings, set the SATA mode, also called SATA \
+             Operation or Storage Configuration, to AHCI, and try again.",
+            mode.name()
+        ),
+        None => "If one is installed, check that its disk is connected; and if the firmware has a \
+                 SATA mode setting, set it to AHCI, not RAID, as a controller in RAID mode hides \
+                 the disks from every system but Windows."
+            .to_string(),
+    };
+    format!("No installed Dukovo was found on this computer's disks. {advice}")
+}
+
+/// What it says when Secure Boot is on: the firmware then refuses to
+/// start what is not signed for it, and Dukovo's startup files are not,
+/// before 1.0 (the handbook's chapter on supported hardware).
+const SECURE_BOOT_ON: &str = "Secure Boot is on in the firmware, and Dukovo's startup files are \
+    not signed for it before 1.0, so the firmware may refuse to start them. In the firmware's \
+    settings, under Security or Boot, turn Secure Boot off.";
+
+/// Whether `typed` is the name of `found`'s disk, which is what the person
+/// must type before its EFI system partition is made again.
+fn names_the_disk(found: &Found, typed: &str) -> bool {
+    typed.trim() == found.disk
+}
+
+/// What it says before it makes `found`'s EFI system partition again, in
+/// lines that fit an 80-column console.
+fn question(found: &Found) -> String {
+    format!(
+        "The EFI system partition {efi} of {disk} cannot be read.\n\
+         Dukovo can make it again, as FAT32, and put back GRUB, its start menu and\n\
+         Rescue's files from this stick. That erases everything on {efi},\n\
+         including the startup files of any other system that shares it, such as\n\
+         Windows'. The rest of {disk} stays as it is, and so does Dukovo's root.\n\
+         To make {efi} again, type the disk's name, {disk}, and press Enter.\n\
+         To leave it as it is, press Enter alone: ",
+        efi = found.efi,
+        disk = found.disk
+    )
+}
+
+/// Asks on the console whether to make `found`'s EFI system partition
+/// again, and is answered by a line of its input.
+fn confirmed(found: &Found) -> bool {
+    use std::io::Write as _;
+    print!("{}", question(found));
+    let _ = std::io::stdout().flush();
+    let mut typed = String::new();
+    std::io::stdin().lock().read_line(&mut typed).is_ok() && names_the_disk(found, &typed)
 }
 
 /// Repairs each of `found`, saying what it did; 0 if each was repaired.
@@ -173,19 +243,60 @@ fn repair(found: &Found, log: &mut Log) -> Result<Vec<String>, String> {
     Ok(said)
 }
 
-/// The slot state and whether the menu keeps a serial console, as the
-/// EFI system partition `efi` holds them; neither when it cannot be read.
-fn on_partition(efi: &str, log: &mut Log) -> (Option<State>, bool) {
+/// What a repair finds on an EFI system partition.
+enum Esp {
+    /// It reads: the slot state it holds, if a copy is whole, and whether
+    /// its menu keeps a serial console.
+    Reads { state: Option<State>, serial: bool },
+    /// Its FAT cannot be read.
+    Unreadable,
+}
+
+/// What the EFI system partition `efi` holds that a repair keeps, or that
+/// it cannot be read.
+fn on_partition(efi: &str, log: &mut Log) -> Esp {
     let esp = Path::new(install::WORK).join("esp");
     if install::mount(efi, &esp, &["-t", "fat"], log).is_err() {
-        return (None, false);
+        return Esp::Unreadable;
     }
     let copy = |name: &str| fs::read(esp.join(name)).ok().and_then(|block| State::decode(&block));
     let found = state::newest(copy(state::COPIES[0]), copy(state::COPIES[1]));
     let serial = fs::read_to_string(esp.join("boot/grub/grub.cfg"))
         .is_ok_and(|menu| menu.contains("console=ttyS"));
     let _ = install::run_when_free(log, "umount", &[&install::path(&esp)]);
-    (found.map(|(state, _)| state), serial)
+    Esp::Reads { state: found.map(|(state, _)| state), serial }
+}
+
+/// Makes `found`'s EFI system partition again, as FAT32 labelled as an
+/// install labels it, empty: [`install::grub_on`] and the Rescue step
+/// fill it as an install does.
+fn make_again(found: &Found, log: &mut Log) -> Result<(), String> {
+    let device = install::path(&disks::device(&found.efi));
+    log.run("mkfs-fat", &["-F", "32", "-n", install::ESP_LABEL, &device]).map(drop)
+}
+
+/// Puts Rescue's files of the stick's release on `found`'s EFI system
+/// partition, which was made again, and says what came of it. The system
+/// starts without Rescue if the stick's release cannot be read or does
+/// not fit, as after an install whose partition is too small.
+fn rescue_back(found: &Found, log: &mut Log) -> String {
+    let put = install::find_release(None, log).and_then(|source| {
+        log.installing(&found.disk, &source.release.version);
+        let disk = BootDisk {
+            disk: found.disk.clone(),
+            efi: found.efi.clone(),
+            bios_boot: found.bios_boot,
+        };
+        install::install_rescue(&[disk], &source, log).map(|()| source.release.version)
+    });
+    match put {
+        Ok(version) => format!("Rescue of Dukovo {version} is on {} again.", found.efi),
+        Err(why) => format!(
+            "Rescue's files could not be put back on {}: {why}. The system starts without \
+             Rescue until an update or an install puts it back.",
+            found.efi
+        ),
+    }
 }
 
 /// Repairs the startup of `found`, its root mounted at `root`.
@@ -198,7 +309,21 @@ fn repair_mounted(
     let mut said = Vec::new();
     let present =
         |slot: Slot| root.join(slot.subvolume()).join("boot/grub/installed.cfg").is_file();
-    let (found_state, serial) = on_partition(&found.efi, log);
+    let (found_state, serial, remade) = match on_partition(&found.efi, log) {
+        Esp::Reads { state, serial } => (state, serial, false),
+        Esp::Unreadable => {
+            if !confirmed(found) {
+                return Err(format!(
+                    "its EFI system partition {} cannot be read, and was left as it is; run \
+                     Repair startup again and type the disk's name to have it made again",
+                    found.efi
+                ));
+            }
+            make_again(found, log)?;
+            said.push(format!("{} could not be read: it is made again, as FAT32.", found.efi));
+            (None, false, true)
+        }
+    };
     let Some(kept) = state_to_keep(found_state, present) else {
         return Err(format!(
             "the root on {} holds no system in either slot: Rescue, or an install, puts one back",
@@ -231,6 +356,9 @@ fn repair_mounted(
         });
         let unmounted = install::run_when_free(log, "umount", &[&install::path(&esp)]);
         written.and(unmounted)?;
+    }
+    if remade {
+        said.push(rescue_back(found, log));
     }
     let bios = if found.bios_boot { " and for a BIOS" } else { "" };
     said.push(format!(
@@ -291,6 +419,51 @@ mod tests {
         assert_eq!(number("sda", "sda2"), Some(2));
         assert_eq!(number("nvme0n1", "nvme0n1p1"), Some(1));
         assert_eq!(number("sda", "sdb1"), None);
+    }
+
+    #[test]
+    fn a_partition_is_made_again_only_once_the_disks_name_is_typed() {
+        let found =
+            Found { disk: "sda".into(), efi: "sda2".into(), bios_boot: true, root: "sda4".into() };
+        assert!(names_the_disk(&found, "sda\n"));
+        assert!(names_the_disk(&found, "  sda \r\n"));
+        // Nothing typed, the partition's name, another disk's and a yes
+        // all leave it as it is.
+        for typed in ["\n", "", "sda2\n", "sdb\n", "yes\n", "SDA\n", "y\n"] {
+            assert!(!names_the_disk(&found, typed), "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn the_question_names_the_partition_and_what_it_erases() {
+        let found = Found {
+            disk: "nvme0n1".into(),
+            efi: "nvme0n1p1".into(),
+            bios_boot: false,
+            root: "nvme0n1p3".into(),
+        };
+        let asked = question(&found);
+        assert!(asked.contains("The EFI system partition nvme0n1p1 of nvme0n1 cannot be read"));
+        assert!(asked.contains("erases everything on nvme0n1p1"));
+        assert!(asked.contains("type the disk's name, nvme0n1, and press Enter"));
+        assert!(asked.ends_with("press Enter alone: "));
+        // Each line fits a console of 80 columns, with the longest names.
+        assert!(asked.lines().all(|line| line.len() <= 80), "{asked}");
+    }
+
+    #[test]
+    fn a_disk_that_is_not_found_says_which_firmware_setting_hides_it() {
+        for mode in [SataMode::Raid, SataMode::Ide] {
+            let name = mode.name();
+            let said = nothing_found(Some(mode));
+            assert!(said.contains(&format!("SATA controller is in {name} mode")), "{said}");
+            assert!(said.contains("set the SATA mode"), "{said}");
+            assert!(said.contains("to AHCI"), "{said}");
+        }
+        let unknown = nothing_found(None);
+        assert!(unknown.starts_with("No installed Dukovo was found"), "{unknown}");
+        assert!(unknown.contains("set it to AHCI, not RAID"), "{unknown}");
+        assert!(SECURE_BOOT_ON.contains("turn Secure Boot off"));
     }
 
     #[test]

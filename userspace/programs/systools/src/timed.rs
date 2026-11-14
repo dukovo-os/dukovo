@@ -250,8 +250,14 @@ fn now_ns() -> i128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i128)
 }
 
+/// When timed last synced, in seconds since 1970, as kept from boot to
+/// boot.
+pub(crate) fn last_synced() -> Option<u64> {
+    fs::read_to_string(LAST).ok().and_then(|t| t.trim().parse::<u64>().ok())
+}
+
 /// Whether `err` is a certificate's time check failing.
-fn certificate_time(err: &io::Error) -> bool {
+pub(crate) fn certificate_time(err: &io::Error) -> bool {
     let inner = err.get_ref().and_then(|e| e.downcast_ref::<rustls::Error>());
     matches!(
         inner,
@@ -317,7 +323,7 @@ impl Timed {
                 let told = (now_ns() + sample.offset) / 1_000_000_000;
                 // An unauthenticated time before the last sync could make
                 // a certificate that expired since valid again.
-                if let Some(last) = Self::last_synced()
+                if let Some(last) = last_synced()
                     && told < i128::from(last)
                 {
                     return Err(
@@ -526,15 +532,9 @@ impl Timed {
         Ok(did)
     }
 
-    /// When timed last synced, in seconds since 1970, as kept from boot to
-    /// boot.
-    fn last_synced() -> Option<u64> {
-        fs::read_to_string(LAST).ok().and_then(|t| t.trim().parse::<u64>().ok())
-    }
-
     /// Sets a clock behind the time timed last synced forward to it.
     fn not_before_last() {
-        let Some(last) = Self::last_synced() else {
+        let Some(last) = last_synced() else {
             return;
         };
         let now = now_ns() / 1_000_000_000;

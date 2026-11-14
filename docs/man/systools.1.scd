@@ -128,6 +128,8 @@ error that starts with the tool's name.
 :  show and change files' access lists
 |  *halt*(8), *poweroff*(8), *reboot*(8)
 :  halt, power off or restart the machine
+|  *hardware*(8)
+:  check the memory, disks, processors, sensors, battery and network cards for faults
 |  *hexdump*(1), *hd*(1)
 :  a file's bytes, in hexadecimal or other formats
 |  *host*(1)
@@ -182,6 +184,8 @@ error that starts with the tool's name.
 :  make a disc image of a folder
 |  *mkswap*(8)
 :  make a swap area on a disk or partition
+|  *netcheck*(8)
+:  find the layer where the network stops working
 |  *netd*(8)
 :  set the network cards up, by DHCP or as their settings say
 |  *netlog*(8)

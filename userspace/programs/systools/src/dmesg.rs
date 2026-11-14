@@ -204,18 +204,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut buffer = vec![0u8; 4096];
     let mut last_usec = None;
-    loop {
-        let n = match kmsg.read(&mut buffer) {
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-            // A record was lost to newer ones: read on.
-            Err(e) if e.raw_os_error() == Some(libc::EPIPE) => continue,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => break,
-            Err(e) => return Err(util::failed(&KMSG, e)),
-        };
-        if n == 0 {
-            break;
-        }
+    while let Some(n) = next_record(&mut kmsg, &mut buffer)? {
         let Some(line) = parse(&buffer[..n]) else { continue };
         if levels.as_ref().is_some_and(|l| !l.contains(&line.level))
             || facilities.as_ref().is_some_and(|f| !f.contains(&line.facility))
@@ -265,6 +254,35 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         clear_log()?;
     }
     Ok(0)
+}
+
+/// Reads the next record of the log into `buffer`: its length, or `None`
+/// at the end of what is there (or where a read was interrupted).
+fn next_record(kmsg: &mut File, buffer: &mut [u8]) -> Result<Option<usize>, Fail> {
+    loop {
+        match kmsg.read(buffer) {
+            Ok(0) => return Ok(None),
+            Ok(n) => return Ok(Some(n)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            // A record was lost to newer ones: read on.
+            Err(e) if e.raw_os_error() == Some(libc::EPIPE) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => return Ok(None),
+            Err(e) => return Err(util::failed(&KMSG, e)),
+        }
+    }
+}
+
+/// Every record the log holds, oldest first, for the tools that look for
+/// a line in it.
+pub(crate) fn records() -> Result<Vec<Line>, Fail> {
+    let mut kmsg =
+        OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(KMSG).map_err(refused)?;
+    let mut buffer = vec![0u8; 4096];
+    let mut lines = Vec::new();
+    while let Some(n) = next_record(&mut kmsg, &mut buffer)? {
+        lines.extend(parse(&buffer[..n]));
+    }
+    Ok(lines)
 }
 
 /// The kernel log is root's to read (ADR 0252), as Linux's is with

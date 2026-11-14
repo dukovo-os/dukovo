@@ -235,6 +235,36 @@ const HEALTH_NVME: u32 = 2;
 /// are zeros.
 const HEALTH_SMART_OFF: u32 = 1;
 
+/// Asks the disk of its own self-test, after starting or aborting one
+/// (hardware(8), ADR 0488): Dukovo's own request, as Linux leaves it to
+/// commands passed through raw. It reads a u32, the action: SELF_TEST_STATUS,
+/// SELF_TEST_SHORT, SELF_TEST_EXTENDED or SELF_TEST_ABORT; and writes
+/// SELF_TEST_SIZE bytes: a u32 kind, HEALTH_ATA or HEALTH_NVME; a byte, 1
+/// while a self-test runs; a byte, the percent of it left; two u16s, the
+/// minutes the disk says its short and its extended test take, 0 where it
+/// does not say; six bytes of 0; then 512 bytes of the disk's log of its
+/// self-tests as it gives it, a SATA disk's SMART self-test log or the
+/// first 512 bytes of an NVMe controller's Device Self-test log. A test
+/// runs in the disk while it is used, and ends by itself; a SATA disk
+/// that is asked to start one while another runs aborts the first, and an
+/// NVMe controller fails with io. A partition answers for its disk.
+/// Starting or aborting needs the write right. Fails with not_supported
+/// on a device that runs no self-test, such as a virtio or USB disk or a
+/// SATA disk whose SMART is off, invalid_argument for another action, and
+/// io if the disk does not answer.
+const SELF_TEST: u32 = 0xc210520a;
+/// The bytes SELF_TEST writes.
+const SELF_TEST_SIZE: u32 = 528;
+/// SELF_TEST's action that only asks.
+const SELF_TEST_STATUS: u32 = 0;
+/// SELF_TEST's action that starts the short self-test, a minute or two.
+const SELF_TEST_SHORT: u32 = 1;
+/// SELF_TEST's action that starts the extended self-test, which reads
+/// every sector.
+const SELF_TEST_EXTENDED: u32 = 2;
+/// SELF_TEST's action that aborts the self-test that runs.
+const SELF_TEST_ABORT: u32 = 3;
+
 /// Unlocks the BitLocker volume on the device (unlock(8), ADR 0240):
 /// Dukovo's own request, as Linux leaves it to device-mapper. It reads
 /// UNLOCK_SIZE bytes: a u32, the volume's encryption method as its

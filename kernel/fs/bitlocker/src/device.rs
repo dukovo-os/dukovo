@@ -13,7 +13,7 @@
 use radix_block::mem::{self, CachePage, KBox};
 use radix_block::{
     BlockDevice, DeviceRef, Error as BlockError, Health, Info, MAX_LOGICAL_BLOCK, Page, SECTOR,
-    Segment, SegmentMut, check,
+    Segment, SegmentMut, SelfTest, SelfTestState, check,
 };
 
 use crate::cipher::{Aes, Method, Sectors};
@@ -340,5 +340,9 @@ impl BlockDevice for Unlocked {
 
     fn health(&self, page: &mut Page) -> Result<Health, BlockError> {
         self.device.health(page)
+    }
+
+    fn self_test(&self, test: SelfTest, page: &mut Page) -> Result<SelfTestState, BlockError> {
+        self.device.self_test(test, page)
     }
 }

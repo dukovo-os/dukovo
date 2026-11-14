@@ -638,6 +638,7 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
             .hint("run `./ob doctor` to see what is missing"));
     }
     let grub = grub::build(ctx)?;
+    let memtest = crate::memtest::build(ctx)?;
 
     step(&format!("Assembling the boot image {}", ctx.display(&spec.output)));
     for dir in [&spec.staging, &grub_work(spec)] {
@@ -652,15 +653,18 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
              the system from memory"
         );
     }
-    // An installed system's kernel is in its slot, with its startup archive.
+    // An installed system's kernel is in its slot, with its startup
+    // archive and the memory test.
     if !installed {
         kernel::copy_for_image(ctx, spec.kernel, &spec.staging.join("boot/radix"))?;
+        process::copy(&memtest.program, &spec.staging.join(LIVE_MEMTEST))?;
     }
     let manifest = licenses::install(
         ctx,
         &spec.staging,
         &licenses::Extras {
             grub: &grub,
+            memtest: &memtest,
             microcode: spec.microcode.is_some(),
             programs: spec.programs.map(|programs| &programs.ports),
         },
@@ -1040,7 +1044,8 @@ const SUBVOLUMES: [&str; 7] =
 
 /// The folder of the system, in its slot, that holds what GRUB starts an
 /// installed system with: the kernel, [`SLOT_KERNEL`], and the startup
-/// archive, [`SLOT_ARCHIVE`] (ADR 0307). It is not under `/system/boot`,
+/// archive, [`SLOT_ARCHIVE`] (ADR 0307), and the memory test,
+/// [`SLOT_MEMTEST`] (ADR 0488). It is not under `/system/boot`,
 /// where the EFI system partition is mounted.
 pub const SLOT_STARTUP: &str = "startup";
 
@@ -1054,6 +1059,14 @@ pub const SLOT_ARCHIVE: &str = "archive";
 /// [`MENU_CFG`]: the installed menu on the EFI system partition reads the
 /// slot state and hands over to the default slot's (ADR 0451).
 pub const SLOT_MENU: &str = "menu.cfg";
+
+/// The memory test's name in [`SLOT_STARTUP`]: memtest86+, which the
+/// start menu's Troubleshooting starts (ADR 0488).
+pub const SLOT_MEMTEST: &str = "memtest";
+
+/// Where the install stick and the ISO keep the memory test, beside the
+/// live system's kernel.
+const LIVE_MEMTEST: &str = "boot/memtest";
 
 /// The name in [`SLOT_STARTUP`] of what the slot says of itself, its
 /// version and the kernel flags it always starts with
@@ -1204,8 +1217,9 @@ pub fn stage_release(
 /// Stages the system's slot in `system`, a new directory: what the boot
 /// archive of `programs` has in its `system` directory, with each file's
 /// mode and time, and in [`SLOT_STARTUP`] the kernel at `kernel` and the
-/// startup archive, which an installed system starts from (ADR 0307).
-/// The same tree is a root's `@system.a` and the stick's release.
+/// startup archive, which an installed system starts from (ADR 0307),
+/// and the memory test (ADR 0488). The same tree is a root's `@system.a`
+/// and the stick's release.
 pub fn stage_system(
     ctx: &Ctx,
     kernel: &Path,
@@ -1290,8 +1304,10 @@ fn add_startup(ctx: &Ctx, kernel: &Path, archive: &Path, dir: &Path, time: u64) 
     let about = slots::about::About { version: VERSION.into(), flags: String::new() };
     std::fs::write(&to_about, about.encode())
         .context(|| format!("writing {}", to_about.display()))?;
+    let to_memtest = dir.join(SLOT_MEMTEST);
+    process::copy(&crate::memtest::build(ctx)?.program, &to_memtest)?;
     let date = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time);
-    for path in [&to_kernel, &to_archive, &to_menu, &to_about] {
+    for path in [&to_kernel, &to_archive, &to_menu, &to_about, &to_memtest] {
         std::fs::File::options()
             .write(true)
             .open(path)
@@ -1828,8 +1844,15 @@ mod tests {
             userspace::BOOTFS_WORD
         );
         assert!(cfg.contains(&entry), "{cfg}");
-        // Boot from first disk works under both firmwares.
-        assert!(cfg.contains("Boot from first disk"));
+        // Boot from first disk works under both firmwares, and is where
+        // the boot tests that start it from the stick look for it.
+        let entries: Vec<&str> =
+            cfg.lines().filter(|line| line.starts_with("menuentry ")).collect();
+        assert!(
+            entries[crate::test::FIRST_DISK_ENTRY]
+                .contains("\"Boot from first disk\" --id first-disk"),
+            "{cfg}"
+        );
         // Repair startup (ADR 0503), on the hotkey R.
         assert!(cfg.contains("--id repair-startup --hotkey=r {"), "{cfg}");
         // The partition is the root first, as the chainloader tells the

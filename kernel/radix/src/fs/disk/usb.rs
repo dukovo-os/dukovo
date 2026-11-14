@@ -1031,7 +1031,7 @@ impl<'a> Stick<'a> {
                 return self.after(at, judge(reply, true));
             }
             Op::Discard(_) => return (Outcome::Failed, Some("it does not discard")),
-            Op::Smart(_) => return (Outcome::Failed, Some("it keeps no SMART record")),
+            Op::Smart(..) => return (Outcome::Failed, Some("it keeps no SMART record")),
         };
         let block = u64::from(found.capacity.block_length);
         let unit = block / SECTOR;
@@ -1247,7 +1247,7 @@ impl Queued<'_> {
                         medium.finish(job, Outcome::Failed, Some("it does not discard"));
                         continue;
                     }
-                    Op::Smart(_) => {
+                    Op::Smart(..) => {
                         medium.finish(job, Outcome::Failed, Some("it keeps no SMART record"));
                         continue;
                     }

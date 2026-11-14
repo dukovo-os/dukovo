@@ -27,7 +27,7 @@ use core::fmt::Write;
 
 use radix_ahci::ata::{smart, trimmed};
 use radix_ahci::{Absent, Hba, Port};
-use radix_block::{DeviceRef, Error, Health, Info, Page};
+use radix_block::{DeviceRef, Error, Health, Info, Page, SelfTest, SelfTestState};
 use radix_hal::Devices;
 use radix_hw::pci::{Address, Bar, Function, Msi};
 use radix_klog::{TextBuf, info, warn};
@@ -98,7 +98,7 @@ fn port_op(op: Op) -> radix_ahci::Op {
         Op::WriteThrough => radix_ahci::Op::WriteThrough,
         Op::Flush => radix_ahci::Op::Flush,
         Op::Discard(count) => radix_ahci::Op::Trim(count),
-        Op::Smart(feature) => radix_ahci::Op::Smart(feature),
+        Op::Smart(feature, low) => radix_ahci::Op::Smart(feature, low),
     }
 }
 
@@ -169,11 +169,69 @@ impl Controller for SataPort {
         // The data, then the thresholds, each 512 bytes, alone.
         for (feature, at) in [(smart::READ_DATA, 0), (smart::READ_THRESHOLDS, 512)] {
             let data = [(page.phys() + at, 512)];
-            let op = Op::Smart(feature);
+            let op = Op::Smart(feature, 0);
             disk.request(&Request { op, target: 0, sector: 0, data: &data, unit: 1 })?;
         }
         radix_hw::device_wrote(&mut page.bytes_mut()[..1024]);
         Ok(Health::Ata)
+    }
+
+    fn self_test(
+        disk: &Disk<SataPort>,
+        _target: u32,
+        test: SelfTest,
+        page: &mut Page,
+    ) -> Result<SelfTestState, Error> {
+        let said = disk.controller(|lane| lane.port.identity().map(|id| (id.smart, id.self_test)));
+        // A disk whose SMART is off runs no self-test until it is on.
+        let Some((Some(true), identify_says)) = said.ok_or(Error::Io)? else {
+            return Err(Error::Unsupported);
+        };
+        let routine = match test {
+            SelfTest::Status => None,
+            SelfTest::Short => Some(smart::SHORT_SELF_TEST),
+            SelfTest::Extended => Some(smart::EXTENDED_SELF_TEST),
+            SelfTest::Abort => Some(smart::ABORT_SELF_TEST),
+        };
+        let command = |feature: u8, low: u8, data: &[(u64, u32)]| {
+            let op = Op::Smart(feature, low);
+            disk.request(&Request { op, target: 0, sector: 0, data, unit: 1 })
+        };
+        // The SMART data in the page's second 512 bytes: whether the disk
+        // runs self-tests, which IDENTIFY's word 84 says of some disks
+        // and not of others, QEMU's among them, and after a routine
+        // starts, how it goes (bytes 363 to 376).
+        let data = |page: &mut Page| -> Result<(), Error> {
+            command(smart::READ_DATA, 0, &[(page.phys() + 512, 512)])?;
+            radix_hw::device_wrote(&mut page.bytes_mut()[512..1024]);
+            Ok(())
+        };
+        data(page)?;
+        let can = smart::CAN_EXECUTE_OFFLINE | smart::CAN_SELF_TEST;
+        if !identify_says && page.bytes()[512 + smart::OFFLINE_CAPABILITY] & can != can {
+            return Err(Error::Unsupported);
+        }
+        if let Some(routine) = routine {
+            command(smart::EXECUTE_OFFLINE, routine, &[])?;
+            data(page)?;
+        }
+        // The log in the first 512 bytes.
+        command(smart::READ_LOG, smart::LOG_SELF_TEST, &[(page.phys(), 512)])?;
+        radix_hw::device_wrote(&mut page.bytes_mut()[..512]);
+        let data = &page.bytes()[512..1024];
+        // The high nibble 0xF while one runs, with tenths left below it.
+        let status = data[363];
+        let running = status >> 4 == 0xf;
+        let extended = match data[373] {
+            0xff => u16::from_le_bytes([data[375], data[376]]),
+            minutes => u16::from(minutes),
+        };
+        Ok(SelfTestState {
+            kind: Health::Ata,
+            running,
+            percent_left: if running { (status & 0xf).min(10) * 10 } else { 0 },
+            minutes: (u16::from(data[372]), extended),
+        })
     }
 }
 

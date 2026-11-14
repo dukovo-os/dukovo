@@ -25,7 +25,8 @@
 //! `dig` and `host` ask name servers, and `whois` the registries, what
 //! they hold, and `nic` shows what a network card says of itself, as
 //! ethtool does (ADR 0341); `traceroute` finds the way to a machine, a
-//! router at a time (ADR 0345);
+//! router at a time (ADR 0345); `netcheck` finds the layer where the
+//! network stops working (ADR 0489);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196), and
@@ -54,6 +55,9 @@
 //! its name, lists and changes the firmware's boot entries (ADR 0313).
 //! `changes` says what changed between two starts, from the record the
 //! health check keeps of each (ADR 0500).
+//! `hardware` checks the memory, the disks, the processors, the sensors,
+//! the battery and the network cards for faults, and keeps what it found
+//! (ADR 0488).
 //! `dumps` saves the kernel's crash dump at the boot after a panic, and
 //! lists, shows and deletes the saved ones (ADR 0483).
 //! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
@@ -112,6 +116,7 @@ mod floppy;
 mod fstrim;
 mod git_credential;
 mod guest_agent;
+mod hardware;
 mod hexdump;
 mod hwinfo;
 mod iostat;
@@ -138,6 +143,7 @@ mod metricsd;
 mod mkfs;
 mod modes;
 mod mount;
+mod netcheck;
 mod netd;
 mod netlog;
 mod nic;
@@ -166,6 +172,7 @@ mod rgrub;
 mod rtrace;
 mod script;
 mod scrub;
+mod selftest;
 mod sensors;
 mod serial;
 mod serial_console;
@@ -269,6 +276,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("git-credential-keyring", git_credential::main),
     ("guest-agent", guest_agent::main),
     ("halt", power::halt),
+    ("hardware", hardware::main),
     ("hd", hexdump::hd),
     ("hexdump", hexdump::main),
     ("host", dig::host),
@@ -312,6 +320,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("mkiso", burn::mkiso),
     ("mkswap", swap::mkswap),
     ("mount", mount::mount),
+    ("netcheck", netcheck::main),
     ("netd", netd::main),
     ("netlog", netlog::main),
     ("nic", nic::main),

@@ -55,6 +55,10 @@ pub struct Controller {
     pub shutdown_us: u32,
     /// The version it says it implements (VER), 0 for one before 1.2.
     pub version: u32,
+    /// Whether it runs device self-tests (Device Self-test, OACS bit 4).
+    pub self_test: bool,
+    /// How many minutes its extended self-test takes, if it says (EDSTT).
+    pub extended_test_minutes: u16,
 }
 
 /// What a namespace is (Identify Namespace).
@@ -114,6 +118,8 @@ impl Controller {
         atomic_blocks: 1,
         shutdown_us: 0,
         version: 0,
+        self_test: false,
+        extended_test_minutes: 0,
     };
 }
 
@@ -144,6 +150,8 @@ pub fn controller(data: &[u8; HEAD]) -> Controller {
         atomic_blocks: u32::from(u16_at(data, 528)) + 1,
         shutdown_us: u32_at(data, 88),
         version: u32_at(data, 80),
+        self_test: u16_at(data, 256) & (1 << 4) != 0,
+        extended_test_minutes: u16_at(data, 316),
     }
 }
 

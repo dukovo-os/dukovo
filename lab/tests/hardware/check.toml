@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# hardware(8)'s quick check on real machines, which have healthy hardware:
+# the memory, each disk, the processors and the rest pass, in about three
+# minutes. What hardware keeps agrees with what diskhealth(8) and
+# sensors(1) say of the same disks and chips. A machine with no hardware
+# monitor or battery skips those checks, which is not a failure.
+about = "hardware check, as an administrator, passes on a healthy machine, and its saved result agrees with diskhealth and sensors"
+time = "15m"
+
+# A user who is no administrator is refused, with one line.
+[[step]]
+run = "hardware check"
+exit = 3
+expect = "hardware check needs an administrator: run elevate hardware check"
+
+# The quick check: every area, about three minutes. A disk's self-test is
+# the longest of it.
+[[step]]
+run = "hardware check"
+root = true
+exit = 0
+expect = [
+    "Checking the hardware: a quick check",
+    "memory test",
+    "memory errors",
+    "health",
+    "self-test",
+    "read scan",
+    "load",
+    "machine checks",
+    "passed",
+]
+
+# The result is kept, and a check that ends says so in the log.
+[[step]]
+run = "hardware last"
+root = true
+exit = 0
+expect = ["A quick check ended ", "read scan", "passed"]
+[[step]]
+run = "dmesg"
+root = true
+expect = "quick check ended with status 0: "
+
+# --json is the file, whole.
+[[step]]
+run = "hardware last --json"
+root = true
+expect = ["\"status\": 0", "\"area\": \"memory\"", "\"area\": \"disks\"", "\"area\": \"cpu\""]
+
+# A disk is failed in the result when diskhealth says it is failing, and
+# a chip the result judges is one sensors lists.
+[[step]]
+run = "sh"
+root = true
+input = '''
+hardware last --json > /tmp/last.json
+awk -F'"' '/"check": ".* health"/ { split($4, w, " "); name = w[1]; next }
+    name != "" && /"result"/ { print name, $4; name = "" }' /tmp/last.json > /tmp/health.txt
+while read name verdict; do
+    seen=ok
+    diskhealth "$name" | grep -q FAILING && seen=failed
+    want=ok
+    [ "$verdict" = failed ] && want=failed
+    if [ "$seen" = "$want" ]; then echo "disk agrees: $name"; else echo "disk differs: $name"; fi
+done < /tmp/health.txt
+awk -F'"' '/"check": ".* temperatures"/ { split($4, w, " "); print w[1] }' /tmp/last.json > /tmp/chips.txt
+while read chip; do
+    if sensors | grep -q "^$chip"; then echo "chip agrees: $chip"; else echo "chip differs: $chip"; fi
+done < /tmp/chips.txt
+echo "compared"
+'''
+expect = ["disk agrees: ", "compared"]
+expect_not = ["disk differs", "chip differs"]

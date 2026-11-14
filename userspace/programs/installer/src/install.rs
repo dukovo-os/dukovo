@@ -36,6 +36,10 @@ pub const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
 /// Where the installer keeps its layout files and mounts the new disk.
 pub(crate) const WORK: &str = "/tmp/install";
 
+/// The label of the FAT32 filesystem on the EFI system partitions it
+/// makes, and Repair startup makes again.
+pub(crate) const ESP_LABEL: &str = "DUKOVO_EFI";
+
 /// The Dukovo root's subvolumes, as `./ob image` makes them, but for the
 /// slot, which is copied into `@system.new` and kept read-only as
 /// `@system.a`.
@@ -330,7 +334,7 @@ fn format(planned: &[Planned], target: &str, log: &mut Log) -> Result<(), String
             }
             let device = path(&disks::device(&disks::partition(&p.disk.name, part.number)));
             let (program, args): (&str, &[&str]) = match (part.role, part.format) {
-                (Role::Efi, _) => ("mkfs-fat", &["-F", "32", "-n", "DUKOVO_EFI"]),
+                (Role::Efi, _) => ("mkfs-fat", &["-F", "32", "-n", ESP_LABEL]),
                 (Role::Swap, _) => ("mkswap", &["-L", "swap"]),
                 (Role::Root, _) => ("mkfs-btrfs", &["-f", "-L", "dukovo-root"]),
                 (Role::Data, Some(Format::Fat32)) => ("mkfs-fat", &["-F", "32"]),
@@ -388,7 +392,7 @@ fn fill_root(
     features::turn_on(answers, &target, log)?;
     let console = answers.serial_console(machine::on_serial_console());
     install_grub(parts, &root.join("@system.a"), console, log)?;
-    install_rescue(parts, source, log)?;
+    install_rescue(&parts.boot, source, log)?;
     save(answers, &target, log)
 }
 
@@ -541,20 +545,25 @@ fn serial_settings(esp: &Path, serial: &[String], keep: bool, log: &mut Log) -> 
     log.run("serial", &arguments).map(|_| ())
 }
 
-/// Puts Rescue of the release on the EFI system partition of each disk
-/// that starts the system (ADR 0460): its startup folder, its boot
-/// archive and its signed list, each file checked against the list as
-/// it is written, so that the machine can be repaired, and its system
-/// put back, with no stick. A partition it does not fit leaves the
-/// system without it, which the log says.
-fn install_rescue(parts: &Parts, source: &Source, log: &mut Log) -> Result<(), String> {
+/// Puts Rescue of the release on the EFI system partition of each of
+/// the `boot` disks that start the system (ADR 0460): its startup
+/// folder, its boot archive and its signed list, each file checked
+/// against the list as it is written, so that the machine can be
+/// repaired, and its system put back, with no stick. A partition it does
+/// not fit leaves the system without it, which the log says. Repair
+/// startup puts it back on a partition it made again (ADR 0503).
+pub(crate) fn install_rescue(
+    boot: &[BootDisk],
+    source: &Source,
+    log: &mut Log,
+) -> Result<(), String> {
     log.step(Step::Rescue);
     let store = system_release::store::Store::at(&source.repo.join("files"));
     let file = |entry: &system_release::list::Entry| {
         store.path(entry.file().map_or("", |(sha256, _)| sha256))
     };
     let esp = Path::new(WORK).join("esp");
-    for disk in &parts.boot {
+    for disk in boot {
         mount(&disk.efi, &esp, &["-t", "fat"], log)?;
         let written = system_release::rescue::write(&esp, &source.repo, &source.release, &file);
         let unmounted = run_when_free(log, "umount", &[&path(&esp)]);

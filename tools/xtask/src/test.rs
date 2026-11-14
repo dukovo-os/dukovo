@@ -3663,15 +3663,21 @@ fn utf8_length(first: u8) -> usize {
     }
 }
 
+/// Where *Boot from first disk* is in the install stick's menu, counted
+/// from 0: after *Install Dukovo*, *Install Dukovo with speech*, *Repair
+/// startup* (ADR 0503), *Try Dukovo*, *Install Dukovo (serial console)*
+/// and *Test the memory* (ADR 0488) (dukovo-boot(7)). The image's tests
+/// hold the menu to it.
+pub(crate) const FIRST_DISK_ENTRY: usize = 6;
+
 /// A copy of a test image whose menu starts *Boot from first disk* when
-/// nobody chooses: its sixth entry, after *Install Dukovo*, *Install
-/// Dukovo with speech*, *Repair startup* (ADR 0503), *Try Dukovo* and
-/// *Install Dukovo (serial console)* (dukovo-boot(7)). The menu's `set
-/// default=try` becomes `set default=5`, padded with spaces to its
+/// nobody chooses, its entry [`FIRST_DISK_ENTRY`]: the menu's `set
+/// default=try` becomes `set default=6`, padded with spaces to its
 /// length, so that nothing else in the image moves.
 fn booting_first_disk(mut image: Vec<u8>) -> Result<Vec<u8>, String> {
     const TRY: &[u8] = b"\nset default=try\n";
-    const FIRST_DISK: &[u8] = b"\nset default=5  \n";
+    const FIRST_DISK: &[u8] = b"\nset default=6  \n";
+    const _: () = assert!(FIRST_DISK[13] == b'0' + FIRST_DISK_ENTRY as u8);
     let found: Vec<usize> = image
         .windows(TRY.len())
         .enumerate()

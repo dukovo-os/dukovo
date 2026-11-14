@@ -52,14 +52,14 @@ const FAILS: i32 = 8;
 
 /// A disk's verdict, the worst last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Verdict {
+pub(crate) enum Verdict {
     Passed,
     Warning,
     Failing,
 }
 
 impl Verdict {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Verdict::Passed => "PASSED",
             Verdict::Warning => "WARNING",
@@ -114,13 +114,13 @@ pub(crate) enum Record {
 
 /// The verdict on a disk and what it rests on.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Report {
-    verdict: Verdict,
-    celsius: Option<i64>,
-    hours: Option<u64>,
+pub(crate) struct Report {
+    pub(crate) verdict: Verdict,
+    pub(crate) celsius: Option<i64>,
+    pub(crate) hours: Option<u64>,
     /// An NVMe drive's share of its rated endurance used, in percent.
-    used: Option<u8>,
-    reasons: Vec<String>,
+    pub(crate) used: Option<u8>,
+    pub(crate) reasons: Vec<String>,
 }
 
 impl Report {
@@ -350,7 +350,7 @@ pub(crate) fn read(name: &str) -> Result<Option<Record>, Fail> {
 }
 
 /// The report on `record`, and its kind's name.
-fn report(record: &Record) -> (&'static str, Report) {
+pub(crate) fn report(record: &Record) -> (&'static str, Report) {
     match record {
         Record::Ata(attributes) => ("SATA", ata_report(attributes)),
         Record::AtaOff => {
@@ -644,6 +644,19 @@ fn identity(name: &str) -> (String, String) {
 /// The kept file of the disk `id` stands for.
 fn kept_path(id: &str) -> String {
     format!("{KEPT}/{}", id.replace(['/', '.'], "-"))
+}
+
+/// What the early warning of `--watch` says of disk `name` now, as the
+/// title of its `smart-rising` alert, if it has one: a count that tells
+/// of a failure to come rose since the service's last look, or the
+/// disk's NVMe endurance is nearly used up. Reading it changes nothing
+/// the service keeps.
+pub(crate) fn early_warning_title(name: &str, record: &Record) -> Option<String> {
+    let counts = Counts::of(record)?;
+    let (disk, id) = identity(name);
+    let before = fs::read_to_string(kept_path(&id)).ok().and_then(|text| Kept::parse(&text));
+    let now = util::now_ns() / 1_000_000_000;
+    early_warning(before.as_ref(), counts, now, &disk, &id).1.map(|alert| alert.title)
 }
 
 /// Writes `kept` to its file, by a new file renamed over it.

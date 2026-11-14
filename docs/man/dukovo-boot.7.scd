@@ -122,6 +122,13 @@ archive in memory for the machine's whole life, as it does any archive,
 so an installed system keeps under a MiB where a USB stick keeps the
 whole system.
 
+Each slot's startup folder also holds _memtest_, memtest86+ (ADR 0488),
+which the menu's Troubleshooting starts as "Test the memory": under UEFI
+as an EFI program, under a BIOS through the Linux boot protocol, with
+*console=ttyS*_N_,_speed_ when the menu shows on COM1 to COM4. Rescue's
+entry offers Rescue's copy when no slot's menu can be read, and the
+install stick's menu its own, _boot/memtest_.
+
 An installed system starts quietly (ADR 0426). GRUB's menu stays hidden
 for a second, in which Esc or F4 shows it, and shows at once, for
 *boot.timeout* seconds, when Shift is held as the computer starts; on a

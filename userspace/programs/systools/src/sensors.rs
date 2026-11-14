@@ -20,7 +20,7 @@ use crate::args::{Arg, Args};
 use crate::util::{Fail, fail, usage};
 
 /// Where the kernel shows its hardware monitors.
-const HWMON: &str = "/kernel/class/hwmon";
+pub(crate) const HWMON: &str = "/kernel/class/hwmon";
 
 /// libsensors' narrowest label column, before the colon and the space
 /// after it.

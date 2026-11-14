@@ -13,9 +13,11 @@
 //! own copy of the release or from an update folder, keeping the
 //! settings, apps and files; putting back the settings from before the
 //! last update; checking the root's disk; copying the users' and shared
-//! files to another disk; turning networking on; a shell; and starting
-//! the system normally. Nothing is formatted, and `@users`, `@shared` and
-//! `@applications` are never written.
+//! files to another disk; checking the hardware and the network, which
+//! run `hardware check` and `netcheck` (ADRs 0488 and 0489); turning
+//! networking on; a shell; and starting the system normally. Nothing is
+//! formatted, and `@users`, `@shared` and `@applications` are never
+//! written.
 //!
 //! Each repair says what it did, or why it could not, in one line;
 //! `/system/state/log` keeps Rescue's log until it restarts.
@@ -29,12 +31,13 @@ use system_release::store::Store;
 
 use crate::args::Args;
 use crate::changes;
+use crate::ip;
 use crate::prompt::{self, Answer};
 use crate::sysupdate::place::{self, BUILDING, Root};
 use crate::sysupdate::stage::{self, Files, TRUSTED_ROOT};
 use crate::sysupdate::starts::{self, Outcome};
 use crate::util::{self, Fail, fail};
-use crate::{power, probe, subvolume};
+use crate::{power, probe, service, subvolume};
 
 /// Where Rescue mounts the EFI system partition it reads its own copy
 /// from.
@@ -53,6 +56,10 @@ const NETWORKING: [&str; 4] = ["e1000d", "netd", "resolved", "timed"];
 /// How many times a wrong name or password may be typed before Rescue
 /// waits and asks again.
 const TRIES: u32 = 3;
+
+/// How many seconds Rescue waits for a card to have an address before
+/// it checks the network.
+const ADDRESS_WAIT: u32 = 20;
 
 /// The settings an administrator's name and password are checked
 /// against, in the root's subvolumes.
@@ -108,32 +115,40 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         let can =
             |ok: bool, text: &str| if ok { text.to_string() } else { format!("{text} (not here)") };
         let mounted = rescued.root.is_ok();
+        let choices = [
+            can(mounted, "Why the last start failed, and what changed"),
+            can(mounted, "Reinstall Dukovo, keeping settings, apps and files"),
+            can(update.is_some(), "Put back the settings from before the last update"),
+            can(mounted, "Check the root's disk"),
+            can(mounted, "Copy the users' and shared files to another disk"),
+            "Check the hardware".to_string(),
+            "Turn networking on".to_string(),
+            "Check the network".to_string(),
+            "Open a shell (type exit to come back)".to_string(),
+            "Start Dukovo normally".to_string(),
+            "Restart".to_string(),
+            "Power off".to_string(),
+        ];
         println!("What would you like to do?");
-        println!("  0  {}", can(mounted, "Why the last start failed, and what changed"));
-        println!("  1  {}", can(mounted, "Reinstall Dukovo, keeping settings, apps and files"));
-        println!(
-            "  2  {}",
-            can(update.is_some(), "Put back the settings from before the last update")
-        );
-        println!("  3  {}", can(mounted, "Check the root's disk"));
-        println!("  4  {}", can(mounted, "Copy the users' and shared files to another disk"));
-        println!("  5  Turn networking on");
-        println!("  6  Open a shell (type exit to come back)");
-        println!("  7  Start Dukovo normally");
-        println!("  8  Restart");
-        println!("  9  Power off");
-        let Some(choice) = ask("Choose 0 to 9: ", true) else { return Ok(0) };
+        for (number, text) in choices.iter().enumerate() {
+            println!("{number:>4}  {text}");
+        }
+        let Some(choice) = ask(&format!("Choose 0 to {}: ", choices.len() - 1), true) else {
+            return Ok(0);
+        };
         let done = match (choice.trim(), &rescued.root) {
             ("0", Ok(root)) => Ok(why_it_failed(root).join("\n")),
             ("1", Ok(root)) => reinstall(root),
             ("2", Ok(root)) if update.is_some() => put_back_settings(root),
             ("3", Ok(root)) => check_disk(root),
             ("4", Ok(root)) => copy_off(root),
-            ("5", _) => networking_on(),
-            ("6", _) => shell(),
-            ("7", root) => start_normally(root.as_ref().ok()),
-            ("8", _) => end("reboot"),
-            ("9", _) => end("poweroff"),
+            ("5", _) => show("hardware", &["check"]),
+            ("6", _) => networking_on(),
+            ("7", _) => check_network(),
+            ("8", _) => shell(),
+            ("9", root) => start_normally(root.as_ref().ok()),
+            ("10", _) => end("reboot"),
+            ("11", _) => end("poweroff"),
             (other, _) => Err(format!("{other} is not one of the choices here")),
         };
         match done {
@@ -533,14 +548,68 @@ fn other_disks(root: &Root) -> Vec<String> {
 }
 
 /// Starts the services networking needs, the firewall already running.
+/// A driver the kernel left none of the cards it drives, as e1000d on a
+/// machine with no Intel card, does not start, and is off as it is meant
+/// to be: that is no failure, and what the service command said of it is
+/// not shown.
 fn networking_on() -> Result<String, String> {
     for name in NETWORKING {
         let path = format!("/system/settings/spark/services/{name}.toml");
-        if Path::new(&path).exists() {
-            run("service", &[name, "start"])?;
+        if !Path::new(&path).exists() {
+            continue;
+        }
+        let started = Command::new("/system/commands/service")
+            .args([name, "start"])
+            .output()
+            .map_err(|err| format!("service: {err}"))?;
+        if !started.status.success() && !off_as_meant(name) {
+            eprint!("{}", String::from_utf8_lossy(&started.stderr));
+            return Err(format!("service {name} start failed ({})", started.status));
         }
     }
     Ok("Networking is on, behind the firewall.".into())
+}
+
+/// Whether Spark says service `name` is off as it is meant to be. After a
+/// request to start it, that is a driver the kernel left no cards.
+fn off_as_meant(name: &str) -> bool {
+    service::shown(Some(name))
+        .is_ok_and(|show| show.services.iter().any(|s| s.name == name && s.off_as_meant))
+}
+
+/// Turns networking on as [`networking_on`] does, waits a little for
+/// the cards to have addresses, which DHCP gives some seconds after
+/// netd starts, then shows what `netcheck` finds.
+fn check_network() -> Result<String, String> {
+    networking_on()?;
+    println!("Rescue: waiting up to {ADDRESS_WAIT} seconds for an address");
+    for _ in 0..ADDRESS_WAIT {
+        if has_address() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    show("netcheck", &[])
+}
+
+/// Whether a network card has an IPv4 address.
+fn has_address() -> bool {
+    ip::read_interfaces(Path::new(ip::INTERFACES), Path::new(ip::ROUTES))
+        .is_ok_and(|cards| cards.iter().any(|card| !card.loopback && !card.addresses.is_empty()))
+}
+
+/// Runs `program` with `args` from /system/commands, its results on the
+/// screen, and waits for Enter before the choices come back over them.
+/// What a check finds is in its output and its exit status, so no status
+/// is a failure here.
+fn show(program: &str, args: &[&str]) -> Result<String, String> {
+    Command::new(format!("/system/commands/{program}"))
+        .args(args)
+        .status()
+        .map_err(|err| format!("{program}: {err}"))?;
+    // Any answer, or the console going away, ends the wait.
+    let _ = ask("Press Enter to go back to the choices. ", true);
+    Ok("Back in Rescue.".into())
 }
 
 /// Runs root's shell, as the running system's user database names it,

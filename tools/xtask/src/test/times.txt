@@ -68,6 +68,7 @@ fuzz 27
 git-https 15
 git-keyring 127
 gpio 11
+hardware-check 150
 i2c 22
 install-beside 150
 install-bios 115
@@ -96,11 +97,14 @@ logging 15
 machine-check 31
 machine-check-program 20
 machine-restore 190
+memory-test 70
+memory-test-bios 70
 microcode 10
 mm-stress 17
 monitoring 230
 msr 15
 net 21
+netcheck 420
 network-capture 28
 network-cards 17
 network-discovery 57
@@ -126,6 +130,7 @@ power-button 17
 principals 12
 rcu 21
 rdisk 57
+repair-startup 420
 rescue 330
 restic-backup 200
 rgrub-setup 39

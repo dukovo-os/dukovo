@@ -56,16 +56,16 @@ fn parse_card(text: &str) -> Card {
 }
 
 /// An interface, as nic reads it.
-struct Interface {
-    name: String,
-    dir: PathBuf,
+pub(crate) struct Interface {
+    pub(crate) name: String,
+    pub(crate) dir: PathBuf,
     kind: Kind,
     card: Card,
     /// Megabits a second, if the card says.
-    speed: Option<u32>,
+    pub(crate) speed: Option<u32>,
     /// `full` or `half`, if the card says.
-    duplex: Option<String>,
-    carrier: bool,
+    pub(crate) duplex: Option<String>,
+    pub(crate) carrier: bool,
 }
 
 /// What `file` of `dir` says, without its newline.
@@ -91,7 +91,7 @@ fn open(root: &Path, name: &str) -> Result<Interface, Fail> {
 }
 
 /// Every interface in `root`, by name.
-fn all(root: &Path) -> Result<Vec<Interface>, Fail> {
+pub(crate) fn all(root: &Path) -> Result<Vec<Interface>, Fail> {
     let entries =
         fs::read_dir(root).map_err(|e| fail(format!("cannot read {}: {e}", root.display())))?;
     let mut names: Vec<String> =
@@ -115,7 +115,7 @@ fn driver(interface: &Interface) -> &str {
 
 /// Whether the interface has a wire whose speed and duplex mean
 /// something: a card's, not a bridge's, a VLAN's, a tunnel's or `lo`'s.
-fn has_wire(interface: &Interface) -> bool {
+pub(crate) fn has_wire(interface: &Interface) -> bool {
     matches!(interface.kind, Kind::Card)
 }
 

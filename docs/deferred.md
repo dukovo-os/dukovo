@@ -137,14 +137,13 @@ machine with AMT, an AMD machine and a laptop; see
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
 | A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
-| Repair startup re-making an EFI system partition whose FAT cannot be read, with Rescue's files from the stick, and reading the firmware's Secure Boot and SATA mode settings (ADR 0503) | Repair startup rewrites GRUB and the menu on a partition that reads, and names AHCI when it finds no Dukovo | 16b, with `hardware check` |
-| A boot test of Repair startup in QEMU, which needs a third boot from the stick after the install (ADR 0503) | The unit tests of what it finds and keeps; the lab test waits too (Lab machines and harness) | When the boot tests gain a third boot |
+| A boot test that starts Repair startup from the install stick's menu entry, on the hotkey R, and one of a repair that finds the partition readable, with only GRUB or its menu gone (ADR 0503) | The `repair-startup` boot test runs the repair from the live system's shell, on a partition whose FAT is overwritten with zeros, and restarts from the stick in place; the entry and the readable case have unit tests, and the lab test waits too (Lab machines and harness) | When the boot tests gain a third boot |
 | How far a start got before Spark, in the kernel or mounting the root, written as it is reached (ADR 0503) | Spark marks the starts that reached their services; Rescue tells the rest from the boot menu's count | A need, with the starts' summary on the EFI system partition |
 | Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, after 1.0 |
 | Unattended updates limited to security fixes, and the security advisories each update fixes, shown by `update` (ADR 0502) | Unattended updates take every release, through the waves; the release notes name fixes | The channel listing advisories per release, 16b |
 | Snoozing an update reminder, and pinning the system so that no newer version is taken (ADR 0502) | The reminder comes once a day; `check = "off"` stops it; `update hold` skips one version | 16c, with the web console's updater page |
 | The updater's page in the web console (ADR 0502) | `update` and `updated` on the command line | 16c, Dukovo Admin |
-| The memory test on the start menu, memtest86+ built from source onto the EFI system partition (ADR 0501) | The firmware's own memory test, where the machine has one | 16b, with `hardware check` |
+| The memory test started once at the next start by `hardware check`, ending after one pass and saying how it went (ADR 0488) | Troubleshooting's "Test the memory" on the start menu, which runs until the machine is turned off; `hardware check memory` while the system runs | memtest86+ ending after a pass by itself |
 | A QR code to the error's support page, and single-key choices, on the failure notice (ADR 0501) | The notice gives the support page's address and the commands to run | 16f, with `report --save` |
 | SSH into Rescue when the system had SSH on (ADR 0501) | Rescue on the screen and the serial port; after a failed start that falls back, the system runs, SSH and all | 16e, in the outside security review |
 | A start without graphics on the Troubleshooting menu, and the window manager's screen check (ADR 0501) | No graphical start yet: every start is text | 1.1, with the window manager |
@@ -206,6 +205,9 @@ machine with AMT, an AMD machine and a laptop; see
 | A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |
 | The web console's lab tests run on QEMU in CI for every PR (ADR 0510) | CI runs no lab tests yet; they run on QEMU before each PR, and the console's pages arrive from C3 | admind (Phase 16, PR C2a) |
 | A crash dump sent with a problem report, with the person's consent (ADR 0483) | A dump is kept on the machine and sent nowhere; the reports come with the reporting service | 16b, with the problem reports |
+| Tests of displays in `hardware check`: colours and patterns that show dead or stuck pixels, and the backlight (ADR 0488) | A test draws on the screen and needs the person to look at it, which takes the window manager (windowd) | Release 1.1, with the window manager |
+| `hardware check` saying that a network link is slower than the card and its partner both offer, HW-151 (ADR 0488) | The kernel shows a card's current speed and duplex alone, not the speeds the card offers or its partner does, so a cable that makes a link negotiate down looks like a slow port | A driver that reports what the card and its partner offer |
+| `hardware check` counting a card's receive errors, HW-153, on a driver that does (ADR 0488) | The check reads `rx_errors` of each card, which the kernel gives as 0 for every card, since its drivers count only the frames they drop | Drivers that count frames with a bad checksum or length |
 
 ### Phase 17: Go
 
@@ -342,6 +344,7 @@ machine asks for them.
 | Intel PCH Ethernet: Energy Efficient Ethernet, wake on LAN, jumbo frames, I217, I218, newer I219s, 82577 and 82578 | ADR 0361 |
 | Promiscuous mode for packet capture | ADR 0346 |
 | Firewall rules for outbound traffic and rate limits | ADR 0334 |
+| `netcheck` saying that a firewall rule stops this machine's own DNS, HTTPS or time (NET-151): the firewall filters only what other machines start, so no rule can until it has outbound rules | ADR 0334, ADR 0489 |
 | Routing beyond a tunnel's subnet before the routing table | ADR 0339 |
 | timed: choosing among servers, training the clock's frequency, `CLOCK_REALTIME` timers after a step, authenticated fallback, leap seconds | ADRs 0194, 0487 |
 | `AF_UNIX` datagram and sequenced-packet sockets, `MSG_PEEK`, credentials as control messages | ADR 0091 |
@@ -359,6 +362,7 @@ machine asks for them.
 | A DHCPv6 server and router advertisements: IPv6 computers keep the addresses their network's router has them make | ADR 0486 |
 | DHCP relay agents: a request with `giaddr` set is ignored, and netd's log says so once | ADR 0486 |
 | An ICMP probe of an address before netd's DHCP server offers it: a client's DECLINE covers a conflict (RFC 2131, section 3.1.5) | ADR 0486 |
+| `netcheck` saying that another machine on the network has a card's address (NET-112): netd neither probes an address before it uses it nor reports a conflict (RFC 5227), so the address layer has nothing to read | ADR 0489 |
 | Detecting another DHCP server on a card's network | ADR 0486 |
 | NTS keys shared between several time servers (RFC 8915, section 6): the cookies of timed's server work at that server alone | ADR 0487 |
 

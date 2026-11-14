@@ -156,7 +156,7 @@ impl Controller for ScsiLun {
                 (cdb.ok_or(Error::OutOfRange)?, direction)
             }
             Op::Flush => (Cdb::synchronize_cache(), Direction::ToDevice),
-            Op::Discard(_) | Op::Smart(_) => return Err(Error::Unsupported),
+            Op::Discard(_) | Op::Smart(..) => return Err(Error::Unsupported),
         };
         let mut shared = self.adapter.shared.lock_irq();
         let head = shared.scsi.submit_held(self.at, cdb.bytes(), data, direction).map_err(
