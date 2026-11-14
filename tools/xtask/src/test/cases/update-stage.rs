@@ -15,6 +15,7 @@
 //! update, the changed ones kept aside (ADR 0454).
 
 use super::super::*;
+use super::crash_dump::answer_within;
 
 pub const CASE: Case = Case {
     name: "update-stage",
@@ -53,16 +54,18 @@ pub fn started(vm: &mut Vm, slot: char) -> Result<(), String> {
 }
 
 /// Types `command` at tty1's prompt, on a cleared screen, once the last
-/// command has ended.
+/// command has ended. After a kernel panic, as update-panic's tries end,
+/// alertd's notification of it may show on the bottom line, below the
+/// prompt: it is taken off as crash-dump takes it off.
 pub fn type_command(vm: &mut Vm, command: &str) -> Result<(), String> {
-    answer_prompt_within(vm, "#", &format!("clear; {command}"), COMMAND_SECONDS)
+    answer_within(vm, "#", &format!("clear; {command}"), COMMAND_SECONDS)
 }
 
 /// Types `command`, waits for it to end, and checks that the screen then
 /// shows each of `shown`.
 pub fn run(vm: &mut Vm, command: &str, shown: &[&str]) -> Result<(), String> {
     type_command(vm, command)?;
-    answer_prompt_within(vm, "#", "", COMMAND_SECONDS)?;
+    answer_within(vm, "#", "", COMMAND_SECONDS)?;
     vm.expect_screen(shown).map_err(|err| format!("`{command}`: {err}"))
 }
 

@@ -61,7 +61,13 @@ const PANIC_NOTICE: &str = "alertd (alerts): The machine restarted after a kerne
 /// bottom line whenever it is there: below the prompt, it would be the
 /// screen's last line. Shift takes it off and types nothing.
 fn answer(vm: &mut Vm, prompt: &str, text: &str) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    answer_within(vm, prompt, text, 60)
+}
+
+/// [`answer`], waiting up to `seconds` for the prompt: for every test that
+/// types after a start that follows a panic, as update-panic does.
+pub fn answer_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
         if vm.screen()?.iter().any(|line| line.contains(PANIC_NOTICE)) {
             vm.press(&["shift"])?;
