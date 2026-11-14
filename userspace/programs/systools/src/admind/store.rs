@@ -207,8 +207,9 @@ impl Store {
         Ok(Store { conn, limits: versions::Limits::DEFAULT })
     }
 
-    /// A store in memory, for the tests.
-    #[cfg(test)]
+    /// A store in memory, for the tests and the console of a fuzz target
+    /// (`crate::fuzz`).
+    #[cfg(any(test, feature = "fuzz"))]
     pub fn in_memory() -> Store {
         Store::prepared(Connection::open_in_memory().expect("a database in memory"))
             .expect("a schema that applies")

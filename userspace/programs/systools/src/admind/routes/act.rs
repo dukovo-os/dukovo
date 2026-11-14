@@ -433,7 +433,7 @@ mod tests {
     fn prepared(id: &str, args: Value, files: &[&str]) -> Prepared {
         let action = LAB.iter().copied().find(|action| action.id() == id).unwrap();
         let mut prepared = action.prepare(args).unwrap();
-        prepared.files = files.iter().map(|path| path.to_string()).collect();
+        prepared.files = files.iter().map(ToString::to_string).collect();
         prepared
     }
 
