@@ -138,7 +138,8 @@ pub enum Console {
         assertion: Assertion,
     },
     /// Start the session of sign-in `ticket`, once done: its worker,
-    /// with the two descriptors sent, the session's socket and the log.
+    /// with the three descriptors sent: the pipe it reads admind's calls
+    /// from, the pipe it writes replies to, and the log.
     /// With `trust`, the browser, described by `browser`, is trusted for
     /// 30 days. The answer is `ok PROCESS SESSION`, and the browser's
     /// token when it is trusted.

@@ -519,14 +519,15 @@ pub const CONSOLE_WORKER: &str = "/system/commands/admind";
 /// --worker`, acting for them and the groups `groups`, with the network a
 /// session gets (ADR 0257), and nothing else of a session's: no shell
 /// runs it, as what a shell's startup writes would break its frames. Its
-/// 0 is `socket`, whose other end admind holds and sends the session's
-/// requests on, and its 1 and 2 are `log`. Returns the number of its
-/// process, a child of authd's.
+/// 0 is `calls`, the pipe admind sends the session's requests on, its 3 is
+/// `replies`, the pipe admind reads the answers from, and its 1 and 2 are
+/// `log`. Returns the number of its process, a child of authd's.
 pub fn start_console(
     names: u32,
     user: &User,
     groups: &[u32],
-    socket: &OwnedFd,
+    calls: &OwnedFd,
+    replies: &OwnedFd,
     log: &OwnedFd,
 ) -> Result<u64, String> {
     let program = Program {
@@ -534,7 +535,12 @@ pub fn start_console(
         path: CONSOLE_WORKER,
         args: &[b"admind", b"--worker"],
         env: environment(user, "dumb"),
-        descriptors: &[(socket.as_raw_fd(), 0), (log.as_raw_fd(), 1), (log.as_raw_fd(), 2)],
+        descriptors: &[
+            (calls.as_raw_fd(), 0),
+            (log.as_raw_fd(), 1),
+            (log.as_raw_fd(), 2),
+            (replies.as_raw_fd(), 3),
+        ],
         network: true,
         shares: None,
     };

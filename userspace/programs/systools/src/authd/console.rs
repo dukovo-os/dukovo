@@ -1333,9 +1333,10 @@ impl Authd {
         now: Instant,
     ) -> (Answer, Instant) {
         let descriptors = std::mem::take(&mut self.clients[i].descriptors);
-        let Ok([socket, log]) = <[OwnedFd; 2]>::try_from(descriptors) else {
+        let Ok([calls, replies, log]) = <[OwnedFd; 3]>::try_from(descriptors) else {
             return no(
-                "a console session starts with two descriptors: its socket and the log",
+                "a console session starts with three descriptors: the link's two pipes and the \
+                 log",
                 now,
             );
         };
@@ -1371,7 +1372,7 @@ impl Authd {
         };
         let groups =
             accounts::other_groups(&user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
-        let process = match signin::start_console(names, &user, &groups, &socket, &log) {
+        let process = match signin::start_console(names, &user, &groups, &calls, &replies, &log) {
             Ok(process) => process as i32,
             Err(why) => return no(why, now),
         };
@@ -1673,8 +1674,11 @@ impl Authd {
         now: Instant,
     ) -> (Answer, Instant) {
         let descriptors = std::mem::take(&mut self.clients[i].descriptors);
-        let Ok([socket, log]) = <[OwnedFd; 2]>::try_from(descriptors) else {
-            return no("a worker starts with two descriptors: its socket and the log", now);
+        let Ok([calls, replies, log]) = <[OwnedFd; 3]>::try_from(descriptors) else {
+            return no(
+                "a worker starts with three descriptors: the link's two pipes and the log",
+                now,
+            );
         };
         let Some(names) = self.names else {
             return no("authd holds no names capability to start the console's workers with", now);
@@ -1691,7 +1695,7 @@ impl Authd {
         }
         let groups =
             accounts::other_groups(&user, &files.groups, radix_abi::names::GROUPS_MAX as usize);
-        let process = match signin::start_console(names, &user, &groups, &socket, &log) {
+        let process = match signin::start_console(names, &user, &groups, &calls, &replies, &log) {
             Ok(process) => process as i32,
             Err(why) => return no(why, now),
         };

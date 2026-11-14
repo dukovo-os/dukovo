@@ -140,26 +140,32 @@ fn answer(stream: &UnixStream, script: &Script, record: &Mutex<Vec<String>>) {
     }
 }
 
-/// A worker that is a thread: serves the link `fd` is the end of, and
-/// answers each call by `answer`, noting it in `calls`.
+/// The worker's ends of a link, as authd is sent them: the first two of
+/// `fds`, which are taken out.
+pub fn ends(fds: &mut Vec<OwnedFd>) -> link::Ends {
+    let calls = fds.remove(0);
+    let replies = fds.remove(0);
+    link::Ends::new(calls, replies)
+}
+
+/// A worker that is a thread: serves the link whose worker's ends are
+/// `theirs`, and answers each call by `answer`, noting it in `calls`.
 pub fn worker(
-    fd: OwnedFd,
+    theirs: link::Ends,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
     answer: Arc<Answer>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let socket = UnixStream::from(fd);
-        socket.set_nonblocking(true).unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let local = tokio::task::LocalSet::new();
         local.block_on(&runtime, async move {
-            let socket = tokio::net::UnixStream::from_std(socket).unwrap();
-            link::serve(socket, Duration::from_secs(60), move |method, params| {
+            link::serve(theirs, Duration::from_secs(60), move |method, params| {
                 calls.lock().unwrap().push((method.clone(), params.clone()));
                 let outcome = answer(&method, &params);
                 async move { outcome }
             })
-            .await;
+            .await
+            .unwrap();
         });
     })
 }

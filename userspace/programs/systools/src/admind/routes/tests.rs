@@ -85,7 +85,11 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
             "start" => {
                 let session = format!("{:0<32}", asked.text(0));
                 let trust = if asked.text(1) == "trust" { " aa55bb66" } else { "" };
-                fixture::worker(fds.remove(0), Arc::clone(&calls), Arc::new(worker_answers));
+                fixture::worker(
+                    fixture::ends(&mut fds),
+                    Arc::clone(&calls),
+                    Arc::new(worker_answers),
+                );
                 vec![format!("ok 4242 {session}{trust}")]
             }
             "unlock" => match (asked.text(1).as_str(), asked.text(2).as_str()) {
@@ -938,7 +942,7 @@ fn authd_answering_a_time_that_does_not_read_is_not_an_unlock() {
                 "begin" => vec!["ok done 0a0b01".into()],
                 "start" => {
                     fixture::worker(
-                        fds.remove(0),
+                        fixture::ends(&mut fds),
                         Arc::clone(&shared_calls),
                         Arc::new(worker_answers),
                     );
@@ -1192,8 +1196,8 @@ fn a_session_whose_time_is_up_ends_and_authd_is_told() {
 fn a_session_whose_worker_goes_ends_with_it() {
     run(async {
         let world = world("worker-gone");
-        let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
-        let link = Link::new(ours);
+        let (ours, theirs) = crate::admind::link::pipes().unwrap();
+        let link = Link::new(ours).unwrap();
         let authd = "ab".repeat(16);
         let session = sessions::Session::new(
             "chase".into(),

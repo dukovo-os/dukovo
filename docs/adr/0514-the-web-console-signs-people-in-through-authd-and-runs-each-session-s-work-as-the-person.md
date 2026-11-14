@@ -186,11 +186,14 @@ own record.
 - **The worker is `admind --worker`, authd's child, as the person.** authd
   starts it for the person and their groups in the person's session root,
   with no bypass right and no control right, the network a session gets
-  (ADR 0257), and a socket to admind as descriptor 0. It opens no socket
-  and listens on nothing. admind and the worker speak JSON in frames of a
-  4-byte length and at most 4 MiB, many calls at once, told apart by an
-  id; admind gives up on a call after 30 seconds, and the worker works on
-  16 at once. The worker ends when the socket closes, when its account is
+  (ADR 0257), and its link to admind: the pipe it reads admind's calls
+  from as descriptor 0, and the pipe it writes the replies to as 3. Pipes,
+  not a pair of sockets, as a socket cannot be sent to authd (ADR 0091).
+  It opens no socket and listens on nothing. admind and the worker speak
+  JSON in frames of a 4-byte length and at most 4 MiB, many calls at once,
+  told apart by an id; admind gives up on a call after 30 seconds, and the
+  worker works on 16 at once. The worker ends when admind closes the
+  calls' pipe, when its account is
   disabled (authd ends what an account runs, ADR 0220), or after 12 hours
   with no call.
 - **Unlock is a second proof of the person.** For 15 minutes after a

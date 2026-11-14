@@ -12,8 +12,6 @@
 //! the session is the one authd checked: the name typed with a password it
 //! accepted, or the name it gives for a passkey.
 
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
 use std::time::Instant;
 
 use accounts::console::{Console, Purpose, from_hex};
@@ -25,7 +23,7 @@ use super::{Context, Outcome, Reply, Text, ask, refused, shown};
 use crate::admind::authd;
 use crate::admind::errors::{Attempt, Failure, Kind, refusal};
 use crate::admind::guard::{self, SESSION_COOKIE, TRUST_COOKIE};
-use crate::admind::link::Link;
+use crate::admind::link::{self, Link};
 use crate::admind::log;
 use crate::admind::sessions::Session;
 use crate::admind::webauthn::{self, Credential};
@@ -277,15 +275,14 @@ async fn start(
 ) -> Outcome {
     let internal =
         |err: std::io::Error| Failure::new(Kind::Internal, format!("no link to a worker: {err}"));
-    let (ours, theirs) = UnixStream::pair().map_err(internal)?;
-    ours.set_nonblocking(true).map_err(internal)?;
-    let ours = tokio::net::UnixStream::from_std(ours).map_err(internal)?;
+    let (ours, theirs) = link::pipes().map_err(internal)?;
     let console = Console::Start {
         ticket: ticket_bytes(ticket)?,
         trust: trust && !needs_step,
         browser: browser_name(&cx.user_agent),
     };
-    let fds = [theirs.as_raw_fd(), libc::STDERR_FILENO];
+    let [calls, replies] = theirs.fds();
+    let fds = [calls, replies, libc::STDERR_FILENO];
     let (answer, _) = authd::ask(&cx.shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;
@@ -299,7 +296,7 @@ async fn start(
         }
     };
     let started = started(&text).ok_or_else(authd_unreadable)?;
-    let link = Link::new(ours);
+    let link = Link::new(ours).map_err(internal)?;
     let session =
         Session::new(name.to_string(), started.session.clone(), cx.peer, needs_step, link.clone())
             .map_err(|why| Failure::new(Kind::Internal, why))?;

@@ -569,12 +569,13 @@ answered for the user the connection gives.
 *start* _ticket_ *trust*|*once* _browser_
 	Starts the session of a sign-in that is done, once, and answers
 	*ok* _process_ _session_, and, with *trust*, the token that the
-	browser keeps for 30 days. The request comes with two descriptors,
-	the session's socket to admind and the log. authd starts the
-	session's worker, *admind --worker*, as the person, with their
-	groups and the network of a session and nothing else of one's, no
-	shell, its 0 the socket and its 1 and 2 the log, as a child of its
-	own; the worker's calls to authd are the person's own requests. The
+	browser keeps for 30 days. The request comes with three
+	descriptors: the pipe of admind's calls, the pipe of the replies,
+	and the log. Pipes, since a socket cannot be sent (ADR 0091). authd
+	starts the session's worker, *admind --worker*, as the person, with
+	their groups and the network of a session and nothing else of one's,
+	no shell, its 0 the calls' pipe, its 3 the replies' pipe and its 1
+	and 2 the log, as a child of its own; the worker's calls to authd are the person's own requests. The
 	session is 16 random bytes, in hexadecimal. A sign-in that needs a
 	second step the account has not got starts a session that may only
 	add one. authd keeps 64 sessions, and audits and records each

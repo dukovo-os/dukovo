@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The link between admind and a session's worker (ADR 0514). It is a
-//! pair of connected sockets, one end admind's and the other the worker's
-//! descriptor 0, and nothing else: the worker opens no socket and listens
-//! on none. A frame is 4 bytes, the length of what follows in big-endian
+//! The link between admind and a session's worker (ADR 0514). It is two
+//! pipes ([`pipes`]): the calls' pipe, which admind writes and the worker
+//! reads as its descriptor 0, and the replies' pipe, which the worker
+//! writes as its descriptor 3 and admind reads. Pipes, not a pair of
+//! sockets, since a socket cannot be sent to authd, which starts the
+//! worker (ADR 0091), and nothing else: the worker opens no socket and
+//! listens on none. A frame is 4 bytes, the length of what follows in big-endian
 //! order, and then a JSON object: `{id, method, params}` going to the
 //! worker, `{id, result}` or `{id, error: {id, title, detail}}` coming
 //! back. Calls are told apart by `id`, so that a slow one does not hold up
@@ -24,16 +27,17 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
+use std::fs::File;
 use std::future::Future;
 use std::io;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::rc::Rc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::unix::pipe::{Receiver, Sender};
 use tokio::sync::{Mutex, oneshot, watch};
 use tokio::task::JoinHandle;
 
@@ -57,7 +61,7 @@ pub enum FrameError {
     TooBig(usize),
     /// The link ended inside it.
     Cut,
-    /// The socket failed.
+    /// The pipe failed.
     Io(io::Error),
     /// What it holds is not the JSON that was meant.
     Json(serde_json::Error),
@@ -70,7 +74,7 @@ impl fmt::Display for FrameError {
                 write!(f, "a frame of {length} bytes is more than the {FRAME_MAX} a frame holds")
             }
             FrameError::Cut => f.write_str("the link ended inside a frame"),
-            FrameError::Io(err) => write!(f, "the socket failed: {err}"),
+            FrameError::Io(err) => write!(f, "the pipe failed: {err}"),
             FrameError::Json(err) => write!(f, "a frame holds no JSON object that fits: {err}"),
         }
     }
@@ -82,7 +86,7 @@ impl fmt::Display for FrameError {
 /// # Errors
 ///
 /// If the length is more than [`FRAME_MAX`] (nothing past the 4 bytes of
-/// it is read), the link ended inside the frame, or the socket failed.
+/// it is read), the link ended inside the frame, or reading failed.
 pub async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<Option<Vec<u8>>, FrameError> {
@@ -114,7 +118,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
 ///
 /// # Errors
 ///
-/// If it is longer than [`FRAME_MAX`], or the socket failed.
+/// If it is longer than [`FRAME_MAX`], or writing failed.
 pub async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     payload: &[u8],
@@ -126,6 +130,50 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     writer.write_all(&length.to_be_bytes()).await.map_err(FrameError::Io)?;
     writer.write_all(payload).await.map_err(FrameError::Io)?;
     writer.flush().await.map_err(FrameError::Io)
+}
+
+/// One side's ends of a link: the pipe it reads and the pipe it writes.
+pub struct Ends {
+    reads: OwnedFd,
+    writes: OwnedFd,
+}
+
+impl Ends {
+    /// The ends `reads` and `writes`: for the worker, the descriptors authd
+    /// gave it.
+    pub fn new(reads: OwnedFd, writes: OwnedFd) -> Ends {
+        Ends { reads, writes }
+    }
+
+    /// The descriptors, the end it reads first, as authd is sent them.
+    pub fn fds(&self) -> [RawFd; 2] {
+        [self.reads.as_raw_fd(), self.writes.as_raw_fd()]
+    }
+
+    /// The ends as the runtime's pipes.
+    ///
+    /// # Errors
+    ///
+    /// If either is not a pipe that may be read or written as it must.
+    fn open(self) -> io::Result<(Receiver, Sender)> {
+        let reads = Receiver::from_file(File::from(self.reads))?;
+        let writes = Sender::from_file(File::from(self.writes))?;
+        Ok((reads, writes))
+    }
+}
+
+/// A new link's two pipes: admind's ends, and the worker's, which authd is
+/// sent. Each end is closed in the programs either side starts.
+///
+/// # Errors
+///
+/// If the pipes cannot be made: too many files open.
+pub fn pipes() -> io::Result<(Ends, Ends)> {
+    let (calls_read, calls_write) = io::pipe()?;
+    let (replies_read, replies_write) = io::pipe()?;
+    let ours = Ends::new(replies_read.into(), calls_write.into());
+    let theirs = Ends::new(calls_read.into(), replies_write.into());
+    Ok((ours, theirs))
 }
 
 /// What a worker says when it cannot do what a call asked: an error's ID,
@@ -199,14 +247,15 @@ struct State {
 }
 
 struct Inner {
-    writer: Mutex<OwnedWriteHalf>,
+    writer: Mutex<Sender>,
     next: Cell<u64>,
     state: Rc<State>,
     reader: JoinHandle<()>,
 }
 
 impl Drop for Inner {
-    /// The last [`Link`] to go closes the socket, which ends the worker.
+    /// The last [`Link`] to go closes the calls' pipe, which ends the
+    /// worker.
     fn drop(&mut self) {
         self.reader.abort();
     }
@@ -232,17 +281,21 @@ impl Drop for Waiting<'_> {
 }
 
 impl Link {
-    /// admind's end `stream` of a link, with its reading task started.
+    /// admind's ends `ours` of a link, with its reading task started.
+    ///
+    /// # Errors
+    ///
+    /// If an end is not the pipe [`pipes`] made.
     ///
     /// # Panics
     ///
     /// Outside a `LocalSet`.
-    pub fn new(stream: UnixStream) -> Link {
-        let (reader, writer) = stream.into_split();
+    pub fn new(ours: Ends) -> io::Result<Link> {
+        let (reader, writer) = ours.open()?;
         let (closed, _) = watch::channel(false);
         let state = Rc::new(State { waiting: RefCell::new(HashMap::new()), closed });
         let reader = tokio::task::spawn_local(read_replies(reader, Rc::clone(&state)));
-        Link(Rc::new(Inner { writer: Mutex::new(writer), next: Cell::new(1), state, reader }))
+        Ok(Link(Rc::new(Inner { writer: Mutex::new(writer), next: Cell::new(1), state, reader })))
     }
 
     /// Has the worker run `method` with `params`, and waits [`CALL_TIME`]
@@ -302,7 +355,7 @@ impl Link {
 }
 
 /// Hands each reply to the call that waits for it, until the link ends.
-async fn read_replies(mut reader: OwnedReadHalf, state: Rc<State>) {
+async fn read_replies(mut reader: Receiver, state: Rc<State>) {
     loop {
         let frame = match read_frame(&mut reader).await {
             Ok(Some(frame)) => frame,
@@ -337,32 +390,36 @@ pub enum Ended {
     Broken(String),
 }
 
-/// The worker's end: reads calls from `stream` and answers each, as
-/// `handle` says, while others go on. It ends when admind closes its end,
-/// when `idle` passes with no call, or when the link breaks.
+/// The worker's end: reads calls from its ends `theirs` and answers each,
+/// as `handle` says, while others go on. It ends when admind closes its
+/// end, when `idle` passes with no call, or when the link breaks.
+///
+/// # Errors
+///
+/// If an end is not the pipe [`pipes`] made.
 ///
 /// # Panics
 ///
 /// Outside a `LocalSet`.
-pub async fn serve<H, F>(stream: UnixStream, idle: Duration, handle: H) -> Ended
+pub async fn serve<H, F>(theirs: Ends, idle: Duration, handle: H) -> io::Result<Ended>
 where
     H: Fn(String, Value) -> F + 'static,
     F: Future<Output = Result<Value, Fault>> + 'static,
 {
-    let (mut reader, writer) = stream.into_split();
+    let (mut reader, writer) = theirs.open()?;
     let writer = Rc::new(Mutex::new(writer));
     let handle = Rc::new(handle);
     let working = Rc::new(Cell::new(0usize));
     loop {
         let frame = match tokio::time::timeout(idle, read_frame(&mut reader)).await {
-            Err(_) => return Ended::Idle,
-            Ok(Ok(None)) => return Ended::Closed,
+            Err(_) => return Ok(Ended::Idle),
+            Ok(Ok(None)) => return Ok(Ended::Closed),
             Ok(Ok(Some(frame))) => frame,
-            Ok(Err(err)) => return Ended::Broken(err.to_string()),
+            Ok(Err(err)) => return Ok(Ended::Broken(err.to_string())),
         };
         let call = match serde_json::from_slice::<Call>(&frame) {
             Ok(call) => call,
-            Err(err) => return Ended::Broken(FrameError::Json(err).to_string()),
+            Err(err) => return Ok(Ended::Broken(FrameError::Json(err).to_string())),
         };
         let (handle, writer, working) =
             (Rc::clone(&handle), Rc::clone(&writer), Rc::clone(&working));
@@ -384,11 +441,7 @@ where
 
 /// Writes the answer to call `id`; an answer too big for a frame is
 /// replaced by the fault that says so.
-async fn answer(
-    writer: &Mutex<OwnedWriteHalf>,
-    id: u64,
-    outcome: Outcome,
-) -> Result<(), FrameError> {
+async fn answer(writer: &Mutex<Sender>, id: u64, outcome: Outcome) -> Result<(), FrameError> {
     let mut bytes = serde_json::to_vec(&Reply { id, outcome }).map_err(FrameError::Json)?;
     if bytes.len() > FRAME_MAX {
         let fault = Fault::new(Kind::TooBig, "the answer is too big to send");
@@ -402,7 +455,16 @@ async fn answer(
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::net::UnixStream;
     use tokio::task::LocalSet;
+
+    /// A link: admind's side made into a [`Link`], and the worker's pipes,
+    /// which the test reads calls from and writes replies to.
+    fn linked() -> (Link, Receiver, Sender) {
+        let (ours, theirs) = pipes().unwrap();
+        let (calls, replies) = theirs.open().unwrap();
+        (Link::new(ours).unwrap(), calls, replies)
+    }
 
     /// Runs `future` on a runtime of its own, as admind does.
     fn run<F: Future>(future: F) -> F::Output {
@@ -477,8 +539,7 @@ mod tests {
     #[test]
     fn answers_may_come_in_any_order() {
         run(async {
-            let (ours, mut worker) = UnixStream::pair().unwrap();
-            let link = Link::new(ours);
+            let (link, mut calls_pipe, mut replies) = linked();
             let first = {
                 let link = link.clone();
                 tokio::task::spawn_local(async move { link.call("one", json!({"n": 1})).await })
@@ -489,7 +550,7 @@ mod tests {
             };
             let mut calls = Vec::new();
             for _ in 0..2 {
-                let frame = read_frame(&mut worker).await.unwrap().unwrap();
+                let frame = read_frame(&mut calls_pipe).await.unwrap().unwrap();
                 calls.push(serde_json::from_slice::<Call>(&frame).unwrap());
             }
             calls.sort_by(|a, b| a.method.cmp(&b.method));
@@ -500,7 +561,7 @@ mod tests {
             for call in calls.iter().rev() {
                 let result = json!({ "of": call.method });
                 let reply = Reply { id: call.id, outcome: Outcome::Result(result) };
-                write_frame(&mut worker, &serde_json::to_vec(&reply).unwrap()).await.unwrap();
+                write_frame(&mut replies, &serde_json::to_vec(&reply).unwrap()).await.unwrap();
             }
             assert_eq!(first.await.unwrap().unwrap(), json!({"of": "one"}));
             assert_eq!(second.await.unwrap().unwrap(), json!({"of": "two"}));
@@ -510,18 +571,17 @@ mod tests {
     #[test]
     fn a_fault_a_silent_worker_and_a_gone_one_are_told_apart() {
         run(async {
-            let (ours, mut worker) = UnixStream::pair().unwrap();
-            let link = Link::new(ours);
+            let (link, mut calls, mut replies) = linked();
             let closed = link.closed();
             let asked = {
                 let link = link.clone();
                 tokio::task::spawn_local(async move { link.call("steps", Value::Null).await })
             };
-            let frame = read_frame(&mut worker).await.unwrap().unwrap();
+            let frame = read_frame(&mut calls).await.unwrap().unwrap();
             let call = serde_json::from_slice::<Call>(&frame).unwrap();
             let fault = Fault::new(Kind::Refused, "no");
             let reply = Reply { id: call.id, outcome: Outcome::Error(fault.clone()) };
-            write_frame(&mut worker, &serde_json::to_vec(&reply).unwrap()).await.unwrap();
+            write_frame(&mut replies, &serde_json::to_vec(&reply).unwrap()).await.unwrap();
             assert_eq!(asked.await.unwrap(), Err(CallError::Worker(fault)));
             // Nothing answers this one.
             let silent = link.call_within("slow", Value::Null, Duration::from_millis(50)).await;
@@ -532,8 +592,8 @@ mod tests {
                 let link = link.clone();
                 tokio::task::spawn_local(async move { link.call("again", Value::Null).await })
             };
-            read_frame(&mut worker).await.unwrap().unwrap();
-            drop(worker);
+            read_frame(&mut calls).await.unwrap().unwrap();
+            drop((calls, replies));
             assert_eq!(waiting.await.unwrap(), Err(CallError::Gone));
             closed.await;
             assert_eq!(link.call("after", Value::Null).await, Err(CallError::Gone));
@@ -543,16 +603,14 @@ mod tests {
     #[test]
     fn a_worker_that_sends_what_is_no_reply_has_the_link_closed() {
         run(async {
-            let (ours, mut worker) = UnixStream::pair().unwrap();
-            let link = Link::new(ours);
+            let (link, _calls, mut replies) = linked();
             let closed = link.closed();
-            write_frame(&mut worker, b"[1, 2]").await.unwrap();
+            write_frame(&mut replies, b"[1, 2]").await.unwrap();
             closed.await;
             // A length past the most is the same.
-            let (ours, mut worker) = UnixStream::pair().unwrap();
-            let link = Link::new(ours);
+            let (link, _calls, mut replies) = linked();
             let closed = link.closed();
-            worker.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
+            replies.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
             closed.await;
             drop(link);
         });
@@ -561,7 +619,7 @@ mod tests {
     #[test]
     fn the_worker_answers_each_call_and_ends_when_the_link_does() {
         run(async {
-            let (ours, theirs) = UnixStream::pair().unwrap();
+            let (ours, theirs) = pipes().unwrap();
             let worker = tokio::task::spawn_local(serve(
                 theirs,
                 Duration::from_secs(60),
@@ -573,25 +631,26 @@ mod tests {
                     }
                 },
             ));
-            let link = Link::new(ours);
+            let link = Link::new(ours).unwrap();
             assert_eq!(link.call("echo", json!([1, "two"])).await.unwrap(), json!([1, "two"]));
             let fault = link.call("nothing", Value::Null).await.unwrap_err();
             assert!(matches!(&fault, CallError::Worker(f) if f.id == "ADM-116"), "{fault:?}");
             let fault = link.call("huge", Value::Null).await.unwrap_err();
             assert!(matches!(&fault, CallError::Worker(f) if f.id == "ADM-113"), "{fault:?}");
             drop(link);
-            assert_eq!(worker.await.unwrap(), Ended::Closed);
+            assert_eq!(worker.await.unwrap().unwrap(), Ended::Closed);
         });
     }
 
     #[test]
     fn the_worker_ends_after_the_time_with_no_call() {
         run(async {
-            let (_ours, theirs) = UnixStream::pair().unwrap();
+            let (_ours, theirs) = pipes().unwrap();
             let ended = serve(theirs, Duration::from_millis(50), |_: String, _: Value| async {
                 Ok(Value::Null)
             })
-            .await;
+            .await
+            .unwrap();
             assert_eq!(ended, Ended::Idle);
         });
     }
@@ -599,7 +658,7 @@ mod tests {
     #[test]
     fn the_worker_takes_as_many_calls_at_once_as_it_may() {
         run(async {
-            let (ours, theirs) = UnixStream::pair().unwrap();
+            let (ours, theirs) = pipes().unwrap();
             tokio::task::spawn_local(serve(
                 theirs,
                 Duration::from_secs(60),
@@ -608,7 +667,7 @@ mod tests {
                     Ok(Value::Null)
                 },
             ));
-            let link = Link::new(ours);
+            let link = Link::new(ours).unwrap();
             let calls: Vec<_> = (0..=CALLS_MAX)
                 .map(|_| {
                     let link = link.clone();

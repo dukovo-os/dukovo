@@ -3,8 +3,9 @@
 
 //! `admind --worker`: what a signed-in session of the console does as the
 //! person (ADR 0514). authd starts it for the person and their groups,
-//! without the bypass right, with its end of the session's link as
-//! descriptor 0 and admind's log as 1 and 2. It answers admind's calls
+//! without the bypass right, with its ends of the session's link (the
+//! pipe it reads calls from as descriptor 0, and the pipe it writes
+//! replies to as 3) and admind's log as 1 and 2. It answers admind's calls
 //! over [`link`](super::link), many at once, and opens no socket of its
 //! own. It ends when the link closes, or when no call has come for 12
 //! hours, which is the backstop for a session whose admind has gone
@@ -19,8 +20,7 @@
 //! attestations) are base64url in the JSON, as it writes them; the ids of
 //! passkeys are hexadecimal, as `steps` lists them.
 
-use std::os::fd::FromRawFd;
-use std::os::unix::net::UnixStream;
+use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 use std::time::Duration;
 
 use accounts::console::{Console, from_hex};
@@ -40,31 +40,49 @@ use crate::util::{self, Fail, fail};
 /// How long the worker waits for a call before it ends.
 const IDLE: Duration = Duration::from_hours(12);
 
+/// The descriptor of the pipe the worker reads calls from.
+const CALLS: RawFd = 0;
+
+/// The descriptor of the pipe the worker writes replies to.
+const REPLIES: RawFd = 3;
+
 /// `admind --worker`.
 ///
 /// # Errors
 ///
-/// If descriptor 0 is no socket, or the link breaks.
+/// If descriptors 0 and 3 are not the link's pipes, or the link breaks.
 pub fn run() -> Result<i32, Fail> {
-    // SAFETY: authd gives the worker its socket as descriptor 0, and
-    // nothing else of the worker reads or closes descriptor 0.
-    let socket = unsafe { UnixStream::from_raw_fd(0) };
-    if socket.local_addr().is_err() {
-        return Err(fail(
-            "the worker is started by authd, with its socket as descriptor 0".to_string(),
-        ));
+    for fd in [CALLS, REPLIES] {
+        // SAFETY: fcntl only reads and sets the descriptor's flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        // Closed in what the worker starts, so that no command it runs
+        // can read the calls or keep the link open after the worker ends.
+        // SAFETY: as above.
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(fail(format!(
+                "the worker is started by authd, with the link's pipes as descriptors {CALLS} \
+                 and {REPLIES}: descriptor {fd} is not open"
+            )));
+        }
     }
-    socket.set_nonblocking(true).map_err(|err| util::failed(&"the link", err))?;
+    // SAFETY: authd gives the worker the calls' pipe as descriptor 0 and
+    // the replies' as 3, both open as the loop above found; nothing else of
+    // the worker reads, writes or closes them.
+    let theirs =
+        unsafe { link::Ends::new(OwnedFd::from_raw_fd(CALLS), OwnedFd::from_raw_fd(REPLIES)) };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|err| util::failed(&"the runtime", err))?;
     let local = tokio::task::LocalSet::new();
-    let ended = local.block_on(&runtime, async {
-        let socket = tokio::net::UnixStream::from_std(socket)?;
-        Ok::<_, std::io::Error>(link::serve(socket, IDLE, handle).await)
-    });
-    match ended.map_err(|err| util::failed(&"the link", err))? {
+    let ended = local.block_on(&runtime, link::serve(theirs, IDLE, handle)).map_err(|err| {
+        fail(format!(
+            "the worker is started by authd, with the link's pipes as descriptors {CALLS} and \
+             {REPLIES}: {}",
+            util::strip_os_error(&err)
+        ))
+    })?;
+    match ended {
         Ended::Closed => Ok(0),
         Ended::Idle => {
             log(6, "the worker ends: no call came for 12 hours");
