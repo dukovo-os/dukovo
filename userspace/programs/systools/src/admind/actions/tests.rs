@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::json;
@@ -284,4 +285,91 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
 fn every_action_keeps_the_rules() {
     keeps_the_rules(LAB);
     keeps_the_rules(REGISTRY);
+}
+
+/// The golden list of the actions, from the repository's root.
+const GOLDEN: &str = "lab/actions.toml";
+
+/// The comment `lab/actions.toml` starts with.
+const GOLDEN_HEADER: &str = "\
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Every action of the web console, in the order of its registry
+# (userspace/programs/systools/src/admind/actions), with the five tests
+# that cover it: its host test of the arguments, the boot test that calls
+# its route and the one that runs its shown command, the lab test that uses
+# it in each browser, and the lab test that runs its Ansible task twice.
+# `./ob lab coverage --check` fails when a test named here is not in the
+# tree. The registry makes this file: change an action, then run
+# `UPDATE_ACTIONS=1 ./ob test unit` to write it again.
+";
+
+/// The text of the golden list for `actions`: a `[[action]]` table each,
+/// whose values are written as JSON writes them, which TOML reads the same.
+fn golden(actions: &[&dyn Registered]) -> String {
+    let mut text = GOLDEN_HEADER.to_string();
+    for action in listed(actions).as_array().into_iter().flatten() {
+        let tests = &action["tests"];
+        text.push_str(&format!(
+            "\n[[action]]\nid = {}\ntitle = {}\narea = {}\nmethod = {}\npath = {}\nruns = {}\n\
+             long = {}\ntests = {{ checks = {}, route = {}, same_as_command = {}, browser = {}, \
+             ansible = {} }}\n",
+            action["id"],
+            action["title"],
+            action["area"],
+            action["method"],
+            action["path"],
+            action["runs"],
+            action["long"],
+            tests["checks"],
+            tests["route"],
+            tests["same_as_command"],
+            tests["browser"],
+            tests["ansible"],
+        ));
+    }
+    text
+}
+
+#[test]
+fn actions_toml() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..").join(GOLDEN);
+    let text = golden(REGISTRY);
+    if std::env::var_os("UPDATE_ACTIONS").is_some_and(|value| value == "1") {
+        std::fs::write(&path, &text).unwrap_or_else(|err| panic!("writing {GOLDEN}: {err}"));
+        return;
+    }
+    let have = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        have == text,
+        "{GOLDEN} is not what the registry makes. Run UPDATE_ACTIONS=1 ./ob test unit to write \
+         it, and commit it with the change."
+    );
+}
+
+#[test]
+fn the_golden_list_is_toml_that_says_what_the_registry_says() {
+    let text = golden(REGISTRY);
+    let table: toml::Table = text.parse().unwrap();
+    let written = table["action"].as_array().unwrap();
+    assert_eq!(written.len(), REGISTRY.len());
+    for (action, table) in REGISTRY.iter().zip(written) {
+        let tests = action.tests();
+        assert_eq!(table["id"].as_str(), Some(action.id()));
+        assert_eq!(table["title"].as_str(), Some(action.title()));
+        assert_eq!(table["area"].as_str(), Some(action.area()));
+        assert_eq!(table["method"].as_str(), Some(if action.changes() { "POST" } else { "GET" }));
+        assert_eq!(table["path"].as_str(), Some(action.path()));
+        assert_eq!(table["long"].as_bool(), Some(action.long()));
+        let runs = serde_json::to_value(action.runs()).unwrap();
+        assert_eq!(table["runs"].as_str(), runs.as_str());
+        let named = table["tests"].as_table().unwrap();
+        assert_eq!(named.len(), 5);
+        assert_eq!(named["checks"].as_str(), Some(tests.checks));
+        assert_eq!(named["route"].as_str(), Some(tests.route));
+        assert_eq!(named["same_as_command"].as_str(), Some(tests.same_as_command));
+        assert_eq!(named["browser"].as_str(), Some(tests.browser));
+        assert_eq!(named["ansible"].as_str(), Some(tests.ansible));
+    }
 }
