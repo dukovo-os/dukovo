@@ -650,8 +650,13 @@ fn tokens(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     let result = test.run_with_token(&all_token, None, other, &other.args);
     problems.note("ci-all reads another area", outcome(result, &format!("ci-all reading {}", other.area), 200, None));
     let result = test.run_with_token(&all_token, None, change, &change.args);
+    let changed = result.as_ref().ok().and_then(|reply| changed_of(&reply.json().ok()?).ok());
     problems.note("ci-all changes the services", outcome(result, "ci-all changing services", 200, None));
-    test.said("alice (API token ci-all)", &change.id, "ended with status 0");
+    // The example's service may be as the change leaves it already, as a
+    // service that starts at boot is for a start: the answer and the log
+    // line then say it changed nothing.
+    let ended = if changed == Some(false) { "ended with status 0, changed nothing" } else { "ended with status 0" };
+    test.said("alice (API token ci-all)", &change.id, ended);
 
     // A token is for a caller with no session: a cookie beside it is not
     // what the route takes.
