@@ -50,6 +50,29 @@ const PASSWORD: &str = "queen of hearts";
 /// Where the dumps are saved.
 const FOLDER: &str = "/system/state/crash";
 
+/// alertd's notification of the panic (ADR 0485), which consoled shows on
+/// the bottom line. It is critical, so it stays there until a key is
+/// pressed. notifyd sends a notification only to the programs following
+/// it then, so whether it shows depends on whether consoled follows
+/// notifyd by the time alertd sends it.
+const PANIC_NOTICE: &str = "alertd (alerts): The machine restarted after a kernel panic";
+
+/// [`answer_prompt`], after taking the panic's notification off the
+/// bottom line whenever it is there: below the prompt, it would be the
+/// screen's last line. Shift takes it off and types nothing.
+fn answer(vm: &mut Vm, prompt: &str, text: &str) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if vm.screen()?.iter().any(|line| line.contains(PANIC_NOTICE)) {
+            vm.press(&["shift"])?;
+        }
+        match answer_prompt_within(vm, prompt, text, 2) {
+            Err(_) if Instant::now() < deadline => {}
+            result => return result,
+        }
+    }
+}
+
 /// `command` as root: alice, the owner, is an administrator, and elevate
 /// reads her password from its standard input with `-S`.
 fn as_root(command: &str) -> String {
@@ -88,10 +111,10 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &format!("{RELEASE} {VERSION}"),
         "This computer has no account yet: make yours, the owner's,",
     ])?;
-    answer_prompt(vm, "Name:", "alice")?;
-    answer_prompt(vm, "Full name (may be empty):", "Alice Liddell")?;
-    answer_prompt(vm, "New password:", PASSWORD)?;
-    answer_prompt(vm, "The same again:", PASSWORD)?;
+    answer(vm, "Name:", "alice")?;
+    answer(vm, "Full name (may be empty):", "Alice Liddell")?;
+    answer(vm, "New password:", PASSWORD)?;
+    answer(vm, "The same again:", PASSWORD)?;
     vm.expect_anywhere("authd: alice signed in on pts/")?;
     vm.expect_screen(&["Made alice, number 1000, home /users/alice"])?;
 
@@ -99,9 +122,9 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // Nothing she types panics the kernel. Each line ends with a command
     // that succeeds: after one that fails, the shell's hint follows the
     // prompt.
-    answer_prompt(vm, "$", "clear; cat /devices/crashdump; echo \"cat $?\"")?;
+    answer(vm, "$", "clear; cat /devices/crashdump; echo \"cat $?\"")?;
     vm.expect_screen(&["Permission denied", "cat 1"])?;
-    answer_prompt(
+    answer(
         vm,
         "$",
         "clear; dumps; echo \"list $?\"; dumps show; echo \"show $?\"; dumps test --yes; echo \
@@ -117,7 +140,7 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // Through elevate she lists the one dump: its name ends with the boot's
     // number, and its panic is the self-test's. `list` is read through a
     // pipe, so that no terminal's width cuts the panic short.
-    answer_prompt(
+    answer(
         vm,
         "$",
         &format!(
@@ -141,7 +164,7 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // What the dump holds: its three header lines, and its sections in
     // order. The self-test's function is in the panic's backtrace or on the
     // stack; the panic message names it with a hyphen, so it is not that.
-    answer_prompt(
+    answer(
         vm,
         "$",
         &format!(
@@ -166,7 +189,7 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // crashed start's log follows `== Log`, with the line the self-test
     // logged before it panicked. The dump was not cut short, and the kernel
     // finished it.
-    answer_prompt(
+    answer(
         vm,
         "$",
         "clear; awk '/^== Log$/ { exit } /crash_reboo[t]/ { found = 1 } END { if (found) print \
@@ -178,7 +201,7 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_screen(&["frame: 42", "crashed-log: 42", "cut 0 unfinished 0"])?;
 
     // The saved file and its folder are root's alone.
-    answer_prompt(
+    answer(
         vm,
         "$",
         &format!(
@@ -190,12 +213,12 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_screen(&["drwx------", "-rw-------"])?;
 
     // A second save finds the dump saved.
-    answer_prompt(vm, "$", &format!("clear; {}", as_root("dumps save")))?;
+    answer(vm, "$", &format!("clear; {}", as_root("dumps save")))?;
     vm.expect_screen(&["dumps: the previous boot's dump is already saved as "])?;
 
     // The log has the warning: a record of the dumps service at that
     // level, with the panic's message.
-    answer_prompt(
+    answer(
         vm,
         "$",
         &format!(
@@ -208,18 +231,18 @@ fn crash_dump(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 
     // `dumps test` asks at a terminal, and with its input a pipe, as here,
     // it will not go on without --yes: the kernel is not asked to panic.
-    answer_prompt(vm, "$", &format!("clear; {}; echo \"asked $?\"", as_root("dumps test")))?;
+    answer(vm, "$", &format!("clear; {}; echo \"asked $?\"", as_root("dumps test")))?;
     vm.expect_screen(&[
         "this panics the kernel: run it at a terminal to be asked, or give --yes",
         "asked 1",
     ])?;
-    answer_prompt(vm, "$", "clear; echo \"still $((40 + 2))\"")?;
+    answer(vm, "$", "clear; echo \"still $((40 + 2))\"")?;
     vm.expect_screen(&["still 42"])?;
 
     // With --yes it does: the kernel says which process asked, panics, and
     // restarts. The third start keeps that dump whole too, and the service
     // saves it, naming the test's panic.
-    answer_prompt(vm, "$", &format!("clear; {}", as_root("dumps test --yes")))?;
+    answer(vm, "$", &format!("clear; {}", as_root("dumps test --yes")))?;
     vm.expect("Crash dump: a test panic was asked for by process ")?;
     vm.expect("Radix panic on CPU ")?;
     vm.expect("dumps test: a panic asked for on purpose")?;
