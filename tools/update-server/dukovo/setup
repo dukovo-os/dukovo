@@ -339,10 +339,6 @@ nginx_runs() {
 stage=plain
 if cert show "$host" >/dev/null 2>&1; then stage=tls; fi
 nginx_settings "$stage"
-if [ "$stage" = plain ] && ! nginx -t; then
-	echo "setup: nginx does not read its settings: $nginx_data/conf/nginx.conf" >&2
-	exit 1
-fi
 if ! nginx_runs; then
 	echo "setup: nginx did not start: elevate log nginx | tail says why" >&2
 	exit 1
