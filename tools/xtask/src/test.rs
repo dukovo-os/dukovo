@@ -501,7 +501,7 @@ const POSTGRESQL_FILES: u8 = 35;
 /// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the
 /// `postgresql-service` test's scripts
 /// ([`cases::postgresql_service::make_disk`]).
-const POSTGRESQL_SERVICE_FILES: u8 = 35;
+const POSTGRESQL_SERVICE_FILES: u8 = 36;
 
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
