@@ -104,8 +104,9 @@ authd hold it.
   given again; archives carol's home and keeps dave's. The `elevate`
   case disables bob while he is signed in on tty2: his session ends,
   and he signs in again only once alice enables him.
-- **Not yet:** the setting that lets a user's jobs run while they are
-  signed out, which waits for jobs (16a); the owner's limit on what an
+- The setting that lets a user's jobs run while they are signed out came
+  with ADR 0478.
+- **Not yet:** the owner's limit on what an
   account may install, which waits for the catalog (13e); `last` and
   `lastlog` (13b.7b, ADR 0254), a private `/tmp` for each person
   (13b.7c, ADR 0255) and access lists (13b.7d).

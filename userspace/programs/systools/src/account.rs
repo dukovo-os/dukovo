@@ -185,7 +185,8 @@ pub fn user(args: &mut Args) -> Result<i32, Fail> {
                 user rename name new-name\n       \
                 user set [--full-name NAME] [--admin | --no-admin]\n                \
                          [--elevate-without-password | --elevate-with-password]\n                \
-                         [--console | --no-console] [--yes] name";
+                         [--console | --no-console] [--jobs-signed-out never | allowed]\n                \
+                         [--yes] name";
     let Some(subcommand) = args.subcommand() else {
         return match args.next()? {
             Some(Arg::Long(l)) if l == "help" => {
@@ -524,11 +525,12 @@ fn rename(args: &mut Args) -> Result<i32, Fail> {
 
 /// `user set`: changes an account's full name, whether it is an
 /// administrator's, whether it elevates without a password (ADR 0328),
-/// or whether it signs in to the web console without being an
-/// administrator (ADR 0514).
+/// whether it signs in to the web console without being an administrator
+/// (ADR 0514), or whether its jobs may run while it is signed out (ADR
+/// 0478).
 fn set(args: &mut Args) -> Result<i32, Fail> {
     let (mut full_name, mut admin, mut without_password) = (None, None, None);
-    let mut console = None;
+    let (mut console, mut jobs_signed_out) = (None, None);
     let (names, yes) = operands(args, "user set needs a name", 1, |args, arg| {
         match arg {
             Arg::Long(l) if l == "full-name" => full_name = Some(args.text()?),
@@ -538,15 +540,31 @@ fn set(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(l) if l == "elevate-with-password" => without_password = Some(false),
             Arg::Long(l) if l == "console" => console = Some(true),
             Arg::Long(l) if l == "no-console" => console = Some(false),
+            Arg::Long(l) if l == "jobs-signed-out" => {
+                jobs_signed_out = match args.text()?.as_str() {
+                    "never" => Some(false),
+                    "allowed" => Some(true),
+                    other => {
+                        return Err(usage(format!(
+                            "--jobs-signed-out is never or allowed, not `{other}`"
+                        )));
+                    }
+                }
+            }
             _ => return Ok(false),
         }
         Ok(true)
     })?;
     let name = &names[0];
-    if full_name.is_none() && admin.is_none() && without_password.is_none() && console.is_none() {
+    if full_name.is_none()
+        && admin.is_none()
+        && without_password.is_none()
+        && console.is_none()
+        && jobs_signed_out.is_none()
+    {
         return Err(usage(
             "say what to change: --full-name, --admin, --no-admin, --elevate-without-password, \
-             --elevate-with-password, --console or --no-console"
+             --elevate-with-password, --console, --no-console or --jobs-signed-out"
                 .into(),
         ));
     }
@@ -557,7 +575,8 @@ fn set(args: &mut Args) -> Result<i32, Fail> {
         let accounts = Accounts::read()?;
         last_admin(&accounts, name, yes, "Without it")?;
     }
-    let set = Request::Set { name: name.clone(), full_name, admin, without_password, console };
+    let set =
+        Request::Set { name: name.clone(), full_name, admin, without_password, console, jobs_signed_out };
     let answer = ask(&set)?;
     done(answer, |changed| println!("{name} is changed: {changed}."))
 }

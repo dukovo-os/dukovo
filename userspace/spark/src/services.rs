@@ -43,7 +43,8 @@ use libradix::abi::capability::Rights;
 use libradix::abi::errors::File as FileError;
 use libradix::abi::resource_domain::OomClass;
 use manifest::service::{
-    self, DeviceAccess, Health, OVERRIDES, Oom, Override, PciId, Place, Ready,
+    self, DeviceAccess, Health, OVERRIDES, Oom, Override, PciId, Place, Ready, Reopen, Signal,
+    Socket, Start,
 };
 use radix_rt::fs::Dir;
 use radix_rt::println;
@@ -52,6 +53,9 @@ use spark_api::graph::Link;
 use crate::views;
 
 pub use manifest::service::{Restart, check_name};
+
+/// A second, in nanoseconds, as the supervisor's times are.
+const SECOND: u64 = 1_000_000_000;
 
 /// Where Spark keeps the last copy of each service file that read.
 pub const GOOD: &str = "system/state/spark/good";
@@ -143,6 +147,24 @@ pub struct Spec {
     pub ready: Ready,
     /// Its health check, if it has one.
     pub health: Option<Health>,
+    /// The sockets Spark makes and holds for it (ADR 0477).
+    pub sockets: Vec<Socket>,
+    /// Whether, once enabled, it starts at the first connection to one of
+    /// its sockets rather than at boot.
+    pub on_connection: bool,
+    /// The signal that asks it to stop, and how long Spark waits for it
+    /// to end before it ends its domain, in nanoseconds (ADR 0477).
+    pub stop_signal: Signal,
+    pub stop_timeout: u64,
+    /// More groups its processes are in, by name: the groups of sockets
+    /// other bundles offer it (ADR 0477).
+    pub groups: Vec<String>,
+    /// Whether timerd starts it, at the times its file names (ADR 0478):
+    /// boot leaves it off.
+    pub timer: bool,
+    /// What has it open its log files again after logturn(8) moved them,
+    /// if its file names its own logs.
+    pub reopen: Option<Reopen>,
 }
 
 impl Spec {
@@ -235,6 +257,13 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         give_up_after: file.give_up_after,
         ready: file.ready,
         health: file.health,
+        sockets: file.sockets,
+        on_connection: file.start == Start::OnConnection,
+        stop_signal: file.stop.signal,
+        stop_timeout: u64::from(file.stop.timeout) * SECOND,
+        groups: file.groups,
+        timer: file.timer.is_some(),
+        reopen: file.logs.map(|logs| logs.reopen),
     })
 }
 

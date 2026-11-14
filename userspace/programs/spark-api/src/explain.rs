@@ -131,6 +131,16 @@ fn clause(
         State::Failed => failed(service),
         State::Stopping => format!("is stopping{}", process(service.pid)),
         State::Stopped | State::Disabled => stopped(document, service, context, chain),
+        State::Listening => listening(service),
+    }
+}
+
+/// A service that waits for a connection at its sockets, which starts it
+/// (ADR 0477): "waits for a connection on port 8080, which starts it".
+pub fn listening(service: &Service) -> String {
+    match service.holds.sockets.as_slice() {
+        [] => String::from("waits for a connection, which starts it"),
+        sockets => format!("waits for a connection on {}, which starts it", and_list(sockets)),
     }
 }
 
@@ -361,7 +371,12 @@ fn fix_for(document: &Show, asked: &str, chain: &[String], root: &str) -> Option
         State::Running if last.health.as_ref().is_some_and(|h| h.state == HealthState::Failing) => {
             Some(format!("`service {root} logs` shows what it wrote before its check failed."))
         }
-        State::Running | State::Done | State::Starting | State::Pending | State::Stopping => None,
+        State::Running
+        | State::Done
+        | State::Starting
+        | State::Pending
+        | State::Stopping
+        | State::Listening => None,
     }
 }
 

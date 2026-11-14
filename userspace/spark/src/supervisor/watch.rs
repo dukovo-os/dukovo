@@ -275,6 +275,11 @@ impl Supervisor {
                 seconds(at.saturating_sub(now()))
             )),
             State::Pending => self.blocked(watch, watch.index, 0),
+            // Ran, and waits for the next connection again.
+            State::Listening(_) if since => {
+                Some(format!("ok: {name} ran and waits for a connection again\n"))
+            }
+            State::Listening(_) => Some(format!("ok: {name} waits for a connection\n")),
             State::Running(_) | State::Starting(_) | State::Waiting(_) | State::Draining(..) => {
                 None
             }

@@ -406,6 +406,11 @@ impl Manifest {
             }
         }
         let sockets: Vec<&Name> = self.provides.iter().filter_map(|p| p.socket.as_ref()).collect();
+        let listen = if failed.contains(&"network.listen") {
+            None
+        } else {
+            Some(self.permissions.get("network.listen").map_or(&[][..], |r| r.ports.as_slice()))
+        };
         for (i, svc) in self.services.iter().enumerate() {
             if self.services[..i].iter().any(|s| s.name == svc.name) {
                 fail(&[Key("services"), Index(i)], format!("service {} is named twice", svc.name));
@@ -431,14 +436,36 @@ impl Manifest {
                     ),
                 );
             }
-            if svc.start == Start::OnConnection && sockets.is_empty() {
+            if svc.start == Start::OnConnection && svc.sockets.is_empty() {
                 fail(
                     &[Key("services"), Index(i), Key("start")],
                     format!(
-                        "service {} starts on a connection, but provides names no socket to \
-                         connect to",
+                        "service {} starts on a connection, but its sockets names none to wait \
+                         on",
                         svc.name
                     ),
+                );
+            }
+            svc.check_sockets(i, listen, &mut fail);
+            if let Some(stop) = &svc.stop
+                && let Some(timeout) = stop.timeout
+                && !(1..=service::STOP_TIMEOUT_MAX).contains(&timeout)
+            {
+                fail(
+                    &[Key("services"), Index(i), Key("stop"), Key("timeout")],
+                    format!(
+                        "service {}'s stop.timeout is from 1 to {} seconds, not {timeout}",
+                        svc.name,
+                        service::STOP_TIMEOUT_MAX
+                    ),
+                );
+            }
+            if let Some(backup) = &svc.backup
+                && let Err(why) = backup.check(&self.programs)
+            {
+                fail(
+                    &[Key("services"), Index(i), Key("backup")],
+                    format!("service {}'s backup {why}", svc.name),
                 );
             }
             for (j, need) in svc.needs.iter().enumerate() {
@@ -475,17 +502,72 @@ impl Manifest {
             for (at, why) in svc.graph_mistakes() {
                 fail(&[Key("services"), Index(i), Key(at)], format!("service {}: {why}", svc.name));
             }
+            if let Some(timer) = &svc.timer
+                && let Err(why) = timer.check()
+            {
+                fail(
+                    &[Key("services"), Index(i), Key("timer")],
+                    format!("service {}'s timer: {why}", svc.name),
+                );
+            }
         }
+        let made: Vec<&str> = self
+            .services
+            .iter()
+            .flat_map(|svc| svc.sockets.iter())
+            .filter_map(|socket| socket.path.as_deref())
+            .collect();
         for (i, provide) in self.provides.iter().enumerate() {
             let same = |p: &Provide| p.socket == provide.socket && p.interface == provide.interface;
             if self.provides[..i].iter().any(same) {
                 fail(&[Key("provides"), Index(i)], "provides names it twice".into());
             }
+            if let Some(socket) = &provide.socket
+                && !made.contains(&socket.0.as_str())
+            {
+                fail(
+                    &[Key("provides"), Index(i), Key("socket")],
+                    format!(
+                        "provides offers the socket {socket}, which no service's sockets makes \
+                         as a path: add `{{\"path\": \"{socket}\"}}` to the sockets of the \
+                         service that listens on it"
+                    ),
+                );
+            }
+            // A socket offered to the publisher's bundles or to those
+            // approved has a group of its own, its service's account's
+            // name and `-socket` (ADR 0477), which is a name as any
+            // account's: at most 32 characters.
+            let maker = provide.socket.as_ref().and_then(|socket| {
+                self.services.iter().find(|svc| {
+                    svc.sockets.iter().any(|s| s.path.as_deref() == Some(socket.0.as_str()))
+                })
+            });
+            if let Some(svc) = maker
+                && matches!(provide.to, To::Publisher | To::Approved)
+            {
+                let account = svc.account.as_ref().map_or(svc.name.0.as_str(), |a| a.0.as_str());
+                if account.len() > SOCKET_GROUP_ACCOUNT_MAX {
+                    fail(
+                        &[Key("provides"), Index(i), Key("to")],
+                        format!(
+                            "provides offers a socket of the account {account} to {}, which \
+                             gives it the group {account}-socket: that account's name has at \
+                             most {SOCKET_GROUP_ACCOUNT_MAX} characters, for the group's to fit \
+                             in 32; give service {} a shorter `account`",
+                            provide.to, svc.name
+                        ),
+                    );
+                }
+            }
         }
 
         for (i, used) in self.uses.iter().enumerate() {
-            if self.uses[..i].iter().any(|u| u.interface == used.interface) {
-                fail(&[Key("uses"), Index(i)], format!("uses names {} twice", used.interface));
+            if self.uses[..i]
+                .iter()
+                .any(|u| u.interface == used.interface && u.socket == used.socket)
+            {
+                fail(&[Key("uses"), Index(i)], format!("uses names {} twice", used.what()));
             }
         }
 
@@ -991,6 +1073,14 @@ text!(
 );
 
 text!(
+    /// A socket another bundle offers: its ID and the socket's name, such
+    /// as `org.php.php-fpm/fpm`.
+    SocketRef,
+    "A socket's provider ID and its name, such as org.php.php-fpm/fpm",
+    check_socket_ref
+);
+
+text!(
     /// A language, as a BCP 47 tag such as `de` or `pt-BR`.
     Language,
     "A language, as a BCP 47 tag such as de or pt-BR",
@@ -1352,6 +1442,21 @@ fn account_like(name: &str) -> String {
     }
 }
 
+fn check_socket_ref(text: &str) -> Result<(), String> {
+    let fits = text.split_once('/').is_some_and(|(id, name)| {
+        check_id(id).is_ok() && check_name(name, "a socket's name").is_ok()
+    });
+    if fits {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` is not a socket: write its provider's ID and its name, such as \
+             org.php.php-fpm/fpm",
+            text.escape_debug()
+        ))
+    }
+}
+
 fn check_interface(text: &str) -> Result<(), String> {
     let fits = text.split_once('/').is_some_and(|(name, major)| {
         !name.is_empty()
@@ -1424,6 +1529,11 @@ fn check_public_key(key: &str) -> Result<(), String> {
         )),
     }
 }
+
+/// The longest name of the account of a service that offers a socket
+/// with a group of its own: the group is the name and `-socket`, and a
+/// name has at most 32 characters (accounts' NAME_MAX).
+pub const SOCKET_GROUP_ACCOUNT_MAX: usize = 32 - "-socket".len();
 
 /// Defines a field that holds one of a few words.
 macro_rules! words {
@@ -1697,6 +1807,26 @@ pub struct Service {
     /// How to tell that it works.
     #[serde(default)]
     pub health: Option<Health>,
+    /// The sockets Spark makes and holds for it, as service.toml(5)'s
+    /// `[[sockets]]`: a `path` is a name in the bundle's own live folder
+    /// (ADR 0477).
+    #[serde(default)]
+    pub sockets: Vec<service::SocketFile>,
+    /// How Spark stops it: service.toml(5)'s `[stop]` (ADR 0477).
+    #[serde(default)]
+    pub stop: Option<Stop>,
+    /// What it runs around backups' snapshots: service.toml(5)'s
+    /// `[backup]`, with programs of the bundle by name.
+    #[serde(default)]
+    pub backup: Option<BackupHooks>,
+    /// When timerd starts it, if at set times: service.toml(5)'s
+    /// `[timer]` (ADR 0478).
+    #[serde(default)]
+    pub timer: Option<service::TimerFile>,
+    /// Its own log files, which logturn(8) turns over: service.toml(5)'s
+    /// `[logs]` (ADR 0478).
+    #[serde(default)]
+    pub logs: Option<service::LogsFile>,
 }
 
 impl Service {
@@ -1709,6 +1839,89 @@ impl Service {
             || self.give_up_after > 0
             || self.ready.is_some()
             || self.health.as_ref().is_some_and(|health| health.command.is_some())
+            || self.stop.is_some()
+    }
+}
+
+/// How Spark stops a bundle's service: service.toml(5)'s `[stop]`
+/// (ADR 0477).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Stop {
+    /// The signal that asks it to stop; SIGTERM when left out.
+    #[serde(default, deserialize_with = "service::stop_signal_optional")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<StopSignalWord>"))]
+    pub signal: Option<service::Signal>,
+    /// The seconds from the signal to ending what is left of it, from 1
+    /// to 3600; 5 when left out.
+    #[serde(default)]
+    pub timeout: Option<u32>,
+}
+
+/// `stop.signal`'s words, for the schema.
+#[cfg(feature = "schema")]
+struct StopSignalWord;
+
+#[cfg(feature = "schema")]
+impl JsonSchema for StopSignalWord {
+    fn schema_name() -> Cow<'static, str> {
+        "StopSignal".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let words: Vec<&str> =
+            service::Signal::WORDS.iter().copied().filter(|word| *word != "SIGHUP").collect();
+        json_schema!({"type": "string", "enum": words})
+    }
+}
+
+/// The commands a bundle's service runs around backups' snapshots:
+/// service.toml(5)'s `[backup]`, with each program by name (ADR 0463).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BackupHooks {
+    /// Run as backup(8) is about to make the snapshots.
+    #[serde(default)]
+    pub before: Option<HookCommand>,
+    /// Run once the snapshots are made.
+    #[serde(default)]
+    pub after: Option<HookCommand>,
+    /// The seconds each may run, from 1 to 3600; 300 when left out.
+    #[serde(default)]
+    pub time_limit: Option<u32>,
+}
+
+/// A program of the bundle's and its arguments, which a backup hook runs.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct HookCommand {
+    /// The program it runs, one of the bundle's.
+    pub program: Name,
+    /// The arguments after the program's name.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
+impl BackupHooks {
+    /// What is wrong with it, among the bundle's `programs`, if anything.
+    fn check(&self, programs: &Map<Name, Program>) -> Result<(), String> {
+        for (key, hook) in [("before", &self.before), ("after", &self.after)] {
+            if let Some(hook) = hook
+                && programs.get(hook.program.0.as_str()).is_none()
+            {
+                return Err(format!("{key} runs {}, which programs does not name", hook.program));
+            }
+        }
+        match self.time_limit {
+            Some(limit) if !(1..=service::HOOK_TIME_MAX).contains(&limit) => Err(format!(
+                "has time_limit from 1 to {} seconds, not {limit}",
+                service::HOOK_TIME_MAX
+            )),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -1907,6 +2120,52 @@ impl HealthCommand {
 }
 
 impl Service {
+    /// Reports each mistake of its `sockets`, the service at place `at`
+    /// of the manifest's, through `fail`. `listen` is the ports the
+    /// bundle asks to listen on, or none when that is wrong already.
+    fn check_sockets(
+        &self,
+        at: usize,
+        listen: Option<&[Ports]>,
+        fail: &mut impl FnMut(&[Step<'_>], String),
+    ) {
+        use Step::{Index, Key};
+        if self.sockets.len() > service::SOCKETS_MAX {
+            fail(
+                &[Key("services"), Index(at), Key("sockets")],
+                format!(
+                    "service {} names {} sockets, and at most {} are allowed",
+                    self.name,
+                    self.sockets.len(),
+                    service::SOCKETS_MAX
+                ),
+            );
+            return;
+        }
+        // Who connects to a socket the bundle offers is its `provides`'
+        // to say, which bundled writes into the service file as it
+        // installs the bundle (ADR 0477).
+        for (i, socket) in self.sockets.iter().enumerate() {
+            if socket.says_who_connects() {
+                let key = if socket.to.is_some() { "to" } else { "group" };
+                fail(
+                    &[Key("services"), Index(at), Key("sockets"), Index(i), Key(key)],
+                    format!(
+                        "service {}: a bundle's socket has no {key}: offer it to others in \
+                         provides, with its to",
+                        self.name
+                    ),
+                );
+                return;
+            }
+        }
+        let Err(problem) = service::sockets_from(&self.sockets, listen) else { return };
+        let mut place = vec![Key("services"), Index(at), Key("sockets"), Index(problem.index)];
+        place.extend(problem.key.map(Key));
+        let fix = problem.fix.map_or_else(String::new, |fix| format!(": {fix}"));
+        fail(&place, format!("service {}: {}{fix}", self.name, problem.message));
+    }
+
     /// What is wrong with its `requires`, `wants`, `after`,
     /// `give_up_after` and `ready`, each with the key it is under. Whether
     /// a name it links to is a service of the bundle's or of the system's
@@ -2248,15 +2507,94 @@ impl TryFrom<RawProvide> for Provide {
     }
 }
 
-/// An interface a bundle talks to.
+/// An interface or a socket another bundle offers, which a bundle talks
+/// to.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawUse")]
 pub struct Use {
     /// The interface, by name and major version.
-    pub interface: Interface,
+    pub interface: Option<Interface>,
+    /// The socket, by its provider's ID and its name.
+    pub socket: Option<SocketRef>,
     /// Whether the bundle works without it.
     pub need: Need,
+}
+
+impl Use {
+    /// What it uses, as its manifest names it.
+    pub fn what(&self) -> String {
+        match (&self.interface, &self.socket) {
+            (Some(interface), _) => interface.to_string(),
+            (None, Some(socket)) => socket.to_string(),
+            (None, None) => String::new(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawUse {
+    #[serde(default)]
+    interface: Option<Interface>,
+    #[serde(default)]
+    socket: Option<SocketRef>,
+    need: Need,
+}
+
+impl TryFrom<RawUse> for Use {
+    type Error = String;
+
+    fn try_from(raw: RawUse) -> Result<Use, String> {
+        if raw.socket.is_some() == raw.interface.is_some() {
+            return Err("each of uses names a socket or an interface, one of the two".into());
+        }
+        Ok(Use { interface: raw.interface, socket: raw.socket, need: raw.need })
+    }
+}
+
+#[cfg(feature = "schema")]
+impl JsonSchema for Use {
+    fn schema_name() -> Cow<'static, str> {
+        "Use".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let socket = generator.subschema_for::<SocketRef>();
+        let interface = generator.subschema_for::<Interface>();
+        let need = generator.subschema_for::<Need>();
+        json_schema!({
+            "description": "An interface, or a socket another bundle offers, which the bundle talks to, one of the two, and whether it works without it",
+            "type": "object",
+            "properties": {"socket": socket, "interface": interface, "need": need},
+            "required": ["need"],
+            "oneOf": [{"required": ["socket"]}, {"required": ["interface"]}],
+            "additionalProperties": false
+        })
+    }
+}
+
+#[cfg(feature = "schema")]
+impl JsonSchema for service::SocketFile {
+    fn schema_name() -> Cow<'static, str> {
+        "Socket".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "A socket Spark makes for the service: a port, or a path, one of the two",
+            "type": "object",
+            "properties": {
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "address": {"type": "string", "description": "\"0.0.0.0\", \"::\" or one address; for a port"},
+                "udp": {"type": "boolean", "description": "A datagram socket; for a port"},
+                "path": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$", "description": "A plain name in the service's live folder"},
+                "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+                "backlog": {"type": "integer", "minimum": 1, "maximum": 65535}
+            },
+            "oneOf": [{"required": ["port"]}, {"required": ["path"]}],
+            "additionalProperties": false
+        })
+    }
 }
 
 /// A bundle's own update feed.

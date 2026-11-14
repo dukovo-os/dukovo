@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Log turnover: logturn(8) turns over the log files of the services whose
+# files have a [logs], as a timer starts it each hour (ADR 0478). It
+# renames a file that is due, has the service open it again, and
+# compresses the files turned over before.
+#
+# service.toml(5) explains each setting. `service check logturn` checks
+# this file, and `service edit logturn` checks it as you save.
+
+service_version = 1
+description = "Log turnover"
+program = "/system/commands/logturn"
+# It runs once for each time of its timer, and ends.
+restart = "never"
+
+[limits]
+memory = "64M"
+
+# Each hour, a little after it begins, so that it does not start with
+# everything else that runs on the hour.
+[timer]
+at = ["hourly"]
+spread = "5m"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, since the files it turns over are in each service's data
+# folder and view, and it gives a compressed file the owner of the one it
+# came from; and Spark's control socket, which it asks to have a service
+# open its files again.
+[permissions]
+runs-with-your-access = true

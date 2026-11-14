@@ -50,6 +50,18 @@ start = "when-enabled"
 limits = { memory = "512M", open_files = 65536 }
 after = ["netd", "resolved"]
 ready = { when = "listening", timeout = 30 }
+logs = { files = ["logs/*.log"], reopen = "SIGUSR1" }
+# Spark makes port 80 for IPv4 and for IPv6 and holds them across a
+# restart and an update, so that no client is refused (ADR 0477);
+# nginx-service passes them on. Another port, 443 for one, is added to
+# the service's file by the administrator who turns HTTPS on. QUIT is
+# nginx's graceful stop: it finishes the requests in flight, which can
+# take a while (ADR 0477).
+sockets = [
+    { port = 80, address = "0.0.0.0", name = "http" },
+    { port = 80, address = "::", name = "http6" },
+]
+stop = { signal = "SIGQUIT", timeout = 30 }
 
 [bundle.permissions."network.listen"]
 ports = [80, 443]

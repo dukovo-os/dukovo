@@ -28,6 +28,8 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use manifest::service::Stop;
+use spark_api::explain;
 use spark_api::show::{self, HealthState, Holds, State, Usage};
 use spark_api::words::{and_list, ready_once, span, tenths};
 
@@ -36,9 +38,9 @@ use crate::log;
 use crate::power::{self, CONTROL};
 use crate::proc::{self, Process};
 use crate::util::{self, Fail, fail, fail_with, usage};
-use crate::{servicefiles, servicetry};
+use crate::{servicefiles, servicetry, timerd};
 
-const USAGE: &str = "Usage: service list [--failed] [--json]
+const USAGE: &str = "Usage: service list [--failed] [--json] [--timers]
        service NAME status [-n LINES]
        service NAME explain [--json]
        service NAME start | stop | restart [--no-wait] [-q]
@@ -323,7 +325,7 @@ struct Seen<'a> {
 /// `service NAME status [-n LINES]`: what Spark says of the service, as
 /// systemctl status lays it out, its processes and its last log lines;
 /// 0 when it runs or is done, 3 otherwise (LSB).
-fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
+pub(crate) fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
     let lines = match options {
         [] => STATUS_LINES,
         [flag, count] if flag == "-n" || flag == "--lines" => {
@@ -348,6 +350,7 @@ fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
     };
     let seen = Seen { processes: &processes, listening: &listening, user_name: &util::user_name };
     print!("{}", status_text(service, &clock, &seen));
+    print!("{}", timer_field(name));
     let id = servicetry::trial_id(name);
     if let Some(trial) = document.trials.iter().find(|t| t.id == id) {
         print!("{}", trying_line(trial, name));
@@ -362,6 +365,19 @@ fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
         }
     }
     Ok(if matches!(service.state, State::Running | State::Done) { 0 } else { 3 })
+}
+
+/// The `Timer:` line of `service NAME status` when the service has a
+/// timer and timerd answers (it answers root alone), else nothing.
+fn timer_field(name: &str) -> String {
+    let mut text = String::new();
+    let shown_at = |seconds: i64| util::local_time(seconds, "%Y-%m-%d %H:%M:%S");
+    if let Some(row) =
+        timerd::show::timers().ok().and_then(|rows| rows.into_iter().find(|r| r.name == name))
+    {
+        field(&mut text, "Timer", &timerd::show::status_line(&row, &shown_at));
+    }
+    text
 }
 
 /// The lines of `service NAME status`, but the log's.
@@ -406,6 +422,15 @@ fn status_text(service: &show::Service, clock: &Clock, seen: &Seen) -> String {
     };
     let restart = format!("{}, {} restarts so far{give_up}", service.restart, service.restarts);
     field(&mut text, "Restart", &restart);
+    if let Some(stop) = stop_line(service) {
+        field(&mut text, "", &stop);
+    }
+    if let Some(sockets) = sockets_line(service) {
+        field(&mut text, "Sockets", &sockets);
+    }
+    if service.timer {
+        field(&mut text, "Timer", "timerd starts it at the times its file names");
+    }
     if let Some(end) = &service.last_end {
         let running = matches!(service.state, State::Running | State::Starting);
         match &service.last_line {
@@ -479,7 +504,38 @@ fn active(service: &show::Service, clock: &Clock) -> String {
         State::Failed => format!("failed (Spark gave up on it) since {since}"),
         State::Disabled => String::from("inactive (disabled)"),
         State::Stopped => format!("inactive (dead) since {since}"),
+        State::Listening => format!("listening ({}) since {since}", explain::listening(service)),
     }
+}
+
+/// The line that says how the service stops, when its file's `[stop]` is
+/// not the default (ADR 0477): "stops with SIGINT, then ends it after
+/// 300 s".
+fn stop_line(service: &show::Service) -> Option<String> {
+    let default = Stop::default();
+    let signal = service.stop_signal.as_str();
+    let timeout = service.stop_timeout_s;
+    let plain =
+        (signal.is_empty() || signal == default.signal.name()) && timeout == default.timeout;
+    (!plain).then(|| {
+        let signal = if signal.is_empty() { default.signal.name() } else { signal };
+        format!("stops with {signal}, then ends it after {timeout} s")
+    })
+}
+
+/// The `Sockets:` line: the sockets Spark holds for the service (ADR
+/// 0477), and whether a connection starts it.
+fn sockets_line(service: &show::Service) -> Option<String> {
+    let sockets = &service.holds.sockets;
+    if sockets.is_empty() {
+        return None;
+    }
+    let held = format!("{}, which Spark holds", and_list(sockets));
+    Some(if service.start == "on-connection" {
+        format!("{held}; a connection starts it")
+    } else {
+        held
+    })
 }
 
 /// The `Holds:` lines: what the service's file gives it.
@@ -677,17 +733,22 @@ fn runs_well(service: &show::Service) -> bool {
     }
 }
 
-/// `service list [--failed] [--json]`: each service, its state, whether
-/// it starts at boot, since when and what it is; with `--failed`, those
-/// not running as asked alone, and 1 if there are some.
+/// `service list [--failed] [--json] [--timers]`: each service, its
+/// state, whether it starts at boot, since when and what it is; with
+/// `--failed`, those not running as asked alone, and 1 if there are some;
+/// with `--timers`, the services with a timer instead, as timerd says.
 fn list(options: &[String]) -> Result<i32, Fail> {
-    let (mut failed_only, mut json) = (false, false);
+    let (mut failed_only, mut json, mut timers) = (false, false, false);
     for option in options {
         match option.as_str() {
             "--failed" => failed_only = true,
             "--json" => json = true,
+            "--timers" => timers = true,
             other => return Err(usage(format!("service list: unknown option `{other}'"))),
         }
+    }
+    if timers {
+        return list_timers();
     }
     if json {
         print!("{}", ask("show")?);
@@ -707,6 +768,15 @@ fn list(options: &[String]) -> Result<i32, Fail> {
         writeln!(out, "\n{}", not_as_asked_line(&names))?;
     }
     Ok(i32::from(failed_only && !wrong.is_empty()))
+}
+
+/// `service list --timers`: each service with a timer, its next run and
+/// its last start.
+fn list_timers() -> Result<i32, Fail> {
+    let rows = timerd::show::timers().map_err(fail)?;
+    let shown_at = |seconds: i64| util::local_time(seconds, "%Y-%m-%d %H:%M:%S");
+    print!("{}", timerd::show::table(&rows, &shown_at, util::is_terminal(1)));
+    Ok(0)
 }
 
 /// Whether `service` is not running as asked: given up on, waiting to
@@ -825,6 +895,59 @@ mod tests {
             listening: open,
             user_name: &|uid| if uid == 0 { "root".into() } else { "chase".into() },
         }
+    }
+
+    #[test]
+    fn status_says_how_a_service_stops_and_its_sockets() {
+        // The default stop says nothing.
+        let mut service = nginx();
+        service.stop_signal = "SIGTERM".into();
+        service.stop_timeout_s = 5;
+        assert_eq!(stop_line(&service), None);
+        // An older Spark's document, without them, is the default too.
+        service.stop_signal = String::new();
+        assert_eq!(stop_line(&service), None);
+        service.stop_signal = "SIGINT".into();
+        service.stop_timeout_s = 300;
+        assert_eq!(
+            stop_line(&service).as_deref(),
+            Some("stops with SIGINT, then ends it after 300 s")
+        );
+        service.stop_signal = "SIGTERM".into();
+        service.stop_timeout_s = 30;
+        assert_eq!(
+            stop_line(&service).as_deref(),
+            Some("stops with SIGTERM, then ends it after 30 s")
+        );
+
+        assert_eq!(sockets_line(&service), None);
+        service.holds.sockets = vec!["port 80".into(), "port 80 on ::".into()];
+        service.start = "at-boot".into();
+        assert_eq!(
+            sockets_line(&service).as_deref(),
+            Some("port 80 and port 80 on ::, which Spark holds")
+        );
+        service.start = "on-connection".into();
+        assert_eq!(
+            sockets_line(&service).as_deref(),
+            Some("port 80 and port 80 on ::, which Spark holds; a connection starts it")
+        );
+        service.state = State::Listening;
+        service.pid = None;
+        let line = active(&service, &CLOCK);
+        assert!(
+            line.starts_with(
+                "listening (waits for a connection on port 80 and port 80 on ::, which starts \
+                 it) since "
+            ),
+            "{line}"
+        );
+        let text = status_text(&service, &CLOCK, &seen_with(&[], &|_, _| false));
+        assert!(
+            text.contains("  Sockets: port 80 and port 80 on ::, which Spark holds; a"),
+            "{text}"
+        );
+        assert!(text.contains("stops with SIGTERM, then ends it after 30 s\n"), "{text}");
     }
 
     #[test]

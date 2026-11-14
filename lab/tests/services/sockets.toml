@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Spark holds nginx's ports (ADR 0477): installed for everyone and enabled,
+# nginx is handed port 80 by Spark, and while the machine restarts it three
+# times and installs the same bundle over itself, the lab PC keeps 16
+# requests at a time coming for 20 seconds. The ports stay open the whole
+# time, so a request waits in the backlog for the new nginx and none may
+# be refused or go without its page.
+about = "Spark keeps nginx's ports open across restarts and an update, and no request is refused (ADR 0477)"
+time = "6m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+run = "service nginx enable"
+root = true
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+host = "curl -s http://{machine}:{machine-port:80}/"
+expect = "Welcome to nginx!"
+# Spark's side of it: the service file names the socket, and the status
+# says Spark holds it.
+[[step]]
+run = "sh -c 'service nginx status | grep -i socket'"
+root = true
+expect = "80"
+# Three restarts, six seconds apart, then the bundle installed over itself,
+# by a shell of the machine's own so that the step returns, while the lab
+# PC asks.
+[[step]]
+run = '''sh -c '(for i in 1 2 3; do sleep 6; service nginx restart; done; sleep 6; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv) > /dev/null 2>&1 &' '''
+root = true
+[[step]]
+host = "sh {here}/nginx-load.sh {machine} {machine-port:80} {machine-port:80}"
+expect = "lost 0"
+# Give the last of them time to finish, then it answers again.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+host = "curl -s http://{machine}:{machine-port:80}/"
+expect = "Welcome to nginx!"
+[[step]]
+run = "bundle remove --for-everyone --purge org.nginx.nginx"
+root = true
+expect = "removed org.nginx.nginx"

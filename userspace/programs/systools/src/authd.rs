@@ -334,6 +334,9 @@ struct Session {
     /// Whether its sign-in is in the records, for last(1): all but an
     /// SSH command's without a terminal, as on Linux.
     recorded: bool,
+    /// For a person's job that authd runs for timerd (ADR 0478), what
+    /// the log calls it: `crontab alice`, `at 12`.
+    job: Option<String>,
 }
 
 /// How long a connection whose session runs may wait: as long as it
@@ -347,6 +350,7 @@ macro_rules! audit {
 }
 
 pub(crate) mod console;
+mod jobs;
 mod keyring;
 pub(crate) mod proofs;
 
@@ -557,7 +561,14 @@ impl Authd {
                 continue;
             }
             let peer = Peer::of(&stream);
-            let held = self.clients.iter().filter(|c| c.peer.process == peer.process).count();
+            // A connection that waits for the end of what it started is
+            // not one of its program's requests at once: timerd keeps one
+            // open for each job that runs.
+            let held = self
+                .clients
+                .iter()
+                .filter(|c| c.peer.process == peer.process && c.session.is_none())
+                .count();
             // admind, one process, holds a connection for each elevated
             // command of the web console's that runs (ADR 0514).
             let most = if peer.is_root() { CLIENTS_MAX / 2 } else { CLIENTS_PER_PROCESS };
@@ -711,13 +722,17 @@ impl Authd {
                 Request::Service { name, whose, home } => {
                     (add_service(files, name, whose, home, peer), now)
                 }
+                Request::SocketGroup { name, whose } => {
+                    (add_socket_group(files, name, whose, peer), now)
+                }
                 Request::Rename { name, new } => (self.rename(files, name, new, peer), now),
-                Request::Set { name, full_name, admin, without_password, console } => {
+                Request::Set { name, full_name, admin, without_password, console, jobs_signed_out } => {
                     let change = Change {
                         full_name: full_name.as_deref(),
                         admin: *admin,
                         without_password: *without_password,
                         console: *console,
+                        jobs_signed_out: *jobs_signed_out,
                     };
                     (self.set(files, name, &change, peer), now)
                 }
@@ -784,6 +799,14 @@ impl Authd {
                 Request::Console(asked) => self.console(i, &files, asked, peer, now),
                 Request::KerberosTickets { uid } => {
                     (self.kerberos_tickets(&files, *uid, peer), now)
+                }
+                Request::Job { owner, label, folder, command, environment } => {
+                    let asked = jobs::JobAsked { owner, label, folder, command, environment };
+                    (self.job(i, &files, &asked, peer), now)
+                }
+                Request::KeepRunning => (jobs::keep_running(&files, None, peer), now),
+                Request::SetKeepRunning { chosen } => {
+                    (jobs::keep_running(&files, Some(*chosen), peer), now)
                 }
                 Request::EndShares => {
                     if peer.is_root() {
@@ -1139,6 +1162,8 @@ impl Authd {
         let notices = Notices::read();
         let theirs = notices.of(name);
         lines.extend(theirs.iter().cloned());
+        let missed = jobs::missed_at_sign_in(user);
+        lines.extend(missed.iter().map(|(line, _)| line.clone()));
         if !lines.is_empty()
             && let Ok(copy) = terminal.try_clone()
         {
@@ -1154,6 +1179,11 @@ impl Authd {
                 );
                 if !theirs.is_empty()
                     && let Err(why) = notices.without(name).write()
+                {
+                    eprintln!("authd: {why}");
+                }
+                if let Some((_, told)) = missed
+                    && let Err(why) = told.write()
                 {
                     eprintln!("authd: {why}");
                 }
@@ -1175,6 +1205,7 @@ impl Authd {
                     elevated: false,
                     remote: false,
                     recorded: true,
+                    job: None,
                 };
                 self.sessions.insert(process, session);
                 self.clients[i].session = Some(process);
@@ -1212,7 +1243,13 @@ impl Authd {
                 if session.terminal == console::TERMINAL && !session.elevated {
                     self.console.worker_ended(process);
                 }
-                if session.elevated {
+                if let Some(label) = &session.job {
+                    audit!(
+                        "{}'s job {}, process {process}, ended with status {status:#x}",
+                        session.name,
+                        shown(label)
+                    );
+                } else if session.elevated {
                     audit!(
                         "{}'s elevated process {process} on {} ended with status {status:#x}",
                         session.name,
@@ -1373,6 +1410,7 @@ impl Authd {
             elevated: true,
             remote: false,
             recorded: false,
+            job: None,
         };
         self.sessions.insert(process, session);
         self.hold(i, process, relay);
@@ -1693,6 +1731,7 @@ impl Authd {
                     elevated: false,
                     remote: false,
                     recorded: true,
+                    job: None,
                 };
                 self.sessions.insert(process as i32, session);
                 (Answer::Done(format!("{} {}", user.name, ntlm::hex(&session_key))), now)
@@ -1823,6 +1862,7 @@ impl Authd {
         // away, as a console's does.
         let notices = Notices::read();
         let theirs = if shell { notices.of(&user.name) } else { Vec::new() };
+        let missed = if shell { jobs::missed_at_sign_in(user) } else { None };
         if let Some(tty) = terminal.as_ref().filter(|_| shell) {
             let records = read_text(&signins::of(user.uid)).unwrap_or_default();
             let mut lines =
@@ -1830,6 +1870,7 @@ impl Authd {
                     util::local_time(time, WHEN)
                 });
             lines.extend(theirs.iter().cloned());
+            lines.extend(missed.iter().map(|(line, _)| line.clone()));
             if !lines.is_empty()
                 && let Ok(copy) = tty.try_clone()
             {
@@ -1855,6 +1896,11 @@ impl Authd {
         {
             eprintln!("authd: {why}");
         }
+        if let Some((_, told)) = missed
+            && let Err(why) = told.write()
+        {
+            eprintln!("authd: {why}");
+        }
         let recorded = terminal.is_some();
         if recorded {
             let seat = Seat {
@@ -1874,6 +1920,7 @@ impl Authd {
             elevated: false,
             remote: true,
             recorded,
+            job: None,
         };
         self.sessions.insert(process, session);
         self.clients[i].session = Some(process);
@@ -2247,6 +2294,10 @@ impl Authd {
             }
         };
         let Files { mut users, mut groups, mut passwords, mut sharing } = files;
+        // The group of the sockets its service offered, whose number is
+        // retired with the account's (ADR 0477).
+        let socket_group =
+            accounts::socket_group_of(&user, &groups).map(|g| (g.gid, g.name.clone()));
         if let Err(why) = accounts::remove(&mut users, &mut groups, name) {
             return Answer::Refused(why);
         }
@@ -2256,7 +2307,11 @@ impl Authd {
         // Its number first, so that it is never given again, then the
         // user, whose line going removes the account, and the rest.
         let day = util::local_time(util::now_ns() as i64 / 1_000_000_000, "%Y-%m-%d");
-        let removed = retire(&user, &day)
+        let removed = retire(user.uid, &user.name, &day)
+            .and_then(|()| match &socket_group {
+                Some((number, group)) => retire(*number, group, &day),
+                None => Ok(()),
+            })
             .and_then(|()| replace(accounts::PASSWD, &users.text(), 0o644))
             .and_then(|()| replace(accounts::GROUP, &groups.text(), 0o644))
             .and_then(|()| replace(accounts::PASSWORDS, &passwords.text(), 0o600))
@@ -2269,6 +2324,12 @@ impl Authd {
         let notices = Notices::read();
         if !notices.of(name).is_empty()
             && let Err(why) = notices.without(name).write()
+        {
+            eprintln!("authd: {why}");
+        }
+        let kept = jobs::Jobs::read();
+        if kept.of(user.uid) != jobs::Kept::default()
+            && let Err(why) = kept.without(user.uid).write()
         {
             eprintln!("authd: {why}");
         }
@@ -2373,10 +2434,11 @@ impl Authd {
         Answer::Done(format!("renamed {name} to {new}, home {}", after.home))
     }
 
-    /// Changes `name`'s full name, whether it is an administrator, and
-    /// whether it signs in to the web console.
+    /// Changes `name`'s full name, whether it is an administrator, whether
+    /// it elevates without a password, whether it signs in to the web
+    /// console, or whether its jobs may run while it is signed out.
     fn set(&mut self, files: Files, name: &str, change: &Change<'_>, peer: Peer) -> Answer {
-        let Change { full_name, admin, without_password, console } = *change;
+        let Change { full_name, admin, without_password, console, jobs_signed_out } = *change;
         let Some(user) = files.user(name).cloned() else {
             return Answer::Refused(format!("there is no account {}", shown(name)));
         };
@@ -2384,7 +2446,8 @@ impl Authd {
         let own = peer.user == user.uid
             && admin.is_none()
             && without_password.is_none()
-            && console.is_none();
+            && console.is_none()
+            && jobs_signed_out.is_none();
         if !peer.is_root() && !own {
             let why = "only an administrator, inside elevate, changes an account's settings; \
                        anyone changes their own full name";
@@ -2438,6 +2501,21 @@ impl Authd {
             .and_then(|()| replace(accounts::PASSWD, &users.text(), 0o644));
         if let Err(why) = written {
             return Answer::Refused(why);
+        }
+        if let Some(allowed) = jobs_signed_out {
+            let mut kept = jobs::Jobs::read();
+            kept.change(user.uid, |kept| kept.barred = !allowed);
+            if let Err(why) = kept.write() {
+                return Answer::Refused(why);
+            }
+            changed.push(
+                if allowed {
+                    "its jobs may run while it is signed out"
+                } else {
+                    "its jobs never run while it is signed out"
+                }
+                .into(),
+            );
         }
         // Someone who is no longer an administrator keeps nothing of the
         // admin set.
@@ -2622,9 +2700,9 @@ fn mark_disabled(files: &Files, name: &str, disabled: bool) -> Result<(), String
     replace(accounts::PASSWORDS, &passwords.text(), 0o600)
 }
 
-/// Adds `user`'s number, removed on `day`, to the retired ones, which no
-/// account gets again.
-fn retire(user: &User, day: &str) -> Result<(), String> {
+/// Adds `number`, of the account or group `name`, removed on `day`, to
+/// the retired ones, which no account or group gets again.
+fn retire(number: u32, name: &str, day: &str) -> Result<(), String> {
     let failed = |err: io::Error| {
         format!("cannot write {}: {}", accounts::RETIRED, util::strip_os_error(&err))
     };
@@ -2634,7 +2712,7 @@ fn retire(user: &User, day: &str) -> Result<(), String> {
         .mode(0o600)
         .open(accounts::RETIRED)
         .map_err(failed)?;
-    file.write_all(accounts::retired_line(user, day).as_bytes()).map_err(failed)?;
+    file.write_all(accounts::retired_line(number, name, day).as_bytes()).map_err(failed)?;
     file.sync_all().map_err(failed)
 }
 
@@ -2807,6 +2885,7 @@ struct Change<'a> {
     admin: Option<bool>,
     without_password: Option<bool>,
     console: Option<bool>,
+    jobs_signed_out: Option<bool>,
 }
 
 /// The account of `peer`, if it is an administrator's, or why not.
@@ -2909,7 +2988,7 @@ fn add_service(files: Files, name: &str, whose: &str, home: &str, peer: Peer) ->
         Err(err) => return Answer::Refused(format!("cannot read {}: {err}", accounts::RETIRED)),
     };
     let had = users.entries().any(|u| u.name == name);
-    let full_name = format!("A service of {whose}");
+    let full_name = accounts::service_full_name(whose);
     let user =
         match accounts::add_service(&mut users, &mut groups, name, &full_name, home, &retired) {
             Ok(user) => user,
@@ -2931,6 +3010,40 @@ fn add_service(files: Files, name: &str, whose: &str, home: &str, peer: Peer) ->
         Ok(()) => {
             audit!(
                 "made the account {name} ({number}) of a service of {whose}, for process {} \
+                 (user {})",
+                peer.process,
+                peer.user
+            );
+            Answer::Done(number.to_string())
+        }
+        Err(why) => Answer::Refused(why),
+    }
+}
+
+/// Makes the group of a socket that bundle `whose` offers to others (ADR
+/// 0477), as bundled(8) asks as it installs the bundle: no members, and
+/// a number as a service's account has.
+fn add_socket_group(files: Files, name: &str, whose: &str, peer: Peer) -> Answer {
+    if !peer.is_root() {
+        return Answer::Refused("only bundled, as root, makes a socket's group".into());
+    }
+    let Files { users, mut groups, .. } = files;
+    let retired = match read_text(accounts::RETIRED) {
+        Ok(text) => accounts::retired(&text),
+        Err(err) => return Answer::Refused(format!("cannot read {}: {err}", accounts::RETIRED)),
+    };
+    let had = groups.entries().any(|g| g.name == name);
+    let number = match accounts::add_socket_group(&users, &mut groups, name, whose, &retired) {
+        Ok(number) => number,
+        Err(why) => return Answer::Refused(why),
+    };
+    if had {
+        return Answer::Done(number.to_string());
+    }
+    match replace(accounts::GROUP, &groups.text(), 0o644) {
+        Ok(()) => {
+            audit!(
+                "made the group {name} ({number}) of a socket of {whose}, for process {} \
                  (user {})",
                 peer.process,
                 peer.user
@@ -3236,6 +3349,7 @@ mod tests {
             elevated,
             remote: false,
             recorded: false,
+            job: None,
         };
         let mut sessions = HashMap::new();
         // alice elevated process 41 in pane pts/0; its own terminal is

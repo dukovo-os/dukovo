@@ -198,8 +198,36 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	*start* = *"when-enabled"* | *"at-boot"* | *"on-connection"*
 		When it starts: once an administrator enables it (the
 		default), at boot once it is installed, or at the first
-		connection to a socket it provides, which *provides* names;
-		for now such a one starts at boot.
+		connection to one of its *sockets*, which Spark holds until
+		then (ADR 0477). *"on-connection"* needs at least one socket in
+		*sockets*, and a service that it starts is put back to waiting
+		when it is stopped by request.
+
+	*sockets* = [ { *port* | *path*, *address*, *udp*, *name*, *backlog* } ]
+		The sockets Spark makes and holds for it, at most 16, with the
+		keys and checks of a service file's *[[sockets]]*
+		(*service.toml*(5)), and passed to it as *sd_listen_fds*(3)
+		passes them. A *port* must be one of the *ports* of the
+		*network.listen* permission, which the bundle then asks for;
+		a *path* is a name in the service's own live folder, where the
+		sockets it provides go. A socket in *provides* is one of these
+		*path* sockets. A restart and an update keep them open, so
+		connections wait for the new version and none is refused
+		(*bundled*(8)).
+
+	*stop* = { *signal*, *timeout* }
+		How Spark stops it, as a service file's *[stop]* (ADR 0477):
+		the signal, *"SIGTERM"* unless given, and the seconds before
+		Spark ends what is left of it, from 1 to 3600, 5 unless given.
+		*nginx*'s is *{ "signal": "SIGQUIT", "timeout": 30 }*.
+		*bundled*(8) waits for a stop as long as the longest *timeout*
+		of the services it stops, and 10 seconds more.
+
+	*backup* = { *before*, *after*, *time_limit* }
+		What it runs around the snapshots of *backup*(8), as a service
+		file's *[backup]*: *before* and *after* are each { *program*,
+		*arguments* }, with *program* one of *programs*, and
+		*time_limit* is from 1 to 3600 seconds, 300 unless given.
 
 	*needs* = [_"interface/1"_, ...]
 		The interfaces that must be up before it starts.
@@ -236,8 +264,25 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 		others are *health.every*, *health.timeout* and
 		*health.failures*, with their defaults.
 
+	*timer* = { *at*, *every*, *after_boot*, *spread*, *catch_up*,
+	*time_zone* }
+		Start the service at set times, as a service file's *[timer]*
+		does (*service.toml*(5), ADR 0478): *at* is a list of times,
+		such as *"daily"* or *"30 3 \* \* \*"*; *every* a duration such as
+		*"6h"*; and the others are *timer.after_boot*, *timer.spread*,
+		*timer.catch_up* and *timer.time_zone*, with their defaults. It
+		needs *at* or *every*. *timerd*(8) starts the service when
+		it is enabled.
+
+	*logs* = { *files*, *turn_over*, *keep*, *compress*, *reopen* }
+		The log files the service writes itself, which *logturn*(8)
+		turns over, as a service file's *[logs]* (ADR 0478): *files*
+		are patterns in its data folder, such as *["logs/\*.log"]*;
+		*reopen* is the signal that has it open them again, such as
+		*"SIGUSR1"*, or *"restart"* or *"none"*.
+
 	A service that uses any of *requires*, *wants*, *after*,
-	*give_up_after*, *ready* or *health.command* needs Dukovo 1.0 or
+	*give_up_after*, *ready*, *health.command* or *stop* needs Dukovo 1.0 or
 	later, so its *requires_os* is *"1.0"* or later, as *ob ports*
 	writes it for the catalog's; *bundled*(8) writes its service file
 	as *service_version = 2*.
@@ -272,10 +317,32 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 	of the two, and *to*, who may connect: *"approved"*, the programs an
 	administrator or you approve; *"anyone"*; *"publisher"*, the
 	publisher's other bundles; or *"system"*, the system's own programs.
+	A socket is the *name* of a *path* socket in the *sockets* of one of
+	its services. Spark makes it in that service's live folder, owned by
+	root: with mode 0666 for *"anyone"*, 0600 for *"system"*, and, for
+	*"publisher"* and *"approved"*, 0660 with a group of its own,
+	_ACCOUNT-socket_, which *bundled*(8) has *authd*(8) make as it
+	installs the bundle and which goes with the account (ADR 0477).
+	bundled writes this into the service file as *to* and *group* of the
+	socket (*service.toml*(5)); a bundle's own *sockets* do not say it.
+	The service's live folder is open to look in, 0755.
 
-*uses* = [ { *interface*, *need* } ]
+*uses* = [ { *interface* | *socket*, *need* } ]
 	The interfaces of other bundles and of the system it talks to, such
-	as *"dukovo.certificates/1"*, each *"required"* or *"optional"*.
+	as *"dukovo.certificates/1"*, or a socket another bundle offers, as
+	its ID and the socket's name, such as *"org.php.php-fpm/fpm"*; each
+	*"required"* or *"optional"*. *bundled*(8) grants a socket as it
+	installs the bundle when *to* allows: *"anyone"* at once;
+	*"publisher"* when both bundles have the same publisher;
+	*"approved"* when the person who installs the bundle approves it,
+	which the install's sheet asks and *--yes* answers; *"system"*
+	never, to a bundle. A required socket that is not given stops the
+	install, and an optional one is left out, which the install says. A bundle that was granted it has the
+	socket in the view of its services and the socket's group, which
+	its service file's *groups* names. Without the grant it has
+	neither, and the mode refuses the socket if it reached it another
+	way. A person's own programs do not reach a socket offered to the
+	approved.
 
 *update* = { *feed* = _"https://..."_, *key* = _"minisign key"_ }
 	Its own update feed, for a bundle outside a catalog (ADR 0390): the

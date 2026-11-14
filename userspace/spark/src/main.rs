@@ -77,6 +77,7 @@ extern crate alloc;
 
 mod certificates;
 mod services;
+mod sockets;
 mod supervisor;
 mod swap;
 mod views;

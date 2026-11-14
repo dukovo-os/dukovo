@@ -9,7 +9,7 @@ service - start, stop and look at the services, and check their files
 
 # SYNOPSIS
 
-*service list* [*--failed*] [*--json*]
+*service list* [*--failed*] [*--json*] [*--timers*]
 
 *service* _name_ *status* [*-n* _lines_]
 
@@ -64,6 +64,13 @@ when there are some, for scripts. *--json* prints Spark's *show*
 document as it is (*spark*(8)), which has *show_version* for scripts to
 check. In a pipe, the header is left out.
 
+*list --timers* lists instead the services whose files have a *[timer]*
+(*service.toml*(5)), by name, with the time each starts next and when it
+last started, as *timerd*(8) keeps them (ADR 0478); a timer that has no
+time within five years says *none*. Only an administrator asks. *status*
+of a service with a timer has a *Timer:* line that says the same, for an
+administrator.
+
 *status* shows what Spark knows of a service, what it may reach, its
 processes and its last lines in the log:
 
@@ -109,7 +116,8 @@ web - Web server
 took to be ready when its file says when it is; *active (exited)*, a
 setup step that is done; *activating (starting as process* _n_*, ready
 once* _when_*)*; *activating (waiting for* _names_*)*; *activating
-(waiting to start again)*; *deactivating (stopping as process* _n_*)*;
+(waiting to start again)*; *inactive (waits for a connection on port* _n_*)*, a service that
+starts at its first connection, with its sockets held (ADR 0477); *deactivating (stopping as process* _n_*)*;
 *failed (Spark gave up on it)*; *inactive (disabled)* or *inactive
 (dead)*; and since when, by the clock and how long ago. *Why* says why
 it is not running as asked, *Needs* names the services its file names,
@@ -178,8 +186,9 @@ needs doing.
 *start* starts a service that is stopped or disabled, with those it
 requires and wants; *stop* stops one, with those that require it, and
 keeps it stopped until it is started again or the system restarts; and
-*restart* stops it and starts it again. Spark stops the domain of one
-that has not ended 5 seconds after SIGTERM. Each waits until the service
+*restart* stops it and starts it again. Spark sends one the signal its *[stop]* names, SIGTERM unless set, and stops
+the domain of one that has not ended once its *timeout* has passed, 5
+seconds unless set (ADR 0477; *service.toml*(5)). Each waits until the service
 has settled, and shows Spark's lines about it and the services the
 request reaches as they come (ADR 0471):
 

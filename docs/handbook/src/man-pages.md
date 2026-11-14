@@ -29,6 +29,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `sysupdate(8)`, `updates.toml(5)`, `health.toml(5)` | Updates of the system: channels, checking and downloading from the update server, update files, the two slots, staging an update, trying and proving it, the health check and what it asks, falling back, rolling back, and the boot menu |
 | `snap(1)`, `snap.toml(5)` | Snapshots: the daily ones of `/users`, `/shared` and `/system/settings` in `/snapshots`, how many are kept, and restoring a file from one |
 | `service(8)`, `shutdown(8)`, `reboot(8)` | Starting, stopping and looking at services; stopping, restarting or powering off the machine |
+| `systemctl(1)`, `hostnamectl(1)`, `sendmail(8)` | Linux's front ends for services, the machine's name and mail from scripts: what each takes and what to run for the rest |
 | `tune(8)` | Performance profiles: the kernel's settings for speed, power and waiting, chosen together, and which fits the machine |
 | `consoled(8)` | The virtual consoles on the screen and keyboard, and their keys |
 | `authd(8)`, `user(8)`, `passwd(1)`, `login(1)` | Accounts: the service that keeps them, checks passwords and starts sessions, making and listing accounts, changing a password, signing in at a console, and who may sign in to the web console |
@@ -42,6 +43,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `cloud-setup(8)`, `cloud-config(5)` | Setting a cloud machine up at its first boot from its config disk or its cloud's metadata service, and the user data it reads |
 | `guest-agent(8)` | Answering a virtual machine's host in QEMU's guest agent protocol: its addresses and system, and a clean shutdown |
 | `logd(8)`, `log(1)`, `journalctl(1)`, `logger(1)`, `logtrim(8)`, `log(5)` | The system's log and its audit log: what logd keeps, who reads what, how to read it by service, level, time and boot, how a script writes to it, and how much it keeps |
+| `timerd(8)`, `crontab(1)`, `crontab(5)`, `at(1)`, `atq(1)`, `atrm(1)`, `batch(1)`, `logturn(8)` | Service timers, a person's crontab and `at` jobs, and the turnover of a service's log files: how times are written, what runs while someone is signed out, and what is kept |
 | `dumps(8)` | The kernel's crash dumps: what a panic leaves, saving, listing, showing and deleting the dumps, and testing that a panic is saved |
 | `hardware(8)` | Checking the machine for failing hardware: the memory, disks, processors, sensors, battery and network cards, the full check, the result that is kept, and the ID of each warning and failure |
 | `logforward(8)`, `logforward.toml(5)` | Sending the log to syslog servers over TLS, TCP or UDP: the destinations and what each is sent, the certificate check, how a server that was away is sent what it missed, and the commands that show where each stands and test it |

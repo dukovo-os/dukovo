@@ -130,6 +130,8 @@ pub struct Account {
     pub user: u32,
     /// Its group's number.
     pub group: u32,
+    /// The numbers of the other groups its file names (ADR 0477).
+    pub groups: Vec<u32>,
     /// The `names` capability, which stamps what the view holds from
     /// elsewhere than the root with the account's name, as a view acting
     /// for it takes only that.

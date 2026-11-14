@@ -232,7 +232,9 @@ impl Failure {
 /// restarted RESTARTS times; one Spark gave up on fails it at once.
 pub fn look(essential: &[String], services: &[show::Service]) -> Look {
     let ended_well = |s: &show::Service| match s.state {
-        State::Disabled | State::Done => true,
+        // One that waits for a connection, which starts it, is as it is
+        // meant to be (ADR 0477).
+        State::Disabled | State::Done | State::Listening => true,
         State::Stopped if s.off_as_meant => true,
         State::Stopped => s.why.is_none() && s.last_status.is_none_or(|status| status == 0),
         _ => false,
@@ -987,6 +989,11 @@ mod tests {
         let ended = show::Service { last_status: Some(0), ..service("netd", State::Stopped, 0) };
         assert_eq!(look(&essential, &[ended]), Look::Running(vec![]));
         assert_eq!(look(&essential, &[service("netd", State::Done, 0)]), Look::Running(vec![]));
+        // On-connection, and waiting for one: as it is meant to be.
+        assert_eq!(
+            look(&essential, &[service("netd", State::Listening, 0)]),
+            Look::Running(vec![])
+        );
         // Off as meant, as a driver the kernel left no cards is, the same.
         let idle = show::Service {
             why: Some("the kernel left it none of the cards it drives".into()),

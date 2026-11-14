@@ -17,6 +17,7 @@ use super::{
     MS, SECOND, Service, Shutdown, State, Supervisor, cards_for, ending, now, pci_address,
 };
 use crate::services::Spec;
+use crate::sockets;
 
 impl Supervisor {
     /// The answer to `show`, or to `show NAME` with `name`, which holds
@@ -77,6 +78,7 @@ fn described(service: &Service, devices: Option<u32>, used: bool) -> show::Servi
         State::Waiting(_) => show::State::Waiting,
         State::Draining(..) => show::State::Stopping,
         State::Failed => show::State::Failed,
+        State::Listening(_) => show::State::Listening,
     };
     let health = spec.health.as_ref().map(|check| {
         let checks = &service.checks;
@@ -127,6 +129,10 @@ fn described(service: &Service, devices: Option<u32>, used: bool) -> show::Servi
         last_line: service.last_line.clone(),
         last_request: service.last_request.clone(),
         holds: holds(spec, devices),
+        start: String::from(if spec.on_connection { "on-connection" } else { "at-boot" }),
+        timer: spec.timer,
+        stop_signal: spec.stop_signal.name().to_string(),
+        stop_timeout_s: u32::try_from(spec.stop_timeout / SECOND).unwrap_or(u32::MAX),
         usage: if used { usage(service) } else { None },
     }
 }
@@ -180,6 +186,11 @@ fn holds(spec: &Spec, devices: Option<u32>) -> Holds {
             })
             .collect(),
         outbound: spec.outbound,
+        sockets: {
+            let live = sockets::live_folder(spec);
+            spec.sockets.iter().map(|socket| sockets::words(socket, &live)).collect()
+        },
+        groups: spec.groups.clone(),
         admin: admin.iter().filter(|(has, _)| *has).map(|(_, word)| word.to_string()).collect(),
         names: spec.names,
         cards: cards_for(devices, spec).iter().map(|card| pci_address(card.address)).collect(),

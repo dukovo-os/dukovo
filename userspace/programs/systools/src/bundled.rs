@@ -580,14 +580,32 @@ fn install_in(
     }
     // Services run for everyone, each by a name of its own (ADR 0385).
     check_services(&checked.manifest, place)?;
+    // The sockets of other bundles it uses (ADR 0477): one it requires
+    // and cannot have stops the install, saying why.
+    let wanted = socket_uses(shared, &checked.manifest, &checked.key);
+    if let Some(why) = services::refusal(&wanted) {
+        return Err(format!("not installed: {why}"));
+    }
     // What it asks for that the version it replaces did not (ADR 0384).
     // One whose manifest cannot be read is taken to have asked for
     // nothing, so that the sheet is shown.
     let old = before.as_ref().and_then(|_| installed_manifest(place, &id).ok());
-    let more = match &before {
+    let mut more = match &before {
         Some(_) => asks_more(old.as_ref(), &checked.manifest),
         None => Vec::new(),
     };
+    // A socket the person must approve, that the version before did not
+    // use, is more than it asked for.
+    if before.is_some() {
+        for w in &wanted {
+            let had = old.as_ref().is_some_and(|old| {
+                old.uses.iter().any(|u| u.socket.as_ref().is_some_and(|s| s.0 == w.what()))
+            });
+            if matches!(w.outcome, services::Outcome::Ask(_)) && !had {
+                more.push(format!("socket {}", w.what()));
+            }
+        }
+    }
     if how.automatic && !more.is_empty() {
         return Err(format!(
             "{WAITS}{} did: {}",
@@ -609,7 +627,9 @@ fn install_in(
     };
     if !how.update || !more.is_empty() {
         if let Some(talk) = talk.as_deref_mut() {
-            talk.send(&Answer::Sheet(sheet::write(&facts))).map_err(|e| format!("{e}"))?;
+            let mut text = sheet::write(&facts);
+            text.push_str(&services::socket_sheet(&wanted));
+            talk.send(&Answer::Sheet(text)).map_err(|e| format!("{e}"))?;
         }
         if !how.yes {
             let Some(talk) = talk else {
@@ -682,8 +702,12 @@ fn install_in(
     let linked = link_commands(&shared.lock(), place)
         .err()
         .map_or_default(|why| format!("; its commands are not linked: {why}"));
-    let ran = run_services(&checked.manifest, old.as_ref());
-    let installed = format!("installed {id} {version}{over}, for {whose}{linked}{}", ran.said);
+    let ran = run_services(&checked.manifest, old.as_ref(), &services::reaches(&wanted));
+    let installed = format!(
+        "installed {id} {version}{over}, for {whose}{linked}{}{}",
+        services::skipped(&wanted),
+        ran.said
+    );
     // A new version of a service bundle proves itself, or the version it
     // replaced comes back, with its data (ADR 0386).
     if let (Some(from), Place::Everyone) = (&previous, place)
@@ -697,6 +721,21 @@ fn install_in(
         });
     }
     Ok(installed)
+}
+
+/// What each socket of another bundle that `manifest` uses comes to
+/// (ADR 0477): the bundles it names, as installed for everyone, and
+/// their keys.
+fn socket_uses(shared: &Shared, manifest: &Manifest, key: &PublicKey) -> Vec<services::Wanted> {
+    if manifest.services.is_empty() {
+        return Vec::new();
+    }
+    let registry = shared.lock();
+    services::wanted(manifest, key, |provider| {
+        let installed = registry.installed(Place::Everyone, provider)?;
+        let other = installed_manifest(Place::Everyone, provider).ok()?;
+        Some((other, installed.key))
+    })
 }
 
 /// Checks that `manifest`'s services may be installed in `place` (ADR
@@ -793,6 +832,18 @@ fn make_accounts(manifest: &Manifest) -> Result<(), String> {
             .and_then(|()| fs::set_permissions(&home, fs::Permissions::from_mode(0o700)))
             .map_err(|e| format!("{home}: {e}"))?;
     }
+    // The groups of the sockets it offers to its publisher's bundles and
+    // to the programs people approve (ADR 0477).
+    for group in services::socket_groups(manifest) {
+        let request =
+            accounts::request::Request::SocketGroup { name: group.clone(), whose: id.clone() };
+        match crate::account::ask(&request).map_err(|fail| fail.message)? {
+            accounts::request::Answer::Done(_) => {}
+            accounts::request::Answer::Refused(why) => {
+                return Err(format!("cannot make the group {group}: {why}"));
+            }
+        }
+    }
     // The folders of /shared its services only read, made empty when they
     // are not there, so that each starts before what it reads is put there.
     for folder in services::read_folders(manifest) {
@@ -805,10 +856,40 @@ fn make_accounts(manifest: &Manifest) -> Result<(), String> {
 
 /// Asks Spark to `verb` service `name`: what went wrong, if anything.
 fn tell_spark(verb: &str, name: &str) -> Option<String> {
-    match crate::power::request(&format!("{verb} {name}")) {
+    tell_spark_line(&format!("{verb} {name}"))
+}
+
+/// Sends Spark the request `line`: what went wrong, if anything. An
+/// answer that goes on after `ok:`, such as "; Spark keeps its sockets
+/// open", is not a fault.
+fn tell_spark_line(line: &str) -> Option<String> {
+    match crate::power::request(line) {
         Ok(answer) => answer.strip_prefix("error: ").map(|why| why.trim_end().to_string()),
         Err(fail) => Some(fail.message),
     }
+}
+
+/// The request that stops `name` for an update: Spark keeps its sockets
+/// open while the new version is put in place, so connections wait in
+/// the backlog and none is refused (ADR 0477). Removing a bundle asks a
+/// plain `stop`, which closes them.
+fn stop_for_update(name: &str) -> String {
+    format!("stop {name} --keep-sockets")
+}
+
+/// Whether a service in `state` has no process running: stopped, off,
+/// done, failed, or, for one that starts at its first connection,
+/// listening, where Spark holds its sockets and the next connection
+/// starts it.
+fn is_not_running(state: show::State) -> bool {
+    matches!(
+        state,
+        show::State::Stopped
+            | show::State::Disabled
+            | show::State::Done
+            | show::State::Failed
+            | show::State::Listening
+    )
 }
 
 /// What [`run_services`] did: what to say after the install's message,
@@ -818,9 +899,23 @@ struct Ran {
     started: Vec<String>,
 }
 
-/// How long a service has to stop when bundled stops it, before it
-/// carries on: Spark's own wait, and some.
-const STOP_TIME: Duration = Duration::from_secs(15);
+/// What bundled waits beyond the longest stop timeout of the services it
+/// stops, for Spark to end what is left of them and to say so.
+const STOP_MARGIN: Duration = Duration::from_secs(10);
+
+/// How long the services whose manifests say `timeouts` have to stop
+/// when bundled stops them, before it carries on: the longest of their
+/// `stop.timeout`, 5 seconds for one that says none, and
+/// [`STOP_MARGIN`], so that a service Spark is still waiting for, inside
+/// its own timeout, is not given up on.
+fn stop_time(timeouts: impl IntoIterator<Item = Option<u32>>) -> Duration {
+    let longest = timeouts
+        .into_iter()
+        .map(|timeout| timeout.unwrap_or(manifest::service::STOP_TIMEOUT_DEFAULT))
+        .max()
+        .unwrap_or(manifest::service::STOP_TIMEOUT_DEFAULT);
+    Duration::from_secs(u64::from(longest)) + STOP_MARGIN
+}
 
 /// How long the services of a new version have to answer their health
 /// checks (ADR 0386).
@@ -839,30 +934,22 @@ fn service_states(names: &[String]) -> Vec<(String, show::State)> {
         .collect()
 }
 
-/// Stops each of `names` and waits, up to [`STOP_TIME`], until none
-/// runs: what went wrong, if anything.
-fn stop_services(names: &[String]) -> Option<String> {
+/// Stops each of `names` and waits, up to `time` ([`stop_time`]), until
+/// none runs: what went wrong, if anything.
+fn stop_services(names: &[String], time: Duration) -> Option<String> {
     for name in names {
-        if let Some(why) = tell_spark("stop", name)
+        if let Some(why) = tell_spark_line(&stop_for_update(name))
             && !why.starts_with("no service is called")
         {
             return Some(format!("its service {name} did not stop: {why}"));
         }
     }
-    let deadline = Instant::now() + STOP_TIME;
+    let deadline = Instant::now() + time;
     loop {
         let states = service_states(names);
         let running: Vec<&str> = states
             .iter()
-            .filter(|(_, state)| {
-                !matches!(
-                    state,
-                    show::State::Stopped
-                        | show::State::Disabled
-                        | show::State::Done
-                        | show::State::Failed
-                )
-            })
+            .filter(|(_, state)| !is_not_running(*state))
             .map(|(name, _)| name.as_str())
             .collect();
         if running.is_empty() {
@@ -884,7 +971,7 @@ fn stop_services(names: &[String]) -> Option<String> {
 /// beside one an administrator changed, as `NAME.toml.default`; and
 /// starts each that is enabled. What went wrong is said after the
 /// install's message: the bundle is installed whatever it is.
-fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> Ran {
+fn run_services(manifest: &Manifest, old: Option<&Manifest>, reach: &[services::Reach]) -> Ran {
     let id = &manifest.id.0;
     let mut said = String::new();
     let mut started = Vec::new();
@@ -903,7 +990,13 @@ fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> Ran {
             .map(|s| s.name.0.clone())
             .filter(|name| read_record(name).is_some_and(|r| r.id == *id))
             .collect();
-        if let Some(why) = stop_services(&ran) {
+        let time = stop_time(
+            old.services
+                .iter()
+                .filter(|s| ran.contains(&s.name.0))
+                .map(|s| s.stop.as_ref().and_then(|stop| stop.timeout)),
+        );
+        if let Some(why) = stop_services(&ran, time) {
             let _ = write!(said, "; {why}");
         }
     }
@@ -931,22 +1024,27 @@ fn run_services(manifest: &Manifest, old: Option<&Manifest>) -> Ran {
         // beside it, and service check says what differs.
         let changed = matches!((&record, &current), (Some(r), Some(t)) if r.changed(t));
         let default = format!("{path}.default");
-        let written = services::file(manifest, service, &folder, enabled).and_then(|text| {
-            let record = Record {
-                id: id.clone(),
-                account: services::account(service),
-                written: services::fingerprint(&text),
-            };
-            make_folder(Path::new(&state(services::RECORDS)), 0o700)?;
-            if changed {
-                write_whole(&default, &text, 0o644)?;
-            } else {
-                write_whole(&path, &text, 0o644)?;
-                let _ = fs::remove_file(&default);
-            }
-            write_whole(&state(&format!("{}/{name}", services::RECORDS)), &record.text(), 0o600)?;
-            Ok(())
-        });
+        let written =
+            services::file_with(manifest, service, &folder, enabled, reach).and_then(|text| {
+                let record = Record {
+                    id: id.clone(),
+                    account: services::account(service),
+                    written: services::fingerprint(&text),
+                };
+                make_folder(Path::new(&state(services::RECORDS)), 0o700)?;
+                if changed {
+                    write_whole(&default, &text, 0o644)?;
+                } else {
+                    write_whole(&path, &text, 0o644)?;
+                    let _ = fs::remove_file(&default);
+                }
+                write_whole(
+                    &state(&format!("{}/{name}", services::RECORDS)),
+                    &record.text(),
+                    0o600,
+                )?;
+                Ok(())
+            });
         if let Err(why) = written {
             let _ = write!(said, "; its service {name} cannot run: {why}");
             continue;
@@ -2708,7 +2806,8 @@ fn go_back(
     let held =
         if held { format!("; it is held there until `bundle unhold {id}`") } else { String::new() };
     let (data, ran) = if place == Place::Everyone && !checked.manifest.services.is_empty() {
-        ("", run_services(&checked.manifest, from.as_ref()).said)
+        let wanted = socket_uses(shared, &checked.manifest, &checked.key);
+        ("", run_services(&checked.manifest, from.as_ref(), &services::reaches(&wanted)).said)
     } else {
         ("; its data comes back at its next run", String::new())
     };
@@ -3114,4 +3213,38 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_update_stops_a_service_keeping_its_sockets() {
+        assert_eq!(stop_for_update("nginx"), "stop nginx --keep-sockets");
+    }
+
+    #[test]
+    fn a_service_waiting_for_a_connection_is_not_running() {
+        assert!(is_not_running(show::State::Listening));
+        assert!(is_not_running(show::State::Stopped));
+        assert!(!is_not_running(show::State::Waiting));
+    }
+
+    #[test]
+    fn services_without_a_stop_have_the_time_they_had() {
+        assert_eq!(stop_time([None, None]), Duration::from_secs(15));
+        assert_eq!(stop_time([]), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn a_service_that_takes_long_to_stop_is_waited_for() {
+        assert_eq!(stop_time([Some(300)]), Duration::from_secs(310));
+    }
+
+    #[test]
+    fn the_longest_of_the_services_decides() {
+        assert_eq!(stop_time([Some(30), None, Some(300), Some(2)]), Duration::from_secs(310));
+        assert_eq!(stop_time([Some(2), None]), Duration::from_secs(15));
+    }
 }

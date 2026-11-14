@@ -120,6 +120,16 @@ pub struct Service {
     pub last_request: Option<Request>,
     /// What its file gives it to reach and do.
     pub holds: Holds,
+    /// When it starts once enabled: "at-boot", or "on-connection", at the
+    /// first connection to one of its sockets (ADR 0477).
+    pub start: String,
+    /// Whether timerd starts it, at the times its file names (ADR 0478).
+    pub timer: bool,
+    /// The signal that asks it to stop, as "SIGTERM" (ADR 0477).
+    pub stop_signal: String,
+    /// The seconds Spark waits for it to end after its stop signal before
+    /// it ends its domain.
+    pub stop_timeout_s: u32,
     /// What its domain has used and been held to, in the answer to `show
     /// NAME` alone, once Spark has made the domain.
     pub usage: Option<Usage>,
@@ -172,6 +182,12 @@ pub struct Holds {
     pub listen: Vec<String>,
     /// Whether it may connect out.
     pub outbound: bool,
+    /// The sockets Spark holds for it, in its file's order, in words: "port
+    /// 80", "UDP port 53 on ::", "/system/live/web/db" (ADR 0477).
+    pub sockets: Vec<String>,
+    /// More groups its processes are in, by name: those of the sockets
+    /// other bundles offer it (ADR 0477).
+    pub groups: Vec<String>,
     /// The machine's settings it may change: "network", "hardware",
     /// "time", "firewall" and "kernel settings".
     pub admin: Vec<String>,
@@ -252,6 +268,9 @@ pub enum State {
     Stopping,
     /// Given up on after failed starts in a row.
     Failed,
+    /// Not running, and waiting for a connection at its sockets, which
+    /// starts it (ADR 0477).
+    Listening,
 }
 
 impl State {
@@ -267,6 +286,7 @@ impl State {
             State::Waiting => "waiting",
             State::Stopping => "stopping",
             State::Failed => "failed",
+            State::Listening => "listening",
         }
     }
 }

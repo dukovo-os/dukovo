@@ -565,6 +565,70 @@ macro_rules! lighthouse_answers {
     };
 }
 
+/// A provider of the `offered-sockets` test, a bundle whose service
+/// `$name` has listenfd answer on the socket `echo`, which Spark makes in
+/// its live folder and the bundle offers `$to` (ADR 0477).
+macro_rules! echo_provider {
+    ($name:literal, $to:literal) => {
+        crate::bundles::TestBundle {
+            id: concat!("org.example.", $name),
+            version: "1.0.0",
+            script: "#!/bin/sh\nexec \"$(dirname \"$0\")/listenfd\"\n",
+            permissions: "{}",
+            services: concat!(
+                "{\"name\": \"",
+                $name,
+                "\", \"program\": \"",
+                $name,
+                "\", \"start\": \"at-boot\", \"restart\": \"on-failure\", \"sockets\": [{\"path\": \"echo\"}]}"
+            ),
+            provides: concat!("{\"socket\": \"echo\", \"to\": \"", $to, "\"}"),
+            line: "",
+            add_ons: "",
+            feed: "",
+            uses: "",
+            posix: "listenfd",
+        }
+    };
+}
+
+/// A consumer of the `offered-sockets` test: its service `$name` asks the
+/// socket `echo` of the provider `$provider` for its line, five times at
+/// most, and says what it got, `no answer` when the socket is not in its
+/// view or refuses it.
+macro_rules! echo_user {
+    ($name:literal, $provider:literal) => {
+        echo_user!($name, $provider, concat!("{\"socket\": \"org.example.", $provider, "/echo\", \"need\": \"optional\"}"))
+    };
+    ($name:literal, $provider:literal, $uses:expr) => {
+        crate::bundles::TestBundle {
+            id: concat!("org.example.", $name),
+            version: "1.0.0",
+            script: concat!(
+                "#!/bin/sh\nsocket=/system/live/services/",
+                $provider,
+                "/echo\nsay=\"no answer\"\nfor i in 1 2 3 4 5; do\n  if got=$(echo | nc -w 5 -U \"$socket\" 2>/dev/null) && [ -n \"$got\" ]; then\n    say=$got\n    break\n  fi\n  sleep 1\ndone\necho \"",
+                $name,
+                ": $say\"\nexec sleep 100000\n"
+            ),
+            permissions: "{}",
+            services: concat!(
+                "{\"name\": \"",
+                $name,
+                "\", \"program\": \"",
+                $name,
+                "\", \"start\": \"at-boot\", \"restart\": \"on-failure\"}"
+            ),
+            provides: "",
+            line: "",
+            add_ons: "",
+            feed: "",
+            uses: $uses,
+            posix: "",
+        }
+    };
+}
+
 /// The bundles of a [`SERVICE_FILES`] disk. beacon runs a service, which
 /// counts its starts in its data folder, says as whom it runs, and
 /// crashes on its first start. lighthouse's service keeps a line for each
@@ -573,7 +637,7 @@ macro_rules! lighthouse_answers {
 /// bisectbad's service ends at once, with status 1, once its data folder
 /// holds a file `poison`, and runs until then; bisectgood's runs and says
 /// so (the `bisect` test, ADR 0475).
-const SERVICE_BUNDLES: [crate::bundles::TestBundle; 6] = [
+const SERVICE_BUNDLES: [crate::bundles::TestBundle; 13] = [
     crate::bundles::TestBundle {
         id: "org.example.beacon",
         version: "1.0.0",
@@ -596,6 +660,8 @@ exec sleep 100000
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     },
     lighthouse("1.0.0", lighthouse_answers!("1.0.0")),
     lighthouse("1.1.0", lighthouse_answers!("1.1.0")),
@@ -626,6 +692,8 @@ exec sleep 100000
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.bisectgood",
@@ -638,7 +706,17 @@ exec sleep 100000
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     },
+    echo_provider!("echoprov", "approved"),
+    echo_provider!("pubprov", "publisher"),
+    echo_provider!("anyprov", "anyone"),
+    echo_user!("echouser", "echoprov"),
+    echo_user!("pubuser", "pubprov"),
+    echo_user!("anyuser", "anyprov"),
+    // Names no use of echoprov's socket, and looks for it all the same.
+    echo_user!("stranger", "echoprov", ""),
 ];
 
 /// lighthouse `version`, whose service runs `script` and is checked
@@ -655,6 +733,8 @@ const fn lighthouse(version: &'static str, script: &'static str) -> crate::bundl
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     }
 }
 
@@ -672,6 +752,8 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.diary",
@@ -683,6 +765,8 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -694,6 +778,8 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     },
     crate::bundles::TestBundle {
         id: "org.example.fetcher",
@@ -705,6 +791,8 @@ const UPDATE_BUNDLES: [crate::bundles::TestBundle; 4] = [
         line: "",
         add_ons: "",
         feed: "",
+        uses: "",
+        posix: "",
     },
 ];
 
@@ -733,6 +821,8 @@ const fn almanac(version: &'static str, script: &'static str) -> crate::bundles:
         line: "",
         add_ons: "",
         feed: FEED_ADDRESS,
+        uses: "",
+        posix: "",
     }
 }
 
@@ -752,6 +842,8 @@ const fn tide(
         line,
         add_ons: TIDEPM,
         feed: "",
+        uses: "",
+        posix: "",
     }
 }
 
@@ -2002,7 +2094,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "spark-stop",
-        about: "Spark stops a service that ignores SIGTERM, and what a service leaves behind",
+        about: "Spark stops a service that ignores SIGTERM, and what a service leaves behind; a service whose file says to stop it with SIGINT and wait 2 s ends on SIGINT, and one that ignores it is ended 2 s after the stop (ADR 0477)",
         firmware: Firmware::Bios,
         media: Media::Usb,
         cmdline: "lockdep -- --service-dir /system/tests/services/stop",
@@ -11154,13 +11246,16 @@ fn spark_network(vm: &mut Vm, case: &Case) -> Result<(), String> {
     Ok(())
 }
 
-/// Spark supervises three services: `stubborn` ignores SIGTERM, so 5 s
+/// Spark supervises five services: `stubborn` ignores SIGTERM, so 5 s
 /// after `service stubborn restart`, and again after `stop`, Spark stops
 /// its domain; `leaver` ends and leaves a process in its domain, which
-/// Spark stops; `driver` makes the requests and powers the machine off.
+/// Spark stops; `polite` and `deaf` stop with SIGINT and 2 s, their
+/// files' `[stop]` (ADR 0477): polite ends on SIGINT, and deaf, which
+/// ignores it, is ended 2 s after the stop, not 5; `driver` makes the
+/// requests and powers the machine off.
 fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
-    vm.expect("spark: 3 services in /system/tests/services/stop, 3 enabled")?;
+    vm.expect("spark: 5 services in /system/tests/services/stop, 5 enabled")?;
     vm.expect("spark: started leaver (/system/commands/nukesh) as process ")?;
     vm.expect("spark: started stubborn (/system/commands/nukesh) as process ")?;
     vm.expect("spark: started driver (/system/commands/nukesh) as process ")?;
@@ -11173,6 +11268,14 @@ fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect("spark: asked to stop stubborn")?;
     vm.expect("spark: stubborn did not end in 5 s; stopping its domain")?;
     vm.expect(" was ended by signal 9")?;
+    vm.expect("stops with SIGINT, then ends it after 2 s")?;
+    vm.expect("spark: asked to stop polite")?;
+    vm.expect("spark: polite (process ")?;
+    vm.expect(") exited with code 0x0")?;
+    vm.expect("spark: asked to stop deaf")?;
+    vm.expect("spark: deaf did not end in 2 s; stopping its domain")?;
+    vm.expect(" was ended by signal 9")?;
+    vm.expect("driver:  [ - ]  deaf")?;
     vm.expect("driver:  [ - ]  stubborn")?;
     vm.expect("driver:    Active: inactive (dead)")?;
     vm.expect("spark: asked to power off the machine")?;
@@ -11182,6 +11285,7 @@ fn spark_stop(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let log = vm.log();
     for line in [
         "leaver: left",
+        "polite: asked",
         "spark: leaver (process ",
         "spark: leaver left 1 thread behind; stopping its domain",
         "stubborn: up",

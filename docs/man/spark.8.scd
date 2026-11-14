@@ -408,6 +408,44 @@ spark: web failed its health check 3 times in a row; restarting it
 spark: gave up on web after 5 failed starts in a row (the last: it failed its health check 3 times in a row (exited with code 0x7: connection refused)); `service web start` tries again
 ```
 
+# SOCKETS SPARK HOLDS
+
+A service file's *[[sockets]]* (*service.toml*(5)) are made by Spark and
+not by the service (ADR 0477): TCP and UDP sockets of a port, and Unix
+stream sockets in the service's live folder, each made with its
+*backlog*. Spark makes them before it starts a service, at boot for every
+enabled service before any starts, and holds them while the service is
+enabled or started. A socket it cannot make, because the port is
+taken, fails that service's start with why; the others go on.
+
+It passes them as *sd_listen_fds*(3) does: the descriptors from 3, in the
+file's order, then those of *files.mount*; *LISTEN_FDS* is how many,
+*LISTEN_PID* the number of the process, which Spark knows before it
+runs the program, and *LISTEN_FDNAMES* their names, separated by *:*.
+
+A service of *start = "on-connection"* is not started at boot. Spark
+watches its sockets, and the first connection or datagram starts it, with
+that connection waiting in the backlog. Its state is *listening*, which
+*service status* says as *waits for a connection on port 8080*. A stop
+by request puts it back to waiting; *service disable* closes its sockets.
+
+*restart*, a restart after a failure, and *stop --keep-sockets* keep the
+sockets open. While no process accepts, a client waits for the next one
+and is not refused. *stop* of a service that does not start on
+connection closes them, so the port refuses, as one expects of a stopped
+server.
+
+A socket a bundle offers to others, in *provides* (*manifest.json*(5)),
+is made in the provider's live folder, owned by root, with mode 0666 for
+*"anyone"*, 0600 for *"system"*, and 0660 with the group
+_ACCOUNT-socket_ for *"publisher"* and *"approved"*, which *bundled*(8)
+gives to the bundles that use the socket. Its folder is open to look in,
+0755. A service's *groups* are given to its process.
+
+Spark never starts a second process before the first has ended: a program
+that cannot take an inherited socket has a gap, which connections wait
+out.
+
 # CONTROL SOCKET
 
 Spark listens at the Unix socket _/system/live/spark/control_. A request is one
@@ -454,7 +492,8 @@ presses.
 	*give_up_after*, *requires*, *wants*, *after* and *ready_when* from
 	its file; its *state*: *stopped*, *disabled*, *pending* (waiting
 	for those it names, in *waiting_for*), *starting* (running, not
-	yet ready), *running*, *done* (a setup step that ended as it
+	yet ready), *listening* (a service that starts on a connection, which
+	waits for one with its sockets held), *running*, *done* (a setup step that ended as it
 	should), *waiting* (to be started again), *stopping* or *failed*
 	(given up on); its *pid* while starting or running; *since_ms*,
 	*started_ms* and *ready_ms*; *ready_by_ms* while it is starting,
@@ -506,8 +545,10 @@ presses.
 *start* | *stop* | *restart* _name_
 	Start a service, stop one and keep it stopped until it is started
 	again, or stop one and start it again, whatever its *restart*
-	says. Stopping sends it SIGTERM; one that has not ended 5 seconds
-	later has its domain stopped, as systemd sends SIGKILL after
+	says. Stopping sends it the signal of its *[stop]*, SIGTERM unless
+	its file says another (ADR 0477); one that has not ended within
+	the *[stop]*'s *timeout*, 5 seconds unless its file says another,
+	has its domain stopped, as systemd sends SIGKILL after
 	TimeoutStopSec. Starting reads its file again, and those of the
 	services it requires or wants; *start* of a service whose file was
 	added since boot reads it then, and answers with what is wrong with
@@ -517,6 +558,13 @@ presses.
 	requires db, which has no service file*); on a service Spark gave
 	up on, it starts afresh. *stop* stops those that require it too,
 	and names them.
+
+*stop* _name_ *--keep-sockets*
+	The same stop, but Spark keeps the service's sockets open (see
+	SOCKETS SPARK HOLDS), so connections wait in the backlog and none is
+	refused. *bundled*(8) stops a bundle's services so for an update,
+	and with a plain *stop* when it removes the bundle. The answer may
+	end in *; Spark keeps its sockets open*.
 
 *start* | *stop* | *restart* _name_ *--wait*
 	The same, and a watch (ADR 0471): once Spark has answered, the
@@ -540,6 +588,22 @@ presses.
 	already* at the end of its answer. A watch whose reader has gone,
 	or has left 64 KiB unread, is closed; the request goes on.
 	*service*(8) asks this way unless told *--no-wait*.
+
+*start* _name_ *--by timer*
+	A start that *timerd*(8) asks for at a time of the service's
+	*[timer]* (ADR 0478). Spark starts the service as it does for
+	*start*, as for one that something wanted "by its timer". A timer
+	does not enable a service, and boot leaves a service with a timer
+	off: *timerd*(8) starts the ones that are enabled, at their times.
+
+*reopen* _name_
+	Have a service open its log files again, as its file's *logs.reopen*
+	says (*service.toml*(5)): send it that signal, restart it, or do
+	nothing for a service that opens its file for each line. *logturn*(8)
+	asks it once it has renamed a service's files. A service that is not
+	running is answered *ok*, since it opens its files as it starts; one
+	whose file has no *[logs]* is an error. The request is in the audit
+	log with the process that asked.
 
 *reload* _name_
 	Send a running service SIGHUP, which asks a service that reads
@@ -1079,7 +1143,7 @@ _name_ *(process* _n_*) was ended by signal 9 (stopped at its memory limit)*
 
 # SEE ALSO
 
-*service*(8), *service.toml*(5), *sysupdate*(8), *changes*(1), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
+*service*(8), *service.toml*(5), *timerd*(8), *logturn*(8), *sysupdate*(8), *changes*(1), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
 *radix-files*(7), *radix-processes*(7), *radix-posix*(7), *radix-proc*(5),
 *radix-sysfs*(5), *radix-directory*(2), *radix-process*(2),
 *radix-resource-domain*(2), *radix-kernel-settings*(2), *tune*(8), *radix-power*(2), *radix-platform*(2),

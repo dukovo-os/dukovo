@@ -81,6 +81,15 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   which the person allows at a console's trusted prompt the first time,
   and elevate gives the command a terminal of its own, which is no
   console's.
+- **Spark holds its ports** (ADR 0477). The bundle names two sockets,
+  port 80 on `0.0.0.0` and on `::`, and `nginx-service` sets `NGINX` from
+  `LISTEN_FDS` (`3;4;`), so nginx reuses them as it does across its own
+  binary upgrade. A restart or an update leaves the ports open and the
+  connections wait for the new nginx; none is refused. It stops with
+  `SIGQUIT` and up to 30 seconds (`stop`, ADR 0477), so the requests in
+  flight finish. An administrator who turns on HTTPS adds port 443 to
+  nginx's service file, and the wrapper logs a warning, with that fix,
+  when a `listen` line names an address and port no socket has.
 - **Its log is the system's.** nginx writes its errors to its standard
   error output (`error_log stderr`), and, with a patch, its access log
   too (`access_log stderr`), so `log nginx` reads both and logtrim(8)
@@ -109,7 +118,9 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   leaves it serving and logs the wrong line, a restart, HTTPS with a
   certificate of its own, three reloads during 300 requests that lose
   none, its log, the account that owns its files, and requests logged to
-  a file of its data folder's `logs` folder instead. The lab test `services/nginx`
+  a file of its data folder's `logs` folder instead, and three restarts
+  and an update during 300 requests of `connectloop` that refuse none.
+  The lab test `services/nginx`
   serves the lab PC over the machine's own card, with five reloads
   during 20 seconds of requests 16 at a time; `./ob lab` packs the
   catalog's bundles for it.

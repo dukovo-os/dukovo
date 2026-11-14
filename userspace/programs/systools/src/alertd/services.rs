@@ -86,7 +86,7 @@ fn alert(service: &Service) -> Alert {
             (Severity::Warning, format!("Service {name} stops and waits to start again"))
         }
         State::Stopping => (Severity::Warning, format!("Service {name} is not done stopping")),
-        State::Running | State::Done | State::Disabled => {
+        State::Running | State::Done | State::Disabled | State::Listening => {
             (Severity::Warning, format!("Service {name} fails its health check"))
         }
     };

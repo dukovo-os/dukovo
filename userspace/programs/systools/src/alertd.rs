@@ -39,11 +39,11 @@ mod deliver;
 mod email;
 mod notify;
 mod services;
-mod settings;
+pub(crate) mod settings;
 mod socket;
 mod state;
 pub(crate) mod text;
-mod trouble;
+pub(crate) mod trouble;
 mod webhook;
 
 use std::fs;

@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The timers boot test's service that outlasts its own period: it runs 50
+# seconds every 20, so the times that come while it runs are skipped.
+
+service_version = 1
+description = "Runs for 50 seconds, every 20 seconds"
+program = "/system/commands/sh"
+arguments = ["-c", 'mkdir -p /system/state/timers; echo start >> /system/state/timers/slow; sleep 50']
+enabled = false
+restart = "never"
+
+[timer]
+every = "20s"
+
+[permissions]
+files.read-write = ["/system/state/timers"]

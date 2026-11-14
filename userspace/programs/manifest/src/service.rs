@@ -103,11 +103,39 @@ pub const KEYS: &[&str] = &[
     "health.every",
     "health.timeout",
     "health.failures",
+    "timer",
+    "timer.at",
+    "timer.every",
+    "timer.after_boot",
+    "timer.spread",
+    "timer.catch_up",
+    "timer.time_zone",
+    "logs",
+    "logs.files",
+    "logs.turn_over",
+    "logs.keep",
+    "logs.compress",
+    "logs.reopen",
+    "sockets",
+    "sockets.port",
+    "sockets.address",
+    "sockets.udp",
+    "sockets.path",
+    "sockets.name",
+    "sockets.backlog",
+    "sockets.to",
+    "sockets.group",
+    "start",
+    "groups",
+    "stop",
+    "stop.signal",
+    "stop.timeout",
 ];
 
 /// The keys of service_version 2 (ADR 0470), which a file of version 1
 /// may not use.
-const VERSION_2_KEYS: &[&str] = &["requires", "wants", "after", "give_up_after", "ready", "health"];
+const VERSION_2_KEYS: &[&str] =
+    &["requires", "wants", "after", "give_up_after", "ready", "health", "stop"];
 
 /// The order of a service whose file gives none.
 pub const ORDER_DEFAULT: u32 = 50;
@@ -216,6 +244,274 @@ pub struct Service {
     pub ready: Ready,
     /// Its health check, if it has one.
     pub health: Option<Health>,
+    /// The sockets Spark makes and holds for it, passed from descriptor
+    /// 3 as sd_listen_fds(3) has them (ADR 0477); at most
+    /// [`SOCKETS_MAX`].
+    pub sockets: Vec<Socket>,
+    /// When Spark starts it, once enabled.
+    pub start: Start,
+    /// How Spark stops it: the signal, and how long it waits.
+    pub stop: Stop,
+    /// More groups its processes are in, by name: the groups of sockets
+    /// other bundles offer it (ADR 0477).
+    pub groups: Vec<String>,
+    /// When timerd starts it, if at set times (ADR 0478).
+    pub timer: Option<Timer>,
+    /// Its own log files, which logturn(8) turns over (ADR 0478).
+    pub logs: Option<Logs>,
+}
+
+/// The most sockets a service file names.
+pub const SOCKETS_MAX: usize = 16;
+
+/// A socket's backlog when its file names none: Linux's `somaxconn`.
+pub const BACKLOG_DEFAULT: u32 = 4096;
+
+/// The longest `stop.timeout`, in seconds.
+pub const STOP_TIMEOUT_MAX: u32 = 3600;
+
+/// `stop.timeout` when the file says none, in seconds: how long Spark
+/// waits for a service to end after its stop signal before it ends the
+/// service's domain.
+pub const STOP_TIMEOUT_DEFAULT: u32 = 5;
+
+/// How Spark stops a service: a service file's `[stop]` (ADR 0477).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stop {
+    /// The signal that asks it to stop: one of SIGTERM, SIGINT, SIGQUIT,
+    /// SIGUSR1, SIGUSR2 and SIGWINCH.
+    pub signal: Signal,
+    /// Seconds from the signal to ending its domain, 1 to
+    /// [`STOP_TIMEOUT_MAX`].
+    pub timeout: u32,
+}
+
+impl Default for Stop {
+    fn default() -> Stop {
+        Stop { signal: Signal::Term, timeout: STOP_TIMEOUT_DEFAULT }
+    }
+}
+
+/// A socket Spark makes and holds for a service (ADR 0477).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Socket {
+    /// What it is.
+    pub kind: SocketKind,
+    /// Its name in `LISTEN_FDNAMES`: the file's `name`, or the port's
+    /// number or the path.
+    pub name: String,
+    /// How many connections may wait to be accepted, 1 to 65535.
+    pub backlog: u32,
+    /// Who connects to it, for a Unix socket.
+    pub access: SocketAccess,
+}
+
+/// Who connects to a Unix socket Spark makes (ADR 0477). A socket offered
+/// to others is root's, so that the service cannot widen who reaches it,
+/// and its live folder anyone's to look in; the socket's mode keeps the
+/// rest out. Views decide which services reach it at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SocketAccess {
+    /// The service's own: its account's, mode 0600, or for a service of
+    /// the system's, which has none, root's, mode 0666, as systemd's
+    /// `SocketMode=` default is.
+    #[default]
+    Own,
+    /// `to = "anyone"`: mode 0666.
+    Anyone,
+    /// `to = "system"`: root's programs alone, mode 0600.
+    System,
+    /// `group = NAME`: the group's members, mode 0660, as bundled gives a
+    /// socket a bundle offers its publisher's bundles or the programs an
+    /// administrator approves.
+    Group(String),
+}
+
+impl SocketAccess {
+    /// Whether others than the service connect to it.
+    pub fn offered(&self) -> bool {
+        *self != SocketAccess::Own
+    }
+}
+
+/// What a socket is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SocketKind {
+    /// TCP, listening.
+    Stream {
+        /// Its port.
+        port: u16,
+        /// The address it is on.
+        address: SocketAddress,
+    },
+    /// UDP.
+    Datagram {
+        /// Its port.
+        port: u16,
+        /// The address it is on.
+        address: SocketAddress,
+    },
+    /// A Unix stream socket of this plain name in the service's live
+    /// folder: `/system/live/services/ACCOUNT` for an account's service,
+    /// `/system/live/NAME` for the system's.
+    Unix {
+        /// The socket's name.
+        path: String,
+    },
+}
+
+/// The address a TCP or UDP socket is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SocketAddress {
+    /// Every address, IPv6 and IPv4 alike, as IPv4-mapped IPv6: the file
+    /// names no `address`.
+    #[default]
+    Any,
+    /// Every IPv4 address: `"0.0.0.0"`.
+    AnyV4,
+    /// Every IPv6 address and no IPv4 one (`IPV6_V6ONLY`): `"::"`.
+    AnyV6,
+    /// One IPv4 address.
+    V4([u8; 4]),
+    /// One IPv6 address.
+    V6([u8; 16]),
+}
+
+/// When Spark starts an enabled service.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Start {
+    /// At boot.
+    #[default]
+    AtBoot,
+    /// At the first connection to one of its sockets, or the first
+    /// datagram (ADR 0477).
+    OnConnection,
+}
+
+impl SocketAddress {
+    /// The address as a file writes it; none for [`SocketAddress::Any`],
+    /// which a file writes by leaving `address` out.
+    pub fn text(self) -> Option<String> {
+        match self {
+            SocketAddress::Any => None,
+            SocketAddress::AnyV4 => Some("0.0.0.0".to_owned()),
+            SocketAddress::AnyV6 => Some("::".to_owned()),
+            SocketAddress::V4(octets) => Some(core::net::Ipv4Addr::from(octets).to_string()),
+            SocketAddress::V6(octets) => Some(core::net::Ipv6Addr::from(octets).to_string()),
+        }
+    }
+}
+
+impl Start {
+    pub(crate) const WORDS: &[&str] = &["at-boot", "on-connection"];
+
+    /// The word a file says it with.
+    pub fn name(self) -> &'static str {
+        Self::WORDS[self as usize]
+    }
+}
+
+/// A signal Spark sends a service: to stop it, or to have it open its
+/// log files again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Signal {
+    /// SIGTERM, the stop signal unless a file says another.
+    #[default]
+    Term,
+    /// SIGINT.
+    Int,
+    /// SIGQUIT: nginx's graceful stop.
+    Quit,
+    /// SIGHUP.
+    Hup,
+    /// SIGUSR1: nginx's signal to open its log files again.
+    Usr1,
+    /// SIGUSR2.
+    Usr2,
+    /// SIGWINCH.
+    Winch,
+}
+
+impl Signal {
+    pub(crate) const WORDS: &[&str] =
+        &["SIGTERM", "SIGINT", "SIGQUIT", "SIGHUP", "SIGUSR1", "SIGUSR2", "SIGWINCH"];
+
+    /// Its name, as a file says it.
+    pub fn name(self) -> &'static str {
+        Self::WORDS[self as usize]
+    }
+
+    /// Its number, as Radix and Linux have it on x86-64.
+    pub fn number(self) -> u8 {
+        match self {
+            Signal::Term => 15,
+            Signal::Int => 2,
+            Signal::Quit => 3,
+            Signal::Hup => 1,
+            Signal::Usr1 => 10,
+            Signal::Usr2 => 12,
+            Signal::Winch => 28,
+        }
+    }
+}
+
+/// A service file's `[timer]` (ADR 0478): when timerd starts it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Timer {
+    /// Times of day, as crontab lines' five fields or the words, each
+    /// read ([`crate::schedule`]); empty for none.
+    pub at: Vec<crate::schedule::Calendar>,
+    /// Seconds from its last start to the next; `None` for none.
+    pub every: Option<u64>,
+    /// Seconds from the machine's start to its first start by `every`;
+    /// `None` for `every` itself.
+    pub after_boot: Option<u64>,
+    /// The most seconds a time is put off by, the same each day for this
+    /// machine and timer, so that a fleet does not start at once.
+    pub spread: u64,
+    /// Whether a time missed while the machine was off runs once, soon
+    /// after it starts.
+    pub catch_up: bool,
+    /// The time zone `at` is read in; `None` for the system's.
+    pub time_zone: Option<String>,
+}
+
+/// A service file's `[logs]` (ADR 0478): its own log files.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Logs {
+    /// The files, as patterns whose last part may hold `*`: relative to
+    /// its data folder, or absolute within its view.
+    pub files: Vec<String>,
+    /// When a file is turned over.
+    pub turn_over: TurnOver,
+    /// How many turned-over files are kept, 1 to 100.
+    pub keep: u32,
+    /// Whether turned-over files are compressed with zstd.
+    pub compress: bool,
+    /// How the service is told to open its files again.
+    pub reopen: Reopen,
+}
+
+/// When a log file is turned over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnOver {
+    /// Once a day.
+    Daily,
+    /// Once a week.
+    Weekly,
+    /// Once it holds this many bytes.
+    Size(u64),
+}
+
+/// How a service opens its log files again once they are turned over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reopen {
+    /// Spark sends it this signal.
+    Signal(Signal),
+    /// Spark restarts it.
+    Restart,
+    /// Nothing: it opens its file for each line.
+    Nothing,
 }
 
 /// When a service is ready, and how long it has to get there.
@@ -757,6 +1053,21 @@ pub fn account_numbers(passwd: &str, name: &str) -> Option<(u32, u32)> {
     })
 }
 
+/// The groups, as group(5) has them, whose numbers Spark gives a
+/// service's processes for its `groups` (ADR 0477).
+pub const GROUP: &str = "/system/settings/group";
+
+/// The number of group `name` in `group`, the text of [`GROUP`].
+pub fn group_number(group: &str, name: &str) -> Option<u32> {
+    group.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != name {
+            return None;
+        }
+        fields.nth(1)?.parse().ok()
+    })
+}
+
 /// The most places `files.mount` names: they are descriptors 3 and on.
 pub const MOUNT_MAX: usize = 4;
 
@@ -961,6 +1272,57 @@ restart = "on-failure"
 # health.every = 30
 # health.timeout = 10
 # health.failures = 3
+# When timerd starts it, in [timer] or as timer.KEY: times of day as
+# crontab lines' five fields or the words hourly, daily, weekly, monthly
+# and yearly; or so long after its last start (every, such as "6h"), the
+# first one after the machine starts being after_boot; a delay of up to
+# spread that is the same for this machine each day; whether a time
+# missed while the machine was off runs once, soon after it starts; and
+# the tzdata time zone the times are in, the system's if left out. A
+# service with a timer is not started at boot.
+# timer.at = ["daily", "30 2 * * 1-5"]
+# timer.every = "6h"
+# timer.after_boot = "10m"
+# timer.spread = "1h"
+# timer.catch_up = true
+# timer.time_zone = "UTC"
+# Its own log files, which logturn(8) turns over, in [logs] or as
+# logs.KEY: patterns whose last part may hold a `*`, relative to its data
+# folder or absolute; when, daily, weekly or at a size such as "100M";
+# how many turned-over files are kept; whether they are compressed; and
+# how the service opens its files again: a signal such as "SIGUSR1",
+# "restart", or "none" for a program that opens its file for each line.
+# logs.files = ["logs/*.log"]
+# logs.turn_over = "daily"
+# logs.keep = 14
+# logs.compress = true
+# logs.reopen = "none"
+# How Spark stops it, in [stop] or as stop.KEY: the signal that asks it
+# to end (SIGTERM, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2 or SIGWINCH; the
+# one its daemon takes as a stop request), and the seconds, 1 to 3600,
+# after which Spark ends what is left of it.
+# stop.signal = "SIGTERM"
+# stop.timeout = 5
+# When Spark starts it once enabled: at-boot, or on-connection, at the
+# first connection to one of its sockets. A socket is a [[sockets]]
+# table of the sockets Spark makes and holds, which it passes to the
+# program from descriptor 3 as sd_listen_fds(3) says; the lines of one
+# (a port of network.listen, or a path in its live folder, which only
+# the service reaches unless its to is anyone or system, or a group's
+# members connect):
+# [[sockets]]
+# port = 8080
+# address = "0.0.0.0"
+# udp = false
+# path = "queue"
+# name = "web"
+# backlog = 4096
+# to = "anyone"
+# group = "web-socket"
+# start = "at-boot"
+# More groups its processes are in, by name: those of sockets that
+# other bundles offer it.
+# groups = []
 # The secrets Spark hands it as read-only files, in the folder
 # SECRETS_DIRECTORY names, never in its environment; set each with
 # `service secret set NAME SECRET`.
@@ -1355,6 +1717,15 @@ struct File {
     give_up_after: Option<u32>,
     ready: Option<ReadyFile>,
     health: Option<HealthFile>,
+    timer: Option<TimerFile>,
+    logs: Option<LogsFile>,
+    #[serde(default, deserialize_with = "socket_files")]
+    sockets: Vec<SocketFile>,
+    #[serde(default, deserialize_with = "start")]
+    start: Start,
+    stop: Option<StopFile>,
+    #[serde(default, deserialize_with = "group_names")]
+    groups: Vec<String>,
 }
 
 /// `[ready]` as written.
@@ -1409,6 +1780,7 @@ impl File {
             self.give_up_after.is_some(),
             self.ready.is_some(),
             self.health.is_some(),
+            self.stop.is_some(),
         ];
         VERSION_2_KEYS.iter().zip(set).find_map(|(key, set)| set.then_some(*key))
     }
@@ -1423,12 +1795,14 @@ pub(crate) struct Problem {
     message: String,
     /// What to do about it, when there is one thing to do.
     fix: Option<String>,
+    /// Which of the `[[sockets]]` tables `key` is in, when it is in one.
+    socket: Option<usize>,
 }
 
 impl Problem {
     /// A problem with the file as a whole.
     fn new(message: impl Into<String>) -> Problem {
-        Problem { key: None, message: message.into(), fix: None }
+        Problem { key: None, message: message.into(), fix: None, socket: None }
     }
 
     /// A problem with the setting `key`.
@@ -1450,7 +1824,19 @@ impl Problem {
         if let Some(fix) = self.fix {
             error = error.with_fix(fix);
         }
-        let Some(key) = self.key else { return error };
+        if let Some(index) = self.socket {
+            error = error
+                .with_key(self.key.map_or("sockets".to_owned(), |key| format!("sockets.{key}")));
+            if let Some(text) = over
+                && let Some(span) = socket_span(text, index, self.key)
+            {
+                return Error { in_override: true, ..error.on(text, span) };
+            }
+            if let Some(span) = socket_span(file, index, self.key) {
+                return error.on(file, span);
+            }
+        }
+        let Some(key) = self.socket.map(|_| "sockets").or(self.key) else { return error };
         error = error.with_key(key);
         let mut sought = Some(key);
         while let Some(key) = sought {
@@ -1529,6 +1915,17 @@ fn check(file: File) -> Result<Service, Problem> {
     let wants = file.wants.unwrap_or_default();
     let after = file.after.unwrap_or_default();
     check_named_once(&requires, &wants, &after)?;
+    let sockets = sockets_from(&file.sockets, Some(&file.permissions.network.listen))
+        .map_err(SocketProblem::into_problem)?;
+    if file.start == Start::OnConnection && sockets.is_empty() {
+        return Err(Problem::about(
+            "start",
+            "start = \"on-connection\" waits for a connection, and the file names no socket",
+        )
+        .with_fix("add a [[sockets]] table"));
+    }
+    let timer = file.timer.as_ref().map(TimerFile::check).transpose()?;
+    let logs = file.logs.as_ref().map(Logs::from);
     let health = file.health.map(Health::from_raw).transpose()?;
     let ready = match file.ready {
         Some(ready) => ready.check(&file.permissions, file.restart, health.is_some())?,
@@ -1554,6 +1951,12 @@ fn check(file: File) -> Result<Service, Problem> {
         give_up_after: file.give_up_after.unwrap_or(0),
         ready,
         health,
+        sockets,
+        start: file.start,
+        stop: file.stop.map_or(Stop::default(), StopFile::into_stop),
+        groups: file.groups,
+        timer,
+        logs,
     })
 }
 
@@ -2344,5 +2747,737 @@ impl<'de> Deserialize<'de> for Ports {
             }
         }
         d.deserialize_any(Item)
+    }
+}
+
+/// The folder of the live files of the services that run as an account,
+/// where their `path` sockets are made.
+const LIVE_SERVICES: &str = "/system/live/services/";
+
+/// The longest account name, which names the folder of a service's live
+/// files.
+const ACCOUNT_NAME_MAX: usize = 32;
+
+/// The longest `path` of a socket: its whole path in a service's live
+/// folder is at most as long as a socket's name may be
+/// (radix-file(2)'s SOCKET_NAME_MAX).
+pub const UNIX_NAME_MAX: usize =
+    radix_abi::file::SOCKET_NAME_MAX as usize - LIVE_SERVICES.len() - ACCOUNT_NAME_MAX - 1;
+
+/// The longest `name` of a socket.
+pub const SOCKET_WORD_MAX: usize = 64;
+
+/// The most groups a file names.
+pub const GROUPS_MAX: usize = 16;
+
+/// A `[[sockets]]` table as written, in a service file or a bundle's
+/// manifest: each key alone is checked, the whole by [`sockets_from`].
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SocketFile {
+    /// `port`: a TCP or UDP port.
+    #[serde(default, deserialize_with = "socket_port")]
+    pub port: Option<u16>,
+    /// `address`: the address a port socket is on.
+    #[serde(default, deserialize_with = "socket_address")]
+    pub address: Option<SocketAddress>,
+    /// `udp`: a datagram socket, for a port.
+    pub udp: Option<bool>,
+    /// `path`: the plain name of a Unix socket in the live folder.
+    #[serde(default, deserialize_with = "socket_path")]
+    pub path: Option<String>,
+    /// `name`: its word in `LISTEN_FDNAMES`.
+    #[serde(default, deserialize_with = "socket_name")]
+    pub name: Option<String>,
+    /// `backlog`: how many connections may wait.
+    #[serde(default, deserialize_with = "socket_backlog")]
+    pub backlog: Option<u32>,
+    /// `to`: who connects to a `path` socket besides the service, in a
+    /// service file alone: `anyone`, or the `system`'s programs.
+    #[serde(default, deserialize_with = "socket_to")]
+    pub to: Option<SocketAccess>,
+    /// `group`: the group whose members connect to a `path` socket, in a
+    /// service file alone.
+    #[serde(default, deserialize_with = "socket_group")]
+    pub group: Option<String>,
+}
+
+impl SocketFile {
+    /// Whether it says who connects, which a bundle's manifest leaves to
+    /// its `provides`.
+    pub fn says_who_connects(&self) -> bool {
+        self.to.is_some() || self.group.is_some()
+    }
+}
+
+/// What is wrong with a socket that read: which table, the key in it
+/// the problem is about, and what is wrong.
+pub(crate) struct SocketProblem {
+    /// The place of the table among the file's sockets, from 0.
+    pub(crate) index: usize,
+    /// The key to put the error on, or none for the whole table.
+    pub(crate) key: Option<&'static str>,
+    /// What is wrong, in plain words.
+    pub(crate) message: String,
+    /// What to do about it.
+    pub(crate) fix: Option<String>,
+}
+
+impl SocketProblem {
+    fn into_problem(self) -> Problem {
+        let problem =
+            Problem { key: self.key, socket: Some(self.index), ..Problem::new(self.message) };
+        match self.fix {
+            Some(fix) => problem.with_fix(fix),
+            None => problem,
+        }
+    }
+}
+
+/// The sockets the tables say, each checked alone and against the
+/// others. `listen` is the ports the file may listen on, which a port
+/// socket must be one of; `None` for a file that has none to check
+/// against.
+pub(crate) fn sockets_from(
+    files: &[SocketFile],
+    listen: Option<&[Ports]>,
+) -> Result<Vec<Socket>, SocketProblem> {
+    let mut sockets: Vec<Socket> = Vec::new();
+    for (index, file) in files.iter().enumerate() {
+        let problem = |key, message: String| SocketProblem { index, key, message, fix: None };
+        let kind = match (file.port, &file.path) {
+            (Some(_), Some(_)) => {
+                return Err(problem(
+                    Some("path"),
+                    "a socket has a port or a path, not both".into(),
+                ));
+            }
+            (None, None) => {
+                return Err(problem(None, "a socket needs a port or a path".into()));
+            }
+            (Some(port), None) => {
+                // The ports of network.listen are for both protocols: the
+                // capability that holds one binds TCP and UDP alike.
+                let allowed = listen.is_none_or(|ports| {
+                    ports.iter().any(|ports| ports.first <= port && port <= ports.last)
+                });
+                if !allowed {
+                    return Err(SocketProblem {
+                        fix: Some(format!("add {port} to network.listen")),
+                        ..problem(
+                            Some("port"),
+                            format!("port {port} is none of network.listen's ports"),
+                        )
+                    });
+                }
+                let address = file.address.unwrap_or_default();
+                if file.udp == Some(true) {
+                    SocketKind::Datagram { port, address }
+                } else {
+                    SocketKind::Stream { port, address }
+                }
+            }
+            (None, Some(path)) => {
+                if file.to.is_some() && file.group.is_some() {
+                    return Err(SocketProblem {
+                        fix: Some("keep one of them".into()),
+                        ..problem(
+                            Some("group"),
+                            "a socket has a `to` or a `group`, not both".into(),
+                        )
+                    });
+                }
+                if file.address.is_some() {
+                    return Err(problem(
+                        Some("address"),
+                        "address is for a socket with a port alone".into(),
+                    ));
+                }
+                if file.udp.is_some() {
+                    return Err(problem(
+                        Some("udp"),
+                        "udp is for a socket with a port alone".into(),
+                    ));
+                }
+                SocketKind::Unix { path: path.clone() }
+            }
+        };
+        let name = file.name.clone().unwrap_or_else(|| match &kind {
+            SocketKind::Stream { port, .. } | SocketKind::Datagram { port, .. } => port.to_string(),
+            SocketKind::Unix { path } => path.clone(),
+        });
+        if sockets.iter().any(|other| other.name == name) {
+            return Err(SocketProblem {
+                fix: Some("give one of them a `name`".into()),
+                ..problem(Some("name"), format!("two sockets are named {name}"))
+            });
+        }
+        let access = match (&kind, &file.to, &file.group) {
+            (SocketKind::Unix { .. }, Some(to), _) => to.clone(),
+            (SocketKind::Unix { .. }, None, Some(group)) => SocketAccess::Group(group.clone()),
+            (SocketKind::Unix { .. }, None, None) => SocketAccess::Own,
+            (_, None, None) => SocketAccess::Own,
+            (_, to, _) => {
+                let key = if to.is_some() { "to" } else { "group" };
+                return Err(SocketProblem {
+                    fix: Some("the firewall and network.listen say who reaches a port".into()),
+                    ..problem(Some(key), format!("{key} is for a socket with a path alone"))
+                });
+            }
+        };
+        let backlog = file.backlog.unwrap_or(BACKLOG_DEFAULT);
+        sockets.push(Socket { kind, name, backlog, access });
+    }
+    Ok(sockets)
+}
+
+/// The span of `key` in the table `index` of the array `sockets` of the
+/// file `text`, or of the whole table when `key` is none or the table
+/// does not set it.
+fn socket_span(text: &str, index: usize, key: Option<&str>) -> Option<Range<usize>> {
+    let root = DeTable::parse(text).ok()?;
+    let sockets = root.get_ref().get("sockets")?;
+    let table = sockets.get_ref().as_array()?.get(index)?;
+    // A key the table leaves at its default has the table for its place.
+    let named = key.and_then(|key| table.get_ref().as_table()?.get_key_value(key));
+    Some(named.map_or(table.span(), |(name, _)| name.span()))
+}
+
+/// `sockets`: tables, at most [`SOCKETS_MAX`].
+fn socket_files<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<SocketFile>, D::Error> {
+    let files = Vec::<SocketFile>::deserialize(d)?;
+    if files.len() > SOCKETS_MAX {
+        return Err(de::Error::custom(format!("a file names at most {SOCKETS_MAX} sockets")));
+    }
+    Ok(files)
+}
+
+fn socket_port<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u16>, D::Error> {
+    let n = whole(d, "port")?;
+    match u16::try_from(n) {
+        Ok(port @ 1..) => Ok(Some(port)),
+        _ => Err(de::Error::custom(format!("a socket's port is from 1 to 65535, not {n}"))),
+    }
+}
+
+/// A socket's `address`: `"0.0.0.0"`, `"::"` or one address.
+fn socket_address<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SocketAddress>, D::Error> {
+    let text = String::deserialize(d)?;
+    if let Ok(address) = text.parse::<core::net::Ipv4Addr>() {
+        return Ok(Some(if address.is_unspecified() {
+            SocketAddress::AnyV4
+        } else {
+            SocketAddress::V4(address.octets())
+        }));
+    }
+    if let Ok(address) = text.parse::<core::net::Ipv6Addr>() {
+        return Ok(Some(if address.is_unspecified() {
+            SocketAddress::AnyV6
+        } else {
+            SocketAddress::V6(address.octets())
+        }));
+    }
+    Err(de::Error::custom(format!(
+        "a socket's address is \"0.0.0.0\", \"::\" or one IPv4 or IPv6 address, not `{}`; \
+         leave it out for every address",
+        text.escape_debug()
+    )))
+}
+
+/// Whether `word` is made of letters, digits, `_`, `-` and `.`, which
+/// holds no `:`, the separator of `LISTEN_FDNAMES`.
+fn is_socket_word(word: &str) -> bool {
+    word.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b))
+}
+
+/// A socket's `path`: a plain name.
+fn socket_path<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let path = String::deserialize(d)?;
+    let plain = !path.is_empty()
+        && path.len() <= UNIX_NAME_MAX
+        && path != "."
+        && path != ".."
+        && is_socket_word(&path);
+    if !plain {
+        return Err(de::Error::custom(format!(
+            "a socket's path is a plain name of 1 to {UNIX_NAME_MAX} letters, digits, `_`, `-` \
+             and `.`, made in the service's live folder, not `{}`",
+            path.escape_debug()
+        )));
+    }
+    Ok(Some(path))
+}
+
+/// A socket's `name`: a word for `LISTEN_FDNAMES`.
+fn socket_name<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let name = String::deserialize(d)?;
+    if name.is_empty() || name.len() > SOCKET_WORD_MAX || !is_socket_word(&name) {
+        return Err(de::Error::custom(format!(
+            "a socket's name is 1 to {SOCKET_WORD_MAX} letters, digits, `_`, `-` and `.`, with no \
+             `:`, which separates the names in LISTEN_FDNAMES, not `{}`",
+            name.escape_debug()
+        )));
+    }
+    Ok(Some(name))
+}
+
+fn socket_backlog<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    whole_within(d, "a socket's backlog", (1, 65535), " connections").map(Some)
+}
+
+/// A socket's `to`: `anyone` or `system`; a group is named by `group`.
+fn socket_to<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SocketAccess>, D::Error> {
+    let text = String::deserialize(d)?;
+    match text.as_str() {
+        "anyone" => Ok(Some(SocketAccess::Anyone)),
+        "system" => Ok(Some(SocketAccess::System)),
+        _ => Err(de::Error::custom(format!(
+            "a socket's to is \"anyone\" or \"system\", not `{}`; `group` names a group whose \
+             members connect",
+            text.escape_debug()
+        ))),
+    }
+}
+
+/// A socket's `group`: a group's name, as an account's is written.
+fn socket_group<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let name = String::deserialize(d)?;
+    check_account(&name).map_err(|why| de::Error::custom(format!("a socket's group: {why}")))?;
+    Ok(Some(name))
+}
+
+fn start<'de, D: Deserializer<'de>>(d: D) -> Result<Start, D::Error> {
+    Ok([Start::AtBoot, Start::OnConnection][word(d, "start", Start::WORDS)?])
+}
+
+/// `groups`: names of groups, each as an account's name is written, at
+/// most [`GROUPS_MAX`], each once.
+pub(crate) fn group_names<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let names = Vec::<String>::deserialize(d)?;
+    if names.len() > GROUPS_MAX {
+        return Err(de::Error::custom(format!("groups names at most {GROUPS_MAX} groups")));
+    }
+    for (i, name) in names.iter().enumerate() {
+        check_account(name).map_err(|why| de::Error::custom(format!("groups: {why}")))?;
+        if names[..i].contains(name) {
+            return Err(de::Error::custom(format!("groups names {name} twice")));
+        }
+    }
+    Ok(names)
+}
+
+/// `[stop]` as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StopFile {
+    #[serde(default, deserialize_with = "stop_signal")]
+    signal: Signal,
+    #[serde(default = "stop_timeout_default", deserialize_with = "stop_timeout")]
+    timeout: u32,
+}
+
+impl StopFile {
+    fn into_stop(self) -> Stop {
+        Stop { signal: self.signal, timeout: self.timeout }
+    }
+}
+
+fn stop_timeout_default() -> u32 {
+    STOP_TIMEOUT_DEFAULT
+}
+
+pub(crate) fn stop_timeout<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    whole_within(d, "stop.timeout", (1, STOP_TIMEOUT_MAX), " seconds")
+}
+
+/// `stop.signal` of a bundle's manifest, which may be left out.
+#[cfg(feature = "bundle")]
+pub(crate) fn stop_signal_optional<'de, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Signal>, D::Error> {
+    stop_signal(d).map(Some)
+}
+
+/// `stop.signal`: one of the signals a daemon takes as a request to stop.
+pub(crate) fn stop_signal<'de, D: Deserializer<'de>>(d: D) -> Result<Signal, D::Error> {
+    let name = String::deserialize(d)?;
+    match name.as_str() {
+        "SIGHUP" => Err(de::Error::custom(
+            "stop.signal is not SIGHUP, which `service reload` sends to a service to read its \
+             settings again",
+        )),
+        "SIGKILL" | "SIGSTOP" => Err(de::Error::custom(format!(
+            "stop.signal is not {name}, which a program cannot take as a request: Spark ends \
+             what is left of a service after stop.timeout"
+        ))),
+        _ => Signal::WORDS
+            .iter()
+            .position(|word| *word == name)
+            .map(|at| {
+                [
+                    Signal::Term,
+                    Signal::Int,
+                    Signal::Quit,
+                    Signal::Hup,
+                    Signal::Usr1,
+                    Signal::Usr2,
+                    Signal::Winch,
+                ][at]
+            })
+            .ok_or_else(|| {
+                de::Error::custom(format!(
+                    "stop.signal must be SIGTERM, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2 or SIGWINCH, \
+                     not `{}`",
+                    name.escape_debug()
+                ))
+            }),
+    }
+}
+
+/// The most times of day a `[timer]` names in `at`.
+pub const TIMER_AT_MAX: usize = 32;
+
+/// The most patterns `[logs]` names in `files`.
+pub const LOG_FILES_MAX: usize = 16;
+
+/// The most turned-over files `[logs]` keeps.
+pub const LOG_KEEP_MAX: u32 = 100;
+
+/// How many turned-over files `[logs]` keeps when its file says none.
+pub const LOG_KEEP_DEFAULT: u32 = 14;
+
+/// A service file's `[timer]` as written (service.toml(5)), and a bundle
+/// manifest's `timer` (manifest.json(5)): the same keys, with the times
+/// and durations as the text that was read, which [`TimerFile::check`]
+/// turns into a [`Timer`].
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TimerFile {
+    /// Times of day: crontab lines' five fields, or `hourly`, `daily`,
+    /// `weekly`, `monthly`, `yearly`.
+    #[serde(default, deserialize_with = "timer_at")]
+    pub at: Vec<String>,
+    /// A duration, such as `"6h"`: so long after the last start.
+    #[serde(default, deserialize_with = "timer_every")]
+    pub every: Option<String>,
+    /// A duration: the first start by `every` after the machine starts.
+    #[serde(default, deserialize_with = "timer_after_boot")]
+    pub after_boot: Option<String>,
+    /// A duration: the most a time is put off by.
+    #[serde(default, deserialize_with = "timer_spread")]
+    pub spread: Option<String>,
+    /// Whether a time missed while the machine was off runs once; true
+    /// when left out.
+    #[serde(default)]
+    pub catch_up: Option<bool>,
+    /// A tzdata name such as `"UTC"`; the system's when left out.
+    #[serde(default, deserialize_with = "timer_zone")]
+    pub time_zone: Option<String>,
+}
+
+impl TimerFile {
+    /// The timer it says, when its keys fit together.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong, with the key it is about.
+    pub(crate) fn check(&self) -> Result<Timer, Problem> {
+        if self.at.is_empty() && self.every.is_none() {
+            return Err(Problem::about("timer", "a timer needs `at` or `every`").with_fix(
+                "add a line such as `timer.at = [\"daily\"]` or `timer.every = \"6h\"`",
+            ));
+        }
+        if self.after_boot.is_some() && self.every.is_none() {
+            return Err(Problem::about("timer.after_boot", "after_boot goes with `every`")
+                .with_fix("add `timer.every`, or leave after_boot out"));
+        }
+        let at = self
+            .at
+            .iter()
+            .map(|item| {
+                crate::schedule::read(item).map_err(|(_, why)| Problem::about("timer.at", why))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let seconds =
+            |text: &Option<String>| text.as_deref().and_then(|t| crate::schedule::duration(t).ok());
+        Ok(Timer {
+            at,
+            every: seconds(&self.every),
+            after_boot: seconds(&self.after_boot),
+            spread: seconds(&self.spread).unwrap_or(0),
+            catch_up: self.catch_up.unwrap_or(true),
+            time_zone: self.time_zone.clone(),
+        })
+    }
+}
+
+fn timer_at<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let items = Vec::<String>::deserialize(d)?;
+    if items.len() > TIMER_AT_MAX {
+        return Err(de::Error::custom(format!("timer.at names at most {TIMER_AT_MAX} times")));
+    }
+    for (at, item) in items.iter().enumerate() {
+        if item.starts_with('@') {
+            return Err(de::Error::custom(format!(
+                "timer.at writes `{}` without the @",
+                item.escape_debug()
+            )));
+        }
+        if let Err((column, why)) = crate::schedule::read(item) {
+            return Err(de::Error::custom(format!(
+                "timer.at item {} `{}`, at column {}: {why}",
+                at + 1,
+                item.escape_debug(),
+                column + 1
+            )));
+        }
+    }
+    Ok(items)
+}
+
+/// A duration for the key `key`.
+fn timer_duration<'de, D: Deserializer<'de>>(d: D, key: &str) -> Result<Option<String>, D::Error> {
+    let text = String::deserialize(d)?;
+    crate::schedule::duration(&text).map_err(|why| de::Error::custom(format!("{key}: {why}")))?;
+    Ok(Some(text))
+}
+
+fn timer_every<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    timer_duration(d, "timer.every")
+}
+
+fn timer_after_boot<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    timer_duration(d, "timer.after_boot")
+}
+
+fn timer_spread<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    timer_duration(d, "timer.spread")
+}
+
+/// Checks that `name` has the shape of a tzdata name, such as `UTC` or
+/// `Europe/Berlin`: letters, digits and `_+-.` in parts that are not
+/// empty, `.` or `..`, and no leading `/`, so that it cannot name a file
+/// outside tzdata.
+///
+/// # Errors
+///
+/// What is wrong, in plain words.
+pub fn check_time_zone(name: &str) -> Result<(), String> {
+    let part_fits = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"_+-.".contains(&b))
+    };
+    if name.len() <= 64 && name.split('/').all(part_fits) {
+        return Ok(());
+    }
+    Err(format!(
+        "`{}` is not a time zone's name: use one of tzdata's, such as \"UTC\" or \
+         \"Europe/Berlin\"",
+        name.escape_debug()
+    ))
+}
+
+fn timer_zone<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let name = String::deserialize(d)?;
+    check_time_zone(&name).map_err(|why| de::Error::custom(format!("timer.time_zone: {why}")))?;
+    Ok(Some(name))
+}
+
+/// A service file's `[logs]` as written, and a bundle manifest's `logs`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct LogsFile {
+    /// Patterns of the files; `*` only in the last part, which ends in
+    /// text of its own.
+    #[serde(deserialize_with = "log_files")]
+    pub files: Vec<String>,
+    /// `"daily"`, `"weekly"`, or a size such as `"100M"`; daily when left
+    /// out.
+    #[serde(default = "turn_over_default", deserialize_with = "log_turn_over")]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    pub turn_over: TurnOver,
+    /// How many turned-over files are kept, 1 to 100; 14 when left out.
+    #[serde(default = "log_keep_default", deserialize_with = "log_keep")]
+    pub keep: u32,
+    /// Whether turned-over files are compressed; true when left out.
+    #[serde(default = "yes")]
+    pub compress: bool,
+    /// A signal such as `"SIGUSR1"`, `"restart"`, or `"none"`; none when
+    /// left out.
+    #[serde(default = "reopen_default", deserialize_with = "log_reopen")]
+    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    pub reopen: Reopen,
+}
+
+impl From<&LogsFile> for Logs {
+    fn from(file: &LogsFile) -> Logs {
+        Logs {
+            files: file.files.clone(),
+            turn_over: file.turn_over,
+            keep: file.keep,
+            compress: file.compress,
+            reopen: file.reopen,
+        }
+    }
+}
+
+impl TurnOver {
+    /// What a file says: `daily`, `weekly`, or the size in bytes.
+    #[must_use]
+    pub fn word(self) -> String {
+        match self {
+            TurnOver::Daily => "daily".to_string(),
+            TurnOver::Weekly => "weekly".to_string(),
+            TurnOver::Size(bytes) => bytes.to_string(),
+        }
+    }
+}
+
+impl Reopen {
+    /// What a file says: a signal's name, `restart` or `none`.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Reopen::Signal(signal) => signal.name(),
+            Reopen::Restart => "restart",
+            Reopen::Nothing => "none",
+        }
+    }
+}
+
+fn turn_over_default() -> TurnOver {
+    TurnOver::Daily
+}
+
+fn log_keep_default() -> u32 {
+    LOG_KEEP_DEFAULT
+}
+
+fn reopen_default() -> Reopen {
+    Reopen::Nothing
+}
+
+/// Checks a log file pattern: relative to the service's data folder or
+/// absolute, parts that are plain names, and a `*` only in the last part,
+/// which ends in text of its own so that a pattern never takes the files
+/// logturn(8) has turned over.
+///
+/// # Errors
+///
+/// What is wrong, in plain words.
+pub fn check_log_pattern(pattern: &str) -> Result<(), String> {
+    let wrong = |why: &str| Err(format!("logs.files: `{}` {why}", pattern.escape_debug()));
+    let rest = pattern.strip_prefix('/').unwrap_or(pattern);
+    let parts: Vec<&str> = rest.split('/').collect();
+    let last = parts.len() - 1;
+    for (at, part) in parts.iter().enumerate() {
+        if part.is_empty() || *part == "." || *part == ".." || part.contains('\0') {
+            return wrong("has an empty part, `.`, `..` or a NUL");
+        }
+        if part.contains(['?', '[', ']', '{', '}']) {
+            return wrong("holds a glob character other than `*`");
+        }
+        if part.contains('*') && at != last {
+            return wrong("has a `*` before its last part");
+        }
+    }
+    if parts[last].ends_with('*') {
+        return wrong(
+            "ends in `*`, which would take the files turned over already; end it in text such as `.log`",
+        );
+    }
+    Ok(())
+}
+
+fn log_files<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let files = Vec::<String>::deserialize(d)?;
+    if files.is_empty() || files.len() > LOG_FILES_MAX {
+        return Err(de::Error::custom(format!(
+            "logs.files names 1 to {LOG_FILES_MAX} files, such as [\"logs/*.log\"]"
+        )));
+    }
+    for (at, pattern) in files.iter().enumerate() {
+        check_log_pattern(pattern).map_err(de::Error::custom)?;
+        if files[..at].contains(pattern) {
+            return Err(de::Error::custom(format!("logs.files names {pattern} twice")));
+        }
+    }
+    Ok(files)
+}
+
+fn log_turn_over<'de, D: Deserializer<'de>>(d: D) -> Result<TurnOver, D::Error> {
+    struct Words;
+    impl Visitor<'_> for Words {
+        type Value = TurnOver;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("\"daily\", \"weekly\" or a size such as \"100M\" for logs.turn_over")
+        }
+
+        fn visit_u64<E: de::Error>(self, bytes: u64) -> Result<TurnOver, E> {
+            match bytes {
+                0 => Err(E::custom("logs.turn_over is more than 0 bytes")),
+                bytes => Ok(TurnOver::Size(bytes)),
+            }
+        }
+
+        fn visit_i64<E: de::Error>(self, bytes: i64) -> Result<TurnOver, E> {
+            let bytes =
+                u64::try_from(bytes).map_err(|_| E::custom("logs.turn_over is not below 0"))?;
+            self.visit_u64(bytes)
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<TurnOver, E> {
+            match (value, size(value)) {
+                ("daily", _) => Ok(TurnOver::Daily),
+                ("weekly", _) => Ok(TurnOver::Weekly),
+                (_, Some(bytes)) => self.visit_u64(bytes),
+                _ => Err(E::custom(format!(
+                    "logs.turn_over is \"daily\", \"weekly\" or a size such as \"100M\", not \
+                     `{}`",
+                    value.escape_debug()
+                ))),
+            }
+        }
+    }
+    d.deserialize_any(Words)
+}
+
+fn log_keep<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    whole_within(d, "logs.keep", (1, LOG_KEEP_MAX), " files")
+}
+
+fn log_reopen<'de, D: Deserializer<'de>>(d: D) -> Result<Reopen, D::Error> {
+    let text = String::deserialize(d)?;
+    match text.as_str() {
+        "restart" => return Ok(Reopen::Restart),
+        "none" => return Ok(Reopen::Nothing),
+        _ => {}
+    }
+    let all = [
+        Signal::Term,
+        Signal::Int,
+        Signal::Quit,
+        Signal::Hup,
+        Signal::Usr1,
+        Signal::Usr2,
+        Signal::Winch,
+    ];
+    match Signal::WORDS.iter().position(|word| *word == text) {
+        // These end most programs: a program that wants to open its
+        // files again is told with another.
+        Some(0..=2) => Err(de::Error::custom(format!(
+            "logs.reopen is not {text}, which ends most programs: use a signal such as SIGHUP, \
+             SIGUSR1 or SIGUSR2, \"restart\" or \"none\""
+        ))),
+        Some(at) => Ok(Reopen::Signal(all[at])),
+        None => Err(de::Error::custom(format!(
+            "logs.reopen is a signal such as SIGUSR1, \"restart\" or \"none\", not `{}`",
+            text.escape_debug()
+        ))),
     }
 }

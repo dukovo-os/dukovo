@@ -24,6 +24,7 @@
     "account": "postgres",
     "restart": "on-failure",
     "limits": { "memory": "4G" },
+    "sockets": [ { "path": "postgresql" } ],
     "health": { "socket": "postgresql" }
   } ],
   "permissions": {

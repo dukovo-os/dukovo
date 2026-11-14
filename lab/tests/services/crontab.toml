@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A person's jobs (ADR 0478): crontab(1) and at(1). The boot test crontab
+# covers a person signed out; the lab's account is signed in over SSH.
+about = "a crontab line is refused at its column, then installed and listed; its minute's job runs; an at job runs once and leaves the queue; atq lists a job and atrm removes it; crontab -r removes the crontab; crontab --keep-running sets, says and goes back to the system's default (ADR 0478)"
+time = "6m"
+
+[[step]]
+run = "sh -c 'printf \"61 * * * * true\\n\" | crontab -'"
+exit = 1
+expect = "line 1, column 1"
+[[step]]
+run = "sh -c 'printf \"* * * * * echo lab-ran >> ~/lab-cron.out\\n\" | crontab - && crontab -l'"
+expect = "* * * * * echo lab-ran >> ~/lab-cron.out"
+[[step]]
+run = "sh -c 'for i in $(seq 1 100); do [ -s ~/lab-cron.out ] && break; sleep 1; done; cat ~/lab-cron.out'"
+expect = "lab-ran"
+[[step]]
+run = "sh -c 'echo \"echo at-ran >> ~/lab-at.out\" | at now + 1 minute 2>&1; atq | wc -l'"
+expect = "job "
+[[step]]
+run = "sh -c 'for i in $(seq 1 100); do [ -s ~/lab-at.out ] && break; sleep 1; done; cat ~/lab-at.out; echo \"queued $(atq | wc -l)\"'"
+expect = ["at-ran", "queued 0"]
+[[step]]
+run = "sh -c 'echo true | at now + 1 hour 2>&1 | grep -c job; id=$(atq | cut -f1 | head -n 1); atrm $id; echo \"left $(atq | wc -l)\"'"
+expect = "left 0"
+[[step]]
+run = "sh -c 'crontab -r; crontab -l 2>&1; rm -f ~/lab-cron.out ~/lab-at.out'"
+expect = "no crontab for lab"
+[[step]]
+run = "crontab --keep-running on"
+expect = "Your jobs run while you are signed out. You turned it on."
+[[step]]
+run = "crontab --keep-running"
+expect = "You turned it on."
+[[step]]
+run = "crontab --keep-running default"
+expect = "That is the system's default"
+[[step]]
+run = "batch"
+exit = 1
+expect = "batch is not built"

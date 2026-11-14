@@ -38,7 +38,8 @@ const REQUIRES_OS: &str = "0.12";
 const REQUIRES_OS_GRAPH: &str = "1.0";
 
 /// The keys of a bundle's service that only [`REQUIRES_OS_GRAPH`] reads.
-const GRAPH_KEYS: [&str; 5] = ["requires", "wants", "after", "give_up_after", "ready"];
+const GRAPH_KEYS: [&str; 8] =
+    ["requires", "wants", "after", "give_up_after", "ready", "sockets", "stop", "backup"];
 
 /// The folder a bundle's port installs into, `$PORT_BUNDLE`: beside the
 /// port's stamp, in `out/ports/<name>/bundle`, so that a cache keeps or
@@ -158,6 +159,12 @@ pub struct TestBundle {
     /// Its manifest's `update.feed`, the address of its own feed, which
     /// the build key signs, `update.key` (ADR 0390); empty for none.
     pub feed: &'static str,
+    /// Its manifest's `uses`, a JSON array's insides; empty for none.
+    pub uses: &'static str,
+    /// The name of a C test program of userspace/posix, built into the
+    /// image's test programs, which is copied to `bin` beside the script
+    /// (the script runs it); empty for none.
+    pub posix: &'static str,
 }
 
 /// Packs `bundle` into out/test/bundles, signed by the build key, and
@@ -233,6 +240,14 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
             &format!("  \"provides\": [{}],\n  \"permissions\":", bundle.provides),
         )
     };
+    let manifest = if bundle.uses.is_empty() {
+        manifest
+    } else {
+        manifest.replace(
+            "  \"permissions\":",
+            &format!("  \"uses\": [{}],\n  \"permissions\":", bundle.uses),
+        )
+    };
     let key = signing_key(ctx)?;
     let manifest = if bundle.feed.is_empty() {
         manifest
@@ -255,6 +270,14 @@ pub fn pack_test(ctx: &Ctx, bundle: &TestBundle) -> Result<PathBuf> {
     for (program, script) in programs.into_iter().filter(|(_, script)| !script.is_empty()) {
         let program = folder.join("bin").join(program);
         std::fs::write(&program, script).context(|| format!("writing {}", program.display()))?;
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .context(|| format!("writing {}", program.display()))?;
+    }
+    if !bundle.posix.is_empty() {
+        let built = ctx.out.join("sysroot").join(crate::userspace::POSIX_DIR).join(bundle.posix);
+        let program = folder.join("bin").join(bundle.posix);
+        std::fs::copy(&built, &program)
+            .map_err(|why| Error::new(format!("copying {}: {why}", built.display())))?;
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .context(|| format!("writing {}", program.display()))?;
     }
@@ -551,6 +574,30 @@ mod tests {
         assert_eq!(after, ["netd", "resolved"]);
         let ready = service.ready.as_ref().unwrap();
         assert_eq!((ready.when, ready.timeout), (ReadyWord::Listening, Some(30)));
+        // It holds port 80 for IPv4 and IPv6 alike across its restarts, and
+        // stops with QUIT, which lets the requests in flight finish
+        // (ADR 0477).
+        let sockets: Vec<(Option<u16>, Option<String>, Option<String>)> = service
+            .sockets
+            .iter()
+            .map(|socket| {
+                let address = socket.address.and_then(manifest::service::SocketAddress::text);
+                (socket.port, address, socket.name.clone())
+            })
+            .collect();
+        assert_eq!(
+            sockets,
+            [
+                (Some(80), Some("0.0.0.0".to_string()), Some("http".to_string())),
+                (Some(80), Some("::".to_string()), Some("http6".to_string())),
+            ]
+        );
+        let stop = service.stop.as_ref().unwrap();
+        assert_eq!((stop.signal, stop.timeout), (Some(manifest::service::Signal::Quit), Some(30)));
+        // Its access_log in the data folder's logs is turned over (ADR 0478).
+        let logs = service.logs.as_ref().unwrap();
+        assert_eq!(logs.files, ["logs/*.log"]);
+        assert_eq!(logs.reopen, manifest::service::Reopen::Signal(manifest::service::Signal::Usr1));
         assert_eq!(manifest.requires_os.to_string(), "1.0");
     }
 

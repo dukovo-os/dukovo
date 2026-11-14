@@ -382,7 +382,7 @@ impl Authd {
         let signed_in: HashSet<u32> = self
             .sessions
             .values()
-            .filter(|session| !session.elevated)
+            .filter(|session| !session.elevated && session.job.is_none())
             .map(|session| session.number)
             .chain(self.tickets.values().map(|ticket| ticket.number))
             .collect();

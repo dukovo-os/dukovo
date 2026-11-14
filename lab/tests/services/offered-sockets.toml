@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The sockets a service asks Spark to hold (ADRs 0385 and 0477) are
+# checked as the rest of a service file is: a socket on a port that the
+# service's network.listen does not name is refused at its port, and one
+# that does is read, with the on-connection start it asks for. The
+# sockets a bundle offers to others have no bundle in the catalog yet, and
+# the boot test offered-sockets covers them.
+about = "service check reads a service's sockets and refuses one on a port its network.listen does not name, at the line of the port (ADRs 0385, 0477)"
+time = "3m"
+
+# From nothing: a run before may have left them.
+[[step]]
+run = '''sh -c 'cd /system/settings/spark/services && rm -f lab-sock.toml lab-sock-wrong.toml && printf "service_version = 1\nprogram = \"/system/commands/true\"\nstart = \"on-connection\"\n[permissions]\nnetwork.listen = [8090]\n[[sockets]]\nport = 8090\n" > lab-sock.toml && sed "s/^port = 8090/port = 8091/" lab-sock.toml > lab-sock-wrong.toml && echo installed' '''
+root = true
+expect = "installed"
+[[step]]
+run = "sh -c 'service check lab-sock 2>&1'"
+root = true
+expect_not = "lab-sock.toml:"
+[[step]]
+run = "sh -c 'service check lab-sock-wrong 2>&1'"
+root = true
+exit = 1
+expect = ["lab-sock-wrong.toml:7:", "8091"]
+[[step]]
+run = "sh -c 'cd /system/settings/spark/services && rm -f lab-sock.toml lab-sock-wrong.toml && echo removed'"
+root = true
+expect = "removed"

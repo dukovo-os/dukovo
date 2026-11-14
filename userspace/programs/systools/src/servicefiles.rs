@@ -37,7 +37,7 @@ use crate::{power, prompt, servicetry};
 pub const DIR: &str = "/system/settings/spark/services";
 
 /// Where the system's own service files are kept, as Spark copies them.
-const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
+pub(crate) const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
 
 /// Where Spark keeps the last copy of each service's file, and of its
 /// override beneath `settings.d`, that it read: the copy a service that

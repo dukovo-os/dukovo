@@ -115,4 +115,5 @@ view (ADR 0215), and its secrets as read-only files. That half is 13b.4b
 - **Not yet:** the capabilities a service declares, in a view, and its
   secrets (13b.4b, ADR 0217); the JSON Schema and the manifest's
   `services` section (13d.1); comments kept by Dukovo Admin's editor
-  (toml_edit, 16c); dependencies, health checks and timers (16a).
+  (toml_edit, 16c). Dependencies and health checks came with ADR 0470,
+  and timers with ADR 0478.
