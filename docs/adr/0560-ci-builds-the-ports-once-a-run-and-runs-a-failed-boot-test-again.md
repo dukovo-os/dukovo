@@ -46,6 +46,9 @@ second run passed.
   the cache under its own key, on a pull request too: its next push and
   its re-runs find it, and on main the pull requests after it find it
   within minutes of the merge, not at the end of main's run.
+- The build container's job keeps its own cache of the ports built in
+  the container, and saves it the same way: whenever a port was built,
+  on a pull request too.
 - Main's runs restore the ports as a pull request's do. The nightly run
   builds them from scratch, so a port that builds only on top of an
   older build of itself is still found within a day, as the nightly
