@@ -498,6 +498,11 @@ const WAVES_PAUSE: (&str, &str, &str) = ("org.example.diary", "1.1.0", "bad logs
 /// the case would otherwise type.
 const POSTGRESQL_FILES: u8 = 35;
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the
+/// `postgresql-service` test's scripts
+/// ([`cases::postgresql_service::make_disk`]).
+const POSTGRESQL_SERVICE_FILES: u8 = 35;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1755,9 +1760,12 @@ fn case_budget(case: &Case, timeout: Duration) -> Duration {
 /// Whether `case` installs the catalog's bundles, which ob packs before
 /// the first such test of a run.
 fn needs_packing(case: &Case) -> bool {
-    case.disks
-        .iter()
-        .any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE | PHP_FILES | POSTGRESQL_FILES))
+    case.disks.iter().any(|disk| {
+        matches!(
+            disk.fat,
+            BUNDLE_FILES | CATALOG_SITE | PHP_FILES | POSTGRESQL_FILES | POSTGRESQL_SERVICE_FILES
+        )
+    })
 }
 
 /// About how long packing the catalog's bundles takes on CI, in seconds,
@@ -5341,6 +5349,11 @@ fn make_disks(
         }
         if disk.fat == POSTGRESQL_FILES {
             cases::postgresql::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == POSTGRESQL_SERVICE_FILES {
+            cases::postgresql_service::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
