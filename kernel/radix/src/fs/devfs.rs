@@ -30,9 +30,14 @@
 
 use radix_block::DeviceRef;
 use radix_klog::{error, warn};
+use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sync::Once;
-use radix_vfs::synthetic::{BlockNode, FixedDir, Link, Null, Random, SyntheticFs, Zero};
+use radix_vfs::synthetic::{
+    BlockNode, FixedDir, Link, ListedDir, Listing, Null, Random, SyntheticFs, Zero,
+};
 use radix_vfs::{FsKind, FsRef, KArc, Kind, Node, NodeRef, Result, mem, next_id};
+
+use super::disk;
 
 static ROOT: Once<KArc<FixedDir>> = Once::new();
 /// `virtio-ports`: the links to the named virtio console ports.
@@ -159,4 +164,89 @@ pub fn remove(name: &str) {
 pub fn make() -> Result<FsRef> {
     let root: NodeRef = ROOT.get().ok_or(radix_vfs::Error::NoMemory)?.clone();
     SyntheticFs::make(FsKind::Dev, root)
+}
+
+/// The devices a `/devices` of one class shows besides those every
+/// service has (ADR 0473).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// Every disk and partition, and the `disk` link to their links:
+    /// a `dev-disks` mount.
+    Disks,
+    /// The EFI system partitions alone: a `dev-efi-system` mount.
+    EfiSystem,
+}
+
+/// What every `/devices` of a class has.
+const EVERY_SERVICE: [&str; 4] = ["null", "zero", "random", "urandom"];
+
+/// The tree as a filesystem with only `class`'s devices in it, and the
+/// four every service has: the tree's own nodes, so that a disk plugged
+/// in is there at once and goes when it is pulled out.
+pub fn make_class(class: Class) -> Result<FsRef> {
+    let listing: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(OfClass(class))?;
+    SyntheticFs::make(FsKind::Dev, ListedDir::make(next_id(), listing)?)
+}
+
+/// The root of a `/devices` of one class.
+struct OfClass(Class);
+
+impl OfClass {
+    /// Whether the tree's entry `name`, a node of `kind`, is in it, with
+    /// `efi` saying whether a name is an EFI system partition's.
+    fn has(&self, name: &str, kind: Kind, efi: impl Fn(&str) -> bool) -> bool {
+        if EVERY_SERVICE.contains(&name) {
+            return true;
+        }
+        match (self.0, kind) {
+            (Class::Disks, Kind::BlockDevice) => true,
+            (Class::Disks, Kind::Symlink) => name == "disk",
+            (Class::EfiSystem, Kind::BlockDevice) => efi(name),
+            _ => false,
+        }
+    }
+}
+
+/// Whether `name` is an EFI system partition's, by its table.
+fn is_efi_system(name: &str) -> bool {
+    let mut efi = false;
+    disk::for_each(|entry| {
+        if entry.name.as_str() == name {
+            efi = entry.place.is_some_and(|place| place.kind.is_efi_system());
+        }
+    });
+    efi
+}
+
+impl Listing for OfClass {
+    fn list(&self, f: &mut dyn FnMut(&str, Kind) -> bool) {
+        let Some(root) = ROOT.get() else { return };
+        // The disk table is read first, apart: its lock is never taken
+        // while the tree's is held.
+        let mut efi: alloc::vec::Vec<disk::Name, Kmalloc> =
+            alloc::vec::Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+        if self.0 == Class::EfiSystem {
+            disk::for_each(|entry| {
+                // Short of memory, the listing leaves one out; a lookup
+                // by its name still finds it.
+                if entry.place.is_some_and(|place| place.kind.is_efi_system())
+                    && efi.try_reserve(1).is_ok()
+                {
+                    let _ = efi.push_within_capacity(entry.name.clone());
+                }
+            });
+        }
+        let is_efi = |name: &str| efi.iter().any(|kept| kept.as_str() == name);
+        let _ = root.list(0, &mut |_, name, kind| !self.has(name, kind, is_efi) || f(name, kind));
+    }
+
+    fn lookup(&self, name: &str) -> Result<NodeRef> {
+        let root = ROOT.get().ok_or(radix_vfs::Error::NotFound)?;
+        let node = root.lookup(name)?;
+        if self.has(name, node.kind(), is_efi_system) {
+            Ok(node)
+        } else {
+            Err(radix_vfs::Error::NotFound)
+        }
+    }
 }

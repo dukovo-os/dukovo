@@ -50,12 +50,12 @@ screen = "Password:"
 [[step]]
 type = "{password}\n"
 [[step]]
-screen = ["Rescue: lab is an administrator of this computer.", "Choose 0 to 11:"]
+screen = ["Rescue: lab is an administrator of this computer.", "Choose 0 to 12:"]
 # Why: the starts the menu counted, and what the records say (ADR 0501).
 [[step]]
 type = "0\n"
 [[step]]
-screen = ["The last 3 starts were not seen through.", "Choose 0 to 11:"]
+screen = ["The last 3 starts were not seen through.", "Choose 0 to 12:"]
 # The disk check, read-only, on the machine's own disk.
 [[step]]
 type = "3\n"

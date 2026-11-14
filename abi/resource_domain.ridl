@@ -54,7 +54,7 @@ enum OomClass: u32 {
 
 /// A resource domain. `info` needs the read right; the other methods need
 /// the control right.
-interface resource_domain = 0x000d version 1 {
+interface resource_domain = 0x000d version 2 {
     kind = resource_domain;
     /// Makes a domain named `name` below this one, with CPU weight
     /// `weight`, memory limit `limit_pages` (NO_LIMIT for none beyond this
@@ -98,4 +98,14 @@ interface resource_domain = 0x000d version 1 {
     /// they are gone. Returns how many threads were asked to stop.
     method stop = 6 () -> (threads: u32)
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights];
+    /// Puts in slot `to` a capability, with the read right only, to the
+    /// root of a `/processes` of this domain (ADR 0473): its files about
+    /// the machine as radix-proc(5) has them, and the directories of the
+    /// processes in this domain and the domains below it, and of no
+    /// others, which a lookup does not find either. It acts for the
+    /// caller's name, so the caller can attach it in a view it makes,
+    /// as Spark does at each service's `/processes`. Needs the control
+    /// right.
+    method processes = 7 (to: slot) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, occupied, no_memory];
 }

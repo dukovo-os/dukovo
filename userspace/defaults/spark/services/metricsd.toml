@@ -29,7 +29,9 @@ memory = "32M"
 # history and newest row, and the port of the Prometheus endpoint, which is
 # open only when metrics.toml names an address and the networks that may
 # ask. It reads each filesystem's space from the kernel's /kernel/fs/space
-# (radix-sysfs(5)), so it needs no view of the mounts themselves.
+# (radix-sysfs(5)), so it needs no view of the mounts themselves. And
+# every process, whose use it counts toward each one's service (ADR 0473).
 [permissions]
 network.listen = [9100]
 files.read-write = ["/system/state/metrics", "/system/live/metrics"]
+files.read = ["/processes"]

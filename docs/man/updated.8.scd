@@ -25,7 +25,9 @@ system, firmware set and apps, as *update*(8) does, and does what
   it later needs no network.
 - *apps = "auto"* updates the apps installed for everyone by itself.
 - *unattended = true*, for a machine nobody watches, stages the system
-  or firmware update by itself, and goes back to the version before
+  or firmware update by itself, through the service *sysupdate-stage*,
+  as *update apply* does, which holds the system's subvolumes and no
+  home folder (*sysupdate*(8), ADR 0473), and goes back to the version before
   when the release it runs is withdrawn with that advice (ADR 0469).
   With a *restart* time as well, it restarts the machine into the
   update at that time of day; without one it waits for a restart.
@@ -63,7 +65,10 @@ under *updated*, and what it tells goes to *notifyd*(8).
 
 Each check reads the update channel the machine follows and the app
 catalogs it trusts; the requests carry nothing about the machine
-(*dukovo-privacy*(7)).
+(*dukovo-privacy*(7)). It also fetches the signatures of
+*troubleshoot*(8), a signed file of the update server's, and keeps them
+when they are newer than those in use: they are
+no update of the system, and only data (*troubleshoot-signatures*(5)).
 
 # FILES
 

@@ -235,7 +235,7 @@ fn account(root: &Dir, names: Option<u32>, name: &str) -> Result<views::Account,
         return Err(format!("cannot act for {name}: {:#x}", status.0));
     }
     let root = Dir::own(slot).map_err(|err| format!("cannot act for {name}: {err}"))?;
-    Ok(views::Account { root, user, group })
+    Ok(views::Account { root, user, group, names })
 }
 
 /// Gives `child` the network capabilities `spec` asks for, derived from
@@ -903,10 +903,12 @@ impl Supervisor {
         }
     }
 
-    /// Opens the control socket, and certd's.
+    /// Opens the control socket, and certd's. The control socket's folder
+    /// may be there already: the record of a root on a disk is written
+    /// beside it first (ADR 0473).
     pub fn listen(&mut self) {
-        if let Err(err) = self.root.make_dir(CONTROL_DIR) {
-            println!("spark: cannot make /{CONTROL_DIR}: {err}");
+        if let Err(err) = services::make_dirs(&self.root, CONTROL_DIR) {
+            println!("spark: cannot make {err}");
             return;
         }
         self.listener = self.listen_at(CONTROL, CONNECTIONS_MAX);
@@ -1240,7 +1242,7 @@ impl Supervisor {
             .open(program_path.trim_start_matches('/'), OpenFlags::NONE, Rights::READ)
             .map_err(|err| format!("{program_path}: {err}"))?;
         // Its root: a view of what its file declares (ADR 0217).
-        let view = views::build(&self.root, account.as_ref(), spec)?;
+        let view = views::build(&self.root, account.as_ref(), spec, service.domain)?;
         let root = match &view.root {
             views::Root::View(dir) => dir.slot(),
             views::Root::Spark => root,

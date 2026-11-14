@@ -12,7 +12,9 @@
 //! which describes Intel's DMA remapping units, and the IVRS, which
 //! describes AMD's IOMMUs, and the resource templates devices' `_CRS`
 //! methods return ([`resources`]); Phase 16 the SPCR, the serial port the
-//! firmware sends its console to ([`Spcr`]). Everything here works on byte slices
+//! firmware sends its console to ([`Spcr`]), and the FPDT, how long the
+//! firmware and the boot loader took ([`Fpdt`], [`BootTimes`]).
+//! Everything here works on byte slices
 //! and is unit-tested on the build host; the kernel supplies a [`Memory`]
 //! that maps physical addresses for it. The
 //! AML interpreter, which later phases need, is a separate decision (ADR
@@ -26,6 +28,7 @@
 
 mod dmar;
 mod fadt;
+mod fpdt;
 mod ivrs;
 mod madt;
 mod numa;
@@ -35,6 +38,7 @@ mod spcr;
 
 pub use dmar::{DeviceScope, Dmar, Reserved, ScopeKind, Unit as DmarUnit};
 pub use fadt::{Fadt, GenericAddress, RegisterBlock};
+pub use fpdt::{BootTimes, FBPT_HEADER_LEN, Fpdt};
 pub use ivrs::{Devices as IvrsDevices, Iommu as IvrsIommu, Ivrs, Reserved as IvrsReserved};
 pub use madt::{Madt, MadtEntry};
 pub use numa::{Slit, Srat, SratEntry};

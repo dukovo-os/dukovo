@@ -10,7 +10,7 @@
 # `update undo system` makes the version before the default again.
 # The release is paused on its first day, so the machine is a canary,
 # which takes it (ADR 0469).
-about = "update says what waits for the system, firmware and apps, holds and unholds the system, updated tells of the release, update apply stages the bridge, history lists it after the restart, and update undo system goes back (ADR 0502)"
+about = "update says what waits for the system, firmware and apps, holds and unholds the system, updated tells of the release, update apply stages the bridge as the sysupdate-stage service (ADR 0473), history lists it after the restart, and update undo system goes back (ADR 0502)"
 time = "20m"
 fresh = true
 host_needs = ["python3"]
@@ -45,6 +45,13 @@ expect = ["updated: Dukovo ", "-test.year is ready: `elevate update apply` stage
 run = "update apply --yes"
 root = true
 expect = ["-test.bridge in slot B: it starts at the next restart", "update: Dukovo ", "-test.bridge is staged"]
+# The stage ran as the sysupdate-stage service, whose view holds the
+# system's subvolumes and the EFI system partitions, and no home folder
+# (ADR 0473).
+[[step]]
+run = "sh -c 'log | grep \"[s]park: started sysupdate-stage \"'"
+root = true
+expect = "spark: started sysupdate-stage (/system/commands/sysupdate) as process "
 [[step]]
 run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
 root = true

@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# What troubleshoot(8) knows of why a start went wrong: the signatures
+# the release ships, which a newer file from the update server may
+# replace (troubleshoot-signatures(5), ADR 0474). Each signature is
+# proved by the facts of a planted fault, in the unit tests of
+# troubleshoot, and each ID has a page in docs/errors.
+
+format = 1
+version = 1
+
+# The firmware failures the health check names.
+
+[[signature]]
+id = "FW-101"
+cause = "The CPU microcode of the firmware set is damaged: it failed the kernel's checks, so none of it was used."
+fix = "Stage the set again, or a newer one, with: sysupdate firmware stage. If it happens again with the same set, report it."
+match = [{ start = "failed", error = "FW-101" }]
+
+[[signature]]
+id = "FW-102"
+cause = "The processor refused the CPU microcode update of the firmware set."
+fix = "Check that the set is meant for this processor (lscpu names it). Some processors take an update only after a firmware (BIOS or UEFI) update from the computer's maker."
+match = [{ start = "failed", error = "FW-102" }]
+
+[[signature]]
+id = "FW-103"
+cause = "The CPU microcode of the firmware set did not reach the kernel."
+fix = "Stage the set again with: sysupdate firmware stage. If GRUB was changed by hand, put it back with Rescue."
+match = [{ start = "failed", error = "FW-103" }]
+
+# An essential service that did not stay up. The start's record names it.
+
+[[signature]]
+id = "BOOT-102"
+cause = "An essential service ended, kept restarting or did not start in time."
+fix = "The start's message names the service: service NAME explain says why it is in its state, and service NAME logs what it wrote. changes shows what is new since the last good start."
+match = [{ start = "failed", error = "BOOT-102" }]
+
+# The disk that holds the system is full, and something said so.
+
+[[signature]]
+id = "BOOT-104"
+cause = "The disk that holds the system is full."
+fix = "Make room: delete files and snapshots you no longer need (snap list shows them), and trim the log with logtrim. df shows how full each filesystem is."
+match = [
+  { full = "/system/state", percent = 98 },
+  { log = "*No space left on device*" },
+]
+
+# Rescue could not mount the root: its own line says so.
+
+[[signature]]
+id = "BOOT-105"
+cause = "The Dukovo root did not mount, so the system could not start from it."
+fix = "Check that the computer's firmware sees the disk, and its cables. Rescue's menu checks the root's disk when it can mount it."
+match = [{ log = "*the Dukovo root * cannot be used*" }]
+
+# A disk said it could not be read or written.
+
+[[signature]]
+id = "BOOT-107"
+cause = "A disk reported errors reading or writing."
+fix = "Back up your files now. diskhealth shows what the disk says of its own health; replace a disk that says it is failing, and check its cable."
+match = [{ log = "Disk: * failed*", service = "kernel", level = "warning" }]
+
+# The start failed after a boot option changed.
+
+[[signature]]
+id = "BOOT-108"
+cause = "The start failed after a boot option changed."
+fix = "changes shows which options differ from the last good start. The boot menu's Troubleshooting entries start with only the essentials, or with all of the kernel's messages, and its entries can be edited to take the option back."
+match = [{ start = "failed" }, { changed = "options" }]

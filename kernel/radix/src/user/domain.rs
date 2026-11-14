@@ -8,15 +8,17 @@
 use radix_abi::errors::Kernel;
 use radix_abi::resource_domain::{
     self as abi, CreateArgs, CreateProcessArgs, InfoArgs, InfoResults, NAME_MAX, NO_LIMIT,
-    OomClass as AbiClass, SetLimitArgs, SetWeightArgs, StopArgs, StopResults,
+    OomClass as AbiClass, ProcessesArgs, SetLimitArgs, SetWeightArgs, StopArgs, StopResults,
 };
-use radix_cap::{Rights, SlotRef};
+use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
 use radix_klog::info;
+use radix_vfs::mount::{Location, Mount};
 
 use super::methods::{Answer, answer};
 use super::{Result, UserRef, cap_error, error};
 use crate::domains::{DomainError, DomainRef, OomClass, Settings};
+use crate::fs::FileObject;
 use crate::{Arch, caps, oom};
 
 fn class_of(class: AbiClass) -> OomClass {
@@ -125,6 +127,26 @@ pub fn method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) -> Result<
                 domain.name()
             );
             answer(label, StopResults::WORDS, StopResults { threads }.encode())
+        }
+        abi::PROCESSES => {
+            let a = ProcessesArgs::decode(args)?;
+            let domain = domain(user, slot, Rights::CONTROL)?;
+            let to = SlotRef::new(user.cspace, a.to);
+            let no_memory = |_| error(Kernel::NoMemory);
+            let fs = crate::fs::procfs::make_scoped(domain).map_err(no_memory)?;
+            let mount = Mount::apart(fs.clone(), "processes").map_err(no_memory)?;
+            let at = Location::new(mount, fs.root());
+            let object =
+                FileObject::new(at, user.process.identity()).ok_or(error(Kernel::NoMemory))?;
+            super::files::install_file(
+                user,
+                to,
+                ObjectKind::Directory,
+                Rights::READ,
+                object,
+                false,
+            )?;
+            answer(label, 0, [0; 8])
         }
         _ => Err(error(Kernel::NoSuchMethod)),
     }

@@ -31,6 +31,13 @@ weekly = 4
 	is not there. By default */users*, */shared* and
 	*/system/settings*. An empty list makes no snapshots by itself.
 
+	The *snap* service holds only the places of the default list, with
+	_/snapshots_ and *@snapshots* at the top of the root (ADR 0473). A
+	place that is not in its view, as a data disk's, is skipped and
+	logged until the service's file holds it: *service edit snap* and
+	add the disk's top, *files.read-write = ["/volumes/sdb1"]* for the
+	example below (*service.toml*(5)).
+
 *daily*
 	How many of the latest days that have a snapshot keep their newest:
 	7 by default.

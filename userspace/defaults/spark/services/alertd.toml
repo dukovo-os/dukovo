@@ -24,9 +24,10 @@ memory = "32M"
 # What it holds beyond what every service reads (service.toml(5)): the
 # network, to reach mail and webhook servers; the alerts it keeps, its
 # folder where it answers on a socket (every other service may only
-# connect there), and the notice the next sign-in shows; and Spark's
-# control socket, which it asks what the services do.
+# connect there), and the notice the next sign-in shows; Spark's control
+# socket, which it asks what the services do; and every process, since it
+# names an alert's source by the sender's service (ADR 0473).
 [permissions]
 network.outbound = true
-files.read = ["/system/live/spark"]
+files.read = ["/system/live/spark", "/processes"]
 files.read-write = ["/system/state/alerts", "/system/live/alerts", "/system/live/sign-in"]

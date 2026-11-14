@@ -11,6 +11,8 @@
 //! metadata/1.targets.json              lists system/<version>.json
 //! metadata/1.snapshot.json, timestamp.json
 //! targets/system/<sha256>.<version>.json   the release list
+//! targets/troubleshoot/<sha256>.signatures.toml   what troubleshoot(8)
+//!                                      knows, if the repository has it
 //! files/<sha256>                       every file of the release, once
 //! ```
 //!
@@ -315,6 +317,13 @@ pub(crate) fn expires(built: i64, role: &str) -> String {
     tuf::time::format(built + days * 86_400)
 }
 
+/// The target of the signatures troubleshoot(8) matches (ADR 0474).
+pub const SIGNATURES_TARGET: &str = "troubleshoot/signatures.toml";
+
+/// The most bytes of them that are read, which troubleshoot(8) holds a
+/// file to as well.
+pub const SIGNATURES_MAX: u64 = 256 * 1024;
+
 /// What [`publish`] and [`open`] say of a release.
 #[derive(Debug)]
 pub struct Published {
@@ -322,6 +331,10 @@ pub struct Published {
     pub release: Release,
     /// The SHA-256 of its list, which names the release.
     pub name: String,
+    /// The signatures troubleshoot(8) matches, as the repository signs
+    /// them, if it offers them and they are no more than
+    /// [`SIGNATURES_MAX`] bytes. Their format is not read here.
+    pub signatures: Option<Vec<u8>>,
 }
 
 /// Lays out the repository of `release`, whose files are in the tree at
@@ -338,6 +351,22 @@ pub fn publish(
     release: &Release,
     out: &Path,
 ) -> Result<Published, String> {
+    publish_with(keys, tree, release, out, None)
+}
+
+/// [`publish`], with the troubleshoot `signatures` among the targets if
+/// there are some.
+///
+/// # Errors
+///
+/// As [`publish`].
+pub fn publish_with(
+    keys: &Keys,
+    tree: &Path,
+    release: &Release,
+    out: &Path,
+    signatures: Option<&[u8]>,
+) -> Result<Published, String> {
     if out.exists() {
         std::fs::remove_dir_all(out).map_err(|err| format!("{}: {err}", out.display()))?;
     }
@@ -353,7 +382,12 @@ pub fn publish(
     let list = release.to_bytes();
     let name = hex(ring::digest::digest(&ring::digest::SHA256, &list).as_ref());
     write(out.join(format!("targets/system/{name}.{}.json", release.version)), &list)?;
-    let listed = BTreeMap::from([(target_path(&release.version), repo::file_info(&list))]);
+    let mut listed = BTreeMap::from([(target_path(&release.version), repo::file_info(&list))]);
+    if let Some(bytes) = signatures {
+        let hash = hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref());
+        write(out.join(format!("targets/troubleshoot/{hash}.signatures.toml")), bytes)?;
+        listed.insert(SIGNATURES_TARGET.to_string(), repo::file_info(bytes));
+    }
     let targets = repo::sign(
         &repo::targets(1, &expires(built, "targets"), &listed),
         &[keys.signer("targets")?],
@@ -375,6 +409,9 @@ pub fn publish(
     let published = open(out, &keys.roots()[0], Some(&release.version))?;
     if published.release != *release {
         return Err("the release list read back is not the one written".into());
+    }
+    if published.signatures.as_deref() != signatures {
+        return Err("the signatures read back are not the ones written".into());
     }
     check_files(out, &published.release).map_err(|problems| problems.join("\n"))?;
     Ok(published)
@@ -445,7 +482,19 @@ fn open_in(
         return Err(format!("{path} holds the list of release {}", release.version));
     }
     let name = hex(ring::digest::digest(&ring::digest::SHA256, &list).as_ref());
-    Ok(Published { release, name })
+    // Optional, and no reason to stop a release: the signed list is what
+    // the system is made of.
+    let signatures = updater
+        .target(SIGNATURES_TARGET)
+        .ok()
+        .flatten()
+        .filter(|target| target.length <= SIGNATURES_MAX)
+        .and_then(|target| {
+            let file = work.join("signatures.toml");
+            updater.download_target(SIGNATURES_TARGET, &target, &file).ok()?;
+            std::fs::read(&file).ok()
+        });
+    Ok(Published { release, name, signatures })
 }
 
 /// Reads every target the repository at `dir` offers with the TUF
@@ -617,6 +666,42 @@ mod tests {
         std::fs::write(&list, text).unwrap();
         let refused = open(&out, keys.root(), None).unwrap_err();
         assert!(refused.contains("sha256 is "), "{refused}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn signatures_among_the_targets_are_read_only_as_signed_and_within_their_size() {
+        let dir = scratch("signatures");
+        let slot = dir.join("slot");
+        tree(&slot);
+        let keys = Keys::create(&dir.join("keys"), 1_000_000_000).unwrap();
+        let release = release_of(&slot, "0.14.0");
+        let text = b"format = 1\nversion = 3\n";
+
+        let out = dir.join("release");
+        let published = publish_with(&keys, &slot, &release, &out, Some(text)).unwrap();
+        assert_eq!(published.signatures.as_deref(), Some(&text[..]));
+        let opened = open(&out, keys.root(), None).unwrap();
+        assert_eq!(opened.signatures.as_deref(), Some(&text[..]));
+        // A release that has none says none.
+        let bare = publish(&keys, &slot, &release, &dir.join("bare")).unwrap();
+        assert_eq!(bare.signatures, None);
+
+        // Changed after it was signed, they are left out, and the release is not.
+        let folder = out.join("targets/troubleshoot");
+        let file = std::fs::read_dir(&folder).unwrap().next().unwrap().unwrap().path();
+        std::fs::write(&file, b"format = 1\nversion = 9\n").unwrap();
+        let opened = open(&out, keys.root(), None).unwrap();
+        assert_eq!((opened.signatures, opened.release), (None, release.clone()));
+
+        // More than the most that is read: what is read back is not what was written.
+        let big = vec![b'#'; usize::try_from(SIGNATURES_MAX).unwrap() + 1];
+        let err = publish_with(&keys, &slot, &release, &dir.join("big"), Some(&big)).unwrap_err();
+        assert!(err.contains("signatures read back"), "{err}");
+        let exactly = vec![b'#'; usize::try_from(SIGNATURES_MAX).unwrap()];
+        let kept =
+            publish_with(&keys, &slot, &release, &dir.join("exact"), Some(&exactly)).unwrap();
+        assert_eq!(kept.signatures.map(|bytes| bytes.len() as u64), Some(SIGNATURES_MAX));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

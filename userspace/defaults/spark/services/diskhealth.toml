@@ -18,7 +18,8 @@ order = 50
 restart = "on-failure"
 
 # What it holds beyond what every service reads (service.toml(5)): the
-# disks, to read their health.
+# disks, as they come and go, to read their health, and nothing else of
+# /devices (ADR 0473); and its folder in the state.
 [permissions]
-files.read = ["/devices"]
+files.disks = "read"
 files.read-write = ["/system/state/diskhealth"]

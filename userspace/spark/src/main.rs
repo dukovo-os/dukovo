@@ -82,7 +82,7 @@ mod swap;
 mod views;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 
@@ -555,6 +555,7 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
     let mounted = match (disk, snapshots) {
         (Some(disk), Some(snapshots)) => {
             println!("spark: /system is Dukovo's root on {disk}, compressed (zstd)");
+            record_root(root, &disk);
             println!(
                 "spark: started slot {}, {}",
                 boot.system().letter(),
@@ -1228,6 +1229,44 @@ fn root_volume(
         mount_disk(root, name, true, false)?;
     }
     Some(name.clone())
+}
+
+/// Writes which root this is, on `disk`, at [`spark_api::root::PATH`]
+/// (ADR 0473): its UUID, and every partition its Btrfs is on, found by
+/// the UUID in each one's superblock, so that the updater and the
+/// services that hold the root's subvolumes need read no disk. A record
+/// that cannot be written is said and left out: the updater then finds
+/// no root to update, as on the live system.
+fn record_root(root: &Dir, disk: &str) {
+    let Some(uuid) = btrfs_uuid(root, disk) else {
+        println!("spark: cannot read the UUID of the root on {disk}; it is not recorded");
+        return;
+    };
+    let mut partitions: Vec<String> =
+        root.open_dir("devices", Rights::READ).and_then(|dev| dev.entries()).map_or_else(
+            |_| Vec::new(),
+            |entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.kind == FileKind::BlockDevice)
+                    .map(|entry| entry.name)
+                    .filter(|name| name == disk || btrfs_uuid(root, name).as_deref() == Some(&uuid))
+                    .collect()
+            },
+        );
+    if !partitions.iter().any(|name| name == disk) {
+        partitions.insert(0, disk.to_string());
+    }
+    partitions.truncate(spark_api::root::PARTITIONS_MAX);
+    let record = spark_api::root::Root { disk: disk.to_string(), uuid, partitions };
+    let path = &spark_api::root::PATH[1..];
+    let written =
+        path.rsplit_once('/').map_or(Ok(()), |(dir, _)| services::make_dirs(root, dir)).and_then(
+            |()| root.write_file(path, record.to_text().as_bytes()).map_err(|err| format!("{err}")),
+        );
+    if let Err(err) = written {
+        println!("spark: cannot record the root at /{path}: {err}");
+    }
 }
 
 /// The Dukovo root the kernel's command line names, `root=UUID=<uuid>`, in

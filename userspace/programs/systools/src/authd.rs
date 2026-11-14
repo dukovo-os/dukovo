@@ -348,6 +348,21 @@ mod keyring;
 /// The longest name a line of authd's shows.
 const SHOWN_MAX: usize = 64;
 
+/// Whether the first sign-in since authd started was noted.
+static SIGNED_IN: AtomicBool = AtomicBool::new(false);
+
+/// Notes the time of the first sign-in at a console in the record of
+/// this start, for startup(8) (ADR 0474).
+fn note_first_sign_in() {
+    if SIGNED_IN.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let ms = util::monotonic_ns() / 1_000_000;
+    if let Err(err) = crate::sysupdate::starts::note_sign_in(ms) {
+        eprintln!("authd: cannot note the time of the first sign-in: {err}");
+    }
+}
+
 /// `name`, from a request, as a line shows it: it may hold anything, and
 /// a newline in it would start a line of its own, which Spark would take
 /// for another event. A control character shows as `?`.
@@ -1130,6 +1145,7 @@ impl Authd {
                 {
                     eprintln!("authd: {why}");
                 }
+                note_first_sign_in();
                 let process = process as i32;
                 let seat = Seat {
                     name: name.into(),

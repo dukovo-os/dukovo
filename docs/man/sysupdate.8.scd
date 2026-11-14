@@ -17,6 +17,8 @@ sysupdate - fetch, stage, try, prove and roll back updates of Dukovo's system
 
 *sysupdate stage* [*--version* _version_] [_repository_ | _file_]
 
+*sysupdate stage --request* _file_
+
 *sysupdate channel* [*stable* | *beta* | *nightly*]
 
 *sysupdate unstage*
@@ -48,6 +50,27 @@ version. One that fails, or runs out of tries, falls back: the version
 before starts again by itself, with the settings it had before the
 update (ADRs 0452 to 0454). Nothing installs or restarts by itself: the
 update waits for a restart the administrator chooses.
+
+The root's top level, where the slots are, is held only by the services
+that need it, each in a view of its own (ADR 0473). The health check, the
+service *sysupdate*, holds the two slots, the staging place and the
+firmware store by name, the EFI system partitions and its own state, and
+no home folder. The stage, the service *sysupdate-stage*, holds all of
+that, and the root's *@settings*, *@state* and *@snapshots* besides, for
+the snapshots a fallback needs, and the network; it holds no home folder
+either. It is not started at boot: *update apply* asks for a system
+update or a firmware set by writing the request, one line, *system* or
+*firmware* _set_, to _/system/live/sysupdate/request_ and starting the
+service, whose program is *sysupdate stage --request* _file_. The
+service stages it and writes what it said, a *said* line each, and how
+it ended, *ok* or *failed* _why_, to _/system/live/sysupdate/outcome_,
+which *update* reads and prints; it then ends, and Spark counts a stage
+that failed no failed service. When it does not answer, *log
+sysupdate-stage* shows what it printed. A person who runs *sysupdate
+stage* from a shell has the whole tree and needs no service. Where the root is, and which
+partitions it is on, the updater reads from Spark's record of it,
+_/system/live/spark/root_ (*spark*(8)), and the partition type of each
+partition from _/kernel/block/_*name*_/parttype_.
 
 Which slot starts is the slot state, two copies on each EFI system
 partition, which GRUB reads and writes before each start. A power cut
@@ -88,6 +111,14 @@ first, and how many files this system lacks, and how large they are:
 sysupdate: the stable channel offers Dukovo 0.15.2; this system runs Dukovo 0.15.0
 sysupdate: Dukovo 0.15.2 needs 37 files this system lacks, 18.4 MiB; sysupdate stage fetches and stages it
 ```
+
+*check* also fetches the signed target _troubleshoot/signatures.toml_, as
+it fetches a channel's file, when the server has one, and keeps it in
+_/system/state/troubleshoot/_ if its version is newer than the shipped
+one's and the kept one's (ADR 0474, *troubleshoot-signatures*(5)). A server
+with none is no failure. A file that does not read is refused, whole, and
+logged once; so is one over 256 KiB. The daily check of *updated*(8) does
+the same, and so does staging an update file or a folder that carries one.
 
 A release reaches machines in waves (ADR 0469): the canaries take it on
 the day its channel offers it, and the rest from day 1 to day 7, by the
@@ -275,7 +306,14 @@ _/system/settings/sysupdate/updates.toml_
 
 _/system/state/starts/_
 	The record of each start, which the health check begins and
-	finishes, for *changes*(1).
+	finishes, for *changes*(1). The health check and *authd*(8), which
+	notes when the first person signed in, each hold the lock _lock_
+	there while they change a record.
+
+_/system/live/sysupdate/start_, _/system/live/sysupdate/sign-in_
+	The number of this start's record, once the health check has begun
+	it, and when the first person signed in on this start, which waits
+	there for a record begun later. Both go when the machine stops.
 
 _/system/live/sysupdate/failure_
 	What the sign-in screens show of a failed start until the next start
@@ -288,6 +326,12 @@ _/system/live/sysupdate/failure_
 	*start-failed*, so that the notice reaches the owner by email or a
 	webhook too; and of *update-failed* when an update gives up its tries
 	and the machine cannot be restarted into the version before it.
+	When the signatures of *troubleshoot*(8) name a likely cause, a
+	line says so: "Likely cause: _cause_ (_ID_). Fix: _fix_".
+
+_/system/state/troubleshoot/signatures.toml_
+	The newer signatures for *troubleshoot*(8) that a check or an update
+	file brought.
 
 _/system/state/sysupdate/metadata_
 	The update server's metadata this system has read and trusts.
@@ -314,9 +358,20 @@ _@firmware_ on the root's top level
 _startup/firmware.env_ in each slot
 	The firmware set the slot names, and its microcode's SHA-256.
 
-_/system/live/sysupdate.lock_
+_/system/live/sysupdate/lock_
 	Keeps a stage and the health check from writing the slot state at
-	once.
+	once. It names the process that holds it, which the other finds in
+	_/processes_: both services' files name it with *files.read*.
+
+_/system/live/sysupdate/request_, _/system/live/sysupdate/outcome_
+	What *update apply* or *updated*(8) asked of the *sysupdate-stage*
+	service, and how it went. An asker holds the lock
+	_/system/live/sysupdate/asking_ until it has read the outcome, and
+	starts the stage only when none runs, so two that ask at once take
+	turns.
+
+_/system/live/spark/root_
+	Which root this is, and the partitions it is on (*spark*(8)).
 
 _@snapshots/update_ on the root's top level
 	The settings and the state from before the last update, what it was,

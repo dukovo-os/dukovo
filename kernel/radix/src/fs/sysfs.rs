@@ -179,6 +179,8 @@ pub fn make() -> Result<FsRef> {
     root.add("version", Generated::from_fn(next_id(), version)?)?;
     root.add("cmdline", Generated::from_fn(next_id(), cmdline)?)?;
     root.add("cpus", Generated::from_fn(next_id(), cpus)?)?;
+    let boot = root.add_dir("boot", next_id())?;
+    boot.add("times", Generated::from_fn(next_id(), boot_times)?)?;
     let block: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(Blocks)?;
     root.add("block", ListedDir::make(next_id(), block)?)?;
     let bus = root.add_dir("bus", next_id())?;
@@ -322,6 +324,26 @@ fn version(text: &mut Text) -> fmt::Result {
 
 fn cmdline(text: &mut Text) -> fmt::Result {
     writeln!(text, "{}", COMMAND_LINE.get().copied().unwrap_or(""))
+}
+
+/// `/kernel/boot/times` (ADR 0474): how long the firmware took to start
+/// the boot loader, how long the loader took until the firmware's boot
+/// services ended, and when, by the kernel's clock, the kernel started
+/// Spark; in nanoseconds, a line each, where known. Linux shows the first
+/// two at `/sys/firmware/acpi/fpdt/boot/`.
+fn boot_times(text: &mut Text) -> fmt::Result {
+    let firmware = Arch::firmware_boot_times().unwrap_or_default();
+    let times = [
+        ("firmware_ns", firmware.firmware_ns),
+        ("loader_ns", firmware.loader_ns),
+        ("spark_ns", crate::user::init::spark_started_ns()),
+    ];
+    for (name, ns) in times {
+        if let Some(ns) = ns {
+            writeln!(text, "{name} {ns}")?;
+        }
+    }
+    Ok(())
 }
 
 fn cpus(text: &mut Text) -> fmt::Result {

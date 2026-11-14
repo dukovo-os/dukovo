@@ -123,6 +123,28 @@ impl Mount {
         })?))
     }
 
+    /// A mount of `fs` in no tree that walks go through, for a filesystem
+    /// a capability alone reaches, as the `/processes` of a resource
+    /// domain (ADR 0473) that a view attaches: unlike
+    /// [`Mount::detached`], a view takes its root.
+    pub fn apart(fs: FsRef, source: &str) -> Result<MountRef> {
+        let root = fs.root();
+        Ok(MountRef::new(mem::arc(Mount {
+            id: crate::next_id(),
+            fs,
+            root,
+            on: None,
+            read_only: false,
+            path: mem::vec(),
+            detached: false,
+            source: mem::copy(source.as_bytes())?,
+            lost: AtomicBool::new(false),
+            covered: [const { AtomicU64::new(0) }; FILTER_WORDS],
+            view: None,
+            count: CpuCount::new(),
+        })?))
+    }
+
     /// A view's mount of `fs`, in no tree and read-only to everything but
     /// the view's own calls ([`crate::view`]).
     pub(crate) fn of_view(fs: FsRef, view: crate::view::View) -> Result<MountRef> {
@@ -1008,6 +1030,11 @@ impl Vfs {
         if !who.owns(from.node.access()) {
             return Err(Error::NotPermitted);
         }
+        // The top of a directory with only some names would take the
+        // rest with it (ADR 0473).
+        if crate::named::is_named(&*from.node) {
+            return Err(Error::NotPermitted);
+        }
         // On one filesystem, through whichever mounts of it, as Linux has
         // it: the filesystem checks.
         dir.node.snapshot(name, &from.node, read_only)
@@ -1031,6 +1058,9 @@ impl Vfs {
             return Err(Error::NotPermitted);
         }
         let at = self.resolve(who, base, path)?;
+        if parent.is_some_and(|parent| crate::named::is_named(&*parent.node)) {
+            return Err(Error::NotPermitted);
+        }
         at.node.compare(parent.map(|parent| &parent.node), range, each)
     }
 
@@ -1114,7 +1144,10 @@ impl Vfs {
             }
         }
         drop((moving, replaced));
-        source.node.rename(from_name, &*target.node, to_name)
+        // A directory with only some names: `to_name` must be one, and its
+        // filesystem gets the directory itself (ADR 0473).
+        let to_dir = crate::named::unwrap_dir(&*target.node, to_name)?;
+        source.node.rename(from_name, to_dir, to_name)
     }
 
     /// What `path` beneath `base` is.

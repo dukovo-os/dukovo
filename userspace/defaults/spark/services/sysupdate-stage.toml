@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The stage of atomic updates (sysupdate(8), ADR 0451): it builds the
+# system update the channel offers, or a firmware set, into the spare
+# slot. updated(8) and `update apply` start it, after writing what to
+# stage to /system/live/sysupdate/request, and read what it did from
+# /system/live/sysupdate/outcome; what it printed is in its log
+# (`log sysupdate-stage`). Nothing starts it at boot.
+#
+# service.toml(5) explains each setting. `service check sysupdate-stage`
+# checks this file, and `service edit sysupdate-stage` checks it as you
+# save.
+
+service_version = 1
+description = "Update stage"
+program = "/system/commands/sysupdate"
+arguments = ["stage", "--request", "/system/live/sysupdate/request"]
+# Only when asked: `service sysupdate-stage start`.
+enabled = false
+# It stages what it was asked and ends.
+restart = "never"
+
+# Downloads and hashes go through a buffer of 256 KiB, whatever a file's
+# size; the signed list of a release's files is the most it holds at once.
+[limits]
+memory = "256M"
+
+# What it holds beyond what every service reads (service.toml(5)), and why
+# (ADR 0473): what the health check holds, which is the root's system
+# slots and no other name at the top of the root, the EFI system
+# partitions, its own state and its lock; and the root's settings, state
+# and snapshots, which it snapshots for a fallback; and the network, to
+# reach the update server; and the troubleshoot signatures, which an
+# update file may carry (ADR 0474). It holds no home folder, so nothing
+# that stages a system update can reach one.
+[permissions]
+files.root-subvolumes = [
+    "@system.a",
+    "@system.b",
+    "@system.new",
+    "@firmware",
+    "@settings",
+    "@state",
+    "@snapshots",
+]
+files.efi-system = "read-write"
+files.read-write = [
+    "/system/state/sysupdate",
+    "/system/state/troubleshoot",
+    "/system/live/sysupdate",
+]
+files.read = ["/system/live/spark/root", "/processes"]
+network.outbound = true

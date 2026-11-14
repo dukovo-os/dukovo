@@ -28,6 +28,7 @@ pub(crate) mod firmware;
 pub mod health;
 pub(crate) mod online;
 pub(crate) mod place;
+pub(crate) mod request;
 pub(crate) mod stage;
 pub(crate) mod starts;
 pub(crate) mod verify;
@@ -54,7 +55,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     if action == "firmware" {
         return firmware::main(args);
     }
-    let (mut version, mut stop, mut repo) = (None, None, None);
+    let (mut version, mut stop, mut repo, mut asked_in) = (None, None, None, None);
     let mut keep = Keep::Unsaid;
     while let Some(arg) = args.next()? {
         match arg {
@@ -63,6 +64,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                     && matches!(action.as_str(), "stage" | "check" | "download") =>
             {
                 version = Some(args.text()?);
+            }
+            // What the sysupdate-stage service goes by (ADR 0473).
+            Arg::Long(name) if name == "request" && action == "stage" => {
+                asked_in = Some(PathBuf::from(args.value()?));
             }
             // For the boot tests: stop where a power cut is to fall.
             Arg::Long(name) if name == "test-stop-after" && action == "stage" => {
@@ -88,6 +93,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     match action.as_str() {
         "status" => status(),
         "stage" => {
+            if let Some(file) = &asked_in {
+                if version.is_some() || repo.is_some() || stop.is_some() {
+                    return Err(util::usage(
+                        "stage --request takes no other option or operand".into(),
+                    ));
+                }
+                return request::serve(file);
+            }
             let root = place::root()?;
             let asked = stage::Asked { repo: repo.as_deref(), version: version.as_deref(), stop };
             stage::stage(&root, &asked).map(|()| 0)
@@ -186,6 +199,9 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
     let running = stage::running_version(&root)?;
     let settings = online::Settings::load()?;
     let mut client = online::Client::connect(settings)?;
+    if let Some(said) = online::keep_signatures(&mut client) {
+        println!("sysupdate: {said}");
+    }
     let release = match online::plan(&mut client, &running, version)? {
         online::Plan::Current { offered } => {
             let compared = slots::version::Version::parse(&offered)

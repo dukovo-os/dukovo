@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# What a service's view holds beyond what every service has (ADR 0473). A
+# service that holds the disks sees them and the four devices every
+# service has, and no keyboard; it sees its own processes and no other,
+# Spark's among them, until its file names /processes, and then every
+# one. `service status` says what it holds. A card put into the machine's
+# reader reaches volumed through the disks it holds, and volumed mounts
+# it at its label.
+about = "a service sees its own processes and not Spark's unless its file names /processes, holds the disks and not the keyboard when it asks for them, and a card put in the reader reaches volumed through its class, which mounts it (ADR 0473)"
+time = "6m"
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-view.service {machine} {machine-port:22}"
+expect = "copied: lab-view.service"
+[[step]]
+host = "sh {here}/copy-file.sh {here}/lab-view.sh {machine} {machine-port:22}"
+expect = "copied: lab-view.sh"
+# From nothing: a run before may have left them.
+[[step]]
+run = "sh -c 'rm -f /system/settings/spark/services/lab-view.toml; cp /users/lab/lab-view.sh /system/settings/lab-view.sh && cp /users/lab/lab-view.service /system/settings/spark/services/lab-view.toml && service lab-view start && echo started'"
+root = true
+expect = "started"
+# Its own process and not Spark's; the disks, the four devices and no
+# keyboard. The service says "done" last, so the step waits for that.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! log | grep -q \"[l]ab-view: done\"; do sleep 1; i=$((i + 1)); done; log | grep \"[l]ab-view: \"'"
+root = true
+expect = [
+    "lab-view: sees no process 1",
+    "lab-view: sees itself",
+    "lab-view: has the null device",
+    "lab-view: has no keyboard",
+    "lab-view: done",
+]
+[[step]]
+run = "service lab-view status"
+root = true
+expect = ["its own view, acting for root", "reads the disks, as /devices"]
+# Naming /processes gives it every process, and status says so.
+[[step]]
+run = "sh -c 'service lab-view stop; printf \"files.read = [\\\"/processes\\\"]\\n\" >> /system/settings/spark/services/lab-view.toml && service lab-view start && echo started'"
+root = true
+expect = "started"
+# The first run said "sees no process 1"; the second says the opposite.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! log | grep -q \"[l]ab-view: sees process 1\"; do sleep 1; i=$((i + 1)); done; log | grep \"[l]ab-view: sees\"'"
+root = true
+expect = "lab-view: sees process 1"
+[[step]]
+run = "service lab-view status"
+root = true
+expect = "sees every process"
+[[step]]
+run = "sh -c 'service lab-view stop; rm /system/settings/spark/services/lab-view.toml /system/settings/lab-view.sh /users/lab/lab-view.service /users/lab/lab-view.sh; echo cleaned'"
+root = true
+expect = "cleaned"
+
+# volumed holds the disks and mounts a card put in the reader at its label.
+[[step]]
+run = "service volumed status"
+root = true
+expect = "reads and writes the disks, as /devices"
+[[step]]
+run = "lsblk -dbn -o NAME,SIZE,RM | awk '$2 == \"0\" && $3 == \"1\" { print $1 }' > ~/lab-reader && cat ~/lab-reader"
+expect = "sd"
+[[step]]
+card = "insert"
+blank = "64M"
+# The reader holds the card once lsblk gives the reader a size.
+[[step]]
+run = "sh -c 'n=$(cat /users/lab/lab-reader); i=0; while [ $i -lt 30 ] && ! lsblk -dbn -o NAME,SIZE | grep -q \"^$n  *[1-9]\"; do sleep 1; i=$((i + 1)); done; mkfs-fat -n LABVIEW /devices/$n'"
+root = true
+expect = ["made FAT16", "label LABVIEW"]
+[[step]]
+card = "remove"
+[[step]]
+card = "reinsert"
+# volumed mounts it at its label.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! findmnt | grep -q /volumes/LABVIEW; do sleep 1; i=$((i + 1)); done; findmnt /volumes/LABVIEW'"
+expect = ["vfat", "rw"]
+# Ejected and taken out, it leaves the reader empty, as it was.
+[[step]]
+run = "eject LABVIEW"
+root = true
+[[step]]
+card = "remove"
+[[step]]
+run = "rm -f ~/lab-reader"

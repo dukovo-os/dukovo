@@ -23,9 +23,12 @@ restart = "always"
 memory = "64M"
 
 # What it holds beyond what every service reads (service.toml(5)): the
-# whole tree, to stage an update into the spare slot and update the apps
-# for everyone when the owner asks for that, as sysupdate(8) and
-# bundled(8) do, and the network, to reach the update server.
+# whole tree, to update the apps for everyone when the owner asks for
+# that, as bundled(8) does, to unstage a release and go back to the
+# version before it, and to read the slot back against its signed list,
+# as sysupdate(8) does, and the network, to reach the update server. It
+# stages a system update through the sysupdate-stage service, which holds
+# no home folder (ADR 0473).
 [permissions]
 runs-with-your-access = true
 network.outbound = true

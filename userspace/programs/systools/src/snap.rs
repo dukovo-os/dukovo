@@ -16,6 +16,11 @@
 //! today, then prunes each. Two rounds at once can only leave one
 //! snapshot too many until the next: a snapshot made during a prune only
 //! makes the older ones less needed.
+//!
+//! The service holds only the places its file names (ADR 0473). A place
+//! of `snap.toml` outside that view is skipped and logged, in the words
+//! `service edit snap` is the fix for, and `snap list` says which places
+//! the service's view lacks, from Spark's `show` document.
 
 mod keep;
 
@@ -26,9 +31,11 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde::Deserialize;
+use spark_api::show::Holds;
 
 use crate::args::{Arg, Args};
 use crate::proc;
+use crate::service::shown;
 use crate::subvolume::{self, Info, is_top};
 use crate::util::{self, Fail};
 
@@ -136,9 +143,35 @@ fn folder_name(info: &Info) -> String {
     info.name.strip_prefix('@').unwrap_or(&info.name).to_string()
 }
 
+/// Whether `path` is under a mount whose own folder is not there for this
+/// process, though `mounts` lists it: the process's view lacks it, as the
+/// snap service's does a disk its file does not name.
+fn in_a_mount_out_of_view(
+    path: &Path,
+    mounts: &[proc::Mount],
+    exists: impl Fn(&Path) -> bool,
+) -> bool {
+    mounts.iter().any(|mount| {
+        let at = Path::new(&mount.path);
+        at != Path::new("/") && path.starts_with(at) && !exists(at)
+    })
+}
+
 /// The place whose top folder is `path`.
 pub(crate) fn place(path: &Path) -> Result<Place, Fail> {
-    let top = fs::canonicalize(path).map_err(|e| util::failed(&path.display(), e))?;
+    let top = fs::canonicalize(path).map_err(|err| {
+        let mounts = proc::mounts().unwrap_or_default();
+        if err.kind() == io::ErrorKind::NotFound
+            && in_a_mount_out_of_view(path, &mounts, Path::exists)
+        {
+            util::fail(format!(
+                "{} is not in the snap service's view: add it with `service edit snap`",
+                path.display()
+            ))
+        } else {
+            util::failed(&path.display(), err)
+        }
+    })?;
     let info = match subvolume::info(&top)? {
         Some(info) if is_top(&top) => info,
         _ => {
@@ -477,6 +510,29 @@ fn restore(path: &Path, from: Option<&str>, to: Option<&Path>) -> Result<(), Fai
     Ok(())
 }
 
+/// Whether the view `holds` describes holds `path`: the whole tree, a
+/// place its file names, or one every service has.
+fn held(path: &str, holds: &Holds) -> bool {
+    let within = |place: &str| {
+        path.strip_prefix(place).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    };
+    holds.whole_tree
+        || manifest::service::ALWAYS.iter().any(|&(place, _)| within(place))
+        || [&holds.reads, &holds.changes, &holds.mounts]
+            .iter()
+            .any(|places| places.iter().any(|place| within(place)))
+}
+
+/// The places among `places` that the snap service's view lacks, which
+/// its daily round skips; none when Spark does not say.
+fn outside_the_service(places: &[String]) -> Vec<&String> {
+    let Ok(document) = shown(None) else { return Vec::new() };
+    let Some(service) = document.services.iter().find(|service| service.name == "snap") else {
+        return Vec::new();
+    };
+    places.iter().filter(|place| !held(place, &service.holds)).collect()
+}
+
 /// `snap list`: each place snap.toml names, or the snapshots of one.
 fn list(place_path: Option<&Path>, settings: &Settings) -> Result<i32, Fail> {
     let mut out = io::stdout().lock();
@@ -498,6 +554,11 @@ fn list(place_path: Option<&Path>, settings: &Settings) -> Result<i32, Fail> {
             }
         }
         write_rows(&mut out, &rows)?;
+        for place in outside_the_service(&settings.places) {
+            eprintln!(
+                "snap: {place} is not in the snap service's view: add it with `service edit snap`"
+            );
+        }
         return Ok(status);
     };
     let place = place(path)?;
@@ -668,5 +729,46 @@ mod tests {
             Path::new("/users/bob/x")
         );
         assert_eq!(absolute(Path::new("/..")).unwrap(), Path::new("/"));
+    }
+
+    fn mount(path: &str) -> proc::Mount {
+        proc::Mount {
+            source: "vda3".into(),
+            path: path.into(),
+            kind: "btrfs".into(),
+            read_only: false,
+            label: None,
+        }
+    }
+
+    #[test]
+    fn a_place_under_a_mount_the_view_lacks_is_outside_it() {
+        let mounts = [mount("/"), mount("/users"), mount("/volumes/sdb1")];
+        let there = |at: &Path| at == Path::new("/users");
+        // /volumes/sdb1 is mounted on the machine and not here.
+        let outside = |path: &str| in_a_mount_out_of_view(Path::new(path), &mounts, there);
+        assert!(outside("/volumes/sdb1"));
+        assert!(outside("/volumes/sdb1/photos"));
+        // A folder missing within a mount that is here is only missing, and
+        // so is one on the root's own mount, which every view has.
+        assert!(!outside("/users/nobody"));
+        assert!(!outside("/shared"));
+        assert!(!outside("/volumes/sdc1"));
+    }
+
+    #[test]
+    fn the_service_holds_what_its_file_names_and_what_every_service_has() {
+        let holds = Holds {
+            reads: vec!["/users".into(), "/shared".into()],
+            changes: vec!["/volumes/sdb1".into()],
+            ..Holds::default()
+        };
+        for place in ["/users", "/users/alice", "/volumes/sdb1", "/system/settings"] {
+            assert!(held(place, &holds), "{place}");
+        }
+        for place in ["/volumes/sdc1", "/users2", "/usersx/a", "/applications"] {
+            assert!(!held(place, &holds), "{place}");
+        }
+        assert!(held("/applications", &Holds { whole_tree: true, ..Holds::default() }));
     }
 }

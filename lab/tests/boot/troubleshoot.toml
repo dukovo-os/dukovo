@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# troubleshoot (ADR 0474): the signatures the release ships, matched
+# against the facts of a start that a file beside this test holds, which
+# are those of a disk that reported errors (BOOT-107): troubleshoot names
+# the cause, its fix and the page of the support center, and as JSON
+# says it as data. The facts of a start that went well match nothing.
+# (A start that failed because of bad firmware, which the lab needs a
+# machine with such firmware for, is not tested here.)
+about = "troubleshoot matches the signatures the release ships against the facts of a start: a disk that reported errors is named with its fix and page, in words and as JSON, and the facts of a start that went well match nothing (ADR 0474)"
+time = "3m"
+host_needs = ["scp"]
+
+[[step]]
+run = "troubleshoot --about"
+expect = ["Signatures: version ", " signatures are read"]
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/lab-disk-errors.json {machine} {machine-port:22}"
+expect = "copied: lab-disk-errors.json"
+# The file is the folder's facts.json, as --facts reads it.
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-fault && mkdir /tmp/lab-fault && cp /users/lab/lab-disk-errors.json /tmp/lab-fault/facts.json && echo planted'"
+expect = "planted"
+[[step]]
+run = "troubleshoot --facts /tmp/lab-fault"
+expect = [
+    "Likely cause: A disk reported errors reading or writing (BOOT-107)",
+    "Fix: Back up your files now.",
+    "/errors/BOOT-107.html",
+]
+[[step]]
+run = "troubleshoot --facts /tmp/lab-fault --json"
+expect = ['"id":"BOOT-107"', '"own":false']
+# The same facts with the disk's two messages made to say it went well
+# match nothing. Only the messages change: the facts' own "failed" key,
+# the services that failed, is needed to read them.
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-fine && sed -e \"s/ failed after/ went well after/\" -e \"s/flush failed/flush went well/\" /tmp/lab-fault/facts.json > /tmp/lab-fine/facts.json; troubleshoot --facts /tmp/lab-fine; echo \"exit $?\"'"
+expect = ["No known cause matches this start.", "exit 1"]
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-fault /tmp/lab-fine /users/lab/lab-disk-errors.json; echo cleaned'"
+expect = "cleaned"
