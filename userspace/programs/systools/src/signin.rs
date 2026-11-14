@@ -628,6 +628,7 @@ pub fn start_console(
         ],
         network: true,
         shares: None,
+        domain: None,
     };
     launch(names, user, groups, &program)
 }

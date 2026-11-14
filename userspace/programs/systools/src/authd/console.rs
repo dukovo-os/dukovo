@@ -1609,7 +1609,7 @@ impl Authd {
         // For the journal: which session, or which token, ran it.
         env.push(format!("DUKOVO_CONSOLE_SESSION={tag}"));
         let relay = descriptors.pop();
-        let process = match elevate::start(&descriptors, &plan, &env) {
+        let process = match elevate::start(&descriptors, &plan, &env, None) {
             Ok(process) => process as i32,
             Err(why) => return no(why, now),
         };
