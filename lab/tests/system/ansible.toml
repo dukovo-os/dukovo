@@ -7,7 +7,8 @@
 # ansible.sh beside this file makes ansible-core's environment and installs
 # the collection that tools/xtask/src/test/ansible.lock pins. Without the
 # collection's tarball, which the lock names by DUKOVO_ANSIBLE_COLLECTION
-# until its repository exists, the test is skipped.
+# until its repository exists, the test is skipped, and so it is without
+# Python 3.13 or later on the lab PC, which ansible-core 2.22 needs.
 #
 # Python, which the system has none of, comes by python.yml, with
 # ansible.builtin.raw, from the bundle's file. site.yml then runs each
@@ -21,7 +22,7 @@
 # offers, restarts the machine into it with reboot: true as the reboot
 # module does, and checks that sysupdate status names the new version as
 # running, as online.toml's machine does (ADRs 0466 and 0467).
-about = "Ansible's dukovo.system manages the machine from the lab PC over SSH: python.yml installs Python with ansible.builtin.raw; site.yml runs facts, feature, service, bundle, snapshot and update's channel through elevate, and run again reports changed=0; with the feature removed, --check --diff reports it as JSON before and after and changes nothing; update.yml stages the update the lab's update server offers with reboot: true, and the machine comes back on the new version, which sysupdate status and the facts name as running (skipped while DUKOVO_ANSIBLE_COLLECTION is not set)"
+about = "Ansible's dukovo.system manages the machine from the lab PC over SSH: python.yml installs Python with ansible.builtin.raw; site.yml runs facts, feature, service, bundle, snapshot and update's channel through elevate, and run again reports changed=0; with the feature removed, --check --diff reports it as JSON before and after and changes nothing; update.yml stages the update the lab's update server offers with reboot: true, and the machine comes back on the new version, which sysupdate status and the facts name as running (skipped while DUKOVO_ANSIBLE_COLLECTION is not set, or without Python 3.13 or later on the lab PC)"
 time = "60m"
 fresh = true
 host_needs = ["python3", "ssh", "ssh-keyscan", "sha256sum", "scp"]

@@ -52,6 +52,9 @@ Ansible's modules are GPL-3.0 by custom and by the license of the
    lets an account pass without one, and a wrong password counts towards
    authd's block of the sign-in port (ADR 0479). Facts are gathered with
    `gather_subset: [min]`, since `/proc` and `/sys` are not Linux's.
+   The machine's Python is 3.15, whose modules ansible-core runs from
+   release 2.22 on, so the collection needs ansible-core 2.22 or later,
+   and that needs Python 3.13 or later on the control machine.
 5. **Tested from both sides.** The collection's repository runs
    `ansible-test sanity` and unit tests of each module against recorded
    JSON. Dukovo's boot test `ansible` runs a pinned ansible-core with the

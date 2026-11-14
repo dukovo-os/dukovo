@@ -34,7 +34,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/../../.." && pwd)
 lock="$tree/tools/xtask/src/test/ansible.lock"
 playbooks="$tree/tools/xtask/src/test/ansible"
-core="ansible-core==2.19.15"
+core="ansible-core==2.22.0"
 python="/applications/org.python.python/bin/python3"
 cache="${XDG_CACHE_HOME:-$HOME/.cache}/dukovo-lab/ansible"
 lab_key="${XDG_CONFIG_HOME:-$HOME/.config}/dukovo-lab/lab_ed25519"
@@ -85,12 +85,29 @@ if [ ! -f "$tarball" ]; then
 	exit 1
 fi
 
-# ansible-core, once.
+# ansible-core, once, on the first Python at 3.13 or later, which it needs,
+# as tools/xtask/src/ansible.rs picks it: Linux Mint 22's python3 is 3.12,
+# and a newer one is there only by another name or from uv. Without one the
+# test is skipped.
 venv="$cache/venv-$core"
 if [ ! -f "$venv/.installed" ]; then
+	controller=
+	for candidate in python3 python3.15 python3.14 python3.13; do
+		if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 13) else 1)' 2>/dev/null; then
+			controller=$candidate
+			break
+		fi
+	done
+	if [ -z "$controller" ] && command -v uv >/dev/null 2>&1; then
+		controller=$(uv python find '>=3.13' 2>/dev/null) || controller=
+	fi
+	if [ -z "$controller" ]; then
+		echo "ansible: skipped: $core needs Python 3.13 or later on the lab PC, which has none; on Linux Mint 22, \`uv python install 3.13\` gives one"
+		exit 77
+	fi
 	rm -rf "$venv"
 	mkdir -p "$cache"
-	python3 -m venv "$venv"
+	"$controller" -m venv "$venv"
 	"$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$core"
 	echo "$core" > "$venv/.installed"
 fi

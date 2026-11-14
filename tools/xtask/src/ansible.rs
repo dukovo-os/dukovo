@@ -14,24 +14,33 @@
 //! environment variable instead, [`LockSource::File`], and a test run
 //! without it is skipped with a line that says why, so that CI, which has
 //! no such file, does not fail. The environment, the controller's Python
-//! (3.11 or later, with venv) and OpenSSH's client are all the host needs;
+//! (3.13 or later, with venv) and OpenSSH's client are all the host needs;
 //! it only runs on the build host.
 
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::process::step;
 
 /// ansible-core, pinned to one release, which pip installs into the
-/// environment. The lab's `system/ansible.sh` pins the same one, and a unit
-/// test says so.
-pub const CORE: &str = "2.19.15";
+/// environment. 2.22 is the first release whose modules run under the
+/// machine's Python, 3.15: the modules of earlier ones stop at their start,
+/// in a patch of `dataclasses` that looks for a function 3.15 no longer
+/// has. The lab's `system/ansible.sh` pins the same one, and a unit test
+/// says so.
+pub const CORE: &str = "2.22.0";
 
 /// The oldest Python's minor version that runs ansible-core [`CORE`] on the
 /// controller.
-const PYTHON_MINOR: u32 = 11;
+const PYTHON_MINOR: u32 = 13;
+
+/// The commands tried, in order, for the controller's Python: the first at
+/// 3.[`PYTHON_MINOR`] or later makes the environment. Ubuntu 24.04 and
+/// Linux Mint 22 have 3.12 as `python3`, and a newer one only beside it, by
+/// another name or from uv.
+const PYTHONS: [&str; 4] = ["python3", "python3.15", "python3.14", "python3.13"];
 
 /// Where the environment and the collections installed from tarballs are.
 const CACHE: &str = ".cache/ansible";
@@ -258,20 +267,19 @@ fn venv(root: &Path) -> Result<PathBuf, String> {
     if done.is_file() {
         return Ok(dir);
     }
-    let install = "install Python 3.11 or later with venv (Debian, Ubuntu, Mint: `sudo apt install \
-                   python3-venv`)";
-    let check =
-        format!("import sys; sys.exit(0 if sys.version_info >= (3, {PYTHON_MINOR}) else 1)");
-    run(
-        Command::new("python3").args(["-c", &check]),
-        "python3, which ansible-core needs at 3.11 or later",
-    )
-    .map_err(|err| format!("{err}; {install}"))?;
-    step(&format!("Installing {requirement}"));
+    let install = format!(
+        "install Python 3.{PYTHON_MINOR} or later with venv (Debian 13, Ubuntu 25.04 and later: \
+         `sudo apt install python3-venv`; Ubuntu 24.04 and Linux Mint 22: `uv python install \
+         3.{PYTHON_MINOR}`)"
+    );
+    let python = controller_python().ok_or_else(|| {
+        format!("no Python 3.{PYTHON_MINOR} or later, which ansible-core {CORE} needs; {install}")
+    })?;
+    step(&format!("Installing {requirement} with {}", python.display()));
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|err| format!("removing {}: {err}", dir.display()))?;
     }
-    run(Command::new("python3").args(["-m", "venv"]).arg(&dir), "python3 -m venv")
+    run(Command::new(&python).args(["-m", "venv"]).arg(&dir), "python -m venv")
         .map_err(|err| format!("{err}; {install}"))?;
     let python = dir.join("bin/python");
     let mut pip = Command::new(&python);
@@ -279,6 +287,27 @@ fn venv(root: &Path) -> Result<PathBuf, String> {
     run(&mut pip, "pip install")?;
     fs::write(&done, &requirement).map_err(|err| format!("writing {}: {err}", done.display()))?;
     Ok(dir)
+}
+
+/// The controller's Python: the first of [`PYTHONS`] at 3.[`PYTHON_MINOR`]
+/// or later, or else one that uv installed, by its path.
+fn controller_python() -> Option<PathBuf> {
+    let check =
+        format!("import sys; sys.exit(0 if sys.version_info >= (3, {PYTHON_MINOR}) else 1)");
+    for name in PYTHONS {
+        let status = Command::new(name).args(["-c", &check]).stderr(Stdio::null()).status();
+        if status.is_ok_and(|status| status.success()) {
+            return Some(PathBuf::from(name));
+        }
+    }
+    let found = Command::new("uv")
+        .args(["python", "find", &format!(">=3.{PYTHON_MINOR}")])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let path = String::from_utf8(found.stdout).ok()?;
+    let path = path.trim();
+    (found.status.success() && !path.is_empty()).then(|| PathBuf::from(path))
 }
 
 /// The collection's tarball installed into `.cache/ansible/`, once for each

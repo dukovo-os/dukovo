@@ -13,9 +13,10 @@
 //! the environment variable DUKOVO_ANSIBLE_COLLECTION, and when that is
 //! not set the test is skipped, with a line that says why, and passes: a
 //! run without the tarball, as CI's, does not fail. The host also needs
-//! Python 3.11 or later with venv, which makes ansible-core's environment
+//! Python 3.13 or later with venv, which makes ansible-core's environment
 //! once, in .cache/ansible/, and the bundle files `ob` packs, as the
-//! *python* test does.
+//! *python* test does. ansible-core is 2.22, the first release whose
+//! modules run under the machine's Python 3.15, and it needs that Python.
 //!
 //! The first playbook, python.yml, installs Python on the machine, which
 //! has none, with `ansible.builtin.raw`: the bundle org.python.python, from

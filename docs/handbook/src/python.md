@@ -32,9 +32,10 @@ checks for `linux` to choose what to do takes another path on Dukovo.
 Programs that check for a POSIX system, with `os.name == 'posix'`, work
 as they do on Linux.
 
-Ansible manages a Dukovo machine over SSH with this Python, run by its
-path: give it
-`ansible_python_interpreter=/applications/org.python.python/bin/python3`
+Ansible manages a Dukovo machine over SSH with this Python, from
+ansible-core 2.22 on, the first release whose modules run under Python
+3.15. Give it the path,
+`ansible_python_interpreter=/applications/org.python.python/bin/python3`,
 in its inventory, for Python installed for everyone. Run by its path,
 `python3` asks nothing; by its name, its first run asks at a console
 whether it may run with your access, and Ansible's SSH session has no
