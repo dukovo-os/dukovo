@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Python comes to a Dukovo machine, which has none of its own, before any
+# module can run. It is a bundle, org.python.python, and installing it needs
+# no Python: ansible.builtin.raw runs the command through the shell alone.
+# The bundle goes in for everyone, so that root's modules and the
+# account's find it where ansible_python_interpreter says.
+#
+# dukovo_python_from is what `bundle install` is given: the bundle's ID, which
+# the catalog has, or the path of its .dkv file.
+
+- name: Python comes to the machine
+  hosts: dukovo
+  gather_facts: false
+  become: true
+  vars:
+    dukovo_python_from: org.python.python
+  tasks:
+    - name: Is Python there?
+      ansible.builtin.raw: test -x {{ ansible_python_interpreter }}
+      register: python_there
+      failed_when: false
+      changed_when: false
+
+    - name: Install it for everyone
+      ansible.builtin.raw: bundle install --for-everyone --yes {{ dukovo_python_from }}
+      when: python_there.rc != 0
+
+    - name: It is there
+      ansible.builtin.raw: test -x {{ ansible_python_interpreter }}
+      changed_when: false

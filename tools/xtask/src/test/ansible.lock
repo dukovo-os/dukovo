@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The Ansible collection dukovo.system that `ob test boot --case ansible`
+# and the lab's tests/system/ansible.toml run, pinned as the TUF conformance
+# suite is (src/tuf.rs). A line is `key = value`.
+#
+# source: where the tarball that `ansible-galaxy collection build` makes of
+#   the collection is. `env:NAME` is a file on this computer, which the
+#   environment variable NAME names: while the collection's repository does
+#   not exist, the test runs the tarball its author built, and skips, saying
+#   so, when NAME is not set, so that a run without it does not fail. An
+#   `https://` URL is fetched once into .cache/ansible/ and must have the
+#   sha256 below.
+# commit: the commit of the collection's repository that the tarball is
+#   built from, 40 hexadecimal digits; `-` while source is `env:`.
+# sha256: of the tarball, 64 hexadecimal digits; `-` while source is `env:`,
+#   whose file runs as it is.
+#
+# When the repository exists, the three lines become its release's URL, the
+# release's commit and the tarball's hash, and a change to them is the way
+# the collection a test runs is changed.
+
+source = env:DUKOVO_ANSIBLE_COLLECTION
+commit = -
+sha256 = -
