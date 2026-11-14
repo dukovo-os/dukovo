@@ -41,6 +41,13 @@ console shows, so the button, the API call and the command typed at a
 terminal do the same; *admin*(8) lists the actions and prints the
 command, the API call and the Ansible task of each.
 
+admind also keeps a journal of what changed on the machine, "What changed",
+and runs the actions that take longer than a request waits as tasks that go
+on without the browser that asked (ADR 0516). Both are in a store of its
+own, one SQLite file. A person's preferences are their own file. The store,
+the journal, the tasks, the preferences and the stream of events that tells
+a page of them have a section each below.
+
 *admind* alone is the server, which Spark runs; *admind --worker* is what
 authd runs, and is not for typing.
 
@@ -81,10 +88,10 @@ answers it:
 . Its address is a route's, an action's, or a file's. An address of the
   API that is neither is 404 (ADM-116), and one that takes another method
   is 405 (ADM-117).
-. A token is for the actions, the list of them and the showing of one,
-  and for no other route (403, ADM-124), and authd must take it: one it
-  does not is 401 (ADM-115). An address that gave 10 wrong tokens in a
-  minute is stopped before authd is asked (429, ADM-105).
+. A token is for the actions, the list of them, the showing of one and
+  the tasks, and for no other route (403, ADM-124), and authd must take
+  it: one it does not is 401 (ADM-115). An address that gave 10 wrong
+  tokens in a minute is stopped before authd is asked (429, ADM-105).
 . The route's access. A route for the signed in needs a session, and an
   action's route a session or a token (401, ADM-107, with the cookie
   cleared once the session has ended). A route that is not for a session
@@ -187,9 +194,11 @@ when admind cannot tell: the read failed, the action finds nothing in
 what it printed, or a file cannot be read. A change whose action does
 not compare, such as a restart or *cert renew*, which makes the
 certificate anew whether or not it is due, always answers *true*. A
-command runs 30 seconds at most (ADM-121 for one that has not ended), a
-worker runs 8 at once, and admind runs 32 at once as an administrator,
-for all sessions and tokens together (ADM-105 for the next). A command
+command runs 30 seconds at most (ADM-121 for one that has not ended; an
+action marked *long* is a task, below), a worker runs 8 at once, and admind
+runs 32 at once as an administrator, for all sessions and tokens together,
+the commands of tasks among them (ADM-105 for the next short command; a
+task waits for a place instead). A command
 that ends with a status other than 0 is ADM-123 (422): the *detail* is
 the last line it wrote as an error, the *command* member has its words,
 its status and its error output, and when that line ends with an error
@@ -219,8 +228,9 @@ terminal.
 A script gives a token as *Authorization: Bearer dkv_...*, in one header,
 and nowhere else: a token in an address or a cookie is not read, and a
 token with a session's cookie is refused (ADM-108). A token may ask for
-the actions, their list and the showing of one. For any other route,
-such as sign-in, unlock or the account's own, the answer is ADM-124.
+the actions, their list, the showing of one and the tasks (Tasks, below).
+For any other route, such as sign-in, unlock, the account's own or the
+journal, the answer is ADM-124.
 
 admind holds no token: it passes each one to *authd*(8) with each request,
 and authd answers with the owner, the token's name and its scopes, or
@@ -248,6 +258,266 @@ goes idle). A change that runs as an administrator needs none. The
 console's reach still applies: a connection from an address it does not
 answer is closed, with a token or without.
 
+## The store
+
+admind keeps what the console must not lose with a restart in one SQLite
+file, _/system/state/admind/store.db_ (ADR 0516): the journal of what
+changed, the versions of the files the journal names, and the tasks. The
+file is mode 0600, in a folder that is 0700. It uses SQLite's rollback
+journal and not a write-ahead log, so that *admin put-back* (*admin*(8)),
+which reads the file as root in a process of its own, needs nothing but the
+file. admind is the only program that writes it. The file's version is
+SQLite's *user\_version*: admind brings an older file up to date when it
+starts, and refuses a file that a newer admind made.
+
+When the file cannot be opened, admind says why in the log and goes on:
+people sign in and the actions run, but no change has a row, an action that
+runs as a task is not started, and the routes of the journal and of the
+tasks answer ADM-126 (503). The store keeps at most:
+
+- the newest 10,000 changes, the oldest going first;
+- of each file, the text of its last 20 versions and, of all files, 64 MiB
+  of text, the oldest going first; a file longer than 1 MiB has its hash and
+  size kept and no text;
+- each task for 30 days after it ends.
+
+## What changed
+
+The journal says what changed on the machine and who changed it. Any
+signed-in session reads it, locked or not, since it names people and files
+and never the contents of a secret; only a session that may just add a
+second step does not (ADM-118). A token does not read it (ADM-124).
+
+A change made through the console has a row when its command has ended,
+worked or not: the Unix time, who (the person, or the owner of the token),
+how (*console*, or *token* and the token's name), the action and the command
+it ran, the command's exit status, the task it ran as, and each file the
+action names, with what it was before the command and after it, by SHA-256.
+The files an action names are those *POST /api/1/show* gives as *files*.
+The text of each side is kept as a version, so that a page shows a diff and
+the change can be put back. A command that admind could not run (ADM-121),
+or whose worker did not answer (ADM-112), has a row with no status and a
+note that says why, since it may have changed what it names. A change that
+was refused or not started, as when the console is locked, the account is
+not an administrator, a token's scopes do not cover it or authd did not
+answer, changed nothing and has no row: the log says it. A read has none.
+
+A change made by hand has a row too. Every 30 seconds admind compares the
+size and modification time of each file under _/system/settings_ (8 folders
+deep) and in each folder an action's files are in (4 deep), at most 10,000
+files, with what they were at its last look, and reads and hashes only
+those that differ. A file made, changed or removed while no console change
+is under way on it has a row whose *how* is *by hand*, one for each person
+found and one for the rest. The person is the one whose elevated command
+named the file's path, as a whole word, in the 10 minutes before the file
+changed, by the audit log (*log --audit*), which only root reads and which
+admind asks logd for; if more than one did, the last. A change that no such
+command names is *outside the console*: an edit by *service* _name_ *edit*,
+which names the service and not the path, an editor run as root at the
+machine's own console, or a file copied in. Names that begin with a dot,
+which an editor's work file has on its way to its name, and links are not
+looked at. A file changed and changed back between two looks is not seen,
+and two changes between two looks are one row. The first look at a store
+that holds no file only notes the files, and makes no row.
+
+A file under a service's secrets (_/system/state/spark/secrets_), a file
+that not everyone may read (no read bit for others), and a file in a folder
+that others may not pass through is listed by name, with no hash, text or
+diff. admind runs as root, so it finds each file from the root a part at a
+time and never through a link, opens it only once it knows it is a regular
+file, and does not watch links: a link that a service's account puts in its
+own folder leads it nowhere. A file longer than 1 MiB is listed with its
+hash and size and no text.
+
+*GET /api/1/changes*
+	The changes made at Unix time *since* or later (all, when it is not
+	given), newest first, at most *limit* of them (50 when it is not given,
+	at most 200). A value that is not a number in range is ADM-125 with
+	the *field*. The answer is *{"changes": [...]}*. Each change has *id*,
+	*at*, *who* (the person, or *outside the console*), *how* (*console*,
+	*token NAME* or *by hand*), *action* and *title* (null for a hand edit
+	and for an action the console no longer has), *argv* (the command),
+	*status*, *task*, *note*, *files* and *seen*. Each of *files* has its
+	*path* and what the file was *before* and *after*: an object whose
+	*state* is *absent*, *text* or *large*, which have *sha256* and *size*,
+	*secret* or *unreadable*. *seen* is null, or *{"by", "at"}* for a hand
+	edit that someone has kept.
+
+*GET /api/1/changes/{id}*
+	One change as above, with a unified diff for each file that it
+	changed, as *diff* (and *diff\_truncated*, true when it stops short),
+	or the reason there is none as *no\_diff*: the file is as it was, it is
+	a secret, admind could not read it, it is longer than 1 MiB, its text is
+	not kept any more or is not text, or the change's diffs are 2,000 lines
+	already, the most that its answer holds. It also has *put\_back*, which
+	is *{"possible": true, "command": "elevate admin put-back 41"}*, or has
+	*possible* false and *why*. A change that is not there is ADM-127 (404).
+
+*POST /api/1/changes/{id}/keep*
+	Marks a hand edit seen by the person, and answers the change. It is
+	the person's own say that they have looked, and it changes nothing on
+	the machine, so it asks for no more than a session that is unlocked
+	(ADM-106 while it is locked), which only an administrator's can be. A
+	change that someone kept stays as they marked it. A change made through
+	the console is kept already: ADM-128 (409).
+
+*POST /api/1/changes/{id}/put-back*
+	Writes back the earlier text of each file the change changed. It runs
+	*admin put-back* _id_ as an administrator through authd (*admin*(8)), so
+	that the command the answer shows is the command that ran. It is a
+	route and not an action of the list, since its argument is a row of
+	the journal. It needs an administrator's unlocked session, as an
+	action that runs as an administrator does (ADM-122, ADM-106), and a
+	token never may (ADM-124). The answer is *{"done": true, "output": [...],
+	"command": "elevate admin put-back 41", "change": 52}*: the lines the
+	command printed, the command, and the number of the put back's own row
+	in the journal, which can be put back in turn. A change
+	that cannot be put back is ADM-128 before anyone is asked, with the
+	reason: a file it made has no earlier text, and a secret, a file not
+	everyone may read, a file admind could not read, a file longer than
+	1 MiB and a text that the store has forgotten have none kept; a change
+	that changed no file has nothing to put back. A command that does not
+	work is ADM-123.
+
+A put back of a Spark service file, one in _/system/settings/spark/services_
+or its _settings.d_, writes it and says that Spark reads it when the service
+next starts; *service* _name_ *restart* puts it to use now. A file of a
+bundle service's data is written and followed by a request to the service to
+read it again, as *service* _name_ *reload* makes. A put back of a file that
+was changed again after the change says that the later text is gone.
+
+## Tasks
+
+An action marked *long* in the list (*GET /api/1/actions*) does not wait for
+its command. Its route answers 202 with *{"task": 42}* at once, after the
+checks of any action, and admind runs the command as an administrator
+through authd, without the 30 seconds that a short command has, so that the
+work goes on when the browser has gone and can be seen from another. Only an
+action that runs as an administrator can be long. The task is kept in the
+store: with none, the action is not started (ADM-126).
+
+A task is *waiting* for one of the 32 places that elevated commands share,
+in the order the tasks were asked for; *running* while its command runs;
+and then *done* (the command ended with status 0), *failed* (it ended with
+another status, did not start, or ran out of time) or *stopped*. At most 64
+tasks wait; asking for another is ADM-105 (429) with *Retry-After*, 30
+seconds.
+
+The command's standard output is read a line at a time. A line *step N of
+M: WORDS*, with N from 1 to M, says that the task is at step N of M and what
+the step is (the words, at most 200 characters), and clears the bar; a line
+*progress P%*, with P from 0 to 100, says how far the step has come. Every
+other line, and each line of the error output, is the
+task's log, of which the last 2,000 lines, at most 256 KiB, are kept, each
+cut at 1,024 bytes. A task that is *done* has *changed* too, as a short
+change does, from its files alone: false only when its action names files
+and each reads the same after the command as before it, and true when it
+names none, since a task runs no read before and after. It is null until
+the task is done, and for a task that did not end well.
+
+A task may run 12 hours. Its person, or an administrator, may stop it. A
+stop sends the command SIGTERM, as ^C does, which asks it to put back what it
+did, and a task that still waits just leaves the queue. A command that has
+not ended 30 seconds later is hung up, and one that has not ended 10
+seconds after that is let go. A task whose command was sent SIGTERM to stop
+it is *stopped*, whatever status the command ended with. A command that is
+still running after 12 hours is sent SIGTERM and hung up in the same way,
+and its task is *failed*. When admind starts, it ends every task that
+the last admind left *waiting* or *running* as *stopped*, with the note
+"the console restarted", since authd hangs up the commands of an admind
+that has gone. A task is kept for 30 days after it ends, and then
+forgotten. The journal keeps its change, with the task's number, from when
+its command ended; a task that was stopped before it began has none.
+
+*GET /api/1/tasks*
+	The tasks that wait or run, and those that ended at Unix time *since*
+	or later (in the last 24 hours when it is not given), newest first, at
+	most *limit* of them (50 when it is not given, at most 200). The answer
+	is *{"tasks": [...]}*. Each task has *id*, *action*, *title*, *args*,
+	*argv*, *who*, *how* (*console* or *token NAME*), *started*, *state*,
+	*step*, *steps*, *words*, *percent* (null while the command has said
+	none), *ended*, *status*, *note* (why it is as it is, when the status
+	does not say) and *changed*.
+
+*GET /api/1/tasks/{id}*
+	One task as above, with its *log*, an array of lines. A task that is
+	not there is ADM-127 (404).
+
+*POST /api/1/tasks/{id}/stop*
+	Asks the task to stop, as above, and answers *{"stopping": true,
+	"task": {...}}* at once; the end follows, in the task's *state* and in
+	the event that tells it. It is for the task's own person, or an
+	administrator (ADM-122 for another person), from a session that is locked
+	or unlocked, since a stop only has the command put back what it did.
+	A task that has ended is ADM-128 (409).
+
+A session reads every task, as it reads the journal. A token reads the tasks
+of the actions whose area its scopes let it read, which is how a script that
+asked for a long action finds how it went; a task it may not read is not
+there for it (ADM-127), and the list leaves it out. A token stops a task only
+when its scopes let it change the area of the task's action and its owner is
+the task's person or an administrator (ADM-124 when its scopes do not, and
+for a task whose action the console no longer has, since there is no area to
+check the scopes against).
+
+## Preferences
+
+A person's preferences are their own, not the machine's: how the console
+looks to them and the time zone it shows times in.
+
+*GET /api/1/account/preferences*
+	Answers *{"theme", "text", "motion", "zone"}*.
+
+*POST /api/1/account/preferences*
+	Takes any of the four and answers all of them. A member that is not
+	given stays as it was. A member that the route does not have, or of
+	the wrong type, is ADM-108; a value that cannot work is ADM-125 with
+	the *field*, before the person's worker is asked.
+
+*theme* is *dark* (the default), *light*, *high-contrast* or *device*, which
+follows the device's own. *text* is the size of the text in percent: 100
+(the default), 112, 125 or 150. *motion* is *full* (the default) or *less*.
+*zone* is a time zone of the machine's own database, such as
+*Europe/Berlin*, or empty (the default) for none.
+
+They are in _~/.config/dukovo-admin/settings.toml_, mode 0600 in a folder
+that is 0700, which the person's worker reads and writes as them, through
+the same editing as a settings file has: a comment the person wrote stays,
+and a change that changes nothing writes nothing. The file is theirs to edit
+by hand. A key that is missing or has a value that is none of the above
+reads as its default, so that a typo costs a preference and never the page;
+a file that is not TOML is told with its line (ADM-121) and left as it is.
+Any signed-in session may read and change them, locked or not, but not a
+session that may only add a second step (ADM-118), and not a token
+(ADM-124). They are not in the journal.
+
+## Events
+
+*GET /api/1/events* is a page's stream of events, as server-sent events, for
+a signed-in session. It tells:
+
+*event: unlock*
+	*{"unlock\_seconds": 600}*, the seconds left of the session's unlock, or
+	null when it is locked, when the stream opens and whenever it changes.
+
+*event: session*
+	*{"ended": "idle"}*, why the session ended, one of *signed-out*,
+	*expired*, *idle*, *restarted* or *worker*. The stream ends after it.
+
+*event: task*
+	A task's *id*, *action*, *state*, *step*, *steps*, *words*, *percent*,
+	*ended*, *status*, *note* and *changed*, as the list has them, and none
+	of its *args*, *argv* or *log*, which *GET /api/1/tasks/{id}* has. It is
+	told for each change of the task's state, step, words or progress, at
+	most four times a second for each task: what comes sooner waits, and
+	only the latest is sent. A stream that opens is told where each task is
+	that waits, runs, or ended in the last minute.
+
+A comment line, *: keep*, comes every 25 seconds, so that nothing between
+the browser and admind closes a stream that says nothing. A session with a
+stream open is not idle; once its last stream has closed and a minute has
+passed, an unlocked session locks itself.
+
 ## Errors
 
 An error is *{"error": {"id", "title", "detail", "fix"}}*, with an ID that
@@ -266,7 +536,9 @@ takes another method, *ADM-118* the session may only add a second step,
 *ADM-119* the body is not JSON, *ADM-120* the console is full, *ADM-121*
 the console could not do that, *ADM-122* the account can look but not
 change, *ADM-123* the command did not work, *ADM-124* the API token may
-not do this, *ADM-125* a value cannot work. *detail* says what happened
+not do this, *ADM-125* a value cannot work, *ADM-126* the console keeps no
+journal or tasks now, *ADM-127* it has no such change or task, *ADM-128*
+that cannot be done to this change or task. *detail* says what happened
 this time, in authd's own words where authd refused. ADM-125 also has the
 *field* whose value cannot work, and ADM-123 the *command* with its words,
 status and error output. Each ID has a page in the support center that
@@ -288,6 +560,19 @@ _/system/live/admind/issue_
 
 _/system/live/authd/socket_
 	authd's socket.
+
+_/system/live/log/query_
+	logd's query socket, which admind asks for the audit log when it looks
+	for who changed a file by hand (What changed).
+
+_/system/state/admind/store.db_
+	The store: the journal, the versions of the files it names, and the
+	tasks (The store). Mode 0600; admind is the only program that writes it,
+	and *admin put-back* (*admin*(8)), as root, reads it.
+
+_~/.config/dukovo-admin/settings.toml_
+	A person's preferences (Preferences), which their worker reads and
+	writes as them.
 
 _/system/settings/spark/services/admind.toml_
 	The service.
@@ -318,6 +603,25 @@ not read (ADM-108, ADM-125), which is refused before anyone is asked.
 *authd*(8)'s audit log (*log --audit*) has each command run as an
 administrator, with the session's first 8 characters or the token's name
 and area.
+
+A long action that was asked for has a line that says *is task* and the
+task's number, such as *alice from 192.0.2.7: service.update is task 42*,
+and one when the task ends, with its person, the action and its state, such
+as *task 42 of alice (service.update) ended with status 0: done*. A task
+stopped while it waited has *was stopped by alice before it began*. A stop
+has *alice (API token monitor) from 192.0.2.7: asked task 42 to stop*, a
+Keep it has *alice from 192.0.2.7 kept change 41*, and a put back has the
+line of an action, *alice from 192.0.2.7: changes.put-back 41 ended with
+status 0*. When it starts, admind says how many tasks the last admind left
+that it ended as *stopped*, and, each day, how many tasks that were kept 30
+days it forgot. When its round finds files changed by hand it says how many
+changes are in the journal, such as *2 changes made by hand are in the
+journal*. A store that does not open is said with the reason and *the
+console keeps no journal and runs no tasks*. Other lines say what the store
+or the journal could not do: *the journal could not look at the files*, *the
+journal could not keep* an action's change, *the journal cannot tell who
+changed a file* (logd did not answer, so the rows say *outside the
+console*), and *task 42 could not be saved*.
 
 # EXIT STATUS
 

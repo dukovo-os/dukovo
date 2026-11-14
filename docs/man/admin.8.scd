@@ -210,14 +210,15 @@ remove another's.
 *put-back* _id_
 	Writes back the earlier text of each file that change _id_ of the
 	console's journal, "What changed", changed (ADR 0516). Only root runs
-	it, which the console's *Put back* button does as *elevate admin
-	put-back* _id_, so that the command the console shows is the command
-	that ran. It opens the console's store read-only, finds the change,
-	and writes the earlier text of each of its files as *admind*(8)
-	keeps it, keeping the file's owner and mode (a file that is made again
-	is mode 0644). A file that holds the earlier text already is left
-	alone and said so. A file that was changed again after the change is
-	written over, and it says that the later text is gone.
+	it, which the console's *Put back* does, by *POST
+	/api/1/changes/{id}/put-back* (*admind*(8)), as *elevate admin put-back*
+	_id_, so that the command the console shows is the command that ran.
+	It opens the console's store read-only, finds the change, and writes
+	the earlier text of each of its files as *admind*(8) keeps it, keeping
+	the file's owner and mode (a file that is made again is mode 0644). A
+	file that holds the earlier text already is left alone and said so. A
+	file that was changed again after the change is written over, and it
+	says that the later text is gone.
 
 	A service file, in _/system/settings/spark/services_, or its override
 	in _settings.d_, is Spark's: Spark reads it when the service next
@@ -234,9 +235,11 @@ remove another's.
 
 	A change cannot be put back if a file in it was made by it, which has
 	no earlier text; is a secret or a file that not everyone may read,
-	which the console never keeps; is longer than 1 MiB; or is one whose
-	earlier text is among the versions the console has forgotten, as it
-	keeps the last 20 of a file. It says which, and writes nothing.
+	which the console never keeps; is one that *admind*(8) could not read;
+	is longer than 1 MiB; or is one whose earlier text is among the
+	versions the console has forgotten, as it keeps the last 20 of a file.
+	Nor can a change that changed no file. It says which, and writes
+	nothing.
 
 	```
 	$ elevate admin put-back 41
@@ -358,7 +361,7 @@ The console's reach is now private: admind has read it again.
 ```
 
 Put back a change that someone made by hand to a service's file, which
-the console's "What changed" page shows as change 41:
+the console's journal, "What changed", lists as change 41:
 
 ```
 $ elevate admin put-back 41

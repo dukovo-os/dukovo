@@ -27,11 +27,15 @@ Three programs make it:
   may: it asks authd about their second steps, and runs the commands of
   the actions that run as the person.
 
+admind also keeps a journal of what changed on the machine, and runs the
+actions that take longer than a request waits as tasks. Both are in one
+store file of admind's own, _/system/state/admind/store.db_ (ADR 0516).
+
 This page says how to reach the console, who may sign in, how, what the
 second steps are, how to unlock the console and what ends a session,
-what the actions and the API tokens are, and where to look when something
-fails. The handbook's chapter on the web console does the same task by
-task.
+what the actions and the API tokens are, what the journal and the tasks
+are, and where to look when something fails. The handbook's chapter on the
+web console does the same task by task.
 
 # REACHING THE CONSOLE
 
@@ -296,6 +300,13 @@ words that it shows, never a shell, so the button, the API call and the
 command typed at a terminal do the same thing. *admin*(8) says more, and
 shows an example.
 
+A change answers whether it changed anything, as *changed*, true or false,
+so that a script that asks for what is so learns that nothing was done. The
+console reads what the change moves, as the person, before the command and
+after it, and the files the change names, through the journal, and says
+true when it cannot tell; *admind*(8) says how. An action that the list
+marks *long* answers with a task's number and runs as a task (TASKS).
+
 A command that ends with an error is ADM-123, with the command's own
 words, and with the command's own ID when the action lists it. A value that
 cannot work, such as a service's name that starts with a hyphen, is
@@ -339,14 +350,14 @@ Authorization: Bearer dkv_ACCOUNT_SECRET
 in one header, and nowhere else: a token in an address or a cookie is not
 read, and one that comes with a session's cookie is refused (ADM-108).
 The console takes a token for the actions, their list (*GET
-/api/1/actions*) and the showing of an action (*POST /api/1/show*), and
-for no other route: the sign-in, the unlock and the account's own
-routes answer a token with ADM-124. The scopes decide which actions. A
-read needs the action's area, its area with *:read*, or *\**. A change
-needs the area or *\**. The list names each action's area: *services*
-for *service.restart*. A token that is not enough is ADM-124, which
-names the scopes that would do. Showing an action needs the scope that
-reads its area.
+/api/1/actions*), the showing of an action (*POST /api/1/show*) and the
+tasks (TASKS), and for no other route: the sign-in, the unlock, the
+account's own routes and the journal answer a token with ADM-124. The
+scopes decide which actions. A read needs the action's area, its area with
+*:read*, or *\**. A change needs the area or *\**. The list names each
+action's area: *services* for *service.restart*. A token that is not
+enough is ADM-124, which names the scopes that would do. Showing an action
+needs the scope that reads its area.
 
 authd checks the token on every request, so a token that is removed, that
 has ended, or whose owner may no longer sign in stops working at once
@@ -358,6 +369,66 @@ token's last call. A token that changes something as an administrator
 needs no unlock: its owner chose its scopes and its end when they made
 it, and gave their password to do so. Give each token the fewest scopes
 its script needs.
+
+# WHAT CHANGED
+
+admind keeps a journal of what changed on the machine and who changed it
+(ADR 0516), so that when something stops working the first question, what
+changed, has an answer. A change made through the console, from a page or
+by a script with a token, has a row once its command has ended, worked or
+not: when, who, how (*console*, or *token* and its name), the action and its
+command, how the command ended, and each file the action names, as it was
+before and after. A file that someone edits by hand, in _/system/settings_
+or in a service's own folder, has a row too. Dukovo has no notification of a
+file's change, so admind looks at the files every 30 seconds, and finds who
+from the audit log: the person whose elevated command named the file, or
+*outside the console* when none did.
+
+A row keeps the text of each file, so that what changed can be shown as a
+diff, and the change can be put back. *admin put-back* _id_ writes the
+earlier text of its files back, as root, and the console's *Put back* runs
+it for an administrator's unlocked session. *Keep it* marks a hand edit as
+seen by the person who kept it, and changes nothing on the machine. The
+pages of this release have no page for the journal yet: its routes
+(*admind*(8)) and *admin put-back* are how to use it.
+
+Everyone who is signed in reads the journal. It names people and files and
+never the contents of a secret: a file under a service's secrets, one that
+not everyone may read, and one in a folder that others may not pass
+through are listed by name, with no text. An API token does not read it.
+The store keeps the newest 10,000 changes, the last 20 versions of each file
+and 64 MiB of text in all. *admin export* (*admin*(8)) copies the settings
+into a Git repository of the person's own, for a longer history.
+*admind*(8) says the routes, what each answers and what a put back writes.
+
+# TASKS
+
+An action that takes longer than a request may wait, such as an update or
+the backup of a whole machine, is marked *long* in the list and runs as a
+task (ADR 0516). Its route answers at once with the task's number, and
+admind runs its command as an administrator without the 30 seconds that a
+short command has, so that the work goes on when the browser is closed and
+can be seen from another. A task waits for a place, runs, and ends *done*,
+*failed* or *stopped*. Its command says its step and how far it has come with
+the lines *step 2 of 4: copying* and *progress 40%* on its standard output,
+and its last lines are its log.
+
+The person who asked, or an administrator, stops a task, which sends its
+command SIGTERM so that it puts back what it did. A token reads the tasks of
+the areas its scopes read, and stops those of the areas they change. A task
+is kept for 30 days after it ends, and the journal keeps its change. The
+page is told of each change of a task by *event: task* on _/api/1/events_.
+None of the actions of this release is long yet, and its pages have no
+place for the tasks.
+
+# PREFERENCES
+
+A person's preferences are their own: the console's colours (*theme*), the
+size of its text (*text*), whether things move (*motion*) and the time zone
+it shows times in (*zone*). They are in _~/.config/dukovo-admin/settings.toml_,
+which the person's worker reads and writes as them, and which they may edit
+by hand: a key that is missing or wrong reads as its default, so that a typo
+costs a preference and never the page. *admind*(8) has the routes.
 
 # WHAT IT KEEPS
 
@@ -372,6 +443,13 @@ The sign-in rules and where it listens are in _/system/settings/admin.toml_.
 The pages are in _/system/resources/admin_, each with its SHA-256 in
 _manifest.txt_, and admind serves only the files that match.
 
+admind's own store, _/system/state/admind/store.db_, is one SQLite file, mode
+0600, that only admind writes. It holds the journal of what changed, the
+text of the last 20 versions of each file the journal names (64 MiB in all)
+and the tasks, and no secret: a secret's contents are never read into it.
+Each person's preferences are in their own file,
+_~/.config/dukovo-admin/settings.toml_.
+
 Each console sign-in and a wrong password or code at one are in
 the sign-in records on the terminal *web*, from the browser's
 address, so *last*(1) and *lastb*(1) show them with the rest. authd's audit
@@ -384,7 +462,7 @@ a ticket or a token.
 
 # WHEN IT FAILS
 
-Each error the console gives has an ID, *ADM-101* to *ADM-125*, and a
+Each error the console gives has an ID, *ADM-101* to *ADM-128*, and a
 page of its own in the support center that says what to do. The page
 shows the ID with a short title and a sentence on what to do; *admind*(8)
 lists them.
@@ -403,7 +481,10 @@ it says so in the log and stops; *service admind restart* starts it again
 once that is fixed, and signs everyone out. After a change to the
 settings or the certificate, *service admind reload* is enough. A console
 whose pages do not load, or load with no style, has files that do not
-match their manifest; the log names them.
+match their manifest; the log names them. A console that says it keeps no
+journal or tasks (ADM-126) could not open its store when it started: the
+log says why, and *service admind restart* opens it again once that is
+fixed. Everything else in the console works without it.
 
 A person who is locked out of their second step signs in with a recovery
 code and adds a new step. One with no recovery code left and no step
@@ -423,6 +504,13 @@ _/system/settings/spark/services/admind.toml_
 
 _/system/resources/admin_
 	The console's pages, with _manifest.txt_.
+
+_/system/state/admind/store.db_
+	The store: the journal of what changed, the versions of the files it
+	names, and the tasks.
+
+_~/.config/dukovo-admin/settings.toml_
+	A person's preferences.
 
 _/system/live/admind/issue_
 	The address and the certificate's fingerprint, shown at the
