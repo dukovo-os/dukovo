@@ -7,9 +7,10 @@
 //! and writes it back with [`write`], so that every comment, blank line and
 //! order of keys the file had stays, and a change that leaves the text as
 //! it was writes nothing: the journal and a second run of the same change
-//! see no change. [`table`], [`set_string`] and [`set_integer`] are the
-//! edits the console makes, which keep the comment after a value they
-//! replace and put a new key where a person would.
+//! see no change. [`edited`] is its part that works on text, without a
+//! file. [`table`], [`set_string`] and [`set_integer`] are the edits the
+//! console makes, which keep the comment after a value they replace and
+//! put a new key where a person would.
 //!
 //! [`write`] puts the new text into a new file beside the old one, which
 //! gets the old file's owner and mode and is made durable, and then takes
@@ -162,23 +163,55 @@ pub fn change<E>(
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(Changed::Read { path: path.to_path_buf(), error }),
     };
-    let text = existing.as_deref().unwrap_or_default();
+    let made = edited(existing.as_deref().unwrap_or_default(), edit).map_err(|error| {
+        let path = path.to_path_buf();
+        match error {
+            Unedited::Parse { line, message } => Changed::Parse { path, line, message },
+            Unedited::Edit(error) => Changed::Edit { path, error },
+        }
+    })?;
+    let Some(new) = made else { return Ok(false) };
+    write(path, new.as_bytes(), new_mode)
+        .map_err(|error| Changed::Write { path: path.to_path_buf(), error })
+}
+
+/// Why [`edited`] made no text.
+#[derive(Debug)]
+pub enum Unedited<E> {
+    /// The text is not TOML.
+    Parse {
+        /// The line the parser stopped at, when it says.
+        line: Option<usize>,
+        /// What the parser said was wrong.
+        message: String,
+    },
+    /// The edit refused: its own error.
+    Edit(E),
+}
+
+/// The part of [`change`] that works on text: reads `text` as a TOML
+/// document, lets `edit` change it, and gives the text the document makes,
+/// or None when the edit changed nothing.
+///
+/// # Errors
+///
+/// [`Unedited`]: the text is not TOML, or the edit refused.
+pub fn edited<E>(
+    text: &str,
+    edit: impl FnOnce(&mut DocumentMut) -> Result<(), E>,
+) -> Result<Option<String>, Unedited<E>> {
     let mut document: DocumentMut = text.parse().map_err(|error: toml_edit::TomlError| {
         let line = error.span().map(|span| line_at(text, span.start));
-        Changed::Parse { path: path.to_path_buf(), line, message: error.message().to_string() }
+        Unedited::Parse { line, message: error.message().to_string() }
     })?;
     // The text the document makes before the edit, which is not always the
     // file's: the parser drops a carriage return that follows a comment.
     // An edit that changes nothing is told by it, so that it writes
     // nothing, and makes no file of one that is not there.
     let unedited = document.to_string();
-    edit(&mut document).map_err(|error| Changed::Edit { path: path.to_path_buf(), error })?;
+    edit(&mut document).map_err(Unedited::Edit)?;
     let new = document.to_string();
-    if new == unedited {
-        return Ok(false);
-    }
-    write(path, new.as_bytes(), new_mode)
-        .map_err(|error| Changed::Write { path: path.to_path_buf(), error })
+    Ok((new != unedited).then_some(new))
 }
 
 /// The table `name` of `document`, which is made after everything the
@@ -588,6 +621,29 @@ session-hours = 12
         assert_eq!(fs::read_to_string(&path).unwrap(), KEPT);
         assert!(matches!(refused, Changed::Edit { .. }));
         assert_eq!(refused.to_string(), format!("{}: the console is not for that", path.display()));
+    }
+
+    #[test]
+    fn a_text_is_edited_in_memory_as_a_file_is() {
+        let none = |_: &mut DocumentMut| Ok::<(), std::convert::Infallible>(());
+        let edited_text = edited(KEPT, |document| {
+            set_string(console(document), "reach", "any");
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+        let wanted = KEPT.replace("reach = \"private\" # for now", "reach = \"any\" # for now");
+        assert_eq!(edited_text.as_deref(), Some(wanted.as_str()));
+        // An edit that changes nothing gives no text, and neither does the
+        // empty text that nothing is added to.
+        assert_eq!(edited(KEPT, none).unwrap(), None);
+        assert_eq!(edited("", none).unwrap(), None);
+        // A text that is not a document is not handed to the edit.
+        let broken = edited("[console]\nlisten = \n", |_| -> Result<(), &str> {
+            panic!("the edit is asked")
+        });
+        assert!(matches!(broken, Err(Unedited::Parse { line: Some(2), .. })));
+        let refused = edited(KEPT, |_| Err("no"));
+        assert!(matches!(refused, Err(Unedited::Edit("no"))));
     }
 
     #[test]
