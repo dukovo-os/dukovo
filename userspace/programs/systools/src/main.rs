@@ -165,6 +165,8 @@ mod reader;
 mod releases;
 mod remount;
 mod replace;
+mod reportd;
+mod reports;
 mod rescue;
 mod resolvectl;
 mod resolved;
@@ -345,6 +347,8 @@ const TOOLS: &[(&str, Tool)] = &[
     ("remount", remount::main),
     ("renice", priority::renice),
     ("replace", replace::main),
+    ("report", reports::command::main),
+    ("reportd", reportd::main),
     ("resize-ntfs", ntfs::resize_ntfs),
     ("resolvectl", resolvectl::main),
     ("resolved", resolved::main),

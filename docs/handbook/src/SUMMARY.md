@@ -40,6 +40,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Alerts: email, ntfy and webhooks](alerts.md)
   - [Setting up alert email](alert-email.md)
   - [What each alert means](alert-meanings.md)
+- [Reporting a problem](reporting-a-problem.md)
 - [SSH and remote access](ssh.md)
 - [Kerberos](kerberos.md)
 - [Power, laptops and desktops]()

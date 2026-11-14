@@ -695,8 +695,17 @@ impl Authd {
                     };
                     (self.set(files, name, &change, peer), now)
                 }
-                Request::Session { name, password, term } => {
-                    let (answer, at) = self.session(i, &files, name, password, term, peer, now);
+                Request::Session { name, password, term, command } => {
+                    let (answer, at) = self.session(
+                        i,
+                        &files,
+                        name,
+                        password,
+                        term,
+                        command.as_deref(),
+                        peer,
+                        now,
+                    );
                     // A wrong password is in the audit log already; any
                     // other refusal says why a console could not sign in.
                     if let Answer::Refused(why) = &answer
@@ -1041,7 +1050,9 @@ impl Authd {
 
     /// Starts `name`'s session on the terminal client `i` sent, if
     /// `password` is theirs: root's to ask, as sign-in programs run as
-    /// root. The client then waits for the session's end.
+    /// root. It runs `command` with the shell's `-c` when there is one,
+    /// and the shell as a login shell otherwise. The client then waits
+    /// for the session's end.
     #[allow(clippy::too_many_arguments)]
     fn session(
         &mut self,
@@ -1050,6 +1061,7 @@ impl Authd {
         name: &str,
         password: &[u8],
         term: &str,
+        command: Option<&str>,
         peer: Peer,
         now: Instant,
     ) -> (Answer, Instant) {
@@ -1106,7 +1118,7 @@ impl Authd {
             let text = format!("\n{}\n\n", lines.join("\n"));
             let _ = File::from(copy).write_all(text.as_bytes());
         }
-        match signin::start(names, user, &groups, &terminal, term) {
+        match signin::start(names, user, &groups, &terminal, term, command) {
             Ok(process) => {
                 audit!(
                     "{name} signed in on {tty}: session process {process}, for process {} (user {})",

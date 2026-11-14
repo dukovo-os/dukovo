@@ -541,6 +541,10 @@ impl UserMode for Arch {
         0
     }
 
+    fn frame_registers((): &()) -> [u64; 3] {
+        [0; 3]
+    }
+
     fn enter_user_registers((): &()) -> ! {
         Self::halt()
     }

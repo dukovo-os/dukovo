@@ -220,6 +220,8 @@ error that starts with the tool's name.
 :  a process's nice level
 |  *replace*(8)
 :  put a new disk in the place of one of a Btrfs filesystem's
+|  *report*(1)
+:  write a problem report, read all of it, and send it, save it or hand it to a phone
 |  *resolvectl*(1)
 :  look names up, and show what resolved asks and how
 |  *resolved*(8)

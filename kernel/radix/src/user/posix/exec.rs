@@ -179,13 +179,15 @@ struct Mapped {
 }
 
 /// Maps `program`, from `file`, into `space` at a place in `window` (its
-/// own place, for a fixed one).
+/// own place, for a fixed one). Its parts that run are named `name`, for
+/// crash records (ADR 0530).
 #[inline(never)]
 fn map_program(
     space: &SpaceObject,
     file: &File,
     program: &Program,
     window: core::ops::Range<u64>,
+    name: Option<&fs::MapName>,
 ) -> Result<Mapped> {
     let image = &program.image;
     let bias = image
@@ -203,6 +205,7 @@ fn map_program(
             node: file.node.clone(),
             base: segment.offset - page_offset,
             size: page_offset + segment.filesz,
+            name: name.filter(|_| access == UserAccess::ReadExecute).cloned(),
         });
         let anon = Anon { access: Some(access), file: source, ..Anon::default() };
         let at = segment.first_page().wrapping_add(bias);
@@ -292,6 +295,11 @@ fn copy_block(buffer: UserBuffer) -> Result<Vec<u8, Kmalloc>> {
     Ok(bytes)
 }
 
+/// `opened`, shared, if there is memory for it.
+fn named(opened: fs::Opened) -> Option<fs::MapName> {
+    alloc::sync::Arc::try_new_in(opened, kmalloc()).ok()
+}
+
 /// The last part of a path: what a process run from it is named.
 fn base_name(path: &[u8]) -> &[u8] {
     let path = path.strip_suffix(b"/").unwrap_or(path);
@@ -333,6 +341,9 @@ pub fn exec(
     // it by the file run, the script's for a script (ADR 0334).
     let ran = crate::net::firewall::Program { mount: file.at.mount.id, id: file.at.node.stat().id };
     let mut program_file = File::open(&file.at)?;
+    // The path of the file that runs, for crash records (ADR 0530): none
+    // if there is no memory for it, which costs only its name there.
+    let mut image = named(file.opened);
     drop(file);
     let mut script = None;
     if let Some(line) = shebang(&program_file.head) {
@@ -342,6 +353,7 @@ pub fn exec(
         if program_file.head.starts_with(b"#!") {
             return Err(error(Kernel::NotExecutable));
         }
+        image = named(fs::Opened::from_root(&interpreter));
         script = Some((interpreter, argument));
     }
     let program = program_file.program()?;
@@ -355,7 +367,7 @@ pub fn exec(
             if found.image.kind != Kind::Relocatable || found.interpreter.is_some() {
                 return Err(error(Kernel::NotExecutable));
             }
-            Some((file, found))
+            Some((file, found, named(fs::Opened::from_root(path))))
         }
         None => None,
     };
@@ -367,11 +379,11 @@ pub fn exec(
         Kind::Fixed => USER_START + PAGE_SIZE..ANONYMOUS_TOP / 2,
         Kind::Relocatable => startup::IMAGE_BASE..startup::IMAGE_BASE + startup::WINDOW,
     };
-    let main = map_program(&space, &program_file, &program, window)?;
+    let main = map_program(&space, &program_file, &program, window, image.as_ref())?;
     let loader = match &interpreter {
-        Some((file, found)) => {
+        Some((file, found, name)) => {
             let window = startup::LOADER_BASE..startup::LOADER_BASE + startup::WINDOW;
-            Some(map_program(&space, file, found, window)?)
+            Some(map_program(&space, file, found, window, name.as_ref())?)
         }
         None => None,
     };
@@ -398,7 +410,12 @@ pub fn exec(
         .unwrap_or("program");
     let name = Name::new(name);
     keep_args(target, &block, script.as_ref(), execfn);
-    target.posix.lock().program = ran;
+    let old_image = {
+        let mut posix = target.posix.lock();
+        posix.program = ran;
+        core::mem::replace(&mut posix.image, image)
+    };
+    drop(old_image);
     if let Some(cwd) = cwd {
         super::set_directory(target, cwd);
     }

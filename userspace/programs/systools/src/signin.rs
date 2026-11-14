@@ -336,20 +336,26 @@ impl Spares {
 }
 
 /// Starts `user`'s session on `terminal`, acting for them and the
-/// groups `groups`, with the names capability in `names`. Returns the
-/// number of its first process, a child of authd's.
+/// groups `groups`, with the names capability in `names`: a login shell,
+/// or `command` with the shell's `-c` if there is one. Returns the number
+/// of its first process, a child of authd's.
 pub fn start(
     names: u32,
     user: &User,
     groups: &[u32],
     terminal: &OwnedFd,
     term: &str,
+    command: Option<&str>,
 ) -> Result<u64, String> {
     let tty = terminal.as_raw_fd();
+    let mut args: Vec<&[u8]> = vec![b"login", b"--session"];
+    if let Some(command) = command {
+        args.extend([b"--command".as_slice(), command.as_bytes()]);
+    }
     let program = Program {
         what: "the session",
         path: FIRST_PROGRAM,
-        args: &[b"login", b"--session"],
+        args: &args,
         env: environment(user, term),
         descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
         network: true,

@@ -146,6 +146,10 @@ pub struct PosixState {
     /// interpreter): what the firewall's rules for programs name (ADR
     /// 0334). A child has its parent's until it runs its own.
     pub program: crate::net::firewall::Program,
+    /// The path of the file it last ran (the interpreter, for a script),
+    /// as `exec` was given it: what its crash record names (ADR 0530). A
+    /// child has its parent's until it runs its own.
+    pub image: Option<crate::fs::MapName>,
 }
 
 /// Whether two processes act for the same user, which `kill` asks of
@@ -190,6 +194,7 @@ impl PosixState {
             file_mask: 0o022,
             directory: None,
             program: crate::net::firewall::Program::NONE,
+            image: None,
         })
     }
 
@@ -204,6 +209,9 @@ impl PosixState {
         }
         if self.directory.is_none() {
             self.directory.clone_from(&parent.directory);
+        }
+        if self.image.is_none() {
+            self.image.clone_from(&parent.image);
         }
     }
 }

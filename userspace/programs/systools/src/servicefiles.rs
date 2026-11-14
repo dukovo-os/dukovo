@@ -704,7 +704,7 @@ pub fn enable(name: &str, on: bool) -> Result<i32, Fail> {
 }
 
 /// Whether `name` names a service file in [`DIR`], not a path.
-fn name_ok(name: &str) -> bool {
+pub(crate) fn name_ok(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.@".contains(&b))

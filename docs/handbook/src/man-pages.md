@@ -46,6 +46,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `metricsd(8)`, `metrics(1)`, `metrics.toml(5)` | The machine's history and its early warnings: what is kept and for how long, showing it now and over any time range, the warnings and when each is raised and cleared, and the Prometheus endpoint |
 | `notifyd(8)`, `notify-send(1)`, `notifications(1)` | Notifications: sending them, how the console shows them, and listing them |
 | `alertd(8)`, `alerts(8)`, `alerts.toml(5)` | Alerts: what raises one and what is told, the notice at sign-in, email and webhooks with their retries, the command that lists, tests, raises and clears them, and the file that names where alerts go |
+| `report(1)`, `reportd(8)`, `report.toml(5)`, `radix-crashes(4)` | Problem reports: the questions and the preview, saving a report to a file or handing it to a phone, the service that keeps the crashes and sends the reports, the file that names the server and the security team's keys, and the kernel's records of crashes |
 | `dukovo-privacy(7)` | The privacy promise: what Dukovo keeps on the machine and what it sends on its own |
 | `rtrace(1)` | Tracing a process's system calls and capability messages |
 | `radix_cap_call(2)`, `radix_send(2)`, `radix_recv(2)`, `radix_reply_recv(2)`, `radix_notify(2)`, `radix_wait(2)`, `radix_yield(2)`, `radix_map(2)`, `radix_unmap(2)`, `radix_ring_setup(2)`, `radix_ring_enter(2)`, `radix_debug_log(2)` | The twelve system calls, one page each, with their registers and errors |

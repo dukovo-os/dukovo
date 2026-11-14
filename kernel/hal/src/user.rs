@@ -418,6 +418,10 @@ pub trait UserMode: crate::Threads {
     /// thread's context gets it with [`UserMode::set_thread_pointer`].
     fn thread_pointer(regs: &Self::UserRegisters) -> u64;
 
+    /// The program counter, stack pointer and frame pointer saved registers
+    /// hold: where a stack trace of the thread starts (ADR 0530).
+    fn frame_registers(regs: &Self::UserRegisters) -> [u64; 3];
+
     /// Leaves the kernel for user mode in the running context with every
     /// register as `regs` has it.
     fn enter_user_registers(regs: &Self::UserRegisters) -> !;

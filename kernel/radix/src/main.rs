@@ -131,6 +131,9 @@ pub struct Settings {
     pub random_maps: bool,
     /// A panic writes a crash dump, unless `crashdump=off` (ADR 0483).
     pub crash_dump: bool,
+    /// A program's crash leaves a record for reportd, unless
+    /// `crashrecords=off` (ADR 0530).
+    pub crash_records: bool,
 }
 
 static SETTINGS: Once<Settings> = Once::new();
@@ -158,6 +161,7 @@ pub fn settings() -> Settings {
         fuzz_seed: None,
         random_maps: true,
         crash_dump: true,
+        crash_records: true,
     })
 }
 
@@ -199,6 +203,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
         fuzz_seed: flags.value("fuzz-seed").and_then(|v| v.parse().ok()),
         random_maps: !flags.has("norandmaps"),
         crash_dump: flags.value("crashdump") != Some("off"),
+        crash_records: flags.value("crashrecords") != Some("off"),
     };
     let _ = SETTINGS.set(settings);
     if let Some(level) = flags.value("loglevel") {

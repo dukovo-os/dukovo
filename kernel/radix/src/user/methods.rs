@@ -490,10 +490,19 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
                 }
                 _ => return Err(Kernel::InvalidArgument.status(4)),
             }
+            // A mapping that may run, now or after `mprotect`, keeps the
+            // file's path for crash records (ADR 0530); a writable one never
+            // runs, as no page is both writable and runnable.
+            let name = (access != Some(radix_hal::UserAccess::ReadWrite))
+                .then(|| {
+                    alloc::sync::Arc::try_new_in(file.opened, HEAP.with(Flags::MAY_SLEEP)).ok()
+                })
+                .flatten();
             let source = FileSource {
                 node: file.at.node.clone(),
                 base: a.offset,
                 size: stat.size.saturating_sub(a.offset),
+                name,
             };
             // A read-only shared mapping is a private one that stays
             // read-only, as the file it maps cannot be written through it.

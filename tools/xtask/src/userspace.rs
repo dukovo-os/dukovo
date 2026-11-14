@@ -118,6 +118,7 @@ pub const STD_ARCHIVE: &[(&str, &str)] = &[
     ("system/tests/posix/netservices-test", "netservices-test"),
     ("system/tests/posix/std-test", "std-test"),
     ("system/tests/posix/tls-test", "tls-test"),
+    ("system/tests/report/crash-test", "report-test"),
 ];
 
 /// Symbolic links to those programs in the boot archive: each link's path,
@@ -249,6 +250,8 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/remount", "systools"),
     ("system/commands/renice", "systools"),
     ("system/commands/replace", "systools"),
+    ("system/commands/report", "systools"),
+    ("system/commands/reportd", "systools"),
     ("system/commands/resize-ntfs", "systools"),
     ("system/commands/resolvectl", "systools"),
     ("system/commands/resolved", "systools"),

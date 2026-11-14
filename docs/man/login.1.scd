@@ -117,6 +117,44 @@ that nobody resets a password unseen. Restart and Power off ask
 encrypted (release 1.4), resetting a password will need the recovery
 key.
 
+# A FAILED START
+
+While the notice of a start that failed its health check is shown
+(*sysupdate*(8), ADR 0501), which *consoled*(8) and *serial-console*(8) show
+above the sign-in until the next start, login offers three keys after it
+(ADR 0532) and reads one, without Enter:
+
+```
+Press R to report this failure, Q for its support page as a QR code, or Enter to sign in.
+```
+
+*Q*
+	Shows the QR code of the support page that the notice names, with the
+	address under it, and *Press a key to go back.* A phone's camera reads
+	the code. A terminal too narrow or too low for the code gets the
+	address alone. The choices are shown again after a key. When the
+	notice names no support page, *Q* is not a choice.
+
+*R*
+	Says *Sign in as an administrator to report it.*, asks for the name
+	and the password, and signs the person in with the command *report
+	failure* (*report*(1)) in place of their shell: the session is the
+	report, and ends with it. Only an administrator may make that report;
+	anyone else is told so by *report*. A wrong name or password shows the
+	choices again.
+
+Enter
+	Signs in as usual: the name is asked.
+
+Any other printable key
+	Signs in as usual, with the key as the first letter of the name. A name
+	that starts with *R* or *Q* is typed after Enter.
+
+Other keys, such as Space and the arrow keys, are ignored. A sign-in at a
+console with no failure notice asks for the name at once. On a computer
+that has no account yet, the owner's account is made first and the keys
+are not offered.
+
 # THE SESSION
 
 authd runs *login --session* as the session's first process, acting
@@ -143,7 +181,8 @@ as Linux's sshd runs one.
 
 *--command* _command_
 	In a session, run _command_ with *SHELL -c* instead of a login
-	shell. authd passes it for an SSH client's command.
+	shell. authd passes it for an SSH client's command, and for the
+	command that the failure notice's *R* signs in with.
 
 # EXIT STATUS
 
@@ -152,5 +191,5 @@ authd could not be reached in 30 seconds, saying so.
 
 # SEE ALSO
 
-*authd*(8), *consoled*(8), *sshd*(8), *user*(8), *passwd*(1), *who*(1), *last*(1),
+*authd*(8), *consoled*(8), *report*(1), *serial-console*(8), *sshd*(8), *sysupdate*(8), *user*(8), *passwd*(1), *who*(1), *last*(1),
 *lastlog*(8), *nukesh*(1), *dukovo-boot*(7), *systools*(1)

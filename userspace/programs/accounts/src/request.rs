@@ -180,6 +180,11 @@ pub enum Request {
         password: Vec<u8>,
         /// The terminal's type, for `TERM`.
         term: String,
+        /// A command for the session to run, with the shell's `-c`, in
+        /// place of a login shell, as the failure notice's report key
+        /// runs `report failure`; the session ends with it. A request
+        /// without one, as older sign-in programs send, starts the shell.
+        command: Option<String>,
     },
     /// Set administrator `name`'s password to `password`, from the
     /// startup-trouble menu (ADR 0253): root's to ask, and only while the
@@ -664,8 +669,11 @@ impl Request {
             Request::Owner { name, full_name, password } => {
                 vec![b"owner", name.as_bytes(), full_name.as_bytes(), password]
             }
-            Request::Session { name, password, term } => {
-                vec![b"session", name.as_bytes(), password, term.as_bytes()]
+            Request::Session { name, password, term, command } => {
+                let mut fields: Vec<&[u8]> =
+                    vec![b"session", name.as_bytes(), password, term.as_bytes()];
+                fields.extend(command.iter().map(String::as_bytes));
+                fields
             }
             Request::Reset { name, password } => vec![b"reset", name.as_bytes(), password],
             Request::Disable { name } => vec![b"disable", name.as_bytes()],
@@ -873,11 +881,24 @@ impl Request {
                 full_name: text(full_name)?,
                 password: password.to_vec(),
             }),
-            [b"session", name, password, term] => Ok(Request::Session {
-                name: text(name)?,
-                password: password.to_vec(),
-                term: text(term)?,
-            }),
+            [b"session", name, password, term, ref command @ ..] => {
+                // Older sign-in programs send no command, and a session
+                // runs one command at most.
+                let command = match command {
+                    [] => None,
+                    [command] => match text(command)? {
+                        command if command.is_empty() => return Err(malformed()),
+                        command => Some(command),
+                    },
+                    _ => return Err(malformed()),
+                };
+                Ok(Request::Session {
+                    name: text(name)?,
+                    password: password.to_vec(),
+                    term: text(term)?,
+                    command,
+                })
+            }
             [b"elevate", mode, kind, password, term, directory, ref rest @ ..] => {
                 let mode = Mode::of(mode).ok_or_else(malformed)?;
                 let (password, ask) = password_of(kind, password).ok_or_else(malformed)?;
@@ -1129,8 +1150,8 @@ impl std::fmt::Debug for Request {
             Request::Owner { name, full_name, .. } => {
                 write!(f, "Owner {{ name: {name:?}, full_name: {full_name:?} }}")
             }
-            Request::Session { name, term, .. } => {
-                write!(f, "Session {{ name: {name:?}, term: {term:?} }}")
+            Request::Session { name, term, command, .. } => {
+                write!(f, "Session {{ name: {name:?}, term: {term:?}, command: {command:?} }}")
             }
             Request::Elevate { mode, password, ask, term, command, .. } => {
                 let typed = password.is_some();

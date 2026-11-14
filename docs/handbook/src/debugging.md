@@ -119,8 +119,11 @@ it and `grep` searches it. Its sections are `== Panic` (the report as the
 screen showed it, with the backtrace), `== CPUs`, `== Threads`,
 `== Run queues`, `== Locks`, `== Memory`, one `== Stack of CPU N` for the
 panicking CPU and each of up to eight others, and `== Log`. The ten newest
-dumps are kept, within 64 MiB, and none is sent anywhere: read it before
-you copy it into a report, as you would a log.
+dumps are kept, within 64 MiB, and none is sent anywhere. The reportd
+service keeps each as a crash, with its `== Panic` section alone, and
+`report crash` reports it ("Reporting a problem"); the other sections,
+which hold the kernel's stacks, never go into a report: read them before
+you copy them into one, as you would a log.
 
 A dump lives in the same memory as the crash log, so a switched-off
 machine, or firmware that clears the memory when it restarts, loses it as

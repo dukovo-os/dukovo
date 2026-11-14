@@ -73,6 +73,10 @@ use crate::domains::DomainRef;
 pub type SpaceRef = Arc<SpaceObject, Kmalloc>;
 /// A frame, shared.
 pub type FrameRef = Arc<FrameObject, Kmalloc>;
+/// What [`SpaceObject::each_running_file`] is told of a part of a file
+/// mapped to run: its start, its end, where its start is in its file, and
+/// the file's path where it is known.
+pub type RunningFile<'a> = dyn FnMut(u64, u64, u64, Option<&crate::fs::Opened>) + 'a;
 
 fn kmalloc() -> Kmalloc {
     HEAP.with(Flags::MAY_SLEEP)
@@ -602,6 +606,29 @@ impl SpaceObject {
             self.unmap_range(region.start, region.end());
             false
         });
+    }
+
+    /// The parts of files mapped to run, lowest first, for a crash record
+    /// (ADR 0530): calls `each` with each [`RunningFile`]. The regions stay
+    /// locked meanwhile: `each` only copies.
+    pub fn each_running_file(&self, each: &mut RunningFile<'_>) {
+        let regions = self.regions.lock();
+        for region in regions.iter() {
+            let Backing::Anon(anon) = &region.backing else { continue };
+            let Some(file) = &anon.file else { continue };
+            if anon.access != Some(UserAccess::ReadExecute) {
+                continue;
+            }
+            let offset = file.base.saturating_add(region.offset.saturating_mul(PAGE_SIZE));
+            each(region.start, region.end(), offset, file.name.as_deref());
+        }
+    }
+
+    /// The end of the region `address` is in, if one is mapped there.
+    pub fn region_end(&self, address: u64) -> Option<u64> {
+        let regions = self.regions.lock();
+        let region = regions.get(first_after(&regions, address))?;
+        (region.start <= address).then(|| region.end())
     }
 
     /// Whether `address` is mapped, and with which rights.

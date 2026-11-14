@@ -167,7 +167,8 @@ _/processes/_*n*_/files_
 	*size*, *fs* (the filesystem's kind), *mount* (the mount's number),
 	*rights*, *offset* (unless a read or write holds it), *cut=yes* if
 	the path was too long to keep whole, and *path*: the path it was
-	opened by, made absolute, or a pipe's or socket's name. For any
+	opened by, made absolute, or a pipe's or socket's name. Beneath a
+	view, such as a service's root, it is the path the view shows. For any
 	other capability they are *kind* (*thread*, *address_space*,
 	*process*, *endpoint*, *random*, *kernel_log* and so on) and
 	*rights*. Rights are names joined by *+*, as *radix-capabilities*(7)
