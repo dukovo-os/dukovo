@@ -6,7 +6,8 @@
 // through the console's limit on sign-in tries, the one-time codes of an
 // authenticator app (computed here from the secret the page shows, as an
 // app on a phone does), the certificate the console serves, a call made
-// from the page with fetch(), and the check of a page in dark and light.
+// from the page with fetch() and the error it gets, and the check of a page
+// in dark and light.
 // The scripts import it from beside themselves: the lab's runner starts
 // each script in the test's own folder.
 
@@ -256,6 +257,18 @@ export async function fetchAsPage(page, method, route, body = null) {
       return { status: answer.status, text, json };
     },
     { method, route, body, csrf },
+  );
+}
+
+/** The route `template`, whose `{id}` part is `id`. */
+export const routeOf = (template, id) => template.replace("{id}", String(id));
+
+/** Throws unless `answer`, as `fetchAsPage` gives it, is the console's error `id` with HTTP status `status`; `what` says what was asked. */
+export function mustBe(answer, status, id, what) {
+  const error = answer.json?.error;
+  ensure(
+    answer.status === status && error?.id === id,
+    `${what} was answered ${answer.status} ${error?.id ?? answer.text}, not ${status} ${id}`,
   );
 }
 

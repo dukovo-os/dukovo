@@ -25,7 +25,18 @@
 // routes of a task that is not there are asked of the console too, as
 // ADM-127.
 
-import { ensure, look, mustHaveCalled, openConsole, fetchAsPage, signInDone, signOut, sleep } from "./console.mjs";
+import {
+  ensure,
+  fetchAsPage,
+  look,
+  mustBe,
+  mustHaveCalled,
+  openConsole,
+  routeOf,
+  signInDone,
+  signOut,
+  sleep,
+} from "./console.mjs";
 
 // The password that tasks.toml gives the accounts it makes.
 const PASSWORD = "lab-console-password";
@@ -42,9 +53,6 @@ const ROUTES = {
   events: "GET /api/1/events",
 };
 
-/** The route `template`, whose `{id}` part is `id`. */
-const routeOf = (template, id) => template.replace("{id}", String(id));
-
 // A task that is not there.
 const ABSENT = 999999;
 
@@ -53,15 +61,6 @@ const ABSENT = 999999;
 // console waits before it locks a session with no page.
 const SECONDS = 150;
 const CLOSED_FOR_SECONDS = 75;
-
-/** Throws unless `answer`, as `fetchAsPage` gives it, is the console's error `id` with HTTP status `status`. */
-function mustBe(answer, status, id, what) {
-  const error = answer.json?.error;
-  ensure(
-    answer.status === status && error?.id === id,
-    `${what} was answered ${answer.status} ${error?.id ?? answer.text}, not ${status} ${id}`,
-  );
-}
 
 /** The task `id` as `page` reads it, once `ready` holds of it, waiting up to `seconds`. */
 async function taskWhere(page, id, ready, what, seconds = 60) {
