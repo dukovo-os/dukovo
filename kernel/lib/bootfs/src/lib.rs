@@ -37,8 +37,11 @@ pub mod write;
 /// The size of a header, and of the blocks file data is padded to.
 pub const BLOCK: usize = 512;
 
-/// The most entries an archive may hold.
-pub const MAX_ENTRIES: usize = 4096;
+/// The most entries an archive may hold: a bound on what the kernel
+/// indexes when it mounts one. The live image's archive holds the whole
+/// system, about 4,300 entries in 1.0's first alpha, and each page of the
+/// web console and each manual page adds to it.
+pub const MAX_ENTRIES: usize = 16_384;
 
 /// The longest path, prefix and name together.
 pub const MAX_PATH: usize = 255;

@@ -1016,7 +1016,13 @@ fn write_archive(files: &[(String, PathBuf)], epoch: Option<String>) -> Result<V
         };
         written.map_err(|err| crate::Error::new(format!("the boot archive: {path}: {err}")))?;
     }
-    Ok(writer.finish())
+    let archive = writer.finish();
+    // The kernel checks the archive before it uses any of it, and stops
+    // the boot when it does not pass: check it as the kernel will.
+    radix_bootfs::open(&archive).map_err(|err| {
+        crate::Error::new(format!("the boot archive of {} entries: {err}", entries.len()))
+    })?;
+    Ok(archive)
 }
 
 /// The startup archive (ADR 0307): Spark at [`STARTUP_PROGRAM`] and the
