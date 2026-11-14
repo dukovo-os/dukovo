@@ -21,7 +21,7 @@ user - make, list, disable, remove, rename and change accounts
 
 *user rename* _name_ _new-name_
 
-*user set* [*--full-name* _name_] [*--admin* | *--no-admin*] [*--elevate-without-password* | *--elevate-with-password*] [*--yes*] _name_
+*user set* [*--full-name* _name_] [*--admin* | *--no-admin*] [*--elevate-without-password* | *--elevate-with-password*] [*--console* | *--no-console*] [*--yes*] _name_
 
 # DESCRIPTION
 
@@ -69,10 +69,19 @@ group too, and moves its home if it is _/users/_*name*. It waits until
 nothing runs for the account: until its person has signed out and what
 they left running has ended, or the account is disabled.
 
-*user set* changes the account's full name, or whether it is an
-administrator's. Someone who is no longer an administrator keeps
+*user set* changes the account's full name, whether it is an
+administrator's, whether it elevates without a password, or whether it
+signs in to the web console without being an administrator
+(*dukovo-admin*(7)). Someone who is no longer an administrator keeps
 nothing of the admin set: their elevated commands end, and elevate
 asks them nothing more.
+
+An account signs in to the web console if it is an administrator's, or
+a member of the group *console*, which *--console* puts it in and
+*--no-console* takes it out of; authd makes the group, number 12, the
+first time. An administrator signs in either way, and root never does.
+An account that is no longer allowed is signed out of the console at
+once.
 
 An administrator does not disable, remove or rename the account they
 are signed in with: another administrator does. Disabling or removing
@@ -107,6 +116,16 @@ administrator's password and enables the account.
 *--elevate-with-password*
 	With *user set*: the administrator types their password to
 	elevate again, as by default.
+
+*--console*
+	With *user set*: the account signs in to the web console without
+	being an administrator: it goes in the *console* group. It may look
+	at the console and change its own second steps there; it makes no
+	change as an administrator.
+
+*--no-console*
+	With *user set*: the account is no longer in the *console* group. An
+	administrator still signs in to the console.
 
 *--keep-home*
 	With *user remove*: keep the home where it is. Its files stay
@@ -166,6 +185,13 @@ bob is removed: its home is archived in /users/.removed/bob-2026-10-31.tar.zst,
 for administrators only.
 ```
 
+Let Bob, who is no administrator, sign in to the web console:
+
+```
+$ elevate user set --console bob
+bob is changed: signs in to the web console.
+```
+
 Change your own full name:
 
 ```
@@ -189,4 +215,4 @@ saying why.
 
 # SEE ALSO
 
-*passwd*(1), *login*(1), *authd*(8), *elevate*(8), *id*(1), *tar*(1), *systools*(1)
+*passwd*(1), *login*(1), *authd*(8), *admind*(8), *dukovo-admin*(7), *elevate*(8), *id*(1), *tar*(1), *systools*(1)
