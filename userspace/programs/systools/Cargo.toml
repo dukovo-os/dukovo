@@ -57,6 +57,9 @@ system-release = { path = "../system-release" }
 slots = { path = "../slots" }
 # health.toml(5).
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+# The web console changes a settings file with its comments and order
+# kept (ADR 0516): toml_edit, the toml crate's sibling.
+toml_edit = { version = "0.25.17", default-features = false, features = ["parse", "display"] }
 # bundle feed signs a bundle's own update feed, a small TUF repository, as
 # the catalog's is signed (ADRs 0381 and 0390).
 catalog-repo = { path = "../catalog-repo" }
