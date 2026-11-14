@@ -1,0 +1,24 @@
+  GNU nano 7.2                       hello.txt                        Modified
+Hello nano! The first line of the file.
+A second line, a little longer than the first one.
+
+After a blank line, the last one.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Save modified buffer?
+ Y Yes
+ N No           ^C Cancel

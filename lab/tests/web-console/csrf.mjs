@@ -5,7 +5,7 @@
 // runner (lab repository, docs/test-files.md, "Browser tests"): every
 // route of the console that changes anything, asked for as another site
 // would ask, and refused. An administrator signs in, and the test posts to
-// each of the 24 routes with what a forger can send: no Origin, the Origin
+// each of the 30 routes with what a forger can send: no Origin, the Origin
 // of another site, the console's own Origin said to come from another
 // site, no token, a token that is not the session's. Every one is refused
 // with 403, and the session still stands afterwards, locked or unlocked as
@@ -42,9 +42,9 @@ import {
 const PASSWORD = "lab-console-password";
 const NAME = "wc-csrf";
 
-// What stands for the `{id}` of a task's or a change's route: any number
-// does, since the console refuses the forgery before it looks for the task
-// or the change.
+// What stands for the `{id}` of a task's, a change's or a terminal's route,
+// and the `{pane}` of a pane's: any number does, since the console refuses
+// the forgery before it looks for what the number names.
 const ANY_ID = 1;
 
 // The routes that sign a browser in. They have no session yet, so they
@@ -80,10 +80,21 @@ const SESSION_ROUTES = [
   ["POST /api/1/changes/{id}/keep", {}],
   ["POST /api/1/changes/{id}/put-back", {}],
   ["POST /api/1/tasks/{id}/stop", {}],
+  // The terminal's routes: a forged one would make an administrator's shell, add a pane to a
+  // terminal, change its layout or name, or end it.
+  ["POST /api/1/terminals", { admin: true, cols: 80, rows: 24 }],
+  ["POST /api/1/terminals/{id}/panes", { cols: 80, rows: 24 }],
+  ["POST /api/1/terminals/{id}/layout", { layout: "columns" }],
+  ["POST /api/1/terminals/{id}/rename", { name: "forged" }],
+  ["POST /api/1/terminals/{id}/end", {}],
+  ["POST /api/1/terminals/panes/{pane}/end", {}],
 ];
 
-/** The path of a route written as `METHOD /path`, with a number for each `{id}`. */
-const pathOf = (route) => routeOf(route.split(" ")[1], ANY_ID);
+/** The path of a route written as `METHOD /path`, with a number for each `{id}` and `{pane}`. */
+const pathOf = (route) => routeOf(route.split(" ")[1], ANY_ID).replace("{pane}", String(ANY_ID));
+
+/** The route as `track` records it: its method and its path. */
+const calledAs = (route) => `${route.split(" ")[0]} ${pathOf(route)}`;
 
 /**
  * The headers of the forgeries to try on a route, by what they get wrong.
@@ -258,6 +269,6 @@ export default async function check(t) {
 
   // The browser posted to every route, where it had a page to do it from.
   if (another) {
-    mustHaveCalled(seen, [...SIGN_IN_ROUTES, ...SESSION_ROUTES].map(([route]) => routeOf(route, ANY_ID)));
+    mustHaveCalled(seen, [...SIGN_IN_ROUTES, ...SESSION_ROUTES].map(([route]) => calledAs(route)));
   }
 }

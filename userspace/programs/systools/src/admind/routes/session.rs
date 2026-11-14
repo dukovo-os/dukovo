@@ -20,6 +20,7 @@ use super::{Context, Live, Outcome, Reply, Text, ask, shown};
 use crate::admind::errors::{Attempt, Failure, Kind};
 use crate::admind::guard::{self, SESSION_COOKIE};
 use crate::admind::shared::{seconds_left, unix_now};
+use crate::admind::terminal::protocol::Why;
 use crate::admind::webauthn::{self, Credential};
 use crate::admind::who::{self, Account};
 
@@ -61,6 +62,7 @@ pub async fn show(cx: &Context<'_>, live: &Live) -> Outcome {
         "unlock_seconds": seconds_left(unlocked, unix_now()),
         "needs_step": live.needs_step,
         "kinds": kinds,
+        "terminal": super::terminals::offered(cx.shared, &live.name),
     })))
 }
 
@@ -142,6 +144,10 @@ pub async fn extend(cx: &Context<'_>, live: &Live) -> Outcome {
 
 /// `POST /api/1/lock`.
 pub async fn lock(cx: &Context<'_>, live: &Live) -> Outcome {
+    // The administrators' panes end first, for `locked`: authd ends their
+    // shells as it locks, and a shell that ended while authd was asked
+    // would say only that its program exited.
+    cx.shared.terminals.borrow_mut().end_admin_panes(&live.authd, Why::Locked);
     let what = format!("to lock {}'s session", shown(&live.name));
     ask(cx, Console::Lock { session: live.authd.clone() }, Attempt::Other, &what).await?;
     cx.shared.set_unlocked(&live.cookie, None);

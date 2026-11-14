@@ -8,8 +8,10 @@
 // header's control and the dialog both read and set it.
 
 import { post } from './api.js';
-import { busy, clearError, errorSlot, h, icon, showError } from './dom.js';
-import { canUsePasskeys, getAssertion, passkeyProblem } from './webauthn.js';
+import { clearError, errorSlot, h, icon, showError } from './dom.js';
+
+// With this many minutes left the header says the unlock is about to end.
+const WARN_MINUTES = 2;
 
 const listeners = new Set();
 let endsAt = null;
@@ -24,6 +26,11 @@ export function isUnlocked() {
 /** The minutes still left, counting a started one: 1 until the last second. */
 function minutesLeft() {
   return Math.ceil((endsAt - performance.now()) / 60_000);
+}
+
+/** The minutes of the unlock still left, counting a started one, or null while the console is locked. */
+export function unlockMinutes() {
+  return isUnlocked() ? minutesLeft() : null;
 }
 
 function notify() {
@@ -57,122 +64,20 @@ export function onUnlockChange(listener) {
   return () => listeners.delete(listener);
 }
 
-// What the dialog offers for each way of proving who someone is, with the
-// field it asks for and what the link to it says.
-const METHODS = {
-  passkey: { link: 'Use your passkey', submit: 'Unlock with your passkey' },
-  code: {
-    link: 'Use the code from your app',
-    label: 'Six-digit code',
-    submit: 'Unlock',
-  },
-  password: { link: 'Use your password', label: 'Password', submit: 'Unlock' },
-};
-
-/** The ways this session can unlock, in the order they are offered. */
-function methodsOf({ kinds }) {
-  return [
-    kinds.includes('passkey') && canUsePasskeys() && 'passkey',
-    kinds.includes('app') && 'code',
-    'password',
-  ].filter(Boolean);
-}
-
-function proofField(method) {
-  const isCode = method === 'code';
-  const input = h('input', {
-    id: 'proof', class: isCode ? 'input mono code' : 'input', required: true,
-    type: isCode ? 'text' : 'password', inputmode: isCode ? 'numeric' : null,
-    autocomplete: isCode ? 'one-time-code' : 'current-password',
-  });
-  return { input, field: h('div', { class: 'field' }, h('label', { for: 'proof' }, METHODS[method].label), input) };
-}
-
-/**
- * The body of an unlock request for `method`, with the passkey prompt for
- * it done first. `signal` ends the prompt when the dialog goes.
- */
-async function proofOf(method, input, signal) {
-  if (method === 'passkey') {
-    const { publicKey } = await post('/api/1/unlock/passkey/options', {});
-    return { kind: 'passkey', credential: await getAssertion(publicKey, signal) };
-  }
-  if (method === 'code') return { kind: 'code', code: input.value.replace(/\s/g, '') };
-  return { kind: 'password', password: input.value };
-}
-
 /**
  * Opens the unlock dialog for `session` and resolves with whether the
  * console is unlocked when it closes. `action` is the words for what the
- * person is about to do ("restart nginx"), if there is one.
+ * person is about to do ("restart nginx"), if there is one. The dialog is
+ * another module, read when it is first needed: most sessions never open it.
  */
-export function askToUnlock(session, action) {
-  if (isUnlocked()) return Promise.resolve(true);
-  const methods = methodsOf(session);
-  const dialog = h('dialog', { class: 'dialog medium', 'aria-labelledby': 'h-unlock' });
-  const prompt = new AbortController();
-
-  function show(method) {
-    const problem = errorSlot('unlock-error');
-    const status = h('p', { class: 'hint', role: 'status' });
-    const { input, field } = method === 'passkey' ? {} : proofField(method);
-    const submit = h('button', { class: 'btn default block', type: 'submit' },
-      method === 'passkey' && icon('key'), METHODS[method].submit);
-    const others = methods.filter((other) => other !== method).map((other) =>
-      h('button', { class: 'btn link small', type: 'button', onclick: () => show(other) }, METHODS[other].link));
-    const cancel = h('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, 'Cancel');
-
-    const form = h('form', {},
-      h('div', { class: 'dialog-head' }, icon('unlock'), h('h2', { id: 'h-unlock' }, 'Unlock to make changes')),
-      h('div', { class: 'dialog-body' },
-        h('p', {},
-          action && ['You are about to ', h('b', {}, action), '. '],
-          `Changes to ${session.host} need an administrator to prove it is them, just as `,
-          h('span', { class: 'mono' }, 'elevate'), ' asks at the console.'),
-        field,
-        submit,
-        problem,
-        status,
-        h('div', { class: 'btns apart' }, ...others),
-        h('div', { class: 'field' },
-          h('b', { class: 'label' }, 'Stay unlocked'),
-          h('span', {}, 'For 15 minutes'),
-          h('span', { class: 'hint' },
-            'The header shows the minutes left, and one tap sets it back to 15 while you work. Locks sooner if you ',
-            'sign out or close every console tab. Every change while unlocked is in the journal.'))),
-      h('div', { class: 'dialog-foot' }, cancel));
-
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      busy([submit, ...others], async () => {
-        clearError(problem, input);
-        if (method === 'passkey') status.textContent = 'Follow the browser\'s prompt to use your passkey.';
-        try {
-          const { unlock_seconds: seconds } = await post('/api/1/unlock', await proofOf(method, input, prompt.signal));
-          setUnlockSeconds(seconds);
-          dialog.close('unlocked');
-        } catch (error) {
-          if (!prompt.signal.aborted) showError(problem, passkeyProblem(error), input);
-        } finally {
-          status.textContent = '';
-        }
-      });
-    });
-    dialog.replaceChildren(form);
-    (input ?? submit).focus();
-  }
-
-  return new Promise((resolve) => {
-    dialog.addEventListener('close', () => {
-      prompt.abort();
-      dialog.remove();
-      resolve(dialog.returnValue === 'unlocked');
-    });
-    document.body.append(dialog);
-    dialog.showModal();
-    show(methods[0]);
-  });
+export async function askToUnlock(session, action) {
+  if (isUnlocked()) return true;
+  const { openUnlockDialog } = await import('./unlock-dialog.js');
+  return openUnlockDialog(session, action);
 }
+
+/** Whether to go on with Lock: it asks first when administrator shells would end. */
+export const confirmLock = async () => (await import('./shell/dialogs.js')).lockOk();
 
 /**
  * The header's control: what the console may do now, with the minutes left
@@ -216,11 +121,12 @@ export function accessControl(session) {
     element.className = unlocked ? 'access open' : 'access';
     if (unlocked) {
       minutes.textContent = `${minutesLeft()} min`;
+      element.classList.toggle('soon', minutesLeft() <= WARN_MINUTES);
       element.replaceChildren(
         icon('unlock'),
         h('span', {}, 'Unlocked · ', minutes),
         button('Reset to 15 min', () => change('/api/1/unlock/extend')),
-        button('Lock', () => change('/api/1/lock')));
+        button('Lock', async () => (await confirmLock()) && change('/api/1/lock')));
     } else {
       element.replaceChildren(
         icon('lock'),
@@ -233,7 +139,10 @@ export function accessControl(session) {
     if (!element.isConnected) {
       stop();
     } else if (isUnlocked() === unlocked) {
-      if (unlocked) minutes.textContent = `${minutesLeft()} min`;
+      if (unlocked) {
+        minutes.textContent = `${minutesLeft()} min`;
+        element.classList.toggle('soon', minutesLeft() <= WARN_MINUTES);
+      }
     } else {
       const hadFocus = element.contains(document.activeElement);
       rebuild();

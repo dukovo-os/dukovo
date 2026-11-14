@@ -39,6 +39,11 @@
 //! NAME at TIME", by the machine's name and an address that is no person's,
 //! with the service file as it is on the machine and a SECRETS.md.
 //!
+//! Alice's page is open on the stream of events, GET /api/1/events, from the
+//! start: each row above is told to it as `event: change` with the row's
+//! number, how it was made and when, which are the journal's own, and
+//! nothing else, so no person, action or file is in it.
+//!
 //! Tasks need the lab's action, `lab.long`, and a build for people does not
 //! offer it. The image this test boots is such a build, as the case `admin`
 //! says of the lab's route, so there the test asks only that GET
@@ -63,7 +68,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::super::console_client::{ALICE_PASSWORD, Browser, Console, Pane, Reply, elevated};
+use super::super::console_client::{
+    ALICE_PASSWORD, Browser, Console, Events, Pane, Reply, elevated,
+};
 use super::super::*;
 
 /// The service the test changes: every image runs it and nothing needs it.
@@ -83,7 +90,7 @@ const PEER: &str = "10.0.2.2";
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-journal",
-    about: "The web console's journal of what changed: enabling the example service through its route is a console row with the file's diff, and Put back writes the file as it was, with admin put-back N and a row of its own, and says that Spark reads a service file when the service next starts, leaving the running service alone; the same file changed by hand is a by hand row, outside the console when no elevated command named the file and alice when one did, which Keep it marks seen and Put back undoes, through the route and typed as the page shows it, and the console's own writes are never taken for hand edits; admin export makes the settings a repository of one commit by the machine; where the build offers the lab's long action, a task shows its steps and log and is stopped by alice, and one running when admind restarts ends as stopped, the console restarted (ADR 0516)",
+    about: "The web console's journal of what changed: enabling the example service through its route is a console row with the file's diff, and Put back writes the file as it was, with admin put-back N and a row of its own, and says that Spark reads a service file when the service next starts, leaving the running service alone; the same file changed by hand is a by hand row, outside the console when no elevated command named the file and alice when one did, which Keep it marks seen and Put back undoes, through the route and typed as the page shows it, and the console's own writes are never taken for hand edits; the stream of events tells each row that ends as event: change, with its number, how it was made and when and nothing else; admin export makes the settings a repository of one commit by the machine; where the build offers the lab's long action, a task shows its steps and log and is stopped by alice, and one running when admind restarts ends as stopped, the console restarted (ADR 0516)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -108,9 +115,13 @@ fn admin_journal(vm: &mut Vm, case: &Case) -> Result<(), String> {
         pane: Pane::open()?,
         alice: Browser::default(),
         said: Vec::new(),
+        events: None,
     };
     elevated(vm)?;
     test.sign_in()?;
+    // Alice's page is open on the stream of events from here on: each row
+    // that ends is told to it as `event: change`.
+    test.events = Some(test.console.events(&test.alice)?);
 
     let original = test.file(vm)?;
     if original.contains("enabled = ") || original.contains("# edited by hand") {
@@ -140,6 +151,8 @@ struct Test {
     alice: Browser,
     /// The lines admind's log must have, each without its `admind: `.
     said: Vec<String>,
+    /// Alice's stream of events, once she has signed in.
+    events: Option<Events>,
 }
 
 impl Test {
@@ -216,6 +229,21 @@ impl Test {
     /// The change `id`, with its diffs.
     fn detail(&mut self, id: i64) -> Result<Value, String> {
         self.read(&format!("/api/1/changes/{id}"))
+    }
+
+    /// Checks that the stream tells the row `row` of the journal, which was
+    /// made `how`, as `event: change` with its number, how it was made and
+    /// when and nothing else: no person, action or file.
+    fn told(&self, row: &Value, how: &str) -> Result<(), String> {
+        let id = row["id"].as_i64().ok_or("a row has no number")?;
+        let events = self.events.as_ref().ok_or("alice has no stream of events")?;
+        let event = events.change(id, 20)?;
+        let keys: Vec<&str> =
+            event.as_object().map_or_default(|map| map.keys().map(String::as_str).collect());
+        if keys != ["at", "how", "id"] || event["how"] != json!(how) || event["at"] != row["at"] {
+            return Err(format!("the stream told row {id} as {event}, and the journal has {row}"));
+        }
+        Ok(())
     }
 
     /// The text of the service file, read in the pane: it is for everyone
@@ -369,6 +397,7 @@ fn console_change(vm: &mut Vm, test: &mut Test, original: &str) -> Result<(), St
     if fields != (Some("alice"), Some("console"), Some(0)) || !names(&row) {
         return Err(format!("the row of the enable is {row}"));
     }
+    test.told(&row, "console")?;
     let detail = test.detail(id)?;
     let diff = diff_of(&detail);
     if !diff.contains("\n+enabled = true") || diff.contains("\n-enabled") {
@@ -424,6 +453,7 @@ fn hand_edits(vm: &mut Vm, test: &mut Test, original: &str, first: i64) -> Resul
     {
         return Err(format!("a hand edit no command names is told as {row}"));
     }
+    test.told(&row, "by hand")?;
     let diff = diff_of(&test.detail(id)?);
     if !diff.contains("\n+enabled = false") {
         return Err(format!(
@@ -462,6 +492,7 @@ fn hand_edits(vm: &mut Vm, test: &mut Test, original: &str, first: i64) -> Resul
              could not name her from authd's audit lines"
         ));
     }
+    test.told(&row, "by hand")?;
     let detail = test.detail(id)?;
     if !diff_of(&detail).contains("\n+# edited by hand") {
         return Err(format!("the diff of the copy is {:?}", diff_of(&detail)));

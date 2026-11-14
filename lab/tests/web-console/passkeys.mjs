@@ -236,7 +236,7 @@ async function unlockWithPasskey(t, page) {
   ensure(options.status() === 200, `the console answered ${options.status()} to the passkey's challenge`);
   ensure(unlocked.status() === 200, `the console answered ${unlocked.status()} to the passkey`);
   await t.gone(dialog);
-  await t.see(page.getByText("15 min", { exact: true }));
+  await t.see(page.getByRole("banner").getByText("15 min", { exact: true }));
 }
 
 /** Removes the passkey: the unlocked console asks for no password. */

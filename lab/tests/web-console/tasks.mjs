@@ -18,6 +18,14 @@
 // ended, and the journal has the action's row with the task's number, as
 // the first account's console change.
 //
+// The second browser also has the Tasks drawer of the console's header: the
+// button says how many tasks run, the drawer lists the task under Running
+// with its step, its bar, its log and the command it is, and in each of the
+// console's looks; the other administrator stops it there, with the dialog's
+// question, and the task moves to "Needs a look" with its note, as the count
+// on the button says in words. At the phone's width the drawer fills the
+// screen as a dialog.
+//
 // The lab's action is in a build made with systools' `lab` feature, which
 // `ob image --lab` turns on for the lab image and no other image has. The
 // test needs it: a console that does not offer `lab.long` is a lab image
@@ -26,13 +34,16 @@
 // ADM-127.
 
 import {
+  answerTo,
   ensure,
   fetchAsPage,
-  look,
+  leaveWelcome,
+  lookAll,
   mustBe,
   mustHaveCalled,
   openConsole,
   routeOf,
+  signIn,
   signInDone,
   signOut,
   sleep,
@@ -106,6 +117,102 @@ async function absentTask(page) {
   mustBe(await fetchAsPage(page, "POST", `/api/1/tasks/${ABSENT}/stop`, {}), 404, "ADM-127", "its stop");
 }
 
+/** The header's Tasks button, whose name says how many tasks run or need a look. */
+const tasksButton = (page, words) => page.getByRole("banner").getByRole("button", { name: words });
+
+// The button's name while the task runs. A task that a test before stopped
+// on the same machine needs a look until the drawer is opened, and the name
+// says so first.
+const RUNNING = /^Tasks, (\d+ needs? a look, )?\d+ running$/;
+
+/** The drawer, and the card of the task called `title` in it. */
+const drawerOf = (page) => page.getByRole("complementary", { name: "Tasks" });
+const cardOf = (drawer, title) => drawer.getByRole("region", { name: title });
+
+// The task's card is named by the action's title and its one argument,
+// which a task of a test before has another of.
+const CARD = `Run the lab's long test · ${SECONDS}`;
+
+/** The drawer shows the running task: its group, step, bar, log and command; its looks; and Esc closes it. */
+async function drawerShowsTask(t, page, id, name) {
+  const button = tasksButton(page, RUNNING);
+  await t.see(button);
+  await button.click();
+  const drawer = drawerOf(page);
+  await t.see(drawer);
+  await t.see(drawer.getByRole("heading", { name: /^Running/, level: 3 }));
+  const card = cardOf(drawer, CARD);
+  await t.see(card);
+  await t.see(card.getByText(`Started by ${name}`, { exact: false }));
+  await t.see(card.getByText(new RegExp(`task ${id}$`)));
+  await t.see(card.getByText(/^Step \d of 4/).first());
+  const bar = card.getByRole("progressbar");
+  await t.see(bar);
+  ensure(Number.isInteger(Number(await bar.getAttribute("aria-valuenow"))), "the task's bar has no value");
+
+  // The log, and the command as the console would show it for this task.
+  await card.getByRole("button", { name: "Show the log" }).click();
+  const log = card.getByLabel(`Log of task ${id}`);
+  await t.see(log);
+  await page.waitForFunction((label) => document.querySelector(`[aria-label="${label}"]`)?.textContent.trim().length > 0, `Log of task ${id}`);
+  await t.see(card.getByRole("button", { name: /^Show the command: elevate admin lab-steps/ }));
+  await lookAll(t, page, "tasks-drawer");
+  await page.keyboard.press("Escape");
+  await t.gone(drawer);
+  ensure((await page.evaluate(() => document.activeElement.getAttribute("aria-label") ?? "")).startsWith("Tasks"), "focus is not back on the Tasks button after Esc");
+}
+
+/** The other administrator stops the task in the drawer: the question, the stop, the card in its new group and the button's words. */
+async function stopInDrawer(t, page, id, other) {
+  await tasksButton(page, RUNNING).click();
+  const drawer = drawerOf(page);
+  await t.see(drawer);
+  const card = cardOf(drawer, CARD);
+  await card.getByRole("button", { name: "Stop", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `Stop task ${id}?` });
+  await t.see(dialog);
+  await t.screenshot(page, "tasks-stop-question");
+  const [answer] = await Promise.all([
+    answerTo(page, `/api/1/tasks/${id}/stop`),
+    dialog.getByRole("button", { name: "Stop the task" }).click(),
+  ]);
+  ensure(answer.status() === 200, `the drawer's stop was answered ${answer.status()}: ${await answer.text()}`);
+  await t.see(page.getByText(`Stopping task ${id}.`));
+  await t.see(drawer.getByRole("heading", { name: /^Needs a look/, level: 3 }));
+  await t.see(drawer.getByText(`Stopped: stopped by ${other}`));
+  await t.gone(drawer.getByRole("heading", { name: /^Running/, level: 3 }));
+  // Looking at the list marks what needs a look as seen, so the words say none run.
+  await t.see(tasksButton(page, "Tasks, none running"));
+  await lookAll(t, page, "tasks-stopped");
+  await page.keyboard.press("Escape");
+  await t.gone(drawer);
+}
+
+/** At the phone's width the drawer is a dialog that fills the screen, and Esc closes it. */
+async function drawerOnPhone(t, other) {
+  const phone = await openConsole(t, "/", { viewport: { width: 390, height: 844 } });
+  const answer = await signIn(phone.page, other, PASSWORD);
+  ensure(answer.status() === 200, `${other} was not signed in on a phone: the console answered ${answer.status()}`);
+  await t.see(phone.page.getByRole("button", { name: "More", exact: true }));
+  await leaveWelcome(t, phone.page);
+  // The stopped task needs a look, which this browser has not seen: the
+  // Tasks icon is in the header, with its count in its name. A task that a
+  // test before stopped on the same machine is counted too.
+  const icon = tasksButton(phone.page, /^Tasks, \d+ needs? a look/);
+  await t.see(icon);
+  await icon.click();
+  const dialog = phone.page.getByRole("dialog", { name: "Tasks" });
+  await t.see(dialog);
+  await t.see(dialog.getByText(`Stopped: stopped by ${other}`));
+  const size = phone.page.viewportSize();
+  const box = await dialog.boundingBox();
+  ensure(box !== null && box.width >= size.width - 1 && box.height >= size.height - 1, `the drawer on a phone is ${JSON.stringify(box)}, not the whole screen`);
+  await lookAll(t, phone.page, "tasks-drawer-phone");
+  await phone.page.keyboard.press("Escape");
+  await t.gone(dialog);
+  await phone.page.context().close();
+}
+
 export default async function check(t) {
   const name = `wc-tasks-${t.engine}`;
   const other = `wc-tasks-other-${t.engine}`;
@@ -169,8 +276,11 @@ export default async function check(t) {
 
   // The first browser closes. Its session locks a minute later, and the
   // task goes on.
+  const closedAt = Date.now();
   await first.page.context().close();
-  await sleep(CLOSED_FOR_SECONDS * 1000);
+  // The drawer is looked at while the wait goes on, which the task needs.
+  await drawerShowsTask(t, second.page, id, name);
+  await sleep(Math.max(0, CLOSED_FOR_SECONDS * 1000 - (Date.now() - closedAt)));
   const later = await taskWhere(second.page, id, () => true, "read");
   ensure(
     later.state === "running",
@@ -181,12 +291,9 @@ export default async function check(t) {
     `the task has not moved on: ${JSON.stringify(running)} and then ${JSON.stringify(later)}`,
   );
 
-  // Stop, by the other administrator, who needs no unlock for it.
-  const stopped = await fetchAsPage(second.page, "POST", `/api/1/tasks/${id}/stop`, {});
-  ensure(
-    stopped.status === 200 && stopped.json?.stopping === true,
-    `the stop was answered ${stopped.status} ${stopped.text}`,
-  );
+  // Stop, by the other administrator, who needs no unlock for it: in the
+  // drawer, with its question.
+  await stopInDrawer(t, second.page, id, other);
   const ended = await taskWhere(second.page, id, (task) => task.state !== "running", "ended", 40);
   ensure(
     ended.state === "stopped" && ended.note === `stopped by ${other}` && ended.ended !== null,
@@ -219,6 +326,6 @@ export default async function check(t) {
     ROUTES.events,
   ]);
   mustHaveCalled(first.seen, ["POST /api/1/lab/long"]);
-  await look(t, second.page, "tasks");
+  await drawerOnPhone(t, other);
   await signOut(t, second.page);
 }

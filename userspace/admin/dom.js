@@ -18,7 +18,12 @@ export function h(tag, attributes = {}, ...children) {
     if (name.startsWith('on')) element.addEventListener(name.slice(2), value);
     else element.setAttribute(name, value === true ? '' : value);
   }
-  element.append(...children.flat().filter((child) => child != null && child !== false));
+  return fill(element, ...children);
+}
+
+/** Replaces what `element` holds with `children`, which may be nested lists, leaving out those that are null or false. */
+export function fill(element, ...children) {
+  element.replaceChildren(...children.flat(Infinity).filter((child) => child != null && child !== false));
   return element;
 }
 
@@ -87,6 +92,17 @@ export async function busy(buttons, work) {
   } finally {
     for (const button of buttons) button.disabled = false;
   }
+}
+
+/**
+ * Gives focus back when a dialog, drawer or menu closes (design 4.6): to
+ * `opener` while it is in the page, else to the element that took its
+ * place (the one with its id, when the page drew it again), else to the
+ * page's h1.
+ */
+export function focusBack(opener) {
+  const back = opener?.isConnected ? opener : (opener?.id && document.getElementById(opener.id)) || document.querySelector('main h1');
+  back?.focus();
 }
 
 let lastId = 0;

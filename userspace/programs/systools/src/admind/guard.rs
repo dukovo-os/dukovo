@@ -120,6 +120,21 @@ pub fn csrf_refusal(
     if matches!(method, "GET" | "HEAD") {
         return None;
     }
+    page_refusal(origin, fetch_site, token, expected, csrf)
+}
+
+/// Why a request is refused as not the console's page's, if it is: it
+/// must come from `expected`, the console's origin, with `Sec-Fetch-Site`
+/// absent or `same-origin`, and carry the session's token `csrf`. The
+/// Terminal's socket, a `GET`, is held to these as a change is, with the
+/// token among its protocols.
+pub fn page_refusal(
+    origin: Option<&str>,
+    fetch_site: Option<&str>,
+    token: Option<&str>,
+    expected: &str,
+    csrf: &[u8; 32],
+) -> Option<&'static str> {
     if origin.is_none_or(|origin| !origin.eq_ignore_ascii_case(expected)) {
         return Some("the request did not come from the console's own page");
     }

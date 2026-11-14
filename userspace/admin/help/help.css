@@ -1,0 +1,17 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The help pages (/help and /help/errors): the list of pages and an
+ * article. The router links this file when a help page is first shown, so
+ * the shell's start does not carry it. Same rules as console.css.
+ */
+
+.help-pages { list-style: none; margin: .429rem 0 0; padding: 0; display: grid; gap: .286rem; }
+.help-list { display: flex; flex-direction: column; gap: 1rem; }
+.help-list h2 { font: 600 1rem var(--font-ui); }
+.article { max-width: 46em; display: flex; flex-direction: column; gap: .857rem; }
+.article h2 { font: 600 1.214rem var(--font-ui); color: var(--instr); }
+.article h3 { font: 600 1rem var(--font-ui); }
+.article ul, .article ol { margin: 0; padding-left: 1.571rem; display: flex; flex-direction: column; gap: .286rem; }
+.article pre.log { margin: 0; }

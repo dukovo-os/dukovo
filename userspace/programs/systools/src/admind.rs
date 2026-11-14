@@ -86,8 +86,10 @@ mod sessions;
 mod shared;
 pub(crate) mod store;
 mod tasks;
+mod terminal;
 mod tls;
 pub(crate) mod webauthn;
+pub(crate) mod websocket;
 mod who;
 mod worker;
 

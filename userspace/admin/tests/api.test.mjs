@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
 
-import { ApiError, get, post, setCsrf, whenSessionEnds } from '../api.js';
+import { ApiError, get, post, setCsrf, whenSessionEnds, whenUnreachable } from '../api.js';
 
 const realFetch = globalThis.fetch;
 let calls;
@@ -25,6 +25,7 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   setCsrf(null);
   whenSessionEnds(null);
+  whenUnreachable(null);
 });
 
 test('a GET sends the cookie and no body, token or content type', async () => {
@@ -134,4 +135,62 @@ test('the session ending is reported once for each answer that says so', async (
   answering(401, { error: { id: 'ADM-101', title: 'Wrong', detail: '' } });
   await assert.rejects(post('/api/1/sign-in', {}), { id: 'ADM-101' });
   assert.deepEqual(heard, ['ADM-107']);
+});
+
+test('an error keeps the field a value was refused for and the program\'s own words', async () => {
+  const command = { argv: ['service', 'restart', 'nginx'], status: 1, stderr: 'nginx: unknown directive' };
+  answering(422, { error: { id: 'ADM-123', title: 'nginx could not restart', detail: 'See below.', command } });
+  await assert.rejects(post('/api/1/services/nginx/restart', {}), { field: null, command });
+  answering(400, { error: { id: 'ADM-125', title: 'That port cannot work', detail: 'Ports go from 1 to 65535.', field: 'port' } });
+  await assert.rejects(post('/api/1/firewall', {}), { field: 'port', command: null });
+});
+
+test('a signal ends the wait and not the call, whose answer is still read', async () => {
+  let answer;
+  let read = false;
+  calls = [];
+  globalThis.fetch = (path, options) => {
+    calls.push({ path, options });
+    return new Promise((resolve) => {
+      answer = () => resolve({ ok: true, status: 200, json: async () => { read = true; return {}; } });
+    });
+  };
+  const own = new AbortController();
+  const waiting = get('/api/1/services', { signal: own.signal });
+  own.abort();
+  await assert.rejects(waiting, { name: 'AbortError' });
+  // The browser was given nothing to abort the request with.
+  assert.equal('signal' in calls[0].options, false);
+  answer();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(read, true);
+  // A signal that has already ended sends nothing.
+  await assert.rejects(post('/api/1/lock', {}, { signal: own.signal }), { name: 'AbortError' });
+  assert.equal(calls.length, 1);
+});
+
+test('a call whose page has gone is not taken for a server that is gone, nor for one that answered', async () => {
+  const heard = [];
+  whenUnreachable((error) => heard.push(error.status));
+  const own = new AbortController();
+  globalThis.fetch = async () => {
+    own.abort();
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  await assert.rejects(get('/api/1/tasks', { signal: own.signal }), { name: 'AbortError' });
+  assert.deepEqual(heard, []);
+  // An answer that comes in time is the page's, with or without a signal.
+  answering(200, { n: 1 });
+  assert.deepEqual(await get('/api/1/tasks', { signal: new AbortController().signal }), { n: 1 });
+});
+
+test('each request that gets no answer is reported to whoever watches for a silent server', async () => {
+  const heard = [];
+  whenUnreachable((error) => heard.push(error.status));
+  globalThis.fetch = async () => {
+    throw new TypeError('Failed to fetch');
+  };
+  await assert.rejects(get('/api/1/session'), { status: 0 });
+  await assert.rejects(post('/api/1/lock', {}), { status: 0 });
+  assert.deepEqual(heard, [0, 0]);
 });

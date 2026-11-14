@@ -41,3 +41,14 @@
 # authority for the console's own name. The service file's `certificates`
 # must name it too.
 # certificate = "this-machine"
+
+# The terminal in the console.
+#
+# [terminal]
+# Who may open one: "everyone" (each account that may use the console and
+# has a shell, as at the screen and over SSH), "administrators", or
+# "nobody".
+# allowed = "everyone"
+# How many terminals each account may keep, from 1 to 64. Each holds up to
+# four shells.
+# sessions-per-account = 32

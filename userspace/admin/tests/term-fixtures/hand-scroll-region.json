@@ -1,0 +1,11 @@
+{
+  "source": "hand-built from the xterm-256color terminfo entry (csr, il1, dl1, ri) and the design (13.11): not a recording; tmux inserts and deletes lines when the cursor is above the region, which the VT terminals and xterm do not, so the expected screen is the one without that",
+  "program": "a full-screen program with a status line",
+  "what": "a scroll region with a header above it and a status line below, lines inserted, deleted and scrolled in it",
+  "cols": 12,
+  "rows": 8,
+  "cursor": [
+    6,
+    7
+  ]
+}

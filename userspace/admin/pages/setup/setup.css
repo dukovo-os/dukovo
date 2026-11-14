@@ -1,0 +1,33 @@
+/* The machine's first set-up (design 12.2): the board's wizard frame, with a step to press at the left. */
+.dk .setup .steps { margin: 0; padding: 0; list-style: none; }
+.dk .setup .step { width: 100%; font-family: inherit; font-size: inherit; line-height: inherit; text-align: left; cursor: pointer; }
+.dk .setup .step:not(.cur) { background: none; }
+.dk .setup .step:hover { border-color: var(--border); }
+.dk .setup .step.cur:hover { border-color: var(--sel-b); }
+.dk .setup .step:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.dk .setup .step small { display: block; min-height: 1.2em; }
+.dk .setup .step .ic { font-size: .857rem; }
+.dk .setup .preview { display: flex; align-items: center; gap: .857rem; padding-top: .571rem; border-top: 1px solid var(--border); }
+.dk .setup .preview:empty { display: none; }
+.dk .score.mini { width: 4.571rem; height: 4.571rem; }
+.dk .score.mini span { width: 3.571rem; height: 3.571rem; font-size: 1.214rem; }
+.dk .setup .step-form { display: flex; flex-direction: column; gap: 1rem; }
+.dk .setup .step-form h2:focus { outline: none; }
+.dk .setup .step-form h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.dk .setup .cmd-box { display: flex; flex-direction: column; gap: .429rem; }
+.dk .setup .cmd-box:empty { display: none; }
+.dk .setup .runs { display: flex; align-items: center; gap: .571rem; font: 600 .929rem var(--font-ui); }
+
+@container (max-width: 51.4rem) {
+  .dk .wiz.setup > .steps-col { max-width: none; }
+  /* A thumb needs 44 px: the fields of a step and the link back. */
+  .dk .wiz.setup .input, .dk .wiz.setup .select { min-height: 3.143rem; }
+  .dk .wiz.setup .btns > a { display: inline-flex; align-items: center; min-height: 3.143rem; }
+}
+
+@media (forced-colors: active) {
+  .dk .setup .step.cur { border: 2px solid Highlight; background: none; }
+  .dk .setup .step.done .dot { forced-color-adjust: none; background: Canvas; border-color: CanvasText; color: CanvasText; }
+  .dk .score.mini { forced-color-adjust: none; border: 1px solid CanvasText; background: conic-gradient(Highlight calc(var(--v) * 1%), Canvas 0); color: CanvasText; }
+  .dk .score.mini span { background: Canvas; color: CanvasText; }
+}

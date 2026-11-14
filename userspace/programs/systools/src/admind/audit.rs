@@ -15,6 +15,12 @@
 //! a file copied in, an edit through `service edit`, which names the
 //! service and not the path) has no one: it is "outside the console".
 //!
+//! A file changed while an administrator's terminal of the console ran
+//! (ADR 0517) has no elevated command: the shell is root's already. When
+//! one account's administrator's pane ran at the time the file changed,
+//! that account changed it, in a terminal of the console; when two
+//! accounts' did, no one is named.
+//!
 //! The question to logd is asked on a connection of its own, with a time
 //! for the whole answer, so that a logd that is slow or gone costs the
 //! round of the journal its answer and not the console its thread.
@@ -25,6 +31,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use super::terminal::Rooted;
 use crate::logd::{self, Record, Request};
 
 /// How long before a file's change a command that named it counts.
@@ -38,6 +45,32 @@ const LINES_MAX: usize = 10_000;
 
 /// What the journal says of a change it cannot name a person for.
 pub const NOBODY: &str = "outside the console";
+
+/// The journal's note on a change made in an administrator's terminal of
+/// the console.
+pub const IN_TERMINAL: &str = "in an administrator's terminal of this console";
+
+/// How long after an administrator's pane ended a change still counts as
+/// made in it: an editor that is hung up may save as it goes.
+const ROOTED_SLACK: i64 = 2;
+
+/// Who changed a file by hand, and whether in an administrator's terminal
+/// of the console.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Editor {
+    /// The account's name.
+    pub name: String,
+    /// Whether the change was made in an administrator's terminal of the
+    /// console, not with a command elevated at a terminal.
+    pub in_terminal: bool,
+}
+
+impl Editor {
+    /// The journal's note on the change.
+    pub fn note(&self) -> Option<&'static str> {
+        self.in_terminal.then_some(IN_TERMINAL)
+    }
+}
 
 /// A command someone elevated at a terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,13 +124,46 @@ pub fn who_edited<'a>(commands: &'a [Elevated], path: &str, edited: i64) -> Opti
 /// Who changed each of `edits`, a path and the Unix time it changed at,
 /// by the commands in `commands`. A path no one is found for is not in
 /// the answer.
-pub fn who_edited_each(commands: &[Elevated], edits: &[(String, i64)]) -> BTreeMap<String, String> {
+pub fn who_edited_each(commands: &[Elevated], edits: &[(String, i64)]) -> BTreeMap<String, Editor> {
     edits
         .iter()
         .filter_map(|(path, edited)| {
-            who_edited(commands, path, *edited).map(|who| (path.clone(), who.to_string()))
+            let name = who_edited(commands, path, *edited)?.to_string();
+            Some((path.clone(), Editor { name, in_terminal: false }))
         })
         .collect()
+}
+
+/// Who changed a file at Unix time `edited` in an administrator's terminal
+/// of the console, by the panes `rooted`: the one account whose pane ran
+/// then. Two accounts' panes are no one's: the journal does not guess.
+pub fn who_in_terminal(rooted: &[Rooted], edited: i64) -> Option<&str> {
+    let mut ran = rooted
+        .iter()
+        .filter(|pane| {
+            pane.started <= edited && pane.ended.is_none_or(|ended| edited <= ended + ROOTED_SLACK)
+        })
+        .map(|pane| pane.account.as_str());
+    let first = ran.next()?;
+    ran.all(|other| other == first).then_some(first)
+}
+
+/// Adds to `who` the editors of `edits`, a path and the Unix time it
+/// changed at, that no elevated command names and an administrator's
+/// terminal of the console does.
+pub fn add_terminal_editors(
+    who: &mut BTreeMap<String, Editor>,
+    rooted: &[Rooted],
+    edits: &[(String, i64)],
+) {
+    for (path, edited) in edits {
+        if who.contains_key(path) {
+            continue;
+        }
+        if let Some(name) = who_in_terminal(rooted, *edited) {
+            who.insert(path.clone(), Editor { name: name.to_string(), in_terminal: true });
+        }
+    }
 }
 
 /// The commands elevated at terminals between Unix times `from` and `to`,

@@ -1,0 +1,120 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Overview (design 10): what the Main board and the PhoneOverview board
+ * draw that console.css and boards.css do not. The phone's layout is the
+ * same markup under the container query the shell uses (4.7); nothing here
+ * hides what only a screen reader reaches. Same rules as console.css: rem,
+ * and px for borders and focus rings.
+ */
+.dk { --chart-2: #9A4A00; }
+.dk.dark { --chart-2: #F0A35B; }
+.dk.hc { --chart-2: #66E0FF; }
+
+.ov { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+.ov-notices { display: flex; flex-direction: column; gap: .857rem; }
+.ov-notices:empty { display: none; }
+.card-body { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.ov .card h2 { flex-wrap: wrap; }
+.card h2 .more .btn.link { min-height: 0; }
+
+/* Health */
+.health-top { display: flex; gap: 1rem; align-items: center; }
+.health-words { display: flex; flex-direction: column; gap: .286rem; min-width: 0; }
+.score.warn { background: conic-gradient(var(--warn) calc(var(--v) * 1%), var(--sunken) 0); }
+.score.bad { background: conic-gradient(var(--bad) calc(var(--v) * 1%), var(--sunken) 0); }
+.score.off { background: var(--sunken); }
+.need { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.need li { border-bottom: 1px solid var(--border); }
+.need li:last-child { border-bottom: 0; }
+.need-row { display: flex; align-items: flex-start; gap: .714rem; padding: .643rem 0; color: var(--text); text-decoration: none; }
+a.need-row:hover .need-words b { text-decoration: underline; }
+.need-row > .ic { margin-top: .143rem; }
+.need-row .ic.bad { color: var(--bad); }
+.need-row .ic.warn { color: var(--warn); }
+.need-row .ic.info { color: var(--accent); }
+.need-words { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .143rem; overflow-wrap: anywhere; }
+.need-words small { color: var(--muted); font-size: .857rem; }
+.need .go { color: var(--muted); align-self: center; }
+.see-all, .ov-notices .btn.link { align-self: flex-start; padding-left: 0; }
+.health-command { display: flex; flex-direction: column; gap: .429rem; }
+
+/* Finish setting up: a bar that shows how far it is, and does not move. */
+.ov-setup .meter i { animation: none; background-image: none; background-color: var(--accent); }
+
+/* Usage */
+.usage-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15.7rem, 1fr)); }
+.usage-chart { display: flex; flex-direction: column; gap: .286rem; min-width: 0; }
+.chart .line.second { stroke: var(--chart-2); stroke-dasharray: 5 3; }
+.legend { display: flex; flex-wrap: wrap; gap: .286rem .857rem; list-style: none; margin: 0; padding: 0; font-size: .857rem; color: var(--muted); }
+.legend[hidden] { display: none; }
+.legend li { display: flex; align-items: center; gap: .357rem; }
+.key { display: inline-block; width: 1.5rem; border-top: 2px solid var(--accent); }
+.key.second { border-top: 2px dashed var(--chart-2); }
+.usage-chart .btn.link { align-self: flex-start; }
+.numbers { max-height: 16rem; overflow: auto; }
+.numbers .tbl { min-width: 0; }
+.numbers[hidden] { display: none; }
+.usage-foot[hidden], .usage-grid[hidden] { display: none; }
+
+/* What changed, This server and the full list */
+.rows dd.wrap { overflow-wrap: anywhere; }
+.tl-rail i { display: grid; place-items: center; }
+.all-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.all-row { display: flex; flex-direction: column; gap: .143rem; padding: .571rem 0; border-bottom: 1px solid var(--border); }
+.all-row:last-child { border-bottom: 0; }
+.ov-up { display: none; margin: 0; }
+.tl-body .btns .btn.link { padding-left: 0; }
+
+/* The phone's Overview (10.5): the notices, Health, two charts and a line of
+   how long the machine has been up. The head is only for a screen reader. */
+@container (max-width: 51.4rem) {
+  .main:has(.ov) > .ph { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .main:has(.ov) > .ph > :not(.title) { display: none; }
+  .ov-cards { grid-template-columns: minmax(0, 1fr); }
+  .ov-setup, .ov-changed, .ov-more { display: none; }
+  .ov-health h2 .more { display: none; }
+  /* The ring beside the heading and the words, as the board has them. */
+  .ov-health { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: .857rem; row-gap: .286rem; align-items: center; }
+  .ov-health > .card-body, .ov-health .health-top, .ov-health .health-words { display: contents; }
+  .ov-health > h2 { grid-column: 2; grid-row: 1; align-self: end; }
+  .ov-health .score { grid-column: 1; grid-row: 1 / span 3; }
+  .ov-health .st { grid-column: 2; grid-row: 2; justify-self: start; }
+  .ov-health .look { grid-column: 2; grid-row: 3; align-self: start; }
+  .ov-health .need, .ov-health .health-command, .ov-health .see-all, .ov-health > .card-body > p { grid-column: 1 / -1; }
+  .ov-health .need { margin-top: .429rem; }
+  .ov-health .see-all { justify-self: start; }
+  .ov-health .score { width: 4.5rem; height: 4.5rem; }
+  .ov-health .score span { width: 3.5rem; height: 3.5rem; font-size: 1.357rem; }
+  .ov-health .score small { display: none; }
+  .need-row { min-height: 3.143rem; align-items: center; }
+  .need-row > .ic { margin-top: 0; }
+  .ov-usage { border: 0; background: none; padding: 0; gap: 0; }
+  .ov-usage > h2, .usage-foot { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ov-usage > h2 .more { display: none; }
+  .usage-grid { grid-template-columns: 1fr 1fr; gap: .714rem; }
+  .usage-chart { border: 1px solid var(--border); border-radius: .429rem; background: var(--pane); padding: .714rem .857rem; }
+  .usage-chart[data-chart="disk"], .usage-chart[data-chart="network"] { display: none; }
+  .usage-chart .stat b { font-size: 1.286rem; }
+  .usage-chart .btn.link, .numbers, .legend { display: none; }
+  .usage-chart .chart { height: 3.143rem; }
+  .ov-up { display: block; }
+}
+
+/* Forced colours: the lines are drawn in the text's colour, the second one
+   dashed, the ring in the highlight, and every box has its border. */
+@media (forced-colors: active) {
+  .dk .chart .line { stroke: CanvasText; forced-color-adjust: none; }
+  .dk .chart .line.second { stroke: CanvasText; stroke-dasharray: 5 3; }
+  .dk .chart .area { fill: CanvasText; fill-opacity: .12; forced-color-adjust: none; }
+  .dk .chart .grid-line { stroke: GrayText; forced-color-adjust: none; }
+  .dk .key, .dk .key.second { border-top-color: CanvasText; }
+  .dk .score { forced-color-adjust: none; border: 1px solid CanvasText; background: conic-gradient(Highlight calc(var(--v) * 1%), Canvas 0); color: CanvasText; }
+  .dk .score span, .dk .score span small { background: Canvas; color: CanvasText; }
+  .dk .score.off { background: Canvas; }
+  .dk .tl-rail i { forced-color-adjust: none; border-color: CanvasText; background: Canvas; }
+  .dk .tl-rail i.bad, .dk .tl-rail i.warn { background: CanvasText; }
+  .dk .ov-setup .meter i { background: Highlight; }
+  .dk .usage-chart, .dk .tbl-box { border: 1px solid CanvasText; }
+}

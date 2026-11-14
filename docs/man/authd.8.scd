@@ -406,8 +406,8 @@ closes the connection, but for a session (below):
 *console* _verb_ _field_...
 	A request of the web console (ADR 0514): *begin*, *trusted*, *code*,
 	*challenge*, *passkey*, *start*, *unlock*, *extend*, *lock*, *end*,
-	*elevate*, *token* and *token-start*, which only *admind*(8) asks, as
-	root, and *steps*, *app-begin*, *app-confirm*, *app-remove*,
+	*elevate*, *token*, *token-start* and *terminal*, which only
+	*admind*(8) asks, as root, and *steps*, *app-begin*, *app-confirm*, *app-remove*,
 	*passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*,
 	*codes*, *trusted-forget*, *token-add* and *token-remove*, which a
 	person asks about their own account, from a process that runs as
@@ -802,6 +802,8 @@ none:
 A web console session (WEB CONSOLE) is recorded on the terminal *web*,
 from the browser's address, with its worker's process as the session,
 and a wrong password or app code at its sign-in as *failed* there. A
+person's own shell in the console's Terminal is recorded on its terminal,
+from the browser's address, as an SSH session's is. A
 share session (SESSIONS) is recorded on the terminal *smb*, from the
 PC's address, and a wrong sharing password as *failed* there. An SSH
 session on a terminal is recorded on it, from the client's address; one
@@ -915,6 +917,31 @@ answered for the user the connection gives.
 	is removed or ends, or whose account may no longer sign in, stops at
 	once, and *token-start* only when an action runs as the token's
 	owner. The answer to *token* is *ok* _owner_ _name_ _scopes_ _until_.
+
+*terminal* _session_ *own*|*admin* _term_ [_language_...]
+	Starts the shell of a pane of the console's Terminal (ADR 0517) on
+	the terminal that comes with the request as its one descriptor,
+	whose other side admind holds, as *sshd*(8) holds an SSH session's.
+	*own* is the person's login shell, started as an SSH session's is,
+	after their last sign-in and their notices, and recorded on that
+	terminal from the browser's address (SIGN-IN RECORDS). *admin* is
+	root's login shell, as *elevate -i* starts it, for an administrator
+	whose session is unlocked; it is not recorded, as an elevated
+	command is not. _term_ must be a terminal type the machine knows,
+	and _language_ is the browser's language settings, as _NAME=value_.
+	The session must be one that may do all that is a person's, and its
+	account one that may still sign in. *admin.toml*(5)'s *[terminal]
+	allowed* must let the account, which must have a shell, else the
+	refusal starts with *ADM-132:*; and it may run at most four shells
+	for each terminal *sessions-per-account* lets it keep (*ADM-130:*),
+	so that admind shows the console's own ID. The answer is *ok*
+	_process_, the shell's first process; authd does not hold the
+	request, and the shell ends when admind closes the terminal or the
+	shell exits. An administrator's shell also ends when its session
+	locks, its unlock runs out or the session ends: authd looks every
+	second while one runs, sends SIGHUP to its process group, and
+	SIGKILL 5 seconds later to what is left of the group. The audit log
+	has each shell's start and end, and why an administrator's ended.
 
 *steps*, *app-begin*, *app-confirm*, *app-remove*, *passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*, *codes*, *trusted-forget*, *token-add*, *token-remove*
 	The person's own second steps and tokens (below). *app-begin*,

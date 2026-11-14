@@ -11,7 +11,10 @@
 //! sign-in screen, which alice sees by signing out. Health answers with the
 //! headers every answer has and no HSTS, which a certificate that is no
 //! authority's must not ask for; another name in Host is ADM-114; TLS 1.1
-//! is refused and 1.2 served. A silent connection is cut off in about
+//! is refused and 1.2 served. The console's files have the manifest's hash
+//! as their ETag, a request that holds one is answered 304 with no body,
+//! and the error pages the build copied from docs/errors are served with
+//! their index. A silent connection is cut off in about
 //! ten seconds, a request head of 20 KiB is 431, 32 connections kept
 //! alive from one address leave a 33rd refused and said in the log, and
 //! 64 connections at once from one address leave admind running and
@@ -76,7 +79,7 @@ const PLACES: usize = 32;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin",
-    about: "The web console, Dukovo Admin, answers the host's curl over HTTPS through a port QEMU forwards, with the machine's own certificate, whose fingerprint consoled shows at sign-in: its headers, another name refused, TLS 1.1 refused; sign-in with the cookie's attributes, a wrong password, an account that may not use the console; changes refused from another origin, another site or without the token; an authenticator app added from its otpauth URI, its code asked at sign-in, a wrong code, a replayed code, a recovery code used once; unlock and lock; 32 connections from one address held and a 33rd refused, a silent connection cut off, a 20 KiB head refused, 64 connections at once survived; a restart that ends the sessions (ADR 0514)",
+    about: "The web console, Dukovo Admin, answers the host's curl over HTTPS through a port QEMU forwards, with the machine's own certificate, whose fingerprint consoled shows at sign-in: its headers, the files' ETag and 304 and the error pages with their index, another name refused, TLS 1.1 refused; sign-in with the cookie's attributes, a wrong password, an account that may not use the console; changes refused from another origin, another site or without the token; an authenticator app added from its otpauth URI, its code asked at sign-in, a wrong code, a replayed code, a recovery code used once; unlock and lock; 32 connections from one address held and a 33rd refused, a silent connection cut off, a 20 KiB head refused, 64 connections at once survived; a restart that ends the sessions (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -316,6 +319,7 @@ fn machine(vm: &mut Vm, console: &Console) -> Result<(), String> {
             return Err(format!("health carries {name}: {value}"));
         }
     }
+    console_files(console)?;
     let named = console.send("GET", "/api/1/fingerprint", &[], None)?.must("fingerprint", 200)?;
     if named.json()?["fingerprint"].as_str() != Some(console.fingerprint.as_str()) {
         return Err(format!("the console gives {}, not the certificate's fingerprint", named.body));
@@ -338,6 +342,49 @@ fn machine(vm: &mut Vm, console: &Console) -> Result<(), String> {
     console.tls_refused()?;
     console.tls_served("1.2")?;
     console.tls_served("1.3")
+}
+
+/// The console's files: each has the manifest's hash as its ETag, a
+/// request that names it is answered 304 with no body, and the error pages
+/// the build copied are served with their index.
+fn console_files(console: &Console) -> Result<(), String> {
+    let shell = console.send("GET", "/", &[], None)?.must("the console's page", 200)?;
+    let tag = shell.header("etag").unwrap_or_default().to_string();
+    let hash = tag.trim_matches('"');
+    let quoted = tag.len() == hash.len() + 2;
+    if !quoted || hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("the page's ETag is {tag:?}, not a SHA-256 in quotes"));
+    }
+    if shell.header("cache-control") != Some("no-cache") {
+        return Err(format!("the page's Cache-Control is {:?}", shell.header("cache-control")));
+    }
+    let held = [("If-None-Match".to_string(), format!("\"old\", W/{tag}"))];
+    let same = console.send("GET", "/", &held, None)?.must("the page it holds", 304)?;
+    if !same.body.is_empty() || same.header("etag") != Some(tag.as_str()) {
+        return Err(format!("the 304 for the page has body {:?}, ETag {:?}", same.body, same.header("etag")));
+    }
+    let other = [("If-None-Match".to_string(), "\"old\"".to_string())];
+    console.send("GET", "/", &other, None)?.must("the page it does not hold", 200)?;
+    // A page of the page router has the shell's tag.
+    let routed = console.send("GET", "/services", &[], None)?.must("a page of the router", 200)?;
+    if routed.header("etag") != Some(tag.as_str()) {
+        return Err(format!("a page of the router has the ETag {:?}", routed.header("etag")));
+    }
+    // The error pages and their index, which the build copies from
+    // docs/errors, are among the files.
+    let index = console.send("GET", "/help/errors/index.json", &[], None)?;
+    let index = index.must("the error pages' index", 200)?.json()?;
+    let page = index.as_array().and_then(|pages| pages.iter().find(|page| page["id"] == "ADM-129"));
+    let want = Some("This server does not have that command yet");
+    if page.and_then(|page| page["title"].as_str()) != want || page.is_none_or(|page| page["area"].is_null()) {
+        return Err(format!("the index of the error pages has {page:?} for ADM-129"));
+    }
+    let text = console.send("GET", "/help/errors/ADM-129.md", &[], None)?;
+    let text = text.must("the page of ADM-129", 200)?;
+    if !text.body.contains("# ADM-129: ") {
+        return Err(format!("the page of ADM-129 is {:?}", text.body));
+    }
+    Ok(())
 }
 
 /// Signing in as alice, as a wrong password, a name no one has and bob.

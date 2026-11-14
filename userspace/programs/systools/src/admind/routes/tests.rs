@@ -26,6 +26,7 @@ use crate::admind::shared::unix_now;
 mod act;
 mod changes;
 mod tasks;
+mod terminals;
 
 /// The browser's address, and what it asks for.
 const PEER: &str = "192.0.2.7";
@@ -44,11 +45,30 @@ struct World {
 /// The preferences the test worker has after `change`: the defaults, and
 /// what the change gave.
 fn preferences(change: &Value) -> Value {
-    let mut all = json!({ "theme": "dark", "text": 100, "motion": "full", "zone": "" });
+    let mut all = defaults();
     for (key, value) in change.as_object().into_iter().flatten() {
-        all[key] = value.clone();
+        match value.as_object() {
+            // The terminal's keys are changed one by one.
+            Some(keys) if key == "terminal" => {
+                for (name, value) in keys {
+                    all[key][name] = value.clone();
+                }
+            }
+            _ => all[key] = value.clone(),
+        }
     }
     all
+}
+
+/// The preferences of a person who has changed none.
+fn defaults() -> Value {
+    json!({
+        "theme": "dark", "text": 100, "motion": "full", "zone": "", "commands": "hidden",
+        "terminal": {
+            "size": 14, "scrollback": 10000, "copy-on-select": false, "keep-days": 7,
+            "announce": false, "shortcuts": true,
+        },
+    })
 }
 
 /// What the test worker answers. `calls` holds what it has been asked,
@@ -85,7 +105,10 @@ fn worker_answers(method: &str, params: &Value, calls: &Calls) -> Result<Value, 
         "run" if params["argv"][0] == "probe" => {
             Ok(probe_answer(params["argv"][1].as_str().unwrap_or_default(), calls))
         }
-        "run" => Err(Fault::new(Kind::BadRequest, "there is no command that")),
+        "run" => {
+            let program = params["argv"][0].as_str().unwrap_or_default();
+            Err(Fault::new(Kind::NoProgram, format!("{program}: command not found")))
+        }
         _ => Ok(json!({ "done": true })),
     }
 }
@@ -118,7 +141,9 @@ fn probe_answer(name: &str, calls: &Calls) -> Value {
 /// What the test authd answers: four accounts that sign in, as
 /// `chase` (an administrator), `alice` (who has a second step), `eve`
 /// (who needs to add one) and `dave` (who is not an administrator), with
-/// the password `right`; the code `123456`;
+/// the password `right`, and chase with `elsewhere` too, which starts
+/// another authd session, as a second browser's sign-in does; the code
+/// `123456`;
 /// the trusted browser `aa55bb66`.
 fn script(calls: Calls) -> Arc<fixture::Script> {
     let answers: Arc<fixture::Answer> = {
@@ -132,6 +157,7 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
         match asked.verb.as_str() {
             "begin" => match (asked.text(1).as_str(), asked.text(2).as_str()) {
                 ("chase", "right") => vec!["ok done 0a0b01".into()],
+                ("chase", "elsewhere") => vec!["ok done 0a0b11".into()],
                 ("alice", "right") => vec!["ok step 0a0b02 app,recovery".into()],
                 ("eve", "right") => vec!["ok needs-step 0a0b03".into()],
                 ("dave", "right") => vec!["ok done 0a0b04".into()],
@@ -164,6 +190,7 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 ok()
             }
             "elevate" => elevated(asked, fds, &calls),
+            "terminal" => shell(asked, fds, &calls),
             _ => no("the test's authd does not answer that"),
         }
     })
@@ -222,6 +249,37 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
     output.write_all(format!("{}\n", command[1..].join(" ")).as_bytes()).unwrap();
     let status = if command[0] == "/system/commands/echo" { 768 } else { 0 };
     vec!["ok 4321".into(), format!("ended {status}")]
+}
+
+/// The test authd's shell, on the terminal that came with the request,
+/// noted in `calls` as a call of `terminal` with its fields. It writes
+/// `ready$ `, answers each line typed with `you typed LINE`, and at `exit`
+/// closes its side of the terminal, as a shell that ends does. dave's
+/// session is refused with an ID, as authd refuses one its settings do not
+/// let open a terminal.
+fn shell(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
+    use std::io::{BufRead, Write};
+    let fields: Vec<String> = (0..asked.fields.len()).map(|at| asked.text(at)).collect();
+    calls.lock().unwrap().push(("terminal".into(), json!(fields)));
+    if fields[0].starts_with("0a0b04") {
+        return vec!["no ADM-132: the console's settings do not let dave open a terminal".into()];
+    }
+    let terminal = std::fs::File::from(fds.remove(0));
+    std::thread::spawn(move || {
+        let mut output = terminal.try_clone().unwrap();
+        let _ = output.write_all(b"ready$ ");
+        for line in std::io::BufReader::new(terminal).lines() {
+            match line {
+                Ok(line) if line != "exit" => {
+                    // The terminal writes a line end as CR LF, as it does a
+                    // shell's.
+                    let _ = write!(output, "you typed {line}\nready$ ");
+                }
+                _ => break,
+            }
+        }
+    });
+    vec!["ok 4242".into()]
 }
 
 /// What `admin lab-steps N` does in the test authd, by `mode` N, which
@@ -407,7 +465,12 @@ struct Session {
 
 /// Signs `name` in with the right password, which must be all it takes.
 async fn sign_in(world: &World, name: &str) -> Session {
-    let body = json!({ "name": name, "password": "right" });
+    sign_in_with(world, name, "right").await
+}
+
+/// Signs `name` in with `password`, which signs in at once.
+async fn sign_in_with(world: &World, name: &str, password: &str) -> Session {
+    let body = json!({ "name": name, "password": password });
     let answered = send(world, post("/api/1/sign-in", &body)).await;
     assert_eq!(answered.status, 200, "{}", answered.body);
     let cookie = answered.cookie(SESSION_COOKIE).expect("a session cookie");
@@ -468,10 +531,12 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::Change,
             Route::Tasks,
             Route::Task,
+            Route::Terminals,
+            Route::TerminalSocket,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 36 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 44 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -755,6 +820,64 @@ fn the_consoles_files_are_served_whole_and_any_page_of_it_is_the_shell() {
 }
 
 #[test]
+fn a_file_has_the_manifests_hash_as_its_etag_and_one_the_browser_holds_is_304_with_no_body() {
+    run(async {
+        let world = world("files-etag");
+        let hash = |bytes: &[u8]| {
+            accounts::request::hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+        };
+        let app_tag = format!("\"{}\"", hash(b"export {};"));
+        let shell_tag = format!("\"{}\"", hash(fixture::PAGE.as_bytes()));
+        let app = send(&world, get("/app.js")).await;
+        assert_eq!(app.header("etag"), Some(app_tag.as_str()));
+        assert_eq!(app.header("cache-control"), Some("no-cache"));
+        // The shell has its own, and so has each path that is the router's.
+        for path in ["/", "/index.html", "/services/nginx"] {
+            let shell = send(&world, get(path)).await;
+            assert_eq!(shell.header("etag"), Some(shell_tag.as_str()), "{path}");
+        }
+        // A browser that holds the file is told so, with the file's headers
+        // and no body.
+        let held = |tag: &str| get("/app.js").with("if-none-match", Some(tag));
+        for tag in
+            [app_tag.clone(), format!("W/{app_tag}"), format!("{shell_tag}, {app_tag}"), "*".into()]
+        {
+            let answered = send(&world, held(&tag)).await;
+            assert_eq!((answered.status, answered.body.as_str()), (304, ""), "{tag}");
+            assert_eq!(answered.header("etag"), Some(app_tag.as_str()));
+            assert_eq!(answered.header("cache-control"), Some("no-cache"));
+            assert_eq!(answered.header("content-type"), None);
+            assert_eq!(answered.header("x-content-type-options"), Some("nosniff"));
+            assert!(answered.header("content-security-policy").is_some());
+        }
+        // A tag of another file, or of nothing, is the whole file again.
+        for tag in [shell_tag.as_str(), "\"old\"", "", "garbage"] {
+            let answered = send(&world, held(tag)).await;
+            assert_eq!((answered.status, answered.body.as_str()), (200, "export {};"), "{tag}");
+            assert_eq!(answered.header("etag"), Some(app_tag.as_str()));
+        }
+        // Two lines say what one does, and the page router's paths are 304
+        // for the shell's tag.
+        let mut two = get("/app.js");
+        two.headers.push(("if-none-match".into(), "\"old\"".into()));
+        two.headers.push(("if-none-match".into(), app_tag.clone()));
+        assert_eq!(send(&world, two).await.status, 304);
+        let page = get("/accounts/users").with("if-none-match", Some(&shell_tag));
+        assert_eq!(send(&world, page).await.status, 304);
+        let mut head = get("/app.js").with("if-none-match", Some(&app_tag));
+        head.method = "HEAD";
+        assert_eq!(send(&world, head).await.status, 304);
+        // A file that is not there is a 404 whatever the browser holds, and
+        // an answer of the API has no tag and is not 304.
+        let none = send(&world, get("/missing.png").with("if-none-match", Some("*"))).await;
+        assert_eq!((none.status, none.error().as_str()), (404, "ADM-116"));
+        assert_eq!(none.header("etag"), None);
+        let health = send(&world, get("/api/1/health").with("if-none-match", Some("*"))).await;
+        assert_eq!((health.status, health.header("etag")), (200, None));
+    });
+}
+
+#[test]
 fn a_sign_in_that_does_not_come_from_the_consoles_own_page_is_refused_before_authd_hears_of_it() {
     run(async {
         let world = world("foreign");
@@ -905,7 +1028,7 @@ fn the_session_says_who_it_is_from_the_account_files_and_how_it_can_unlock() {
             json!({
                 "name": "chase", "full_name": "Chase Y", "admin": true, "host": "nas",
                 "csrf": session.csrf, "unlock_seconds": null, "needs_step": false,
-                "kinds": ["password", "app"],
+                "kinds": ["password", "app"], "terminal": true,
             })
         );
         assert_eq!(URL_SAFE_NO_PAD.decode(&session.csrf).unwrap().len(), 32);
@@ -1058,6 +1181,15 @@ fn signing_out_ends_the_session_for_authd_and_the_browser_and_is_logged_once() {
         assert_eq!(out.cookies(), [guard::clear_cookie(SESSION_COOKIE)]);
         let again = send(&world, get("/api/1/session").by(&session)).await;
         assert_eq!((again.status, again.error().as_str()), (401, "ADM-107"));
+        // A tab that was not listening when it ended hears why; a cookie
+        // admind never gave hears nothing more.
+        assert_eq!(again.json()["error"]["detail"], "you signed out");
+        let stranger = get("/api/1/session").with("cookie", Some("__Host-dukovo=abc"));
+        let stranger = send(&world, stranger).await;
+        assert_eq!(
+            stranger.json()["error"]["detail"],
+            "this browser has no session, or it has ended"
+        );
         // authd is told, on a task of its own.
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(world.console.authd.verbs(), ["begin", "start", "end"]);
@@ -1306,13 +1438,13 @@ fn preferences_are_read_and_changed_by_the_worker_for_a_session_that_is_locked()
         let session = sign_in(&world, "chase").await;
         let seen = called(&world).len();
         let path = "/api/1/account/preferences";
-        let defaults = json!({ "theme": "dark", "text": 100, "motion": "full", "zone": "" });
+        let defaults = defaults();
         let shown = send(&world, get(path).by(&session)).await;
         assert_eq!(shown.status, 200);
         assert_eq!(shown.json(), defaults);
         let body = json!({ "theme": "light", "text": 112 });
         let changed = send(&world, post(path, &body).by(&session)).await;
-        let both = json!({ "theme": "light", "text": 112, "motion": "full", "zone": "" });
+        let both = preferences(&body);
         assert_eq!(changed.status, 200);
         assert_eq!(changed.json(), both);
         // No key is a change of nothing, and still all of them are told;
@@ -1338,6 +1470,48 @@ fn preferences_are_read_and_changed_by_the_worker_for_a_session_that_is_locked()
 }
 
 #[test]
+fn the_commands_and_the_terminals_preferences_are_read_and_changed_with_the_others() {
+    run(async {
+        let world = world("preferences-terminal");
+        let session = sign_in(&world, "chase").await;
+        let seen = called(&world).len();
+        let path = "/api/1/account/preferences";
+        let shown = send(&world, get(path).by(&session)).await.json();
+        assert_eq!(shown["commands"], "hidden");
+        let terminal = shown["terminal"].as_object().unwrap();
+        let keys: Vec<&str> = terminal.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            ["announce", "copy-on-select", "keep-days", "scrollback", "shortcuts", "size"]
+        );
+        // The limits themselves work, and the worker is told what was given.
+        let body = json!({
+            "commands": "shown",
+            "terminal": { "size": 20, "scrollback": 1000, "keep-days": 30, "copy-on-select": true },
+        });
+        let changed = send(&world, post(path, &body).by(&session)).await;
+        assert_eq!(changed.status, 200, "{}", changed.body);
+        assert_eq!(changed.json(), preferences(&body));
+        assert_eq!(changed.json()["terminal"]["shortcuts"], true);
+        let low = json!({ "terminal": { "size": 12, "scrollback": 50000, "keep-days": 1 } });
+        assert_eq!(send(&world, post(path, &low).by(&session)).await.status, 200);
+        // An empty table changes nothing and is still sent as the page gave it.
+        let empty = json!({ "terminal": {} });
+        assert_eq!(send(&world, post(path, &empty).by(&session)).await.json(), defaults());
+        let seen = called(&world).split_off(seen);
+        assert_eq!(
+            seen,
+            [
+                ("preferences".to_string(), Value::Null),
+                ("preferences-change".to_string(), body),
+                ("preferences-change".to_string(), low),
+                ("preferences-change".to_string(), empty),
+            ]
+        );
+    });
+}
+
+#[test]
 fn a_value_that_cannot_work_is_refused_before_the_worker_hears_of_it() {
     run(async {
         let world = world("preferences-values");
@@ -1354,6 +1528,15 @@ fn a_value_that_cannot_work_is_refused_before_the_worker_hears_of_it() {
             (json!({ "zone": "Mars/Base" }), "zone"),
             (json!({ "zone": "../../etc/passwd" }), "zone"),
             (json!({ "theme": "light", "text": 99 }), "text"),
+            (json!({ "commands": "loud" }), "commands"),
+            (json!({ "commands": "" }), "commands"),
+            (json!({ "terminal": { "size": 11 } }), "terminal.size"),
+            (json!({ "terminal": { "size": 21 } }), "terminal.size"),
+            (json!({ "terminal": { "scrollback": 999 } }), "terminal.scrollback"),
+            (json!({ "terminal": { "scrollback": 50_001 } }), "terminal.scrollback"),
+            (json!({ "terminal": { "keep-days": 0 } }), "terminal.keep-days"),
+            (json!({ "terminal": { "keep-days": 31 } }), "terminal.keep-days"),
+            (json!({ "terminal": { "announce": true, "size": -4 } }), "terminal.size"),
         ] {
             let refused = send(&world, post(path, &body).by(&session)).await;
             assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-125"), "{body}");
@@ -1365,6 +1548,15 @@ fn a_value_that_cannot_work_is_refused_before_the_worker_hears_of_it() {
             json!({ "text": "112" }),
             json!({ "text": 112.5 }),
             json!({ "theme": ["light"] }),
+            json!({ "commands": true }),
+            json!({ "terminal": 14 }),
+            json!({ "terminal": "size" }),
+            json!({ "terminal": { "size": "14" } }),
+            json!({ "terminal": { "size": 14.5 } }),
+            json!({ "terminal": { "announce": "yes" } }),
+            json!({ "terminal": { "shortcuts": 1 } }),
+            json!({ "terminal": { "keepdays": 7 } }),
+            json!({ "terminal": { "keep_days": 7 } }),
             json!("light"),
             json!(null),
         ] {
@@ -1522,6 +1714,7 @@ fn a_session_whose_time_is_up_ends_and_authd_is_told() {
         world.console.shared.maintain(later);
         let again = send(&world, get("/api/1/session").by(&session)).await;
         assert_eq!(again.error(), "ADM-107");
+        assert_eq!(again.json()["error"]["detail"], "the session reached its time limit");
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(world.console.authd.verbs(), ["begin", "start", "end"]);
         let authd = format!("{:0<32}", "0a0b01");

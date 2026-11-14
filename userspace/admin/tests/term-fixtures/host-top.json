@@ -1,0 +1,11 @@
+{
+  "source": "recorded on the development host (Linux, TERM=xterm-256color, a pty of 80x24), not on Dukovo; the first line is the prompt line, which the recorder wrote; expected screen and cursor read from tmux 3.4; the scrollback is the one line the last line feed scrolls off (tmux also keeps what a clear throws away, which this terminal does not)",
+  "program": "top (procps-ng)",
+  "what": "top watching two processes, two frames, then q",
+  "cols": 80,
+  "rows": 24,
+  "cursor": [
+    0,
+    23
+  ]
+}

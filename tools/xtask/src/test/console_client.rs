@@ -3,19 +3,29 @@
 
 //! The web console as the boot tests reach it: the host's curl, aimed
 //! through a port QEMU forwards at the console's port 9090 in the guest,
-//! as a browser at `localhost` would be. The `admin` and `admin-actions`
-//! cases both use it, with what they both need of the machine: alice, the
-//! owner, whose password the pane asks for once, and the replies,
-//! cookies and certificates that curl prints.
+//! as a browser at `localhost` would be. The `admin`, `admin-actions`,
+//! `admin-journal` and `admin-terminal` cases use it, with what they need
+//! of the machine: alice, the owner, whose password the pane asks for
+//! once, and the replies, cookies and certificates that curl prints.
 //!
 //! curl trusts the one certificate the machine served at first and no
 //! other, so a case that makes the machine serve another says so with
 //! [`Console::trust_what_is_served`].
+//!
+//! The Terminal's socket is a WebSocket, which curl does not speak and
+//! xtask has no library for. A [`Socket`] starts `websocket_client.py`,
+//! a Python 3 program of the standard library alone, and drives it one
+//! JSON line at a time; the program's own words say what it does.
 
-use std::io::Read;
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -216,6 +226,95 @@ impl Console {
     }
 }
 
+/// A stream of events as a page opens it, `GET /api/1/events`: curl keeps
+/// running with what it receives in a file, which the test reads as the
+/// events come. It is stopped, and the file taken away, when this is
+/// dropped.
+pub struct Events {
+    child: Child,
+    path: PathBuf,
+}
+
+impl Console {
+    /// Opens the stream of events for the session of `browser`, which has
+    /// signed in. The first event, the unlock, is the stream's start.
+    pub fn events(&self, browser: &Browser) -> Result<Events, String> {
+        let cookie = browser.cookie.as_ref().ok_or("a stream needs a session's cookie")?;
+        let path = self.pem.with_file_name("events.txt");
+        let file = File::create(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+        let errors = file.try_clone().map_err(|err| format!("{}: {err}", path.display()))?;
+        let child = Command::new("curl")
+            .args(["--disable", "--silent", "--show-error", "--http1.1", "--no-buffer"])
+            .args(["--max-time", "1800", "--noproxy", "*", "--connect-to"])
+            .arg(format!("localhost:{PORT}:127.0.0.1:{}", self.port))
+            .args(["--include", "--cacert"])
+            .arg(&self.pem)
+            .arg("--header")
+            .arg(format!("Cookie: {SESSION_COOKIE}={cookie}"))
+            .arg(format!("{ORIGIN}/api/1/events"))
+            .stdin(Stdio::null())
+            .stdout(file)
+            .stderr(errors)
+            .spawn()
+            .map_err(|err| format!("the console tests need the host's curl: {err}"))?;
+        Ok(Events { child, path })
+    }
+}
+
+impl Events {
+    /// What the stream has said so far, headers and events, as text.
+    pub fn text(&self) -> String {
+        std::fs::read(&self.path)
+            .map_or_default(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Waits up to `seconds` for the stream to tell the `change` event of
+    /// the journal's row `id`, and gives its data.
+    pub fn change(&self, id: i64, seconds: u64) -> Result<Value, String> {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let text = self.text();
+            if let Some(event) = change_events(&text).into_iter().find(|event| event["id"] == id) {
+                return Ok(event);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("the stream did not tell row {id} in {seconds} s: {text:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+impl Drop for Events {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The data of each `change` event in `text`, which is what a stream said:
+/// its headers, then `event: NAME` and `data: JSON` lines, with a blank
+/// line after each event and a comment, `: keep`, now and then. An event
+/// whose data has not come, or is not JSON, is left out.
+pub fn change_events(text: &str) -> Vec<Value> {
+    let mut named = None;
+    let mut found = Vec::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("event: ") {
+            named = Some(name);
+        } else if let Some(data) = line.strip_prefix("data: ") {
+            if named == Some("change")
+                && let Ok(event) = serde_json::from_str(data)
+            {
+                found.push(event);
+            }
+            named = None;
+        }
+    }
+    found
+}
+
 /// What a browser keeps of the console: the session's cookie and the token
 /// its page reads from the session.
 #[derive(Default)]
@@ -238,6 +337,23 @@ impl Browser {
             headers.push((CSRF_HEADER.into(), token.clone()));
         }
         headers
+    }
+
+    /// The headers that the console's own page sends to open the Terminal's
+    /// socket: its origin, its cookie, a request from the same site, and
+    /// the token in the protocols, as a page cannot set a header of its own
+    /// on a socket.
+    pub fn socket_headers(&self) -> Headers {
+        let mut headers =
+            Headers::default().with("Origin", ORIGIN).with("Sec-Fetch-Site", "same-origin");
+        if let Some(cookie) = &self.cookie {
+            headers = headers.with("Cookie", &format!("{SESSION_COOKIE}={cookie}"));
+        }
+        let protocols = match &self.token {
+            Some(token) => format!("{PROTOCOL}, csrf.{token}"),
+            None => PROTOCOL.to_string(),
+        };
+        headers.with("Sec-WebSocket-Protocol", &protocols)
     }
 
     /// Takes what `reply` tells a browser to keep: the session's cookie, or
@@ -380,6 +496,480 @@ impl Pane {
     }
 }
 
+/// The protocol the Terminal's socket speaks, which the page names.
+const PROTOCOL: &str = "dukovo-terminal-1";
+
+/// The WebSocket client, which the test writes to the machine's folder and
+/// starts with `python3 -I`.
+const CLIENT: &str = include_str!("websocket_client.py");
+
+/// The clients started in this run, to give each a file for its errors.
+static CLIENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// The seconds, besides the ones a command asks for, that the client has to
+/// answer it.
+const GRACE: u64 = 10;
+
+/// The headers of a WebSocket handshake that a test gives. The client
+/// writes Host, Connection, Upgrade, Sec-WebSocket-Version and a key of
+/// its own; a header given here with the same name replaces that one, and
+/// a header [left out](Headers::without) is not sent, so that a test can
+/// open a socket without Upgrade or with another version.
+#[derive(Clone, Default)]
+pub struct Headers(Vec<(String, Option<String>)>);
+
+impl Headers {
+    /// These headers with `name` as `value`, in place of any header of that
+    /// name.
+    #[must_use]
+    pub fn with(mut self, name: &str, value: &str) -> Headers {
+        self.put(name, Some(value.to_string()));
+        self
+    }
+
+    /// These headers with no `name`: none given, and none of the client's
+    /// own.
+    #[must_use]
+    pub fn without(mut self, name: &str) -> Headers {
+        self.put(name, None);
+        self
+    }
+
+    /// The value given for `name`, if one is.
+    #[cfg(test)]
+    pub fn value(&self, name: &str) -> Option<&str> {
+        let (_, value) = self.0.iter().find(|(have, _)| have.eq_ignore_ascii_case(name))?;
+        value.as_deref()
+    }
+
+    fn put(&mut self, name: &str, value: Option<String>) {
+        match self.0.iter_mut().find(|(have, _)| have.eq_ignore_ascii_case(name)) {
+            Some(held) => *held = (name.to_string(), value),
+            None => self.0.push((name.to_string(), value)),
+        }
+    }
+
+    fn json(&self) -> Value {
+        Value::Array(self.0.iter().map(|(name, value)| json!([name, value])).collect())
+    }
+}
+
+/// What a wait of the client came to.
+#[derive(Debug)]
+pub struct Waited {
+    /// What it looked for, as it found it, or null.
+    pub found: Value,
+    /// Whether the time ran out.
+    pub timed_out: bool,
+    /// The close frame's code if one came, 0 if the connection ended with
+    /// none.
+    pub closed: Option<i64>,
+    /// The bytes of each pane's output read so far, by the pane's number.
+    pub lengths: BTreeMap<u64, u64>,
+}
+
+impl Waited {
+    /// The bytes of pane `pane`'s output read so far.
+    pub fn length(&self, pane: u64) -> u64 {
+        self.lengths.get(&pane).copied().unwrap_or(0)
+    }
+
+    /// Reads the client's answer to a wait.
+    fn of(answer: &Value) -> Waited {
+        let lengths = answer["lengths"].as_object().map_or_else(BTreeMap::new, |lengths| {
+            lengths
+                .iter()
+                .filter_map(|(pane, bytes)| Some((pane.parse().ok()?, bytes.as_u64()?)))
+                .collect()
+        });
+        Waited {
+            found: answer["found"].clone(),
+            timed_out: answer["timed_out"].as_bool().unwrap_or(false),
+            closed: answer["closed"].as_i64(),
+            lengths,
+        }
+    }
+}
+
+/// All the output the client read of one pane.
+#[derive(Debug)]
+pub struct Held {
+    /// The output, decoded as UTF-8 with replacement.
+    pub text: String,
+    /// Its length in bytes.
+    pub length: u64,
+    /// The offset of its first byte, which an `attached` message gave: none
+    /// when nothing has been read.
+    pub first: Option<u64>,
+}
+
+impl Held {
+    /// The offset just past the last byte read.
+    pub fn end(&self) -> u64 {
+        self.first.unwrap_or(0) + self.length
+    }
+}
+
+/// One WebSocket to the Terminal's route, which `websocket_client.py` holds
+/// and this drives: each command is a line to the client's standard input
+/// and each answer a line of its output, which a thread reads, so that an
+/// answer that does not come is a timeout and not a hang.
+pub struct Socket {
+    child: Child,
+    commands: Option<ChildStdin>,
+    answers: Receiver<String>,
+    /// Where the client's standard error went.
+    errors: PathBuf,
+    /// The messages of the console that waits have read and none has asked
+    /// for yet, oldest first.
+    said: Vec<Value>,
+}
+
+impl Socket {
+    /// Starts a client and has it open the console's socket with the
+    /// handshake `headers`. The answer is the client's: the 101, or the
+    /// console's refusal with its status and body.
+    pub fn open(vm: &Vm, console: &Console, headers: &Headers) -> Result<(Socket, Value), String> {
+        let script = vm.dir().join("websocket_client.py");
+        if std::fs::read_to_string(&script).ok().as_deref() != Some(CLIENT) {
+            std::fs::write(&script, CLIENT)
+                .map_err(|err| format!("writing {}: {err}", script.display()))?;
+        }
+        let number = CLIENTS.fetch_add(1, Ordering::Relaxed);
+        let errors = vm.dir().join(format!("websocket-client-{number}.err"));
+        let mut command = Command::new("python3");
+        command.arg("-I").arg(&script);
+        let mut socket = Socket::start(command, errors)?;
+        // The client waits up to a minute each for the connection and for
+        // the answer's head: the machine's TLS is slow without KVM.
+        let answer = socket.ask(&open_command(console.port, &console.pem, headers), 120)?;
+        Ok((socket, answer))
+    }
+
+    /// Starts `command` as a client, with its standard error in the file
+    /// `errors`.
+    fn start(mut command: Command, errors: PathBuf) -> Result<Socket, String> {
+        let log = File::create(&errors).map_err(|err| format!("{}: {err}", errors.display()))?;
+        let mut child =
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(log).spawn().map_err(
+                |err| format!("the console's boot tests need Python 3 (ob doctor): {err}"),
+            )?;
+        let commands = child.stdin.take();
+        let stdout = child.stdout.take().ok_or("the client has no standard output")?;
+        let (sender, answers) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Socket { child, commands, answers, errors, said: Vec::new() })
+    }
+
+    /// Writes `command` to the client and waits up to `seconds` and ten
+    /// more for its answer. The client's `{"error": ...}` is an error here,
+    /// and so is a client that ended: with its status and what it said.
+    pub fn ask(&mut self, command: &Value, seconds: u64) -> Result<Value, String> {
+        let what = brief(command);
+        let written = match self.commands.as_mut() {
+            Some(commands) => writeln!(commands, "{command}").and_then(|()| commands.flush()),
+            None => Err(std::io::ErrorKind::BrokenPipe.into()),
+        };
+        if written.is_err() {
+            return Err(self.gone(&what));
+        }
+        match self.answers.recv_timeout(Duration::from_secs(seconds + GRACE)) {
+            Ok(line) => {
+                let answer: Value = serde_json::from_str(&line).map_err(|err| {
+                    format!("the client answered {what} with {line:.200}, which is no JSON: {err}")
+                })?;
+                match answer.get("error") {
+                    None => Ok(answer),
+                    Some(error) => {
+                        let error =
+                            error.as_str().map_or_else(|| error.to_string(), str::to_string);
+                        Err(format!("{what}: {error}"))
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                Err(format!("the client did not answer {what} in {} s", seconds + GRACE))
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(self.gone(&what)),
+        }
+    }
+
+    /// Says how the client ended, for the command `what` that found it so:
+    /// its exit status, and what it wrote to its standard error.
+    fn gone(&mut self, what: &str) -> String {
+        self.commands = None;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status.to_string(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => break "still running".to_string(),
+                Err(err) => break err.to_string(),
+            }
+        };
+        let said = std::fs::read_to_string(&self.errors).unwrap_or_default();
+        let said = said.trim();
+        let said = if said.is_empty() { String::new() } else { format!(": {said}") };
+        format!("the client ended ({status}) at {what}{said}")
+    }
+
+    /// Sends a command that writes to the console. A write that could not
+    /// be made is an error only when `strict`: a test that makes the
+    /// console close the socket races the write against the close.
+    fn send(&mut self, command: &Value, strict: bool) -> Result<(), String> {
+        let what = brief(command);
+        let answer = self.ask(command, 10)?;
+        match answer["send_error"].as_str() {
+            Some(why) if strict => Err(format!("{what} was not sent: {why}")),
+            _ => Ok(()),
+        }
+    }
+
+    /// Sends `message` as JSON in a text frame.
+    pub fn text(&mut self, message: &Value) -> Result<(), String> {
+        self.send(&json!({"text": message}), true)
+    }
+
+    /// Sends `text`, as it is, in a text frame.
+    pub fn text_raw(&mut self, text: &str) -> Result<(), String> {
+        self.send(&json!({"text_raw": text}), true)
+    }
+
+    /// Types `keys` in pane `pane`: a binary frame.
+    pub fn type_in(&mut self, pane: u64, keys: &str) -> Result<(), String> {
+        self.send(&json!({"type": {"pane": pane, "keys": keys}}), true)
+    }
+
+    /// Writes `bytes` to the connection as they are, which the console may
+    /// answer by closing it before the last is written.
+    pub fn frame(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.send(&json!({"frame": {"hex": hex(bytes)}}), false)
+    }
+
+    /// Sends a ping with `words`.
+    pub fn ping(&mut self, words: &str) -> Result<(), String> {
+        self.send(&json!({"ping": words}), true)
+    }
+
+    /// Sends a close frame with `code`, which the console may have sent its
+    /// own for already.
+    pub fn close(&mut self, code: u16) -> Result<(), String> {
+        self.send(&json!({"close": code}), false)
+    }
+
+    /// Turns the acknowledging of output on or off.
+    pub fn acks(&mut self, on: bool) -> Result<(), String> {
+        self.ask(&json!({"acks": on}), 10).map(|_| ())
+    }
+
+    /// Waits up to `seconds` for what `kind` asks for with `wanted`, as the
+    /// client's `wait` takes them. The messages it reads are kept for
+    /// [`Socket::wait_said`].
+    pub fn wait(&mut self, kind: &str, wanted: Value, seconds: u64) -> Result<Waited, String> {
+        // A map, since `json!` takes no variable for a key.
+        let mut spec = serde_json::Map::new();
+        spec.insert("seconds".into(), json!(seconds));
+        spec.insert(kind.into(), wanted);
+        let answer = self.ask(&json!({"wait": spec}), seconds)?;
+        if let Some(read) = answer["said"].as_array() {
+            self.said.extend(read.iter().cloned());
+        }
+        Ok(Waited::of(&answer))
+    }
+
+    /// The oldest message kept that has the key `key`, taken out.
+    fn take_said(&mut self, key: &str) -> Option<Value> {
+        let at = self.said.iter().position(|said| said.get(key).is_some())?;
+        Some(self.said.remove(at))
+    }
+
+    /// Forgets the messages kept that have the key `key`.
+    pub fn forget_said(&mut self, key: &str) {
+        self.said.retain(|said| said.get(key).is_none());
+    }
+
+    /// Waits up to `seconds` for a message of the console that has the key
+    /// `key`, and gives it. A message that came while an earlier wait read
+    /// is there, too.
+    pub fn wait_said(&mut self, key: &str, seconds: u64) -> Result<Value, String> {
+        if let Some(found) = self.take_said(key) {
+            return Ok(found);
+        }
+        let waited = self.wait("said", json!(key), seconds)?;
+        match self.take_said(key) {
+            Some(found) => Ok(found),
+            None => Err(lacking(&format!("a message with {key:?}"), seconds, &waited, &self.said)),
+        }
+    }
+
+    /// Waits up to `seconds` for the output of pane `pane` to hold `needle`.
+    pub fn wait_output(&mut self, pane: u64, needle: &str, seconds: u64) -> Result<(), String> {
+        let waited = self.wait("output", json!([pane, needle]), seconds)?;
+        if !waited.found.is_null() {
+            return Ok(());
+        }
+        let held = self.output(pane)?;
+        let what = format!("{needle:?} in the output of pane {pane}");
+        let mut why = lacking(&what, seconds, &waited, &self.said);
+        why.push_str(&format!("; the output ends with {:?}", tail(&held.text, 300)));
+        Err(why)
+    }
+
+    /// Waits up to `seconds` for pane `pane` to have output of `count`
+    /// bytes or more.
+    pub fn wait_bytes(&mut self, pane: u64, count: u64, seconds: u64) -> Result<Waited, String> {
+        let waited = self.wait("bytes", json!([pane, count]), seconds)?;
+        if waited.found.is_null() {
+            let what = format!("{count} bytes of output of pane {pane}");
+            return Err(lacking(&what, seconds, &waited, &self.said));
+        }
+        Ok(waited)
+    }
+
+    /// Reads for `seconds` and finds nothing to wait for: what is read in
+    /// that time is in the pane's lengths.
+    pub fn wait_quiet(&mut self, seconds: u64) -> Result<Waited, String> {
+        self.wait("quiet", json!(true), seconds)
+    }
+
+    /// Waits up to `seconds` for the pong of a ping with `words`.
+    pub fn wait_pong(&mut self, words: &str, seconds: u64) -> Result<(), String> {
+        let waited = self.wait("pong", json!(words), seconds)?;
+        if waited.found.is_null() {
+            return Err(lacking(&format!("a pong of {words:?}"), seconds, &waited, &self.said));
+        }
+        Ok(())
+    }
+
+    /// Waits up to `seconds` for a close frame, or the end of the
+    /// connection, and gives the frame's code: 0 when the connection ended
+    /// with none.
+    pub fn wait_closed(&mut self, seconds: u64) -> Result<i64, String> {
+        let waited = self.wait("closed", json!(true), seconds)?;
+        match waited.closed {
+            Some(code) => Ok(code),
+            None => Err(lacking("the socket's close", seconds, &waited, &self.said)),
+        }
+    }
+
+    /// All the output the client read of pane `pane`.
+    pub fn output(&mut self, pane: u64) -> Result<Held, String> {
+        let answer = self.ask(&json!({"output": pane}), 30)?;
+        let text = answer["text"].as_str().ok_or_else(|| format!("no text in {answer}"))?;
+        let length = answer["length"].as_u64().ok_or_else(|| format!("no length in {answer}"))?;
+        Ok(Held { text: text.to_string(), length, first: answer["first"].as_u64() })
+    }
+
+    /// Attaches to pane `pane` with the size `cols` by `rows`, from after
+    /// the output at offset `since` if one is given, and gives the console's
+    /// `attached` message.
+    pub fn attach(
+        &mut self,
+        pane: u64,
+        (cols, rows): (u32, u32),
+        since: Option<u64>,
+    ) -> Result<Value, String> {
+        // An earlier attach's answer is not this one's.
+        self.forget_said("attached");
+        let mut message = json!({"attach": pane, "cols": cols, "rows": rows});
+        if let Some(since) = since {
+            message["since"] = json!(since);
+        }
+        self.text(&message)?;
+        self.wait_said("attached", 30)
+    }
+}
+
+impl Drop for Socket {
+    fn drop(&mut self) {
+        if let Some(mut commands) = self.commands.take() {
+            // A client that has ended has no one to tell; its end of input
+            // is a quit as well.
+            let _ = writeln!(commands, "{{\"quit\":true}}");
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Not ended in 2 s: it is stopped. It may have ended just now, and
+        // then there is nothing to stop.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The client's `open`: the host's port of the console, the one certificate
+/// to trust and the headers to give.
+fn open_command(port: u16, cafile: &Path, headers: &Headers) -> Value {
+    json!({"open": {
+        "port": port,
+        "cafile": cafile,
+        "host": format!("localhost:{PORT}"),
+        "path": "/api/1/terminal",
+        "headers": headers.json(),
+    }})
+}
+
+/// `command` as a line of a message: at most 120 characters of it.
+fn brief(command: &Value) -> String {
+    let text = command.to_string();
+    if text.chars().count() <= 120 {
+        return text;
+    }
+    let head: String = text.chars().take(120).collect();
+    format!("{head}... ({} bytes)", text.len())
+}
+
+/// The last `count` characters of `text`.
+pub fn tail(text: &str, count: usize) -> &str {
+    let skip = text.chars().count().saturating_sub(count);
+    text.char_indices().nth(skip).map_or("", |(at, _)| &text[at..])
+}
+
+/// The bytes as lower-case hexadecimal, which the client's `frame` takes.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        // Writing to a string does not fail.
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
+}
+
+/// What an error says of a wait that did not find `what` in `seconds`: why
+/// it stopped, what the console said on its way, and how much each pane
+/// had given.
+fn lacking(what: &str, seconds: u64, waited: &Waited, said: &[Value]) -> String {
+    let mut why = if waited.timed_out {
+        format!("{what} did not come in {seconds} s")
+    } else {
+        format!("{what} did not come before the socket closed")
+    };
+    match waited.closed {
+        Some(0) => why.push_str("; the connection ended with no close frame"),
+        Some(code) => why.push_str(&format!("; the console closed the socket with {code}")),
+        None => {}
+    }
+    if !said.is_empty() {
+        why.push_str(&format!("; its other messages were {}", brief(&Value::from(said))));
+    }
+    if !waited.lengths.is_empty() {
+        why.push_str(&format!("; the bytes read of each pane are {:?}", waited.lengths));
+    }
+    why
+}
+
 /// The status in `ran N`, as `Pane::status` has the pane say it.
 pub fn ran_status(text: &str) -> Option<i32> {
     text.lines().find_map(|line| line.trim().strip_prefix("ran ")?.trim().parse().ok())
@@ -510,6 +1100,30 @@ pub fn http_date(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_change_events_of_a_stream_are_read_from_its_text() {
+        let text = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n\
+                    event: unlock\ndata: {\"unlock_seconds\":null}\n\n\
+                    : keep\n\n\
+                    event: change\ndata: {\"at\":1790000000,\"how\":\"console\",\"id\":7}\n\n\
+                    event: task\ndata: {\"id\":7,\"state\":\"running\"}\n\n\
+                    event: change\ndata: {\"at\":1790000030,\"how\":\"by hand\",\"id\":8}\n\n\
+                    event: change\ndata: not json\n\n\
+                    event: change\n";
+        let found = change_events(text);
+        assert_eq!(
+            found,
+            [
+                json!({"at": 1790000000, "how": "console", "id": 7}),
+                json!({"at": 1790000030, "how": "by hand", "id": 8}),
+            ]
+        );
+        assert!(change_events("").is_empty());
+        // Another event's data is not a change's, even if it is JSON.
+        assert!(change_events("event: task\ndata: {\"id\":1}\n\n").is_empty());
+        assert!(change_events("data: {\"id\":1}\n\n").is_empty());
+    }
 
     #[test]
     fn what_the_pane_says_is_read_back() {
@@ -650,5 +1264,318 @@ mod tests {
         ] {
             assert_eq!(http_date(wrong), None, "{wrong}");
         }
+    }
+
+    #[test]
+    fn handshake_headers_are_replaced_by_name_and_left_out_with_none() {
+        let headers = Headers::default()
+            .with("Origin", ORIGIN)
+            .with("Upgrade", "websocket")
+            .with("origin", "https://other.example")
+            .without("UPGRADE");
+        assert_eq!(headers.value("ORIGIN"), Some("https://other.example"));
+        assert_eq!(headers.value("Upgrade"), None);
+        assert_eq!(headers.value("Cookie"), None);
+        // Two headers, the one of each name once; a left out one is null.
+        assert_eq!(headers.json(), json!([["origin", "https://other.example"], ["UPGRADE", null]]));
+    }
+
+    #[test]
+    fn the_page_opens_the_socket_with_its_origin_cookie_and_token() {
+        let browser = Browser { cookie: Some("one".into()), token: Some("tok_en-1".into()) };
+        let headers = browser.socket_headers();
+        assert_eq!(headers.value("Origin"), Some(ORIGIN));
+        assert_eq!(headers.value("Cookie"), Some("__Host-dukovo=one"));
+        assert_eq!(headers.value("Sec-Fetch-Site"), Some("same-origin"));
+        assert_eq!(
+            headers.value("Sec-WebSocket-Protocol"),
+            Some("dukovo-terminal-1, csrf.tok_en-1")
+        );
+        // A browser that has signed in to nothing has neither.
+        let headers = Browser::default().socket_headers();
+        assert_eq!(headers.value("Cookie"), None);
+        assert_eq!(headers.value("Sec-WebSocket-Protocol"), Some("dukovo-terminal-1"));
+    }
+
+    #[test]
+    fn the_open_command_names_the_port_the_certificate_and_the_headers() {
+        let headers = Headers::default().with("Origin", ORIGIN).without("Upgrade");
+        let open = open_command(45678, Path::new("/tmp/admind.pem"), &headers);
+        assert_eq!(
+            open,
+            json!({"open": {
+                "port": 45678,
+                "cafile": "/tmp/admind.pem",
+                "host": "localhost:9090",
+                "path": "/api/1/terminal",
+                "headers": [["Origin", ORIGIN], ["Upgrade", null]],
+            }})
+        );
+    }
+
+    #[test]
+    fn long_commands_are_cut_in_messages_and_the_tail_of_a_text_is_whole_characters() {
+        assert_eq!(brief(&json!({"text": "short"})), r#"{"text":"short"}"#);
+        let long = brief(&json!({"frame": {"hex": "ab".repeat(500)}}));
+        assert!(long.starts_with(r#"{"frame":{"hex":"abab"#), "{long}");
+        assert!(long.ends_with("... (1020 bytes)"), "{long}");
+        assert_eq!(long.chars().count(), 120 + "... (1020 bytes)".len());
+        assert_eq!(tail("abcdef", 3), "def");
+        assert_eq!(tail("abc", 10), "abc");
+        assert_eq!(tail("", 3), "");
+        // A character of two bytes is not cut in half.
+        assert_eq!(tail("a\u{e9}\u{e9}", 2), "\u{e9}\u{e9}");
+        assert_eq!(hex(&[0x81, 0x02, 0x7b, 0x00, 0xff]), "81027b00ff");
+        assert_eq!(hex(&[]), "");
+    }
+
+    #[test]
+    fn a_wait_that_finds_nothing_says_what_came_instead() {
+        let mut waited = Waited {
+            found: Value::Null,
+            timed_out: true,
+            closed: None,
+            lengths: BTreeMap::from([(3, 17)]),
+        };
+        let said = [json!({"changed": 1})];
+        assert_eq!(
+            lacking("a pong of \"x\"", 5, &waited, &said),
+            "a pong of \"x\" did not come in 5 s; its other messages were [{\"changed\":1}]; \
+             the bytes read of each pane are {3: 17}"
+        );
+        assert_eq!(waited.length(3), 17);
+        assert_eq!(waited.length(4), 0);
+        waited.timed_out = false;
+        waited.closed = Some(1001);
+        assert_eq!(
+            lacking("a message", 5, &waited, &[]),
+            "a message did not come before the socket closed; the console closed the socket \
+             with 1001; the bytes read of each pane are {3: 17}"
+        );
+        waited.closed = Some(0);
+        waited.lengths.clear();
+        assert_eq!(
+            lacking("a message", 5, &waited, &[]),
+            "a message did not come before the socket closed; the connection ended with no \
+             close frame"
+        );
+    }
+
+    #[test]
+    fn the_answer_to_a_wait_is_read() {
+        let waited = Waited::of(&json!({
+            "found": {"attached": 3},
+            "timed_out": false,
+            "said": [],
+            "closed": 1000,
+            "lengths": {"3": 5, "12": 40},
+        }));
+        assert_eq!(waited.found, json!({"attached": 3}));
+        assert!(!waited.timed_out);
+        assert_eq!(waited.closed, Some(1000));
+        assert_eq!((waited.length(3), waited.length(12)), (5, 40));
+        let empty = Waited::of(&json!({"found": null, "timed_out": true, "closed": null}));
+        assert!(empty.found.is_null() && empty.timed_out && empty.lengths.is_empty());
+        assert_eq!(empty.closed, None);
+    }
+
+    #[test]
+    fn what_a_pane_held_ends_where_its_last_byte_was() {
+        let held = Held { text: "abc".into(), length: 3, first: Some(5000) };
+        assert_eq!(held.end(), 5003);
+        assert_eq!(Held { text: String::new(), length: 0, first: None }.end(), 0);
+    }
+
+    /// Whether the host has Python 3; a test that needs it prints a note
+    /// and passes where it has none, as the test of `ob doctor` does for
+    /// what it cannot find.
+    fn has_python() -> bool {
+        let found = Command::new("python3").arg("--version").output().is_ok();
+        if !found {
+            eprintln!("skipped: python3 is not on this host");
+        }
+        found
+    }
+
+    /// The client's own check of its frames, the accept key and its
+    /// commands runs, and passes.
+    #[test]
+    fn the_websocket_client_passes_its_own_checks() {
+        if !has_python() {
+            return;
+        }
+        let script =
+            std::env::temp_dir().join(format!("dukovo-websocket-client-{}.py", std::process::id()));
+        std::fs::write(&script, CLIENT).unwrap();
+        let out = Command::new("python3").arg("-I").arg(&script).arg("--self-test").output();
+        std::fs::remove_file(&script).unwrap();
+        let out = out.unwrap();
+        assert!(
+            out.status.success(),
+            "the client's self-test ended with {}: {}{}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// What a client does, as far as the plumbing sees it: this answers
+    /// each command by its name.
+    const STAND_IN: &str = r#"
+import json, sys, time
+for line in sys.stdin:
+    (name, value), = json.loads(line).items()
+    if name == "die":
+        sys.stderr.write("it broke\n")
+        sys.exit(3)
+    elif name == "bad":
+        answer = {"error": "that cannot be done"}
+    elif name == "slip" or name == "frame":
+        answer = {"ok": True, "send_error": "BrokenPipeError: gone"}
+    elif name == "output":
+        answer = {"text": "abc", "length": 3, "sha256": "", "first": 10}
+    elif name == "wait":
+        kind = [key for key in value if key != "seconds"][0]
+        said, found, closed, timed_out = [], None, None, False
+        if kind == "said" and value["said"] == "attached":
+            said = [{"changed": 1}, {"attached": 3, "offset": 9}]
+            found = said[1]
+        elif kind == "quiet":
+            said = [{"ended": 3, "why": "locked"}]
+        elif kind == "closed":
+            found = closed = 1001
+        elif kind == "bytes" and value["bytes"][1] <= 7:
+            found = 7
+        else:
+            timed_out = True
+        answer = {"found": found, "timed_out": timed_out, "said": said,
+                  "closed": closed, "lengths": {"3": 7}}
+    else:
+        answer = {"ok": True}
+    print(json.dumps(answer), flush=True)
+"#;
+
+    /// A client that runs `program`, with its errors in a file of the test.
+    fn stand_in(program: &str) -> Option<Socket> {
+        static MADE: AtomicUsize = AtomicUsize::new(0);
+        if !has_python() {
+            return None;
+        }
+        let errors = std::env::temp_dir().join(format!(
+            "dukovo-stand-in-{}-{}.err",
+            std::process::id(),
+            MADE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut command = Command::new("python3");
+        command.args(["-I", "-c", program]);
+        Some(Socket::start(command, errors).unwrap())
+    }
+
+    /// Ends a stand-in and takes its file of errors away.
+    fn finish(socket: Socket) {
+        let errors = socket.errors.clone();
+        drop(socket);
+        std::fs::remove_file(errors).unwrap();
+    }
+
+    #[test]
+    fn a_client_error_is_an_error_naming_the_command_and_a_dead_client_gives_its_stderr() {
+        let Some(mut socket) = stand_in(STAND_IN) else { return };
+        assert_eq!(socket.ask(&json!({"ping": "x"}), 5).unwrap(), json!({"ok": true}));
+        assert_eq!(
+            socket.ask(&json!({"bad": 1}), 5).unwrap_err(),
+            r#"{"bad":1}: that cannot be done"#
+        );
+        // The client is answering still after an error.
+        assert!(socket.ask(&json!({"ping": "y"}), 5).is_ok());
+        let ended = socket.ask(&json!({"die": 1}), 5).unwrap_err();
+        assert!(ended.starts_with("the client ended (exit status: 3) at {\"die\":1}"), "{ended}");
+        assert!(ended.ends_with(": it broke"), "{ended}");
+        // And later commands find it so, too.
+        let later = socket.ask(&json!({"ping": "z"}), 5).unwrap_err();
+        assert!(later.contains("exit status: 3") && later.contains("it broke"), "{later}");
+        finish(socket);
+    }
+
+    #[test]
+    fn a_write_that_failed_is_an_error_only_where_the_test_needs_it_made() {
+        let Some(mut socket) = stand_in(STAND_IN) else { return };
+        socket.text(&json!({"detach": 1})).unwrap();
+        socket.type_in(1, "ls\r").unwrap();
+        // The stand-in says that a typed write failed; it names the write.
+        let why = socket.send(&json!({"slip": 1}), true).unwrap_err();
+        assert_eq!(why, r#"{"slip":1} was not sent: BrokenPipeError: gone"#);
+        socket.send(&json!({"slip": 1}), false).unwrap();
+        // A frame that provokes a close may fail to be written whole.
+        socket.frame(&[0x81, 0x02, 0x7b, 0x7d]).unwrap();
+        socket.close(1000).unwrap();
+        socket.ping("words").unwrap();
+        socket.acks(true).unwrap();
+        finish(socket);
+    }
+
+    #[test]
+    fn messages_that_waits_read_wait_for_the_wait_that_asks_for_them() {
+        let Some(mut socket) = stand_in(STAND_IN) else { return };
+        let attached = socket.attach(3, (80, 24), Some(7)).unwrap();
+        assert_eq!(attached, json!({"attached": 3, "offset": 9}));
+        // The message before it is kept.
+        assert_eq!(socket.said, [json!({"changed": 1})]);
+        // A quiet wait reads `ended`; it is there for the wait that asks.
+        let waited = socket.wait_quiet(1).unwrap();
+        assert_eq!(waited.length(3), 7);
+        assert_eq!(socket.wait_said("ended", 1).unwrap(), json!({"ended": 3, "why": "locked"}));
+        assert_eq!(socket.said, [json!({"changed": 1})]);
+        // A message nothing has said is a wait that runs out, and says so.
+        let why = socket.wait_said("detached", 1).unwrap_err();
+        assert!(why.contains("a message with \"detached\" did not come"), "{why}");
+        assert!(why.contains(r#"its other messages were [{"changed":1}]"#), "{why}");
+        socket.forget_said("changed");
+        assert!(socket.said.is_empty());
+        finish(socket);
+    }
+
+    #[test]
+    fn waits_for_output_bytes_pongs_and_closes_say_what_they_lacked() {
+        let Some(mut socket) = stand_in(STAND_IN) else { return };
+        let why = socket.wait_output(3, "needle", 1).unwrap_err();
+        assert!(why.contains("\"needle\" in the output of pane 3 did not come in 1 s"), "{why}");
+        assert!(why.ends_with("; the output ends with \"abc\""), "{why}");
+        assert_eq!(socket.wait_bytes(3, 7, 1).unwrap().length(3), 7);
+        let why = socket.wait_bytes(3, 8, 1).unwrap_err();
+        assert!(why.starts_with("8 bytes of output of pane 3 did not come in 1 s"), "{why}");
+        let why = socket.wait_pong("words", 1).unwrap_err();
+        assert!(why.starts_with("a pong of \"words\" did not come in 1 s"), "{why}");
+        assert_eq!(socket.wait_closed(1).unwrap(), 1001);
+        let held = socket.output(3).unwrap();
+        assert_eq!(
+            (held.text.as_str(), held.length, held.first, held.end()),
+            ("abc", 3, Some(10), 13)
+        );
+        finish(socket);
+    }
+
+    #[test]
+    fn a_client_that_does_not_quit_is_stopped_after_two_seconds() {
+        let Some(socket) = stand_in("import time\ntime.sleep(60)\n") else { return };
+        let pid = socket.child.id();
+        let errors = socket.errors.clone();
+        let started = Instant::now();
+        drop(socket);
+        let took = started.elapsed();
+        assert!(took >= Duration::from_secs(2) && took < Duration::from_secs(8), "{took:?}");
+        // It was reaped as well as killed: nothing is left of its process.
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        std::fs::remove_file(errors).unwrap();
+    }
+
+    #[test]
+    fn a_client_that_quits_ends_at_once() {
+        let program =
+            "import sys\nfor line in sys.stdin:\n    print('{}', flush=True)\n    break\n";
+        let Some(socket) = stand_in(program) else { return };
+        let started = Instant::now();
+        finish(socket);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

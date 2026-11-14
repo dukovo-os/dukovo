@@ -438,6 +438,52 @@ pub fn ssh_environment(
     env
 }
 
+/// What a shell on a terminal of the web console has set besides a
+/// console session's environment (ADR 0517): the console's terminal draws
+/// any colour, and a program may tell it is in the console.
+pub const WEB_TERMINAL_SETTINGS: [&str; 2] = ["COLORTERM=truecolor", "DUKOVO_CONSOLE=1"];
+
+/// The environment a shell of the web console's terminal starts with
+/// (ADR 0517): a console session's on terminal type `term`, with the
+/// browser's `language` settings over `LANG`, and
+/// [`WEB_TERMINAL_SETTINGS`].
+pub fn web_terminal_environment(user: &User, term: &str, language: &[String]) -> Vec<String> {
+    let mut env: Vec<String> = environment(user, term)
+        .into_iter()
+        .filter(|v| !(v.starts_with("LANG=") && language.iter().any(|l| l.starts_with("LANG="))))
+        .collect();
+    env.extend(language.iter().cloned());
+    env.extend(WEB_TERMINAL_SETTINGS.map(String::from));
+    env
+}
+
+/// Starts `user`'s shell on a terminal of the web console (ADR 0517), as
+/// an SSH session on a terminal starts: `login --session` on `tty`, which
+/// becomes its controlling terminal, acting for them and the groups
+/// `groups`, with the names capability in `names`, in the environment
+/// `env`. Returns the number of its first process, a child of authd's.
+pub fn start_web_terminal(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    tty: &OwnedFd,
+    env: Vec<String>,
+) -> Result<u64, String> {
+    let tty = tty.as_raw_fd();
+    let program = Program {
+        what: "the console terminal's shell",
+        path: FIRST_PROGRAM,
+        args: &[b"login", b"--session"],
+        folder: b"/",
+        env,
+        descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
+        network: true,
+        shares: None,
+        domain: None,
+    };
+    launch(names, user, groups, &program)
+}
+
 /// Starts `user`'s session over SSH (ADR 0347), acting for them and the
 /// groups `groups`, with the names capability in `names`: `login
 /// --session`, with `command` if the client asked for one, on `io`, in
@@ -884,6 +930,29 @@ mod tests {
         }
         assert!(environment(&alice(), "x\ny").iter().any(|e| e == "TERM=dumb"));
         assert!(environment(&alice(), "").iter().any(|e| e == "TERM=dumb"));
+    }
+
+    #[test]
+    fn a_web_terminal_takes_the_browsers_language_and_says_it_is_the_consoles() {
+        let language = ["LANG=de_DE.UTF-8".to_string()];
+        let env = web_terminal_environment(&alice(), "xterm-256color", &language);
+        for set in [
+            "TERM=xterm-256color",
+            "LANG=de_DE.UTF-8",
+            "COLORTERM=truecolor",
+            "DUKOVO_CONSOLE=1",
+            "HOME=/users/alice",
+        ] {
+            assert!(env.iter().any(|e| e == set), "{set}");
+        }
+        assert_eq!(env.iter().filter(|e| e.starts_with("LANG=")).count(), 1);
+        // With no language of the browser's, the machine's.
+        let plain = web_terminal_environment(&alice(), "xterm-256color", &[]);
+        assert!(plain.iter().any(|e| e == "LANG=C.UTF-8"));
+        // It is no SSH session: no client, connection or terminal of one.
+        for ssh in ["SSH_CLIENT=", "SSH_CONNECTION=", "SSH_TTY="] {
+            assert!(!plain.iter().any(|e| e.starts_with(ssh)), "{ssh}");
+        }
     }
 
     #[test]

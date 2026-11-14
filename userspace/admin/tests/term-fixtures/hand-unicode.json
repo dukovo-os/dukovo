@@ -1,0 +1,8 @@
+{
+  "source": "hand-built from the Unicode 15.1 East Asian Width table and the design (13.11): not a recording",
+  "program": "any program that writes text past ASCII",
+  "what": "wide characters, a combining mark, an emoji, and wide characters at the last column",
+  "cols": 10,
+  "rows": 8,
+  "cursor": [1, 6]
+}

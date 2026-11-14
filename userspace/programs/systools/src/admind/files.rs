@@ -11,6 +11,10 @@
 //! that is no file and has no extension is the page router's, and is
 //! answered with `index.html`.
 //!
+//! The manifest's hash of a file is its `ETag`, so that a browser that
+//! has the file asks "has it changed?" and is told 304, with no body,
+//! when it has not ([`File::matches`]).
+//!
 //! When the console shows nothing, look in the log for the lines that
 //! begin `admind: the console's files`.
 
@@ -37,6 +41,20 @@ pub struct File {
     pub bytes: Bytes,
     /// Its `Content-Type`.
     pub content_type: &'static str,
+    /// Its `ETag`: the manifest's hash of it, in quotes.
+    pub etag: String,
+}
+
+impl File {
+    /// Whether `if_none_match`, the value of a request's `If-None-Match`,
+    /// names this file as it is: `*`, or a list of entity tags one of which
+    /// is its own, weak or strong, as a `GET` compares them.
+    pub fn matches(&self, if_none_match: &str) -> bool {
+        if_none_match
+            .split(',')
+            .map(str::trim)
+            .any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == self.etag)
+    }
 }
 
 /// The files that match their manifest.
@@ -79,6 +97,7 @@ fn content_type(path: &str) -> &'static str {
         Some("ico") => "image/vnd.microsoft.icon",
         Some("woff2") => "font/woff2",
         Some("txt") => "text/plain; charset=utf-8",
+        Some("md") => "text/markdown; charset=utf-8",
         _ => "application/octet-stream",
     }
 }
@@ -111,7 +130,8 @@ impl Files {
                 said.push(format!("{path} is not the file the manifest lists, and is not served"));
                 continue;
             }
-            let file = File { bytes: Bytes::from(bytes), content_type: content_type(&path) };
+            let etag = format!("\"{hash}\"");
+            let file = File { bytes: Bytes::from(bytes), content_type: content_type(&path), etag };
             served.insert(path, file);
         }
         Ok(Files { served })
@@ -196,6 +216,48 @@ mod tests {
     }
 
     #[test]
+    fn a_files_etag_is_the_manifests_hash_in_quotes_and_a_matching_tag_is_told() {
+        let scratch = folder(
+            "etag",
+            &[("index.html", "<html>"), ("app.js", "console.log(1)")],
+            &[(&sum(b"<html>"), "index.html"), (&sum(b"console.log(1)"), "app.js")],
+        );
+        let files = Files::read(&scratch.0, &mut Vec::new()).unwrap();
+        let app = files.get("/app.js").unwrap();
+        assert_eq!(app.etag, format!("\"{}\"", sum(b"console.log(1)")));
+        assert_ne!(app.etag, files.get("/index.html").unwrap().etag);
+        // The page router's paths have the shell's tag.
+        assert_eq!(files.get("/services").unwrap().etag, files.get("/").unwrap().etag);
+        let tag = app.etag.clone();
+        let other = format!("\"{}\"", sum(b"console.log(2)"));
+        for matching in [
+            tag.clone(),
+            format!("W/{tag}"),
+            format!("{other}, {tag}"),
+            format!("{other},{tag}"),
+            format!("  {tag}  "),
+            format!("{other}, W/{tag} , \"x\""),
+            "*".to_string(),
+            "\"x\", *".to_string(),
+        ] {
+            assert!(app.matches(&matching), "{matching}");
+        }
+        for different in [
+            String::new(),
+            other.clone(),
+            sum(b"console.log(1)"),
+            tag.trim_matches('"').to_string(),
+            format!("{tag}x"),
+            format!("\"x{}", tag.trim_start_matches('"')),
+            format!("w/{tag}"),
+            format!("{other}, \"y\""),
+            "**".to_string(),
+        ] {
+            assert!(!app.matches(&different), "{different}");
+        }
+    }
+
+    #[test]
     fn a_path_that_is_no_file_is_the_page_routers_unless_it_names_one() {
         let scratch =
             folder("router", &[("index.html", "<html>")], &[(&sum(b"<html>"), "index.html")]);
@@ -243,6 +305,7 @@ mod tests {
             ("a.json", "application/json"),
             ("a.svg", "image/svg+xml"),
             ("a.woff2", "font/woff2"),
+            ("help/errors/ADM-101.md", "text/markdown; charset=utf-8"),
             ("a.png", "image/png"),
             ("a.bin", "application/octet-stream"),
             ("noextension", "application/octet-stream"),

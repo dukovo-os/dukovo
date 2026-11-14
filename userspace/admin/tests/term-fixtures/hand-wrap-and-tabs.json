@@ -1,0 +1,11 @@
+{
+  "source": "hand-built from the xterm-256color terminfo entry (am, xenl, rmam, smam, rep, ht) and the design (13.11): not a recording",
+  "program": "any program that writes to the last column",
+  "what": "autowrap and the wait to wrap, rmam, tabs, rep, cursor movement",
+  "cols": 10,
+  "rows": 8,
+  "cursor": [
+    0,
+    7
+  ]
+}

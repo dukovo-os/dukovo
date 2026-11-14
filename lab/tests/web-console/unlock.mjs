@@ -12,12 +12,15 @@
 // not leave the next one an app whose secret it cannot know.
 
 import {
+  accountItem,
   addApp,
   ensure,
   look,
   mustHaveCalled,
   mustRefuse,
+  openAccountMenu,
   openConsole,
+  openSecondStep,
   postAsPage,
   press,
   sessionOf,
@@ -129,14 +132,12 @@ async function unlockWithPassword(t, page, other) {
 
 /** While the console is unlocked, a change asks for no password. */
 async function changeWithoutPassword(t, page) {
-  await page.getByRole("link", { name: "Manage the second step" }).click();
-  await t.see(page.getByRole("heading", { name: "Second step", level: 1 }));
-  await t.see(page.getByRole("heading", { name: "Trusted browsers" }));
+  await openSecondStep(t, page);
   const { app, codes } = await addApp(t, page, null);
   await page.getByRole("button", { name: "I have saved them" }).click();
   await t.gone(page.getByRole("heading", { name: "Your recovery codes" }));
   await page.getByRole("link", { name: "Home" }).click();
-  await t.see(page.getByText("Signed in as"));
+  await t.see(page.getByRole("heading", { name: "Overview", level: 1 }));
   return { app, codes };
 }
 
@@ -247,6 +248,7 @@ async function lockWhenTheLastPageCloses(t, page) {
 async function viewer(t, page) {
   await signOut(t, page);
   await signInDone(t, page, VIEWER, PASSWORD);
+  await accountItem(await openAccountMenu(t, page), "Your account").click();
   await t.see(page.getByText("it is not an administrator"));
   await t.see(header(page).getByText("Limited access"));
   await t.gone(headerButton(page, "Unlock"));

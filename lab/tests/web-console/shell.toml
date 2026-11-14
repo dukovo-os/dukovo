@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's frame in the lab PC's browsers, in each engine: an
+# administrator signs in and finds the header, the navigation and the page
+# in their landmarks; the skip link and the keys reach them; each route
+# puts focus on its h1 and its name in the tab's title; the header and its
+# menus work by the arrow keys; a display choice applies at once and
+# follows the person to a second browser; the text at 150% does not scroll
+# sideways, wide or on a phone; the unlock's states and its warning show; a
+# console that does not answer is said so; a session signed out in another
+# tab shows the sign-in page; a reader is told which pages are for
+# administrators; and a phone at 390 by 844 has its tab bar and its More
+# sheet. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe. Each engine has an administrator of its own, and
+# there is one reader, which this test makes and removes, so no script
+# needs the lab's password.
+about = "Browsers sign in to the web console and use its frame: landmarks, the skip link, focus and the title on each route, the header and its menus by the keys, display choices that follow the person, large text, the unlock's warning, a console that does not answer, a session that ends in another tab, a reader, and a phone"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-shell-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-shell-chromium", "Made wc-shell-firefox", "Made wc-shell-webkit"]
+# An account that signs in to the console without being an administrator.
+[[step]]
+run = "sh -c 'echo lab-console-password | user add wc-shell-reader && user set --console --yes wc-shell-reader'"
+root = true
+expect = ["Made wc-shell-reader", "wc-shell-reader is changed"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "shell.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for name in wc-shell-chromium wc-shell-firefox wc-shell-webkit wc-shell-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-shell-chromium is removed", "wc-shell-firefox is removed", "wc-shell-webkit is removed", "wc-shell-reader is removed"]

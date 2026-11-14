@@ -26,6 +26,11 @@
 //! it is done on admind's thread, with the clock a value that the caller
 //! gives, which is how the tests drive it.
 //!
+//! **The tabs are told.** A row, once the store has kept it, is announced
+//! ([`News`]), and the stream of events tells each open tab, as everyone's
+//! to read, `event: change` with the row's number, how it was made and
+//! when: no person, action or file.
+//!
 //! **What is not shown.** Everyone who is signed in reads the journal,
 //! and not everyone may read the files. A file under a service's
 //! `secrets`, one that not everyone may read (no read bit for others), and
@@ -47,11 +52,14 @@ use std::path::{Path, PathBuf};
 
 use ring::digest;
 
-use super::audit::{self, NOBODY};
+pub use self::news::{News, Row};
+
+use super::audit::{self, Editor, NOBODY};
 use super::store::changes::{Change, FileChange, NewChange, Seen};
 use super::store::versions::sha256;
 use super::store::watched::Watched;
 use super::store::{Result, Store};
+use super::terminal::Rooted;
 use crate::bundles::folder::{self, Dir};
 
 /// Where the settings are, which the round watches whole.
@@ -313,11 +321,14 @@ impl Scan {
 }
 
 /// The journal's state in memory: the files console changes are under way
-/// on, which the round leaves alone until they end.
+/// on, which the round leaves alone until they end, and the rows that
+/// ended, for the streams of events to tell.
 pub struct Journal {
     /// Where the settings are: [`SETTINGS`], but in a test.
     settings: PathBuf,
     pending: RefCell<BTreeMap<String, usize>>,
+    /// The rows that ended lately: `event: change`.
+    pub news: News,
 }
 
 /// A console change that has begun: what each file named was before.
@@ -360,7 +371,7 @@ pub struct Ended<'a> {
 impl Journal {
     /// A journal that watches the settings in `settings`.
     pub fn new(settings: &Path) -> Journal {
-        Journal { settings: settings.to_path_buf(), pending: RefCell::default() }
+        Journal { settings: settings.to_path_buf(), pending: RefCell::default(), news: News::new() }
     }
 
     /// Begins the change of the files `files`: looks at each, which keeps
@@ -533,25 +544,30 @@ impl Journal {
         &self,
         store: &Store,
         scan: &Scan,
-        who: &BTreeMap<String, String>,
+        who: &BTreeMap<String, Editor>,
         now: i64,
     ) -> Result<usize> {
-        store.atomically(|| {
+        let made = store.atomically(|| {
             let watched = store.watched()?;
             // A row for each person, and the account files in rows of
             // their own: a change to them is never put back with others.
-            let mut by_person: BTreeMap<(&str, bool), Vec<FileChange>> = BTreeMap::new();
+            let mut by_person: BTreeMap<(&str, Option<&str>, bool), Vec<FileChange>> =
+                BTreeMap::new();
             for edit in &scan.edits {
                 let noted = watched.get(&edit.path).map_or(&Seen::Absent, |noted| &noted.seen);
                 if self.is_pending(&edit.path) || *noted != edit.before {
                     continue;
                 }
-                let person = who.get(&edit.path).map_or(NOBODY, String::as_str);
-                by_person.entry((person, is_accounts(&edit.path))).or_default().push(FileChange {
-                    path: edit.path.clone(),
-                    before: edit.before.clone(),
-                    after: edit.after.clone(),
-                });
+                let (person, note) = who
+                    .get(&edit.path)
+                    .map_or((NOBODY, None), |editor| (editor.name.as_str(), editor.note()));
+                by_person.entry((person, note, is_accounts(&edit.path))).or_default().push(
+                    FileChange {
+                        path: edit.path.clone(),
+                        before: edit.before.clone(),
+                        after: edit.after.clone(),
+                    },
+                );
                 match edit.stamp {
                     Some(stamp) => store.set_watched(
                         &edit.path,
@@ -560,8 +576,9 @@ impl Journal {
                     None => store.forget_watched(&edit.path)?,
                 }
             }
-            for ((person, _), files) in &by_person {
-                store.add_change(&NewChange {
+            let mut rows = Vec::with_capacity(by_person.len());
+            for ((person, note, _), files) in &by_person {
+                rows.push(store.add_change(&NewChange {
                     at: now,
                     who: person,
                     how: "by hand",
@@ -569,12 +586,17 @@ impl Journal {
                     argv: None,
                     status: None,
                     task: None,
-                    note: None,
+                    note: *note,
                     files,
-                })?;
+                })?);
             }
-            Ok(by_person.len())
-        })
+            Ok(rows)
+        })?;
+        // The rows are kept: the tabs are told of them.
+        for id in &made {
+            self.news.announce(*id, "by hand", now);
+        }
+        Ok(made.len())
     }
 
     /// One round, as the server runs it every 30 seconds: [`scan`], and
@@ -589,20 +611,27 @@ impl Journal {
     ///
     /// [`scan`]: Journal::scan
     /// [`record`]: Journal::record
-    pub async fn round(&self, store: &Store, logd: &str, now: i64) -> Result<usize> {
+    pub async fn round(
+        &self,
+        store: &Store,
+        logd: &str,
+        rooted: &[Rooted],
+        now: i64,
+    ) -> Result<usize> {
         let scan = self.scan(store, now)?;
         if scan.edits.is_empty() {
             return Ok(0);
         }
         let times = scan.times(now);
         let earliest = times.iter().map(|(_, at)| *at).min().unwrap_or(now);
-        let who = match audit::elevated_between(logd, earliest - audit::WINDOW, now).await {
+        let mut who = match audit::elevated_between(logd, earliest - audit::WINDOW, now).await {
             Ok(commands) => audit::who_edited_each(&commands, &times),
             Err(why) => {
                 super::log(4, &format!("the journal cannot tell who changed a file: {why}"));
                 BTreeMap::new()
             }
         };
+        audit::add_terminal_editors(&mut who, rooted, &times);
         self.record(store, &scan, &who, now)
     }
 }
@@ -652,7 +681,10 @@ impl Begun<'_> {
             })
         });
         match made {
-            Ok(id) => Ending { row: Some(id), same },
+            Ok(id) => {
+                self.journal.news.announce(id, ended.how, now);
+                Ending { row: Some(id), same }
+            }
             Err(why) => {
                 super::log(
                     4,
@@ -832,5 +864,6 @@ fn walk_in(
     }
 }
 
+mod news;
 #[cfg(test)]
 mod tests;

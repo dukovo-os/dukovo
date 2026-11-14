@@ -45,7 +45,7 @@ use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 
 use super::files::{self, Files};
-use super::limits::Slot;
+use super::limits::{Held, Slot};
 use super::log;
 use super::reach;
 use super::routes;
@@ -58,8 +58,12 @@ use crate::logd;
 use crate::util::{self, Fail, fail};
 
 /// How long a connection has for its TLS handshake and the head of its
-/// first request together.
-const HEAD_TIME: Duration = Duration::from_secs(10);
+/// first request together. Browsers open connections ahead of need and
+/// keep one they have not used for a while (Chromium for 10 seconds);
+/// this is longer, so that the browser closes such a connection first and
+/// never sends a request on one admind is closing, which it would retry
+/// on another and, a few times over, give up as a failed page.
+const HEAD_TIME: Duration = Duration::from_secs(20);
 
 /// How long a connection may wait for the head of its next request, and
 /// how long a quiet one waits before the network's first probe.
@@ -272,7 +276,9 @@ impl Upkeep {
 /// when the store failed.
 async fn journal_round(shared: &Shared) {
     let Some(store) = &shared.store else { return };
-    match shared.journal.round(store, logd::QUERY, unix_now()).await {
+    let now = unix_now();
+    let rooted = shared.terminals.borrow().rooted(now);
+    match shared.journal.round(store, logd::QUERY, &rooted, now).await {
         Ok(0) => {}
         Ok(rows) => log(6, &format!("{rows} changes made by hand are in the journal")),
         Err(why) => log(4, &format!("the journal could not look at the files: {why}")),
@@ -402,7 +408,8 @@ fn probe_every(stream: &TcpStream) -> io::Result<()> {
     if done < 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
 
-/// Serves one connection, which holds `slot` until it ends. `head_time`
+/// Serves one connection, which holds `slot` until it ends, or hands it
+/// to the Terminal's socket that it becomes. `head_time`
 /// is how long its handshake and first head have.
 async fn connection(
     shared: Rc<Shared>,
@@ -420,20 +427,22 @@ async fn connection(
     let tls = match tokio::time::timeout_at(deadline, acceptor.accept(stream)).await {
         Ok(Ok(tls)) => tls,
         Ok(Err(err)) => {
-            shared.refused_connection(peer, &format!("its TLS handshake failed: {err}"));
+            shared.refused_connection(peer, "its TLS handshake failed", &err.to_string());
             return;
         }
         Err(_) => {
-            shared.refused_connection(peer, "its TLS handshake did not finish in time");
+            shared.refused_connection(peer, "its TLS handshake did not finish in time", "");
             return;
         }
     };
     let seen = Rc::new(Cell::new(false));
+    // The Terminal's socket takes the connection's place from here.
+    let held: Held = Rc::new(Cell::new(Some(slot)));
     let service = {
-        let (shared, seen) = (Rc::clone(&shared), Rc::clone(&seen));
+        let (shared, seen, held) = (Rc::clone(&shared), Rc::clone(&seen), Rc::clone(&held));
         service_fn(move |request| {
             seen.set(true);
-            routes::handle(Rc::clone(&shared), peer, request)
+            routes::handle_on(Rc::clone(&shared), peer, Some(Rc::clone(&held)), request)
         })
     };
     let served = http1::Builder::new()
@@ -442,13 +451,16 @@ async fn connection(
         .max_buf_size(HEAD_MAX)
         .max_headers(HEADERS_MAX)
         .keep_alive(true)
-        .serve_connection(TokioIo::new(tls), service);
+        .serve_connection(TokioIo::new(tls), service)
+        // The Terminal's WebSocket takes the connection over once its
+        // answer, 101, is sent (`websocket`).
+        .with_upgrades();
     // A connection that ends badly is a browser that went away: nothing
     // to say about it.
     if head_in_time(served, &seen, deadline).await.is_none() {
-        shared.refused_connection(peer, "it sent no request in time");
+        shared.refused_connection(peer, "it sent no request in time", "");
     }
-    drop(slot);
+    drop(held);
 }
 
 /// The place a connection from `peer` holds if it is served, or why it is
@@ -473,7 +485,7 @@ fn admit(shared: &Rc<Shared>, stream: TcpStream, peer: SocketAddr) {
         Ok(slot) => {
             tokio::task::spawn_local(connection(Rc::clone(shared), stream, peer, HEAD_TIME, slot));
         }
-        Err(why) => shared.refused_connection(peer, why),
+        Err(why) => shared.refused_connection(peer, why, ""),
     }
 }
 
@@ -526,6 +538,7 @@ async fn serve(shared: Rc<Shared>) -> Result<(), String> {
         if RELOAD.swap(false, Ordering::Relaxed) {
             upkeep.reload(&shared);
         }
+        shared.look_at_terminals();
         if last.elapsed() >= UPKEEP_EVERY {
             last = Instant::now();
             upkeep.tick(&shared);
@@ -577,7 +590,7 @@ pub fn run() -> Result<i32, Fail> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::admin_settings::SecondStep;
     use crate::admind::fixture::{Console, run};
@@ -756,7 +769,7 @@ mod tests {
 
     /// Serves each connection to a loopback port as the server does,
     /// with `head_time` for its first head, and gives the port.
-    fn serve_on_loopback(shared: &Rc<Shared>, head_time: Duration) -> u16 {
+    pub(crate) fn serve_on_loopback(shared: &Rc<Shared>, head_time: Duration) -> u16 {
         let socket = listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let port = socket.local_addr().unwrap().port();
         let shared = Rc::clone(shared);
@@ -778,7 +791,10 @@ mod tests {
 
     /// A TLS connection to the console on `port`, as a browser that trusts
     /// its authority makes it.
-    async fn connect(console: &Console, port: u16) -> tokio_rustls::client::TlsStream<TcpStream> {
+    pub(crate) async fn connect(
+        console: &Console,
+        port: u16,
+    ) -> tokio_rustls::client::TlsStream<TcpStream> {
         let config = rustls::ClientConfig::builder_with_provider(crate::tls::provider())
             .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
             .unwrap()

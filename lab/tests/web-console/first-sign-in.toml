@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The first sign-in of a new account in the web console, in each engine
+# (design 12.1 and 12.2): the account has no time zone yet, so /welcome
+# comes before any page and keeps the page that was asked for. The browser
+# is in Europe/Prague, and the time zone step says so, with the zone of the
+# server's clock beside it. A zone the server does not have is said under
+# the field with the server's own in one press, and a zone it has is kept by
+# Next. The display previews each choice and keeps them at Next. The second
+# step is the account's own page in the frame, for an account that has none.
+# An administrator then goes on to the offer to set the machine up, which
+# leads to /setup, where the lab's step runs as a task and is marked done;
+# an account that is no administrator goes straight to the page it asked
+# for and is told that /setup is for administrators. Skip all keeps the zone
+# that is shown, so that /welcome does not come back. Each look is dark,
+# light, high contrast, forced colours and less motion, checked by axe.
+# admind is the service that answers. The lab's step is in a build made with
+# systools' `lab` feature, which `ob image --lab` turns on for the lab image.
+# Each engine has three accounts of its own, which this test makes and
+# removes: an administrator, an account that is no administrator and one
+# that skips, so no script needs the lab's password.
+about = "A new account's first sign-in to the web console, in each engine: time zone, display and second step in the wizard, the offer to set the machine up and its step, the page that was asked for, and Skip all"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-welcome-$engine || exit 1; for name in wc-welcome-reader-$engine wc-welcome-skip-$engine; do echo lab-console-password | user add $name && user set --console --yes $name || exit 1; done; done'"
+root = true
+expect = ["Made wc-welcome-chromium", "Made wc-welcome-reader-chromium", "Made wc-welcome-skip-chromium", "Made wc-welcome-firefox", "Made wc-welcome-reader-firefox", "Made wc-welcome-skip-firefox", "Made wc-welcome-webkit", "Made wc-welcome-reader-webkit", "Made wc-welcome-skip-webkit"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "first-sign-in.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-welcome-$engine wc-welcome-reader-$engine wc-welcome-skip-$engine; do user remove --delete-home --yes $name || exit 1; done; done'"
+root = true
+expect = ["wc-welcome-chromium is removed", "wc-welcome-reader-chromium is removed", "wc-welcome-skip-chromium is removed", "wc-welcome-firefox is removed", "wc-welcome-reader-firefox is removed", "wc-welcome-skip-firefox is removed", "wc-welcome-webkit is removed", "wc-welcome-reader-webkit is removed", "wc-welcome-skip-webkit is removed"]

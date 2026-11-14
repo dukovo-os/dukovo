@@ -5,14 +5,15 @@ dukovo-admin(7) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-dukovo-admin - the web console, Dukovo Admin: signing in, second steps, unlocking, actions, API tokens
+dukovo-admin - the web console, Dukovo Admin: signing in, second steps, unlocking, the shell and its keys, the palette, the terminal, actions, API tokens
 
 # DESCRIPTION
 
 Dukovo Admin is the machine's web console (ADR 0514): pages in a browser,
 served by the machine itself, where the people who run it sign in, add a
 second step to their sign-in, and unlock the console to make changes as
-an administrator.
+an administrator. Its pages are in one shell, with a command palette and a
+terminal (ADR 0517).
 
 Three programs make it:
 
@@ -33,9 +34,10 @@ store file of admind's own, _/system/state/admind/store.db_ (ADR 0516).
 
 This page says how to reach the console, who may sign in, how, what the
 second steps are, how to unlock the console and what ends a session,
-what the actions and the API tokens are, what the journal and the tasks
-are, and where to look when something fails. The handbook's chapter on the
-web console does the same task by task.
+what the shell of pages is, which keys it takes, what the palette finds
+and what the terminal is, what the actions and the API tokens are, what
+the journal and the tasks are, and where to look when something fails. The
+handbook's chapter on the web console does the same task by task.
 
 # REACHING THE CONSOLE
 
@@ -127,9 +129,10 @@ and the second step together. It does not work where the console was
 opened by an address (Passkeys, below).
 
 When the sign-in is done, admind gives the browser a cookie,
-*\_\_Host-dukovo*, that names the session, and the console shows its home
-page, which says who is signed in and links to the second step. The
-session belongs to the name the browser opened: the same console opened
+*\_\_Host-dukovo*, that names the session, and the console shows the page
+the person asked for, the Overview by default (THE SHELL); an account that
+has no time zone yet is first taken through the pages of its first sign-in.
+The session belongs to the name the browser opened: the same console opened
 by its name and by its address is two sessions.
 
 # THE SIGN-IN RULES
@@ -158,8 +161,8 @@ and says why in the log, rather than loosening a rule.
 
 # SECOND STEPS
 
-The page *Second step*, from the home page's *Manage the second step*,
-lists what the account has and changes it. Changing a second step asks
+The page *Second step*, from *Manage the second step* under *Your account*
+(THE SHELL), lists what the account has and changes it. Changing a second step asks
 for the account's password, or, in an unlocked console, nothing more. An
 account may have all of them.
 
@@ -245,14 +248,14 @@ _/applications/commands_, never a shell and never a path outside them, with
 at most 64 arguments and 32 KiB between them. Each is in the audit log
 (*log --audit*), with the session that ran it, and has that session's
 first 8 characters in *DUKOVO\_CONSOLE\_SESSION* in its environment. What
-runs them is an action (ACTIONS, below); none of this release's pages has
-a button for one.
+runs them is an action (ACTIONS, below), which the command palette runs by
+its name (THE COMMAND PALETTE).
 
 # SESSIONS ENDING
 
 A session ends when
 
-- the person signs out, with *Sign out* in the header;
+- the person signs out, with *Sign out* in the account's menu in the header;
 - *session-hours* have passed since the sign-in;
 - no console page of it has been open for *idle-minutes*;
 - its worker ends, because the account may no longer sign in or authd
@@ -265,13 +268,179 @@ The console holds 64 sessions at once (ADM-120). Sign-ins under way,
 the challenges given to passkeys and which sessions are unlocked are in
 memory too; a sign-in under way and a challenge last 5 minutes.
 
+# THE SHELL
+
+The console's pages sit in one frame (ADR 0517): a header along the top, the
+list of pages at the left, and the page. They are files of
+_/system/resources/admin_, with no framework and no build step, and a page's
+code is read when it is first asked for. The pages are
+
+- *Overview*, at _/_, the first page after the sign-in;
+- *Welcome*, at _/welcome_, the first sign-in's pages, shown once to an
+  account that has no time zone yet, and *Set up this server*, at _/setup_,
+  for administrators;
+- *Your account*, at _/account_: the display, the time zone, the way to the
+  second step, the command that makes an API token, and the terminal's
+  settings;
+- *Second step*, at _/second-step_ (SECOND STEPS);
+- *Terminal*, at _/terminal_, with *Sessions* and *Terminal settings* under
+  it (THE TERMINAL);
+- *What error messages mean*, at _/help/errors_, and the page of each error
+  ID at _/help/errors/_ID (WHEN IT FAILS).
+
+The list of pages names the machine, and has the *Overview* and, for an
+account that may open one, the *Terminal*. A page the console does not have
+says so, and a page for administrators tells anyone else that it is.
+
+The header has, from the left: the machine's name, which opens its addresses
+and the certificate's fingerprint; *Search or run a command* (THE COMMAND
+PALETTE); the lock, *Limited access* with *Unlock* or *Unlocked* with the
+minutes left, *Reset to 15 min* and *Lock* (UNLOCKING THE CONSOLE); *Tasks*,
+which opens the drawer of the tasks (TASKS); *Help*, with *Keyboard
+shortcuts*, *What error messages mean* and *About Dukovo Admin*; and the
+account's menu, with *Your account*, the choice of *Dark*, *Light*, *High
+contrast* or *Same as this device*, and *Sign out*. *Lock* asks first when
+it would end administrator shells, and *Sign out* when terminals run (THE
+TERMINAL).
+
+At 1100 pixels and wider, at the default text size, the list of pages stays
+at the left. Below that, *Pages* in the header opens it over the page, and
+below 720 pixels the frame is a phone's: a bar of tabs with *Overview* and
+*More*, which opens the list of pages, the account's menu and *Help*. The
+handbook's chapter on the web console, "Finding your way", says how each part
+works.
+
+# KEYS
+
+The console takes these keys. None is a key of one character, so that
+nothing is done by a key pressed by mistake while typing.
+
+[[ *Keys*
+:[ *What they do*
+|  Ctrl+K, Meta+K
+:  Open the command palette, and close it again
+|  Ctrl+/
+:  Show these keys
+|  Esc
+:  Close the dialog, drawer, menu or note in front
+|  Arrow keys, Home, End
+:  Move in a menu, a list of tabs or the search results
+|  Alt+Shift+K
+:  Open the command palette from inside a terminal
+|  Alt+Shift+Up
+:  Leave a top pane of the terminal for the terminal's tabs
+
+Inside a terminal the program has every key, so *Ctrl+K* and *Ctrl+/* are
+not the console's there. The terminal has keys of its own (THE TERMINAL).
+
+# THE COMMAND PALETTE
+
+*Ctrl+K*, or *Search or run a command* in the header, opens the palette: a
+box that finds a page, an action, a service, a certificate or a terminal by
+a few of its letters. Its rows are the pages and their parts (*Terminal ›
+Sessions*), the actions (*GET /api/1/actions*), the services and the
+certificates the account may read, a row to start, stop, restart, enable or
+disable each service and to renew each certificate, and the account's
+terminals. The last 8 rows used are kept by the browser, for the account, and
+shown first.
+
+Each word typed has to be found, letter by letter and in order, in a row's
+title or one of its keywords. The words may come in any order, and case and
+accents do not count. A word *kind:*_value_ or *state:*_value_ keeps only the
+rows of that kind (*page*, *action*, *service*, *certificate* or
+*terminal*) or state. At most 50 rows show.
+
+*Enter* goes to a page or a terminal; runs a read whose arguments are all
+known and shows its answer, as a table or as facts, with the JSON; and opens
+the form of anything else, made from the action's *input* (ACTIONS), with the
+command in one line and *Run* or *Show the answer*. *Tab* opens the form with
+the panel of the command, the API call, the Ansible task and the files open. A change
+goes the way a page's button does: an administrator whose console is locked
+is asked to unlock first (UNLOCKING THE CONSOLE), an account that is not an
+administrator is told it can look but not change (ADM-122) and gets no *Run*,
+and a long action is a task (TASKS). The handbook's chapter says more, in
+"The command palette" and "Showing the command".
+
+# THE TERMINAL
+
+The *Terminal* page shows shells in the browser (ADR 0517). A terminal has a
+name and one to four panes, each a shell on a terminal that admind holds, as
+*sshd*(8) holds an SSH session's (*admind*(8), Terminals). authd starts the
+shell (*authd*(8)): the person's own login shell, with a sign-in record on a
+terminal such as _pts/7_ from the browser's address, which *who*(1) and
+*last*(1) show; or, for an administrator whose session is unlocked, root's,
+as *elevate -i* starts it, which they do not show, as an elevated command is
+not recorded, and which the audit log has (*log --audit*). *nukesh*(1) shows
+an *admin* badge and a *#* while the shell is root's. A shell has *TERM* set
+to *xterm-256color*, *COLORTERM* to *truecolor* and *DUKOVO\_CONSOLE* to *1*.
+
+A terminal is the account's, not the session's. It goes on when the page
+closes and when the session ends, and every session of the account shows it.
+An administrator's pane is its session's alone, and ends when the console
+locks, when the unlock runs out and when the session ends: *Lock* asks first,
+and *Reset to 15 min* is in the pane's head when the end is near. A terminal
+that no page has shown for its *keep-days* (1 to 30, 7 by default) ends, and
+all of them end when admind stops or starts again, since admind holds them in
+memory. A browser that opens one again is shown the last 64 KiB of what it
+showed.
+
+*admin.toml*(5)'s *[terminal] allowed* says who may have a terminal and
+*sessions-per-account* how many each account keeps. An account with no shell
+has none (ADM-132). The limits are 4 panes to a terminal, 256 panes in all, 4
+connections for terminals to a session and 16 panes to a connection (ADM-130). A
+terminal or pane that is not there, has ended, or is another account's is
+ADM-131, the same for each. A token never opens one (ADM-124).
+
+The page has tabs for the terminals, panes in a layout (one pane, columns,
+rows, a main pane at the left, or a grid) with a border to move, a key bar
+for a phone, a *Read the screen* dialog for a screen reader, a paste that asks
+first when it has several lines for a program that did not ask, *Sessions*,
+which lists, opens, renames and ends the terminals, and *Terminal settings*:
+*size*, *scrollback*, *keep-days*, *copy-on-select*, *announce* and
+*shortcuts* (PREFERENCES). Its keys, while *shortcuts* is on, are
+
+[[ *Keys*
+:[ *What they do*
+|  Alt+Shift+T
+:  A new terminal
+|  Alt+Shift+W
+:  End this pane, and ask while a program runs
+|  Alt+Shift+PageUp, Alt+Shift+PageDown
+:  The tab before, the tab after
+|  Alt+Shift+ an arrow key
+:  The pane in that direction
+|  Alt+Shift+Up in a top pane
+:  Leave the pane for the tabs: the way out of the terminal
+|  Alt+Shift+\\, Alt+Shift+-
+:  Split right, split down
+|  Delete on a terminal's tab
+:  Close the terminal, and ask while a program runs
+|  Alt+Shift+K
+:  Open the command palette
+|  Alt+Shift+R
+:  Read the screen
+|  Ctrl+C
+:  Copy when text is selected, else send it to the program
+|  Ctrl+Shift+V, Shift+Insert
+:  Paste
+|  Shift+PageUp, Shift+PageDown
+:  Scroll the lines above the screen
+
+With *shortcuts* off only *Alt+Shift+Up* and *Alt+Shift+K* stay. Every other
+key goes to the program, but the browser keeps *Ctrl+W*, *Ctrl+T*, *Ctrl+N*
+and *Ctrl+Tab*: the key bar's *Ctrl*, pressed before *W*, sends *Ctrl+W*. The
+handbook's chapter says the rest, in "The terminal".
+
 # ACTIONS
 
 What the console does to the machine, and what it reads from it, is a list
 of actions (ADR 0515). Each is one read or one change, with an id of its
 area and a verb, such as *service.restart* or *certificate.show*, a route
 in the API, and the command that does it. The services' and the
-certificates' are the actions of this release. A read runs as the person
+certificates' are the actions of this release, with the console's own: whom
+it answers, what it shows of the machine (*console.about*, *console.notices*,
+*checks.last*) and the machine's usage (*metrics.now*, *metrics.usage*). A
+read runs as the person
 who asks, with their own rights. A change runs as an administrator, for
 an unlocked session of an administrator (UNLOCKING THE CONSOLE) or for an
 API token whose owner is one (API TOKENS); an account that is not an
@@ -282,7 +451,7 @@ changes, who runs it, its route and an example of its command. *admin
 actions --json* prints the list that *GET /api/1/actions* answers, which
 a script reads to learn what the console does.
 
-*admin show* _action_ [_name_=_value_]... and the console's *Show the
+*admin show* _action_ [_name_=_value_]... and the console's *Show
 command*, which asks *POST /api/1/show*, give the same four things for an
 action with its arguments, and run nothing:
 
@@ -389,8 +558,9 @@ diff, and the change can be put back. *admin put-back* _id_ writes the
 earlier text of its files back, as root, and the console's *Put back* runs
 it for an administrator's unlocked session. *Keep it* marks a hand edit as
 seen by the person who kept it, and changes nothing on the machine. The
-pages of this release have no page for the journal yet: its routes
-(*admind*(8)) and *admin put-back* are how to use it.
+Overview's *What changed* card shows the newest five changes, with *See the
+change*, *Keep it*, *Put back* and *Undo*; the whole journal is in its routes
+(*admind*(8)), and *admin put-back* puts a change back at a terminal.
 
 Everyone who is signed in reads the journal. It names people and files and
 never the contents of a secret: a file under a service's secrets, one that
@@ -400,6 +570,9 @@ The store keeps the newest 10,000 changes, the last 20 versions of each file
 and 64 MiB of text in all. *admin export* (*admin*(8)) copies the settings
 into a Git repository of the person's own, for a longer history.
 *admind*(8) says the routes, what each answers and what a put back writes.
+The page is told of each row that ends by *event: change* on
+_/api/1/events_, which says its number, how it was made and when, and
+nothing of who or which files.
 
 # TASKS
 
@@ -418,17 +591,23 @@ command SIGTERM so that it puts back what it did. A token reads the tasks of
 the areas its scopes read, and stops those of the areas they change. A task
 is kept for 30 days after it ends, and the journal keeps its change. The
 page is told of each change of a task by *event: task* on _/api/1/events_.
-None of the actions of this release is long yet, and its pages have no
-place for the tasks.
+None of the actions of this release is long yet. *Tasks* in the header opens
+the drawer of the tasks: those that wait or run, those that failed or were
+stopped, and those that finished today, with *Stop* for a task that the
+person asked for, or any task for an administrator.
 
 # PREFERENCES
 
 A person's preferences are their own: the console's colours (*theme*), the
-size of its text (*text*), whether things move (*motion*) and the time zone
-it shows times in (*zone*). They are in _~/.config/dukovo-admin/settings.toml_,
+size of its text (*text*), whether things move (*motion*), the time zone
+it shows times in (*zone*), whether pages show the command an action runs
+(*commands*, *hidden* or *shown*) and the terminal's (a *[terminal]* table:
+*size*, *scrollback*, *copy-on-select*, *keep-days*, *announce* and
+*shortcuts*). They are in _~/.config/dukovo-admin/settings.toml_,
 which the person's worker reads and writes as them, and which they may edit
-by hand: a key that is missing or wrong reads as its default, so that a typo
-costs a preference and never the page. *admind*(8) has the routes.
+by hand: a key that is missing or wrong, a number out of its range included,
+reads as its default, so that a typo costs a preference and never the page.
+*admind*(8) has the routes and each key's values.
 
 # WHAT IT KEEPS
 
@@ -448,7 +627,10 @@ admind's own store, _/system/state/admind/store.db_, is one SQLite file, mode
 text of the last 20 versions of each file the journal names (64 MiB in all)
 and the tasks, and no secret: a secret's contents are never read into it.
 Each person's preferences are in their own file,
-_~/.config/dukovo-admin/settings.toml_.
+_~/.config/dukovo-admin/settings.toml_. The terminals are in admind's memory
+only, as the sessions are, and a restart ends them (THE TERMINAL). The
+palette's list of recent rows is in the browser's own storage, for the
+account.
 
 Each console sign-in and a wrong password or code at one are in
 the sign-in records on the terminal *web*, from the browser's
@@ -462,10 +644,19 @@ a ticket or a token.
 
 # WHEN IT FAILS
 
-Each error the console gives has an ID, *ADM-101* to *ADM-128*, and a
+Each error the console gives has an ID, *ADM-101* to *ADM-132*, and a
 page of its own in the support center that says what to do. The page
 shows the ID with a short title and a sentence on what to do; *admind*(8)
 lists them.
+
+The console puts an error where it belongs: under the field whose value
+cannot work, in the unlock dialog for a locked console, on the sign-in page
+for an ended session, as a countdown for too many tries, and otherwise in a
+box with *What happened*, *What to do*, the command's own message when there
+is one, the ID and *Copy the details*. *What error messages mean* in the Help
+menu lists the pages, which the console serves from this machine at
+_/help/errors_. When the machine does not answer, a banner says so and the
+page asks again after 5, 10, 30 and 60 seconds, and then every 60.
 
 If the console does not answer at all, check that it runs, and read its
 log, which says why it did not start:
@@ -525,5 +716,5 @@ _/system/state/sign-ins_
 # SEE ALSO
 
 *admind*(8), *admin*(8), *authd*(8), *admin.toml*(5), *consoled*(8), *user*(8),
-*cert*(8), *certd*(8), *elevate*(8), *service*(8), *log*(1), *last*(1),
-*dukovo-certificates*(7)
+*cert*(8), *certd*(8), *elevate*(8), *service*(8), *sshd*(8), *log*(1),
+*last*(1), *who*(1), *nukesh*(1), *dukovo-certificates*(7)

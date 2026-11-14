@@ -12,7 +12,15 @@
 //!   or 150;
 //! - `motion`: `full` (the default) or `less`;
 //! - `zone`: a time zone of the machine's database, such as
-//!   `Europe/Berlin`, or empty (the default) while the person has none.
+//!   `Europe/Berlin`, or empty (the default) while the person has none;
+//! - `commands`: `hidden` (the default) or `shown`, whether pages show the
+//!   command that an action runs;
+//! - the `[terminal]` table: `size` of the text in pixels, 12 to 20 (14);
+//!   `scrollback` in lines, 1000 to 50000 (10000); `copy-on-select`
+//!   (false); `keep-days` that a terminal that no tab is attached to is
+//!   kept, 1 to 30 (7); `announce`, to read new output aloud (false); and
+//!   `shortcuts`, the terminal's Alt+Shift keys (true). The API names them
+//!   the same, under `terminal`.
 //!
 //! The person's own worker reads and writes the file, as them, through
 //! [`settings_edit`], so that a comment they wrote stays and a change that
@@ -26,6 +34,7 @@
 use std::convert::Infallible;
 use std::ffi::OsString;
 use std::fs::DirBuilder;
+use std::ops::RangeInclusive;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +56,22 @@ pub const TEXT_SIZES: [i64; 4] = [100, 112, 125, 150];
 /// The ways things may move, the default first.
 pub const MOTIONS: [&str; 2] = ["full", "less"];
 
+/// Whether pages show the command an action runs, the default first.
+pub const COMMANDS: [&str; 2] = ["hidden", "shown"];
+
+/// What the terminal's text may be, in pixels, and what it is.
+pub const TERMINAL_SIZES: RangeInclusive<i64> = 12..=20;
+pub const TERMINAL_SIZE: i64 = 14;
+
+/// How many lines the browser keeps of a terminal, and what it keeps.
+pub const TERMINAL_SCROLLBACKS: RangeInclusive<i64> = 1_000..=50_000;
+pub const TERMINAL_SCROLLBACK: i64 = 10_000;
+
+/// How many days a terminal that no tab is attached to is kept, and how
+/// many it is when the person has not said.
+pub const TERMINAL_KEEP_DAYS: RangeInclusive<i64> = 1..=30;
+pub const TERMINAL_KEEP: i64 = 7;
+
 /// The person's folder for the console's files, in their home, and the
 /// file in it.
 const FOLDER: &str = ".config/dukovo-admin";
@@ -67,6 +92,10 @@ pub struct Preferences {
     pub motion: String,
     /// A time zone, or empty.
     pub zone: String,
+    /// One of [`COMMANDS`].
+    pub commands: String,
+    /// The terminal's.
+    pub terminal: Terminal,
 }
 
 impl Default for Preferences {
@@ -76,6 +105,70 @@ impl Default for Preferences {
             text: TEXT_SIZES[0],
             motion: MOTIONS[0].into(),
             zone: String::new(),
+            commands: COMMANDS[0].into(),
+            terminal: Terminal::default(),
+        }
+    }
+}
+
+/// What a person prefers of the terminal: the `[terminal]` table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Terminal {
+    /// The text's size in pixels, in [`TERMINAL_SIZES`].
+    pub size: i64,
+    /// The lines the browser keeps, in [`TERMINAL_SCROLLBACKS`].
+    pub scrollback: i64,
+    /// Whether a selection is copied as soon as it is made.
+    #[serde(rename = "copy-on-select")]
+    pub copy_on_select: bool,
+    /// The days a terminal that no tab is attached to is kept, in
+    /// [`TERMINAL_KEEP_DAYS`].
+    #[serde(rename = "keep-days")]
+    pub keep_days: i64,
+    /// Whether new output is read aloud.
+    pub announce: bool,
+    /// Whether the terminal's Alt+Shift keys are on.
+    pub shortcuts: bool,
+}
+
+impl Default for Terminal {
+    fn default() -> Terminal {
+        Terminal {
+            size: TERMINAL_SIZE,
+            scrollback: TERMINAL_SCROLLBACK,
+            copy_on_select: false,
+            keep_days: TERMINAL_KEEP,
+            announce: false,
+            shortcuts: true,
+        }
+    }
+}
+
+impl Terminal {
+    /// What the table `terminal` of a settings file says, each key that is
+    /// not there or is not right reading as its default. A `terminal` that
+    /// is no table reads as the defaults.
+    fn of(terminal: Option<&Item>) -> Terminal {
+        let default = Terminal::default();
+        let Some(table) = terminal.and_then(Item::as_table_like) else {
+            return default;
+        };
+        let number = |key: &str, range: &RangeInclusive<i64>, default: i64| {
+            table
+                .get(key)
+                .and_then(Item::as_integer)
+                .filter(|value| range.contains(value))
+                .unwrap_or(default)
+        };
+        let switch =
+            |key: &str, default: bool| table.get(key).and_then(Item::as_bool).unwrap_or(default);
+        Terminal {
+            size: number("size", &TERMINAL_SIZES, default.size),
+            scrollback: number("scrollback", &TERMINAL_SCROLLBACKS, default.scrollback),
+            copy_on_select: switch("copy-on-select", default.copy_on_select),
+            keep_days: number("keep-days", &TERMINAL_KEEP_DAYS, default.keep_days),
+            announce: switch("announce", default.announce),
+            shortcuts: switch("shortcuts", default.shortcuts),
         }
     }
 }
@@ -108,6 +201,8 @@ impl Preferences {
             text,
             motion: word("motion", &MOTIONS, default.motion),
             zone,
+            commands: word("commands", &COMMANDS, default.commands),
+            terminal: Terminal::of(document.get("terminal")),
         }
     }
 }
@@ -128,6 +223,105 @@ pub struct Change {
     /// A time zone, or empty to have none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
+    /// One of [`COMMANDS`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commands: Option<String>,
+    /// Any of the terminal's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalChange>,
+}
+
+/// What a `POST` changes of the terminal's preferences: any of them.
+#[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalChange {
+    /// In [`TERMINAL_SIZES`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
+    /// In [`TERMINAL_SCROLLBACKS`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrollback: Option<i64>,
+    #[serde(rename = "copy-on-select", skip_serializing_if = "Option::is_none")]
+    pub copy_on_select: Option<bool>,
+    /// In [`TERMINAL_KEEP_DAYS`].
+    #[serde(rename = "keep-days", skip_serializing_if = "Option::is_none")]
+    pub keep_days: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub announce: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcuts: Option<bool>,
+}
+
+impl TerminalChange {
+    /// Whether it changes nothing.
+    fn is_empty(&self) -> bool {
+        *self == TerminalChange::default()
+    }
+
+    /// Checks each number it holds against its range.
+    fn check(&self) -> Result<(), Failure> {
+        let ranges = [
+            ("terminal.size", self.size, &TERMINAL_SIZES, "the terminal's text is {} to {} pixels"),
+            (
+                "terminal.scrollback",
+                self.scrollback,
+                &TERMINAL_SCROLLBACKS,
+                "the terminal keeps {} to {} lines",
+            ),
+            (
+                "terminal.keep-days",
+                self.keep_days,
+                &TERMINAL_KEEP_DAYS,
+                "a terminal is kept for {} to {} days",
+            ),
+        ];
+        for (field, value, range, words) in ranges {
+            if let Some(value) = value
+                && !range.contains(&value)
+            {
+                let why = words.replacen("{}", &range.start().to_string(), 1).replacen(
+                    "{}",
+                    &range.end().to_string(),
+                    1,
+                );
+                return Err(Failure::bad_value(field, why));
+            }
+        }
+        Ok(())
+    }
+
+    /// Puts what it holds into the table `terminal` of `document`, which
+    /// is made when it is not there and made over when it is no table.
+    fn apply(&self, document: &mut DocumentMut) {
+        if self.is_empty() {
+            return;
+        }
+        let table = match settings_edit::table(document, "terminal") {
+            Some(table) => table,
+            None => {
+                document.remove("terminal");
+                settings_edit::table(document, "terminal").expect("a table was just made")
+            }
+        };
+        if let Some(size) = self.size {
+            settings_edit::set_integer(table, "size", size);
+        }
+        if let Some(scrollback) = self.scrollback {
+            settings_edit::set_integer(table, "scrollback", scrollback);
+        }
+        if let Some(copy) = self.copy_on_select {
+            settings_edit::set_bool(table, "copy-on-select", copy);
+        }
+        if let Some(days) = self.keep_days {
+            settings_edit::set_integer(table, "keep-days", days);
+        }
+        if let Some(announce) = self.announce {
+            settings_edit::set_bool(table, "announce", announce);
+        }
+        if let Some(shortcuts) = self.shortcuts {
+            settings_edit::set_bool(table, "shortcuts", shortcuts);
+        }
+    }
 }
 
 /// `words` as a sentence's list: `a, b or c`.
@@ -143,7 +337,13 @@ fn either(words: &[impl ToString]) -> String {
 impl Change {
     /// Whether it changes nothing: the page only reads.
     pub fn is_empty(&self) -> bool {
-        *self == Change::default()
+        let Change { theme, text, motion, zone, commands, terminal } = self;
+        theme.is_none()
+            && text.is_none()
+            && motion.is_none()
+            && zone.is_none()
+            && commands.is_none()
+            && terminal.as_ref().is_none_or(TerminalChange::is_empty)
     }
 
     /// Checks each value it holds against what the preference may be;
@@ -178,6 +378,15 @@ impl Change {
             let why = "a zone is empty, or a time zone of this machine, such as Europe/Berlin";
             return Err(Failure::bad_value("zone", why));
         }
+        if let Some(commands) = &self.commands
+            && !COMMANDS.contains(&commands.as_str())
+        {
+            let why = format!("commands are {}", either(&COMMANDS));
+            return Err(Failure::bad_value("commands", why));
+        }
+        if let Some(terminal) = &self.terminal {
+            terminal.check()?;
+        }
         Ok(())
     }
 
@@ -195,6 +404,12 @@ impl Change {
         }
         if let Some(zone) = &self.zone {
             settings_edit::set_string(table, "zone", zone);
+        }
+        if let Some(commands) = &self.commands {
+            settings_edit::set_string(table, "commands", commands);
+        }
+        if let Some(terminal) = &self.terminal {
+            terminal.apply(document);
         }
     }
 }
@@ -331,7 +546,13 @@ mod tests {
         assert_eq!(found, Preferences::default());
         assert_eq!(
             json!(found),
-            json!({ "theme": "dark", "text": 100, "motion": "full", "zone": "" })
+            json!({
+                "theme": "dark", "text": 100, "motion": "full", "zone": "", "commands": "hidden",
+                "terminal": {
+                    "size": 14, "scrollback": 10000, "copy-on-select": false, "keep-days": 7,
+                    "announce": false, "shortcuts": true,
+                },
+            })
         );
         assert!(!home.0.join(".config").exists());
         assert_eq!(read(&home.0).unwrap(), Preferences::default());
@@ -469,6 +690,13 @@ mod tests {
             text: Some(150),
             motion: Some("less".into()),
             zone: Some("Asia/Calcutta".into()),
+            commands: Some("shown".into()),
+            terminal: Some(TerminalChange {
+                size: Some(20),
+                scrollback: Some(1_000),
+                keep_days: Some(30),
+                ..TerminalChange::default()
+            }),
         };
         assert!(good.check(zones).is_ok());
         assert!(Change::default().check(zones).is_ok());
@@ -514,6 +742,16 @@ mod tests {
         assert_eq!(said(text), "a text size is 100, 112, 125 or 150 percent");
         assert_eq!(said(motion), "motion is full or less");
         assert!(said(zone).starts_with("a zone is empty, or a time zone of this machine"));
+        let commands = Change { commands: Some("x".into()), ..Change::default() };
+        assert_eq!(said(commands), "commands are hidden or shown");
+        let terminal =
+            |change: TerminalChange| Change { terminal: Some(change), ..Change::default() };
+        let size = TerminalChange { size: Some(1), ..TerminalChange::default() };
+        let scrollback = TerminalChange { scrollback: Some(1), ..TerminalChange::default() };
+        let keep = TerminalChange { keep_days: Some(1_000), ..TerminalChange::default() };
+        assert_eq!(said(terminal(size)), "the terminal's text is 12 to 20 pixels");
+        assert_eq!(said(terminal(scrollback)), "the terminal keeps 1000 to 50000 lines");
+        assert_eq!(said(terminal(keep)), "a terminal is kept for 1 to 30 days");
         let nothing: [&str; 0] = [];
         assert_eq!(either(&nothing), "");
         assert_eq!(either(&["one"]), "one");
@@ -531,6 +769,7 @@ mod tests {
                 text: Some(112),
                 motion: Some("less".into()),
                 zone: Some("UTC".into()),
+                ..Change::default()
             }
         );
         for odd in [
@@ -549,6 +788,353 @@ mod tests {
         let some = Change { zone: Some(String::new()), text: Some(125), ..Change::default() };
         assert_eq!(json!(some), json!({ "text": 125, "zone": "" }));
         assert_eq!(json!(Change::default()), json!({}));
+    }
+
+    /// A change of the terminal's keys only.
+    fn terminal(change: TerminalChange) -> Change {
+        Change { terminal: Some(change), ..Change::default() }
+    }
+
+    #[test]
+    fn the_defaults_of_the_commands_and_the_terminal_are_what_the_design_gives() {
+        let found = Preferences::default();
+        assert_eq!(found.commands, "hidden");
+        let terminal = found.terminal;
+        assert_eq!((terminal.size, terminal.scrollback, terminal.keep_days), (14, 10_000, 7));
+        assert_eq!(
+            (terminal.copy_on_select, terminal.announce, terminal.shortcuts),
+            (false, false, true)
+        );
+    }
+
+    #[test]
+    fn the_commands_and_the_terminals_keys_are_read_one_by_one() {
+        let home = Home::new("terminal-read");
+        let read = |text: &str| {
+            home.write(text);
+            after(&home.0, &Change::default(), zones).unwrap()
+        };
+        let found = read(
+            "commands = \"shown\"\n\n[terminal]\nsize = 18\nscrollback = 2000\n\
+             copy-on-select = true\nkeep-days = 30\nannounce = true\nshortcuts = false\n",
+        );
+        assert_eq!(found.commands, "shown");
+        assert_eq!(
+            found.terminal,
+            Terminal {
+                size: 18,
+                scrollback: 2_000,
+                copy_on_select: true,
+                keep_days: 30,
+                announce: true,
+                shortcuts: false,
+            }
+        );
+        // A key that is not there is its own default, and so is a table.
+        let found = read("[terminal]\nsize = 16\n");
+        let default = Terminal::default();
+        assert_eq!(found.terminal, Terminal { size: 16, ..default.clone() });
+        assert_eq!(found.commands, "hidden");
+        assert_eq!(read("theme = \"light\"\n").terminal, default);
+        // A table written inline or with dotted keys is read as a table.
+        assert_eq!(read("terminal = { size = 12, shortcuts = false }\n").terminal.size, 12);
+        assert_eq!(read("terminal.keep-days = 3\n").terminal.keep_days, 3);
+    }
+
+    #[test]
+    fn a_wrong_value_of_the_commands_or_the_terminal_reads_as_its_default_and_the_rest_stay() {
+        let home = Home::new("terminal-odd");
+        let default = Terminal::default();
+        let read = |text: &str| {
+            home.write(text);
+            after(&home.0, &Change::default(), zones).unwrap()
+        };
+        // At the limits of each number, and one past them.
+        for (key, low, high, default) in [
+            ("size", 12, 20, default.size),
+            ("scrollback", 1_000, 50_000, default.scrollback),
+            ("keep-days", 1, 30, default.keep_days),
+        ] {
+            let at = |value: i64| {
+                let found = read(&format!("[terminal]\n{key} = {value}\n")).terminal;
+                match key {
+                    "size" => found.size,
+                    "scrollback" => found.scrollback,
+                    _ => found.keep_days,
+                }
+            };
+            assert_eq!((at(low), at(high)), (low, high), "{key}");
+            assert_eq!((at(low - 1), at(high + 1)), (default, default), "{key}");
+            assert_eq!(
+                (at(0), at(-1), at(i64::MAX), at(i64::MIN)),
+                (default, default, default, default)
+            );
+        }
+        // Another type, or another word, is the default; the key beside it is not.
+        for odd in [
+            "commands = \"loud\"\n[terminal]\nsize = \"16\"\nscrollback = 2000.5\n\
+             copy-on-select = \"true\"\nkeep-days = true\nannounce = 1\nshortcuts = \"no\"\n",
+            "commands = true\nterminal = 3\n",
+            "commands = \"Shown\"\nterminal = [1, 2]\n",
+            "commands = [\"shown\"]\n[terminal]\nsize = [16]\n",
+            "commands = \"\"\nterminal = \"size = 16\"\n",
+        ] {
+            let found = read(odd);
+            assert_eq!(found.commands, "hidden", "{odd}");
+            assert_eq!(found.terminal, Terminal::default(), "{odd}");
+        }
+        let found = read("[terminal]\nsize = 99\nannounce = true\nshortcuts = 5\nkeep-days = 2\n");
+        let want = Terminal { announce: true, keep_days: 2, ..Terminal::default() };
+        assert_eq!(found.terminal, want);
+    }
+
+    #[test]
+    fn the_commands_and_the_terminals_limits_are_checked_at_and_past_each_end() {
+        let one = |change: TerminalChange| terminal(change).check(zones);
+        for (low, high, make) in [
+            (
+                12,
+                20,
+                (|n| TerminalChange { size: Some(n), ..TerminalChange::default() })
+                    as fn(i64) -> TerminalChange,
+            ),
+            (1_000, 50_000, |n| TerminalChange {
+                scrollback: Some(n),
+                ..TerminalChange::default()
+            }),
+            (1, 30, |n| TerminalChange { keep_days: Some(n), ..TerminalChange::default() }),
+        ] {
+            assert!(one(make(low)).is_ok(), "{low}");
+            assert!(one(make(high)).is_ok(), "{high}");
+            assert!(one(make((low + high) / 2)).is_ok());
+            for past in [low - 1, high + 1, 0, -1, i64::MIN, i64::MAX] {
+                let failure = one(make(past)).unwrap_err();
+                assert_eq!(failure.kind, Kind::BadValue, "{past}");
+                assert!(
+                    !failure.detail.contains(&past.to_string()) || past == 0 || past == 1,
+                    "{}",
+                    failure.detail
+                );
+            }
+        }
+        // Each is named by its key under `terminal`.
+        let field = |change: TerminalChange| one(change).unwrap_err().field;
+        assert_eq!(
+            field(TerminalChange { size: Some(11), ..TerminalChange::default() }),
+            Some("terminal.size")
+        );
+        assert_eq!(
+            field(TerminalChange { scrollback: Some(999), ..TerminalChange::default() }),
+            Some("terminal.scrollback")
+        );
+        assert_eq!(
+            field(TerminalChange { keep_days: Some(31), ..TerminalChange::default() }),
+            Some("terminal.keep-days")
+        );
+        // The switches take either, and the words of commands, either word.
+        let switches = TerminalChange {
+            copy_on_select: Some(true),
+            announce: Some(false),
+            shortcuts: Some(true),
+            ..TerminalChange::default()
+        };
+        assert!(one(switches).is_ok());
+        for word in COMMANDS {
+            assert!(
+                Change { commands: Some(word.into()), ..Change::default() }.check(zones).is_ok()
+            );
+        }
+        for odd in ["Shown", "", "show", "true", "hunter2"] {
+            let change = Change { commands: Some(odd.into()), ..Change::default() };
+            let failure = change.check(zones).unwrap_err();
+            assert_eq!((failure.kind, failure.field), (Kind::BadValue, Some("commands")), "{odd}");
+            assert!(!failure.detail.contains("hunter2"));
+        }
+        // The first that cannot work is the one told: the older keys first.
+        let two = Change {
+            commands: Some("x".into()),
+            terminal: Some(TerminalChange { size: Some(99), ..TerminalChange::default() }),
+            ..Change::default()
+        };
+        assert_eq!(two.check(zones).unwrap_err().field, Some("commands"));
+        let two = Change { motion: Some("x".into()), ..two };
+        assert_eq!(two.check(zones).unwrap_err().field, Some("motion"));
+    }
+
+    #[test]
+    fn a_change_of_the_commands_and_the_terminal_reads_from_json_and_goes_to_the_worker_as_given() {
+        let read = |value: Value| serde_json::from_value::<Change>(value);
+        let all = read(json!({
+            "commands": "shown",
+            "terminal": {
+                "size": 16, "scrollback": 5000, "copy-on-select": true,
+                "keep-days": 3, "announce": true, "shortcuts": false,
+            },
+        }))
+        .unwrap();
+        assert_eq!(all.commands.as_deref(), Some("shown"));
+        assert_eq!(
+            all.terminal,
+            Some(TerminalChange {
+                size: Some(16),
+                scrollback: Some(5_000),
+                copy_on_select: Some(true),
+                keep_days: Some(3),
+                announce: Some(true),
+                shortcuts: Some(false),
+            })
+        );
+        // Any of the terminal's keys, and an empty table, which changes nothing.
+        assert_eq!(
+            read(json!({ "terminal": { "size": 12 } })).unwrap().terminal.unwrap().size,
+            Some(12)
+        );
+        assert!(read(json!({ "terminal": {} })).unwrap().is_empty());
+        assert!(read(json!({ "terminal": null })).unwrap().is_empty());
+        assert!(!read(json!({ "terminal": { "announce": false } })).unwrap().is_empty());
+        for odd in [
+            json!({ "terminal": { "colour": 1 } }),
+            json!({ "terminal": { "copy_on_select": true } }),
+            json!({ "terminal": { "keep_days": 3 } }),
+            json!({ "terminal": { "size": "14" } }),
+            json!({ "terminal": { "size": 14.5 } }),
+            json!({ "terminal": { "announce": "yes" } }),
+            json!({ "terminal": { "shortcuts": 1 } }),
+            json!({ "terminal": { "copy-on-select": null, "extra": 1 } }),
+            json!({ "terminal": 14 }),
+            json!({ "terminal": "size" }),
+            json!({ "commands": 1 }),
+            json!({ "commands": true }),
+        ] {
+            assert!(read(odd.clone()).is_err(), "{odd}");
+        }
+        // What goes to the worker is only what was given, under the names
+        // the page used.
+        let some = Change {
+            commands: Some("shown".into()),
+            terminal: Some(TerminalChange {
+                keep_days: Some(9),
+                copy_on_select: Some(false),
+                ..TerminalChange::default()
+            }),
+            ..Change::default()
+        };
+        assert_eq!(
+            json!(some),
+            json!({ "commands": "shown", "terminal": { "copy-on-select": false, "keep-days": 9 } })
+        );
+    }
+
+    #[test]
+    fn a_change_of_the_terminals_keys_makes_the_table_after_the_other_keys_and_keeps_the_comments()
+    {
+        let home = Home::new("terminal-write");
+        // No file: the keys are made, with the table.
+        let change = Change {
+            commands: Some("shown".into()),
+            terminal: Some(TerminalChange {
+                size: Some(16),
+                copy_on_select: Some(true),
+                ..TerminalChange::default()
+            }),
+            ..Change::default()
+        };
+        let found = after(&home.0, &change, zones).unwrap();
+        assert_eq!(
+            home.text(),
+            "commands = \"shown\"\n\n[terminal]\nsize = 16\ncopy-on-select = true\n"
+        );
+        assert_eq!(found.commands, "shown");
+        assert_eq!(
+            found.terminal,
+            Terminal { size: 16, copy_on_select: true, ..Terminal::default() }
+        );
+        // A file by hand: the comments stay, and a key that is there is changed in place.
+        home.write(
+            "# Mine.\ntheme = \"light\"\n\n[terminal]\n# The text.\nsize = 18 # big\n\
+             announce = false\n",
+        );
+        let change = terminal(TerminalChange {
+            size: Some(20),
+            announce: Some(true),
+            shortcuts: Some(false),
+            keep_days: Some(1),
+            ..TerminalChange::default()
+        });
+        after(&home.0, &change, zones).unwrap();
+        assert_eq!(
+            home.text(),
+            "# Mine.\ntheme = \"light\"\n\n[terminal]\n# The text.\nsize = 20 # big\n\
+             announce = true\nkeep-days = 1\nshortcuts = false\n"
+        );
+        // The same again writes nothing.
+        let inode = fs::metadata(home.file()).unwrap().ino();
+        after(&home.0, &change, zones).unwrap();
+        assert_eq!(fs::metadata(home.file()).unwrap().ino(), inode);
+    }
+
+    #[test]
+    fn a_change_of_nothing_in_the_terminal_writes_nothing_and_makes_no_table() {
+        let home = Home::new("terminal-empty");
+        for change in [terminal(TerminalChange::default()), Change::default()] {
+            assert!(change.is_empty());
+            let found = after(&home.0, &change, zones).unwrap();
+            assert_eq!(found, Preferences::default());
+            assert!(!home.0.join(".config").exists());
+        }
+        home.write("theme = \"light\"\n");
+        after(&home.0, &terminal(TerminalChange::default()), zones).unwrap();
+        assert_eq!(home.text(), "theme = \"light\"\n");
+        // A change of the commands alone makes no table either.
+        let commands = Change { commands: Some("shown".into()), ..Change::default() };
+        assert!(!commands.is_empty());
+        after(&home.0, &commands, zones).unwrap();
+        assert_eq!(home.text(), "theme = \"light\"\ncommands = \"shown\"\n");
+    }
+
+    #[test]
+    fn a_terminal_that_is_no_table_is_made_over_by_a_change_and_an_inline_table_is_kept_inline() {
+        let home = Home::new("terminal-over");
+        home.write("terminal = 3\ntheme = \"light\"\n");
+        let change = terminal(TerminalChange { size: Some(13), ..TerminalChange::default() });
+        let found = after(&home.0, &change, zones).unwrap();
+        assert_eq!(found.terminal.size, 13);
+        assert_eq!(home.text(), "theme = \"light\"\n\n[terminal]\nsize = 13\n");
+        home.write("terminal = { size = 12 }\n");
+        let change = terminal(TerminalChange { announce: Some(true), ..TerminalChange::default() });
+        let found = after(&home.0, &change, zones).unwrap();
+        assert!(home.text().starts_with("terminal = { size = 12"), "{}", home.text());
+        assert!(!home.text().contains('['), "{}", home.text());
+        assert_eq!((found.terminal.size, found.terminal.announce), (12, true));
+        assert_eq!(read(&home.0).unwrap().terminal, found.terminal);
+    }
+
+    #[test]
+    fn the_worker_checks_the_terminals_limits_again_and_writes_nothing_that_cannot_work() {
+        let home = Home::new("terminal-again");
+        for (change, field) in [
+            (TerminalChange { size: Some(21), ..TerminalChange::default() }, "terminal.size"),
+            (
+                TerminalChange { scrollback: Some(999), ..TerminalChange::default() },
+                "terminal.scrollback",
+            ),
+            (
+                TerminalChange { keep_days: Some(0), ..TerminalChange::default() },
+                "terminal.keep-days",
+            ),
+        ] {
+            let fault = change_with(&home.0, &terminal(change), zones).unwrap_err();
+            assert_eq!(fault.id, "ADM-125", "{field}");
+        }
+        assert!(!home.0.join(".config").exists());
+        // A change that is right with one that is not writes neither.
+        let both = Change {
+            commands: Some("shown".into()),
+            terminal: Some(TerminalChange { size: Some(30), ..TerminalChange::default() }),
+            ..Change::default()
+        };
+        assert_eq!(change_with(&home.0, &both, zones).unwrap_err().id, "ADM-125");
+        assert!(!home.0.join(".config").exists());
     }
 
     #[test]

@@ -8,8 +8,8 @@
 //! order of keys the file had stays, and a change that leaves the text as
 //! it was writes nothing: the journal and a second run of the same change
 //! see no change. [`edited`] is its part that works on text, without a
-//! file. [`table`], [`set_string`] and [`set_integer`] are the edits the
-//! console makes, which keep the comment after a value they replace and
+//! file. [`table`], [`set_string`], [`set_integer`] and [`set_bool`] are the
+//! edits the console makes, which keep the comment after a value they replace and
 //! put a new key where a person would.
 //!
 //! [`write`] puts the new text into a new file beside the old one, which
@@ -249,6 +249,13 @@ pub fn set_string(table: &mut dyn TableLike, key: &str, value: &str) {
 /// [`set_string`] for an integer.
 pub fn set_integer(table: &mut dyn TableLike, key: &str, value: i64) {
     if table.get(key).and_then(Item::as_integer) != Some(value) {
+        put(table, key, Value::from(value));
+    }
+}
+
+/// [`set_string`] for a switch: `true` or `false`.
+pub fn set_bool(table: &mut dyn TableLike, key: &str, value: bool) {
+    if table.get(key).and_then(Item::as_bool) != Some(value) {
         put(table, key, Value::from(value));
     }
 }
@@ -534,6 +541,33 @@ session-hours = 12
         });
         assert!(wrote);
         assert_eq!(after, text.replace("'any'", "\"private\""));
+    }
+
+    #[test]
+    fn a_switch_is_set_in_place_and_one_that_is_set_already_writes_nothing() {
+        let scratch = Scratch::new("switch");
+        let text = "[terminal]\nannounce = false # off\nshortcuts = true\n";
+        let (wrote, after) = changed(&scratch, text, |document| {
+            set_bool(table(document, "terminal").unwrap(), "announce", true);
+        });
+        assert!(wrote);
+        assert_eq!(after, text.replace("announce = false", "announce = true"));
+        let (wrote, after) = changed(&scratch, text, |document| {
+            let terminal = table(document, "terminal").unwrap();
+            set_bool(terminal, "announce", false);
+            set_bool(terminal, "shortcuts", true);
+        });
+        assert!(!wrote);
+        assert_eq!(after, text);
+        // A key that is not there goes to the end of its table, and one of
+        // another type is replaced by the switch.
+        let (wrote, after) = changed(&scratch, "[terminal]\nannounce = \"yes\"\n", |document| {
+            let terminal = table(document, "terminal").unwrap();
+            set_bool(terminal, "announce", false);
+            set_bool(terminal, "copy-on-select", true);
+        });
+        assert!(wrote);
+        assert_eq!(after, "[terminal]\nannounce = false\ncopy-on-select = true\n");
     }
 
     #[test]

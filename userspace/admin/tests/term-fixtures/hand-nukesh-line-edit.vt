@@ -1,0 +1,24 @@
+# hand-built: what nukesh sends while a person edits a line. nukesh reads a
+# line with reedline, which draws through crossterm: it asks the terminal
+# three things at start (the keyboard protocol with CSI ? u, which this
+# terminal does not know, the device attributes, and the cursor position),
+# turns bracketed paste on, marks the prompt with OSC 133, sets the title
+# with OSC 0, moves with CUB, CUF and CHA, and draws a right prompt at the
+# last columns. 40 columns, 8 rows.
+\e[?2004h\e[?u\e[c\e[6n
+\e]133;A\e\\\e]0;chase@duke-nas: ~\a
+\e[1;32mchase@duke-nas\e[0m:\e[1;34m~\e[0m$ \e]133;B\e\\
+# typed: echo helo
+echo helo
+# Left, then l: the line from the cursor is drawn again, the cursor goes back
+\e[D
+l
+o\e[D
+# Enter: to the end of the line, then a new line, then the output
+\e[C\r\n
+hello\r\n
+# the next prompt, a right prompt at the last 5 columns, back to column 19
+\e]133;D;0\e\\\e]133;A\e\\
+\e[1;32mchase@duke-nas\e[0m:\e[1;34m~\e[0m$ \e]133;B\e\\
+\e[36G12:41\e[19G
+ls

@@ -19,6 +19,7 @@ accounts 26
 acpi-power 31
 acpi-thermal 32
 admin-journal 270
+admin-terminal 360
 aml-off 16
 audio-cd 60
 backup 200

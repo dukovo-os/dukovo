@@ -1,15 +1,14 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// What the web console's five browser tests share (sign-in, passkeys,
-// unlock, csrf and actions): opening the console, pressing a button
-// through the console's limit on sign-in tries, the one-time codes of an
-// authenticator app (computed here from the secret the page shows, as an
-// app on a phone does), the certificate the console serves, a call made
-// from the page with fetch() and the error it gets, and the check of a page
-// in dark and light.
-// The scripts import it from beside themselves: the lab's runner starts
-// each script in the test's own folder.
+// What the web console's browser tests share: opening the console,
+// pressing a button through the console's limit on sign-in tries, the
+// one-time codes of an authenticator app (computed here from the secret the
+// page shows, as an app on a phone does), the certificate the console
+// serves, a call made from the page with fetch() and the error it gets, and
+// the check of a page in each way the console can look. The scripts import
+// it from beside themselves: the lab's runner starts each script in the
+// test's own folder.
 
 import { createHash, createHmac } from "node:crypto";
 import net from "node:net";
@@ -79,25 +78,110 @@ export function mustHaveCalled(seen, routes) {
   ensure(missing.length === 0, `the test never called ${missing.join(", ")}`);
 }
 
+/** The root's classes that say how the page looks: the colours, the text size and the motion. */
+const DISPLAY_CLASSES = ["dark", "light", "hc", "t112", "t125", "t150", "calm"];
+
+/**
+ * Has the page show itself with `display`, `{theme, text, motion}`, the way
+ * its own code does for a person's choice (theme.js's `dukovoDisplay`), and
+ * waits for the root to carry the colours' class. A choice that is left out
+ * is the default. Gives a function that puts the page's classes back as they
+ * were.
+ */
+export async function showAs(page, display, colours) {
+  const before = await page.evaluate(() => document.documentElement.className);
+  await page.evaluate((wanted) => window.dukovoDisplay.apply(wanted), display);
+  await page.waitForFunction((name) => document.documentElement.classList.contains(name), colours);
+  return () => page.evaluate((classes) => { document.documentElement.className = classes; }, before);
+}
+
+/** The animations of the page that are running now, by the name of their element's class. */
+export const runningAnimations = (page) =>
+  page.evaluate(() =>
+    document.getAnimations()
+      .filter((animation) => animation.playState === "running")
+      .map((animation) => animation.effect?.target?.className || animation.effect?.target?.localName || "unknown"));
+
+/**
+ * Whether the page scrolls sideways, which only a box made to keep two
+ * dimensions may (the terminal's screen, a wide table in a box of its own).
+ * Gives how many pixels wider the page is than its window.
+ */
+export const sidewaysScroll = (page) =>
+  page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth));
+
 /**
  * Looks at the page as it is in dark and in light: its content security
  * policy has stopped nothing, the accessibility check passes, and a
  * screenshot is kept for each. `name` is the step, in letters, digits and
- * dashes.
+ * dashes. The colours are the console's own choice, which theme.js applies,
+ * and not the browser's colour scheme: the console shows dark until a
+ * person chooses "Same as this device".
  */
 export async function look(t, page, name) {
   const stopped = await policyStopped(page);
   ensure(stopped.length === 0, `${name}: the content security policy stopped ${stopped.join(", ")}`);
-  for (const colorScheme of ["dark", "light"]) {
-    await page.emulateMedia({ colorScheme });
-    // The console follows the browser's scheme by a class on its root.
-    await page.waitForFunction(
-      (scheme) => document.documentElement.classList.contains(scheme),
-      colorScheme,
-    );
+  for (const theme of ["dark", "light"]) {
+    const restore = await showAs(page, { theme }, theme);
     await t.axe(page);
-    await t.screenshot(page, `${name}-${colorScheme}`);
+    await t.screenshot(page, `${name}-${theme}`);
+    await restore();
   }
+}
+
+/**
+ * Looks at the page as `look` does, and then in the three other ways the
+ * console can look (design 14): high contrast, with the browser's forced
+ * colours, and with less motion. Each is checked by the accessibility check
+ * and kept as a screenshot. With high contrast the root has `hc`; with
+ * forced colours the browser sets the colours and the page's own are not
+ * used, so the check there is every rule of axe but the contrast of the
+ * page's own colours, and that no control has lost its border; with less
+ * motion nothing on the page animates.
+ * An engine that cannot emulate forced colours (WebKit's does not) skips
+ * that look and says so in the log.
+ */
+export async function lookAll(t, page, name) {
+  await look(t, page, name);
+
+  let restore = await showAs(page, { theme: "high-contrast" }, "hc");
+  await t.axe(page);
+  await t.screenshot(page, `${name}-high-contrast`);
+  await restore();
+
+  let forced = false;
+  try {
+    await page.emulateMedia({ forcedColors: "active" });
+    forced = await page.evaluate(() => matchMedia("(forced-colors: active)").matches);
+  } catch {
+    // An engine that cannot emulate forced colours says so by refusing.
+  }
+  if (forced) {
+    // The browser draws the page in the system's colours, which axe cannot
+    // read: it takes the page's own text colour against a white page and
+    // calls it unreadable. Every other rule holds.
+    const found = (await t.violations(page)).filter(({ id }) => id !== "color-contrast");
+    ensure(found.length === 0, `${name}: with forced colours the accessibility check found ${found.map(({ id }) => id).join(", ")}`);
+    await t.screenshot(page, `${name}-forced-colours`);
+    const bare = await page.evaluate(() =>
+      [...document.querySelectorAll("main button, main .btn, header button")]
+        .filter((button) => button.offsetParent !== null && getComputedStyle(button).borderTopWidth === "0px")
+        .map((button) => button.textContent.trim() || button.getAttribute("aria-label") || button.className),
+    );
+    ensure(bare.length === 0, `${name}: with forced colours these buttons have no border: ${bare.join(", ")}`);
+  } else {
+    console.log(`${name}: ${t.engine} cannot emulate forced colours, so that look is skipped`);
+  }
+  await page.emulateMedia({ forcedColors: "none" }).catch(() => {});
+
+  restore = await showAs(page, { motion: "less" }, "dark");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await t.axe(page);
+  await t.screenshot(page, `${name}-less-motion`);
+  const moving = await runningAnimations(page);
+  ensure(moving.length === 0, `${name}: with less motion these still move: ${moving.join(", ")}`);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await restore();
 }
 
 // --- Pressing buttons ---
@@ -149,8 +233,33 @@ export async function mustRefuse(answer, status, id) {
 /** The heading of the sign-in page. */
 export const signInHeading = (page) => page.getByRole("heading", { name: "Sign in", exact: true });
 
-/** The header's button that signs out, which only a signed-in page has. */
-export const signOutButton = (page) => page.getByRole("button", { name: "Sign out" });
+/**
+ * The header's account menu, which only a signed-in page has: its button is
+ * the person's name and holds "Your account", the display choices and
+ * "Sign out". Its name is "NAME account menu".
+ */
+export const signOutButton = (page) => page.getByRole("banner").getByRole("button", { name: / account menu$/ });
+
+/**
+ * Opens the account menu and gives it. A phone's header has no such menu: the
+ * "More" sheet holds the same items, and gives the dialog that holds them.
+ */
+export async function openAccountMenu(t, page) {
+  const button = signOutButton(page);
+  if (await button.isVisible()) {
+    await button.click();
+    const menu = page.getByRole("menu", { name: /^Account of / });
+    await t.see(menu);
+    return menu;
+  }
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  const sheet = page.getByRole("dialog", { name: "More" });
+  await t.see(sheet);
+  return sheet;
+}
+
+/** The item `name` of the menu or the sheet that `openAccountMenu` gave. */
+export const accountItem = (menu, name) => menu.getByRole("menuitem", { name, exact: true }).or(menu.getByRole("link", { name, exact: true })).or(menu.getByRole("button", { name, exact: true }));
 
 /** Fills in the sign-in page and presses its button. Gives the answer of the console. */
 export async function signIn(page, name, password) {
@@ -159,16 +268,34 @@ export async function signIn(page, name, password) {
   return press(page, page.getByRole("button", { name: "Sign in", exact: true }), "/api/1/sign-in");
 }
 
+/**
+ * Gives the account a time zone if it has none, and shows the page again. A
+ * new account has none, and the console asks for it on /welcome before any
+ * other page: a test that is not about that page gives it one, the way a
+ * person who chose "Skip all" on it would have.
+ */
+export async function leaveWelcome(t, page, zone = "UTC") {
+  const read = await fetchAsPage(page, "GET", "/api/1/account/preferences");
+  ensure(read.status === 200, `GET /api/1/account/preferences was answered ${read.status}: ${read.text}`);
+  if (read.json.zone !== "") return;
+  const saved = await fetchAsPage(page, "POST", "/api/1/account/preferences", { zone });
+  ensure(saved.status === 200, `the time zone was not kept: the console answered ${saved.status}: ${saved.text}`);
+  await page.goto(new URL("/", page.url()).href);
+  await t.see(page.getByRole("heading", { name: "Overview", level: 1 }));
+}
+
 /** Signs in with nothing more to give, and waits for the signed-in page. */
 export async function signInDone(t, page, name, password) {
   const answer = await signIn(page, name, password);
   ensure(answer.status() === 200, `${name} was not signed in: the console answered ${answer.status()}`);
   await t.see(signOutButton(page));
+  await leaveWelcome(t, page);
 }
 
-/** Presses "Sign out" and waits for the sign-in page. */
+/** Chooses "Sign out" in the account menu and waits for the sign-in page. */
 export async function signOut(t, page) {
-  await press(page, signOutButton(page), "/api/1/sign-out");
+  const menu = await openAccountMenu(t, page);
+  await press(page, accountItem(menu, "Sign out"), "/api/1/sign-out");
   await t.see(signInHeading(page));
 }
 
@@ -188,6 +315,7 @@ export async function signInWithRecovery(t, page, name, password, code) {
   const taken = await giveCode(page, "Recovery code", code);
   ensure(taken.status() === 200, `the recovery code was not taken: the console answered ${taken.status()}`);
   await t.see(signOutButton(page));
+  await leaveWelcome(t, page);
 }
 
 /** The browser's cookie called `name` for the console, or undefined. */
@@ -202,10 +330,16 @@ export async function sessionOf(page) {
   return answer.json();
 }
 
-/** The page of the signed-in account's second step. */
+/**
+ * The page of the signed-in account's second step: from the account menu to
+ * "Your account", and there the link "Manage the second step".
+ */
 export async function openSecondStep(t, page) {
   // A page that was on it when the session ended is back on it at once.
   if (!new URL(page.url()).pathname.endsWith("/second-step")) {
+    await leaveWelcome(t, page);
+    const menu = await openAccountMenu(t, page);
+    await accountItem(menu, "Your account").click();
     await page.getByRole("link", { name: "Manage the second step" }).click();
   }
   await t.see(page.getByRole("heading", { name: "Second step", level: 1 }));

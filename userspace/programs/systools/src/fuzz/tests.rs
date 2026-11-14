@@ -257,6 +257,15 @@ fn a_preferences_body_has_the_keys_a_preference_has_and_values_that_can_work() {
     }
     // An empty zone is none.
     assert_eq!(preferences_body(br#"{"zone":""}"#), Ok(()));
+    // The commands and the terminal's keys, at their limits.
+    for body in [
+        &br#"{"commands":"shown"}"#[..],
+        br#"{"terminal":{"size":12,"scrollback":1000,"keep-days":1}}"#,
+        br#"{"terminal":{"size":20,"scrollback":50000,"keep-days":30,"announce":true}}"#,
+        br#"{"terminal":{}}"#,
+    ] {
+        assert_eq!(preferences_body(body), Ok(()), "{}", String::from_utf8_lossy(body));
+    }
     for body in [
         &br#"{"theme":"neon"}"#[..],
         br#"{"text":101}"#,
@@ -264,6 +273,12 @@ fn a_preferences_body_has_the_keys_a_preference_has_and_values_that_can_work() {
         br#"{"colour":"red"}"#,
         br#"{"zone":"../etc/passwd"}"#,
         br#"{"zone":"/etc/passwd"}"#,
+        br#"{"commands":"loud"}"#,
+        br#"{"terminal":{"size":21}}"#,
+        br#"{"terminal":{"scrollback":999}}"#,
+        br#"{"terminal":{"keep-days":31}}"#,
+        br#"{"terminal":{"keep_days":3}}"#,
+        br#"{"terminal":{"announce":"yes"}}"#,
         b"null",
         b"",
     ] {
@@ -287,6 +302,12 @@ fn a_preferences_change_is_made_to_a_settings_text_and_keeps_its_comments() {
     assert_eq!(
         settings_text("", br#"{"motion":"less"}"#).unwrap().as_deref(),
         Some("motion = \"less\"\n")
+    );
+    assert_eq!(
+        settings_text(text, br#"{"terminal":{"size":16},"commands":"shown"}"#).unwrap().as_deref(),
+        Some(
+            "# Mine.\ntheme = \"dark\" # the best\n\n# Size.\ntext = 100\ncommands = \"shown\"\n\n[terminal]\nsize = 16\n"
+        )
     );
     assert!(settings_text("theme = \n", b"{}").is_err());
     assert!(settings_text(text, b"{").is_err());
@@ -482,6 +503,55 @@ fn what_a_browser_sends_of_a_passkey_is_json_of_base64url() {
     ] {
         assert!(webauthn_json(create, json.as_bytes()).is_err(), "{create} {json}");
     }
+}
+
+/// A browser's frame on the Terminal's socket: `first` is its first byte,
+/// and the body is masked with `mask`.
+fn socket_frame(first: u8, body: &[u8], mask: [u8; 4]) -> Vec<u8> {
+    let mut frame = vec![first];
+    match u16::try_from(body.len()) {
+        Ok(length @ 0..=125) => frame.push(0x80 | u8::try_from(length).unwrap()),
+        Ok(length) => {
+            frame.push(0x80 | 0x7e);
+            frame.extend_from_slice(&length.to_be_bytes());
+        }
+        Err(_) => {
+            frame.push(0x80 | 0x7f);
+            frame.extend_from_slice(&u64::try_from(body.len()).unwrap().to_be_bytes());
+        }
+    }
+    frame.extend_from_slice(&mask);
+    frame.extend(body.iter().zip(mask.iter().cycle()).map(|(byte, key)| byte ^ key));
+    frame
+}
+
+#[test]
+fn a_browsers_request_opens_the_terminals_socket_and_another_does_not() {
+    let mut asked: Vec<(&[u8], &[u8])> = vec![
+        (b"upgrade", b"websocket"),
+        (b"connection", b"keep-alive, Upgrade"),
+        (b"sec-websocket-version", b"13"),
+        (b"sec-websocket-key", b"dGhlIHNhbXBsZSBub25jZQ=="),
+        (b"sec-websocket-protocol", b"dukovo-terminal-1, csrf.token"),
+    ];
+    assert_eq!(websocket_opening(&asked), Ok("token".into()));
+    asked[2].1 = b"12";
+    assert!(websocket_opening(&asked).is_err());
+    assert!(websocket_opening(&[(b"bad name", b"x")]).is_err());
+}
+
+#[test]
+fn a_browsers_frames_make_messages_and_one_that_breaks_a_rule_is_closed() {
+    let mut bytes = socket_frame(0x01, b"{\"ack\"", [1, 2, 3, 4]);
+    bytes.extend(socket_frame(0x80, b":1}", [5, 6, 7, 8]));
+    bytes.extend(socket_frame(0x89, b"", [0; 4]));
+    for piece in [1, 2, 9, bytes.len()] {
+        assert_eq!(websocket_frames(&bytes, piece), (2, None), "pieces of {piece}");
+    }
+    assert_eq!(websocket_frames(&[0x81, 0x00], 2), (0, Some(1002)), "not masked");
+    let big = socket_frame(0x82, &vec![0; (64 << 10) + 1], [0; 4]);
+    assert_eq!(websocket_frames(&big[..14], 14), (0, Some(1009)));
+    assert_eq!(websocket_frames(&socket_frame(0x81, &[0xff], [9; 4]), 1), (0, Some(1007)));
 }
 
 /// A generator of numbers with a seed of its own (xorshift64*), so that a
@@ -784,6 +854,7 @@ fn random_request(rng: &mut Rng, paths: &[String]) -> Sent {
 /// and altered, some noise.
 fn random_parsers(rng: &mut Rng, passkey: &Authenticator, ids: &[&'static str]) {
     let noise = |rng: &mut Rng| rng.bytes(60);
+    random_socket(rng);
     // What the passkey checks read.
     let created = passkey.data(0x41, 0, true);
     let used = passkey.data(0x01, 1, false);
@@ -891,6 +962,46 @@ fn random_parsers(rng: &mut Rng, passkey: &Authenticator, ids: &[&'static str]) 
     };
     let _ = webauthn_json(create, json.to_string().as_bytes());
     let _ = webauthn_json(create, &sample(rng));
+}
+
+/// What a browser could send on the Terminal's socket: frames that are
+/// right, frames with one byte changed, and noise, read in pieces of any
+/// size; and the request that opens it, with its headers mixed up.
+fn random_socket(rng: &mut Rng) {
+    let mut bytes = Vec::new();
+    for _ in 0..rng.below(6) {
+        let first = if rng.chance(80) {
+            *rng.pick(&[0x81, 0x82, 0x01, 0x02, 0x00, 0x80, 0x88, 0x89, 0x8A])
+        } else {
+            u8::try_from(rng.below(256)).unwrap()
+        };
+        let body = if rng.chance(10) { vec![0x61; rng.below(70_000)] } else { rng.bytes(200) };
+        let mask = [0, 1, 2, 3].map(|_| u8::try_from(rng.below(256)).unwrap());
+        bytes.extend(socket_frame(first, &body, mask));
+    }
+    if !bytes.is_empty() && rng.chance(30) {
+        let at = rng.below(bytes.len());
+        bytes[at] = u8::try_from(rng.below(256)).unwrap();
+    }
+    if rng.chance(20) {
+        bytes.extend(rng.bytes(40));
+    }
+    let _ = websocket_frames(&bytes, 1 + rng.below(20_000));
+    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = vec![
+        (b"upgrade".to_vec(), b"websocket".to_vec()),
+        (b"connection".to_vec(), b"Upgrade".to_vec()),
+        (b"sec-websocket-version".to_vec(), b"13".to_vec()),
+        (b"sec-websocket-key".to_vec(), b"dGhlIHNhbXBsZSBub25jZQ==".to_vec()),
+        (b"sec-websocket-protocol".to_vec(), b"dukovo-terminal-1, csrf.x".to_vec()),
+    ];
+    for pair in &mut pairs {
+        if rng.chance(15) {
+            pair.1 = rng.bytes(30);
+        }
+    }
+    let pairs: Vec<(&[u8], &[u8])> =
+        pairs.iter().map(|(name, value)| (name.as_slice(), value.as_slice())).collect();
+    let _ = websocket_opening(&pairs);
 }
 
 #[test]

@@ -48,6 +48,13 @@ admin-journal userspace/programs/accounts/ userspace/programs/systools/src/admin
 admin-journal userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/ userspace/programs/systools/src/service.rs
 admin-journal userspace/programs/systools/src/servicefiles.rs userspace/programs/systools/src/settings_edit.rs userspace/programs/systools/src/power.rs
 admin-journal userspace/programs/systools/src/logd.rs userspace/spark/src/supervisor/read.rs tools/xtask/src/test/console_client.rs ports/netcat/
+admin-terminal userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/admin_settings.rs
+admin-terminal userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/ userspace/programs/accounts/
+admin-terminal userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/last.rs userspace/programs/systools/src/log.rs
+admin-terminal userspace/programs/systools/src/logd.rs userspace/programs/systools/src/service.rs userspace/programs/systools/src/power.rs
+admin-terminal userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/spark/src/supervisor/read.rs
+admin-terminal userspace/programs/nukesh/ ports/uutils-coreutils/ ports/netcat/
+admin-terminal tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
 audio-cd kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/fs/disk/optical.rs
 audio-cd kernel/radix/src/fs/disk/removable.rs kernel/radix/src/fs/disk/usb.rs tools/xtask/src/disc_drive/

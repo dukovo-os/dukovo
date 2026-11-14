@@ -510,7 +510,13 @@ mod tests {
     }
 
     fn who() -> Result<Who, Fault> {
-        Ok(Who { name: "chase".into(), full_name: String::new(), admin: true, groups: vec![] })
+        Ok(Who {
+            name: "chase".into(),
+            full_name: String::new(),
+            admin: true,
+            groups: vec![],
+            shell: true,
+        })
     }
 
     #[test]
@@ -542,8 +548,13 @@ mod tests {
 
     #[test]
     fn a_passkey_is_made_with_the_challenge_the_person_and_the_passkeys_to_leave_out() {
-        let who =
-            Who { name: "chase".into(), full_name: "Chase Y".into(), admin: true, groups: vec![] };
+        let who = Who {
+            name: "chase".into(),
+            full_name: "Chase Y".into(),
+            admin: true,
+            groups: vec![],
+            shell: true,
+        };
         let made = creation("0a0b 0c0d 01 ff02", &who).unwrap();
         assert_eq!(
             made,

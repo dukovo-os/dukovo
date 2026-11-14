@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The web console's settings, `/system/settings/admin.toml`
-//! (admin.toml(5), ADR 0514): the sign-in rules, which authd(8) keeps,
-//! and where admind(8) answers and whom.
+//! (admin.toml(5), ADRs 0514 and 0517): the sign-in rules, which authd(8)
+//! keeps, where admind(8) answers and whom, and who may open a terminal
+//! in the console, which authd checks at each request for one.
 //!
 //! A file that is not there gives the defaults; a key that is not there
 //! gives its default; a key with a value out of its range is refused, so
@@ -92,6 +93,61 @@ impl Default for Console {
     }
 }
 
+/// Who may open a terminal in the console.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Allowed {
+    /// Each account that may use the console and has a shell, as at the
+    /// machine's screen and over SSH.
+    #[default]
+    Everyone,
+    /// Administrators.
+    Administrators,
+    /// No one.
+    Nobody,
+}
+
+impl Allowed {
+    /// Whether it lets an account open a terminal: an administrator's
+    /// when `admin`.
+    pub fn lets(self, admin: bool) -> bool {
+        match self {
+            Allowed::Everyone => true,
+            Allowed::Administrators => admin,
+            Allowed::Nobody => false,
+        }
+    }
+
+    /// The word admin.toml writes it with.
+    pub fn word(self) -> &'static str {
+        match self {
+            Allowed::Everyone => "everyone",
+            Allowed::Administrators => "administrators",
+            Allowed::Nobody => "nobody",
+        }
+    }
+}
+
+/// The most terminals an account may keep, which `sessions-per-account`
+/// may lower.
+pub const TERMINALS_MAX: u32 = 64;
+
+/// The `[terminal]` table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct Terminal {
+    /// Who may open one.
+    pub allowed: Allowed,
+    /// How many terminals each account may keep, 1 to [`TERMINALS_MAX`].
+    pub sessions_per_account: u32,
+}
+
+impl Default for Terminal {
+    fn default() -> Terminal {
+        Terminal { allowed: Allowed::Everyone, sessions_per_account: 32 }
+    }
+}
+
 /// The whole file.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -100,6 +156,8 @@ pub struct Settings {
     pub sign_in: SignIn,
     /// The console's server.
     pub console: Console,
+    /// The console's terminal.
+    pub terminal: Terminal,
 }
 
 impl Settings {
@@ -120,6 +178,9 @@ impl Settings {
         }
         if let Err(err) = manifest::service::check_certificate(&settings.console.certificate) {
             return Err(format!("{PATH}: certificate: {err}"));
+        }
+        if !(1..=TERMINALS_MAX).contains(&settings.terminal.sessions_per_account) {
+            return Err(format!("{PATH}: sessions-per-account is 1 to {TERMINALS_MAX}"));
         }
         Ok(settings)
     }
@@ -153,6 +214,26 @@ mod tests {
         assert_eq!(settings.console.listen, 9090);
         assert_eq!(settings.console.reach, Reach::Private);
         assert_eq!(settings.console.certificate, "this-machine");
+        assert_eq!(settings.terminal.allowed, Allowed::Everyone);
+        assert_eq!(settings.terminal.sessions_per_account, 32);
+    }
+
+    #[test]
+    fn who_may_open_a_terminal_is_the_word_the_file_gives() {
+        let cases = [
+            (Allowed::Everyone, [true, true]),
+            (Allowed::Administrators, [false, true]),
+            (Allowed::Nobody, [false, false]),
+        ];
+        for (allowed, [person, admin]) in cases {
+            let text = format!("[terminal]\nallowed = \"{}\"\n", allowed.word());
+            assert_eq!(Settings::parse(&text).unwrap().terminal.allowed, allowed);
+            assert_eq!((allowed.lets(false), allowed.lets(true)), (person, admin), "{allowed:?}");
+        }
+        let fewest = Settings::parse("[terminal]\nsessions-per-account = 1\n").unwrap();
+        assert_eq!(fewest.terminal.sessions_per_account, 1);
+        let most = format!("[terminal]\nsessions-per-account = {TERMINALS_MAX}\n");
+        assert_eq!(Settings::parse(&most).unwrap().terminal.sessions_per_account, TERMINALS_MAX);
     }
 
     #[test]
@@ -212,6 +293,10 @@ mod tests {
             "[console]\nreach = \"public\"\n",
             "[console]\ncertificate = \"../key\"\n",
             "[consoles]\n",
+            "[terminal]\nallowed = \"admins\"\n",
+            "[terminal]\nsessions-per-account = 0\n",
+            "[terminal]\nsessions-per-account = 65\n",
+            "[terminal]\nkeep-days = 7\n",
         ] {
             assert!(Settings::parse(text).is_err(), "{text}");
         }

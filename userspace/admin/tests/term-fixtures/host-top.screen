@@ -1,0 +1,24 @@
+Tasks:   2 total,   0 running,   2 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.0 us,  0.0 sy, 24.4 ni, 75.0 id,  0.0 wa,  0.0 hi,  0.0 si,  0.6 st
+MiB Mem :  16087.7 total,   6307.4 free,   8677.4 used,   7308.6 buff/cache
+MiB Swap:      0.0 total,      0.0 free,      0.0 used.   7410.3 avail Mem
+
+  PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+30415 root      20   0    3100   1968   1852 S   0.0   0.0   0:00.00 sleep
+30416 root      20   0    3100   1964   1848 S   0.0   0.0   0:00.00 sleep
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

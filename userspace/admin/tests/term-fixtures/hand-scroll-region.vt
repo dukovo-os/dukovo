@@ -1,0 +1,20 @@
+# hand-built: a full-screen program with a header and a status line outside
+# a scroll region, as the csr, il1, dl1, ri and ind capabilities of
+# xterm-256color draw it. 12 columns, 8 rows, a region of rows 2 to 7.
+\e[H\e[2J
+HEADER
+\e[8;1Hstatus
+\e[2;7r\e[2;1H
+# nine lines into a region of six: the first three scroll out of it
+l1\r\nl2\r\nl3\r\nl4\r\nl5\r\nl6\r\nl7\r\nl8\r\nl9
+# insert two lines at the top of the region, delete one below them
+\e[2;1H\e[2L
+\e[3;1H\e[M
+# reverse index at the top of the region, then scroll down two and up one
+\e[2;1H\eM
+\e[2T\e[S
+# write on row 5; above the region, insert and delete lines do nothing
+\e[5;3Hx
+\e[1;1H\e[L\e[M
+# a line feed on the last row, below the region, does not scroll
+\e[8;7H\n

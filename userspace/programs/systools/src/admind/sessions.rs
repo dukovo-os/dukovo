@@ -44,6 +44,9 @@ pub struct Session<W> {
     /// Whether it may only add a second step.
     pub needs_step: bool,
     pub worker: W,
+    /// The SHA-256 of its cookie, which `Sessions` keeps it by: set when
+    /// it is kept, so that the reason it ends can be found from its cookie.
+    pub key: [u8; 32],
 }
 
 impl<W> Session<W> {
@@ -70,6 +73,7 @@ impl<W> Session<W> {
             unlocked_until: None,
             needs_step,
             worker,
+            key: [0; 32],
         })
     }
 
@@ -99,7 +103,7 @@ impl<W> Default for Sessions<W> {
 
 /// The key a cookie is kept by: the SHA-256 of its 32 bytes, or `None`
 /// for a cookie admind did not make.
-fn key(cookie: &str) -> Option<[u8; 32]> {
+pub fn key(cookie: &str) -> Option<[u8; 32]> {
     let bytes = URL_SAFE_NO_PAD.decode(cookie).ok().filter(|bytes| bytes.len() == 32)?;
     let mut key = [0u8; 32];
     key.copy_from_slice(digest::digest(&digest::SHA256, &bytes).as_ref());
@@ -108,12 +112,13 @@ fn key(cookie: &str) -> Option<[u8; 32]> {
 
 impl<W> Sessions<W> {
     /// Keeps `session`: its cookie, for the browser.
-    pub fn add(&mut self, session: Session<W>) -> Result<String, String> {
+    pub fn add(&mut self, mut session: Session<W>) -> Result<String, String> {
         if self.map.len() >= SESSIONS_MAX {
             return Err(format!("{SESSIONS_MAX} sessions are signed in already"));
         }
         let cookie = URL_SAFE_NO_PAD.encode(random::<32>()?);
         let key = key(&cookie).ok_or("a cookie made does not read")?;
+        session.key = key;
         self.map.insert(key, session);
         Ok(cookie)
     }
@@ -140,6 +145,11 @@ impl<W> Sessions<W> {
         let ended: Vec<[u8; 32]> =
             self.map.iter().filter(|(_, s)| gone(s)).map(|(k, _)| *k).collect();
         ended.iter().filter_map(|key| self.map.remove(key)).collect()
+    }
+
+    /// Whether a session `which` picks is signed in.
+    pub fn any(&self, which: impl Fn(&Session<W>) -> bool) -> bool {
+        self.map.values().any(which)
     }
 
     pub fn len(&self) -> usize {

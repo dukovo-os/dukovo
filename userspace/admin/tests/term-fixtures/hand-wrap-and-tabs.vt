@@ -1,0 +1,9 @@
+# hand-built: what the right edge does. Autowrap with the wait to wrap, rmam
+# and smam, tabs, the repeat of the rep capability and cursor movement. 10
+# columns, 8 rows.
+\e[H\e[2J
+0123456789ab\r\n
+\e[?7l0123456789ab\r\n\e[?7h
+a\tb\tc\r\n
+x\e[3b\e[2Cy\r\n
+0123456789z\r\n
