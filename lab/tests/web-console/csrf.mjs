@@ -5,7 +5,7 @@
 // runner (lab repository, docs/test-files.md, "Browser tests"): every
 // route of the console that changes anything, asked for as another site
 // would ask, and refused. An administrator signs in, and the test posts to
-// each of the 20 routes with what a forger can send: no Origin, the Origin
+// each of the 21 routes with what a forger can send: no Origin, the Origin
 // of another site, the console's own Origin said to come from another
 // site, no token, a token that is not the session's. Every one is refused
 // with 403, and the session still stands afterwards, locked or unlocked as
@@ -70,6 +70,7 @@ const SESSION_ROUTES = [
   ["POST /api/1/account/second-step/trusted/forget", {}],
   ["POST /api/1/account/tokens/add", { proof: PASSWORD, name: "forged" }],
   ["POST /api/1/account/tokens/remove", { id: "00" }],
+  ["POST /api/1/account/preferences", { theme: "light" }],
 ];
 
 /** The path of a route written as `METHOD /path`. */

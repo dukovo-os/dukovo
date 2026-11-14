@@ -20,7 +20,7 @@
 //! - [`serve`] listens, checks who may connect, speaks TLS and HTTP, and
 //!   ends the sessions whose time is up;
 //! - [`routes`] answers each request: the order of its checks, the sign-in
-//!   and the session routes, the account's second step;
+//!   and the session routes, the account's second step and preferences;
 //! - [`actions`] is the list of what the API does, each read and change with
 //!   its arguments, the command it runs and the forms it shows as, which
 //!   admin(8) prints too;
@@ -30,6 +30,9 @@
 //!   may knock, and [`shared`] holds what the connections share;
 //! - [`authd`], [`link`] and [`worker`] are the asking: authd's requests
 //!   and the frames between admind and a session's worker;
+//! - [`preferences`] is what a person prefers of the console, kept in
+//!   their own `~/.config/dukovo-admin/settings.toml`, which their worker
+//!   reads and writes (ADR 0516);
 //! - [`errors`] is the table of error IDs, `ADM-101` and on, each with its
 //!   status; [`files`], [`tls`] and [`webauthn`] read the console's files,
 //!   the certificate and a browser's passkey JSON.
@@ -60,6 +63,7 @@ mod fixture;
 mod guard;
 mod limits;
 mod link;
+mod preferences;
 mod reach;
 mod routes;
 mod run;

@@ -35,8 +35,9 @@
 //! Every answer carries [`guard::headers`] and no `Server` header; an answer
 //! of the API is `no-store`, a file `no-cache`. [`sign_in`] holds the
 //! routes that sign a browser in, [`session`] those of a signed-in session,
-//! [`events`] a tab's stream, and [`account`] the person's own second steps
-//! and tokens, which their worker asks authd for.
+//! [`events`] a tab's stream, and [`account`] the person's own second steps,
+//! tokens and preferences, which their worker asks authd or their files
+//! for.
 //!
 //! When a page gets an error it does not expect, the answer's `id` is in
 //! [`errors`](super::errors), and `log admind` has the refusal with the
@@ -234,6 +235,8 @@ enum Route {
     TrustedForget,
     TokenAdd,
     TokenRemove,
+    Preferences,
+    PreferencesChange,
     Actions,
     Show,
     #[cfg(feature = "lab")]
@@ -309,6 +312,8 @@ const TABLE: &[Entry] = &[
     ),
     entry(Verb::Post, "/api/1/account/tokens/add", Route::TokenAdd, Access::Full),
     entry(Verb::Post, "/api/1/account/tokens/remove", Route::TokenRemove, Access::Full),
+    entry(Verb::Get, "/api/1/account/preferences", Route::Preferences, Access::Full),
+    entry(Verb::Post, "/api/1/account/preferences", Route::PreferencesChange, Access::Full),
     entry(Verb::Get, "/api/1/actions", Route::Actions, Access::Api),
     entry(Verb::Post, "/api/1/show", Route::Show, Access::Api),
     #[cfg(feature = "lab")]
@@ -374,14 +379,16 @@ enum Lookup {
 }
 
 /// The route for `verb` and `path`: an address of the API must be in the
-/// table; any other is a file's, which `GET` and `HEAD` ask for.
+/// table, once for each verb it takes; any other is a file's, which `GET`
+/// and `HEAD` ask for.
 fn lookup(verb: Verb, path: &str) -> Lookup {
     if path != "/api" && !path.starts_with("/api/") {
         return if verb == Verb::Post { Lookup::WrongVerb } else { Lookup::Found(&FILE) };
     }
-    match TABLE.iter().find(|entry| entry.path == path) {
-        Some(entry) if entry.verb == verb => Lookup::Found(entry),
-        Some(_) => Lookup::WrongVerb,
+    let here = || TABLE.iter().filter(|entry| entry.path == path);
+    match here().find(|entry| entry.verb == verb) {
+        Some(entry) => Lookup::Found(entry),
+        None if here().next().is_some() => Lookup::WrongVerb,
         None => Lookup::Missing,
     }
 }
@@ -703,6 +710,8 @@ async fn dispatch(
         (Route::TrustedForget, Some(live)) => account::trusted_forget(&live).await,
         (Route::TokenAdd, Some(live)) => account::token_add(cx, &live).await,
         (Route::TokenRemove, Some(live)) => account::token_remove(cx, &live).await,
+        (Route::Preferences, Some(live)) => account::preferences(cx, &live).await,
+        (Route::PreferencesChange, Some(live)) => account::preferences_change(cx, &live).await,
         // For a session or a token, which `check` has let through.
         (Route::Actions, _) => Ok(Reply::json(actions::listed(cx.shared.actions.get()))),
         (Route::Show, _) => act::show(cx, token.as_ref()),

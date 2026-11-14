@@ -155,16 +155,32 @@ fn is_tzif(path: &Path) -> bool {
     fs::read(path).is_ok_and(|data| data.starts_with(b"TZif"))
 }
 
-fn set_timezone(zone: &str) -> Result<(), Fail> {
+/// Whether `zone` names a time zone of the database in `database`: a
+/// relative name with no empty, `.` or `..` part, so that it stays inside
+/// the database, whose file there is a TZif file. A link of the database,
+/// such as `Asia/Calcutta`, is a zone too, as it is to `set-timezone`;
+/// browsers still name zones by their links.
+fn is_zone_in(database: &Path, zone: &str) -> bool {
     let safe = !zone.is_empty()
         && !zone.starts_with('/')
         && zone.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
-    let target = format!("{ZONEINFO}/{zone}");
-    if !safe || !is_tzif(Path::new(&target)) {
+    safe && is_tzif(&database.join(zone))
+}
+
+/// Whether `zone` names a time zone of the system's database,
+/// [`ZONEINFO`]: what `set-timezone` takes, and the web console's
+/// preferences.
+pub(crate) fn is_zone(zone: &str) -> bool {
+    is_zone_in(Path::new(ZONEINFO), zone)
+}
+
+fn set_timezone(zone: &str) -> Result<(), Fail> {
+    if !is_zone(zone) {
         return Err(fail(format!(
             "timedatectl: no time zone '{zone}': timedatectl list-timezones lists them"
         )));
     }
+    let target = format!("{ZONEINFO}/{zone}");
     let new = format!("{LOCALTIME}.new");
     let _ = fs::remove_file(&new);
     symlink(&target, &new)
@@ -238,6 +254,38 @@ fn set_time(text: &str) -> Result<(), Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_time_zone_is_a_tzif_file_inside_the_database() {
+        let dir = std::env::temp_dir().join(format!("timedatectl-zones-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("Europe")).unwrap();
+        std::fs::write(dir.join("Europe/Berlin"), b"TZif2 rest").unwrap();
+        std::fs::write(dir.join("UTC"), b"TZif2").unwrap();
+        std::fs::write(dir.join("zone1970.tab"), "# a table\n").unwrap();
+        std::os::unix::fs::symlink("Berlin", dir.join("Europe/Kiel")).unwrap();
+        std::fs::write(dir.join("outside"), b"TZif2").unwrap();
+        for zone in ["Europe/Berlin", "UTC", "Europe/Kiel"] {
+            assert!(is_zone_in(&dir, zone), "{zone}");
+        }
+        let names = [
+            "",
+            "/UTC",
+            "Europe",
+            "Europe/",
+            "Europe//Berlin",
+            "./UTC",
+            "Europe/../UTC",
+            "../outside",
+            "zone1970.tab",
+            "Europe/Paris",
+            "UTC\0",
+            "europe/berlin",
+        ];
+        for zone in names {
+            assert!(!is_zone_in(&dir, zone), "{zone:?}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn local_times_read() {

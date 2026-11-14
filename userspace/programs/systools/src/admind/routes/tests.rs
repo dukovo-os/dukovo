@@ -39,6 +39,16 @@ struct World {
     calls: Calls,
 }
 
+/// The preferences the test worker has after `change`: the defaults, and
+/// what the change gave.
+fn preferences(change: &Value) -> Value {
+    let mut all = json!({ "theme": "dark", "text": 100, "motion": "full", "zone": "" });
+    for (key, value) in change.as_object().into_iter().flatten() {
+        all[key] = value.clone();
+    }
+    all
+}
+
 /// What the test worker answers.
 fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
     match method {
@@ -59,6 +69,13 @@ fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
         "passkey-add" => Ok(json!({ "codes": [] })),
         "trusted-forget" => Ok(json!({ "forgotten": 2 })),
         "token-add" => Ok(json!({ "token": "dkv_chase_aa" })),
+        "preferences" => Ok(preferences(&json!({}))),
+        // A theme that the worker cannot keep, as a file it cannot write.
+        "preferences-change" if params["theme"] == "device" => Err(Fault::new(
+            Kind::Internal,
+            "cannot write /home/chase/.config/dukovo-admin/settings.toml: permission denied",
+        )),
+        "preferences-change" => Ok(preferences(params)),
         "run" if params["argv"] == json!(["service", "list", "--json"]) => {
             Ok(json!({ "status": 0, "output": "[{\"name\":\"nginx\"}]\n", "errors": "" }))
         }
@@ -304,6 +321,19 @@ async fn sign_in(world: &World, name: &str) -> Session {
     Session { csrf: shown.json()["csrf"].as_str().unwrap().into(), cookie }
 }
 
+/// Signs `name` in with the right password, when what is left to do is to
+/// add a second step.
+async fn sign_in_to_add_a_step(world: &World, name: &str) -> Session {
+    let body = json!({ "name": name, "password": "right" });
+    let answered = send(world, post("/api/1/sign-in", &body)).await;
+    assert_eq!(answered.json(), json!({ "needs_step": true }));
+    let cookie = answered.cookie(SESSION_COOKIE).expect("a session cookie");
+    let header = format!("{SESSION_COOKIE}={cookie}");
+    let shown = send(world, get("/api/1/session").with("cookie", Some(&header))).await;
+    assert_eq!(shown.json()["needs_step"], json!(true));
+    Session { csrf: shown.json()["csrf"].as_str().unwrap().into(), cookie }
+}
+
 /// The calls the worker has had, as `method params`.
 fn called(world: &World) -> Vec<(String, Value)> {
     world.calls.lock().unwrap().clone()
@@ -312,16 +342,24 @@ fn called(world: &World) -> Vec<(String, Value)> {
 // The table and the small decisions.
 
 #[test]
-fn every_route_is_found_by_its_own_verb_and_no_other_and_each_address_is_one_route() {
-    let mut paths = HashSet::new();
+fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_table_twice() {
+    let mut routes = HashSet::new();
     for entry in TABLE {
-        assert!(paths.insert(entry.path), "{} twice", entry.path);
+        assert!(routes.insert(entry.route as usize), "{:?} twice", entry.route);
+        let twins = TABLE.iter().filter(|other| other.path == entry.path);
+        assert_eq!(
+            twins.filter(|other| other.verb == entry.verb).count(),
+            1,
+            "{} {:?} twice",
+            entry.path,
+            entry.verb
+        );
         assert!(entry.path.starts_with("/api/1/"), "{}", entry.path);
         assert!(
             matches!(lookup(entry.verb, entry.path), Lookup::Found(found) if found.route == entry.route)
         );
-        let other = if entry.verb == Verb::Get { Verb::Post } else { Verb::Get };
-        assert!(matches!(lookup(other, entry.path), Lookup::WrongVerb), "{}", entry.path);
+        // No verb that the table does not give the address finds it.
+        assert!(matches!(lookup(Verb::Head, entry.path), Lookup::WrongVerb), "{}", entry.path);
         // What only reads is a GET, and what changes anything is a POST.
         let reads = [
             Route::Health,
@@ -329,11 +367,12 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_each_address_is_one_rou
             Route::Session,
             Route::Events,
             Route::Steps,
+            Route::Preferences,
             Route::Actions,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 27 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 29 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -402,6 +441,8 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
         Route::Lock,
         Route::TokenAdd,
         Route::TokenRemove,
+        Route::Preferences,
+        Route::PreferencesChange,
     ] {
         assert_eq!(access(full), Access::Full, "{full:?}");
     }
@@ -848,15 +889,7 @@ fn a_browser_that_is_trusted_is_trusted_for_30_days_and_skips_the_step_until_it_
 fn a_session_that_may_only_add_a_second_step_may_do_that_and_sign_out_and_nothing_more() {
     run(async {
         let world = world("needs-step");
-        let body = json!({ "name": "eve", "password": "right" });
-        let answered = send(&world, post("/api/1/sign-in", &body)).await;
-        assert_eq!(answered.json(), json!({ "needs_step": true }));
-        let cookie = answered.cookie(SESSION_COOKIE).unwrap();
-        let header = format!("{SESSION_COOKIE}={cookie}");
-        let shown = send(&world, get("/api/1/session").with("cookie", Some(&header))).await;
-        let csrf = shown.json()["csrf"].as_str().unwrap().to_string();
-        assert_eq!(shown.json()["needs_step"], json!(true));
-        let session = Session { cookie, csrf };
+        let session = sign_in_to_add_a_step(&world, "eve").await;
         // What it may use.
         assert_eq!(send(&world, get("/api/1/account/second-step").by(&session)).await.status, 200);
         let begun = send(
@@ -1150,6 +1183,145 @@ fn what_authd_refuses_through_the_worker_is_told_by_its_words_and_logged() {
         // was the session's, which asks what the account has.
         let methods: Vec<String> = called(&world).into_iter().map(|(method, _)| method).collect();
         assert_eq!(methods, ["steps", "app-confirm"]);
+    });
+}
+
+// The person's preferences, through the worker.
+
+#[test]
+fn one_address_takes_a_get_and_a_post_and_no_other_verb() {
+    let found = |verb| match lookup(verb, "/api/1/account/preferences") {
+        Lookup::Found(entry) => Some(entry.route),
+        Lookup::WrongVerb => None,
+        Lookup::Missing => panic!("the address is in the table"),
+    };
+    assert_eq!(found(Verb::Get), Some(Route::Preferences));
+    assert_eq!(found(Verb::Post), Some(Route::PreferencesChange));
+    assert_eq!(found(Verb::Head), None);
+}
+
+#[test]
+fn preferences_are_read_and_changed_by_the_worker_for_a_session_that_is_locked() {
+    run(async {
+        let world = world("preferences");
+        let session = sign_in(&world, "chase").await;
+        let seen = called(&world).len();
+        let path = "/api/1/account/preferences";
+        let defaults = json!({ "theme": "dark", "text": 100, "motion": "full", "zone": "" });
+        let shown = send(&world, get(path).by(&session)).await;
+        assert_eq!(shown.status, 200);
+        assert_eq!(shown.json(), defaults);
+        let body = json!({ "theme": "light", "text": 112 });
+        let changed = send(&world, post(path, &body).by(&session)).await;
+        let both = json!({ "theme": "light", "text": 112, "motion": "full", "zone": "" });
+        assert_eq!(changed.status, 200);
+        assert_eq!(changed.json(), both);
+        // No key is a change of nothing, and still all of them are told;
+        // an empty zone is the person having none.
+        let nothing = send(&world, post(path, &json!({})).by(&session)).await;
+        assert_eq!(nothing.json(), defaults);
+        let none = send(&world, post(path, &json!({ "zone": "" })).by(&session)).await;
+        assert_eq!(none.json(), defaults);
+        // The worker is told what the page gave, and no more, with no
+        // unlock: the file is the person's own.
+        let seen = called(&world).split_off(seen);
+        assert_eq!(
+            seen,
+            [
+                ("preferences".to_string(), Value::Null),
+                ("preferences-change".to_string(), body),
+                ("preferences-change".to_string(), json!({})),
+                ("preferences-change".to_string(), json!({ "zone": "" })),
+            ]
+        );
+        assert!(!world.console.authd.verbs().contains(&"unlock".to_string()));
+    });
+}
+
+#[test]
+fn a_value_that_cannot_work_is_refused_before_the_worker_hears_of_it() {
+    run(async {
+        let world = world("preferences-values");
+        let session = sign_in(&world, "chase").await;
+        let seen = called(&world).len();
+        let path = "/api/1/account/preferences";
+        // The test machine has no zone database, so no zone but none is one.
+        for (body, field) in [
+            (json!({ "theme": "purple" }), "theme"),
+            (json!({ "theme": "" }), "theme"),
+            (json!({ "text": 130 }), "text"),
+            (json!({ "text": -1 }), "text"),
+            (json!({ "motion": "none" }), "motion"),
+            (json!({ "zone": "Mars/Base" }), "zone"),
+            (json!({ "zone": "../../etc/passwd" }), "zone"),
+            (json!({ "theme": "light", "text": 99 }), "text"),
+        ] {
+            let refused = send(&world, post(path, &body).by(&session)).await;
+            assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-125"), "{body}");
+            assert_eq!(refused.json()["error"]["field"], field, "{body}");
+        }
+        // A body that is not what the route takes is the browser's mistake.
+        for body in [
+            json!({ "themes": "light" }),
+            json!({ "text": "112" }),
+            json!({ "text": 112.5 }),
+            json!({ "theme": ["light"] }),
+            json!("light"),
+            json!(null),
+        ] {
+            let refused = send(&world, post(path, &body).by(&session)).await;
+            assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-108"), "{body}");
+        }
+        let mut empty = post(path, &json!({})).by(&session);
+        empty.body.clear();
+        assert_eq!(send(&world, empty).await.error(), "ADM-108");
+        assert_eq!(called(&world).len(), seen);
+    });
+}
+
+#[test]
+fn a_file_the_worker_cannot_write_is_told_in_its_words_and_logged() {
+    run(async {
+        let world = world("preferences-fault");
+        let session = sign_in(&world, "chase").await;
+        let path = "/api/1/account/preferences";
+        let answered = send(&world, post(path, &json!({ "theme": "device" })).by(&session)).await;
+        assert_eq!((answered.status, answered.error().as_str()), (500, "ADM-121"));
+        let detail = answered.json()["error"]["detail"].as_str().unwrap().to_string();
+        assert!(detail.starts_with("cannot write /home/chase/.config/dukovo-admin/"), "{detail}");
+    });
+}
+
+#[test]
+fn preferences_are_for_a_signed_in_session_that_may_do_all_and_not_for_a_token() {
+    run(async {
+        let world = world("preferences-access");
+        let path = "/api/1/account/preferences";
+        // Nobody is signed in.
+        assert_eq!(send(&world, get(path)).await.error(), "ADM-107");
+        let anonymous = post(path, &json!({})).with("cookie", Some("__Host-dukovo=abc"));
+        assert_eq!(send(&world, anonymous).await.error(), "ADM-107");
+        // A token is for the actions.
+        let bearer = format!("Bearer {TOKEN_ALL}");
+        for request in [get(path), post(path, &json!({}))] {
+            let answered = send(&world, request.with("authorization", Some(&bearer))).await;
+            assert_eq!((answered.status, answered.error().as_str()), (403, "ADM-124"));
+        }
+        // A change that does not come from the console's own page is refused.
+        let session = sign_in(&world, "chase").await;
+        let seen = called(&world).len();
+        let foreign = post(path, &json!({ "theme": "light" })).by(&session).with("origin", None);
+        assert_eq!(send(&world, foreign).await.error(), "ADM-109");
+        assert_eq!(called(&world).len(), seen);
+        // A session that may only add a second step may not.
+        let eve = sign_in_to_add_a_step(&world, "eve").await;
+        let seen = called(&world).len();
+        for request in [get(path), post(path, &json!({}))] {
+            let refused = send(&world, request.by(&eve)).await;
+            assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-118"));
+        }
+        // The worker was asked for none of it.
+        assert_eq!(called(&world).len(), seen);
     });
 }
 

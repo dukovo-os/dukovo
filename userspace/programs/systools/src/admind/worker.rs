@@ -12,7 +12,9 @@
 //! without closing it.
 //!
 //! Its methods are `whoami`; `run`, which runs an action's command as the
-//! person ([`run`]); and one for each of the person's own second steps
+//! person ([`run`]); `preferences` and `preferences-change`, which read
+//! and change the person's own preferences file in their home
+//! ([`preferences`]); and one for each of the person's own second steps
 //! and tokens, which it passes to authd on a connection of its own,
 //! so that authd sees the person asking, as it does for `passwd`. A
 //! request's `proof` is the person's password, or empty while the session
@@ -22,6 +24,7 @@
 //! passkeys are hexadecimal, as `steps` lists them.
 
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use accounts::console::{Console, from_hex};
@@ -35,6 +38,7 @@ use super::authd;
 use super::errors::Kind;
 use super::link::{self, Ended, Fault};
 use super::log;
+use super::preferences::{self, Change};
 use super::who::{self, Account, Sources, Who};
 use crate::util::{self, Fail, fail};
 
@@ -103,6 +107,14 @@ async fn handle(method: String, params: Value) -> Result<Value, Fault> {
     }
     if method == "run" {
         return run::run(params).await;
+    }
+    if method == "preferences" {
+        nothing(&params)?;
+        return Ok(json!(preferences::read(&home()?)?));
+    }
+    if method == "preferences-change" {
+        let change: Change = take(&method, params)?;
+        return Ok(json!(preferences::change(&home()?, &change)?));
     }
     let (console, shape) = request(&method, params)?;
     let (answer, _) = authd::ask(accounts::SOCKET, console, &[])
@@ -351,6 +363,12 @@ fn creation(text: &str, who: &Who) -> Result<Value, Fault> {
         "user": { "id": handle, "name": who.name, "displayName": display },
         "exclude": exclude,
     }))
+}
+
+/// The home folder of the person this worker acts for, which authd gives
+/// it as `HOME`.
+fn home() -> Result<PathBuf, Fault> {
+    preferences::home_of(std::env::var_os("HOME")).map_err(|why| Fault::new(Kind::Internal, why))
 }
 
 /// Who this worker acts for, by its own user number.

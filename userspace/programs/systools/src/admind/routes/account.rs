@@ -1,16 +1,19 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The person's own second steps and API tokens (ADR 0514): the
-//! authenticator app, passkeys, recovery codes, the browsers they trust,
-//! and the tokens that stand for them to scripts.
+//! The person's own second steps, API tokens and preferences (ADR 0514,
+//! ADR 0516): the authenticator app, passkeys, recovery codes, the
+//! browsers they trust, the tokens that stand for them to scripts, and how
+//! the console looks to them.
 //!
 //! Each route is one call to the session's worker, which asks authd as the
-//! person, so that authd sees them asking, as it does for `passwd`. admind
-//! only turns what a browser sends into the call, and the worker's answer
-//! into what the page reads; whether the password or the unlock is enough
-//! is authd's to say. A `proof` is the person's password, or empty while
-//! the session is unlocked.
+//! person, so that authd sees them asking, as it does for `passwd`, or
+//! reads and writes the person's own file. admind only turns what a
+//! browser sends into the call, and the worker's answer into what the page
+//! reads; whether the password or the unlock is enough is authd's to say.
+//! A `proof` is the person's password, or empty while the session is
+//! unlocked. The preferences ask for no proof: they are the person's own
+//! file, which a locked session may change as much as an unlocked one.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -18,7 +21,9 @@ use serde_json::{Value, json};
 use super::{Context, Live, Outcome, Reply, Text, refused, shown};
 use crate::admind::errors::{self, Attempt, Failure, Kind};
 use crate::admind::link::CallError;
+use crate::admind::preferences::Change;
 use crate::admind::webauthn::{self, Made};
+use crate::timedatectl;
 
 /// The failure that a call to the worker that went wrong is, for what
 /// `attempt` was.
@@ -206,6 +211,22 @@ pub async fn token_remove(cx: &Context<'_>, live: &Live) -> Outcome {
     let body: Body = cx.json()?;
     let params = json!({ "name": &*body.name });
     Ok(Reply::json(call(cx, live, "token-remove", params, Attempt::Other).await?))
+}
+
+/// `GET /api/1/account/preferences`: how the console looks to the person
+/// and the time zone it shows times in.
+pub async fn preferences(cx: &Context<'_>, live: &Live) -> Outcome {
+    Ok(Reply::json(call(cx, live, "preferences", Value::Null, Attempt::Other).await?))
+}
+
+/// `POST /api/1/account/preferences`: changes any of them, and answers
+/// them all. A value that cannot work is refused before the worker hears
+/// of it.
+pub async fn preferences_change(cx: &Context<'_>, live: &Live) -> Outcome {
+    let change: Change = cx.json()?;
+    change.check(timedatectl::is_zone)?;
+    let changed = call(cx, live, "preferences-change", json!(change), Attempt::Other).await?;
+    Ok(Reply::json(changed))
 }
 
 #[cfg(test)]
