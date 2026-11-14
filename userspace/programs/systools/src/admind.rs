@@ -56,6 +56,8 @@
 pub(crate) mod actions;
 mod authd;
 mod caller;
+#[allow(dead_code)]
+mod diff;
 pub(crate) mod errors;
 mod files;
 #[cfg(test)]
