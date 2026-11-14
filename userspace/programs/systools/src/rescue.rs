@@ -555,10 +555,12 @@ fn start_ssh(root: &Root) -> Result<(), String> {
             replace_with_copy(&from, Path::new(path), None)?;
         }
     }
-    let loaded = Command::new("/system/commands/firewall")
-        .arg("load")
+    // Spark loads them through the firewall's own service, which holds the
+    // right to change the rules; Rescue's screens do not hold it.
+    let loaded = Command::new("/system/commands/service")
+        .args(["firewall", "start"])
         .output()
-        .map_err(|err| format!("firewall: {err}"))?;
+        .map_err(|err| format!("service: {err}"))?;
     if !loaded.status.success() {
         return Err(format!(
             "the root's firewall rules did not load: {}",
