@@ -6003,6 +6003,33 @@ fn make_bundle_disk(
     Ok(())
 }
 
+/// Makes a [`BUNDLE_FILES`] disk that also holds `files`, each a name and
+/// its text, beside the bundles: what a test would otherwise type, a key at
+/// a time.
+fn make_bundle_files_with(
+    ctx: &Ctx,
+    disk: &Disk,
+    path: &Path,
+    files: &[(&str, &str)],
+) -> Result<(), String> {
+    make_bundle_files(ctx, disk, path)?;
+    let image = path.display().to_string();
+    for (name, text) in files {
+        let source = path.with_extension(name);
+        std::fs::write(&source, text)
+            .map_err(|err| format!("writing {}: {err}", source.display()))?;
+        let copied = host_tool(
+            std::process::Command::new("mcopy")
+                .args(["-i", &image])
+                .arg(&source)
+                .arg(format!("::/{name}")),
+        );
+        let _ = std::fs::remove_file(&source);
+        copied?;
+    }
+    Ok(())
+}
+
 /// Makes an [`UPDATE_RELEASES`] disk: FAT32 holding the repositories
 /// [`test_updates`] made in `updates`, each in a folder of its name.
 fn make_update_releases(disk: &Disk, path: &Path, updates: &Path) -> Result<(), String> {
@@ -11445,6 +11472,32 @@ fn run_within(vm: &mut Vm, command: &str, seconds: u64) -> Result<(), String> {
         let screen = vm.screen()?;
         if screen.iter().any(|line| line.trim() == marker) {
             return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return screen_shows(&screen, &[&marker]);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Unlocks elevate in the pane, or keeps it unlocked for 15 minutes more,
+/// asking the password if it is locked: a long step may take it from the
+/// pane.
+fn unlock(vm: &mut Vm) -> Result<(), String> {
+    static UNLOCKS: AtomicU32 = AtomicU32::new(0);
+    let n = UNLOCKS.fetch_add(1, Ordering::Relaxed);
+    let marker = format!("unlocked-{n}");
+    answer_prompt(vm, "$", &format!("clear; elevate -v; echo unlocked-$(echo {n})"))?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut answered = false;
+    loop {
+        let screen = vm.screen()?;
+        if screen.iter().any(|line| line.trim() == marker) {
+            return Ok(());
+        }
+        if !answered && screen.iter().any(|line| line.contains("to unlock elevate in this pane")) {
+            answer_prompt(vm, "in this pane:", "queen of hearts")?;
+            answered = true;
         }
         if Instant::now() >= deadline {
             return screen_shows(&screen, &[&marker]);

@@ -21,7 +21,6 @@
 //! button ends it.
 
 use super::super::*;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The disk of bundles' label.
 const LABEL: &str = "BUNDLES";
@@ -68,32 +67,6 @@ pub const CASE: Case = Case {
     disks: DISKS,
     second: None,
 };
-
-/// Unlocks elevate in the pane, or keeps it unlocked for 15 minutes more,
-/// asking the password if it is locked: a long step may take it from the
-/// pane.
-fn unlock(vm: &mut Vm) -> Result<(), String> {
-    static UNLOCKS: AtomicU32 = AtomicU32::new(0);
-    let n = UNLOCKS.fetch_add(1, Ordering::Relaxed);
-    let marker = format!("unlocked-{n}");
-    answer_prompt(vm, "$", &format!("clear; elevate -v; echo unlocked-$(echo {n})"))?;
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut answered = false;
-    loop {
-        let screen = vm.screen()?;
-        if screen.iter().any(|line| line.trim() == marker) {
-            return Ok(());
-        }
-        if !answered && screen.iter().any(|line| line.contains("to unlock elevate in this pane")) {
-            answer_prompt(vm, "in this pane:", "queen of hearts")?;
-            answered = true;
-        }
-        if Instant::now() >= deadline {
-            return screen_shows(&screen, &[&marker]);
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
 
 fn php_fpm(vm: &mut Vm, case: &Case) -> Result<(), String> {
     owner_signs_in(vm, case)?;

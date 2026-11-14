@@ -17,8 +17,6 @@
 //! Tests of PHP's own suite, which the disk lists, check what the port
 //! changes in PHP.
 
-use std::process::Command;
-
 use super::super::*;
 
 /// The disk of bundles' label.
@@ -197,20 +195,13 @@ c("opcache", opcache_get_status()["opcache_enabled"]);
 /// Makes the disk of bundles, with the checks' script, `checks.php`, and
 /// the list of the suite's tests, `suite.txt`, beside the bundles.
 pub fn make_disk(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    make_bundle_files(ctx, disk, path)?;
-    let image = path.display().to_string();
     let list = SUITE.join("\n") + "\n";
-    for (name, text) in [("checks.php", CHECKS_SCRIPT), ("suite.txt", list.as_str())] {
-        let source = path.with_extension(name);
-        std::fs::write(&source, text)
-            .map_err(|err| format!("writing {}: {err}", source.display()))?;
-        let copied = host_tool(
-            Command::new("mcopy").args(["-i", &image]).arg(&source).arg(format!("::/{name}")),
-        );
-        let _ = std::fs::remove_file(&source);
-        copied?;
-    }
-    Ok(())
+    make_bundle_files_with(
+        ctx,
+        disk,
+        path,
+        &[("checks.php", CHECKS_SCRIPT), ("suite.txt", list.as_str())],
+    )
 }
 
 fn php(vm: &mut Vm, case: &Case) -> Result<(), String> {
