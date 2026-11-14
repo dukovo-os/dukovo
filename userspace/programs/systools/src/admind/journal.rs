@@ -32,6 +32,8 @@
 //! others), is listed by name and never read: no hash, no version, no
 //! diff. A file admind could not read is listed as unreadable. A file
 //! longer than 1 MiB is listed with its hash and size, and no text.
+//! `admin export` copies the files of the settings that the round watches
+//! and leaves out the same secrets ([`settings_files`], [`is_hidden`]).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,6 +91,31 @@ fn is_secret(path: &str) -> bool {
     Path::new(path).starts_with(SECRETS)
 }
 
+/// Whether the file at `path`, whose metadata is `md`, is one whose text
+/// is never read for the journal, nor shown: one under a service's secrets,
+/// or one that not everyone may read. Everyone who is signed in reads the
+/// journal, so the console keeps only the name of such a file. `admin
+/// export` leaves the same files out.
+pub fn is_hidden(path: &str, md: &Metadata) -> bool {
+    is_secret(path) || md.mode() & 0o004 == 0
+}
+
+/// The settings under a folder, as the round watches them.
+pub struct SettingsFiles {
+    /// The regular files, to the depth and in the number the round looks
+    /// at them.
+    pub files: BTreeSet<String>,
+    /// The folders that could not be opened, whose files are not in `files`.
+    pub closed: Vec<String>,
+}
+
+/// The settings files under `dir`, which `admin export` copies.
+pub fn settings_files(dir: &Path) -> SettingsFiles {
+    let (mut files, mut room) = (BTreeSet::new(), FILES_MAX);
+    let closed = walk(dir, DEPTH_SETTINGS, &mut files, &mut room);
+    SettingsFiles { files, closed }
+}
+
 /// What `path` is now, and its stamp when it is there, and keeps the text
 /// as a version of the file at Unix time `now`. A secret is never read.
 ///
@@ -107,7 +134,7 @@ pub fn look(store: &Store, path: &str, now: i64) -> Result<(Seen, Option<Stamp>)
     }
     // Everyone who is signed in reads the journal: a file that not
     // everyone reads has its text kept out of it.
-    if is_secret(path) || md.mode() & 0o004 == 0 {
+    if is_hidden(path, &md) {
         return Ok((Seen::Secret, stamp));
     }
     let limit = store.limits.file;
@@ -604,9 +631,13 @@ pub fn restore_plan(store: &Store, change: &Change) -> std::result::Result<Vec<R
 /// Adds to `out` the regular files in `dir` and the folders in it to
 /// `depth` levels, but no file whose name starts with a dot (an editor's
 /// or a writer's file that is on its way to its name), and at most `room`
-/// of them in all.
-fn walk(dir: &Path, depth: usize, out: &mut BTreeSet<String>, room: &mut usize) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+/// of them in all. Gives the folders that could not be opened.
+fn walk(dir: &Path, depth: usize, out: &mut BTreeSet<String>, room: &mut usize) -> Vec<String> {
+    let mut closed = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        closed.extend(dir.to_str().map(str::to_string));
+        return closed;
+    };
     for entry in entries.flatten() {
         let (Some(name), Ok(kind)) =
             (entry.file_name().to_str().map(str::to_string), entry.file_type())
@@ -619,7 +650,7 @@ fn walk(dir: &Path, depth: usize, out: &mut BTreeSet<String>, room: &mut usize) 
         let path = entry.path();
         if kind.is_dir() {
             if depth > 0 {
-                walk(&path, depth - 1, out, room);
+                closed.extend(walk(&path, depth - 1, out, room));
             }
         } else if (kind.is_file()
             || (kind.is_symlink() && fs::metadata(&path).is_ok_and(|md| md.is_file())))
@@ -630,6 +661,7 @@ fn walk(dir: &Path, depth: usize, out: &mut BTreeSet<String>, room: &mut usize) 
             out.insert(path.to_string());
         }
     }
+    closed
 }
 
 #[cfg(test)]

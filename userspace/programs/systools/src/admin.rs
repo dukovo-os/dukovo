@@ -38,6 +38,7 @@ use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
 use crate::account::{self, Input};
+use crate::admin_export;
 use crate::admin_put_back;
 use crate::admin_settings::{self, Reach, Settings};
 use crate::admind::ISSUE;
@@ -55,7 +56,7 @@ const USAGE: &str = "usage: admin fingerprint\n       admin actions [--json]\n  
                      admin reach [private | any]\n       \
                      admin token add NAME --scope SCOPE... [--days N]\n       \
                      admin token list\n       admin token remove NAME\n       \
-                     admin put-back ID";
+                     admin put-back ID\n       admin export DIR";
 
 /// The most of the issue file that is read, as consoled reads it: it holds
 /// two short lines.
@@ -85,6 +86,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("show") => show_action(args),
         Some("reach") => reach(args),
         Some("token") => token(args),
+        Some("export") => admin_export::main(args),
         Some("put-back") => admin_put_back::main(args),
         // A lab build's long command, for the lab's long action.
         #[cfg(feature = "lab")]

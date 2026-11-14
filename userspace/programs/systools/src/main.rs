@@ -77,6 +77,7 @@
 
 mod account;
 mod admin;
+mod admin_export;
 #[cfg(feature = "lab")]
 mod admin_lab;
 mod admin_put_back;

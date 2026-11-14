@@ -25,6 +25,8 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin put-back* _id_
 
+*admin export* _dir_
+
 # DESCRIPTION
 
 *admin* is the command that goes with the web console, Dukovo Admin
@@ -32,7 +34,8 @@ admin - the web console from a terminal: its address, its actions and its API to
 and which certificate it serves, lists what the console's API does, shows
 what an action runs in the forms a person copies, says or sets whom the
 console answers, makes, lists and removes the API tokens of the person who
-types it, and, as root, puts a change back.
+types it, keeps the machine's settings in a Git repository of that
+person's, and, as root, puts a change back.
 
 An _action_ is one read or change that the console and its API offer, such
 as *service.restart*. Each has an _id_ of its area and a verb. The
@@ -234,6 +237,41 @@ remove another's.
 	change 41 is put back: 1 file
 	```
 
+*export* _dir_
+	Copies the settings files that the console watches, the files under
+	_/system/settings_, into _dir_, a Git repository, so that a person
+	keeps the machine's settings history in their own Git (ADR 0516). Each
+	file is put at the path it has on the machine, under
+	_system/settings_ in _dir_. A _dir_ that is not there is made, and a
+	new one or an empty one gets *git init*; a folder that has other files
+	and is not a repository is refused, and nothing is written in it. A
+	repository that has other files of the person's is changed in
+	_system/settings_ and _SECRETS.md_ alone.
+
+	Each export is one commit, "Settings of _name_ at _time_", with the
+	machine's name and the time in UTC. It replaces what the last export
+	put in _system/settings_, so a file that was removed from the machine
+	is removed from the repository, and an export that changes nothing makes
+	no commit and says so. The commit's author and committer are the
+	machine's: the name "Dukovo on" _name_ and the address
+	settings@_name_.invalid, which is no one's, whatever the person's own
+	Git settings say. The person's hooks and signing do not apply to it.
+
+	It runs as the person who types it, with their rights, and needs no
+	elevate. A file that not everyone may read is a secret: it is left out
+	by name, whatever the person's own rights, so that what everyone may
+	not read is not in a repository that goes elsewhere. A file or folder
+	that the person cannot read is left out too. _SECRETS.md_ in the
+	repository lists every such path, as it is on the machine, and says
+	why; the contents are never in the repository. It needs *git*.
+
+	```
+	$ admin export ~/duke-nas-settings
+	37 files copied to /home/alice/duke-nas-settings
+	2 secrets left out, since not everyone may read them: listed in SECRETS.md
+	committed 3f2a1bc: Settings of duke-nas at 2026-11-14 08:00:00 UTC
+	```
+
 There is no *admin run*. The command that an action runs is the command
 *show* prints, and a person runs it as it is, with *elevate*(8) where it
 says so. A second way to run an action would be a second interface to
@@ -265,8 +303,9 @@ _/system/state/admind/store.db_
 includes a mistake in the command line, a refusal of *authd*(8), the
 console not running for *fingerprint*, for *reach* a change that was not
 made by root, a settings file that is not right and a Spark that did not
-take the reload, and a change that cannot be put back or a store that
-cannot be opened for *put-back*.
+take the reload, a change that cannot be put back or a store that cannot
+be opened for *put-back*, and a folder that *export* will not write in or
+a *git* that does not run.
 
 # EXAMPLES
 
@@ -317,6 +356,14 @@ the console's "What changed" page shows as change 41:
 $ elevate admin put-back 41
 ```
 
+Keep the machine's settings in a Git repository of your own, and again
+after the next change:
+
+```
+$ admin export ~/duke-nas-settings
+$ git -C ~/duke-nas-settings log --oneline
+```
+
 Remove the token when the script no longer runs:
 
 ```
@@ -327,4 +374,4 @@ The API token monitor is removed.
 # SEE ALSO
 
 *admind*(8), *admin.toml*(5), *authd*(8), *dukovo-admin*(7), *elevate*(8),
-*service*(8), *cert*(8), *passwd*(1)
+*service*(8), *cert*(8), *passwd*(1), *git*(1)

@@ -479,3 +479,38 @@ fn a_kept_text_that_no_longer_matches_its_hash_is_not_written() {
     let why = restore_plan(&machine.store, &change_of(vec![file])).unwrap_err();
     assert!(why.contains("not kept any more"), "{why}");
 }
+
+#[test]
+fn the_settings_files_are_the_regular_files_without_a_dot_and_the_folders_not_opened_are_told() {
+    let machine = Machine::new("settings-files");
+    let settings = machine.folder.0.join("settings");
+    put(&machine.path("admin.toml"), "a = 1\n", 1);
+    put(&machine.path("spark/services/web.toml"), "b = 2\n", 1);
+    put(&machine.path(".editing.toml"), "half", 1);
+    let found = settings_files(&settings);
+    let names: Vec<&str> = found
+        .files
+        .iter()
+        .map(|path| path.strip_prefix(settings.to_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(names, ["/admin.toml", "/spark/services/web.toml"]);
+    assert!(found.closed.is_empty());
+
+    // A folder that is not there is the one that was not opened.
+    let gone = settings_files(&machine.folder.0.join("none"));
+    assert!(gone.files.is_empty());
+    assert_eq!(gone.closed, [machine.folder.0.join("none").to_string_lossy().into_owned()]);
+}
+
+#[test]
+fn a_secret_and_a_file_not_everyone_may_read_are_hidden() {
+    let machine = Machine::new("is-hidden");
+    let open = machine.path("open.toml");
+    let closed = machine.path("closed.toml");
+    put(&open, "x", 1);
+    put(&closed, "y", 1);
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o640)).unwrap();
+    assert!(!is_hidden(&open, &fs::metadata(&open).unwrap()));
+    assert!(is_hidden(&closed, &fs::metadata(&closed).unwrap()));
+    assert!(is_hidden(&format!("{SECRETS}/web/key"), &fs::metadata(&open).unwrap()));
+}
