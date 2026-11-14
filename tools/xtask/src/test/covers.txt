@@ -20,6 +20,10 @@ accounts userspace/defaults/group userspace/defaults/passwd userspace/posix/acco
 accounts userspace/posix/authd.h userspace/programs/accounts/
 accounts userspace/programs/systools/src/account.rs userspace/programs/systools/src/authd.rs
 accounts userspace/programs/systools/src/authd/
+admin-commands userspace/programs/systools/src/systemctl.rs userspace/programs/systools/src/journalctl.rs
+admin-commands userspace/programs/systools/src/hostnamectl.rs userspace/programs/systools/src/sendmail.rs
+admin-commands userspace/programs/systools/src/mail.rs userspace/programs/systools/src/log.rs
+admin-commands userspace/programs/systools/src/service.rs userspace/programs/systools/src/servicefiles.rs
 acpi-power kernel/lib/acpi/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-power userspace/programs/systools/src/power.rs
 acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
@@ -55,6 +59,14 @@ bios-cdrom kernel/lib/bootinfo/ tools/xtask/src/grub.rs
 bios-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/
 bios-usb kernel/drivers/xhci/ kernel/hal/ kernel/lib/acpi/ kernel/lib/bootinfo/
 bios-usb tools/xtask/src/grub.rs
+bisect image/grub/installed.cfg.in image/grub/menu.cfg tools/xtask/src/bundles.rs
+bisect tools/xtask/src/release.rs userspace/programs/slots/ userspace/programs/spark-api/
+bisect userspace/defaults/spark/services/sysupdate.toml userspace/spark/src/views.rs
+bisect userspace/programs/system-release/ userspace/programs/systools/src/bundled.rs
+bisect userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+bisect userspace/programs/systools/src/changes.rs userspace/programs/systools/src/sign_in_notices.rs
+bisect userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+bisect userspace/spark/src/supervisor/starting.rs
 bitlocker kernel/fs/bitlocker/ userspace/programs/systools/src/nvme.rs
 bitlocker userspace/programs/systools/src/unlock.rs userspace/programs/systools/src/volumed.rs
 braille kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/usb/ kernel/radix/src/fs/sysfs/usb.rs ports/brltty/
@@ -158,6 +170,11 @@ crash-dump userspace/programs/systools/src/login.rs userspace/programs/systools/
 crash-dump userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/signin.rs
 crash-log-bios kernel/lib/klog/
 crash-log-uefi kernel/lib/klog/
+crontab userspace/programs/systools/src/crontab.rs userspace/programs/systools/src/at.rs
+crontab userspace/programs/systools/src/at/ userspace/programs/systools/src/timerd.rs
+crontab userspace/programs/systools/src/timerd/ userspace/programs/systools/src/jobs.rs
+crontab userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+crontab userspace/defaults/spark/services/timerd.toml
 dhcp kernel/net/ userspace/posix/dhcp.c userspace/programs/systools/src/dhcp.rs
 dhcp userspace/programs/systools/src/dhcp6.rs userspace/programs/systools/src/ip.rs
 dhcp userspace/programs/systools/src/netd.rs userspace/spark/tests/services/dhcp/
@@ -182,6 +199,8 @@ disk-raw kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/fs/block/ kernel/fs/fa
 disk-raw userspace/programs/systools/src/nvme.rs userspace/storage/
 disk-raw-4k kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/src/nvme.rs
 disk-raw-4k userspace/storage/
+disk-readers kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/
+disk-readers kernel/radix/src/fs/disk/queue.rs userspace/posix/diskread.c
 efi-boot-entries kernel/arch/ kernel/lib/bootinfo/ userspace/programs/systools/src/efiboot.rs
 elevate userspace/posix/authd.h userspace/posix/signintest.c userspace/programs/accounts/
 elevate userspace/programs/consoled/ userspace/programs/systools/src/authd.rs
@@ -230,6 +249,9 @@ hardware-check userspace/programs/systools/src/priority.rs userspace/programs/sy
 hardware-check userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/elevate.rs
 hardware-check userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
 hardware-check abi/block.ridl kernel/fs/block/ kernel/radix/src/fs/disk/ahci.rs kernel/radix/src/fs/disk/mod.rs
+held-sockets userspace/posix/listenfd.c userspace/posix/connectloop.c userspace/spark/
+held-sockets userspace/spark/tests/services/sockets/ userspace/programs/manifest/
+held-sockets userspace/programs/systools/src/service.rs userspace/programs/systools/src/servicefiles.rs
 hyperv kernel/drivers/hyperv/ kernel/radix/src/hyperv.rs kernel/arch/x86_64/src/hyperv.rs
 hyperv kernel/arch/x86_64/src/time.rs kernel/radix/src/fs/disk/storvsc.rs
 hyperv kernel/drivers/mana/ kernel/radix/src/vpci.rs
@@ -310,6 +332,10 @@ installed-uefi image/grub/menu.cfg userspace/programs/slots/ image/grub/rescue.c
 interfaces kernel/drivers/virtio/ kernel/net/ userspace/posix/interfaces.c
 interfaces userspace/programs/systools/src/ip.rs userspace/programs/systools/src/netd.rs
 interfaces userspace/programs/systools/src/ss.rs
+io-weight kernel/fs/block/ kernel/radix/src/domains.rs kernel/radix/src/fs/disk/
+io-weight userspace/posix/diskread.c userspace/programs/manifest/src/service.rs
+io-weight userspace/programs/systools/src/service.rs userspace/spark/src/supervisor.rs
+io-weight userspace/spark/tests/services/io-weight/
 iommu kernel/drivers/nvme/ kernel/drivers/vtd/ kernel/fs/block/ kernel/lib/iopt/
 iommu userspace/programs/systools/src/nvme.rs userspace/storage/
 iommu-amd kernel/drivers/amdvi/ kernel/drivers/nvme/ kernel/fs/block/ kernel/lib/iopt/
@@ -321,6 +347,10 @@ kerberos userspace/programs/systools/src/authd/ userspace/programs/systools/src/
 kerberos userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/netd.rs
 keyring userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
 keyring userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/unlock.rs
+limits kernel/mm/ kernel/radix/src/domains.rs kernel/radix/src/user/posix/limits.rs
+limits userspace/posix/forkbomb.c userspace/posix/hog.c userspace/programs/manifest/src/service.rs
+limits userspace/programs/systools/src/service.rs userspace/spark/src/supervisor.rs
+limits userspace/spark/tests/services/limits/
 live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-bios userspace/programs/systools/src/releases.rs
 live-dvd image/grub/live.cfg.in kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/fs/iso9660/
@@ -335,6 +365,9 @@ log-forward userspace/posix/logforwardtest.c userspace/programs/systools/src/log
 log-forward userspace/programs/systools/src/logforward.rs userspace/programs/systools/src/logforward/
 log-forward userspace/programs/systools/src/logger.rs userspace/programs/systools/src/netd.rs
 log-forward userspace/programs/systools/src/tls.rs userspace/spark/tests/services/forward/
+log-turnover userspace/programs/systools/src/logturn.rs userspace/defaults/spark/services/logturn.toml
+log-turnover userspace/spark/tests/services/log-turnover/ userspace/programs/manifest/
+log-turnover userspace/programs/systools/src/timerd/state.rs
 logging kernel/lib/klog/ userspace/defaults/log/ userspace/posix/logtest.c
 logging userspace/programs/systools/src/dmesg.rs userspace/programs/systools/src/log.rs
 logging userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
@@ -435,9 +468,9 @@ nfsd userspace/programs/systools/src/signals.rs
 nginx ports/curl/ ports/nginx/ ports/openssl/ tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs
 nginx tools/xtask/src/ports.rs userspace/programs/dkv/ userspace/programs/manifest/
 nginx userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
-nginx userspace/programs/systools/src/authd.rs
 nginx userspace/defaults/spark/services/certd.toml userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/
 nginx userspace/programs/systools/src/certd.rs userspace/spark/src/certificates.rs userspace/spark/src/supervisor/certd.rs
+nginx userspace/programs/systools/src/authd.rs userspace/posix/connectloop.c
 ntfs kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
 ntfs userspace/programs/systools/src/nvme.rs userspace/storage/
 ntfs-power-cut kernel/fs/block/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
@@ -447,6 +480,9 @@ ntfs-resize tools/xtask/src/grub_theme.rs userspace/programs/disk/ userspace/pro
 ntfs-resize userspace/programs/systools/src/mount.rs userspace/programs/systools/src/ntfs.rs
 ntfs-write kernel/fs/block/ kernel/fs/fat/ kernel/fs/ntfs/ userspace/programs/systools/src/ntfs.rs
 ntfs-write userspace/storage/
+offered-sockets userspace/posix/listenfd.c userspace/spark/ userspace/programs/manifest/
+offered-sockets userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
+offered-sockets userspace/programs/systools/src/authd.rs tools/xtask/src/bundles.rs
 oom kernel/mm/
 optical kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/
 optical kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/usb.rs
@@ -615,7 +651,7 @@ sockets kernel/net/ userspace/sockets/
 spark userspace/hello/
 spark-network userspace/posix/netgrant.c userspace/spark/tests/services/network/
 spark-oom kernel/mm/ userspace/posix/hog.c userspace/spark/tests/services/hog.toml
-spark-stop userspace/spark/tests/services/stop/
+spark-stop userspace/spark/tests/services/stop/ userspace/spark/src/supervisor.rs userspace/spark/src/supervisor/watch.rs userspace/programs/systools/src/service.rs
 sqlite kernel/fs/block/ kernel/fs/btrfs/ ports/sqlite/ userspace/programs/sqlite-test/
 ssh kernel/net/ ports/openssh/ userspace/posix/sshtest.c
 ssh-keyring ports/openssh/ userspace/programs/systools/src/authd.rs
@@ -653,11 +689,19 @@ storage-uas kernel/fs/block/ userspace/storage/
 storage-usb kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/usbhc/ kernel/drivers/xhci/
 storage-usb kernel/fs/block/ userspace/storage/
 swap kernel/mm/ userspace/posix/swaptest.c userspace/programs/systools/src/swap.rs
+timers userspace/programs/systools/src/timerd.rs userspace/programs/systools/src/timerd/
+timers userspace/spark/tests/services/timers/ userspace/programs/manifest/
+timers userspace/defaults/spark/services/timerd.toml userspace/programs/systools/src/service.rs
+timers userspace/spark/src/ userspace/programs/systools/src/servicefiles.rs
 tlb kernel/arch/ kernel/mm/
 tls kernel/net/ ports/ca-certificates/ userspace/programs/tls-test/
 troubleshoot userspace/defaults/spark/services/sysupdate.toml userspace/programs/systools/src/changes.rs
 troubleshoot userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/troubleshoot.rs
 troubleshoot userspace/programs/systools/src/troubleshoot/ userspace/troubleshoot/
+tune kernel/radix/src/settings.rs kernel/radix/src/user/settings.rs
+tune userspace/defaults/spark/services/tune.toml userspace/programs/manifest/src/service.rs
+tune userspace/programs/systools/src/sign_in_notices.rs userspace/programs/systools/src/tune.rs
+tune userspace/spark/src/supervisor.rs userspace/tune/
 uefi-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
 uefi-cdrom kernel/lib/bootinfo/ kernel/lib/uacpi/ tools/xtask/src/grub.rs
 uefi-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/

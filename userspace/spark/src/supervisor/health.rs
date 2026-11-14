@@ -32,7 +32,7 @@ use radix_rt::SYS;
 use radix_rt::fs::File;
 
 use super::watch::say;
-use super::{LINE_MAX, SECOND, STOP_WAIT, State, Supervisor, ending, now};
+use super::{LINE_MAX, SECOND, State, Supervisor, ending, now};
 
 /// How often a service that is ready once healthy is checked while it
 /// starts.
@@ -166,7 +166,7 @@ impl Supervisor {
     /// stopped at `until`.
     fn start_check(&mut self, index: usize, command: &[String], until: u64) {
         let Some((program, arguments)) = command.split_first() else { return };
-        match self.spawn_as(index, program, arguments) {
+        match self.spawn_as(index, program, arguments, false) {
             Ok((pid, output)) => {
                 let checks = &mut self.services[index].checks;
                 checks.next = 0;
@@ -260,9 +260,8 @@ impl Supervisor {
         let why =
             format!("it failed its health check {} times in a row ({words})", checks.failures);
         service.set_why(Some(why), None);
-        service.stop_by.get_or_insert(time + STOP_WAIT);
         // Its end comes through `ended`, and `schedule` starts it again as
         // its file says.
-        let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
+        service.ask_to_stop(pid);
     }
 }

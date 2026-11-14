@@ -21,6 +21,11 @@ title = "Updates"
 about = "Updates staged in the spare slot, tried, proved and rolled back, the boot menu and fallbacks that keep a machine starting, and the snapshots files come back from"
 
 [[category]]
+name = "startup"
+title = "Startup trouble"
+about = "A start that fails its health check, and finding the change that broke it"
+
+[[category]]
 name = "hardware"
 title = "Hardware and drivers"
 about = "The devices found and working: controllers, disks, USB, CPUs and memory"
@@ -64,6 +69,11 @@ about = "The machine's history and its Prometheus endpoint, read by the lab PC's
 name = "reports"
 title = "Problem reports"
 about = "A crash on the machine reported to a staging reports server on the lab PC, its status changed there and read back, and the one-time download of a report for a phone"
+
+[[category]]
+name = "system"
+title = "System tuning"
+about = "The kernel's settings and the performance profiles that set them"
 
 [[category]]
 name = "time"

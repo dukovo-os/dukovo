@@ -9,7 +9,9 @@
 //! and slot, the kernel, the firmware set and its microcode, the boot
 //! options, the network cards and the root's partitions, and the apps
 //! installed for everyone, each with when it was installed where that is
-//! known. changes(1) compares two records. Each also keeps how long the
+//! known. A try of `changes bisect` (ADR 0475) is recorded as any start,
+//! with its number, and is never taken as the last good start. changes(1)
+//! compares two records. Each also keeps how long the
 //! start took, step by step and service by service ([`Times`], ADR 0474),
 //! for startup(8). The records are kept in the state,
 //! `/system/state/starts/<number>.json`, the last [`KEEP`] of them.
@@ -111,6 +113,15 @@ pub struct Start {
     /// What failed, in words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The essential service that failed it, or `check NAME` for a
+    /// required check of health.toml(5), where one did: with the error
+    /// ID, what tells two failures apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failing: Option<String>,
+    /// The number of the try of `changes bisect` this start was, which
+    /// the boot menu started in place of the usual start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<u8>,
     /// What it ran.
     pub items: Vec<Item>,
     /// How long it took, once the health check has seen it through and
@@ -352,7 +363,8 @@ fn write_unlocked(dir: &Path, start: &Start) -> std::io::Result<()> {
 }
 
 /// Begins the record of this start, unfinished, as of `now`, in `dir`:
-/// the next number, the slot it started and what it runs.
+/// the next number, the slot it started, the try of `changes bisect` it
+/// is, if one, and what it runs.
 ///
 /// # Errors
 ///
@@ -361,6 +373,7 @@ pub fn begin_in(
     dir: &Path,
     live: &Path,
     slot: &str,
+    trial: Option<u8>,
     items: Vec<Item>,
     now: i64,
 ) -> std::io::Result<Start> {
@@ -377,6 +390,8 @@ pub fn begin_in(
             outcome: Outcome::Unfinished,
             error: None,
             why: None,
+            failing: None,
+            trial,
             items,
             times: None,
         };
@@ -440,7 +455,8 @@ pub fn error_id(why: &str) -> Option<String> {
     is_error_id(id).then(|| id.to_string())
 }
 
-/// Finishes `start` with `outcome`, and why it failed, in `dir`.
+/// Finishes `start` with `outcome`, and why it failed and by which
+/// service or check, in `dir`, as the health check does.
 ///
 /// # Errors
 ///
@@ -450,6 +466,7 @@ pub fn finish_in(
     mut start: Start,
     outcome: Outcome,
     why: Option<&str>,
+    failing: Option<&str>,
     times: Option<Times>,
 ) -> std::io::Result<Start> {
     locked(dir, || {
@@ -463,9 +480,7 @@ pub fn finish_in(
         start.times = times
             .or(start.times.take())
             .map(|times| Times { sign_in_ms: times.sign_in_ms.or(signed_in), ..times });
-        start.outcome = outcome;
-        start.error = why.and_then(error_id);
-        start.why = why.map(str::to_string);
+        let start = finished(start, outcome, why, failing);
         write_unlocked(dir, &start)?;
         Ok(start)
     })
@@ -513,10 +528,29 @@ pub fn note_sign_in(ms: u64) -> std::io::Result<()> {
     note_sign_in_in(Path::new(DIR), Path::new(LIVE), ms)
 }
 
-/// The last good start of `starts` before start `before`.
+/// `start` finished with `outcome`, and why it failed and by which
+/// service or check, not yet kept.
+#[must_use]
+pub fn finished(
+    mut start: Start,
+    outcome: Outcome,
+    why: Option<&str>,
+    failing: Option<&str>,
+) -> Start {
+    start.outcome = outcome;
+    start.error = why.and_then(error_id);
+    start.why = why.map(str::to_string);
+    start.failing = failing.map(str::to_string);
+    start
+}
+
+/// The last good start of `starts` before start `before`. A try of
+/// `changes bisect` is none: it ran with some changes left out.
 #[must_use]
 pub fn last_good(starts: &[Start], before: u64) -> Option<&Start> {
-    starts.iter().rev().find(|start| start.number < before && start.outcome == Outcome::Good)
+    starts.iter().rev().find(|start| {
+        start.number < before && start.outcome == Outcome::Good && start.trial.is_none()
+    })
 }
 
 /// One difference between two starts.
@@ -604,17 +638,25 @@ mod tests {
         };
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(REACHED), "services\n").unwrap();
-        let first = begin_in(&dir, &dir.join("live"), "a", items("2026.1.1", true), 1000).unwrap();
+        let first =
+            begin_in(&dir, &dir.join("live"), "a", None, items("2026.1.1", true), 1000).unwrap();
         assert!(!dir.join(REACHED).exists(), "the health check's record removes Spark's mark");
         assert_eq!((first.number, first.outcome), (1, Outcome::Unfinished));
-        finish_in(&dir, first, Outcome::Good, None, None).unwrap();
+        finish_in(&dir, first, Outcome::Good, None, None, None).unwrap();
         let second =
-            begin_in(&dir, &dir.join("live"), "b", items("2026.2.1", false), 2000).unwrap();
+            begin_in(&dir, &dir.join("live"), "b", None, items("2026.2.1", false), 2000).unwrap();
         let why = "the CPU microcode of firmware 2026.2.1 has data that failed its checks (FW-101)";
-        let second = finish_in(&dir, second, Outcome::Failed, Some(why), None).unwrap();
+        let second = finish_in(&dir, second, Outcome::Failed, Some(why), None, None).unwrap();
         assert_eq!(second.error.as_deref(), Some("FW-101"));
+        // A good try of changes bisect is no last good start.
+        let tried =
+            begin_in(&dir, &dir.join("live"), "a", Some(1), items("2026.1.1", true), 2500).unwrap();
+        let tried = finish_in(&dir, tried, Outcome::Good, None, None, None).unwrap();
+        assert_eq!(tried.trial, Some(1));
         let starts = all_in(&dir);
-        assert_eq!(starts.len(), 2);
+        assert_eq!(starts.len(), 3);
+        assert_eq!(starts[2].trial, Some(1), "the try's number is kept");
+        assert_eq!(last_good(&starts, tried.number + 1).unwrap().number, 1);
         let good = last_good(&starts, second.number).unwrap();
         assert_eq!(good.number, 1);
         let found = changes(&starts, good, &second);
@@ -628,10 +670,15 @@ mod tests {
         // Only the last KEEP are kept.
         let mut last = second;
         for _ in 0..KEEP {
-            last = begin_in(&dir, &dir.join("live"), "b", Vec::new(), 3000).unwrap();
+            last = begin_in(&dir, &dir.join("live"), "b", None, Vec::new(), 3000).unwrap();
         }
         let kept = all_in(&dir);
         assert_eq!((kept.len() as u64, kept[0].number), (KEEP, last.number + 1 - KEEP));
+        // A record from before the fields of a failure and a try reads.
+        let old = r#"{"number":7,"started":1,"slot":"a","stage":"services","outcome":"failed",
+            "error":"BOOT-102","items":[]}"#;
+        let old: Start = serde_json::from_str(old).unwrap();
+        assert_eq!((old.failing, old.trial), (None, None));
         assert_eq!(error_id("no ID here"), None);
         assert_eq!(error_id("it is missing (BOOT-101)").as_deref(), Some("BOOT-101"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -764,8 +811,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sign-in-{}", std::process::id()));
         let live = dir.join("live");
         let _ = std::fs::remove_dir_all(&dir);
-        let earlier = begin_in(&dir, &live, "a", Vec::new(), 1000).unwrap();
-        finish_in(&dir, earlier, Outcome::Good, None, None).unwrap();
+        let earlier = begin_in(&dir, &live, "a", None, Vec::new(), 1000).unwrap();
+        finish_in(&dir, earlier, Outcome::Good, None, None, None).unwrap();
         // A new boot: its notes are gone, and its record not begun yet.
         std::fs::remove_dir_all(&live).unwrap();
         // A sign-in before the health check begins this start's record
@@ -773,14 +820,14 @@ mod tests {
         note_sign_in_in(&dir, &live, 12_000).unwrap();
         assert_eq!(all_in(&dir)[0].times, None);
         assert_eq!(signed_in_in(&live), Some(12_000));
-        let this = begin_in(&dir, &live, "a", Vec::new(), 2000).unwrap();
+        let this = begin_in(&dir, &live, "a", None, Vec::new(), 2000).unwrap();
         assert_eq!(this_start_in(&live), Some(this.number));
         // Only the first sign-in counts.
         note_sign_in_in(&dir, &live, 20_000).unwrap();
         assert_eq!(signed_in_in(&live), Some(12_000));
         // The health check takes the waiting time as it finishes.
         let times = Times { settled_ms: 7000, sign_in_ms: signed_in_in(&live), ..Times::default() };
-        let done = finish_in(&dir, this, Outcome::Good, None, Some(times)).unwrap();
+        let done = finish_in(&dir, this, Outcome::Good, None, None, Some(times)).unwrap();
         let kept = done.times.unwrap();
         assert_eq!((kept.settled_ms, kept.sign_in_ms), (7000, Some(12_000)));
         assert_eq!(all_in(&dir)[1].times, Some(kept));
@@ -788,18 +835,18 @@ mod tests {
         // A sign-in after the record began is noted in it, and the health
         // check finishing the record afterwards keeps it.
         std::fs::remove_dir_all(&live).unwrap();
-        let next = begin_in(&dir, &live, "a", Vec::new(), 3000).unwrap();
+        let next = begin_in(&dir, &live, "a", None, Vec::new(), 3000).unwrap();
         note_sign_in_in(&dir, &live, 15_000).unwrap();
         assert_eq!(all_in(&dir)[2].times.as_ref().and_then(|t| t.sign_in_ms), Some(15_000));
         let times = Times { settled_ms: 6000, ..Times::default() };
-        let done = finish_in(&dir, next, Outcome::Good, None, Some(times)).unwrap();
+        let done = finish_in(&dir, next, Outcome::Good, None, None, Some(times)).unwrap();
         assert_eq!(done.times.and_then(|t| t.sign_in_ms), Some(15_000));
 
         // And one after the record was finished.
         std::fs::remove_dir_all(&live).unwrap();
-        let last = begin_in(&dir, &live, "a", Vec::new(), 4000).unwrap();
+        let last = begin_in(&dir, &live, "a", None, Vec::new(), 4000).unwrap();
         let times = Times { settled_ms: 5000, ..Times::default() };
-        finish_in(&dir, last, Outcome::Good, None, Some(times)).unwrap();
+        finish_in(&dir, last, Outcome::Good, None, None, Some(times)).unwrap();
         note_sign_in_in(&dir, &live, 30_000).unwrap();
         let kept = all_in(&dir)[3].times.clone().unwrap();
         assert_eq!((kept.settled_ms, kept.sign_in_ms), (5000, Some(30_000)));

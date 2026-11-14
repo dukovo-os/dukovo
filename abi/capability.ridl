@@ -70,6 +70,8 @@ enum ObjectKind: u8 {
     device = 22;
     /// The firewall's rules (radix-firewall(2)).
     firewall = 23;
+    /// The kernel's settings (radix-kernel-settings(2)).
+    kernel_settings = 24;
 }
 
 /// What a capability lets its holder do.

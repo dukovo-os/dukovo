@@ -394,9 +394,10 @@ pub fn retired(text: &str) -> Vec<u32> {
     text.lines().filter_map(|line| line.split(':').next()?.parse().ok()).collect()
 }
 
-/// The line of [`RETIRED`] for `user`, removed on `day`.
-pub fn retired_line(user: &User, day: &str) -> String {
-    format!("{}:{}:{day}\n", user.uid, user.name)
+/// The line of [`RETIRED`] for the number `number`, of the account or
+/// group `name`, removed on `day`.
+pub fn retired_line(number: u32, name: &str, day: &str) -> String {
+    format!("{number}:{name}:{day}\n")
 }
 
 /// The number a new account gets: the lowest from [`FIRST_USER`] that no
@@ -499,6 +500,66 @@ pub fn add_service(
     Ok(user)
 }
 
+/// What an account made for a bundle's service says in its full name
+/// about whose it is.
+pub fn service_full_name(whose: &str) -> String {
+    format!("A service of {whose}")
+}
+
+/// The end of the name of the group a bundle's service makes for a
+/// socket it offers (ADR 0477): its account's name, then this.
+pub const SOCKET_GROUP_SUFFIX: &str = "-socket";
+
+/// The group of the sockets that `user`'s service offers to others (ADR
+/// 0477), if it is a service's account that has one.
+pub fn socket_group_of<'a>(user: &User, groups: &'a Table<Group>) -> Option<&'a Group> {
+    let socket = format!("{}{SOCKET_GROUP_SUFFIX}", user.name);
+    groups.entries().find(|g| {
+        user.is_service() && g.name == socket && (FIRST_SERVICE..=LAST_SERVICE).contains(&g.gid)
+    })
+}
+
+/// Adds the group `name` of a socket that bundle `whose` offers to
+/// others (ADR 0477) to `groups`: the name of the account of one of its
+/// services, which must be there as a service's account that is
+/// `whose`'s, and [`SOCKET_GROUP_SUFFIX`]. The group has the lowest free
+/// number from [`FIRST_SERVICE`] not `retired`, like a service's own, and
+/// no members. A group of that name that has such a number is the
+/// bundle's already, from an install before, and is kept; one with a
+/// person's number, or a name that is not the bundle's, is refused. Its
+/// number, or why it cannot be made.
+pub fn add_socket_group(
+    users: &Table<User>,
+    groups: &mut Table<Group>,
+    name: &str,
+    whose: &str,
+    retired: &[u32],
+) -> Result<u32, String> {
+    check_name(name)?;
+    let account = name
+        .strip_suffix(SOCKET_GROUP_SUFFIX)
+        .ok_or_else(|| format!("{name} is not a socket's group: its name ends in -socket"))?;
+    let ours = users
+        .entries()
+        .any(|u| u.name == account && u.is_service() && u.full_name == service_full_name(whose));
+    if !ours {
+        return Err(format!("{name} is not a group of a service of {whose}"));
+    }
+    if users.entries().any(|u| u.name == name) {
+        return Err(format!("there is an account {name} already"));
+    }
+    if let Some(group) = groups.entries().find(|g| g.name == name) {
+        if (FIRST_SERVICE..=LAST_SERVICE).contains(&group.gid) && group.members.is_empty() {
+            return Ok(group.gid);
+        }
+        return Err(format!("there is a group {name} already, which is not {whose}'s"));
+    }
+    let number = free_in(FIRST_SERVICE..=LAST_SERVICE, users, groups, retired)
+        .ok_or("every number of a service's account is taken")?;
+    groups.push(Group { name: name.into(), gid: number, members: Vec::new() });
+    Ok(number)
+}
+
 /// Puts `name` in the [`ADMINS`] group, made if there is none, or takes
 /// it out: not as its own group, which only another `gid` changes.
 pub fn set_admin(groups: &mut Table<Group>, name: &str, admin: bool) -> Result<(), String> {
@@ -567,6 +628,10 @@ pub fn remove(
         .ok_or_else(|| format!("there is no account {name}"))?;
     users.retain_entries(|u| u.name != name);
     groups.retain_entries(|g| !(g.name == name && g.gid == user.gid));
+    // A service's socket group goes with it (ADR 0477).
+    if let Some(socket) = socket_group_of(&user, groups).map(|g| g.gid) {
+        groups.retain_entries(|g| g.gid != socket);
+    }
     for group in groups.entries_mut() {
         group.members.retain(|m| m != name);
     }

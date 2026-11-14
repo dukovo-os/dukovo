@@ -117,7 +117,22 @@ seen through until the health check sees it through; until then, the
 menu shows at the next start, for 10 seconds or *boot.timeout* if
 longer, then starts the Dukovo entry by itself. The menu also offers the
 previous version, which starts once without becoming the default, and,
-during a try, the version the update updates. The boot loader keeps the startup
+during a try, the version the update updates.
+
+A try of *changes bisect* (*changes*(1), ADR 0475) is one start of the
+default or the previous version with the boot options it names, which
+the system writes in _boot/grub/trial_ beside the slot state. While no
+update is being tried, the Dukovo entry starts it in place of the usual
+start, with *trial=*_number_, and marks it taken before it starts it, so
+that it starts once: a hang, a panic or a power cut during it leaves the
+next start the usual one. It changes nothing in the slot state but the
+start's mark, as an entry chosen by hand does. While a try waits, the
+entry's title says so, *(changes bisect, try* _N_*)*. A block that is
+torn or unreadable, whose check fails, or whose slot is neither the
+default nor the previous version or has no kernel, is no try, and the
+usual start follows; the block holds at most 400 bytes of options.
+
+The boot loader keeps the startup
 archive in memory for the machine's whole life, as it does any archive,
 so an installed system keeps under a MiB where a USB stick keeps the
 whole system.
@@ -288,7 +303,7 @@ seconds since the kernel started; messages before timer calibration show
 [    0.254500] Time: TSC at 2807.603 MHz (measured against the HPET); APIC timer input 1004.640 MHz; tick 100 Hz
 [    0.383220] Scheduler: EEVDF fair class (3 ms slices) and FIFO and round-robin real-time classes; timer APIC one-shot, idle with HLT; extended state XSAVEOPT on every switch: x87, SSE, AVX, PKRU; 2696-byte areas
 [    0.419834] Lock checker: off (the lockdep flag turns it on)
-[    0.445393] Capabilities: ready; 24 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
+[    0.445393] Capabilities: ready; 25 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
 [    0.469304] User mode: SYSCALL/SYSRET entry, user half 0x10000-0x7ffffffff000; SMEP on, SMAP on (lifted for user copies only)
 [    0.494239] Files: the root is a tmpfs; Spark mounts the rest
 [    0.520196] User: the usertests image is 183 KiB
@@ -636,7 +651,9 @@ them to *init*, and the kernel does not read them.
 *epp*=_preference_
 	Ask the CPUs for this energy preference, by Linux's names:
 	*performance*, *balance_performance*, *balance_power* or *power*.
-	By default the firmware's stays. See *CPU FREQUENCY*.
+	By default the firmware's stays. Once the machine runs, *tune*(8)
+	changes it, and its default profile puts it back to this value. See
+	*CPU FREQUENCY*.
 
 *iommu*=off
 	Leave the IOMMU's DMA remapping off, so that every device reaches
@@ -844,6 +861,15 @@ them to *init*, and the kernel does not read them.
 	tries or failed its health check, so the version before started.
 	Spark puts the settings from before the update back before any
 	service starts (ADR 0454).
+
+*trial*=_number_
+	Read by *spark*(8) and the health check, not the kernel: the boot
+	menu started try _number_ of *changes bisect* (*changes*(1), ADR
+	0475) in place of the usual start, and starts it only once. Spark
+	leaves out the services the try lists, and the health check judges
+	the start as a try, which never counts as the last good start. The
+	menu puts it first on the command line, with the try's slot and the
+	boot options the try names in place of the slot's own.
 
 *test-hang*
 	Read by *spark*(8), not the kernel: Spark stops responding at every

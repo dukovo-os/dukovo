@@ -374,6 +374,17 @@ pub fn user_name(uid: u32) -> String {
     .unwrap_or_else(|| uid.to_string())
 }
 
+/// User `uid`'s home folder, as the user database gives it.
+pub fn user_home(uid: u32) -> Option<String> {
+    with_user(uid, |pw| {
+        // SAFETY: getpwuid_r set pw_dir to null or to a C string in the
+        // buffer, which lives until with_user returns.
+        (!pw.pw_dir.is_null())
+            .then(|| unsafe { CStr::from_ptr(pw.pw_dir) }.to_string_lossy().into_owned())
+    })
+    .flatten()
+}
+
 /// User `uid`'s login group, as the user database gives it.
 pub fn login_group(uid: u32) -> Option<u32> {
     with_user(uid, |pw| pw.pw_gid)

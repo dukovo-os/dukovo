@@ -74,6 +74,8 @@ error that starts with the tool's name.
 :  show the alerts, test where they go, and raise them from a script
 |  *balance*(8)
 :  move a Btrfs filesystem's chunks, converting them to another profile
+|  *at*(1), *atq*(1), *atrm*(1), *batch*(1)
+:  run commands once, at a time, and list and remove the jobs
 |  *audiocd*(1)
 :  list, play and rip the music CD in an optical drive
 |  *authd*(8)
@@ -92,6 +94,8 @@ error that starts with the tool's name.
 :  keep the machine's own certificate, and watch those added by hand
 |  *chgrp*(1), *chmod*(1), *chown*(1)
 :  change a file's group, mode or owner
+|  *crontab*(1)
+:  a person's crontab, and whether their jobs run while they are signed out
 |  *column*(1)
 :  put lines in columns, or a table
 |  *df*(1)
@@ -140,6 +144,8 @@ error that starts with the tool's name.
 :  a file's bytes, in hexadecimal or other formats
 |  *host*(1)
 :  look a name or an address up in the DNS
+|  *hostnamectl*(1)
+:  the machine's name and what it runs on, and set the name
 |  *hwinfo*(8)
 :  what the machine is, as its firmware's SMBIOS tables say
 |  *ionice*(1)
@@ -168,6 +174,8 @@ error that starts with the tool's name.
 :  write a line to the system's log
 |  *login*(1)
 :  sign in at a console
+|  *logturn*(8)
+:  turn over the log files services write themselves
 |  *logtrim*(8)
 :  trim the system's log
 |  *lsblk*(8)
@@ -246,14 +254,20 @@ error that starts with the tool's name.
 :  the TCP and UDP sockets
 |  *scrub*(8)
 :  read and check every block of a Btrfs filesystem
+|  *sendmail*(8)
+:  send a message through the mail account alerts.toml names
 |  *subvolume*(8)
 :  make, snapshot and remove Btrfs subvolumes
 |  *sudo*(8)
 :  *elevate*(8) by sudo's name
 |  *swapon*(8), *swapoff*(8)
 :  turn swap areas on and off, and list them
+|  *systemctl*(1)
+:  *service*(8) by systemctl's verbs
 |  *taskset*(1)
 :  the CPUs a process may run on
+|  *timerd*(8)
+:  start services at their times, and run people's jobs
 |  *timed*(8)
 :  keep the clock right from the network
 |  *timedatectl*(1)

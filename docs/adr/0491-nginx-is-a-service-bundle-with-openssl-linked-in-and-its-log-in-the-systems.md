@@ -81,6 +81,15 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   which the person allows at a console's trusted prompt the first time,
   and elevate gives the command a terminal of its own, which is no
   console's.
+- **Spark holds its ports** (ADR 0477). The bundle names two sockets,
+  port 80 on `0.0.0.0` and on `::`, and `nginx-service` sets `NGINX` from
+  `LISTEN_FDS` (`3;4;`), so nginx reuses them as it does across its own
+  binary upgrade. A restart or an update leaves the ports open and the
+  connections wait for the new nginx; none is refused. It stops with
+  `SIGQUIT` and up to 30 seconds (`stop`, ADR 0477), so the requests in
+  flight finish. An administrator who turns on HTTPS adds port 443 to
+  nginx's service file, and the wrapper logs a warning, with that fix,
+  when a `listen` line names an address and port no socket has.
 - **Its log is the system's.** nginx writes its errors to its standard
   error output (`error_log stderr`), and, with a patch, its access log
   too (`access_log stderr`), so `log nginx` reads both and logtrim(8)
@@ -91,9 +100,12 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   PHP is set up (ADR 0520), `index.php`. Until then its settings answer
   every `.php` URL with 404, so a PHP page's code is never sent as text.
   Its HTTPS server is in the settings, turned off, with the commands
-  that make a certificate with openssl until certd gives them. Each
-  worker raises its open files to 4096, the hard limit, as Spark does
-  not set a service's `open_files` yet.
+  that make a certificate with openssl until certd gives them. The
+  service's limits set each worker's open files limit to 65536
+  (`open_files`, which Spark sets as ADR 0476 says; until then each
+  worker raised its own to the hard limit, 4096), of which a process
+  holds up to 4,032 while a capability space has room for no more, well
+  above its 1024 connections.
 
 ## Consequences
 
@@ -106,7 +118,9 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   leaves it serving and logs the wrong line, a restart, HTTPS with a
   certificate of its own, three reloads during 300 requests that lose
   none, its log, the account that owns its files, and requests logged to
-  a file of its data folder's `logs` folder instead. The lab test `services/nginx`
+  a file of its data folder's `logs` folder instead, and three restarts
+  and an update during 300 requests of `connectloop` that refuse none.
+  The lab test `services/nginx`
   serves the lab PC over the machine's own card, with five reloads
   during 20 seconds of requests 16 at a time; `./ob lab` packs the
   catalog's bundles for it.
@@ -118,7 +132,6 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   - The catalog's commands through elevate, `nginx -t` among them.
   - The services a site needs started first, and readiness, once
     manifests have dependency lines.
-  - Spark setting `open_files`.
   - Log files of a service's own, turned over.
   - nginx on an event queue, with sendfile and thread pools.
   - HTTP/3.

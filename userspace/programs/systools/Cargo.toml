@@ -152,6 +152,11 @@ qrcodegen = "1.8.0"
 # logd(8)'s records and requests, as lines of JSON (ADR 0210).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
+# logturn(8) compresses the log files it has turned over.
+zstd = { version = "0.13.4", default-features = false }
+# timerd(8)'s and crontab(1)'s times in a time zone: the tzdata files
+# (TZif) and their footers' rules, read as the backups' times are.
+jiff = { version = "0.2.43", default-features = false, features = ["std"] }
 # The network stack's DHCP messages (0BSD), which netd(8) reads and
 # writes with it (ADR 0191); the socket feature only for the crate to
 # build.

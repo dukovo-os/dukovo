@@ -60,6 +60,9 @@
 //! (ADR 0488).
 //! `dumps` saves the kernel's crash dump at the boot after a panic, and
 //! lists, shows and deletes the saved ones (ADR 0483).
+//! `tune` chooses a performance profile, a few of the kernel's settings
+//! with a reason each, and its service applies it at each start (ADR
+//! 0476).
 //! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
 //! CDs, DVDs and Blu-ray discs, of data or of audio, and `mkiso` makes a
 //! disc image of a folder (ADR 0449).
@@ -81,6 +84,7 @@ mod admind;
 mod alertd;
 mod alerts;
 mod args;
+mod at;
 mod audiocd;
 mod authd;
 mod backup;
@@ -97,6 +101,7 @@ mod certd;
 mod changes;
 mod cloud;
 mod column;
+mod crontab;
 mod deadline;
 mod device;
 mod df;
@@ -125,9 +130,12 @@ mod git_credential;
 mod guest_agent;
 mod hardware;
 mod hexdump;
+mod hostnamectl;
 mod hwinfo;
 mod iostat;
 mod ip;
+mod jobs;
+mod journalctl;
 mod kerberos;
 mod keymaps;
 mod keyring;
@@ -139,12 +147,14 @@ mod logforward;
 mod logger;
 mod login;
 mod logtrim;
+mod logturn;
 mod lsblk;
 mod lscpu;
 mod lsmem;
 mod lsof;
 mod lspci;
 mod lsusb;
+mod mail;
 mod memory;
 mod metricsd;
 mod mkfs;
@@ -182,6 +192,7 @@ mod rtrace;
 mod script;
 mod scrub;
 mod selftest;
+mod sendmail;
 mod sensors;
 mod serial;
 mod serial_console;
@@ -202,14 +213,17 @@ mod startup;
 mod subvolume;
 mod swap;
 mod sys;
+mod systemctl;
 mod sysupdate;
 mod timed;
 mod timedatectl;
+mod timerd;
 mod tls;
 mod top;
 mod traceroute;
 mod tree;
 mod troubleshoot;
+mod tune;
 mod unlock;
 mod update;
 mod util;
@@ -240,6 +254,9 @@ const TOOLS: &[(&str, Tool)] = &[
     ("admind", admind::main),
     ("alertd", alertd::main),
     ("alerts", alerts::command::main),
+    ("at", at::main),
+    ("atq", at::atq),
+    ("atrm", at::atrm),
     ("audio", sound::main),
     ("audiocd", audiocd::main),
     ("audiod", sound::daemon),
@@ -249,6 +266,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("blkid", blkid::main),
     ("braille", braille::main),
     ("brailled", braille::daemon),
+    ("batch", at::batch),
     ("btrfsck", btrfs::fsck_btrfs),
     ("bundle", bundles::main),
     ("bundled", bundled::main),
@@ -261,6 +279,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("chown", modes::chown),
     ("cloud-setup", cloud::main),
     ("column", column::main),
+    ("crontab", crontab::main),
     ("df", df::main),
     ("device", device::main),
     ("dig", dig::dig),
@@ -295,11 +314,12 @@ const TOOLS: &[(&str, Tool)] = &[
     ("hd", hexdump::hd),
     ("hexdump", hexdump::main),
     ("host", dig::host),
+    ("hostnamectl", hostnamectl::main),
     ("hwinfo", hwinfo::main),
     ("ionice", priority::ionice),
     ("iostat", iostat::main),
     ("ip", ip::main),
-    ("journalctl", log::journalctl),
+    ("journalctl", journalctl::main),
     ("kdestroy", kerberos::kdestroy),
     ("keymap", keymaps::main),
     ("keyring", keyring::main),
@@ -316,6 +336,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("logger", logger::main),
     ("login", login::main),
     ("logtrim", logtrim::main),
+    ("logturn", logturn::main),
     ("lsblk", lsblk::main),
     ("lscpu", lscpu::main),
     ("lsmem", lsmem::main),
@@ -370,6 +391,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("script", script::main),
     ("scrub", scrub::main),
     ("sensors", sensors::main),
+    ("sendmail", sendmail::main),
     ("serial", serial::main),
     ("serial-console", serial_console::main),
     ("service", service::service),
@@ -385,15 +407,18 @@ const TOOLS: &[(&str, Tool)] = &[
     ("swapoff", swap::swapoff),
     ("swapon", swap::swapon),
     ("system-release", releases::main),
+    ("systemctl", systemctl::main),
     ("sysupdate", sysupdate::main),
     ("taskset", priority::taskset),
     ("timed", timed::main),
     ("timedatectl", timedatectl::main),
+    ("timerd", timerd::main),
     ("top", top::main),
     ("traceroute", traceroute::main),
     ("traceroute6", traceroute::main6),
     ("tree", tree::main),
     ("troubleshoot", troubleshoot::main),
+    ("tune", tune::main),
     ("umount", mount::umount),
     ("unlock", unlock::main),
     ("update", update::update),

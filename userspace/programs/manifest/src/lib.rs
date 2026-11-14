@@ -21,6 +21,7 @@ extern crate alloc;
 pub mod bundle;
 pub mod feature;
 pub mod legacy;
+pub mod schedule;
 pub mod service;
 pub mod shares;
 #[cfg(test)]

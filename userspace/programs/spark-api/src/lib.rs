@@ -7,7 +7,8 @@
 //! `show` answer ([`show`]), which service(8), sysupdate's health check,
 //! bundled(8) and the web console read; settings tried with an undo
 //! ([`trial`], ADR 0472); and the record of the root Spark started
-//! ([`root`], ADR 0473). Three modules turn the document into words:
+//! ([`root`], ADR 0473); and the services a try of changes bisect leaves
+//! out ([`bisect`], ADR 0475). Three modules turn the document into words:
 //! [`explain`] says why a service is in its state, for `service NAME
 //! explain` and the console alike, [`dry_run`] says what putting a
 //! service file to use would do, for `service check` and the console, and
@@ -22,6 +23,7 @@
 
 extern crate alloc;
 
+pub mod bisect;
 pub mod dry_run;
 pub mod explain;
 pub mod graph;

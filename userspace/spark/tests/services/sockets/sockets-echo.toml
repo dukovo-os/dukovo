@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The sockets boot test's service (ADR 0477): Spark holds a TCP socket on
+# port 8090 and a Unix socket, and starts listenfd, which answers on both,
+# at the first connection.
+
+service_version = 1
+description = "Answers on a TCP port and a Unix socket, started at the first connection"
+program = "/system/tests/posix/listenfd"
+enabled = false
+restart = "on-failure"
+start = "on-connection"
+
+[permissions]
+network.listen = [8090]
+
+[[sockets]]
+port = 8090
+name = "tcp"
+
+[[sockets]]
+path = "greet"
+name = "unix"

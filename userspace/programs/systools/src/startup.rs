@@ -299,14 +299,17 @@ fn median(mut values: Vec<u64>) -> Option<u64> {
 /// (BOOT-106): more than [`LATER_PERCENT`] percent and [`LATER_MS`]
 /// milliseconds later than the median of the last [`RECENT`] good starts
 /// of `records` before it, which all need to have their times. Says the
-/// step that grew most, and the service that did, if the services did.
+/// step that grew most, and the service that did, if the services did. A
+/// try of changes bisect leaves services out (ADR 0475), so it is neither
+/// told of nor one of the usual starts.
 #[must_use]
 pub fn slow_notice(records: &[Start], this: &Start) -> Option<String> {
-    let now = this.times.as_ref().filter(|times| complete(times))?;
+    let now = this.times.as_ref().filter(|times| this.trial.is_none() && complete(times))?;
     let usual: Vec<&Times> = records
         .iter()
         .rev()
         .filter(|start| start.number < this.number && start.outcome == Outcome::Good)
+        .filter(|start| start.trial.is_none())
         .filter_map(|start| start.times.as_ref().filter(|times| complete(times)))
         .take(RECENT)
         .collect();
@@ -436,6 +439,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                     records.iter().rev().find(|record| {
                         record.number < start.number
                             && record.outcome == Outcome::Good
+                            && record.trial.is_none()
                             && record.times.as_ref().is_some_and(complete)
                     })
                 })
@@ -559,6 +563,8 @@ mod tests {
             outcome,
             error: None,
             why: None,
+            failing: None,
+            trial: None,
             items: vec![Item::new("system", "Dukovo", "0.15.0", None)],
             times,
         }
@@ -752,6 +758,14 @@ mod tests {
         let mut later = records.clone();
         later.push(usual(9, 1000));
         assert!(slow_notice(&later, &this(6, 2000)).is_some());
+        // A try of changes bisect is neither told of nor usual: one that
+        // settled fast in place of a usual start leaves four.
+        let mut tried = this(6, 2000);
+        tried.trial = Some(1);
+        assert_eq!(slow_notice(&records, &tried), None);
+        let mut with_try = records[..5].to_vec();
+        with_try[4].trial = Some(2);
+        assert_eq!(slow_notice(&with_try, &this(6, 2000)), None);
     }
 
     #[test]

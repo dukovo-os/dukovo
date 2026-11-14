@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The limits boot test's fork bomb: it forks until its domain's 64 threads
+# are used, when fork fails with EAGAIN (ADR 0476).
+
+service_version = 1
+description = "Forks until its thread limit stops it"
+program = "/system/tests/posix/forkbomb"
+restart = "never"
+
+[limits]
+threads = 64

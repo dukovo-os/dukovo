@@ -130,6 +130,8 @@ pub struct Account {
     pub user: u32,
     /// Its group's number.
     pub group: u32,
+    /// The numbers of the other groups its file names (ADR 0477).
+    pub groups: Vec<u32>,
     /// The `names` capability, which stamps what the view holds from
     /// elsewhere than the root with the account's name, as a view acting
     /// for it takes only that.
@@ -342,12 +344,18 @@ fn when_missing(path: &str, write: bool, optional: bool) -> Missing {
     }
 }
 
+/// Group numbers as names_process and stamp take them.
+pub fn group_bytes(groups: &[u32]) -> Vec<u8> {
+    groups.iter().flat_map(|group| group.to_le_bytes()).collect()
+}
+
 /// Attaches its processes at `processes` in `view`: those of its
 /// `domain` and beneath, or, for a service Spark made no domain for, as
 /// where the kernel gave Spark none, every process, as `base` has them.
 /// The domain's list is Spark's, so for a service that acts for an
-/// `account` it is stamped with the account's name first: the kernel
-/// attaches to a view only what acts for the view's name.
+/// `account` it is stamped with the account's name first, its other
+/// groups and all: the kernel attaches to a view only what acts for the
+/// view's name, the whole of it.
 fn attach_processes(
     base: &Dir,
     view: &Dir,
@@ -368,8 +376,9 @@ fn attach_processes(
     if let Some(account) = account {
         let slot = slots::take().ok_or("no free slot")?;
         let (user, group) = (account.user, account.group);
+        let groups = group_bytes(&account.groups);
         if let Err(status) =
-            names_abi::stamp(&SYS, account.names, processes.slot(), slot, user, group, &[])
+            names_abi::stamp(&SYS, account.names, processes.slot(), slot, user, group, &groups)
         {
             slots::give_back(slot);
             return Err(format!("cannot list its processes as its account: {:#x}", status.0));

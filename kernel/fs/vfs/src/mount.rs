@@ -1451,6 +1451,22 @@ impl Vfs {
         self.sync_where(|fs| fs.is_dirty())
     }
 
+    /// Syncs what a program's *sync* of directory `dir` asks for
+    /// (radix-files(7)): every filesystem with changes, for the tree's
+    /// root, as sync(2) from a program whose root it is means them all;
+    /// the filesystem of each place a view attaches, for a view's
+    /// directory; `dir`'s own filesystem otherwise, as syncfs(2) on
+    /// Linux. Returns the first error.
+    pub fn sync_at(&self, dir: &Location) -> Result<()> {
+        if dir.in_view() {
+            self.sync_view(dir)
+        } else if dir.mount_path().is_some_and(<[u8]>::is_empty) {
+            self.sync_all()
+        } else {
+            dir.mount.fs.sync()
+        }
+    }
+
     /// Syncs every filesystem whose changes are due
     /// ([`crate::FileSystem::is_due`]), as the writeback thread does every few
     /// seconds; returns the first error.

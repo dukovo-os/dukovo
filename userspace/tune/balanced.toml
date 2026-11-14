@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The default profile: it sets nothing.
+#
+# A profile lists the kernel settings it sets (radix-kernel-settings(2)),
+# each with the reason it gives that value. Every setting it does not list
+# is put back to the value the kernel started with, so a profile changes
+# nothing it does not name. tune(8) explains how one is chosen, and
+# `tune show balanced` says what this one sets.
+
+description = "The default: every setting at its start value"
+
+[settings]

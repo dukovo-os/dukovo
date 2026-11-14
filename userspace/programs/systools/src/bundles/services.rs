@@ -30,9 +30,10 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use manifest::bundle::{Access, Manifest, Service, ServiceName, Start};
-use manifest::service::{self as service_file, Ports};
+use manifest::bundle::{Access, Manifest, Need, Service, ServiceName, Start, To};
+use manifest::service::{self as service_file, Ports, SocketAccess};
 
+use super::minisign::PublicKey;
 use super::run;
 
 /// Where Spark reads the service files.
@@ -65,6 +66,235 @@ pub fn accounts(manifest: &Manifest) -> Vec<String> {
         }
     }
     all
+}
+
+/// What becomes of a bundle's use of a socket another bundle offers (ADR
+/// 0477).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grant {
+    /// It is given as the bundle is installed.
+    Given,
+    /// It is given if the person who installs the bundle approves it.
+    Ask,
+    /// It is never given to a bundle.
+    Never,
+}
+
+/// What a provider that offers a socket `to` gives a bundle that uses it,
+/// `same_publisher` being whether both are signed by one key.
+pub fn socket_grant(to: To, same_publisher: bool) -> Grant {
+    match to {
+        To::Anyone => Grant::Given,
+        To::Publisher if same_publisher => Grant::Given,
+        To::Publisher | To::System => Grant::Never,
+        To::Approved => Grant::Ask,
+    }
+}
+
+/// The group of the socket a service of account `account` offers to its
+/// publisher's bundles or the programs people approve: authd makes it as
+/// bundled installs the provider.
+pub fn socket_group(account: &str) -> String {
+    format!("{account}{}", accounts::SOCKET_GROUP_SUFFIX)
+}
+
+/// Whether offering a socket `to` has it a group of its own.
+fn has_group(to: To) -> bool {
+    matches!(to, To::Publisher | To::Approved)
+}
+
+/// The groups `manifest` has made for the sockets it offers, each once.
+pub fn socket_groups(manifest: &Manifest) -> Vec<String> {
+    let mut groups: Vec<String> = Vec::new();
+    for provide in &manifest.provides {
+        if let Some(name) = &provide.socket
+            && has_group(provide.to)
+            && let Some(offer) = offer(manifest, &name.0)
+        {
+            let group = socket_group(&offer.account);
+            if !groups.contains(&group) {
+                groups.push(group);
+            }
+        }
+    }
+    groups
+}
+
+/// A socket a bundle offers: the account of the service that makes it,
+/// whose live folder it is in, and who may connect.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Offer {
+    pub account: String,
+    pub to: To,
+}
+
+/// The socket `name` that `manifest` offers, if it does: named in
+/// `provides` and a `path` of one of its services' sockets.
+pub fn offer(manifest: &Manifest, name: &str) -> Option<Offer> {
+    let provide =
+        manifest.provides.iter().find(|p| p.socket.as_ref().is_some_and(|s| s.0 == name))?;
+    let service = manifest
+        .services
+        .iter()
+        .find(|s| s.sockets.iter().any(|socket| socket.path.as_deref() == Some(name)))?;
+    Some(Offer { account: account(service), to: provide.to })
+}
+
+/// A socket of another bundle that a service reaches: its place and,
+/// for one with a group, the group.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reach {
+    /// The account of the service that makes it.
+    pub account: String,
+    /// Its name.
+    pub name: String,
+    /// The group whose members connect to it, if it has one.
+    pub group: Option<String>,
+}
+
+impl Reach {
+    /// Where it is.
+    pub fn path(&self) -> String {
+        format!("{}/{}", live_folder(&self.account), self.name)
+    }
+}
+
+/// What came of one `uses` of a socket.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Given as the bundle is installed.
+    Given(Reach),
+    /// Given if the person approves it at the install.
+    Ask(Reach),
+    /// Not given, and why.
+    Refused(String),
+}
+
+/// One `uses` of a socket of another bundle, and what came of it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Wanted {
+    /// The provider's ID.
+    pub provider: String,
+    /// The socket's name.
+    pub socket: String,
+    /// Whether the bundle works without it.
+    pub need: Need,
+    pub outcome: Outcome,
+}
+
+impl Wanted {
+    /// What it uses, as the manifest writes it: `PROVIDER/NAME`.
+    pub fn what(&self) -> String {
+        format!("{}/{}", self.provider, self.socket)
+    }
+}
+
+/// What each socket that `manifest` uses comes to: `find` gives the
+/// manifest and the signing key of the installed bundle with an ID, if
+/// there is one, and `key` is the key `manifest` is signed by.
+pub fn wanted(
+    manifest: &Manifest,
+    key: &PublicKey,
+    find: impl Fn(&str) -> Option<(Manifest, PublicKey)>,
+) -> Vec<Wanted> {
+    let mut all = Vec::new();
+    for used in &manifest.uses {
+        let Some(socket) = &used.socket else { continue };
+        let Some((provider, name)) = socket.0.split_once('/') else { continue };
+        let outcome = match find(provider) {
+            None => Outcome::Refused(format!(
+                "{provider} is not installed for everyone: install it first, with elevate \
+                 bundle install --for-everyone {provider}"
+            )),
+            Some((other, other_key)) => match offer(&other, name) {
+                None => Outcome::Refused(format!("{provider} does not offer a socket {name}")),
+                Some(offer) => {
+                    let reach = Reach {
+                        group: has_group(offer.to).then(|| socket_group(&offer.account)),
+                        account: offer.account,
+                        name: name.to_string(),
+                    };
+                    match socket_grant(offer.to, other_key == *key) {
+                        Grant::Given => Outcome::Given(reach),
+                        Grant::Ask => Outcome::Ask(reach),
+                        Grant::Never if offer.to == To::System => Outcome::Refused(format!(
+                            "{provider} offers {name} to the system's own programs alone, which \
+                             no bundle is"
+                        )),
+                        Grant::Never => Outcome::Refused(format!(
+                            "{provider} offers {name} only to bundles of its own publisher, and \
+                             this one is signed by another key"
+                        )),
+                    }
+                }
+            },
+        };
+        all.push(Wanted {
+            provider: provider.to_string(),
+            socket: name.to_string(),
+            need: used.need,
+            outcome,
+        });
+    }
+    all
+}
+
+/// Why `wanted` stops the install, if it does: a socket the bundle
+/// requires that it is not given.
+pub fn refusal(wanted: &[Wanted]) -> Option<String> {
+    wanted.iter().find_map(|w| match (&w.outcome, w.need) {
+        (Outcome::Refused(why), Need::Required) => Some(format!(
+            "it requires the socket {} of {}, which it cannot have: {why}",
+            w.socket, w.provider
+        )),
+        _ => None,
+    })
+}
+
+/// What the install says of the sockets it does not give, for the ones
+/// the bundle works without.
+pub fn skipped(wanted: &[Wanted]) -> String {
+    let mut said = String::new();
+    for w in wanted {
+        if let (Outcome::Refused(why), Need::Optional) = (&w.outcome, w.need) {
+            let _ = write!(said, "; it has no socket {} of {}: {why}", w.socket, w.provider);
+        }
+    }
+    said
+}
+
+/// The sheet's lines about the sockets of other bundles that the install
+/// would give, for the person to approve.
+pub fn socket_sheet(wanted: &[Wanted]) -> String {
+    let mut o = String::new();
+    for w in wanted {
+        match &w.outcome {
+            Outcome::Ask(_) => {
+                let _ = writeln!(
+                    o,
+                    "  Uses the socket {} of {}, which it offers to the programs you approve: \
+                     installing approves it.",
+                    w.socket, w.provider
+                );
+            }
+            Outcome::Given(_) => {
+                let _ = writeln!(o, "  Uses the socket {} of {}.", w.socket, w.provider);
+            }
+            Outcome::Refused(_) => {}
+        }
+    }
+    o
+}
+
+/// The places of the given sockets, which a service of the bundle reaches.
+pub fn reaches(wanted: &[Wanted]) -> Vec<Reach> {
+    wanted
+        .iter()
+        .filter_map(|w| match &w.outcome {
+            Outcome::Given(reach) | Outcome::Ask(reach) => Some(reach.clone()),
+            Outcome::Refused(_) => None,
+        })
+        .collect()
 }
 
 /// The data folder of bundle `id`'s account `account`: its home.
@@ -240,11 +470,25 @@ fn linked(manifest: &Manifest, name: &ServiceName, key: &str, service: &str) -> 
 /// The service file bundled writes for `service` of `manifest`,
 /// installed in `folder`; `enabled`, whether it starts at boot, when an
 /// administrator turned it on or off already. Checked as Spark reads it.
+#[cfg(test)]
 pub fn file(
     manifest: &Manifest,
     service: &Service,
     folder: &str,
     enabled: Option<bool>,
+) -> Result<String, String> {
+    file_with(manifest, service, folder, enabled, &[])
+}
+
+/// [`file`], for a service whose bundle reaches the sockets `reach` of
+/// others (ADR 0477): their places are its to read and write, and the
+/// groups of those that have one are its process's.
+pub fn file_with(
+    manifest: &Manifest,
+    service: &Service,
+    folder: &str,
+    enabled: Option<bool>,
+    reach: &[Reach],
 ) -> Result<String, String> {
     let id = &manifest.id.0;
     let name = &service.name.0;
@@ -275,7 +519,19 @@ pub fn file(
     let _ = writeln!(o, "order = {ORDER}");
     let _ = writeln!(o, "enabled = {enabled}");
     let _ = writeln!(o, "restart = {}", quoted(service.restart.name()));
+    if service.start == Start::OnConnection {
+        let _ = writeln!(o, "start = {}", quoted(service_file::Start::OnConnection.name()));
+    }
     let _ = writeln!(o, "secrets = {}", list(service.secrets.iter().map(String::as_str)));
+    let mut groups: Vec<&str> = Vec::new();
+    for group in reach.iter().filter_map(|r| r.group.as_deref()) {
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    if !groups.is_empty() {
+        let _ = writeln!(o, "groups = {}", list(groups));
+    }
     let links =
         [("requires", &service.requires), ("wants", &service.wants), ("after", &service.after)];
     for (key, names) in links {
@@ -313,6 +569,9 @@ pub fn file(
         }
     }
     let _ = writeln!(o, "oom = {}", quoted(limits.oom.name()));
+    if let Some(files) = limits.open_files {
+        let _ = writeln!(o, "open_files = {files}");
+    }
     let _ = writeln!(o, "\n[permissions]");
     let _ = writeln!(o, "network.outbound = {}", holds.outbound);
     let ports: Vec<String> = holds.listen.iter().map(|p| quoted(&p.to_string())).collect();
@@ -321,7 +580,9 @@ pub fn file(
         holds.shared.iter().filter(move |(_, w)| *w == write).map(|(f, _)| format!("/shared/{f}"))
     };
     let read: Vec<String> = std::iter::once(folder.to_string()).chain(shared(false)).collect();
-    let read_write: Vec<String> = [data, live.clone()].into_iter().chain(shared(true)).collect();
+    let reached: Vec<String> = reach.iter().map(Reach::path).collect();
+    let read_write: Vec<String> =
+        [data, live.clone()].into_iter().chain(shared(true)).chain(reached).collect();
     let _ = writeln!(o, "files.read = {}", list(read.iter().map(String::as_str)));
     let _ = writeln!(o, "files.read-write = {}", list(read_write.iter().map(String::as_str)));
     if let Some(ready) = &service.ready {
@@ -351,9 +612,157 @@ pub fn file(
             }
         }
     }
+    write_sockets(&mut o, &offered(manifest, service));
+    if let Some(stop) = &service.stop {
+        write_stop(&mut o, stop);
+    }
+    if let Some(backup) = &service.backup {
+        write_backup(&mut o, backup, |program| program_path(manifest, program, name), folder)?;
+    }
+    if let Some(timer) = &service.timer {
+        write_timer(&mut o, timer);
+    }
+    if let Some(logs) = &service.logs {
+        write_logs(&mut o, logs);
+    }
     service_file::from_toml(&o)
         .map_err(|err| format!("its service {name}'s file does not read: {err}"))?;
     Ok(o)
+}
+
+/// The sockets of `service`, those its bundle offers having who connects
+/// to them (ADR 0477): `to = "anyone"` or `"system"`, or the group of
+/// the socket for the publisher's bundles and the programs people
+/// approve.
+fn offered(manifest: &Manifest, service: &Service) -> Vec<service_file::SocketFile> {
+    let mut sockets = service.sockets.clone();
+    for socket in &mut sockets {
+        let Some(offer) = socket.path.as_deref().and_then(|path| self::offer(manifest, path))
+        else {
+            continue;
+        };
+        match offer.to {
+            To::Anyone => socket.to = Some(SocketAccess::Anyone),
+            To::System => socket.to = Some(SocketAccess::System),
+            To::Publisher | To::Approved => socket.group = Some(socket_group(&offer.account)),
+        }
+    }
+    sockets
+}
+
+/// `sockets` as service.toml(5)'s `[[sockets]]` tables. A `path` stays a
+/// plain name: Spark makes the socket in the service's live folder.
+fn write_sockets(o: &mut String, sockets: &[service_file::SocketFile]) {
+    for socket in sockets {
+        let _ = writeln!(o, "\n[[sockets]]");
+        if let Some(port) = socket.port {
+            let _ = writeln!(o, "port = {port}");
+        }
+        if let Some(address) = socket.address.and_then(service_file::SocketAddress::text) {
+            let _ = writeln!(o, "address = {}", quoted(&address));
+        }
+        if let Some(udp) = socket.udp {
+            let _ = writeln!(o, "udp = {udp}");
+        }
+        if let Some(path) = &socket.path {
+            let _ = writeln!(o, "path = {}", quoted(path));
+        }
+        if let Some(name) = &socket.name {
+            let _ = writeln!(o, "name = {}", quoted(name));
+        }
+        if let Some(backlog) = socket.backlog {
+            let _ = writeln!(o, "backlog = {backlog}");
+        }
+        if let Some(non_blocking) = socket.non_blocking {
+            let _ = writeln!(o, "non-blocking = {non_blocking}");
+        }
+        match &socket.to {
+            Some(SocketAccess::Anyone) => {
+                let _ = writeln!(o, "to = \"anyone\"");
+            }
+            Some(SocketAccess::System) => {
+                let _ = writeln!(o, "to = \"system\"");
+            }
+            _ => {}
+        }
+        if let Some(group) = &socket.group {
+            let _ = writeln!(o, "group = {}", quoted(group));
+        }
+    }
+}
+
+/// `stop` as service.toml(5)'s `[stop]`.
+fn write_stop(o: &mut String, stop: &manifest::bundle::Stop) {
+    let _ = writeln!(o, "\n[stop]");
+    if let Some(signal) = stop.signal {
+        let _ = writeln!(o, "signal = {}", quoted(signal.name()));
+    }
+    if let Some(timeout) = stop.timeout {
+        let _ = writeln!(o, "timeout = {timeout}");
+    }
+}
+
+/// `backup` as service.toml(5)'s `[backup]`, each hook's program at its
+/// path in the installed bundle `folder`; `program_path` finds a
+/// program's path in the bundle.
+fn write_backup<'a>(
+    o: &mut String,
+    backup: &manifest::bundle::BackupHooks,
+    program_path: impl Fn(&str) -> Result<&'a str, String>,
+    folder: &str,
+) -> Result<(), String> {
+    let _ = writeln!(o, "\n[backup]");
+    for (key, hook) in [("before", &backup.before), ("after", &backup.after)] {
+        let Some(hook) = hook else { continue };
+        let path = program_path(&hook.program.0)?;
+        let words: Vec<String> =
+            std::iter::once(format!("{folder}/{path}")).chain(hook.arguments.clone()).collect();
+        let _ = writeln!(o, "{key} = {}", list(words.iter().map(String::as_str)));
+    }
+    if let Some(limit) = backup.time_limit {
+        let _ = writeln!(o, "time_limit = {limit}");
+    }
+    Ok(())
+}
+
+/// `timer` as service.toml(5)'s `[timer]`, with what it says, as it was
+/// read.
+fn write_timer(o: &mut String, timer: &service_file::TimerFile) {
+    let _ = writeln!(o, "\n[timer]");
+    if !timer.at.is_empty() {
+        let _ = writeln!(o, "at = {}", list(timer.at.iter().map(String::as_str)));
+    }
+    let durations = [
+        ("every", &timer.every),
+        ("after_boot", &timer.after_boot),
+        ("spread", &timer.spread),
+        ("time_zone", &timer.time_zone),
+    ];
+    for (key, value) in durations {
+        if let Some(value) = value {
+            let _ = writeln!(o, "{key} = {}", quoted(value));
+        }
+    }
+    if let Some(catch_up) = timer.catch_up {
+        let _ = writeln!(o, "catch_up = {catch_up}");
+    }
+}
+
+/// `logs` as service.toml(5)'s `[logs]`.
+fn write_logs(o: &mut String, logs: &service_file::LogsFile) {
+    let _ = writeln!(o, "\n[logs]");
+    let _ = writeln!(o, "files = {}", list(logs.files.iter().map(String::as_str)));
+    match logs.turn_over {
+        service_file::TurnOver::Size(bytes) => {
+            let _ = writeln!(o, "turn_over = {bytes}");
+        }
+        other => {
+            let _ = writeln!(o, "turn_over = {}", quoted(&other.word()));
+        }
+    }
+    let _ = writeln!(o, "keep = {}", logs.keep);
+    let _ = writeln!(o, "compress = {}", logs.compress);
+    let _ = writeln!(o, "reopen = {}", quoted(logs.reopen.word()));
 }
 
 /// Whether the service file `text` says it starts at boot, if it reads.
@@ -394,7 +803,7 @@ mod tests {
         let m = manifest(
             r#"{"name": "web", "program": "web", "arguments": ["--port", "8080 \"x\""],
                 "environment": {"MODE": "fast"}, "start": "at-boot", "secrets": ["key"],
-                "limits": {"memory": "64M", "cpu_weight": 50}}"#,
+                "limits": {"memory": "64M", "cpu_weight": 50, "open_files": 65536}}"#,
             r#""network.listen": {"need": "required", "ports": [8080, "9000-9001"]},
                "network.local": {"need": "optional"},
                "files.shared": {"need": "required", "folders": {"photos": "read", "music": "read-write"}},
@@ -410,6 +819,7 @@ mod tests {
         assert_eq!(read.secrets, ["key"]);
         assert_eq!(read.limits.memory, Some(64 << 20));
         assert_eq!(read.limits.cpu_weight, 50);
+        assert_eq!(read.limits.open_files, Some(65536));
         assert!(read.permissions.network.outbound);
         assert_eq!(read.network_grants(), 3);
         let places: Vec<(String, bool)> =
@@ -440,6 +850,125 @@ mod tests {
         );
         assert!(text.starts_with("# The service web of the bundle org.example.web 0.1.0"));
         assert_eq!(enabled(&text), Some(true));
+    }
+
+    #[test]
+    fn a_timer_and_logs_are_written_through() {
+        let m = manifest(
+            r#"{"name": "web", "program": "web",
+                "timer": {"at": ["daily", "30 2 * * 1-5"], "every": "6h", "after_boot": "10m",
+                          "spread": "1h", "catch_up": false, "time_zone": "UTC"},
+                "logs": {"files": ["logs/*.log"], "turn_over": "100M", "keep": 7,
+                         "compress": false, "reopen": "SIGUSR1"}}"#,
+            "",
+        );
+        let text = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap();
+        let read = service_file::from_toml(&text).unwrap();
+        let timer = read.timer.unwrap();
+        assert_eq!(timer.at.len(), 2);
+        assert_eq!((timer.every, timer.after_boot, timer.spread), (Some(21_600), Some(600), 3600));
+        assert!(!timer.catch_up);
+        assert_eq!(timer.time_zone.as_deref(), Some("UTC"));
+        let logs = read.logs.unwrap();
+        assert_eq!(logs.files, ["logs/*.log"]);
+        assert_eq!(logs.turn_over, service_file::TurnOver::Size(100 << 20));
+        assert_eq!((logs.keep, logs.compress), (7, false));
+        assert_eq!(logs.reopen, service_file::Reopen::Signal(service_file::Signal::Usr1));
+    }
+
+    #[test]
+    fn sockets_and_starting_on_a_connection_are_written_through() {
+        let m = manifest(
+            r#"{"name": "web", "program": "web", "start": "on-connection",
+                "sockets": [{"port": 8080, "address": "0.0.0.0"},
+                            {"port": 8080, "address": "::", "name": "web6", "backlog": 64,
+                             "non-blocking": true},
+                            {"port": 9000, "udp": true}, {"path": "echo"}]}"#,
+            r#""network.listen": {"need": "required", "ports": [8080, 9000]}"#,
+        );
+        let text = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap();
+        assert!(text.contains("\nstart = \"on-connection\"\n"), "{text}");
+        assert_eq!(enabled(&text), Some(true));
+        let read = service_file::from_toml(&text).unwrap();
+        assert_eq!(read.start, service_file::Start::OnConnection);
+        let names: Vec<&str> = read.sockets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["8080", "web6", "9000", "echo"]);
+        assert_eq!(read.sockets[1].backlog, 64);
+        assert_eq!((read.sockets[0].non_blocking, read.sockets[1].non_blocking), (false, true));
+        assert_eq!(
+            read.sockets[1].kind,
+            service_file::SocketKind::Stream {
+                port: 8080,
+                address: service_file::SocketAddress::AnyV6
+            }
+        );
+        assert_eq!(
+            read.sockets[2].kind,
+            service_file::SocketKind::Datagram {
+                port: 9000,
+                address: service_file::SocketAddress::Any
+            }
+        );
+        assert_eq!(read.sockets[3].kind, service_file::SocketKind::Unix { path: "echo".into() });
+        // The offered sockets' groups and a user's place are written
+        // apart, by the grants.
+        assert!(read.groups.is_empty());
+    }
+
+    #[test]
+    fn a_service_without_sockets_starts_at_boot_with_none() {
+        let m = manifest(r#"{"name": "web", "program": "web", "start": "at-boot"}"#, "");
+        let text = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap();
+        assert!(!text.contains("[[sockets]]") && !text.contains("on-connection"), "{text}");
+        let read = service_file::from_toml(&text).unwrap();
+        assert!(read.sockets.is_empty() && read.start == service_file::Start::AtBoot);
+        assert_eq!(read.stop, service_file::Stop::default());
+    }
+
+    #[test]
+    fn a_stop_and_backup_hooks_are_written_through() {
+        let m = manifest(
+            r#"{"name": "web", "program": "web",
+                "stop": {"signal": "SIGQUIT", "timeout": 30},
+                "backup": {"before": {"program": "web", "arguments": ["checkpoint", "-q"]},
+                           "time_limit": 120}}"#,
+            "",
+        );
+        let folder = "/applications/org.example.web";
+        let text = file(&m, &m.services[0], folder, None).unwrap();
+        assert!(text.contains("service_version = 2\n"), "{text}");
+        let read = service_file::from_toml(&text).unwrap();
+        assert_eq!(
+            read.stop,
+            service_file::Stop { signal: service_file::Signal::Quit, timeout: 30 }
+        );
+        assert_eq!(
+            read.backup.before,
+            [format!("{folder}/bin/web"), "checkpoint".into(), "-q".into()]
+        );
+        assert!(read.backup.after.is_empty());
+        assert_eq!(read.backup.time_limit, 120);
+        // A timeout alone leaves the signal at SIGTERM; backup alone
+        // keeps the file at version 1.
+        let m = manifest(
+            r#"{"name": "web", "program": "web", "stop": {"timeout": 9},
+                "backup": {"after": {"program": "web"}}}"#,
+            "",
+        );
+        let text = file(&m, &m.services[0], folder, None).unwrap();
+        let read = service_file::from_toml(&text).unwrap();
+        assert_eq!(read.stop, service_file::Stop { timeout: 9, ..Default::default() });
+        assert_eq!(read.backup.after, [format!("{folder}/bin/web")]);
+        let m = manifest(r#"{"name": "web", "program": "web", "backup": {"time_limit": 5}}"#, "");
+        let text = file(&m, &m.services[0], folder, None).unwrap();
+        assert!(text.contains("service_version = 1\n"), "{text}");
+    }
+
+    #[test]
+    fn a_service_without_a_timer_or_logs_writes_none() {
+        let m = manifest(r#"{"name": "web", "program": "web"}"#, "");
+        let text = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap();
+        assert!(!text.contains("[timer]") && !text.contains("[logs]"));
     }
 
     #[test]
@@ -544,5 +1073,138 @@ mod tests {
         let toml =
             format!("service_version = 1\nprogram = \"/x\"\ndescription = {}\n", quoted(text));
         assert_eq!(service_file::from_toml(&toml).unwrap().description, text);
+    }
+
+    /// A provider of org.example.web whose service `web` makes the socket
+    /// `echo`, offered `to`.
+    fn provider(to: &str) -> Manifest {
+        let text = manifest::bundle::template("org.example.web", "Web", "Example, Inc.", "MIT")
+            .replace(
+                "\"permissions\": {}",
+                &format!(
+                    "\"services\": [{{\"name\": \"web\", \"program\": \"web\", \"sockets\": \
+                     [{{\"path\": \"echo\"}}]}}],\n  \"provides\": [{{\"socket\": \"echo\", \
+                     \"to\": \"{to}\"}}],\n  \"permissions\": {{}}"
+                ),
+            );
+        manifest::bundle::from_json(&text).unwrap()
+    }
+
+    /// A consumer whose service `app` uses `org.example.web/echo`.
+    fn consumer(need: &str) -> Manifest {
+        let text = manifest::bundle::template("org.example.app", "App", "Example, Inc.", "MIT")
+            .replace(
+                "\"permissions\": {}",
+                &format!(
+                    "\"services\": [{{\"name\": \"app\", \"program\": \"app\"}}],\n  \
+                     \"uses\": [{{\"socket\": \"org.example.web/echo\", \"need\": \"{need}\"}}],\n  \
+                     \"permissions\": {{}}"
+                ),
+            );
+        manifest::bundle::from_json(&text).unwrap()
+    }
+
+    fn key(n: u8) -> PublicKey {
+        super::super::minisign::SecretKey::generate(&[n; 40]).unwrap().public()
+    }
+
+    #[test]
+    fn who_is_given_a_socket_follows_who_it_is_offered_to() {
+        assert_eq!(socket_grant(To::Anyone, false), Grant::Given);
+        assert_eq!(socket_grant(To::Publisher, true), Grant::Given);
+        assert_eq!(socket_grant(To::Publisher, false), Grant::Never);
+        assert_eq!(socket_grant(To::Approved, true), Grant::Ask);
+        assert_eq!(socket_grant(To::Approved, false), Grant::Ask);
+        assert_eq!(socket_grant(To::System, true), Grant::Never);
+        assert_eq!(socket_grant(To::System, false), Grant::Never);
+    }
+
+    #[test]
+    fn a_provider_writes_who_connects_to_its_socket() {
+        let read = |to: &str| {
+            let m = provider(to);
+            let text = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap();
+            service_file::from_toml(&text).unwrap().sockets[0].access.clone()
+        };
+        assert_eq!(read("anyone"), SocketAccess::Anyone);
+        assert_eq!(read("system"), SocketAccess::System);
+        assert_eq!(read("approved"), SocketAccess::Group("web-socket".into()));
+        assert_eq!(read("publisher"), SocketAccess::Group("web-socket".into()));
+        assert_eq!(socket_groups(&provider("approved")), ["web-socket"]);
+        assert_eq!(socket_groups(&provider("publisher")), ["web-socket"]);
+        assert!(socket_groups(&provider("anyone")).is_empty());
+        assert!(socket_groups(&provider("system")).is_empty());
+        // A socket that is not offered stays the service's own.
+        let m = manifest(r#"{"name": "web", "program": "web", "sockets": [{"path": "db"}]}"#, "");
+        let text = file(&m, &m.services[0], "/applications/org.example.web", None).unwrap();
+        assert_eq!(service_file::from_toml(&text).unwrap().sockets[0].access, SocketAccess::Own);
+        assert!(!text.contains("group ="));
+    }
+
+    #[test]
+    fn a_consumer_reaches_the_socket_it_is_given() {
+        let (web, app) = (provider("approved"), consumer("required"));
+        let find = |id: &str| (id == "org.example.web").then(|| (provider("approved"), key(1)));
+        let wanted = wanted(&app, &key(2), find);
+        assert_eq!(wanted.len(), 1);
+        let Outcome::Ask(reach) = &wanted[0].outcome else { panic!("{:?}", wanted[0].outcome) };
+        assert_eq!(reach.path(), "/system/live/services/web/echo");
+        assert_eq!(reach.group.as_deref(), Some("web-socket"));
+        assert_eq!(refusal(&wanted), None);
+        assert!(socket_sheet(&wanted).contains("echo of org.example.web"));
+        let text = file_with(
+            &app,
+            &app.services[0],
+            "/applications/org.example.app",
+            None,
+            &reaches(&wanted),
+        )
+        .unwrap();
+        let read = service_file::from_toml(&text).unwrap();
+        assert_eq!(read.groups, ["web-socket"]);
+        let places: Vec<String> =
+            read.permissions.places().into_iter().filter(|p| p.write).map(|p| p.path).collect();
+        assert!(places.contains(&"/system/live/services/web/echo".to_string()), "{places:?}");
+        // Without it, the file has neither.
+        let plain = file(&app, &app.services[0], "/applications/org.example.app", None).unwrap();
+        assert!(service_file::from_toml(&plain).unwrap().groups.is_empty());
+        assert!(!plain.contains("web/echo"));
+        drop(web);
+    }
+
+    #[test]
+    fn a_socket_offered_to_anyone_is_a_place_without_a_group() {
+        let app = consumer("required");
+        let find = |_: &str| Some((provider("anyone"), key(1)));
+        let wanted = wanted(&app, &key(2), find);
+        let Outcome::Given(reach) = &wanted[0].outcome else { panic!() };
+        assert_eq!(reach.group, None);
+        let text = file_with(&app, &app.services[0], "/x/app", None, &reaches(&wanted)).unwrap();
+        assert!(service_file::from_toml(&text).unwrap().groups.is_empty());
+        assert!(text.contains("/system/live/services/web/echo"));
+    }
+
+    #[test]
+    fn a_socket_that_cannot_be_had_stops_a_bundle_that_requires_it() {
+        let required = consumer("required");
+        let optional = consumer("optional");
+        let absent = |_: &str| None;
+        let w = wanted(&required, &key(2), absent);
+        assert!(refusal(&w).unwrap().contains("org.example.web is not installed"));
+        assert!(refusal(&w).unwrap().contains("elevate bundle install"));
+        let w = wanted(&optional, &key(2), absent);
+        assert_eq!(refusal(&w), None);
+        assert!(skipped(&w).contains("echo of org.example.web"));
+        assert!(reaches(&w).is_empty());
+        // Offered to its publisher alone, and the keys differ; or the same.
+        let find = |_: &str| Some((provider("publisher"), key(1)));
+        assert!(refusal(&wanted(&required, &key(2), find)).unwrap().contains("another key"));
+        assert_eq!(refusal(&wanted(&required, &key(1), find)), None);
+        // To the system alone, never a bundle.
+        let find = |_: &str| Some((provider("system"), key(1)));
+        assert!(refusal(&wanted(&required, &key(1), find)).unwrap().contains("system's"));
+        // A provider with no such socket.
+        let find = |_: &str| Some((manifest(r#"{"name": "web", "program": "web"}"#, ""), key(1)));
+        assert!(refusal(&wanted(&required, &key(1), find)).unwrap().contains("does not offer"));
     }
 }

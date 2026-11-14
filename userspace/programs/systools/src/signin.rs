@@ -356,6 +356,7 @@ pub fn start(
         what: "the session",
         path: FIRST_PROGRAM,
         args: &args,
+        folder: b"/",
         env: environment(user, term),
         descriptors: &[(tty, 0), (tty, 1), (tty, 2)],
         network: true,
@@ -432,6 +433,7 @@ pub fn start_ssh(
         what: "the SSH session",
         path: FIRST_PROGRAM,
         args: &args,
+        folder: b"/",
         env,
         descriptors: &descriptors,
         network: true,
@@ -461,8 +463,50 @@ pub fn start_forwarder(
         what: "the SSH connection's forwarder",
         path: FORWARDER,
         args: &[b"sshd", b"--forward"],
+        folder: b"/",
         env,
         descriptors: &[(input.as_raw_fd(), 0), (output.as_raw_fd(), 1), (error.as_raw_fd(), 2)],
+        network: true,
+        shares: None,
+    };
+    launch(names, user, groups, &program)
+}
+
+/// The shell that runs a person's job (ADR 0478).
+pub const JOB_SHELL: &str = "/system/commands/sh";
+
+/// A person's job, as authd(8) runs it for timerd(8).
+pub struct Job<'a> {
+    /// The folder it starts in.
+    pub folder: &'a str,
+    /// The command, which `sh -c` runs.
+    pub command: &'a str,
+    /// Where its standard output and error go.
+    pub output: &'a OwnedFd,
+}
+
+/// Starts a job of `user`'s (ADR 0478), acting for them and the groups
+/// `groups`: `sh -c` with its command, in its folder, with the null
+/// device as its 0 and its output as its 1 and 2, the environment `env`,
+/// and the network a session gets (ADR 0257). Returns the number of its
+/// process, a child of authd's.
+pub fn start_job(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    job: &Job,
+    env: Vec<String>,
+) -> Result<u64, String> {
+    let null = File::open("/devices/null")
+        .map_err(|err| format!("cannot start the job: /devices/null: {err}"))?;
+    let (null, output) = (null.as_raw_fd(), job.output.as_raw_fd());
+    let program = Program {
+        what: "the job",
+        path: JOB_SHELL,
+        args: &[b"sh", b"-c", job.command.as_bytes()],
+        folder: job.folder.as_bytes(),
+        env,
+        descriptors: &[(null, 0), (output, 1), (output, 2)],
         network: true,
         shares: None,
     };
@@ -492,6 +536,7 @@ pub fn start_share(
         what: "the share session",
         path: SHARE_PROGRAM,
         args: &[b"smbd", b"--worker"],
+        folder: b"/",
         env: vec![
             format!("HOME={}", user.home),
             format!("USER={}", user.name),
@@ -534,6 +579,7 @@ pub fn start_console(
         what: "the web console's worker",
         path: CONSOLE_WORKER,
         args: &[b"admind", b"--worker"],
+        folder: b"/",
         env: environment(user, "dumb"),
         descriptors: &[
             (calls.as_raw_fd(), 0),
@@ -591,6 +637,7 @@ pub fn start_nfs(
         what: "the NFS worker",
         path: NFS_PROGRAM,
         args: &[b"nfsd", b"--worker"],
+        folder: b"/",
         env: vec![format!("USER={}", user.name), "HOME=/".into(), "LANG=C.UTF-8".into()],
         descriptors: &[
             (null.as_raw_fd(), 0),
@@ -613,6 +660,8 @@ struct Program<'a> {
     path: &'a str,
     /// Its arguments, its name first.
     args: &'a [&'a [u8]],
+    /// The folder it starts in.
+    folder: &'a [u8],
     /// Its environment.
     env: Vec<String>,
     /// Descriptors of authd's, each with the number it has in the
@@ -686,7 +735,7 @@ fn launch(names: u32, user: &User, groups: &[u32], program: &Program) -> Result<
     if program.network {
         give_network(child, network, user.uid == 0).map_err(failed("giving it the network"))?;
     }
-    let block = exec_block(program.path.as_bytes(), program.args, &program.env);
+    let block = exec_block_in(program.folder, program.path.as_bytes(), program.args, &program.env);
     process::exec(&SYS, child, opened, &block).map_err(failed("starting its program"))?;
     // The child stays in the tree after its capability goes, for wait.
     let number = process::info(&SYS, child).map_err(failed("its number"))?.number;

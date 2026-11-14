@@ -21,7 +21,7 @@ user - make, list, disable, remove, rename and change accounts
 
 *user rename* _name_ _new-name_
 
-*user set* [*--full-name* _name_] [*--admin* | *--no-admin*] [*--elevate-without-password* | *--elevate-with-password*] [*--console* | *--no-console*] [*--yes*] _name_
+*user set* [*--full-name* _name_] [*--admin* | *--no-admin*] [*--elevate-without-password* | *--elevate-with-password*] [*--console* | *--no-console*] [*--jobs-signed-out* *never* | *allowed*] [*--yes*] _name_
 
 # DESCRIPTION
 
@@ -70,9 +70,10 @@ nothing runs for the account: until its person has signed out and what
 they left running has ended, or the account is disabled.
 
 *user set* changes the account's full name, whether it is an
-administrator's, whether it elevates without a password, or whether it
+administrator's, whether it elevates without a password, whether it
 signs in to the web console without being an administrator
-(*dukovo-admin*(7)). Someone who is no longer an administrator keeps
+(*dukovo-admin*(7)), or whether its jobs may run while its person is
+signed out. Someone who is no longer an administrator keeps
 nothing of the admin set: their elevated commands end, and elevate
 asks them nothing more.
 
@@ -102,6 +103,14 @@ administrator's password and enables the account.
 
 *--no-admin*
 	With *user set*: the account is no longer an administrator's.
+
+*--jobs-signed-out* *never* | *allowed*
+	Whether the account's person may have their jobs run while they
+	are signed out (ADR 0478). The person chooses with
+	*crontab --keep-running* (*crontab*(1)); *never* bars it, whatever
+	they chose, and their jobs wait for them to sign in, which tells
+	them how many did not run; *allowed* takes the bar away. An
+	account is allowed unless it was barred. *authd*(8) keeps it.
 
 *--elevate-without-password*
 	With *user set*: the administrator elevates without typing a
@@ -215,5 +224,5 @@ saying why.
 
 # SEE ALSO
 
-*passwd*(1), *login*(1), *authd*(8), *admind*(8), *dukovo-admin*(7),
+*passwd*(1), *login*(1), *authd*(8), *admind*(8), *dukovo-admin*(7), *crontab*(1),
 *elevate*(8), *id*(1), *tar*(1), *systools*(1)

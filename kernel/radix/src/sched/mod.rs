@@ -66,7 +66,7 @@ use radix_sched::{
 use radix_sync::{Mutex, Once, SpinLock};
 
 use crate::Arch;
-use crate::domains::{self, DomainError, DomainRef};
+use crate::domains::{self, DomainError, DomainRef, JoinError};
 use crate::percpu::{PerCpu, Slot};
 pub use hooks::{lockdep_last_problem, lockdep_reports, set_lockdep_expecting, write_lockdep};
 use queue::{Class, Rq, Weighing};
@@ -244,6 +244,8 @@ pub enum SpawnError {
     NoCpu,
     /// Its domain is being stopped for want of memory.
     Stopping,
+    /// Its domain, or one above it, has as many threads as its limit.
+    TooManyThreads,
     /// The scheduler is not running yet.
     NotStarted,
 }
@@ -256,6 +258,7 @@ impl fmt::Display for SpawnError {
             SpawnError::InvalidPolicy => "the nice level or priority is out of range",
             SpawnError::NoCpu => "the affinity names no CPU that runs threads",
             SpawnError::Stopping => "the domain is being stopped for want of memory",
+            SpawnError::TooManyThreads => "the domain has as many threads as its limit allows",
             SpawnError::NotStarted => "the scheduler is not running yet",
         })
     }
@@ -518,9 +521,12 @@ fn make_thread(
         Some(old) if Arc::ptr_eq(old.domain(), &domain) => old.hand_over_domain(),
         _ => domain.thread_joined(),
     };
-    if !joined {
+    if let Err(refused) = joined {
         domain.uncharge(charged);
-        return Err(SpawnError::Stopping);
+        return Err(match refused {
+            JoinError::Stopping => SpawnError::Stopping,
+            JoinError::TooManyThreads => SpawnError::TooManyThreads,
+        });
     }
     let thread = Thread::new(id, name, context, entry, arg, policy, affinity, domain, charged);
     let thread = Arc::try_new_in(thread, kmalloc()).map_err(|_| SpawnError::NoMemory)?;
@@ -571,6 +577,26 @@ fn start_cpu_with(cpu: usize, current: &ThreadRef, idle: ThreadRef, boot: bool) 
     slot.online.store(true, Ordering::Release);
     ONLINE.lock_irq().insert(cpu);
     Some(())
+}
+
+/// The fair class's base slice: [`radix_sched::BASE_SLICE_NS`] at
+/// start, and what the kernel setting `sched.slice_us` sets (ADR 0476).
+static SLICE_NS: AtomicU64 = AtomicU64::new(radix_sched::BASE_SLICE_NS);
+
+/// The fair class's base slice, in nanoseconds.
+pub fn slice_ns() -> u64 {
+    SLICE_NS.load(Ordering::Relaxed)
+}
+
+/// Sets the fair class's base slice on every CPU: each thread has it from
+/// its next turn, and a CPU that comes online later from the start.
+pub fn set_slice_ns(slice_ns: u64) {
+    SLICE_NS.store(slice_ns, Ordering::Relaxed);
+    for cpu in 0..MAX_CPUS {
+        if let Some(rq) = CPUS.get(cpu).rq.lock_irq().as_mut() {
+            rq.set_slice_ns(slice_ns);
+        }
+    }
 }
 
 /// The CPUs that run threads.

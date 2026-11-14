@@ -25,16 +25,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use libradix::abi::directory::FileKind;
-use libradix::abi::process;
-use libradix::abi::signal;
-use libradix::abi::startup::SLOT_PROCESS;
 use manifest::service::ReadyWhen;
-use radix_rt::{SYS, println};
+use radix_rt::println;
+use spark_api::bisect;
 use spark_api::graph::{self, Link, Node, Peer, Verdict};
 use spark_api::ready;
 
 use super::watch::say;
-use super::{MS, SECOND, STOP_WAIT, Service, Shutdown, State, Supervisor, now};
+use super::{MS, SECOND, Service, Shutdown, State, Supervisor, now};
 
 /// How often Spark looks whether a starting service is ready.
 pub(super) const READY_POLL: u64 = 100 * MS;
@@ -49,6 +47,10 @@ pub(super) enum Wanted {
     Boot,
     /// A `start` or `restart` request named it.
     Request,
+    /// A connection or a datagram came to one of its sockets (ADR 0477).
+    Connection,
+    /// timerd started it, at a time its file names (ADR 0478).
+    Timer,
 }
 
 impl Supervisor {
@@ -88,13 +90,15 @@ impl Supervisor {
         }
     }
 
-    /// Why Rescue or essentials leave service `name` off until it is
-    /// started by a request, if they do.
-    pub(super) fn left_off(&self, name: &str) -> Option<&'static str> {
-        if self.essentials && !self.own(name) {
-            Some("only the essentials start: it stays off until it is started")
+    /// Why Rescue, essentials or a try of changes bisect leave service
+    /// `name` off until it is started by a request, if they do.
+    pub(super) fn left_off(&self, name: &str) -> Option<String> {
+        if let Some(number) = self.left_out(name) {
+            Some(bisect::why(number))
+        } else if self.essentials && !self.own(name) {
+            Some(String::from("only the essentials start: it stays off until it is started"))
         } else if self.rescue && !super::RESCUE_SERVICES.contains(&name) {
-            Some("Rescue leaves it off until it is started")
+            Some(String::from("Rescue leaves it off until it is started"))
         } else {
             None
         }
@@ -104,24 +108,34 @@ impl Supervisor {
     /// wants, at any depth, that is stopped; they start as
     /// [`Self::step_pending`] lets them. At boot, a service Rescue or
     /// essentials leave off is not pulled in; a request pulls it in, and
-    /// one that was stopped by a request, and tries again one Spark gave
-    /// up on.
+    /// one that was stopped by a request, and a request or its timer tries
+    /// again one Spark gave up on.
     pub(super) fn want(&mut self, index: usize, wanted: Wanted) {
         let pending = |state| {
-            matches!(state, State::Stopped | State::Failed | State::Done | State::Waiting(_))
+            matches!(
+                state,
+                State::Stopped
+                    | State::Failed
+                    | State::Done
+                    | State::Waiting(_)
+                    | State::Listening(_)
+            )
         };
         // Spark read every file at boot; later, a file is read again as its
         // service is about to start.
-        if wanted == Wanted::Request && pending(self.services[index].state) {
+        if wanted != Wanted::Boot && pending(self.services[index].state) {
             self.reread(index);
         }
+        let fresh_start = matches!(wanted, Wanted::Request | Wanted::Timer);
         let service = &mut self.services[index];
         if pending(service.state) {
             service.wanted_by = Some(String::from(match wanted {
                 Wanted::Boot => "boot",
                 Wanted::Request => "a request",
+                Wanted::Connection => "a connection",
+                Wanted::Timer => "its timer",
             }));
-            if wanted == Wanted::Request {
+            if fresh_start {
                 service.failures = 0;
             }
             service.held = false;
@@ -141,7 +155,7 @@ impl Supervisor {
             let service = &mut self.services[at];
             if matches!(service.state, State::Stopped | State::Failed) {
                 service.wanted_by = Some(format!("{}, which {} it", pull.by, pull.link.key()));
-                if wanted == Wanted::Request {
+                if fresh_start {
                     service.failures = 0;
                 }
                 service.held = false;
@@ -255,6 +269,9 @@ impl Supervisor {
         service.waiting_for.clear();
         service.set_why(Some(why), cause);
         service.set(State::Stopped);
+        // An on-connection service no longer waits: its port refuses, as
+        // what it requires is off.
+        self.close_sockets(index);
         self.stop_dependents(index);
     }
 
@@ -272,13 +289,19 @@ impl Supervisor {
             return Peer::Off("waits for itself");
         }
         match service.state {
-            State::Running(_) | State::Done => Peer::Ready,
+            // One waiting for a connection takes connections, which wait for
+            // its start: what requires it starts, as systemd's socket
+            // activation lets it.
+            State::Running(_) | State::Done | State::Listening(_) => Peer::Ready,
             State::Pending | State::Starting(_) | State::Waiting(_) | State::Draining(..) => {
                 Peer::Coming
             }
             State::Failed => Peer::Off("Spark gave up on"),
             State::Stopped if service.held => Peer::Off("was stopped"),
             State::Stopped => match self.left_off(name) {
+                Some(_) if self.left_out(name).is_some() => {
+                    Peer::Off("is left out for a try of changes bisect")
+                }
                 Some(_) if self.essentials => Peer::Off("is not one of the essentials"),
                 Some(_) => Peer::Off("Rescue leaves off"),
                 None => Peer::Off("is stopped"),
@@ -309,16 +332,21 @@ impl Supervisor {
                 let why = format!("it requires {name}, which {words}");
                 match service.state {
                     State::Pending | State::Waiting(_) => service.set(State::Stopped),
+                    State::Listening(_) => {
+                        service.set(State::Stopped);
+                        if let Some(held) = service.sockets.take() {
+                            held.close(&self.root);
+                        }
+                    }
                     State::Starting(pid) | State::Running(pid) => {
                         say(
                             &mut self.told,
                             other,
                             format!("stopping {}: {why}", service.spec.name),
                         );
-                        service.stop_by.get_or_insert(now() + STOP_WAIT);
                         // Its end comes through `ended`, as a stop request's
                         // does.
-                        let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
+                        service.ask_to_stop(pid);
                     }
                     State::Draining(..) => {}
                     State::Stopped | State::Done | State::Failed => continue,
@@ -434,8 +462,7 @@ impl Supervisor {
         );
         say(&mut self.told, index, line);
         service.set_why(Some(format!("it did not get ready in {seconds} s: {missing}")), None);
-        service.stop_by = Some(now() + STOP_WAIT);
-        let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGTERM);
+        service.ask_to_stop(pid);
     }
 }
 

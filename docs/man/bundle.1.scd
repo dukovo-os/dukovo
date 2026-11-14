@@ -468,6 +468,22 @@ socket outlives the capability it was made with, so the program and
 what it started are stopped, *SIGTERM* and two seconds later *SIGKILL*,
 and bundle exits with 143; its next run goes without.
 
+# SOCKETS
+
+A bundle can offer a socket to others (ADR 0385, 0477): its manifest names
+it in *provides*, and a bundle that needs it names it in *uses* as
+_PROVIDER_ID/NAME_ (*manifest.json*(5)). Installing the second bundle
+grants it when the provider's *to* allows: for *"anyone"* at once, for
+*"publisher"* when both are signed by one key, for *"approved"* when you
+approve it: the sheet says "uses the socket _NAME_ of _PROVIDER_, which it
+offers to the programs you approve", and your yes, or *--yes*, approves it
+with the rest. For *"system"* never. The provider must be installed for
+everyone first. A bundle that requires a socket it cannot have is not
+installed, and one that only uses it is installed without. A bundle that
+is not given the socket does not see it in its view, and the socket's mode
+refuses it anyway. A person's own programs do not reach a socket offered
+to the approved yet.
+
 # CATALOGS
 
 A catalog is a repository of bundles, signed as The Update Framework

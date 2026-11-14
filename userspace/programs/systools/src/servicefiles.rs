@@ -30,14 +30,15 @@ use spark_api::graph::Link;
 use spark_api::show;
 
 use crate::service::shown;
+use crate::timerd::protocol::TimerRow;
 use crate::util::{self, Fail, fail, usage};
-use crate::{power, prompt, servicetry};
+use crate::{power, prompt, servicetry, timerd};
 
 /// Where Spark reads the service files.
 pub const DIR: &str = "/system/settings/spark/services";
 
 /// Where the system's own service files are kept, as Spark copies them.
-const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
+pub(crate) const DEFAULTS: &str = "/system/resources/default-settings/spark/services";
 
 /// Where Spark keeps the last copy of each service's file, and of its
 /// override beneath `settings.d`, that it read: the copy a service that
@@ -705,12 +706,30 @@ pub fn turn(name: &str, on: bool) -> Result<(), Fail> {
         let _ = fs::remove_file(&new);
         return Err(util::failed(&path, e));
     }
-    let verb = if on { "start" } else { "stop" };
-    let answer = power::request(&format!("{verb} {name}"))?;
+    // Spark does for it what it does at boot: an on-connection service
+    // waits for its first connection (ADR 0477), and one with a timer is
+    // left for timerd (ADR 0478), rather than running at once.
+    let (verb, request) = if on {
+        ("start", format!("start {name} --as-at-boot"))
+    } else {
+        ("stop", format!("stop {name}"))
+    };
+    let answer = power::request(&request)?;
     if let Some(why) = answer.strip_prefix("error: ") {
         return Err(fail(format!("cannot {verb} {name}: {}", why.trim_end())));
     }
+    if has_timer(&text) {
+        // timerd reads the files again when it lists the timers, so that
+        // it keeps this one's times from now, not from its next reading.
+        // One that cannot be reached reads them when it starts.
+        let _ = timerd::show::timers();
+    }
     Ok(())
+}
+
+/// Whether the service file `text` has a `[timer]`.
+fn has_timer(text: &str) -> bool {
+    service::from_toml(text).is_ok_and(|file| file.timer.is_some())
 }
 
 /// `service NAME enable` and `service NAME disable`: the service starts
@@ -727,12 +746,34 @@ pub fn enable(name: &str, on: bool) -> Result<i32, Fail> {
         )));
     }
     turn(name, on)?;
-    if on {
-        println!("{name} is running, and starts at each boot.");
-    } else {
-        println!("{name} is stopped, and no longer starts at boot.");
+    let file = service::from_toml(&text(name).unwrap_or_default()).ok();
+    let timer = file.as_ref().is_some_and(|file| file.timer.is_some());
+    let waits = file.is_some_and(|file| file.start == service::Start::OnConnection);
+    match (on, timer) {
+        (true, true) => println!("{}", timer_words(name)),
+        (true, false) if waits => {
+            println!("{name} waits for a connection, which starts it, now and from each boot.");
+        }
+        (true, false) => println!("{name} is running, and starts at each boot."),
+        (false, true) => println!("{name} is stopped, and its timer no longer starts it."),
+        (false, false) => println!("{name} is stopped, and no longer starts at boot."),
     }
     Ok(0)
+}
+
+/// What `service NAME enable` says of a service with a timer: when timerd
+/// starts it next, as timerd says.
+fn timer_words(name: &str) -> String {
+    let said = format!("{name} is enabled: timerd starts it at the times its timer names");
+    let row = timerd::show::timers().map(|rows| rows.into_iter().find(|row| row.name == name));
+    match row {
+        Ok(Some(row)) if row.running => format!("{said}, and runs it now."),
+        Ok(Some(TimerRow { next: Some(next), .. })) => {
+            format!("{said}, the next at {}.", util::local_time(next, "%Y-%m-%d %H:%M:%S"))
+        }
+        Ok(_) => format!("{said}, but none comes within five years."),
+        Err(why) => format!("{said} ({why})."),
+    }
 }
 
 /// Whether `name` names a service file in [`DIR`], not a path.
@@ -745,6 +786,15 @@ pub(crate) fn name_ok(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_with_a_timer_is_told_to_timerd() {
+        let plain =
+            "service_version = 1\ndescription = \"x\"\nprogram = \"/system/commands/true\"\n";
+        assert!(!has_timer(plain));
+        assert!(has_timer(&format!("{plain}\n[timer]\nat = [\"0 3 * * *\"]\n")));
+        assert!(!has_timer("not a service file"));
+    }
 
     #[test]
     fn only_a_services_name_is_enabled() {

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The io-weight boot test's reader of four times the weight: it reads as
+# iow-light does and, when the disk's queue has more requests waiting
+# than it lets go at once, gets four times as many of them through
+# (ADR 0476).
+
+service_version = 1
+description = "Reads a disk at four times the default I/O weight"
+program = "/system/tests/posix/diskread"
+arguments = ["/devices/vda", "16", "64"]
+restart = "never"
+
+[limits]
+io_weight = 400
+
+# The disk it reads.
+[permissions]
+files.read = ["/devices/vda"]

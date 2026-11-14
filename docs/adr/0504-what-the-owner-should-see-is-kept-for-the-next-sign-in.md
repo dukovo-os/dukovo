@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0504. What the owner should see is kept for the next sign-in
 
-- Status: Accepted
+- Status: Accepted; the health check keeps the result of a search too, as `bisect`, since [0475](0475-changes-bisect-halves-the-changes-between-two-starts-with-one-start-trials.md), and tune keeps a notice for a virtual machine, as `tune`, since [0476](0476-a-service-s-limits-cover-threads-disks-and-open-files-and-tune-sets-the-kernel-s-settings-from-profiles.md)
 - Date: 2026-11-12
 
 ## Context

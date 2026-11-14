@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# For a laptop on its battery, or a machine that is mostly idle.
+#
+# A profile lists the kernel settings it sets (radix-kernel-settings(2)),
+# each with the reason it gives that value. Every setting it does not list
+# is put back to the value the kernel started with, so a profile changes
+# nothing it does not name. tune(8) explains how one is chosen, and
+# `tune show power-saver` says what this one sets.
+
+description = "Less power: the CPUs lean to saving it"
+
+[settings]
+# The CPUs lean to saving power, and run slower when the work allows.
+"cpu.energy_preference" = "power"
+# Fewer thread switches is less work for the same work done.
+"sched.slice_us" = 4000

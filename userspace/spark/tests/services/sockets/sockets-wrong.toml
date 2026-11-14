@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The sockets boot test's mistake: a socket on a port that network.listen
+# does not name, which service check refuses at the line of its port.
+
+service_version = 1
+description = "Names a socket whose port it may not listen on"
+program = "/system/tests/posix/listenfd"
+enabled = false
+start = "on-connection"
+
+[permissions]
+network.listen = [8090]
+
+[[sockets]]
+port = 8091

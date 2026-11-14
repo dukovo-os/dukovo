@@ -98,6 +98,8 @@ pub enum Object {
     Device(DeviceRef),
     /// The firewall's rules (radix-firewall(2)).
     Firewall,
+    /// The kernel's settings (radix-kernel-settings(2)).
+    KernelSettings,
 }
 
 impl Object {
@@ -121,6 +123,7 @@ impl Object {
             Object::Clock => ObjectKind::Clock,
             Object::Devices | Object::Device(_) => ObjectKind::Device,
             Object::Firewall => ObjectKind::Firewall,
+            Object::KernelSettings => ObjectKind::KernelSettings,
         }
     }
 }
@@ -214,6 +217,7 @@ enum Kept {
     Devices,
     Device(Weak<DeviceObject, Kmalloc>),
     Firewall,
+    KernelSettings,
 }
 
 impl Kept {
@@ -237,6 +241,7 @@ impl Kept {
             Object::Devices => Kept::Devices,
             Object::Device(device) => Kept::Device(Arc::downgrade(device)),
             Object::Firewall => Kept::Firewall,
+            Object::KernelSettings => Kept::KernelSettings,
         }
     }
 
@@ -261,6 +266,7 @@ impl Kept {
             Kept::Devices => Object::Devices,
             Kept::Device(device) => Object::Device(device.upgrade()?),
             Kept::Firewall => Object::Firewall,
+            Kept::KernelSettings => Object::KernelSettings,
         })
     }
 }
@@ -748,7 +754,8 @@ pub fn released(kept: Option<Recorded>, by: Option<&super::UserThread>) {
         | Object::Names
         | Object::Clock
         | Object::Devices
-        | Object::Firewall => {}
+        | Object::Firewall
+        | Object::KernelSettings => {}
     }
     // What it was charged is given back once it has closed.
     match (charge, by) {

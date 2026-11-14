@@ -249,8 +249,15 @@ go there.
 
 # UPDATING SERVICES
 
-An update or going back stops the services the version before ran and
-waits until Spark says they have stopped (ADR 0386). It copies each
+An update or going back stops the services the version before ran, with
+*stop NAME --keep-sockets*, so that Spark keeps their sockets open and
+connections wait for the new version and none is refused (ADR 0477), and
+waits until Spark says they have stopped (ADR 0386). A service that waits
+for a connection, with its sockets held and no process, has stopped. The
+wait is as long as the longest *stop.timeout* among the services it
+stops (*service.toml*(5)), 5 seconds for one that says none, and 10 seconds
+more, for Spark to end what is left of them and to say so (ADRs 0386
+and 0477). It copies each
 account's data folder to _/shared/services/ID/.snapshots/ACCOUNT/VERSION_
 for the version that ran, keeping each file's owner, as *bundle run*
 does for an app's data; going back to a version whose copy is there,
@@ -274,6 +281,36 @@ does: the version before, its services' data as that version left it,
 and a hold, so that no update tries the failed version again unasked.
 The update fails with why, and the history keeps it.
 
+# SOCKETS
+
+A service of a bundle names its *sockets* in its manifest
+(*manifest.json*(5)), and bundled writes them into its service file with
+*start*, so that Spark holds them as it does a service file's, and a
+service that starts *"on-connection"* waits for its first connection
+(ADR 0477). It writes the service's *stop* and *backup* in the same way
+as *[stop]* and *[backup]*.
+
+A bundle offers a socket in *provides*. As it installs the provider,
+bundled has *authd*(8) make the socket's group, _ACCOUNT-SOCKET_, for
+*"publisher"* and *"approved"*, and removes it with the bundle. A bundle
+that names the socket in *uses*, as _PROVIDER_ID/NAME_, is granted it as
+it is installed when the provider's *to* allows: *"anyone"*; *"publisher"*
+when both are signed by the same key; *"approved"* when the person who
+installs it approves it, which the install's sheet asks ("uses the socket
+_NAME_ of _PROVIDER_, which it offers to the programs you approve") and
+the install's yes, or *--yes*, answers; *"system"* never. The provider
+must be installed for everyone and offer the socket. A required socket
+that is not given stops the install, with why and what to do; an
+optional one is left out, and the install says so. A bundle that adds
+such a socket to an update asks for more, as a new permission does. A
+given socket's place is added to the *files.read-write* of every service
+of the bundle, and the socket's group, when it has one, to its *groups*,
+in the service file bundled writes. Without the grant a service has
+neither. The provider's service file says who connects: *to = "anyone"*
+or *to = "system"*, or *group = "ACCOUNT-socket"*, which *authd*(8)
+makes (*SocketGroup*) and records as the bundle's, and removes with the
+account.
+
 # REMOVING
 
 bundled removes the sealed folder, the version kept to go back to, and
@@ -285,7 +322,8 @@ up and one from anyone else is refused. At its start it forgets a
 recorded bundle whose folder is gone, and removes the working folders
 it left behind.
 
-Removing a bundle installed for everyone stops its services and removes
+Removing a bundle installed for everyone stops its services, with a plain
+*stop*, which closes their sockets, and removes
 their files. Their accounts and data folders stay, for a later install
 to take up; with *--purge*, authd removes the accounts, whose numbers
 are retired, and bundled removes _/shared/services/ID_.

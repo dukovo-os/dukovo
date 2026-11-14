@@ -69,7 +69,9 @@ all, as a Debian package's daemon runs as a system user of its own.
   bundle's service takes its name.
 - **When it starts**: `at-boot` is enabled, and Spark starts it at once;
   `when-enabled` waits for `service NAME enable`, which the install's
-  message says. `on-connection` starts at boot for now. An update or a
+  message says. `on-connection` is not started at boot: Spark holds
+  the service's sockets and starts it at its first connection (ADR 0477).
+  An update or a
   rollback writes the files again, keeps what an administrator enabled or
   disabled, starts again each enabled service, takes away the services
   the version before ran that this one does not, and counts a service the
@@ -95,12 +97,15 @@ all, as a Debian package's daemon runs as a system user of its own.
   it runs as it in its data folder, which Alice cannot read, that Spark
   starts it again after it crashes and at the next boot, and that
   `--purge` removes its account and data.
+- **Sockets** (ADR 0477). A service's manifest names its `sockets`, which
+  Spark holds and passes as `sd_listen_fds` does, and a bundle offers a
+  socket to others in `provides`, whom `to` names and a consumer's
+  `uses.socket` asks for.
 - **Not yet:**
   - The health check, which goes back by itself when a new version
     fails it, and the copies of a service's data before an update (13e's
     service updates).
   - Settings files shipped as `.default` beside the administrator's, and
     `settings.d` (13e's service updates).
-  - Sockets a bundle provides to others, and `on-connection` starting a
-    service at its first connection; `needs`, which waits for interfaces;
+  - `needs`, which waits for interfaces;
     and `open_files`, which Spark does not set yet.

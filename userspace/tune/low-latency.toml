@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# For a machine people work at, or whose programs must answer quickly.
+#
+# A profile lists the kernel settings it sets (radix-kernel-settings(2)),
+# each with the reason it gives that value. Every setting it does not list
+# is put back to the value the kernel started with, so a profile changes
+# nothing it does not name. tune(8) explains how one is chosen, and
+# `tune show low-latency` says what this one sets.
+
+description = "Quick answers: short slices, CPUs at speed"
+
+[settings]
+# The CPUs are at speed when work arrives, so nothing waits for them.
+"cpu.energy_preference" = "performance"
+# Each waiting thread gets its turn sooner, at the cost of more switches.
+"sched.slice_us" = 1000

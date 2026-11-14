@@ -11,6 +11,10 @@
 #
 # Rough is fine: the times change from run to run by about 10 percent.
 # Measured 2026-11-06 on main and pull request runs.
+#
+# A test's line also sets how long its boot may take before a wait gives
+# up: three times the line, when that is more than `--timeout` (300
+# seconds), for a test that must wait out minutes of the clock.
 accounts 26
 acpi-power 31
 acpi-thermal 32
@@ -19,6 +23,7 @@ audio-cd 60
 backup 200
 bios-cdrom 12
 bios-usb 11
+bisect 420
 bitlocker 39
 btrfs 32
 btrfs-log 16
@@ -44,6 +49,7 @@ consoles 38
 crash-dump 140
 crash-log-bios 23
 crash-log-uefi 26
+crontab 480
 dhcp 25
 disc-burn 110
 discs 20
@@ -178,6 +184,7 @@ storage-tools 54
 storage-uas 36
 storage-usb 34
 swap 36
+timers 240
 tlb 15
 tls 22
 uefi-cdrom 11

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# For a machine whose work is guests: their virtual CPUs are its threads.
+#
+# A profile lists the kernel settings it sets (radix-kernel-settings(2)),
+# each with the reason it gives that value. Every setting it does not list
+# is put back to the value the kernel started with, so a profile changes
+# nothing it does not name. tune(8) explains how one is chosen, and
+# `tune show vm-host` says what this one sets.
+
+description = "A machine that runs virtual machines"
+
+[settings]
+# The guests' virtual CPUs run on these, so they run at speed.
+"cpu.energy_preference" = "performance"
+# A virtual CPU is a thread that runs long: fewer switches between them.
+"sched.slice_us" = 6000
+# Many guests read their disks at once: a middle read-ahead serves each.
+"disk.read_ahead_kib" = 512

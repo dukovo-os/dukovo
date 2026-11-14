@@ -88,7 +88,7 @@ fn in_rescue(vm: &mut Vm) -> Result<usize, String> {
 
 /// Chooses `choice` in Rescue's menu.
 fn choose(vm: &mut Vm, choice: &str) -> Result<(), String> {
-    answer_prompt(vm, "Choose 0 to 12:", choice)
+    answer_prompt(vm, "Choose 0 to 13:", choice)
 }
 
 /// The second boot, from the installed disk alone.
@@ -140,19 +140,19 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     }
     // Its likely cause (ADR 0474): no start failed, so no signature the
     // release ships matches what Rescue can see.
-    choose(vm, "12")?;
+    choose(vm, "1")?;
     vm.expect_screen(&["No known cause matches what Rescue can see."])?;
 
     // Check the network turns networking on and shows what netcheck
     // finds, until a key is pressed (ADR 0489).
-    choose(vm, "7")?;
+    choose(vm, "9")?;
     wait_for_screen(vm, "Press Enter to go back to the choices.", NETWORK_CHECK_SECONDS)?;
     vm.expect_screen(&["netcheck: "])?;
     answer_prompt(vm, "Press Enter to go back to the choices.", "")?;
     vm.expect_screen(&["Back in Rescue."])?;
 
     // Both slots broken: the health check goes, and the only slot.
-    choose(vm, "8")?;
+    choose(vm, "10")?;
     answer_prompt(
         vm,
         "#",
@@ -164,17 +164,17 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_screen(&["gone: 42"])?;
     answer_prompt(vm, "#", "exit")?;
     vm.expect_screen(&["Back in Rescue."])?;
-    choose(vm, "10")?;
+    choose(vm, "12")?;
 
     // No slot to start: Rescue starts by itself, and reinstalls.
     in_rescue(vm)?;
-    choose(vm, "1")?;
+    choose(vm, "3")?;
     answer_prompt(vm, "type the folder or file:", "")?;
     vm.expect_screen(&[&format!("Reinstall Dukovo {VERSION} into slot A?")])?;
     answer_prompt(vm, "Type yes to reinstall:", "yes")?;
     wait_for_screen(vm, "is back in slot A", REINSTALL_SECONDS)?;
     vm.expect_screen(&[&format!("Dukovo {VERSION} is back in slot A, every file checked")])?;
-    choose(vm, "10")?;
+    choose(vm, "12")?;
 
     // The system starts as usual, with alice's file and app.
     vm.expect(&format!("spark: /system is Dukovo's root on {ROOT}"))?;

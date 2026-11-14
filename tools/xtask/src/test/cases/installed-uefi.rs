@@ -10,7 +10,9 @@
 //! 10 seconds of GRUB handing over, by the kernel's clock. Idle, with the
 //! services running, the machine uses less than 100 MiB, counting the
 //! startup archive the boot loader keeps in memory, which must be under
-//! a MiB. Both are budgets CI holds every change to (ADR 0427).
+//! a MiB. Both are budgets CI holds every change to (ADR 0427), and the
+//! test prints the archive's size in KiB, so that every pull request's
+//! log shows how it moves.
 
 use super::super::*;
 
@@ -53,6 +55,7 @@ pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     // The rest of the line may not have come yet when its start has.
     vm.expect(" entries; starting ")?;
     let archive = archive_kib(&vm.log())?;
+    eprintln!("          startup archive: {archive} KiB of {STARTUP_ARCHIVE_KIB} KiB");
     if archive > STARTUP_ARCHIVE_KIB {
         return Err(format!(
             "the boot loader gave a boot archive of {archive} KiB, not the startup archive of \

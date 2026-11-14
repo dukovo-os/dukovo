@@ -73,7 +73,10 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 *domain*
 	A resource domain: a CPU weight and a memory limit shared by the
 	threads in it, and its class for the out-of-memory policy (see
-	*radix-scheduling*(7)). Rights: *read*, *control*.
+	*radix-scheduling*(7)); and since ADR 0476 a limit on its threads
+	and a weight and rates for its disk I/O, with counts of what it has
+	used (see *radix-resource-domain*(2)). Rights: *read*, to ask what
+	it is and has used; *control*, to change it.
 
 *random*
 	The kernel's random number generator, which every program receives
@@ -149,6 +152,16 @@ rights listed, plus *copy* and *transfer*, which every kind has.
 	gives the services with *admin.firewall* (see *radix-firewall*(2),
 	ADR 0334). Rights: *read*, to ask its rules, its counts and what
 	listens; *control*, to give it new rules.
+
+*kernel settings*
+	The kernel's few settings, such as the CPUs' energy preference, the
+	scheduler's slice and the page cache's read-ahead, which only Spark
+	holds from the kernel and gives the services with *admin.tune*, as
+	the *tune* service's file does (see *radix-kernel-settings*(2), ADR
+	0476). Rights: *read*, to list them with their values, their values
+	at start and the values they take; *control*, to set one. Everyone
+	reads the values in _/kernel/settings_ without it
+	(*radix-sysfs*(5)).
 
 # RIGHTS
 
@@ -293,7 +306,7 @@ Operations on capabilities fail with one of these, and change nothing:
 At boot the kernel reports its store:
 
 ```
-Capabilities: ready; 24 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
+Capabilities: ready; 25 object kinds, 15 rights, spaces of up to 65536 slots, derivations up to 64 deep
 ```
 
 The *kdb* command *caps* counts the spaces, capabilities and objects by
@@ -303,4 +316,4 @@ are described in *radix-debug*(7).
 # SEE ALSO
 
 *radix-ipc*(7), *radix-capability*(2), *radix-names*(2), *radix-errors*(2), *radix-debug*(7),
-*dukovo-boot*(7), *ob*(1)
+*radix-kernel-settings*(2), *radix-resource-domain*(2), *dukovo-boot*(7), *ob*(1)

@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Service timers (ADR 0478): service list --timers shows a service with
+# a timer, a clock set two hours on makes its hourly timer run once, and
+# the timers are kept after the power is cut and given back. The boot test
+# timers covers the catch-up after a start, which needs a clock the
+# machine does not keep, and the skipped time.
+about = "service list --timers shows a service with a timer, a clock set forward makes its hourly timer run once, and the timers are kept after a power cut (ADR 0478)"
+time = "10m"
+
+# From nothing: a run before may have left them.
+[[step]]
+run = '''sh -c 'service lab-timer disable; cd /system/settings/spark/services && rm -f lab-timer.toml && printf "service_version = 1\ndescription = \"Lab timer\"\nprogram = \"/system/commands/sh\"\narguments = [\"-c\", \"echo run >> /system/state/lab-timer/runs\"]\nrestart = \"never\"\n[timer]\nat = [\"hourly\"]\n[permissions]\nfiles.read-write = [\"/system/state/lab-timer\"]\n" > lab-timer.toml && mkdir -p /system/state/lab-timer && : > /system/state/lab-timer/runs && service lab-timer enable && echo installed' '''
+root = true
+expect = "installed"
+[[step]]
+# The table has its header only on a terminal: the line names the
+# service and the time it starts next.
+run = """sh -c 'service check lab-timer && echo "listed $(service list --timers | grep -c "^lab-timer  *20[0-9][0-9]-")"'"""
+root = true
+expect = ["lab-timer.toml: ok", "listed 1"]
+[[step]]
+run = "service timerd status"
+root = true
+expect = "running"
+# timed would put the clock right again: it stops for the test.
+[[step]]
+run = "sh -c 'service timed stop; wc -l < /system/state/lab-timer/runs > /system/state/lab-timer/before && timedatectl set-time \"2031-06-15 08:30:00\" && echo moved'"
+root = true
+expect = "moved"
+[[step]]
+wait = "90s"
+[[step]]
+run = "sh -c 'echo \"grew $(( $(wc -l < /system/state/lab-timer/runs) - $(cat /system/state/lab-timer/before) ))\"; service lab-timer status'"
+root = true
+# `service status` of a service that is not running exits 3, as
+# systemctl's does.
+exit = 3
+expect = ["grew 1", "last start "]
+# The power goes, and comes back: the timer is still there.
+[[step]]
+run = "sync"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+[[step]]
+run = "service list --timers"
+root = true
+expect = "lab-timer"
+# Put back as it was: the clock to the lab PC's, timed on.
+[[step]]
+host = "sh {here}/../time/clock-back.sh {machine} {machine-port:22}"
+input = "{password}\n"
+expect = "set the machine's clock to the lab PC's"
+[[step]]
+run = "sh -c 'service lab-timer disable; rm -r /system/settings/spark/services/lab-timer.toml /system/state/lab-timer; service timed start; echo removed'"
+root = true
+expect = "removed"

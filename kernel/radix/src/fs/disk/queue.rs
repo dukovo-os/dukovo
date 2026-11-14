@@ -32,17 +32,27 @@
 //! that the device empties for it. Once in flight, every request is the
 //! device's alike.
 //!
+//! While a resource domain has a disk I/O weight other than the default,
+//! a request of a volume's takes its turn first: the disk lets up to
+//! [`SHARE_DEPTH`] of them go at once and serves those that wait by rank
+//! and then in proportion to their domains' weights ([`Shares`], ADR
+//! 0476). A domain's rates hold its thread before it gets so far
+//! ([`account::keep_to_rates`]).
+//!
 //! A raw transfer ([`BlockDevice::read_frames`], into memory a program
 //! lends), and one of the page cache's or a filesystem's of more than
 //! [`MAX_SEGMENTS`], goes in requests of as many segments as the device
 //! takes: a virtio disk's take 254 pages, an AHCI disk's 32. A transfer
-//! of more goes as several requests,
-//! all in flight at once, and the device hears of them
-//! together: a controller may hold back the doorbell of a request that
-//! has another right behind it ([`Controller::submit`]'s `more`), which
-//! lets QEMU's virtio disk merge them into one read or write of its file.
-//! Its thread waits for the last request first: requests tend to end in
-//! order, so the earlier ones' completions wake no one.
+//! of more goes as several requests, up to [`PARTS`] in flight at once,
+//! and the device hears of them together: a controller may hold back the
+//! doorbell of a request that has another right behind it
+//! ([`Controller::submit`]'s `more`), which lets QEMU's virtio disk merge
+//! them into one read or write of its file. Only the first of them waits
+//! for room; the others go while there is room, and the thread collects
+//! what it started before it waits again, so that threads that each hold
+//! some of a lane's slots never wait for one another's. Its thread waits
+//! for the last request first: requests tend to end in order, so the
+//! earlier ones' completions wake no one.
 //!
 //! In a virtual machine, a thread that has its CPU to itself polls for
 //! its request before it sleeps, with the device's interrupt off, for as
@@ -73,9 +83,10 @@ use core::fmt::Write as _;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use radix_abi::process::{IO_LEVELS, IoClass};
+use radix_block::share::{Shares, Ticket};
 use radix_block::{
-    BlockDevice, Error, Health, Info, Page, Segment, SegmentMut, SelfTest, SelfTestState, Stats,
-    Write,
+    BlockDevice, Error, Health, Info, PAGE_SIZE, Page, Segment, SegmentMut, SelfTest,
+    SelfTestState, Stats, Write,
 };
 use radix_hal::{Cpu, CpuLocal, Devices, PciAddress, Timer};
 use radix_klog::{TextBuf, warn};
@@ -83,10 +94,10 @@ use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sched::HaltPoll;
 use radix_sync::SpinLock;
 
-use super::{Name, READ_SECTORS, READS, WRITES, WRITTEN_SECTORS};
-use crate::Arch;
+use super::{Name, READ_SECTORS, READS, WRITES, WRITTEN_SECTORS, account};
 use crate::sched::{self, ThreadRef, wait};
 use crate::user::posix::priority;
+use crate::{Arch, domains};
 
 /// Requests in flight or waiting to be collected, per lane.
 pub const SLOTS: usize = 64;
@@ -122,6 +133,16 @@ const RETRY: u8 = 5;
 const RANKS: usize = 2 * IO_LEVELS as usize + 1;
 /// The idle class's rank, the least urgent.
 const IDLE: usize = RANKS - 1;
+
+/// The most requests of a disk's volumes that its shares let go at once
+/// while domains have weights ([`Disk::take_turn`]). Weights decide only
+/// the order in which requests that wait go, so the depth must be less
+/// than the requests the domains that share a disk keep on it: with 32,
+/// two services of 16 threads each reading had every request on the disk
+/// at once and shared it evenly whatever their weights. Eight keep a disk
+/// busy with large requests; small random reads on an NVMe disk, which
+/// needs more at once for its fastest, are slower while weights are set.
+const SHARE_DEPTH: u32 = 8;
 
 /// What a request does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,6 +382,8 @@ pub struct Disk<C> {
     /// How many of them the device takes only alone, and wait for it to
     /// empty, by rank.
     lone: [AtomicU32; RANKS],
+    /// The domains' turns while some have weights ([`Disk::take_turn`]).
+    shares: SpinLock<Shares>,
     /// An error stopped the controller: a waiting thread is to recover it.
     attention: AtomicBool,
     /// A thread has the controller out to recover or reset it.
@@ -435,6 +458,7 @@ impl<C: Controller> Disk<C> {
             spare: SpinLock::new(spare),
             waiting: [const { AtomicU32::new(0) }; RANKS],
             lone: [const { AtomicU32::new(0) }; RANKS],
+            shares: SpinLock::new(Shares::new(SHARE_DEPTH)?),
             attention: AtomicBool::new(false),
             recovering: AtomicBool::new(false),
             failures: SpinLock::new((0, 0)),
@@ -731,6 +755,68 @@ impl<C: Controller> Disk<C> {
         ended()
     }
 
+    /// What the threads waiting for their turn sleep on.
+    fn shares_key(&self) -> usize {
+        core::ptr::from_ref(&self.shares) as usize
+    }
+
+    /// Waits for the turn of the running thread's request of `pages`
+    /// pages, of rank `rank`, while a domain has a disk I/O weight other
+    /// than the default (ADR 0476): up to [`SHARE_DEPTH`] go at once, and
+    /// those that wait go by rank, then in proportion to their domains'
+    /// weights ([`Shares`]). The wait counts in the domain's wait time.
+    /// Returns the turn, to give back once the request is done
+    /// ([`Disk::turn_done`]); `None` when the request goes as it comes:
+    /// no domain has a weight, or the shares of [`radix_block::share::SHARES`]
+    /// domains wait already.
+    fn take_turn(&self, rank: usize, pages: u64) -> Option<Ticket> {
+        if !domains::io_weighted() {
+            return None;
+        }
+        let me = sched::running()?;
+        let domain = me.domain();
+        let ticket =
+            self.shares.lock_irq().arrive(domain.id(), rank as u8, domain.flat_io_weight())?;
+        let cost = Shares::cost(pages, self.info.rotational);
+        let start = sched::now_ns();
+        let mut waited = false;
+        loop {
+            let mut shares = self.shares.lock_irq();
+            if shares.may_go(ticket) {
+                shares.go(ticket, cost);
+                let more = shares.next_may_go();
+                drop(shares);
+                if more {
+                    wait::wake_all(self.shares_key());
+                }
+                break;
+            }
+            drop(shares);
+            waited = true;
+            // Taken under the waiters' table, never the other way round.
+            wait::wait_until(self.shares_key(), "disk turn", || {
+                self.shares.lock_irq().may_go(ticket)
+            });
+        }
+        if waited {
+            domain.count_disk_wait(sched::now_ns().saturating_sub(start), 0);
+        }
+        Some(ticket)
+    }
+
+    /// Gives back the turn of a request that is done
+    /// ([`Disk::take_turn`]), and wakes those that wait for one.
+    fn turn_done(&self, turn: Option<Ticket>) {
+        let Some(ticket) = turn else { return };
+        let mut shares = self.shares.lock_irq();
+        shares.done(ticket);
+        let waiting = shares.waiting();
+        drop(shares);
+        if waiting {
+            wait::wake_all(self.shares_key());
+        }
+    }
+
     /// Whether a request of rank `rank` may take room now: no more urgent
     /// one waits for it, and for the idle class, no other request waits or
     /// is in flight in any lane, as Linux's idle class is served only when
@@ -767,6 +853,37 @@ impl<C: Controller> Disk<C> {
         request: &Request<'_>,
         more: bool,
     ) -> Result<usize, Error> {
+        // One that waits ends with a slot, or an error.
+        self.start(lane, rank, held, request, more, true)?.ok_or(Error::Io)
+    }
+
+    /// Starts the next part of a transfer whose earlier parts hold slots
+    /// in `lane` and have not been collected: only if there is room now,
+    /// and `None` if not, when the caller collects what it holds before it
+    /// waits for more. A thread that waited for room while holding slots
+    /// could deadlock with others doing the same: between them they hold
+    /// every slot, each waiting for one that only a waiter frees, as
+    /// sixteen threads reading a SATA disk raw, 1 MiB at a time, did.
+    fn issue_if_room(
+        &self,
+        lane: usize,
+        rank: usize,
+        request: &Request<'_>,
+        more: bool,
+    ) -> Result<Option<usize>, Error> {
+        self.start(lane, rank, None, request, more, false)
+    }
+
+    /// [`Disk::issue`], and with `waits` false, [`Disk::issue_if_room`].
+    fn start(
+        &self,
+        lane: usize,
+        rank: usize,
+        held: Option<usize>,
+        request: &Request<'_>,
+        more: bool,
+        waits: bool,
+    ) -> Result<Option<usize>, Error> {
         let this = &self.lanes[lane];
         self.waiting[rank].fetch_add(1, Ordering::AcqRel);
         let waiting = Waiting(&self.waiting[rank]);
@@ -789,9 +906,9 @@ impl<C: Controller> Disk<C> {
                         if controller.room(request.op, request.data.len()) {
                             controller.submit(slot as u8, request, more)?;
                             this.requests[slot].store(PENDING, Ordering::Release);
-                            break slot;
+                            break Some(slot);
                         }
-                        if lone.is_none() && controller.alone(request.op) {
+                        if waits && lone.is_none() && controller.alone(request.op) {
                             self.lone[rank].fetch_add(1, Ordering::AcqRel);
                             lone = Some(Waiting(&self.lone[rank]));
                         }
@@ -801,7 +918,10 @@ impl<C: Controller> Disk<C> {
             // No room, or a more urgent request comes first, or the
             // controller is being recovered: wait for a completion, or a
             // slot freed, once the device knows of what was held back
-            // for it.
+            // for it; or, for a part that may not wait, say so.
+            if !waits {
+                break None;
+            }
             self.kick(lane);
             let room = || this.events.load(Ordering::SeqCst) != seen;
             this.room_waiters.fetch_add(1, Ordering::SeqCst);
@@ -902,21 +1022,35 @@ impl<C: Controller> Disk<C> {
         self.reaching(core::slice::from_ref(request), || self.request_parts(request))
     }
 
-    /// [`Disk::request_all`], with the buffers mapped.
+    /// [`Disk::request_all`], with the buffers mapped. The first part of
+    /// each window waits for room; the rest go only while there is room,
+    /// and the window ends at the first that finds none
+    /// ([`Disk::issue_if_room`]).
     fn request_parts(&self, request: &Request<'_>) -> Result<(), Error> {
         let (lane, rank) = (self.here(), running_rank());
         let most = self.raw_segments;
+        let buffers = request.data;
         let mut result = Ok(());
         let mut at = request.sector;
-        for window in request.data.chunks(most * PARTS) {
-            // Each part's slot, buffers and first sector.
-            let mut parts = [(0usize, 0usize, 0u64); PARTS];
+        // The first buffer that no part has carried yet.
+        let mut next = 0;
+        while next < buffers.len() {
+            // Each part's slot, its first and last buffers, and its first
+            // sector.
+            let mut parts = [(0usize, 0usize, 0usize, 0u64); PARTS];
             let mut issued = 0;
-            for (i, part) in window.chunks(most).enumerate() {
-                let more = (i + 1) * most < window.len();
-                let part = Request { sector: at, data: part, ..*request };
-                match self.issue(lane, rank, None, &part, more) {
-                    Ok(slot) => parts[i] = (slot, i * most, at),
+            while issued < PARTS && next < buffers.len() {
+                let end = (next + most).min(buffers.len());
+                let more = issued + 1 < PARTS && end < buffers.len();
+                let part = Request { sector: at, data: &buffers[next..end], ..*request };
+                let started = if issued == 0 {
+                    self.issue(lane, rank, None, &part, more).map(Some)
+                } else {
+                    self.issue_if_room(lane, rank, &part, more)
+                };
+                match started {
+                    Ok(Some(slot)) => parts[issued] = (slot, next, end, at),
+                    Ok(None) => break,
                     Err(err) => {
                         result = Err(err);
                         break;
@@ -924,12 +1058,12 @@ impl<C: Controller> Disk<C> {
                 }
                 issued += 1;
                 at += sectors(part.data);
+                next = end;
             }
             self.kick(lane);
             // The last first: the others have likely ended by then.
-            for &(slot, first, start) in parts[..issued].iter().rev() {
-                let data = &window[first..(first + most).min(window.len())];
-                let part = Request { sector: start, data, ..*request };
+            for &(slot, first, end, start) in parts[..issued].iter().rev() {
+                let part = Request { sector: start, data: &buffers[first..end], ..*request };
                 let settled = self.settle(lane, rank, slot, &part);
                 if result.is_ok() {
                     result = settled;
@@ -947,16 +1081,27 @@ impl<C: Controller> Disk<C> {
         self.reaching(requests, || self.request_windows(requests))
     }
 
-    /// [`Disk::request_many`], with the buffers mapped.
+    /// [`Disk::request_many`], with the buffers mapped, in windows as
+    /// [`Disk::request_parts`] has them.
     fn request_windows(&self, requests: &[Request<'_>]) -> Result<(), Error> {
         let (lane, rank) = (self.here(), running_rank());
         let mut result = Ok(());
-        for window in requests.chunks(PARTS) {
+        // The first request not yet carried.
+        let mut next = 0;
+        while next < requests.len() {
+            let window = &requests[next..requests.len().min(next + PARTS)];
             let mut slots = [0usize; PARTS];
             let mut issued = 0;
             for (i, request) in window.iter().enumerate() {
-                match self.issue(lane, rank, None, request, i + 1 < window.len()) {
-                    Ok(slot) => slots[i] = slot,
+                let more = i + 1 < window.len();
+                let started = if i == 0 {
+                    self.issue(lane, rank, None, request, more).map(Some)
+                } else {
+                    self.issue_if_room(lane, rank, request, more)
+                };
+                match started {
+                    Ok(Some(slot)) => slots[i] = slot,
+                    Ok(None) => break,
                     Err(err) => {
                         result = Err(err);
                         break;
@@ -973,6 +1118,7 @@ impl<C: Controller> Disk<C> {
                 }
             }
             result?;
+            next += issued;
         }
         Ok(())
     }
@@ -1217,6 +1363,18 @@ impl<C: Controller> Volume<C> {
         self.counters.count(self.disk.here(), kind, requests, sectors, f)
     }
 
+    /// Runs `f`, which moves `sectors` sectors in `requests` requests, in
+    /// its turn among the domains that share the disk
+    /// ([`Disk::take_turn`]), counted ([`Volume::counted`]) from when it
+    /// has its turn.
+    fn served<R>(&self, kind: usize, requests: u64, sectors: u64, f: impl FnOnce() -> R) -> R {
+        let pages = (sectors * radix_block::SECTOR).div_ceil(PAGE_SIZE as u64);
+        let turn = self.disk.take_turn(running_rank(), pages);
+        let result = self.counted(kind, requests, sectors, f);
+        self.disk.turn_done(turn);
+        result
+    }
+
     /// Flushes after `writes`, done with `result`, if one of them was to
     /// be durable and the disk has no forced unit access.
     fn flush_after(&self, writes: &[Write<'_>], result: Result<(), Error>) -> Result<(), Error> {
@@ -1244,7 +1402,7 @@ impl<C: Controller> Volume<C> {
         radix_hw::device_barrier();
         let buffers = segments.iter().map(|s| (s.page.phys() + s.offset as u64, s.len as u32));
         let moved = sectors_of(segments.iter().map(|s| s.len as u64));
-        self.counted(Stats::WRITE, 1, moved, || self.transfer(op, sector, buffers))
+        self.served(Stats::WRITE, 1, moved, || self.transfer(op, sector, buffers))
     }
 
     /// Carries out `op` from `sector` with `buffers`: as one request when
@@ -1310,7 +1468,9 @@ impl<C: Controller> BlockDevice for Volume<C> {
         radix_block::check(sectors, self.info.unit(), max_segments, sector, lengths)?;
         let buffers = segments.iter().map(|s| (s.page.phys() + s.offset as u64, s.len as u32));
         let moved = sectors_of(segments.iter().map(|s| s.len as u64));
-        self.counted(Stats::READ, 1, moved, || self.transfer(Op::Read, sector, buffers))?;
+        account::keep_to_rates(false, moved * radix_block::SECTOR, 1);
+        self.served(Stats::READ, 1, moved, || self.transfer(Op::Read, sector, buffers))?;
+        account::count(false, moved * radix_block::SECTOR, 1);
         for segment in segments.iter_mut() {
             let (offset, len) = (segment.offset, segment.len);
             radix_hw::device_wrote(&mut segment.page.bytes_mut()[offset..offset + len]);
@@ -1335,7 +1495,9 @@ impl<C: Controller> BlockDevice for Volume<C> {
         radix_block::check_frames(self.info.sectors, unit, sector, frames)?;
         let request = Request { op: Op::Read, target: self.target, sector, data: frames, unit };
         let moved = sectors_of(frames.iter().map(|f| u64::from(f.1)));
-        self.counted(Stats::READ, 1, moved, || self.disk.request_all(&request))?;
+        account::keep_to_rates(false, moved * radix_block::SECTOR, 1);
+        self.served(Stats::READ, 1, moved, || self.disk.request_all(&request))?;
+        account::count(false, moved * radix_block::SECTOR, 1);
         radix_hw::device_barrier();
         Ok(())
     }
@@ -1349,7 +1511,10 @@ impl<C: Controller> BlockDevice for Volume<C> {
         radix_hw::device_barrier();
         let request = Request { op: Op::Write, target: self.target, sector, data: frames, unit };
         let moved = sectors_of(frames.iter().map(|f| u64::from(f.1)));
-        self.counted(Stats::WRITE, 1, moved, || self.disk.request_all(&request))
+        account::keep_to_rates(true, moved * radix_block::SECTOR, 1);
+        self.served(Stats::WRITE, 1, moved, || self.disk.request_all(&request))?;
+        account::count(true, moved * radix_block::SECTOR, 1);
+        Ok(())
     }
 
     /// Has every write in flight at once ([`Disk::request_many`]); one of
@@ -1401,9 +1566,8 @@ impl<C: Controller> BlockDevice for Volume<C> {
             let _ = requests.push_within_capacity(request);
         }
         let moved = sectors_of(writes.iter().flat_map(|w| w.segments).map(|s| s.len as u64));
-        let result = self.counted(Stats::WRITE, writes.len() as u64, moved, || {
-            self.disk.request_many(&requests)
-        });
+        let result = self
+            .served(Stats::WRITE, writes.len() as u64, moved, || self.disk.request_many(&requests));
         self.flush_after(writes, result)
     }
 

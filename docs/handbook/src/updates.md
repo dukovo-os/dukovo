@@ -297,6 +297,71 @@ services, Rescue says so, and the start with only the essentials is the
 one to try; when none did, they stopped in the kernel or mounting the
 root, and the start with all of the kernel's messages shows where.
 
+### Finding the change that broke a start
+
+When a start fails and several things changed since the last good one,
+say an update, a boot option and two apps, `changes --failed` lists them
+all but cannot say which one did it. The failed start's notice offers a
+way to find out:
+
+```
+To find which change did it: `elevate changes bisect`, up to 2 restarts.
+```
+
+`elevate changes bisect` shows what it can try and asks before it does
+anything:
+
+```
+$ elevate changes bisect
+Start 42 failed its health check: sshd has restarted 3 times
+From the last good start, 40, these changes can each be left out for one start:
+  1. the system: Dukovo 0.15.2 to Dukovo 0.15.3
+  2. the boot options: `quiet` to `quiet nowatchdog`
+  3. app org.nginx.nginx: new, 1.30.6; installed 2026-11-12 14:03
+  4. app org.python.python: 3.14.0 to 3.14.1; installed 2026-11-12 14:05
+Finding which one takes up to 2 restarts. The machine restarts by itself for each try, ...
+Restart for the first try now? [y/N]
+```
+
+Each **try** is one start of the computer with some of the changes left
+out: the other version of the system, the old boot options, or an app's
+services not started. The computer restarts by itself for each try, a
+minute after the one before has shown how it went, and halves what is
+left: with four changes, two tries are enough. A try never changes the
+version, the settings or an app's data, and the start menu takes it
+only once, so a hang, a panic or a power cut during a try costs only
+that try; the next start is the usual one, and the search tries again.
+To stop it between tries, run `elevate changes bisect --stop`, and
+`changes bisect --status` shows each try and what it found.
+
+At the end it says which change broke the start, and how to undo it:
+
+```
+The start fails with org.nginx.nginx 1.30.6, installed 2026-11-12 14:03, and starts without it.
+To remove it: `elevate bundle remove org.nginx.nginx --for-everyone`.
+```
+
+It changes nothing itself. The computer is left running the last try,
+and starts as before at the next restart, until you take the fix. The
+result is shown at the next sign-in. When the search can only say that
+every other change was cleared, it says the change was found **by
+elimination**, and `elevate changes bisect --confirm` makes sure with one
+more restart that leaves out only that change. `changes --list` marks
+the tries.
+
+It can try apart the version, the boot options and apps with services
+that are installed for everyone. It says what it cannot: a network card,
+a disk, an app that is gone, or a version built again since the good
+start. Two changes that break a start only together are not found, and
+it says so. It does not begin while an update is being tried, or when no
+start has failed since a good one.
+
+Rescue's **Find the change that broke the start** says which starts to
+look between and what to run, but cannot run the search itself: each try
+is a start of the installed system, which judges it with its own health
+check. Start Dukovo normally, and run `elevate changes bisect` once it is
+up, even with a service failing.
+
 ### Repair startup
 
 If no Dukovo menu shows at all, because GRUB or its menu is gone from
@@ -414,19 +479,24 @@ Password:
 
 What would you like to do?
    0  Why the last start failed, and what changed
-   1  Reinstall Dukovo, keeping settings, apps and files
-   2  Put back the settings from before the last update
-   3  Check the root's disk
-   4  Copy the users' and shared files to another disk
-   5  Check the hardware
-   6  Turn networking on
-   7  Check the network
-   8  Open a shell (type exit to come back)
-   9  Start Dukovo normally
-  10  Restart
-  11  Power off
+   1  Find the likely cause
+   2  Find the change that broke the start
+   3  Reinstall Dukovo, keeping settings, apps and files
+   4  Put back the settings from before the last update
+   5  Check the root's disk
+   6  Copy the users' and shared files to another disk
+   7  Check the hardware
+   8  Turn networking on
+   9  Check the network
+  10  Open a shell (type exit to come back)
+  11  Start Dukovo normally
+  12  Restart
+  13  Power off
 ```
 
+**Find the likely cause** says what `troubleshoot` would, from what Rescue
+can read, even when the root does not mount, and **Find the change that
+broke the start** says how to find it, as above.
 **Reinstall** builds the system again from Rescue's own copy, or from an
 update folder or update file on a USB stick, every file checked against
 the signed list. Settings, apps and everyone's files are not touched. Once it says

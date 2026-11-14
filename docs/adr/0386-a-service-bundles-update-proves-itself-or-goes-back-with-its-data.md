@@ -43,8 +43,12 @@ never touch the shipped file.
   which settings differ between the two. A file no one changed is
   written anew, and a `.default` beside it removed.
 - **The data is copied before each update.** bundled stops the
-  services the old version ran and waits until Spark says they have
-  stopped, so that the copy is whole. Then, as `bundle run` does for an
+  services the old version ran, keeping their sockets open so that
+  connections wait and none is refused (ADR 0477), and waits until Spark
+  says they have stopped, so that the copy is whole. The wait is as long
+  as the longest `stop.timeout` among those services, 5 seconds for one
+  that says none, and 10 seconds more (ADR 0477), so a service that is
+  given 30 seconds to finish its requests is not given up on at 15. Then, as `bundle run` does for an
   app's data (ADR 0384), it copies each account's data folder to
   `/shared/services/ID/.snapshots/ACCOUNT/VERSION` for the version that
   ran, keeping each file's owner, and notes the new version; going back
@@ -87,5 +91,3 @@ never touch the shipped file.
 - **Not yet:**
   - The required and wanted checks of the system's health check (15a).
   - Override files for the system's other TOML files.
-  - Sockets a bundle provides to others, and `on-connection` starting a
-    service at its first connection.

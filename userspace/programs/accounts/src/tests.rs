@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::request::{
-    Answer, CONTINUE, Choice, Mode, PROMPT_SHOWN_MAX, Prompt, Prompted, Question, REQUEST_MAX,
-    Relay, Request, SSH_COMMAND_MAX, SshProof, SshRun, ended, ended_status, signal, stopped,
-    stopped_signal,
+    Answer, CONTINUE, Choice, JOB_TEXT_MAX, KeepRunning, Mode, PROMPT_SHOWN_MAX, Prompt, Prompted,
+    Question, REQUEST_MAX, Relay, Request, SSH_COMMAND_MAX, SshProof, SshRun, ended, ended_status,
+    signal, stopped, stopped_signal,
 };
 use super::*;
 
@@ -80,7 +80,7 @@ fn removing_accounts() {
     assert_eq!(users.entries().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["root", "alice"]);
     assert_eq!(groups.text(), "admins:x:10:alice\nalice:x:1000:\nstaff:x:50:\n");
     assert!(remove(&mut users, &mut groups, "bob").unwrap_err().contains("no account bob"));
-    assert_eq!(retired_line(&bob, "2026-10-31"), "1001:bob:2026-10-31\n");
+    assert_eq!(retired_line(bob.uid, &bob.name, "2026-10-31"), "1001:bob:2026-10-31\n");
 }
 
 #[test]
@@ -191,6 +191,47 @@ fn services_get_accounts_of_their_own() {
     add(&mut users, &mut groups, "alice", "", false, &[]).unwrap();
     assert!(add_service(&mut users, &mut groups, "alice", "x", home, &[]).is_err());
     assert_eq!(add(&mut users, &mut groups, "bob", "", false, &[]).unwrap().uid, 1001);
+}
+
+#[test]
+fn a_socket_group_is_its_bundles_and_goes_with_the_service() {
+    let mut users = users("root:x:0:0:root:/:/system/commands/nukesh\n");
+    let mut groups = groups("root:x:0:\nstaff:x:100:\n");
+    let home = "/shared/services/org.example.web";
+    // No account of the bundle yet: nothing to make a group for.
+    assert!(add_socket_group(&users, &mut groups, "web-socket", "org.example.web", &[]).is_err());
+    add_service(&mut users, &mut groups, "web", "A service of org.example.web", home, &[]).unwrap();
+    add_service(&mut users, &mut groups, "other", "A service of org.example.other", home, &[])
+        .unwrap();
+    // A number from a service's range, no members; again, the same.
+    let gid = add_socket_group(&users, &mut groups, "web-socket", "org.example.web", &[]).unwrap();
+    assert!((FIRST_SERVICE..=LAST_SERVICE).contains(&gid));
+    assert!(groups.text().contains(&format!("web-socket:x:{gid}:\n")));
+    assert_eq!(
+        add_socket_group(&users, &mut groups, "web-socket", "org.example.web", &[]).unwrap(),
+        gid
+    );
+    // Another bundle's, a name that is no socket's, a person's group.
+    assert!(add_socket_group(&users, &mut groups, "web-socket", "org.example.other", &[]).is_err());
+    assert!(add_socket_group(&users, &mut groups, "web", "org.example.web", &[]).is_err());
+    assert!(add_socket_group(&users, &mut groups, "other-socket", "org.example.web", &[]).is_err());
+    groups.push(Group { name: "other-socket".into(), gid: 1500, members: Vec::new() });
+    assert!(
+        add_socket_group(&users, &mut groups, "other-socket", "org.example.other", &[]).is_err()
+    );
+    // It is the account's socket group, whose number is retired with it.
+    let web = users.entries().find(|u| u.name == "web").unwrap().clone();
+    assert_eq!(socket_group_of(&web, &groups).map(|g| g.gid), Some(gid));
+    // Not root's, which has none, nor other's, whose group of that name
+    // has a person's number.
+    let root = users.entries().find(|u| u.name == "root").unwrap().clone();
+    assert!(socket_group_of(&root, &groups).is_none());
+    let other = users.entries().find(|u| u.name == "other").unwrap().clone();
+    assert!(socket_group_of(&other, &groups).is_none());
+    // It goes with its service's account, and not another's.
+    remove(&mut users, &mut groups, "web").unwrap();
+    assert!(!groups.text().contains("web-socket"));
+    assert!(groups.text().contains("other-socket"));
 }
 
 #[test]
@@ -317,6 +358,7 @@ fn requests_go_and_come_back() {
             whose: "org.example.web".into(),
             home: "/shared/services/org.example.web".into(),
         },
+        Request::SocketGroup { name: "web-socket".into(), whose: "org.example.web".into() },
         Request::Rename { name: "bob".into(), new: "robert".into() },
         Request::Set {
             name: "bob".into(),
@@ -324,6 +366,7 @@ fn requests_go_and_come_back() {
             admin: None,
             without_password: None,
             console: None,
+            jobs_signed_out: None,
         },
         Request::Set {
             name: "bob".into(),
@@ -331,6 +374,7 @@ fn requests_go_and_come_back() {
             admin: Some(true),
             without_password: None,
             console: None,
+            jobs_signed_out: None,
         },
         Request::Set {
             name: "bob".into(),
@@ -338,6 +382,7 @@ fn requests_go_and_come_back() {
             admin: Some(false),
             without_password: None,
             console: None,
+            jobs_signed_out: None,
         },
         Request::Set {
             name: "bob".into(),
@@ -345,6 +390,7 @@ fn requests_go_and_come_back() {
             admin: None,
             without_password: Some(true),
             console: None,
+            jobs_signed_out: None,
         },
         Request::Set {
             name: "bob".into(),
@@ -352,7 +398,42 @@ fn requests_go_and_come_back() {
             admin: None,
             without_password: None,
             console: Some(true),
+            jobs_signed_out: None,
         },
+        Request::Set {
+            name: "bob".into(),
+            full_name: None,
+            admin: None,
+            without_password: None,
+            console: None,
+            jobs_signed_out: Some(false),
+        },
+        Request::Set {
+            name: "bob".into(),
+            full_name: None,
+            admin: None,
+            without_password: None,
+            console: None,
+            jobs_signed_out: Some(true),
+        },
+        Request::Job {
+            owner: "alice".into(),
+            label: "crontab alice".into(),
+            folder: "/users/alice".into(),
+            command: "backup --quiet".into(),
+            environment: vec!["SHELL=/bin/sh".into(), "A=b=c".into()],
+        },
+        Request::Job {
+            owner: "root".into(),
+            label: "at 12".into(),
+            folder: "/".into(),
+            command: "echo hi\nsleep 1\n".into(),
+            environment: Vec::new(),
+        },
+        Request::KeepRunning,
+        Request::SetKeepRunning { chosen: Some(true) },
+        Request::SetKeepRunning { chosen: Some(false) },
+        Request::SetKeepRunning { chosen: None },
         Request::SharePassword {
             name: "alice".into(),
             current: b"s3cret".to_vec(),
@@ -483,6 +564,7 @@ fn requests_go_and_come_back() {
             admin: Some(false),
             without_password: None,
             console: None,
+            jobs_signed_out: None,
         }
         .encode(),
         b"set\0bob\0full-name\0Bob\0admin\0no\0"
@@ -494,6 +576,7 @@ fn requests_go_and_come_back() {
             admin: None,
             without_password: None,
             console: Some(false),
+            jobs_signed_out: None,
         }
         .encode(),
         b"set\0bob\0console\0no\0"
@@ -668,6 +751,19 @@ fn requests_go_and_come_back() {
         b"set\0bob\0admin\0maybe\0",
         b"set\0bob\0admin\0yes\0admin\0no\0",
         b"set\0bob\0shell\0/bin/sh\0",
+        b"set\0bob\0jobs-signed-out\0yes\0",
+        // A job with no command, a folder that is not a path, a setting
+        // that is not NAME=value, an empty owner, or a label on two
+        // lines; keep-running with a word it does not know, or two.
+        b"job\0alice\0at 1\0/\0\0",
+        b"job\0alice\0at 1\0users\0id\0",
+        b"job\0alice\0at 1\0/\0id\0SHELL\0",
+        b"job\0alice\0at 1\0/\0id\0=x\0",
+        b"job\0\0at 1\0/\0id\0",
+        b"job\0alice\0at\n1\0/\0id\0",
+        b"job\0alice\0at 1\0/\0",
+        b"keep-running\0maybe\0",
+        b"keep-running\0on\0off\0",
     ] {
         assert!(Request::decode(bad).is_err(), "{bad:?}");
     }
@@ -676,6 +772,37 @@ fn requests_go_and_come_back() {
     long.extend(vec![b'x'; SSH_COMMAND_MAX + 1]);
     long.push(0);
     assert!(Request::decode(&long).is_err());
+    // A job's command and environment are at most JOB_TEXT_MAX together.
+    let job = |command: usize, setting: usize| {
+        let mut bytes = b"job\0alice\0at 1\0/\0".to_vec();
+        bytes.extend(vec![b'x'; command]);
+        bytes.extend(b"\0A=");
+        bytes.extend(vec![b'y'; setting]);
+        bytes.push(0);
+        Request::decode(&bytes)
+    };
+    assert!(job(JOB_TEXT_MAX - 1024, 1024 - 2).is_ok());
+    assert!(job(JOB_TEXT_MAX - 1024, 1024 - 1).is_err());
+}
+
+#[test]
+fn keep_running_says_its_words_and_reads_them_back() {
+    for chosen in [None, Some(true), Some(false)] {
+        for default in [true, false] {
+            for barred in [true, false] {
+                let setting = KeepRunning { chosen, default, barred };
+                assert_eq!(KeepRunning::from_words(&setting.words()), Some(setting));
+                assert_eq!(setting.on(), !barred && chosen.unwrap_or(default));
+            }
+        }
+    }
+    assert_eq!(
+        KeepRunning { chosen: None, default: false, barred: false }.words(),
+        "default off allowed"
+    );
+    for bad in ["", "on", "on off", "yes off allowed", "on off maybe", "on off allowed x"] {
+        assert_eq!(KeepRunning::from_words(bad), None, "{bad}");
+    }
 }
 
 #[test]

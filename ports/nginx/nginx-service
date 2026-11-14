@@ -14,6 +14,14 @@
 # version on an update; a changed one stays, and the bundle's version is
 # written beside it as NAME.default, as the service files' are (ADR
 # 0386).
+#
+# Spark holds nginx's listening sockets (ADR 0477) and passes them as
+# descriptors 3 and on, so that a restart or an update refuses no
+# connection: the connections wait in the socket's backlog until the new
+# nginx accepts them. nginx takes inherited sockets through the NGINX
+# variable, as it does across its own binary upgrade; it keeps each one
+# whose address and port a `listen` of its settings names, and opens any
+# other itself.
 set -eu
 
 bundle=$(cd "$(dirname "$0")/.." && pwd)
@@ -48,5 +56,95 @@ for shipped in "$bundle"/conf/*; do
 	fi
 	copy "$shipped" "$last"
 done
+
+service_file=/system/settings/spark/services/nginx.toml
+override_file=/system/settings/spark/services/settings.d/nginx.toml
+
+# The address and port of each [[sockets]] table of the service file, one
+# to a line, as an override that has such tables replaces the file's own.
+# An address left out is "::", which is how a socket for both IPv6 and
+# IPv4 names itself. A table written inline is not read: the warning
+# below is then wrong, and nginx runs as it would.
+held_sockets() {
+	file=$service_file
+	if [ -r "$override_file" ] && grep -q '^\[\[sockets\]\]' "$override_file"; then
+		file=$override_file
+	fi
+	[ -r "$file" ] || return 0
+	awk '
+		function flush() {
+			if (port != "" && udp != "true") print (address == "" ? "::" : address), port
+			port = ""; address = ""; udp = ""
+		}
+		/^\[\[sockets\]\]/ { flush(); inside = 1; next }
+		/^\[/ { flush(); inside = 0; next }
+		inside && $1 == "port" { port = $3 }
+		inside && $1 == "address" { address = $3; gsub(/"/, "", address) }
+		inside && $1 == "udp" { udp = $3 }
+		END { flush() }
+	' "$file" | tr 'A-Z' 'a-z'
+}
+
+# The address and port of each `listen` of nginx's settings, one to a
+# line, as nginx reads them: no address is every IPv4 address, no port
+# is 80. A name or a unix: socket is left out, which nginx's settings
+# check (nginx -t) is for.
+nginx_listens() {
+	"$bundle/bin/nginx" -T 2> /dev/null | awk '
+		$1 == "listen" {
+			arg = $2
+			sub(/;$/, "", arg)
+			address = ""; port = 80
+			if (arg ~ /^[0-9]+$/) { address = "0.0.0.0"; port = arg }
+			else if (arg ~ /^\*:[0-9]+$/) { address = "0.0.0.0"; port = substr(arg, 3) }
+			else if (arg ~ /^\[[0-9a-fA-F:.]*\]:[0-9]+$/) {
+				address = substr(arg, 2, index(arg, "]") - 2)
+				port = substr(arg, index(arg, "]") + 2)
+			}
+			else if (arg ~ /^\[[0-9a-fA-F:.]*\]$/) { address = substr(arg, 2, length(arg) - 2) }
+			else if (arg ~ /^[0-9.]+:[0-9]+$/) {
+				address = substr(arg, 1, index(arg, ":") - 1)
+				port = substr(arg, index(arg, ":") + 1)
+			}
+			else if (arg ~ /^[0-9.]+$/) { address = arg }
+			if (address != "") print address, port
+		}
+	' | tr 'A-Z' 'a-z' | sort -u
+}
+
+# Says in the log, for each `listen` of nginx's settings that no socket
+# of Spark's has, what to add to the service's file. nginx then opens
+# that socket itself, so it works, but a restart refuses connections
+# there for a moment.
+warn_unserved() {
+	held=$(held_sockets)
+	nginx_listens | while read -r address port; do
+		if ! printf '%s\n' "$held" | grep -qxF "$address $port"; then
+			echo "nginx-service: warning: nginx listens on $address port $port, which" \
+				"Spark holds no socket for; add a [[sockets]] table with port = $port," \
+				"address = \"$address\" and non-blocking = true to nginx's service file" \
+				"(service edit nginx)" \
+				"to keep that port open across restarts" >&2
+		fi
+	done
+}
+
+# The inherited sockets are for this process alone: LISTEN_PID is the
+# one Spark started, which this shell keeps by running nginx in place.
+# The settings are listed first, as nginx would take the sockets for
+# that too.
+if [ "${LISTEN_PID:-}" = "$$" ]; then
+	warn_unserved
+	fds=${LISTEN_FDS:-0}
+	if [ "$fds" -gt 0 ] 2> /dev/null; then
+		inherited=
+		fd=3
+		while [ "$fd" -lt $((3 + fds)) ]; do
+			inherited="$inherited$fd;"
+			fd=$((fd + 1))
+		done
+		export NGINX="$inherited"
+	fi
+fi
 
 exec "$bundle/bin/nginx" -g 'daemon off;'

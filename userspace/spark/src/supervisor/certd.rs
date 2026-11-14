@@ -85,13 +85,16 @@ impl Supervisor {
             }
             let spec = &service.spec;
             let account = match &spec.account {
-                Some(account_name) => match account(&self.root, self.names, account_name) {
-                    Ok(account) => Some(account),
-                    Err(err) => {
-                        failed.push(format!("{}: {err}", spec.name));
-                        continue;
+                // The copy is the account's own: its other groups play no part.
+                Some(account_name) => {
+                    match account(&self.root, self.names, account_name, Vec::new()) {
+                        Ok(account) => Some(account),
+                        Err(err) => {
+                            failed.push(format!("{}: {err}", spec.name));
+                            continue;
+                        }
                     }
-                },
+                }
                 None => None,
             };
             // A copy that fails leaves the one before in place.

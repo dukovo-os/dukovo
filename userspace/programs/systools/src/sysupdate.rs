@@ -23,6 +23,7 @@
 //! (`log sysupdate`) says what failed, and the settings it had
 //! are kept in `@snapshots/update/settings-failed`.
 
+pub(crate) mod bisect;
 mod devices;
 pub(crate) mod firmware;
 pub mod health;

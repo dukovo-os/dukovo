@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# What a service's limits do (ADR 0476), with the service files of the
+# limits boot test: a memory hog in a service with a 64 MiB limit is
+# stopped at it, which service status says, while another service goes on
+# running; a fork bomb in a service with 64 threads gets EAGAIN, and a
+# command still answers within 2 seconds; both at once; and a service with
+# open_files = 10000 starts a shell whose soft and hard limits are that.
+about = "a service's limits: a memory hog with a 64 MiB limit is stopped at it and service status says so while another service runs; a fork bomb with 64 threads gets EAGAIN and a command still answers within 2 seconds; both at once; open_files = 10000 sets the soft and hard limit (ADR 0476)"
+time = "5m"
+
+[[step]]
+run = "ls /system/tests/services/limits /system/tests/posix/hog /system/tests/posix/forkbomb"
+expect = ["limits-hog.toml", "limits-files.toml", "/system/tests/posix/hog", "/system/tests/posix/forkbomb"]
+or_skip = "needs the test programs and their service files in /system/tests"
+# From nothing: a run before may have left them.
+[[step]]
+run = '''sh -c 'for s in steady hog bomb files; do service limits-$s stop -q > /dev/null 2>&1; done; rm -f /system/settings/spark/services/limits-*.toml; cp /system/tests/services/limits/*.toml /system/settings/spark/services/ && echo "checked $(service check limits-hog limits-steady limits-bomb limits-files | grep -c ": ok")"' '''
+root = true
+expect = "checked 4"
+[[step]]
+run = "service limits-steady start -q"
+root = true
+# The hog takes memory a MiB at a time, and the limit refuses a page of
+# the 65th.
+[[step]]
+run = "service limits-hog start --no-wait -q"
+root = true
+[[step]]
+wait = "10s"
+[[step]]
+run = "service limits-hog status -n 0"
+root = true
+exit = 3
+expect = ["Limits: memory up to 64M", "refused; stopped at its memory limit"]
+[[step]]
+run = "service limits-steady status -n 0"
+root = true
+expect = "Active: active (running)"
+# The bomb makes fewer than 64 children, and a command still answers.
+[[step]]
+run = "service limits-bomb start --no-wait -q"
+root = true
+[[step]]
+wait = "5s"
+[[step]]
+run = "service limits-bomb logs"
+root = true
+expect = "forkbomb: fork failed with EAGAIN after "
+[[step]]
+run = "sh -c 'timeout 2 ls /system > /dev/null; echo answered $?'"
+root = true
+expect = "answered 0"
+[[step]]
+run = "service limits-bomb status -n 0"
+root = true
+expect = ["at most 64 threads", " of 64"]
+# Both again at once: each is stopped by its own limit, and a command
+# answers.
+[[step]]
+run = '''sh -c 'service limits-hog restart --no-wait -q; service limits-bomb restart --no-wait -q; sleep 10; echo "stopped at the limit: $(service limits-hog status -n 0 | grep -c "stopped at its memory limit")"; timeout 2 ls /system > /dev/null; echo answered $?' '''
+root = true
+expect = ["stopped at the limit: 1", "answered 0"]
+[[step]]
+run = "service limits-bomb logs"
+root = true
+expect = "forkbomb: fork failed with EAGAIN after "
+[[step]]
+run = "service limits-steady status -n 0"
+root = true
+expect = "Active: active (running)"
+# open_files: Spark sets both limits before the program starts.
+[[step]]
+run = "service limits-files start --no-wait -q"
+root = true
+[[step]]
+wait = "2s"
+[[step]]
+run = "service limits-files logs"
+root = true
+expect = "soft 10000 hard 10000"
+[[step]]
+run = "service limits-files status -n 0"
+root = true
+expect = "10000 open files"
+[[step]]
+run = '''sh -c 'for s in steady hog bomb files; do service limits-$s stop -q > /dev/null 2>&1; done; rm -f /system/settings/spark/services/limits-*.toml; echo "left: $(ls /system/settings/spark/services | grep -c limits-)"' '''
+root = true
+expect = "left: 0"
