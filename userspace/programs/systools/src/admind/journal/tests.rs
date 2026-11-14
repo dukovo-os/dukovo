@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -513,4 +514,58 @@ fn a_secret_and_a_file_not_everyone_may_read_are_hidden() {
     assert!(!is_hidden(&open, &fs::metadata(&open).unwrap()));
     assert!(is_hidden(&closed, &fs::metadata(&closed).unwrap()));
     assert!(is_hidden(&format!("{SECRETS}/web/key"), &fs::metadata(&open).unwrap()));
+}
+
+#[test]
+fn a_link_is_not_followed_nor_watched() {
+    let machine = Machine::new("look-link");
+    let outside = machine.folder.0.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("key.toml");
+    put(target.to_str().unwrap(), "key = \"theirs\"\n", 1);
+    let link = machine.path("linked.toml");
+    fs::create_dir_all(Path::new(&link).parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    // The link itself is not read, and its target's text is not kept.
+    let (seen, _) = look(&machine.store, &link, 1).unwrap();
+    assert_eq!(seen, Seen::Unreadable);
+    assert_eq!(machine.store.text_size().unwrap(), 0);
+    // A link where a folder of the path is leads nowhere either.
+    let folder_link = machine.path("through");
+    std::os::unix::fs::symlink(&outside, &folder_link).unwrap();
+    let through = format!("{folder_link}/key.toml");
+    assert_eq!(look(&machine.store, &through, 1).unwrap(), (Seen::Unreadable, None));
+    // The round does not list either link.
+    let listed = settings_files(Path::new(&machine.path("")));
+    assert!(listed.files.iter().all(|path| !path.contains("linked") && !path.contains("through")));
+}
+
+#[test]
+fn a_file_in_a_folder_others_may_not_pass_is_hidden() {
+    let machine = Machine::new("look-closed-folder");
+    let inside = machine.path("closed/inside.toml");
+    put(&inside, "token = \"t\"\n", 1);
+    fs::set_permissions(&inside, fs::Permissions::from_mode(0o644)).unwrap();
+    let closed = Path::new(&inside).parent().unwrap();
+    fs::set_permissions(closed, fs::Permissions::from_mode(0o750)).unwrap();
+    let (seen, stamp) = look(&machine.store, &inside, 1).unwrap();
+    assert_eq!(seen, Seen::Secret);
+    assert!(stamp.is_some());
+    assert_eq!(machine.store.text_size().unwrap(), 0);
+    fs::set_permissions(closed, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(look(&machine.store, &inside, 1).unwrap().0, text("token = \"t\"\n"));
+}
+
+#[test]
+fn a_pipe_is_not_opened() {
+    let machine = Machine::new("look-pipe");
+    let pipe = machine.path("fifo");
+    fs::create_dir_all(Path::new(&pipe).parent().unwrap()).unwrap();
+    let name = std::ffi::CString::new(pipe.clone()).unwrap();
+    // SAFETY: the name is a C string.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o644) }, 0);
+    // Opening it to read would wait for a writer: it is not opened.
+    let (seen, stamp) = look(&machine.store, &pipe, 1).unwrap();
+    assert_eq!(seen, Seen::Unreadable);
+    assert!(stamp.is_some());
 }

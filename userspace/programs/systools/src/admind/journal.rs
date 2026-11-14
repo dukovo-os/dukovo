@@ -28,17 +28,20 @@
 //!
 //! **What is not shown.** Everyone who is signed in reads the journal,
 //! and not everyone may read the files. A file under a service's
-//! `secrets`, and one that not everyone may read (no read bit for
-//! others), is listed by name and never read: no hash, no version, no
-//! diff. A file admind could not read is listed as unreadable. A file
-//! longer than 1 MiB is listed with its hash and size, and no text.
-//! `admin export` copies the files of the settings that the round watches
-//! and leaves out the same secrets ([`settings_files`], [`is_hidden`]).
+//! `secrets`, one that not everyone may read (no read bit for others), and
+//! one in a folder that others may not pass through, is listed by name and
+//! never read: no hash, no version, no diff. admind runs as root, so it
+//! follows each path from the root a part at a time and never through a
+//! link, and does not watch links ([`find`]). A file admind could not read
+//! is listed as unreadable. A file longer than 1 MiB is listed with its
+//! hash and size, and no text. `admin export` copies the files of the
+//! settings that the round watches and leaves out the same secrets
+//! ([`settings_files`], [`is_hidden`]).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, Metadata};
-use std::io::Read;
+use std::fs::{File, Metadata};
+use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -49,6 +52,7 @@ use super::store::changes::{Change, FileChange, NewChange, Seen};
 use super::store::versions::sha256;
 use super::store::watched::Watched;
 use super::store::{Result, Store};
+use crate::bundles::folder::{self, Dir};
 
 /// Where the settings are, which the round watches whole.
 pub const SETTINGS: &str = "/system/settings";
@@ -76,9 +80,13 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    /// The stamp of a file with metadata `md`.
-    fn of(md: &Metadata) -> Stamp {
-        Stamp { size: md.len(), mtime: md.mtime().saturating_mul(1_000_000_000) + md.mtime_nsec() }
+    /// The stamp of a file whose status is `st`.
+    fn of_stat(st: &libc::stat) -> Stamp {
+        let seconds = i64::from(st.st_mtime);
+        Stamp {
+            size: u64::try_from(st.st_size).unwrap_or(0),
+            mtime: seconds.saturating_mul(1_000_000_000) + i64::from(st.st_mtime_nsec),
+        }
     }
 
     /// The Unix second of the modification.
@@ -92,11 +100,11 @@ fn is_secret(path: &str) -> bool {
     Path::new(path).starts_with(SECRETS)
 }
 
-/// Whether the file at `path`, whose metadata is `md`, is one whose text
-/// is never read for the journal, nor shown: one under a service's secrets,
-/// or one that not everyone may read. Everyone who is signed in reads the
-/// journal, so the console keeps only the name of such a file. `admin
-/// export` leaves the same files out.
+/// Whether the file at `path`, whose metadata is `md`, is a secret by the
+/// journal's rule for the file itself: one under a service's secrets, or
+/// one that not everyone may read. `admin export`, which runs as the
+/// person, leaves such files out; the journal also hides a file in a
+/// folder others may not pass through ([`find`]).
 pub fn is_hidden(path: &str, md: &Metadata) -> bool {
     is_secret(path) || md.mode() & 0o004 == 0
 }
@@ -117,56 +125,143 @@ pub fn settings_files(dir: &Path) -> SettingsFiles {
     SettingsFiles { files, closed }
 }
 
+/// A file as the journal finds it by its path (see [`find`]).
+enum Found {
+    /// There is no such file.
+    Absent,
+    /// Something the journal does not read: a link, a folder or another
+    /// kind of file that is not a regular one, or a path it could not
+    /// follow; with its stamp when it is there.
+    Unreadable(Option<Stamp>),
+    /// A regular file that not everyone may read by its path: one of a
+    /// service's secrets, one with no read bit for others, or one in a
+    /// folder that others may not pass through.
+    Hidden(Stamp),
+    /// A regular file that everyone may read, open when it was asked to
+    /// be.
+    Public(Option<File>, Stamp),
+}
+
+/// Whether a folder whose status is `st` lets others pass through it.
+fn others_pass(st: &libc::stat) -> bool {
+    st.st_mode & 0o001 != 0
+}
+
+/// Whether what `st` describes is a regular file.
+fn is_regular(st: &libc::stat) -> bool {
+    st.st_mode & libc::S_IFMT == libc::S_IFREG
+}
+
+/// Finds the file at `path`, and opens it when `open` and everyone may
+/// read it.
+///
+/// admind runs as root, which passes every folder whatever its mode and
+/// follows any link, and everyone who is signed in reads what the journal
+/// keeps. So the path is followed from the root a part at a time, never
+/// through a link: a service's account could put a link in a folder of its
+/// own to lead admind to a file it may not read itself, and have its text
+/// shown. A file is everyone's only when each folder on its way lets
+/// others pass and the file lets others read it, as for a person who is
+/// not root. A file is opened only once it is known to be a regular one,
+/// so that no device or pipe is ever opened, and only when it is still that
+/// file once open.
+fn find(path: &str, open: bool) -> Found {
+    let Some(parts) = path.strip_prefix('/') else { return Found::Unreadable(None) };
+    let parts: Vec<&str> = parts.split('/').collect();
+    let Some((name, folders)) = parts.split_last() else { return Found::Unreadable(None) };
+    let Ok(mut dir) = Dir::open("/") else { return Found::Unreadable(None) };
+    let mut public = dir.stat().is_ok_and(|st| others_pass(&st));
+    for part in folders {
+        // Not through a link, and only a folder: anything else fails here.
+        let next = match dir.dir_at(part) {
+            Ok(next) => next,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Found::Absent,
+            Err(_) => return Found::Unreadable(None),
+        };
+        match next.stat() {
+            Ok(st) => public &= others_pass(&st),
+            Err(_) => return Found::Unreadable(None),
+        }
+        dir = next;
+    }
+    let st = match dir.stat_at(name) {
+        Ok(Some(st)) => st,
+        Ok(None) => return Found::Absent,
+        Err(_) => return Found::Unreadable(None),
+    };
+    let stamp = Stamp::of_stat(&st);
+    if !is_regular(&st) {
+        return Found::Unreadable(Some(stamp));
+    }
+    if !public || st.st_mode & 0o004 == 0 || is_secret(path) {
+        return Found::Hidden(stamp);
+    }
+    if !open {
+        return Found::Public(None, stamp);
+    }
+    let Ok(fd) = dir.open_at(name, false) else { return Found::Unreadable(Some(stamp)) };
+    match folder::fd_stat(&fd) {
+        Ok(now) if folder::same(&st, &now) && is_regular(&now) && now.st_mode & 0o004 != 0 => {
+            Found::Public(Some(File::from(fd)), Stamp::of_stat(&now))
+        }
+        _ => Found::Unreadable(Some(stamp)),
+    }
+}
+
+/// The stamp of the file at `path` when it is there, found as [`find`]
+/// finds it, without opening it.
+fn stamp_of(path: &str) -> Option<Stamp> {
+    match find(path, false) {
+        Found::Absent | Found::Unreadable(None) => None,
+        Found::Unreadable(Some(stamp)) | Found::Hidden(stamp) | Found::Public(_, stamp) => {
+            Some(stamp)
+        }
+    }
+}
+
 /// What `path` is now, and its stamp when it is there, and keeps the text
-/// as a version of the file at Unix time `now`. A secret is never read.
+/// as a version of the file at Unix time `now`. A secret, a file not
+/// everyone may read and anything that is not a regular file are never
+/// read (see [`find`]).
 ///
 /// # Errors
 ///
 /// If the store fails; a file that cannot be read is [`Seen::Unreadable`].
 pub fn look(store: &Store, path: &str, now: i64) -> Result<(Seen, Option<Stamp>)> {
-    let md = match fs::metadata(path) {
-        Ok(md) => md,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((Seen::Absent, None)),
-        Err(_) => return Ok((Seen::Unreadable, None)),
+    let (file, stamp) = match find(path, true) {
+        Found::Absent => return Ok((Seen::Absent, None)),
+        Found::Unreadable(stamp) => return Ok((Seen::Unreadable, stamp)),
+        // Everyone who is signed in reads the journal: a file that not
+        // everyone reads has its text kept out of it.
+        Found::Hidden(stamp) => return Ok((Seen::Secret, Some(stamp))),
+        Found::Public(None, stamp) => return Ok((Seen::Unreadable, Some(stamp))),
+        Found::Public(Some(file), stamp) => (file, stamp),
     };
-    let stamp = Some(Stamp::of(&md));
-    if !md.is_file() {
-        return Ok((Seen::Unreadable, stamp));
-    }
-    // Everyone who is signed in reads the journal: a file that not
-    // everyone reads has its text kept out of it.
-    if is_hidden(path, &md) {
-        return Ok((Seen::Secret, stamp));
-    }
     let limit = store.limits.file;
-    if md.len() > limit {
-        return Ok((
-            hash_file(path).map_or(Seen::Unreadable, |(sha256, size)| Seen::Large { sha256, size }),
-            stamp,
-        ));
-    }
     let mut bytes = Vec::new();
-    // One byte past the limit: a file that grew since its size was read
-    // is a large file, not a cut one.
-    let read = File::open(path).and_then(|file| file.take(limit + 1).read_to_end(&mut bytes));
-    if read.is_err() {
-        return Ok((Seen::Unreadable, stamp));
+    // One byte past the limit: a file longer than the store keeps is read
+    // on only to be hashed, from the same descriptor.
+    let mut file = file;
+    if (&mut file).take(limit + 1).read_to_end(&mut bytes).is_err() {
+        return Ok((Seen::Unreadable, Some(stamp)));
     }
     if bytes.len() as u64 > limit {
-        return Ok((
-            hash_file(path).map_or(Seen::Unreadable, |(sha256, size)| Seen::Large { sha256, size }),
-            stamp,
-        ));
+        let seen = hash_rest(bytes, file)
+            .map_or(Seen::Unreadable, |(sha256, size)| Seen::Large { sha256, size });
+        return Ok((seen, Some(stamp)));
     }
     store.keep_version(path, &bytes, now)?;
-    Ok((Seen::Text { sha256: sha256(&bytes), size: bytes.len() as u64 }, stamp))
+    Ok((Seen::Text { sha256: sha256(&bytes), size: bytes.len() as u64 }, Some(stamp)))
 }
 
-/// The SHA-256 and size of the file at `path`, read in pieces.
-fn hash_file(path: &str) -> std::io::Result<(String, u64)> {
-    let mut file = File::open(path)?;
+/// The SHA-256 and size of a file whose first bytes are `first` and the
+/// rest of which `file` reads, in pieces.
+fn hash_rest(first: Vec<u8>, mut file: File) -> io::Result<(String, u64)> {
     let mut context = digest::Context::new(&digest::SHA256);
-    let (mut buffer, mut size) = (vec![0u8; 64 << 10], 0u64);
+    context.update(&first);
+    let mut size = first.len() as u64;
+    let mut buffer = first;
+    buffer.resize(64 << 10, 0);
     loop {
         match file.read(&mut buffer)? {
             0 => break,
@@ -367,7 +462,7 @@ impl Journal {
                 continue;
             }
             let known = watched.get(&path);
-            let now_stamp = fs::metadata(&path).ok().as_ref().map(Stamp::of);
+            let now_stamp = stamp_of(&path);
             if known.is_some()
                 && now_stamp.map(|s| (s.size, s.mtime)) == known.map(|w| (w.size, w.mtime))
             {
@@ -631,40 +726,71 @@ pub fn restore_plan(store: &Store, change: &Change) -> std::result::Result<Vec<R
     Ok(plan)
 }
 
-/// Adds to `out` the regular files in `dir` and the folders in it to
-/// `depth` levels, but no file whose name starts with a dot (an editor's
-/// or a writer's file that is on its way to its name), and at most `room`
-/// of them in all. Gives the folders that could not be opened.
+/// The regular files under the folder `dir`, at most `depth` folders
+/// deeper, into `out`, while `room` lasts; gives the folders that could not
+/// be opened. Names that begin with a dot are left out (an editor's or a
+/// writer's file that is on its way to its name), and so is every link: the folders are opened from the root a part at a time, never
+/// through a link, as [`find`] does, so that a link a service's account put
+/// in its own folder leads the round nowhere.
 fn walk(dir: &Path, depth: usize, out: &mut BTreeSet<String>, room: &mut usize) -> Vec<String> {
     let mut closed = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        closed.extend(dir.to_str().map(str::to_string));
-        return closed;
+    match open_folder(dir) {
+        Ok(opened) => walk_in(&opened, dir, depth, out, room, &mut closed),
+        Err(_) => closed.extend(dir.to_str().map(str::to_string)),
+    }
+    closed
+}
+
+/// The folder at `path`, opened from the root a part at a time and never
+/// through a link.
+fn open_folder(path: &Path) -> io::Result<Dir> {
+    let not_from_root = || io::Error::new(io::ErrorKind::InvalidInput, "not a path from the root");
+    let text = path.to_str().ok_or_else(not_from_root)?;
+    let parts = text.strip_prefix('/').ok_or_else(not_from_root)?;
+    let mut dir = Dir::open("/")?;
+    for part in parts.split('/').filter(|part| !part.is_empty()) {
+        dir = dir.dir_at(part)?;
+    }
+    Ok(dir)
+}
+
+/// [`walk`] in the open folder `dir`, which is at `path`, gathering the
+/// folders that could not be opened in `closed`.
+fn walk_in(
+    dir: &Dir,
+    path: &Path,
+    depth: usize,
+    out: &mut BTreeSet<String>,
+    room: &mut usize,
+    closed: &mut Vec<String>,
+) {
+    let Ok(mut names) = dir.names() else {
+        closed.extend(path.to_str().map(str::to_string));
+        return;
     };
-    for entry in entries.flatten() {
-        let (Some(name), Ok(kind)) =
-            (entry.file_name().to_str().map(str::to_string), entry.file_type())
-        else {
-            continue;
-        };
+    // In order, so that which files a full round leaves out is the same
+    // from one round to the next.
+    names.sort();
+    for name in names {
         if name.starts_with('.') {
             continue;
         }
-        let path = entry.path();
-        if kind.is_dir() {
-            if depth > 0 {
-                closed.extend(walk(&path, depth - 1, out, room));
+        let Ok(Some(st)) = dir.stat_at(&name) else { continue };
+        let inner = path.join(&name);
+        match st.st_mode & libc::S_IFMT {
+            libc::S_IFDIR if depth > 0 => match dir.dir_at(&name) {
+                Ok(sub) => walk_in(&sub, &inner, depth - 1, out, room, closed),
+                Err(_) => closed.extend(inner.to_str().map(str::to_string)),
+            },
+            libc::S_IFREG if *room > 0 => {
+                if let Some(text) = inner.to_str() {
+                    *room -= 1;
+                    out.insert(text.to_string());
+                }
             }
-        } else if (kind.is_file()
-            || (kind.is_symlink() && fs::metadata(&path).is_ok_and(|md| md.is_file())))
-            && *room > 0
-            && let Some(path) = path.to_str()
-        {
-            *room -= 1;
-            out.insert(path.to_string());
+            _ => {}
         }
     }
-    closed
 }
 
 #[cfg(test)]
