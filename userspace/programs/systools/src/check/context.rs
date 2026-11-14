@@ -18,6 +18,7 @@ use crate::alerts::protocol::Active;
 use crate::firewall::{self, Reached};
 use crate::proc;
 use crate::service;
+use crate::sysupdate;
 use crate::util;
 
 /// How long a computer must have been up before a check that asks whether
@@ -36,7 +37,8 @@ pub(crate) struct Context {
     pub(crate) now: u64,
     /// How long the computer has been up, in seconds.
     pub(crate) uptime: u64,
-    /// The release this system runs.
+    /// The release this system runs, as its slot says it, which the
+    /// update checks compare with what the update server offered.
     pub(crate) release: String,
     /// The services Spark knows, or why it could not say.
     pub(crate) services: Result<Vec<Service>, String>,
@@ -53,7 +55,7 @@ impl Context {
             root: PathBuf::from("/"),
             now: util::now_ns() / 1_000_000_000,
             uptime: proc::uptime_ns() / 1_000_000_000,
-            release: env!("CARGO_PKG_VERSION").to_string(),
+            release: running_release(),
             services: service::shown(None).map(|show| show.services).map_err(|fail| fail.message),
             reached: firewall::reached().map_err(|fail| fail.message),
             alerts: command::active().map_err(|fail| fail.message),
@@ -105,6 +107,15 @@ impl Context {
     pub(crate) fn service(&self, name: &str) -> Result<Option<&Service>, String> {
         Ok(self.services()?.iter().find(|service| service.name == name))
     }
+}
+
+/// The release the running slot says it is (startup/slot.env), as the
+/// update checks name it, or, where the slots cannot be read, this
+/// program's own.
+fn running_release() -> String {
+    sysupdate::place::root()
+        .and_then(|root| sysupdate::stage::running_version(&root))
+        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
 }
 
 #[cfg(test)]

@@ -119,12 +119,12 @@ impl Problem {
     pub(crate) fn advice(self) -> &'static str {
         match self {
             Problem::FirewallAllowsAll => {
-                "Remove that rule with firewall remove NUMBER, and open only the ports that need \
-                 it, as firewall allow tcp 443 does."
+                "Remove that rule with elevate firewall remove NUMBER, and open only the ports \
+                 that need it, as elevate firewall allow tcp 443 does."
             }
             Problem::FirewallOff => {
-                "Run service firewall explain to see why the rules are not loaded, then service \
-                 firewall start."
+                "Run service firewall explain to see why the rules are not loaded, then elevate \
+                 service firewall start."
             }
             Problem::SshPasswords => {
                 "Add your SSH key, then set PasswordAuthentication no in \
@@ -132,15 +132,15 @@ impl Problem {
             }
             Problem::SshAnyone => {
                 "Name who may sign in, as AllowGroups admins in /system/settings/ssh/sshd_config, \
-                 then run service sshd reload."
+                 then run elevate service sshd reload."
             }
             Problem::BlockingOff => {
                 "Remove on = false from /system/settings/blocking.toml, which turns blocking \
                  back on."
             }
             Problem::EmptyPassword => {
-                "Give each of them a password with passwd NAME, or turn the account off with \
-                 user disable NAME."
+                "Give each of them a password with elevate passwd NAME, or turn the account off \
+                 with elevate user disable NAME."
             }
             Problem::NoAdministrator => {
                 "Make an account an administrator with user set --admin NAME, from the console \
@@ -158,12 +158,12 @@ impl Problem {
                  server can be reached."
             }
             Problem::ServiceGaveUp => {
-                "Run service NAME explain to see why it failed, and service NAME start once that \
-                 is mended."
+                "Run service NAME explain to see why it failed, and elevate service NAME start \
+                 once that is mended."
             }
             Problem::NoSnapshots => {
                 "Put /users and /shared in the places of /system/settings/snap.toml, and start \
-                 the snapshots with service snap start."
+                 the snapshots with elevate service snap start."
             }
         }
     }
