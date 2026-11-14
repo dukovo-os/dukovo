@@ -3415,6 +3415,9 @@ fn boot_tests_of(
 }
 
 fn unit_tests(ctx: &Ctx) -> Result<()> {
+    step("Running the script tests of the web console's pages");
+    userspace::test_admin_scripts(ctx)?;
+
     step("Running unit tests for the build tool");
     let mut cmd = process::cargo(ctx);
     cmd.args(["test", "--workspace"]);

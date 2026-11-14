@@ -15,6 +15,22 @@ pub const MDBOOK_VERSION: &str = "0.4.52";
 /// Kani release the proof harnesses are checked with (ADR 0019).
 pub const KANI_VERSION: &str = "0.68.0";
 
+/// The oldest Node the tests of the web console's scripts run on: they are
+/// ES modules that Node's own test runner (`node --test`) runs.
+pub const NODE_MINIMUM: u32 = 20;
+
+/// What `node --version` says, if Node is installed.
+pub fn node_installed() -> Option<String> {
+    program_version("node", "--version")
+}
+
+/// Whether `version`, as `node --version` writes it ("v22.1.0"), is
+/// [`NODE_MINIMUM`] or later.
+pub fn node_is_new_enough(version: &str) -> bool {
+    let major = version.trim().trim_start_matches('v').split('.').next();
+    major.and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major >= NODE_MINIMUM)
+}
+
 /// The installed Kani's version, if any.
 pub fn kani_version() -> Option<String> {
     process::find_program("cargo-kani")?;
@@ -611,6 +627,13 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "Node.js",
+            purpose: "runs the tests of the web console's scripts (version 20 or later)",
+            found: |_| node_installed().filter(|version| node_is_new_enough(version)),
+            packages: all("nodejs"),
+            fallback: Some("install Node 20 or later from https://nodejs.org/".into()),
+        },
+        Requirement {
             name: "mdBook",
             purpose: "builds the handbook",
             found: |_| program_version("mdbook", "--version"),
@@ -827,6 +850,17 @@ mod tests {
             "sudo apt install ovmf mtools"
         );
         assert_eq!(Distro::Pacman.install_command(&["grub"]), "sudo pacman -S --needed grub");
+    }
+
+    #[test]
+    fn node_must_be_version_20_or_later() {
+        assert!(node_is_new_enough("v20.0.0"));
+        assert!(node_is_new_enough("v22.12.0\n"));
+        assert!(!node_is_new_enough("v18.19.1"));
+        assert!(!node_is_new_enough("v9.11.2"));
+        // What `program_version` falls back to when node prints nothing.
+        assert!(!node_is_new_enough("/usr/bin/node"));
+        assert!(!node_is_new_enough(""));
     }
 
     #[test]
