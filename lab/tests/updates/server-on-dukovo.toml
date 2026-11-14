@@ -1,0 +1,227 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The move of the update server to Dukovo (ADR 0542), as
+# docs/runbooks/update-server-move.md does it, with the machine as NEW and
+# the lab PC as OLD and as the laptop (script: server-on-dukovo.sh beside
+# this file). Over the lab network, HTTP only: there is no ACME authority
+# in the lab and the name the machine is set up for, updates.invalid, never
+# resolves, so setup's certificate step fails at once, as it does for a
+# name that does not lead to the machine yet, and nginx serves HTTP. The
+# runbook's certificate steps (3 and 11) and the switch of the DNS record
+# are not tried here.
+#
+# The old server is the test update server `ob lab` builds, served by
+# update-server.sh. The machine reads its stable channel once, so that its
+# kept TUF metadata holds the old server's timestamp and snapshot
+# versions, which a client never takes a lower one than. The machine is
+# then set up with the online keys of the old server (step 4, in a folder
+# of the lab account's own /tmp), the old server's metadata folder and the
+# plans of its rollouts are seeded (step 6), and the lab PC deploys the
+# release keys' repository with `ob release send`, whose tar over ssh
+# needs no rsync, which Dukovo has not. timerd starts the publish job each
+# minute; nginx serves what it publishes. The lab PC reads the new server
+# with `ob release check`, and the machine, pointed at itself, takes its
+# metadata with no refusal for a lower version: the seed made the new
+# server count on from the old one's, which a server begun at 1 would not.
+# The old server's pause of the stable release is still held, so that the
+# plans were carried too.
+#
+# Last, a deploy that is not told `ready` is not published, though the
+# timer ran twice: the one sent is the withdrawal of the stable release,
+# which the machine would see at once. Told ready, the next deploy is
+# published, and it does.
+about = "The update server moved to Dukovo (ADR 0542), over the lab network and HTTP: nginx's bundle and the setup run through elevate for the old server's online keys make the six jobs with their timers; the old server's metadata and rollout plans are seeded; the lab PC deploys the test releases with ob's tar over ssh and reads them back from the first root; a machine that read the old server takes the new one's metadata, still paused, with no refusal for a lower version; a deploy not told ready publishes nothing, and is published when told"
+time = "50m"
+fresh = true
+host_needs = ["python3", "ssh", "scp", "tar", "curl", "base64", "cmp", "cargo"]
+
+# The test update server this tree builds, the setup's files and nginx's
+# bundle: without them the test is skipped, before it changes anything.
+[[step]]
+host = "sh {here}/server-on-dukovo.sh needs"
+expect = "the test update server and the setup's files are there"
+
+# OLD: the lab PC serves the test update server, and the machine reads it
+# once.
+[[step]]
+host = "sh {here}/update-server.sh serve {port:updates}"
+background = true
+ready = "serving updates"
+[[step]]
+run = '''sh -c 'printf "server = \"http://{peer}:{port:updates}/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+[[step]]
+run = "sysupdate check"
+root = true
+expect = [
+    "sysupdate: the stable channel offers Dukovo ",
+    "-test.year; this system runs Dukovo ",
+    "-test.bridge comes first",
+    "files this system lacks",
+]
+# What it kept, which the new server's numbers must not be lower than.
+[[step]]
+run = "ls /system/state/sysupdate/metadata"
+root = true
+expect = ["snapshot.json", "timestamp.json"]
+
+# NEW, steps 4 and 5: nginx's bundle, which setup would fetch from the
+# catalog, the files of the setup copied as ob copies them, the online keys
+# in the lab account's own /tmp, and setup run through elevate. The six
+# jobs are service files with timers that timerd starts; each online key is
+# a secret of the jobs that sign with it.
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = "installed org.nginx.nginx"
+[[step]]
+host = "sh {here}/server-on-dukovo.sh copy-setup {machine} {machine-port:22}"
+expect = "copied: the server's files"
+[[step]]
+host = "sh {here}/server-on-dukovo.sh keys {machine} {machine-port:22}"
+expect = "keys: 4 files in /tmp/dukovo-update-keys: catalog.json catalog.key system.json system.key"
+[[step]]
+run = "sh /users/lab/dukovo-update-server/dukovo/setup updates.invalid"
+root = true
+expect = [
+    "==> The online keys",
+    "Taking the catalog online key from ",
+    "Taking the system online key from ",
+    "==> nginx",
+    "==> The jobs",
+    "dukovo-system-publish",
+    "dukovo-system-refresh",
+    "nginx answers port 80 with 302",
+    "updates.invalid has no certificate yet",
+]
+[[step]]
+run = "service list --timers"
+root = true
+expect = [
+    "dukovo-catalog-flaws",
+    "dukovo-catalog-publish",
+    "dukovo-catalog-refresh",
+    "dukovo-flaws-fetch",
+    "dukovo-system-publish",
+    "dukovo-system-refresh",
+]
+# The public halves are the old server's, and the folder of keys is gone
+# from the account's /tmp.
+[[step]]
+host = "sh {here}/server-on-dukovo.sh kept {machine} {machine-port:22}"
+expect = [
+    "kept: the system online key's public half is the one sent",
+    "kept: the catalog online key's public half is the one sent",
+]
+[[step]]
+run = "sh -c 'ls /tmp/dukovo-update-keys 2>&1; echo \"ls: done\"'"
+expect = ["No such file or directory", "ls: done"]
+
+# Step 6: the old server's metadata folder, as the folder nginx serves,
+# and its rollout plans.
+[[step]]
+host = "sh {here}/server-on-dukovo.sh seed {machine} {machine-port:22}"
+expect = "seed: sent the metadata folder and rollout.json"
+[[step]]
+run = '''sh -c 'mkdir -p /var/lib/dukovo-system-site/system.seed && tar --no-same-owner -xf /users/lab/system-metadata.tar -C /var/lib/dukovo-system-site/system.seed && ln -sfn system.seed /var/lib/dukovo-system-site/system && cp /users/lab/rollout.json /var/lib/dukovo-system/rollout.json && echo "seeded: $((6 * 7))"' '''
+root = true
+expect = "seeded: 42"
+
+# Step 7: the newest release, and the rest of the repository, deployed with
+# ob's tar over ssh; the deploy waits for the publish job, which hashes
+# every file it takes and signs the snapshot and timestamp on top of the
+# seed.
+[[step]]
+host = "sh {here}/server-on-dukovo.sh send {machine} {machine-port:22} repository-before-pull"
+expect = [
+    "Copying the repository to lab@",
+    "Publishing it on the server",
+    "send: repository-before-pull",
+]
+
+# Step 8: the lab PC checks it as a client would, from the first root,
+# every release list and channel, and its numbers go on from the old
+# server's.
+[[step]]
+host = "sh {here}/server-on-dukovo.sh check {machine} {machine-port:80}"
+expect = [
+    "offers 3 releases, newest Dukovo ",
+    "signed from the trusted root",
+    "the stable channel of ",
+    "the beta channel of ",
+]
+[[step]]
+host = "sh {here}/server-on-dukovo.sh counts {machine} {machine-port:80}"
+expect = "counts on from the old server's"
+
+# The machine reads its own server: the metadata it kept from the old one
+# is not newer than what this one signed, so nothing is refused; what it
+# is offered is what the old server offered; and the pause of the stable
+# release, a rollout plan the seed carried, is held.
+[[step]]
+run = '''sh -c 'printf "server = \"http://127.0.0.1/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+root = true
+expect = "set: 42"
+[[step]]
+run = "sysupdate check"
+root = true
+expect = [
+    "sysupdate: the stable channel offers Dukovo ",
+    "-test.year; this system runs Dukovo ",
+    "-test.bridge comes first",
+    "files this system lacks",
+]
+expect_not = "is older than the trusted"
+[[step]]
+run = '''sh -c 'log nginx | grep "GET /system/metadata/timestamp.json" | tail -n 1' '''
+root = true
+expect = "GET /system/metadata/timestamp.json"
+[[step]]
+run = "sh -c 'echo 500 > /system/state/sysupdate/wave && sysupdate check'"
+root = true
+expect = [
+    "sysupdate: it reaches machines in waves; this machine's opens on day 7",
+    "sysupdate: the waves are held: paused: a test pause",
+]
+expect_not = "was withdrawn"
+
+# A deploy with no `ready`: the withdrawal of the stable release waits in
+# the incoming folder, and the publish job, which timerd starts each
+# minute, runs twice and publishes nothing of it.
+[[step]]
+host = "sh {here}/server-on-dukovo.sh copy-only {machine} {machine-port:22} repository-after-pull"
+expect = "copy-only: repository-after-pull"
+[[step]]
+run = "ls /var/lib/dukovo-system-incoming"
+expect = ["metadata", "targets"]
+expect_not = "ready"
+[[step]]
+wait = "150s"
+[[step]]
+run = "sysupdate check"
+root = true
+expect = "sysupdate: the waves are held: paused: a test pause"
+expect_not = "was withdrawn"
+
+# Told ready, the next deploy is published within the timer's minute, so
+# that what was left waiting was never lost, only unpublished; the machine
+# takes the withdrawal on top of its metadata.
+[[step]]
+host = "sh {here}/server-on-dukovo.sh send {machine} {machine-port:22} repository-after-pull"
+expect = ["Publishing it on the server", "send: repository-after-pull"]
+[[step]]
+run = "sysupdate check"
+root = true
+expect = "-test.year was withdrawn: a test withdrawal; nothing to do"
+
+# What the test set up, taken down: the jobs and nginx stop, and the
+# machine's wave is its own again.
+[[step]]
+run = '''sh -c 'rm -f /system/state/sysupdate/wave; for job in dukovo-catalog-flaws dukovo-catalog-publish dukovo-catalog-refresh dukovo-flaws-fetch dukovo-system-publish dukovo-system-refresh nginx; do service $job disable; done; echo "taken down: $((6 * 7))"' '''
+root = true
+expect = "taken down: 42"

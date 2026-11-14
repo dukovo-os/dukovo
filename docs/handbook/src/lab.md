@@ -245,6 +245,18 @@ onto the machine over SSH (`lab/tests/updates/copy-update.sh`), and the
 test stages it with `sysupdate stage`. Without them, as with an image
 given by `--image`, those tests are skipped and say why.
 
+`updates/server-on-dukovo` moves an update server to the machine, as the
+update server move runbook does, over the lab network and HTTP: the lab
+PC serves the test update server of `out/lab/updates` first, and the
+machine reads it once; the machine is set up as an update server with the
+files `./ob lab` stages in `DUKOVO_LAB_SERVER_FILES`; and the lab PC
+deploys the test update server's repository to it with `./ob release
+send`, whose `$OB_UPDATE_SSH_OPTIONS` reach the machine at its port with
+the lab's key, and reads it back with `./ob release check --root`. The
+machine then takes the new server's metadata with no refusal for a
+version lower than the old server's. No ACME authority is in the lab, so
+the certificate steps of the runbook are not tried.
+
 The service bundles' tests install bundles of the catalog that `./ob
 lab` packs from the same tree, and names to the lab in
 `DUKOVO_LAB_BUNDLES`. A host step copies one onto the machine over SSH

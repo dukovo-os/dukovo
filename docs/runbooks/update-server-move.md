@@ -210,22 +210,34 @@ timestamp and snapshot it saw, and refuses a lower one, as every TUF client
 does. A new server that starts at 1 is refused by them until it has counted
 past what they saw. If no machine but yours has read updates.dukovo.org yet,
 skip to step 7. Otherwise, from OLD, give NEW the metadata folders of what
-OLD serves, so that it goes on counting from there:
+OLD serves, so that it goes on counting from there, and the plans of the
+system releases' rollouts, which say which releases are paused and which
+waves are open, so that a release paused on OLD is not let out by NEW. The
+files go to your home folder on NEW, not to `/tmp`, which `elevate` does not
+share with you:
 
 ```console
 $ ssh -A OLD-LOGIN@OLD-IP
 OLD$ NEW=dukovo@NEW-IP
-OLD$ sudo tar -C "$(readlink -f /srv/dukovo/system)" -cf - metadata | ssh "$NEW" 'cat > /tmp/system-metadata.tar'
-OLD$ sudo tar -C "$(readlink -f /srv/dukovo/catalog)" -cf - metadata | ssh "$NEW" 'cat > /tmp/catalog-metadata.tar'
+OLD$ sudo tar -C "$(readlink -f /srv/dukovo/system)" -cf - metadata | ssh "$NEW" 'cat > system-metadata.tar'
+OLD$ sudo tar -C "$(readlink -f /srv/dukovo/catalog)" -cf - metadata | ssh "$NEW" 'cat > catalog-metadata.tar'
+OLD$ sudo cat /var/lib/dukovo-system/rollout.json | ssh "$NEW" 'cat > rollout.json'
 OLD$ exit
 $ ssh dukovo@NEW-IP
-$ elevate sh -c 'mkdir -p /var/lib/dukovo-system-site/system.seed && tar -xf /tmp/system-metadata.tar -C /var/lib/dukovo-system-site/system.seed && ln -sfn system.seed /var/lib/dukovo-system-site/system'
-$ elevate sh -c 'mkdir -p /var/lib/dukovo-catalog-site/catalog.seed && tar -xf /tmp/catalog-metadata.tar -C /var/lib/dukovo-catalog-site/catalog.seed && ln -sfn catalog.seed /var/lib/dukovo-catalog-site/catalog'
+$ elevate sh -c "mkdir -p /var/lib/dukovo-system-site/system.seed && tar --no-same-owner -xf $PWD/system-metadata.tar -C /var/lib/dukovo-system-site/system.seed && ln -sfn system.seed /var/lib/dukovo-system-site/system && cp $PWD/rollout.json /var/lib/dukovo-system/rollout.json"
+$ elevate sh -c "mkdir -p /var/lib/dukovo-catalog-site/catalog.seed && tar --no-same-owner -xf $PWD/catalog-metadata.tar -C /var/lib/dukovo-catalog-site/catalog.seed && ln -sfn catalog.seed /var/lib/dukovo-catalog-site/catalog"
 ```
 
-Nothing in this step has been run before. The first deploy of step 7 takes
-the seed as the folder served, signs the next numbers on top of it and
-takes the seed away.
+The shell on NEW fills in `$PWD`, your home folder, before `elevate` runs
+the command. The first deploy of step 7 takes the seed as the folder
+served, signs the next numbers on top of it, keeps the plans and takes the
+seed away.
+
+The lab test `updates/server-on-dukovo` (`lab/tests/updates/`) checks this
+step for the system's releases: a machine that read the old test server
+takes the new one's metadata with no refusal, and still finds the stable
+release paused. It uses HTTP and a name that has no certificate, and seeds
+the system's releases alone, not the catalog.
 
 ## 7. Deploy the newest release and catalog
 

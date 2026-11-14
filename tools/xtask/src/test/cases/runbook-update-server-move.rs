@@ -33,9 +33,10 @@
 //! each signs a new timestamp. Setup run again, for the name this-machine,
 //! which certd made, keeps the online keys; nginx then serves HTTPS with
 //! that certificate to a client that trusts it, and sends HTTP there. A
-//! certificate from an ACME authority, the version numbers a move carries
-//! over, and the install of nginx from the catalog, which setup does when
-//! nginx is not there, are not tried.
+//! certificate from an ACME authority and the install of nginx from the
+//! catalog, which setup does when nginx is not there, are not tried; the
+//! version numbers a move carries over are the lab test
+//! updates/server-on-dukovo's.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read as _, Write as _};
