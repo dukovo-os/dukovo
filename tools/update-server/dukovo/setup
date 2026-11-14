@@ -15,8 +15,9 @@
 #   so, and running it again once HOST does turns HTTPS on.
 # - Each online key is a Spark secret of the jobs that sign with it: made
 #   here the first time, or taken from the files of `--keys DIR`, or of
-#   /tmp/dukovo-update-keys where that is, which is how a server that
-#   takes over brings its keys (docs/runbooks/update-server-move.md). A key
+#   the folder dukovo-update-keys in the login's own /tmp where that is,
+#   which is how a server that takes over brings its keys
+#   (docs/runbooks/update-server-move.md). A key
 #   that is set is never replaced, and no file of the key stays: its
 #   public half is /system/state/lib/dukovo-catalog/online.json and
 #   dukovo-system/online.json, for the source tree.
@@ -35,7 +36,7 @@ usage() {
 	echo "usage: setup HOST [--keys DIR]" >&2
 	echo "  DIR holds catalog.key and system.key, each the online key as base64," >&2
 	echo "  and catalog.json and system.json, each its public half; without" >&2
-	echo "  --keys, /tmp/dukovo-update-keys is taken if it is there" >&2
+	echo "  --keys, the folder dukovo-update-keys in the login's /tmp is taken" >&2
 	exit 2
 }
 
@@ -86,8 +87,16 @@ if [ ! -f "$top/catalog-repo" ]; then
 	echo "setup: $top/catalog-repo is missing: run it from the folder ob copied" >&2
 	exit 1
 fi
-if [ -z "$keys" ] && [ -d /tmp/dukovo-update-keys ]; then
-	keys=/tmp/dukovo-update-keys
+# The folder the deploying login made in its own /tmp: elevate has the
+# system's /tmp, and the login's is at its real place (ADR 0255).
+if [ -z "$keys" ]; then
+	person_tmp=/system/live/authd/tmp/$(id -u "$deployer")
+	for folder in "$person_tmp/dukovo-update-keys" /tmp/dukovo-update-keys; do
+		if [ -d "$folder" ]; then
+			keys=$folder
+			break
+		fi
+	done
 fi
 if [ -n "$keys" ]; then
 	# The key decides who may sign for every client: only the one who

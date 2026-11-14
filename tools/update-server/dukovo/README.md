@@ -30,9 +30,11 @@ elevate sh dukovo-update-server/dukovo/setup HOST [--keys DIR]
 
 `setup` can be run again: it puts the scripts and service files in again,
 leaves each online key and each folder as it is, and starts what is not
-running. `--keys DIR`, or the folder `/tmp/dukovo-update-keys` where it is
-(`/tmp` is in memory), has it take the online keys of another server in
-place of making new ones: `catalog.key` and `system.key`, each the key as
+running. `--keys DIR`, or the folder `dukovo-update-keys` in the deploying
+login's own `/tmp` where it is (`/tmp` is in memory, and each login has
+one: `elevate` has the system's, so `setup` looks at the login's at its
+real place, `/system/live/authd/tmp/NUMBER`), has it take the online keys
+of another server in place of making new ones: `catalog.key` and `system.key`, each the key as
 base64, and `catalog.json` and `system.json`, each its public half. The
 folder must be the deploying login's, mode 700, and is removed once the
 keys are in. It makes the keys, installs nginx from the catalog, writes

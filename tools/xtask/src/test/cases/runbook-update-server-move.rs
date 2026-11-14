@@ -622,8 +622,8 @@ fn update_server(vm: &mut Vm, case: &Case) -> Result<(), String> {
     online_keys.send(&server)?;
     crate::catalog::copy_staging(&ctx, &server, &staging).map_err(|err| err.to_string())?;
     let said = run_setup(&server, PLAIN_HOST)?;
-    require(&said, "Taking the catalog online key from /tmp/dukovo-update-keys.", "setup")?;
-    require(&said, "Taking the system online key from /tmp/dukovo-update-keys.", "setup")?;
+    require(&said, "Taking the catalog online key from ", "setup")?;
+    require(&said, "Taking the system online key from ", "setup")?;
     require(&said, &format!("{PLAIN_HOST} has no certificate yet"), "setup")?;
     online_keys.kept(&server)?;
     jobs_and_keys(&server)?;

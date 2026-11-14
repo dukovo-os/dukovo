@@ -135,8 +135,9 @@ OLD$ ssh "$NEW" 'umask 077 && mkdir /tmp/dukovo-update-keys'
 ```
 
 OLD asks whether to trust NEW's host key: answer yes only if its
-fingerprint is the one you wrote down in step 2. `/tmp` on NEW is in
-memory: the keys never reach its disk.
+fingerprint is the one you wrote down in step 2. Each login has a `/tmp`
+of its own on Dukovo, which `setup` finds for the login that runs it, and
+which is in memory: the keys never reach NEW's disk.
 
 ```console
 OLD$ sudo base64 -w0 /var/lib/dukovo-catalog/online.key | ssh "$NEW" 'umask 077 && cat > /tmp/dukovo-update-keys/catalog.key'
@@ -174,9 +175,9 @@ It builds `catalog-repo` for Dukovo, copies the server's files with `scp`
 and runs `setup` on NEW through `elevate`. Everything it prints that
 starts with `==>` is a stage. You should see, in this order, `The
 folders`, `The program and the scripts`, `The service files`, `The online
-keys` with the lines `Taking the catalog online key from
-/tmp/dukovo-update-keys.` and `Taking the system online key from
-/tmp/dukovo-update-keys.`, `nginx`, `The jobs` with six lines naming the
+keys` with the lines `Taking the catalog online key from` and `Taking the
+system online key from`, each naming the folder of step 4 where your `/tmp`
+really is, under `/system/live/authd/tmp/`, `nginx`, `The jobs` with six lines naming the
 `dukovo-` jobs and their next times, then `nginx answers port 80 with
 301`, and last `Done.` with the two places the keys' public halves are in.
 There is no line saying `has no certificate yet`: step 3 gave it one.
