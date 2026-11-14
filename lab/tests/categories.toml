@@ -61,6 +61,11 @@ title = "Monitoring and alerts"
 about = "The machine's history and its Prometheus endpoint, read by the lab PC's promtool and checked against free, df and ps, and what reaches the owner: alerts by email and to webhooks, and the early warning of a disk filling"
 
 [[category]]
+name = "reports"
+title = "Problem reports"
+about = "A crash on the machine reported to a staging reports server on the lab PC, its status changed there and read back, and the one-time download of a report for a phone"
+
+[[category]]
 name = "time"
 title = "Time and date"
 about = "The clock, the time zone, and keeping time by NTP"

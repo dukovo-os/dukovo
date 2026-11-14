@@ -1033,6 +1033,10 @@ impl UserMode for Arch {
         regs.fs_base
     }
 
+    fn frame_registers(regs: &Self::UserRegisters) -> [u64; 3] {
+        [regs.rip, regs.rsp, regs.rbp]
+    }
+
     fn enter_user_registers(regs: &Self::UserRegisters) -> ! {
         user::enter_user_registers(regs)
     }

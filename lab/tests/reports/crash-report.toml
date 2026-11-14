@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A crash on the machine, reported to the staging reports server that runs
+# on the lab PC (report-server.py and report-lab.sh beside this file) in
+# place of the project's own: the lab account's program ends with SIGSEGV
+# in three functions of its own, reportd(8) keeps a record of it, and
+# report list shows it with the function that faulted. The report goes to
+# the server over HTTPS, with a certificate that an authority of the
+# test's own signed, which report.toml(5) names in `ca` (ADR 0531). The
+# server keeps the text byte for byte, and report status reads what it
+# says: received, and then, once the lab PC marks the report fixed, the
+# version with the fix. report delete takes it off the server. The
+# authority and the keys are the test's own, of no use elsewhere, and both
+# machines' clocks have to be right, as the certificate holds dates.
+#
+# Over SSH there is no terminal for report's preview to ask its questions
+# and read its keys on, so crash-test, the program that crashes, does what
+# report does after the preview: it asks reportd for the draft of the crash
+# and sends the text it gets, unchanged. The boot test problem-report
+# drives report itself.
+about = "A crash of a program of the lab account's is kept and listed with the function that faulted, reported to the lab PC's staging server over HTTPS, and its status, changed there to fixed in a version, is read back with report status until report delete takes it off the server (ADR 0531)"
+time = "10m"
+host_needs = ["python3", "openssl", "scp"]
+
+[[step]]
+host = "sh {here}/report-lab.sh serve {port:reports} {peer}"
+background = true
+ready = "report server ready"
+
+# The authority's certificate goes where reportd may read it, and
+# report.toml names the server and the authority; reportd reads its
+# settings again when it starts.
+[[step]]
+host = "sh {here}/../services/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cp /users/lab/ca.pem /system/settings/ssl/lab-reports-ca.pem && cat > /system/settings/report.toml && service reportd restart && sleep 2 && echo configured'"
+root = true
+input = """
+server = "https://{peer}:{port:reports}"
+ca = ["/system/settings/ssl/lab-reports-ca.pem"]
+"""
+expect = "configured"
+
+# The crash: the program writes through a null pointer in fault_here, which
+# middle calls and outer calls in turn. The kernel ends it with SIGSEGV, and
+# reportd keeps the record a moment later.
+[[step]]
+run = "sh -c '/system/tests/report/crash-test segv; true'"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! report list | grep -q fault_here; do sleep 1; i=$((i + 1)); done; report list'"
+expect = ["crash-test", "fault_here"]
+
+# The report goes to the lab PC, which keeps what was sent: the text
+# the draft had, with the crash's frames.
+[[step]]
+run = "/system/tests/report/crash-test send \"crash-test stopped in the lab\""
+expect = "sent 1"
+[[step]]
+host = "python3 -I {here}/report-server.py show reports 1"
+expect = ["Dukovo problem report", "crash-test stopped in the lab", "== Crash", "SIGSEGV", "fault_here", "outer"]
+[[step]]
+run = "report list"
+expect = "crash-test stopped in the lab"
+
+# What the server says is read back: received, and then fixed in the
+# version the lab PC names, as the people who handle reports set it.
+[[step]]
+run = "report status"
+expect = "Received"
+[[step]]
+host = "python3 -I {here}/report-server.py set-status reports 1 fixed --fixed-in 0.16.1"
+expect = "report 1: fixed"
+[[step]]
+run = "report status"
+expect = "Fixed in 0.16.1"
+
+# The report is deleted from the server, which then holds none.
+[[step]]
+run = "report delete 1"
+[[step]]
+host = "python3 -I {here}/report-server.py show reports 1"
+exit = 1
+expect = "there is no report 1"
+
+# The machine as it was.
+[[step]]
+run = "sh -c 'rm -f /system/settings/report.toml /system/settings/ssl/lab-reports-ca.pem /users/lab/ca.pem && service reportd restart && echo cleaned'"
+root = true
+expect = "cleaned"

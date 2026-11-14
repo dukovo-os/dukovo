@@ -46,6 +46,7 @@
 
 mod account;
 mod clock;
+pub mod crash;
 pub mod device;
 mod domain;
 pub(crate) mod files;

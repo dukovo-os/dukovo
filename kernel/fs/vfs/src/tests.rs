@@ -2455,6 +2455,9 @@ fn a_view_is_made_of_attached_places() {
 
     let view = vfs.make_view(&ALICE).unwrap();
     assert!(view.in_view() && !place("home/alice").in_view());
+    // Its root is `/` to a program whose root it is, and its other
+    // directories are no mount's root.
+    assert_eq!(view.mount_path(), Some(&b""[..]));
     vfs.attach(&view, "system/libraries", &place("system/libraries"), &ALICE, true).unwrap();
     vfs.attach(&view, "home/alice", &place("home/alice"), &ALICE, false).unwrap();
     vfs.attach(&view, "tmp", &place("tmp/session-1"), &ALICE, false).unwrap();
@@ -2483,6 +2486,7 @@ fn a_view_is_made_of_attached_places() {
         read_all(&vfs.open(&ALICE, &view, "etc/motd", OpenFlags::default()).unwrap().node),
         b"hello"
     );
+    assert_eq!(vfs.open(&ALICE, &view, "etc", OpenFlags::default()).unwrap().mount_path(), None);
     // Nothing past them: not the rest of /system, nor /tmp's other files.
     assert_eq!(vfs.stat(&ALICE, &view, "system/secret").err(), Some(Error::NotFound));
     assert_eq!(vfs.stat(&ALICE, &view, "tmp/shared").err(), Some(Error::NotFound));

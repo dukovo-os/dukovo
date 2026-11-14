@@ -35,7 +35,7 @@ const USAGE: &str = "Usage: dukofetch [--no-logo] [--json]\n  \
                      --json     the facts as JSON";
 
 /// Where the kernel gives its name and version, and the release's.
-const VERSION: &str = "/kernel/version";
+pub(crate) const VERSION: &str = "/kernel/version";
 
 /// The brand's colours dukofetch writes in: the labels in tan, the
 /// separators in steel, and the palette row.
@@ -188,9 +188,10 @@ fn gather() -> Facts {
 
 /// The kernel's name and version, then the release's, from
 /// `/kernel/version`'s `Radix 0.12.0 (Dukovo Server 0.12.0)`.
-type Versions = ((String, String), (String, String));
+pub(crate) type Versions = ((String, String), (String, String));
 
-fn parse_version(text: &str) -> Option<Versions> {
+/// The kernel's and the release's names and versions in `text`.
+pub(crate) fn parse_version(text: &str) -> Option<Versions> {
     let (kernel, release) = text.trim().split_once(" (")?;
     let release = release.strip_suffix(')')?;
     let (kernel_name, kernel_version) = kernel.split_once(' ')?;
@@ -257,7 +258,7 @@ fn cpu() -> Option<Cpu> {
 /// The processor's brand string without its marks, its clock, `CPU`,
 /// `Processor` and a count of cores: `Intel Core i7-8550U` for `Intel(R)
 /// Core(TM) i7-8550U CPU @ 1.80GHz`, as neofetch shortens it.
-fn cpu_name(brand: &str) -> String {
+pub(crate) fn cpu_name(brand: &str) -> String {
     let mut name = brand.to_string();
     for mark in ["(R)", "(r)", "(TM)", "(tm)"] {
         name = name.replace(mark, "");

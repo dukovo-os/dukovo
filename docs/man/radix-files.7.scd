@@ -204,7 +204,9 @@ changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.
 	boot left when it panicked, then that boot's log, root's alone
 	(mode 0600) and empty when it left none; writing *panic* and a line
 	end to it panics the kernel on purpose (*radix-debug*(7),
-	*dumps*(8), ADR 0483).
+	*dumps*(8), ADR 0483). _crashes_ gives the records of the programs
+	that crashed, one for each read, to root alone (mode 0400):
+	*reportd*(8) reads them (*radix-crashes*(4), ADR 0530).
 
 *bootfs*
 	The boot archive (*radix-processes*(7)), read-only, with the

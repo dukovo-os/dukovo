@@ -1933,6 +1933,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gimli"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
+dependencies = [
+ "fallible-iterator",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "git-https-test"
 version = "0.15.0"
 dependencies = [
@@ -3072,6 +3082,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3523,6 +3542,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
+
+[[package]]
 name = "quick_cache"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3938,6 +3963,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "report-test"
+version = "0.15.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "rfc6979"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4113,6 +4145,12 @@ dependencies = [
  "sha2 0.11.1",
  "walkdir",
 ]
+
+[[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
 
 [[package]]
 name = "rustc-hash"
@@ -5056,6 +5094,7 @@ dependencies = [
  "catalog-repo",
  "disk",
  "dkv",
+ "gimli",
  "http",
  "http-body-util",
  "if-addrs",
@@ -5067,6 +5106,8 @@ dependencies = [
  "md-5",
  "mdns-sd",
  "netproto",
+ "object",
+ "qrcodegen",
  "radix-abi",
  "radix-bitlocker",
  "radix-btrfs",
@@ -5077,6 +5118,7 @@ dependencies = [
  "radix-spd",
  "rcgen",
  "ring",
+ "rustc-demangle",
  "rustic_core",
  "rustls",
  "rustls-webpki",

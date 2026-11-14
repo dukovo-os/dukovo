@@ -508,6 +508,17 @@ python userspace/programs/dkv/ userspace/programs/manifest/
 python userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 power-button kernel/lib/acpi/ kernel/lib/uacpi/ userspace/programs/systools/src/power.rs
 principals userspace/posix/names.h userspace/posix/principals.c
+problem-report abi/crash.ridl kernel/radix/src/fs/crashes.rs kernel/radix/src/user/crash.rs
+problem-report userspace/defaults/spark/services/reportd.toml userspace/programs/report-test/
+problem-report userspace/programs/systools/src/reportd.rs
+problem-report userspace/programs/systools/src/reportd/ userspace/programs/systools/src/reports.rs
+problem-report userspace/programs/systools/src/reports/
+problem-report kernel/fs/vfs/src/mount.rs kernel/fs/vfs/src/view.rs
+problem-report-access abi/crash.ridl kernel/radix/src/fs/crashes.rs kernel/radix/src/user/crash.rs
+problem-report-access userspace/defaults/spark/services/reportd.toml userspace/programs/report-test/
+problem-report-access userspace/programs/systools/src/authd.rs userspace/programs/systools/src/login.rs
+problem-report-access userspace/programs/systools/src/reportd.rs userspace/programs/systools/src/reportd/
+problem-report-access userspace/programs/systools/src/reports.rs userspace/programs/systools/src/reports/
 quiet-boot kernel/lib/fbcon/ kernel/radix/src/console.rs kernel/radix/src/fs/keyboard.rs
 rcu kernel/lib/sync/
 rdisk userspace/programs/disk/ userspace/programs/systools/src/mkfs.rs

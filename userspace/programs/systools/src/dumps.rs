@@ -353,7 +353,7 @@ fn show(folder: &Path, name: Option<&str>) -> Result<i32, Fail> {
 /// Writes `text` through the pager, `$PAGER` or else `less`, when the
 /// standard output is a terminal, and straight to it otherwise or when
 /// the pager cannot be started.
-fn page(text: &[u8]) -> Result<(), Fail> {
+pub(crate) fn page(text: &[u8]) -> Result<(), Fail> {
     if util::is_terminal(1) {
         let pager = std::env::var("PAGER").ok().filter(|pager| !pager.trim().is_empty());
         let mut words = pager.as_deref().unwrap_or("less").split_whitespace();

@@ -17,6 +17,15 @@
 //! than a terminal, and with `--command` runs that command with the
 //! shell's `-c`, as Linux's sshd runs one, instead of a login shell.
 //!
+//! While the failure notice of a start that failed its health check is
+//! shown (ADR 0501), login offers three keys after it, read one at a time
+//! (ADR 0532): `Q` draws the QR code of the notice's support page, for a
+//! phone to read; `R` asks for an administrator's name and password and
+//! signs them in with the command `report failure`, so that their session
+//! is the report and ends with it; Enter signs in as usual, and any other
+//! printable key starts the name. A terminal too narrow or too low for the
+//! code gets the address alone.
+//!
 //! A computer started from its boot menu's startup-trouble entry, with
 //! the kernel flag `startup-trouble`, shows the startup-trouble menu
 //! before the sign-in (ADR 0253): it resets an administrator's password
@@ -35,6 +44,7 @@ use accounts::wipe;
 
 use crate::account::Input;
 use crate::args::{Arg, Args};
+use crate::reports::qr;
 use crate::util::{self, Fail, fail};
 use crate::{authd, prompt, signin};
 
@@ -100,9 +110,17 @@ fn ask(request: &Request) -> Result<Answer, Fail> {
 /// A line typed at the terminal after `prompt`, shown as typed; none if
 /// the input ended or a signal stopped it.
 fn line(prompt_text: &str) -> Result<Option<String>, Fail> {
-    match prompt::ask(prompt_text, true) {
+    line_after(prompt_text, None)
+}
+
+/// A line typed after `prompt_text`, as [`line`] gives it, that starts
+/// with `first`, a key already pressed.
+fn line_after(prompt_text: &str, first: Option<char>) -> Result<Option<String>, Fail> {
+    let start = first.map_or_default(String::from);
+    match prompt::ask(&format!("{prompt_text}{start}"), true) {
         Ok(prompt::Answer::Line(line)) => {
-            Ok(Some(String::from_utf8_lossy(&line).trim().to_string()))
+            let rest = String::from_utf8_lossy(&line);
+            Ok(Some(format!("{start}{rest}").trim().to_string()))
         }
         Ok(prompt::Answer::Stopped) => Ok(None),
         Err(err) => Err(util::failed(&"the terminal", err)),
@@ -173,10 +191,16 @@ fn needs_owner() -> Result<bool, Fail> {
 }
 
 /// Has authd start `name`'s session on this terminal, if `password` is
-/// theirs, and waits for it to end. Whether it started; why not if not.
-fn sign_in(name: String, password: Vec<u8>) -> Result<Result<(), String>, Fail> {
+/// theirs, and waits for it to end: a shell, or `command` if there is one.
+/// Whether it started; why not if not.
+fn sign_in(
+    name: String,
+    password: Vec<u8>,
+    command: Option<&str>,
+) -> Result<Result<(), String>, Fail> {
     let term = std::env::var("TERM").unwrap_or_else(|_| "dumb".into());
-    let stream = send(&Request::Session { name, password, term }, true)?;
+    let command = command.map(String::from);
+    let stream = send(&Request::Session { name, password, term, command }, true)?;
     let mut reader = BufReader::new(stream);
     match answer(&mut reader)? {
         Answer::Done(_) => {}
@@ -288,6 +312,134 @@ fn power(command: &str) {
     }
 }
 
+/// The command the failure notice's `R` signs in with: the report of the
+/// failed start, which only an administrator may make.
+const REPORT_COMMAND: &str = "report failure";
+
+/// The start of the support pages' addresses, as the failure notice
+/// gives one.
+const SUPPORT: &str = "https://dukovo.org/support/";
+
+/// What the failure notice offers.
+#[derive(Debug, PartialEq, Eq)]
+struct Failure {
+    /// The address of the notice's support page, if it names one.
+    page: Option<String>,
+}
+
+impl Failure {
+    /// The failure notice of this start, if there is one.
+    fn read() -> Option<Failure> {
+        let notice = std::fs::read_to_string(crate::sysupdate::health::NOTICE).ok()?;
+        Some(Failure { page: support_page(&notice) })
+    }
+}
+
+/// The address of the support page in the failure notice `notice`: its
+/// first word that starts as a support address does.
+fn support_page(notice: &str) -> Option<String> {
+    notice.split_whitespace().find(|word| word.starts_with(SUPPORT)).map(String::from)
+}
+
+/// What a key pressed at the failure notice's choices does.
+#[derive(Debug, PartialEq, Eq)]
+enum Choice {
+    /// `Q`: show the support page's QR code.
+    Support,
+    /// `R`: sign in as an administrator to report the failure.
+    Report,
+    /// Enter: sign in as usual.
+    SignIn,
+    /// Another printable key: sign in as usual, with it the name's first
+    /// letter.
+    Name(char),
+    /// Nothing: not a key a name starts with.
+    Ignore,
+}
+
+/// What `key` does when the notice has a support page, `page`, or not.
+/// A name may start with any visible ASCII character; `Q` starts one when
+/// there is no page to show.
+fn choose(key: u8, page: bool) -> Choice {
+    match key {
+        b'\n' | b'\r' => Choice::SignIn,
+        b'r' | b'R' => Choice::Report,
+        b'q' | b'Q' if page => Choice::Support,
+        0x21..=0x7e => Choice::Name(char::from(key)),
+        _ => Choice::Ignore,
+    }
+}
+
+/// The line that says which keys do what.
+fn choices_line(page: bool) -> &'static str {
+    if page {
+        "Press R to report this failure, Q for its support page as a QR code, or Enter to sign in."
+    } else {
+        "Press R to report this failure, or Enter to sign in."
+    }
+}
+
+/// The lines that show the support page at `address` on a terminal of
+/// `columns` and `rows`: its QR code, when it fits with the lines under
+/// it, and the address.
+fn page_lines(address: &str, columns: usize, rows: usize) -> Vec<String> {
+    // Under the code: a blank line, the address, a blank line and the
+    // line that says how to go back.
+    let code =
+        qr::encode(address).and_then(|code| qr::lines(&code, columns, rows.saturating_sub(4)));
+    let mut lines = code.unwrap_or_default();
+    if !lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines.push(address.to_string());
+    lines
+}
+
+/// Shows the support page's QR code and address, and waits for a key.
+fn show_page(address: &str) {
+    let (columns, rows) = util::terminal_size(1).unwrap_or((80, 24));
+    println!();
+    for line in page_lines(address, columns, rows) {
+        println!("{line}");
+    }
+    println!();
+    // Any key, or none: the input ending or Ctrl+C goes back as well.
+    let _ = prompt::key("Press a key to go back.");
+    println!();
+}
+
+/// Where the failure notice's choices lead.
+#[derive(Debug, PartialEq, Eq)]
+enum Next {
+    /// The usual sign-in, with the name's first letter if a key began it.
+    SignIn(Option<char>),
+    /// An administrator's sign-in that reports the failure.
+    Report,
+}
+
+/// Shows the failure notice's choices and reads keys until one leads
+/// somewhere; none if the input ended.
+fn offer(failure: &Failure) -> Result<Option<Next>, Fail> {
+    println!("{}", choices_line(failure.page.is_some()));
+    loop {
+        let key = match prompt::key("") {
+            Ok(prompt::Pressed::Key(key)) => key,
+            Ok(prompt::Pressed::Stopped) => return Ok(None),
+            Err(err) => return Err(util::failed(&"the terminal", err)),
+        };
+        match (choose(key, failure.page.is_some()), &failure.page) {
+            (Choice::Support, Some(address)) => {
+                show_page(address);
+                println!("{}", choices_line(true));
+            }
+            (Choice::Report, _) => return Ok(Some(Next::Report)),
+            (Choice::SignIn, _) => return Ok(Some(Next::SignIn(None))),
+            (Choice::Name(letter), _) => return Ok(Some(Next::SignIn(Some(letter)))),
+            _ => {}
+        }
+    }
+}
+
 /// The sign-in at a console: name and password until a session starts
 /// and ends.
 fn console() -> Result<i32, Fail> {
@@ -297,10 +449,14 @@ fn console() -> Result<i32, Fail> {
     if util::kernel_flag(authd::STARTUP_TROUBLE) && !trouble()? {
         return Ok(1);
     }
+    let failure = Failure::read();
+    // Whether the failure notice's choices come next: first, and again
+    // after a report that did not start.
+    let mut offered = failure.is_some();
     loop {
         if needs_owner()? {
             match make_owner()? {
-                Some((name, password)) => match sign_in(name, password)? {
+                Some((name, password)) => match sign_in(name, password, None)? {
                     Ok(()) => return Ok(0),
                     Err(why) => println!("{why}\n"),
                 },
@@ -308,14 +464,29 @@ fn console() -> Result<i32, Fail> {
             }
             continue;
         }
-        let Some(name) = line("Name: ")? else { return Ok(1) };
+        let (mut first, mut command) = (None, None);
+        if let Some(failure) = failure.as_ref().filter(|_| offered) {
+            match offer(failure)? {
+                None => return Ok(1),
+                Some(Next::SignIn(letter)) => first = letter,
+                Some(Next::Report) => {
+                    println!("Sign in as an administrator to report it.\n");
+                    command = Some(REPORT_COMMAND);
+                }
+            }
+        }
+        let Some(name) = line_after("Name: ", first)? else { return Ok(1) };
         if name.is_empty() {
+            offered = command.is_some();
             continue;
         }
         let Ok(password) = Input::Terminal.password("Password: ") else { return Ok(1) };
-        match sign_in(name, password)? {
+        match sign_in(name, password, command)? {
             Ok(()) => return Ok(0),
-            Err(why) => println!("{}.\n", capitalized(&why)),
+            Err(why) => {
+                println!("{}.\n", capitalized(&why));
+                offered = command.is_some();
+            }
         }
     }
 }
@@ -382,4 +553,93 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     }
     let _ = io::stdout().flush();
     if in_session { session(command) } else { console() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enter_signs_in_and_r_reports() {
+        for page in [true, false] {
+            assert_eq!(choose(b'\n', page), Choice::SignIn);
+            assert_eq!(choose(b'\r', page), Choice::SignIn);
+            assert_eq!(choose(b'r', page), Choice::Report);
+            assert_eq!(choose(b'R', page), Choice::Report);
+        }
+    }
+
+    #[test]
+    fn q_shows_the_page_only_when_the_notice_has_one() {
+        assert_eq!(choose(b'q', true), Choice::Support);
+        assert_eq!(choose(b'Q', true), Choice::Support);
+        // Without a page, Q is a name's first letter, as for quincy.
+        assert_eq!(choose(b'q', false), Choice::Name('q'));
+        assert_eq!(choose(b'Q', false), Choice::Name('Q'));
+    }
+
+    #[test]
+    fn any_other_visible_key_starts_the_name() {
+        for &key in b"aZ0_.~!" {
+            assert_eq!(choose(key, true), Choice::Name(char::from(key)));
+        }
+    }
+
+    #[test]
+    fn keys_that_no_name_starts_with_are_ignored() {
+        // A space, Escape and the arrow keys' first byte, Backspace, Tab,
+        // Ctrl+D, a delete and a byte of a longer character.
+        for key in [b' ', 0x1b, 0x08, b'\t', 0x04, 0x7f, 0xc3, 0x00] {
+            assert_eq!(choose(key, true), Choice::Ignore, "{key:#x}");
+        }
+    }
+
+    #[test]
+    fn the_choices_name_the_keys_that_work() {
+        assert_eq!(
+            choices_line(true),
+            "Press R to report this failure, Q for its support page as a QR code, or Enter to sign in."
+        );
+        assert_eq!(choices_line(false), "Press R to report this failure, or Enter to sign in.");
+    }
+
+    const NOTICE: &str = "This start of Dukovo 0.16.0 failed its health check, and goes on.\n\
+        The service web did not become healthy.\n\
+        More: changes --failed, and log -b -1 for the failed start's log.\n\
+        Help: https://dukovo.org/support/0.16.0/errors/NET-132.html\n";
+
+    #[test]
+    fn the_support_page_is_the_address_in_the_notice() {
+        assert_eq!(
+            support_page(NOTICE).as_deref(),
+            Some("https://dukovo.org/support/0.16.0/errors/NET-132.html")
+        );
+        assert_eq!(support_page("The start failed.\nMore: changes --failed\n"), None);
+        assert_eq!(support_page("See https://example.org/support/x"), None);
+        assert_eq!(support_page(""), None);
+    }
+
+    #[test]
+    fn the_page_is_a_code_over_its_address_where_there_is_room() {
+        let address = "https://dukovo.org/support/0.16.0/errors/NET-132.html";
+        let lines = page_lines(address, 80, 25);
+        assert_eq!(lines.last().map(String::as_str), Some(address));
+        let code = &lines[..lines.len() - 2];
+        // A code of 33 modules with a quiet zone of four: 41 columns, and
+        // 21 lines of two modules.
+        assert_eq!((code.len(), code[0].chars().count()), (21, 41));
+        assert_eq!(lines[lines.len() - 2], "");
+        assert!(code.iter().all(|line| line.chars().all(|c| " ▀▄█".contains(c))));
+    }
+
+    #[test]
+    fn a_narrow_or_low_terminal_gets_the_address_only() {
+        let address = "https://dukovo.org/support/0.16.0/errors/NET-132.html";
+        assert_eq!(page_lines(address, 36, 40), [address]);
+        // Rows enough for the code with its narrow quiet zone, 19, and the
+        // four lines under it: 23.
+        assert_eq!(page_lines(address, 80, 22), [address]);
+        let narrow_quiet = page_lines(address, 80, 23);
+        assert_eq!((narrow_quiet.len(), narrow_quiet[0].chars().count()), (19 + 2, 37));
+    }
 }

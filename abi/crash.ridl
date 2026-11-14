@@ -1,0 +1,134 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! Crash records (ADR 0530): what the kernel keeps of a program that a
+//! crash ended, for reportd(8) to turn into a stack trace.
+//!
+//! A process ends in a crash when a signal of a fault ends it (SIGSEGV,
+//! SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGSYS), or SIGABRT does: one with no
+//! handler, or that its thread blocks, as POSIX has those signals end a
+//! process with a core dump. The kernel then keeps a record of the thread
+//! that took it, made in that thread before the process ends: a Header,
+//! `mappings` Mapping structures, one for each part of a file the process
+//! had mapped to run, lowest first, and `stack_len` bytes of the thread's
+//! stack from its stack pointer up, as far as STACK_MAX bytes and the end
+//! of the stack's mapping reach and its pages are present. The stack is
+//! the program's memory and can hold what it kept secret: only root reads
+//! the records, and reportd keeps nothing of the stack once it has found
+//! the return addresses in it. Spark's processes, a process ended by
+//! SIGKILL or by its own exit, and a process already ending leave none.
+//!
+//! _/devices/crashes_ (radix-files(7)), root's, mode 0400, gives the
+//! records. A read takes the oldest one waiting, whole, and fails with
+//! invalid_argument if the buffer cannot hold it (RECORD_MAX bytes hold
+//! any); it waits for one unless the file is non-blocking, when it fails
+//! with would_block. `poll` finds it readable while one waits. At most
+//! RECORDS_KEPT wait: a crash past that is not kept, and the next record
+//! read counts it in `dropped`. The kernel's log has a line for every
+//! crash either way. The kernel flag `crashrecords=off` keeps none.
+
+module crash;
+
+/// Header's `magic`: "RADIXCRS" in its bytes' order.
+const MAGIC: u64 = 0x5352435849444152;
+/// Header's `version`.
+const VERSION: u32 = 1;
+/// How many records wait at most.
+const RECORDS_KEPT: u32 = 8;
+/// The most mappings a record holds.
+const MAPPINGS_MAX: u32 = 64;
+/// The most bytes of stack a record holds.
+const STACK_MAX: u32 = 65536;
+/// The longest a path is in a Mapping or the Header: longer ones keep
+/// their start, with PATH_CUT set.
+const PATH_MAX: u32 = 104;
+/// The longest a resource domain's name is in the Header, as
+/// resource_domain's NAME_MAX, and the bytes it is kept in.
+const DOMAIN_MAX: u32 = 23;
+/// The longest a record is.
+const RECORD_MAX: u32 = 74544;
+
+/// A Mapping's or the Header's `path_flags`: the path's end was cut off.
+const PATH_CUT: u32 = 1;
+/// The path is not known: the file was opened by a capability passed
+/// from another process, or mapped in a way that names no path.
+const PATH_UNKNOWN: u32 = 2;
+
+/// What a record starts with.
+struct Header {
+    /// MAGIC.
+    magic: u64;
+    /// VERSION.
+    version: u32;
+    /// The whole record's size in bytes.
+    size: u32;
+    /// How many crashes were not kept, as RECORDS_KEPT waited, since the
+    /// record read before this one.
+    dropped: u32;
+    /// The signal that ended the process.
+    signal: u32;
+    /// Its `si_code`, as the program's handler would have had it.
+    code: i32;
+    /// How many Mapping structures follow the Header.
+    mappings: u32;
+    /// The address the fault was at, for a fault's signal: `si_addr`.
+    address: u64;
+    /// The process's number.
+    process: u64;
+    /// The thread's number.
+    thread: u64;
+    /// The user it acted for.
+    user: u32;
+    /// The group it acted for.
+    group: u32;
+    /// The numbers of its parent, its parent's parent and so on, 0 past
+    /// the last known.
+    ancestors: [u64; 4];
+    /// When, in nanoseconds since 1970 (UTC), or 0 if the kernel did not
+    /// know the time of day.
+    wall_ns: u64;
+    /// When, in nanoseconds since boot.
+    boot_ns: u64;
+    /// The thread's name, ended by a 0 if shorter.
+    thread_name: [u8; 16];
+    /// The thread's program counter.
+    pc: u64;
+    /// Its stack pointer.
+    sp: u64;
+    /// Its frame pointer.
+    fp: u64;
+    /// The address of the stack's first byte kept: the stack pointer.
+    stack_address: u64;
+    /// How many bytes of the stack follow the mappings.
+    stack_len: u32;
+    /// The program's path's PATH_CUT or PATH_UNKNOWN.
+    path_flags: u32;
+    /// The program's path's length.
+    path_len: u32;
+    /// The length of the name of its resource domain.
+    domain_len: u32;
+    /// The path of the file it ran, as `exec` was given it: the script's
+    /// interpreter for a script. PATH_MAX bytes, `path_len` of them the
+    /// path's, laid in words.
+    path: [u64; 13];
+    /// The name of the resource domain it ran in, a service's name for a
+    /// service's process: `domain_len` bytes of 24, laid in words.
+    domain: [u64; 3];
+}
+
+/// A part of a file the process had mapped to run.
+struct Mapping {
+    /// Its first address.
+    start: u64;
+    /// The address past its last byte.
+    end: u64;
+    /// Where `start` is in the file, in bytes.
+    offset: u64;
+    /// The path's PATH_CUT or PATH_UNKNOWN.
+    path_flags: u32;
+    /// The path's length.
+    path_len: u32;
+    /// The file's path, as the process opened it: PATH_MAX bytes,
+    /// `path_len` of them the path's, laid in words.
+    path: [u64; 13];
+}

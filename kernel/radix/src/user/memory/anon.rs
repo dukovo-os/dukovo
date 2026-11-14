@@ -392,6 +392,9 @@ pub struct FileSource {
     pub base: u64,
     /// How many bytes from `base` come from the file.
     pub size: u64,
+    /// The file's path, for a mapping the program runs (ADR 0530): what
+    /// a crash record names it by.
+    pub name: Option<crate::fs::MapName>,
 }
 
 /// Where `map_anonymous` puts what it maps.

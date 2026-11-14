@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The one-time download of a report for a phone (ADR 0532): report crash
+# --save, with no file, prints an address with a random token in its path,
+# a QR code of it and the certificate's fingerprint, and waits for one
+# download. The lab PC stands in for the phone, which the lab has no
+# camera for: it reads the address report printed, fetches it from the
+# port that reaches the download's (report-lab.sh beside this file) and
+# gets the text of the report, with the crash's functions; the second
+# fetch of the same address gets no text. The download listens on port
+# 9443, which report's --port names, so that the firewall can allow it
+# first, as a program a person runs listens for the machine alone, and
+# so that the lab PC can reach it through the port it forwards. No report
+# server is needed: nothing is sent.
+#
+# report takes its answers from its standard input when it is not on a
+# terminal, and --save skips the preview's keys, which there is no
+# terminal to press over SSH.
+about = "report crash --save prints an address for a phone and waits: the lab PC fetches the address once and gets the report's text with the crashed function, and the second fetch is refused (ADR 0532)"
+time = "10m"
+host_needs = ["curl", "ssh"]
+
+# A crash to report, as crash-report makes one.
+[[step]]
+run = "sh -c '/system/tests/report/crash-test segv; true'"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! report list | grep -q fault_here; do sleep 1; i=$((i + 1)); done; report list'"
+expect = "fault_here"
+
+# The firewall lets the lab PC reach the download's port.
+[[step]]
+run = "sh -c 'firewall allow tcp 9443 && echo allowed'"
+root = true
+expect = "allowed"
+
+# The three answers, the last two empty, and report in the background, as
+# it waits for the download; what it prints goes to a file that the lab PC
+# reads.
+[[step]]
+run = "sh -c 'cat > answers.txt'"
+input = "The lab fetched this report\n\n\n\n"
+[[step]]
+run = "sh -c 'report crash --save --port 9443 < answers.txt > save.out 2>&1 &'"
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! grep -q report.txt save.out 2> /dev/null; do sleep 1; i=$((i + 1)); done; cat save.out'"
+expect = ["https://", "/report.txt", "Waiting for one download"]
+
+# One fetch gets the text and the next is refused.
+[[step]]
+host = "sh {here}/report-lab.sh download {machine} {machine-port:22} {machine-port:9443}"
+expect = ["first fetch: 200", "text: Dukovo problem report", "crash: fault_here in the text", "second fetch: refused"]
+expect_not = "second fetch: not refused"
+
+# The machine as it was: the rule for the port goes, by its number.
+[[step]]
+run = "rm -f answers.txt save.out"
+[[step]]
+run = "sh -c 'n=$(firewall list | awk \"/ allow tcp 9443$/ { print \\$1 }\"); firewall remove $n && echo removed'"
+root = true
+expect = "removed"

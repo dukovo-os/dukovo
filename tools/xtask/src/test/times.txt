@@ -129,6 +129,8 @@ pci-serial 18
 posix 70
 power-button 17
 principals 12
+problem-report 230
+problem-report-access 200
 rcu 21
 rdisk 57
 repair-startup 420

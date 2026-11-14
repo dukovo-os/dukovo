@@ -684,6 +684,12 @@ them to *init*, and the kernel does not read them.
 	region, which is reserved either way. See *radix-debug*(7) and
 	*dumps*(8).
 
+*crashrecords*=off
+	Make no record of a program that crashes, so that
+	_/devices/crashes_ stays empty and *reportd*(8) keeps no crash of
+	a program but a service's panic and the kernel's dumps. The kernel
+	still logs one line for each crash. See *radix-crashes*(4).
+
 *selftest*=_name_
 	Run a self-test at the end of boot: *page-fault*, *crash-reboot*,
 	*breakpoint*, *mm-stress*, *stack-overflow*, *smep*, *smap*, *tlb*,
@@ -1422,7 +1428,7 @@ the steps of a smoke test and its results.
 
 # SEE ALSO
 
-*spark*(8), *sysupdate*(8), *radix-processes*(7), *radix-debug*(7), *dumps*(8), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial*(8), *serial-console*(8)
+*spark*(8), *sysupdate*(8), *radix-processes*(7), *radix-debug*(7), *radix-crashes*(4), *dumps*(8), *radix-capabilities*(7), *radix-scheduling*(7), *ob*(1), *dukovo.toml*(5), *rgrub-setup*(8), *serial*(8), *serial-console*(8)
 
 The Multiboot2 specification:
 https://www.gnu.org/software/grub/manual/multiboot2/

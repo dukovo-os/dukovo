@@ -256,6 +256,13 @@ fn requests_go_and_come_back() {
             name: "alice".into(),
             password: b"s3cret".to_vec(),
             term: "linux".into(),
+            command: None,
+        },
+        Request::Session {
+            name: "alice".into(),
+            password: b"s3cret".to_vec(),
+            term: "linux".into(),
+            command: Some("report failure".into()),
         },
         Request::Elevate {
             mode: Mode::Command,
@@ -411,6 +418,27 @@ fn requests_go_and_come_back() {
         b"check\0a\0b\0"
     );
     assert_eq!(Request::NeedsOwner.encode(), b"needs-owner\0");
+    // A session's command is one more field; a request without it, as
+    // older sign-in programs send, still starts a shell.
+    let plain = Request::Session {
+        name: "alice".into(),
+        password: b"pw".to_vec(),
+        term: "linux".into(),
+        command: None,
+    };
+    assert_eq!(plain.encode(), b"session\0alice\0pw\0linux\0");
+    assert_eq!(Request::decode(b"session\0alice\0pw\0linux\0"), Ok(plain));
+    let reporting = Request::Session {
+        name: "alice".into(),
+        password: b"pw".to_vec(),
+        term: "linux".into(),
+        command: Some("report failure".into()),
+    };
+    assert_eq!(reporting.encode(), b"session\0alice\0pw\0linux\0report failure\0");
+    assert_eq!(Request::decode(b"session\0alice\0pw\0linux\0report failure\0"), Ok(reporting));
+    // An empty command, or two, is no request.
+    assert!(Request::decode(b"session\0alice\0pw\0linux\0\0").is_err());
+    assert!(Request::decode(b"session\0alice\0pw\0linux\0a\0b\0").is_err());
     assert_eq!(
         Request::Reset { name: "alice".into(), password: b"pw".to_vec() }.encode(),
         b"reset\0alice\0pw\0"
@@ -657,6 +685,7 @@ fn debug_leaves_out_passwords() {
         name: "alice".into(),
         password: b"hunter2".to_vec(),
         term: "linux".into(),
+        command: None,
     };
     assert!(!format!("{session:?}").contains("hunter2"));
     let elevate = Request::Elevate {

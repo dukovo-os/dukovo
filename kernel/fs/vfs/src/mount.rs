@@ -243,10 +243,13 @@ impl Location {
     }
 
     /// Its path from the tree's root if it is the root of a mount in the
-    /// tree, whose path the tree keeps: `""` for the tree's root.
+    /// tree, whose path the tree keeps: `""` for the tree's root. A view's
+    /// root is `""` too, as it is `/` to a program whose root it is, which
+    /// sees real paths beneath it (ADR 0215).
     pub fn mount_path(&self) -> Option<&[u8]> {
-        (address(&self.node) == address(&self.mount.root) && !self.mount.detached)
-            .then_some(&self.mount.path[..])
+        (address(&self.node) == address(&self.mount.root)
+            && (!self.mount.detached || self.in_view()))
+        .then_some(&self.mount.path[..])
     }
 
     /// Fails with [`Error::ReadOnly`] if its mount, or the node itself, is

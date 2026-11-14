@@ -2698,6 +2698,8 @@ enum Target<'a> {
     Capture,
     /// A sound output, or `speech`.
     Audio,
+    /// `/devices/crashes` (ADR 0530).
+    Crashes,
     /// A file of the tree, through its node.
     Node,
 }
@@ -2727,6 +2729,8 @@ fn target(file: &FileObject) -> Target<'_> {
         Target::Capture
     } else if file.is_audio() {
         Target::Audio
+    } else if file.is_crashes() {
+        Target::Crashes
     } else {
         Target::Node
     }
@@ -2788,6 +2792,7 @@ fn read_special(
         Target::Fuse => fs::fuse::read(file, out, non_blocking).map(|n| n as u64),
         Target::Tunnel => fs::tunnel::read(file, out, non_blocking).map(|n| n as u64),
         Target::Capture => fs::capture::read(file, out, non_blocking).map(|n| n as u64),
+        Target::Crashes => fs::crashes::read(file, out, non_blocking).map(|n| n as u64),
         Target::Framebuffer | Target::Audio | Target::Node => Ok(0),
     }
 }
@@ -2903,7 +2908,7 @@ fn write_special(
             Ok(written)
         }
         Target::Framebuffer => fs::framebuffer::write(file, offset, data).map(|n| n as u64),
-        Target::Keyboard | Target::Mouse => Err(error(Kernel::InvalidArgument)),
+        Target::Keyboard | Target::Mouse | Target::Crashes => Err(error(Kernel::InvalidArgument)),
         Target::Node => Ok(0),
     }
 }

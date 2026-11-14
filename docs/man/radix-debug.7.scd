@@ -332,6 +332,18 @@ A panic in the code that writes the dump does not halt the machine: the
 dump is left cut short after its last whole section, and the machine
 restarts as after any panic.
 
+A saved dump is also a crash that *reportd*(8) keeps, with its *Panic*
+section alone, so that the person can report it (*report*(1)). The words
+of the stacks never go into a report.
+
+# CRASH RECORDS
+
+A program that crashes, as with SIGSEGV, leaves a record of how it
+ended, which *reportd*(8) reads from _/devices/crashes_ (ADR 0530). The
+record is made in memory, as the program ends, and holds three of its
+registers and up to 64 KiB of its stack, so only root reads it. *crashrecords*=off
+makes none. *radix-crashes*(4) describes the device and the record.
+
 # KERNEL DEBUGGER
 
 *kdb* is a command line on the debug console: the serial ports, COM1
@@ -948,5 +960,5 @@ _out/test/_
 
 # SEE ALSO
 
-*dukovo-boot*(7), *dumps*(8), *uart*(4), *radix-capabilities*(7), *radix-scheduling*(7), *radix-ipc*(7),
+*dukovo-boot*(7), *dumps*(8), *reportd*(8), *radix-crashes*(4), *uart*(4), *radix-capabilities*(7), *radix-scheduling*(7), *radix-ipc*(7),
 *watchdog*(8), *ob*(1), *gdb*(1), *qemu-system-x86_64*(1)

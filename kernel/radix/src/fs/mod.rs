@@ -41,6 +41,7 @@
 
 pub mod capture;
 pub mod crashdump;
+pub mod crashes;
 pub mod devfs;
 pub mod disk;
 mod events;
@@ -169,10 +170,18 @@ enum Special {
     Capture,
     /// A sound output of `/devices/audio`, or `speech` (ADR 0320).
     Audio,
+    /// `/devices/crashes` (ADR 0530).
+    Crashes,
 }
 
 /// The most bytes of a path an [`Opened`] keeps.
 pub const OPENED_MAX: usize = 104;
+
+const _: () = assert!(OPENED_MAX == radix_abi::crash::PATH_MAX as usize);
+
+/// The path of a file mapped to run, kept with its mappings for crash
+/// records (ADR 0530): shared by the mapping's parts and copies.
+pub type MapName = alloc::sync::Arc<Opened, radix_mm::Kmalloc>;
 
 /// Where a file object was opened, as an absolute path, for
 /// `/processes/<n>/files` and lsof(1): the path its open was given, beneath the
@@ -198,6 +207,15 @@ impl Opened {
 
     /// No path.
     pub const NONE: Opened = Opened { len: 0, state: Opened::UNKNOWN, bytes: [0; OPENED_MAX] };
+
+    /// The path `path` names from the root, as `exec` opens an
+    /// interpreter: absolute or not, it starts at `/`.
+    pub fn from_root(path: &[u8]) -> Opened {
+        let mut opened = Opened { len: 1, state: Opened::WHOLE, bytes: [0; OPENED_MAX] };
+        opened.bytes[0] = b'/';
+        opened.join(path);
+        opened
+    }
 
     /// Writes at `place`, which is not yet written, where an object for
     /// `at` was opened ([`Opened::set`]): a path from a directory starts
@@ -408,6 +426,7 @@ impl FileObject {
             Kind::CharDevice if tunnel::end_of(&at.node).is_some() => Special::Tunnel,
             Kind::CharDevice if capture::end_of(&at.node).is_some() => Special::Capture,
             Kind::CharDevice if crate::audio::is_audio(&at.node) => Special::Audio,
+            Kind::CharDevice if crashes::is_crashes(&at.node) => Special::Crashes,
             _ => Special::No,
         };
         // The devices are the last kinds: one comparison for the others.
@@ -529,6 +548,11 @@ impl FileObject {
     /// Whether it is of a sound output, or of `speech`.
     pub fn is_audio(&self) -> bool {
         self.special == Special::Audio
+    }
+
+    /// Whether it is of `/devices/crashes`.
+    pub fn is_crashes(&self) -> bool {
+        self.special == Special::Crashes
     }
 
     /// Whether its reads and writes are a pipe's, a socket's, a terminal's

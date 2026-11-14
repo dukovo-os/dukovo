@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Asking at the terminal: a line, a line not shown, as a password is,
-//! and a yes or no. Ctrl+C stops a question, not the program, which puts
-//! the terminal's echo back first.
+//! a yes or no, and one key. Ctrl+C stops a question, not the program,
+//! which puts the terminal's echo back first.
 
 use std::io::{self, Write};
 use std::os::fd::RawFd;
@@ -147,5 +147,125 @@ pub fn confirm(question: &str) -> bool {
             },
             _ => return false,
         }
+    }
+}
+
+/// What a question for one key got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pressed {
+    /// The key, as the byte it sends: a letter, `\n` for Enter, 0x1b for
+    /// Escape and the keys that start with it.
+    Key(u8),
+    /// No key: the input ended, or a signal stopped the question.
+    Stopped,
+}
+
+/// The terminal's settings as they were, put back when dropped, on every
+/// way out of a question for a key.
+struct Restore(libc::termios);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        // SAFETY: the termios was read from the terminal at the start.
+        unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const self.0) };
+    }
+}
+
+/// The key a line stands for when the input is no terminal: its first
+/// character that is not a space, or Enter for a blank line. A script's
+/// answer is a letter and Enter, as a person's is.
+fn key_of_line(line: &[u8]) -> u8 {
+    line.iter().copied().find(|byte| !byte.is_ascii_whitespace()).unwrap_or(b'\n')
+}
+
+/// How long the rest of an Escape sequence is waited for, in milliseconds:
+/// a terminal sends it in one piece.
+const SEQUENCE_WAIT: libc::c_int = 30;
+
+/// Reads and drops the rest of the key sequence that began with Escape,
+/// so that the arrow keys' `[C` is not a `C` pressed.
+fn drop_sequence() {
+    loop {
+        let mut fd = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd, for descriptor 0.
+        if unsafe { libc::poll(&raw mut fd, 1, SEQUENCE_WAIT) } <= 0 {
+            return;
+        }
+        let mut byte = 0u8;
+        // SAFETY: `byte` is one writable byte.
+        if unsafe { libc::read(0, (&raw mut byte).cast(), 1) } != 1 {
+            return;
+        }
+    }
+}
+
+/// Reads one key: at once on a terminal, a line's first letter otherwise.
+fn read_key() -> io::Result<Pressed> {
+    // SAFETY: all zeros is a valid termios: numbers.
+    let mut saved: libc::termios = unsafe { util::zeroed() };
+    // SAFETY: tcgetattr fills `saved`.
+    if unsafe { libc::tcgetattr(0, &raw mut saved) } != 0 {
+        let mut line = Vec::new();
+        return Ok(if read_line(0, &mut line)? {
+            Pressed::Key(key_of_line(&line))
+        } else {
+            Pressed::Stopped
+        });
+    }
+    let _restore = Restore(saved);
+    let mut keys = saved;
+    keys.c_lflag &= !(libc::ICANON | libc::ECHO);
+    keys.c_cc[libc::VMIN] = 1;
+    keys.c_cc[libc::VTIME] = 0;
+    // SAFETY: `keys` is a valid termios.
+    unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw const keys) };
+    while !STOPPED.load(Ordering::Relaxed) {
+        let mut byte = 0u8;
+        // SAFETY: `byte` is one writable byte.
+        match unsafe { libc::read(0, (&raw mut byte).cast(), 1) } {
+            0 => return Ok(Pressed::Stopped),
+            1 => {
+                if byte == 0x1b {
+                    drop_sequence();
+                }
+                return Ok(Pressed::Key(byte));
+            }
+            _ => match io::Error::last_os_error() {
+                err if err.kind() == io::ErrorKind::Interrupted => {}
+                err => return Err(err),
+            },
+        }
+    }
+    Ok(Pressed::Stopped)
+}
+
+/// Shows `prompt` on the standard error and reads one key from the
+/// standard input: without waiting for Enter on a terminal, which is put
+/// back as it was; on a script's input, the first letter of a line. Ctrl+C
+/// stops the question.
+pub fn key(prompt: &str) -> io::Result<Pressed> {
+    STOPPED.store(false, Ordering::Relaxed);
+    let _ = io::stderr().flush();
+    // SAFETY: writes from a valid buffer; a short write only loses some of
+    // the prompt.
+    unsafe { libc::write(2, prompt.as_ptr().cast(), prompt.len()) };
+    let before = catch_signals();
+    let pressed = read_key();
+    restore_signals(&before);
+    // SAFETY: as above.
+    unsafe { libc::write(2, b"\n".as_ptr().cast(), 1) };
+    pressed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scripts_line_is_its_first_letter_and_a_blank_one_is_enter() {
+        assert_eq!(key_of_line(b"s"), b's');
+        assert_eq!(key_of_line(b"  Send it"), b'S');
+        assert_eq!(key_of_line(b""), b'\n');
+        assert_eq!(key_of_line(b"   "), b'\n');
     }
 }

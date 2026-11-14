@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Problem reports: reportd(8) keeps the crashes of programs, of services'
+# panics and of the kernel, offers each new kind of crash once at sign-in,
+# and drafts, queues and sends the reports a person approves with
+# report(1), to the server /system/settings/report.toml names
+# (report.toml(5)). Nothing is sent without that approval (ADR 0531).
+#
+# service.toml(5) explains each setting. `service check reportd` checks
+# this file, and `service edit reportd` checks it as you save.
+
+service_version = 1
+description = "Problem reports"
+program = "/system/commands/reportd"
+# After logd, whose log it follows for panics, and dumps, which saves the
+# kernel's crash dumps it reads.
+order = 12
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "128M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# kernel's crash records and saved dumps; the system's test programs, so
+# that their crashes are unwound with their functions' names as the
+# system's commands are (a program in a home or on a volume is unwound
+# without its file, reportd(8)); the memory /processes counts, for a
+# report's facts; logd's and Spark's sockets,
+# which it asks for a service's log and the names of the services; the
+# network, to reach the reports server; the crashes and reports it keeps,
+# its folder where it answers on a socket, and the notice the next
+# sign-in shows.
+[permissions]
+network.outbound = true
+files.read = ["/devices/crashes", "/system/state/crash", "/system/tests", "/processes", "/system/live/log", "/system/live/spark"]
+files.read-write = ["/system/state/reports", "/system/live/reports", "/system/live/sign-in"]

@@ -556,6 +556,7 @@ pub fn fault(
     };
     if !handled {
         warn!("User: thread {} ({}) ended: {fault}", me.id(), me.name());
+        crate::user::crash::keep(me, user, signal, code, address);
         process.posix.lock().ended_by.get_or_insert(signal);
     }
     handled
@@ -577,8 +578,8 @@ enum Step {
     Park,
     /// Stop the process with this signal.
     Stop(u32),
-    /// End the process, killed by this signal.
-    Kill(u32),
+    /// End the process, killed by this signal, which came with this.
+    Kill(u32, Info),
     /// Run a handler.
     Handle { signal: u32, info: Info, action: Action, handling: Handling },
     /// Nothing: look for the next signal.
@@ -633,7 +634,7 @@ pub fn deliver(me: &ThreadRef, user: &UserRef) {
                                 Step::Next
                             }
                             Disposition::Stop => Step::Stop(signal),
-                            Disposition::Terminate => Step::Kill(signal),
+                            Disposition::Terminate => Step::Kill(signal, info),
                             Disposition::Handle(action) => {
                                 // What its frame needs of the thread's
                                 // signals is taken under this one hold of
@@ -676,10 +677,14 @@ pub fn deliver(me: &ThreadRef, user: &UserRef) {
                 trace::signal(process, me.id(), signal, TraceSignal::Stopped);
                 stop_process(process, signal);
             }
-            Step::Kill(signal) => {
+            Step::Kill(signal, info) => {
                 trace::signal(process, me.id(), signal, TraceSignal::Ended);
                 if rules::is_crash(signal) {
                     warn!("User: process {} ended by signal {signal}", process.number());
+                    // The address is a fault's only when the kernel sent
+                    // it for one; a sender's number is no address.
+                    let address = if info.code > 0 { info.pid } else { 0 };
+                    crate::user::crash::keep(me, user, signal, info.code, address);
                 }
                 kill_process(process, signal);
                 exit_current(user.clone(), EXIT_STOPPED, Ending::Stop);
@@ -693,6 +698,7 @@ pub fn deliver(me: &ThreadRef, user: &UserRef) {
                         me.id(),
                         me.name()
                     );
+                    crate::user::crash::keep(me, user, SIGSEGV, rules::SI_KERNEL, 0);
                     kill_process(process, SIGSEGV);
                     exit_current(user.clone(), EXIT_FAULT, Ending::Stop);
                 }

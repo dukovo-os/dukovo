@@ -24,8 +24,9 @@
 //! `virtio-ports` links each named one by its name (ADR 0327, from
 //! `crate::vports`), as udev links Linux's. Since Phase 16, `shm` is
 //! where Spark mounts the memory filesystem of `shm_open` and System V
-//! IPC (ADR 0490), as Linux's `/dev/shm`, and `crashdump` holds the crash
-//! dump the previous boot left (ADR 0483, from `crashdump`).
+//! IPC (ADR 0490), as Linux's `/dev/shm`, `crashdump` holds the crash
+//! dump the previous boot left (ADR 0483, from `crashdump`), and `crashes`
+//! the records of programs that crashed (ADR 0530, from `crashes`).
 
 use radix_block::DeviceRef;
 use radix_klog::{error, warn};
@@ -66,6 +67,8 @@ pub fn init() {
         root.add("fuse", fuse)?;
         let crashdump: NodeRef = mem::arc(super::crashdump::CrashDump(next_id()))?;
         root.add("crashdump", crashdump)?;
+        let crashes: NodeRef = mem::arc(super::crashes::Crashes(next_id()))?;
+        root.add("crashes", crashes)?;
         root.add("disk", Link::make(next_id(), DISK_LINKS)?)?;
         let audio: NodeRef = crate::audio::dir()?;
         root.add("audio", audio)?;

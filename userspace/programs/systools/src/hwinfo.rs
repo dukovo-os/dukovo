@@ -38,7 +38,7 @@ use crate::sys::SYS;
 use crate::util::{Fail, fail, usage};
 
 /// Where the kernel shows what anyone may read of the tables.
-const DMI: &str = "/kernel/class/dmi/id";
+pub(crate) const DMI: &str = "/kernel/class/dmi/id";
 
 /// Where it shows the memory modules' SPD EEPROMs.
 const I2C: &str = "/kernel/bus/i2c/devices";

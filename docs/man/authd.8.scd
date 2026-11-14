@@ -153,10 +153,14 @@ closes the connection, but for a session (below):
 	administrator keeps nothing of the admin set: their elevated
 	commands end and their panes lock.
 
-*session* _name_ _password_ _term_
+*session* _name_ _password_ _term_ [_command_]
 	Starts _name_'s session, if _password_ is theirs, on the terminal
 	sent with the request as a descriptor (*SCM_RIGHTS*), with *TERM*
-	set to _term_. Only root may, as *login*(1) runs. A wrong password
+	set to _term_. With a _command_, the session runs it with the shell's
+	*-c*, as *login --session --command* does, and ends with it: *login*(1)
+	sends *report failure* when an administrator asks at the failure
+	notice to report the failed start. A request without a _command_
+	starts the person's shell. Only root may, as *login*(1) runs. A wrong password
 	waits as *check*'s does. The answer is *ok* _process_, the number
 	of the session's first process, and the connection stays open: when
 	that process ends, authd writes *ended* _status_, its wait status,

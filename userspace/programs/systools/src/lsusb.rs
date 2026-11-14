@@ -17,7 +17,7 @@ use crate::args::{Arg, Args};
 use crate::util::{Fail, fail, usage};
 
 /// Where the kernel lists the devices.
-const DEVICES: &str = "/kernel/bus/usb/devices";
+pub(crate) const DEVICES: &str = "/kernel/bus/usb/devices";
 
 /// The USB ID database, where hwdata puts it on Linux, under Dukovo's
 /// name for /usr/share.
@@ -168,6 +168,13 @@ fn read_devices(dir: &Path) -> io::Result<(Vec<RootHub>, Vec<Device>)> {
     hubs.sort_by_key(|hub| hub.bus);
     devices.sort_by_key(|d| (d.bus, d.number));
     Ok((hubs, devices))
+}
+
+/// The vendor and product ID of each device under `dir`, as `1d6b:0002`,
+/// root hubs left out: they are the controllers' own.
+pub(crate) fn ids(dir: &Path) -> io::Result<Vec<String>> {
+    let (_, devices) = read_devices(dir)?;
+    Ok(devices.iter().map(|d| format!("{:04x}:{:04x}", d.vendor, d.product)).collect())
 }
 
 /// The names the database gives the devices asked about, and the
