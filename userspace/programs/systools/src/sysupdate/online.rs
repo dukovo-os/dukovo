@@ -724,15 +724,20 @@ pub fn waiting(offered: &str, day: i64, held: Option<&str>) -> Vec<String> {
 /// Where this machine keeps its wave number.
 pub const WAVE: &str = "/system/state/sysupdate/wave";
 
+/// The number [`WAVE`] keeps, if this machine has drawn one; `sysupdate
+/// status` says it without drawing.
+pub fn wave_kept() -> Option<u16> {
+    std::fs::read_to_string(WAVE)
+        .ok()
+        .and_then(|text| text.trim().parse::<u16>().ok())
+        .filter(|n| *n < 1000)
+}
+
 /// This machine's number from 0 to 999, which places it in a wave (ADR
 /// 0456): drawn the first time it is needed, so that machines cloned from
 /// one image draw their own, and kept to itself.
 pub fn wave_number() -> u16 {
-    if let Some(number) = std::fs::read_to_string(WAVE)
-        .ok()
-        .and_then(|text| text.trim().parse::<u16>().ok())
-        .filter(|n| *n < 1000)
-    {
+    if let Some(number) = wave_kept() {
         return number;
     }
     let mut bytes = [0u8; 2];

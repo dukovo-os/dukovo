@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "running": "a",
+  "default": "a",
+  "previous": null,
+  "staged": null,
+  "next": "a",
+  "unfinished_start": null,
+  "slots": [
+    {"slot": "a", "version": "0.15.0", "firmware": null},
+    {"slot": "b", "version": null, "firmware": null}
+  ],
+  "channel": "stable",
+  "canary": false,
+  "wave": null,
+  "held": {"system": null, "firmware": null},
+  "last_health_check": null,
+  "last_update": null,
+  "slot_state": [
+    {"partition": "vda1", "generation": 0}
+  ]
+}

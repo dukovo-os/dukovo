@@ -26,6 +26,7 @@
 pub(crate) mod bisect;
 pub(crate) mod checked;
 mod devices;
+mod documents;
 pub(crate) mod firmware;
 pub mod health;
 pub(crate) mod keep_rescue;
@@ -60,8 +61,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     }
     let (mut version, mut stop, mut repo, mut asked_in) = (None, None, None, None);
     let mut keep = Keep::Unsaid;
+    let mut json = false;
     while let Some(arg) = args.next()? {
         match arg {
+            Arg::Long(name) if name == "json" && action == "status" => json = true,
             Arg::Long(name)
                 if name == "version"
                     && matches!(action.as_str(), "stage" | "check" | "download") =>
@@ -94,7 +97,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     match action.as_str() {
-        "status" => status(),
+        "status" => status(json),
         "stage" => {
             if let Some(file) = &asked_in {
                 if version.is_some() || repo.is_some() || stop.is_some() {
@@ -120,19 +123,61 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 }
 
 /// `sysupdate status`: which slot runs, what each holds, and what starts
-/// next.
-fn status() -> Result<i32, Fail> {
+/// next; with `json`, as the document sysupdate(8) describes.
+fn status(json: bool) -> Result<i32, Fail> {
     let root = place::root()?;
     let (copies, state) = place::state(&root)?;
-    let letter = |slot: Slot| slot.letter().to_ascii_uppercase();
-    let version = |slot: Slot| match (root.about(slot), firmware::named(&root.slot(slot))) {
-        (None, _) => "nothing".to_string(),
-        (Some(about), None) => format!("Dukovo {}", about.version),
-        (Some(about), Some(named)) => format!("Dukovo {}, firmware {}", about.version, named.set),
+    let facts = documents::Facts {
+        running: root.running,
+        state,
+        slots: [Slot::A, Slot::B].map(|slot| documents::SlotFacts {
+            slot,
+            exists: root.slot(slot).exists(),
+            version: root.about(slot).map(|about| about.version),
+            firmware: firmware::named(&root.slot(slot)).map(|named| named.set),
+        }),
+        health: std::fs::read_to_string(health::LAST)
+            .ok()
+            .and_then(|text| documents::Health::parse(&text)),
+        update: stage::about_update(&root).map(|about| {
+            let get = |key: &str| about.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+            documents::Update {
+                from: get("from"),
+                to: get("to"),
+                slot: get("slot"),
+                restored: stage::restored(&root),
+            }
+        }),
+        partitions: copies
+            .iter()
+            .map(|copy| documents::Partition {
+                name: copy.partition.clone(),
+                generation: copy.newest().map(|(newest, _)| newest.generation),
+            })
+            .collect(),
     };
-    println!("Running:  slot {}, {}", letter(root.running), version(root.running));
+    if json {
+        let settings = online::Settings::load()?;
+        return crate::json::print(&documents::Status::of(&facts, &settings, online::wave_kept()))
+            .map(|()| 0);
+    }
+    say_status(&facts);
+    Ok(0)
+}
+
+/// What `sysupdate status` prints for `facts`.
+fn say_status(facts: &documents::Facts) {
+    let state = &facts.state;
+    let letter = |slot: Slot| slot.letter().to_ascii_uppercase();
+    let held = |slot: Slot| &facts.slots[usize::from(slot == Slot::B)];
+    let version = |slot: Slot| match (&held(slot).version, &held(slot).firmware) {
+        (None, _) => "nothing".to_string(),
+        (Some(version), None) => format!("Dukovo {version}"),
+        (Some(version), Some(set)) => format!("Dukovo {version}, firmware {set}"),
+    };
+    println!("Running:  slot {}, {}", letter(facts.running), version(facts.running));
     for slot in [Slot::A, Slot::B] {
-        let what = if !root.slot(slot).exists() {
+        let what = if !held(slot).exists {
             "empty".to_string()
         } else if state.trying == Some(slot) && state.tries > 0 {
             format!("{}, an update being tried: {} tries left", version(slot), state.tries)
@@ -159,35 +204,28 @@ fn status() -> Result<i32, Fail> {
             letter(slot)
         );
     }
-    if let Ok(text) = std::fs::read_to_string(health::LAST) {
-        let mut words = text.trim().splitn(3, ' ');
-        let (when, result, rest) = (words.next(), words.next(), words.next());
-        if let (Some(when), Some(result)) =
-            (when, result.filter(|r| *r == "passed" || *r == "failed"))
-        {
-            let when = when.parse().map_or_default(|s: i64| util::local_time(s, "%Y-%m-%d %H:%M"));
-            println!("Last health check: {result}, {when}: {}", rest.unwrap_or_default());
-        }
+    if let Some(health) = &facts.health {
+        let result = if health.passed { "passed" } else { "failed" };
+        let when = health.time.map_or_default(|s| util::local_time(s, "%Y-%m-%d %H:%M"));
+        println!("Last health check: {result}, {when}: {}", health.detail);
     }
-    if let Some(about) = stage::about_update(&root) {
-        let get = |key: &str| about.iter().find(|(k, _)| k == key).map_or("?", |(_, v)| v.as_str());
-        let restored = if stage::restored(&root) {
-            "; a fallback put the settings from before it back"
-        } else {
-            ""
-        };
+    if let Some(update) = &facts.update {
+        let say = |text: &Option<String>| text.clone().unwrap_or_else(|| "?".into());
+        let restored =
+            if update.restored { "; a fallback put the settings from before it back" } else { "" };
         println!(
             "Last update: {} to {} in slot {}{restored}",
-            get("from"),
-            get("to"),
-            get("slot").to_ascii_uppercase()
+            say(&update.from),
+            say(&update.to),
+            say(&update.slot).to_ascii_uppercase()
         );
     }
-    let partitions: Vec<String> = copies
+    let partitions: Vec<String> = facts
+        .partitions
         .iter()
-        .map(|c| match c.newest() {
-            Some((newest, _)) => format!("{} (generation {})", c.partition, newest.generation),
-            None => format!("{} (no whole copy)", c.partition),
+        .map(|part| match part.generation {
+            Some(generation) => format!("{} (generation {generation})", part.name),
+            None => format!("{} (no whole copy)", part.name),
         })
         .collect();
     println!("Slot state: on {}", partitions.join(", "));
@@ -196,7 +234,6 @@ fn status() -> Result<i32, Fail> {
         Some(version) => println!("Rescue: Dukovo {version}"),
         None => println!("Rescue: not written since the install"),
     }
-    Ok(0)
 }
 
 /// `sysupdate check` and `download`: what the update server offers this

@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "running": "a",
+  "default": "a",
+  "previous": null,
+  "staged": {"slot": "b", "tries_left": 2},
+  "next": "b",
+  "unfinished_start": null,
+  "slots": [
+    {"slot": "a", "version": "0.15.0", "firmware": "2026.2"},
+    {"slot": "b", "version": "0.16.0", "firmware": "2026.3"}
+  ],
+  "channel": "beta",
+  "canary": true,
+  "wave": 412,
+  "held": {"system": "0.16.0", "firmware": null},
+  "last_health_check": {"time": "2026-11-12T03:00:00Z", "passed": true, "detail": "14 services up"},
+  "last_update": {"from": "0.14.0", "to": "0.15.0", "slot": "a", "settings_restored": false},
+  "slot_state": [
+    {"partition": "vda1", "generation": 1},
+    {"partition": "vda2", "generation": null}
+  ]
+}
