@@ -375,6 +375,30 @@ pub fn test_site(ctx: &Ctx, bundles: &[PathBuf], advisories: Option<&str>) -> Re
     Ok(dir)
 }
 
+/// Makes an online key as the update server's setup does, for a boot
+/// test that brings keys to a server as a move does: `catalog.key`, the
+/// secret half, and `catalog.json`, the public half, in `dir`, which is
+/// made new.
+///
+/// # Errors
+///
+/// If catalog-repo cannot be built or run, or the files cannot be written.
+pub fn test_online_key(ctx: &Ctx, dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).context(|| format!("removing {}", dir.display()))?;
+    }
+    std::fs::create_dir_all(dir).context(|| format!("making {}", dir.display()))?;
+    let program = build(ctx, false)?;
+    let (secret, public) = (dir.join("catalog.key"), dir.join("catalog.json"));
+    let mut cmd = Command::new(program);
+    cmd.arg("--repo").arg(dir.join("new")).args(["key", "new"]).arg(&secret);
+    cmd.args(["online", "snapshot", "timestamp"]);
+    process::output(ctx, &mut cmd)?;
+    std::fs::copy(dir.join("new/keys/online.json"), &public)
+        .context(|| format!("writing {}", public.display()))?;
+    Ok((secret, public))
+}
+
 /// Makes a catalog repository for a boot test that deploys it to an
 /// update server of its own, in `dir`: `repo/`, whose keys and metadata
 /// throwaway keys signed and whose root names the server's online key,

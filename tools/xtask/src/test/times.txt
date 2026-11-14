@@ -148,6 +148,7 @@ rescue-ssh 300
 restic-backup 200
 rgrub-setup 39
 root 49
+runbook-update-server-move 720
 sched-balance 16
 sched-fair 17
 sched-mutex 19
@@ -199,7 +200,6 @@ update-offline 160
 update-online 240
 update-panic 120
 update-power-cut 90
-update-server 720
 update-stage 110
 usb-c 35
 usb-companions 22

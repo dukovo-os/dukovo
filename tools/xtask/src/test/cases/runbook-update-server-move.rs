@@ -1,18 +1,21 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The update server on Dukovo (ADR 0542): the setup, jobs and nginx
+//! The move of the update server to Dukovo (ADR 0542), as
+//! docs/runbooks/update-server-move.md has it: the setup, jobs and nginx
 //! settings of tools/update-server/dukovo/, and the deploys of *ob*, which
 //! need only ssh, sh and tar on the server. The machine is an ordinary
 //! Dukovo with nginx's bundle installed and alice's key in its sshd. Its
 //! clock is set to noon of the next day, so that the six hours the test
-//! moves it by later pass the time of no daily job. The host copies the
-//! setup over with scp, as *ob catalog server setup --dukovo* does, and
-//! runs it through elevate for a name that has no certificate: certd
-//! cannot get one for it, setup says so, and nginx serves over HTTP. Each
-//! of the six jobs is enabled with its timer, each online key is a secret
-//! of the jobs that sign with it, and its public half is a file alice
-//! reads.
+//! moves it by later pass the time of no daily job. The host brings the
+//! online keys to a folder of /tmp as the move does, each secret half as
+//! base64 and each public half beside it, copies the setup over with scp,
+//! as *ob catalog server setup --dukovo* does, and runs it through
+//! elevate for a name that has no certificate: setup takes the keys,
+//! certd cannot get a certificate for the name, setup says so, and nginx
+//! serves over HTTP. Each of the six jobs is enabled with its timer, each
+//! online key is a secret of the jobs that sign with it, and the folder
+//! of keys is gone.
 //!
 //! The host deploys a release of two files and a catalog of one bundle with
 //! the code of *ob release deploy* and *ob catalog deploy*, from
@@ -30,21 +33,22 @@
 //! each signs a new timestamp. Setup run again, for the name this-machine,
 //! which certd made, keeps the online keys; nginx then serves HTTPS with
 //! that certificate to a client that trusts it, and sends HTTP there. A
-//! certificate from an ACME authority, and the install of nginx from the
-//! catalog, which setup does when nginx is not there, are not tried.
+//! certificate from an ACME authority, the version numbers a move carries
+//! over, and the install of nginx from the catalog, which setup does when
+//! nginx is not there, are not tried.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use super::super::*;
 use super::help_session::{as_root, free_port, keys, scan_host_key, sshd_on};
 use crate::deploy::Server;
 
 /// The test's files, from the top of the tree, which QEMU runs in.
-const DIR: &str = "out/test/update-server";
+const DIR: &str = "out/test/update-server-move";
 
 /// The disk of bundles' label.
 const LABEL: &str = "BUNDLES";
@@ -63,8 +67,8 @@ const CERTD_HOST: &str = "this-machine";
 
 /// The test.
 pub const CASE: Case = Case {
-    name: "update-server",
-    about: "the update server on Dukovo (ADR 0542): setup run through elevate makes the six jobs with timers, each online key a secret of the jobs that sign with it, and nginx, over HTTP for a name that has no certificate; deploys with ssh and tar, whose folders are the jobs' group's, are published by the timers and read back by a client from the first root, system releases and catalog with its bundle, with Caddy's cache headers and refusals; a deploy not told ready is not published, and is when told; each refresh timer signs a new timestamp after the clock moves six hours; run again for this-machine, setup keeps the keys and nginx serves HTTPS with certd's certificate and sends HTTP to it",
+    name: "runbook-update-server-move",
+    about: "the move of the update server to Dukovo (ADR 0542): the online keys brought in a folder of /tmp and setup run through elevate make the six jobs with timers, each online key a secret of the jobs that sign with it, and nginx, over HTTP for a name that has no certificate; deploys with ssh and tar, whose folders are the jobs' group's, are published by the timers and read back by a client from the first root, system releases and catalog with its bundle, with Caddy's cache headers and refusals; a deploy not told ready is not published, and is when told; each refresh timer signs a new timestamp after the clock moves six hours; run again for this-machine, setup keeps the keys and nginx serves HTTPS with certd's certificate and sends HTTP to it",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, certd and timerd among
@@ -343,6 +347,102 @@ fn ssh_options(dir: &Path, port: u16) -> Vec<OsString> {
     options
 }
 
+/// The two online keys a move brings to the server: each secret half as
+/// base64, as the old server's files are carried, and each public half.
+struct OnlineKeys {
+    /// The public halves of the system releases' key and the catalog's.
+    system: PathBuf,
+    catalog: PathBuf,
+    /// What setup takes from its folder, by file name.
+    files: Vec<(&'static str, Vec<u8>)>,
+}
+
+impl OnlineKeys {
+    /// Makes the keys in `dir`, as the old server made them.
+    fn new(ctx: &Ctx, dir: &Path) -> Result<OnlineKeys, String> {
+        let (secret, public) = (dir.join("system.key"), dir.join("system.json"));
+        let os = OsStr::new;
+        release_tool(
+            ctx,
+            &[os("online-key"), os("--out"), public.as_os_str(), secret.as_os_str()],
+        )?;
+        let (catalog_secret, catalog_public) =
+            crate::catalog::test_online_key(ctx, &dir.join("catalog-key"))
+                .map_err(|err| err.to_string())?;
+        let text = |path: &Path| {
+            std::fs::read(path).map_err(|err| format!("reading {}: {err}", path.display()))
+        };
+        Ok(OnlineKeys {
+            files: vec![
+                ("catalog.key", base64_of(&catalog_secret)?),
+                ("system.key", base64_of(&secret)?),
+                ("catalog.json", text(&catalog_public)?),
+                ("system.json", text(&public)?),
+            ],
+            system: public,
+            catalog: catalog_public,
+        })
+    }
+
+    /// Puts the keys in `/tmp/dukovo-update-keys` of the machine, a folder
+    /// of its login's that no one else reaches, as step 4 of the runbook
+    /// does from the old server.
+    fn send(&self, server: &Server) -> Result<(), String> {
+        guest_ok(server, "umask 077 && mkdir /tmp/dukovo-update-keys")?;
+        for (name, bytes) in &self.files {
+            let mut cmd = server.ssh(&format!("umask 077 && cat > /tmp/dukovo-update-keys/{name}"));
+            cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = cmd.spawn().map_err(|err| format!("running ssh: {err}"))?;
+            child
+                .stdin
+                .take()
+                .expect("the input was piped")
+                .write_all(bytes)
+                .map_err(|err| format!("sending {name}: {err}"))?;
+            let output =
+                child.wait_with_output().map_err(|err| format!("sending {name}: {err}"))?;
+            if !output.status.success() {
+                return Err(format!(
+                    "sending {name}: {}",
+                    String::from_utf8_lossy(&output.stderr).trim_end()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Fails unless the public halves setup keeps are the ones sent, and
+    /// the folder of keys is gone.
+    fn kept(&self, server: &Server) -> Result<(), String> {
+        for (kind, sent) in [("system", &self.system), ("catalog", &self.catalog)] {
+            let kept = guest_ok(server, &format!("cat /var/lib/dukovo-{kind}/online.json"))?;
+            let sent = std::fs::read_to_string(sent)
+                .map_err(|err| format!("reading {}: {err}", sent.display()))?;
+            if kept.trim() != sent.trim() {
+                return Err(format!("the {kind} online key's public half is not the one sent"));
+            }
+        }
+        if guest(server, "ls /tmp/dukovo-update-keys")?.0 {
+            return Err("/tmp/dukovo-update-keys is still there after setup took the keys".into());
+        }
+        Ok(())
+    }
+}
+
+/// The file `path` as base64 on one line, as `base64 -w0` writes it.
+fn base64_of(path: &Path) -> Result<Vec<u8>, String> {
+    let output = Command::new("base64")
+        .arg("-w0")
+        .arg(path)
+        .output()
+        .map_err(|err| format!("running base64: {err}"))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(format!("base64 could not read {}", path.display()))
+    }
+}
+
 /// Runs setup on the machine for `host`, through elevate, and gives what
 /// it said.
 fn run_setup(server: &Server, host: &str) -> Result<String, String> {
@@ -352,16 +452,14 @@ fn run_setup(server: &Server, host: &str) -> Result<String, String> {
 /// What the machine's folders and nginx do for the host's deploys, once
 /// setup has run for a name without a certificate: both repositories deployed and
 /// read back, the cache headers and the refusals.
-fn deployed(ctx: &Ctx, server: &Server, dir: &Path, web: u16) -> Result<Releases, String> {
-    let online_system = guest_ok(server, "cat /var/lib/dukovo-system/online.json")?;
-    let online_catalog = guest_ok(server, "cat /var/lib/dukovo-catalog/online.json")?;
-    let (system_key, catalog_key) =
-        (dir.join("system-online.json"), dir.join("catalog-online.json"));
-    std::fs::write(&system_key, online_system)
-        .and_then(|()| std::fs::write(&catalog_key, online_catalog))
-        .map_err(|err| format!("writing the online keys: {err}"))?;
-
-    let releases = Releases::new(ctx, dir, &system_key)?;
+fn deployed(
+    ctx: &Ctx,
+    server: &Server,
+    dir: &Path,
+    web: u16,
+    keys: &OnlineKeys,
+) -> Result<Releases, String> {
+    let releases = Releases::new(ctx, dir, &keys.system)?;
     releases.add(ctx, dir, "9.9.9-test.one")?;
     crate::release::publish_to(ctx, server, &releases.repo).map_err(|err| err.to_string())?;
 
@@ -383,7 +481,7 @@ fn deployed(ctx: &Ctx, server: &Server, dir: &Path, web: u16) -> Result<Releases
     )
     .map_err(|err| err.to_string())?;
     let (repo, store) =
-        crate::catalog::test_repo(ctx, &dir.join("catalog"), &[bundle], &catalog_key)
+        crate::catalog::test_repo(ctx, &dir.join("catalog"), &[bundle], &keys.catalog)
             .map_err(|err| err.to_string())?;
     crate::catalog::publish_to(ctx, server, &repo, &store).map_err(|err| err.to_string())?;
 
@@ -518,18 +616,21 @@ fn update_server(vm: &mut Vm, case: &Case) -> Result<(), String> {
     )?;
     require(&installed, "installed org.nginx.nginx", "bundle install")?;
 
-    // setup is copied as ob copies it, and run for a name without a
-    // certificate.
+    // The keys come as step 4 of the runbook brings them, setup is copied
+    // as ob copies it, and run for a name without a certificate.
+    let online_keys = OnlineKeys::new(&ctx, &dir)?;
+    online_keys.send(&server)?;
     crate::catalog::copy_staging(&ctx, &server, &staging).map_err(|err| err.to_string())?;
     let said = run_setup(&server, PLAIN_HOST)?;
-    require(&said, "Making the catalog online key.", "setup")?;
-    require(&said, "Making the system online key.", "setup")?;
+    require(&said, "Taking the catalog online key from /tmp/dukovo-update-keys.", "setup")?;
+    require(&said, "Taking the system online key from /tmp/dukovo-update-keys.", "setup")?;
     require(&said, &format!("{PLAIN_HOST} has no certificate yet"), "setup")?;
+    online_keys.kept(&server)?;
     jobs_and_keys(&server)?;
 
     // Both repositories are deployed, published by the timers and read
     // back through nginx.
-    let releases = deployed(&ctx, &server, &dir, web)?;
+    let releases = deployed(&ctx, &server, &dir, web, &online_keys)?;
 
     // A deploy that is not told ready is not published, though the timer
     // ran.
