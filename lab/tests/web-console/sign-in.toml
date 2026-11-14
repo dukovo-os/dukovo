@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's sign-in in the lab PC's browsers (ADR 0514): the
+# sign-in page and its fingerprint note, a wrong password and an account
+# that may not use the console, then an administrator who adds an
+# authenticator app and is asked for its code: a wrong one, one used
+# already, one that trusts the browser, and the recovery codes. Each page
+# is checked in dark and light. admind is the console's service and
+# starts with the machine; the browser reaches its port 9090 through the
+# lab's forward. Each engine signs in as an account of its own, which
+# this test makes and removes, so no script needs the lab's password.
+about = "Browsers sign in to the web console with a password and the second step of an authenticator app, a recovery code and a trusted browser, in dark and light"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-signin-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-signin-chromium", "Made wc-signin-firefox", "Made wc-signin-webkit"]
+# An account that is no administrator and not in group console.
+[[step]]
+run = "sh -c 'echo lab-console-password | user add wc-signin-plain'"
+root = true
+expect = "Made wc-signin-plain"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "sign-in.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for name in wc-signin-chromium wc-signin-firefox wc-signin-webkit wc-signin-plain; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-signin-chromium is removed", "wc-signin-plain is removed"]
