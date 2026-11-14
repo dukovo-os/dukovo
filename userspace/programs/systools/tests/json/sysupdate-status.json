@@ -16,6 +16,7 @@
   "held": {"system": "0.16.0", "firmware": null},
   "last_health_check": {"time": "2026-11-12T03:00:00Z", "passed": true, "detail": "14 services up"},
   "last_update": {"from": "0.14.0", "to": "0.15.0", "slot": "a", "settings_restored": false},
+  "rescue": "0.14.0",
   "slot_state": [
     {"partition": "vda1", "generation": 1},
     {"partition": "vda2", "generation": null}

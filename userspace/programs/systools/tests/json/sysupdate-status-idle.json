@@ -16,6 +16,7 @@
   "held": {"system": null, "firmware": null},
   "last_health_check": null,
   "last_update": null,
+  "rescue": null,
   "slot_state": [
     {"partition": "vda1", "generation": 0}
   ]

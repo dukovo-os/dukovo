@@ -385,6 +385,9 @@ without *--json*, with the same exit status. The members:
 	*settings_restored*, whether a fallback put the settings from before
 	it back.
 
+*rescue*
+	The release Rescue holds, or *null* before it is written.
+
 *slot_state*
 	A list with an object for each partition that holds the slot state:
 	*partition*, and *generation*, that of its newest whole copy, or

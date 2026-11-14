@@ -12,6 +12,22 @@ use slots::{Slot, State};
 use super::online::Settings;
 use crate::json;
 
+/// Where the release Rescue holds is kept, in one line. The file is
+/// missing until Rescue is written.
+const RESCUE: &str = "/system/state/sysupdate/rescue";
+
+/// The release Rescue holds, as [`RESCUE`] says; none when the file is
+/// missing or empty.
+pub(crate) fn rescue_kept() -> Option<String> {
+    rescue_in(&std::fs::read_to_string(RESCUE).ok()?)
+}
+
+/// The version `text`, the file's, says.
+fn rescue_in(text: &str) -> Option<String> {
+    let version = text.trim();
+    (!version.is_empty()).then(|| version.to_string())
+}
+
 /// What one slot holds.
 pub(crate) struct SlotFacts {
     pub(crate) slot: Slot,
@@ -79,6 +95,8 @@ pub(crate) struct Facts {
     pub(crate) slots: [SlotFacts; 2],
     pub(crate) health: Option<Health>,
     pub(crate) update: Option<Update>,
+    /// The release Rescue holds.
+    pub(crate) rescue: Option<String>,
     pub(crate) partitions: Vec<Partition>,
 }
 
@@ -110,6 +128,8 @@ pub(crate) struct Status {
     held: Held,
     last_health_check: Option<LastHealth>,
     last_update: Option<LastUpdate>,
+    /// The release Rescue holds; none before it is written.
+    rescue: Option<String>,
     slot_state: Vec<StatePartition>,
 }
 
@@ -209,6 +229,7 @@ impl Status {
                 slot: update.slot.clone(),
                 settings_restored: update.restored,
             }),
+            rescue: facts.rescue.clone(),
             slot_state: facts
                 .partitions
                 .iter()
@@ -259,6 +280,7 @@ mod tests {
                 slot: Some("a".into()),
                 restored: false,
             }),
+            rescue: rescue_in("0.14.0\n"),
             partitions: vec![
                 Partition { name: "vda1".into(), generation: Some(1) },
                 Partition { name: "vda2".into(), generation: None },
@@ -281,6 +303,14 @@ mod tests {
         assert_eq!(Health::parse("soon passed x").unwrap().time, None);
         assert_eq!(Health::parse("1794452400 maybe x"), None);
         assert_eq!(Health::parse(""), None);
+    }
+
+    #[test]
+    fn rescue_s_file_says_its_release_in_one_line_or_nothing() {
+        assert_eq!(rescue_in("0.14.0\n").as_deref(), Some("0.14.0"));
+        assert_eq!(rescue_in("  0.15.0-rc.1  ").as_deref(), Some("0.15.0-rc.1"));
+        assert_eq!(rescue_in(""), None);
+        assert_eq!(rescue_in("\n"), None);
     }
 
     #[test]
@@ -310,6 +340,7 @@ mod tests {
             slots: [slot_with(Slot::A, Some("0.15.0"), None), slot_with(Slot::B, None, None)],
             health: None,
             update: None,
+            rescue: rescue_in(""),
             partitions: vec![Partition { name: "vda1".into(), generation: Some(0) }],
         };
         let line = json::line(&Status::of(&facts, &Settings::default(), None)).unwrap();
