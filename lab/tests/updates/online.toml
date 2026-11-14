@@ -9,7 +9,8 @@
 # machine trusts names. Its stable channel offers a release that updates
 # only from a bridge, so the machine checks, is told the bridge comes
 # first, fetches only the files its slot lacks, stages the bridge, and
-# proves it at the restart.
+# proves it at the restart. The release is paused on its first day, so
+# the machine is a canary, which takes it (ADR 0469).
 about = "The machine checks a real update server's stable channel over the lab network, signed by the server's own key, is told a bridge release comes first, fetches only the files it lacks, stages the bridge and proves it at the restart (ADRs 0466, 0467)"
 time = "15m"
 fresh = true
@@ -20,7 +21,7 @@ host = "sh {here}/update-server.sh serve {port:updates}"
 background = true
 ready = "serving updates"
 [[step]]
-run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
+run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
 root = true
 expect = "set: 42"
 [[step]]

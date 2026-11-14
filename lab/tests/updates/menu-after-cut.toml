@@ -13,6 +13,9 @@ run = '''printf '[[check]]\nname = "wait"\ncommand = ["sleep", "60"]\nrequired =
 [[step]]
 run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
 root = true
+# On the disk before the reset, which no filesystem sees coming.
+[[step]]
+run = "sync"
 [[step]]
 power = "reset"
 [[step]]
