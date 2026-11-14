@@ -77,11 +77,11 @@
 
 mod account;
 mod admin_settings;
+mod admind;
 mod alertd;
 mod alerts;
 mod args;
 mod audiocd;
-mod admind;
 mod authd;
 mod backup;
 mod balance;

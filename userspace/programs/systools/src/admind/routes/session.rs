@@ -151,9 +151,10 @@ pub async fn lock(cx: &Context<'_>, live: &Live) -> Outcome {
 /// The answer to an unlock or an extension, when authd said it ends at the
 /// Unix time `text`.
 fn unlocked(cx: &Context<'_>, live: &Live, text: &str) -> Outcome {
-    let until: i64 = text.trim().parse().map_err(|_| {
-        Failure::new(Kind::AuthdSilent, "authd answered a time that does not read")
-    })?;
+    let until: i64 = text
+        .trim()
+        .parse()
+        .map_err(|_| Failure::new(Kind::AuthdSilent, "authd answered a time that does not read"))?;
     cx.shared.set_unlocked(&live.cookie, Some(until));
     Ok(Reply::json(json!({ "unlock_seconds": seconds_left(Some(until), unix_now()) })))
 }

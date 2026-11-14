@@ -173,7 +173,12 @@ pub async fn password(cx: &Context<'_>) -> Outcome {
 /// What to do once a password is right and a second step is wanted: a
 /// browser that was trusted for 30 days is let in, and any other is asked
 /// for the step.
-async fn second_step(cx: &Context<'_>, ticket: String, name: String, kinds: Vec<String>) -> Outcome {
+async fn second_step(
+    cx: &Context<'_>,
+    ticket: String,
+    name: String,
+    kinds: Vec<String>,
+) -> Outcome {
     let token = cx.trust.as_deref().and_then(|token| from_hex(token.as_bytes()));
     let mut forgotten = false;
     if let Some(token) = token {
@@ -225,7 +230,9 @@ pub async fn passkey_options(cx: &Context<'_>) -> Outcome {
             let what = format!("a passkey challenge for {}'s sign-in", shown(&name));
             (Purpose::SignIn(ticket_bytes(ticket)?), "preferred", what)
         }
-        None => (Purpose::Alone(cx.peer.to_string()), "required", "a passkey challenge".to_string()),
+        None => {
+            (Purpose::Alone(cx.peer.to_string()), "required", "a passkey challenge".to_string())
+        }
     };
     let console = Console::Challenge { purpose, relying_party: cx.host.clone() };
     let text = ask(cx, console, Attempt::Passkey, &what).await?;
@@ -268,7 +275,8 @@ async fn start(
     needs_step: bool,
     trust: bool,
 ) -> Outcome {
-    let internal = |err: std::io::Error| Failure::new(Kind::Internal, format!("no link to a worker: {err}"));
+    let internal =
+        |err: std::io::Error| Failure::new(Kind::Internal, format!("no link to a worker: {err}"));
     let (ours, theirs) = UnixStream::pair().map_err(internal)?;
     ours.set_nonblocking(true).map_err(internal)?;
     let ours = tokio::net::UnixStream::from_std(ours).map_err(internal)?;
@@ -292,14 +300,9 @@ async fn start(
     };
     let started = started(&text).ok_or_else(authd_unreadable)?;
     let link = Link::new(ours);
-    let session = Session::new(
-        name.to_string(),
-        started.session.clone(),
-        cx.peer,
-        needs_step,
-        link.clone(),
-    )
-    .map_err(|why| Failure::new(Kind::Internal, why))?;
+    let session =
+        Session::new(name.to_string(), started.session.clone(), cx.peer, needs_step, link.clone())
+            .map_err(|why| Failure::new(Kind::Internal, why))?;
     let cookie = cx.shared.admit(session)?;
     cx.shared.watch(&link, started.session);
     log(6, &format!("{} signed in from {}", shown(name), cx.peer));
@@ -321,9 +324,13 @@ mod tests {
         assert_eq!(next("needs-step 0a0b"), Some(Next::NeedsStep("0a0b".into())));
         assert_eq!(
             next("step 0a0b app,passkey,recovery"),
-            Some(Next::Step("0a0b".into(), vec!["app".into(), "passkey".into(), "recovery".into()]))
+            Some(Next::Step(
+                "0a0b".into(),
+                vec!["app".into(), "passkey".into(), "recovery".into()]
+            ))
         );
-        for wrong in ["", "done", "done zz", "done 0a 0b", "step 0a0b", "later 0a0b", "done  0a0b"] {
+        for wrong in ["", "done", "done zz", "done 0a 0b", "step 0a0b", "later 0a0b", "done  0a0b"]
+        {
             assert_eq!(next(wrong), None, "{wrong:?}");
         }
     }
@@ -342,7 +349,14 @@ mod tests {
             started(&format!("81 {session} ab12")),
             Some(Started { session: session.clone(), trust: Some("ab12".into()) })
         );
-        for wrong in ["", "81", &format!("x {session}"), "81 zz", &format!("81 {session} zz"), &format!("81 {session} ab12 cd")] {
+        for wrong in [
+            "",
+            "81",
+            &format!("x {session}"),
+            "81 zz",
+            &format!("81 {session} zz"),
+            &format!("81 {session} ab12 cd"),
+        ] {
             assert_eq!(started(wrong), None, "{wrong:?}");
         }
     }
@@ -350,11 +364,26 @@ mod tests {
     #[test]
     fn a_browser_is_named_as_a_person_would() {
         let cases = [
-            ("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0", "Firefox on Linux"),
-            ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Edg/126.0", "Edge on Windows"),
-            ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15", "Safari on macOS"),
-            ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36", "Chrome on Android"),
-            ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1", "Safari on iOS"),
+            (
+                "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+                "Firefox on Linux",
+            ),
+            (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Edg/126.0",
+                "Edge on Windows",
+            ),
+            (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+                "Safari on macOS",
+            ),
+            (
+                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36",
+                "Chrome on Android",
+            ),
+            (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+                "Safari on iOS",
+            ),
             ("curl/8.0", "a browser"),
             ("", "a browser"),
             ("Lynx on Linux", "a browser on Linux"),

@@ -113,7 +113,8 @@ mod tests {
     const PASSWD: &str = "root:x:0:0:root:/system/root:/system/commands/nukesh\n\
                           chase:x:1000:1000:Chase Y,Room 4,555:/users/chase:/system/commands/nukesh\n\
                           bob:x:1001:1001::/users/bob:/system/commands/nukesh\n";
-    const GROUP: &str = "root:x:0:\nchase:x:1000:\nbob:x:1001:\nadmins:x:10:chase\nconsole:x:12:bob\n";
+    const GROUP: &str =
+        "root:x:0:\nchase:x:1000:\nbob:x:1001:\nadmins:x:10:chase\nconsole:x:12:bob\n";
 
     #[test]
     fn an_account_is_found_by_its_number_or_its_name_with_its_groups() {

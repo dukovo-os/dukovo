@@ -41,6 +41,11 @@
 //! again, for the connections that come after. SIGTERM ends the sessions
 //! and stops. The tests of what the console must refuse are in
 //! `lab/tests/web-console`.
+//!
+//! Only the lab's build, made with the `lab` feature of systools, has
+//! `POST /api/1/test/elevate`, which runs a command in an unlocked session
+//! so that the lab can see what an elevated session does. The build that
+//! ships has no such route.
 
 mod authd;
 mod errors;

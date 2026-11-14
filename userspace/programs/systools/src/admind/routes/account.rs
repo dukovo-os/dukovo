@@ -67,7 +67,8 @@ struct Proof {
 
 /// `GET /api/1/account/second-step`: what the account has.
 pub async fn steps(live: &Live) -> Outcome {
-    let steps = live.link.call("steps", Value::Null).await.map_err(|e| failed(e, Attempt::Other))?;
+    let steps =
+        live.link.call("steps", Value::Null).await.map_err(|e| failed(e, Attempt::Other))?;
     Ok(Reply::json(steps))
 }
 
@@ -216,7 +217,10 @@ mod tests {
     fn a_worker_that_could_not_ask_authd_has_its_own_words_passed_on() {
         let fault = Fault::new(Kind::BadRequest, "app-confirm does not take that");
         let failure = failed(CallError::Worker(fault), Attempt::Code);
-        assert_eq!((failure.kind, failure.detail.as_str()), (Kind::BadRequest, "app-confirm does not take that"));
+        assert_eq!(
+            (failure.kind, failure.detail.as_str()),
+            (Kind::BadRequest, "app-confirm does not take that")
+        );
         // An ID that is none of the console's is an internal fault.
         let odd = Fault { id: "ADM-999".into(), title: "x".into(), detail: "odd".into() };
         assert_eq!(failed(CallError::Worker(odd), Attempt::Other).kind, Kind::Internal);
@@ -227,7 +231,10 @@ mod tests {
         let refusal = |why: &str, attempt| {
             failed(CallError::Worker(Fault::new(Kind::Refused, why)), attempt).kind
         };
-        assert_eq!(refusal(accounts::request::WRONG_PASSWORD, Attempt::Password), Kind::WrongPassword);
+        assert_eq!(
+            refusal(accounts::request::WRONG_PASSWORD, Attempt::Password),
+            Kind::WrongPassword
+        );
         assert_eq!(refusal("that code is not right", Attempt::Code), Kind::WrongCode);
         assert_eq!(refusal("the console is locked", Attempt::Other), Kind::Locked);
         assert_eq!(refusal("a token with that name exists", Attempt::Other), Kind::Refused);

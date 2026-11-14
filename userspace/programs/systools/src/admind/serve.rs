@@ -131,9 +131,8 @@ fn merged(old: &Settings, new: Settings, certificate_read: bool) -> Settings {
 /// that is a name with dots, such as `duke-nas.local` or an authority's, and
 /// otherwise the machine's.
 fn address_for(host: &str, certificate: &[String], port: u16) -> String {
-    let named = certificate
-        .iter()
-        .find(|name| name.contains('.') && name.parse::<IpAddr>().is_err());
+    let named =
+        certificate.iter().find(|name| name.contains('.') && name.parse::<IpAddr>().is_err());
     let name = named.map_or(host, String::as_str);
     if port == 443 { format!("https://{name}") } else { format!("https://{name}:{port}") }
 }
@@ -283,7 +282,11 @@ fn listen(port: u16) -> Result<Vec<TcpListener>, String> {
 /// Polls `work` to its end, unless `seen` is still false once `deadline`
 /// comes, which is `None`: the head of a connection's first request has
 /// not come in time. After it has, hyper's own timer watches the heads.
-async fn head_in_time<F: Future>(work: F, seen: &Cell<bool>, deadline: Instant) -> Option<F::Output> {
+async fn head_in_time<F: Future>(
+    work: F,
+    seen: &Cell<bool>,
+    deadline: Instant,
+) -> Option<F::Output> {
     let mut work = pin!(work);
     let mut late = pin!(tokio::time::sleep_until(deadline));
     poll_fn(|cx| {
@@ -397,7 +400,9 @@ fn start_line(address: &str, fingerprint: &str, kind: Reach) -> String {
         Reach::Private => "private networks",
         Reach::Any => "any network",
     };
-    format!("answers at {address} to {reach}; the certificate's SHA-256 fingerprint is {fingerprint}")
+    format!(
+        "answers at {address} to {reach}; the certificate's SHA-256 fingerprint is {fingerprint}"
+    )
 }
 
 /// Serves until SIGTERM.
@@ -471,13 +476,14 @@ pub fn run() -> Result<i32, Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::admind::fixture::{Console, run};
     use crate::admin_settings::SecondStep;
+    use crate::admind::fixture::{Console, run};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn the_rules_and_reach_take_effect_and_a_port_waits_for_a_restart() {
-        let old = Settings::parse("[console]\nlisten = 9090\ncertificate = \"this-machine\"\n").unwrap();
+        let old =
+            Settings::parse("[console]\nlisten = 9090\ncertificate = \"this-machine\"\n").unwrap();
         let new = Settings::parse(
             "[sign-in]\nsecond-step = \"everyone\"\nsession-hours = 2\n\
              [console]\nlisten = 8443\nreach = \"any\"\ncertificate = \"admin.example.org\"\n",
@@ -490,7 +496,10 @@ mod tests {
         assert_eq!(kept.sign_in.second_step, SecondStep::Everyone);
         assert_eq!(kept.sign_in.session_hours, 2);
         let read = merged(&old, new, true);
-        assert_eq!((read.console.listen, read.console.certificate.as_str()), (9090, "admin.example.org"));
+        assert_eq!(
+            (read.console.listen, read.console.certificate.as_str()),
+            (9090, "admin.example.org")
+        );
     }
 
     #[test]
@@ -498,10 +507,16 @@ mod tests {
         let names = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
         let this = names(&["duke-nas", "duke-nas.local", "localhost"]);
         assert_eq!(address_for("duke-nas", &this, 9090), "https://duke-nas.local:9090");
-        assert_eq!(address_for("duke-nas", &names(&["admin.example.org", "10.0.0.5"]), 443), "https://admin.example.org");
+        assert_eq!(
+            address_for("duke-nas", &names(&["admin.example.org", "10.0.0.5"]), 443),
+            "https://admin.example.org"
+        );
         // A certificate with no such name leaves the machine's own, and an
         // address is no name.
-        assert_eq!(address_for("duke-nas", &names(&["10.0.0.5", "localhost"]), 9090), "https://duke-nas:9090");
+        assert_eq!(
+            address_for("duke-nas", &names(&["10.0.0.5", "localhost"]), 9090),
+            "https://duke-nas:9090"
+        );
         assert_eq!(address_for("duke-nas", &[], 8443), "https://duke-nas:8443");
         assert_eq!(
             issue_text("https://duke-nas.local:9090", "AB:CD"),
@@ -535,7 +550,10 @@ mod tests {
             assert_eq!(head_in_time(later, &seen, Instant::now()).await, Some(7));
             // Work that ends first is its own end.
             let quick = async { 1 };
-            assert_eq!(head_in_time(quick, &Cell::new(false), Instant::now() + HEAD_TIME).await, Some(1));
+            assert_eq!(
+                head_in_time(quick, &Cell::new(false), Instant::now() + HEAD_TIME).await,
+                Some(1)
+            );
         });
     }
 
@@ -567,7 +585,13 @@ mod tests {
             loop {
                 let (stream, peer) = socket.accept().await.unwrap();
                 let slot = admission(&shared, peer.ip()).unwrap();
-                tokio::task::spawn_local(connection(Rc::clone(&shared), stream, peer.ip(), head_time, slot));
+                tokio::task::spawn_local(connection(
+                    Rc::clone(&shared),
+                    stream,
+                    peer.ip(),
+                    head_time,
+                    slot,
+                ));
             }
         });
         port
@@ -592,7 +616,8 @@ mod tests {
         let mut stream = connect(console, port).await;
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut answer = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+        let read =
+            tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
         // A connection that was closed without the alert, as a server that
         // hangs up on a request it refuses does, is an end too.
         let _ = read.expect("an answer in 5 seconds");
@@ -609,7 +634,8 @@ mod tests {
             let console = console("serve-health");
             let port = serve_on_loopback(&console.shared, Duration::from_secs(10));
             let one = "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\n\r\n";
-            let two = "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\nConnection: close\r\n\r\n";
+            let two =
+                "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\nConnection: close\r\n\r\n";
             let answer = exchange(&console, port, &format!("{one}{two}")).await;
             assert_eq!(answer.matches("HTTP/1.1 200 OK").count(), 2, "{answer}");
             assert_eq!(answer.matches("{\"ok\":true}").count(), 2);
@@ -617,7 +643,8 @@ mod tests {
             assert!(lower.contains("content-security-policy: default-src 'self'"));
             assert!(!lower.contains("\r\nserver:"), "{answer}");
             // Another name is another machine's.
-            let rebound = "GET /api/1/health HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n";
+            let rebound =
+                "GET /api/1/health HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n";
             assert!(exchange(&console, port, rebound).await.starts_with("HTTP/1.1 421"));
         });
     }
@@ -627,12 +654,15 @@ mod tests {
         run(async {
             let console = console("serve-heads");
             let port = serve_on_loopback(&console.shared, Duration::from_secs(10));
-            let head = |extra: &str| format!("GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\n{extra}\r\n");
+            let head = |extra: &str| {
+                format!("GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\n{extra}\r\n")
+            };
             let large = head(&format!("X-Pad: {}\r\n", "a".repeat(20 << 10)));
             assert!(exchange(&console, port, &large).await.starts_with("HTTP/1.1 431"));
-            let many: String = (0..70).map(|n| format!("X-{n}: 1\r\n")).collect();
+            let headers = |count: u32| "X-1: 1\r\n".repeat(count as usize);
+            let many = headers(70);
             assert!(exchange(&console, port, &head(&many)).await.starts_with("HTTP/1.1 431"));
-            let few: String = (0..40).map(|n| format!("X-{n}: 1\r\n")).collect();
+            let few = headers(40);
             let closing = head(&format!("{few}Connection: close\r\n"));
             assert!(exchange(&console, port, &closing).await.starts_with("HTTP/1.1 200"));
         });
@@ -654,7 +684,8 @@ mod tests {
             let mut slow = connect(&console, port).await;
             slow.write_all(b"GET /api/1/health HTTP/1.1\r\nHost: nas.exa").await.unwrap();
             let mut rest = Vec::new();
-            let read = tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut rest)).await;
+            let read =
+                tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut rest)).await;
             assert!(read.is_ok(), "not closed in time");
             assert!(!String::from_utf8_lossy(&rest).contains("200 OK"));
             // Nothing holds a place once they are gone.
@@ -670,7 +701,8 @@ mod tests {
             let shared = &console.shared;
             let ip = |text: &str| text.parse::<IpAddr>().unwrap();
             // 32 from one address; the 33rd waits for one to end.
-            let held: Vec<Slot> = (0..32).map(|_| admission(shared, ip("192.168.1.5")).unwrap()).collect();
+            let held: Vec<Slot> =
+                (0..32).map(|_| admission(shared, ip("192.168.1.5")).unwrap()).collect();
             let refused = admission(shared, ip("192.168.1.5")).err();
             assert_eq!(refused, Some("there are as many connections as it takes"));
             assert!(admission(shared, ip("192.168.1.6")).is_ok());
@@ -678,15 +710,31 @@ mod tests {
             assert!(admission(shared, ip("192.168.1.5")).is_ok());
             // Private networks only: this one's, and the ranges no one
             // reaches from the internet.
-            for private in ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.9.9", "100.64.1.1", "fd12::1", "fe80::1", "::ffff:192.168.1.9"] {
+            for private in [
+                "127.0.0.1",
+                "10.1.2.3",
+                "172.16.0.9",
+                "192.168.9.9",
+                "100.64.1.1",
+                "fd12::1",
+                "fe80::1",
+                "::ffff:192.168.1.9",
+            ] {
                 assert!(admission(shared, ip(private)).is_ok(), "{private}");
             }
-            for public in ["203.0.113.9", "8.8.8.8", "2001:db8::1", "::ffff:8.8.8.8", "100.128.0.1"] {
-                assert_eq!(admission(shared, ip(public)).err(), Some("it is not on a network admind answers"), "{public}");
+            for public in ["203.0.113.9", "8.8.8.8", "2001:db8::1", "::ffff:8.8.8.8", "100.128.0.1"]
+            {
+                assert_eq!(
+                    admission(shared, ip(public)).err(),
+                    Some("it is not on a network admind answers"),
+                    "{public}"
+                );
             }
             // The count is of the /64 for IPv6, and a refused one holds no place.
             shared.settings.borrow_mut().console.reach = Reach::Any;
-            let six: Vec<Slot> = (0..32).map(|n| admission(shared, ip(&format!("2001:db8::{n:x}"))).unwrap()).collect();
+            let six: Vec<Slot> = (0..32)
+                .map(|n| admission(shared, ip(&format!("2001:db8::{n:x}"))).unwrap())
+                .collect();
             assert!(admission(shared, ip("2001:db8::ffff")).is_err());
             assert!(admission(shared, ip("2001:db8:1::1")).is_ok());
             drop(six);

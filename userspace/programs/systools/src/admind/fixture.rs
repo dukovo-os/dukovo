@@ -125,8 +125,12 @@ fn answer(stream: &UnixStream, script: &Script, record: &Mutex<Vec<String>>) {
     let verb = String::from_utf8(parts.next().expect("a verb").to_vec()).unwrap();
     let fields: Vec<Vec<u8>> = parts.map(<[u8]>::to_vec).collect();
     let asked = Asked { verb, fields };
-    let said: Vec<String> = asked.fields.iter().map(|f| String::from_utf8_lossy(f).into_owned()).collect();
-    record.lock().unwrap().push(format!("{} {}", asked.verb, said.join(" ")).trim_end().to_string());
+    let said: Vec<String> =
+        asked.fields.iter().map(|f| String::from_utf8_lossy(f).into_owned()).collect();
+    record
+        .lock()
+        .unwrap()
+        .push(format!("{} {}", asked.verb, said.join(" ")).trim_end().to_string());
     let mut stream = stream;
     for line in script(&asked, fds) {
         // A client that gave up has gone.
@@ -141,7 +145,7 @@ fn answer(stream: &UnixStream, script: &Script, record: &Mutex<Vec<String>>) {
 pub fn worker(
     fd: OwnedFd,
     calls: Arc<Mutex<Vec<(String, Value)>>>,
-    answer: Arc<dyn Fn(&str, &Value) -> Result<Value, Fault> + Send + Sync>,
+    answer: Arc<Answer>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let socket = UnixStream::from(fd);
@@ -160,6 +164,10 @@ pub fn worker(
     })
 }
 
+/// What a test's worker says to a call: the method and its parameters, and
+/// the answer or the fault.
+pub type Answer = dyn Fn(&str, &Value) -> Result<Value, Fault> + Send + Sync;
+
 /// A console as the tests run it.
 pub struct Console {
     /// What the connections share.
@@ -177,9 +185,12 @@ pub struct Console {
 /// not, and the account of the second step.
 pub const PASSWD: &str = "root:x:0:0:root:/system/root:/system/commands/nukesh\n\
                           chase:x:1000:1000:Chase Y,,:/users/chase:/system/commands/nukesh\n\
-                          bob:x:1001:1001::/users/bob:/system/commands/nukesh\n";
+                          bob:x:1001:1001::/users/bob:/system/commands/nukesh\n\
+                          alice:x:1002:1002:Alice,,:/users/alice:/system/commands/nukesh\n\
+                          eve:x:1003:1003::/users/eve:/system/commands/nukesh\n";
 /// Their groups.
-pub const GROUP: &str = "root:x:0:\nchase:x:1000:\nbob:x:1001:\nadmins:x:10:chase\n";
+pub const GROUP: &str = "root:x:0:\nchase:x:1000:\nbob:x:1001:\nalice:x:1002:\neve:x:1003:\n\
+                         admins:x:10:chase,alice\n";
 
 /// The page the test console serves.
 pub const PAGE: &str = "<!doctype html><title>Dukovo Admin</title>";
@@ -201,21 +212,25 @@ impl Console {
         );
         let certificates = folder.0.join("certificate");
         std::fs::create_dir_all(&certificates).unwrap();
-        std::fs::write(certificates.join("fullchain.pem"), fixtures::chain_file(&[&leaf.der])).unwrap();
+        std::fs::write(certificates.join("fullchain.pem"), fixtures::chain_file(&[&leaf.der]))
+            .unwrap();
         std::fs::write(certificates.join("key.pem"), &leaf.key).unwrap();
         let certificate = tls::load(&certificates).unwrap();
         let pages = folder.0.join("pages");
         std::fs::create_dir_all(&pages).unwrap();
         std::fs::write(pages.join("index.html"), PAGE).unwrap();
         std::fs::write(pages.join("app.js"), "export {};").unwrap();
-        let hash = |bytes: &[u8]| accounts::request::hex(digest::digest(&digest::SHA256, bytes).as_ref());
-        let manifest = format!("{}  index.html\n{}  app.js\n", hash(PAGE.as_bytes()), hash(b"export {};"));
+        let hash =
+            |bytes: &[u8]| accounts::request::hex(digest::digest(&digest::SHA256, bytes).as_ref());
+        let manifest =
+            format!("{}  index.html\n{}  app.js\n", hash(PAGE.as_bytes()), hash(b"export {};"));
         std::fs::write(pages.join("manifest.txt"), manifest).unwrap();
         let files = Files::read(&pages, &mut Vec::new()).unwrap();
         let loopback = Network { ip: [127, 0, 0, 1].into(), prefix: 8 };
         let identity = Identity::new("nas", vec![loopback], &certificate.names);
         let authd = Authd::start(what, script);
-        let mut shared = Shared::new(Settings::default(), identity, certificate, files, &authd.path);
+        let mut shared =
+            Shared::new(Settings::default(), identity, certificate, files, &authd.path);
         let passwd = folder.0.join("passwd");
         let group = folder.0.join("group");
         std::fs::write(&passwd, PASSWD).unwrap();

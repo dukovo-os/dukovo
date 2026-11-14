@@ -92,14 +92,18 @@ impl Files {
     /// If the manifest cannot be read or has a line that is not right.
     pub fn read(folder: &Path, said: &mut Vec<String>) -> Result<Files, String> {
         let manifest = folder.join("manifest.txt");
-        let text = fs::read_to_string(&manifest)
-            .map_err(|err| format!("cannot read {}: {}", manifest.display(), util::strip_os_error(&err)))?;
+        let text = fs::read_to_string(&manifest).map_err(|err| {
+            format!("cannot read {}: {}", manifest.display(), util::strip_os_error(&err))
+        })?;
         let mut served = HashMap::new();
         for (hash, path) in parse(&text).map_err(|why| format!("{}: {why}", manifest.display()))? {
             let bytes = match fs::read(folder.join(&path)) {
                 Ok(bytes) => bytes,
                 Err(err) => {
-                    said.push(format!("{path} is listed but cannot be read: {}", util::strip_os_error(&err)));
+                    said.push(format!(
+                        "{path} is listed but cannot be read: {}",
+                        util::strip_os_error(&err)
+                    ));
                     continue;
                 }
             };
@@ -150,9 +154,9 @@ mod tests {
             fs::create_dir_all(at.parent().unwrap()).unwrap();
             fs::write(at, text).unwrap();
         }
-        let manifest = listed.iter().fold(String::new(), |text, (hash, path)| {
-            text + &format!("{hash}  {path}\n")
-        });
+        let manifest = listed
+            .iter()
+            .fold(String::new(), |text, (hash, path)| text + &format!("{hash}  {path}\n"));
         fs::write(scratch.0.join("manifest.txt"), manifest).unwrap();
         scratch
     }

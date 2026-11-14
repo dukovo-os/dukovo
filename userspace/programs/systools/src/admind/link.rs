@@ -83,7 +83,9 @@ impl fmt::Display for FrameError {
 ///
 /// If the length is more than [`FRAME_MAX`] (nothing past the 4 bytes of
 /// it is read), the link ended inside the frame, or the socket failed.
-pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<Vec<u8>>, FrameError> {
+pub async fn read_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<Vec<u8>>, FrameError> {
     let mut header = [0u8; 4];
     let mut have = 0;
     while have < header.len() {
@@ -100,7 +102,8 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<V
     // Grown as the bytes come, so that a frame that never arrives holds
     // no memory.
     let mut payload = Vec::new();
-    let read = reader.take(length as u64).read_to_end(&mut payload).await.map_err(FrameError::Io)?;
+    let read =
+        reader.take(length as u64).read_to_end(&mut payload).await.map_err(FrameError::Io)?;
     if read < length {
         return Err(FrameError::Cut);
     }
@@ -112,7 +115,10 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Option<V
 /// # Errors
 ///
 /// If it is longer than [`FRAME_MAX`], or the socket failed.
-pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) -> Result<(), FrameError> {
+pub async fn write_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    payload: &[u8],
+) -> Result<(), FrameError> {
     if payload.len() > FRAME_MAX {
         return Err(FrameError::TooBig(payload.len()));
     }
@@ -358,7 +364,8 @@ where
             Ok(call) => call,
             Err(err) => return Ended::Broken(FrameError::Json(err).to_string()),
         };
-        let (handle, writer, working) = (Rc::clone(&handle), Rc::clone(&writer), Rc::clone(&working));
+        let (handle, writer, working) =
+            (Rc::clone(&handle), Rc::clone(&writer), Rc::clone(&working));
         tokio::task::spawn_local(async move {
             let outcome = if working.get() >= CALLS_MAX {
                 Outcome::Error(Fault::new(Kind::Wait, "the worker has as many calls as it takes"))
@@ -377,7 +384,11 @@ where
 
 /// Writes the answer to call `id`; an answer too big for a frame is
 /// replaced by the fault that says so.
-async fn answer(writer: &Mutex<OwnedWriteHalf>, id: u64, outcome: Outcome) -> Result<(), FrameError> {
+async fn answer(
+    writer: &Mutex<OwnedWriteHalf>,
+    id: u64,
+    outcome: Outcome,
+) -> Result<(), FrameError> {
     let mut bytes = serde_json::to_vec(&Reply { id, outcome }).map_err(FrameError::Json)?;
     if bytes.len() > FRAME_MAX {
         let fault = Fault::new(Kind::TooBig, "the answer is too big to send");
@@ -434,7 +445,9 @@ mod tests {
             let sender = tokio::task::spawn_local(async move {
                 write_frame(&mut ours, &biggest).await.unwrap();
                 let refused = write_frame(&mut ours, &vec![b' '; FRAME_MAX + 1]).await;
-                assert!(matches!(refused, Err(FrameError::TooBig(length)) if length == FRAME_MAX + 1));
+                assert!(
+                    matches!(refused, Err(FrameError::TooBig(length)) if length == FRAME_MAX + 1)
+                );
                 // The length alone, with nothing after it.
                 let length = u32::try_from(FRAME_MAX + 1).unwrap().to_be_bytes();
                 ours.write_all(&length).await.unwrap();

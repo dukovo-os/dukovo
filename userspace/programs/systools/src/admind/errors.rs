@@ -342,20 +342,48 @@ mod tests {
         let cases = [
             (Attempt::Password, WRONG_PASSWORD, Kind::WrongPassword),
             (Attempt::Other, WRONG_PASSWORD, Kind::WrongPassword),
-            (Attempt::Password, "bob may not use the web console: an administrator lets them with `elevate user set --console bob`", Kind::NotAllowed),
-            (Attempt::Password, "root does not sign in to the web console: sign in as an administrator", Kind::NotAllowed),
+            (
+                Attempt::Password,
+                "bob may not use the web console: an administrator lets them with `elevate user set --console bob`",
+                Kind::NotAllowed,
+            ),
+            (
+                Attempt::Password,
+                "root does not sign in to the web console: sign in as an administrator",
+                Kind::NotAllowed,
+            ),
             (Attempt::Passkey, "the account bob is disabled", Kind::NotAllowed),
             (Attempt::Code, "that code is not right", Kind::WrongCode),
             (Attempt::Code, "that code was used already: give the app's next one", Kind::WrongCode),
             (Attempt::Code, "unlocking takes the app's 6 digits", Kind::WrongCode),
             (Attempt::Code, "authd cannot write /system/state/authd", Kind::Refused),
-            (Attempt::Passkey, "that passkey challenge is not one authd gave, or was used: try again", Kind::PasskeyRefused),
-            (Attempt::Other, "that passkey challenge is not one authd gave, or was used: try again", Kind::Refused),
+            (
+                Attempt::Passkey,
+                "that passkey challenge is not one authd gave, or was used: try again",
+                Kind::PasskeyRefused,
+            ),
+            (
+                Attempt::Other,
+                "that passkey challenge is not one authd gave, or was used: try again",
+                Kind::Refused,
+            ),
             (Attempt::Other, "the session is locked: unlock it to make changes", Kind::Locked),
             (Attempt::Other, "the session is locked: unlock it again", Kind::Locked),
-            (Attempt::Code, "that web console session has ended: sign in again", Kind::SessionEnded),
-            (Attempt::Code, "that sign-in is not one under way, or began more than 5 minutes ago: sign in again", Kind::SessionEnded),
-            (Attempt::Other, "this session may only add a second step: sign in again once it is added", Kind::SecondStepOnly),
+            (
+                Attempt::Code,
+                "that web console session has ended: sign in again",
+                Kind::SessionEnded,
+            ),
+            (
+                Attempt::Code,
+                "that sign-in is not one under way, or began more than 5 minutes ago: sign in again",
+                Kind::SessionEnded,
+            ),
+            (
+                Attempt::Other,
+                "this session may only add a second step: sign in again once it is added",
+                Kind::SecondStepOnly,
+            ),
             (Attempt::Other, "64 web console sessions are signed in already", Kind::Refused),
         ];
         for (attempt, why, kind) in cases {

@@ -158,8 +158,11 @@ impl Tickets {
     pub fn give(&mut self, ticket: &str, name: &str, address: IpAddr, now: Instant) {
         self.tidy(now);
         while self.given.len() >= TICKETS_MAX {
-            let Some(oldest) =
-                self.given.iter().min_by_key(|(_, given)| given.at).map(|(ticket, _)| ticket.clone())
+            let Some(oldest) = self
+                .given
+                .iter()
+                .min_by_key(|(_, given)| given.at)
+                .map(|(ticket, _)| ticket.clone())
             else {
                 break;
             };
@@ -285,9 +288,12 @@ mod tests {
         }
         assert!(Slot::take(&held, ip("10.9.9.9")).is_none());
         places.pop();
-        assert!(Slot::take(&held, ip("10.9.9.9")).is_some());
+        let extra = Slot::take(&held, ip("10.9.9.9"));
+        assert!(extra.is_some());
         places.clear();
         assert_eq!(held.borrow().total, 1);
+        drop(extra);
+        assert_eq!(held.borrow().total, 0);
     }
 
     #[test]
@@ -344,7 +350,12 @@ mod tests {
         let start = Instant::now();
         let address = ip("192.0.2.1");
         for n in 0..=TICKETS_MAX {
-            tickets.give(&format!("t{n}"), "chase", address, start + Duration::from_millis(n as u64));
+            tickets.give(
+                &format!("t{n}"),
+                "chase",
+                address,
+                start + Duration::from_millis(n as u64),
+            );
         }
         let now = start + Duration::from_secs(1);
         assert_eq!(tickets.name_for("t0", address, now), None);

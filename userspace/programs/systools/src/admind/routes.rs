@@ -130,13 +130,24 @@ struct Reply {
 impl Reply {
     /// A 200 with `value`.
     fn json(value: Value) -> Reply {
-        Reply { status: StatusCode::OK, content: Content::Json(value), cookies: Vec::new(), retry_after: None }
+        Reply {
+            status: StatusCode::OK,
+            content: Content::Json(value),
+            cookies: Vec::new(),
+            retry_after: None,
+        }
     }
 
     /// The answer to a request that failed.
     fn failure(failure: &Failure) -> Reply {
-        let status = StatusCode::from_u16(failure.kind.status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        Reply { status, content: Content::Json(failure.body()), cookies: Vec::new(), retry_after: failure.retry_after }
+        let status = StatusCode::from_u16(failure.kind.status())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        Reply {
+            status,
+            content: Content::Json(failure.body()),
+            cookies: Vec::new(),
+            retry_after: failure.retry_after,
+        }
     }
 
     /// The same, setting the cookie `cookie`.
@@ -236,7 +247,12 @@ const TABLE: &[Entry] = &[
     entry(Verb::Get, "/api/1/fingerprint", Route::Fingerprint, Access::Anyone),
     entry(Verb::Post, "/api/1/sign-in", Route::SignIn, Access::SignIn),
     entry(Verb::Post, "/api/1/sign-in/code", Route::SignInCode, Access::SignIn),
-    entry(Verb::Post, "/api/1/sign-in/passkey/options", Route::SignInPasskeyOptions, Access::SignIn),
+    entry(
+        Verb::Post,
+        "/api/1/sign-in/passkey/options",
+        Route::SignInPasskeyOptions,
+        Access::SignIn,
+    ),
     entry(Verb::Post, "/api/1/sign-in/passkey", Route::SignInPasskey, Access::SignIn),
     entry(Verb::Get, "/api/1/session", Route::Session, Access::Limited),
     entry(Verb::Post, "/api/1/sign-out", Route::SignOut, Access::Limited),
@@ -249,12 +265,32 @@ const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/account/second-step/app/begin", Route::AppBegin, Access::Limited),
     entry(Verb::Post, "/api/1/account/second-step/app/confirm", Route::AppConfirm, Access::Limited),
     entry(Verb::Post, "/api/1/account/second-step/app/remove", Route::AppRemove, Access::Limited),
-    entry(Verb::Post, "/api/1/account/second-step/passkey/begin", Route::PasskeyBegin, Access::Limited),
+    entry(
+        Verb::Post,
+        "/api/1/account/second-step/passkey/begin",
+        Route::PasskeyBegin,
+        Access::Limited,
+    ),
     entry(Verb::Post, "/api/1/account/second-step/passkey/add", Route::PasskeyAdd, Access::Limited),
-    entry(Verb::Post, "/api/1/account/second-step/passkey/remove", Route::PasskeyRemove, Access::Limited),
-    entry(Verb::Post, "/api/1/account/second-step/passkey/rename", Route::PasskeyRename, Access::Limited),
+    entry(
+        Verb::Post,
+        "/api/1/account/second-step/passkey/remove",
+        Route::PasskeyRemove,
+        Access::Limited,
+    ),
+    entry(
+        Verb::Post,
+        "/api/1/account/second-step/passkey/rename",
+        Route::PasskeyRename,
+        Access::Limited,
+    ),
     entry(Verb::Post, "/api/1/account/second-step/codes", Route::Codes, Access::Limited),
-    entry(Verb::Post, "/api/1/account/second-step/trusted/forget", Route::TrustedForget, Access::Limited),
+    entry(
+        Verb::Post,
+        "/api/1/account/second-step/trusted/forget",
+        Route::TrustedForget,
+        Access::Limited,
+    ),
     entry(Verb::Post, "/api/1/account/tokens/add", Route::TokenAdd, Access::Full),
     entry(Verb::Post, "/api/1/account/tokens/remove", Route::TokenRemove, Access::Full),
     #[cfg(feature = "lab")]
@@ -467,7 +503,11 @@ where
     let live = cookie.and_then(|cookie| live(shared, cookie));
     check(shared, peer, head, entry, live.as_ref(), &origin)?;
     let signed_in = matches!(entry.access, Access::Limited | Access::Full);
-    let body = if verb == Verb::Post { read_body(&head.headers, body, signed_in).await? } else { Bytes::new() };
+    let body = if verb == Verb::Post {
+        read_body(&head.headers, body, signed_in).await?
+    } else {
+        Bytes::new()
+    };
     let cx = Context {
         shared,
         peer,
@@ -500,7 +540,10 @@ fn verb_of(head: &Parts) -> Result<Verb, Failure> {
 
 /// The value of the cookie `name`, if the request has it once.
 fn cookie_of<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    guard::cookie(headers.get_all(header::COOKIE).iter().filter_map(|value| value.to_str().ok()), name)
+    guard::cookie(
+        headers.get_all(header::COOKIE).iter().filter_map(|value| value.to_str().ok()),
+        name,
+    )
 }
 
 /// Refuses a request that brings an API token, which the console takes
@@ -535,7 +578,9 @@ fn check(
                 return Err(Failure::new(Kind::ForeignRequest, why));
             }
             let tries = shared.tries.borrow_mut().take(reach::counted(peer), Instant::now());
-            tries.map_err(|seconds| Failure::wait("too many sign-in requests from this address", seconds))
+            tries.map_err(|seconds| {
+                Failure::wait("too many sign-in requests from this address", seconds)
+            })
         }
         (Access::Limited | Access::Full, None) => Err(ended()),
         (Access::Full, Some(live)) if live.needs_step => Err(Failure::new(
@@ -596,7 +641,8 @@ fn host_of(shared: &Shared, headers: &HeaderMap) -> Result<(String, String), Fai
     let wrong = || Failure::new(Kind::WrongHost, "this is not the name of this machine");
     let header = single(headers, &header::HOST).ok_or_else(wrong)?;
     let identity = shared.identity.borrow();
-    let host = guard::host(header, &identity.names, &identity.addresses, shared.port).ok_or_else(wrong)?;
+    let host =
+        guard::host(header, &identity.names, &identity.addresses, shared.port).ok_or_else(wrong)?;
     let host = host.to_ascii_lowercase();
     let origin = guard::origin(&host, shared.port);
     Ok((host, origin))
@@ -617,7 +663,8 @@ where
     }
     let limit = body_limit(signed_in);
     let too_big = || Failure::new(Kind::TooBig, format!("a body is at most {limit} bytes here"));
-    let declared = single(headers, &header::CONTENT_LENGTH).and_then(|text| text.parse::<usize>().ok());
+    let declared =
+        single(headers, &header::CONTENT_LENGTH).and_then(|text| text.parse::<usize>().ok());
     if declared.is_some_and(|length| length > limit) {
         return Err(too_big());
     }
@@ -654,10 +701,14 @@ fn fingerprint(cx: &Context<'_>) -> Reply {
 /// carries.
 fn render(shared: &Shared, reply: Reply) -> Response<Body> {
     let (kind, caching, body) = match reply.content {
-        Content::Json(value) => {
-            ("application/json", "no-store", Full::new(Bytes::from(value.to_string())).boxed_unsync())
+        Content::Json(value) => (
+            "application/json",
+            "no-store",
+            Full::new(Bytes::from(value.to_string())).boxed_unsync(),
+        ),
+        Content::File(file) => {
+            (file.content_type, "no-cache", Full::new(file.bytes).boxed_unsync())
         }
-        Content::File(file) => (file.content_type, "no-cache", Full::new(file.bytes).boxed_unsync()),
         Content::Events(events) => ("text/event-stream", "no-store", events.boxed_unsync()),
     };
     let mut response = Response::new(body);

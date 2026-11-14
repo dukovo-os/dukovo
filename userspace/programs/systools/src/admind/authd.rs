@@ -81,11 +81,7 @@ impl Asked {
 /// # Errors
 ///
 /// In plain words, if authd cannot be reached or does not answer in time.
-pub async fn ask(
-    socket: &str,
-    console: Console,
-    fds: &[RawFd],
-) -> Result<(Answer, Asked), String> {
+pub async fn ask(socket: &str, console: Console, fds: &[RawFd]) -> Result<(Answer, Asked), String> {
     ask_within(socket, ANSWER_TIME, console, fds).await
 }
 
@@ -180,12 +176,15 @@ mod tests {
     #[test]
     fn a_refusal_is_an_answer_and_a_descriptor_goes_with_the_request() {
         let path = socket("refusal");
-        let authd = fake(&path, vec!["no the name or the password is wrong\n".into()], Duration::ZERO);
+        let authd =
+            fake(&path, vec!["no the name or the password is wrong\n".into()], Duration::ZERO);
         let (ours, _theirs) = std::os::unix::net::UnixStream::pair().unwrap();
         run(async {
             let console = Console::Lock { session: "3f9a".into() };
             let (answer, _) =
-                ask_within(&path, Duration::from_secs(5), console, &[ours.as_raw_fd()]).await.unwrap();
+                ask_within(&path, Duration::from_secs(5), console, &[ours.as_raw_fd()])
+                    .await
+                    .unwrap();
             assert_eq!(answer, Answer::Refused("the name or the password is wrong".into()));
         });
         authd.join().unwrap();

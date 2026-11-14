@@ -155,9 +155,8 @@ pub fn request_options(
     let mut words = text.split_whitespace();
     let base64 = |hex: &str| from_hex(hex.as_bytes()).map(|bytes| URL_SAFE_NO_PAD.encode(bytes));
     let challenge = words.next().and_then(base64).ok_or_else(authd_unreadable)?;
-    let allowed: Option<Vec<Value>> = words
-        .map(|hex| base64(hex).map(|id| json!({ "type": "public-key", "id": id })))
-        .collect();
+    let allowed: Option<Vec<Value>> =
+        words.map(|hex| base64(hex).map(|id| json!({ "type": "public-key", "id": id }))).collect();
     Ok(json!({ "publicKey": {
         "challenge": challenge,
         "rpId": relying_party,
@@ -250,9 +249,12 @@ mod tests {
     #[test]
     fn a_credential_goes_to_authd_with_the_challenge_its_client_data_names() {
         let challenge = [7u8; 32];
-        let assertion =
-            assertion(&credential(&challenge, Some("handle")), "https://duke-nas.local:9090", "duke-nas.local")
-                .unwrap();
+        let assertion = assertion(
+            &credential(&challenge, Some("handle")),
+            "https://duke-nas.local:9090",
+            "duke-nas.local",
+        )
+        .unwrap();
         assert_eq!(assertion.challenge, challenge);
         assert_eq!(assertion.origin, "https://duke-nas.local:9090");
         assert_eq!(assertion.relying_party, "duke-nas.local");
@@ -260,12 +262,16 @@ mod tests {
         assert_eq!(assertion.authenticator_data, b"auth");
         assert_eq!(assertion.signature, b"sig");
         assert_eq!(assertion.user_handle, b"handle");
-        assert_eq!(assertion.client_data, serde_json::to_vec(&json!({
-            "type": "webauthn.get",
-            "challenge": b64(&challenge),
-            "origin": "https://duke-nas.local:9090",
-            "crossOrigin": false,
-        })).unwrap());
+        assert_eq!(
+            assertion.client_data,
+            serde_json::to_vec(&json!({
+                "type": "webauthn.get",
+                "challenge": b64(&challenge),
+                "origin": "https://duke-nas.local:9090",
+                "crossOrigin": false,
+            }))
+            .unwrap()
+        );
         // As a second step a passkey gives no user handle.
         let second = self::assertion(&credential(&challenge, None), "o", "r").unwrap();
         assert!(second.user_handle.is_empty());
@@ -275,7 +281,10 @@ mod tests {
     fn a_credential_that_does_not_read_is_refused_in_words() {
         let mut broken = credential(&[1], None);
         broken.response.signature = "!!".into();
-        assert_eq!(assertion(&broken, "o", "r").err().unwrap().detail, "the signature is not base64url");
+        assert_eq!(
+            assertion(&broken, "o", "r").err().unwrap().detail,
+            "the signature is not base64url"
+        );
         let mut broken = credential(&[1], None);
         broken.response.client_data = b64(b"not json");
         let why = assertion(&broken, "o", "r").err().unwrap();
@@ -309,7 +318,10 @@ mod tests {
             "attestationObject": "!",
         }}))
         .unwrap();
-        assert_eq!(super::registration(&broken).unwrap_err().detail, "the attestation is not base64url");
+        assert_eq!(
+            super::registration(&broken).unwrap_err().detail,
+            "the attestation is not base64url"
+        );
     }
 
     #[test]
@@ -362,7 +374,10 @@ mod tests {
             key["authenticatorSelection"],
             json!({ "residentKey": "required", "userVerification": "required" })
         );
-        assert_eq!((key["attestation"].as_str(), key["timeout"].as_u64()), (Some("none"), Some(120_000)));
+        assert_eq!(
+            (key["attestation"].as_str(), key["timeout"].as_u64()),
+            (Some("none"), Some(120_000))
+        );
         let why = creation_options(json!({"challenge": 1}), "h", "m").unwrap_err();
         assert_eq!(why.kind, Kind::WorkerSilent);
     }

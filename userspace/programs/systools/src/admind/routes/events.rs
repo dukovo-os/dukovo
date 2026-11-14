@@ -130,12 +130,7 @@ async fn woken(changes: &mut watch::Receiver<()>, sender: &mpsc::Sender<Bytes>) 
 
 /// Tells a tab of its session until the session or the tab ends, then
 /// counts the tab out.
-async fn stream(
-    shared: Rc<Shared>,
-    cookie: String,
-    authd: String,
-    sender: mpsc::Sender<Bytes>,
-) {
+async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc::Sender<Bytes>) {
     let mut changes = shared.changes.subscribe();
     // The unlock last told, so that only a change is.
     let mut told = None;

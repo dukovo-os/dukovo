@@ -81,8 +81,9 @@ async fn handle(method: String, params: Value) -> Result<Value, Fault> {
         return Ok(whoami()?.json());
     }
     let (console, shape) = request(&method, params)?;
-    let (answer, _) =
-        authd::ask(accounts::SOCKET, console, &[]).await.map_err(|why| Fault::new(Kind::AuthdSilent, why))?;
+    let (answer, _) = authd::ask(accounts::SOCKET, console, &[])
+        .await
+        .map_err(|why| Fault::new(Kind::AuthdSilent, why))?;
     match answer {
         Answer::Done(text) => result(&shape, &text, whoami),
         Answer::Refused(why) => Err(Fault::new(Kind::Refused, why)),
@@ -307,13 +308,13 @@ fn result(
 /// ID...`, all in hexadecimal: the challenge, the person, and the ids of
 /// the passkeys it already has for this machine, in base64url.
 fn creation(text: &str, who: &Who) -> Result<Value, Fault> {
-    let unreadable = || Fault::new(Kind::AuthdSilent, "authd answered a challenge that does not read");
+    let unreadable =
+        || Fault::new(Kind::AuthdSilent, "authd answered a challenge that does not read");
     let mut words = text.split_whitespace();
     let (Some(challenge), Some(handle)) = (words.next(), words.next()) else {
         return Err(unreadable());
     };
-    let base64 =
-        |hex: &str| from_hex(hex.as_bytes()).map(|bytes| URL_SAFE_NO_PAD.encode(bytes));
+    let base64 = |hex: &str| from_hex(hex.as_bytes()).map(|bytes| URL_SAFE_NO_PAD.encode(bytes));
     let exclude: Option<Vec<String>> = words.map(base64).collect();
     let (Some(challenge), Some(handle), Some(exclude)) =
         (base64(challenge), base64(handle), exclude)
@@ -330,7 +331,8 @@ fn creation(text: &str, who: &Who) -> Result<Value, Fault> {
 
 /// Who this worker acts for, by its own user number.
 fn whoami() -> Result<Who, Fault> {
-    who::read(&Sources::default(), Account::Number(util::own_user())).map_err(|why| Fault::new(Kind::Refused, why))
+    who::read(&Sources::default(), Account::Number(util::own_user()))
+        .map_err(|why| Fault::new(Kind::Refused, why))
 }
 
 #[cfg(test)]
@@ -375,7 +377,10 @@ mod tests {
             (
                 "passkey-begin",
                 json!({"proof": "pw", "relying_party": "duke-nas.local"}),
-                Console::PasskeyBegin { proof: b"pw".to_vec(), relying_party: "duke-nas.local".into() },
+                Console::PasskeyBegin {
+                    proof: b"pw".to_vec(),
+                    relying_party: "duke-nas.local".into(),
+                },
                 Shape::Creation,
             ),
             (
@@ -407,7 +412,12 @@ mod tests {
                 Console::PasskeyRename { id: vec![0x0a, 0xff], name: "Desk key".into() },
                 Shape::Done,
             ),
-            ("codes", json!({"proof": "pw"}), Console::Codes { proof: b"pw".to_vec() }, Shape::Codes),
+            (
+                "codes",
+                json!({"proof": "pw"}),
+                Console::Codes { proof: b"pw".to_vec() },
+                Shape::Codes,
+            ),
             (
                 "token-add",
                 json!({"proof": "pw", "name": "ansible", "scopes": ["services:read"], "days": 30}),
@@ -439,7 +449,10 @@ mod tests {
         assert!(bad("app-begin", json!({"proof": "pw"})).contains("missing field `host`"));
         assert!(bad("app-confirm", json!({"code": "1", "extra": 1})).contains("unknown field"));
         assert!(bad("app-remove", Value::Null).contains("app-remove does not take that"));
-        assert!(bad("token-add", json!({"proof": "", "name": "a", "scopes": "*", "days": 1})).contains("scopes"));
+        assert!(
+            bad("token-add", json!({"proof": "", "name": "a", "scopes": "*", "days": 1}))
+                .contains("expected a sequence")
+        );
         let ok = json!({"challenge": "!!", "origin": "o", "relying_party": "r", "name": "n",
                         "client_data": "AA", "attestation": "AA"});
         assert_eq!(bad("passkey-add", ok), "the challenge is not base64url");
@@ -448,7 +461,10 @@ mod tests {
             "a passkey's id is hexadecimal"
         );
         let fault = ask("rm-rf", Value::Null).err().unwrap();
-        assert_eq!((fault.id.as_str(), fault.detail.as_str()), ("ADM-116", "the worker has no method rm-rf"));
+        assert_eq!(
+            (fault.id.as_str(), fault.detail.as_str()),
+            ("ADM-116", "the worker has no method rm-rf")
+        );
     }
 
     fn who() -> Result<Who, Fault> {
@@ -458,14 +474,25 @@ mod tests {
     #[test]
     fn authds_answers_are_told_as_the_page_reads_them() {
         let told = |shape: Shape, text: &str| result(&shape, text, who).unwrap();
-        assert_eq!(told(Shape::Steps, r#"{"app":null,"needed":false}"#), json!({"app": null, "needed": false}));
-        assert_eq!(told(Shape::Uri, "otpauth://totp/x?secret=A"), json!({"uri": "otpauth://totp/x?secret=A"}));
-        assert_eq!(told(Shape::Codes, "AAAA-BBBB CCCC-DDDD"), json!({"codes": ["AAAA-BBBB", "CCCC-DDDD"]}));
+        assert_eq!(
+            told(Shape::Steps, r#"{"app":null,"needed":false}"#),
+            json!({"app": null, "needed": false})
+        );
+        assert_eq!(
+            told(Shape::Uri, "otpauth://totp/x?secret=A"),
+            json!({"uri": "otpauth://totp/x?secret=A"})
+        );
+        assert_eq!(
+            told(Shape::Codes, "AAAA-BBBB CCCC-DDDD"),
+            json!({"codes": ["AAAA-BBBB", "CCCC-DDDD"]})
+        );
         assert_eq!(told(Shape::Codes, ""), json!({"codes": []}));
         assert_eq!(told(Shape::Forgotten, "3"), json!({"forgotten": 3}));
         assert_eq!(told(Shape::Token, "dkv_ansible_ab"), json!({"token": "dkv_ansible_ab"}));
         assert_eq!(told(Shape::Done, ""), json!({"done": true}));
-        for (shape, text) in [(Shape::Steps, "not json"), (Shape::Forgotten, "many"), (Shape::Creation, "00")] {
+        for (shape, text) in
+            [(Shape::Steps, "not json"), (Shape::Forgotten, "many"), (Shape::Creation, "00")]
+        {
             let fault = result(&shape, text, who).unwrap_err();
             assert_eq!(fault.id, "ADM-111", "{text}");
         }
@@ -473,7 +500,8 @@ mod tests {
 
     #[test]
     fn a_passkey_is_made_with_the_challenge_the_person_and_the_passkeys_to_leave_out() {
-        let who = Who { name: "chase".into(), full_name: "Chase Y".into(), admin: true, groups: vec![] };
+        let who =
+            Who { name: "chase".into(), full_name: "Chase Y".into(), admin: true, groups: vec![] };
         let made = creation("0a0b 0c0d 01 ff02", &who).unwrap();
         assert_eq!(
             made,

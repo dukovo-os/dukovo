@@ -76,7 +76,9 @@ enum Command {
 fn words(command: &Command) -> Result<Vec<Vec<u8>>, Failure> {
     let words: Vec<Vec<u8>> = match command {
         Command::Words(words) => words.iter().map(|word| word.as_bytes().to_vec()).collect(),
-        Command::Line(line) => line.split_whitespace().map(|word| word.as_bytes().to_vec()).collect(),
+        Command::Line(line) => {
+            line.split_whitespace().map(|word| word.as_bytes().to_vec()).collect()
+        }
     };
     if words.is_empty() {
         return Err(Failure::new(Kind::BadRequest, "give a command to run"));
@@ -131,14 +133,12 @@ pub async fn elevate(cx: &Context<'_>, live: &Live) -> Outcome {
     // authd takes the last of the four as the relay, whose closing hangs
     // the command up: ours stays open until the command has ended.
     let (relay, _hang_up) = pipe().map_err(internal)?;
-    let fds = [
-        input.as_raw_fd(),
-        written.as_raw_fd(),
-        written.as_raw_fd(),
-        relay.as_raw_fd(),
-    ];
-    let console =
-        Console::Elevate { by: Elevator::Session(live.authd.clone()), language: Vec::new(), command };
+    let fds = [input.as_raw_fd(), written.as_raw_fd(), written.as_raw_fd(), relay.as_raw_fd()];
+    let console = Console::Elevate {
+        by: Elevator::Session(live.authd.clone()),
+        language: Vec::new(),
+        command,
+    };
     let what = format!("to run a command for {}", shown(&live.name));
     let (answer, mut asked) = authd::ask(&cx.shared.authd, console, &fds)
         .await
@@ -166,7 +166,9 @@ pub async fn elevate(cx: &Context<'_>, live: &Live) -> Outcome {
     };
     let (kept, status) = match tokio::time::timeout(RUN_TIME, run).await {
         Ok(Ok(done)) => done,
-        Ok(Err(err)) => return Err(Failure::new(Kind::Internal, format!("the command's end: {err}"))),
+        Ok(Err(err)) => {
+            return Err(Failure::new(Kind::Internal, format!("the command's end: {err}")));
+        }
         Err(_) => return Err(Failure::new(Kind::Internal, "the command did not end in a minute")),
     };
     Ok(Reply::json(json!({
@@ -179,6 +181,7 @@ pub async fn elevate(cx: &Context<'_>, live: &Live) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admind::fixture::Console;
 
     #[test]
     fn a_command_is_its_words_or_a_line_of_them_and_there_must_be_one() {
@@ -190,6 +193,19 @@ mod tests {
         assert_eq!(given(r#""  ""#).unwrap_err().kind, Kind::BadRequest);
         // A word with a NUL would split a field of the request.
         assert!(serde_json::from_str::<Command>(r#"["a\u0000b"]"#).is_err());
+    }
+
+    #[test]
+    fn at_most_32_commands_run_at_once_and_a_place_is_given_back() {
+        let console = Console::new("lab-places", std::sync::Arc::new(|_, _| Vec::new()));
+        let shared = &*console.shared;
+        let held: Vec<Place<'_>> =
+            (0..ELEVATED_MAX).map(|_| Place::take(shared).unwrap()).collect();
+        assert!(Place::take(shared).is_none());
+        drop(held);
+        assert_eq!(shared.elevating.get(), 0);
+        assert!(Place::take(shared).is_some());
+        assert_eq!(shared.elevating.get(), 0);
     }
 
     #[test]

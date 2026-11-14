@@ -45,10 +45,27 @@ pub struct Session<W> {
 impl<W> Session<W> {
     /// A session of `name`'s, signed in now from `from`, as authd started
     /// it.
-    pub fn new(name: String, authd: String, from: IpAddr, needs_step: bool, worker: W) -> Result<Session<W>, String> {
+    pub fn new(
+        name: String,
+        authd: String,
+        from: IpAddr,
+        needs_step: bool,
+        worker: W,
+    ) -> Result<Session<W>, String> {
         let now = Instant::now();
         let csrf = random::<32>()?;
-        Ok(Session { name, authd, from, started: now, seen: now, tabs: 0, csrf, unlocked_until: None, needs_step, worker })
+        Ok(Session {
+            name,
+            authd,
+            from,
+            started: now,
+            seen: now,
+            tabs: 0,
+            csrf,
+            unlocked_until: None,
+            needs_step,
+            worker,
+        })
     }
 
     /// Whether it has ended by `now`, with sessions lasting `lasts` and
@@ -115,7 +132,8 @@ impl<W> Sessions<W> {
 
     /// Takes out each session that `keep` does not keep.
     pub fn take_where(&mut self, gone: impl Fn(&Session<W>) -> bool) -> Vec<Session<W>> {
-        let ended: Vec<[u8; 32]> = self.map.iter().filter(|(_, s)| gone(s)).map(|(k, _)| *k).collect();
+        let ended: Vec<[u8; 32]> =
+            self.map.iter().filter(|(_, s)| gone(s)).map(|(k, _)| *k).collect();
         ended.iter().filter_map(|key| self.map.remove(key)).collect()
     }
 

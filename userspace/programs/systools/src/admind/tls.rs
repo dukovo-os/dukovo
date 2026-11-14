@@ -58,12 +58,15 @@ pub fn folder(name: &str) -> Result<PathBuf, String> {
 pub fn load(folder: &Path) -> Result<Certificate, String> {
     let read = |file: &str| {
         let path = folder.join(file);
-        fs::read_to_string(&path)
-            .map_err(|err| format!("cannot read {}: {}", path.display(), util::strip_os_error(&err)))
+        fs::read_to_string(&path).map_err(|err| {
+            format!("cannot read {}: {}", path.display(), util::strip_os_error(&err))
+        })
     };
     let chain = inspect::chain_of(&read("fullchain.pem")?)
         .map_err(|why| format!("{}/fullchain.pem: {why}", folder.display()))?;
-    let leaf = chain.first().ok_or_else(|| format!("{}/fullchain.pem holds no certificate", folder.display()))?;
+    let leaf = chain
+        .first()
+        .ok_or_else(|| format!("{}/fullchain.pem holds no certificate", folder.display()))?;
     let key = inspect::pem_blocks(&read("key.pem")?)
         .and_then(|blocks| {
             let block = blocks.first().ok_or("it holds no key")?;
@@ -100,7 +103,7 @@ fn server_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cert::fixtures::{self, Scratch, Server};
+    use crate::cert::fixtures::{self, DAY, Scratch, Server};
     use rustls::pki_types::ServerName;
     use rustls::{ClientConfig, SupportedCipherSuite};
     use tokio::net::UnixStream;
@@ -110,7 +113,12 @@ mod tests {
     /// of its own, and what trusts that authority.
     fn certificate(what: &str) -> (Scratch, rustls::RootCertStore) {
         let authority = fixtures::root("Test Root");
-        let leaf = fixtures::server(&authority, &Server::default());
+        // Valid whatever day the tests run: a client checks it against the
+        // clock, which the fixtures' own time does not stand in for.
+        let now = crate::admind::shared::unix_now();
+        let valid =
+            Server { not_before: now - DAY, not_after: now + 90 * DAY, ..Server::default() };
+        let leaf = fixtures::server(&authority, &valid);
         let scratch = Scratch::new(what);
         fs::write(scratch.0.join("fullchain.pem"), fixtures::chain_file(&[&leaf.der])).unwrap();
         fs::write(scratch.0.join("key.pem"), &leaf.key).unwrap();

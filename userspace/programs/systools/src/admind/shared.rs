@@ -77,9 +77,9 @@ impl Identity {
 
 /// Seconds since 1970.
 pub fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| {
-        i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-    })
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// Why a session that `now` finds ended did: it ran its hours, or it was
@@ -212,7 +212,10 @@ impl Shared {
     ///
     /// Outside a `LocalSet`.
     pub fn finish(&self, session: Session<Link>, reason: &'static str) -> JoinHandle<()> {
-        log(6, &format!("{}'s console session from {} ended: {reason}", session.name, session.from));
+        log(
+            6,
+            &format!("{}'s console session from {} ended: {reason}", session.name, session.from),
+        );
         self.endings.borrow_mut().note(&session.authd, reason);
         let authd = session.authd.clone();
         drop(session);
@@ -289,7 +292,8 @@ impl Shared {
             return;
         }
         let all = self.sessions.borrow_mut().take_where(|_| true);
-        let told: Vec<_> = all.into_iter().map(|session| self.finish(session, "restarted")).collect();
+        let told: Vec<_> =
+            all.into_iter().map(|session| self.finish(session, "restarted")).collect();
         let waiting = async {
             for task in told {
                 // A task that failed told no one, which authd finds out
@@ -319,7 +323,8 @@ mod tests {
             Network { ip: ip("192.168.1.10"), prefix: 24 },
             Network { ip: ip("fd00::10"), prefix: 64 },
         ];
-        let certificate = vec!["duke-nas.local".to_string(), "admin.example.org".into(), "10.0.0.5".into()];
+        let certificate =
+            vec!["duke-nas.local".to_string(), "admin.example.org".into(), "10.0.0.5".into()];
         let identity = Identity::new("duke-nas", cards.clone(), &certificate);
         assert_eq!(identity.host, "duke-nas");
         assert_eq!(
@@ -335,7 +340,10 @@ mod tests {
         let started = Instant::now();
         let lasts = Duration::from_hours(12);
         assert_eq!(ending_reason(started, started + lasts, lasts), "expired");
-        assert_eq!(ending_reason(started, started + lasts + Duration::from_mins(1), lasts), "expired");
+        assert_eq!(
+            ending_reason(started, started + lasts + Duration::from_mins(1), lasts),
+            "expired"
+        );
         assert_eq!(ending_reason(started, started + Duration::from_mins(31), lasts), "idle");
     }
 

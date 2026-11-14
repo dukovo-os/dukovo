@@ -95,6 +95,20 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
             },
             "extend" => in_15_minutes(),
             "lock" | "end" => ok(),
+            // The lab's elevated command: the four descriptors are its
+            // input, its output, its error output and its relay. It
+            // writes to the output and ends with the status 3.
+            #[cfg(feature = "lab")]
+            "elevate" if asked.text(3) == "/system/commands/locked" => {
+                no("the session is locked: unlock it to make changes")
+            }
+            #[cfg(feature = "lab")]
+            "elevate" => {
+                use std::io::Write;
+                let mut output = std::fs::File::from(fds.remove(1));
+                output.write_all(format!("{}\n", asked.text(4)).as_bytes()).unwrap();
+                vec!["ok 4321".into(), "ended 768".into()]
+            }
             _ => no("the test's authd does not answer that"),
         }
     })
@@ -114,7 +128,12 @@ struct Req {
 }
 
 fn get(path: &str) -> Req {
-    Req { method: "GET", path: path.into(), headers: vec![("host".into(), HOST.into())], body: Vec::new() }
+    Req {
+        method: "GET",
+        path: path.into(),
+        headers: vec![("host".into(), HOST.into())],
+        body: Vec::new(),
+    }
 }
 
 fn post(path: &str, body: &Value) -> Req {
@@ -159,7 +178,10 @@ impl Answered {
 
     /// The ID of the error it is.
     fn error(&self) -> String {
-        self.json()["error"]["id"].as_str().unwrap_or_else(|| panic!("an error: {}", self.body)).into()
+        self.json()["error"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("an error: {}", self.body))
+            .into()
     }
 
     fn header(&self, name: &str) -> Option<&str> {
@@ -194,7 +216,11 @@ async fn send_from(world: &World, peer: &str, req: Req) -> Answered {
     let Ok(response) = handle(shared, peer.parse().unwrap(), request).await;
     let (head, body) = response.into_parts();
     let bytes = body.collect().await.unwrap().to_bytes();
-    Answered { status: head.status.as_u16(), headers: head.headers, body: String::from_utf8(bytes.to_vec()).unwrap() }
+    Answered {
+        status: head.status.as_u16(),
+        headers: head.headers,
+        body: String::from_utf8(bytes.to_vec()).unwrap(),
+    }
 }
 
 async fn send(world: &World, req: Req) -> Answered {
@@ -231,27 +257,35 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_each_address_is_one_rou
     for entry in TABLE {
         assert!(paths.insert(entry.path), "{} twice", entry.path);
         assert!(entry.path.starts_with("/api/1/"), "{}", entry.path);
-        assert!(matches!(lookup(entry.verb, entry.path), Lookup::Found(found) if found.route == entry.route));
+        assert!(
+            matches!(lookup(entry.verb, entry.path), Lookup::Found(found) if found.route == entry.route)
+        );
         let other = if entry.verb == Verb::Get { Verb::Post } else { Verb::Get };
         assert!(matches!(lookup(other, entry.path), Lookup::WrongVerb), "{}", entry.path);
         // What only reads is a GET, and what changes anything is a POST.
-        let reads = [Route::Health, Route::Fingerprint, Route::Session, Route::Events, Route::Steps];
+        let reads =
+            [Route::Health, Route::Fingerprint, Route::Session, Route::Events, Route::Steps];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 26 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 25 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/2/health"), Lookup::Missing));
     // A path that only starts like the API's is a file's.
-    assert!(matches!(lookup(Verb::Get, "/apiary"), Lookup::Found(entry) if entry.route == Route::File));
+    assert!(
+        matches!(lookup(Verb::Get, "/apiary"), Lookup::Found(entry) if entry.route == Route::File)
+    );
 }
 
 #[test]
 fn files_are_for_get_and_head_alone_and_a_post_to_a_page_is_the_wrong_verb() {
     for path in ["/", "/app.js", "/accounts/users", "/x.png"] {
         for verb in [Verb::Get, Verb::Head] {
-            assert!(matches!(lookup(verb, path), Lookup::Found(entry) if entry.route == Route::File), "{path}");
+            assert!(
+                matches!(lookup(verb, path), Lookup::Found(entry) if entry.route == Route::File),
+                "{path}"
+            );
         }
         assert!(matches!(lookup(Verb::Post, path), Lookup::WrongVerb), "{path}");
     }
@@ -263,21 +297,43 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
     for open in [Route::Health, Route::Fingerprint] {
         assert_eq!(access(open), Access::Anyone);
     }
-    for sign in [Route::SignIn, Route::SignInCode, Route::SignInPasskeyOptions, Route::SignInPasskey] {
+    for sign in
+        [Route::SignIn, Route::SignInCode, Route::SignInPasskeyOptions, Route::SignInPasskey]
+    {
         assert_eq!(access(sign), Access::SignIn);
     }
     // What a session that may only add a second step can use.
-    let limited: Vec<Route> =
-        TABLE.iter().filter(|entry| entry.access == Access::Limited).map(|entry| entry.route).collect();
+    let limited: Vec<Route> = TABLE
+        .iter()
+        .filter(|entry| entry.access == Access::Limited)
+        .map(|entry| entry.route)
+        .collect();
     assert_eq!(
         limited,
         [
-            Route::Session, Route::SignOut, Route::Events, Route::Steps, Route::AppBegin,
-            Route::AppConfirm, Route::AppRemove, Route::PasskeyBegin, Route::PasskeyAdd,
-            Route::PasskeyRemove, Route::PasskeyRename, Route::Codes, Route::TrustedForget,
+            Route::Session,
+            Route::SignOut,
+            Route::Events,
+            Route::Steps,
+            Route::AppBegin,
+            Route::AppConfirm,
+            Route::AppRemove,
+            Route::PasskeyBegin,
+            Route::PasskeyAdd,
+            Route::PasskeyRemove,
+            Route::PasskeyRename,
+            Route::Codes,
+            Route::TrustedForget,
         ]
     );
-    for full in [Route::Unlock, Route::UnlockPasskeyOptions, Route::UnlockExtend, Route::Lock, Route::TokenAdd, Route::TokenRemove] {
+    for full in [
+        Route::Unlock,
+        Route::UnlockPasskeyOptions,
+        Route::UnlockExtend,
+        Route::Lock,
+        Route::TokenAdd,
+        Route::TokenRemove,
+    ] {
         assert_eq!(access(full), Access::Full, "{full:?}");
     }
 }
@@ -304,10 +360,20 @@ fn an_api_token_is_a_bearer_of_dkv_and_nothing_else_is() {
 
 #[test]
 fn a_body_is_json_with_or_without_parameters_and_the_limit_grows_after_sign_in() {
-    for json in [Some("application/json"), Some("Application/JSON"), Some("application/json; charset=utf-8")] {
+    for json in [
+        Some("application/json"),
+        Some("Application/JSON"),
+        Some("application/json; charset=utf-8"),
+    ] {
         assert!(is_json(json), "{json:?}");
     }
-    for other in [None, Some("text/plain"), Some("application/x-www-form-urlencoded"), Some("application/jsonp"), Some("")] {
+    for other in [
+        None,
+        Some("text/plain"),
+        Some("application/x-www-form-urlencoded"),
+        Some("application/jsonp"),
+        Some(""),
+    ] {
         assert!(!is_json(other), "{other:?}");
     }
     assert_eq!((body_limit(false), body_limit(true)), (64 << 10, 1 << 20));
@@ -337,9 +403,16 @@ fn a_value_for_authd_has_no_nul_and_is_at_most_4096_bytes() {
 fn every_answer_carries_the_security_headers_and_no_server_header() {
     run(async {
         let world = world("headers");
-        for request in [get("/api/1/health"), get("/"), get("/api/1/session"), get("/api/1/nothing")] {
+        for request in
+            [get("/api/1/health"), get("/"), get("/api/1/session"), get("/api/1/nothing")]
+        {
             let answered = send(&world, request).await;
-            assert!(answered.header("content-security-policy").unwrap().contains("frame-ancestors 'none'"));
+            assert!(
+                answered
+                    .header("content-security-policy")
+                    .unwrap()
+                    .contains("frame-ancestors 'none'")
+            );
             assert_eq!(answered.header("x-content-type-options"), Some("nosniff"));
             assert_eq!(answered.header("referrer-policy"), Some("no-referrer"));
             assert_eq!(answered.header("cross-origin-opener-policy"), Some("same-origin"));
@@ -395,14 +468,26 @@ fn a_host_that_is_not_this_machines_is_not_answered_whatever_it_asks_for() {
         for host in ["evil.example", "evil.example:9090", "nas.example:9091", "nas.example:", ""] {
             for path in ["/api/1/health", "/", "/api/1/nothing"] {
                 let answered = send(&world, get(path).with("host", Some(host))).await;
-                assert_eq!((answered.status, answered.error().as_str()), (421, "ADM-114"), "{host} {path}");
+                assert_eq!(
+                    (answered.status, answered.error().as_str()),
+                    (421, "ADM-114"),
+                    "{host} {path}"
+                );
             }
         }
         let none = send(&world, get("/api/1/health").with("host", None)).await;
         assert_eq!(none.status, 421);
         // The name, the machine's own, `.local`, localhost and an address
         // of its cards are its own; case does not matter.
-        for host in ["nas.example:9090", "NAS.Example:9090", "nas:9090", "nas.local:9090", "localhost:9090", "127.0.0.1:9090", "[::1]:9090"] {
+        for host in [
+            "nas.example:9090",
+            "NAS.Example:9090",
+            "nas:9090",
+            "nas.local:9090",
+            "localhost:9090",
+            "127.0.0.1:9090",
+            "[::1]:9090",
+        ] {
             let answered = send(&world, get("/api/1/health").with("host", Some(host))).await;
             assert_eq!(answered.status, 200, "{host}");
         }
@@ -506,7 +591,8 @@ fn a_body_is_json_and_not_too_long_and_what_is_wrong_with_it_is_said_without_rep
         assert_eq!((answered.status, answered.error().as_str()), (415, "ADM-119"));
         let none = post("/api/1/sign-in", &body).with("content-type", None);
         assert_eq!(send(&world, none).await.error(), "ADM-119");
-        let charset = post("/api/1/sign-in", &body).with("content-type", Some("application/json; charset=utf-8"));
+        let charset = post("/api/1/sign-in", &body)
+            .with("content-type", Some("application/json; charset=utf-8"));
         assert_eq!(send(&world, charset).await.error(), "ADM-101");
         // Not JSON, and JSON that is not what the route takes: the words
         // never hold what was sent, which may be a password.
@@ -582,14 +668,19 @@ fn a_password_that_authd_accepts_signs_the_browser_in_with_a_cookie_that_only_th
         assert_eq!(world.console.shared.sessions.borrow().len(), 1);
         // A password nobody has: the same words for a name that is not
         // there and a password that is wrong.
-        let wrong = send(&world, post("/api/1/sign-in", &json!({ "name": "nobody", "password": "x" }))).await;
+        let wrong =
+            send(&world, post("/api/1/sign-in", &json!({ "name": "nobody", "password": "x" })))
+                .await;
         assert_eq!((wrong.status, wrong.error().as_str()), (401, "ADM-101"));
         assert!(wrong.cookies().is_empty());
-        let empty = send(&world, post("/api/1/sign-in", &json!({ "name": "chase", "password": "" }))).await;
+        let empty =
+            send(&world, post("/api/1/sign-in", &json!({ "name": "chase", "password": "" }))).await;
         assert_eq!(empty.error(), "ADM-101");
         // An account that may not use the console is told so, as authd
         // says it only to someone who knows the password.
-        let bob = send(&world, post("/api/1/sign-in", &json!({ "name": "bob", "password": "right" }))).await;
+        let bob =
+            send(&world, post("/api/1/sign-in", &json!({ "name": "bob", "password": "right" })))
+                .await;
         assert_eq!((bob.status, bob.error().as_str()), (403, "ADM-104"));
         assert!(bob.body.contains("bob may not use the web console"));
     });
@@ -611,7 +702,9 @@ fn the_session_says_who_it_is_from_the_account_files_and_how_it_can_unlock() {
         );
         assert_eq!(URL_SAFE_NO_PAD.decode(&session.csrf).unwrap().len(), 32);
         // No cookie, a cookie that is no session's, and one sent twice.
-        for cookie in [None, Some("__Host-dukovo=nothing"), Some("__Host-dukovo=a; __Host-dukovo=b")] {
+        for cookie in
+            [None, Some("__Host-dukovo=nothing"), Some("__Host-dukovo=a; __Host-dukovo=b")]
+        {
             let answered = send(&world, get("/api/1/session").with("cookie", cookie)).await;
             assert_eq!((answered.status, answered.error().as_str()), (401, "ADM-107"));
             // The browser forgets the cookie it was told is no good.
@@ -630,7 +723,8 @@ fn a_second_step_is_asked_for_by_a_ticket_that_only_the_address_it_was_given_to_
         assert_eq!(step["kinds"], json!(["app", "recovery"]));
         let ticket = step["ticket"].as_str().unwrap().to_string();
         assert!(answered.cookies().is_empty());
-        let code = |code: &str| post("/api/1/sign-in/code", &json!({ "ticket": ticket, "code": code }));
+        let code =
+            |code: &str| post("/api/1/sign-in/code", &json!({ "ticket": ticket, "code": code }));
         // Another address has no such sign-in.
         let other = send_from(&world, "192.0.2.8", code("123456")).await;
         assert_eq!((other.status, other.error().as_str()), (401, "ADM-107"));
@@ -663,7 +757,8 @@ fn a_browser_that_is_trusted_is_trusted_for_30_days_and_skips_the_step_until_it_
             "{TRUST_COOKIE}=aa55bb66; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=2592000"
         )));
         // With its cookie, the next sign-in needs no step.
-        let known = post("/api/1/sign-in", &body).with("cookie", Some("__Host-dukovo-trust=aa55bb66"));
+        let known =
+            post("/api/1/sign-in", &body).with("cookie", Some("__Host-dukovo-trust=aa55bb66"));
         let answered = send(&world, known).await;
         assert_eq!(answered.json(), json!({ "done": true }));
         // With a cookie authd does not know, the step is asked for and the
@@ -693,14 +788,21 @@ fn a_session_that_may_only_add_a_second_step_may_do_that_and_sign_out_and_nothin
         let session = Session { cookie, csrf };
         // What it may use.
         assert_eq!(send(&world, get("/api/1/account/second-step").by(&session)).await.status, 200);
-        let begun = send(&world, post("/api/1/account/second-step/app/begin", &json!({ "proof": "right" })).by(&session)).await;
+        let begun = send(
+            &world,
+            post("/api/1/account/second-step/app/begin", &json!({ "proof": "right" })).by(&session),
+        )
+        .await;
         assert_eq!(begun.status, 200, "{}", begun.body);
         // What it may not, which authd would refuse anyway.
         for (path, body) in [
             ("/api/1/unlock", json!({ "kind": "password", "password": "right" })),
             ("/api/1/unlock/extend", json!({})),
             ("/api/1/lock", json!({})),
-            ("/api/1/account/tokens/add", json!({ "proof": "", "name": "a", "scopes": ["*"], "days": 1 })),
+            (
+                "/api/1/account/tokens/add",
+                json!({ "proof": "", "name": "a", "scopes": ["*"], "days": 1 }),
+            ),
         ] {
             let refused = send(&world, post(path, &body).by(&session)).await;
             assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-118"), "{path}");
@@ -726,8 +828,12 @@ fn a_request_that_changes_something_carries_the_origin_and_the_sessions_token() 
             bare().with("x-dukovo-csrf", Some("not base64!")),
             // A token that is right, but another site's page sent it.
             bare().with("x-dukovo-csrf", Some(&session.csrf)).with("origin", None),
-            bare().with("x-dukovo-csrf", Some(&session.csrf)).with("origin", Some("https://evil.example")),
-            bare().with("x-dukovo-csrf", Some(&session.csrf)).with("sec-fetch-site", Some("cross-site")),
+            bare()
+                .with("x-dukovo-csrf", Some(&session.csrf))
+                .with("origin", Some("https://evil.example")),
+            bare()
+                .with("x-dukovo-csrf", Some(&session.csrf))
+                .with("sec-fetch-site", Some("cross-site")),
         ];
         for request in requests {
             let answered = send(&world, request).await;
@@ -770,7 +876,10 @@ fn a_session_unlocks_with_a_password_or_a_code_for_what_authd_says_and_locks_aga
         assert_eq!((wrong.status, wrong.error().as_str()), (401, "ADM-102"));
         let shown = send(&world, get("/api/1/session").by(&session)).await;
         assert_eq!(shown.json()["unlock_seconds"], Value::Null);
-        for body in [json!({ "kind": "password", "password": "right" }), json!({ "kind": "code", "code": "123456" })] {
+        for body in [
+            json!({ "kind": "password", "password": "right" }),
+            json!({ "kind": "code", "code": "123456" }),
+        ] {
             let done = send(&world, unlock(body)).await;
             let seconds = done.json()["unlock_seconds"].as_i64().unwrap();
             assert!((898..=900).contains(&seconds), "{seconds}");
@@ -811,15 +920,20 @@ fn an_unlock_that_does_not_say_what_it_needs_is_a_bad_request_and_authd_is_not_a
 fn authd_answering_a_time_that_does_not_read_is_not_an_unlock() {
     run(async {
         let shared_calls = Calls::default();
-        let silly: Arc<fixture::Script> = Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| match asked.verb.as_str() {
-            "begin" => vec!["ok done 0a0b01".into()],
-            "start" => {
-                fixture::worker(fds.remove(0), Arc::clone(&shared_calls), Arc::new(worker_answers));
-                vec![format!("ok 1 {:0<32}", asked.text(0))]
-            }
-            "unlock" => vec!["ok soon".into()],
-            _ => vec!["ok".into()],
-        });
+        let silly: Arc<fixture::Script> =
+            Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| match asked.verb.as_str() {
+                "begin" => vec!["ok done 0a0b01".into()],
+                "start" => {
+                    fixture::worker(
+                        fds.remove(0),
+                        Arc::clone(&shared_calls),
+                        Arc::new(worker_answers),
+                    );
+                    vec![format!("ok 1 {:0<32}", asked.text(0))]
+                }
+                "unlock" => vec!["ok soon".into()],
+                _ => vec!["ok".into()],
+            });
         let world = World { console: Console::new("silly", silly), calls: Calls::default() };
         let session = sign_in(&world, "chase").await;
         let body = json!({ "kind": "password", "password": "right" });
@@ -843,19 +957,30 @@ fn each_second_step_route_is_one_call_to_the_worker_with_what_admind_adds_to_it(
         assert_eq!(steps.json()["app"], json!({ "added": 1 }));
         let begun = send(&world, call("second-step/app/begin", json!({ "proof": "pw" }))).await;
         assert_eq!(begun.json(), json!({ "uri": "otpauth://totp/nas:chase?secret=ABCD" }));
-        let confirmed = send(&world, call("second-step/app/confirm", json!({ "code": "123456" }))).await;
+        let confirmed =
+            send(&world, call("second-step/app/confirm", json!({ "code": "123456" }))).await;
         assert_eq!(confirmed.json(), json!({ "codes": ["AAAA-BBBB"] }));
         let removed = send(&world, call("second-step/app/remove", json!({ "proof": "" }))).await;
         assert_eq!(removed.json(), json!({ "done": true }));
-        let renamed = send(&world, call("second-step/passkey/rename", json!({ "id": "0aff", "name": "Desk" }))).await;
+        let renamed = send(
+            &world,
+            call("second-step/passkey/rename", json!({ "id": "0aff", "name": "Desk" })),
+        )
+        .await;
         assert_eq!(renamed.json(), json!({ "done": true }));
-        let gone = send(&world, call("second-step/passkey/remove", json!({ "proof": "pw", "id": "0aff" }))).await;
+        let gone = send(
+            &world,
+            call("second-step/passkey/remove", json!({ "proof": "pw", "id": "0aff" })),
+        )
+        .await;
         assert_eq!(gone.json(), json!({ "done": true }));
         let codes = send(&world, call("second-step/codes", json!({ "proof": "pw" }))).await;
         assert_eq!(codes.json(), json!({ "codes": ["AAAA-BBBB"] }));
-        let forgotten = send(&world, post(&path("second-step/trusted/forget"), &json!({})).by(&session)).await;
+        let forgotten =
+            send(&world, post(&path("second-step/trusted/forget"), &json!({})).by(&session)).await;
         assert_eq!(forgotten.json(), json!({ "forgotten": 2 }));
-        let token = json!({ "proof": "pw", "name": "ansible", "scopes": ["services:read"], "days": 30 });
+        let token =
+            json!({ "proof": "pw", "name": "ansible", "scopes": ["services:read"], "days": 30 });
         let added = send(&world, call("tokens/add", token)).await;
         assert_eq!(added.json(), json!({ "token": "dkv_chase_aa" }));
         let removed = send(&world, call("tokens/remove", json!({ "name": "ansible" }))).await;
@@ -866,12 +991,27 @@ fn each_second_step_route_is_one_call_to_the_worker_with_what_admind_adds_to_it(
         let methods: Vec<&str> = seen.iter().map(|(method, _)| method.as_str()).collect();
         assert_eq!(
             methods,
-            ["steps", "steps", "app-begin", "app-confirm", "app-remove", "passkey-rename", "passkey-remove", "codes", "trusted-forget", "token-add", "token-remove"]
+            [
+                "steps",
+                "steps",
+                "app-begin",
+                "app-confirm",
+                "app-remove",
+                "passkey-rename",
+                "passkey-remove",
+                "codes",
+                "trusted-forget",
+                "token-add",
+                "token-remove"
+            ]
         );
         assert_eq!(seen[2].1, json!({ "proof": "pw", "host": "nas" }));
         assert_eq!(seen[3].1, json!({ "code": "123456" }));
         assert_eq!(seen[5].1, json!({ "id": "0aff", "name": "Desk" }));
-        assert_eq!(seen[9].1, json!({ "proof": "pw", "name": "ansible", "scopes": ["services:read"], "days": 30 }));
+        assert_eq!(
+            seen[9].1,
+            json!({ "proof": "pw", "name": "ansible", "scopes": ["services:read"], "days": 30 })
+        );
     });
 }
 
@@ -881,7 +1021,9 @@ fn a_passkey_is_made_for_the_name_the_browser_used_and_added_with_the_challenge_
         let world = world("passkey-add");
         let session = sign_in(&world, "chase").await;
         let path = "/api/1/account/second-step/passkey";
-        let begun = send(&world, post(&format!("{path}/begin"), &json!({ "proof": "pw" })).by(&session)).await;
+        let begun =
+            send(&world, post(&format!("{path}/begin"), &json!({ "proof": "pw" })).by(&session))
+                .await;
         let options = &begun.json()["publicKey"];
         assert_eq!(options["challenge"], "AQI");
         assert_eq!(options["rp"], json!({ "id": "nas.example", "name": "Dukovo (nas)" }));
@@ -894,7 +1036,12 @@ fn a_passkey_is_made_for_the_name_the_browser_used_and_added_with_the_challenge_
                 "attestationObject": encode("attestation"),
             },
         });
-        let added = send(&world, post(&format!("{path}/add"), &json!({ "name": "Desk key", "credential": credential })).by(&session)).await;
+        let added = send(
+            &world,
+            post(&format!("{path}/add"), &json!({ "name": "Desk key", "credential": credential }))
+                .by(&session),
+        )
+        .await;
         assert_eq!(added.json(), json!({ "codes": [] }));
         let seen = called(&world);
         assert_eq!(seen[1].0, "passkey-begin");
@@ -902,7 +1049,10 @@ fn a_passkey_is_made_for_the_name_the_browser_used_and_added_with_the_challenge_
         assert_eq!(seen[2].0, "passkey-add");
         let params = &seen[2].1;
         assert_eq!(params["challenge"], "AQI");
-        assert_eq!((params["origin"].as_str(), params["relying_party"].as_str()), (Some(ORIGIN), Some("nas.example")));
+        assert_eq!(
+            (params["origin"].as_str(), params["relying_party"].as_str()),
+            (Some(ORIGIN), Some("nas.example"))
+        );
         assert_eq!(params["name"], "Desk key");
         assert_eq!(params["attestation"], encode("attestation"));
         // A credential that is not what a browser makes.
@@ -917,7 +1067,8 @@ fn what_authd_refuses_through_the_worker_is_told_by_its_words_and_logged() {
     run(async {
         let world = world("account-refused");
         let session = sign_in(&world, "chase").await;
-        let wrong = post("/api/1/account/second-step/app/confirm", &json!({ "code": "000000" })).by(&session);
+        let wrong = post("/api/1/account/second-step/app/confirm", &json!({ "code": "000000" }))
+            .by(&session);
         let answered = send(&world, wrong).await;
         assert_eq!((answered.status, answered.error().as_str()), (401, "ADM-102"));
         assert_eq!(answered.json()["error"]["detail"], "that code is not right");
@@ -939,21 +1090,28 @@ fn a_tabs_stream_tells_the_unlock_when_it_changes_and_why_the_session_ended() {
         let world = world("events");
         let session = sign_in(&world, "chase").await;
         let request = build(get("/api/1/events").by(&session));
-        let Ok(response) = handle(Rc::clone(&world.console.shared), PEER.parse().unwrap(), request).await;
+        let Ok(response) =
+            handle(Rc::clone(&world.console.shared), PEER.parse().unwrap(), request).await;
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers()["content-type"], "text/event-stream");
         assert_eq!(response.headers()["cache-control"], "no-store");
         let mut body = response.into_body();
         let mut next = async || {
             let frame = tokio::time::timeout(Duration::from_secs(5), body.frame()).await.unwrap();
-            frame.map(|frame| String::from_utf8(frame.unwrap().into_data().unwrap().to_vec()).unwrap())
+            frame.map(|frame| {
+                String::from_utf8(frame.unwrap().into_data().unwrap().to_vec()).unwrap()
+            })
         };
         assert_eq!(next().await.unwrap(), "event: unlock\ndata: {\"unlock_seconds\":null}\n\n");
         assert_eq!(world.console.shared.with_session(&session.cookie, |s| s.tabs), Some(1));
         let unlock = json!({ "kind": "password", "password": "right" });
         send(&world, post("/api/1/unlock", &unlock).by(&session)).await;
         let told = next().await.unwrap();
-        assert!(told.starts_with("event: unlock\ndata: {\"unlock_seconds\":89"), "{told}");
+        let data =
+            told.strip_prefix("event: unlock\ndata: ").and_then(|rest| rest.strip_suffix("\n\n"));
+        let seconds =
+            serde_json::from_str::<Value>(data.expect(&told)).unwrap()["unlock_seconds"].as_i64();
+        assert!((895..=900).contains(&seconds.unwrap()), "{told}");
         send(&world, post("/api/1/lock", &json!({})).by(&session)).await;
         assert_eq!(next().await.unwrap(), "event: unlock\ndata: {\"unlock_seconds\":null}\n\n");
         send(&world, post("/api/1/sign-out", &json!({})).by(&session)).await;
@@ -1006,7 +1164,7 @@ fn a_session_whose_time_is_up_ends_and_authd_is_told() {
         let world = world("maintain");
         let session = sign_in(&world, "chase").await;
         // 13 hours on, with the sign-in rules' 12.
-        let later = std::time::Instant::now() + Duration::from_secs(13 * 3600);
+        let later = std::time::Instant::now() + Duration::from_hours(13);
         world.console.shared.maintain(later);
         let again = send(&world, get("/api/1/session").by(&session)).await;
         assert_eq!(again.error(), "ADM-107");
@@ -1024,7 +1182,13 @@ fn a_session_whose_worker_goes_ends_with_it() {
         let (ours, theirs) = tokio::net::UnixStream::pair().unwrap();
         let link = Link::new(ours);
         let authd = "ab".repeat(16);
-        let session = sessions::Session::new("chase".into(), authd.clone(), PEER.parse().unwrap(), false, link.clone());
+        let session = sessions::Session::new(
+            "chase".into(),
+            authd.clone(),
+            PEER.parse().unwrap(),
+            false,
+            link.clone(),
+        );
         world.console.shared.admit(session.unwrap()).unwrap();
         world.console.shared.watch(&link, authd.clone());
         assert_eq!(world.console.shared.sessions.borrow().len(), 1);
@@ -1033,5 +1197,39 @@ fn a_session_whose_worker_goes_ends_with_it() {
         assert!(world.console.shared.sessions.borrow().is_empty());
         assert_eq!(world.console.shared.endings.borrow().reason(&authd), "worker");
         assert_eq!(world.console.authd.verbs(), ["end"]);
+    });
+}
+
+// The lab's route.
+
+#[cfg(feature = "lab")]
+#[test]
+fn the_lab_route_runs_a_command_for_an_unlocked_session_and_gives_its_output_and_status() {
+    run(async {
+        let world = world("lab-elevate");
+        let session = sign_in(&world, "chase").await;
+        let run = |command: Value| {
+            post("/api/1/test/elevate", &json!({ "command": command })).by(&session)
+        };
+        let done = send(&world, run(json!(["/system/commands/echo", "hello there"]))).await;
+        assert_eq!(done.status, 200, "{}", done.body);
+        assert_eq!(
+            done.json(),
+            json!({ "process": "4321", "output": "hello there\n", "status": 3 })
+        );
+        // One line of words is the same command.
+        let line = send(&world, run(json!("/system/commands/echo hi"))).await;
+        assert_eq!(line.json()["output"], "hi\n");
+        // What authd refuses is told as it is: here, a locked session.
+        let locked = send(&world, run(json!(["/system/commands/locked"]))).await;
+        assert_eq!((locked.status, locked.error().as_str()), (403, "ADM-106"));
+        let none = send(&world, run(json!([]))).await;
+        assert_eq!(none.error(), "ADM-108");
+        assert_eq!(world.console.shared.elevating.get(), 0);
+        // The route is for a session that is not limited to a second step.
+        let eve = sign_in(&world, "eve").await;
+        let body = json!({ "command": ["/system/commands/echo"] });
+        let refused = send(&world, post("/api/1/test/elevate", &body).by(&eve)).await;
+        assert_eq!(refused.error(), "ADM-118");
     });
 }

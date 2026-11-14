@@ -60,7 +60,12 @@ pub fn clear_cookie(name: &str) -> String {
 /// this machine on `port`: one of its `names` (its host name, that name
 /// with `.local`, `localhost`, and its certificate's names), or one of
 /// its `addresses`, loopback included. Names are compared without case.
-pub fn host<'a>(header: &'a str, names: &[String], addresses: &[IpAddr], port: u16) -> Option<&'a str> {
+pub fn host<'a>(
+    header: &'a str,
+    names: &[String],
+    addresses: &[IpAddr],
+    port: u16,
+) -> Option<&'a str> {
     let (host, given) = if let Some(rest) = header.strip_prefix('[') {
         let (inside, after) = rest.split_once(']')?;
         (inside, if after.is_empty() { None } else { Some(after.strip_prefix(':')?) })
@@ -126,7 +131,11 @@ pub fn csrf_refusal(
 /// refused, if it is: the sign-in routes have no session token, so their
 /// `Origin` and `Sec-Fetch-Site` are what keep another site from signing
 /// a browser in as someone else.
-pub fn sign_in_refusal(origin: Option<&str>, fetch_site: Option<&str>, expected: &str) -> Option<&'static str> {
+pub fn sign_in_refusal(
+    origin: Option<&str>,
+    fetch_site: Option<&str>,
+    expected: &str,
+) -> Option<&'static str> {
     if origin.is_none_or(|origin| !origin.eq_ignore_ascii_case(expected)) {
         return Some("the request did not come from the console's own page");
     }
@@ -195,8 +204,10 @@ mod tests {
 
     #[test]
     fn the_host_must_name_this_machine() {
-        let names = vec!["duke-nas".to_string(), "duke-nas.local".into(), "admin.example.org".into()];
-        let addresses: Vec<IpAddr> = vec!["192.168.1.10".parse().unwrap(), "fd00::10".parse().unwrap()];
+        let names =
+            vec!["duke-nas".to_string(), "duke-nas.local".into(), "admin.example.org".into()];
+        let addresses: Vec<IpAddr> =
+            vec!["192.168.1.10".parse().unwrap(), "fd00::10".parse().unwrap()];
         let host = |header: &'static str| host(header, &names, &addresses, 9090);
         assert_eq!(host("duke-nas.local:9090"), Some("duke-nas.local"));
         assert_eq!(host("DUKE-NAS.LOCAL:9090"), Some("DUKE-NAS.LOCAL"));
@@ -250,7 +261,10 @@ mod tests {
         assert!(check("POST", Some(expected), Some("none"), Some(&token)).is_some());
         assert!(check("POST", Some(expected), None, None).is_some());
         assert!(check("POST", Some(expected), None, Some("AAAA")).is_some());
-        assert!(check("DELETE", Some(expected), None, Some(&URL_SAFE_NO_PAD.encode([8u8; 32]))).is_some());
+        assert!(
+            check("DELETE", Some(expected), None, Some(&URL_SAFE_NO_PAD.encode([8u8; 32])))
+                .is_some()
+        );
         assert!(sign_in_refusal(Some(expected), None, expected).is_none());
         assert!(sign_in_refusal(None, None, expected).is_some());
         assert!(sign_in_refusal(Some(expected), Some("cross-site"), expected).is_some());
