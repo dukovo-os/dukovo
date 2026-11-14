@@ -32,6 +32,10 @@
 //! A helper signs in to a help session as `help`, no account's name, with
 //! the session's code or key, which authd checks; the connection then
 //! shows them the help screen alone (ADR 0540, [`help`]).
+//!
+//! In Rescue, sshd signs in the installed system's administrators by its
+//! accounts, keys and settings, and a session is Rescue's menu, which
+//! authd starts: no command, SFTP or forwarding (ADR 0540).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -51,6 +55,7 @@ use accounts::request::{
     self, Answer, HELP_NAME, HelpProof, Request, SSH_COMMAND_MAX, SSH_KEY_ALGORITHMS, SshProof,
     SshRun,
 };
+use accounts::rescue;
 use accounts::sshd_config::{self, Settings};
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{Algorithm, PrivateKey};
@@ -287,8 +292,11 @@ fn admitted(settings: &Settings, name: &str) -> Result<(), String> {
 /// The names of the groups of `name`'s account, none for a name no
 /// account has.
 fn groups_of(name: &str) -> Result<Vec<String>, String> {
+    // In Rescue, the installed system's accounts (ADR 0540).
     let read = |path: &str| {
-        std::fs::read_to_string(path).map_err(|err| format!("cannot read {path}: {err}"))
+        let path = rescue::path(path);
+        std::fs::read_to_string(&path)
+            .map_err(|err| format!("cannot read {}: {err}", path.display()))
     };
     let users = accounts::users(&read(accounts::PASSWD)?);
     let groups = accounts::groups(&read(accounts::GROUP)?);
@@ -363,6 +371,13 @@ impl Connection {
     /// `which` way: if not, why is logged.
     fn may_forward(&self, which: &str, allowed: bool) -> Option<String> {
         let who = self.signed_in.as_ref()?;
+        if rescue::is_rescue() {
+            eprintln!(
+                "sshd: refused to forward {which} for {} from {}: Rescue",
+                who.name, self.from
+            );
+            return None;
+        }
         if !allowed {
             eprintln!(
                 "sshd: refused to forward {which} for {} from {}: AllowTcpForwarding",
@@ -798,7 +813,7 @@ impl server::Handler for Connection {
         command: &[u8],
         session: &mut Session,
     ) -> Result<(), Error> {
-        if self.helper_refused("a command") {
+        if self.helper_refused("a command") || self.rescue_refused("a command") {
             session.channel_failure(id)?;
             return Ok(());
         }
@@ -816,7 +831,7 @@ impl server::Handler for Connection {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Error> {
-        if self.helper_refused("SFTP") {
+        if self.helper_refused("SFTP") || self.rescue_refused("SFTP") {
             session.channel_failure(id)?;
             return Ok(());
         }
@@ -918,6 +933,19 @@ impl Connection {
     fn refuse(&mut self, user: &str, why: String) {
         self.refused = Some(why);
         self.tried = Some(user.into());
+    }
+
+    /// Whether this is Rescue, whose sessions are its menu alone and not
+    /// `what`: if so, the log says it was refused.
+    fn rescue_refused(&self, what: &str) -> bool {
+        let rescue = rescue::is_rescue();
+        if rescue {
+            eprintln!(
+                "sshd: refused {what} from {}: in Rescue, SSH gives its menu alone",
+                self.from
+            );
+        }
+        rescue
     }
 
     /// Whether a helper signed in, who gets the help screen alone and not

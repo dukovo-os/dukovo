@@ -30,6 +30,7 @@ pub mod hash;
 #[cfg(feature = "ntlm")]
 pub mod ntlm;
 pub mod request;
+pub mod rescue;
 pub mod signins;
 pub mod sshd_config;
 #[cfg(test)]

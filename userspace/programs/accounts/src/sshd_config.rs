@@ -275,14 +275,15 @@ pub fn parse(text: &str) -> Result<Settings, Vec<Mistake>> {
     Ok(settings)
 }
 
-/// The settings in [`PATH`]: the defaults when there is no file; what is
-/// wrong otherwise, a line each.
+/// The settings in [`PATH`], the installed system's in Rescue: the
+/// defaults when there is no file; what is wrong otherwise, a line each.
 ///
 /// # Errors
 ///
 /// When the file cannot be read, or has mistakes.
 pub fn read() -> Result<Settings, String> {
-    read_from(PATH)
+    // In Rescue, the installed system's (ADR 0540).
+    read_from(&crate::rescue::path(PATH).to_string_lossy())
 }
 
 /// The settings in the file at `path`, as [`read`] reads them.

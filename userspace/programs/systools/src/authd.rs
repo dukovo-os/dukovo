@@ -77,6 +77,7 @@ use accounts::request::{
     self, Answer, Mode, Prompt, Prompted, Question, REQUEST_MAX, Relay, Request, SSH_TICKET_LENGTH,
     SshProof, SshRun,
 };
+use accounts::rescue;
 use accounts::signins::{self, Event, Latest, Place, Record, Seat};
 use accounts::{DISABLED, Group, Password, Table, User};
 use radix_abi::names;
@@ -366,6 +367,7 @@ mod help;
 mod jobs;
 mod keyring;
 pub(crate) mod proofs;
+mod rescue_mode;
 
 /// The longest name a line of authd's shows.
 const SHOWN_MAX: usize = 64;
@@ -413,7 +415,12 @@ struct Files {
 
 impl Files {
     fn read() -> Result<Files, String> {
-        let read = |path: &str| read_text(path).map_err(|e| format!("cannot read {path}: {e}"));
+        // In Rescue, the installed system's, in the root Rescue mounted
+        // (ADR 0540).
+        let read = |path: &str| {
+            let path = rescue::path(path).to_string_lossy().into_owned();
+            read_text(&path).map_err(|e| format!("cannot read {path}: {e}"))
+        };
         Ok(Files {
             users: accounts::users(&read(accounts::PASSWD)?),
             groups: accounts::groups(&read(accounts::GROUP)?),
@@ -709,8 +716,12 @@ impl Authd {
         if let Ok(files) = &files {
             self.check_blocking_settings(files);
         }
-        // Inside a help screen, nothing asks for a password (ADR 0540).
-        let in_help = self.help_refuses(&request, peer);
+        // Inside a help screen, nothing asks for a password; in Rescue,
+        // authd answers only SSH's sign-ins (ADR 0540).
+        let in_help = match &files {
+            Ok(files) if rescue::is_rescue() => rescue_mode::refuses(&request, files),
+            _ => self.help_refuses(&request, peer),
+        };
         let (answer, at) = match (files, in_help) {
             (Err(why), _) | (Ok(_), Some(why)) => (Answer::Refused(why), now),
             (Ok(files), None) => match &request {
@@ -1914,6 +1925,41 @@ impl Authd {
                 }
             }
         };
+        // In Rescue, an administrator's session is Rescue's menu, as root,
+        // on a terminal (ADR 0540).
+        if rescue::is_rescue() {
+            let Some(tty) = terminal.as_ref().filter(|_| matches!(asked.run, SshRun::Shell)) else {
+                return refused(
+                    "in Rescue, SSH gives Rescue's menu alone, on a terminal: no command, SFTP or \
+                     forwarding"
+                        .into(),
+                );
+            };
+            let process = match rescue_mode::start_menu(user, tty, asked.connection, asked.term) {
+                Ok(process) => process as i32,
+                Err(why) => return refused(why),
+            };
+            let tty = signin::terminal_name(tty);
+            audit!(
+                "{} signed in to Rescue over SSH from {from} with {with}: its menu on {tty}, \
+                 session process {process}",
+                user.name
+            );
+            let session = Session {
+                name: user.name.clone(),
+                terminal: tty,
+                from: shown(from),
+                number: user.uid,
+                group: user.gid,
+                elevated: false,
+                remote: true,
+                recorded: false,
+                job: None,
+            };
+            self.sessions.insert(process, session);
+            self.clients[i].session = Some(process);
+            return Answer::Done(process.to_string());
+        }
         let (command, what): (Option<&[u8]>, &str) = match asked.run {
             SshRun::Shell => (None, "a shell"),
             SshRun::Command(command) => (Some(command), "a command"),
@@ -3413,10 +3459,18 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         .map_err(|e| util::failed(&accounts::SOCKET, e))?;
     listener.set_nonblocking(true).map_err(|e| util::failed(&accounts::SOCKET, e))?;
     // An account with no home gets one: one `ob image --user` made, as
-    // every file in an image is root's, or one whose home went.
+    // every file in an image is root's, or one whose home went. Not in
+    // Rescue, whose accounts are the installed system's (ADR 0540).
     let people: Vec<User> = Files::read()
         .map_or_default(|files| files.users.entries().filter(|u| u.is_person()).cloned().collect());
-    for user in people.iter().filter(|u| fs::symlink_metadata(&u.home).is_err()) {
+    if rescue::is_rescue() {
+        eprintln!(
+            "authd: Rescue: answering SSH's sign-ins alone, by the accounts of the root at {}",
+            rescue::ROOT
+        );
+    }
+    let homeless = |u: &&User| !rescue::is_rescue() && fs::symlink_metadata(&u.home).is_err();
+    for user in people.iter().filter(homeless) {
         match make_home(user) {
             Ok(_) => eprintln!("authd: made the home {} of {}", user.home, user.name),
             Err(why) => eprintln!("authd: {why}"),

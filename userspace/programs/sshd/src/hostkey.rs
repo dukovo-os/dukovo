@@ -11,6 +11,7 @@ use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
+use accounts::rescue;
 use russh::keys::PrivateKey;
 use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
 use russh::keys::ssh_key::{HashAlg, LineEnding};
@@ -26,19 +27,26 @@ pub const KEY: &str = "/system/state/sshd/ssh_host_ed25519_key";
 /// Where its public half is.
 pub const PUBLIC: &str = "/system/state/sshd/ssh_host_ed25519_key.pub";
 
-/// The key, read from [`KEY`].
+/// The key, read from [`KEY`]: in Rescue, the installed system's, so
+/// that a client sees the host key it knows (ADR 0540).
 pub fn load() -> Result<PrivateKey, String> {
-    let text = fs::read(KEY).map_err(|err| format!("cannot read the host key {KEY}: {err}"))?;
+    let path = rescue::path(KEY);
+    let text = fs::read(&path)
+        .map_err(|err| format!("cannot read the host key {}: {err}", path.display()))?;
     let key = PrivateKey::from_openssh(&text)
-        .map_err(|err| format!("the host key {KEY} is not one: {err}"))?;
+        .map_err(|err| format!("the host key {} is not one: {err}", path.display()))?;
     if key.is_encrypted() {
-        return Err(format!("the host key {KEY} is encrypted"));
+        return Err(format!("the host key {} is encrypted", path.display()));
     }
     Ok(key)
 }
 
-/// The key, made first if there is none, and whether it was made.
+/// The key, made first if there is none, and whether it was made. Rescue
+/// makes none: it uses the installed system's, or SSH stays off.
 pub fn load_or_make() -> Result<(PrivateKey, bool), String> {
+    if rescue::is_rescue() {
+        return load().map(|key| (key, false));
+    }
     match fs::symlink_metadata(KEY) {
         Ok(_) => {
             let key = load()?;
