@@ -72,7 +72,7 @@ async function seeLocked(t, page) {
 
 /** Waits for the header of `page` to say that the console is unlocked, with 15 minutes left. */
 async function seeUnlocked(t, page) {
-  await t.see(header(page).getByText("Unlocked"));
+  await t.see(header(page).getByText("Unlocked ·"));
   await t.see(headerButton(page, "Lock"));
   await t.see(minutesLeft(page, 15));
 }

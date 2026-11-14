@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Passkeys in the web console (ADR 0514). A passkey belongs to a name, so
+# the console offers none on a page opened by an address, which the lab
+# checks in every engine. Chromium has a virtual authenticator, with which
+# an administrator adds a passkey, renames it, signs in with it alone,
+# unlocks the console with it and removes it; its relying party is
+# localhost, which is the name the lab PC opens the machine's console by.
+# Firefox and WebKit have none, so they check that the page offers the
+# passkey button on a name and stop there. admind, the console's service,
+# starts with the machine. The account is one this test makes and removes,
+# so no script needs the lab's password.
+about = "A virtual authenticator in Chromium adds a passkey to the web console, signs in and unlocks with it; other engines see the passkey button offered by name and withheld by address"
+time = "15m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-passkeys-chromium'"
+root = true
+expect = "Made wc-passkeys-chromium"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "passkeys.mjs"
+port = 9090
+[[step]]
+run = "user remove --delete-home --yes wc-passkeys-chromium"
+root = true
+expect = "wc-passkeys-chromium is removed"

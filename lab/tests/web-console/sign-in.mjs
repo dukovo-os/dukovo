@@ -22,6 +22,7 @@ import {
   mustHaveCalled,
   mustRefuse,
   openConsole,
+  openSecondStep,
   press,
   recoveryCodesShown,
   servedCertificate,
@@ -69,16 +70,6 @@ const alertWith = (page, text) => page.getByRole("alert").filter({ hasText: text
 
 /** The "Trust this browser" box of the step's page. */
 const trustBox = (page) => page.getByRole("checkbox", { name: "Trust this browser for 30 days" });
-
-/** The page of the signed-in account's second step. */
-async function openSecondStep(t, page) {
-  // A page that was on it when the session ended is back on it at once.
-  if (!new URL(page.url()).pathname.endsWith("/second-step")) {
-    await page.getByRole("link", { name: "Manage the second step" }).click();
-  }
-  await t.see(page.getByRole("heading", { name: "Second step", level: 1 }));
-  await t.see(page.getByRole("heading", { name: "Trusted browsers" }));
-}
 
 /** Signs in and waits for the page that asks for the second step. */
 async function signInToStep(t, page, name) {
@@ -202,7 +193,7 @@ async function codesAtSignIn(t, page, name, app) {
 
   // The next step's code, once the console's clock comes to it, with the
   // box ticked.
-  await trustBox(page).ensure();
+  await trustBox(page).check();
   await giveRightCode(t, page, APP_CODE, await app.nextCode(page));
   ensure(await cookieNamed(page, TRUSTED), "the browser was not trusted although the box was ticked");
 }

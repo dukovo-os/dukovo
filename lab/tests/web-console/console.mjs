@@ -18,6 +18,7 @@ export function ensure(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/** Waits `milliseconds`. */
 export const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 /** The console's second-step routes, which the account's pages and the tests both name. */
@@ -178,6 +179,16 @@ export async function sessionOf(page) {
   return answer.json();
 }
 
+/** The page of the signed-in account's second step. */
+export async function openSecondStep(t, page) {
+  // A page that was on it when the session ended is back on it at once.
+  if (!new URL(page.url()).pathname.endsWith("/second-step")) {
+    await page.getByRole("link", { name: "Manage the second step" }).click();
+  }
+  await t.see(page.getByRole("heading", { name: "Second step", level: 1 }));
+  await t.see(page.getByRole("heading", { name: "Trusted browsers" }));
+}
+
 /** The origin of the console that `page` shows, `https://host:port`. */
 export const originOf = (page) => new URL(page.url()).origin;
 
@@ -215,6 +226,9 @@ export function servedCertificate(url) {
     socket.on("error", reject);
   });
 }
+
+/** Whether `hostname`, as a URL gives it, is an IP address, which a passkey's relying party may not be. */
+export const isAddress = (hostname) => net.isIP(hostname.replace(/^\[|\]$/g, "")) !== 0;
 
 /** The pin of the certificate's public key, as Chromium's `--ignore-certificate-errors-spki-list` takes it. */
 export function pinOf(certificate) {
