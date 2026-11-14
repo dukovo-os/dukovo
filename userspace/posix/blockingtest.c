@@ -312,7 +312,7 @@ static void five_wrong_passwords(void) {
 	const char *list = blocked();
 	printf("blockingtest: firewall blocked:\n%s", list);
 	CHECK(strstr(list, "Blocked") == list);
-	CHECK(strstr(list, "Until") && strstr(list, "Times today") && strstr(list, "Why"));
+	CHECK(strstr(list, "Until") && strstr(list, "In a row") && strstr(list, "Why"));
 	const char *row = strstr(list, B_ADDRESS " ");
 	CHECK(row != NULL);
 	if(row) {
