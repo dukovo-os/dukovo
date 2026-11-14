@@ -45,8 +45,11 @@ const PROGRAM: &str = "/applications/net.php.php/bin/php";
 /// accept(2) gives is blocking, as the kernel makes it, when the listening
 /// one is not (patch 0010), and host names are looked up with the C
 /// library's gethostbyname(3), as build.sh tells configure, which the
-/// sockets extension's tests do to make their listening socket.
+/// sockets extension's tests do to make their listening socket; and calls
+/// nested too deep end in an Error, not a crash, as build.sh tells
+/// configure the stack grows down.
 const SUITE: &[&str] = &[
+    "Zend/tests/gh18572.phpt",
     "ext/standard/tests/streams/gh8472.phpt",
     "ext/standard/tests/network/gethostbyname_basic003.phpt",
     "ext/standard/tests/network/gethostbynamel_basic1.phpt",
@@ -80,10 +83,7 @@ pub const CASE: Case = Case {
     media: Media::Usb,
     cmdline: "lockdep",
     cpus: 2,
-    // On 2 GiB the install of the bundle's 20,000 files to the root stops
-    // with no_memory (and Files says its write-back to the disk ran out of
-    // it): a gap of the kernel, in docs/deferred.md.
-    memory: "4G",
+    memory: "2G",
     reboot: false,
     image: TestImage::Plain,
     cpu_model: None,

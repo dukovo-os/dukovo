@@ -43,6 +43,22 @@ pub(crate) type Ranges = KVec<(u64, u64)>;
 /// free.
 pub(crate) type Log = KVec<(u64, u64, bool)>;
 
+/// Adds to `log` that `[start, end)` became free, or was taken: to the
+/// last change, if that one made the same change to the range just before.
+/// Space is taken in order as files are written, so a commit's changes
+/// mostly follow on, and its log stays short (ADR 0524).
+pub(crate) fn note(log: &mut Log, start: u64, end: u64, freed: bool) -> Result<()> {
+    if let Some(last) = log.last_mut()
+        && last.1 == start
+        && last.2 == freed
+    {
+        last.1 = end;
+        return Ok(());
+    }
+    mem::push(log, (start, end, freed))?;
+    Ok(())
+}
+
 /// Adds `[start, end)` to `set`, joining the ranges it touches.
 pub(crate) fn add(set: &mut Ranges, start: u64, end: u64) -> Result<()> {
     if start >= end {
@@ -182,7 +198,7 @@ impl Space {
         exclude_mirrors(volume, &mut group)?;
         group.free_bytes = group.free.iter().map(|&(s, e)| e - s).sum();
         for &(s, e) in &group.free {
-            mem::push(&mut group.log, (s, e, true))?;
+            note(&mut group.log, s, e, true)?;
         }
         let at = self.groups.partition_point(|g| g.start < start);
         mem::insert(&mut self.groups, at, group)?;
@@ -260,7 +276,7 @@ impl Space {
     /// both data and metadata (`mkfs.btrfs --mixed`) holds either.
     pub(crate) fn take(&mut self, want: u64, size: u64, align: u64) -> Result<u64> {
         let (group, at) = self.find(want, size, align)?;
-        mem::push(&mut group.log, (at, at + size, false))?;
+        note(&mut group.log, at, at + size, false)?;
         group.used_delta += size as i64;
         Ok(at)
     }
@@ -332,7 +348,7 @@ impl Space {
             return Err(Error::Corrupt);
         }
         remove(&mut group.free, start, end)?;
-        mem::push(&mut group.log, (start, end, false))?;
+        note(&mut group.log, start, end, false)?;
         group.free_bytes -= len;
         group.used_delta += len as i64;
         Ok(())
@@ -343,7 +359,7 @@ impl Space {
     pub(crate) fn free_now(&mut self, start: u64, len: u64) -> Result<()> {
         let group = self.group_mut(start)?;
         add(&mut group.free, start, start + len)?;
-        mem::push(&mut group.log, (start, start + len, true))?;
+        note(&mut group.log, start, start + len, true)?;
         group.free_bytes += len;
         group.used_delta -= len as i64;
         Ok(())
@@ -354,7 +370,7 @@ impl Space {
     /// may be taken once this commit is durable ([`Space::unpin`]).
     pub(crate) fn free_pinned(&mut self, start: u64, len: u64) -> Result<()> {
         let group = self.group_mut(start)?;
-        mem::push(&mut group.log, (start, start + len, true))?;
+        note(&mut group.log, start, start + len, true)?;
         group.pinned += len;
         group.used_delta -= len as i64;
         Ok(())

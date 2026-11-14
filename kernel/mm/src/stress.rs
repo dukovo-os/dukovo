@@ -11,6 +11,11 @@
 //! the pattern before freeing it, so an object handed to two callers, or
 //! damaged while in use, shows up as a mismatch. Zeroed objects are
 //! checked to be zero. At the end the worker frees what it still holds.
+//!
+//! The heap's areas get a test of their own: [`break_up`] leaves memory in
+//! pieces, with no block larger than a frame free, and each worker of
+//! [`areas`] then makes large requests, which areas must serve, and frees
+//! some of them where it may not wait to release them.
 
 #![allow(unsafe_code)]
 
@@ -18,7 +23,9 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 
 use crate::context::Flags;
+use crate::frames::Frames;
 use crate::heap::Heap;
+use crate::page::{Owner, PAGE_SHIFT, PAGE_SIZE};
 use crate::raw;
 
 /// Objects one worker keeps alive at most.
@@ -176,9 +183,152 @@ fn free(heap: &Heap, slot: &mut Slot, report: &mut StressReport) {
     slot.addr = 0;
 }
 
+/// Ends the chain of frames [`Pieces`] keeps.
+const END: u64 = u64::MAX;
+
+/// Memory left in pieces by [`break_up`]: the frames it keeps, chained
+/// through their own first words, so that keeping them takes no memory.
+pub struct Pieces<'a> {
+    frames: &'a Frames,
+    direct_map: usize,
+    first: u64,
+    kept: u64,
+}
+
+/// Takes every free frame, then frees each one whose frame number is odd:
+/// half of the memory that was free is free again, but no two free frames
+/// are buddies, so no block larger than a frame is free. The frames come
+/// from the reserves too, so for as long as memory stays in pieces even
+/// callers that may not sleep find no larger block. [`Pieces::join`] gives
+/// the frames kept back.
+pub fn break_up(frames: &Frames) -> Pieces<'_> {
+    let Some(platform) = frames.platform() else {
+        return Pieces { frames, direct_map: 0, first: END, kept: 0 };
+    };
+    let direct_map = platform.direct_map();
+    let mut pieces = Pieces { frames, direct_map, first: END, kept: 0 };
+    let mut odd = END;
+    while let Ok(phys) = frames.alloc(0, Flags::ATOMIC, Owner::Kernel) {
+        let chain = if (phys >> PAGE_SHIFT) & 1 == 0 { &mut pieces.first } else { &mut odd };
+        // SAFETY: the frame was just allocated for this chain, and the
+        // direct map maps every managed frame writable (`Platform`).
+        unsafe { raw::write_word(direct_map + phys as usize, *chain as usize) };
+        *chain = phys;
+        pieces.kept += u64::from((phys >> PAGE_SHIFT) & 1 == 0);
+    }
+    pieces.give_back(odd);
+    pieces
+}
+
+impl Pieces<'_> {
+    /// How many frames are kept.
+    pub fn kept(&self) -> u64 {
+        self.kept
+    }
+
+    /// Gives back the frames kept, making memory whole again.
+    pub fn join(self) {
+        self.give_back(self.first);
+    }
+
+    /// Frees the chain of frames from `first`.
+    fn give_back(&self, mut next: u64) {
+        while next != END {
+            // SAFETY: a frame on a chain is ours until freed below, and
+            // its first word was written when it joined the chain.
+            let after = unsafe { raw::read_word(self.direct_map + next as usize) } as u64;
+            let _ = self.frames.free(next, 0, Owner::Kernel);
+            next = after;
+        }
+    }
+}
+
+/// What one worker of [`areas`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AreaReport {
+    /// Large requests that areas served.
+    pub areas: u64,
+    /// Large requests that blocks of frames served.
+    pub blocks: u64,
+    /// Large requests that failed.
+    pub failures: u64,
+    /// Requests whose memory was not zeroed, or whose contents were wrong
+    /// when checked.
+    pub mismatches: u64,
+}
+
+impl AreaReport {
+    /// Adds another worker's counts.
+    pub fn add(&mut self, other: &AreaReport) {
+        self.areas += other.areas;
+        self.blocks += other.blocks;
+        self.failures += other.failures;
+        self.mismatches += other.mismatches;
+    }
+}
+
+/// The large requests each round of [`areas`] makes: just over the
+/// largest object a slab holds (8 KiB), 68 KiB and 256 KiB.
+const AREA_SIZES: [usize; 3] = [2 * PAGE_SIZE + 8, 17 * PAGE_SIZE, 64 * PAGE_SIZE];
+
+/// Makes `rounds` rounds of large requests on `heap`, zeroed, from a
+/// caller that may sleep: with memory in pieces ([`break_up`]), areas
+/// serve them. Checks that each is zeroed, fills it with a pattern and
+/// checks the pattern, then frees them, the first of each round with
+/// interrupts disabled, where the heap may not wait to release it.
+pub fn areas(heap: &Heap, rounds: u64) -> AreaReport {
+    let mut report = AreaReport::default();
+    let Some(platform) = heap.frames().platform() else { return report };
+    for _ in 0..rounds {
+        let mut live = [None; AREA_SIZES.len()];
+        for (slot, size) in live.iter_mut().zip(AREA_SIZES) {
+            let Ok(layout) = Layout::from_size_align(size, 8) else { continue };
+            let Ok(ptr) = heap.alloc(layout, Flags::MAY_SLEEP.zeroed()) else {
+                report.failures += 1;
+                continue;
+            };
+            let addr = ptr.as_ptr() as usize;
+            if platform.area_frame(addr).is_some() {
+                report.areas += 1;
+            } else {
+                report.blocks += 1;
+            }
+            for at in offsets(size) {
+                // SAFETY: `at` is a word inside the `size` bytes just
+                // allocated for us, and the request is 8-byte aligned.
+                if unsafe { raw::read_word(addr + at) } != 0 {
+                    report.mismatches += 1;
+                }
+                // SAFETY: as above.
+                unsafe { raw::write_word(addr + at, pattern(addr, at)) };
+            }
+            *slot = Some((ptr, layout));
+        }
+        for (index, (ptr, layout)) in live.into_iter().flatten().enumerate() {
+            let addr = ptr.as_ptr() as usize;
+            for at in offsets(layout.size()) {
+                // SAFETY: the request is still ours, and `at` is a word
+                // inside it.
+                if unsafe { raw::read_word(addr + at) } != pattern(addr, at) {
+                    report.mismatches += 1;
+                }
+            }
+            let were_enabled = (index == 0).then(|| platform.disable_interrupts());
+            // SAFETY: the request came from `heap.alloc` with this layout
+            // and is forgotten here.
+            unsafe { heap.free(ptr, layout) };
+            if let Some(were_enabled) = were_enabled {
+                platform.restore_interrupts(were_enabled);
+            }
+        }
+    }
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::heap_with_window;
 
     #[test]
     fn offsets_stay_inside_objects() {
@@ -190,5 +340,22 @@ mod tests {
         assert_eq!(offsets(7).count(), 0);
         assert_eq!(offsets(16).count(), 2);
         assert_eq!(offsets(4096).count(), 5);
+    }
+
+    #[test]
+    fn areas_serve_large_requests_while_memory_is_in_pieces() {
+        let (heap, _) = heap_with_window(1024, 512);
+        let frames = heap.frames();
+        let free = frames.free_pages();
+        let pieces = break_up(frames);
+        assert_eq!(pieces.kept(), 512);
+        assert_eq!(frames.free_pages(), 512);
+        let report = areas(heap, 4);
+        assert_eq!(report, AreaReport { areas: 12, ..AreaReport::default() });
+        pieces.join();
+        heap.drain();
+        assert_eq!(frames.free_pages(), free);
+        assert_eq!((heap.stats().areas, heap.stats().corruptions), (0, 0));
+        frames.check().unwrap();
     }
 }

@@ -388,9 +388,11 @@ with *0x*. Both may contain *\_* separators, as in *ffffffff_80100000*.
 
 *heap*
 	Show the kernel heap's totals (objects in use, objects cached in the
-	per-CPU magazines, memory in slabs and in large blocks, failed
-	requests, damaged objects found) and, for each size class with
-	slabs, its slabs and objects.
+	per-CPU magazines, memory in slabs, in large blocks and in areas,
+	failed requests, damaged objects found) and, for each size class
+	with slabs, its slabs and objects. An area serves a large request
+	with single frames mapped one after another when no block that large
+	is free.
 
 *caps*
 	Count the capability spaces and their slots, the capabilities and

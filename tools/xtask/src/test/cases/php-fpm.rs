@@ -59,10 +59,7 @@ pub const CASE: Case = Case {
     // As a normal boot: Spark starts the services, bundled among them.
     cmdline: "lockdep",
     cpus: 2,
-    // On 2 GiB the install of the bundle's 20,000 files to the root stops
-    // with no_memory (and Files says its write-back to the disk ran out of
-    // it): a gap of the kernel, in docs/deferred.md.
-    memory: "4G",
+    memory: "2G",
     reboot: false,
     image: TestImage::Plain,
     cpu_model: None,

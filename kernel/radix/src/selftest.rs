@@ -132,9 +132,14 @@ fn breakpoint() {
 const STRESS_OPERATIONS: u64 = 12_500_000;
 /// Areas each CPU maps and unmaps in `mm-stress`.
 const STRESS_AREAS: u64 = 200;
+/// Rounds of large heap requests each CPU makes in `mm-stress` while
+/// memory is in pieces, three requests a round.
+const STRESS_PIECES: u64 = 40;
 
 /// Every CPU's results, added up.
 static STRESS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+/// Every CPU's [`stress::AreaReport`], added up.
+static PIECES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 /// One CPU's part of `mm-stress`.
 fn stress_worker() {
@@ -171,6 +176,17 @@ fn stress_worker() {
     }
 }
 
+/// One CPU's large heap requests in `mm-stress`, while memory is in
+/// pieces.
+fn pieces_worker() {
+    let report = stress::areas(&HEAP, STRESS_PIECES);
+    for (total, value) in
+        PIECES.iter().zip([report.areas, report.blocks, report.failures, report.mismatches])
+    {
+        total.fetch_add(value, Ordering::Relaxed);
+    }
+}
+
 #[inline(never)]
 fn mm_stress() {
     let me = Arch::current_cpu();
@@ -178,8 +194,9 @@ fn mm_stress() {
         .filter(|&cpu| Arch::cpu_info(cpu).is_some_and(|info| info.online))
         .count();
     info!(
-        "selftest mm-stress: {STRESS_OPERATIONS} heap operations and {STRESS_AREAS} mapped areas \
-         on each of {cpus} CPUs"
+        "selftest mm-stress: {STRESS_OPERATIONS} heap operations, {STRESS_AREAS} mapped areas \
+         and, with memory in pieces, {} large heap requests on each of {cpus} CPUs",
+        STRESS_PIECES * 3
     );
     // Free frames, plus the ones the run may keep for good: page tables of
     // the mapping window and caches of CPUs that had not used the heap.
@@ -193,6 +210,12 @@ fn mm_stress() {
     let started = Arch::now_ns();
     work::on_all(me, stress_worker);
     let millis = (Arch::now_ns() - started) / 1_000_000;
+    // Then with no block larger than a frame free, where the heap serves
+    // large requests with areas (ADR 0524), on every CPU at once.
+    let pieces = stress::break_up(&FRAMES);
+    let kept = pieces.kept();
+    work::on_all(me, pieces_worker);
+    pieces.join();
     HEAP.drain();
     let after = (HEAP.stats(), frames());
     let [allocations, frees, failures, mismatches, area_errors] =
@@ -223,6 +246,24 @@ fn mm_stress() {
     }
     if area_errors > 0 {
         problem(format_args!("{area_errors} mapped areas failed or were not zeroed"));
+    }
+    let [areas, blocks, area_failures, area_mismatches] =
+        PIECES.each_ref().map(|total| total.load(Ordering::Relaxed));
+    info!(
+        "selftest mm-stress: with {kept} frames taken to leave memory in pieces, areas served \
+         {areas} large heap requests"
+    );
+    if blocks > 0 || area_failures > 0 {
+        problem(format_args!(
+            "with memory in pieces, {blocks} large heap requests got blocks and {area_failures} \
+             failed; areas should have served them all"
+        ));
+    }
+    if area_mismatches > 0 {
+        problem(format_args!("{area_mismatches} heap areas were not zeroed or were damaged"));
+    }
+    if after.0.areas != before.0.areas {
+        problem(format_args!("the heap holds {} areas, {} before", after.0.areas, before.0.areas));
     }
     if after.0.objects != before.0.objects || after.0.large_blocks != before.0.large_blocks {
         problem(format_args!(

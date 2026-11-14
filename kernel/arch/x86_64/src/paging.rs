@@ -40,7 +40,7 @@ use core::ops::Range;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use radix_hal::MAX_CPUS;
-use radix_mm::{AllocError, FRAMES, Owner, PageInfo, Ranges};
+use radix_mm::{AllocError, AreaError, FRAMES, Owner, PageInfo, RangeError, Ranges};
 use radix_sync::SpinLock;
 
 use crate::cpu::{self, msr};
@@ -675,6 +675,98 @@ pub fn unmap_area(virt: usize, pages: usize) {
     }
     if let Err(err) = state.window.release(area - PAGE, (pages + 1) * PAGE) {
         panic!("unmapping {area:#x}: {err:?}");
+    }
+}
+
+/// Reserves an area of `pages` pages in the mapping window, with an
+/// unmapped guard page below it, maps none of it, and returns its address,
+/// for the kernel heap ([`radix_mm::Platform::reserve_area`]).
+/// [`map_area_page`] maps its pages, and [`release_area`] gives it back.
+pub fn reserve_area(pages: usize) -> Option<usize> {
+    let pages = u64::try_from(pages).ok().filter(|&pages| pages > 0)?;
+    window_alloc(&mut STATE.lock(), pages).map(|area| area as usize)
+}
+
+/// Maps the page at `virt`, in an area from [`reserve_area`], to the frame
+/// at `phys`, writable and not executable. Fails if a page table was needed
+/// and there was no memory for it. Panics if `virt` is outside the window
+/// or its page is mapped already.
+pub fn map_area_page(virt: usize, phys: u64) -> Result<(), AllocError> {
+    let virt = virt as u64;
+    let state = STATE.lock();
+    let (start, end) = state.window.window();
+    assert!((start..end).contains(&virt), "mapping {virt:#x}: not in the mapping window");
+    let flags = leaf_flags(&state, Access::ReadWrite, Cache::WriteBack);
+    let slot = entry(state.pml4, virt, 1, false).map_err(|_| AllocError)?;
+    assert!(slot.load(Ordering::Relaxed) == 0, "mapping {virt:#x}: mapped already");
+    slot.store(phys | flags, Ordering::Relaxed);
+    Ok(())
+}
+
+/// The frame the page at `virt` maps, if `virt` is in the mapping window
+/// and its page is mapped ([`radix_mm::Platform::area_frame`]). Takes no
+/// lock: the window's page tables are never freed, and their entries are
+/// read whole.
+pub fn area_frame(virt: usize) -> Option<u64> {
+    let (virt, window) = (virt as u64, memory::window());
+    if !(window..window + memory::WINDOW_SIZE).contains(&virt) {
+        return None;
+    }
+    let entry = leaf(kernel_pml4(), virt)?.load(Ordering::Relaxed);
+    (entry & PRESENT != 0).then_some(entry & ADDRESS)
+}
+
+/// Gives back the area of `pages` pages at `virt`, from [`reserve_area`]
+/// ([`radix_mm::Platform::release_area`]): unmaps those of its pages that
+/// are mapped, flushes them from every CPU's TLB, hands the frame of each
+/// to `freed`, and releases the area and its guard page. Fails, changing
+/// nothing, if the area and its guard page are not all reserved. Call it
+/// with no spin lock held that another CPU might be waiting for, as
+/// [`shootdown`].
+pub fn release_area(
+    virt: usize,
+    pages: usize,
+    freed: &mut dyn FnMut(u64),
+) -> Result<(), AreaError> {
+    let area = virt as u64;
+    let guard = area.checked_sub(PAGE).ok_or(AreaError)?;
+    let len = (pages as u64).checked_mul(PAGE).ok_or(AreaError)?;
+    let end = area.checked_add(len).ok_or(AreaError)?;
+    // Mark the pages not present first, keeping their frame addresses:
+    // the frames are freed only once no CPU can reach them any more. The
+    // area stays reserved until then, so nothing else maps there.
+    let (root, mapped) = {
+        let state = STATE.lock();
+        state.window.check_taken(guard, len + PAGE).map_err(|_| AreaError)?;
+        let mut mapped = false;
+        for page in (area..end).step_by(PAGE as usize) {
+            let Some(slot) = leaf(state.pml4, page) else { continue };
+            let entry = slot.load(Ordering::Relaxed);
+            if entry & PRESENT != 0 {
+                slot.store(entry & !PRESENT, Ordering::Relaxed);
+                mapped = true;
+            }
+        }
+        (state.pml4, mapped)
+    };
+    if mapped {
+        shootdown(area..end);
+    }
+    let mut state = STATE.lock();
+    for page in (area..end).step_by(PAGE as usize) {
+        let Some(slot) = leaf(root, page) else { continue };
+        let entry = slot.load(Ordering::Relaxed);
+        if entry != 0 {
+            slot.store(0, Ordering::Relaxed);
+            freed(entry & ADDRESS);
+        }
+    }
+    // A window whose free space is in too many pieces to take the area
+    // back keeps it out of use: that costs only addresses, of which the
+    // window has 512 GiB.
+    match state.window.release(guard, len + PAGE) {
+        Ok(()) | Err(RangeError::TooFragmented) => Ok(()),
+        Err(err) => panic!("releasing the area at {area:#x}: {err:?}"),
     }
 }
 
