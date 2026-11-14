@@ -51,7 +51,7 @@ to: one who is not root runs it with *elevate*(8), and is otherwise
 told so, with status 4.
 
 *list* shows every service, by name, with its state, whether it starts
-at boot and since when it is in that state:
+at boot, as its file says, and since when it is in that state:
 
 ```
 SERVICE   STATE                    AT BOOT  SINCE     DESCRIPTION
@@ -68,8 +68,13 @@ or failing their health check. One that is off as it is meant to be, a
 driver the kernel left none of the cards it drives or a service Rescue
 or essentials leave off, is not among them. *--failed* lists those alone and exits 1
 when there are some, for scripts. *--json* prints Spark's *show*
-document as it is (*spark*(8)), which has *show_version* for scripts to
-check. In a pipe, the header is left out.
+document (*spark*(8)), which has *show_version* for scripts to check,
+with each service's *enabled* as its file says. Spark reads a service's
+file again only as it starts the service, so its own copy does not
+follow *disable* of a service that is stopped or *enable* of one that
+runs until then; *list* reads the files, which the next boot follows,
+and says *disabled* of a stopped service whose file is off. In a pipe,
+the header is left out.
 
 *status* shows what Spark knows of a service, what it may reach, its
 processes and its last lines in the log:

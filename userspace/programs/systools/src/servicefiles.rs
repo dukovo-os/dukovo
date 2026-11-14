@@ -17,6 +17,7 @@
 //! root's. The `service-graph` boot test and the lab's `services/check`
 //! test cover this file.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -79,6 +80,32 @@ pub fn read_all() -> Vec<(String, PathBuf, service::Service)> {
                 .and_then(|over| service::Override::from_toml(&over).ok());
             let read = service::from_toml_over(&text, over.as_ref()).ok()?;
             Some((name, path, read))
+        })
+        .collect()
+}
+
+/// Whether each service starts at boot, as its file in [`DIR`] says with
+/// its override over it, by name: what the next boot does. A service whose
+/// file or override cannot be read, or does not read, is left out, since
+/// its file says nothing that can be trusted.
+pub fn at_boot() -> BTreeMap<String, bool> {
+    let Ok(entries) = fs::read_dir(DIR) else { return BTreeMap::new() };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_stem()?.to_str()?.to_string();
+            if path.extension()? != "toml" || service::check_name(&name).is_err() {
+                return None;
+            }
+            let text = fs::read_to_string(&path).ok()?;
+            let over = match fs::read_to_string(override_path(&path)) {
+                Ok(over) => Some(service::Override::from_toml(&over).ok()?),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(_) => return None,
+            };
+            let read = service::from_toml_over(&text, over.as_ref()).ok()?;
+            Some((name, read.enabled))
         })
         .collect()
 }

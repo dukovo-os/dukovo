@@ -23,6 +23,7 @@
 //! 0471). The `service-graph` boot test and the lab's `services/command`
 //! and `services/explain` tests cover this file.
 
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
@@ -642,11 +643,12 @@ fn list(options: &[String]) -> Result<i32, Fail> {
             other => return Err(usage(format!("service list: unknown option `{other}'"))),
         }
     }
+    let mut document = shown(None)?;
+    as_filed(&mut document.services, &servicefiles::at_boot());
     if json {
-        print!("{}", read("show")?);
+        println!("{}", show::to_json(&document).map_err(fail)?);
         return Ok(0);
     }
-    let mut document = shown(None)?;
     document.services.sort_by(|a, b| a.name.cmp(&b.name));
     let clock = Clock { now_ms: document.now_ms, wall: (util::now_ns() / 1_000_000_000) as i64 };
     let wrong: Vec<&show::Service> = document.services.iter().filter(|s| not_as_asked(s)).collect();
@@ -660,6 +662,26 @@ fn list(options: &[String]) -> Result<i32, Fail> {
         writeln!(out, "\n{}", not_as_asked_line(&names))?;
     }
     Ok(i32::from(failed_only && !wrong.is_empty()))
+}
+
+/// Sets whether each of `services` starts at boot to what its file says
+/// (`at_boot`, by name), which is what the next boot does. Spark reads a
+/// service's file again only as it starts the service, so its own word
+/// does not follow `service NAME disable` of a service that is stopped, or
+/// `enable` of one that runs. A stopped service that nothing started and
+/// whose file says it does not start at boot is `disabled`, as Spark says
+/// of one, and one whose file says it does is `stopped`. A service whose
+/// file does not read keeps Spark's word.
+fn as_filed(services: &mut [show::Service], at_boot: &BTreeMap<String, bool>) {
+    for service in services {
+        let Some(&enabled) = at_boot.get(&service.name) else { continue };
+        service.enabled = enabled;
+        service.state = match service.state {
+            State::Stopped if !enabled && service.started_by.is_none() => State::Disabled,
+            State::Disabled if enabled => State::Stopped,
+            state => state,
+        };
+    }
 }
 
 /// Whether `service` is not running as asked: given up on, waiting to
@@ -941,6 +963,48 @@ mod tests {
         assert_eq!(
             not_as_asked_line(&["a".into(), "b".into(), "c".into(), "d".into(), "e".into()]),
             "Not running as asked: a, b, c and 2 more. `service a explain` says why."
+        );
+    }
+
+    #[test]
+    fn whether_a_service_starts_at_boot_is_what_its_file_says() {
+        let named = |name: &str, state, enabled, started_by: Option<&str>| show::Service {
+            name: name.into(),
+            state,
+            enabled,
+            started_by: started_by.map(String::from),
+            ..nginx()
+        };
+        let mut services = vec![
+            // Disabled while stopped: Spark's copy still says at boot.
+            named("stopped-off", State::Stopped, true, None),
+            // Enabled while it runs: Spark's copy still says not.
+            named("running-on", State::Running, false, Some("boot")),
+            // Enabled while Spark calls it disabled.
+            named("disabled-on", State::Disabled, false, None),
+            // Off, but another service started it, so it is not disabled.
+            named("wanted", State::Stopped, true, Some("web")),
+            // Its file does not read: Spark's word stands.
+            named("unread", State::Stopped, true, None),
+        ];
+        let at_boot = BTreeMap::from([
+            ("stopped-off".to_string(), false),
+            ("running-on".to_string(), true),
+            ("disabled-on".to_string(), true),
+            ("wanted".to_string(), false),
+        ]);
+        as_filed(&mut services, &at_boot);
+        let seen: Vec<(&str, State, bool)> =
+            services.iter().map(|s| (s.name.as_str(), s.state, s.enabled)).collect();
+        assert_eq!(
+            seen,
+            [
+                ("stopped-off", State::Disabled, false),
+                ("running-on", State::Running, true),
+                ("disabled-on", State::Stopped, true),
+                ("wanted", State::Stopped, false),
+                ("unread", State::Stopped, true),
+            ]
         );
     }
 }

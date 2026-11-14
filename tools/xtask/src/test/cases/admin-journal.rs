@@ -442,8 +442,8 @@ fn hand_edits(vm: &mut Vm, test: &mut Test, original: &str, first: i64) -> Resul
     // command names the file: authd's audit line has it.
     let before = test.newest()?;
     let copy = format!(
-        "cp {FILE} /tmp/hand.toml && echo \"# edited by hand\" >> /tmp/hand.toml && elevate cp \
-         /tmp/hand.toml {FILE}"
+        "cp {FILE} $HOME/hand.toml && echo \"# edited by hand\" >> $HOME/hand.toml && elevate cp \
+         $HOME/hand.toml {FILE}"
     );
     let status = test.pane.status(vm, &copy)?;
     if status != 0 {
