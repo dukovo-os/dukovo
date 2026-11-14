@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# `ob release rollout` runs this through elevate on a Dukovo update
+# server: system-rollout.sh (ADR 0469) with the places the service files
+# give the jobs (dukovo-system-refresh.toml has the same), since elevate
+# passes none of the caller's environment. The online key is the refresh
+# job's secret, which system-site.sh reads from Spark's folder as root.
+set -eu
+
+DUKOVO_SYSTEM_HOME=/system/state/lib/dukovo-system
+DUKOVO_SYSTEM_PROGRAM=/system/commands/system-release
+DUKOVO_SYSTEM_SITE=/system/state/lib/dukovo-system-site
+DUKOVO_LOCK=/system/live/dukovo-update-server/system.lock
+export DUKOVO_SYSTEM_HOME DUKOVO_SYSTEM_PROGRAM DUKOVO_SYSTEM_SITE DUKOVO_LOCK
+
+exec sh "$(dirname "$0")/system-rollout.sh" "$@"

@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Signs the catalog's timestamp again (ADR 0382) every six hours: a
+# timestamp alone while the snapshot is good for two more days, everything
+# again when it is not. Nothing until the first deploy brings a root. It
+# has no network.
+#
+# service.toml(5) explains each setting, `service check dukovo-catalog-refresh` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Sign the catalog's timestamp again"
+program = "/system/commands/sh"
+arguments = ["/system/state/lib/dukovo-update-server/refresh.sh"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+# This job's own copy of the online key, as base64: a secret loses a
+# trailing newline and a key is binary. `service secret set` puts it in.
+secrets = ["online-key"]
+
+[environment]
+DUKOVO_CATALOG_HOME = "/system/state/lib/dukovo-catalog"
+DUKOVO_CATALOG_INCOMING = "/system/state/lib/dukovo-catalog-incoming"
+DUKOVO_CATALOG_PROGRAM = "/system/state/lib/dukovo-update-server/catalog-repo"
+DUKOVO_CATALOG_SITE = "/system/state/lib/dukovo-catalog-site"
+DUKOVO_LOCK = "/system/live/dukovo-update-server/catalog.lock"
+
+[limits]
+memory = "512M"
+
+[timer]
+every = "6h"
+after_boot = "10m"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# script and the update server's own folders it works in, and nothing
+# else of the system's.
+[permissions]
+files.read = ["/system/state/lib/dukovo-update-server"]
+files.read-write = ["/system/state/lib/dukovo-catalog", "/system/state/lib/dukovo-catalog-site", "/system/live/dukovo-update-server"]

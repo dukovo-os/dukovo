@@ -1,0 +1,386 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Sets up Dukovo's update server (ADR 0542) on a Dukovo machine, as root,
+# from the folder it is in, which `ob catalog server setup --dukovo` and
+# `ob release server setup --dukovo` copy over and run through elevate:
+#
+#   elevate sh setup HOST [--keys DIR]
+#
+# - nginx, from the catalog, serves the catalog as /catalog/ and the
+#   system's releases as /system/ for HOST. It serves them over HTTP until
+#   certd has given HOST a certificate, which setup asks it for, by HTTP-01;
+#   if that cannot be had yet, because HOST does not lead here, setup says
+#   so, and running it again once HOST does turns HTTPS on.
+# - Each online key is a Spark secret of the jobs that sign with it: made
+#   here the first time, or taken from the files of `--keys DIR`, or of
+#   /tmp/dukovo-update-keys where that is, which is how a server that
+#   takes over brings its keys (docs/runbooks/update-server-move.md). A key
+#   that is set is never replaced, and no file of the key stays: its
+#   public half is /system/state/lib/dukovo-catalog/online.json and
+#   dukovo-system/online.json, for the source tree.
+# - The person running it, through elevate, may deploy: what they copy into
+#   the folders dukovo-catalog-incoming or dukovo-system-incoming of
+#   /system/state/lib is published when `ready` appears there.
+# - Six service files (README.md) publish, sign the timestamps again every
+#   six hours and list the known flaws. They have no account of their own,
+#   since Dukovo has no way to make one that no one signs in to, and run
+#   with nothing but the folders and the secret each names.
+#
+# It can run again, to update the scripts and these files.
+set -eu
+
+usage() {
+	echo "usage: setup HOST [--keys DIR]" >&2
+	echo "  DIR holds catalog.key and system.key, each the online key as base64," >&2
+	echo "  and catalog.json and system.json, each its public half; without" >&2
+	echo "  --keys, /tmp/dukovo-update-keys is taken if it is there" >&2
+	exit 2
+}
+
+host=
+keys=
+while [ "$#" -gt 0 ]; do
+	case $1 in
+	--keys)
+		[ "$#" -ge 2 ] || usage
+		keys=$2
+		shift 2
+		;;
+	-*) usage ;;
+	*)
+		[ -z "$host" ] || usage
+		host=$1
+		shift
+		;;
+	esac
+done
+[ -n "$host" ] || usage
+case $host in
+*[!a-z0-9.-]* | .* | *..*)
+	echo "setup: $host is not a host name" >&2
+	exit 2
+	;;
+esac
+
+here=$(cd "$(dirname "$0")" && pwd)
+top=$(cd "$here/.." && pwd)
+deployer=${SUDO_USER:-}
+
+if [ "$(id -u)" != 0 ]; then
+	echo "setup: run it as root, through elevate" >&2
+	exit 1
+fi
+if [ -z "$deployer" ] || [ "$deployer" = root ]; then
+	echo "setup: run it through elevate, as the person who will deploy" >&2
+	exit 1
+fi
+for command in service bundle cert system-release; do
+	if ! command -v "$command" >/dev/null 2>&1; then
+		echo "setup: there is no $command: this is not a Dukovo machine with certd" >&2
+		exit 1
+	fi
+done
+if [ ! -f "$top/catalog-repo" ]; then
+	echo "setup: $top/catalog-repo is missing: run it from the folder ob copied" >&2
+	exit 1
+fi
+if [ -z "$keys" ] && [ -d /tmp/dukovo-update-keys ]; then
+	keys=/tmp/dukovo-update-keys
+fi
+if [ -n "$keys" ]; then
+	# The key decides who may sign for every client: only the one who
+	# deploys may have put it there, where no one else could.
+	if [ "$(stat -c '%U %a' "$keys")" != "$deployer 700" ]; then
+		echo "setup: $keys must belong to $deployer, with the mode 700" >&2
+		exit 1
+	fi
+	for file in catalog.key catalog.json system.key system.json; do
+		if [ ! -s "$keys/$file" ]; then
+			echo "setup: $keys/$file is missing or empty" >&2
+			exit 1
+		fi
+	done
+fi
+
+state=/system/state/lib
+services=/system/settings/spark/services
+secrets=/system/state/spark/secrets
+nginx_data=/shared/services/org.nginx.nginx/nginx
+program_dir=$state/dukovo-update-server
+
+# A folder for what must not outlive this run: on a machine whose / is in
+# memory, a key written here never reaches a disk.
+work=$(umask 077 && mktemp -d)
+trap 'rm -rf "${work:?}"' EXIT
+
+say() {
+	echo "==> $*"
+}
+
+# Puts the file $2 at $3 with the mode $1 by one rename: a job that reads
+# a script as it is written would otherwise read half of it.
+put() {
+	cp "$2" "$3.new"
+	chmod "$1" "$3.new"
+	mv -f "$3.new" "$3"
+}
+
+say "The folders"
+for dir in dukovo-update-server dukovo-catalog dukovo-catalog-site dukovo-system \
+	dukovo-system-site dukovo-flaws; do
+	mkdir -p "$state/$dir"
+	chmod 0755 "$state/$dir"
+done
+# The catalog's repository is read by the jobs alone. The store's names
+# are listed by the person who deploys, to send only what the server
+# lacks, so its folders are open to read and its files are not.
+mkdir -p "$state/dukovo-catalog/repo" "$state/dukovo-catalog/store/bundles"
+chmod 0700 "$state/dukovo-catalog/repo"
+chmod 0755 "$state/dukovo-catalog/store" "$state/dukovo-catalog/store/bundles"
+# A deploy's files belong to the person who deploys and, by the group, to
+# root, which is what the jobs act as: a folder no one else reaches.
+for dir in dukovo-catalog-incoming dukovo-system-incoming; do
+	mkdir -p "$state/$dir"
+	chown "$deployer" "$state/$dir"
+	chmod 2770 "$state/$dir"
+done
+
+say "The program and the scripts"
+put 0755 "$top/catalog-repo" "$program_dir/catalog-repo"
+for script in publish.sh refresh.sh flaws-fetch.sh flaws.sh system-publish.sh \
+	system-refresh.sh system-rollout.sh; do
+	put 0755 "$top/$script" "$program_dir/$script"
+done
+put 0644 "$top/site.sh" "$program_dir/site.sh"
+put 0644 "$top/system-site.sh" "$program_dir/system-site.sh"
+put 0755 "$here/system-rollout" "$program_dir/system-rollout"
+
+say "The service files"
+service check "$here"/dukovo-*.toml
+for file in "$here"/dukovo-*.toml; do
+	put 0644 "$file" "$services/${file##*/}"
+done
+
+# Whether the job $1 has its secret online-key.
+has_secret() {
+	service secret list "$1" 2>/dev/null | grep -q 'online-key'
+}
+
+# Sets the secret online-key of each job after the first argument to the
+# base64 text in the file $1.
+set_secrets() {
+	text=$1
+	shift
+	for job in "$@"; do
+		tr -d ' \n' <"$text" | service secret set "$job" online-key
+	done
+}
+
+# Keeps an online key. $1 is its kind, catalog or system, $2 where its
+# public half goes and the other arguments the jobs that sign with it. The
+# key is made, or taken from --keys, only when none of the jobs has it.
+keep_key() {
+	kind=$1
+	public=$2
+	shift 2
+	have=
+	for job in "$@"; do
+		if has_secret "$job"; then have=$job; fi
+	done
+	if [ -n "$have" ]; then
+		if [ -n "$keys" ]; then
+			echo "setup: the $kind online key is set and is never replaced. To take the one" >&2
+			echo "  in $keys, run service secret remove JOB online-key for $*" >&2
+			exit 1
+		fi
+		# A run that stopped part way left some jobs without it.
+		for job in "$@"; do
+			if ! has_secret "$job"; then
+				cp "$secrets/$have/online-key" "$work/$kind.copy"
+				set_secrets "$work/$kind.copy" "$job"
+			fi
+		done
+		if [ ! -s "$public" ]; then
+			echo "setup: $public is missing. It is the public half of the key the roots" >&2
+			echo "  of the $kind name, and the server that had the key has it" >&2
+			exit 1
+		fi
+		echo "The $kind online key is set."
+		return 0
+	fi
+	if [ -n "$keys" ]; then
+		echo "Taking the $kind online key from $keys."
+		cp "$keys/$kind.key" "$work/$kind.b64"
+		cp "$keys/$kind.json" "$work/$kind.json"
+		base64 -d "$work/$kind.b64" >/dev/null
+	else
+		echo "Making the $kind online key."
+		if [ "$kind" = catalog ]; then
+			"$program_dir/catalog-repo" --repo "$work/catalog-new" key new "$work/catalog.key" \
+				online snapshot timestamp
+			cp "$work/catalog-new/keys/online.json" "$work/catalog.json"
+		else
+			system-release online-key --out "$work/system.json" "$work/system.key"
+		fi
+		base64 "$work/$kind.key" | tr -d '\n' >"$work/$kind.b64"
+	fi
+	# The public half first: the secrets are what says this is done.
+	put 0644 "$work/$kind.json" "$public"
+	set_secrets "$work/$kind.b64" "$@"
+	if [ -n "$keys" ]; then rm -f "${keys:?}/$kind.key" "${keys:?}/$kind.json"; fi
+}
+
+say "The online keys"
+keep_key catalog "$state/dukovo-catalog/online.json" \
+	dukovo-catalog-publish dukovo-catalog-refresh dukovo-catalog-flaws
+keep_key system "$state/dukovo-system/online.json" \
+	dukovo-system-publish dukovo-system-refresh
+if [ -n "$keys" ]; then rmdir "$keys" 2>/dev/null || true; fi
+
+say "nginx"
+if ! bundle list | grep -q 'org\.nginx\.nginx'; then
+	bundle install org.nginx.nginx --for-everyone --yes
+fi
+if [ ! -d "$nginx_data" ]; then
+	echo "setup: nginx's data folder $nginx_data is not there" >&2
+	exit 1
+fi
+mkdir -p "$services/settings.d"
+if [ ! -d "$nginx_data/conf" ]; then
+	mkdir -p "$nginx_data/conf"
+	chown nginx "$nginx_data/conf"
+	chmod 0755 "$nginx_data/conf"
+fi
+
+changed=0
+
+# Writes the file $2 from the file $1 if it is not as it is, and notes it
+# in $changed; $3 is the account that owns it and $4 its mode.
+write_if_changed() {
+	if ! cmp -s "$1" "$2"; then
+		cp "$1" "$2.new"
+		chown "$3" "$2.new"
+		chmod "$4" "$2.new"
+		mv -f "$2.new" "$2"
+		changed=1
+	fi
+}
+
+# Whether the file $1 is an administrator's, which setup leaves: it is
+# there, this did not write it, and it is not the bundle's own copy, which
+# nginx-service made.
+not_ours() {
+	[ -e "$1" ] && ! grep -q 'dukovo-update-server setup writes' "$1" &&
+		! cmp -s "$1" "/applications/org.nginx.nginx/conf/${1##*/}"
+}
+
+# Writes nginx's settings and its service file's override for $1: plain,
+# which serves over HTTP, or tls, which serves over HTTPS with the
+# certificate of $host.
+nginx_settings() {
+	kind=$1
+	certificates=
+	case $kind in
+	tls)
+		certificates="certificates = [\"$host\"]"
+		set -- -e '/# BEGIN-PLAIN/,/# END-PLAIN/d'
+		;;
+	*)
+		set -- -e '/# BEGIN-TLS/,/# END-TLS/d' -e '/# BEGIN-REDIRECT/,/# END-REDIRECT/d'
+		;;
+	esac
+	sed "$@" -e "s/@HOST@/$host/g" -e '/# BEGIN-[A-Z]*$/d' -e '/# END-[A-Z]*$/d' \
+		"$here/nginx.conf" >"$work/nginx.conf"
+	cat >"$work/override.toml" <<OVERRIDE
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# dukovo-update-server setup writes this file, and writes it again when it
+# runs again: what nginx needs to serve the update server (ADR 0542). The
+# list takes the place of the service file's own (service.toml(5)), so it
+# names nginx's own folder again, and not the shared folder www.
+$certificates
+
+[permissions]
+files.read = ["/applications/org.nginx.nginx", "/system/live/certd", "/system/state/lib/dukovo-catalog-site", "/system/state/lib/dukovo-system-site"]
+OVERRIDE
+	override="$services/settings.d/nginx.toml"
+	if [ -e "$override" ] && ! grep -q 'dukovo-update-server setup writes' "$override"; then
+		echo "setup: $override is not one setup wrote: remove it, or put its" >&2
+		echo "  settings into the file by hand (README.md has them)" >&2
+		exit 1
+	fi
+	for file in nginx.conf update-server.conf; do
+		if not_ours "$nginx_data/conf/$file"; then
+			echo "setup: $nginx_data/conf/$file was changed, and is not replaced" >&2
+			exit 1
+		fi
+	done
+	write_if_changed "$work/override.toml" "$override" root 0644
+	write_if_changed "$work/nginx.conf" "$nginx_data/conf/nginx.conf" nginx 0600
+	write_if_changed "$here/update-server.conf" "$nginx_data/conf/update-server.conf" nginx 0600
+}
+
+# Starts nginx, or starts it again if its files changed. A start that does
+# not become ready fails, and the log says why. Each step is checked here:
+# `set -e` does not hold in a function whose status is tested.
+nginx_runs() {
+	service nginx enable || return 1
+	if [ "$changed" = 1 ]; then
+		service nginx restart || return 1
+	elif ! service nginx status >/dev/null 2>&1; then
+		service nginx start || return 1
+	fi
+	changed=0
+}
+
+stage=plain
+if cert show "$host" >/dev/null 2>&1; then stage=tls; fi
+nginx_settings "$stage"
+if [ "$stage" = plain ] && ! nginx -t; then
+	echo "setup: nginx does not read its settings: $nginx_data/conf/nginx.conf" >&2
+	exit 1
+fi
+if ! nginx_runs; then
+	echo "setup: nginx did not start: elevate log nginx | tail says why" >&2
+	exit 1
+fi
+
+certificate=yes
+if [ "$stage" = plain ]; then
+	say "A certificate for $host, from certd"
+	if cert get "$host" --agree-terms; then
+		nginx_settings tls
+		if ! nginx_runs; then
+			echo "setup: nginx did not start with the certificate: HTTP again" >&2
+			nginx_settings plain
+			nginx_runs || true
+			exit 1
+		fi
+	else
+		certificate=no
+	fi
+fi
+
+say "The jobs"
+for file in "$here"/dukovo-*.toml; do
+	name=${file##*/}
+	service "${name%.toml}" enable
+done
+service list --timers | grep 'dukovo-' || true
+
+if command -v curl >/dev/null 2>&1; then
+	code=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: $host" http://127.0.0.1/ || true)
+	echo "nginx answers port 80 with ${code:-no answer}"
+fi
+
+echo
+echo "==> Done. The online keys' public halves, for the roots, are"
+echo "    $state/dukovo-catalog/online.json and $state/dukovo-system/online.json"
+if [ "$certificate" = no ]; then
+	echo "    $host has no certificate yet, so the site is served over HTTP. When $host"
+	echo "    leads to this machine and port 80 reaches it from the internet, run"
+	echo "    this again: it gets the certificate and turns HTTPS on."
+fi

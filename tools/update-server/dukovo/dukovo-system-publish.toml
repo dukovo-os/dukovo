@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Publishes the system releases a deploy copied into the incoming folder
+# (ADR 0467), as `ob release deploy` asks by putting `ready` there: a timer
+# starts system-publish.sh each minute, and it ends at once when there is
+# no `ready`. system-release takes from the deploy only what the release
+# keys signed, each file checked against its SHA-256, signs a snapshot and
+# timestamp with the online key, and reads every release back from the first
+# root before the repository is served as /system/ (nginx). It has no
+# network: the check reads what it published from the disk.
+#
+# service.toml(5) explains each setting, `service check dukovo-system-publish` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Publish the system releases a deploy brought"
+program = "/system/commands/sh"
+arguments = ["/system/state/lib/dukovo-update-server/system-publish.sh"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+# This job's own copy of the online key, as base64: a secret loses a
+# trailing newline and a key is binary. `service secret set` puts it in.
+secrets = ["online-key"]
+
+[environment]
+DUKOVO_SYSTEM_HOME = "/system/state/lib/dukovo-system"
+DUKOVO_SYSTEM_INCOMING = "/system/state/lib/dukovo-system-incoming"
+DUKOVO_SYSTEM_PROGRAM = "/system/commands/system-release"
+DUKOVO_SYSTEM_SITE = "/system/state/lib/dukovo-system-site"
+DUKOVO_LOCK = "/system/live/dukovo-update-server/system.lock"
+
+[limits]
+memory = "1G"
+
+[timer]
+every = "1m"
+after_boot = "2m"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# script and the update server's own folders it works in, and nothing
+# else of the system's.
+[permissions]
+files.read = ["/system/state/lib/dukovo-update-server"]
+files.read-write = ["/system/state/lib/dukovo-system", "/system/state/lib/dukovo-system-incoming", "/system/state/lib/dukovo-system-site", "/system/live/dukovo-update-server"]

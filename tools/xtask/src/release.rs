@@ -63,7 +63,7 @@ pub const SERVER_ONLINE_KEYS: [&str; 2] =
 /// Dukovo one.
 const ROLLOUT_SCRIPTS: [&str; 2] = [
     "/usr/local/lib/dukovo-system/system-rollout.sh",
-    "/var/lib/dukovo-update-server/system-rollout.sh",
+    "/var/lib/dukovo-update-server/system-rollout",
 ];
 
 /// How long a deploy waits for the server to publish: it hashes every

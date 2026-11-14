@@ -4,7 +4,9 @@
 
 # Publishes the system releases a deploy copied into the incoming folder
 # (ADR 0467), as the user dukovo-system, when dukovo-system-publish.path
-# sees `ready`. system-release takes from the deploy only the roots and
+# sees `ready` (on a Dukovo server, dukovo/dukovo-system-publish.toml
+# starts it each minute, as the service dukovo-system-publish).
+# system-release takes from the deploy only the roots and
 # targets the release keys signed, the release lists, the channels and
 # the files, each checked against its SHA-256 and none ever replaced;
 # signs a snapshot and timestamp with the online key; and reads every
@@ -12,6 +14,15 @@
 # served (system-site.sh). What happened is written to `result`, for the
 # deploy to show; the deploy's files, now in the store, are removed.
 set -eu
+
+server_root=${DUKOVO_SERVER_ROOT:-}
+incoming=$server_root${DUKOVO_SYSTEM_INCOMING:-/var/lib/dukovo-system-incoming}
+
+# A Dukovo server's timer starts this each minute, and there is nothing
+# to do until a deploy says `ready`.
+if [ ! -e "$incoming/ready" ]; then
+	exit 0
+fi
 
 # shellcheck source=tools/update-server/system-site.sh
 . "$(dirname "$0")/system-site.sh"
@@ -26,6 +37,8 @@ else
 	status=failed
 fi
 printf '%s\n%s\n' "$status" "$output" >"$incoming/result.partial"
+# The deploy that waits for it is another account.
+chmod 0664 "$incoming/result.partial"
 mv "$incoming/result.partial" "$incoming/result"
 echo "$output"
 [ "$status" = published ]
