@@ -34,6 +34,9 @@ wait = "90s"
 [[step]]
 run = "sh -c 'echo \"grew $(( $(wc -l < /system/state/lab-timer/runs) - $(cat /system/state/lab-timer/before) ))\"; service lab-timer status'"
 root = true
+# `service status` of a service that is not running exits 3, as
+# systemctl's does.
+exit = 3
 expect = ["grew 1", "last start "]
 # The power goes, and comes back: the timer is still there.
 [[step]]

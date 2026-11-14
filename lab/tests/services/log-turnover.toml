@@ -9,7 +9,7 @@ about = "logturn turns over the log file a service names, keeps three turned fil
 time = "6m"
 
 [[step]]
-run = '''sh -c 'service lab-turn disable; cd /system/settings/spark/services && rm -f lab-turn.toml && printf "service_version = 1\ndescription = \"Lab log\"\nprogram = \"/system/commands/sh\"\narguments = [\"-c\", \"i=0; while :; do i=$((i+1)); echo $i >> /system/state/lab-turn/logs/x.log; sleep 1; done\"]\nrestart = \"on-failure\"\n[logs]\nfiles = [\"logs/*.log\"]\nkeep = 3\n[permissions]\nfiles.read-write = [\"/system/state/lab-turn\"]\n" > lab-turn.toml && mkdir -p /system/state/lab-turn/logs && service lab-turn enable && echo installed' '''
+run = '''sh -c 'service lab-turn disable; cd /system/settings/spark/services && rm -f lab-turn.toml && printf "service_version = 1\ndescription = \"Lab log\"\nprogram = \"/system/commands/sh\"\narguments = [\"-c\", \"i=0; while :; do i=\$((i+1)); echo \$i >> /system/state/lab-turn/logs/x.log; sleep 1; done\"]\nrestart = \"on-failure\"\n[logs]\nfiles = [\"logs/*.log\"]\nkeep = 3\n[permissions]\nfiles.read-write = [\"/system/state/lab-turn\"]\n" > lab-turn.toml && mkdir -p /system/state/lab-turn/logs && service lab-turn enable && echo installed' '''
 root = true
 expect = "installed"
 [[step]]
