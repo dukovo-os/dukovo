@@ -906,28 +906,67 @@ fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32,
     Ok(0)
 }
 
-/// `bundle history`: what bundled did to this person's bundles and
-/// everyone's, or to one, the newest last.
-fn history(id: Option<String>) -> Result<i32, Fail> {
-    let (_stream, mut input) = ask(&Request::History { id }, None).map_err(fail)?;
-    // SAFETY: getuid has no failure and touches no memory.
-    let me = unsafe { libc::getuid() };
-    let mut shown = 0;
+/// What `bundle update --check` finds for this person's bundles.
+pub(crate) struct Pending {
+    /// Each bundle whose catalog, or feed, lists a newer version.
+    pub(crate) rows: Vec<Available>,
+    /// What bundled says besides, for a person.
+    pub(crate) notes: Vec<String>,
+}
+
+/// The updates waiting for this person's bundles, as `bundle update
+/// --check` finds them, for `update --json`.
+pub(crate) fn pending_updates() -> Result<Pending, Fail> {
+    let request = Request::Update { ids: Vec::new(), everyone: false, check: true, yes: false };
+    let (_stream, mut input) = ask(&request, None).map_err(fail)?;
+    let mut found = Pending { rows: Vec::new(), notes: Vec::new() };
     loop {
         match answer(&mut input)? {
-            Answer::Event(event) => {
-                println!("{}", history_line(&event, me));
-                shown += 1;
+            Answer::Available(row) => found.rows.push(row),
+            Answer::Note(note) => found.notes.push(note),
+            Answer::Ok(said) => {
+                // The summary, then what came with it.
+                found.notes.extend(said.split("; ").skip(1).map(str::to_string));
+                return Ok(found);
             }
-            Answer::Ok(_) => break,
-            Answer::Error(why) => {
-                eprintln!("bundle: {why}");
-                return Ok(1);
-            }
+            Answer::Error(why) => return Err(fail(why)),
             _ => return Err(fail("bundled answered out of turn".into())),
         }
     }
-    if shown == 0 {
+}
+
+/// What bundled did to this person's bundles and everyone's, or to one,
+/// the newest last; or bundled's words when it refuses. `Err` when it
+/// cannot be asked.
+pub(crate) fn history_events(id: Option<String>) -> Result<Result<Vec<Event>, String>, Fail> {
+    let (_stream, mut input) = ask(&Request::History { id }, None).map_err(fail)?;
+    let mut events = Vec::new();
+    loop {
+        match answer(&mut input)? {
+            Answer::Event(event) => events.push(event),
+            Answer::Ok(_) => return Ok(Ok(events)),
+            Answer::Error(why) => return Ok(Err(why)),
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
+}
+
+/// `bundle history`: what bundled did to this person's bundles and
+/// everyone's, or to one, the newest last.
+fn history(id: Option<String>) -> Result<i32, Fail> {
+    let events = match history_events(id)? {
+        Ok(events) => events,
+        Err(why) => {
+            eprintln!("bundle: {why}");
+            return Ok(1);
+        }
+    };
+    // SAFETY: getuid has no failure and touches no memory.
+    let me = unsafe { libc::getuid() };
+    for event in &events {
+        println!("{}", history_line(event, me));
+    }
+    if events.is_empty() {
         println!("bundled has done nothing to your bundles yet");
     }
     Ok(0)

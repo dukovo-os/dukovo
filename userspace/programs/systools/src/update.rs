@@ -20,6 +20,8 @@
 //!   `bundle hold` does.
 //! - `update history` lists each change of the system and firmware by
 //!   the start that first ran it, then the apps' history.
+//! - `update` and `update history` take `--json`, which says the same as
+//!   one document each (ADR 0541, [`documents`]).
 //!
 //! updated(8), a service, checks once a day, ten minutes after the
 //! machine starts, and does what updates.toml(5) says: by default it
@@ -36,6 +38,8 @@
 //! downloads and stages nothing until a check finds the connection not
 //! metered, unless updates.toml(5) says `metered = "download"`.
 
+mod documents;
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
@@ -45,15 +49,16 @@ use crate::alerts::client::Screen;
 use crate::alerts::protocol::{Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
+use crate::sysupdate::checked::Found;
 use crate::sysupdate::online::{self, Apps, Check, Metered, Plan, Settings};
 use crate::sysupdate::starts::{self, Outcome};
 use crate::sysupdate::{self, firmware, place, request, stage};
 use crate::util::{self, Fail, fail};
 use crate::{bundles, power};
 
-const USAGE: &str = "usage: update [check | apply [--yes] | undo ITEM [--settings-from-before | \
-                     --keep-settings] | hold ITEM | unhold ITEM | history], where ITEM is system, \
-                     firmware or an app's ID";
+const USAGE: &str = "usage: update [check [--json] | apply [--yes] | undo ITEM \
+                     [--settings-from-before | --keep-settings] | hold ITEM | unhold ITEM | \
+                     history [--json]], where ITEM is system, firmware or an app's ID";
 
 /// How long updated waits after the machine starts before its first
 /// check: the network is up by then.
@@ -70,10 +75,17 @@ const METERED: &str = "/system/live/netd/metered";
 pub fn update(args: &mut Args) -> Result<i32, Fail> {
     let action = args.subcommand().map(|a| a.to_string_lossy().into_owned());
     let mut yes = false;
+    let mut json = false;
     let mut item = None;
     let mut keep = sysupdate::Keep::Unsaid;
     while let Some(arg) = args.next()? {
         match arg {
+            Arg::Long(name)
+                if name == "json"
+                    && matches!(action.as_deref(), None | Some("check" | "history")) =>
+            {
+                json = true;
+            }
             Arg::Long(name) if name == "yes" && action.as_deref() == Some("apply") => yes = true,
             Arg::Long(name)
                 if name == "settings-from-before" && action.as_deref() == Some("undo") =>
@@ -94,12 +106,12 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
     }
     let needs_item = || item.clone().ok_or_else(|| util::usage(USAGE.into()));
     match action.as_deref() {
-        None | Some("check") => check(),
+        None | Some("check") => check(json),
         Some("apply") => apply(yes),
         Some("undo") => undo(&needs_item()?, keep),
         Some("hold") => hold(&needs_item()?, true),
         Some("unhold") => hold(&needs_item()?, false),
-        Some("history") => history(),
+        Some("history") => history(json),
         Some(_) => Err(util::usage(USAGE.into())),
     }
 }
@@ -110,8 +122,12 @@ fn bundle(words: &[&str]) -> Result<i32, Fail> {
     bundles::main(&mut Args::new("bundle", items))
 }
 
-/// `update check`: the system, the firmware set and the apps.
-fn check() -> Result<i32, Fail> {
+/// `update check`: the system, the firmware set and the apps; with
+/// `json`, as the document update(8) describes.
+fn check(json: bool) -> Result<i32, Fail> {
+    if json {
+        return crate::json::print(&found()).map(|()| 0);
+    }
     println!("System:");
     if let Err(why) = sysupdate::check(None, false) {
         println!("update: the system cannot be checked: {}", why.message);
@@ -137,6 +153,13 @@ struct FirmwareOffer {
     take: Option<String>,
     /// What to say.
     said: String,
+    /// The set the running slot names.
+    running: Option<String>,
+    /// The set the channel offers.
+    offered: Option<String>,
+    /// What the offer comes to: `Current` when it offers none or none
+    /// newer, `Waiting` for its wave, `Held`, or `Update`.
+    found: Found,
 }
 
 /// The firmware set the channel offers, and whether to take it.
@@ -147,11 +170,17 @@ fn firmware_offer() -> Result<FirmwareOffer, Fail> {
     let hold = settings.hold.firmware.clone();
     let mut client = online::Client::connect(settings)?;
     let Some(offered) = client.channel()?.firmware else {
-        let said = match running {
+        let said = match &running {
             Some(set) => format!("this system runs firmware {set}; its channel offers none"),
             None => "the channel offers no firmware set, and this system runs none".into(),
         };
-        return Ok(FirmwareOffer { take: None, said });
+        return Ok(FirmwareOffer {
+            take: None,
+            said,
+            running,
+            offered: None,
+            found: Found::Current,
+        });
     };
     let newer = running.as_ref().is_none_or(|set| {
         system_release::firmware::compare(&offered, set) == std::cmp::Ordering::Greater
@@ -159,46 +188,98 @@ fn firmware_offer() -> Result<FirmwareOffer, Fail> {
     let held = hold.as_ref().is_some_and(|held| {
         system_release::firmware::compare(&offered, held) != std::cmp::Ordering::Greater
     });
-    let now = running.map_or_else(|| "no firmware set".into(), |set| format!("firmware {set}"));
+    let now =
+        running.as_ref().map_or_else(|| "no firmware set".into(), |set| format!("firmware {set}"));
     // A set held back waits whatever its wave; one not held waits for its
     // wave (ADR 0544).
     let waiting =
         if newer && !held { online::firmware_waiting(&mut client, &offered)? } else { None };
-    Ok(if !newer {
-        FirmwareOffer { take: None, said: format!("this system runs {now}, the newest offered") }
+    let (take, said, found) = if !newer {
+        (None, format!("this system runs {now}, the newest offered"), Found::Current)
     } else if let Some(lines) = waiting {
-        FirmwareOffer {
-            take: None,
-            said: format!(
-                "firmware {offered} is offered, waiting for its wave: {}; this system runs {now}",
-                lines.join("; ")
-            ),
-        }
+        let said = format!(
+            "firmware {offered} is offered, waiting for its wave: {}; this system runs {now}",
+            lines.join("; ")
+        );
+        (None, said, Found::Waiting)
     } else if held {
-        FirmwareOffer {
-            take: None,
-            said: format!(
-                "firmware {offered} is offered, and held back: `update unhold firmware` lifts \
-                 the hold; this system runs {now}"
-            ),
-        }
+        let said = format!(
+            "firmware {offered} is offered, and held back: `update unhold firmware` lifts the \
+             hold; this system runs {now}"
+        );
+        (None, said, Found::Held)
     } else {
-        FirmwareOffer {
-            said: format!(
-                "firmware {offered} is offered; this system runs {now}: `update apply` stages it"
-            ),
-            take: Some(offered),
+        let said = format!(
+            "firmware {offered} is offered; this system runs {now}: `update apply` stages it"
+        );
+        (Some(offered.clone()), said, Found::Update)
+    };
+    Ok(FirmwareOffer { take, said, running, offered: Some(offered), found })
+}
+
+/// The system update and the firmware set the channel offers, and the
+/// apps' updates, for `update --json`: a part that cannot be checked is
+/// named, as the text form says it, and the others still are.
+fn found() -> documents::Updates {
+    let mut updates = documents::Updates {
+        offers: Vec::new(),
+        running_withdrawn: None,
+        unchecked: Vec::new(),
+        notes: Vec::new(),
+    };
+    match system_offer(&mut updates.notes) {
+        Ok(offer) => updates.offers.push(offer),
+        Err(why) => updates.unchecked.push(documents::Unchecked::new("system", &why.message)),
+    }
+    updates.running_withdrawn = running_withdrawal().ok().flatten().map(|(version, withdrawal)| {
+        documents::RunningWithdrawn::new(&version, &withdrawal.reason, withdrawal.advice)
+    });
+    match firmware_offer() {
+        Ok(offer) => updates.offers.push(documents::Offer::firmware(&offer)),
+        Err(why) => updates.unchecked.push(documents::Unchecked::new("firmware", &why.message)),
+    }
+    match bundles::pending_updates() {
+        Ok(pending) => {
+            updates.offers.extend(pending.rows.iter().map(documents::Offer::app));
+            updates.notes.extend(pending.notes);
         }
-    })
+        Err(why) => updates.unchecked.push(documents::Unchecked::new("apps", &why.message)),
+    }
+    updates
+}
+
+/// What the channel offers of the system, as `sysupdate check` finds it:
+/// the troubleshoot signatures it reads along are kept, and a note on
+/// them goes to `notes`.
+fn system_offer(notes: &mut Vec<String>) -> Result<documents::Offer, Fail> {
+    let root = place::root()?;
+    let running = stage::running_version(&root)?;
+    let mut client = online::Client::connect(Settings::load()?)?;
+    notes.extend(online::keep_signatures(&mut client));
+    let plan = online::plan(&mut client, &running, None)?;
+    let download = match &plan {
+        Plan::Update { release, .. } => {
+            let needed = online::needed(&root.slot(root.running), release)?;
+            Some(documents::Download { files: needed.fetch.len() as u64, bytes: needed.bytes })
+        }
+        _ => None,
+    };
+    Ok(documents::Offer::system(&plan, &running, download))
+}
+
+/// The release this system runs and its withdrawal, if the release keys
+/// signed one.
+fn running_withdrawal() -> Result<Option<(String, system_release::rollout::Withdrawal)>, Fail> {
+    let root = place::root()?;
+    let running = stage::running_version(&root)?;
+    let mut client = online::Client::connect(Settings::load()?)?;
+    Ok(client.withdrawal(&running)?.map(|withdrawal| (running, withdrawal)))
 }
 
 /// When the release this system runs was withdrawn: what to say, and
 /// whether its release keys advise going back.
 fn withdrawn_running() -> Result<Option<(String, bool)>, Fail> {
-    let root = place::root()?;
-    let running = stage::running_version(&root)?;
-    let mut client = online::Client::connect(Settings::load()?)?;
-    let Some(withdrawal) = client.withdrawal(&running)? else { return Ok(None) };
+    let Some((running, withdrawal)) = running_withdrawal()? else { return Ok(None) };
     let back = withdrawal.advice == system_release::rollout::Advice::Rollback;
     let advice = if back {
         "`update undo system` goes back to the version before it"
@@ -342,37 +423,37 @@ fn hold(item: &str, on: bool) -> Result<i32, Fail> {
 }
 
 /// `update history`: each change of the system and the firmware set, by
-/// the start that first ran it, then the apps'.
-fn history() -> Result<i32, Fail> {
-    println!("System and firmware, by the start that first ran each:");
+/// the start that first ran it, then the apps'; with `json`, as the
+/// document update(8) describes.
+fn history(json: bool) -> Result<i32, Fail> {
     let records = starts::all();
-    let value = |start: &starts::Start, kind: &str| {
-        start.items.iter().find(|item| item.kind == kind).map(|item| item.value.clone())
-    };
-    let mut any = false;
-    for pair in records.windows(2) {
-        let (before, after) = (&pair[0], &pair[1]);
-        for (kind, what) in [("system", "Dukovo"), ("firmware", "firmware")] {
-            let (from, to) = (value(before, kind), value(after, kind));
-            if from == to {
-                continue;
-            }
-            any = true;
-            let outcome = match after.outcome {
-                Outcome::Good => "good".to_string(),
-                Outcome::Unfinished => "unfinished".to_string(),
-                Outcome::Failed => format!("failed ({})", after.error.as_deref().unwrap_or("?")),
-            };
-            println!(
-                "  start {} on {}: {what} {} to {}; {outcome}",
-                after.number,
-                util::local_time(after.started, "%Y-%m-%d %H:%M"),
-                from.as_deref().unwrap_or("none"),
-                to.as_deref().unwrap_or("none")
-            );
-        }
+    let changes = documents::changes(&records);
+    if json {
+        let apps = bundles::history_events(None)?.map_err(fail)?;
+        let history = documents::History {
+            changes,
+            starts_kept: records.len(),
+            apps: apps.iter().map(documents::AppEvent::of).collect(),
+        };
+        return crate::json::print(&history).map(|()| 0);
     }
-    if !any {
+    println!("System and firmware, by the start that first ran each:");
+    for change in &changes {
+        let what = if change.item == "system" { "Dukovo" } else { "firmware" };
+        let outcome = match change.outcome {
+            Outcome::Good => "good".to_string(),
+            Outcome::Unfinished => "unfinished".to_string(),
+            Outcome::Failed => format!("failed ({})", change.error.as_deref().unwrap_or("?")),
+        };
+        println!(
+            "  start {} on {}: {what} {} to {}; {outcome}",
+            change.start,
+            util::local_time(change.time, "%Y-%m-%d %H:%M"),
+            change.from.as_deref().unwrap_or("none"),
+            change.to.as_deref().unwrap_or("none")
+        );
+    }
+    if changes.is_empty() {
         println!("  no change in the {} starts kept", records.len());
     }
     println!("\nApps:");

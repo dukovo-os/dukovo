@@ -51,6 +51,17 @@ pub(crate) fn time(seconds: i64) -> String {
     util::time_text(seconds, "%Y-%m-%dT%H:%M:%SZ", true)
 }
 
+/// Writes `seconds` as [`time`] does, for a member marked
+/// `#[serde(serialize_with = "json::serialize_time")]`, which calls it with
+/// a reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+pub(crate) fn serialize_time<S: serde::Serializer>(
+    seconds: &i64,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&time(*seconds))
+}
+
 /// Fails unless `line`, a document, has the members and values of the
 /// golden file `golden`, and its first member is `format`. The failure
 /// prints the document, to paste into the golden file when the change is
