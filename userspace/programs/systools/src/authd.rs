@@ -726,7 +726,14 @@ impl Authd {
                     (add_socket_group(files, name, whose, peer), now)
                 }
                 Request::Rename { name, new } => (self.rename(files, name, new, peer), now),
-                Request::Set { name, full_name, admin, without_password, console, jobs_signed_out } => {
+                Request::Set {
+                    name,
+                    full_name,
+                    admin,
+                    without_password,
+                    console,
+                    jobs_signed_out,
+                } => {
                     let change = Change {
                         full_name: full_name.as_deref(),
                         admin: *admin,

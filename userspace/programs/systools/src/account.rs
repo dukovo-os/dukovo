@@ -575,8 +575,14 @@ fn set(args: &mut Args) -> Result<i32, Fail> {
         let accounts = Accounts::read()?;
         last_admin(&accounts, name, yes, "Without it")?;
     }
-    let set =
-        Request::Set { name: name.clone(), full_name, admin, without_password, console, jobs_signed_out };
+    let set = Request::Set {
+        name: name.clone(),
+        full_name,
+        admin,
+        without_password,
+        console,
+        jobs_signed_out,
+    };
     let answer = ask(&set)?;
     done(answer, |changed| println!("{name} is changed: {changed}."))
 }

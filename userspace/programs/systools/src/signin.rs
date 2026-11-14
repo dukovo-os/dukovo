@@ -579,6 +579,7 @@ pub fn start_console(
         what: "the web console's worker",
         path: CONSOLE_WORKER,
         args: &[b"admind", b"--worker"],
+        folder: b"/",
         env: environment(user, "dumb"),
         descriptors: &[
             (calls.as_raw_fd(), 0),
