@@ -480,6 +480,12 @@ fn verdict(
         }
         Checked::Start => println!("sysupdate: this start of {named} is seen through"),
     }
+    // Rescue follows the release once a start of it is seen through
+    // (ADR 0543), but not on a try of changes bisect, nor before a restart.
+    let restarts = matches!(bisected, Some((Some(_), _)));
+    if trial.is_none() && !restarts && matches!(checked, Checked::Proved(_) | Checked::Start) {
+        super::keep_rescue::ask_when_due(root);
+    }
     match bisected {
         Some((Some(number), _)) => restart_for(number),
         Some((None, Some(search))) => keep_result(&search),

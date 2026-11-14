@@ -204,7 +204,7 @@ fn open_device(name: &str) -> io::Result<(File, MountFlags)> {
 /// the root, as for eject(1) in root's shell. The places follow the
 /// sockets Spark holds for it, from descriptor 3, which `LISTEN_FDS`
 /// counts (ADR 0477).
-fn mount_base(path: &str) -> (u32, String) {
+pub(crate) fn mount_base(path: &str) -> (u32, String) {
     let places = std::env::var("MOUNT_PLACES").unwrap_or_default();
     let sockets = std::env::var("LISTEN_FDS").ok().and_then(|count| count.parse::<i32>().ok());
     let first = 3 + sockets.unwrap_or(0).max(0);

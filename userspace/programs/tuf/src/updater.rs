@@ -133,6 +133,8 @@ pub struct Updater {
     targets: Option<Url>,
     limits: Limits,
     trusted: Trusted,
+    /// Where each root walked to is kept by version too, if anywhere.
+    roots: Option<PathBuf>,
 }
 
 impl Updater {
@@ -173,7 +175,20 @@ impl Updater {
             targets: targets.map(Url::base),
             limits: Limits::default(),
             trusted,
+            roots: None,
         }
+    }
+
+    /// Keeps each root this client walks to in `dir` too, by its version
+    /// (`2.root.json`), beside the newest it keeps as `root.json`, so that
+    /// a client that trusts an older root can walk them from a copy of
+    /// what it kept: Rescue, written from the release that runs (ADR
+    /// 0543). The client's own folder holds only the roles' files, as
+    /// TUF's conformance tests check.
+    #[must_use]
+    pub fn keeping_roots(mut self, dir: &Path) -> Self {
+        self.roots = Some(dir.to_path_buf());
+        self
     }
 
     /// The trusted metadata.
@@ -226,6 +241,10 @@ impl Updater {
             };
             self.trusted.update_root(&data)?;
             self.keep("root", &data)?;
+            if let Some(dir) = &self.roots {
+                std::fs::create_dir_all(dir).map_err(|err| Error::Io(dir.clone(), err))?;
+                write_whole(&dir.join(format!("{version}.root.json")), &data)?;
+            }
         }
         Ok(())
     }

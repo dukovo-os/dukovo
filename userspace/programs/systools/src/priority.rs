@@ -147,6 +147,13 @@ fn class_name(class: IoClass) -> &'static str {
 }
 
 /// ionice(1).
+/// Puts this process's disk requests in the idle class, served only when
+/// no other class waits: for work that can wait, as writing Rescue again
+/// can (ADR 0543). Whether the kernel took it.
+pub(crate) fn idle_io() -> bool {
+    abi::io_priority(&SYS, SLOT_PROCESS, PriorityWhich::Process, 0, true, IoClass::Idle, 0).is_ok()
+}
+
 pub fn ionice(args: &mut Args) -> Result<i32, Fail> {
     args.stop_at_operand();
     let mut class: Option<IoClass> = None;

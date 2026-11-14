@@ -61,7 +61,8 @@ the snapshots a fallback needs, and the network; it holds no home folder
 either. It is not started at boot: *update apply* asks for a system
 update or a firmware set by writing the request, one line, *system* or
 *firmware* _set_, to _/system/live/sysupdate/request_ and starting the
-service, whose program is *sysupdate stage --request* _file_. The
+service, whose program is *sysupdate stage --request* _file_; the health
+check asks for *rescue*, below, the same way, and does not wait. The
 service stages it and writes what it said, a *said* line each, and how
 it ended, *ok* or *failed* _why_, to _/system/live/sysupdate/outcome_,
 which *update* reads and prints; it then ends, and Spark counts a stage
@@ -77,8 +78,8 @@ partition, which GRUB reads and writes before each start. A power cut
 while one copy is written leaves the other whole.
 
 *status* says which slot runs, what each slot holds, which starts next,
-the health check's last result, the last update, and where the slot
-state is:
+the health check's last result, the last update, where the slot state
+is, and which release Rescue was last written from:
 
 ```
 # sysupdate status
@@ -89,6 +90,7 @@ Next start: slot B
 Last health check: passed, 2026-11-11 09:14: slot A (Dukovo 0.15.0)
 Last update: 0.15.0 to 0.15.1 in slot B
 Slot state: on vda1 (generation 2)
+Rescue: Dukovo 0.15.0
 ```
 
 Updates come from the update server through a channel: *stable*, the
@@ -229,6 +231,21 @@ or with no slot to start, the menu starts Rescue by itself
 (*dukovo-rescue*(8), ADR 0460). Each start seen through sets that count
 back to 0.
 
+Rescue follows the release that runs (ADR 0543). Once a start is seen
+through while Rescue holds another release, the first being the start
+that proves an update, the health check asks the stage to write Rescue
+again on each EFI system partition of the root's disks, and goes on
+without waiting. The stage writes it at idle disk priority from the
+running slot's files and the release's signed metadata, which it kept
+when it staged the release, each file checked against the signed list
+as it is written, and the copy read back before it replaces the one
+there; so a reinstall from Rescue puts back the release that runs, not
+the one the machine was installed with. A firmware set staged alone
+changes no release and writes nothing. A partition without room for
+the new copy beside the old, or whose write fails, keeps the copy it
+has, and the stage's log says why with UPD-102; the next start tries
+again.
+
 A start that fails its check and goes on leaves a notice on the sign-in
 screens (ADR 0501), which, when the changes since the last good start
 can be tried apart, names *elevate changes bisect* and the most restarts
@@ -357,6 +374,18 @@ _/system/state/troubleshoot/signatures.toml_
 _/system/state/sysupdate/metadata_
 	The update server's metadata this system has read and trusts.
 
+_/system/state/sysupdate/roots_
+	Each root of the update server this system walked to since it was
+	installed, by version, so that Rescue's copy of the metadata reads
+	from the root the release trusts.
+
+_/system/state/sysupdate/release_
+	The signed metadata of the release staged last, as a repository,
+	from which Rescue is written once it proves itself.
+
+_/system/state/sysupdate/rescue_
+	The release Rescue was last written from, or found to hold.
+
 _/system/state/sysupdate/files_
 	The files fetched for the next stage, by SHA-256; a stage removes
 	them once the slot holds them.
@@ -385,8 +414,8 @@ _/system/live/sysupdate/lock_
 	_/processes_: both services' files name it with *files.read*.
 
 _/system/live/sysupdate/request_, _/system/live/sysupdate/outcome_
-	What *update apply* or *updated*(8) asked of the *sysupdate-stage*
-	service, and how it went. An asker holds the lock
+	What *update apply*, *updated*(8) or the health check asked of the
+	*sysupdate-stage* service, and how it went. An asker holds the lock
 	_/system/live/sysupdate/asking_ until it has read the outcome, and
 	starts the stage only when none runs, so two that ask at once take
 	turns.
@@ -401,6 +430,13 @@ _@snapshots/update_ on the root's top level
 
 _boot/grub/state1_, _boot/grub/state2_ on each EFI system partition
 	The two copies of the slot state.
+
+_/system/live/sysupdate-esp/_
+	Where the stage mounts each EFI system partition, for the while, to
+	write Rescue.
+
+_boot/rescue_, _boot/rescue.new_ on each EFI system partition
+	Rescue, and a new copy of it while one is written.
 
 _boot/grub/rescue.env_ on each EFI system partition
 	The count of starts in a row that were not seen through.

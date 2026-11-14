@@ -60,13 +60,26 @@ const WAIT: Duration = Duration::from_secs(2);
 const MOST_BRIDGES: usize = 16;
 
 /// Where the trusted metadata is kept.
-fn metadata_dir() -> PathBuf {
+pub(crate) fn metadata_dir() -> PathBuf {
     Path::new(STATE).join("metadata")
+}
+
+/// Where each root the client walked to is kept by version, for Rescue's
+/// copy of the metadata (ADR 0543).
+pub(crate) fn roots_dir() -> PathBuf {
+    Path::new(STATE).join("roots")
 }
 
 /// Where the lists and channel files read are kept.
 fn lists_dir() -> PathBuf {
     Path::new(STATE).join("lists")
+}
+
+/// The signed list of Dukovo `version` as the client last fetched it, if
+/// it kept it: checked when it was fetched, and again by whatever opens
+/// it with the metadata.
+pub(crate) fn kept_list(version: &str) -> Option<Vec<u8>> {
+    std::fs::read(lists_dir().join(target_path(version).replace('/', "-"))).ok()
 }
 
 /// Where the files fetched for the next stage are kept, by SHA-256.
@@ -354,7 +367,8 @@ impl Client {
         };
         let base = url("")?;
         let mut updater = tuf::Updater::new(&dir, &url("metadata/")?, Some(&url("targets/")?))
-            .map_err(|err| fail(format!("the trusted metadata in {}: {err}", dir.display())))?;
+            .map_err(|err| fail(format!("the trusted metadata in {}: {err}", dir.display())))?
+            .keeping_roots(&roots_dir());
         updater.refresh().map_err(|err| refused(&settings.server, &err))?;
         Ok(Client { updater, base, settings })
     }
