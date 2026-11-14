@@ -42,6 +42,7 @@ import {
   signOut,
   signOutButton,
   track,
+  watchPolicy,
 } from "./console.mjs";
 
 // The password that passkeys.toml gives the accounts it makes.
@@ -66,7 +67,7 @@ const ROUTES = [
 ];
 
 // What a Chromium page opened here looks like, as the lab's runner opens one.
-const PAGE = { viewport: { width: 1280, height: 800 }, locale: "en-US", bypassCSP: true, ignoreHTTPSErrors: true };
+const PAGE = { viewport: { width: 1280, height: 800 }, locale: "en-US", ignoreHTTPSErrors: true };
 
 const PASSKEY_BUTTON = "Sign in with a passkey";
 
@@ -130,7 +131,7 @@ async function refusalOf(page, { cdp, authenticatorId }) {
  * the calls it goes on to make, and what to call when the test is done.
  */
 async function chromiumByName(t, url, first) {
-  let page = await t.open(url, { bypassCSP: true });
+  let page = await t.open(url);
   let refusal = await refusalOf(page, await addAuthenticator(page));
   let close = async () => {};
   if (refusal !== null) {
@@ -148,6 +149,7 @@ async function chromiumByName(t, url, first) {
     ensure(refusal === null, `Chromium would not make a passkey on ${url}, with the console's key trusted: ${refusal}`);
   }
   const seen = track(page);
+  await watchPolicy(page);
   // The page's first calls came before anything listened for them. The
   // page keeps its authenticator through a reload.
   await page.reload();
@@ -257,7 +259,7 @@ export default async function check(t) {
   }
 
   if (t.engine !== "chromium") {
-    const page = await t.open(url, { bypassCSP: true });
+    const { page } = await openConsole(t, url);
     await t.see(signInHeading(page));
     const button = page.getByRole("button", { name: PASSKEY_BUTTON });
     await t.see(button);

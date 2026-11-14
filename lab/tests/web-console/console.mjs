@@ -31,18 +31,36 @@ export const SECOND_STEP = "/api/1/account/second-step";
  * `METHOD /path` that the context goes on to request, for a test to check
  * against the routes it claims to cover.
  *
- * The context goes without the console's content security policy, which
- * allows no inline script: the lab's accessibility check adds axe-core to
- * the page as one, and the policy would stop it. The policy is the
- * server's, and the sign-in test reads its header.
+ * The page keeps the console's content security policy, and `look` fails
+ * when the policy stopped anything (`watchPolicy`): a page the policy
+ * breaks fails here, as it would for a person.
  */
 export async function openConsole(t, path, options = {}) {
-  const page = await t.open(path, { bypassCSP: true, ...options });
+  const page = await t.open(path, options);
   const seen = track(page);
+  await watchPolicy(page);
   // The page's first calls came before anything listened for them.
   await page.reload();
   return { page, seen };
 }
+
+/**
+ * Has every page of `page`'s context note what its content security policy
+ * stops, from its next load on, for `look` to read (`policyStopped`).
+ */
+export async function watchPolicy(page) {
+  await page.context().addInitScript(() => {
+    window.labPolicyStopped = [];
+    document.addEventListener(
+      "securitypolicyviolation",
+      (event) => window.labPolicyStopped.push(`${event.effectiveDirective} ${event.blockedURI || "inline"}`),
+      { capture: true },
+    );
+  });
+}
+
+/** What the content security policy stopped on `page` since it loaded, if it is watched. */
+export const policyStopped = (page) => page.evaluate(() => window.labPolicyStopped ?? []);
 
 /** The set of `METHOD /path` that the context of `page` requests from now on. */
 export function track(page) {
@@ -60,11 +78,14 @@ export function mustHaveCalled(seen, routes) {
 }
 
 /**
- * Looks at the page as it is in dark and in light: the accessibility
- * check passes and a screenshot is kept for each. `name` is the step, in
- * letters, digits and dashes.
+ * Looks at the page as it is in dark and in light: its content security
+ * policy has stopped nothing, the accessibility check passes, and a
+ * screenshot is kept for each. `name` is the step, in letters, digits and
+ * dashes.
  */
 export async function look(t, page, name) {
+  const stopped = await policyStopped(page);
+  ensure(stopped.length === 0, `${name}: the content security policy stopped ${stopped.join(", ")}`);
   for (const colorScheme of ["dark", "light"]) {
     await page.emulateMedia({ colorScheme });
     // The console follows the browser's scheme by a class on its root.
