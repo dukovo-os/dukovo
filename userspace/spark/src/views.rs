@@ -32,7 +32,8 @@
 //! through the view, `@users` and `@shared` among them. A socket the file
 //! names, such as logd's `/system/live/log/query`, cannot be opened to be
 //! attached, so its folder is attached in the same way, with only the
-//! names the file gives in it.
+//! names the file gives in it; so is a device that each open makes anew,
+//! such as `/devices/ptmx`, which an opened one would not stand for.
 //!
 //! A file with `runs-with-your-access` gets Spark's own root instead, the
 //! whole tree with the bypass right, as consoled needs to start root's
@@ -404,9 +405,16 @@ fn mount_class(root: &Dir, class: DeviceClass) -> Result<String, String> {
     Ok(place)
 }
 
-/// A folder that holds a socket a service's file names, with the names
-/// of its places in it, and whether one of them that is no socket is
-/// written.
+/// The devices that one handle, opened as the view is made, would not
+/// stand for: each open of `/devices/ptmx` makes a new pseudo-terminal,
+/// of `/devices/tty` opens the opener's own terminal, and of
+/// `/devices/fuse` is a new connection. Attached opened, every terminal
+/// of admind's or sshd's would be the one pseudo-terminal Spark made.
+const OPENED_ANEW: &[&str] = &["devices/ptmx", "devices/tty", "devices/fuse"];
+
+/// A folder that holds a socket a service's file names, or a device of
+/// [`OPENED_ANEW`], with the names of its places in it, and whether one
+/// of them that is no socket is written.
 struct SocketFolder {
     path: String,
     names: Vec<String>,
@@ -426,14 +434,16 @@ impl SocketFolder {
 /// of the places in it that are there (ADR 0473): read-only unless one
 /// that is no socket is written, since connecting writes nothing to the
 /// folder. A server that makes its socket again, as logd does when it
-/// restarts, is found at the same name.
+/// restarts, is found at the same name. A device of [`OPENED_ANEW`] is
+/// reached the same way, so that each open of it is a new one.
 fn socket_folders(root: &Dir, places: &[(Place, bool)]) -> Vec<SocketFolder> {
     let is_socket = |path: &str| root.stat(path).is_ok_and(|stat| stat.kind == FileKind::Socket);
+    let by_name = |path: &str| OPENED_ANEW.contains(&path) || is_socket(path);
     let mut folders: Vec<SocketFolder> = Vec::new();
     for (place, _) in places {
         let path = &place.path[1..];
         if let Some((folder, _)) = path.rsplit_once('/')
-            && is_socket(path)
+            && by_name(path)
             && !folders.iter().any(|known| known.path == folder)
         {
             folders.push(SocketFolder { path: folder.into(), names: Vec::new(), write: false });
