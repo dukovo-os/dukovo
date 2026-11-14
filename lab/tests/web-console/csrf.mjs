@@ -199,6 +199,8 @@ async function fromAnotherOrigin(page) {
         { url, text: JSON.stringify(body) },
       ),
     ]);
+    // The answer is a page now: it is let finish before the next form.
+    await attacker.waitForURL(url);
     // A route that signs in has no session to look for and refuses the
     // Origin. Any other finds no session: 401 says that the browser sent no
     // cookie, as 403 would say that it did, and the console then refused
