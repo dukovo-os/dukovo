@@ -163,13 +163,13 @@ async fn stream(
             }
         }
     }
-    left(&shared, &cookie, &authd).await;
+    left(&shared, &cookie, &authd, LOCK_AFTER).await;
 }
 
 /// Counts a tab of the session out, and locks the session if it was the
-/// last and the session was unlocked, once [`LOCK_AFTER`] has passed with
-/// no tab open again.
-async fn left(shared: &Rc<Shared>, cookie: &str, authd: &str) {
+/// last and the session was unlocked, once `after` has passed with no tab
+/// open again.
+pub(super) async fn left(shared: &Rc<Shared>, cookie: &str, authd: &str, after: Duration) {
     let last = shared.with_session(cookie, |session| {
         session.tabs = session.tabs.saturating_sub(1);
         session.seen = Instant::now();
@@ -178,11 +178,9 @@ async fn left(shared: &Rc<Shared>, cookie: &str, authd: &str) {
     if last != Some(true) {
         return;
     }
-    tokio::time::sleep(LOCK_AFTER).await;
+    tokio::time::sleep(after).await;
     let due = shared.with_session(cookie, |session| {
-        session.tabs == 0
-            && session.unlocked_until.is_some()
-            && session.seen.elapsed() >= LOCK_AFTER
+        session.tabs == 0 && session.unlocked_until.is_some() && session.seen.elapsed() >= after
     });
     if due != Some(true) {
         return;

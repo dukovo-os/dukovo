@@ -127,6 +127,7 @@ mod tests {
     /// A socket path of the test's own.
     fn socket(what: &str) -> String {
         let path = std::env::temp_dir().join(format!("admind-authd-{}-{what}", std::process::id()));
+        // A socket left by an earlier run of the test would be in the way.
         let _ = std::fs::remove_file(&path);
         path.to_string_lossy().into_owned()
     }
@@ -173,7 +174,7 @@ mod tests {
             assert_eq!(asked.line().await.unwrap().as_deref(), Some("ended 0"));
             assert_eq!(asked.line().await.unwrap(), None);
         });
-        assert_eq!(authd.join().unwrap(), b"console\0begin\0192.0.2.7\0chase\0secret\0");
+        assert_eq!(authd.join().unwrap(), b"console\x00begin\x00192.0.2.7\x00chase\x00secret\x00");
     }
 
     #[test]

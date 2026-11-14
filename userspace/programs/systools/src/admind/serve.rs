@@ -350,20 +350,30 @@ async fn connection(
     drop(slot);
 }
 
-/// What to do with a connection from `peer`: serve it, or close it with no
-/// word and note why.
+/// The place a connection from `peer` holds if it is served, or why it is
+/// not: there are as many connections as it takes, or the address is not
+/// one admind answers.
+fn admission(shared: &Shared, peer: IpAddr) -> Result<Slot, &'static str> {
+    let slot = Slot::take(&shared.connections, reach::counted(peer))
+        .ok_or("there are as many connections as it takes")?;
+    let kind: Reach = shared.settings.borrow().console.reach;
+    if reach::answers(kind, peer, &shared.identity.borrow().networks) {
+        Ok(slot)
+    } else {
+        Err("it is not on a network admind answers")
+    }
+}
+
+/// Serves a connection from `peer`, or closes it with no word and notes
+/// why.
 fn admit(shared: &Rc<Shared>, stream: TcpStream, peer: SocketAddr) {
     let peer = reach::plain(peer.ip());
-    let Some(slot) = Slot::take(&shared.connections, reach::counted(peer)) else {
-        shared.refused_connection(peer, "there are as many connections as it takes");
-        return;
-    };
-    let kind: Reach = shared.settings.borrow().console.reach;
-    if !reach::answers(kind, peer, &shared.identity.borrow().networks) {
-        shared.refused_connection(peer, "it is not on a network admind answers");
-        return;
+    match admission(shared, peer) {
+        Ok(slot) => {
+            tokio::task::spawn_local(connection(Rc::clone(shared), stream, peer, HEAD_TIME, slot));
+        }
+        Err(why) => shared.refused_connection(peer, why),
     }
-    tokio::task::spawn_local(connection(Rc::clone(shared), stream, peer, HEAD_TIME, slot));
 }
 
 /// Accepts connections on `socket` as long as admind runs.
@@ -415,13 +425,13 @@ async fn serve(shared: Rc<Shared>) -> Result<(), String> {
             upkeep.tick(&shared);
         }
     }
-    log(6, "stops: it ends its sessions");
+    log(6, &format!("stops: it ends {} sessions", shared.sessions.borrow().len()));
     shared.end_all().await;
     // A console that is no more has no address to show.
-    if let Err(err) = fs::remove_file(ISSUE) {
-        if err.kind() != io::ErrorKind::NotFound {
-            log(4, &format!("cannot remove {ISSUE}: {}", util::strip_os_error(&err)));
-        }
+    if let Err(err) = fs::remove_file(ISSUE)
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        log(4, &format!("cannot remove {ISSUE}: {}", util::strip_os_error(&err)));
     }
     Ok(())
 }
@@ -446,6 +456,7 @@ pub fn run() -> Result<i32, Fail> {
     for line in said {
         log(4, &line);
     }
+    log(6, &format!("serves {} files of the console", files.len()));
     let identity = Identity::read(&certificate.names);
     let shared = Shared::new(settings, identity, certificate, files, accounts::SOCKET);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -460,7 +471,9 @@ pub fn run() -> Result<i32, Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admind::fixture::{Console, run};
     use crate::admin_settings::SecondStep;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn the_rules_and_reach_take_effect_and_a_port_waits_for_a_restart() {
@@ -507,11 +520,6 @@ mod tests {
         assert!(start_line("x", "y", Reach::Any).contains("to any network"));
     }
 
-    fn run<F: Future>(future: F) -> F::Output {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        runtime.block_on(future)
-    }
-
     #[test]
     fn a_head_that_has_not_come_by_the_deadline_ends_the_connection_and_one_that_has_does_not() {
         run(async {
@@ -546,6 +554,143 @@ mod tests {
                 assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, six_port)).await.is_err());
             }
             assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.is_ok());
+        });
+    }
+
+    /// Serves each connection to a loopback port as the server does,
+    /// with `head_time` for its first head, and gives the port.
+    fn serve_on_loopback(shared: &Rc<Shared>, head_time: Duration) -> u16 {
+        let socket = listener(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let shared = Rc::clone(shared);
+        tokio::task::spawn_local(async move {
+            loop {
+                let (stream, peer) = socket.accept().await.unwrap();
+                let slot = admission(&shared, peer.ip()).unwrap();
+                tokio::task::spawn_local(connection(Rc::clone(&shared), stream, peer.ip(), head_time, slot));
+            }
+        });
+        port
+    }
+
+    /// A TLS connection to the console on `port`, as a browser that trusts
+    /// its authority makes it.
+    async fn connect(console: &Console, port: u16) -> tokio_rustls::client::TlsStream<TcpStream> {
+        let config = rustls::ClientConfig::builder_with_provider(crate::tls::provider())
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .unwrap()
+            .with_root_certificates(console.roots.clone())
+            .with_no_client_auth();
+        let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from("nas.example").unwrap();
+        tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream).await.unwrap()
+    }
+
+    /// What the console answers to `request`, written to a connection
+    /// that it then reads to its end.
+    async fn exchange(console: &Console, port: u16, request: &str) -> String {
+        let mut stream = connect(console, port).await;
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut answer = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+        // A connection that was closed without the alert, as a server that
+        // hangs up on a request it refuses does, is an end too.
+        let _ = read.expect("an answer in 5 seconds");
+        String::from_utf8_lossy(&answer).into_owned()
+    }
+
+    fn console(what: &str) -> Console {
+        Console::new(what, Arc::new(|_, _| vec!["no the test's authd answers nothing".into()]))
+    }
+
+    #[test]
+    fn a_browser_gets_the_health_answer_over_tls_and_requests_may_follow_one_another() {
+        run(async {
+            let console = console("serve-health");
+            let port = serve_on_loopback(&console.shared, Duration::from_secs(10));
+            let one = "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\n\r\n";
+            let two = "GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\nConnection: close\r\n\r\n";
+            let answer = exchange(&console, port, &format!("{one}{two}")).await;
+            assert_eq!(answer.matches("HTTP/1.1 200 OK").count(), 2, "{answer}");
+            assert_eq!(answer.matches("{\"ok\":true}").count(), 2);
+            let lower = answer.to_ascii_lowercase();
+            assert!(lower.contains("content-security-policy: default-src 'self'"));
+            assert!(!lower.contains("\r\nserver:"), "{answer}");
+            // Another name is another machine's.
+            let rebound = "GET /api/1/health HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n";
+            assert!(exchange(&console, port, rebound).await.starts_with("HTTP/1.1 421"));
+        });
+    }
+
+    #[test]
+    fn a_head_of_more_than_16_kib_or_64_headers_is_refused_with_431() {
+        run(async {
+            let console = console("serve-heads");
+            let port = serve_on_loopback(&console.shared, Duration::from_secs(10));
+            let head = |extra: &str| format!("GET /api/1/health HTTP/1.1\r\nHost: nas.example:9090\r\n{extra}\r\n");
+            let large = head(&format!("X-Pad: {}\r\n", "a".repeat(20 << 10)));
+            assert!(exchange(&console, port, &large).await.starts_with("HTTP/1.1 431"));
+            let many: String = (0..70).map(|n| format!("X-{n}: 1\r\n")).collect();
+            assert!(exchange(&console, port, &head(&many)).await.starts_with("HTTP/1.1 431"));
+            let few: String = (0..40).map(|n| format!("X-{n}: 1\r\n")).collect();
+            let closing = head(&format!("{few}Connection: close\r\n"));
+            assert!(exchange(&console, port, &closing).await.starts_with("HTTP/1.1 200"));
+        });
+    }
+
+    #[test]
+    fn a_client_that_sends_no_head_in_time_is_cut_off_with_or_without_a_handshake() {
+        run(async {
+            let console = console("serve-slow");
+            let port = serve_on_loopback(&console.shared, Duration::from_millis(300));
+            let started = std::time::Instant::now();
+            // No handshake at all.
+            let mut quiet = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await.unwrap();
+            let mut buffer = [0u8; 64];
+            let read = tokio::time::timeout(Duration::from_secs(5), quiet.read(&mut buffer)).await;
+            assert!(matches!(read, Ok(Ok(0) | Err(_))), "{read:?}");
+            assert!(started.elapsed() >= Duration::from_millis(250));
+            // A handshake and then a head that never ends.
+            let mut slow = connect(&console, port).await;
+            slow.write_all(b"GET /api/1/health HTTP/1.1\r\nHost: nas.exa").await.unwrap();
+            let mut rest = Vec::new();
+            let read = tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut rest)).await;
+            assert!(read.is_ok(), "not closed in time");
+            assert!(!String::from_utf8_lossy(&rest).contains("200 OK"));
+            // Nothing holds a place once they are gone.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(console.shared.connections.borrow().total(), 0);
+        });
+    }
+
+    #[test]
+    fn a_connection_is_served_only_within_the_limits_and_from_an_address_that_is_answered() {
+        run(async {
+            let console = console("serve-admission");
+            let shared = &console.shared;
+            let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+            // 32 from one address; the 33rd waits for one to end.
+            let held: Vec<Slot> = (0..32).map(|_| admission(shared, ip("192.168.1.5")).unwrap()).collect();
+            let refused = admission(shared, ip("192.168.1.5")).err();
+            assert_eq!(refused, Some("there are as many connections as it takes"));
+            assert!(admission(shared, ip("192.168.1.6")).is_ok());
+            drop(held);
+            assert!(admission(shared, ip("192.168.1.5")).is_ok());
+            // Private networks only: this one's, and the ranges no one
+            // reaches from the internet.
+            for private in ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.9.9", "100.64.1.1", "fd12::1", "fe80::1", "::ffff:192.168.1.9"] {
+                assert!(admission(shared, ip(private)).is_ok(), "{private}");
+            }
+            for public in ["203.0.113.9", "8.8.8.8", "2001:db8::1", "::ffff:8.8.8.8", "100.128.0.1"] {
+                assert_eq!(admission(shared, ip(public)).err(), Some("it is not on a network admind answers"), "{public}");
+            }
+            // The count is of the /64 for IPv6, and a refused one holds no place.
+            shared.settings.borrow_mut().console.reach = Reach::Any;
+            let six: Vec<Slot> = (0..32).map(|n| admission(shared, ip(&format!("2001:db8::{n:x}"))).unwrap()).collect();
+            assert!(admission(shared, ip("2001:db8::ffff")).is_err());
+            assert!(admission(shared, ip("2001:db8:1::1")).is_ok());
+            drop(six);
+            assert_eq!(shared.connections.borrow().total(), 0);
         });
     }
 }

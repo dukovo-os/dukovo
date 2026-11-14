@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use accounts::request;
 use bytes::Bytes;
 use ring::digest;
 
@@ -82,10 +83,6 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 impl Files {
     /// The files of `folder` that its `manifest.txt` lists and that match.
     /// What does not is said in `said`, a line each.
@@ -106,7 +103,7 @@ impl Files {
                     continue;
                 }
             };
-            if hex(digest::digest(&digest::SHA256, &bytes).as_ref()) != hash {
+            if request::hex(digest::digest(&digest::SHA256, &bytes).as_ref()) != hash {
                 said.push(format!("{path} is not the file the manifest lists, and is not served"));
                 continue;
             }
@@ -141,7 +138,7 @@ mod tests {
     use crate::cert::fixtures::Scratch;
 
     fn sum(bytes: &[u8]) -> String {
-        hex(digest::digest(&digest::SHA256, bytes).as_ref())
+        request::hex(digest::digest(&digest::SHA256, bytes).as_ref())
     }
 
     /// A folder with the files `(path, text)` and a manifest that lists
@@ -153,8 +150,9 @@ mod tests {
             fs::create_dir_all(at.parent().unwrap()).unwrap();
             fs::write(at, text).unwrap();
         }
-        let manifest: String =
-            listed.iter().map(|(hash, path)| format!("{hash}  {path}\n")).collect();
+        let manifest = listed.iter().fold(String::new(), |text, (hash, path)| {
+            text + &format!("{hash}  {path}\n")
+        });
         fs::write(scratch.0.join("manifest.txt"), manifest).unwrap();
         scratch
     }
@@ -221,7 +219,7 @@ mod tests {
             &format!("{}  ../etc/passwd", "a".repeat(64)),
             &format!("{}  /index.html", "a".repeat(64)),
             &format!("{}  a//b", "a".repeat(64)),
-            &format!("{}", "a".repeat(64)),
+            &"a".repeat(64),
             &format!("{}  ", "z".repeat(64)),
         ] {
             fs::write(scratch.0.join("manifest.txt"), text).unwrap();

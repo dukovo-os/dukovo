@@ -13,8 +13,6 @@
 //! authd's word, kept as it answered.
 
 use accounts::console::{Console, Proof, Purpose};
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -42,9 +40,12 @@ fn kinds_of(steps: &Value, host: &str) -> Vec<&'static str> {
 
 /// `GET /api/1/session`: who this is, and what the page needs to go on.
 pub async fn show(cx: &Context<'_>, live: &Live) -> Outcome {
-    let who = who::read(Account::Name(&live.name))
+    let who = who::read(&cx.shared.accounts, Account::Name(&live.name))
         .map_err(|why| Failure::new(Kind::Internal, why))?;
-    let unlocked = cx.shared.with_session(&live.cookie, |session| session.unlocked_until).flatten();
+    let (unlocked, csrf) = cx
+        .shared
+        .with_session(&live.cookie, |session| (session.unlocked_until, session.csrf_text()))
+        .ok_or_else(super::ended)?;
     // The password is the proof every account has, so it is what the page
     // offers when the worker does not say more.
     let kinds = match live.link.call("steps", Value::Null).await {
@@ -56,7 +57,7 @@ pub async fn show(cx: &Context<'_>, live: &Live) -> Outcome {
         "full_name": who.full_name,
         "admin": who.admin,
         "host": cx.shared.identity.borrow().host,
-        "csrf": URL_SAFE_NO_PAD.encode(live.csrf),
+        "csrf": csrf,
         "unlock_seconds": seconds_left(unlocked, unix_now()),
         "needs_step": live.needs_step,
         "kinds": kinds,

@@ -77,19 +77,33 @@ pub fn find(passwd: &str, group: &str, account: Account) -> Result<Who, String> 
     })
 }
 
-/// The account `account`, read from [`accounts::PASSWD`] and
-/// [`accounts::GROUP`].
+/// Where the account files are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Sources {
+    /// The file of the accounts.
+    pub passwd: String,
+    /// The file of the groups.
+    pub group: String,
+}
+
+impl Default for Sources {
+    fn default() -> Sources {
+        Sources { passwd: accounts::PASSWD.into(), group: accounts::GROUP.into() }
+    }
+}
+
+/// The account `account`, read from the files `sources` names.
 ///
 /// # Errors
 ///
 /// In plain words, if a file cannot be read or no account is the one asked
 /// for.
-pub fn read(account: Account) -> Result<Who, String> {
+pub fn read(sources: &Sources, account: Account) -> Result<Who, String> {
     let text = |path: &str| {
         std::fs::read_to_string(path)
             .map_err(|err| format!("cannot read {path}: {}", crate::util::strip_os_error(&err)))
     };
-    find(&text(accounts::PASSWD)?, &text(accounts::GROUP)?, account)
+    find(&text(&sources.passwd)?, &text(&sources.group)?, account)
 }
 
 #[cfg(test)]
@@ -132,6 +146,23 @@ mod tests {
         // A name that only looks like an account's is not it.
         assert!(find(PASSWD, GROUP, Account::Name("Chase")).is_err());
         assert!(find(PASSWD, GROUP, Account::Name("chase ")).is_err());
+    }
+
+    #[test]
+    fn the_files_are_read_from_where_the_sources_say() {
+        let folder = std::env::temp_dir().join(format!("admind-who-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let sources = Sources {
+            passwd: folder.join("passwd").to_string_lossy().into_owned(),
+            group: folder.join("group").to_string_lossy().into_owned(),
+        };
+        let why = read(&sources, Account::Name("chase")).unwrap_err();
+        assert!(why.starts_with("cannot read "), "{why}");
+        std::fs::write(&sources.passwd, PASSWD).unwrap();
+        std::fs::write(&sources.group, GROUP).unwrap();
+        assert_eq!(read(&sources, Account::Name("chase")).unwrap().full_name, "Chase Y");
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(Sources::default().passwd, "/system/settings/passwd");
     }
 
     #[test]

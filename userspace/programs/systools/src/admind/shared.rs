@@ -32,6 +32,7 @@ use super::log;
 use super::reach::{self, Network};
 use super::sessions::{Session, Sessions};
 use super::tls::Certificate;
+use super::who::Sources;
 use crate::admin_settings::Settings;
 use crate::cert::machine;
 use crate::util;
@@ -123,6 +124,9 @@ pub struct Shared {
     pub certificate: RefCell<Certificate>,
     /// The console's files.
     pub files: Files,
+    /// Where the account files are, which admind reads for what a person
+    /// is.
+    pub accounts: Sources,
     /// The sessions signed in.
     pub sessions: RefCell<Sessions<Link>>,
     /// The sign-ins waiting for a second step.
@@ -162,6 +166,7 @@ impl Shared {
             identity: RefCell::new(identity),
             certificate: RefCell::new(certificate),
             files,
+            accounts: Sources::default(),
             sessions: RefCell::new(Sessions::default()),
             tickets: RefCell::default(),
             tries: RefCell::default(),

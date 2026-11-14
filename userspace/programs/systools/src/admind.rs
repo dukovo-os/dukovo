@@ -45,6 +45,8 @@
 mod authd;
 mod errors;
 mod files;
+#[cfg(test)]
+mod fixture;
 mod guard;
 mod limits;
 mod link;

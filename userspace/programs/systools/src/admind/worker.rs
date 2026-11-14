@@ -34,7 +34,7 @@ use super::authd;
 use super::errors::Kind;
 use super::link::{self, Ended, Fault};
 use super::log;
-use super::who::{self, Account, Who};
+use super::who::{self, Account, Sources, Who};
 use crate::util::{self, Fail, fail};
 
 /// How long the worker waits for a call before it ends.
@@ -330,7 +330,7 @@ fn creation(text: &str, who: &Who) -> Result<Value, Fault> {
 
 /// Who this worker acts for, by its own user number.
 fn whoami() -> Result<Who, Fault> {
-    who::read(Account::Number(util::own_user())).map_err(|why| Fault::new(Kind::Refused, why))
+    who::read(&Sources::default(), Account::Number(util::own_user())).map_err(|why| Fault::new(Kind::Refused, why))
 }
 
 #[cfg(test)]

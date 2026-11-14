@@ -78,6 +78,14 @@ impl Slot {
     }
 }
 
+#[cfg(test)]
+impl Connections {
+    /// How many connections are held, for the tests of the server.
+    pub fn total(&self) -> usize {
+        self.total
+    }
+}
+
 impl Drop for Slot {
     fn drop(&mut self) {
         let mut held = self.connections.borrow_mut();

@@ -195,8 +195,8 @@ mod tests {
     #[test]
     fn only_the_first_64_kib_of_output_is_kept() {
         let mut kept = Vec::new();
-        keep(&mut kept, &[b'a'; 40_000]);
-        keep(&mut kept, &[b'b'; 40_000]);
+        keep(&mut kept, &vec![b'a'; 40_000]);
+        keep(&mut kept, &vec![b'b'; 40_000]);
         keep(&mut kept, b"more");
         assert_eq!(kept.len(), OUTPUT_MAX);
         assert_eq!(kept[39_999], b'a');

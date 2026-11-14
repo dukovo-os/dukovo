@@ -22,13 +22,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::errors::{Failure, Kind};
+use crate::authd::proofs::ALGORITHMS;
 
 /// How long a browser has to answer, in milliseconds.
 const TIMEOUT: u64 = 120_000;
-
-/// The kinds of key a passkey may be, as COSE numbers them: ES256,
-/// EdDSA and RS256, which authd checks.
-const ALGORITHMS: [i64; 3] = [-7, -8, -257];
 
 /// A passkey's answer to a challenge, as the browser wrote it.
 #[derive(Deserialize)]
