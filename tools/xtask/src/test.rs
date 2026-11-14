@@ -4072,8 +4072,10 @@ fn make_test_firmware(ctx: &Ctx, staging: &Path, out: &Path) -> Result<()> {
 /// scripts published and signed what it serves; `system/`, a link to the
 /// repository it serves; `keys/`, the release keys; `stale-timestamp.json`,
 /// a timestamp it signed before its newest, to replay; `expected.toml`,
-/// how many files each update fetches; and the bridge release's update
-/// file.
+/// how many files each update fetches; `repository-before-pull/` and
+/// `repository-after-pull/`, the release keys' repository as it was before
+/// the withdrawal and after it; `catalog-key/`, a catalog online key the
+/// server never used; and the bridge release's update file.
 pub const TEST_SERVER: &str = "update-server";
 
 /// Why [`TEST_SERVER`]'s stable release is paused.
@@ -4084,6 +4086,21 @@ pub const TEST_PULL: &str = "a test withdrawal";
 
 /// [`TEST_SERVER`]'s repository as it was served before the withdrawal.
 pub const TEST_SERVER_BEFORE_PULL: &str = "system-before-pull";
+
+/// The update repository the release keys signed, as it was before the
+/// withdrawal, to deploy to another update server: the lab test that moves
+/// [`TEST_SERVER`]'s releases to a Dukovo server sends it (`ob release
+/// send`).
+pub const TEST_SERVER_REPOSITORY: &str = "repository-before-pull";
+
+/// The same repository after the withdrawal of the stable release, which
+/// that test sends to see what a deploy not told ready leaves unpublished.
+pub const TEST_SERVER_REPOSITORY_PULLED: &str = "repository-after-pull";
+
+/// A catalog online key `catalog-repo` made for [`TEST_SERVER`], beside the
+/// system's: the files of a server's setup take both, though the test never
+/// deploys a catalog.
+pub const TEST_SERVER_CATALOG_KEY: &str = "catalog-key";
 
 /// The boot test that reads [`TEST_SERVER`] over the network.
 const TEST_SERVER_CASE: &str = "update-online";
@@ -4160,6 +4177,7 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         process::copy(&ctx.root.join("tools/update-server").join(script), &lib.join(script))?;
     }
     process::copy(&crate::release::tool_for(ctx, false)?, &lib.join("system-release"))?;
+    crate::catalog::test_online_key(ctx, &out.join(TEST_SERVER_CATALOG_KEY))?;
     let online = home.join("online.json");
     crate::release::system_release(
         ctx,
@@ -4280,10 +4298,16 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         ctx,
         std::process::Command::new("cp").arg("-al").arg(served.join(".")).arg(&before),
     )?;
+    // The repository that signed it, which the keys' own folder does not
+    // keep: files are written new, never changed, so links to them do.
+    let kept = out.join(TEST_SERVER_REPOSITORY);
+    process::run(ctx, std::process::Command::new("cp").arg("-al").arg(&repo).arg(&kept))?;
     crate::release::system_release(
         ctx,
         &repo_args(&["pull", "--version", &year, "--reason", TEST_PULL, "--advice", "rollback"]),
     )?;
+    let pulled = out.join(TEST_SERVER_REPOSITORY_PULLED);
+    process::run(ctx, std::process::Command::new("cp").arg("-al").arg(&repo).arg(&pulled))?;
     for folder in ["metadata", "targets", "files"] {
         let old = incoming.join(folder);
         if old.exists() {

@@ -513,6 +513,27 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
                 Err(why) => eprintln!("    note: the service bundle tests will skip: {why}"),
             }
         }
+        // The files of the update server's setup for Dukovo, with
+        // catalog-repo built for Radix, which the lab test of the move
+        // copies onto the machine and runs there (ADR 0542).
+        let server = if no_build {
+            let dir = ctx.out.join("update-server");
+            if dir.join("dukovo/setup").is_file() {
+                Ok(dir)
+            } else {
+                Err("no setup files for a Dukovo update server were staged yet, and --no-build \
+                     stages none"
+                    .to_string())
+            }
+        } else {
+            crate::catalog::stage_dukovo(ctx).map_err(|e| e.to_string())
+        };
+        match server {
+            Ok(server) => {
+                lab.env(SERVER_ENV, server);
+            }
+            Err(why) => eprintln!("    note: the update server move's test will skip: {why}"),
+        }
     }
     lab.args(&rest);
     // dukovo-lab's own exit status says how the run went (0 passed, 1 a
@@ -541,6 +562,11 @@ const BUNDLES_ENV: &str = "DUKOVO_LAB_BUNDLES";
 /// steps that copy them onto the machine
 /// (`lab/tests/services/copy-port-file.sh`).
 const PORTS_ENV: &str = "DUKOVO_LAB_PORTS";
+
+/// The variable that names the folder the update server's setup for Dukovo
+/// is copied from, which `ob catalog server setup --dukovo` copies too
+/// (`lab/tests/updates/server-on-dukovo.sh`).
+const SERVER_ENV: &str = "DUKOVO_LAB_SERVER_FILES";
 
 /// The console's fonts, which dukovo-lab reads the screen's text with:
 /// the PSF files the kernel and consoled draw in.
