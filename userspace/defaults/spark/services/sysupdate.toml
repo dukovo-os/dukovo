@@ -40,9 +40,14 @@ memory = "64M"
 # - Its own state and the starts' records, and /system/live/sysupdate,
 #   where the lock, the failure notice and this start's record number
 #   are.
-# - The list of installed apps, which each start's record names, and
-#   every process, since the stage that holds the lock may be a process
-#   of another service.
+# - The search of `changes bisect`, whose tries it judges and whose next
+#   try it writes, and the sign-in notices, where it keeps what a search
+#   found for the next sign-in (ADR 0475).
+# - The list of installed apps, which each start's record names, the
+#   records of their services, through which a failed start's notice
+#   counts the apps `changes bisect` can leave out (ADR 0475), and every
+#   process, since the stage that holds the lock may be a process of
+#   another service.
 # - Spark's control socket, to watch the essential services and to ask
 #   for a restart, and the log's query socket and the troubleshoot
 #   signatures, to name the likely cause of a failed start in its notice
@@ -55,13 +60,16 @@ files.efi-system = "read-write"
 files.read-write = [
     "/system/state/sysupdate",
     "/system/state/starts",
+    "/system/state/bisect",
     "/system/live/sysupdate",
+    "/system/live/sign-in",
     "/system/live/spark/control",
     "/system/live/log/query",
 ]
 files.read = [
     "/system/live/spark/root",
     "/system/state/bundled/installed",
+    "/system/state/bundled/services",
     "/system/state/troubleshoot",
     "/processes",
 ]

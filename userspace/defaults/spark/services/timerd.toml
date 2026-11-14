@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Timers: timerd(8) starts the services whose files have a [timer] at
+# their times, and runs the lines of people's crontabs and their `at` jobs
+# through authd, as crontab(1) and at(1) keep them in
+# /system/state/timerd (ADR 0478).
+#
+# service.toml(5) explains each setting. `service check timerd` checks
+# this file, and `service edit timerd` checks it as you save.
+
+service_version = 1
+description = "Timers, crontabs and at jobs"
+program = "/system/commands/timerd"
+# After authd, which runs the jobs, and the services it starts.
+order = 27
+# Started again whenever it ends: always, on-failure or never.
+restart = "always"
+
+[limits]
+memory = "32M"
+
+# What it holds beyond what every service reads (service.toml(5), which
+# includes the service files it reads in /system/settings/spark): the
+# network, to mail a job's output to the server of alerts.toml(5); its
+# state, and its folder where it answers on a socket (every other
+# program may only connect there); Spark's control socket, which it asks
+# to start a service; and authd's socket, which it asks to run a
+# person's job.
+[permissions]
+network.outbound = true
+files.read = ["/system/live/spark", "/system/live/authd"]
+files.read-write = ["/system/state/timerd", "/system/live/timerd"]

@@ -37,6 +37,9 @@
 //! ssh-session\0192.0.2.7 51234 192.0.2.1 22\0alice\0key\000000020...\0000000b...\0\0forward\0\0
 //! ssh-ended\09f86d081...\0
 //! console\0begin\0192.0.2.7\0chase\0secret\0
+//! job\0alice\0crontab alice\0/users/alice\0backup --quiet\0SHELL=/bin/sh\0
+//! keep-running\0
+//! keep-running\0on\0
 //! ```
 //!
 //! The web console's requests, `console` and a verb, are in
@@ -58,6 +61,10 @@
 //! the client signed with their key, or with the ticket authd answered
 //! an `ssh-password` request with (ADR 0348), which holds for the
 //! connection that asked until it sends `ssh-ended`.
+//!
+//! A `job` request (ADR 0478) comes with one descriptor, where the job's
+//! standard output and error go, and is answered as a `session` request
+//! is: `ok` and the job's process, and [`ended`]'s line when it ends.
 //!
 //! An `elevate` request (ADR 0219) comes with the three descriptors the
 //! command is to have as its 0, 1 and 2, and a pipe's read end, sent
@@ -100,9 +107,15 @@ pub fn unhex(text: &str) -> Option<Vec<u8>> {
 }
 
 /// The longest request authd reads, in bytes: room for a share sign-in's
-/// three NTLM messages, in hexadecimal, and for the command an SSH
-/// client asks to run ([`SSH_COMMAND_MAX`]).
-pub const REQUEST_MAX: usize = 64 * 1024;
+/// three NTLM messages, in hexadecimal, for the command an SSH client
+/// asks to run ([`SSH_COMMAND_MAX`]), and for a person's job
+/// ([`JOB_TEXT_MAX`]).
+pub const REQUEST_MAX: usize = 192 * 1024;
+
+/// The most bytes of a job's command and environment together: what
+/// at(1) queues, 128 KiB, with room to spare, and less than the kernel
+/// takes for a program's arguments and environment (EXEC_MAX, 256 KiB).
+pub const JOB_TEXT_MAX: usize = 160 * 1024;
 
 /// The longest command an SSH client may ask to run, in bytes: what
 /// [`REQUEST_MAX`] leaves room for, with the rest of the request.
@@ -235,6 +248,18 @@ pub enum Request {
         /// Its home.
         home: String,
     },
+    /// Make the group `name` of a socket that bundle `whose` offers to
+    /// others (ADR 0477): its service account's name and `-socket`, with
+    /// no members, a number as a service's account has. Root's to ask;
+    /// the answer is `ok` and its number. A group of that name that the
+    /// bundle made before is kept; one that is not its own is refused.
+    /// It goes when its service's account is removed.
+    SocketGroup {
+        /// The group.
+        name: String,
+        /// The bundle that offers the socket.
+        whose: String,
+    },
     /// Rename account `name` to `new`, with its own group and its home in
     /// `/users`, while nothing acts for it. Root's to ask.
     Rename {
@@ -257,6 +282,9 @@ pub enum Request {
         /// Whether it may sign in to the web console without being an
         /// administrator, in the console group (ADR 0514).
         console: Option<bool>,
+        /// Whether its jobs may run while its person is signed out (ADR
+        /// 0478): `false` bars it, whatever they chose.
+        jobs_signed_out: Option<bool>,
     },
     /// Run a command as an administrator, with the admin set (ADR 0219):
     /// an administrator's to ask, and after their password unless their
@@ -467,7 +495,111 @@ pub enum Request {
     },
     /// The web console's requests (ADR 0514), in [`console`](crate::console).
     Console(Console),
+    /// Run a person's job (ADR 0478): timerd(8)'s, which runs as root, to
+    /// ask. authd starts `/bin/sh -c COMMAND` as `owner`, in `folder`,
+    /// with the descriptor sent with the request as its standard output
+    /// and error, while they are signed in, or while they are not when
+    /// they keep their jobs running ([`Request::SetKeepRunning`]); root's
+    /// always. The answer is `ok` and the job's process, and the
+    /// connection then waits for its end, as a session's does; a job that
+    /// does not run is refused with one of the `JOB_` words.
+    Job {
+        /// Whose it is: the account's name.
+        owner: String,
+        /// What the log calls it: `crontab alice`, `at 12`.
+        label: String,
+        /// The folder it starts in.
+        folder: String,
+        /// The command, which `/bin/sh -c` runs.
+        command: String,
+        /// Its environment, `NAME=value` each, over a session's.
+        environment: Vec<String>,
+    },
+    /// Whether the asker's jobs run while they are signed out: anyone's
+    /// to ask, of their own. The answer is `ok` and [`KeepRunning`]'s
+    /// words.
+    KeepRunning,
+    /// Set whether the asker's jobs run while they are signed out: on,
+    /// off, or `None` for the system's default. Anyone's to ask, of their
+    /// own; answered as [`Request::KeepRunning`] is.
+    SetKeepRunning {
+        /// What they choose.
+        chosen: Option<bool>,
+    },
 }
+
+/// Whether a person's jobs run while they are signed out (ADR 0478), as
+/// authd answers [`Request::KeepRunning`]: `CHOSEN DEFAULT BAR`, each a
+/// word, as `default off allowed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeepRunning {
+    /// What they chose, or `None` for the system's default.
+    pub chosen: Option<bool>,
+    /// The system's default, off unless /system/settings/jobs.toml says
+    /// otherwise (the `server` preset turns it on).
+    pub default: bool,
+    /// Whether an administrator barred it for their account.
+    pub barred: bool,
+}
+
+impl KeepRunning {
+    /// Whether their jobs run while they are signed out.
+    #[must_use]
+    pub fn on(self) -> bool {
+        !self.barred && self.chosen.unwrap_or(self.default)
+    }
+
+    /// Its words in authd's answer.
+    #[must_use]
+    pub fn words(self) -> String {
+        let word = |on: bool| if on { "on" } else { "off" };
+        format!(
+            "{} {} {}",
+            self.chosen.map_or("default", word),
+            word(self.default),
+            if self.barred { "barred" } else { "allowed" }
+        )
+    }
+
+    /// The setting `words` says, as [`KeepRunning::words`] made them.
+    #[must_use]
+    pub fn from_words(words: &str) -> Option<KeepRunning> {
+        let on = |word: &str| match word {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        };
+        match words.split(' ').collect::<Vec<_>>()[..] {
+            [chosen, default, bar] => Some(KeepRunning {
+                chosen: if chosen == "default" { None } else { Some(on(chosen)?) },
+                default: on(default)?,
+                barred: match bar {
+                    "barred" => true,
+                    "allowed" => false,
+                    _ => return None,
+                },
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The most jobs authd runs at once (ADR 0478): timerd starts no more,
+/// and holds the rest until one ends.
+pub const JOBS_MAX: usize = 16;
+
+/// Why a job did not run: its owner is signed out, and does not keep
+/// their jobs running.
+pub const JOB_SIGNED_OUT: &str = "its owner is signed out and does not keep their jobs running: crontab --keep-running on \
+     turns that on";
+/// Why a job did not run: its owner is signed out, and an administrator
+/// barred their jobs from running then.
+pub const JOB_BARRED: &str =
+    "its owner is signed out, and an administrator barred their jobs from running then";
+/// Why a job did not run: its owner's account is disabled.
+pub const JOB_DISABLED: &str = "its owner's account is disabled";
+/// Why a job did not run: its owner is no person's account, nor root's.
+pub const JOB_NO_USER: &str = "its owner is no person's account";
 
 /// The longest name of an entry in a keyring, in bytes.
 pub const KEYRING_NAME_MAX: usize = 256;
@@ -702,8 +834,11 @@ impl Request {
             Request::Service { name, whose, home } => {
                 vec![b"service", name.as_bytes(), whose.as_bytes(), home.as_bytes()]
             }
+            Request::SocketGroup { name, whose } => {
+                vec![b"socket-group", name.as_bytes(), whose.as_bytes()]
+            }
             Request::Rename { name, new } => vec![b"rename", name.as_bytes(), new.as_bytes()],
-            Request::Set { name, full_name, admin, without_password, console } => {
+            Request::Set { name, full_name, admin, without_password, console, jobs_signed_out } => {
                 let mut fields: Vec<&[u8]> = vec![b"set", name.as_bytes()];
                 if let Some(full_name) = full_name {
                     fields.extend([b"full-name".as_slice(), full_name.as_bytes()]);
@@ -717,6 +852,10 @@ impl Request {
                 }
                 if let Some(console) = console {
                     fields.extend([b"console".as_slice(), yes(*console)]);
+                }
+                if let Some(allowed) = jobs_signed_out {
+                    let word: &[u8] = if *allowed { b"allowed" } else { b"never" };
+                    fields.extend([b"jobs-signed-out".as_slice(), word]);
                 }
                 fields
             }
@@ -831,6 +970,26 @@ impl Request {
                 vec![b"kerberos-tickets", number.as_bytes()]
             }
             Request::Console(_) => unreachable!("sent above"),
+            Request::Job { owner, label, folder, command, environment } => {
+                let mut fields: Vec<&[u8]> = vec![
+                    b"job",
+                    owner.as_bytes(),
+                    label.as_bytes(),
+                    folder.as_bytes(),
+                    command.as_bytes(),
+                ];
+                fields.extend(environment.iter().map(String::as_bytes));
+                fields
+            }
+            Request::KeepRunning => vec![b"keep-running"],
+            Request::SetKeepRunning { chosen } => {
+                let word: &[u8] = match chosen {
+                    Some(true) => b"on",
+                    Some(false) => b"off",
+                    None => b"default",
+                };
+                vec![b"keep-running", word]
+            }
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -875,10 +1034,14 @@ impl Request {
             [b"service", name, whose, home] => {
                 Ok(Request::Service { name: text(name)?, whose: text(whose)?, home: text(home)? })
             }
+            [b"socket-group", name, whose] => {
+                Ok(Request::SocketGroup { name: text(name)?, whose: text(whose)? })
+            }
             [b"rename", name, new] => Ok(Request::Rename { name: text(name)?, new: text(new)? }),
             [b"set", name, ref settings @ ..] => {
                 let (mut full_name, mut admin, mut without_password) = (None, None, None);
                 let mut console = None;
+                let mut jobs_signed_out = None;
                 let (pairs, rest) = settings.as_chunks::<2>();
                 if !rest.is_empty() || pairs.is_empty() {
                     return Err(malformed());
@@ -899,10 +1062,22 @@ impl Request {
                         (b"console", value @ (b"yes" | b"no")) if console.is_none() => {
                             console = Some(value == b"yes");
                         }
+                        (b"jobs-signed-out", value @ (b"allowed" | b"never"))
+                            if jobs_signed_out.is_none() =>
+                        {
+                            jobs_signed_out = Some(value == b"allowed");
+                        }
                         _ => return Err(malformed()),
                     }
                 }
-                Ok(Request::Set { name: text(name)?, full_name, admin, without_password, console })
+                Ok(Request::Set {
+                    name: text(name)?,
+                    full_name,
+                    admin,
+                    without_password,
+                    console,
+                    jobs_signed_out,
+                })
             }
             [b"owner", name, full_name, password] => Ok(Request::Owner {
                 name: text(name)?,
@@ -1089,6 +1264,39 @@ impl Request {
             [b"console", ref rest @ ..] => {
                 Console::decode(rest).map(Request::Console).ok_or_else(malformed)
             }
+            [b"job", owner, label, folder, command, ref environment @ ..] => {
+                let environment = environment
+                    .iter()
+                    .map(|f| {
+                        text(f)
+                            .ok()
+                            .filter(|t| t.find('=').is_some_and(|at| at > 0))
+                            .ok_or_else(malformed)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let size = command.len() + environment.iter().map(String::len).sum::<usize>();
+                let (owner, label, folder) = (text(owner)?, text(label)?, text(folder)?);
+                let one_line = |t: &str| !t.is_empty() && !t.chars().any(char::is_control);
+                if command.is_empty()
+                    || size > JOB_TEXT_MAX
+                    || !one_line(&owner)
+                    || !one_line(&label)
+                    || !folder.starts_with('/')
+                {
+                    return Err(malformed());
+                }
+                Ok(Request::Job { owner, label, folder, command: text(command)?, environment })
+            }
+            [b"keep-running"] => Ok(Request::KeepRunning),
+            [b"keep-running", word] => {
+                let chosen = match word {
+                    b"on" => Some(true),
+                    b"off" => Some(false),
+                    b"default" => None,
+                    _ => return Err(malformed()),
+                };
+                Ok(Request::SetKeepRunning { chosen })
+            }
             _ => Err(malformed()),
         }
     }
@@ -1139,13 +1347,17 @@ impl Request {
             | Request::Enable { .. }
             | Request::Remove { .. }
             | Request::Service { .. }
+            | Request::SocketGroup { .. }
             | Request::Rename { .. }
             | Request::Set { .. }
             | Request::ShareSignIn { .. }
             | Request::EndShares
             | Request::NfsWorker { .. }
             | Request::SshKey { .. }
-            | Request::SshSession { proof: SshProof::Key { .. }, .. } => {}
+            | Request::SshSession { proof: SshProof::Key { .. }, .. }
+            | Request::Job { .. }
+            | Request::KeepRunning
+            | Request::SetKeepRunning { .. } => {}
         }
     }
 }
@@ -1172,14 +1384,20 @@ impl std::fmt::Debug for Request {
             Request::Service { name, whose, home } => {
                 write!(f, "Service {{ name: {name:?}, whose: {whose:?}, home: {home:?} }}")
             }
+            Request::SocketGroup { name, whose } => {
+                write!(f, "SocketGroup {{ name: {name:?}, whose: {whose:?} }}")
+            }
             Request::Rename { name, new } => {
                 write!(f, "Rename {{ name: {name:?}, new: {new:?} }}")
             }
-            Request::Set { name, full_name, admin, without_password, console } => write!(
-                f,
-                "Set {{ name: {name:?}, full_name: {full_name:?}, admin: {admin:?}, \
-                 without_password: {without_password:?}, console: {console:?} }}"
-            ),
+            Request::Set { name, full_name, admin, without_password, console, jobs_signed_out } => {
+                write!(
+                    f,
+                    "Set {{ name: {name:?}, full_name: {full_name:?}, admin: {admin:?}, \
+                     without_password: {without_password:?}, console: {console:?}, \
+                     jobs_signed_out: {jobs_signed_out:?} }}"
+                )
+            }
             Request::Owner { name, full_name, .. } => {
                 write!(f, "Owner {{ name: {name:?}, full_name: {full_name:?} }}")
             }
@@ -1250,6 +1468,13 @@ impl std::fmt::Debug for Request {
             Request::KeyringLock => write!(f, "KeyringLock"),
             Request::KerberosTickets { uid } => write!(f, "KerberosTickets {{ uid: {uid} }}"),
             Request::Console(console) => write!(f, "{console:?}"),
+            Request::Job { owner, label, folder, .. } => {
+                write!(f, "Job {{ owner: {owner:?}, label: {label:?}, folder: {folder:?} }}")
+            }
+            Request::KeepRunning => write!(f, "KeepRunning"),
+            Request::SetKeepRunning { chosen } => {
+                write!(f, "SetKeepRunning {{ chosen: {chosen:?} }}")
+            }
         }
     }
 }

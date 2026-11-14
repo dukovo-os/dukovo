@@ -5062,6 +5062,7 @@ dependencies = [
  "hyper-util",
  "if-addrs",
  "instant-acme",
+ "jiff",
  "kerberos",
  "keymap",
  "libc",
@@ -5101,6 +5102,7 @@ dependencies = [
  "toml_edit",
  "tuf",
  "x509-cert",
+ "zstd",
 ]
 
 [[package]]

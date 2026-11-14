@@ -43,6 +43,7 @@ pub mod mem;
 pub mod pagemap;
 pub mod partition;
 pub mod ram;
+pub mod share;
 pub mod swap;
 
 #[cfg(test)]

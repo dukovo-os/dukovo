@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Performance profiles (ADR 0476) on QEMU: tune shows the profile in use
+# and each kernel setting, list and show say the profiles and why each
+# setting is set, recommend says vm-guest; throughput sets the slice and
+# the read-ahead, balanced puts every setting back to the value it started
+# with, vm-guest sets what it lists, a name that is no profile is
+# refused, and choosing a profile ends the sign-in notice about virtual
+# machines. The tune service applies the choice again at each start, a
+# restart of the machine among them.
+about = "performance profiles: tune shows the profile in use and each setting, list and show say what each profile sets and why, recommend says vm-guest on QEMU, set changes the kernel's settings and balanced puts them all back to the start values, and a name that is no profile is refused, and the choice is set again after a restart (ADR 0476)"
+time = "8m"
+
+# The kernel's settings are the same on every machine, but the energy
+# preference is for CPUs with a hardware power control, which a real
+# machine may have and QEMU's lack.
+[[step]]
+run = "cat /kernel/class/dmi/id/sys_vendor"
+expect = "QEMU"
+or_skip = "needs QEMU: the VM notice, the recommendation and the energy preference are those of a virtual machine"
+
+# From nothing: balanced puts every setting at its start value, whatever
+# an earlier run left, and the saved lines are what it started with.
+[[step]]
+run = "tune set balanced"
+root = true
+expect = "the profile is balanced"
+[[step]]
+run = '''sh -c 'for f in /kernel/settings/*; do echo "$f $(cat $f)"; done > /tmp/tune-start; echo "saved $(wc -l < /tmp/tune-start)"' '''
+root = true
+expect = "saved 4"
+
+[[step]]
+run = "tune"
+expect = ["Profile: balanced, chosen by an administrator", "disk.read_ahead_kib    128", "net.congestion         cubic", "sched.slice_us         3000", "* set by the profile"]
+[[step]]
+run = "tune list"
+expect = ["balanced     The default: every setting at its start value  (in use)", "low-latency  Quick answers", "power-saver  Less power", "throughput   Most work done a second", "vm-guest     A virtual machine", "vm-host      A machine that runs virtual machines"]
+[[step]]
+run = "tune show throughput"
+expect = ["throughput: Most work done a second", "disk.read_ahead_kib    1024         Reads further ahead", "sched.slice_us         6000         Fewer thread switches", "Every other setting is at its start value."]
+[[step]]
+run = "tune recommend"
+expect = ["vm-guest: this machine runs in a virtual machine", "chooses it."]
+
+# throughput: the slice and the read-ahead are set, and tune marks them.
+[[step]]
+run = "tune set throughput"
+root = true
+expect = "the profile is throughput"
+[[step]]
+run = '''sh -c 'echo "slice $(cat /kernel/settings/sched.slice_us) ahead $(cat /kernel/settings/disk.read_ahead_kib)"' '''
+expect = "slice 6000 ahead 1024"
+[[step]]
+run = "tune"
+expect = ["Profile: throughput, chosen by an administrator", "* disk.read_ahead_kib    1024", "* sched.slice_us         6000"]
+
+# A name that is no profile is refused, and the choice stays.
+[[step]]
+run = "tune set nonsense"
+root = true
+exit = 1
+expect = "no profile is called nonsense"
+[[step]]
+run = "tune"
+expect = "Profile: throughput, chosen by an administrator"
+
+# balanced: every file of /kernel/settings is as it started.
+[[step]]
+run = '''sh -c 'tune set balanced > /dev/null; for f in /kernel/settings/*; do echo "$f $(cat $f)"; done > /tmp/tune-now; cmp /tmp/tune-start /tmp/tune-now && echo "settings are" "at their start"' '''
+root = true
+expect = "settings are at their start"
+
+# vm-guest sets what it lists; choosing a profile has ended the notice.
+[[step]]
+run = "tune set vm-guest"
+root = true
+expect = "the profile is vm-guest"
+[[step]]
+run = '''sh -c 'echo "slice $(cat /kernel/settings/sched.slice_us) ahead $(cat /kernel/settings/disk.read_ahead_kib)"; [ -e /system/live/sign-in/tune ] || echo "notice" "gone"' '''
+expect = ["slice 4000 ahead 512", "notice gone"]
+
+# The service applies the choice again at its start, and again changes
+# nothing it does not list.
+[[step]]
+run = '''sh -c 'service tune restart -q; echo "slice $(cat /kernel/settings/sched.slice_us) ahead $(cat /kernel/settings/disk.read_ahead_kib)"' '''
+root = true
+expect = "slice 4000 ahead 512"
+[[step]]
+run = "service tune logs"
+root = true
+expect = "profile vm-guest: nothing to change"
+
+# The choice outlasts a restart of the machine: the kernel starts with
+# its own values (a slice of 3000), so 4000 after it is the service's
+# work at the next start.
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "Boot complete."
+[[step]]
+wait = "ready"
+[[step]]
+run = '''sh -c 'echo "slice $(cat /kernel/settings/sched.slice_us) ahead $(cat /kernel/settings/disk.read_ahead_kib)"; tune | head -n 1' '''
+expect = ["slice 4000 ahead 512", "Profile: vm-guest, chosen by an administrator"]
+
+# Back to the default: every setting at its start, and no choice.
+[[step]]
+run = '''sh -c 'tune set balanced > /dev/null; rm -f /system/settings/tune.toml /tmp/tune-start /tmp/tune-now; service tune restart -q; echo "restored: $(tune | head -n 1)"' '''
+root = true
+expect = "restored: Profile: balanced, the default"

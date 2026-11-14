@@ -112,7 +112,12 @@ impl Supervisor {
                 .ok_or_else(|| format!("no service is called {name}"))?;
             failed_before.push((index, self.services[index].failed_starts));
             if request.restart.contains(name) {
-                let ran = !matches!(self.services[index].state, State::Stopped | State::Failed);
+                // One that waits for a connection starts with the file in
+                // force at its next one.
+                let ran = !matches!(
+                    self.services[index].state,
+                    State::Stopped | State::Failed | State::Listening(_)
+                );
                 restart.push(Named { name: name.clone(), ran });
             }
         }
@@ -219,12 +224,15 @@ impl Supervisor {
             let Some(index) = self.services.iter().position(|s| s.spec.name == named.name) else {
                 continue;
             };
-            let running = !matches!(self.services[index].state, State::Stopped | State::Failed);
+            let running = !matches!(
+                self.services[index].state,
+                State::Stopped | State::Failed | State::Listening(_)
+            );
             if named.ran {
                 let _ = self.answer_restart(index);
                 restarted.push(format!("restarted {}", named.name));
             } else if running {
-                let _ = self.answer_stop(index);
+                let _ = self.answer_stop(index, false);
                 restarted.push(format!("stopped {}", named.name));
             }
         }

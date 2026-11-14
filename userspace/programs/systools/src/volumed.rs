@@ -198,13 +198,17 @@ fn open_device(name: &str) -> io::Result<(File, MountFlags)> {
 }
 
 /// The directory to mount beneath at the absolute `path`, as a slot, and
-/// `path` beneath it: a place Spark handed this program as a descriptor
-/// from 3 on, as its service file's `files.mount` asks, which
-/// `MOUNT_PLACES` names in order (ADR 0217), since nothing is mounted
-/// through a view; or else the root, as for eject(1) in root's shell.
+/// `path` beneath it: a place Spark handed this program as a descriptor,
+/// as its service file's `files.mount` asks, which `MOUNT_PLACES` names
+/// in order (ADR 0217), since nothing is mounted through a view; or else
+/// the root, as for eject(1) in root's shell. The places follow the
+/// sockets Spark holds for it, from descriptor 3, which `LISTEN_FDS`
+/// counts (ADR 0477).
 fn mount_base(path: &str) -> (u32, String) {
     let places = std::env::var("MOUNT_PLACES").unwrap_or_default();
-    for (fd, place) in (3..).zip(places.split(':').filter(|p| !p.is_empty())) {
+    let sockets = std::env::var("LISTEN_FDS").ok().and_then(|count| count.parse::<i32>().ok());
+    let first = 3 + sockets.unwrap_or(0).max(0);
+    for (fd, place) in (first..).zip(places.split(':').filter(|p| !p.is_empty())) {
         if let Some(rest) = path.strip_prefix(place).and_then(|r| r.strip_prefix('/')) {
             return (sys::slot_of(fd), rest.to_string());
         }

@@ -135,12 +135,16 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/admind", "systools"),
     ("system/commands/alertd", "systools"),
     ("system/commands/alerts", "systools"),
+    ("system/commands/at", "systools"),
+    ("system/commands/atq", "systools"),
+    ("system/commands/atrm", "systools"),
     ("system/commands/audio", "systools"),
     ("system/commands/audiocd", "systools"),
     ("system/commands/audiod", "systools"),
     ("system/commands/authd", "systools"),
     ("system/commands/backup", "systools"),
     ("system/commands/balance", "systools"),
+    ("system/commands/batch", "systools"),
     ("system/commands/blkid", "systools"),
     ("system/commands/braille", "systools"),
     ("system/commands/brailled", "systools"),
@@ -156,6 +160,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/chown", "systools"),
     ("system/commands/cloud-setup", "systools"),
     ("system/commands/column", "systools"),
+    ("system/commands/crontab", "systools"),
     ("system/commands/df", "systools"),
     ("system/commands/device", "systools"),
     ("system/commands/dig", "systools"),
@@ -190,6 +195,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/hardware", "systools"),
     ("system/commands/hexdump", "systools"),
     ("system/commands/host", "systools"),
+    ("system/commands/hostnamectl", "systools"),
     ("system/commands/hwinfo", "systools"),
     ("system/commands/ionice", "systools"),
     ("system/commands/iostat", "systools"),
@@ -211,6 +217,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/logger", "systools"),
     ("system/commands/login", "systools"),
     ("system/commands/logtrim", "systools"),
+    ("system/commands/logturn", "systools"),
     ("system/commands/lsblk", "systools"),
     ("system/commands/lscpu", "systools"),
     ("system/commands/lsmem", "systools"),
@@ -265,6 +272,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/script", "systools"),
     ("system/commands/scrub", "systools"),
     ("system/commands/sensors", "systools"),
+    ("system/commands/sendmail", "systools"),
     ("system/commands/serial", "systools"),
     ("system/commands/serial-console", "systools"),
     ("system/commands/service", "systools"),
@@ -280,15 +288,18 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/swapoff", "systools"),
     ("system/commands/swapon", "systools"),
     ("system/commands/system-release", "systools"),
+    ("system/commands/systemctl", "systools"),
     ("system/commands/sysupdate", "systools"),
     ("system/commands/taskset", "systools"),
     ("system/commands/timed", "systools"),
     ("system/commands/timedatectl", "systools"),
+    ("system/commands/timerd", "systools"),
     ("system/commands/top", "systools"),
     ("system/commands/traceroute", "systools"),
     ("system/commands/traceroute6", "systools"),
     ("system/commands/tree", "systools"),
     ("system/commands/troubleshoot", "systools"),
+    ("system/commands/tune", "systools"),
     ("system/commands/umount", "systools"),
     ("system/commands/unlock", "systools"),
     ("system/commands/update", "systools"),
@@ -329,6 +340,10 @@ pub const FEATURES_DIR: &str = "system/resources/features";
 /// boot archive they go, beside the rest of the signed system.
 pub const TROUBLESHOOT: &str = "userspace/troubleshoot";
 pub const TROUBLESHOOT_DIR: &str = "system/resources/troubleshoot";
+/// The performance profiles tune(8) applies (ADR 0476), and where in the
+/// boot archive they go, beside the rest of the signed system.
+pub const TUNE: &str = "userspace/tune";
+pub const TUNE_DIR: &str = "system/resources/tune";
 
 /// The console's pages (admind(8), ADR 0514), and where in the boot
 /// archive they go: the folder admind serves. Its `manifest.txt` lists
@@ -626,6 +641,7 @@ pub fn build_for(ctx: &Ctx, profile: Profile, lab: bool) -> Result<Programs> {
     install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &[], &mut files)?;
     install_tree(ctx, FEATURES, FEATURES_DIR, &[], &mut files)?;
     install_tree(ctx, TROUBLESHOOT, TROUBLESHOOT_DIR, &[], &mut files)?;
+    install_tree(ctx, TUNE, TUNE_DIR, &[], &mut files)?;
     install_admin(ctx, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
     // The root this system trusts its releases by (ADR 0308).
@@ -1103,6 +1119,35 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    /// The tools systools starts itself, from its own program, and never
+    /// by a name in /system/commands: cert's responder of HTTP-01 (ADR
+    /// 0513).
+    const STARTED_BY_SYSTOOLS: [&str; 1] = ["acme-answer"];
+
+    /// Every tool in systools' table has a link in /system/commands, so a
+    /// new one is in the image; a tool left out is not found at boot.
+    #[test]
+    fn each_systools_tool_has_its_command() {
+        let library = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../userspace/programs/systools/src/lib.rs");
+        let text = std::fs::read_to_string(&library).unwrap();
+        let start = text.find("const TOOLS: &[(&str, Tool)] = &[").expect("systools' table");
+        let table = &text[start..start + text[start..].find("\n];").expect("the table's end")];
+        let tools: Vec<&str> = table
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("(\"")?.split('"').next())
+            .collect();
+        assert!(tools.len() > 100, "read {} tools", tools.len());
+        let missing: Vec<&str> = tools
+            .into_iter()
+            .filter(|tool| !STARTED_BY_SYSTOOLS.contains(tool))
+            .filter(|tool| {
+                !STD_LINKS.contains(&(format!("system/commands/{tool}").as_str(), "systools"))
+            })
+            .collect();
+        assert!(missing.is_empty(), "add these to STD_LINKS: {missing:?}");
+    }
 
     #[test]
     fn programs_on_std_link_the_sysroots_sqlite() {

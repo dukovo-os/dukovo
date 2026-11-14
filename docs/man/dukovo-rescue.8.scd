@@ -53,19 +53,20 @@ From the last good start, 41 on 2026-11-11 21:03, Dukovo 0.15.0, to start 42:
 
 What would you like to do?
    0  Why the last start failed, and what changed
-   1  Reinstall Dukovo, keeping settings, apps and files
-   2  Put back the settings from before the last update
-   3  Check the root's disk
-   4  Copy the users' and shared files to another disk
-   5  Check the hardware
-   6  Turn networking on
-   7  Check the network
-   8  Open a shell (type exit to come back)
-   9  Start Dukovo normally
-  10  Restart
-  11  Power off
-  12  Find the likely cause
-Choose 0 to 12:
+   1  Find the likely cause
+   2  Find the change that broke the start
+   3  Reinstall Dukovo, keeping settings, apps and files
+   4  Put back the settings from before the last update
+   5  Check the root's disk
+   6  Copy the users' and shared files to another disk
+   7  Check the hardware
+   8  Turn networking on
+   9  Check the network
+  10  Open a shell (type exit to come back)
+  11  Start Dukovo normally
+  12  Restart
+  13  Power off
+Choose 0 to 13:
 ```
 
 A choice that needs the root, or a last update to undo, says *(not here)*
@@ -90,7 +91,28 @@ install stick puts GRUB and the menu back (*dukovo-install*(8)).
 *0 Why the last start failed*
 	Shows again what Rescue said of the last starts after the sign-in.
 
-*1 Reinstall Dukovo*
+*1 Find the likely cause*
+	Names the likely cause of what went wrong, as *troubleshoot*(8) does
+	(ADR 0474): of the root's newest start that did not go well, from its
+	record and what changed since the last good start, or, when the root
+	does not mount, of that. Each match says its cause, its fix and the
+	support page of its error ID; with none, it says that no known cause
+	matches what Rescue can see. It works when the root is not mounted,
+	which is when the other choices that need it say *(not here)*. It goes
+	by the signatures Rescue's own copy of the release ships, or the newer
+	file the root keeps, when it mounts.
+
+*2 Find the change that broke the start*
+	Says which start failed and which was the last good one before it,
+	and what to run to find the change between them: *elevate changes
+	bisect* (*changes*(1)), once the system is up, even with a service
+	failing. Rescue cannot run the search itself. Each try is a start of
+	the installed system, which judges it with its own health check, and
+	the search keeps its state in the system's _/system/state_, which
+	in Rescue is memory. Nothing is changed. It says why when no start
+	has failed or no good start is kept.
+
+*3 Reinstall Dukovo*
 	Builds the system into the default slot, or slot A when no slot is
 	left, from Rescue's own copy of the release, or from an update folder
 	or update file on a disk (*sysupdate stage* reads the same), signed
@@ -103,61 +125,50 @@ install stick puts GRUB and the menu back (*dukovo-install*(8)).
 	and apps, and shared files are not written. Rescue reinstalls its own
 	version; the system then updates as usual.
 
-*2 Put back the settings*
+*4 Put back the settings*
 	Runs the fallback's steps (ADR 0454) on the last update's snapshot,
 	_@snapshots/update_: the settings the system has now are kept in
 	_settings-failed_, and those from before the update take their place.
 
-*3 Check the disk*
+*5 Check the disk*
 	Unmounts the root and runs *fsck-btrfs*(8) on it, read-only, then
 	mounts it again. When it finds problems, copy the files off before
 	anything else.
 
-*4 Copy files off*
+*6 Copy files off*
 	Copies _@users_ and _@shared_ to a new folder,
 	_dukovo-rescue-_*time*, on another disk or partition, which Rescue
 	mounts and unmounts.
 
-*5 Check the hardware*
+*7 Check the hardware*
 	Runs *hardware check* (*hardware*(8), ADR 0488): the memory, the
 	processors, the disks' self-tests and the other parts it checks,
 	for a start that fails in ways that point at a part. Rescue shows
 	its results and waits for Enter before it shows the choices again.
 	It needs no root and no network.
 
-*6 Turn networking on*
+*8 Turn networking on*
 	Starts the network services the system has, behind the firewall
 	already running: for a reinstall from an update folder or file on a
 	network share, or to copy files off over the network from the shell.
 
-*7 Check the network*
-	Turns networking on as choice 6 does, waits up to 20 seconds for a
+*9 Check the network*
+	Turns networking on as choice 8 does, waits up to 20 seconds for a
 	card to have an address, then runs *netcheck* (*netcheck*(8), ADR
 	0489), which says at which layer the network stops working. Rescue
 	waits for Enter before it shows the choices again. Nothing leaves
 	the local network: *netcheck* is run without *--internet*.
 
-*8 Open a shell*
+*10 Open a shell*
 	Runs root's shell, with the root mounted at _/volumes/_*disk*. Exit
 	the shell to come back.
 
-*9 Start Dukovo normally*
+*11 Start Dukovo normally*
 	Sets the count of starts not seen through back to 0 and restarts, so
 	that the menu starts the default slot again.
 
-*10 Restart*, *11 Power off*
+*12 Restart*, *13 Power off*
 	End Rescue.
-
-*12 Find the likely cause*
-	Names the likely cause of what went wrong, as *troubleshoot*(8) does
-	(ADR 0474): of the root's newest start that did not go well, from its
-	record and what changed since the last good start, or, when the root
-	does not mount, of that. Each match says its cause, its fix and the
-	support page of its error ID; with none, it says that no known cause
-	matches what Rescue can see. It works when the root is not mounted,
-	which is when the other choices that need it say *(not here)*. It goes
-	by the signatures Rescue's own copy of the release ships, or the newer
-	file the root keeps, when it mounts.
 
 # EXIT STATUS
 
@@ -184,5 +195,5 @@ _boot/grub/rescue.cfg_, _boot/grub/rescue.env_ on each EFI system partition
 # SEE ALSO
 
 *sysupdate*(8), *system-release*(8), *spark*(8), *consoled*(8),
-*dukovo-install*(8), *dukovo-boot*(7), *fsck-btrfs*(8), *hardware*(8),
-*netcheck*(8)
+*dukovo-install*(8), *dukovo-boot*(7), *fsck-btrfs*(8), *changes*(1),
+*hardware*(8), *netcheck*(8)

@@ -83,11 +83,11 @@ fn the_worked_examples_read() {
     assert_eq!(listen.ports.iter().map(ToString::to_string).collect::<Vec<_>>(), ["80", "443"]);
     let shared = nginx.permissions.get("files.shared").unwrap();
     assert_eq!(shared.folders, [("www".to_string(), Access::Read)]);
-    assert_eq!(nginx.uses[0].interface.0, "dukovo.certificates/1");
+    assert_eq!(nginx.uses[0].interface.as_ref().unwrap().0, "dukovo.certificates/1");
     assert_eq!(nginx.data, Data { settings: true, data: false, cache: true });
 
     let postgres = from_json(EXAMPLES[1].1).unwrap();
-    assert_eq!(postgres.programs.len(), 3);
+    assert_eq!(postgres.programs.len(), 4);
     assert_eq!(postgres.provides[0].socket.as_ref().map(|s| s.0.as_str()), Some("postgresql"));
     assert_eq!(postgres.provides[0].to, To::Approved);
 
@@ -277,15 +277,17 @@ fn commands_and_services_run_its_programs() {
         ",\n  \"services\": [ {\n    \"name\": \"app\",\n    \"program\": \"app\",\n    \
          \"health\": { \"socket\": \"app\" }\n  } ]",
     );
+    // A socket Spark holds answers before the service runs, so a health
+    // check through it would pass a service that never works.
+    let held =
+        service.replace("\"health\":", "\"sockets\": [ { \"path\": \"app\" } ], \"health\":");
     assert_eq!(
-        error(&service),
-        "line 15: service app is checked through the socket app, which provides does not name"
+        error(&held),
+        "line 15: service app is checked through the socket app, which Spark holds and so \
+         answers before the service does: check through a socket the service makes itself, or \
+         with health.command"
     );
-    let provided = service.replace(
-        "\n}\n",
-        ",\n  \"provides\": [ { \"socket\": \"app\", \"to\": \"anyone\" } ]\n}\n",
-    );
-    let manifest = from_json(&provided).unwrap();
+    let manifest = from_json(&service).unwrap();
     let svc = &manifest.services[0];
     assert_eq!(
         (svc.restart, svc.start, svc.account.clone()),
@@ -319,7 +321,7 @@ fn commands_and_services_run_its_programs() {
     assert!(in_service("\"needs\": [\"dukovo.network\"]").contains("is not an interface"));
     assert_eq!(
         in_service("\"start\": \"on-connection\""),
-        "line 12: service app starts on a connection, but provides names no socket to connect to"
+        "line 12: service app starts on a connection, but its sockets names none to wait on"
     );
     assert!(
         in_service("\"needs\": [\"a.b/1\", \"a.b/1\"]").contains("service app needs a.b/1 twice")
@@ -888,5 +890,211 @@ fn damaged_manifests_get_errors_not_panics() {
                 assert!(!error.message.is_empty());
             }
         }
+    }
+}
+
+#[test]
+fn a_service_names_its_timer_and_its_logs() {
+    let in_service = |more: &str| {
+        errors(&with(&format!(
+            ",\n  \"services\": [ {{ \"name\": \"app\", \"program\": \"app\", {more} }} ]"
+        )))
+        .join("\n")
+    };
+    let good = with(
+        ",\n  \"services\": [ { \"name\": \"app\", \"program\": \"app\", \
+         \"timer\": { \"at\": [\"daily\"], \"every\": \"6h\", \"spread\": \"1h\" }, \
+         \"logs\": { \"files\": [\"logs/*.log\"], \"reopen\": \"SIGUSR1\", \"keep\": 7 } } ]",
+    );
+    let manifest = from_json(&good).unwrap();
+    let svc = &manifest.services[0];
+    let timer = svc.timer.as_ref().unwrap();
+    assert_eq!(
+        (timer.at.as_slice(), timer.every.as_deref()),
+        (&["daily".to_string()][..], Some("6h"))
+    );
+    assert_eq!(svc.logs.as_ref().unwrap().keep, 7);
+    assert!(from_json(&with("")).unwrap().services.iter().all(|s| s.timer.is_none()));
+
+    for (more, said) in [
+        ("\"timer\": {}", "a timer needs `at` or `every`"),
+        ("\"timer\": { \"at\": [\"daily\"], \"after_boot\": \"1m\" }", "after_boot goes with"),
+        ("\"timer\": { \"at\": [\"61 * * * *\"] }", "timer.at item 1"),
+        ("\"timer\": { \"every\": \"soon\" }", "timer.every"),
+        ("\"timer\": { \"every\": \"1h\", \"time_zone\": \"../x\" }", "time zone"),
+        ("\"logs\": { \"files\": [] }", "logs.files names 1 to 16"),
+        ("\"logs\": { \"files\": [\"a.log\"], \"keep\": 0 }", "logs.keep"),
+        ("\"logs\": { \"files\": [\"a.log\"], \"reopen\": \"USR1\" }", "logs.reopen"),
+        ("\"logs\": { \"files\": [\"a/*/b.log\"] }", "logs.files"),
+    ] {
+        let said_now = in_service(more);
+        assert!(said_now.contains(said), "{more}: {said_now}");
+    }
+}
+
+/// A manifest whose one service has `more` after its program, with the
+/// permission to listen on port 80 and 8080.
+fn with_service(more: &str, rest: &str) -> String {
+    with(&format!(
+        ",\n  \"permissions\": {{ \"network.listen\": {{ \"ports\": [80, 8080], \"need\": \
+         \"required\" }} }},\n  \"services\": [ {{ \"name\": \"app\", \"program\": \"app\"{more} }} \
+         ]{rest}"
+    ))
+}
+
+#[test]
+fn a_service_names_its_sockets_as_a_service_file_does() {
+    let text = with_service(
+        ", \"start\": \"on-connection\", \"sockets\": [ \
+         { \"port\": 80, \"address\": \"0.0.0.0\" }, { \"port\": 80, \"address\": \"::\", \
+         \"name\": \"web6\", \"backlog\": 64 }, { \"port\": 8080, \"udp\": true }, \
+         { \"path\": \"echo\" } ]",
+        ",\n  \"provides\": [ { \"socket\": \"echo\", \"to\": \"approved\" } ]",
+    );
+    let manifest = from_json(&text).unwrap();
+    let svc = &manifest.services[0];
+    assert_eq!(svc.start, Start::OnConnection);
+    assert_eq!(svc.sockets.len(), 4);
+    assert_eq!(svc.sockets[1].name.as_deref(), Some("web6"));
+    assert_eq!(svc.sockets[1].backlog, Some(64));
+    assert_eq!(
+        svc.sockets[1].address.and_then(service::SocketAddress::text).as_deref(),
+        Some("::")
+    );
+    assert_eq!(svc.sockets[2].udp, Some(true));
+    // The same checks as a service file's, each at the socket it is about.
+    for (sockets, said) in [
+        ("{ \"port\": 81 }", "service app: port 81 is none of network.listen's ports"),
+        ("{ \"port\": 80, \"path\": \"a\" }", "a socket has a port or a path, not both"),
+        ("{ \"name\": \"a\" }", "a socket needs a port or a path"),
+        ("{ \"path\": \"a\", \"udp\": true }", "udp is for a socket with a port alone"),
+        ("{ \"path\": \"a/b\" }", "a socket's path is a plain name"),
+        ("{ \"port\": 80, \"address\": \"all\" }", "a socket's address is"),
+        ("{ \"port\": 80, \"name\": \"a:b\" }", "a socket's name is 1 to 64"),
+        ("{ \"port\": 80, \"backlog\": 0 }", "a socket's backlog is from 1 to 65535"),
+        ("{ \"port\": 80 }, { \"port\": 80, \"udp\": true }", "two sockets are named 80"),
+    ] {
+        let said_now =
+            errors(&with_service(&format!(", \"sockets\": [ {sockets} ]"), "")).join("\n");
+        assert!(said_now.contains(said), "{sockets}: {said_now}");
+    }
+    let many: Vec<String> = (0..17).map(|n| format!("{{ \"path\": \"s{n}\" }}")).collect();
+    let text = with_service(&format!(", \"sockets\": [ {} ]", many.join(", ")), "");
+    assert!(error(&text).contains("names 17 sockets, and at most 16 are allowed"));
+    // Without the permission no port is listened on.
+    let text = with(
+        ",\n  \"services\": [ { \"name\": \"app\", \"program\": \"app\", \"sockets\": [ { \
+         \"port\": 80 } ] } ]",
+    );
+    assert!(error(&text).contains("port 80 is none of network.listen's ports"));
+}
+
+#[test]
+fn a_provided_socket_is_a_path_socket_of_a_service() {
+    let provides = ",\n  \"provides\": [ { \"socket\": \"echo\", \"to\": \"anyone\" } ]";
+    let by_port = with_service(", \"sockets\": [ { \"port\": 80, \"name\": \"echo\" } ]", provides);
+    assert!(
+        error(&by_port).contains(
+            "provides offers the socket echo, which no service's sockets makes as a path"
+        )
+    );
+    let none = with_service("", provides);
+    assert!(error(&none).contains("provides offers the socket echo"));
+    let by_path = with_service(", \"sockets\": [ { \"path\": \"echo\" } ]", provides);
+    assert!(from_json(&by_path).is_ok());
+    // Offered to the publisher's bundles, it has a group of its account's
+    // name and `-socket`, which fits in 32 characters.
+    let account = |name: &str, to: &str| {
+        with_service(
+            &format!(", \"account\": \"{name}\", \"sockets\": [ {{ \"path\": \"echo\" }} ]"),
+            &format!(",\n  \"provides\": [ {{ \"socket\": \"echo\", \"to\": \"{to}\" }} ]"),
+        )
+    };
+    let longest = "a".repeat(SOCKET_GROUP_ACCOUNT_MAX);
+    assert!(from_json(&account(&longest, "publisher")).is_ok());
+    let longer = "a".repeat(SOCKET_GROUP_ACCOUNT_MAX + 1);
+    assert!(error(&account(&longer, "approved")).contains("that account's name has at most 25"));
+    // Offered to anyone, it has no group.
+    assert!(from_json(&account(&longer, "anyone")).is_ok());
+    let on_connection = with_service(", \"start\": \"on-connection\"", "");
+    assert!(error(&on_connection).contains("starts on a connection, but its sockets names none"));
+    // Who connects is provides' to say, not the socket's.
+    for key in ["\"to\": \"anyone\"", "\"group\": \"echo-socket\""] {
+        let text =
+            with_service(&format!(", \"sockets\": [ {{ \"path\": \"echo\", {key} }} ]"), provides);
+        assert!(error(&text).contains("a bundle's socket has no "), "{key}: {}", error(&text));
+    }
+}
+
+#[test]
+fn uses_names_an_interface_or_a_socket_of_another_bundle() {
+    let uses = |items: &str| with(&format!(",\n  \"uses\": [\n    {items}\n  ]"));
+    let text = uses(
+        "{ \"interface\": \"dukovo.certificates/1\", \"need\": \"required\" },\n    \
+         { \"socket\": \"org.php.php-fpm/fpm\", \"need\": \"optional\" }",
+    );
+    let manifest = from_json(&text).unwrap();
+    assert_eq!(manifest.uses[0].what(), "dukovo.certificates/1");
+    assert_eq!(manifest.uses[1].what(), "org.php.php-fpm/fpm");
+    assert_eq!(manifest.uses[1].need, Need::Optional);
+    assert!(manifest.uses[1].interface.is_none());
+    for (item, said) in [
+        ("{ \"need\": \"required\" }", "names a socket or an interface, one of the two"),
+        (
+            "{ \"socket\": \"a.b.c/x\", \"interface\": \"a.b/1\", \"need\": \"required\" }",
+            "names a socket or an interface, one of the two",
+        ),
+        ("{ \"socket\": \"fpm\", \"need\": \"required\" }", "is not a socket"),
+        ("{ \"socket\": \"Org.Php/fpm\", \"need\": \"required\" }", "is not a socket"),
+        ("{ \"socket\": \"org.php.fpm/\", \"need\": \"required\" }", "is not a socket"),
+        ("{ \"socket\": \"org.php.fpm/a/b\", \"need\": \"required\" }", "is not a socket"),
+    ] {
+        let said_now = error(&uses(item));
+        assert!(said_now.contains(said), "{item}: {said_now}");
+    }
+    let twice = uses(
+        "{ \"socket\": \"org.php.fpm/fpm\", \"need\": \"required\" },\n    \
+         { \"socket\": \"org.php.fpm/fpm\", \"need\": \"optional\" }",
+    );
+    assert!(error(&twice).contains("uses names org.php.fpm/fpm twice"));
+}
+
+#[test]
+fn a_service_stops_and_backs_up_as_a_service_file_says() {
+    let text = with_service(
+        ", \"stop\": { \"signal\": \"SIGQUIT\", \"timeout\": 30 }, \"backup\": { \"before\": { \
+         \"program\": \"app\", \"arguments\": [\"checkpoint\"] }, \"time_limit\": 60 }",
+        "",
+    );
+    let manifest = from_json(&text).unwrap();
+    let svc = &manifest.services[0];
+    let stop = svc.stop.as_ref().unwrap();
+    assert_eq!((stop.signal, stop.timeout), (Some(service::Signal::Quit), Some(30)));
+    let backup = svc.backup.as_ref().unwrap();
+    assert_eq!(backup.before.as_ref().unwrap().arguments, ["checkpoint"]);
+    assert!(backup.after.is_none() && backup.time_limit == Some(60));
+    // stop is version 2's, backup is not.
+    assert!(svc.uses_version_2());
+    let backup_only = with_service(", \"backup\": { \"after\": { \"program\": \"app\" } }", "");
+    assert!(!from_json(&backup_only).unwrap().services[0].uses_version_2());
+    let defaults = with_service(", \"stop\": {}", "");
+    let stop = from_json(&defaults).unwrap().services[0].stop.clone().unwrap();
+    assert_eq!((stop.signal, stop.timeout), (None, None));
+    for (more, said) in [
+        ("\"stop\": { \"signal\": \"SIGHUP\" }", "`service reload` sends"),
+        ("\"stop\": { \"signal\": \"SIGKILL\" }", "which a program cannot take as a request"),
+        ("\"stop\": { \"signal\": \"QUIT\" }", "stop.signal must be SIGTERM, SIGINT"),
+        ("\"stop\": { \"timeout\": 0 }", "stop.timeout is from 1 to 3600 seconds, not 0"),
+        ("\"stop\": { \"timeout\": 3601 }", "stop.timeout is from 1 to 3600 seconds, not 3601"),
+        ("\"stop\": { \"soon\": 1 }", "`soon` is not a field here"),
+        (
+            "\"backup\": { \"before\": { \"program\": \"tool\" } }",
+            "before runs tool, which programs does not name",
+        ),
+        ("\"backup\": { \"time_limit\": 0 }", "time_limit from 1 to 3600 seconds, not 0"),
+        ("\"backup\": { \"after\": { \"program\": \"app\" }, \"time_limit\": 3601 }", "not 3601"),
+    ] {
+        let said_now = errors(&with_service(&format!(", {more}"), "")).join("\n");
+        assert!(said_now.contains(said), "{more}: {said_now}");
     }
 }

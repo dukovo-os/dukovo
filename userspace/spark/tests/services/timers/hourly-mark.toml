@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The timers boot test's hourly service: each run adds a line to a file.
+# It has no catch-up, so a time that passes while the machine is off does
+# not make it run.
+
+service_version = 1
+description = "Adds a line to a file every hour, with no catch-up"
+program = "/system/commands/sh"
+arguments = ["-c", 'mkdir -p /system/state/timers; echo run >> /system/state/timers/hourly-mark']
+enabled = false
+restart = "never"
+
+[timer]
+at = ["hourly"]
+catch_up = false
+
+[permissions]
+files.read-write = ["/system/state/timers"]

@@ -160,6 +160,11 @@ errors kernel = 1 {
     /// A router or the machine says that what was sent is prohibited
     /// there (ICMPv6's "administratively prohibited").
     prohibited = 56 => EACCES;
+    /// The process's resource domain, or one above it, has as many
+    /// threads as its thread limit allows (radix-resource-domain(2)'s
+    /// `set_threads`, ADR 0476), as Linux's `pids.max`: `fork` and
+    /// `pthread_create` fail with EAGAIN.
+    too_many_threads = 57 => EAGAIN;
 }
 
 /// Errors of files and directories (radix-directory(2), radix-file(2)).

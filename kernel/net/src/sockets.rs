@@ -5,11 +5,55 @@
 //! each is made from, which comes back when it is taken out of its stack,
 //! and the calls on a stack that need its interface, as connecting does.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::{Socket, icmp, tcp, udp};
 use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpVersion};
 
 use crate::{Link, PingMemory, Stack, lent};
+
+/// The congestion control of the TCP sockets made from then on (ADR 0476):
+/// CUBIC, Linux's default, until the kernel setting `net.congestion`
+/// chooses another ([`set_congestion`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Congestion {
+    /// CUBIC (RFC 9438), which grows the window by a cubic function of the
+    /// time since the last loss: the better on long, fast paths.
+    Cubic,
+    /// Reno (RFC 5681), which grows it by about a segment each round trip
+    /// once past slow start: the gentler on short, shared ones.
+    Reno,
+}
+
+impl Congestion {
+    /// Its name, as Linux's `tcp_congestion_control` gives it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Congestion::Cubic => "cubic",
+            Congestion::Reno => "reno",
+        }
+    }
+
+    /// The one named `name`.
+    pub fn parse(name: &str) -> Option<Congestion> {
+        [Congestion::Cubic, Congestion::Reno].into_iter().find(|c| c.name() == name)
+    }
+}
+
+/// Whether new TCP sockets use Reno rather than CUBIC.
+static RENO: AtomicBool = AtomicBool::new(false);
+
+/// The congestion control new TCP sockets use.
+pub fn congestion() -> Congestion {
+    if RENO.load(Ordering::Relaxed) { Congestion::Reno } else { Congestion::Cubic }
+}
+
+/// Makes the TCP sockets made from now on use `congestion`; those open
+/// keep theirs, as on Linux.
+pub fn set_congestion(congestion: Congestion) {
+    RENO.store(congestion == Congestion::Reno, Ordering::Relaxed);
+}
 
 /// The buffers of a TCP socket, lent to it for as long as it lives.
 pub struct TcpMemory {
@@ -25,7 +69,13 @@ impl TcpMemory {
     /// 1 GiB to receive into.
     pub fn socket(self) -> tcp::Socket<'static> {
         let TcpMemory { receive, transmit } = self;
-        tcp::Socket::new(tcp::SocketBuffer::new(receive), tcp::SocketBuffer::new(transmit))
+        let mut socket =
+            tcp::Socket::new(tcp::SocketBuffer::new(receive), tcp::SocketBuffer::new(transmit));
+        socket.set_congestion_control(match congestion() {
+            Congestion::Cubic => tcp::CongestionControl::Cubic,
+            Congestion::Reno => tcp::CongestionControl::Reno,
+        });
+        socket
     }
 
     /// The memory `socket` was made with, back.

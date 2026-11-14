@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The log-turnover boot test's service (ADR 0478): it writes a numbered
+# line to a file of its logs folder each second, opening the file for
+# each line, as a service that reopens its log does. logturn turns the
+# file over, keeping three.
+
+service_version = 1
+description = "Writes numbered lines to a log file"
+program = "/system/commands/sh"
+arguments = ["-c", 'mkdir -p /system/state/turnlog/logs; i=0; while :; do i=$((i+1)); echo $i >> /system/state/turnlog/logs/x.log; sleep 1; done']
+enabled = false
+restart = "on-failure"
+
+[logs]
+files = ["logs/*.log"]
+turn_over = "64K"
+keep = 3
+
+[permissions]
+files.read-write = ["/system/state/turnlog"]

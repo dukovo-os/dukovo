@@ -55,7 +55,7 @@ override:
 	it. A later Dukovo reads every earlier version. A file for a version
 	newer than this Dukovo knows is refused, with a message to update
 	Dukovo. Version 2, which Dukovo 1.0 and later read, adds *requires*,
-	*wants*, *after*, *give_up_after*, *[ready]* and *[health]*; a
+	*wants*, *after*, *give_up_after*, *[ready]*, *[health]* and *[stop]*; a
 	version 1 file with one of them is refused with that fix. A file
 	that uses none of them may stay version 1, which every Dukovo reads.
 
@@ -98,8 +98,9 @@ override:
 *requires* = [_"service"_, ...]
 	The services it requires, by name: each is started first, and this
 	one starts only once each is ready. One that is stopped, that Spark
-	gave up on, that has no file, or that Rescue or a start with only
-	the essentials leaves off keeps it from starting; and when one
+	gave up on, that has no file, or that Rescue, a start with only
+	the essentials or a try of *changes bisect* leaves off keeps it from
+	starting; and when one
 	stops for good, Spark stops this one too (see STARTING AND
 	READINESS). None unless set; version 2.
 
@@ -169,6 +170,109 @@ override:
 	A dotted name is a key of a table, so *ready.when = "listening"* at
 	the top of the file is *when = "listening"* under *[ready]*.
 
+*start* = *"at-boot"* | *"on-connection"*
+	When Spark starts it, once it is enabled: at boot, the default, or
+	at the first connection or datagram on one of its *sockets*, which
+	Spark holds meanwhile, so that the connection waits and is served
+	once the service runs (see SOCKETS SPARK HOLDS). *"on-connection"*
+	needs at least one socket. Stopping it by request puts it back to
+	waiting. ADR 0477.
+
+*sockets* = [{ ... }, ...]
+	The sockets Spark makes and holds for it, as *[[sockets]]* tables,
+	at most 16 (see SOCKETS SPARK HOLDS). Each has one of *port* and
+	*path*; under *[[sockets]]* each key is written without *sockets.*:
+
+	*sockets.port* = _number_
+		A TCP socket on that port, which must be one of
+		*network.listen*'s: that list covers TCP and UDP alike.
+		Without *address* it takes every address, IPv6 and IPv4
+		together.
+
+	*sockets.address* = _"0.0.0.0"_ | _"::"_ | _"address"_
+		With *port*: every IPv4 address; every IPv6 address and no
+		IPv4; or one IPv4 or IPv6 address, such as _"127.0.0.1"_.
+
+	*sockets.udp* = *true* | *false*
+		With *port*: a UDP socket instead of a TCP one. *false* unless
+		set.
+
+	*sockets.path* = _"name"_
+		A Unix stream socket of that name in the service's live
+		folder (see WHAT A SERVICE SEES). A plain name of letters,
+		digits, underscore, hyphen and dot, not "." or ".." and with no slash.
+
+	*sockets.name* = _"word"_
+		The word for it in *LISTEN_FDNAMES*: letters, digits, underscore,
+		hyphen and dot, with no colon; each once in the file. The
+		port's number or the path unless set.
+
+	*sockets.backlog* = _number_
+		The connections the kernel keeps waiting for the service to
+		accept, 1 to 65535: 4096 unless set.
+
+	*sockets.non-blocking* = *true* | *false*
+		Whether the socket is passed with *O_NONBLOCK* set, as
+		systemd's *NonBlocking=* does; *false* unless set. A program
+		that takes a socket as it inherits it and waits for it with
+		*poll*(2), as nginx does, needs it: on a socket that waits,
+		each of its processes that loses the race for a connection
+		waits in *accept*(2), and no longer hears a request to stop.
+
+	*sockets.to* = _"anyone"_ | _"system"_
+		With *path*: who may connect besides the service. *"anyone"*
+		makes the socket root's, mode 0666; *"system"* root's, mode
+		0600, for the system's own programs. Spark also sets the
+		service's live folder to 0755 so that a socket can be reached
+		by name. Without *to* and *group* the socket is the
+		service's account's, mode 0600. *bundled*(8) writes it for a
+		socket a bundle offers (see *manifest.json*(5)).
+
+	*sockets.group* = _"name"_
+		With *path*: the group whose members may connect, as an
+		account's name is written. The socket is root's, in that
+		group, mode 0660. A group that does not exist is skipped, and
+		Spark logs it. Not with *to*.
+
+	```
+	start = "on-connection"
+
+	[permissions]
+	network.listen = [8090]
+
+	[[sockets]]
+	port = 8090
+	name = "web"
+	```
+
+*groups* = [_"group"_, ...]
+	The groups Spark gives its process besides its account's, at most
+	16, each once and named as an account is, which Spark gives the
+	process, and the root its view acts through. *bundled*(8) writes it
+	for a bundle that is given a socket another bundle offers to its
+	group (see *manifest.json*(5)). None unless set.
+
+*stop*
+	How Spark stops it, in a table *[stop]* of its own (ADR 0477);
+	version 2. Its keys:
+
+	*stop.signal* = _"SIGTERM"_ | _"SIGINT"_ | _"SIGQUIT"_ | _"SIGUSR1"_ | _"SIGUSR2"_ | _"SIGWINCH"_
+		The signal that asks the service to stop: *"SIGTERM"* unless
+		set. *nginx*'s is *"SIGQUIT"*, its graceful stop. Not
+		*"SIGHUP"*, which *service reload* sends to read settings
+		again, and not *"SIGKILL"* or *"SIGSTOP"*, which a program
+		cannot take as a request.
+
+	*stop.timeout* = _seconds_
+		How long Spark waits for the service to end after the signal,
+		before it ends what is left of it: 5 unless set, 1 to 3600.
+
+	```
+	[stop]
+	signal = "SIGQUIT"
+	timeout = 30
+	```
+
 *account* = _"name"_
 	The account it runs as, from _/system/settings/passwd_; root's
 	unless set, without root's right to pass the owners and modes of
@@ -217,6 +321,49 @@ override:
 		The domain's out-of-memory class: *"service"*, the default, is
 		stopped only after every app domain when memory runs out
 		(*radix-resource-domain*(2)).
+
+	*io_weight* = _number_
+		The domain's share of a disk, 1 to 10000, 100 unless set. While
+		services wait for a disk, those with the larger weight get the
+		larger share of its requests: of weights 400 and 100 reading
+		as fast as they can, the first gets four times the bytes
+		(ADR 0476). A request of a more urgent *ionice*(1) class or
+		level still goes first; weights share the disk between those of
+		the same rank. With nothing waiting a service gets all of the
+		disk, whatever its weight.
+
+	*io_read* = _"size"_ | _bytes_ | *"none"*, *io_write* = _"size"_ | _bytes_ | *"none"*
+		The bytes the domain may read from disks, and write to them, each
+		second, written as *memory* is: *"50M"* is 50 MiB a second. The
+		rate is for the domain across all disks together, and holds a
+		reader or writer back, which its programs notice only as slower
+		reads and writes. No limit unless set. Dirty pages the page
+		cache writes back later are the kernel's and are held to no
+		rate; *service*(8)'s *status* shows the time a service's rates
+		held it.
+
+	*io_read_ops* = _number_ | *"none"*, *io_write_ops* = _number_ | *"none"*
+		The read and write requests the domain may make to disks each
+		second, 1 or more; no limit unless set. A rate of requests holds
+		a program that makes many small ones, which a rate of bytes
+		does not.
+
+	*threads* = _number_
+		The most threads the domain may have, in all its processes
+		together, 1 to 1048576, *4096* unless set. A *fork* or thread
+		creation past it fails with EAGAIN, as Linux's *pids.max* does,
+		so a fork bomb in a service fills its own limit and not the
+		machine's; ADR 0476. The service's own first thread counts.
+
+	*open_files* = _number_
+		The files each of the service's processes may have open at
+		once, 1 to 1048576: Spark sets the soft and the hard limit of
+		RLIMIT_NOFILE to it before the program starts, and what the
+		program starts keeps it. A program has 1024 unless this says
+		more, so a server with many connections, as nginx with
+		*worker_connections*, names its own (*open_files = 65536*).
+		*service check* refuses a number outside 1 to 1048576, naming
+		its line and column.
 
 *permissions*
 	A table of what it may do beyond running, by the names of the
@@ -345,6 +492,14 @@ override:
 		file sets it, and *authd*(8)'s, so that *date*(1)'s *--set*
 		works inside *elevate*(8).
 
+	*admin.tune* = *true* | *false*
+		Whether it holds the kernel settings capability, which lists the
+		kernel's settings and sets them (*radix-kernel-settings*(2),
+		ADR 0476); *false* unless set. Only the *tune* service's file
+		sets it, so that *tune*(8) may give the kernel a performance
+		profile at each boot. Anyone reads the settings' values in
+		_/kernel/settings_.
+
 	*devices.pci* = [_"vendor:device"_, ...]
 		The PCI cards it drives, for a driver program, each by its
 		vendor's and its device's ID in hexadecimal, as *lspci*(8)
@@ -402,7 +557,8 @@ override:
 At boot, Spark wants every service that is turned on (*enabled*), and
 *service* _name_ *start* wants one; a wanted service wants those it
 requires and wants, whether turned on or not, and so on along them.
-Rescue and a start with only the essentials leave theirs off still. Each
+Rescue, a start with only the essentials and a try of *changes bisect*
+(for the services it leaves out) leave theirs off still. Each
 wanted service waits until those it names are settled, and starts once
 it may:
 
@@ -467,6 +623,32 @@ never start; Spark logs the circle once, and each says so:
 spark: a and b wait for each other, through requires, wants or after: none of them starts until one of their files is changed
 ```
 
+# SOCKETS SPARK HOLDS
+
+A service whose file has *sockets* does not make them itself: Spark
+makes them before it starts the service, at boot for every enabled
+service, so that services that talk to each other start in any order. A
+socket Spark cannot make, because the port is taken, fails that
+service's start, with the reason, and the others go on.
+
+Spark passes them as *sd_listen_fds*(3) does: the descriptors from 3, in
+the file's order, with *LISTEN_FDS* their number, *LISTEN_PID* the
+process's own number and *LISTEN_FDNAMES* their names, separated by
+*:*. The places of *files.mount* follow, from _3 + LISTEN_FDS_.
+
+*service restart*, a restart after a failure and a bundle's update keep
+the sockets open. While no process accepts, connections wait in the
+backlog and are served once the new process runs: a client waits a
+moment and is not refused. *service stop* of a service that does not
+start *"on-connection"* closes them, so the port refuses; for one that
+does, it puts the service back to waiting, with its sockets open. *service
+disable* closes them. *service status* says "waits for a connection on
+port 8080" of a service that waits.
+
+A program that listens for itself and cannot take an inherited
+descriptor is not helped: name no socket for it. *nginx*'s wrapper
+turns the descriptors into its *NGINX* variable (see the handbook's nginx chapter).
+
 # HEALTH CHECKS
 
 Spark runs a running service's *health.command* *health.every* seconds
@@ -503,6 +685,75 @@ spark: gave up on web after 5 failed starts in a row (the last: it exited with c
 A service that has been ready for 10 s, or a setup step that is done,
 starts the count again. *service* _name_ *start* starts a failed service
 afresh.
+
+# TIMERS
+
+A service with a *timer*, a *[timer]* table, is started at times (ADR 0478): *timerd*(8)
+asks Spark to start it, as *service start --by timer* does. A timer does
+not turn a service on: an enabled service with a timer is off between
+its times, and a start that comes while the last still runs is skipped.
+*service status* says when it last started and next starts. A timer
+needs *at* or *every*.
+
+*timer.at* = [_"time"_, ...]
+	Times of day: five fields as *crontab*(5) has them (_"30 3 \* \* \*"_
+	is half past three each night), or a word: _"hourly"_, _"daily"_,
+	_"weekly"_, _"monthly"_ or _"yearly"_. At most 32.
+
+*timer.every* = _"duration"_
+	So long after the last start: _"6h"_, _"90m"_, _"1d12h"_. The units
+	are *w*, *d*, *h*, *m* and *s*, largest first, each once; from one
+	second to 366 days.
+
+*timer.after_boot* = _"duration"_
+	With *every*: the first start comes this long after the machine
+	starts, not *every* after the last start.
+
+*timer.spread* = _"duration"_
+	Put each time off by up to this much, by an amount that is the same
+	for the timer each time and differs between machines, so that machines
+	do not start together.
+
+*timer.catch_up* = _true_ | _false_
+	Whether a time that came while the machine was off makes the service
+	start once, soon after the machine starts. True when left out.
+
+*timer.time_zone* = _"name"_
+	The time zone of *at*, a name of the time zone database; the
+	system's when left out.
+
+# LOG FILES
+
+A service that writes its own log files names them in *logs*, a *[logs]*
+table, and
+*logturn*(8) turns them over (ADR 0478): it renames a file that is due,
+has the service open its files again, and compresses the files turned
+over before. The service writes on into the renamed file until it has,
+so no line is lost. A file the service writes through the system's log
+(standard output and error) is *logd*(8)'s, and needs no setting here.
+
+*logs.files* = [_"pattern"_, ...]
+	The files, relative to the service's data folder, which is the
+	_HOME_ of its environment (for a bundle's service, the folder of its
+	account; else _/system/state/_name). A \* may stand in the last part
+	of the pattern only: _"logs/\*.log"_. At most 16.
+
+*logs.turn_over* = _"daily"_ | _"weekly"_ | _"size"_
+	When a file is due: each day, each week, or when it holds this
+	many bytes (_"100M"_, with K, M or G). _"daily"_ when left out.
+
+*logs.keep* = _number_
+	How many turned-over files are kept, 1 to 100. 14 when left out.
+
+*logs.compress* = _true_ | _false_
+	Whether the files turned over are compressed with zstd, from the
+	second on. True when left out.
+
+*logs.reopen* = _"signal"_ | _"restart"_ | _"none"_
+	How the service opens its files again: Spark sends it the signal,
+	such as _"SIGUSR1"_, which nginx takes; restarts it; or does nothing,
+	for a service that opens its file for each line. _"none"_ when left
+	out. The signal can be neither _SIGTERM_, _SIGINT_ nor _SIGQUIT_.
 
 # WHAT A SERVICE SEES
 
@@ -621,7 +872,8 @@ spark: could not start web: its certificate shop.example.com does not exist: cer
 Spark reads every file at boot, and a service's file again each time it
 starts the service, by *service* _name_ *start* or *restart* or after
 the service ended: a changed file takes effect at the service's next
-start. Its CPU weight and memory limit change then too; its
+start. Its limits change then too (its CPU weight, its memory, its
+disk weight and rates, its threads and its open files); its
 out-of-memory class stays its domain's until the next boot. A file added
 since boot is read when its service is first started.
 
@@ -738,5 +990,5 @@ _/system/live/spark/tmp/name_
 
 # SEE ALSO
 
-*spark*(8), *service*(8), *cert*(8), *certd*(8), *logd*(8), *e1000d*(8),
-*health.toml*(5)
+*spark*(8), *service*(8), *timerd*(8), *logturn*(8), *cert*(8), *certd*(8),
+*logd*(8), *e1000d*(8), *health.toml*(5)

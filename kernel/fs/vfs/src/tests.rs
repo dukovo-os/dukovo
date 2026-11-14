@@ -823,6 +823,34 @@ fn powering_off_syncs_changes_the_writeback_thread_leaves_for_later() {
 }
 
 #[test]
+fn a_sync_of_the_root_syncs_every_filesystem_and_of_another_directory_its_own() {
+    let vfs = vfs();
+    let root = vfs.root();
+    vfs.make_directory(&K, &root, "data", DIR).unwrap();
+    vfs.make_directory(&K, &root, "etc", DIR).unwrap();
+    let waiting = mem::arc(Waiting { inner: tmpfs(1 << 20), syncs: AtomicUsize::new(0) }).unwrap();
+    let fs: FsRef = waiting.clone();
+    vfs.mount(&K, &root, "data", fs, "vdb", false).unwrap();
+    let syncs = || waiting.syncs.load(Ordering::Relaxed);
+    let dir = OpenFlags { directory: true, ..OpenFlags::default() };
+    // A directory of the root's filesystem, not its root, is that
+    // filesystem's alone, as syncfs(2) is.
+    let etc = vfs.open(&K, &root, "etc", dir).unwrap();
+    vfs.sync_at(&etc).unwrap();
+    assert_eq!(syncs(), 0);
+    // The mounted filesystem's own root is its own.
+    let data = vfs.open(&K, &root, "data", dir).unwrap();
+    vfs.sync_at(&data).unwrap();
+    assert_eq!(syncs(), 1);
+    // The tree's root is every filesystem's, as sync(2) is: mlibc's sync
+    // syncs the root, which is memory once Spark mounts the disks.
+    vfs.sync_at(&root).unwrap();
+    assert_eq!(syncs(), 2);
+    drop((etc, data));
+    vfs.unmount(&K, &root, "data").unwrap();
+}
+
+#[test]
 fn mounts_join_filesystems() {
     let vfs = vfs();
     let root = vfs.root();

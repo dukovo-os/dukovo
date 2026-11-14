@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+about = "The commands of a Linux server work: systemctl says sshd's state in systemd's words, journalctl reads its records, hostnamectl shows the machine and sets its name, and a verb Dukovo lacks says what to run"
+time = "3m"
+
+# systemctl: the state of a service Spark runs, in systemd's words.
+[[step]]
+run = "systemctl is-active sshd"
+root = true
+expect = "active"
+[[step]]
+run = "systemctl status sshd"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "systemctl show -p ActiveState,SubState sshd"
+root = true
+expect = ["ActiveState=active", "SubState=running"]
+[[step]]
+run = "systemctl list-units --type=service"
+root = true
+expect = ["sshd.service", "loaded"]
+# A service that is not there is inactive, with systemd's status 3.
+[[step]]
+run = "systemctl is-active no-such-service"
+root = true
+exit = 3
+expect = "inactive"
+# A verb Dukovo does not have says what to run.
+[[step]]
+run = "systemctl mask sshd"
+root = true
+exit = 1
+expect = "elevate service NAME disable"
+
+# journalctl: a service's records.
+[[step]]
+run = "journalctl -u sshd -n 5 --no-pager"
+root = true
+expect = "sshd"
+
+# hostnamectl: the machine, its name changed and given back.
+[[step]]
+run = "hostnamectl status"
+root = true
+expect = ["Static hostname:", "Operating System: Dukovo", "Kernel: Radix"]
+[[step]]
+run = "sh -c 'old=$(hostnamectl hostname); hostnamectl set-hostname labadmin && hostnamectl hostname; hostnamectl set-hostname $old'"
+root = true
+expect = "labadmin"
+
+# sendmail: a message without a recipient is refused.
+[[step]]
+run = "printf 'Subject: x\\n\\nhi\\n' | sendmail -t"
+root = true
+exit = 64
+expect = "no recipients"

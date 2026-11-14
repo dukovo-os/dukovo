@@ -181,6 +181,8 @@ mod tests {
             outcome,
             error: error.map(str::to_string),
             why: None,
+            failing: None,
+            trial: None,
             items: vec![Item::new("system", "Dukovo", "0.15.0", None)],
             times: None,
         }

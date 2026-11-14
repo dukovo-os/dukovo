@@ -66,6 +66,10 @@ const TIMERS_MAX: u32 = 256;
 /// A resource limit that is no limit (RLIM_INFINITY).
 const UNLIMITED: u64 = 0xffffffffffffffff;
 
+/// The most `start_limit` sets RLIMIT_NOFILE's hard limit to: Linux's
+/// fs.nr_open.
+const FILES_MAX: u64 = 1048576;
+
 /// The version of the block `exec` takes.
 const EXEC_VERSION: u32 = 1;
 /// The most bytes an `exec` block may hold.
@@ -301,7 +305,7 @@ enum ProcessState: u8 {
 }
 
 /// A process.
-interface process = 0x000a version 9 {
+interface process = 0x000a version 10 {
     kind = process;
     /// Makes a kernel object, charged to this process's resource domain,
     /// and puts its capability, with every right, in slot `to`: a process
@@ -718,4 +722,15 @@ interface process = 0x000a version 9 {
     /// there, fails with no_such_process. (Since Phase 16, ADR 0497.)
     method cpu_time = 57 (id: u64, process: bool) -> (ns: u64)
         raises [no_such_slot, empty_slot, missing_rights, no_such_process];
+    /// Sets resource limit `resource` of the process, which has not
+    /// started, to `current` and `max`, as its maker asks: Spark sets a
+    /// service's `open_files` this way before its program starts. Unlike
+    /// `limits`, the hard limit may be raised; RLIMIT_NOFILE's to at most
+    /// FILES_MAX, as Linux's fs.nr_open, though a process holds no more
+    /// descriptors than its capability space has slots for
+    /// (radix-posix(7)). The program the process starts reads them as its
+    /// own. Fails with not_permitted once the process has started. Needs
+    /// the control right. (Since version 10, ADR 0476.)
+    method start_limit = 58 (resource: LimitKind, current: u64, max: u64) -> ()
+        raises [no_such_slot, empty_slot, missing_rights, invalid_argument, not_permitted];
 }

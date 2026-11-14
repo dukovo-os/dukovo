@@ -3,12 +3,15 @@
 
 //! The methods of resource domains (Phase 9, radix-resource-domain(2)):
 //! what Spark uses to give each service a domain of its own, with a CPU
-//! weight, a memory limit and an out-of-memory class (`crate::domains`).
+//! weight, a memory limit and an out-of-memory class (`crate::domains`),
+//! and since ADR 0476 a thread limit, a disk I/O weight and rates, and
+//! what its threads read from disks and wrote to them.
 
 use radix_abi::errors::Kernel;
 use radix_abi::resource_domain::{
-    self as abi, CreateArgs, CreateProcessArgs, InfoArgs, InfoResults, NAME_MAX, NO_LIMIT,
-    OomClass as AbiClass, ProcessesArgs, SetLimitArgs, SetWeightArgs, StopArgs, StopResults,
+    self as abi, CreateArgs, CreateProcessArgs, InfoArgs, InfoResults, IoArgs, IoResults, NAME_MAX,
+    NO_LIMIT, NO_THREAD_LIMIT, OomClass as AbiClass, ProcessesArgs, SetIoArgs, SetLimitArgs,
+    SetThreadsArgs, SetWeightArgs, StopArgs, StopResults, UsageArgs, UsageResults,
 };
 use radix_cap::{ObjectKind, Rights, SlotRef};
 use radix_hal::UserMode;
@@ -17,7 +20,7 @@ use radix_vfs::mount::{Location, Mount};
 
 use super::methods::{Answer, answer};
 use super::{Result, UserRef, cap_error, error};
-use crate::domains::{DomainError, DomainRef, OomClass, Settings};
+use crate::domains::{DomainError, DomainRef, IoRates, OomClass, Settings};
 use crate::fs::FileObject;
 use crate::{Arch, caps, oom};
 
@@ -67,6 +70,7 @@ pub fn method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) -> Result<
                 limit_pages: (a.limit_pages != NO_LIMIT).then_some(a.limit_pages),
                 class: class_of(a.oom_class),
                 supervisor: None,
+                thread_limit: None,
             };
             let at = SlotRef::new(user.cspace, a.to);
             let made = caps::create_domain(at, &parent, name, settings).map_err(cap_error)?;
@@ -147,6 +151,53 @@ pub fn method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) -> Result<
                 false,
             )?;
             answer(label, 0, [0; 8])
+        }
+        abi::SET_IO => {
+            let a = SetIoArgs::decode(args)?;
+            let domain = domain(user, slot, Rights::CONTROL)?;
+            let rates = IoRates {
+                read_bps: a.read_bps,
+                write_bps: a.write_bps,
+                read_iops: a.read_iops,
+                write_iops: a.write_iops,
+            };
+            domain.set_io(a.weight, rates).map_err(|_| Kernel::InvalidArgument.status(0))?;
+            answer(label, 0, [0; 8])
+        }
+        abi::SET_THREADS => {
+            let a = SetThreadsArgs::decode(args)?;
+            let domain = domain(user, slot, Rights::CONTROL)?;
+            domain.set_thread_limit((a.limit != NO_THREAD_LIMIT).then_some(a.limit));
+            answer(label, 0, [0; 8])
+        }
+        abi::USAGE => {
+            UsageArgs::decode(args)?;
+            let domain = domain(user, slot, Rights::READ)?;
+            let used = domain.disk_use();
+            let results = UsageResults {
+                read_bytes: used.read_bytes,
+                written_bytes: used.written_bytes,
+                reads: used.reads,
+                writes: used.writes,
+                wait_ns: used.wait_ns,
+                throttled_ns: used.throttled_ns,
+                threads: domain.threads_within(),
+                thread_limit: domain.thread_limit(),
+            };
+            answer(label, UsageResults::WORDS, results.encode())
+        }
+        abi::IO => {
+            IoArgs::decode(args)?;
+            let domain = domain(user, slot, Rights::READ)?;
+            let IoRates { read_bps, write_bps, read_iops, write_iops } = domain.io_rates();
+            let results = IoResults {
+                weight: domain.io_weight(),
+                read_bps,
+                write_bps,
+                read_iops,
+                write_iops,
+            };
+            answer(label, IoResults::WORDS, results.encode())
         }
         _ => Err(error(Kernel::NoSuchMethod)),
     }

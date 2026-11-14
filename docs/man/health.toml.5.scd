@@ -41,7 +41,9 @@ timeout = 30
 
 *stable*
 	Seconds the essential services must run, none of them restarting,
-	before an update counts as proved: 120 by default.
+	before an update counts as proved: 120 by default. Any other start
+	is seen through once they have run for 10 seconds, or this many if
+	fewer, none of them restarting.
 
 *deadline*
 	The most seconds an update has to start them all: 600 by default.

@@ -1,0 +1,59 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The kernel settings capability (Phase 16, ADR 0476): the few values
+//! that change how the kernel runs and that a machine's work may want
+//! otherwise, which tune(8) sets from a profile.
+//!
+//! Each setting has a name, such as `sched.slice_us`, and a value in
+//! text, one of a list of words or a whole number in a range. `list`
+//! gives a setting's name, its value, the value it had when the kernel
+//! started, and the values it takes, as one line of words separated by
+//! single spaces:
+//!
+//! ```text
+//! sched.slice_us 3000 3000 500-20000
+//! net.congestion cubic cubic cubic reno
+//! ```
+//!
+//! The values are either words, each one the setting takes, or one range,
+//! MIN-MAX, with /STEP when the value must be a multiple of STEP. A change
+//! applies at once, to what runs from then on; nothing is kept when the
+//! machine starts again, where tune(8) sets them again. Everyone reads the
+//! values in /kernel/settings/, a file each (radix-sysfs(5)).
+//!
+//! The kernel gives Spark the one capability when it starts, with the
+//! read and control rights. Spark gives a service a copy in SLOT_SETTINGS
+//! when its file asks for admin.tune (service.toml(5)), as the tune
+//! service's does. Asking needs the read right, and changing a setting
+//! the control right.
+
+module kernel_settings;
+
+/// The longest setting name.
+const NAME_MAX: u64 = 31;
+/// The longest value a setting takes.
+const VALUE_MAX: u64 = 31;
+/// The longest line `list` writes.
+const LINE_MAX: u64 = 256;
+
+/// The kernel's settings.
+interface kernel_settings = 0x0033 version 1 {
+    kind = kernel_settings;
+    /// Writes the line of setting number `index`, from 0, into `buffer`
+    /// (LINE_MAX bytes are enough) and returns its length. Fails with
+    /// out_of_range past the last setting, and with invalid_argument if
+    /// the line does not fit. Needs the read right.
+    method list = 1 (index: u32, buffer: out bytes) -> (len: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, bad_address, out_of_range,
+                invalid_argument];
+    /// Sets setting `name` to `value`, and logs that the caller did.
+    /// Fails with out_of_range for a name that is no setting's, with
+    /// invalid_argument for a value the setting does not take, and with
+    /// not_supported for one this machine cannot have (an energy
+    /// preference on a CPU whose speed the firmware keeps). Needs the
+    /// control right.
+    method set = 2 (name: in bytes, value: in bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, bad_address, out_of_range,
+                invalid_argument, not_supported];
+}

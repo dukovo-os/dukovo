@@ -9,7 +9,7 @@ service - start, stop and look at the services, and check their files
 
 # SYNOPSIS
 
-*service list* [*--failed*] [*--json*]
+*service list* [*--failed*] [*--json*] [*--timers*]
 
 *service* _name_ *status* [*-n* _lines_]
 
@@ -65,8 +65,8 @@ Not running as asked: lab-sick and lab-web. `service lab-sick explain` says why.
 The last line, on a terminal, names those not running as asked: given
 up on, waiting to be started again after an end, stopped for a reason,
 or failing their health check. One that is off as it is meant to be, a
-driver the kernel left none of the cards it drives or a service Rescue
-or essentials leave off, is not among them. *--failed* lists those alone and exits 1
+driver the kernel left none of the cards it drives or a service Rescue,
+essentials or a try of *changes bisect* leave off, is not among them. *--failed* lists those alone and exits 1
 when there are some, for scripts. *--json* prints Spark's *show*
 document (*spark*(8)), which has *show_version* for scripts to check,
 with each service's *enabled* as its file says. Spark reads a service's
@@ -75,6 +75,13 @@ follow *disable* of a service that is stopped or *enable* of one that
 runs until then; *list* reads the files, which the next boot follows,
 and says *disabled* of a stopped service whose file is off. In a pipe,
 the header is left out.
+
+*list --timers* lists instead the services whose files have a *[timer]*
+(*service.toml*(5)), by name, with the time each starts next and when it
+last started, as *timerd*(8) keeps them (ADR 0478); a timer that has no
+time within five years says *none*. Only an administrator asks. *status*
+of a service with a timer has a *Timer:* line that says the same, for an
+administrator.
 
 *status* shows what Spark knows of a service, what it may reach, its
 processes and its last lines in the log:
@@ -89,7 +96,11 @@ nginx - nginx web server
            changes /system/state/org.nginx.nginx
            secrets tls-key
            listens on 80 (open), 443 (open); connects out
-           memory up to 256M; CPU weight 100
+   Limits: memory up to 256M; CPU weight 100; at most 4096 threads; 65536 open files
+           disk weight 100
+      Use: memory 12M, peak 14M
+           threads 3 of 4096
+           disk read 1.1M, written 52K; waited 0.0 s for a disk, held 0.0 s by its rates
 Processes: 3 (57 nginx, 58 nginx, 59 nginx), 12.3M of memory, 1.2 s of CPU
   Restart: on-failure, 0 restarts so far
 
@@ -117,7 +128,8 @@ web - Web server
 took to be ready when its file says when it is; *active (exited)*, a
 setup step that is done; *activating (starting as process* _n_*, ready
 once* _when_*)*; *activating (waiting for* _names_*)*; *activating
-(waiting to start again)*; *deactivating (stopping as process* _n_*)*;
+(waiting to start again)*; *inactive (waits for a connection on port* _n_*)*, a service that
+starts at its first connection, with its sockets held (ADR 0477); *deactivating (stopping as process* _n_*)*;
 *failed (Spark gave up on it)*; *inactive (disabled)* or *inactive
 (dead)*; and since when, by the clock and how long ago. *Why* says why
 it is not running as asked, *Needs* names the services its file names,
@@ -139,7 +151,18 @@ tree and its file names _/processes_, where one that does not sees its
 own processes alone (ADR 0473); its secrets; the ports it may
 listen on, *(open)* for those something listens on now, and whether it
 connects out, or *no network*; the machine's settings it may set, the
-cards it drives; its memory limit and CPU weight. *Processes* counts the
+cards it drives. *Limits* is what its file limits its domain to
+(*service.toml*(5), ADR 0476): its memory, CPU weight, the threads it may
+have and the files each process may have open, when the file names a
+number; and its disk weight, with the bytes and the requests a second it
+may read and write when the file limits them. *Use* is what the domain
+has used since Spark made it, kept after the service ends: its memory now
+and at its peak, with the charges its limit refused and whether the
+service's last end was *stopped at its memory limit*; its threads of those
+it may have; and the bytes it read from disks and wrote (those its writes
+left dirty in the page cache among them), the time its requests waited
+for a disk's room, and the time its rates held it back. A service whose
+domain Spark has not made yet has no *Use*. *Processes* counts the
 processes in its domain, the first five by number and name, and their
 memory and CPU time. The last lines are its records in the log, Spark's
 lines about it among them, as *log -s* _name_ shows them (*log*(1));
@@ -175,8 +198,9 @@ needs doing.
 *start* starts a service that is stopped or disabled, with those it
 requires and wants; *stop* stops one, with those that require it, and
 keeps it stopped until it is started again or the system restarts; and
-*restart* stops it and starts it again. Spark stops the domain of one
-that has not ended 5 seconds after SIGTERM. Each waits until the service
+*restart* stops it and starts it again. Spark sends one the signal its *[stop]* names, SIGTERM unless set, and stops
+the domain of one that has not ended once its *timeout* has passed, 5
+seconds unless set (ADR 0477; *service.toml*(5)). Each waits until the service
 has settled, and shows Spark's lines about it and the services the
 request reaches as they come (ADR 0471):
 
@@ -232,8 +256,12 @@ The command line is Debian's.
 
 *enable* turns a service on: it sets *enabled = true* in its file, so
 that it starts at each boot, and starts it now, as
-*systemctl enable --now* does; *disable* stops it and sets
-*enabled = false*, so that it no longer starts at boot. Only root may.
+*systemctl enable --now* does; a service of *start = "on-connection"*
+waits for its first connection instead, now and at each boot, and one
+with a *[timer]* is not started now: *timerd*(8) starts it at its
+times, and *enable* says when it does next.
+*disable* stops it and sets *enabled = false*, so that it no longer
+starts at boot, or its timer no longer starts it. Only root may.
 A service whose file is not in _/system/settings/spark/services_ yet
 gets a copy of the system's own there first, and the change is written
 only if Spark still reads the file after it. This is how *sshd*(8) is

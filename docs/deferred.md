@@ -178,11 +178,14 @@ machine with AMT, an AMD machine and a laptop; see
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | `update` (and `update check`, `update history`) for an ordinary user, which update(8) says anyone may run: it finds the system's root by reading the disk's Btrfs UUID from `/devices`, which only root may read, so it says "this system did not start from a Dukovo root on a disk"; it could ask updated(8) instead, or take the UUID from the kernel's command line | Found on the OptiPlex 7040 by `updates/updater`, which fails at step 3 until then | 16a |
-| Timers: a service started at set times or intervals (ADR 0216) | Production service management; dependencies, readiness and health checks came first (ADR 0470) | 16a |
+| A bundle that offers a socket its program makes itself, as PostgreSQL makes `.s.PGSQL.5432`: ADR 0477 offers only a socket Spark holds, and a program that takes no inherited socket cannot serve on one | Spark would set the group and mode of the socket once the service has made it; the catalog's PostgreSQL is reached over TCP meanwhile | The first bundle that offers such a socket, 16a |
+| `batch`: jobs that wait for a low load (ADR 0478) | `at` and `crontab` run jobs at a time; a job that waits for the load to fall needs the load average the scheduler can read, and no job asks for it yet | 16a |
+| updated's and backup's own schedules moved to timers (ADR 0478) | They keep their own clocks, which work; a timer in each service's file is the same schedule in one place, and moves them when their settings do | 16a |
 | The system's own service files using service_version 2's keys: `requires`, `wants`, `after`, `[ready]` and `[health]` for the system's services, and `service new`'s template writing version 2 (ADR 0470) | A release writes only what the one before it reads (ADR 0454), and 0.15 reads service_version 1 alone; the system's services start by `order` meanwhile, as before | The release after 1.0.0-alpha.1 |
 | bundled refusing a bundle whose `requires_os` is newer than the system, with a message to update (ADR 0470) | `requires_os` is informational; a bundle whose service uses version 2's keys says 1.0, and alpha.1 is the first release any machine runs | Before the first release after 1.0.0-alpha.1 |
-| A user's jobs that run while they are signed out (ADR 0220) | Needs jobs | 16a |
-| Sockets a bundle offers to others, and starting a service at its first connection (ADRs 0385, 0386) | Socket activation | 16a |
+| A second process started before the first ends (zero-downtime restarts for programs that cannot take an inherited socket) (ADR 0477) | Spark empties a service's domain before it starts the next process, and Spark's held sockets keep the connections waiting meanwhile | 16a |
+| A person's own programs reaching a socket a bundle offers to approved programs (`bundle allow`), and approving a bundle's use of one after it was installed (ADR 0477) | No catalog bundle offers a socket to people's programs yet; a bundle installed without the approval is installed again to ask | 16a |
+| sshd taking Spark's socket (ADR 0477) | sshd listens for itself and refuses connections while it restarts | 16a |
 | The services that still hold the whole tree (`runs-with-your-access`): authd, backup, bundled, cloud-setup, consoled, firewall, guest-agent, serial-console, and updated for the apps it updates (ADR 0473) | Each needs a view that holds what it reaches and no more, which the finer views now make possible; narrowed one at a time where a view suffices | 16a, in A5 to A8 |
 | Rescue kept up to date: a newer copy written to the EFI system partition when an update proves itself (ADR 0460) | Rescue is the release the installer wrote; its reinstall puts that version back, and the system then updates as usual | Phase 16, with the update server on Dukovo (16e) |
 | Rescue's reinstall from the update server (ADR 0460) | Rescue reinstalls from its own copy, an update folder or an update file, with networking off | Phase 16, with the update server on Dukovo (16e) |
@@ -201,6 +204,7 @@ machine with AMT, an AMD machine and a laptop; see
 | The alerts page and push notices in the web console (ADR 0485) | Alerts reach the screen, the next sign-in, email and webhooks; `alerts` lists them | 16c, Dukovo Admin |
 | A bundle's service raising alerts (ADR 0485) | alertd serves root's processes and the system's services alone, which covers every shipped service; a bundle's service runs as an account of its own | A need |
 | A certificate authority of its own for a webhook in alerts.toml(5) (ADR 0485) | Webhooks trust the system's roots; a private authority is added to them as dukovo-certificates(7) says | A need |
+| A mail queue for sendmail(8) (ADR 0478) | sendmail sends a message at once through the submission server alerts.toml(5) names, and a message that cannot go is the command's failure, with sysexits(3)'s status and a line in the log; cron's mail and a script's are lost unless the caller tries again | A need |
 | Silencing an alert for a while (ADR 0485) | An alert is told only when it changes, so one that stays does not repeat; `severity` and `cleared` in alerts.toml(5) quiet a channel | A need |
 | A certificate for each of nginx's sites: the web console's Add website flow names a certificate for a site and has nginx serve it (ADRs 0491, 0512) | nginx serves its HTTPS server with one certificate, `this-machine` or one added with `cert add`, that its service file names | The web console's Add website flow (C7) |
 | DNS providers' APIs, so that a certificate proved by DNS-01 (a wildcard, or a name on a machine no router forwards port 80 to) renews by itself (ADR 0513) | `cert get --dns` has a person add the TXT records, and certd does not renew a certificate proved that way: each provider has its own API and credentials | A later phase, which picks the providers most people use |
@@ -208,8 +212,6 @@ machine with AMT, an AMD machine and a laptop; see
 | TLS-ALPN-01, the check of a name made over port 443 (ADR 0513) | It needs port 443 free or a TLS hook in nginx; HTTP-01 and DNS-01 cover the cases | A later phase, if an authority comes to ask for it |
 | Certificates for IP addresses (ADR 0513) | Let's Encrypt gives them only on its short-lived profile; `cert get` asks for DNS names | A later phase, with `--profile` |
 | A service's choice of being restarted instead of sent SIGHUP when its certificates change (ADR 0512) | Every server Dukovo ships reads its certificates again on SIGHUP: nginx, PostgreSQL and admind | Zero-downtime restarts (A4) |
-| Spark setting a service's `open_files` (RLIMIT_NOFILE); nginx raises its own to the hard limit, 4096, meanwhile (ADRs 0385, 0491) | Service limits | 16a |
-| A service's own log files, turned over: nginx logs to the system's log, and an `access_log` to a file of its own is never turned over (ADR 0491) | Needs timers | 16a |
 | A second step at SSH and at the consoles' text sign-in (ADR 0514) | The console's sign-in rules and each account's second steps are authd's, where the consoles' and SSH's sign-ins already are, so a later change adds the step to `login` and to sshd's keyboard-interactive sign-in without moving anything; `second-step` in admin.toml(5) rules the web console alone meanwhile | A need, before 1.0.0-beta.1 |
 | The keyring opened by a sign-in to the web console (ADR 0514) | authd opens a keyring when a person signs in with their password at a console or over SSH; the console's sign-in checks the password and opens none, and the console's pages use no keyring entry; `keyring unlock` opens it at a terminal | A page that needs an entry of the keyring |
 | Web fonts for the console (ADR 0514) | None ships: the console's style falls back to the system's fonts, and its security policy allows fonts from its own folder alone | A decision by the maintainers |
@@ -231,6 +233,11 @@ machine with AMT, an AMD machine and a laptop; see
 | The web console's Report a problem page (ADR 0531) | `report` on the command line and the failure notice's keys | 16c, Dukovo Admin |
 | The phone download's port opened in the firewall for the download alone, and closed after it (ADR 0532) | What a person's program listens on is for the machine alone; report prints the command that allows the port, and `--port` lets an administrator allow it first | A need, with rules that last as long as a socket |
 | Taking back a report that waits in the queue (ADR 0531) | A report waits until it is sent or 30 days pass; `report list` shows it | A need |
+| `changes bisect` undoing a change to the settings, a service file or a setting edited by hand, from the snapshots (ADR 0475) | A try leaves out the slot, the boot options and an app's services; the start record holds no settings, which `service check` and `try` cover meanwhile | A need: a failed start that no change in the record explains |
+| `changes bisect` finding two changes that break a start only together (ADR 0475) | The search names one change; when the start still fails with that one left out, it says so and `changes --failed` lists every change, and trying pairs takes more restarts | A need: a search that ends so |
+| `changes bisect` after an update fell back (ADR 0475) | The update's slot is then neither the default nor the previous version, which the boot menu starts, so a try cannot start it; the failure notice offers no search, and the log says why the update failed | A need |
+| A setting for the 60 seconds between a try's verdict and the next restart of `changes bisect`, for a machine nobody sits at (ADR 0475) | The wait lets whoever is at the machine stop the search, and no machine has asked for another | A need |
+| `changes bisect` in the web console's updates area (ADR 0475) | Dukovo Admin | 16c |
 
 ### Phase 17: Go
 
@@ -335,6 +342,9 @@ machine asks for them.
 | `ipcs` and `ipcrm`; `IPC_INFO`, `SHM_INFO`, `SEM_INFO` and the `*_STAT` commands that take an index | ADR 0490 |
 | `shmat`'s `SHM_EXEC` with write access, which Radix never maps together | ADR 0490 |
 | The crash dump written to a disk from the panic path through polled drivers, so that a power cycle or a firmware that clears the RAM keeps it | ADR 0483 |
+| A CPU quota for a resource domain (`cpu_max`, as cgroups' `cpu.max`), beside its weight, which only shares the CPUs while they are busy | ADR 0476 |
+| More than 4,032 descriptors in one process, whatever `open_files` says: the capability space's room for them | ADR 0476 |
+| A `cpu.idle` kernel setting: how deep the CPUs' idle states may go | ADR 0476 |
 
 ### Files and storage
 
@@ -344,6 +354,9 @@ machine asks for them.
 | Shared writable mappings of files other than `/dev/shm`'s, and `msync`, which SQLite's WAL between connections and its memory-mapped I/O need (ADR 0511) | posix design note, ADRs 0110, 0490, 0511, `lab/tests/services/sqlite-skips.txt` |
 | Read-ahead in the background; write clustering; `O_DIRECT` for files | storage design note, ADR 0133 |
 | FAT read-ahead | storage design note |
+| Disk I/O rates for each disk: a domain's rates count across all disks together | ADR 0476 |
+| A disk I/O weight for the page cache's writeback: its requests are the kernel's, so no domain's weight decides their share of a disk, and no rate holds them | ADR 0476 |
+| A disk queue depth for weights that follows the disk: while domains have weights, every disk lets 8 requests go at once, which costs an NVMe disk's small random reads some speed | ADR 0476 |
 | Btrfs: trim as blocks are freed (`discard`), small files inline, compression of small files, a per-CPU compression workspace, removing empty block groups, deleting a subvolume in the background, scrubbing in a thread of its own, a log of fsyncs a path at a time, tree blocks read whole | storage design note, ADRs 0130, 0158 |
 | Btrfs RAID5 and RAID6 | Never planned (storage design note) |
 | Removing a subvolume with a file of it open, or the default subvolume | ADR 0138 |
@@ -361,6 +374,7 @@ machine asks for them.
 
 | Item | Source |
 | --- | --- |
+| A `net.tcp_buffer_kib` kernel setting: the size of TCP sockets' buffers | ADR 0476 |
 | An interface MTU below 1500 from DHCP's option 26 | ADR 0197 |
 | RSA keys made by certd: `this-machine` has an ECDSA P-256 key, since ring makes no RSA keys and every browser takes ECDSA; a certificate with an RSA key added by `cert add` works | ADR 0512 |
 | ENA's low-latency queues; gVNIC's DQO queue format; SFP+ modules; fiber and SerDes gigabit cards | ADR 0197 |
@@ -497,3 +511,4 @@ finding or removed.
 | A scheduled check of the support center's links to other sites (ADR 0420) | Pull requests check only the links between the site's own pages; outside links need a job of their own |
 | The *Known limits* sections of `docs/design/posix.md` and `docs/design/storage.md`, and radix-posix(7) | They still describe Phases 7 to 9: no network sockets, no users, no hot plug, no exFAT, no Btrfs quotas, locales "until Phase 12" |
 | The roadmap's catalog ports paragraph says Go comes with release 1.1 | Go is Phase 17 |
+| The comment on mlibc's `sync()` in `ports/mlibc/sysdeps/radix/generic/files.cpp` says it syncs the root's filesystem alone | A sync of the tree's root has synced every filesystem since Phase 16; a change to mlibc rebuilds every port, so the comment waits for the next one |

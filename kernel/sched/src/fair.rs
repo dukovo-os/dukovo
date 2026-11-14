@@ -152,6 +152,12 @@ impl<K, A: Allocator> FairQueue<K, A> {
         }
     }
 
+    /// Changes the real time its entities get per turn, from each one's
+    /// next turn.
+    pub fn set_slice_ns(&mut self, slice_ns: u64) {
+        self.slice_ns = slice_ns.max(1);
+    }
+
     /// How many entities are queued, the running one included.
     pub fn len(&self) -> usize {
         self.entities.len()

@@ -24,8 +24,18 @@ static const char *const ELSEWHERE[][2] = {
 		{"unlock", "the bitlocker boot test's: it unlocks a stick BitLocker encrypted, at the console"},
 		{"logd", "the logging boot test's service: it keeps the log the services write"},
 		{"log", "the logging boot test's: it reads the log through logd"},
-		{"journalctl", "the logging boot test's: it reads the log through logd"},
+		{"journalctl", "the logging and admin-commands boot tests': it reads the log through logd"},
+		{"systemctl", "the admin-commands boot test's: it asks Spark about the services, as service does"},
+		{"hostnamectl", "the admin-commands boot test's: it shows the machine's name and sets it"},
+		{"sendmail", "the admin-commands boot test's: it sends a message through a submission server on lo"},
 		{"logtrim", "the logging boot test's: it asks logd to trim the log"},
+		{"timerd", "the timers boot test's service: it starts services by their timers and runs crontab and at jobs"},
+		{"crontab", "the crontab boot test's: it installs, lists and refuses a person's crontab through timerd"},
+		{"at", "the crontab boot test's: it queues a job for a time"},
+		{"atq", "the crontab boot test's: it lists the queued jobs"},
+		{"atrm", "the crontab boot test's: it removes a queued job"},
+		{"batch", "at's name for a job that waits for a low load, which is deferred (docs/deferred.md)"},
+		{"logturn", "the log-turnover and nginx boot tests': it turns over a service's log files"},
 		{"notifyd", "the logging and consoles boot tests' service: consoled shows its notifications"},
 		{"notify-send", "the logging and consoles boot tests': it sends notifyd a notification"},
 		{"notifications", "the logging and consoles boot tests': it lists notifyd's notifications"},
@@ -149,6 +159,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"startup", "the startup boot test's: it says why a start of a system installed on a disk took as long as it did, from the times the health check keeps there, which this test's has none of"},
 		{"admin", "the admin-actions boot test's: it lists and shows actions and makes API tokens through authd"},
 		{"admind", "the admin boot test's service: it serves the web console over HTTPS and signs people in through authd"},
+		{"tune", "the tune boot test's service and command: it sets the kernel's settings through a capability only that service holds"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };

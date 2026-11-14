@@ -18,9 +18,14 @@
 //! and the HTTPS server of its settings turned on, a restart has it serve
 //! HTTPS too, to a client that trusts that certificate and no other; three
 //! reloads while 300 requests come over HTTP and HTTPS lose none of them.
-//! Its log, `log nginx`, holds a line for each request, and its process
-//! number's file is the account's; set to log requests to a file of its
-//! data folder's logs folder, it does. The power button ends it.
+//! Three restarts and an install of its file over itself, which is an
+//! update, while connectloop (userspace/posix/connectloop.c) makes 300
+//! requests one after another, lose none either: Spark holds its sockets
+//! (ADR 0477). Its log, `log nginx`, holds a line for each request, and its
+//! process number's file is the account's; set to log requests to a file of
+//! its data folder's logs folder, it does, and `logturn --now nginx` turns
+//! that file over (ADR 0478): the request logged before is in access.log.1,
+//! and nginx writes on into a new access.log. The power button ends it.
 
 use super::super::*;
 
@@ -189,6 +194,35 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
     )?;
     answer_prompt_within(vm, "$", "clear; cat /tmp/served", 120)?;
     vm.expect_screen(&["served 300 of 300"])?;
+    // Its sockets are Spark's (ADR 0477): three restarts and an update of
+    // the bundle, its file installed over itself, while connectloop makes
+    // 300 requests one after another, refuse none and fail none.
+    answer_prompt(
+        vm,
+        "$",
+        "clear; /system/tests/posix/connectloop 127.0.0.1 80 300 40 'GET / HTTP/1.0\\r\\n\\r\\n' \
+         > /tmp/loop &",
+    )?;
+    answer_prompt(
+        vm,
+        "$",
+        "clear; elevate sh -c 'for i in 1 2 3; do service nginx restart; sleep 1; done'; echo \
+         \"restarts $?\"",
+    )?;
+    vm.expect_screen(&["restarts 0"])?;
+    answer_prompt(
+        vm,
+        "$",
+        &format!(
+            "clear; cd {VOLUME}; elevate bundle install --for-everyone --yes {FILE} > \
+             /dev/null 2>&1; echo \"update $?\"; cd"
+        ),
+    )?;
+    vm.expect_screen(&["update 0"])?;
+    answer_prompt_within(vm, "$", "clear; wait; cat /tmp/loop", 180)?;
+    vm.expect_screen(&["connections 300 refused 0 failed 0"])?;
+    answer_prompt(vm, "$", "clear; curl -s http://localhost/ | head -c 40")?;
+    vm.expect_screen(&["<p>Hello from Dukovo</p>"])?;
     // Its log is the system's; its process number's file is its
     // account's.
     answer_prompt(
@@ -212,6 +246,20 @@ fn nginx(vm: &mut Vm, case: &Case) -> Result<(), String> {
         ),
     )?;
     vm.expect_screen(&["logged to its file"])?;
+    // logturn renames the file and has nginx open it again (USR1, as the
+    // bundle's manifest says): the old request is in the turned file, and
+    // a new one in the new file.
+    answer_prompt(
+        vm,
+        "$",
+        &format!(
+            "clear; elevate logturn --now nginx; echo \"turned $?\"; for i in 1 2 3 4 5; do \
+             curl -s -o /dev/null http://localhost/?after-turn; sleep 1; elevate grep -q \
+             'GET /?after-turn' {LOGS}/access.log 2>/dev/null && echo 'writing on' && break; \
+             done; elevate grep -q 'GET /?to-file' {LOGS}/access.log.1 && echo 'kept in .1'"
+        ),
+    )?;
+    vm.expect_screen(&["turned 0", "writing on", "kept in .1"])?;
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;

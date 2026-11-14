@@ -45,9 +45,9 @@ screen = "Password:"
 [[step]]
 type = "{password}\n"
 [[step]]
-screen = "Choose 0 to 12:"
+screen = "Choose 0 to 13:"
 [[step]]
-type = "8\n"
+type = "10\n"
 [[step]]
 type = "rm /volumes/*/@settings/sysupdate/health.toml && echo \"gone\"\": $((40 + 2))\"\n"
 [[step]]
@@ -59,7 +59,7 @@ screen = "Back in Rescue."
 # Reinstall from Rescue's own copy: the whole system written and read
 # back on the machine's own disk.
 [[step]]
-type = "1\n"
+type = "3\n"
 [[step]]
 screen = "type the folder or file:"
 [[step]]
@@ -71,7 +71,7 @@ type = "yes\n"
 [[step]]
 screen = "is back in slot A, every file checked"
 [[step]]
-type = "10\n"
+type = "12\n"
 [[step]]
 serial = "spark: started slot a, @system.a"
 [[step]]

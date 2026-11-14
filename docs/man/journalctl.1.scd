@@ -76,11 +76,50 @@ A _match_ *\_SYSTEMD\_UNIT=*_service_ or *UNIT=*_service_ is *-u*;
 *\_TRANSPORT=audit* reads the audit log, as *log --audit* does. Other
 fields are not kept, and fail.
 
+# WHAT DUKOVO HAS INSTEAD
+
+The options of journald that logd has no use for each say in one line
+what to run, and end with status 1:
+
+*--user*, *--user-unit*, *-M*, *--machine*
+	Dukovo has one log: a person sees the records of their own programs
+	with *journalctl*, and an administrator all of them with
+	*elevate journalctl*.
+
+*-D*, *--directory*, *--file*, *--root*, *--image*, *--namespace*
+	The log is logd's day files in _/system/state/log_, which
+	*journalctl* reads through logd.
+
+*--rotate*, *--flush*, *--sync*, *--relinquish-var*
+	logd starts a file each day and writes as it goes; *elevate logtrim*
+	trims the log.
+
+*--verify*, *--setup-keys*, *--interval*, *--force*, *--header*,
+*--update-catalog*, *--list-catalog*, *--dump-catalog*, *--new-id128*
+	There are no sealed files, catalogs or journal files to describe.
+
+*-F*, *--field*, *-N*, *--fields*, *--list-fields*, *--output-fields*
+	*journalctl -o json* writes every field of a record, for a script
+	to pick from.
+
+*-c*, *--cursor*, *--after-cursor*, *--cursor-file*, *--show-cursor*
+	logd has no cursors; *--since* starts at a time.
+
+# TIMES
+
+*--since* and *--until* take journalctl's forms: *YYYY-MM-DD*, with
+*HH:MM* or *HH:MM:SS* after it, *HH:MM[:SS]* for today, *now*, *today*,
+*yesterday*, *tomorrow*, *-1h* and *+30min*, and *2 days ago*, in local
+time unless *--utc* or a trailing *UTC* says otherwise. *-b -1* is the
+boot before this one, as far back as logd keeps (*--list-boots* lists
+them).
+
 # EXIT STATUS
 
 0, or 1 if logd is not running or does not answer, or the command line
-is wrong.
+is wrong or asks for what Dukovo does not have.
 
 # SEE ALSO
 
-*log*(1), *dmesg*(1), *logger*(1), *logd*(8), *logtrim*(8), *systools*(1)
+*log*(1), *dmesg*(1), *logger*(1), *logd*(8), *logtrim*(8), *systemctl*(1),
+*systools*(1)

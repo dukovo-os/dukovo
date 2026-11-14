@@ -25,9 +25,10 @@
 //! 0190). `admin.hardware = true` gives it the platform capability, which
 //! sets the fans, the LEDs and the ARGB header (ADR 0208), and
 //! `admin.time = true` the clock capability, which sets the time of day
-//! and the real-time clock (ADR 0194), and `admin.firewall = true` the
+//! and the real-time clock (ADR 0194), `admin.firewall = true` the
 //! firewall capability, which gives the packet filter its rules (ADR
-//! 0334). The ports a service listens on take what other machines start:
+//! 0334), and `admin.tune = true` the kernel settings capability, which
+//! changes the kernel's settings (ADR 0476). The ports a service listens on take what other machines start:
 //! they are open while it runs (ADR 0334). A driver program's
 //! `devices.pci` names the cards it drives, and Spark gives it each card
 //! the kernel left for a program that one matches (ADR 0198). It reaches
@@ -42,7 +43,8 @@ use libradix::abi::capability::Rights;
 use libradix::abi::errors::File as FileError;
 use libradix::abi::resource_domain::OomClass;
 use manifest::service::{
-    self, DeviceAccess, Health, OVERRIDES, Oom, Override, PciId, Place, Ready,
+    self, DeviceAccess, Health, OVERRIDES, Oom, Override, PciId, Place, Ready, Reopen, Signal,
+    Socket, Start,
 };
 use radix_rt::fs::Dir;
 use radix_rt::println;
@@ -51,6 +53,9 @@ use spark_api::graph::Link;
 use crate::views;
 
 pub use manifest::service::{Restart, check_name};
+
+/// A second, in nanoseconds, as the supervisor's times are.
+const SECOND: u64 = 1_000_000_000;
 
 /// Where Spark keeps the last copy of each service file that read.
 pub const GOOD: &str = "system/state/spark/good";
@@ -73,6 +78,18 @@ pub struct Spec {
     pub memory_pages: Option<u64>,
     /// Its domain's out-of-memory class: service or app.
     pub oom: OomClass,
+    /// Its domain's disk I/O weight.
+    pub io_weight: u32,
+    /// The bytes it may read and write each second, and the read and
+    /// write requests it may make, if its file limits them.
+    pub io_read: Option<u64>,
+    pub io_write: Option<u64>,
+    pub io_read_ops: Option<u64>,
+    pub io_write_ops: Option<u64>,
+    /// The most threads its domain may have.
+    pub threads: u32,
+    /// The files each of its processes may have open, if its file says.
+    pub open_files: Option<u32>,
     /// More of the environment, as `NAME=value`.
     pub environment: Vec<String>,
     pub enabled: bool,
@@ -88,6 +105,8 @@ pub struct Spec {
     pub time: bool,
     /// Whether it gets the firewall capability: admin.firewall.
     pub firewall: bool,
+    /// Whether it gets the kernel settings capability: admin.tune.
+    pub tune: bool,
     /// The places its view holds beyond what every service's does.
     pub places: Vec<Place>,
     /// The places it mounts filesystems beneath, which it gets as
@@ -128,6 +147,24 @@ pub struct Spec {
     pub ready: Ready,
     /// Its health check, if it has one.
     pub health: Option<Health>,
+    /// The sockets Spark makes and holds for it (ADR 0477).
+    pub sockets: Vec<Socket>,
+    /// Whether, once enabled, it starts at the first connection to one of
+    /// its sockets rather than at boot.
+    pub on_connection: bool,
+    /// The signal that asks it to stop, and how long Spark waits for it
+    /// to end before it ends its domain, in nanoseconds (ADR 0477).
+    pub stop_signal: Signal,
+    pub stop_timeout: u64,
+    /// More groups its processes are in, by name: the groups of sockets
+    /// other bundles offer it (ADR 0477).
+    pub groups: Vec<String>,
+    /// Whether timerd starts it, at the times its file names (ADR 0478):
+    /// boot leaves it off.
+    pub timer: bool,
+    /// What has it open its log files again after logturn(8) moved them,
+    /// if its file names its own logs.
+    pub reopen: Option<Reopen>,
 }
 
 impl Spec {
@@ -177,6 +214,13 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
             Oom::Service => OomClass::Service,
             Oom::App => OomClass::App,
         },
+        io_weight: file.limits.io_weight,
+        io_read: file.limits.io_read,
+        io_write: file.limits.io_write,
+        io_read_ops: file.limits.io_read_ops,
+        io_write_ops: file.limits.io_write_ops,
+        threads: file.limits.threads,
+        open_files: file.limits.open_files,
         environment: file
             .environment
             .iter()
@@ -189,6 +233,7 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         hardware: file.permissions.admin.hardware,
         time: file.permissions.admin.time,
         firewall: file.permissions.admin.firewall,
+        tune: file.permissions.admin.tune,
         places: file.permissions.places(),
         mounts: file.permissions.files.mount.clone(),
         whole_tree: file.permissions.runs_with_your_access,
@@ -212,6 +257,13 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         give_up_after: file.give_up_after,
         ready: file.ready,
         health: file.health,
+        sockets: file.sockets,
+        on_connection: file.start == Start::OnConnection,
+        stop_signal: file.stop.signal,
+        stop_timeout: u64::from(file.stop.timeout) * SECOND,
+        groups: file.groups,
+        timer: file.timer.is_some(),
+        reopen: file.logs.map(|logs| logs.reopen),
     })
 }
 

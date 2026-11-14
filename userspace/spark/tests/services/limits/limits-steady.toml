@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The limits boot test's bystander: a service that keeps running while the
+# others hit their limits (ADR 0476).
+
+service_version = 1
+description = "Runs while the others hit their limits"
+program = "/system/commands/sh"
+arguments = ["-c", "echo steady; while sleep 1; do :; done"]
+restart = "never"

@@ -658,7 +658,8 @@ interface directory = 0x000b version 11 {
                 bad_address, not_found, not_directory, name_too_long, bad_name, outside, in_use,
                 io, corrupt, too_many_links, denied, not_supported];
     /// Writes everything the directory's filesystem holds in memory to its
-    /// disk.
+    /// disk. The tree's root writes every filesystem's, as sync(2) does on
+    /// Linux, and a view's directory those of the places it attaches.
     method sync = 9 () -> ()
         raises [no_such_slot, empty_slot, io, corrupt];
     /// The directory's filesystem: its kind, how it is mounted, its block

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The spark-stop boot test's service that stops on SIGINT and ignores
+# SIGTERM, as PostgreSQL's fast shutdown: its file's [stop] says so, and
+# it ends on Spark's SIGINT, well inside its 2 s (ADR 0477).
+
+service_version = 2
+description = "Stops on SIGINT"
+program = "/system/commands/nukesh"
+arguments = ["-c", "trap '' TERM; trap 'echo asked; exit 0' INT; echo up; while :; do sleep 1; done"]
+restart = "never"
+
+[stop]
+signal = "SIGINT"
+timeout = 2

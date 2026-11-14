@@ -82,10 +82,12 @@ pub enum ObjectKind {
     Device = 22,
     /// The firewall's rules (ADR 0334).
     Firewall = 23,
+    /// The kernel's settings (ADR 0476).
+    KernelSettings = 24,
 }
 
 /// How many kinds there are.
-pub const KINDS: usize = 24;
+pub const KINDS: usize = 25;
 
 impl ObjectKind {
     /// Every kind, in the order of their numbers.
@@ -114,6 +116,7 @@ impl ObjectKind {
         ObjectKind::Clock,
         ObjectKind::Device,
         ObjectKind::Firewall,
+        ObjectKind::KernelSettings,
     ];
 
     /// The kind numbered `n`.
@@ -180,6 +183,8 @@ impl ObjectKind {
             // Reading asks what the rules are and what listens; control
             // gives the rules.
             ObjectKind::Firewall => Rights::READ.union(Rights::CONTROL),
+            // Reading lists the settings; control changes them.
+            ObjectKind::KernelSettings => Rights::READ.union(Rights::CONTROL),
         };
         own.union(Rights::COPY).union(Rights::TRANSFER)
     }
@@ -244,6 +249,7 @@ impl ObjectKind {
             ObjectKind::Clock => "clock",
             ObjectKind::Device => "device",
             ObjectKind::Firewall => "firewall",
+            ObjectKind::KernelSettings => "kernel settings",
         }
     }
 }

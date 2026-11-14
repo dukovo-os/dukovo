@@ -140,6 +140,18 @@ closes the connection, but for a session (below):
 	with that home is taken up again. Answers *ok* and its number. Only
 	root may.
 
+*socket-group* _name_ _bundle_
+	Makes the group of a socket that _bundle_ offers to others (ADR
+	0477), as *bundled*(8) asks while it installs the bundle: _name_ is
+	the name of the account of one of its services and *-socket*, which
+	must be a service account of _bundle_'s. The group has the lowest
+	number from 100 to 999 that no user or group has and no removed
+	account had, and no members. A group of that name with a number of
+	that range is taken up again; one with a person's number, or an
+	account of that name, is refused. The group goes when the account
+	of its service is removed. Answers *ok* and its number. Only root
+	may.
+
 *rename* _name_ _new_
 	Renames the account, its own group, its name in other groups, its
 	hash's line and its notices, and moves its home if it is
@@ -356,6 +368,50 @@ authd says when a keyring opens and closes, and why one did not:
 authd: keyring of alice: open
 authd: keyring of alice: closed
 ```
+
+# JOBS
+
+authd runs the jobs of people for *timerd*(8) (ADR 0478): the lines of
+a crontab (*crontab*(5)) and the jobs of *at*(1). It starts each as the
+person and their groups, as it starts a session's first program, in a
+view of theirs with their own _/tmp_ and a session's network:
+*sh -c* with the command, in the folder the job names (the home for a
+crontab line, the folder *at* ran in for an *at* job), with the null
+device as its standard input and the descriptor timerd sent as its
+standard output and error. Its environment is a session's, without
+*TERM*, with the job's own settings over it. authd tells timerd when it
+ends, as it tells a sign-in program. Only timerd, which is root, asks.
+authd runs 16 jobs at once, and timerd starts no more: one whose time
+comes while 16 run waits for one of them to end.
+
+A job runs for a person who is signed in, at a console or over SSH; a
+share's session, an elevated command or another job does not count.
+For one who is not, it runs only if they asked for that with
+*crontab --keep-running on* (*crontab*(1)), or chose nothing and the
+system's default says so, and no administrator barred it with
+*user set --jobs-signed-out never* (*user*(8)). The default is off
+unless _/system/settings/jobs.toml_ holds *keep_running = true*, as the
+*server* preset writes. Such a job has no keyring, which opens with the
+person's password. Root's jobs always run. A job of a disabled account,
+or of one that is no person's, does not run.
+
+A job that does not run because its owner is signed out is counted for
+them, and their next sign-in says how many did not, after the notices:
+
+```
+2 scheduled jobs of yours did not run while you were signed out, the first on Sat Oct 31 02:00 2026. crontab --keep-running on lets them run then.
+```
+
+Each job's start and end is a security event, as a session's is:
+
+```
+authd: alice's job crontab alice, for process 40: process 71, while they are signed out
+authd: alice's job crontab alice, process 71, ended with status 0x0
+```
+
+The setting is kept for the person's account, and read and written by the
+person themselves (*crontab --keep-running*) or by an administrator
+(*user set --jobs-signed-out*).
 
 # WRONG PASSWORDS
 
@@ -790,6 +846,18 @@ _/system/state/authd/notices_
 	What each person is told at their next sign-in: a line
 	_name_<tab>_text_ each.
 
+_/system/state/authd/jobs_
+	For each person whose jobs have a setting, a line _number_
+	_chosen_ _bar_ _missed_ _first_: whether they keep their jobs
+	running while signed out (*on*, *off* or *default*), whether an
+	administrator barred it (*barred* or *allowed*), and how many did
+	not run since they last signed in, the first at _first_, in seconds
+	since 1970 (see JOBS). Only root reads it.
+
+_/system/settings/jobs.toml_
+	The system's default for jobs while their owner is signed out:
+	*keep_running = true* or *false*. Without it, off.
+
 _/system/state/authd/keyrings/_*number*
 	Each person's keyring, sealed (see KEYRINGS).
 
@@ -821,5 +889,6 @@ exits with 1 if it cannot start.
 
 *login*(1), *sshd*(8), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *keyring*(1), *id*(1), *last*(1),
 *lastlog*(8), *consoled*(8), *admind*(8), *admin.toml*(5), *dukovo-admin*(7), *service*(8),
+*timerd*(8), *crontab*(1),
 *service.toml*(5), *spark*(8), *logd*(8), *radix-names*(2), *radix-posix*(7),
 *systools*(1)

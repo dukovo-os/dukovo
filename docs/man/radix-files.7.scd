@@ -95,7 +95,9 @@ into them and marks them dirty. The disk sees a change when its
 filesystem is synced:
 
 - every five seconds, by the kernel's writeback thread;
-- when a program calls *sync* on a file or a directory of the filesystem;
+- when a program calls *sync* on a file or a directory of the filesystem,
+  or on the tree's root, which syncs every filesystem, as *sync*(2) does
+  on Linux;
 - when the filesystem is unmounted.
 
 So a power cut loses at most the last five seconds of changes, as on

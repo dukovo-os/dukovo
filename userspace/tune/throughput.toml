@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# For a machine whose work is long runs of computing and reading.
+#
+# A profile lists the kernel settings it sets (radix-kernel-settings(2)),
+# each with the reason it gives that value. Every setting it does not list
+# is put back to the value the kernel started with, so a profile changes
+# nothing it does not name. tune(8) explains how one is chosen, and
+# `tune show throughput` says what this one sets.
+
+description = "Most work done a second, for servers and builds"
+
+[settings]
+# The CPUs lean to speed, not to saving power.
+"cpu.energy_preference" = "performance"
+# Fewer thread switches: more of the time is work, and turns come later.
+"sched.slice_us" = 6000
+# Reads further ahead, which keeps a disk busy with long runs.
+"disk.read_ahead_kib" = 1024

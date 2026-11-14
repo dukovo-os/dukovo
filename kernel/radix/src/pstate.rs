@@ -9,7 +9,9 @@
 //! asks for every level from its lowest to its highest, at its own
 //! choice, with the firmware's energy preference or the one `epp=` names,
 //! as Linux's `intel_pstate` and `amd-pstate-epp` drivers do in their
-//! active mode. `pstate=off` leaves the CPUs to the firmware. The thermal
+//! active mode; the kernel setting `cpu.energy_preference` changes it
+//! later ([`set_preference`], ADR 0476). `pstate=off` leaves the CPUs to
+//! the firmware. The thermal
 //! zones' passive cooling caps every CPU's highest level ([`cool`], ADR
 //! 0203).
 //!
@@ -43,6 +45,11 @@ const AVAILABLE_PREFERENCES: &str = "default performance balance_performance bal
 static DRIVER: Once<Driver> = Once::new();
 /// The energy preference asked for, or [`FIRMWARE_PREFERENCE`].
 static PREFERENCE: AtomicU16 = AtomicU16::new(FIRMWARE_PREFERENCE);
+/// Each CPU's energy preference as its firmware left it, which
+/// [`FIRMWARE_PREFERENCE`] asks for again.
+static FIRMWARE_PREFERENCES: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
+/// One change of the energy preference at a time.
+static PREFERRING: Mutex<()> = Mutex::new(());
 /// Whether the CPUs' highest levels differ, as AMD's do on CPUs that rank
 /// their cores.
 static RANKED: Once<bool> = Once::new();
@@ -188,10 +195,54 @@ fn start_here() {
     };
     let request =
         Request::at_boot(levels, firmware, preference.filter(|_| driver.has_preference()));
+    FIRMWARE_PREFERENCES[cpu].store(firmware.preference, Ordering::Relaxed);
     Arch::request_performance(request);
     let Some((scale, ranked_top)) = Arch::performance_scale(levels) else { return };
     REQUESTS[cpu].store(pack(request), Ordering::Relaxed);
     let _ = CONTROLS[cpu].set(Control { levels, scale, ranked_top });
+}
+
+/// The energy preference the CPUs were asked for: `None` for their
+/// firmware's, and wherever their speed is the firmware's or their
+/// control has no preference.
+pub fn preference() -> Option<Preference> {
+    let driver = driver().filter(|driver| driver.has_preference())?;
+    match PREFERENCE.load(Ordering::Relaxed) {
+        FIRMWARE_PREFERENCE => None,
+        value => Preference::of(driver, value as u8),
+    }
+}
+
+/// Asks every CPU for the energy preference `preference`, or for its
+/// firmware's again (`None`), as `epp=` does at boot (ADR 0476). Returns
+/// false, and asks nothing, for a preference where the CPUs can have
+/// none: their speed is the firmware's, or their control has no
+/// preference.
+pub fn set_preference(preference: Option<Preference>) -> bool {
+    let Some(driver) = driver().filter(|driver| driver.has_preference()) else {
+        return preference.is_none();
+    };
+    let _one = PREFERRING.lock();
+    let value = preference.map_or(FIRMWARE_PREFERENCE, |p| u16::from(p.value(driver)));
+    if PREFERENCE.swap(value, Ordering::Relaxed) != value {
+        on_every_cpu(prefer_here);
+    }
+    true
+}
+
+/// On each CPU, from [`set_preference`]: asks for the preference.
+fn prefer_here() {
+    let cpu = Arch::current_cpu();
+    if CONTROLS[cpu].get().is_none() {
+        return;
+    }
+    let preference = match PREFERENCE.load(Ordering::Relaxed) {
+        FIRMWARE_PREFERENCE => FIRMWARE_PREFERENCES[cpu].load(Ordering::Relaxed),
+        value => value as u8,
+    };
+    let request = Request { preference, ..request(cpu) };
+    Arch::request_performance(request);
+    REQUESTS[cpu].store(pack(request), Ordering::Relaxed);
 }
 
 /// Runs `job` once on every CPU: here first, then on the others.

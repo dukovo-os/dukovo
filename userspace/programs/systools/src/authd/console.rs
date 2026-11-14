@@ -1424,6 +1424,7 @@ impl Authd {
             elevated: false,
             remote: false,
             recorded: true,
+            job: None,
         };
         self.sessions.insert(process, recorded);
         let live = Live {
@@ -1635,6 +1636,7 @@ impl Authd {
             elevated: true,
             remote: false,
             recorded: false,
+            job: None,
         };
         self.sessions.insert(process, session);
         self.hold(i, process, relay);
@@ -1726,6 +1728,7 @@ impl Authd {
             elevated: false,
             remote: false,
             recorded: false,
+            job: None,
         };
         self.sessions.insert(process, session);
         (Answer::Done(process.to_string()), now)

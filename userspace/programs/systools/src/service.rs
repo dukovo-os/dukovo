@@ -29,7 +29,9 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use spark_api::show::{self, HealthState, Holds, State};
+use manifest::service::Stop;
+use spark_api::explain;
+use spark_api::show::{self, HealthState, Holds, State, Usage};
 use spark_api::words::{and_list, ready_once, span, tenths};
 
 use crate::args::{Arg, Args};
@@ -37,9 +39,9 @@ use crate::log;
 use crate::power::{self, CONTROL};
 use crate::proc::{self, Process};
 use crate::util::{self, Fail, fail, fail_with, usage};
-use crate::{servicefiles, servicetry};
+use crate::{servicefiles, servicetry, timerd};
 
-const USAGE: &str = "Usage: service list [--failed] [--json]
+const USAGE: &str = "Usage: service list [--failed] [--json] [--timers]
        service NAME status [-n LINES]
        service NAME explain [--json]
        service NAME start | stop | restart [--no-wait] [-q]
@@ -336,7 +338,7 @@ struct Seen<'a> {
 /// `service NAME status [-n LINES]`: what Spark says of the service, as
 /// systemctl status lays it out, its processes and its last log lines;
 /// 0 when it runs or is done, 3 otherwise (LSB).
-fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
+pub(crate) fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
     let lines = match options {
         [] => STATUS_LINES,
         [flag, count] if flag == "-n" || flag == "--lines" => {
@@ -361,6 +363,7 @@ fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
     };
     let seen = Seen { processes: &processes, listening: &listening, user_name: &util::user_name };
     print!("{}", status_text(service, &clock, &seen));
+    print!("{}", timer_field(name));
     let id = servicetry::trial_id(name);
     if let Some(trial) = document.trials.iter().find(|t| t.id == id) {
         print!("{}", trying_line(trial, name));
@@ -375,6 +378,19 @@ fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
         }
     }
     Ok(if matches!(service.state, State::Running | State::Done) { 0 } else { 3 })
+}
+
+/// The `Timer:` line of `service NAME status` when the service has a
+/// timer and timerd answers (it answers root alone), else nothing.
+fn timer_field(name: &str) -> String {
+    let mut text = String::new();
+    let shown_at = |seconds: i64| util::local_time(seconds, "%Y-%m-%d %H:%M:%S");
+    if let Some(row) =
+        timerd::show::timers().ok().and_then(|rows| rows.into_iter().find(|r| r.name == name))
+    {
+        field(&mut text, "Timer", &timerd::show::status_line(&row, &shown_at));
+    }
+    text
 }
 
 /// The lines of `service NAME status`, but the log's.
@@ -419,6 +435,15 @@ fn status_text(service: &show::Service, clock: &Clock, seen: &Seen) -> String {
     };
     let restart = format!("{}, {} restarts so far{give_up}", service.restart, service.restarts);
     field(&mut text, "Restart", &restart);
+    if let Some(stop) = stop_line(service) {
+        field(&mut text, "", &stop);
+    }
+    if let Some(sockets) = sockets_line(service) {
+        field(&mut text, "Sockets", &sockets);
+    }
+    if service.timer {
+        field(&mut text, "Timer", "timerd starts it at the times its file names");
+    }
     if let Some(end) = &service.last_end {
         let running = matches!(service.state, State::Running | State::Starting);
         match &service.last_line {
@@ -431,6 +456,14 @@ fn status_text(service: &show::Service, clock: &Clock, seen: &Seen) -> String {
     }
     for (at, held) in holds_lines(&service.holds, seen).iter().enumerate() {
         field(&mut text, if at == 0 { "Holds" } else { "" }, held);
+    }
+    for (at, limit) in limit_lines(&service.holds).iter().enumerate() {
+        field(&mut text, if at == 0 { "Limits" } else { "" }, limit);
+    }
+    if let Some(usage) = &service.usage {
+        for (at, used) in use_lines(usage, &service.holds).iter().enumerate() {
+            field(&mut text, if at == 0 { "Use" } else { "" }, used);
+        }
     }
     if let Some(processes) = processes_line(seen.processes) {
         field(&mut text, "Processes", &processes);
@@ -484,7 +517,38 @@ fn active(service: &show::Service, clock: &Clock) -> String {
         State::Failed => format!("failed (Spark gave up on it) since {since}"),
         State::Disabled => String::from("inactive (disabled)"),
         State::Stopped => format!("inactive (dead) since {since}"),
+        State::Listening => format!("listening ({}) since {since}", explain::listening(service)),
     }
+}
+
+/// The line that says how the service stops, when its file's `[stop]` is
+/// not the default (ADR 0477): "stops with SIGINT, then ends it after
+/// 300 s".
+fn stop_line(service: &show::Service) -> Option<String> {
+    let default = Stop::default();
+    let signal = service.stop_signal.as_str();
+    let timeout = service.stop_timeout_s;
+    let plain =
+        (signal.is_empty() || signal == default.signal.name()) && timeout == default.timeout;
+    (!plain).then(|| {
+        let signal = if signal.is_empty() { default.signal.name() } else { signal };
+        format!("stops with {signal}, then ends it after {timeout} s")
+    })
+}
+
+/// The `Sockets:` line: the sockets Spark holds for the service (ADR
+/// 0477), and whether a connection starts it.
+fn sockets_line(service: &show::Service) -> Option<String> {
+    let sockets = &service.holds.sockets;
+    if sockets.is_empty() {
+        return None;
+    }
+    let held = format!("{}, which Spark holds", and_list(sockets));
+    Some(if service.start == "on-connection" {
+        format!("{held}; a connection starts it")
+    } else {
+        held
+    })
 }
 
 /// The `Holds:` lines: what the service's file gives it.
@@ -544,12 +608,63 @@ fn holds_lines(holds: &Holds, seen: &Seen) -> Vec<String> {
     if !holds.cards.is_empty() {
         lines.push(format!("drives {}", holds.cards.join(", ")));
     }
+    lines
+}
+
+/// The `Limits:` lines: what the service's file limits its domain to
+/// (ADR 0476), on a line for the CPU, memory, threads and files, and one
+/// for the disks.
+fn limit_lines(holds: &Holds) -> Vec<String> {
     let memory = holds.memory_bytes.map_or_else(
         || String::from("no memory limit"),
         |bytes| format!("memory up to {}", util::human(bytes, false)),
     );
-    lines.push(format!("{memory}; CPU weight {}", holds.cpu_weight));
-    lines
+    let mut cpu_and_memory = vec![
+        memory,
+        format!("CPU weight {}", holds.cpu_weight),
+        format!("at most {} threads", holds.threads),
+    ];
+    cpu_and_memory.extend(holds.open_files.map(|files| format!("{files} open files")));
+    let mut disks = vec![format!("disk weight {}", holds.io_weight)];
+    disks.extend(rate_words("reads", holds.io_read, holds.io_read_ops));
+    disks.extend(rate_words("writes", holds.io_write, holds.io_write_ops));
+    vec![cpu_and_memory.join("; "), disks.join("; ")]
+}
+
+/// What a service may `verb` to disks each second, in bytes and in
+/// requests, if either is limited.
+fn rate_words(verb: &str, bytes: Option<u64>, requests: Option<u64>) -> Option<String> {
+    let bytes = bytes.map(|bytes| format!("{} a second", util::human(bytes, false)));
+    let requests = requests.map(|requests| format!("{requests} requests a second"));
+    let limits: Vec<String> = bytes.into_iter().chain(requests).collect();
+    (!limits.is_empty()).then(|| format!("{verb} up to {}", limits.join(" and ")))
+}
+
+/// The `Use:` lines: what the service's domain has used and been held
+/// to, on a line for its memory, its threads and its disks (ADR 0476).
+fn use_lines(usage: &Usage, holds: &Holds) -> Vec<String> {
+    let human = |bytes| util::human(bytes, false);
+    let mut memory =
+        format!("memory {}, peak {}", human(usage.memory_bytes), human(usage.memory_peak_bytes));
+    match usage.memory_refused {
+        0 => {}
+        1 => memory.push_str("; 1 charge refused"),
+        n => memory.push_str(&format!("; {n} charges refused")),
+    }
+    if usage.stopped_at_limit {
+        memory.push_str("; stopped at its memory limit");
+    }
+    vec![
+        memory,
+        format!("threads {} of {}", usage.threads, holds.threads),
+        format!(
+            "disk read {}, written {}; waited {} for a disk, held {} by its rates",
+            human(usage.read_bytes),
+            human(usage.written_bytes),
+            tenths(usage.waited_ms),
+            tenths(usage.held_ms)
+        ),
+    ]
 }
 
 /// A port or range of ports as `show` writes it, "80" or "8000-8010",
@@ -631,17 +746,22 @@ fn runs_well(service: &show::Service) -> bool {
     }
 }
 
-/// `service list [--failed] [--json]`: each service, its state, whether
-/// it starts at boot, since when and what it is; with `--failed`, those
-/// not running as asked alone, and 1 if there are some.
+/// `service list [--failed] [--json] [--timers]`: each service, its
+/// state, whether it starts at boot, since when and what it is; with
+/// `--failed`, those not running as asked alone, and 1 if there are some;
+/// with `--timers`, the services with a timer instead, as timerd says.
 fn list(options: &[String]) -> Result<i32, Fail> {
-    let (mut failed_only, mut json) = (false, false);
+    let (mut failed_only, mut json, mut timers) = (false, false, false);
     for option in options {
         match option.as_str() {
             "--failed" => failed_only = true,
             "--json" => json = true,
+            "--timers" => timers = true,
             other => return Err(usage(format!("service list: unknown option `{other}'"))),
         }
+    }
+    if timers {
+        return list_timers();
     }
     let mut document = shown(None)?;
     as_filed(&mut document.services, &servicefiles::at_boot());
@@ -682,6 +802,15 @@ fn as_filed(services: &mut [show::Service], at_boot: &BTreeMap<String, bool>) {
             state => state,
         };
     }
+}
+
+/// `service list --timers`: each service with a timer, its next run and
+/// its last start.
+fn list_timers() -> Result<i32, Fail> {
+    let rows = timerd::show::timers().map_err(fail)?;
+    let shown_at = |seconds: i64| util::local_time(seconds, "%Y-%m-%d %H:%M:%S");
+    print!("{}", timerd::show::table(&rows, &shown_at, util::is_terminal(1)));
+    Ok(0)
 }
 
 /// Whether `service` is not running as asked: given up on, waiting to
@@ -775,6 +904,9 @@ mod tests {
                 outbound: true,
                 memory_bytes: Some(256 << 20),
                 cpu_weight: 100,
+                io_weight: 100,
+                threads: 4096,
+                open_files: Some(65536),
                 ..Holds::default()
             },
             ..show::Service::default()
@@ -800,6 +932,59 @@ mod tests {
     }
 
     #[test]
+    fn status_says_how_a_service_stops_and_its_sockets() {
+        // The default stop says nothing.
+        let mut service = nginx();
+        service.stop_signal = "SIGTERM".into();
+        service.stop_timeout_s = 5;
+        assert_eq!(stop_line(&service), None);
+        // An older Spark's document, without them, is the default too.
+        service.stop_signal = String::new();
+        assert_eq!(stop_line(&service), None);
+        service.stop_signal = "SIGINT".into();
+        service.stop_timeout_s = 300;
+        assert_eq!(
+            stop_line(&service).as_deref(),
+            Some("stops with SIGINT, then ends it after 300 s")
+        );
+        service.stop_signal = "SIGTERM".into();
+        service.stop_timeout_s = 30;
+        assert_eq!(
+            stop_line(&service).as_deref(),
+            Some("stops with SIGTERM, then ends it after 30 s")
+        );
+
+        assert_eq!(sockets_line(&service), None);
+        service.holds.sockets = vec!["port 80".into(), "port 80 on ::".into()];
+        service.start = "at-boot".into();
+        assert_eq!(
+            sockets_line(&service).as_deref(),
+            Some("port 80 and port 80 on ::, which Spark holds")
+        );
+        service.start = "on-connection".into();
+        assert_eq!(
+            sockets_line(&service).as_deref(),
+            Some("port 80 and port 80 on ::, which Spark holds; a connection starts it")
+        );
+        service.state = State::Listening;
+        service.pid = None;
+        let line = active(&service, &CLOCK);
+        assert!(
+            line.starts_with(
+                "listening (waits for a connection on port 80 and port 80 on ::, which starts \
+                 it) since "
+            ),
+            "{line}"
+        );
+        let text = status_text(&service, &CLOCK, &seen_with(&[], &|_, _| false));
+        assert!(
+            text.contains("  Sockets: port 80 and port 80 on ::, which Spark holds; a"),
+            "{text}"
+        );
+        assert!(text.contains("stops with SIGTERM, then ends it after 30 s\n"), "{text}");
+    }
+
+    #[test]
     fn status_says_what_a_service_holds_and_runs() {
         let processes = [process(57, "nginx", 4096), process(58, "nginx", 2048)];
         let open = |first: u32, _| first == 80;
@@ -815,7 +1000,8 @@ mod tests {
             "           changes /system/state/org.nginx.nginx",
             "           secrets tls-key",
             "           listens on 80 (open), 443; connects out",
-            "           memory up to 256M; CPU weight 100",
+            "   Limits: memory up to 256M; CPU weight 100; at most 4096 threads; 65536 open files",
+            "           disk weight 100",
             "Processes: 2 (57 nginx, 58 nginx), 6.0M of memory, 1.2 s of CPU",
         ];
         for line in expected {
@@ -850,6 +1036,56 @@ mod tests {
         assert!(!text.contains("every process") && !text.contains("top of the root"), "{text}");
     }
 
+    /// Each limit its file names, and what its domain used (ADR 0476).
+    #[test]
+    fn status_says_each_limit_and_what_the_domain_used() {
+        let mut web = nginx();
+        web.holds = Holds {
+            memory_bytes: Some(64 << 20),
+            cpu_weight: 100,
+            io_weight: 400,
+            io_read: Some(50 << 20),
+            io_write_ops: Some(200),
+            threads: 64,
+            open_files: Some(10_000),
+            ..Holds::default()
+        };
+        web.usage = Some(Usage {
+            memory_bytes: 12 << 20,
+            memory_peak_bytes: 64 << 20,
+            memory_refused: 3,
+            stopped_at_limit: true,
+            threads: 4,
+            read_bytes: 1 << 20,
+            waited_ms: 1_234,
+            held_ms: 300,
+            ..Usage::default()
+        });
+        let text = status_text(&web, &CLOCK, &seen_with(&[], &|_, _| false));
+        for line in [
+            "   Limits: memory up to 64M; CPU weight 100; at most 64 threads; 10000 open files",
+            "           disk weight 400; reads up to 50M a second; writes up to 200 requests a \
+             second",
+            "      Use: memory 12M, peak 64M; 3 charges refused; stopped at its memory limit",
+            "           threads 4 of 64",
+            "           disk read 1.0M, written 0; waited 1.2 s for a disk, held 0.3 s by its rates",
+        ] {
+            assert!(text.contains(line), "{line:?} in\n{text}");
+        }
+        // One refused charge is one charge, and a service that was not
+        // stopped at its limit says nothing of it.
+        if let Some(usage) = &mut web.usage {
+            usage.memory_refused = 1;
+            usage.stopped_at_limit = false;
+        }
+        let text = status_text(&web, &CLOCK, &seen_with(&[], &|_, _| false));
+        assert!(text.contains("memory 12M, peak 64M; 1 charge refused\n"), "{text}");
+        // Before its domain is made, nothing was used.
+        web.usage = None;
+        let text = status_text(&web, &CLOCK, &seen_with(&[], &|_, _| false));
+        assert!(text.contains("   Limits: ") && !text.contains("Use:"), "{text}");
+    }
+
     #[test]
     fn status_says_who_asked_and_what_a_stopped_one_said_last() {
         let mut web = nginx();
@@ -868,7 +1104,7 @@ mod tests {
             "     Last: exited with code 0x1 (\"nginx: [emerg] bind() to 0.0.0.0:80 failed\")",
             "    Holds: the whole tree, with Spark's access",
             "           no network",
-            "           no memory limit; CPU weight 0",
+            "   Limits: no memory limit; CPU weight 0; at most 0 threads",
         ] {
             assert!(text.contains(line), "{line:?} in\n{text}");
         }

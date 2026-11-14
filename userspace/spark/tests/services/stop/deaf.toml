@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The spark-stop boot test's service that ignores both SIGINT and
+# SIGTERM: Spark stops its domain 2 s after `service deaf stop`, its
+# file's time, not the default's 5 s (ADR 0477).
+
+service_version = 2
+description = "Ignores its stop signal"
+program = "/system/commands/nukesh"
+arguments = ["-c", "trap '' TERM INT; echo up; while :; do sleep 1; done"]
+restart = "never"
+
+[stop]
+signal = "SIGINT"
+timeout = 2

@@ -33,8 +33,8 @@ use core::sync::atomic::Ordering;
 
 use radix_mm::Kmalloc;
 use radix_sched::{
-    BASE_SLICE_NS, CpuLoad, DOMAIN_WEIGHT_DEFAULT, Entity, FairQueue, Level, NICE_0_WEIGHT,
-    Placement, RR_QUANTUM_NS, RtEntry, RtQueue, is_cache_hot, mul_div, mul_div_unsigned,
+    CpuLoad, DOMAIN_WEIGHT_DEFAULT, Entity, FairQueue, Level, NICE_0_WEIGHT, Placement,
+    RR_QUANTUM_NS, RtEntry, RtQueue, is_cache_hot, mul_div, mul_div_unsigned,
 };
 
 use super::thread::{FAIR, NOT_QUEUED, Policy, REAL_TIME, State, Thread, ThreadRef};
@@ -115,11 +115,16 @@ impl Rq {
         alloc: Kmalloc,
         tick_ns: u64,
     ) -> Option<Rq> {
-        let mut fair = FairQueue::new_in(alloc, BASE_SLICE_NS, tick_ns);
+        let mut fair = FairQueue::new_in(alloc, super::slice_ns(), tick_ns);
         fair.try_reserve(room).ok()?;
         let mut rt = RtQueue::new_in(alloc);
         rt.try_reserve(room).ok()?;
         Some(Rq { fair, rt, current, idle, clock_ns: now, switches: 0, pulled: [0; 4] })
+    }
+
+    /// Changes the fair class's base slice ([`super::set_slice_ns`]).
+    pub(super) fn set_slice_ns(&mut self, slice_ns: u64) {
+        self.fair.set_slice_ns(slice_ns);
     }
 
     /// Swaps in larger buffers, made outside the lock, and returns the old
@@ -289,7 +294,7 @@ impl Rq {
         }
         match self.current.queued.load(Ordering::Relaxed) {
             FAIR if self.fair.len() > 1 => {
-                let left = self.fair.running_left_ns().unwrap_or(BASE_SLICE_NS);
+                let left = self.fair.running_left_ns().unwrap_or_else(super::slice_ns);
                 now.saturating_add(left.max(MIN_SLICE_NS))
             }
             REAL_TIME if self.current.round_robin.load(Ordering::Relaxed) => {

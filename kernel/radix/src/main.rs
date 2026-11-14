@@ -82,6 +82,7 @@ mod sched;
 mod schedtest;
 mod selftest;
 mod serial;
+mod settings;
 mod swap;
 mod symbols;
 mod usb;
@@ -315,6 +316,7 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     crosec::find();
     mce::start(flags.value("mce-poll"));
     pstate::start(flags.value("pstate") == Some("off"), flags.value("epp"));
+    settings::init();
     acpi::thermal::start();
     hwmon::find();
     check_timers(online);

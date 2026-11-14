@@ -1694,11 +1694,15 @@ mod tests {
         // mounts by its `slot=`; quiet, with the slot's own flags before
         // the machine's (ADR 0426). The console's flag is a word of its
         // own: GRUB drops the space its value starts with, and `$3` joined
-        // to it started the kernel with `quietconsole=ttyS0`.
+        // to it started the kernel with `quietconsole=ttyS0`. A try of
+        // changes bisect gives all of the options after the menu's own
+        // words (ADR 0475).
         let kernel = format!(
-            "    multiboot2 ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_KERNEL} $2 \
-             root=UUID=${{dukovo_root}} slot=$1 panic=10 $3 ${{dukovo_console}} ${{slot_flags}} \
-             ${{dukovo_cmdline}}\n"
+            "    if [ \"$5\" = given ]; then\n        multiboot2 \
+             ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_KERNEL} $2 root=UUID=${{dukovo_root}} \
+             slot=$1 panic=10 $3\n    else\n        multiboot2 \
+             ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_KERNEL} $2 root=UUID=${{dukovo_root}} \
+             slot=$1 panic=10 $3 ${{dukovo_console}} ${{slot_flags}} ${{dukovo_cmdline}}\n    fi\n"
         );
         let archive = format!(
             "    module2 ($system)/@system.$1/{SLOT_STARTUP}/{SLOT_ARCHIVE} {}\n",
@@ -1747,9 +1751,35 @@ mod tests {
             "    slot_started\n    dukovo_start \"${slot_start}\" \"${slot_fallback}\" quiet\n"
         ));
         assert!(menu.contains("set slot_fallback=\"fallback=${slot_try}\"\n"));
-        // The two entries above, and the four of Troubleshooting (ADR
-        // 0501), each chosen once.
-        assert_eq!(menu.matches("        slot_chose ").count(), 6);
+        // A try of changes bisect (ADR 0475), where no update is being
+        // tried: read whole by its check, taken before it starts and read
+        // back taken, then started as a start chosen by hand, with its
+        // number first and its options in place of the slot's own.
+        assert_eq!(slots::trial::PATH, "boot/grub/trial");
+        let trial = slots::trial::VARIABLES.join(" ");
+        assert!(menu.contains(&format!("load_env --file \"${{prefix}}/trial\" {trial}; then\n")));
+        assert!(
+            menu.contains(
+                "\"${trial_check}\" = \"${trial_number}:${trial_slot}:${trial_options}\""
+            )
+        );
+        assert_eq!(slots::trial::VARIABLES[4], "trial_taken");
+        assert_eq!(menu.matches("save_env --file \"${prefix}/trial\"").count(), 1);
+        assert!(menu.contains("save_env --file \"${prefix}/trial\" trial_taken; then\n"));
+        assert!(
+            menu.contains(
+                "if [ \"${slot_ok}\" = 1 -a -z \"${slot_try}\" ]; then\n    trial_read\n"
+            )
+        );
+        assert!(menu[dukovo..].contains(
+            "    if [ \"${trial_pending}\" = 1 ]; then\n        trial_take\n    fi\n    if [ \
+             \"${trial_took}\" = 1 ]; then\n        slot_chose \"${trial_slot}\"\n        \
+             dukovo_start \"${trial_slot}\" \"trial=${trial_number}\" \"${trial_options}\" \"\" \
+             given\n    fi\n    slot_started\n"
+        ));
+        // The two entries above, the four of Troubleshooting (ADR 0501),
+        // each chosen once, and a try.
+        assert_eq!(menu.matches("        slot_chose ").count(), 7);
         assert!(menu.contains("submenu \"Troubleshooting\" --id troubleshooting {"), "{menu}");
         // Windows after the Dukovo entries, remembered as Dukovo is (ADR
         // 0314), and startup trouble last, with its flag first and the

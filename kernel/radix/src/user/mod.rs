@@ -67,6 +67,7 @@ pub mod power;
 pub mod process;
 pub mod random;
 mod ring;
+mod settings;
 mod syscall;
 
 use alloc::sync::Arc;

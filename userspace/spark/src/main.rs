@@ -77,6 +77,7 @@ extern crate alloc;
 
 mod certificates;
 mod services;
+mod sockets;
 mod supervisor;
 mod swap;
 mod views;
@@ -303,6 +304,10 @@ fn run() -> Option<Supervisor> {
     // The start menu's Troubleshooting: only the essentials (ADR 0501).
     if kernel_flag(&root, "essentials") {
         supervisor.set_essentials();
+    }
+    // A try of changes bisect: the services its list names stay off (ADR 0475).
+    if let Some(number) = slot_boot(&root).trial {
+        supervisor.set_bisect_try(number);
     }
     if !rescue(&root) {
         mark_reached(&root);

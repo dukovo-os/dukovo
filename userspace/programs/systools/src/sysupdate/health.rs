@@ -7,9 +7,10 @@
 //! update being tried proves itself when they have run for two minutes
 //! without a restart, the required checks of health.toml(5) pass, the
 //! firmware set it names loaded, and every device the last good start
-//! had is there (ADR 0468); any other start is seen through once its
-//! services run, and what is wrong with its firmware or devices is only
-//! logged. Each start seen through keeps its devices as the record the
+//! had is there (ADR 0468); any other start is seen through once each of
+//! its services has run for a few seconds since it last started, which
+//! one that ends at once and is started again never has, and what is
+//! wrong with its firmware or devices is only logged. Each start seen through keeps its devices as the record the
 //! next try is held to ([`super::devices`]). Each start has a record,
 //! begun as the check begins and finished with its outcome
 //! ([`super::starts`], ADR 0500), and each failure names its error ID.
@@ -29,7 +30,7 @@ use spark_api::show::{self, HealthState::Failing, State};
 
 use super::place::{self, BUILDING, Root};
 use super::starts::{self, Item, Outcome};
-use super::{devices, firmware};
+use super::{bisect, devices, firmware};
 use crate::alerts::client::{self as alerts, Screen};
 use crate::alerts::protocol::{Alert, Severity};
 use crate::power;
@@ -56,6 +57,14 @@ const EVERY: Duration = Duration::from_secs(2);
 
 /// How many restarts of an essential service fail the check at once.
 const RESTARTS: u64 = 3;
+
+/// The most seconds each essential service of a start that is not an
+/// update being tried must have run, since Spark last started it, before
+/// the start is seen through: `stable` if that is less. Seeing them run
+/// once is not enough, since a service that ends at once runs for a
+/// moment each time Spark starts it again; while the check waits, it
+/// restarts enough to fail it.
+const SEEN_STEADY: u64 = 10;
 
 /// How long the health check waits for a stage that holds the slot
 /// state's lock, in seconds.
@@ -194,8 +203,24 @@ pub enum Look {
     Running(Vec<u64>),
     /// These do not run yet, or fail their health checks and may recover.
     Waiting(Vec<String>),
-    /// One keeps failing, or ended for good in failure: why.
-    Failing(String),
+    /// One keeps failing, or ended for good in failure: which, and why.
+    Failing(String, String),
+}
+
+/// Why a start failed its health check: in words, ending with the error
+/// ID, and the essential service, or `check NAME` for a required check,
+/// that failed it, where one did.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Failure {
+    pub why: String,
+    pub failing: Option<String>,
+}
+
+impl Failure {
+    /// A failure no one service or check is named for.
+    fn of(why: String) -> Failure {
+        Failure { why, failing: None }
+    }
 }
 
 /// The essential services of `essential` among `services`, as Spark's
@@ -207,7 +232,9 @@ pub enum Look {
 /// restarted RESTARTS times; one Spark gave up on fails it at once.
 pub fn look(essential: &[String], services: &[show::Service]) -> Look {
     let ended_well = |s: &show::Service| match s.state {
-        State::Disabled | State::Done => true,
+        // One that waits for a connection, which starts it, is as it is
+        // meant to be (ADR 0477).
+        State::Disabled | State::Done | State::Listening => true,
         State::Stopped if s.off_as_meant => true,
         State::Stopped => s.why.is_none() && s.last_status.is_none_or(|status| status == 0),
         _ => false,
@@ -220,25 +247,32 @@ pub fn look(essential: &[String], services: &[show::Service]) -> Look {
     let unhealthy = |s: &show::Service| s.health.as_ref().is_some_and(|h| h.state == Failing);
     if let Some(service) = counted.iter().find(|s| s.state == State::Failed) {
         let why = service.why.as_deref().unwrap_or("it failed to start");
-        return Look::Failing(format!("Spark gave up on {}: {why}", service.name));
+        let name = service.name.clone();
+        return Look::Failing(name, format!("Spark gave up on {}: {why}", service.name));
     }
     if let Some(service) = counted.iter().find(|s| u64::from(s.restarts) >= RESTARTS) {
         let name = &service.name;
-        return Look::Failing(match service.health.as_ref().filter(|_| unhealthy(service)) {
-            Some(health) => {
-                let last = health.last_failure.as_deref().unwrap_or("no reason given");
-                format!("{name} fails its health check: {last}")
-            }
-            None => format!("{name} has restarted {} times", service.restarts),
-        });
+        return Look::Failing(
+            name.clone(),
+            match service.health.as_ref().filter(|_| unhealthy(service)) {
+                Some(health) => {
+                    let last = health.last_failure.as_deref().unwrap_or("no reason given");
+                    format!("{name} fails its health check: {last}")
+                }
+                None => format!("{name} has restarted {} times", service.restarts),
+            },
+        );
     }
     if let Some(service) = counted.iter().find(|s| s.state == State::Stopped) {
         let name = &service.name;
-        return Look::Failing(match (&service.why, service.last_status) {
-            (Some(why), _) => format!("{name} does not run: {why}"),
-            (None, Some(status)) => format!("{name} ended, with status {status:#x}"),
-            (None, None) => format!("{name} ended"),
-        });
+        return Look::Failing(
+            name.clone(),
+            match (&service.why, service.last_status) {
+                (Some(why), _) => format!("{name} does not run: {why}"),
+                (None, Some(status)) => format!("{name} ended, with status {status:#x}"),
+                (None, None) => format!("{name} ended"),
+            },
+        );
     }
     let waiting: Vec<String> = counted
         .iter()
@@ -266,10 +300,13 @@ pub fn run() -> Result<i32, Fail> {
         }
     };
     remove_half_built(&root);
+    let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
+    let trial = slots::cmdline::parse(&line).trial;
     let begun = starts::begin_in(
         Path::new(starts::DIR),
         Path::new(starts::LIVE),
         root.running.letter(),
+        trial,
         start_items(&root),
         i64::try_from(crate::util::now_ns() / 1_000_000_000).unwrap_or(0),
     );
@@ -294,8 +331,8 @@ pub fn run() -> Result<i32, Fail> {
     if passed {
         devices::record(&devices::present(&root));
     }
-    if let Err(why) = &result {
-        println!("sysupdate: {named} failed its health check: {why}");
+    if let Err(failure) = &result {
+        println!("sysupdate: {named} failed its health check: {}", failure.why);
     }
     record(&named, &result);
     // The verdict is kept at once, with the times so far: the notice of a
@@ -303,15 +340,18 @@ pub fn run() -> Result<i32, Fail> {
     // a restart soon after must not find the start unfinished.
     let this = begun.ok().and_then(|start| {
         let outcome = if passed { Outcome::Good } else { Outcome::Failed };
-        let why = result.as_ref().err().map(String::as_str);
-        finish(start, outcome, why, starts::Times::now(starts::signed_in()))
+        let failure = result.as_ref().err();
+        let why = failure.map(|failure| failure.why.as_str());
+        let failing = failure.and_then(|failure| failure.failing.as_deref());
+        finish(start, outcome, why, failing, starts::Times::now(starts::signed_in()))
     });
-    verdict(&root, &named, passed, this.as_ref())?;
+    verdict(&root, &named, passed, trial, this.as_ref())?;
     // A start seen through is timed again once its services settle, which
     // can take two minutes: after the verdict, with the slot state's lock
     // let go, so that neither the verdict nor a stage waits for it.
     if let Some(this) = this.filter(|_| passed)
-        && let Some(this) = finish(this, Outcome::Good, None, starts::Times::settled(SETTLE_WAIT))
+        && let Some(this) =
+            finish(this, Outcome::Good, None, None, starts::Times::settled(SETTLE_WAIT))
     {
         println!("sysupdate: kept the times of start {}, which startup shows", this.number);
         // A start that settled later than starting usually does, is told.
@@ -328,26 +368,28 @@ pub fn run() -> Result<i32, Fail> {
     Ok(0)
 }
 
-/// Keeps `start`'s record finished with `outcome`, why it failed and
-/// `times`, saying what went wrong.
+/// Keeps `start`'s record finished with `outcome`, why it failed and the
+/// service `failing`, and `times`, saying what went wrong.
 fn finish(
     start: starts::Start,
     outcome: Outcome,
     why: Option<&str>,
+    failing: Option<&str>,
     times: Result<starts::Times, String>,
 ) -> Option<starts::Start> {
     let times = times
         .inspect_err(|why| println!("sysupdate: cannot take the times of this start: {why}"))
         .ok();
-    starts::finish_in(Path::new(starts::DIR), start, outcome, why, times)
+    starts::finish_in(Path::new(starts::DIR), start, outcome, why, failing, times)
         .inspect_err(|err| println!("sysupdate: cannot keep the record of this start: {err}"))
         .ok()
 }
 
 /// Follows the health check's result, `passed`, for the slot that runs,
 /// `named`, whose start's record is `this`: tells of a failed start,
-/// writes the slot state, sets Rescue's count back, and restarts into the
-/// other slot when an update gives up its tries.
+/// writes the slot state, sets Rescue's count back, restarts into the
+/// other slot when an update gives up its tries, and takes changes
+/// bisect's next step when this start is its try `trial`.
 ///
 /// # Errors
 ///
@@ -356,6 +398,7 @@ fn verdict(
     root: &Root,
     named: &str,
     passed: bool,
+    trial: Option<u8>,
     this: Option<&starts::Start>,
 ) -> Result<(), Fail> {
     // Naming a failed start's likely cause reads its log and can take
@@ -365,9 +408,10 @@ fn verdict(
     let (_, now) = place::state(root)?;
     let (_, would) = now.checked(root.running, passed);
     let cause = noticed(&records, this, would)
+        .filter(|_| trial.is_none())
         .map(|failed| (failed.number, crate::troubleshoot::likely_cause(&records, failed)));
     // A stage takes minutes at most.
-    let _lock = place::lock_within(Duration::from_secs(STAGE_WAIT))?;
+    let lock = place::lock_within(Duration::from_secs(STAGE_WAIT))?;
     let (copies, state) = place::state(root)?;
     let (next, checked) = state.checked(root.running, passed);
     let likely = |failed: &starts::Start| {
@@ -376,9 +420,19 @@ fn verdict(
             .filter(|(number, _)| *number == failed.number)
             .and_then(|(_, hit)| hit.clone())
     };
-    if let Some(text) = failure_notice(&records, this, checked, named, &likely) {
-        tell(&text);
-        tell_alertd(&failure_alert(checked, named, &text), Screen::Shown);
+    // A try of changes bisect is judged by the search, which says what
+    // it found once it ends.
+    if trial.is_none() {
+        // The search is offered for a start that failed and goes on: an
+        // update that fell back cannot be tried again, so it has none.
+        let restarts = this
+            .filter(|start| start.outcome == Outcome::Failed)
+            .and_then(|_| bisect::plan_now().ok())
+            .map(|search| search.restarts_left());
+        if let Some(text) = failure_notice(&records, this, checked, named, &likely, restarts) {
+            tell(&text);
+            tell_alertd(&failure_alert(checked, named, &text), Screen::Shown);
+        }
     }
     if let Some(next) = next {
         place::write(&copies, next)?;
@@ -389,6 +443,9 @@ fn verdict(
             println!("sysupdate: cannot set Rescue's count of starts back: {why}");
         }
     }
+    // The next step of changes bisect, while it waits on a try.
+    let bisected = this.map(|this| bisect::health_step(root, this, &starts::all()));
+    drop(lock);
     match checked {
         Checked::Proved(slot) => {
             let before = place::named(root, slot.other());
@@ -423,7 +480,67 @@ fn verdict(
         }
         Checked::Start => println!("sysupdate: this start of {named} is seen through"),
     }
+    match bisected {
+        Some((Some(number), _)) => restart_for(number),
+        Some((None, Some(search))) => keep_result(&search),
+        _ => {}
+    }
     Ok(())
+}
+
+/// Says what a search that has ended found, and keeps it for the next
+/// sign-in (ADR 0504), where the owner who was not at the machine finds
+/// it. A search that has not ended says nothing.
+fn keep_result(search: &bisect::Search) {
+    let lines: Vec<String> = crate::changes::bisect_result(search)
+        .into_iter()
+        .map(|line| format!("changes bisect: {line}"))
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+    for line in &lines {
+        println!("{line}");
+    }
+    if crate::sign_in_notices::put("bisect", &lines) {
+        let body = format!("{}\nchanges bisect --status shows every try", lines.join("\n"));
+        let sent = crate::notifyd::send(
+            "changes bisect",
+            "changes bisect has ended",
+            &body,
+            crate::notifyd::Urgency::Normal,
+        );
+        if let Err(why) = sent {
+            println!("changes bisect: cannot tell the consoles: {}", why.message);
+        }
+    }
+}
+
+/// How long the health check waits before it restarts into the next try
+/// of changes bisect, for whoever is at the machine to stop it.
+const TRY_AFTER: Duration = Duration::from_mins(1);
+
+/// Restarts into try `number` of changes bisect once [`TRY_AFTER`] has
+/// passed, unless the search was stopped meanwhile.
+fn restart_for(number: u8) {
+    let said = format!(
+        "restarting in {} seconds for try {number}; `elevate changes bisect --stop` stops it",
+        TRY_AFTER.as_secs()
+    );
+    println!("changes bisect: {said}");
+    if let Err(why) =
+        crate::notifyd::send("changes bisect", &said, "", crate::notifyd::Urgency::Normal)
+    {
+        println!("changes bisect: cannot tell the consoles: {}", why.message);
+    }
+    std::thread::sleep(TRY_AFTER);
+    if !bisect::still_waiting_on(number) {
+        println!("changes bisect: the search was stopped, so the machine does not restart");
+        return;
+    }
+    if let Err(why) = power::request("reboot") {
+        println!("changes bisect: cannot ask Spark to restart: {}", why.message);
+    }
 }
 
 /// Removes a slot a stage left half built, as a power cut can (ADR
@@ -442,17 +559,38 @@ fn remove_half_built(root: &Root) {
     }
 }
 
+/// Whether each essential service that runs has run for `for_ms` since
+/// Spark last started it, as `show` says.
+pub fn settled(essential: &[String], show: &show::Show, for_ms: u64) -> bool {
+    essential
+        .iter()
+        .filter_map(|name| show.services.iter().find(|s| &s.name == name))
+        .filter(|service| service.state == State::Running)
+        .all(|service| {
+            service.started_ms.is_none_or(|started| show.now_ms.saturating_sub(started) >= for_ms)
+        })
+}
+
 /// Waits until the essential services run: for `config.stable` seconds
-/// with no restart when `trying`, and once otherwise.
-fn watch(config: &Config, trying: bool) -> Result<(), String> {
+/// with no restart when `trying`, and otherwise until each has run for
+/// [`SEEN_STEADY`] seconds, or `stable` if less, since it last started.
+fn watch(config: &Config, trying: bool) -> Result<(), Failure> {
+    let seen_ms = config.stable.min(SEEN_STEADY).saturating_mul(1000);
     let start = Instant::now();
     let mut steady: Option<(Instant, Vec<u64>)> = None;
     loop {
-        let answer = power::request("show").map_err(|why| format!("Spark: {}", why.message))?;
-        let document = show::parse(&answer).map_err(|why| format!("Spark: {why}"))?;
+        let answer =
+            power::request("show").map_err(|why| Failure::of(format!("Spark: {}", why.message)))?;
+        let document = show::parse(&answer).map_err(|why| Failure::of(format!("Spark: {why}")))?;
         match look(&config.essential, &document.services) {
-            Look::Failing(why) => return Err(format!("{why} (BOOT-102)")),
-            Look::Running(_) if !trying => return Ok(()),
+            Look::Failing(name, why) => {
+                return Err(Failure { why: format!("{why} (BOOT-102)"), failing: Some(name) });
+            }
+            Look::Running(_) if !trying => {
+                if settled(&config.essential, &document, seen_ms) {
+                    return Ok(());
+                }
+            }
             Look::Running(restarts) => match &steady {
                 Some((since, before)) if *before == restarts => {
                     if since.elapsed() >= Duration::from_secs(config.stable) {
@@ -464,19 +602,21 @@ fn watch(config: &Config, trying: bool) -> Result<(), String> {
             Look::Waiting(names) => {
                 steady = None;
                 if start.elapsed() >= Duration::from_secs(config.deadline) {
-                    return Err(format!(
+                    let why = format!(
                         "{} did not run within {} seconds (BOOT-102)",
                         names.join(", "),
                         config.deadline
-                    ));
+                    );
+                    // The first that did not, which names the failure.
+                    return Err(Failure { why, failing: names.into_iter().next() });
                 }
             }
         }
         if start.elapsed() >= Duration::from_secs(config.deadline + config.stable) {
-            return Err(format!(
+            return Err(Failure::of(format!(
                 "its services did not settle within {} seconds (BOOT-102)",
                 config.deadline
-            ));
+            )));
         }
         std::thread::sleep(EVERY);
     }
@@ -484,14 +624,17 @@ fn watch(config: &Config, trying: bool) -> Result<(), String> {
 
 /// Runs health.toml's checks: a required one that fails fails the
 /// health check, a wanted one is only logged.
-fn checks(config: &Config) -> Result<(), String> {
+fn checks(config: &Config) -> Result<(), Failure> {
     for check in &config.checks {
         let passed = run_check(check);
         let kind = if check.required { "required" } else { "wanted" };
         match (&passed, check.required) {
             (Ok(()), _) => println!("sysupdate: the {kind} check {} passed", check.name),
             (Err(why), true) => {
-                return Err(format!("the required check {} failed: {why} (BOOT-103)", check.name));
+                return Err(Failure {
+                    why: format!("the required check {} failed: {why} (BOOT-103)", check.name),
+                    failing: Some(format!("check {}", check.name)),
+                });
             }
             (Err(why), false) => {
                 println!("sysupdate: the wanted check {} failed: {why}", check.name);
@@ -505,7 +648,7 @@ fn checks(config: &Config) -> Result<(), String> {
 /// names loaded, and every device the last good start had is here. While
 /// `trying`, the first problem fails the health check; otherwise each is
 /// only logged, as a machine that lost a card has to start all the same.
-fn hardware(root: &Root, trying: bool) -> Result<(), String> {
+fn hardware(root: &Root, trying: bool) -> Result<(), Failure> {
     let mut problems: Vec<String> = firmware_problem(root).into_iter().collect();
     if let Some(before) = devices::recorded() {
         problems.extend(devices::missing(&before, &devices::present(root)).into_iter().map(
@@ -518,7 +661,7 @@ fn hardware(root: &Root, trying: bool) -> Result<(), String> {
         ));
     }
     if trying {
-        return problems.into_iter().next().map_or(Ok(()), Err);
+        return problems.into_iter().next().map_or(Ok(()), |why| Err(Failure::of(why)));
     }
     for problem in problems {
         println!("sysupdate: {problem}; as this start is no update's try, it goes on");
@@ -581,24 +724,27 @@ fn run_check(check: &Check) -> Result<(), String> {
     }
 }
 
-/// What this start runs, for its record: the system and its kernel, the
-/// firmware set and its microcode, the boot options, the devices and the
-/// apps installed for everyone.
-fn start_items(root: &Root) -> Vec<Item> {
-    let slot = root.slot(root.running);
-    let installed = |path: &Path| {
-        std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .and_then(|d| i64::try_from(d.as_secs()).ok())
-    };
-    let about = slot.join(slots::about::PATH);
+/// When the file at `path` was last written, in seconds since 1970: when
+/// what it holds was installed.
+fn installed(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+}
+
+/// What a start of `slot` runs of it, as a start's record holds it: the
+/// system and its kernel, the firmware set and its microcode. changes
+/// bisect compares the slot as it is now with what a start ran.
+pub fn slot_items(root: &Root, slot: slots::Slot) -> Vec<Item> {
+    let path = root.slot(slot);
+    let about = path.join(slots::about::PATH);
     let mut items = Vec::new();
-    if let Some(running) = root.about(root.running) {
+    if let Some(running) = root.about(slot) {
         items.push(Item::new("system", "Dukovo", &running.version, installed(&about)));
     }
-    let kernel = slot.join("startup/radix");
+    let kernel = path.join("startup/radix");
     if let Ok(bytes) = std::fs::read(&kernel) {
         let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
         let hex = digest.as_ref()[..8].iter().fold(String::new(), |mut hex, byte| {
@@ -607,7 +753,7 @@ fn start_items(root: &Root) -> Vec<Item> {
         });
         items.push(Item::new("kernel", "Radix", &hex, installed(&kernel)));
     }
-    if let Some(named) = firmware::named(&slot) {
+    if let Some(named) = firmware::named(&path) {
         let list =
             root.path(slots::firmware::STORE).join("sets").join(format!("{}.json", named.set));
         items.push(Item::new("firmware", "firmware set", &named.set, installed(&list)));
@@ -615,11 +761,20 @@ fn start_items(root: &Root) -> Vec<Item> {
             items.push(Item::new("microcode", "CPU microcode", &hash[..hash.len().min(16)], None));
         }
     }
-    // Less the slot GRUB named, which changes with every update.
+    items
+}
+
+/// What this start runs, for its record: the system and its kernel, the
+/// firmware set and its microcode, the boot options, the devices and the
+/// apps installed for everyone.
+fn start_items(root: &Root) -> Vec<Item> {
+    let mut items = slot_items(root, root.running);
+    // Less the slot GRUB named, which changes with every update, and the
+    // try of changes bisect this start may be, which its record keeps.
     let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
     let options: Vec<&str> = line
         .split_whitespace()
-        .filter(|word| !word.starts_with("slot=") && !word.starts_with("fallback="))
+        .filter(|word| !["slot=", "fallback=", "trial="].iter().any(|menu| word.starts_with(menu)))
         .collect();
     items.push(Item::new("options", "boot options", &options.join(" "), None));
     for device in devices::present(root) {
@@ -640,16 +795,18 @@ fn start_items(root: &Root) -> Vec<Item> {
 /// What the sign-in screen says of a failed start (ADR 0501), if this
 /// start is one or follows one: the update that fell back, of `records`,
 /// or `this` start, which failed its check and goes on; what Dukovo did;
-/// what changed since the last good start; and where to read more. A
-/// failed try says nothing: the start after it does. `likely` gives the
-/// likely cause of the failed start, if the signatures name one
-/// (troubleshoot(8), ADR 0474), as a line after what changed.
+/// what changed since the last good start; the likely cause of the
+/// failed start, if the signatures name one (troubleshoot(8), ADR 0474),
+/// which `likely` gives; when a search for the change could begin now,
+/// how many restarts it takes at most (`restarts`); and where to read
+/// more. A failed try says nothing: the start after it does.
 fn failure_notice(
     records: &[starts::Start],
     this: Option<&starts::Start>,
     checked: Checked,
     named: &str,
     likely: &dyn Fn(&starts::Start) -> Option<Hit>,
+    restarts: Option<u32>,
 ) -> Option<String> {
     let this_failed = this.filter(|start| start.outcome == Outcome::Failed);
     let failed = noticed(records, this, checked)?;
@@ -675,6 +832,13 @@ fn failure_notice(
     }
     if let Some(hit) = likely(failed) {
         let _ = writeln!(text, "{}", hit.line());
+    }
+    if let Some(restarts) = restarts {
+        let _ = writeln!(
+            text,
+            "To find which change did it: `elevate changes bisect`, up to {restarts} restart{}.",
+            if restarts == 1 { "" } else { "s" }
+        );
     }
     text.push_str("More: changes --failed, and log -b -1 for the failed start's log.\n");
     if let Some(id) = &failed.error {
@@ -756,11 +920,11 @@ fn tell(text: &str) {
 }
 
 /// Keeps the result for `sysupdate status`.
-fn record(named: &str, result: &Result<(), String>) {
+fn record(named: &str, result: &Result<(), Failure>) {
     let when = crate::util::now_ns() / 1_000_000_000;
     let text = match result {
         Ok(()) => format!("{when} passed {named}\n"),
-        Err(why) => format!("{when} failed {named}: {why}\n"),
+        Err(failure) => format!("{when} failed {named}: {}\n", failure.why),
     };
     let path = Path::new(LAST);
     if let Some(dir) = path.parent() {
@@ -812,7 +976,10 @@ mod tests {
             assert_eq!(look(&essential[2..3], &services), Look::Waiting(vec!["netd".into()]));
         }
         let failing = [service("logd", State::Waiting, 3)];
-        assert_eq!(look(&essential, &failing), Look::Failing("logd has restarted 3 times".into()));
+        assert_eq!(
+            look(&essential, &failing),
+            Look::Failing("logd".into(), "logd has restarted 3 times".into())
+        );
     }
 
     #[test]
@@ -822,6 +989,11 @@ mod tests {
         let ended = show::Service { last_status: Some(0), ..service("netd", State::Stopped, 0) };
         assert_eq!(look(&essential, &[ended]), Look::Running(vec![]));
         assert_eq!(look(&essential, &[service("netd", State::Done, 0)]), Look::Running(vec![]));
+        // On-connection, and waiting for one: as it is meant to be.
+        assert_eq!(
+            look(&essential, &[service("netd", State::Listening, 0)]),
+            Look::Running(vec![])
+        );
         // Off as meant, as a driver the kernel left no cards is, the same.
         let idle = show::Service {
             why: Some("the kernel left it none of the cards it drives".into()),
@@ -834,7 +1006,7 @@ mod tests {
             show::Service { last_status: Some(0x200), ..service("netd", State::Stopped, 0) };
         assert_eq!(
             look(&essential, &[ended]),
-            Look::Failing("netd ended, with status 0x200".into())
+            Look::Failing("netd".into(), "netd ended, with status 0x200".into())
         );
         let refused = show::Service {
             why: Some("it requires resolved, which is stopped".into()),
@@ -842,7 +1014,10 @@ mod tests {
         };
         assert_eq!(
             look(&essential, &[refused]),
-            Look::Failing("netd does not run: it requires resolved, which is stopped".into())
+            Look::Failing(
+                "netd".into(),
+                "netd does not run: it requires resolved, which is stopped".into()
+            )
         );
         let given_up = show::Service {
             why: Some("it failed to start 5 times in a row".into()),
@@ -850,8 +1025,39 @@ mod tests {
         };
         assert_eq!(
             look(&essential, &[given_up]),
-            Look::Failing("Spark gave up on netd: it failed to start 5 times in a row".into())
+            Look::Failing(
+                "netd".into(),
+                "Spark gave up on netd: it failed to start 5 times in a row".into()
+            )
         );
+    }
+
+    #[test]
+    fn a_start_is_seen_through_once_each_service_has_run_a_while_since_it_last_started() {
+        let essential: Vec<String> = ["logd", "valkey", "netd"].map(String::from).to_vec();
+        let started = |name: &str, state: State, started_ms: u64| show::Service {
+            started_ms: Some(started_ms),
+            ..service(name, state, 0)
+        };
+        let mut show = show::Show {
+            now_ms: 12_000,
+            services: vec![
+                started("logd", State::Running, 1_000),
+                // Started again a moment ago, as one that ends at once is.
+                started("valkey", State::Running, 9_500),
+                // Done, as a setup step is: it does not count.
+                started("netd", State::Done, 11_900),
+            ],
+            ..show::Show::default()
+        };
+        assert!(!settled(&essential, &show, 10_000));
+        assert!(settled(&essential, &show, 2_500));
+        show.now_ms = 19_500;
+        assert!(settled(&essential, &show, 10_000));
+        // One Spark has no start time for counts as settled.
+        show.services[1].started_ms = None;
+        show.now_ms = 12_000;
+        assert!(settled(&essential, &show, 10_000));
     }
 
     #[test]
@@ -872,6 +1078,7 @@ mod tests {
         assert_eq!(
             look(&essential, &[unhealthy(3)]),
             Look::Failing(
+                "web".into(),
                 "web fails its health check: exited with code 0x1: no answer on 8080".into()
             )
         );
@@ -904,29 +1111,35 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("notice-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let set = |value: &str| vec![Item::new("firmware", "set", value, Some(200))];
-        let good = starts::begin_in(&dir, &dir.join("live"), "b", set("2026.1.1"), 1000).unwrap();
-        starts::finish_in(&dir, good, Outcome::Good, None, None).unwrap();
-        let tried = starts::begin_in(&dir, &dir.join("live"), "a", set("2026.2.1"), 2000).unwrap();
+        let good =
+            starts::begin_in(&dir, &dir.join("live"), "b", None, set("2026.1.1"), 1000).unwrap();
+        starts::finish_in(&dir, good, Outcome::Good, None, None, None).unwrap();
+        let tried =
+            starts::begin_in(&dir, &dir.join("live"), "a", None, set("2026.2.1"), 2000).unwrap();
         let why = "the network card vio0 (52:54:00:15:0c:01), there at the last good start, \
                    is missing (BOOT-101)";
-        starts::finish_in(&dir, tried, Outcome::Failed, Some(why), None).unwrap();
-        let this = starts::begin_in(&dir, &dir.join("live"), "b", set("2026.1.1"), 3000).unwrap();
-        let this = starts::finish_in(&dir, this, Outcome::Good, None, None).unwrap();
+        starts::finish_in(&dir, tried, Outcome::Failed, Some(why), None, None).unwrap();
+        let this =
+            starts::begin_in(&dir, &dir.join("live"), "b", None, set("2026.1.1"), 3000).unwrap();
+        let this = starts::finish_in(&dir, this, Outcome::Good, None, None, None).unwrap();
         let records = starts::all_in(&dir);
         let named = "slot B (Dukovo 0.15.0, firmware 2026.1.1)";
         // A failed try says nothing; the start after it does.
         let unknown = |_: &starts::Start| None;
         let failed = Checked::Failed(slots::Slot::A);
-        assert_eq!(failure_notice(&records, None, failed, named, &unknown), None);
+        assert_eq!(failure_notice(&records, None, failed, named, &unknown, None), None);
         let fell_back = Checked::FellBack(slots::Slot::A);
-        let text = failure_notice(&records, Some(&this), fell_back, named, &unknown).unwrap();
+        let text = failure_notice(&records, Some(&this), fell_back, named, &unknown, None).unwrap();
         assert!(!text.contains("Likely cause"), "{text}");
         assert!(text.starts_with(&format!("Start 2 failed its health check: {why}\n")), "{text}");
         assert!(text.contains(&format!("Dukovo went back to {named}")), "{text}");
         assert!(text.contains("  firmware set: 2026.1.1 to 2026.2.1;"), "{text}");
         assert!(text.contains("/errors/BOOT-101.html"), "{text}");
         // A good start that follows no failure says nothing.
-        assert_eq!(failure_notice(&records, Some(&this), Checked::Start, named, &unknown), None);
+        assert_eq!(
+            failure_notice(&records, Some(&this), Checked::Start, named, &unknown, None),
+            None
+        );
         // The likely cause is a line after what changed, for the failed start.
         let hit = |failed: &starts::Start| {
             assert_eq!(failed.number, 2);
@@ -936,7 +1149,7 @@ mod tests {
                 fix: "Plug it in.".into(),
             })
         };
-        let text = failure_notice(&records, Some(&this), fell_back, named, &hit).unwrap();
+        let text = failure_notice(&records, Some(&this), fell_back, named, &hit, None).unwrap();
         let line = "Likely cause: A card is gone (BOOT-101). Fix: Plug it in.\n";
         assert!(text.contains(&format!("{line}More: changes --failed")), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -955,5 +1168,36 @@ mod tests {
         assert_eq!(fell.invalid(), None);
         let goes_on = failure_alert(Checked::Start, "Dukovo 0.16.0 (slot A)", text);
         assert_eq!((goes_on.key.as_str(), goes_on.severity), ("start-failed", Severity::Warning));
+    }
+
+    #[test]
+    fn a_failed_start_that_goes_on_offers_the_search_when_one_could_begin() {
+        let dir = std::env::temp_dir().join(format!("offer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let set = |value: &str| vec![Item::new("firmware", "set", value, Some(200))];
+        let good =
+            starts::begin_in(&dir, &dir.join("live"), "a", None, set("2026.1.1"), 1000).unwrap();
+        starts::finish_in(&dir, good, Outcome::Good, None, None, None).unwrap();
+        let this =
+            starts::begin_in(&dir, &dir.join("live"), "a", None, set("2026.2.1"), 2000).unwrap();
+        let why = "Spark gave up on sshd: it failed to start (BOOT-102)";
+        let this = starts::finish_in(&dir, this, Outcome::Failed, Some(why), Some("sshd"), None);
+        let this = this.unwrap();
+        let records = starts::all_in(&dir);
+        let named = "slot A (Dukovo 0.15.0, firmware 2026.2.1)";
+        let unknown = |_: &starts::Start| None;
+        let notice = |restarts| {
+            failure_notice(&records, Some(&this), Checked::Start, named, &unknown, restarts)
+        };
+        let offer = "To find which change did it: `elevate changes bisect`, up to";
+        let text = notice(Some(2)).unwrap();
+        assert!(text.contains(&format!("{offer} 2 restarts.\n")), "{text}");
+        // After what changed, before where to read more.
+        let at = |needle: &str| text.find(needle).unwrap();
+        assert!(at("  firmware set: ") < at(offer) && at(offer) < at("More: changes --failed"));
+        assert!(notice(Some(1)).unwrap().contains(&format!("{offer} 1 restart.\n")));
+        // No search could begin: no line.
+        assert!(!notice(None).unwrap().contains("changes bisect"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

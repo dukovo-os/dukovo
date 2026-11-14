@@ -736,6 +736,7 @@ fn set_account(account: &Account, dry_run: bool) -> bool {
             admin: None,
             without_password: Some(true),
             console: None,
+            jobs_signed_out: None,
         })
     {
         return false;

@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use crate::legacy;
-use crate::service::{self, Oom, Override, PciId, Place, Ports, Restart};
+use crate::service::{self, Oom, Override, PciId, Place, Ports, ReadyWhen, Restart};
 use crate::{Error, Source};
 
 /// The service files Dukovo ships, and those of the boot tests.
@@ -35,12 +35,23 @@ const SHIPPED: &[(&str, &str)] = &[
     ("certd", include_str!("../../../defaults/spark/services/certd.toml")),
     ("certtest", include_str!("../../../spark/tests/services/certificates/certtest.toml")),
     ("certtest2", include_str!("../../../spark/tests/services/certificates/certtest2.toml")),
+    ("timerd", include_str!("../../../defaults/spark/services/timerd.toml")),
+    ("logturn", include_str!("../../../defaults/spark/services/logturn.toml")),
     ("dumps", include_str!("../../../defaults/spark/services/dumps.toml")),
+    ("sockets-echo", include_str!("../../../spark/tests/services/sockets/sockets-echo.toml")),
     ("netd", include_str!("../../../spark/tests/services/serve/netd.toml")),
     ("timed", include_str!("../../../spark/tests/services/serve/timed.toml")),
     ("metricsd", include_str!("../../../defaults/spark/services/metricsd.toml")),
     ("alertd", include_str!("../../../defaults/spark/services/alertd.toml")),
     ("admind", include_str!("../../../defaults/spark/services/admind.toml")),
+    ("tune", include_str!("../../../defaults/spark/services/tune.toml")),
+    ("limits-hog", include_str!("../../../spark/tests/services/limits/limits-hog.toml")),
+    ("limits-steady", include_str!("../../../spark/tests/services/limits/limits-steady.toml")),
+    ("limits-bomb", include_str!("../../../spark/tests/services/limits/limits-bomb.toml")),
+    ("limits-files", include_str!("../../../spark/tests/services/limits/limits-files.toml")),
+    ("iow-light", include_str!("../../../spark/tests/services/io-weight/iow-light.toml")),
+    ("iow-heavy", include_str!("../../../spark/tests/services/io-weight/iow-heavy.toml")),
+    ("iow-rated", include_str!("../../../spark/tests/services/io-weight/iow-rated.toml")),
     ("netd", include_str!("../../../defaults/spark/services/netd.toml")),
     ("netd", include_str!("../../../spark/tests/services/dhcp/netd.toml")),
 ];
@@ -169,6 +180,60 @@ fn dumps_reads_the_device_of_the_dump_and_changes_its_folder() {
 }
 
 #[test]
+fn tune_holds_the_kernel_settings_and_waits_to_have_ended() {
+    let (_, text) = SHIPPED.iter().find(|(name, _)| *name == "tune").unwrap();
+    let tune = service::from_toml(text).unwrap();
+    assert_eq!(tune.program, "/system/commands/tune");
+    assert_eq!(tune.arguments, ["apply"]);
+    // After logd, which is 5, and one-shot: `tune set` waits for it to end.
+    assert_eq!((tune.order, tune.restart), (7, Restart::Never));
+    assert_eq!(tune.ready.when, ReadyWhen::Ended);
+    assert!(tune.permissions.admin.tune);
+    assert!(!tune.permissions.runs_with_your_access);
+    let place = |path: &str, write| Place { path: path.into(), write };
+    assert_eq!(
+        tune.permissions.places(),
+        [
+            place("/system/live/sign-in", true),
+            place("/system/live/tune", true),
+            place("/system/state/tune", true)
+        ]
+    );
+    // No other shipped file asks for the kernel's settings.
+    for (name, text) in SHIPPED {
+        let held = service::from_toml(text).unwrap().permissions.admin.tune;
+        assert_eq!(held, *name == "tune", "{name}");
+    }
+}
+
+#[test]
+fn the_limits_boot_tests_services_say_their_limits() {
+    let read = |name: &str| {
+        let (_, text) = SHIPPED.iter().find(|(shipped, _)| *shipped == name).unwrap();
+        service::from_toml(text).unwrap()
+    };
+    let hog = read("limits-hog");
+    assert_eq!((hog.limits.memory, hog.restart), (Some(64 << 20), Restart::Never));
+    let bomb = read("limits-bomb");
+    assert_eq!((bomb.limits.threads, bomb.limits.memory), (64, None));
+    assert_eq!(read("limits-files").limits.open_files, Some(10_000));
+    assert_eq!(read("limits-steady").limits.threads, 4096);
+    // Three readers of one disk: the weights 100 and 400, and a rate.
+    let (light, heavy, rated) = (read("iow-light"), read("iow-heavy"), read("iow-rated"));
+    assert_eq!(
+        (light.limits.io_weight, heavy.limits.io_weight, rated.limits.io_weight),
+        (100, 400, 100)
+    );
+    assert_eq!(rated.limits.io_read, Some(10 << 20));
+    assert_eq!((light.limits.io_read, heavy.limits.io_read), (None, None));
+    for reader in [&light, &heavy, &rated] {
+        assert_eq!(reader.arguments, ["/devices/vda", "16", "64"]);
+        let place = |path: &str, write| Place { path: path.into(), write };
+        assert_eq!(reader.permissions.places(), [place("/devices/vda", false)]);
+    }
+}
+
+#[test]
 fn only_authd_holds_the_names_capability() {
     // The names capability lets its holder act for anyone: authd needs it
     // to start the sessions of those who sign in (ADR 0250), and no other
@@ -227,11 +292,18 @@ fn the_template_reads_as_a_service_not_started_at_boot() {
         let body = after.split("\n[").next().unwrap_or_default();
         body.lines().any(|line| line.starts_with(&format!("{name} =")))
     };
+    // The sockets' keys are in a commented `[[sockets]]` table.
+    let in_sockets = |key: &str| {
+        key.strip_prefix("sockets.").is_some_and(|name| {
+            text.contains("# [[sockets]]\n") && text.contains(&format!("\n# {name} = "))
+        })
+    };
     for key in service::KEYS {
         assert!(
             text.contains(&format!("{key} ="))
                 || text.contains(&format!("[{key}]"))
-                || in_table(key),
+                || in_table(key)
+                || in_sockets(key),
             "{key}"
         );
     }
@@ -246,6 +318,10 @@ fn what_a_file_leaves_out() {
     assert_eq!((service.order, service.enabled, service.restart), (50, true, Restart::Always));
     assert_eq!((service.limits.cpu_weight, service.limits.memory), (100, None));
     assert_eq!(service.limits.oom, Oom::Service);
+    let limits = &service.limits;
+    assert_eq!((limits.io_weight, limits.threads, limits.open_files), (100, 4096, None));
+    assert_eq!((limits.io_read, limits.io_write), (None, None));
+    assert_eq!((limits.io_read_ops, limits.io_write_ops), (None, None));
     assert_eq!(service.network_grants(), 0);
 }
 
@@ -287,6 +363,46 @@ network.listen = [80, "443", "8000-8009"]
 }
 
 #[test]
+fn a_service_may_limit_its_disks_threads_and_files() {
+    let text = file(
+        "[limits]\nio_weight = 400\nio_read = \"50M\"\nio_write = 1048576\nio_read_ops = 200\n\
+         io_write_ops = \"none\"\nthreads = 64\nopen_files = 65536\n",
+    );
+    let limits = service::from_toml(&text).unwrap().limits;
+    assert_eq!(limits.io_weight, 400);
+    assert_eq!((limits.io_read, limits.io_write), (Some(50 << 20), Some(1 << 20)));
+    assert_eq!((limits.io_read_ops, limits.io_write_ops), (Some(200), None));
+    assert_eq!((limits.threads, limits.open_files), (64, Some(65536)));
+    // The ends of each range are allowed.
+    let ends = file("[limits]\nio_weight = 10000\nthreads = 1048576\nopen_files = 1048576\n");
+    let limits = service::from_toml(&ends).unwrap().limits;
+    assert_eq!(
+        (limits.io_weight, limits.threads, limits.open_files),
+        (10_000, 1 << 20, Some(1 << 20))
+    );
+    let least = file("[limits]\nio_weight = 1\nthreads = 1\nopen_files = 1\nio_read_ops = 1\n");
+    let limits = service::from_toml(&least).unwrap().limits;
+    assert_eq!((limits.io_weight, limits.threads, limits.open_files), (1, 1, Some(1)));
+    assert_eq!(limits.io_read_ops, Some(1));
+}
+
+#[test]
+fn a_limit_out_of_range_is_placed_on_its_value() {
+    let weight = failure(&file("[limits]\nio_weight = 20000"));
+    assert_eq!(place(&weight), (Some(4), Some(13), 5, Some("limits.io_weight")));
+    assert_eq!(weight.message, "io_weight is from 1 to 10000, not 20000");
+    let threads = failure(&file("[limits]\nthreads = 2000000"));
+    assert_eq!(place(&threads), (Some(4), Some(11), 7, Some("limits.threads")));
+    assert_eq!(threads.message, "threads is from 1 to 1048576, not 2000000");
+    let files = failure(&file("[limits]\nopen_files = 0"));
+    assert_eq!(place(&files), (Some(4), Some(14), 1, Some("limits.open_files")));
+    assert_eq!(files.message, "open_files is from 1 to 1048576, not 0");
+    // The second of two limits is placed on its own line.
+    let second = failure(&file("[limits]\nthreads = 64\nio_read = \"fast\""));
+    assert_eq!(place(&second), (Some(5), Some(11), 6, Some("limits.io_read")));
+}
+
+#[test]
 fn a_service_may_run_as_an_account() {
     assert_eq!(service::from_toml(&file("")).unwrap().account, None);
     let service = service::from_toml(&file("account = \"web-cache\"\n")).unwrap();
@@ -303,6 +419,11 @@ fn a_service_may_run_as_an_account() {
     assert_eq!(service::account_numbers(passwd, "root"), Some((0, 0)));
     assert_eq!(service::account_numbers(passwd, "we"), None);
     assert_eq!(service::account_numbers(passwd, "broken"), None);
+    let group = "root:x:0:\nadmins:x:10:alice\nphp-fpm-socket:x:105:nginx,web\nbroken:x:x:\n";
+    assert_eq!(service::group_number(group, "php-fpm-socket"), Some(105));
+    assert_eq!(service::group_number(group, "admins"), Some(10));
+    assert_eq!(service::group_number(group, "php-fpm"), None);
+    assert_eq!(service::group_number(group, "broken"), None);
 }
 
 #[test]
@@ -470,6 +591,24 @@ fn errors_name_their_line_in_plain_words() {
             "line 4: memory is a size such as \"64M\", \"512K\" or \"2G\", or \"none\", not `lots`",
         ),
         ("[limits]\nmemory = 0", "line 4: memory is more than 0 bytes; \"none\" sets no limit"),
+        ("[limits]\nio_weight = 0", "line 4: io_weight is from 1 to 10000, not 0"),
+        ("[limits]\nio_weight = -1", "line 4: io_weight is not below 0"),
+        (
+            "[limits]\nio_read = \"fast\"",
+            "line 4: io_read is a size such as \"64M\", \"512K\" or \"2G\", or \"none\", not `fast`",
+        ),
+        ("[limits]\nio_write = 0", "line 4: io_write is more than 0 bytes; \"none\" sets no limit"),
+        (
+            "[limits]\nio_read_ops = 0",
+            "line 4: io_read_ops is 1 or more a second; \"none\" sets no limit",
+        ),
+        (
+            "[limits]\nio_write_ops = \"many\"",
+            "line 4: io_write_ops is a whole number a second, or \"none\", not `many`",
+        ),
+        ("[limits]\nthreads = 0", "line 4: threads is from 1 to 1048576, not 0"),
+        ("[limits]\nthreads = 1048577", "line 4: threads is from 1 to 1048576, not 1048577"),
+        ("[limits]\nopen_files = 1048577", "line 4: open_files is from 1 to 1048576, not 1048577"),
         ("order = \"first\"", "line 3: invalid type: string \"first\", expected a whole number"),
         ("enabled = \"yes\"", "line 3: invalid type: string \"yes\", expected true or false"),
         (
@@ -1281,4 +1420,450 @@ fn the_settings_that_differ_are_those_of_the_files_with_their_overrides() {
     assert_eq!(error.line, Some(1));
     // changed_keys compares two texts alone.
     assert_eq!(service::changed_keys(&base, &heavier).unwrap(), ["limits.cpu_weight"]);
+}
+
+#[test]
+fn a_timer_is_read_with_its_defaults() {
+    let service =
+        service::from_toml(&file("[timer]\nat = [\"daily\", \"30 2 * * 1-5\"]\n")).unwrap();
+    let timer = service.timer.unwrap();
+    assert_eq!(timer.at.len(), 2);
+    assert_eq!(timer.at[0], crate::schedule::word("daily").unwrap());
+    assert_eq!((timer.every, timer.after_boot, timer.spread), (None, None, 0));
+    assert!(timer.catch_up);
+    assert_eq!(timer.time_zone, None);
+    assert!(service::from_toml(&file("")).unwrap().timer.is_none());
+}
+
+#[test]
+fn every_timer_setting() {
+    let text = file(
+        "[timer]\nevery = \"6h\"\nafter_boot = \"10m\"\nspread = \"1h30m\"\ncatch_up = false\n\
+         time_zone = \"Europe/Berlin\"\nat = [\"hourly\"]\n",
+    );
+    let timer = service::from_toml(&text).unwrap().timer.unwrap();
+    assert_eq!(timer.every, Some(21_600));
+    assert_eq!(timer.after_boot, Some(600));
+    assert_eq!(timer.spread, 5400);
+    assert!(!timer.catch_up);
+    assert_eq!(timer.time_zone.as_deref(), Some("Europe/Berlin"));
+}
+
+#[test]
+fn a_wrong_timer_is_refused_where_it_is_wrong() {
+    let at = |body: &str| service::from_toml(&file(body)).unwrap_err();
+    let err = at("[timer]\n");
+    assert!(err.message.contains("`at` or `every`"), "{err}");
+    let err = at("[timer]\nat = [\"daily\"]\nafter_boot = \"1m\"\n");
+    assert!(err.message.contains("goes with `every`"), "{err}");
+    assert_eq!(err.key.as_deref(), Some("timer.after_boot"));
+    let err = at("[timer]\nat = [\"@daily\"]\n");
+    assert!(err.message.contains("without the @"), "{err}");
+    let err = at("[timer]\nat = [\"daily\", \"61 * * * *\"]\n");
+    assert!(err.message.contains("item 2") && err.message.contains("column 1"), "{err}");
+    assert_eq!(err.line, Some(4));
+    for every in ["\"0s\"", "\"1x\"", "\"367d\"", "6", "\"\""] {
+        let err = at(&format!("[timer]\nevery = {every}\n"));
+        assert!(
+            err.message.contains("timer.every") || err.message.contains("invalid type"),
+            "{err}"
+        );
+    }
+    let err = at("[timer]\nevery = \"1h\"\nspread = \"soon\"\n");
+    assert!(err.message.contains("timer.spread"), "{err}");
+    for zone in ["../etc/passwd", "/UTC", "A//B", "UTC/..", "", "a b"] {
+        let err = at(&format!("[timer]\nevery = \"1h\"\ntime_zone = \"{zone}\"\n"));
+        assert!(err.message.contains("time zone"), "{zone}: {err}");
+    }
+    let err = at("[timer]\nevery = \"1h\"\nsometimes = true\n");
+    assert!(err.message.contains("sometimes"), "{err}");
+}
+
+#[test]
+fn a_timer_can_be_written_as_dotted_keys() {
+    let service = service::from_toml(&file("timer.every = \"20s\"\n")).unwrap();
+    assert_eq!(service.timer.unwrap().every, Some(20));
+}
+
+#[test]
+fn logs_are_read_with_their_defaults() {
+    let service = service::from_toml(&file("[logs]\nfiles = [\"logs/*.log\"]\n")).unwrap();
+    let logs = service.logs.unwrap();
+    assert_eq!(logs.files, ["logs/*.log"]);
+    assert_eq!(logs.turn_over, service::TurnOver::Daily);
+    assert_eq!((logs.keep, logs.compress), (14, true));
+    assert_eq!(logs.reopen, service::Reopen::Nothing);
+}
+
+#[test]
+fn every_logs_setting() {
+    let text = file(
+        "[logs]\nfiles = [\"a/*.log\", \"/var/b.log\"]\nturn_over = \"100M\"\nkeep = 100\n\
+         compress = false\nreopen = \"SIGUSR1\"\n",
+    );
+    let logs = service::from_toml(&text).unwrap().logs.unwrap();
+    assert_eq!(logs.files, ["a/*.log", "/var/b.log"]);
+    assert_eq!(logs.turn_over, service::TurnOver::Size(100 << 20));
+    assert_eq!((logs.keep, logs.compress), (100, false));
+    assert_eq!(logs.reopen, service::Reopen::Signal(service::Signal::Usr1));
+    for (word, want) in [
+        ("weekly", service::TurnOver::Weekly),
+        ("64K", service::TurnOver::Size(64 << 10)),
+        ("4096", service::TurnOver::Size(4096)),
+    ] {
+        let text = file(&format!("[logs]\nfiles = [\"x.log\"]\nturn_over = \"{word}\"\n"));
+        assert_eq!(service::from_toml(&text).unwrap().logs.unwrap().turn_over, want, "{word}");
+    }
+    let text = file("[logs]\nfiles = [\"x.log\"]\nturn_over = 8192\nreopen = \"restart\"\n");
+    let logs = service::from_toml(&text).unwrap().logs.unwrap();
+    assert_eq!(logs.turn_over, service::TurnOver::Size(8192));
+    assert_eq!(logs.reopen, service::Reopen::Restart);
+}
+
+#[test]
+fn wrong_logs_are_refused() {
+    let at = |body: &str| service::from_toml(&file(&format!("[logs]\n{body}"))).unwrap_err();
+    assert!(at("keep = 3\n").message.contains("files"), "a file with none");
+    assert!(at("files = []\n").message.contains("1 to 16"));
+    for pattern in
+        ["a/*/b.log", "../x.log", "/", "a//b.log", "x.*", "x?.log", "./x.log", "x[1].log"]
+    {
+        let err = at(&format!("files = [\"{pattern}\"]\n"));
+        assert!(err.message.contains("logs.files"), "{pattern}: {err}");
+    }
+    assert!(at("files = [\"a.log\", \"a.log\"]\n").message.contains("twice"));
+    for (key, value) in [
+        ("turn_over", "\"hourly\""),
+        ("turn_over", "0"),
+        ("turn_over", "\"none\""),
+        ("keep", "0"),
+        ("keep", "101"),
+        ("reopen", "\"USR1\""),
+        ("reopen", "\"SIGTERM\""),
+        ("reopen", "\"SIGQUIT\""),
+        ("reopen", "\"later\""),
+    ] {
+        let err = at(&format!("files = [\"x.log\"]\n{key} = {value}\n"));
+        assert!(err.message.contains(&format!("logs.{key}")), "{key} = {value}: {err}");
+        assert_eq!(err.line, Some(5), "{key} = {value}");
+    }
+}
+
+/// A version 1 file that listens on ports 80, 8090 and 9000 to 9009,
+/// with `top` before its tables and `tables` after them.
+fn socket_file(top: &str, tables: &str) -> String {
+    format!(
+        "service_version = 1\nprogram = \"/system/commands/true\"\n{top}\n{tables}\n\
+         [permissions]\nnetwork.listen = [80, 8090, \"9000-9009\"]\n"
+    )
+}
+
+#[test]
+fn a_service_names_the_sockets_spark_holds() {
+    use service::{BACKLOG_DEFAULT, SocketAddress, SocketKind, Start};
+    let text = socket_file(
+        "start = \"on-connection\"",
+        "[[sockets]]\nport = 80\naddress = \"0.0.0.0\"\n\
+         [[sockets]]\nport = 80\naddress = \"::\"\nname = \"web6\"\nbacklog = 128\nnon-blocking = true\n\
+         [[sockets]]\nport = 9000\nudp = true\naddress = \"192.168.1.5\"\n\
+         [[sockets]]\nport = 8090\naddress = \"::1\"\n\
+         [[sockets]]\nport = 9001\n\
+         [[sockets]]\npath = \"db\"\n",
+    );
+    let service = service::from_toml(&text).unwrap();
+    assert_eq!(service.start, Start::OnConnection);
+    let kinds: Vec<&SocketKind> = service.sockets.iter().map(|socket| &socket.kind).collect();
+    let mut loopback = [0; 16];
+    loopback[15] = 1;
+    assert_eq!(
+        kinds,
+        [
+            &SocketKind::Stream { port: 80, address: SocketAddress::AnyV4 },
+            &SocketKind::Stream { port: 80, address: SocketAddress::AnyV6 },
+            &SocketKind::Datagram { port: 9000, address: SocketAddress::V4([192, 168, 1, 5]) },
+            &SocketKind::Stream { port: 8090, address: SocketAddress::V6(loopback) },
+            &SocketKind::Stream { port: 9001, address: SocketAddress::Any },
+            &SocketKind::Unix { path: "db".into() },
+        ]
+    );
+    let names: Vec<&str> = service.sockets.iter().map(|socket| socket.name.as_str()).collect();
+    assert_eq!(names, ["80", "web6", "9000", "8090", "9001", "db"]);
+    let backlogs: Vec<u32> = service.sockets.iter().map(|socket| socket.backlog).collect();
+    assert_eq!(backlogs, [BACKLOG_DEFAULT, 128, BACKLOG_DEFAULT, BACKLOG_DEFAULT, 4096, 4096]);
+    // Blocking unless the file says, as systemd's NonBlocking= is.
+    let non_blocking: Vec<bool> =
+        service.sockets.iter().map(|socket| socket.non_blocking).collect();
+    assert_eq!(non_blocking, [false, true, false, false, false, false]);
+}
+
+#[test]
+fn a_file_without_sockets_starts_at_boot_with_no_groups() {
+    let service = service::from_toml(&file("")).unwrap();
+    assert!(service.sockets.is_empty() && service.groups.is_empty());
+    assert_eq!(service.start, service::Start::AtBoot);
+    let text = file("start = \"at-boot\"\ngroups = [\"web\", \"mail.out\"]");
+    let service = service::from_toml(&text).unwrap();
+    assert_eq!(service.groups, ["web", "mail.out"]);
+}
+
+#[test]
+fn a_unix_socket_says_who_connects_besides_its_service() {
+    use service::SocketAccess;
+    let text = socket_file(
+        "",
+        "[[sockets]]\npath = \"own\"\n[[sockets]]\npath = \"all\"\nto = \"anyone\"\n\
+         [[sockets]]\npath = \"root\"\nto = \"system\"\n\
+         [[sockets]]\npath = \"fpm\"\ngroup = \"php-fpm-socket\"\n[[sockets]]\nport = 80\n",
+    );
+    let service = service::from_toml(&text).unwrap();
+    let access: Vec<&SocketAccess> = service.sockets.iter().map(|socket| &socket.access).collect();
+    assert_eq!(
+        access,
+        [
+            &SocketAccess::Own,
+            &SocketAccess::Anyone,
+            &SocketAccess::System,
+            &SocketAccess::Group("php-fpm-socket".into()),
+            &SocketAccess::Own,
+        ]
+    );
+    assert!(!SocketAccess::Own.offered() && SocketAccess::System.offered());
+    // Each mistake on its key, or its line for a value that does not
+    // read: a port's reach is the firewall's to say.
+    for (tables, key, said) in [
+        (
+            "[[sockets]]\nport = 80\nto = \"anyone\"",
+            "sockets.to",
+            "to is for a socket with a path alone",
+        ),
+        (
+            "[[sockets]]\nport = 80\ngroup = \"web\"",
+            "sockets.group",
+            "group is for a socket with a path alone",
+        ),
+        (
+            "[[sockets]]\npath = \"a\"\nto = \"anyone\"\ngroup = \"web\"",
+            "sockets.group",
+            "a socket has a `to` or a `group`, not both",
+        ),
+        (
+            "[[sockets]]\npath = \"a\"\nto = \"everyone\"",
+            "line 6",
+            "a socket's to is \"anyone\" or",
+        ),
+        ("[[sockets]]\npath = \"a\"\ngroup = \"Web Users\"", "line 6", "a socket's group:"),
+    ] {
+        let error = failure(&socket_file("", tables));
+        assert!(error.message.contains(said), "{tables}: {}", error.message);
+        match key.strip_prefix("line ") {
+            Some(line) => assert_eq!(error.line, line.parse().ok(), "{tables}"),
+            None => assert_eq!(error.key.as_deref(), Some(key), "{tables}"),
+        }
+    }
+}
+
+#[test]
+fn a_socket_that_does_not_fit_is_placed_on_its_key() {
+    // Each case: the tables, the key's line and column, and what is said.
+    let cases: &[(&str, (usize, usize), &str)] = &[
+        (
+            "[[sockets]]\nport = 80\npath = \"db\"",
+            (6, 1),
+            "a socket has a port or a path, not both",
+        ),
+        ("[[sockets]]\nname = \"db\"", (4, 1), "a socket needs a port or a path"),
+        ("[[sockets]]\npath = \"db\"\nudp = true", (6, 1), "udp is for a socket with a port alone"),
+        (
+            "[[sockets]]\npath = \"db\"\naddress = \"::\"",
+            (6, 1),
+            "address is for a socket with a port alone",
+        ),
+        (
+            "[[sockets]]\nport = 80\n[[sockets]]\nport = 81",
+            (7, 1),
+            "port 81 is none of network.listen's ports",
+        ),
+        (
+            "[[sockets]]\nport = 80\n[[sockets]]\nport = 80\nudp = true",
+            (6, 1),
+            "two sockets are named 80",
+        ),
+        (
+            "[[sockets]]\npath = \"x\"\nname = \"x\"\n[[sockets]]\nport = 80\nname = \"x\"",
+            (9, 1),
+            "two sockets are named x",
+        ),
+    ];
+    for (tables, (line, column), said) in cases {
+        let error = failure(&socket_file("", tables));
+        assert!(error.message.contains(said), "{tables}: {}", error.message);
+        assert_eq!((error.line, error.column), (Some(*line), Some(*column)), "{tables}");
+    }
+    let listen = failure(&socket_file("", "[[sockets]]\nport = 81"));
+    assert_eq!(listen.fix.as_deref(), Some("add 81 to network.listen"));
+    assert_eq!(listen.key.as_deref(), Some("sockets.port"));
+    // A table with neither is placed on the table.
+    let neither = failure(&socket_file("", "[[sockets]]\nname = \"db\""));
+    assert_eq!(neither.key.as_deref(), Some("sockets"));
+}
+
+#[test]
+fn a_socket_s_values_are_checked_where_they_are_written() {
+    let cases: &[(&str, &str)] = &[
+        ("port = 0", "a socket's port is from 1 to 65535, not 0"),
+        ("port = 70000", "a socket's port is from 1 to 65535, not 70000"),
+        ("port = 80\naddress = \"localhost\"", "a socket's address is \"0.0.0.0\", \"::\""),
+        ("port = 80\naddress = \"1.2.3\"", "not `1.2.3`"),
+        ("path = \"a/b\"", "a socket's path is a plain name"),
+        ("path = \"..\"", "a socket's path is a plain name"),
+        ("path = \".\"", "a socket's path is a plain name"),
+        ("path = \"\"", "a socket's path is a plain name"),
+        ("port = 80\nname = \"a:b\"", "a socket's name is 1 to 64 letters"),
+        ("port = 80\nname = \"\"", "a socket's name is 1 to 64 letters"),
+        ("port = 80\nbacklog = 0", "a socket's backlog is from 1 to 65535 connections, not 0"),
+        ("port = 80\nbacklog = 65536", "not 65536"),
+        ("port = 80\nwarm = true", "`warm` is not a setting here"),
+    ];
+    for (table, said) in cases {
+        let error = failure(&socket_file("", &format!("[[sockets]]\n{table}")));
+        assert!(error.message.contains(said), "{table}: {}", error.message);
+        // Each is on the line of the value, below the table's own.
+        assert!(error.line.is_some_and(|line| line >= 5), "{table}: {:?}", error.line);
+    }
+    let long = "a".repeat(service::UNIX_NAME_MAX + 1);
+    let error = failure(&socket_file("", &format!("[[sockets]]\npath = \"{long}\"")));
+    assert!(error.message.contains("a socket's path is a plain name"));
+    let longest = "a".repeat(service::UNIX_NAME_MAX);
+    service::from_toml(&socket_file("", &format!("[[sockets]]\npath = \"{longest}\""))).unwrap();
+}
+
+#[test]
+fn a_file_names_at_most_sixteen_sockets() {
+    let socket = |n: usize| format!("[[sockets]]\npath = \"s{n}\"\n");
+    let sixteen: String = (0..service::SOCKETS_MAX).map(socket).collect();
+    assert_eq!(service::from_toml(&socket_file("", &sixteen)).unwrap().sockets.len(), 16);
+    let seventeen = format!("{sixteen}{}", socket(16));
+    assert!(failure(&socket_file("", &seventeen)).message.contains("at most 16 sockets"));
+}
+
+#[test]
+fn a_port_of_a_socket_is_one_of_network_listen_for_udp_too() {
+    let udp = socket_file("", "[[sockets]]\nport = 9005\nudp = true");
+    assert!(service::from_toml(&udp).is_ok());
+    let outside = socket_file("", "[[sockets]]\nport = 9010\nudp = true");
+    assert!(failure(&outside).message.contains("port 9010 is none of network.listen's ports"));
+    // A file that listens on nothing has no socket to make.
+    let none = file("[[sockets]]\nport = 80");
+    assert!(failure(&none).message.contains("port 80 is none of network.listen's ports"));
+}
+
+#[test]
+fn starting_on_a_connection_needs_a_socket() {
+    let error = failure(&file("start = \"on-connection\""));
+    assert_eq!(error.key.as_deref(), Some("start"));
+    assert_eq!((error.line, error.column), (Some(3), Some(1)));
+    assert!(error.message.contains("waits for a connection"));
+    assert_eq!(error.fix.as_deref(), Some("add a [[sockets]] table"));
+    let bad = failure(&file("start = \"lazily\""));
+    assert!(bad.message.contains("start must be at-boot or on-connection, not `lazily`"));
+}
+
+#[test]
+fn groups_are_account_style_names_at_most_sixteen_each_once() {
+    for (groups, said) in [
+        ("[\"Web\"]", "groups: `Web` is not an account's name"),
+        ("[\"web\", \"web\"]", "groups names web twice"),
+        ("[\"\"]", "groups: ``"),
+        ("[\"a:b\"]", "groups: `a:b`"),
+    ] {
+        let error = failure(&file(&format!("groups = {groups}")));
+        assert!(error.message.contains(said), "{groups}: {}", error.message);
+        assert_eq!(error.line, Some(3), "{groups}");
+    }
+    let many: Vec<String> = (0..17).map(|n| format!("\"g{n}\"")).collect();
+    let error = failure(&file(&format!("groups = [{}]", many.join(", "))));
+    assert!(error.message.contains("groups names at most 16 groups"));
+    let sixteen = &many[..16];
+    assert!(service::from_toml(&file(&format!("groups = [{}]", sixteen.join(", ")))).is_ok());
+}
+
+#[test]
+fn an_override_may_replace_a_service_s_sockets() {
+    let text = socket_file("", "[[sockets]]\nport = 80");
+    let over = Override::from_toml("sockets = [{ port = 8090, name = \"alt\" }]\n").unwrap();
+    let service = service::from_toml_over(&text, Some(&over)).unwrap();
+    assert_eq!(service.sockets.len(), 1);
+    assert_eq!(service.sockets[0].name, "alt");
+    let bad = Override::from_toml("sockets = [{ port = 81 }]\n").unwrap();
+    let error = service::from_toml_over(&text, Some(&bad)).unwrap_err();
+    assert!(error.in_override);
+    assert_eq!((error.line, error.key.as_deref()), (Some(1), Some("sockets.port")));
+}
+
+/// `text` after the lines of a file that sets nothing else.
+fn stop_file(version: u32, text: &str) -> String {
+    format!("service_version = {version}\nprogram = \"/system/commands/true\"\n{text}\n")
+}
+
+#[test]
+fn a_service_stops_with_the_signal_and_time_its_file_says() {
+    use service::{STOP_TIMEOUT_DEFAULT, STOP_TIMEOUT_MAX, Signal, Stop};
+    assert_eq!(Stop::default(), Stop { signal: Signal::Term, timeout: 5 });
+    assert_eq!((STOP_TIMEOUT_DEFAULT, STOP_TIMEOUT_MAX), (5, 3600));
+    assert_eq!(service::from_toml(&file("")).unwrap().stop, Stop::default());
+    assert_eq!(service::from_toml(&stop_file(2, "")).unwrap().stop, Stop::default());
+    for (word, signal) in [
+        ("SIGTERM", Signal::Term),
+        ("SIGINT", Signal::Int),
+        ("SIGQUIT", Signal::Quit),
+        ("SIGUSR1", Signal::Usr1),
+        ("SIGUSR2", Signal::Usr2),
+        ("SIGWINCH", Signal::Winch),
+    ] {
+        let text = stop_file(2, &format!("[stop]\nsignal = \"{word}\""));
+        let stop = service::from_toml(&text).unwrap().stop;
+        assert_eq!(stop, Stop { signal, timeout: 5 }, "{word}");
+    }
+    let timeout = |n: u32| service::from_toml(&stop_file(2, &format!("stop.timeout = {n}")));
+    assert_eq!(timeout(1).unwrap().stop.timeout, 1);
+    assert_eq!(timeout(3600).unwrap().stop.timeout, 3600);
+    for n in [0, 3601] {
+        let said = format!("stop.timeout is from 1 to 3600 seconds, not {n}");
+        assert!(timeout(n).unwrap_err().message.contains(&said), "{n}");
+    }
+    let both = stop_file(2, "stop = { signal = \"SIGQUIT\", timeout = 30 }");
+    assert_eq!(service::from_toml(&both).unwrap().stop, Stop { signal: Signal::Quit, timeout: 30 });
+}
+
+#[test]
+fn a_stop_signal_that_is_no_request_is_refused_with_why() {
+    let error = |word: &str| failure(&stop_file(2, &format!("[stop]\nsignal = \"{word}\"")));
+    let hup = error("SIGHUP");
+    assert!(hup.message.contains("`service reload` sends"), "{}", hup.message);
+    assert_eq!((hup.line, hup.column), (Some(4), Some(10)));
+    for word in ["SIGKILL", "SIGSTOP"] {
+        assert!(error(word).message.contains("which a program cannot take as a request"));
+    }
+    let wrong = error("TERM");
+    assert!(wrong.message.contains(
+        "stop.signal must be SIGTERM, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2 or SIGWINCH, not `TERM`"
+    ));
+}
+
+#[test]
+fn a_version_1_file_may_not_use_stop() {
+    assert_eq!(
+        error(&stop_file(1, "[stop]\ntimeout = 9")),
+        "stop needs service_version = 2: change the file's service_version to 2"
+    );
+}
+
+#[test]
+fn an_override_changes_the_stop_timeout_alone() {
+    let text = stop_file(2, "[stop]\nsignal = \"SIGINT\"\ntimeout = 300");
+    let over = Override::from_toml("[stop]\ntimeout = 2\n").unwrap();
+    let stop = service::from_toml_over(&text, Some(&over)).unwrap().stop;
+    assert_eq!((stop.signal, stop.timeout), (service::Signal::Int, 2));
+    let bad = Override::from_toml("[stop]\ntimeout = 0\n").unwrap();
+    assert!(service::from_toml_over(&text, Some(&bad)).unwrap_err().in_override);
 }

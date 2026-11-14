@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The io-weight boot test's reader with a rate: it reads as iow-light does
+# but is held to 10 MiB a second, whatever the disk could give it
+# (ADR 0476).
+
+service_version = 1
+description = "Reads a disk at 10 MiB a second"
+program = "/system/tests/posix/diskread"
+arguments = ["/devices/vda", "16", "64"]
+restart = "never"
+
+[limits]
+io_read = "10M"
+
+# The disk it reads.
+[permissions]
+files.read = ["/devices/vda"]

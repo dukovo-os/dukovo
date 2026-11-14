@@ -15,6 +15,23 @@
 //! - a memory limit, in pages, that its charges and its children's
 //!   together may not pass: a charge that would is refused and the
 //!   allocation fails with an error for the caller, never a kill;
+//! - a thread limit, that its threads and its children's together may not
+//!   pass, as Linux's `pids.max`: a thread that would is not made, and
+//!   `fork` or `pthread_create` fails with EAGAIN (ADR 0476);
+//! - what its threads have read from disks and written to them
+//!   ([`DiskUse`], ADR 0476): counted in the domain alone as it goes, so
+//!   that a request costs no more than its own domain's counters, and
+//!   summed over the domains below it when asked; a domain that goes
+//!   hands its counts to its parent;
+//! - a disk I/O weight, 1 to 10,000 (default 100), and rates of bytes and
+//!   requests each second, read and written (ADR 0476). A domain's rates
+//!   hold its threads' requests and those of the domains below it, across
+//!   all disks together, as Linux's `io.max` holds a cgroup's on each
+//!   disk: a thread waits before a request until the slowest allows it.
+//!   While any domain has a weight other than the default, each disk
+//!   serves the domains whose requests wait for it in proportion to their
+//!   weights, flattened along the tree ([`Domain::flat_io_weight`]), as
+//!   `io.weight` shares a disk out;
 //! - an out-of-memory class, [`OomClass`]: when the machine as a whole runs
 //!   out of memory, `oom` stops whole domains, apps first and services
 //!   next, and never `system` ones, which hold the trusted computing base;
@@ -37,6 +54,7 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use radix_block::share::Rate;
 use radix_cap::ObjectId;
 use radix_mm::{Flags, HEAP, Kmalloc};
 use radix_sched::{DOMAIN_WEIGHT_DEFAULT, DOMAIN_WEIGHT_MAX};
@@ -52,6 +70,41 @@ pub const MAX_DEPTH: u8 = 4;
 
 /// Most domains at once.
 pub const MAX_DOMAINS: usize = 256;
+
+/// The heaviest disk I/O weight.
+pub const IO_WEIGHT_MAX: u32 = 10_000;
+
+/// The disk I/O weight a domain has unless it is given another.
+pub const IO_WEIGHT_DEFAULT: u32 = 100;
+
+/// The rates a domain's requests keep to across all disks together, each
+/// second ([`Domain::set_io`]); `u64::MAX` for none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IoRates {
+    /// Bytes read.
+    pub read_bps: u64,
+    /// Bytes written, those a write leaves dirty in the page cache too.
+    pub write_bps: u64,
+    /// Read requests.
+    pub read_iops: u64,
+    /// Write requests.
+    pub write_iops: u64,
+}
+
+impl IoRates {
+    /// No rate at all.
+    pub const NONE: IoRates = IoRates {
+        read_bps: u64::MAX,
+        write_bps: u64::MAX,
+        read_iops: u64::MAX,
+        write_iops: u64::MAX,
+    };
+
+    /// Whether any rate is set.
+    pub fn any(&self) -> bool {
+        *self != IoRates::NONE
+    }
+}
 
 /// What the out-of-memory policy may do to a domain, least protected
 /// first.
@@ -89,13 +142,95 @@ pub struct Settings {
     pub class: OomClass,
     /// What restarts it after an out-of-memory stop, if anything.
     pub supervisor: Option<fn(&DomainRef)>,
+    /// Thread limit; `None` for none beyond the parent's.
+    pub thread_limit: Option<u32>,
 }
 
 impl Settings {
-    /// Default weight, no limit, in `class`, unsupervised.
+    /// Default weight, no limits, in `class`, unsupervised.
     pub const fn new(class: OomClass) -> Settings {
-        Settings { weight: DOMAIN_WEIGHT_DEFAULT, limit_pages: None, class, supervisor: None }
+        Settings {
+            weight: DOMAIN_WEIGHT_DEFAULT,
+            limit_pages: None,
+            class,
+            supervisor: None,
+            thread_limit: None,
+        }
     }
+}
+
+/// What a domain's threads, and those of the domains below it, moved to
+/// and from disks: the bytes and requests the devices finished, and the
+/// time requests waited for the device's room and for the domain's rates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiskUse {
+    /// Bytes read.
+    pub read_bytes: u64,
+    /// Bytes written: those a write left dirty in the page cache, counted
+    /// as it did, and those written to a disk directly.
+    pub written_bytes: u64,
+    /// Read requests.
+    pub reads: u64,
+    /// Write requests written directly.
+    pub writes: u64,
+    /// Nanoseconds requests waited for room on a device.
+    pub wait_ns: u64,
+    /// Nanoseconds requests and writers were held to the domain's rates.
+    pub throttled_ns: u64,
+}
+
+impl DiskUse {
+    fn add(&mut self, other: &DiskUse) {
+        self.read_bytes += other.read_bytes;
+        self.written_bytes += other.written_bytes;
+        self.reads += other.reads;
+        self.writes += other.writes;
+        self.wait_ns += other.wait_ns;
+        self.throttled_ns += other.throttled_ns;
+    }
+}
+
+/// [`DiskUse`] as a domain counts it, its own and that of the domains
+/// below it that have gone.
+#[derive(Default)]
+struct DiskCounts {
+    read_bytes: AtomicU64,
+    written_bytes: AtomicU64,
+    reads: AtomicU64,
+    writes: AtomicU64,
+    wait_ns: AtomicU64,
+    throttled_ns: AtomicU64,
+}
+
+impl DiskCounts {
+    fn read(&self) -> DiskUse {
+        DiskUse {
+            read_bytes: self.read_bytes.load(Ordering::Relaxed),
+            written_bytes: self.written_bytes.load(Ordering::Relaxed),
+            reads: self.reads.load(Ordering::Relaxed),
+            writes: self.writes.load(Ordering::Relaxed),
+            wait_ns: self.wait_ns.load(Ordering::Relaxed),
+            throttled_ns: self.throttled_ns.load(Ordering::Relaxed),
+        }
+    }
+
+    fn add(&self, used: &DiskUse) {
+        self.read_bytes.fetch_add(used.read_bytes, Ordering::Relaxed);
+        self.written_bytes.fetch_add(used.written_bytes, Ordering::Relaxed);
+        self.reads.fetch_add(used.reads, Ordering::Relaxed);
+        self.writes.fetch_add(used.writes, Ordering::Relaxed);
+        self.wait_ns.fetch_add(used.wait_ns, Ordering::Relaxed);
+        self.throttled_ns.fetch_add(used.throttled_ns, Ordering::Relaxed);
+    }
+}
+
+/// Why a thread could not join a domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinError {
+    /// The domain is being stopped.
+    Stopping,
+    /// The domain, or one above it, has as many threads as its limit.
+    TooManyThreads,
 }
 
 /// Why a domain operation failed.
@@ -142,6 +277,62 @@ pub struct Domain {
     /// side to come in.
     state: AtomicU64,
     oom_stops: AtomicU32,
+    /// Its threads and those of the domains below it.
+    within: AtomicU32,
+    /// The most threads `within` may count; `u32::MAX` for no limit.
+    thread_limit: AtomicU32,
+    /// What its own threads moved to and from disks, and what the
+    /// domains below it that have gone did.
+    disk: DiskCounts,
+    /// Its disk I/O weight, 1 to [`IO_WEIGHT_MAX`].
+    io_weight: AtomicU32,
+    /// Its rates, as [`IoRates`] lists them, `None` for none: what each
+    /// allows and has been taken of it.
+    io_rates: SpinLock<[Option<Rate>; 4]>,
+}
+
+/// How many domains have a disk I/O weight other than the default: while
+/// none has, the disks serve requests in the order they come.
+static WEIGHTED: AtomicU32 = AtomicU32::new(0);
+
+/// How many domains have a disk I/O rate: while none has, requests take
+/// nothing from any.
+static RATED: AtomicU32 = AtomicU32::new(0);
+
+/// Whether a domain has a disk I/O weight other than the default.
+pub fn io_weighted() -> bool {
+    WEIGHTED.load(Ordering::Relaxed) > 0
+}
+
+/// Whether a domain has a disk I/O rate.
+pub fn io_rated() -> bool {
+    RATED.load(Ordering::Relaxed) > 0
+}
+
+/// Counts in `counter` a domain that is now counted (`now`) or not, and
+/// was (`was`) or not.
+fn recount(counter: &AtomicU32, was: bool, now: bool) {
+    match (was, now) {
+        (false, true) => {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+        (true, false) => {
+            counter.fetch_sub(1, Ordering::Relaxed);
+        }
+        _ => {}
+    }
+}
+
+impl Drop for Domain {
+    /// Hands what it moved to and from disks to its parent, so that the
+    /// parent's counts never go back.
+    fn drop(&mut self) {
+        if let Some(parent) = &self.parent {
+            parent.disk.add(&self.disk.read());
+        }
+        recount(&WEIGHTED, *self.io_weight.get_mut() != IO_WEIGHT_DEFAULT, false);
+        recount(&RATED, self.io_rates.get_mut().iter().any(Option::is_some), false);
+    }
 }
 
 /// The bit of [`Domain`]'s state that says it is being stopped.
@@ -227,6 +418,144 @@ impl Domain {
         (self.state.load(Ordering::Relaxed) & THREAD_COUNT) as u32
     }
 
+    /// Threads in it and the domains below it now, which its thread limit
+    /// counts.
+    pub fn threads_within(&self) -> u32 {
+        self.within.load(Ordering::Relaxed)
+    }
+
+    /// Its thread limit (`u32::MAX` for none).
+    pub fn thread_limit(&self) -> u32 {
+        self.thread_limit.load(Ordering::Relaxed)
+    }
+
+    /// Changes its thread limit. A limit below the threads it has already
+    /// refuses new threads until enough have exited; none is stopped.
+    pub fn set_thread_limit(&self, limit: Option<u32>) {
+        self.thread_limit.store(limit.unwrap_or(u32::MAX), Ordering::Relaxed);
+    }
+
+    /// Its disk I/O weight.
+    pub fn io_weight(&self) -> u32 {
+        self.io_weight.load(Ordering::Relaxed)
+    }
+
+    /// Its disk I/O weight as the disks share them out: its own, made a
+    /// hundredth larger or smaller for each hundredth that each domain's
+    /// above it is over or under the default. Domains below one parent so
+    /// share in proportion to their own weights, and the domains below
+    /// one of twice the weight have twice as much between them as those
+    /// below its sibling, when as many of each use the disk.
+    pub fn flat_io_weight(&self) -> u64 {
+        let mut weight = u64::from(self.io_weight());
+        let mut above = self.parent.as_deref();
+        while let Some(domain) = above {
+            weight =
+                weight.saturating_mul(u64::from(domain.io_weight())) / u64::from(IO_WEIGHT_DEFAULT);
+            above = domain.parent.as_deref();
+        }
+        weight.max(1)
+    }
+
+    /// The rates its requests keep to across all disks together.
+    pub fn io_rates(&self) -> IoRates {
+        let [read_bps, write_bps, read_iops, write_iops] =
+            self.io_rates.lock_irq().map(|rate| rate.map_or(u64::MAX, |r| r.per_second()));
+        IoRates { read_bps, write_bps, read_iops, write_iops }
+    }
+
+    /// Takes `bytes` in `requests` requests, read, or written (`written`),
+    /// from its rates and those of each domain above it, at `now_ns` on
+    /// the kernel's clock: how long the thread that is to make them waits
+    /// first, in nanoseconds, to keep to the slowest of them.
+    pub fn take_io(&self, written: bool, bytes: u64, requests: u64, now_ns: u64) -> u64 {
+        // As IoRates lists them: bytes read, then written, then requests.
+        let (by_bytes, by_requests) = if written { (1, 3) } else { (0, 2) };
+        let mut wait = 0;
+        let mut domain = Some(self);
+        while let Some(this) = domain {
+            let mut rates = this.io_rates.lock_irq();
+            for (rate, units) in [(by_bytes, bytes), (by_requests, requests)] {
+                if let Some(rate) = &mut rates[rate]
+                    && units > 0
+                {
+                    wait = wait.max(rate.take(units, now_ns));
+                }
+            }
+            drop(rates);
+            domain = this.parent.as_deref();
+        }
+        wait
+    }
+
+    /// Changes its disk I/O weight and rates, for the requests made from
+    /// now on: a weight out of range, or a rate of 0, is refused.
+    pub fn set_io(&self, weight: u32, rates: IoRates) -> Result<(), DomainError> {
+        let IoRates { read_bps, write_bps, read_iops, write_iops } = rates;
+        if !(1..=IO_WEIGHT_MAX).contains(&weight)
+            || [read_bps, write_bps, read_iops, write_iops].contains(&0)
+        {
+            return Err(DomainError::InvalidArgument);
+        }
+        // Under its rates' lock, so that two changes at once count it
+        // once.
+        let mut held = self.io_rates.lock_irq();
+        let old = self.io_weight.swap(weight, Ordering::Relaxed);
+        recount(&WEIGHTED, old != IO_WEIGHT_DEFAULT, weight != IO_WEIGHT_DEFAULT);
+        let was_rated = held.iter().any(Option::is_some);
+        for (rate, value) in held.iter_mut().zip([read_bps, write_bps, read_iops, write_iops]) {
+            *rate = match (rate.take(), value) {
+                (_, u64::MAX) => None,
+                // What was taken stays taken at the new rate.
+                (Some(mut kept), value) => {
+                    kept.set(value);
+                    Some(kept)
+                }
+                (None, value) => Some(Rate::new(value)),
+            };
+        }
+        recount(&RATED, was_rated, rates.any());
+        Ok(())
+    }
+
+    /// Counts `bytes` read from a disk, in `requests` requests, by one of
+    /// its threads, or written (`written`) by one: to a disk directly, or
+    /// left dirty in the page cache, with no requests then.
+    pub fn count_disk(&self, written: bool, bytes: u64, requests: u64) {
+        if written {
+            self.disk.written_bytes.fetch_add(bytes, Ordering::Relaxed);
+            self.disk.writes.fetch_add(requests, Ordering::Relaxed);
+        } else {
+            self.disk.read_bytes.fetch_add(bytes, Ordering::Relaxed);
+            self.disk.reads.fetch_add(requests, Ordering::Relaxed);
+        }
+    }
+
+    /// Counts time one of its threads' requests waited for a device's
+    /// room, and time it was held to the domain's rates.
+    pub fn count_disk_wait(&self, wait_ns: u64, throttled_ns: u64) {
+        if wait_ns > 0 {
+            self.disk.wait_ns.fetch_add(wait_ns, Ordering::Relaxed);
+        }
+        if throttled_ns > 0 {
+            self.disk.throttled_ns.fetch_add(throttled_ns, Ordering::Relaxed);
+        }
+    }
+
+    /// What it and the domains below it moved to and from disks: its own
+    /// counts and those of each domain below it in the table. One that
+    /// has left the table but not yet gone (threads in it hold it) is not
+    /// counted until it goes.
+    pub fn disk_use(&self) -> DiskUse {
+        let mut used = self.disk.read();
+        for_each(|domain| {
+            if !core::ptr::eq(Arc::as_ptr(domain), self) && domain.is_within(self) {
+                used.add(&domain.disk.read());
+            }
+        });
+        used
+    }
+
     /// How many times the out-of-memory policy has stopped it.
     pub fn oom_stops(&self) -> u32 {
         self.oom_stops.load(Ordering::Relaxed)
@@ -284,9 +613,46 @@ impl Domain {
         }
     }
 
-    /// A thread joins it; refused (false) while it is being stopped.
-    pub(crate) fn thread_joined(&self) -> bool {
-        self.update(|state| (state & STOPPING == 0).then_some(state + 1)).is_some()
+    /// A thread joins it: refused while it is being stopped, or when it
+    /// or a domain above it has as many threads as its limit allows, and
+    /// then nothing is counted.
+    pub(crate) fn thread_joined(&self) -> Result<(), JoinError> {
+        self.count_within()?;
+        if self.update(|state| (state & STOPPING == 0).then_some(state + 1)).is_none() {
+            self.uncount_within(None);
+            return Err(JoinError::Stopping);
+        }
+        Ok(())
+    }
+
+    /// Counts one more thread within it and every domain above it, unless
+    /// that would pass one of their thread limits, as [`Domain::charge`]
+    /// does for pages; then nothing is counted.
+    fn count_within(&self) -> Result<(), JoinError> {
+        let mut at = Some(self);
+        while let Some(domain) = at {
+            let before = domain.within.fetch_add(1, Ordering::AcqRel);
+            if before >= domain.thread_limit.load(Ordering::Relaxed) {
+                domain.within.fetch_sub(1, Ordering::AcqRel);
+                self.uncount_within(Some(domain));
+                return Err(JoinError::TooManyThreads);
+            }
+            at = domain.parent.as_deref();
+        }
+        Ok(())
+    }
+
+    /// Counts one thread fewer within it and the domains above it, up to
+    /// `until` and not it, or all of them.
+    fn uncount_within(&self, until: Option<&Domain>) {
+        let mut at = Some(self);
+        while let Some(domain) = at {
+            if until.is_some_and(|until| core::ptr::eq(domain, until)) {
+                break;
+            }
+            domain.within.fetch_sub(1, Ordering::AcqRel);
+            at = domain.parent.as_deref();
+        }
     }
 
     /// A thread in it exited (or was freed without running). Returns
@@ -301,6 +667,7 @@ impl Domain {
                 Some(if left & THREAD_COUNT == 0 && unsupervised { left & !STOPPING } else { left })
             })
             .unwrap_or(0);
+        self.uncount_within(None);
         before & THREAD_COUNT == 1
     }
 
@@ -381,6 +748,11 @@ fn new_domain(
         refused: AtomicU64::new(0),
         state: AtomicU64::new(0),
         oom_stops: AtomicU32::new(0),
+        within: AtomicU32::new(0),
+        thread_limit: AtomicU32::new(settings.thread_limit.unwrap_or(u32::MAX)),
+        disk: DiskCounts::default(),
+        io_weight: AtomicU32::new(IO_WEIGHT_DEFAULT),
+        io_rates: SpinLock::new([None; 4]),
     }
 }
 

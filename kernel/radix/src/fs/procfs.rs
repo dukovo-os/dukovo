@@ -434,6 +434,9 @@ fn status(process: &ProcessRef, text: &mut Text) -> fmt::Result {
     let (read, written) = process.io_bytes();
     writeln!(text, "read_bytes: {read}")?;
     writeln!(text, "written_bytes: {written}")?;
+    let (read, written) = process.disk_bytes();
+    writeln!(text, "disk_read_bytes: {read}")?;
+    writeln!(text, "disk_written_bytes: {written}")?;
     let (voluntary, involuntary) = process.switch_counts();
     writeln!(text, "voluntary_switches: {voluntary}")?;
     writeln!(text, "involuntary_switches: {involuntary}")?;

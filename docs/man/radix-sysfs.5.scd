@@ -623,6 +623,17 @@ _/kernel/devices/system/edac/mc/mc0/dimm_*n*_/dimm_label_, _dimm_location_
 _/kernel/devices/system/edac/mc/mc0/dimm_*n*_/dimm_ce_count_, _dimm_ue_count_
 	Its corrected and uncorrected errors.
 
+_/kernel/settings/_*name*
+	The value of one of the kernel's settings (*radix-kernel-settings*(2),
+	ADR 0476), one file for each, named as the setting is: *cpu.energy_preference*
+	(*firmware*, *performance*, *balance_performance*, *balance_power* or
+	*power*), *sched.slice_us* (the fair scheduling class's base slice in
+	microseconds), *disk.read_ahead_kib* (how far ahead the page cache
+	reads, in KiB) and *net.congestion* (*cubic* or *reno*, for new TCP
+	sockets). Everyone reads them. Radix's own, and, as everything of
+	_/kernel_, read-only here: a setting is changed with the kernel
+	settings capability, which *tune*(8) uses.
+
 # EXAMPLES
 
 In the *storage* boot test (*ob*(1)), the 32 MiB disk _vdb_ has
@@ -631,5 +642,5 @@ virtio function for each of its four disks in _/kernel/bus/pci/devices_.
 
 # SEE ALSO
 
-*radix-proc*(5), *radix-block*(2), *radix-files*(7), *dukovo-boot*(7), *ob*(1),
-*spark*(8), *watchdog*(8), *lspci*(8), *lsmem*(1), *ip*(8)
+*radix-proc*(5), *radix-block*(2), *radix-kernel-settings*(2), *radix-files*(7),
+*dukovo-boot*(7), *ob*(1), *tune*(8), *spark*(8), *watchdog*(8), *lspci*(8), *lsmem*(1), *ip*(8)

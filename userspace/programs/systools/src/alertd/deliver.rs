@@ -312,7 +312,7 @@ pub fn send(channel: &Configured, id: &str, changes: &[Change], host: &str) -> R
         Target::Email(mail) => {
             let extra: Vec<String> =
                 mail.ca.iter().filter_map(|path| path.to_str().map(str::to_string)).collect();
-            let server = email::Server {
+            let server = crate::mail::Server {
                 host: mail.server.clone(),
                 port: mail.port,
                 user: mail.user.clone(),
