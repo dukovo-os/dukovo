@@ -476,11 +476,20 @@ fn launch(listeners: &[RawFd], input: RawFd) -> Result<u64, String> {
     capability::derive(&SYS, view, given, GIVEN, 0).map_err(failed("narrowing its view"))?;
     process::create(&SYS, startup::SLOT_PROCESS, ObjectKind::Process, signin::SLOTS, child)
         .map_err(failed("making its process"))?;
+    // Rust's runtime opens /dev/null for a standard descriptor that is
+    // closed, and aborts if it cannot, as it cannot in the responder's
+    // view: so what it has no use for is the null device.
+    let null_device = File::options()
+        .write(true)
+        .open("/devices/null")
+        .map_err(|error| format!("cannot start the responder: /devices/null: {error}"))?;
+    let null = sys::slot_of(null_device.as_raw_fd());
     let mut shares = vec![
         (given, startup::SLOT_ROOT),
         (startup::SLOT_RANDOM, startup::SLOT_RANDOM),
         (startup::SLOT_LOG, startup::SLOT_LOG),
         (sys::slot_of(input), startup::SLOT_FD_BASE),
+        (null, startup::SLOT_FD_BASE + 1),
     ];
     // Its errors go where the caller's go, unless that is a terminal: a
     // program that answers strangers never holds a person's terminal,
@@ -488,6 +497,8 @@ fn launch(listeners: &[RawFd], input: RawFd) -> Result<u64, String> {
     let errors = sys::slot_of(2);
     if !crate::util::is_terminal(2) && capability::info(&SYS, errors).is_ok() {
         shares.push((errors, startup::SLOT_FD_BASE + 2));
+    } else {
+        shares.push((null, startup::SLOT_FD_BASE + 2));
     }
     for (number, fd) in listeners.iter().enumerate() {
         shares.push((sys::slot_of(*fd), startup::SLOT_FD_BASE + 3 + number as u32));
