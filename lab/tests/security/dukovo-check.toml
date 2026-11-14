@@ -1,0 +1,150 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# dukovo-check(8) on a machine as it was installed: it refuses a user who
+# is no administrator, and gives an administrator a line for each of its
+# checks, among them SSH, which the lab keeps on with keys alone. The
+# kept result is what --last and --json read back. What a machine has
+# beyond the install, a clock that was never set or a hardware check that
+# found a fault, is not for this test to judge, so it holds the machine to
+# what dukovo-check says of SSH alone: sshd_config with passwords on gives
+# SEC-110 and status 2, and with the file as it was, the warning is gone.
+# The file only is changed, never sshd's own settings, which a reload
+# would give it: the lab's sign-ins by SSH keep to keys throughout.
+about = "dukovo-check refuses a user who is no administrator; as one it gives a line for each check, keeps the result that --last and --json read back, warns of PasswordAuthentication yes with SEC-110 and status 2, and passes again once it is as it was"
+time = "10m"
+fresh = true
+
+# A user who is no administrator is refused, with one line.
+[[step]]
+run = "dukovo-check"
+exit = 3
+expect = "needs an administrator: run elevate dukovo-check"
+
+# The report: its first line, and a line for each check, each with one of
+# the four results. The status is 0, or 2 for what the machine has beyond
+# the install; 1 is a failure that another tool found, which a machine of
+# the lab does not have, and 3 is a run that could not be made.
+[[step]]
+run = "sh"
+root = true
+input = '''
+dukovo-check > /tmp/first.txt
+status=$?
+head -n 1 /tmp/first.txt
+case $status in 0|2) echo "first-status: fine" ;; *) echo "first-status: $status" ;; esac
+missing=
+for name in reachable "firewall rules" "firewall on" passwords "who may sign in" blocking "empty passwords" administrators waiting "last check" clock failed "early warnings" hardware snapshots; do
+    grep -q -E "^[a-z]+ +$name +(passed|warning|FAILED|skipped) " /tmp/first.txt || missing="$missing $name"
+done
+echo "first-missing:$missing."
+grep -E "^ssh +passwords " /tmp/first.txt
+grep -E "^[0-9]+ passed, " /tmp/first.txt
+echo "report-end"
+'''
+expect = [
+    "Checking this computer's security and health. Ctrl-C stops it.",
+    "first-status: fine",
+    "first-missing:.",
+    "only keys sign in over SSH",
+    " passed, ",
+    "report-end",
+]
+expect_not = ["first-status: 1", "first-status: 3"]
+
+# The result is kept, and a run says so in the log, with its status.
+[[step]]
+run = "dmesg"
+root = true
+expect = "dukovo-check: check ended with status "
+
+# --last prints what the run showed, after its first line, and a person
+# who is no root but is an administrator reads it too.
+[[step]]
+run = "sh"
+root = true
+input = '''
+dukovo-check --last > /tmp/last.txt
+echo "last-status: $?"
+head -n 1 /tmp/last.txt
+if [ "$(tail -n +2 /tmp/first.txt)" = "$(tail -n +2 /tmp/last.txt)" ]; then echo "last-same: yes"; else echo "last-same: no"; fi
+'''
+expect = ["last-status: ", "The last check ended ", "last-same: yes"]
+expect_not = "last-same: no"
+[[step]]
+run = "sh"
+input = '''
+dukovo-check --last > /tmp/by-lab.txt
+case $? in 0|2) echo "by-lab: read" ;; *) echo "by-lab: not read" ;; esac
+head -n 1 /tmp/by-lab.txt
+'''
+expect = ["by-lab: read", "The last check ended "]
+expect_not = "by-lab: not read"
+
+# --json is the file, whole, and --last --json reads it back. It has the
+# version of the format, the time, the release, each result and the counts.
+[[step]]
+run = "sh"
+root = true
+input = '''
+dukovo-check --json > /tmp/run.json
+dukovo-check --last --json > /tmp/back.json
+if [ "$(cat /tmp/run.json)" = "$(cat /tmp/back.json)" ]; then echo "json-same: yes"; else echo "json-same: no"; fi
+echo "json-version: $(grep -c -E '^  "version": 1,$' /tmp/run.json)"
+echo "json-checked: $(grep -c -E '^  "checked": "[0-9-]+T[0-9:]+Z",$' /tmp/run.json)"
+echo "json-release: $(grep -c -E '^  "release": "[^"]+",$' /tmp/run.json)"
+echo "json-counts: $(grep -c -E '^  "counts": \{$' /tmp/run.json)"
+echo "json-passwords: $(grep -c -E '^      "check": "passwords",$' /tmp/run.json)"
+ls -ln /system/state/dukovo-check/last.json
+'''
+expect = ["json-same: yes", "json-version: 1", "json-checked: 1", "json-release: 1", "json-counts: 1", "json-passwords: 1", "-rw-r-----"]
+expect_not = "json-same: no"
+
+# The timer: the service is there, and has its next run.
+[[step]]
+run = "service list --timers"
+root = true
+expect = ["dukovo-check", "NEXT RUN"]
+
+# Passwords on in sshd_config, for the file alone: SEC-110, and SEC-111
+# with it, since no list says who may sign in. The status is 2, and the
+# run's line in the log has both IDs. The first value of a keyword is the
+# one kept, so the line goes in front of the file's own.
+[[step]]
+run = "sh"
+root = true
+input = '''
+cp /system/settings/ssh/sshd_config /tmp/sshd_config.kept
+{ echo "PasswordAuthentication yes"; cat /tmp/sshd_config.kept; } > /system/settings/ssh/sshd_config
+dukovo-check > /tmp/passwords.txt
+echo "passwords-status: $?"
+grep -E "^ssh +passwords " /tmp/passwords.txt
+grep -E "^ +SEC-11[01]: " /tmp/passwords.txt
+echo "passwords-end"
+'''
+expect = [
+    "passwords-status: 2",
+    "passwords sign in over SSH",
+    "SEC-110: Add your SSH key",
+    "SEC-111: ",
+    "passwords-end",
+]
+[[step]]
+run = "dmesg"
+root = true
+expect = "check ended with status 2: "
+
+# As it was: the file back, and the warnings with it.
+[[step]]
+run = "sh"
+root = true
+input = '''
+cp /tmp/sshd_config.kept /system/settings/ssh/sshd_config
+dukovo-check > /tmp/restored.txt
+status=$?
+case $status in 0|2) echo "restored-status: fine" ;; *) echo "restored-status: $status" ;; esac
+grep -E "^ssh +passwords " /tmp/restored.txt
+grep -c -E "SEC-11[01]" /tmp/restored.txt | sed 's/^/restored-ids: /'
+'''
+expect = ["restored-status: fine", "only keys sign in over SSH", "restored-ids: 0"]
+expect_not = "SEC-110"

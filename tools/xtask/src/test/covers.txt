@@ -201,6 +201,12 @@ disk-raw-4k kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/sr
 disk-raw-4k userspace/storage/
 disk-readers kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/
 disk-readers kernel/radix/src/fs/disk/queue.rs userspace/posix/diskread.c
+dukovo-check userspace/defaults/spark/services/dukovo-check.toml userspace/programs/accounts/
+dukovo-check userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
+dukovo-check userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/firewall.rs
+dukovo-check userspace/programs/systools/src/snap.rs userspace/programs/systools/src/alerts/command.rs
+dukovo-check userspace/programs/systools/src/timed.rs userspace/programs/systools/src/sysupdate/checked.rs
+dukovo-check userspace/programs/sshd/
 efi-boot-entries kernel/arch/ kernel/lib/bootinfo/ userspace/programs/systools/src/efiboot.rs
 elevate userspace/posix/authd.h userspace/posix/signintest.c userspace/programs/accounts/
 elevate userspace/programs/consoled/ userspace/programs/systools/src/authd.rs
