@@ -63,6 +63,12 @@ pub struct Guarded {
     pub name: String,
 }
 
+/// The service file of `name`, which `enable` and `disable` write and the
+/// journal keeps the versions of.
+fn service_file(name: &str) -> String {
+    format!("{}/{name}.toml", crate::servicefiles::DIR)
+}
+
 /// Checks that `name` can be a service's name, for `service` to take.
 fn check_name(name: &str) -> Result<(), Bad> {
     let max = radix_abi::resource_domain::NAME_MAX;
@@ -196,7 +202,8 @@ fn bad_names_and_the_console() -> Vec<Value> {
 macro_rules! change {
     (
         $(#[$doc:meta])*
-        $action:ident, $verb:literal, $title:literal, $args:ident, $bad:expr, undo: $undo:expr
+        $action:ident, $verb:literal, $title:literal, $args:ident, $bad:expr, undo: $undo:expr,
+        file: $file:literal
     ) => {
         $(#[$doc])*
         pub struct $action;
@@ -219,6 +226,10 @@ macro_rules! change {
                 Some(args.name.clone())
             }
 
+            fn files(args: &$args) -> Vec<String> {
+                if $file { vec![service_file(&args.name)] } else { Vec::new() }
+            }
+
             fn examples() -> Examples<$args> {
                 Examples {
                     good: vec![$args { name: EXAMPLE.into() }],
@@ -233,32 +244,33 @@ macro_rules! change {
 change! {
     /// `service NAME start`: starts a service. `service.stop` puts back
     /// what its example did.
-    Start, "start", "Start a service", Named, bad_names(), undo: Some("service.stop")
+    Start, "start", "Start a service", Named, bad_names(), undo: Some("service.stop"), file: false
 }
 
 change! {
     /// `service NAME stop`: stops a service, unless it is the console's.
     /// `service.start` puts back what its example did.
-    Stop, "stop", "Stop a service", Guarded, bad_names_and_the_console(), undo: Some("service.start")
+    Stop, "stop", "Stop a service", Guarded, bad_names_and_the_console(), undo: Some("service.start"), file: false
 }
 
 change! {
     /// `service NAME restart`: stops a service and starts it again, unless
     /// it is the console's. Nothing puts back what it did.
-    Restart, "restart", "Restart a service", Guarded, bad_names_and_the_console(), undo: None
+    Restart, "restart", "Restart a service", Guarded, bad_names_and_the_console(), undo: None, file: false
 }
 
 change! {
-    /// `service NAME enable`: starts a service now and at each boot.
-    /// `service.disable` puts back what its example did.
-    Enable, "enable", "Enable a service", Named, bad_names(), undo: Some("service.disable")
+    /// `service NAME enable`: starts a service now and at each boot, which
+    /// it keeps in the service's file. `service.disable` puts back what its
+    /// example did.
+    Enable, "enable", "Enable a service", Named, bad_names(), undo: Some("service.disable"), file: true
 }
 
 change! {
     /// `service NAME disable`: stops a service and keeps it from starting
-    /// at boot, unless it is the console's. `service.enable` puts back what
-    /// its example did.
-    Disable, "disable", "Disable a service", Guarded, bad_names_and_the_console(), undo: Some("service.enable")
+    /// at boot, which it keeps in the service's file, unless it is the
+    /// console's. `service.enable` puts back what its example did.
+    Disable, "disable", "Disable a service", Guarded, bad_names_and_the_console(), undo: Some("service.enable"), file: true
 }
 
 #[cfg(test)]
@@ -421,11 +433,14 @@ mod tests {
     }
 
     #[test]
-    fn a_service_change_names_no_file() {
+    fn enable_and_disable_name_the_service_file_they_write_and_the_others_none() {
         for verb in CHANGES {
             let prepared =
                 registered(&format!("service.{verb}")).prepare(json!({ "name": "nginx" })).unwrap();
-            assert!(prepared.files.is_empty(), "{verb}");
+            let writes = matches!(verb, "enable" | "disable");
+            let want: &[&str] =
+                if writes { &["/system/settings/spark/services/nginx.toml"] } else { &[] };
+            assert_eq!(prepared.files, want, "{verb}");
         }
     }
 
