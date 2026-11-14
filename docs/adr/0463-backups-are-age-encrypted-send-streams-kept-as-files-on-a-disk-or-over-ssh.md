@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0463. Backups are age-encrypted send streams, kept as files on a disk or over SSH
 
-- Status: Accepted
+- Status: Accepted; a bundle's service names its backup hooks in its manifest since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md)
 - Date: 2026-11-11
 
 ## Context

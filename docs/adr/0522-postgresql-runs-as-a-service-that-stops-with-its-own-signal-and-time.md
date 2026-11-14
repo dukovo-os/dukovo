@@ -59,6 +59,10 @@ of the system that is not there yet:
 - **libpq for PHP.** PHP's `pgsql` and `pdo_pgsql` extensions link libpq,
   which a port finds in the sysroot.
 
+This record changes three earlier ones: the health check after an update
+(ADR 0386), the hooks around a backup (ADR 0463) and the keys of a service
+file (ADR 0470). Their status lines say so.
+
 ## Decision
 
 - **The service `postgresql`** runs as the account `postgres`, which owns
@@ -86,6 +90,14 @@ of the system that is not there yet:
   snapshot of `/shared` holds the cluster as a crash would leave it a
   moment after a checkpoint, which PostgreSQL documents as a valid backup
   ("File System Level Backup").
+- **The signal and the time belong to each service,** and Spark's 5
+  seconds stay the default for the rest. A longer wait for every service
+  would hold a machine's shutdown for as long as any one that does not end
+  can be waited for, and a service that ends in a moment gains nothing from
+  it. A service says what it needs: a signal from `SIGTERM`, `SIGINT`,
+  `SIGQUIT`, `SIGUSR1`, `SIGUSR2` and `SIGWINCH`, the ones daemons take as a
+  request to stop (nginx's is `SIGQUIT`, PostgreSQL's `SIGINT`), and
+  a time of 1 to 3600 seconds.
 - **Ready and healthy.** The service is ready once `pg_isready` passes,
   with the longest `ready.timeout`, 3600 seconds: a start after a crash
   replays the log first and must not be stopped half way, as the upstream
@@ -118,14 +130,24 @@ of the system that is not there yet:
 
 ## Consequences
 
-- `elevate bundle install --for-everyone` and `elevate service enable
-  postgresql` give a server that takes connections: `elevate psql -U
+- `elevate bundle install --for-everyone` and `elevate service postgresql
+  enable` give a server that takes connections: `elevate psql -U
   postgres` opens a superuser session with no password, `elevate createuser
   -U postgres alice` lets alice run `psql -d postgres` as herself, and a
   role with a password connects over `127.0.0.1`.
-- `service stop postgresql` with a session open stops the server in
+- `service postgresql stop` with a session open stops the server in
   seconds and the next start needs no recovery. A machine's shutdown can
   wait up to 300 seconds for it.
+- A backup holds every database in the snapshot of `/shared`, taken after a
+  checkpoint, and makes no dump. A cluster restored from it starts with a
+  short recovery, as after a crash a moment after a checkpoint.
+- A database that is to sort as English does is made from `template0` with
+  a locale of the C library (`createdb --template template0
+  --locale-provider libc --locale en_US.UTF-8`), which the `locales` port
+  has for English alone; the cluster's own databases sort by code point.
+  Its collation's version is the data's, so that an update of the `locales`
+  port that changes the order is reported by PostgreSQL, as a new C
+  library is on Linux.
 - An update of the bundle copies the whole data folder while the server is
   stopped (ADR 0386), which takes time for a large cluster, and until
   copies are reflinks (docs/deferred.md) that time grows with the cluster.

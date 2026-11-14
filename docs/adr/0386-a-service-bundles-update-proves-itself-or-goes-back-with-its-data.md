@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0386. A service bundle's update proves itself, or goes back with its data
 
-- Status: Accepted
+- Status: Accepted; a service with a health command and no health socket is checked by Spark's report of it since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md)
 - Date: 2026-11-03
 
 ## Context

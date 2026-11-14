@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0470. Services name what they wait for, say when they are ready, and check their health
 
-- Status: Accepted
+- Status: Accepted; a service sets the signal and the time of its stop with `[stop]` since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md)
 - Date: 2026-11-13
 
 ## Context
