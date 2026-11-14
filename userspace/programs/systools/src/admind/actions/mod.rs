@@ -24,6 +24,7 @@
 //! `admin actions` and `lab/actions.toml` are all made from it.
 
 mod certificate;
+mod console;
 mod service;
 pub mod show;
 
@@ -150,7 +151,8 @@ pub struct Examples<A> {
 /// takes to.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Undo {
-    /// The id of the action, which is another change of the list.
+    /// The id of the action, which is a change of the list: another, or
+    /// the action itself where it sets one value, as `console.reach` does.
     pub action: &'static str,
     /// Its arguments, as its route takes them.
     pub args: Value,
@@ -336,6 +338,7 @@ registry![
     certificate::List,
     certificate::Show,
     certificate::Renew,
+    console::SetReach,
 ];
 
 /// The list `GET /api/1/actions` answers and `admin actions` prints: each

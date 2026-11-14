@@ -15,6 +15,8 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin show* _action_ [_name_=_value_ | _name_:=_json_]...
 
+*admin reach* [*private* | *any*]
+
 *admin token add* _name_ *--scope* _scope_... [*--days* _n_]
 
 *admin token list*
@@ -26,16 +28,19 @@ admin - the web console from a terminal: its address, its actions and its API to
 *admin* is the command that goes with the web console, Dukovo Admin
 (*admind*(8), *dukovo-admin*(7), ADR 0515). It says where the console is
 and which certificate it serves, lists what the console's API does, shows
-what an action runs in the forms a person copies, and makes, lists and
-removes the API tokens of the person who types it.
+what an action runs in the forms a person copies, says or sets whom the
+console answers, and makes, lists and removes the API tokens of the person
+who types it.
 
 An _action_ is one read or change that the console and its API offer, such
 as *service.restart*. Each has an _id_ of its area and a verb. The
 console runs an action's command, which is the command *show* prints: the
 button, the API call and the command typed at a terminal do the same.
 
-*actions* and *show* need no rights. *token* is the person's own, asked of
-*authd*(8) as that person, so it can never make or remove another's.
+*actions*, *show* and *reach* with no word need no rights. *reach* with a
+word is root's, as the file it changes is: *elevate*(8) it. *token* is the
+person's own, asked of *authd*(8) as that person, so it can never make or
+remove another's.
 
 # COMMANDS
 
@@ -71,6 +76,7 @@ button, the API call and the command typed at a terminal do the same.
 	service.restart    change  administrator  POST /api/1/services/{name}/restart    e.g. elevate service diskhealth restart
 	certificate.show   read    the person     GET /api/1/certificates/{name}         e.g. cert show this-machine --json
 	certificate.renew  change  administrator  POST /api/1/certificates/{name}/renew  e.g. elevate cert renew this-machine
+	console.reach      change  administrator  POST /api/1/console/reach              e.g. elevate admin reach private
 	```
 
 	A read runs as the person, with the person's own rights, and always
@@ -134,6 +140,32 @@ button, the API call and the command typed at a terminal do the same.
 	none
 	```
 
+*reach* [*private* | *any*]
+	With no word, prints whom the console answers, *private* or *any*,
+	from _/system/settings/admin.toml_ (*admin.toml*(5)): *private* is this
+	machine, the networks of its cards and the address ranges no one
+	reaches from the internet, and *any* is every machine. With a word,
+	makes it what the word says. It changes *reach* in the *[console]*
+	table of the file and nothing else, so that every comment in the
+	file stays, and then has Spark reload *admind*(8) (as *service admind
+	reload* does), which reads the file again at once. When the file
+	says the word already it changes nothing and says so. A file that
+	*admind* would refuse is not changed: *reach* says what is wrong with
+	it. A word that is neither is a mistake in the command line. The
+	change is root's, as the console's *console.reach* action runs it:
+
+	```
+	$ admin reach
+	private
+	$ elevate admin reach any
+	The console's reach is now any: admind has read it again.
+	```
+
+	*any* asks for care: give administrators a second step first
+	(*admin.toml*(5)). *admind* checks an address when it accepts a
+	connection, so a connection that is made goes on, and the next one
+	from an address that *private* does not answer is closed.
+
 *token add* _name_ *--scope* _scope_... [*--days* _n_]
 	Makes an API token named _name_ for the person who types it, which a
 	script gives the console as *Authorization: Bearer* and the token
@@ -179,6 +211,10 @@ _/system/live/admind/issue_
 	*admind*(8) writes when it starts and again when the certificate
 	changes. It is not there while the console is not running.
 
+_/system/settings/admin.toml_
+	The console's settings, which *admin reach* reads and, as root,
+	changes (*admin.toml*(5)).
+
 _/system/state/authd/console/_*name*.toml
 	The account's second steps and tokens, as hashes, which only root
 	reads. *admin token* reaches them only through *authd*(8).
@@ -186,8 +222,10 @@ _/system/state/authd/console/_*name*.toml
 # EXIT STATUS
 
 0 when it did what was asked; 1 when it did not, saying why, which
-includes a mistake in the command line, a refusal of *authd*(8) and the
-console not running for *fingerprint*.
+includes a mistake in the command line, a refusal of *authd*(8), the
+console not running for *fingerprint*, and for *reach* a change that was
+not made by root, a settings file that is not right and a Spark that
+did not take the reload.
 
 # EXAMPLES
 
@@ -222,6 +260,15 @@ Write the Ansible task that restarts a service, for a playbook:
 $ admin show service.restart name=diskhealth
 ```
 
+Open the console to every machine, and close it again:
+
+```
+$ elevate admin reach any
+The console's reach is now any: admind has read it again.
+$ elevate admin reach private
+The console's reach is now private: admind has read it again.
+```
+
 Remove the token when the script no longer runs:
 
 ```
@@ -231,5 +278,5 @@ The API token monitor is removed.
 
 # SEE ALSO
 
-*admind*(8), *authd*(8), *dukovo-admin*(7), *elevate*(8), *service*(8),
-*cert*(8), *passwd*(1)
+*admind*(8), *admin.toml*(5), *authd*(8), *dukovo-admin*(7), *elevate*(8),
+*service*(8), *cert*(8), *passwd*(1)

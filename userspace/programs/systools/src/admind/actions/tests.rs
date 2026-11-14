@@ -301,7 +301,9 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
                 .iter()
                 .find(|other| other.id() == undo.action)
                 .unwrap_or_else(|| panic!("{id}'s undo, {}, is not in the list", undo.action));
-            assert!(other.changes() && other.id() != id, "{id}'s undo is another change");
+            // An action that sets one value may be its own undo, with the
+            // value the machine starts with: console.reach.
+            assert!(other.changes(), "{id}'s undo is a change");
             assert!(other.prepare(undo.args.clone()).is_ok(), "{id}'s undo takes its arguments");
         }
         for args in &good {

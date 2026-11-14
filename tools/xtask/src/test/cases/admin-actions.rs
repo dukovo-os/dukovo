@@ -27,10 +27,16 @@
 //! that one elevate unlocked with her password, leaves the example service
 //! as the route does; the route's undo, which examples.undo names, puts
 //! back what the change did, and the log has a line for each change asked
-//! for and none for a read that worked. certificate.renew comes last: a
-//! renewal makes the machine's certificate anew, so the console serves
-//! another, the issue file and cert show name its fingerprint, and the
-//! host, told the new one, is answered.
+//! for and none for a read that worked. console.reach changes admin.toml,
+//! the first change of a settings file through the console: the route sets
+//! the other reach, the file keeps every comment it shipped with, admind's
+//! log says it read its settings again, and the undo, then the shown
+//! command, put the file back the same. A reach the file says already
+//! changes nothing and reloads nothing, and a word that is no reach is
+//! ADM-125 with the field reach. certificate.renew comes last: a renewal
+//! makes the machine's certificate anew, so the console serves another, the
+//! issue file and cert show name its fingerprint, and the host, told the
+//! new one, is answered.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -55,7 +61,7 @@ const PEER: &str = "10.0.2.2";
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-actions",
-    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, a change ADM-122 for bob and ADM-106 for alice locked, a name that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; admind's log has a line for each change and none for a read that worked; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
+    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, a change ADM-122 for bob and ADM-106 for alice locked, a name that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -108,6 +114,7 @@ fn admin_actions(vm: &mut Vm, case: &Case) -> Result<(), String> {
     // and the console's session too.
     elevated(vm)?;
     service_changes(vm, &mut test)?;
+    console_changes(vm, &mut test)?;
     renewing(vm, &mut test)?;
     the_log(vm, &test)?;
 
@@ -860,6 +867,144 @@ fn service_restart(
     Ok(())
 }
 
+/// The reach that the console is set to by the change the test makes: the
+/// one the example does not use.
+const OTHER_REACH: &str = "any";
+
+/// What `admin reach` prints in alice's pane.
+fn reach_printed(vm: &mut Vm, test: &Test) -> Result<String, String> {
+    Ok(test.pane.output(vm, "admin reach")?.trim().to_string())
+}
+
+/// What admin.toml holds, as the pane prints it.
+fn settings_printed(vm: &mut Vm, test: &Test) -> Result<String, String> {
+    test.pane.output(vm, "cat /system/settings/admin.toml")
+}
+
+/// How many lines admind's log has that say it read its settings and its
+/// certificate again, as it does at SIGHUP.
+fn reloads(log: &str) -> usize {
+    log.lines()
+        .filter(|line| line.contains("admind: the certificate ") && line.contains(" is read again"))
+        .count()
+}
+
+/// Waits up to 20 seconds for admind's log to have at least `times` lines
+/// of [`reloads`].
+fn reloaded(vm: &Vm, times: usize) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while reloads(&vm.log()) < times && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let have = reloads(&vm.log());
+    if have >= times { Ok(()) } else { Err(format!("admind read its settings again {have} times, not {times}, in 20 s")) }
+}
+
+/// Whether `settings`, what admin.toml holds now, still starts with all of
+/// `shipped`, what it held before, and says `reach` on a line that is no
+/// comment.
+fn kept_and_says(settings: &str, shipped: &str, reach: &str) -> Result<(), String> {
+    if !settings.starts_with(shipped.trim_end()) {
+        return Err(format!("admin.toml lost a comment it shipped with: it holds {settings:?}"));
+    }
+    let line = format!("reach = \"{reach}\"");
+    if !settings.lines().any(|have| have.trim() == line) {
+        return Err(format!("admin.toml does not say {line}: it holds {settings:?}"));
+    }
+    Ok(())
+}
+
+/// The console's own change, console.reach: the first through the console
+/// to a settings file. The route sets the other reach, which changes
+/// admin.toml in place, keeps its comments and has admind read it again;
+/// the undo puts the example's reach back; the command, typed in the pane
+/// from the other reach, leaves the file as the undo did; a reach that is
+/// set already changes nothing and reloads nothing; and a word that is no
+/// reach is refused before anything runs.
+fn console_changes(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    // The services' changes took their time, and the pane's unlock lasts 15 minutes.
+    elevated(vm)?;
+    let reach = test.action("console.reach")?;
+    let command = test
+        .commands
+        .get(&reach.id)
+        .cloned()
+        .ok_or("the command of console.reach was not shown")?;
+    let (undo, undo_args) = reach.undo.clone().ok_or("console.reach has no undo")?;
+    let example = reach.args["reach"].as_str().ok_or("console.reach's example has no reach")?.to_string();
+    if example == OTHER_REACH {
+        return Err(format!("console.reach's example is {example}, which the test sets to see a change"));
+    }
+    let other = json!({ "reach": OTHER_REACH });
+
+    // A machine that was not changed has the reach the example gives: the
+    // file ships with every setting a comment.
+    let said = reach_printed(vm, test)?;
+    if said != example {
+        return Err(format!("admin reach says {said:?} before any change, and the example is {example}"));
+    }
+    let shipped = settings_printed(vm, test)?;
+    let mut read_again = reloads(&vm.log());
+
+    // The route: the file says the other reach, with its comments, and admind read it again.
+    test.change(&reach.id, &other)?;
+    let said = reach_printed(vm, test)?;
+    if said != OTHER_REACH {
+        return Err(format!("admin reach says {said:?} after the route set {OTHER_REACH}"));
+    }
+    kept_and_says(&settings_printed(vm, test)?, &shipped, OTHER_REACH)?;
+    read_again += 1;
+    reloaded(vm, read_again)?;
+
+    // The undo puts the example's reach back, in the same file.
+    test.change(&undo, &undo_args)?;
+    let said = reach_printed(vm, test)?;
+    if said != example {
+        return Err(format!("admin reach says {said:?} after {undo} put {example} back"));
+    }
+    let put_back = settings_printed(vm, test)?;
+    kept_and_says(&put_back, &shipped, &example)?;
+    read_again += 1;
+    reloaded(vm, read_again)?;
+
+    // The shown command, from the other reach, leaves the file as the undo did.
+    test.change(&reach.id, &other)?;
+    read_again += 1;
+    reloaded(vm, read_again)?;
+    let status = test.pane.status(vm, &command)?;
+    if status != 0 {
+        return Err(format!("the command `{command}` ended with status {status}"));
+    }
+    let said = reach_printed(vm, test)?;
+    let typed = settings_printed(vm, test)?;
+    if said != example || typed != put_back {
+        return Err(format!("the command left admin reach {said:?} and admin.toml {typed:?}, and the undo left {put_back:?}"));
+    }
+    read_again += 1;
+    reloaded(vm, read_again)?;
+
+    // A reach that is set already: done, and nothing is written or read again.
+    let before = reloads(&vm.log());
+    test.change(&reach.id, &reach.args)?;
+    std::thread::sleep(Duration::from_secs(3));
+    if reloads(&vm.log()) != before {
+        return Err("admind read its settings again for a reach that was set already".into());
+    }
+    let still = settings_printed(vm, test)?;
+    if still != put_back {
+        return Err(format!("admin.toml changed when its reach was set to what it said: {still:?}"));
+    }
+
+    // A word that is no reach is refused with its field, as a name is.
+    test.unlocked()?;
+    let refused = test.run(Who::Alice, &reach, &json!({ "reach": "everyone" }))?;
+    let refused = refused.refused("console.reach for `everyone`", 400, "ADM-125")?;
+    if refused.json()?["error"]["field"] != json!("reach") {
+        return Err("the refusal of `everyone` does not name the field reach".into());
+    }
+    Ok(())
+}
+
 /// A renewal makes the machine's certificate anew, which the console
 /// serves from then on: the route's, and the command's after it. The issue
 /// file and cert show say the new fingerprint, and the host, told it, is
@@ -1074,6 +1219,31 @@ mod tests {
             projection("service.explain", &explained("a ran for 9 s."))
         );
         assert_eq!(projection("certificate.list", &json!([1])), json!([1]));
+    }
+
+    #[test]
+    fn a_reload_is_the_line_admind_logs_when_it_reads_its_settings_and_certificate_again() {
+        let log = "admind: answers at https://nas:9090 to private networks; the certificate's \
+                   SHA-256 fingerprint is AB\n\
+                   admind: the certificate this-machine is read again\n\
+                   admind: alice from 10.0.2.2: console.reach ended with status 0\n\
+                   admind: the certificate example.org is read again\n\
+                   certd: the certificate this-machine is read again\n";
+        assert_eq!(reloads(log), 2);
+        assert_eq!(reloads(""), 0);
+    }
+
+    #[test]
+    fn the_settings_file_keeps_what_it_shipped_with_and_says_the_reach_on_a_line_of_its_own() {
+        let shipped = "# SPDX\n#\n# [console]\n# reach = \"private\"\n";
+        let changed = format!("{shipped}\n[console]\nreach = \"any\"\n");
+        assert!(kept_and_says(&changed, shipped, "any").is_ok());
+        // The comment that holds the default is no line that says it.
+        let said = kept_and_says(&changed, shipped, "private").unwrap_err();
+        assert!(said.contains("does not say reach = \"private\""), "{said}");
+        let lost = "# SPDX\n[console]\nreach = \"any\"\n";
+        assert!(kept_and_says(lost, shipped, "any").unwrap_err().contains("lost a comment"));
+        assert!(kept_and_says(&format!("{shipped}[console]\n  reach = \"any\"  \n"), shipped, "any").is_ok());
     }
 
     #[test]

@@ -109,3 +109,13 @@ path = "/api/1/certificates/{name}/renew"
 runs = "as-administrator"
 long = false
 tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "console.reach"
+title = "Set whom the console answers"
+area = "console"
+method = "POST"
+path = "/api/1/console/reach"
+runs = "as-administrator"
+long = false
+tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }

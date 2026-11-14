@@ -36,6 +36,7 @@ admin-actions userspace/programs/systools/src/authd.rs userspace/programs/systoo
 admin-actions userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs userspace/programs/systools/src/service.rs
 admin-actions userspace/programs/systools/src/servicefiles.rs tools/xtask/src/test/console_client.rs ports/netcat/
 admin-actions userspace/spark/src/supervisor/read.rs userspace/programs/systools/src/power.rs
+admin-actions userspace/programs/systools/src/admin_settings.rs userspace/programs/systools/src/settings_edit.rs
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
 audio-cd kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/fs/disk/optical.rs
 audio-cd kernel/radix/src/fs/disk/removable.rs kernel/radix/src/fs/disk/usb.rs tools/xtask/src/disc_drive/

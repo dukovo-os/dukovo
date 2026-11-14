@@ -4,8 +4,8 @@
 //! admin(8): the web console from a terminal (ADR 0515). It says where the
 //! console is and which certificate it serves, lists the actions the API
 //! offers, shows an action as the command, the API call and the Ansible
-//! task that do it, and makes, lists and removes the API tokens of the
-//! person who runs it.
+//! task that do it, says or sets whom the console answers, and makes,
+//! lists and removes the API tokens of the person who runs it.
 //!
 //! The list and the forms an action shows as are those of the console
 //! itself, from `admind::actions`, so that what is printed here is what the
@@ -14,6 +14,12 @@
 //! signed-in session, and authd checks the password and the rules. There
 //! is no `admin run`: the command an action runs is the command shown, and
 //! a person runs it as it is.
+//!
+//! `admin reach` is the command of the console's `console.reach` action
+//! (ADR 0516). It sets `reach` in admin.toml(5) through [`settings_edit`],
+//! so that every comment in the file stays, and has Spark reload admind,
+//! through the code `service admind reload` runs, so that the console
+//! answers whom the file says at once. It is root's, as the file is.
 //!
 //! When it misbehaves, `admin fingerprint` says whether admind has written
 //! its address, `log admind` and `log --audit` say what the console and
@@ -27,18 +33,23 @@ use accounts::console::Console;
 use accounts::request::{Answer, Request};
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use toml_edit::DocumentMut;
 
 use crate::account::{self, Input};
+use crate::admin_settings::{self, Reach, Settings};
 use crate::admind::ISSUE;
 use crate::admind::actions::{self, REGISTRY, Registered, show};
 use crate::admind::errors::Failure;
 use crate::admind::scopes::Scopes;
 use crate::args::{Arg, Args};
+use crate::service;
+use crate::settings_edit::{self, Changed};
 use crate::util::{self, Fail, fail, usage};
 
 /// What a mistake in the command line is told.
 const USAGE: &str = "usage: admin fingerprint\n       admin actions [--json]\n       \
                      admin show ACTION [NAME=VALUE | NAME:=JSON]...\n       \
+                     admin reach [private | any]\n       \
                      admin token add NAME --scope SCOPE... [--days N]\n       \
                      admin token list\n       admin token remove NAME";
 
@@ -68,6 +79,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("fingerprint") => fingerprint(args),
         Some("actions") => list_actions(args),
         Some("show") => show_action(args),
+        Some("reach") => reach(args),
         Some("token") => token(args),
         _ => Err(usage(format!("no such command: {}\n{USAGE}", subcommand.to_string_lossy()))),
     }
@@ -235,6 +247,92 @@ fn shown_text(shown: &Value) -> String {
         part("api"),
         part("ansible"),
     )
+}
+
+/// The mode of admin.toml when it is made, as the file that ships has it:
+/// every account reads it, and root writes it.
+const SETTINGS_MODE: u32 = 0o644;
+
+/// What `admin reach WORD` found to do.
+#[derive(Debug, PartialEq, Eq)]
+enum Reached {
+    /// admin.toml said it already.
+    Already,
+    /// admin.toml has been changed.
+    Changed,
+}
+
+/// Fails unless `user` is root, whom the settings file and Spark's control
+/// socket are for.
+fn require_root(user: u32) -> Result<(), Fail> {
+    if user == 0 {
+        return Ok(());
+    }
+    Err(fail(
+        "only root may change the console's reach: elevate first, as `sudo admin reach ...`".into(),
+    ))
+}
+
+/// Makes `reach` what the admin.toml at `path` says, with every comment of
+/// the file kept, and nothing written when it says it already. A file that
+/// admind would refuse is left as it is, and what is wrong with it told,
+/// for the person to mend first.
+fn set_reach(path: &Path, reach: Reach) -> Result<Reached, Fail> {
+    if Settings::read_at(path).map_err(fail)?.console.reach == reach {
+        return Ok(Reached::Already);
+    }
+    let edit = |document: &mut DocumentMut| {
+        let console = settings_edit::table(document, "console")
+            .ok_or_else(|| format!("{}: console is not a table", admin_settings::PATH))?;
+        settings_edit::set_string(console, "reach", reach.word());
+        Ok(())
+    };
+    match settings_edit::change(path, SETTINGS_MODE, edit) {
+        Ok(true) => Ok(Reached::Changed),
+        Ok(false) => Ok(Reached::Already),
+        // The edit's words name the file already.
+        Err(Changed::Edit { error, .. }) => Err(fail(error)),
+        Err(other) => Err(fail(other.to_string())),
+    }
+}
+
+/// `admin reach [private | any]`: says whom the console answers, or makes
+/// it answer that, as root.
+fn reach(args: &mut Args) -> Result<i32, Fail> {
+    let mut word = None;
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Operand(operand) if word.is_none() => {
+                word = Some(operand.to_string_lossy().into_owned());
+            }
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    let path = Path::new(admin_settings::PATH);
+    let Some(word) = word else {
+        println!("{}", Settings::read_at(path).map_err(fail)?.console.reach.word());
+        return Ok(0);
+    };
+    let wanted = Reach::parse(&word)
+        .ok_or_else(|| usage(format!("{word} is not a reach: private or any")))?;
+    require_root(util::own_user())?;
+    match set_reach(path, wanted)? {
+        Reached::Already => println!("The console's reach is already {word}."),
+        Reached::Changed => {
+            // Spark signals admind, which reads the file again; it would
+            // within 30 seconds anyway, and when it starts.
+            service::ask("reload admind").map_err(|why| {
+                fail(format!(
+                    "{} says reach = \"{word}\" now, but admind was not told to read it again \
+                     ({}): it does within 30 seconds, and when it starts",
+                    admin_settings::PATH,
+                    why.message
+                ))
+            })?;
+            println!("The console's reach is now {word}: admind has read it again.");
+        }
+    }
+    Ok(0)
 }
 
 /// `admin token ...`.
@@ -613,6 +711,131 @@ mod tests {
         assert!(main(&mut args(&["token", "remove"])).unwrap_err().usage);
         assert!(main(&mut args(&["token", "remove", "a", "b"])).unwrap_err().usage);
         assert_eq!(main(&mut args(&["--help"])).unwrap(), 0);
+    }
+
+    /// admin.toml as it ships: every setting in it is a comment.
+    const SHIPPED: &str = include_str!("../../../defaults/admin.toml");
+
+    /// A folder of its own under the system's temporary folder, taken away
+    /// at the end, and the settings file in it.
+    struct Folder(std::path::PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Folder {
+            let dir =
+                std::env::temp_dir().join(format!("admin-reach-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Folder(dir)
+        }
+
+        fn file(&self) -> std::path::PathBuf {
+            self.0.join("admin.toml")
+        }
+
+        fn text(&self) -> String {
+            std::fs::read_to_string(self.file()).unwrap()
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_reach_is_set_in_the_file_that_ships_with_its_comments_kept_above_the_table() {
+        let folder = Folder::new("shipped");
+        std::fs::write(folder.file(), SHIPPED).unwrap();
+        assert_eq!(set_reach(&folder.file(), Reach::Any).unwrap(), Reached::Changed);
+        assert_eq!(folder.text(), format!("{SHIPPED}\n[console]\nreach = \"any\"\n"));
+        assert_eq!(Settings::read_at(&folder.file()).unwrap().console.reach, Reach::Any);
+        // And back, in the same place and with the same comments.
+        assert_eq!(set_reach(&folder.file(), Reach::Private).unwrap(), Reached::Changed);
+        assert_eq!(folder.text(), format!("{SHIPPED}\n[console]\nreach = \"private\"\n"));
+    }
+
+    #[test]
+    fn a_reach_that_is_set_changes_its_value_and_no_other_line_of_the_file() {
+        let folder = Folder::new("kept");
+        let before = "# Mine.\n\n[sign-in]\nsession-hours = 8 # a working day\n\n[console]\n\
+                      listen = 9090\n# Whom.\nreach = \"private\" # as shipped\ncertificate = \"this-machine\"\n";
+        std::fs::write(folder.file(), before).unwrap();
+        assert_eq!(set_reach(&folder.file(), Reach::Any).unwrap(), Reached::Changed);
+        assert_eq!(folder.text(), before.replace("\"private\" # as", "\"any\" # as"));
+        // A key that is not there is added to its table.
+        std::fs::write(folder.file(), "[console]\nlisten = 9090\n\n[sign-in]\nidle-minutes = 60\n")
+            .unwrap();
+        assert_eq!(set_reach(&folder.file(), Reach::Any).unwrap(), Reached::Changed);
+        assert_eq!(
+            folder.text(),
+            "[console]\nlisten = 9090\nreach = \"any\"\n\n[sign-in]\nidle-minutes = 60\n"
+        );
+    }
+
+    #[test]
+    fn a_reach_that_is_set_already_writes_nothing_and_a_file_that_is_not_there_is_made_when_it_must()
+     {
+        use std::os::unix::fs::MetadataExt;
+
+        let folder = Folder::new("already");
+        // The default is what a file that is not there says: nothing is made.
+        assert_eq!(set_reach(&folder.file(), Reach::Private).unwrap(), Reached::Already);
+        assert!(!folder.file().exists());
+        std::fs::write(folder.file(), "[console]\nreach = 'any' # single quotes\n").unwrap();
+        let ino = std::fs::metadata(folder.file()).unwrap().ino();
+        assert_eq!(set_reach(&folder.file(), Reach::Any).unwrap(), Reached::Already);
+        assert_eq!(folder.text(), "[console]\nreach = 'any' # single quotes\n");
+        assert_eq!(std::fs::metadata(folder.file()).unwrap().ino(), ino);
+        // A file that is not there is made for a reach it does not give.
+        std::fs::remove_file(folder.file()).unwrap();
+        assert_eq!(set_reach(&folder.file(), Reach::Any).unwrap(), Reached::Changed);
+        assert_eq!(folder.text(), "[console]\nreach = \"any\"\n");
+        assert_eq!(std::fs::metadata(folder.file()).unwrap().mode() & 0o7777, 0o644);
+    }
+
+    #[test]
+    fn a_file_admind_would_refuse_or_that_is_no_toml_is_left_as_it_is_and_said() {
+        let folder = Folder::new("refused");
+        for (text, said) in [
+            ("[sign-in]\nsession-hours = 500\n", "session-hours is 1 to 168"),
+            ("[console]\nlisten = 80\n", "listen is 443, or 1024 to 65535"),
+            ("[console]\nreech = \"any\"\n", "unknown field `reech`"),
+            ("[console]\nreach = \"everyone\"\n", "unknown variant `everyone`"),
+            ("console = 5\n", "invalid type: integer `5`"),
+            ("[console\n", "unclosed table"),
+        ] {
+            std::fs::write(folder.file(), text).unwrap();
+            let fail = set_reach(&folder.file(), Reach::Any).unwrap_err();
+            assert!(!fail.usage);
+            assert!(fail.message.starts_with("/system/settings/admin.toml: "), "{}", fail.message);
+            assert!(fail.message.contains(said), "{text:?}: {}", fail.message);
+            assert_eq!(folder.text(), text);
+        }
+    }
+
+    #[test]
+    fn only_root_changes_the_reach() {
+        assert!(require_root(0).is_ok());
+        for user in [1, 1000, 65_534] {
+            let fail = require_root(user).unwrap_err();
+            assert_eq!(
+                fail.message,
+                "only root may change the console's reach: elevate first, as `sudo admin reach ...`"
+            );
+            assert!(!fail.usage);
+        }
+    }
+
+    #[test]
+    fn a_reach_that_is_none_or_a_second_word_is_a_mistake_in_the_command_line() {
+        let fail = main(&mut args(&["reach", "everyone"])).unwrap_err();
+        assert!(fail.usage);
+        assert_eq!(fail.message, "everyone is not a reach: private or any");
+        for items in [&["reach", "Any"][..], &["reach", "private", "any"], &["reach", "--now"]] {
+            assert!(main(&mut args(items)).unwrap_err().usage, "{items:?}");
+        }
     }
 
     #[test]
