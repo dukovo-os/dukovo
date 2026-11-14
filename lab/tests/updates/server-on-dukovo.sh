@@ -166,13 +166,15 @@ counts)
 		python3 -c 'import json, sys; s = json.load(open(sys.argv[1]))["signed"]; print(s["version"], s["meta"]["snapshot.json"]["version"])' "$1"
 	}
 	served=$(readlink -f "$old/system-before-pull")
-	curl -s "http://$machine:$port/system/metadata/timestamp.json" >new-timestamp.json
+	stamp=$(mktemp)
+	curl -s "http://$machine:$port/system/metadata/timestamp.json" >"$stamp"
 	# shellcheck disable=SC2046
 	set -- $(versions "$served/metadata/timestamp.json")
 	old_timestamp=$1 old_snapshot=$2
 	# shellcheck disable=SC2046
-	set -- $(versions new-timestamp.json)
+	set -- $(versions "$stamp")
 	new_timestamp=$1 new_snapshot=$2
+	rm -f "$stamp"
 	echo "timestamp: the old server's $old_timestamp, the new server's $new_timestamp"
 	echo "snapshot: the old server's $old_snapshot, the new server's $new_snapshot"
 	if [ "$new_timestamp" -gt "$old_timestamp" ] && [ "$new_snapshot" -ge "$old_snapshot" ]; then

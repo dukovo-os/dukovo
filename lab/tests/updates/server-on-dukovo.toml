@@ -153,8 +153,8 @@ host = "sh {here}/server-on-dukovo.sh check {machine} {machine-port:80}"
 expect = [
     "offers 3 releases, newest Dukovo ",
     "signed from the trusted root",
-    "the stable channel of ",
-    "the beta channel of ",
+    "the stable channel offers Dukovo ",
+    "the beta channel offers Dukovo ",
 ]
 [[step]]
 host = "sh {here}/server-on-dukovo.sh counts {machine} {machine-port:80}"
