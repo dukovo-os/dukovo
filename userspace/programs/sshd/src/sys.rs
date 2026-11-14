@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! What sshd asks of the system beyond Rust's standard library: random
-//! bytes, the machine's name, pipes, descriptors sent to authd, and
-//! descriptors that do not block.
+//! bytes, the machine's name, pipes, descriptors sent to and from authd,
+//! and descriptors that do not block.
 
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -64,7 +64,7 @@ pub fn set_nonblocking(fd: &impl AsRawFd) -> io::Result<()> {
     Ok(())
 }
 
-/// The most descriptors sent with one request.
+/// The most descriptors sent with one request, or kept from one answer.
 const DESCRIPTORS_MAX: usize = 4;
 
 /// Sends `bytes` on `stream` with the descriptors `fds` (SCM_RIGHTS) in
@@ -104,4 +104,45 @@ pub fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[RawFd]) -> io::Re
     // What the first message did not take goes after it, as a write.
     let rest = &bytes[sent as usize..];
     if rest.is_empty() { Ok(()) } else { (&mut &*stream).write_all(rest) }
+}
+
+/// Reads from the socket `fd` into `buffer`, as read(2) does, and keeps
+/// the descriptors sent with the bytes (SCM_RIGHTS) in `fds`, closed on
+/// exec, up to [`DESCRIPTORS_MAX`] in all; any more are closed.
+pub fn receive(fd: RawFd, buffer: &mut [u8], fds: &mut Vec<OwnedFd>) -> io::Result<usize> {
+    let mut iov = libc::iovec { iov_base: buffer.as_mut_ptr().cast(), iov_len: buffer.len() };
+    // Room for more descriptors than are kept, aligned for the headers.
+    let mut control = [0u64; 8];
+    // SAFETY: all zeros is a valid msghdr: numbers and null pointers.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &raw mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = size_of_val(&control) as _;
+    // SAFETY: the message points at our buffer and control space.
+    let n = unsafe { libc::recvmsg(fd, &raw mut message, libc::MSG_CMSG_CLOEXEC) };
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the control messages are those recvmsg wrote into
+    // `control`, walked with the C library's macros; each descriptor in
+    // one is ours to own.
+    unsafe {
+        let mut header = libc::CMSG_FIRSTHDR(&raw const message);
+        while !header.is_null() {
+            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
+                let data = libc::CMSG_DATA(header);
+                let bytes = (*header).cmsg_len as usize - libc::CMSG_LEN(0) as usize;
+                for k in 0..bytes / size_of::<libc::c_int>() {
+                    let at = data.add(k * size_of::<libc::c_int>());
+                    let received = OwnedFd::from_raw_fd(at.cast::<libc::c_int>().read_unaligned());
+                    if fds.len() < DESCRIPTORS_MAX {
+                        fds.push(received);
+                    }
+                }
+            }
+            header = libc::CMSG_NXTHDR(&raw const message, header);
+        }
+    }
+    Ok(n as usize)
 }

@@ -28,12 +28,17 @@
 //! settings let it (ADR 0349): sshd has the connection's forwarder, which
 //! authd starts as them, make the connections and listen on the ports
 //! ([`forward`]).
+//!
+//! A helper signs in to a help session as `help`, no account's name, with
+//! the session's code or key, which authd checks; the connection then
+//! shows them the help screen alone (ADR 0540, [`help`]).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
-use std::os::fd::FromRawFd;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,20 +48,20 @@ use tokio::time::Instant;
 
 use accounts::forwarding::HOST_MAX;
 use accounts::request::{
-    self, Answer, Request, SSH_COMMAND_MAX, SSH_KEY_ALGORITHMS, SshProof, SshRun,
+    self, Answer, HELP_NAME, HelpProof, Request, SSH_COMMAND_MAX, SSH_KEY_ALGORITHMS, SshProof,
+    SshRun,
 };
 use accounts::sshd_config::{self, Settings};
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{
-    self, Auth, ChannelOpenHandle, Handle, Msg, PublicKeyOffer, Session, VerifiedPublicKey,
+    self, Auth, ChannelOpenHandle, Handle, Msg, PublicKeyOffer, Response, Session,
+    VerifiedPublicKey,
 };
-use russh::{
-    Channel, ChannelId, ChannelOpenFailure, Disconnect, MethodKind, MethodSet, Preferred, SshId,
-    kex,
-};
+use russh::{Channel, ChannelId, ChannelOpenFailure, Disconnect, MethodSet, Preferred, SshId, kex};
 
 use crate::forward::Forwarding;
+use crate::help::{self, Helping};
 use crate::session::{self, SignedIn, WINDOW};
 use crate::{authd, hostkey, pty};
 
@@ -133,6 +138,8 @@ struct Connection {
     guard: Option<oneshot::Sender<()>>,
     /// Who signed in.
     signed_in: Option<SignedIn>,
+    /// The help session a helper signed in to, in place of someone.
+    helping: Option<Helping>,
     /// Why the last key was refused, for the log.
     refused: Option<String>,
     /// The account the last refused try named, empty for a name no
@@ -184,6 +191,7 @@ pub fn run(settings: Settings) -> ExitCode {
         notify: Some(notify),
         guard: Some(guard),
         signed_in: None,
+        helping: None,
         refused: None,
         tried: None,
         password_checked: false,
@@ -217,13 +225,7 @@ async fn serve(
     let deadline = Instant::now() + SIGN_IN_TIME;
     socket.set_nonblocking(true).map_err(|err| err.to_string())?;
     let socket = tokio::net::TcpStream::from_std(socket).map_err(|err| err.to_string())?;
-    let mut methods = Vec::new();
-    if connection.settings.keys {
-        methods.push(MethodKind::PublicKey);
-    }
-    if connection.settings.passwords {
-        methods.push(MethodKind::Password);
-    }
+    let methods = help::methods(&connection.settings);
     let config = Arc::new(server::Config {
         server_id: SshId::Standard("SSH-2.0-Dukovo".into()),
         methods: MethodSet::from(methods.as_slice()),
@@ -297,11 +299,32 @@ fn groups_of(name: &str) -> Result<Vec<String>, String> {
 }
 
 impl Connection {
-    /// Someone signed in as `name`, as `proof` shows: the listener counts
-    /// the connection as signed in, and its sign-in guard stands down.
+    /// Someone signed in as `name`, as `proof` shows.
     fn sign_in(&mut self, name: &str, proof: SshProof, how: &str) {
-        eprintln!("sshd: {name} signed in from {} with {how}", self.from);
         self.signed_in = Some(SignedIn { name: name.into(), proof });
+        self.signed(name, how);
+    }
+
+    /// Whether someone, or a helper, signed in.
+    fn is_signed_in(&self) -> bool {
+        self.signed_in.is_some() || self.helping.is_some()
+    }
+
+    /// Whether `user` may sign in at all: AllowUsers and the others, which
+    /// a helper passes; and while sshd runs for a help session alone, a
+    /// helper alone.
+    fn admits(&self, user: &str) -> Result<(), String> {
+        match user {
+            HELP_NAME => Ok(()),
+            _ if help::only() => Err("sshd runs for a help session alone".into()),
+            _ => admitted(&self.settings, user),
+        }
+    }
+
+    /// `name` signed in, with `how`, for the log: the listener counts the
+    /// connection as signed in, and its sign-in guard stands down.
+    fn signed(&mut self, name: &str, how: &str) {
+        eprintln!("sshd: {name} signed in from {} with {how}", self.from);
         self.refused = None;
         if let Some(mut notify) = self.notify.take() {
             let _ = notify.write_all(b"in\n");
@@ -418,7 +441,7 @@ impl server::Handler for Connection {
             self.refuse("", "a name no account has".into());
             return Ok(Auth::reject());
         }
-        if let Err(why) = admitted(&self.settings, user) {
+        if let Err(why) = self.admits(user) {
             self.refuse(user, format!("{user}: {why}"));
             return Ok(Auth::reject());
         }
@@ -432,7 +455,11 @@ impl server::Handler for Connection {
             return Ok(Auth::reject());
         }
         let key = offer.public_key.to_bytes().map_err(|_| russh::Error::Inconsistent)?;
-        let request = Request::SshKey { name: user.into(), key };
+        // A helper's key is one a help session waits for.
+        let request = match user {
+            HELP_NAME => Request::SshHelpKey { key },
+            _ => Request::SshKey { name: user.into(), key },
+        };
         let fingerprint = offer.public_key.fingerprint(HashAlg::Sha256);
         match authd::ask(&request, &[]).await {
             Ok((Answer::Done(_), _)) => Ok(Auth::Accept),
@@ -456,12 +483,18 @@ impl server::Handler for Connection {
         // Checked again, as a client may sign without asking first.
         if !self.settings.keys
             || !account_name(user)
-            || self.signed_in.is_some()
-            || admitted(&self.settings, user).is_err()
+            || self.is_signed_in()
+            || self.admits(user).is_err()
         {
             return Ok(Auth::reject());
         }
         let fingerprint = key.public_key.fingerprint(HashAlg::Sha256).to_string();
+        // authd checks a helper's signature before it signs them in.
+        if user == HELP_NAME {
+            let proof =
+                HelpProof::Key { signed: key.signed.to_vec(), signature: key.signature.to_vec() };
+            return self.help_sign_in(proof, &format!("key {fingerprint}")).await;
+        }
         let proof =
             SshProof::Key { signed: key.signed.to_vec(), signature: key.signature.to_vec() };
         self.sign_in(user, proof, &format!("key {fingerprint}"));
@@ -469,10 +502,18 @@ impl server::Handler for Connection {
     }
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Error> {
-        if !self.settings.passwords || !account_name(user) || self.signed_in.is_some() {
+        if !account_name(user) || self.is_signed_in() {
             return Ok(Auth::reject());
         }
-        if let Err(why) = admitted(&self.settings, user) {
+        // A helper's password is a help session's code, whatever the
+        // settings say of passwords.
+        if user == HELP_NAME {
+            return self.help_sign_in(HelpProof::Code(password.into()), "the code").await;
+        }
+        if !self.settings.passwords {
+            return Ok(Auth::reject());
+        }
+        if let Err(why) = self.admits(user) {
             self.refuse(user, format!("{user}: {why}"));
             return Ok(Auth::reject());
         }
@@ -511,6 +552,31 @@ impl server::Handler for Connection {
                 eprintln!("sshd: {why}");
                 self.refused = Some(why);
                 Ok(Auth::reject())
+            }
+        }
+    }
+
+    async fn auth_keyboard_interactive<'a>(
+        &'a mut self,
+        user: &str,
+        _submethods: &str,
+        response: Option<Response<'a>>,
+    ) -> Result<Auth, Error> {
+        // Offered while a help session waits for a code, and for helpers
+        // alone: the prompt says what to type.
+        if user != HELP_NAME || self.is_signed_in() {
+            return Ok(Auth::reject());
+        }
+        match response {
+            None => Ok(Auth::Partial {
+                name: "Help session".into(),
+                instructions: "Type the code its owner gave you.".into(),
+                prompts: Cow::Owned(vec![("Code: ".into(), true)]),
+            }),
+            Some(mut response) => {
+                let code = response.next().unwrap_or_default();
+                let code = String::from_utf8_lossy(&code).into_owned();
+                self.help_sign_in(HelpProof::Code(code), "the code").await
             }
         }
     }
@@ -626,6 +692,14 @@ impl server::Handler for Connection {
             // Dropping the reply refuses the channel.
             return Ok(());
         }
+        // A helper has the help screen once.
+        if let Some(helping) = &mut self.helping {
+            if helping.opened {
+                eprintln!("sshd: refused a second session for the helper from {}", self.from);
+                return Ok(());
+            }
+            helping.opened = true;
+        }
         self.channels.insert(id, session::Channel::default());
         reply.accept().await;
         Ok(())
@@ -687,6 +761,34 @@ impl server::Handler for Connection {
     }
 
     async fn shell_request(&mut self, id: ChannelId, session: &mut Session) -> Result<(), Error> {
+        if let Some(helping) = &mut self.helping {
+            let started = match self.channels.get_mut(&id) {
+                Some(channel) if channel.running.is_some() => {
+                    Err("the channel's session has started already".into())
+                }
+                // The help screen is a terminal's, and the helper's own
+                // terminal shows it as one only when the client asked.
+                Some(channel) if channel.pty.is_none() => {
+                    Err("the client asked for no terminal, which the help screen needs".into())
+                }
+                Some(channel) => helping.start(channel, id, session.handle()),
+                None => Err("the channel is not open".into()),
+            };
+            match started {
+                Ok(()) => {
+                    eprintln!(
+                        "sshd: showing help session {} to the helper from {}",
+                        helping.id, self.from
+                    );
+                    session.channel_success(id)?;
+                }
+                Err(why) => {
+                    eprintln!("sshd: cannot show help session {} to its helper: {why}", helping.id);
+                    session.channel_failure(id)?;
+                }
+            }
+            return Ok(());
+        }
         self.start(id, SshRun::Shell, session).await
     }
 
@@ -696,6 +798,10 @@ impl server::Handler for Connection {
         command: &[u8],
         session: &mut Session,
     ) -> Result<(), Error> {
+        if self.helper_refused("a command") {
+            session.channel_failure(id)?;
+            return Ok(());
+        }
         if command.len() > SSH_COMMAND_MAX || command.contains(&0) {
             eprintln!("sshd: refused a command from {}: too long, or with a NUL in it", self.from);
             session.channel_failure(id)?;
@@ -710,6 +816,10 @@ impl server::Handler for Connection {
         name: &str,
         session: &mut Session,
     ) -> Result<(), Error> {
+        if self.helper_refused("SFTP") {
+            session.channel_failure(id)?;
+            return Ok(());
+        }
         // SFTP, which scp uses too: OpenSSH's sftp-server, as the person.
         if name == "sftp" {
             return self.start(id, SshRun::Sftp, session).await;
@@ -794,6 +904,10 @@ impl server::Handler for Connection {
         // What passes the session's bytes stops, and its terminal or
         // pipes close.
         self.channels.remove(&id);
+        // A helper who closes the help screen leaves.
+        if self.helping.is_some() {
+            return Err(russh::Error::Disconnect.into());
+        }
         Ok(())
     }
 }
@@ -805,22 +919,83 @@ impl Connection {
         self.refused = Some(why);
         self.tried = Some(user.into());
     }
+
+    /// Whether a helper signed in, who gets the help screen alone and not
+    /// `what`: if so, the log says it was refused.
+    fn helper_refused(&self, what: &str) -> bool {
+        if self.helping.is_some() {
+            eprintln!(
+                "sshd: refused {what} for the helper from {}: a helper has the help screen alone",
+                self.from
+            );
+        }
+        self.helping.is_some()
+    }
+
+    /// Signs a helper in to the help session that `proof` shows, as authd
+    /// checks it, `how` saying with what for the log. authd counts a
+    /// wrong code for the address, as it counts a wrong password.
+    async fn help_sign_in(&mut self, proof: HelpProof, how: &str) -> Result<Auth, Error> {
+        let code = matches!(proof, HelpProof::Code(_));
+        let request = Request::SshHelp { connection: self.connection.clone(), proof };
+        let answer = authd::ask_for_fds(&request).await;
+        drop(request);
+        match answer {
+            Ok((Answer::Done(id), fds)) => match <[OwnedFd; 2]>::try_from(fds) {
+                Ok([socket, transcript]) => {
+                    self.signed(HELP_NAME, &format!("{how}, to help session {id}"));
+                    self.helping = Some(Helping::new(id, socket, File::from(transcript)));
+                    Ok(Auth::Accept)
+                }
+                Err(_) => {
+                    eprintln!(
+                        "sshd: authd signed a helper in to help session {id} without its socket \
+                         and transcript"
+                    );
+                    let _ = authd::ask(&Request::SshHelpEnded { id }, &[]).await;
+                    Ok(Auth::reject())
+                }
+            },
+            // A guesser's connection open before its address was blocked
+            // ends.
+            Ok((Answer::Refused(why), _)) if why.starts_with(request::BLOCKED) => {
+                self.refused = Some(format!("a helper's sign-in: {why}"));
+                Err(russh::Error::Disconnect.into())
+            }
+            Ok((Answer::Refused(why), _)) => {
+                self.password_checked |= code;
+                self.refuse(HELP_NAME, format!("a helper's sign-in with {how}: {why}"));
+                Ok(Auth::reject())
+            }
+            Err(why) => {
+                eprintln!("sshd: {why}");
+                self.refused = Some(why);
+                Ok(Auth::reject())
+            }
+        }
+    }
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        if self.signed_in.is_none()
+        if !self.is_signed_in()
             && let Some(why) = &self.refused
         {
             eprintln!("sshd: no one signed in from {}: {why}", self.from);
         }
         // Tried, refused each time, and gone: one failed sign-in for its
         // address, unless authd counted its passwords already.
-        if self.signed_in.is_none()
+        if !self.is_signed_in()
             && !self.password_checked
             && let Some(name) = self.tried.take()
         {
             authd::tell(&Request::SshFailed { connection: self.connection.clone(), name });
+        }
+        // A helper who leaves ends the help session; their last line is
+        // kept first.
+        if let Some(helping) = self.helping.take() {
+            helping.finish();
+            authd::tell(&Request::SshHelpEnded { id: helping.id.clone() });
         }
         // A password's ticket holds no longer than its connection.
         if let Some(SignedIn { proof: SshProof::Ticket(ticket), .. }) = self.signed_in.take() {

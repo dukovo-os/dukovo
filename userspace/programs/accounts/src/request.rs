@@ -714,6 +714,93 @@ pub fn help_code_shown(code: &str) -> String {
         .join("-")
 }
 
+/// The most a help session's transcript holds, in bytes: sshd ends the
+/// helper's connection before a line would take it past this, so that
+/// nothing the helper types goes unkept.
+pub const HELP_TRANSCRIPT_MAX: u64 = 1 << 20;
+
+/// A help session's transcript line (ADR 0540): `SECONDS KIND TEXT`,
+/// with what `text` holds that is not printable shown as
+/// [`help_printable`] shows it, so that one line stays one. authd writes
+/// the session's steps, and sshd each line the helper types.
+#[must_use]
+pub fn help_transcript_line(seconds: u64, kind: &str, text: &[u8]) -> String {
+    format!("{seconds} {kind} {}\n", help_printable(text))
+}
+
+/// `bytes` as a transcript keeps them: control characters as `^X`, other
+/// bytes outside printable ASCII as `\xNN`, and a backslash doubled.
+#[must_use]
+pub fn help_printable(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        match byte {
+            b'\\' => text.push_str("\\\\"),
+            b' '..=b'~' => text.push(char::from(byte)),
+            0..=0x1f => {
+                text.push('^');
+                text.push(char::from(byte + 0x40));
+            }
+            0x7f => text.push_str("^?"),
+            _ => text.push_str(&format!("\\x{byte:02x}")),
+        }
+    }
+    text
+}
+
+/// The longest line of a helper's a transcript keeps as one: a longer
+/// one, such as a paste with no line end, is kept in lines of this many
+/// bytes.
+pub const HELP_LINE_MAX: usize = 1024;
+
+/// What a helper types, cut into the lines a help session's transcript
+/// keeps (ADR 0540): a carriage return or a line feed ends a line, a line
+/// feed right after a carriage return ends none, and a line ends once it
+/// has [`HELP_LINE_MAX`] bytes.
+#[derive(Default)]
+pub struct HelpLines {
+    /// What was typed since the end of the last line.
+    line: Vec<u8>,
+    /// Whether the last byte ended a line with a carriage return.
+    after_return: bool,
+}
+
+impl HelpLines {
+    /// Takes `bytes`, as typed, and gives each line they end.
+    pub fn take(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut ended = Vec::new();
+        for &byte in bytes {
+            match byte {
+                b'\n' if self.after_return => self.after_return = false,
+                b'\r' | b'\n' => {
+                    ended.push(std::mem::take(&mut self.line));
+                    self.after_return = byte == b'\r';
+                }
+                _ => {
+                    self.after_return = false;
+                    self.line.push(byte);
+                    if self.line.len() >= HELP_LINE_MAX {
+                        ended.push(std::mem::take(&mut self.line));
+                    }
+                }
+            }
+        }
+        ended
+    }
+
+    /// The line not ended yet.
+    #[must_use]
+    pub fn rest(&self) -> &[u8] {
+        &self.line
+    }
+
+    /// The line not ended yet, ended, if anything was typed of it: as the
+    /// helper's connection ends.
+    pub fn end(&mut self) -> Option<Vec<u8>> {
+        (!self.line.is_empty()).then(|| std::mem::take(&mut self.line))
+    }
+}
+
 /// What authd answers a `help-start` with: `ID UNTIL CODE HOSTKEY`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HelpStarted {

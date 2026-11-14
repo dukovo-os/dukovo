@@ -175,7 +175,7 @@ impl Help {
 
     /// Writes a line to its transcript.
     fn note(&mut self, kind: &str, text: &str) {
-        let line = transcript_line(unix_now(), kind, text);
+        let line = request::help_transcript_line(unix_now(), kind, text.as_bytes());
         if let Err(err) = self.transcript.write_all(line.as_bytes()) {
             eprintln!("authd: cannot write the transcript of help session {}: {err}", self.id);
         }
@@ -188,31 +188,6 @@ impl Help {
             None => "a code".into(),
         }
     }
-}
-
-/// A transcript's line: `SECONDS KIND TEXT`, with what the text holds
-/// that is not printable shown, so that one line stays one.
-pub(super) fn transcript_line(seconds: u64, kind: &str, text: &str) -> String {
-    format!("{seconds} {kind} {}\n", printable(text.as_bytes()))
-}
-
-/// `bytes` as a transcript keeps them: control characters as `^X`, other
-/// bytes outside printable ASCII as `\xNN`, and a backslash doubled.
-pub(super) fn printable(bytes: &[u8]) -> String {
-    let mut text = String::with_capacity(bytes.len());
-    for &byte in bytes {
-        match byte {
-            b'\\' => text.push_str("\\\\"),
-            b' '..=b'~' => text.push(char::from(byte)),
-            0..=0x1f => {
-                text.push('^');
-                text.push(char::from(byte + 0x40));
-            }
-            0x7f => text.push_str("^?"),
-            _ => text.push_str(&format!("\\x{byte:02x}")),
-        }
-    }
-    text
 }
 
 /// Whether `typed` is `code`, compared in a time that does not say how
@@ -906,13 +881,6 @@ pub(super) fn help_log(files: &Files, id: Option<&str>, peer: Peer) -> Answer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_transcript_keeps_one_line_for_each_and_shows_what_is_not_printable() {
-        assert_eq!(transcript_line(12, "typed", "ls -l"), "12 typed ls -l\n");
-        assert_eq!(printable(b"a\tb\x1b[A\x7f\\\xc3\xa9"), "a^Ib^[[A^?\\\\\\xc3\\xa9");
-        assert_eq!(printable(b"line\r\nnext"), "line^M^Jnext");
-    }
 
     #[test]
     fn a_code_is_the_same_only_when_all_of_it_is() {

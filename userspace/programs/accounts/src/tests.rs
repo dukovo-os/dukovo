@@ -863,6 +863,31 @@ fn a_help_code_is_read_however_it_is_typed() {
 }
 
 #[test]
+fn a_transcript_keeps_one_line_for_each_and_shows_what_is_not_printable() {
+    assert_eq!(request::help_transcript_line(12, "typed", b"ls -l"), "12 typed ls -l\n");
+    assert_eq!(request::help_printable(b"a\tb\x1b[A\x7f\\\xc3\xa9"), "a^Ib^[[A^?\\\\\\xc3\\xa9");
+    assert_eq!(request::help_printable(b"line\r\nnext"), "line^M^Jnext");
+}
+
+#[test]
+fn a_helper_s_typing_is_kept_a_line_for_each_however_it_ends() {
+    let mut lines = request::HelpLines::default();
+    assert_eq!(lines.take(b"ls -l\r"), [b"ls -l".to_vec()]);
+    // The line feed after a carriage return ends nothing more.
+    assert_eq!(lines.take(b"\ncd /tmp\r\n"), [b"cd /tmp".to_vec()]);
+    // An empty line is one too: Enter alone.
+    assert_eq!(lines.take(b"\r"), [Vec::new()]);
+    assert_eq!(lines.take(b"vi notes\n\x1b[A"), [b"vi notes".to_vec()]);
+    assert_eq!(lines.rest(), b"\x1b[A");
+    assert_eq!(lines.end(), Some(b"\x1b[A".to_vec()));
+    assert_eq!(lines.end(), None);
+    // A long line, as a paste, is kept in parts.
+    let ended = lines.take(&[b'x'; request::HELP_LINE_MAX + 10]);
+    assert_eq!(ended, [vec![b'x'; request::HELP_LINE_MAX]]);
+    assert_eq!(lines.rest().len(), 10);
+}
+
+#[test]
 fn help_answers_and_events_say_their_words_and_read_them_back() {
     let started = HelpStarted {
         id: "k7q2mx".into(),

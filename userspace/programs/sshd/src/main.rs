@@ -11,7 +11,8 @@
 //!   reads sshd_config, makes the host's key the first time, listens on
 //!   port 22, and starts a process for each connection.
 //! - `sshd --connection --settings TEXT` serves one connection, its
-//!   standard input, with the settings the listener read.
+//!   standard input, with the settings the listener read; a helper signs
+//!   in there to a help session (ADR 0540).
 //! - `sshd --forward`, which authd(8) starts as the person, forwards a
 //!   connection's ports, passing frames with it on its standard input
 //!   and output.
@@ -21,6 +22,7 @@ mod authd;
 mod connection;
 mod forward;
 mod forwarder;
+mod help;
 mod hostkey;
 mod listener;
 mod pty;
