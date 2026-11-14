@@ -24,6 +24,11 @@ acpi-power kernel/lib/acpi/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-power userspace/programs/systools/src/power.rs
 acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-thermal userspace/programs/systools/src/power.rs userspace/programs/systools/src/sensors.rs
+admin userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
+admin userspace/programs/accounts/ userspace/programs/consoled/ userspace/programs/systools/src/admind.rs
+admin userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin userspace/programs/systools/src/authd/ userspace/programs/systools/src/cert.rs
+admin userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
 audio-cd kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/fs/disk/optical.rs
 audio-cd kernel/radix/src/fs/disk/removable.rs kernel/radix/src/fs/disk/usb.rs tools/xtask/src/disc_drive/
