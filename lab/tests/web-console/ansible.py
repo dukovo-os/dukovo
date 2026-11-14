@@ -83,7 +83,7 @@ def recap_of(output):
 
 
 def inventory(machine, ssh_port):
-    """The inventory: the lab account over SSH with the lab's key, Python found by name, sudo with the lab's password."""
+    """The inventory: the lab account over SSH with the lab's key, Python by its path, sudo with the lab's password."""
     return f"""all:
   hosts:
     machine:
@@ -92,8 +92,11 @@ def inventory(machine, ssh_port):
       ansible_user: lab
       ansible_ssh_private_key_file: "{KEY_FILE}"
       ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes"
-      # Python from the catalog (docs/handbook/src/python.md).
-      ansible_python_interpreter: python3
+      # Python from the catalog, by its path (docs/handbook/src/python.md):
+      # by the name python3, its first run asks at a console whether it
+      # may run with the account's access, and Ansible's SSH session has
+      # no console to ask at.
+      ansible_python_interpreter: /applications/org.python.python/bin/python3
       # A task that becomes root runs `sudo -H -S -p PROMPT -u root ...`:
       # Ansible asks for -H and -S by default, and -n only when it has no
       # password to give, which it has here. Dukovo's sudo(8) is elevate(8),

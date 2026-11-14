@@ -14,9 +14,9 @@
 # the first: the test says so, and claims no more, until thread A's
 # dukovo.system collection gives the actions modules of their own
 # (docs/deferred.md). certificate.renew is left to the boot test
-# admin-actions. Ansible finds Python by the name python3, as the Python
-# chapter of the handbook says, so the Python bundle of the catalog is
-# installed for everyone first and taken away at the end.
+# admin-actions. Ansible runs Python by its path, as the Python chapter of
+# the handbook says, so the Python bundle of the catalog is installed for
+# everyone first and taken away at the end.
 #
 # What Ansible says to sudo: `sudo -H -S -p PROMPT -u root` (-n instead of
 # the prompt when it has no password), and Dukovo's sudo(8) takes every

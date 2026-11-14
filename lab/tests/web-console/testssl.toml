@@ -11,9 +11,10 @@
 #
 # testssl.sh is pinned to the release v3.2.5, by its tag and by the commit
 # the tag names, in testssl-run.sh, which clones it into the lab PC's cache
-# on the first run. The lab PC needs git, bash, openssl and python3, and the
-# script skips the test where it cannot clone the release. No account is
-# made.
+# on the first run. The lab PC needs git, bash, openssl and python3, and
+# one of dig, host, drill and nslookup, which testssl.sh looks names up
+# with; the script skips the test where one is missing or it cannot clone
+# the release. No account is made.
 about = "testssl.sh finds the web console's TLS to be 1.2 and 1.3 only, with forward secrecy and no weak cipher, and its certificate named and valid, and nothing of MEDIUM or worse that testssl-accepted.txt does not list"
 time = "20m"
 host_needs = ["git", "bash", "openssl", "python3", "curl"]

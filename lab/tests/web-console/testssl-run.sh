@@ -10,7 +10,8 @@
 # ACCEPTED is testssl-accepted.txt; MACHINE the machine's address and
 # CONSOLEPORT the lab PC's port that reaches the console (9090), as
 # {machine} and {machine-port:9090} give them. It runs in the test's own
-# folder, and needs git, bash, openssl and python3.
+# folder, and needs git, bash, openssl and python3, and one of dig, host,
+# drill and nslookup, without which testssl.sh stops before it scans.
 #
 # testssl.sh is pinned by the tag of its release, and by the commit that
 # tag names: the script clones that tag, and refuses a clone whose commit
@@ -19,7 +20,8 @@
 # DUKOVO_LAB_TESTSSL names, and nothing is installed.
 #
 # Exits with 77 where the lab PC cannot do its part: no git, bash,
-# openssl or python3, or no way to clone the release. That skips the test.
+# openssl or python3, none of the four that look names up, or no way to
+# clone the release. That skips the test.
 set -eu
 
 VERSION=v3.2.5
@@ -37,6 +39,11 @@ for program in git bash openssl python3; do
 		exit 77
 	fi
 done
+if ! command -v dig > /dev/null 2>&1 && ! command -v host > /dev/null 2>&1 \
+	&& ! command -v drill > /dev/null 2>&1 && ! command -v nslookup > /dev/null 2>&1; then
+	echo "the lab PC has none of dig, host, drill and nslookup, one of which testssl.sh $VERSION takes"
+	exit 77
+fi
 
 build=""
 work=""
