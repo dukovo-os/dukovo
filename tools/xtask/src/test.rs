@@ -4263,6 +4263,7 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         .context(|| "reading the served timestamp".to_string())?;
     let forged = incoming.join("files").join("0".repeat(64));
     write(forged.clone(), b"not this file\n")?;
+    write(incoming.join("ready"), b"")?;
     server_script(ctx, &server, "system-publish.sh", &[], false)?;
     let after = std::fs::read(served.join("metadata/timestamp.json"))
         .context(|| "reading the served timestamp".to_string())?;
