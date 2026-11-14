@@ -272,8 +272,9 @@ pub struct Failure {
     /// For [`Kind::CommandFailed`], the ID the command gave, when its
     /// action names it: the answer's `id` instead of ADM-123.
     pub own_id: Option<String>,
-    /// For [`Kind::CommandFailed`], the command, its status and its error
-    /// output, for the page's "the program's own words".
+    /// For [`Kind::CommandFailed`], the command: `{argv, status, stderr}`,
+    /// its words, its status and its error output, for the page's "the
+    /// program's own words".
     pub command: Option<Value>,
 }
 
@@ -302,7 +303,7 @@ impl Failure {
     ) -> Failure {
         Failure {
             own_id: id.map(str::to_string),
-            command: Some(json!({ "argv": argv, "status": status, "errors": errors })),
+            command: Some(json!({ "argv": argv, "status": status, "stderr": errors })),
             ..Failure::new(Kind::CommandFailed, detail)
         }
     }
@@ -445,6 +446,14 @@ mod tests {
         // A kind with nothing to try has no fix at all, not an empty one.
         let bad = Failure::new(Kind::BadRequest, "no JSON").body();
         assert!(bad["error"].get("fix").is_none());
+        // A command that failed says its words, status and error output as
+        // the page reads them.
+        let argv = ["service".to_string(), "nginx".into(), "restart".into()];
+        let failed = Failure::command(None, "nginx: no".into(), &argv, 1, "nginx: no\n").body();
+        assert_eq!(
+            failed["error"]["command"],
+            json!({ "argv": ["service", "nginx", "restart"], "status": 1, "stderr": "nginx: no\n" })
+        );
         assert_eq!(Failure::wait("slow down", 7).retry_after, Some(7));
     }
 

@@ -205,9 +205,9 @@ with 3 for a service that does not run, is not ready or fails its
 health check, answers with its explanation after 0 and 3 alike, and its
 Ansible task fails only after other statuses. For ADM-123, the *detail* is
 the last line it wrote as an error, the *command* member has its words,
-its status and its error output, and when that line ends with an error
-ID in parentheses that the action lists, such as *(SVC-104)*, the
-answer's *id* is that ID.
+its status and its error output (*argv*, *status* and *stderr*), and when
+that line ends with an error ID in parentheses that the action lists,
+such as *(SVC-104)*, the answer's *id* is that ID.
 
 A person who is not an administrator is ADM-122 for a change that runs as
 an administrator, and a session that is locked is ADM-106: *Unlock* in the

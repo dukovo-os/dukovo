@@ -129,7 +129,7 @@ fn a_command_that_fails_answers_with_its_own_error_id_and_words() {
             json!({
                 "argv": ["service", "broken", "restart"],
                 "status": 1,
-                "errors": "starting broken\nbroken.conf did not load (SVC-104)\n",
+                "stderr": "starting broken\nbroken.conf did not load (SVC-104)\n",
             })
         );
     });
