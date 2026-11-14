@@ -1263,7 +1263,7 @@ fn what_authd_refuses_through_the_worker_is_told_by_its_words_and_logged() {
 #[test]
 fn one_address_takes_a_get_and_a_post_and_no_other_verb() {
     let found = |verb| match lookup(verb, "/api/1/account/preferences") {
-        Lookup::Found(entry) => Some(entry.route),
+        Lookup::Found(entry, _) => Some(entry.route),
         Lookup::WrongVerb => None,
         Lookup::Missing => panic!("the address is in the table"),
     };
