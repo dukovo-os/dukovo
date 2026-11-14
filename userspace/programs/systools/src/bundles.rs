@@ -40,6 +40,7 @@ pub(crate) mod documents;
 pub(crate) mod feeds;
 pub(crate) mod folder;
 pub(crate) mod grants;
+pub(crate) mod health;
 pub(crate) mod history;
 pub(crate) mod keyring;
 pub(crate) mod protocol;

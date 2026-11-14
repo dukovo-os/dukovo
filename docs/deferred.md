@@ -469,6 +469,7 @@ machine asks for them.
 | A Unix socket of one bundle's service that another bundle's services reach, as Valkey's and PHP-FPM's are on Linux: a service's data folder is its account's alone, so they talk over TCP on the machine itself, nginx and PHP-FPM on 127.0.0.1:9000, where any program on the machine may connect | ADR 0492, ADR 0520 |
 | Rich and NFSv4 access lists; Btrfs properties | ADR 0256 |
 | Bundles: grants before install (`--grant`), resource limits for the sandbox, programs for other architectures, read-only subvolumes and reflink sharing for sealed bundles, asking people about their data when a bundle is removed for everyone | ADRs 0223 to 0225 |
+| The copy of a service's data folder that an update of its bundle makes while the service is stopped is a whole copy, where a reflink would share the data, so an update of a bundle with a large database, PostgreSQL's, keeps the service down for as long as the copy takes | ADRs 0386, 0522 |
 | Views: detaching an entry; devices attached one by one | ADR 0215 |
 | Manual pages inside bundles on `MANPATH` | ADR 0370 |
 | Removing an everyone's line also removes each person's add-ons | ADR 0388 |

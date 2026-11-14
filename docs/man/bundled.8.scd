@@ -295,6 +295,9 @@ service counts as asking for more.
 
 After an update, each started service whose manifest names a *health*
 socket must answer on it, in its _RUNTIME_DIRECTORY_, within 60 seconds.
+One whose manifest has a *health* command and no socket must be running,
+as *spark*(8) reports it, with its last health check passed, within the
+same 60 seconds (ADR 0522); one that has stopped for good fails at once.
 If one does not, bundled goes back by itself, as *bundle rollback*
 does: the version before, its services' data as that version left it,
 and a hold, so that no update tries the failed version again unasked.

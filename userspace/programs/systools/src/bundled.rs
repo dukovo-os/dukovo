@@ -63,6 +63,7 @@ use crate::bundles::catalogs::{self, Catalog};
 use crate::bundles::feeds;
 use crate::bundles::folder::{DEPTH_MAX, Dir, check, fd_stat, same};
 use crate::bundles::grants::{self, Grant, Grants, Said};
+use crate::bundles::health::{Verdict, verdict};
 use crate::bundles::history::{self, Event, What};
 use crate::bundles::minisign::PublicKey;
 use crate::bundles::protocol::{
@@ -917,21 +918,22 @@ fn stop_time(timeouts: impl IntoIterator<Item = Option<u32>>) -> Duration {
     Duration::from_secs(u64::from(longest)) + STOP_MARGIN
 }
 
-/// How long the services of a new version have to answer their health
-/// checks (ADR 0386).
+/// How long the services of a new version have to pass their health
+/// checks (ADR 0386, 0522).
 const HEALTH_TIME: Duration = Duration::from_secs(60);
+
+/// What Spark reports of each of `names`; nothing for one it does not
+/// know.
+fn service_reports(names: &[String]) -> Vec<show::Service> {
+    let Ok(answer) = crate::power::request("show") else { return Vec::new() };
+    let Ok(document) = show::parse(&answer) else { return Vec::new() };
+    document.services.into_iter().filter(|service| names.contains(&service.name)).collect()
+}
 
 /// What Spark says each of `names` is doing; nothing for one it does not
 /// know.
 fn service_states(names: &[String]) -> Vec<(String, show::State)> {
-    let Ok(answer) = crate::power::request("show") else { return Vec::new() };
-    let Ok(document) = show::parse(&answer) else { return Vec::new() };
-    document
-        .services
-        .into_iter()
-        .filter(|service| names.contains(&service.name))
-        .map(|service| (service.name, service.state))
-        .collect()
+    service_reports(names).into_iter().map(|service| (service.name, service.state)).collect()
 }
 
 /// Stops each of `names` and waits, up to `time` ([`stop_time`]), until
@@ -1078,33 +1080,69 @@ fn run_services(manifest: &Manifest, old: Option<&Manifest>, reach: &[services::
     Ran { said, started }
 }
 
-/// Whether the services of `manifest` that were `started` work: each
-/// whose manifest names a health check answers on its socket, in its
-/// account's live folder, within [`HEALTH_TIME`] (ADR 0386). Why not, if
-/// one does not.
+/// Whether the services of `manifest` that were `started` work, within
+/// [`HEALTH_TIME`] for all (ADR 0386, 0522). One whose manifest names a
+/// health socket answers on it, in its account's live folder. One with a
+/// health command and no socket, which has none to answer on, is running
+/// with the last run of its command passed, as Spark reports it. A
+/// service with neither is not checked. Why not, if one does not work.
 fn health(manifest: &Manifest, started: &[String]) -> Result<(), String> {
     let deadline = Instant::now() + HEALTH_TIME;
     for service in &manifest.services {
-        let check = service.health.as_ref().and_then(|health| health.socket.as_ref());
-        let (Some(check), true) = (check, started.contains(&service.name.0)) else {
+        let name = &service.name.0;
+        let Some(health) = service.health.as_ref().filter(|_| started.contains(name)) else {
             continue;
         };
-        let socket = format!("{}/{}", services::live_folder(&services::account(service)), check);
-        loop {
-            if UnixStream::connect(&socket).is_ok() {
-                break;
+        match (&health.socket, &health.command) {
+            (Some(check), _) => {
+                let folder = services::live_folder(&services::account(service));
+                answers_on(name, &format!("{folder}/{check}"), deadline)?;
             }
-            if Instant::now() >= deadline {
-                return Err(format!(
-                    "its service {} did not answer at {socket} within {} seconds",
-                    service.name,
-                    HEALTH_TIME.as_secs()
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(250));
+            (None, Some(_)) => passes_its_check(name, deadline)?,
+            (None, None) => {}
         }
     }
     Ok(())
+}
+
+/// Waits until service `name` answers on `socket`, up to `deadline`: why
+/// not, if it does not.
+fn answers_on(name: &str, socket: &str, deadline: Instant) -> Result<(), String> {
+    loop {
+        if UnixStream::connect(socket).is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "its service {name} did not answer at {socket} within {} seconds",
+                HEALTH_TIME.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Waits until Spark reports service `name` running with its last health
+/// check passed, up to `deadline`: why not, if it does not. A service that
+/// ended for good does not get the time: it will not pass.
+fn passes_its_check(name: &str, deadline: Instant) -> Result<(), String> {
+    loop {
+        let reports = service_reports(&[name.to_string()]);
+        let still = match verdict(reports.first()) {
+            Verdict::Works => return Ok(()),
+            Verdict::Fails(why) => {
+                return Err(format!("its service {name} did not pass its health check: it {why}"));
+            }
+            Verdict::Waits(why) => why,
+        };
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "its service {name} did not pass its health check within {} seconds: it {still}",
+                HEALTH_TIME.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// Stops service `name` and takes its file and record away: what went
