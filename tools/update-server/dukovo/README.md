@@ -124,8 +124,10 @@ none of which an Ubuntu server notices:
   as a timer starts them, instead of a `.path` unit; `result` is made
   group readable, since the deploy that waits for it is another account.
 - `refresh.sh`, `flaws.sh`, `flaws-fetch.sh`: the same paths.
-- `system-rollout`, here: names the Dukovo places for
-  `system-rollout.sh`, which `ob release rollout` runs through `elevate`.
+- `system-rollout` and `catalog-rollout`, here: name the Dukovo places
+  for `system-rollout.sh` and `catalog-rollout.sh`, which `ob release
+  rollout` and `ob catalog rollout` run through `elevate`; `site.sh`
+  then reads the catalog's online key from the refresh job's secret.
 
 ## Departures from the design
 

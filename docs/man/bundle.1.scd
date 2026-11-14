@@ -225,17 +225,22 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	catalog it came from lists; see UPDATES. One that asks for no more
 	than the version it replaces updates without a question; one that
 	asks for more shows its sheet and asks, which *--yes* answers. A held
-	one is left as it is, and bundle says so. A service bundle's new
-	version that fails its health check goes back by itself, with its
-	data, and is held (*bundled*(8)). With *--check*, it lists
-	what would update, with the version installed, the newest and the
-	catalog, or *its own feed*, and changes nothing.
+	one is left as it is, and bundle says so. With no _id_, one whose
+	catalog sends its newest version out in waves waits for this
+	computer's wave, and bundle says on which day it opens and why the
+	waves are held, if they are; one named is taken at once (WAVES). A
+	service bundle's new version that fails its health check goes back
+	by itself, with its data, and is held (*bundled*(8)). With *--check*,
+	it lists what would update, with the version installed, the newest
+	and the catalog, or *its own feed*, and, for each that waits for its
+	wave, why and how to take it now, and changes nothing.
 
 *update --automatic* *on*|*off* [*--for-everyone*]
 	Says whether your bundles, or everyone's, through *elevate*(8),
 	update by themselves, daily; it is off unless you turn it on. Turned
-	on, they update at once. One whose new version asks for more waits
-	for you to run *bundle update*, and *bundle history* says so.
+	on, they update at once, and each one whose wave has not opened
+	waits for it (WAVES). One whose new version asks for more waits for
+	you to run *bundle update*, and *bundle history* says so.
 
 *rollback* _id_ [*--for-everyone*]
 	Goes back to the version the last update replaced, and holds the
@@ -557,6 +562,44 @@ Updating by themselves, once turned on, runs some minutes after
 *bundled*(8) starts and then daily. An update that asks for more than
 the version it replaces never installs by itself: it waits for *bundle
 update*.
+
+# WAVES
+
+A catalog's update server may send the newest version of a bundle out in
+waves (ADR 0544), as Dukovo's own releases go out (*sysupdate*(8)): the
+project's canary computers take it first, and the rest on days 1, 3, 5
+and 7 after the server first saw that version, a few at first and then
+everyone, each computer by the number it draws and keeps in
+_/system/state/sysupdate/wave_. A computer is a canary by *canary* in
+_updates.toml_ (*updates.toml*(5)). If something goes wrong, the server's
+operator pauses the waves, and the computers not reached yet wait. A
+catalog that signs no waves has every update taken at once.
+
+The updates by themselves and *bundle update* with no _id_ wait for the
+wave. Of an update that waits, bundle says which version it is, on which
+day after its release this computer's wave opens, why the waves are
+held, if they are, and what takes it now; *bundle update --check* says
+it in place of a row of its table, and counts it apart:
+
+```
+$ bundle update --check
+org.example.app 2.1.0 reaches machines in waves; this machine's opens on day 7
+  the waves are held: paused: crashes on start
+  `bundle update org.example.app` takes it now
+0 to update, 0 up to date, 1 waiting for their wave
+```
+
+Three updates do not wait. *bundle update* _id_, which names the bundle,
+takes it at once, as *sysupdate stage --version* does for the system.
+An update that fixes a known flaw goes at once, whatever its wave: when
+the catalog's list of flaws (FLAWS) names a high or critical flaw in the
+version installed that it does not name in the newer version, which the
+list looked at, a computer running the flawed version does not wait up
+to a week for the fix. And a bundle installed anew, with *bundle install*
+_id_, takes the newest version, since waves are for updates. A bundle
+from its own feed (OWN FEEDS) has no waves. A rollout that cannot be
+read holds the update back, and bundle says why; naming the bundle takes
+it.
 
 # OWN FEEDS
 

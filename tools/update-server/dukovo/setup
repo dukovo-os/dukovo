@@ -158,13 +158,14 @@ done
 
 say "The program and the scripts"
 put 0755 "$top/catalog-repo" "$program_dir/catalog-repo"
-for script in publish.sh refresh.sh flaws-fetch.sh flaws.sh system-publish.sh \
-	system-refresh.sh system-rollout.sh; do
+for script in publish.sh refresh.sh flaws-fetch.sh flaws.sh catalog-rollout.sh \
+	system-publish.sh system-refresh.sh system-rollout.sh; do
 	put 0755 "$top/$script" "$program_dir/$script"
 done
 put 0644 "$top/site.sh" "$program_dir/site.sh"
 put 0644 "$top/system-site.sh" "$program_dir/system-site.sh"
 put 0755 "$here/system-rollout" "$program_dir/system-rollout"
+put 0755 "$here/catalog-rollout" "$program_dir/catalog-rollout"
 
 say "The service files"
 service check "$here"/dukovo-*.toml

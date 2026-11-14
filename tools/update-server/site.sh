@@ -59,10 +59,16 @@ fi
 # server it is the job's Spark secret, which holds the key as base64,
 # since a secret loses a trailing newline and a key is binary; it is
 # decoded into a folder of the job's own /tmp, which `finish` takes away.
+# `ob catalog rollout` runs catalog-rollout.sh through elevate, outside
+# any job: it reads the refresh job's secret from Spark's folder as root.
 if [ -e "$home/online.key" ]; then
 	key=$home/online.key
 else
-	secret=${SECRETS_DIRECTORY:?there is no online key: `service secret set` puts it in}/online-key
+	secret=${SECRETS_DIRECTORY:-/system/state/spark/secrets/dukovo-catalog-refresh}/online-key
+	if [ ! -e "$secret" ]; then
+		echo "there is no online key: \`service secret set\` puts it in" >&2
+		exit 1
+	fi
 	work=$(umask 077 && mktemp -d)
 	(umask 077 && base64 -d "$secret" >"$work/online.key")
 	key=$work/online.key

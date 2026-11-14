@@ -10,8 +10,10 @@
 # which are added to the store and never replaced. catalog-repo then
 # signs a snapshot and timestamp with the online key, lays out the
 # catalog and reads it back with the client before it is served
-# (site.sh). What happened is written to `result`, for the deploy to
-# show.
+# (site.sh). A new version of a bundle starts its waves with the
+# rollouts signed here (ADR 0544); the plan of each, kept in rollout.json
+# beside the online key, is never served. What happened is written to
+# `result`, for the deploy to show.
 set -eu
 
 incoming=${DUKOVO_CATALOG_INCOMING:-/var/lib/dukovo-catalog-incoming}
@@ -61,7 +63,7 @@ publish() {
 	rm -rf "$home/repo.old"
 	if [ -e "$home/repo" ]; then mv "$home/repo" "$home/repo.old" || return 1; fi
 	mv "$new" "$home/repo" || return 1
-	if ! sign_site publish --store "$home/store"; then
+	if ! sign_site publish --store "$home/store" --plan "$home/rollout.json"; then
 		# Keep the repository that what is served came from.
 		rm -rf "$home/repo"
 		if [ -e "$home/repo.old" ]; then mv "$home/repo.old" "$home/repo"; fi

@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# `ob catalog rollout` runs this through elevate on a Dukovo update
+# server: catalog-rollout.sh (ADR 0544) with the places the service files
+# give the catalog's jobs (dukovo-catalog-refresh.toml has the same),
+# since elevate passes none of the caller's environment. The online key
+# is the refresh job's secret, which site.sh reads from Spark's folder as
+# root.
+set -eu
+
+DUKOVO_CATALOG_HOME=/system/state/lib/dukovo-catalog
+DUKOVO_CATALOG_INCOMING=/system/state/lib/dukovo-catalog-incoming
+DUKOVO_CATALOG_PROGRAM=/system/state/lib/dukovo-update-server/catalog-repo
+DUKOVO_CATALOG_SITE=/system/state/lib/dukovo-catalog-site
+DUKOVO_LOCK=/system/live/dukovo-update-server/catalog.lock
+export DUKOVO_CATALOG_HOME DUKOVO_CATALOG_INCOMING DUKOVO_CATALOG_PROGRAM DUKOVO_CATALOG_SITE
+export DUKOVO_LOCK
+
+exec sh "$(dirname "$0")/catalog-rollout.sh" "$@"

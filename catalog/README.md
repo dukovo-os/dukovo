@@ -97,6 +97,37 @@ The server signs a new timestamp every six hours by itself. Keep the
 bundles in `out/catalog/store/` until they are deployed: they exist
 nowhere else.
 
+## Waves
+
+The newest version of each bundle goes out to computers in waves (ADR
+0544), as a system release does: the project's canary computers on its
+first day, then on days 1, 3, 5 and 7 the computers numbered below 10,
+100, 500 and 1000. The targets delegate the role `rollout` to the
+server's key for the paths `rollout/ID/VERSION.json`, which the next
+`./ob catalog sign` puts in; until then no rollout is signed and every
+computer takes its updates at once. The server signs each rollout when
+it publishes and every six hours, keeping its plan in
+`/var/lib/dukovo-catalog/rollout.json`, which is never served. A version
+counts from the day the server first sees it, so the first publish after
+the server runs this starts the waves of every bundle's newest version
+then.
+
+If a new version misbehaves, hold its waves, with a reason computers
+show, and free them when it is fixed or known to be fine:
+
+```
+$ ./ob catalog rollout pause io.github.burntsushi.ripgrep 15.3.0 "crashes on start"
+$ ./ob catalog rollout resume io.github.burntsushi.ripgrep 15.3.0
+$ ./ob catalog rollout canary my-canary red
+```
+
+It asks for your password on the server, and needs no YubiKey. A
+computer running a version with a known high or critical flaw takes the
+version that ends it at once, whatever its wave, and `bundle update
+ID` takes any version at once. Paused waves do not take back what the
+computers reached already: `bundle rollback` does that, one computer at
+a time.
+
 ## When the server or its key is lost
 
 Remove `/var/lib/dukovo-catalog/online.key` on the server, or start a

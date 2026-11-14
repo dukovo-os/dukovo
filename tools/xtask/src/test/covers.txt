@@ -179,6 +179,11 @@ catalog-install userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-install userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-install userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
 catalog-install catalog/
+catalog-waves tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs userspace/programs/dkv/
+catalog-waves userspace/programs/catalog-repo/ userspace/programs/manifest/
+catalog-waves userspace/programs/system-release/src/rollout.rs userspace/programs/systools/src/bundled.rs
+catalog-waves userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+catalog-waves userspace/programs/tuf/ catalog/
 certificates userspace/defaults/spark/services/certd.toml userspace/programs/manifest/src/service.rs
 certificates userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/
 certificates userspace/programs/systools/src/certd.rs userspace/programs/systools/src/servicefiles.rs

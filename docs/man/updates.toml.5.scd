@@ -49,10 +49,11 @@ system = "2026.3.1"
 
 *canary*
 	*true* for a machine that takes each release on the day its
-	channel offers it, before the waves reach the rest (ADR 0469);
-	*false*, the default. The project's own canaries say *true*. Every
-	other machine takes a release when its wave opens, from day 1 to
-	day 7, by the number it keeps in
+	channel offers it, before the waves reach the rest (ADR 0469), and
+	each update of a bundle from a catalog on the day its server first
+	sees that version (ADR 0544); *false*, the default. The project's
+	own canaries say *true*. Every other machine takes a release when
+	its wave opens, from day 1 to day 7, by the number it keeps in
 	_/system/state/sysupdate/wave_.
 
 *check*

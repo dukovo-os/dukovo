@@ -179,6 +179,25 @@ for more than the one it replaces, a permission or more of one, or a
 command that runs with the person's access. Updating everyone's bundles
 is an administrator's.
 
+A catalog may also send the newest version of a bundle out in waves
+(ADR 0544). Its snapshot then lists the delegated role *rollout*, the
+online key's, whose targets _rollout/ID/VERSION.json_ say which wave is
+open for that version: bundled reads it with the catalog's client, and
+refuses one that does not name that ID and version, or a wave above 4.
+An update of a bundle the request did not name waits until a wave that
+reaches this computer is open, as *sysupdate*(8) does for the system:
+by the number in _/system/state/sysupdate/wave_, which bundled draws
+and keeps as sysupdate does, or *canary* in _updates.toml_
+(*updates.toml*(5)). A bundle named in the request is taken at once, and
+so is an update that fixes a known flaw: when the catalog's kept list
+of flaws (below) names a high or critical flaw in the version installed
+that it does not name in the newer one, which the list looked at, no
+wave holds it back. A catalog that signs no rollout of that version has
+it taken at once; one whose rollout cannot be read holds the update, with
+why, unless it is a fix. What waits is not fetched, written to
+_history_ or counted as failed: *bundle update --check* and the updater's
+log, each day, say which version waits and why.
+
 A bundle bound to no catalog updates from its own feed, when the
 manifest of its installed version names one in *update* (ADR 0390): a
 small TUF repository, which bundled reads with the client it reads the
