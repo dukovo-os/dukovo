@@ -16,7 +16,9 @@
 //! fallback puts
 //! the settings from before the update back ([`restore`]). When no slot
 //! starts, three starts in a row that were not seen through start Rescue
-//! from the EFI system partition, which counts them ([`rescue`]). A
+//! from the EFI system partition, which counts them ([`rescue`]). A try of
+//! `changes bisect` is one start of a slot with given boot options, kept
+//! beside the slot state and never in it ([`trial`]). A
 //! whole machine restored from its backups is put in place at a start
 //! the same way ([`machine`]). The serial console's settings, which the
 //! menu reads beside the slot state, are in [`serial`] (ADR 0481).
@@ -38,6 +40,7 @@ pub mod rescue;
 pub mod restore;
 pub mod serial;
 pub mod state;
+pub mod trial;
 pub mod version;
 
 pub use state::{Slot, State};

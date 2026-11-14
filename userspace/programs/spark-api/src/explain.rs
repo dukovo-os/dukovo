@@ -23,6 +23,7 @@ use alloc::vec::Vec;
 
 use serde::Serialize;
 
+use crate::bisect;
 use crate::show::{HealthState, Request, Service, Show, State};
 use crate::words::{and_list, ready_once, span};
 
@@ -31,7 +32,8 @@ const DEPTH_MAX: usize = 16;
 
 /// The `why` texts of a service Spark leaves off at boot, as it is meant
 /// to be: in essentials only the system's own services start, and in
-/// Rescue only Rescue's.
+/// Rescue only Rescue's. A try of changes bisect leaves services off too,
+/// with a text of its own ([`bisect::why`]).
 const LEFT_OFF: [&str; 2] = [
     "only the essentials start: it stays off until it is started",
     "Rescue leaves it off until it is started",
@@ -368,11 +370,15 @@ fn fix_for(document: &Show, asked: &str, chain: &[String], root: &str) -> Option
 fn stopped_fix(last: &Service, asked: &str, alone: bool) -> Option<String> {
     let root = &last.name;
     match stop_reason(last) {
-        Stop::Reason(why) if last.off_as_meant && LEFT_OFF.contains(&why) => Some(if alone {
-            format!("`service {asked} start` starts it in this boot.")
-        } else {
-            format!("`service {asked} start` starts it and {root} in this boot.")
-        }),
+        Stop::Reason(why)
+            if last.off_as_meant && (LEFT_OFF.contains(&why) || bisect::is_why(why)) =>
+        {
+            Some(if alone {
+                format!("`service {asked} start` starts it in this boot.")
+            } else {
+                format!("`service {asked} start` starts it and {root} in this boot.")
+            })
+        }
         Stop::Reason(why) if ENDS.iter().any(|end| why.starts_with(end)) => {
             Some(restart_after_end(asked, root, alone))
         }
@@ -955,8 +961,9 @@ mod tests {
     }
 
     #[test]
-    fn a_service_left_off_in_rescue_or_essentials_starts_in_this_boot() {
-        for why in LEFT_OFF {
+    fn a_service_left_off_in_rescue_essentials_or_a_try_starts_in_this_boot() {
+        let tried = bisect::why(2);
+        for why in [LEFT_OFF[0], LEFT_OFF[1], tried.as_str()] {
             let db = Service {
                 why: Some(why.into()),
                 off_as_meant: true,

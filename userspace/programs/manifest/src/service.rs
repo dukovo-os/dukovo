@@ -32,7 +32,9 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::ops::Range;
 
-use radix_abi::resource_domain::{NAME_MAX, WEIGHT_DEFAULT, WEIGHT_MAX};
+use radix_abi::resource_domain::{
+    IO_WEIGHT_DEFAULT, IO_WEIGHT_MAX, NAME_MAX, WEIGHT_DEFAULT, WEIGHT_MAX,
+};
 use radix_abi::startup::NETWORK_SLOTS;
 use serde::Deserialize;
 use serde::de::{self, DeserializeOwned, Deserializer, MapAccess, Visitor};
@@ -59,6 +61,13 @@ pub const KEYS: &[&str] = &[
     "cpu_weight",
     "memory",
     "oom",
+    "io_weight",
+    "io_read",
+    "io_write",
+    "io_read_ops",
+    "io_write_ops",
+    "threads",
+    "open_files",
     "secrets",
     "certificates",
     "permissions",
@@ -73,6 +82,7 @@ pub const KEYS: &[&str] = &[
     "admin.hardware",
     "admin.time",
     "admin.firewall",
+    "admin.tune",
     "names",
     "devices.pci",
     "backup",
@@ -101,6 +111,23 @@ const VERSION_2_KEYS: &[&str] = &["requires", "wants", "after", "give_up_after",
 
 /// The order of a service whose file gives none.
 pub const ORDER_DEFAULT: u32 = 50;
+
+/// The threads a service and what it starts may have together when its
+/// file gives no `threads`: far more than a service that works needs,
+/// and few enough that a fork bomb in one cannot starve the machine.
+pub const THREADS_DEFAULT: u32 = 4096;
+
+/// The most `threads` a file may say: a million, as many as a program
+/// may have files open ([`OPEN_FILES_MAX`]). A thread costs its stacks,
+/// so no machine has the memory for more; a limit above what memory
+/// allows is no limit at all, which `threads` has no word for.
+pub const THREADS_MAX: u32 = 1 << 20;
+
+/// The highest `open_files`: Linux's `fs.nr_open`. A process holds no
+/// more descriptors than its capability space has slots for, whatever
+/// its limit (radix-posix(7)), so a program written for Linux may ask
+/// for as many as it does there.
+pub const OPEN_FILES_MAX: u32 = 1 << 20;
 
 /// When a service that ended is started again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -366,11 +393,45 @@ pub struct Limits {
     /// Which programs the out-of-memory policy stops first.
     #[serde(default, deserialize_with = "oom")]
     pub oom: Oom,
+    /// Its share of each disk when several services wait for it, from 1
+    /// to 10000; 100 is everyone's.
+    #[serde(default = "io_weight_default", deserialize_with = "io_weight")]
+    pub io_weight: u32,
+    /// The bytes it may read from disks each second, if it has a limit.
+    #[serde(default, deserialize_with = "io_read")]
+    pub io_read: Option<u64>,
+    /// The bytes it may write to disks each second, if it has a limit.
+    #[serde(default, deserialize_with = "io_write")]
+    pub io_write: Option<u64>,
+    /// The read requests it may make each second, if it has a limit.
+    #[serde(default, deserialize_with = "io_read_ops")]
+    pub io_read_ops: Option<u64>,
+    /// The write requests it may make each second, if it has a limit.
+    #[serde(default, deserialize_with = "io_write_ops")]
+    pub io_write_ops: Option<u64>,
+    /// The most threads it and what it starts may have together.
+    #[serde(default = "threads_default", deserialize_with = "threads")]
+    pub threads: u32,
+    /// How many files each of its processes may have open at once
+    /// (RLIMIT_NOFILE), if not a program's 1024.
+    #[serde(default, deserialize_with = "open_files")]
+    pub open_files: Option<u32>,
 }
 
 impl Default for Limits {
     fn default() -> Limits {
-        Limits { cpu_weight: WEIGHT_DEFAULT, memory: None, oom: Oom::Service }
+        Limits {
+            cpu_weight: WEIGHT_DEFAULT,
+            memory: None,
+            oom: Oom::Service,
+            io_weight: IO_WEIGHT_DEFAULT,
+            io_read: None,
+            io_write: None,
+            io_read_ops: None,
+            io_write_ops: None,
+            threads: THREADS_DEFAULT,
+            open_files: None,
+        }
     }
 }
 
@@ -410,7 +471,7 @@ impl Permissions {
 }
 
 /// The administration group: `admin.network`, `admin.hardware`,
-/// `admin.time` and `admin.firewall`.
+/// `admin.time`, `admin.firewall` and `admin.tune`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Admin {
@@ -431,6 +492,10 @@ pub struct Admin {
     /// filter its rules (ADR 0334).
     #[serde(default)]
     pub firewall: bool,
+    /// Whether it gets the kernel settings capability, which changes the
+    /// kernel's settings, as the tune service does (ADR 0476).
+    #[serde(default)]
+    pub tune: bool,
 }
 
 /// The devices group: `devices.pci`, the cards the kernel left for a
@@ -911,11 +976,25 @@ certificates = []
 
 # What its domain may use: a CPU weight from 1 to 10000, where 100 is
 # everyone's; a memory limit such as "64M", or "none"; and "service" or
-# "app", which the out-of-memory policy stops first.
+# "app", which the out-of-memory policy stops first. Its disks: a weight
+# from 1 to 10000, where 100 is everyone's, which shares a disk between
+# services whose requests wait for it; the bytes it may read and write
+# each second, such as "50M", and the requests it may make, or "none",
+# across all disks. The most threads it and what it starts may have
+# (1 to 1048576), which a fork bomb in it cannot pass, and the files each
+# of its processes may have open (1 to 1048576), which a program has 1024
+# of unless this says more.
 [limits]
 cpu_weight = 100
 memory = "none"
 oom = "service"
+io_weight = 100
+io_read = "none"
+io_write = "none"
+io_read_ops = "none"
+io_write_ops = "none"
+threads = 4096
+# open_files = 1024
 
 # What it may do beyond running: connect out to the network, listen on
 # ports and ranges of ports, such as 80 or "8000-8009", set the network
@@ -945,6 +1024,8 @@ admin.hardware = false
 admin.time = false
 # Whether it may give the firewall its rules, as firewall(8) does.
 admin.firewall = false
+# Whether it may change the kernel's settings, as tune(8)'s service does.
+admin.tune = false
 # Giving processes and files another user's name: only for authd, which
 # signs people in.
 names = false
@@ -1893,23 +1974,56 @@ pub(crate) fn weight<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
 
 /// `memory`: a size such as `"64M"`, a number of bytes, or `"none"`.
 pub(crate) fn memory<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
-    struct Memory;
-    impl Visitor<'_> for Memory {
+    bytes_or_none(d, "memory")
+}
+
+/// `io_read`: bytes each second, written as `memory` is.
+fn io_read<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    bytes_or_none(d, "io_read")
+}
+
+/// `io_write`: bytes each second, written as `memory` is.
+fn io_write<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    bytes_or_none(d, "io_write")
+}
+
+/// `io_read_ops`: requests each second, or `"none"`.
+fn io_read_ops<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    per_second_or_none(d, "io_read_ops")
+}
+
+/// `io_write_ops`: requests each second, or `"none"`.
+fn io_write_ops<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    per_second_or_none(d, "io_write_ops")
+}
+
+/// The size `key` takes: a size such as `"64M"`, a number of bytes, or
+/// `"none"`.
+fn bytes_or_none<'de, D: Deserializer<'de>>(
+    d: D,
+    key: &'static str,
+) -> Result<Option<u64>, D::Error> {
+    struct Bytes(&'static str);
+    impl Visitor<'_> for Bytes {
         type Value = Option<u64>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a size such as \"64M\", or \"none\", for memory")
+            write!(f, "a size such as \"64M\", or \"none\", for {}", self.0)
         }
 
         fn visit_u64<E: de::Error>(self, bytes: u64) -> Result<Option<u64>, E> {
             match bytes {
-                0 => Err(E::custom("memory is more than 0 bytes; \"none\" sets no limit")),
+                0 => Err(E::custom(format!(
+                    "{} is more than 0 bytes; \"none\" sets no limit",
+                    self.0
+                ))),
                 bytes => Ok(Some(bytes)),
             }
         }
 
         fn visit_i64<E: de::Error>(self, bytes: i64) -> Result<Option<u64>, E> {
-            let bytes = u64::try_from(bytes).map_err(|_| E::custom("memory is not below 0"))?;
+            let bytes = u64::try_from(bytes)
+                .map_err(|_| E::custom(format!("{} is not below 0", self.0)))?;
             self.visit_u64(bytes)
         }
 
@@ -1919,12 +2033,85 @@ pub(crate) fn memory<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::
                 Some(bytes) => Ok(Some(bytes)),
                 None if value == "none" => Ok(None),
                 None => Err(E::custom(format!(
-                    "memory is a size such as \"64M\", \"512K\" or \"2G\", or \"none\", not `{value}`"
+                    "{} is a size such as \"64M\", \"512K\" or \"2G\", or \"none\", not `{value}`",
+                    self.0
                 ))),
             }
         }
     }
-    d.deserialize_any(Memory)
+    d.deserialize_any(Bytes(key))
+}
+
+/// The number of requests each second `key` takes: a whole number of 1 or
+/// more, or `"none"`.
+fn per_second_or_none<'de, D: Deserializer<'de>>(
+    d: D,
+    key: &'static str,
+) -> Result<Option<u64>, D::Error> {
+    struct PerSecond(&'static str);
+    impl Visitor<'_> for PerSecond {
+        type Value = Option<u64>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "a whole number, or \"none\", for {}", self.0)
+        }
+
+        fn visit_u64<E: de::Error>(self, n: u64) -> Result<Option<u64>, E> {
+            match n {
+                0 => Err(E::custom(format!(
+                    "{} is 1 or more a second; \"none\" sets no limit",
+                    self.0
+                ))),
+                n => Ok(Some(n)),
+            }
+        }
+
+        fn visit_i64<E: de::Error>(self, n: i64) -> Result<Option<u64>, E> {
+            let n =
+                u64::try_from(n).map_err(|_| E::custom(format!("{} is not below 0", self.0)))?;
+            self.visit_u64(n)
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Option<u64>, E> {
+            match value {
+                "none" => Ok(None),
+                _ => Err(E::custom(format!(
+                    "{} is a whole number a second, or \"none\", not `{value}`",
+                    self.0
+                ))),
+            }
+        }
+    }
+    d.deserialize_any(PerSecond(key))
+}
+
+fn io_weight_default() -> u32 {
+    IO_WEIGHT_DEFAULT
+}
+
+fn io_weight<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    match whole(d, "io_weight")? {
+        n @ 1.. if n <= u64::from(IO_WEIGHT_MAX) => Ok(n as u32),
+        n => Err(de::Error::custom(format!("io_weight is from 1 to {IO_WEIGHT_MAX}, not {n}"))),
+    }
+}
+
+fn threads_default() -> u32 {
+    THREADS_DEFAULT
+}
+
+fn threads<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    match whole(d, "threads")? {
+        n @ 1.. if n <= u64::from(THREADS_MAX) => Ok(n as u32),
+        n => Err(de::Error::custom(format!("threads is from 1 to {THREADS_MAX}, not {n}"))),
+    }
+}
+
+pub(crate) fn open_files<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    match whole(d, "open_files")? {
+        n @ 1.. if n <= u64::from(OPEN_FILES_MAX) => Ok(Some(n as u32)),
+        n => Err(de::Error::custom(format!("open_files is from 1 to {OPEN_FILES_MAX}, not {n}"))),
+    }
 }
 
 /// `files.root-subvolumes`: plain names, none twice and none of the

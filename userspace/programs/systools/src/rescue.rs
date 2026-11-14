@@ -16,9 +16,11 @@
 //! files to another disk; checking the hardware and the network, which
 //! run `hardware check` and `netcheck` (ADRs 0488 and 0489); turning
 //! networking on; a shell; naming the likely cause of what went wrong
-//! (troubleshoot(8)); and starting the system normally. Nothing is
-//! formatted, and `@users`, `@shared` and `@applications` are never
-//! written.
+//! (troubleshoot(8)); and starting the system normally. It also says
+//! whether the change that broke the last start can be found, and how:
+//! `changes bisect` runs in the installed system, not here (ADR 0475).
+//! Nothing is formatted, and `@users`, `@shared` and `@applications` are
+//! never written.
 //!
 //! Each repair says what it did, or why it could not, in one line;
 //! `/system/state/log` keeps Rescue's log until it restarts.
@@ -34,6 +36,7 @@ use crate::args::Args;
 use crate::changes;
 use crate::ip;
 use crate::prompt::{self, Answer};
+use crate::sysupdate::bisect;
 use crate::sysupdate::place::{self, BUILDING, Root};
 use crate::sysupdate::stage::{self, Files, TRUSTED_ROOT};
 use crate::sysupdate::starts::{self, Outcome};
@@ -118,6 +121,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         let mounted = rescued.root.is_ok();
         let choices = [
             can(mounted, "Why the last start failed, and what changed"),
+            "Find the likely cause".to_string(),
+            can(mounted, "Find the change that broke the start"),
             can(mounted, "Reinstall Dukovo, keeping settings, apps and files"),
             can(update.is_some(), "Put back the settings from before the last update"),
             can(mounted, "Check the root's disk"),
@@ -129,7 +134,6 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             "Start Dukovo normally".to_string(),
             "Restart".to_string(),
             "Power off".to_string(),
-            "Find the likely cause".to_string(),
         ];
         println!("What would you like to do?");
         for (number, text) in choices.iter().enumerate() {
@@ -140,18 +144,19 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         };
         let done = match (choice.trim(), &rescued.root) {
             ("0", Ok(root)) => Ok(why_it_failed(root).join("\n")),
-            ("1", Ok(root)) => reinstall(root),
-            ("2", Ok(root)) if update.is_some() => put_back_settings(root),
-            ("3", Ok(root)) => check_disk(root),
-            ("4", Ok(root)) => copy_off(root),
-            ("5", _) => show("hardware", &["check"]),
-            ("6", _) => networking_on(),
-            ("7", _) => check_network(),
-            ("8", _) => shell(),
-            ("9", root) => start_normally(root.as_ref().ok()),
-            ("10", _) => end("reboot"),
-            ("11", _) => end("poweroff"),
-            ("12", _) => Ok(likely_cause(&rescued)),
+            ("1", _) => Ok(likely_cause(&rescued)),
+            ("2", Ok(root)) => find_the_change(root),
+            ("3", Ok(root)) => reinstall(root),
+            ("4", Ok(root)) if update.is_some() => put_back_settings(root),
+            ("5", Ok(root)) => check_disk(root),
+            ("6", Ok(root)) => copy_off(root),
+            ("7", _) => show("hardware", &["check"]),
+            ("8", _) => networking_on(),
+            ("9", _) => check_network(),
+            ("10", _) => shell(),
+            ("11", root) => start_normally(root.as_ref().ok()),
+            ("12", _) => end("reboot"),
+            ("13", _) => end("poweroff"),
             (other, _) => Err(format!("{other} is not one of the choices here")),
         };
         match done {
@@ -215,6 +220,25 @@ fn likely_cause(rescued: &Rescued) -> String {
         Err(why) => (Vec::new(), Some(why.as_str()), PathBuf::from("/system/state/troubleshoot")),
     };
     crate::troubleshoot::for_rescue(&records, unusable, &rescued.uuid, &kept).join("\n")
+}
+
+/// Whether the change that broke the last start can be looked for, by the
+/// records the health check keeps (ADR 0475), and how. Rescue cannot run
+/// `changes bisect` itself: its tries are starts of the installed system,
+/// whose health check judges each against that system's own records of
+/// starts and apps and keeps the search in its state, none of which
+/// Rescue, running from memory, holds where the search reads it.
+fn find_the_change(root: &Root) -> Result<String, String> {
+    let records = starts::all_in(&root.path("@state/starts"));
+    let (failed, good) = bisect::failed_and_good(&records).map_err(|why| why.to_string())?;
+    Ok(format!(
+        "Start {} failed its health check, and start {} before it was good. Rescue cannot try \
+         the changes between them apart: each try is a start of the installed system, which \
+         judges it itself. Start Dukovo normally, and once it is up, even with a service \
+         failing, run `elevate changes bisect`: it restarts the machine by itself, a few times, \
+         and names the change that broke the start. Nothing changes for good.",
+        failed.number, good.number
+    ))
 }
 
 /// Where starts that never began their health check stopped, by whether

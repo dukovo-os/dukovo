@@ -3,7 +3,9 @@
 
 //! Resource domains (Phase 9, ADR 0098): groups of processes that share a
 //! CPU weight and a memory limit, as Linux's cgroups (v2) do, and their
-//! class for the out-of-memory policy (radix-processes(7)).
+//! class for the out-of-memory policy (radix-processes(7)); since ADR 0476,
+//! a thread limit, and a disk I/O weight and rates, with what they read
+//! from disks and wrote to them.
 //!
 //! Domains form a tree under the kernel's root domain, `system`. Each has
 //! a CPU weight, 1 to WEIGHT_MAX: the scheduler shares the CPU between a
@@ -12,7 +14,19 @@
 //! Each may have a memory limit, in pages, that what is charged to it and
 //! to the domains below it together may not pass: a charge that would
 //! fails, and the allocation behind it fails with no_memory for the
-//! caller; nothing is stopped for it. And each has an out-of-memory class:
+//! caller; nothing is stopped for it. Each may have a thread limit that
+//! its threads and those of the domains below it together may not pass:
+//! a thread that would is not made, and `fork` and `pthread_create` fail
+//! with too_many_threads (EAGAIN). Each has a disk I/O weight, 1 to
+//! IO_WEIGHT_MAX: while any domain has a weight other than the default
+//! and requests of several domains wait for a disk, the disk serves them
+//! in proportion to their weights, each scaled by the weights of the
+//! domains above it over the default; with room free, every request goes
+//! at once. And each may have rates of bytes and of requests read and
+//! written each second, across all disks together, which its requests
+//! and those of the domains below it wait to keep to; the bytes a write
+//! leaves dirty in the page cache count against its write rate as they
+//! are written. And each has an out-of-memory class:
 //! when the machine as a whole runs out of memory, the kernel stops whole
 //! domains, apps first and services next, never `system` ones, each time
 //! the one with threads of its own using the most memory, counting the
@@ -38,6 +52,12 @@ const NO_LIMIT: u64 = 0xffffffffffffffff;
 const NAME_MAX: u64 = 23;
 /// The most domains below the root, counted down from it.
 const DEPTH_MAX: u32 = 4;
+/// The heaviest disk I/O weight.
+const IO_WEIGHT_MAX: u32 = 10000;
+/// The disk I/O weight a domain has unless it is given another.
+const IO_WEIGHT_DEFAULT: u32 = 100;
+/// A thread limit that is no limit.
+const NO_THREAD_LIMIT: u32 = 0xffffffff;
 
 /// What the out-of-memory policy may do to a domain, least protected
 /// first.
@@ -52,9 +72,9 @@ enum OomClass: u32 {
     system = 2;
 }
 
-/// A resource domain. `info` needs the read right; the other methods need
-/// the control right.
-interface resource_domain = 0x000d version 2 {
+/// A resource domain. `info`, `usage` and `io` need the read right; the
+/// other methods need the control right.
+interface resource_domain = 0x000d version 3 {
     kind = resource_domain;
     /// Makes a domain named `name` below this one, with CPU weight
     /// `weight`, memory limit `limit_pages` (NO_LIMIT for none beyond this
@@ -108,4 +128,35 @@ interface resource_domain = 0x000d version 2 {
     /// right.
     method processes = 7 (to: slot) -> ()
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, occupied, no_memory];
+    /// Changes the disk I/O weight, 1 to IO_WEIGHT_MAX, and the rates its
+    /// requests keep to across all disks together, each second: bytes
+    /// read and written, and read and write requests, NO_LIMIT for none. The bytes a write
+    /// leaves dirty in the page cache count against the write rate as the
+    /// write makes them, and the writer waits there. They apply to the
+    /// requests made from now on. Fails with invalid_argument for a weight
+    /// out of range or a rate of 0.
+    method set_io = 8 (weight: u32, read_bps: u64, write_bps: u64, read_iops: u64,
+                       write_iops: u64) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument];
+    /// Changes the thread limit: the most threads it and the domains
+    /// below it may have together, NO_THREAD_LIMIT for none beyond those
+    /// above it. A limit below the threads it has refuses new ones until
+    /// enough have exited; none is stopped.
+    method set_threads = 9 (limit: u32) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights];
+    /// What it and the domains below it have read from disks and written
+    /// to them: the bytes read; the bytes written, those writes left dirty
+    /// in the page cache and those written to a disk directly; the read
+    /// requests and the direct write requests; the nanoseconds requests
+    /// waited for a disk's room, and those requests and writers were held
+    /// to its rates and those above it. And its threads with those of the
+    /// domains below it, which its thread limit counts, and that limit.
+    method usage = 10 ()
+        -> (read_bytes: u64, written_bytes: u64, reads: u64, writes: u64, wait_ns: u64,
+            throttled_ns: u64, threads: u32, thread_limit: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights];
+    /// Its disk I/O weight and rates, as set_io last set them.
+    method io = 11 ()
+        -> (weight: u32, read_bps: u64, write_bps: u64, read_iops: u64, write_iops: u64)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights];
 }

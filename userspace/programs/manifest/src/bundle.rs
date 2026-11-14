@@ -40,6 +40,7 @@ use serde::de::{self, DeserializeOwned, Deserializer, IgnoredAny, MapAccess, Vis
 
 use self::locate::{Step, locate};
 use self::permissions::{PERSONAL_FOLDERS, Takes};
+pub use crate::service::OPEN_FILES_MAX;
 use crate::service::{self, Oom, Ports, Restart, check_account};
 use crate::{Error, line_of};
 
@@ -105,12 +106,6 @@ pub const RESERVED: &[&str] = &["entries", "actions", "display", "runtime", "plu
 
 /// The architectures a bundle may carry programs for.
 pub const ARCHITECTURES: &[&str] = &["x86_64", "aarch64", "riscv64", "wasm"];
-
-/// The highest `open_files`: Linux's `fs.nr_open`. A process holds no
-/// more descriptors than its capability space has slots for, whatever
-/// its limit (radix-posix(7)), so a program written for Linux may ask
-/// for as many as it does there.
-pub const OPEN_FILES_MAX: u32 = 1 << 20;
 
 /// A bundle's manifest, read and checked.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1813,21 +1808,14 @@ pub struct Limits {
     pub oom: Oom,
     /// How many files each of its processes may have open at once
     /// (RLIMIT_NOFILE), if not a program's 1024.
-    #[serde(default, deserialize_with = "open_files")]
+    #[serde(default, deserialize_with = "service::open_files")]
     pub open_files: Option<u32>,
 }
 
 impl Default for Limits {
     fn default() -> Limits {
-        let service::Limits { cpu_weight, memory, oom } = service::Limits::default();
+        let service::Limits { cpu_weight, memory, oom, .. } = service::Limits::default();
         Limits { cpu_weight, memory, oom, open_files: None }
-    }
-}
-
-fn open_files<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
-    match service::whole(d, "open_files")? {
-        n @ 1.. if n <= u64::from(OPEN_FILES_MAX) => Ok(Some(n as u32)),
-        n => Err(de::Error::custom(format!("open_files is from 1 to {OPEN_FILES_MAX}, not {n}"))),
     }
 }
 

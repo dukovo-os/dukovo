@@ -140,6 +140,15 @@ _/processes/_*n*_/status_
 		sockets and terminals alike: Linux's *rchar* and *wchar*, not
 		only what went to a disk.
 
+	*disk_read_bytes*, *disk_written_bytes*
+		The bytes its threads have read from disks, as the devices
+		finished them, and written: those their writes left dirty in the
+		page cache, counted as they did, and those written to a disk
+		directly, as Linux's _/proc/PID/io_ counts *read_bytes* and
+		*write_bytes* (ADR 0476). Writing a dirty page back to the disk
+		is the kernel's, and pages changed through a shared mapping of
+		a file are not counted.
+
 	*voluntary_switches*, *involuntary_switches*
 		Times its threads gave up the CPU to wait, and times another
 		thread was given it.
@@ -334,6 +343,8 @@ minor_faults: 811
 major_faults: 37
 read_bytes: 1402880
 written_bytes: 2210
+disk_read_bytes: 1048576
+disk_written_bytes: 0
 voluntary_switches: 64
 involuntary_switches: 3
 traced: no

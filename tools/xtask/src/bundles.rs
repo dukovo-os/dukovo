@@ -541,6 +541,7 @@ mod tests {
         assert_eq!(service.name.0, "nginx");
         assert_eq!(service.program.0, "nginx-service");
         assert_eq!(service.limits.memory, Some(512 << 20));
+        assert_eq!(service.limits.open_files, Some(65536));
         assert!(manifest.permissions.get("network.listen").is_some());
         assert!(manifest.permissions.get("files.shared").is_some());
         assert!(manifest.data.settings && manifest.data.data && !manifest.data.cache);

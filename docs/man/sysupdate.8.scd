@@ -227,6 +227,22 @@ or with no slot to start, the menu starts Rescue by itself
 (*dukovo-rescue*(8), ADR 0460). Each start seen through sets that count
 back to 0.
 
+A start that fails its check and goes on leaves a notice on the sign-in
+screens (ADR 0501), which, when the changes since the last good start
+can be tried apart, names *elevate changes bisect* and the most restarts
+it takes. A search of that command (*changes*(1), ADR 0475) makes
+starts of its own, its tries, each a start of one slot that the boot
+menu takes once, with some changes left out. The health check judges a
+try as any other start, records it with its try's number, and never
+counts it as the last good start. Then it takes the search's next step:
+60 seconds after its verdict it writes the next try and restarts the
+machine, saying so on the console and in a notification, which gives
+whoever is there time to stop it with *changes bisect --stop*; or it
+ends the search, keeping what it found for the next sign-in (ADR 0504).
+It never changes the slot state: the default, the previous version and
+an update's tries are as they were. The boot menu takes no try while an
+update is being tried, and *changes bisect* does not begin one then.
+
 # OPTIONS
 
 *--version* _version_
@@ -273,7 +289,10 @@ entry starts what the slot state says, and its title says which: the
 version, the version with *(update, first try)*, *(update, second try)*
 or *(update, last try)*, or the version before with *(the update to
 VERSION failed)*; for a firmware set, *(firmware update, first try)* and
-*(the firmware update to VERSION failed)*. While an update is being tried, an entry starts the
+*(the firmware update to VERSION failed)*; or the slot of a try of
+*changes bisect* with *(changes bisect, try* _N_*)*, which the menu
+starts once in place of the usual start and then forgets. While an
+update is being tried, an entry starts the
 version it updates, *(without the update)*, and leaves the tries as they
 are. The previous version's entry starts it once, without making it the
 default. After the slots' entries, *Rescue (Dukovo* _version_*)* starts
@@ -383,6 +402,15 @@ _boot/grub/state1_, _boot/grub/state2_ on each EFI system partition
 
 _boot/grub/rescue.env_ on each EFI system partition
 	The count of starts in a row that were not seen through.
+
+_boot/grub/trial_ on each EFI system partition
+	The try of *changes bisect* that waits, its slot and boot options,
+	and whether the menu has taken it. The slot state is never changed
+	by it.
+
+_/system/state/bisect/_
+	The search of *changes bisect*, _state.json_, and for each try
+	_try-_N, the services Spark leaves out of it (*spark*(8)).
 
 # DIAGNOSTICS
 

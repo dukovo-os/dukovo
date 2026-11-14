@@ -81,6 +81,9 @@ Spark gets what every program gets (see *radix-startup*(2)) and more:
   kernel left for driver programs (below);
 - the firewall capability in slot 16, which gives the packet filter its
   rules (*radix-firewall*(2), ADR 0334);
+- the kernel settings capability in slot 17, which lists the kernel's
+  few settings and sets them (*radix-kernel-settings*(2), ADR 0476), and
+  which Spark gives to the one service whose file asks for it (below);
 - an image placed at a random address, as every position-independent
   program is (see *radix-processes*(7)).
 
@@ -226,7 +229,17 @@ Init: /system/commands/spark is process 1
 . It listens at _/system/live/spark/control_.
 . With no program on the command line, as on a normal boot, it starts
   the services that _/system/settings/spark/services_ enables, the lowest
-  *order* first.
+  *order* first. When the kernel's command line has *trial=*_N_, as the
+  boot menu gives a try of *changes bisect* (ADR 0475, *changes*(1)),
+  Spark first reads _/system/state/bisect/try-_*N*, the names of the
+  services to leave out, one to a line, and holds them off as meant: they
+  show stopped, with the reason *left out for try* _N_ *of changes
+  bisect*, a service that requires one is not started either, and
+  neither *service list --failed* nor the health check counts them. It
+  says *spark: try* _N_ *of changes bisect: leaving out* _names_, or
+  *nothing*. A file that is missing or cannot be read leaves nothing
+  out, a name no service has is ignored, and without *trial=* the file is
+  never read.
 . With a program, it reads it from _/system_ and passes it the arguments
   after it. It starts the program in a process made for Spark, with 2
   MiB of memory from its pool, the capabilities every program gets, the
@@ -334,6 +347,20 @@ lines in the system's log as the service's: the kernel marks each line
 with the number of the process that wrote it, and only Spark's lines
 name services.
 
+A service's file may limit its domain (*[limits]* in *service.toml*(5),
+ADR 0476): its CPU weight and memory, its disk I/O weight and rates, and
+the threads it may have. Spark gives the domain these when it makes it and
+again at each start, with *set_weight*, *set_limit*, *set_io* and
+*set_threads* (*radix-resource-domain*(2)), so that an edit to the file
+takes effect at the next start. A file that names no limit gets the
+defaults: CPU and disk weight 100, no memory or rate limit, 4096 threads.
+*open_files* is not the domain's but each process's: Spark sets the soft
+and hard limit on the file descriptors of the program before it runs
+(*start_limit*, *radix-process*(2)), and its children keep it. A service
+that asks for memory past its limit is refused it, and one that tries to
+make more threads than it may gets EAGAIN from *fork*; Spark logs a
+service that its memory limit ended (see *MESSAGES*).
+
 When a service ends, Spark logs how, and starts it again as its
 *restart* says: after 0.1 seconds, and twice as long after each end in a
 row that came less than 10 seconds after its start, up to 30 seconds. A
@@ -438,7 +465,8 @@ presses.
 	asked, a clause after its name; *off_as_meant*, true when it is
 	stopped as it is meant to be, which is no failure (the kernel left
 	it none of the cards it drives, or Rescue or essentials leave it
-	off), and *why* then says why; *started_by*
+	off, or a try of *changes bisect* leaves it out), and *why* then
+	says why; *started_by*
 	(*boot*, *a request*, or the service that requires or wants it);
 	*health* (*state*: *unknown*, *passing* or *failing*, *failures*,
 	*restart_after*, the failed checks in a row after which Spark
@@ -459,7 +487,18 @@ presses.
 	*listen* (ports and ranges as *"80"* or
 	*"8000-8010"*), *outbound*, *admin* (the rights it has, as
 	*network*), *names*, *cards* (the PCI addresses it drives),
-	*memory_bytes* and *cpu_weight*. A field may be *null* or left out where it does not
+	*memory_bytes*, *cpu_weight*, *io_weight*, *io_read*, *io_write*,
+	*io_read_ops* and *io_write_ops* (the bytes and requests it may read
+	or write a second, or *null*), *threads* and *open_files* (or
+	*null*). In the answer for one name, and once Spark has made its
+	domain, a service also has *usage*, what the domain has used and been
+	held to since Spark made it: *memory_bytes* and *memory_peak_bytes*,
+	*memory_refused*, the charges its memory limit refused,
+	*stopped_at_limit*, true when its last end was a stop at the memory
+	limit, *threads*, *read_bytes* and *written_bytes*, and *waited_ms*
+	and *held_ms*, the time its requests waited for a disk and the time
+	its rates held them (*radix-resource-domain*(2)'s *usage* and *io*).
+	A field may be *null* or left out where it does not
 	apply, and later versions of Spark may add fields, which clients
 	pass over. A name Spark does not know answers *error: no service
 	is called* _name_.
@@ -720,6 +759,17 @@ that does not ask cannot
 change them; the hardware monitor's files under _/kernel/class/hwmon_
 still show the fans and sensors to everyone (*radix-sysfs*(5)).
 
+# THE KERNEL'S SETTINGS
+
+The kernel gives Spark the kernel settings capability, with the rights to
+read the settings and to change them (*radix-kernel-settings*(2), ADR
+0476). A service whose file says *admin.tune = true* gets a copy in
+_SLOT_SETTINGS_ (*radix-startup*(2)), with the copy and transfer rights.
+Only the *tune* service's file asks, to give the kernel the performance
+profile an administrator chose (*tune*(8)); every setting's value is
+readable by everyone in _/kernel/settings_ (*radix-sysfs*(5)). A service
+that does not ask cannot change them.
+
 # DEVICES
 
 The kernel gives Spark the root device capability, which lists the PCI
@@ -883,6 +933,10 @@ _/system/live/spark/certd/socket_
 _/system/live/certificates/_*name*
 	Service _name_'s copies of the certificates its file names.
 
+_/system/state/bisect/try-_*N*
+	The services try *N* of *changes bisect* leaves out, one name to a
+	line; read only when the kernel's command line says *trial=*_N_.
+
 _/system/tests/hello_
 	A test program for the boot tests. It prints its process number,
 	its arguments and how far it was moved, fills its heap, and exits
@@ -955,8 +1009,13 @@ _name_ *holds no FAT, exFAT, NTFS, Btrfs, ext4, UDF or ISO 9660 filesystem; left
 	failed. Spark tries again as after a quick end.
 
 *spark: not starting* _name_*: it requires* _other_*, which* _reason_
-	A service's requirement is stopped, failed, left off or has no
-	file, so it does not start (*service.toml*(5)).
+	A service's requirement is stopped, failed, left off, left out for
+	a try of *changes bisect* or has no file, so it does not start
+	(*service.toml*(5)).
+
+*spark: try* _N_ *of changes bisect: leaving out* _names_
+	This start is try _N_ of *changes bisect*, and the services in
+	its list, or *nothing*, stay off for it (see *WHAT SPARK v2 DOES*).
 
 *spark: stopping* _name_*: it requires* _other_*, which* _reason_
 	A service's requirement stopped for good, so Spark stops it too.
@@ -990,6 +1049,12 @@ _name_ *(process* _n_*) was ended by signal 9 (stopped by the out-of-memory poli
 	Memory ran out and the kernel stopped the service's domain
 	(*radix-resource-domain*(2)).
 
+_name_ *(process* _n_*) was ended by signal 9 (stopped at its memory limit)*
+	The service's domain refused it memory because of the limit its
+	file names, and then the kernel ended the process; this is not the
+	out-of-memory policy, which acts only when the machine's memory
+	runs out. *service*(8)'s *status* shows the refused charges.
+
 *spark: cannot hear of children ending; services are not watched*
 	The kernel could not make the notification Spark waits on; the
 	services start but are not started again.
@@ -1014,9 +1079,9 @@ _name_ *(process* _n_*) was ended by signal 9 (stopped by the out-of-memory poli
 
 # SEE ALSO
 
-*service*(8), *service.toml*(5), *sysupdate*(8), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
+*service*(8), *service.toml*(5), *sysupdate*(8), *changes*(1), *shutdown*(8), *reboot*(8), *consoled*(8), *dukovo-boot*(7),
 *radix-files*(7), *radix-processes*(7), *radix-posix*(7), *radix-proc*(5),
 *radix-sysfs*(5), *radix-directory*(2), *radix-process*(2),
-*radix-resource-domain*(2), *radix-power*(2), *radix-platform*(2),
+*radix-resource-domain*(2), *radix-kernel-settings*(2), *tune*(8), *radix-power*(2), *radix-platform*(2),
 *radix-names*(2), *radix-device*(2), *radix-startup*(2), *ob*(1), *watchdog*(8),
 *ectool*(8), *e1000d*(8), *system-release*(8)

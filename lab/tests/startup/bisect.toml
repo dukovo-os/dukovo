@@ -1,0 +1,317 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# changes bisect finds the change that broke a start (ADR 0475), on an
+# installed system. Four changes come between a good start and a failed
+# one: an update, proved in slot B and made the default again by
+# `sysupdate rollback` (slot A held the good start); the boot option
+# bisect.test.fail=1, which the test update's slot starts with, and which
+# nothing reads until a check does; and two apps from the catalog, for
+# everyone, Valkey and nginx, Valkey being the first by ID. Valkey is
+# made the one that fails: a setting it does not know ends it at once, and
+# health.toml names it an essential service.
+#
+# The first search names Valkey, confirmed after two tries. The machine
+# restarts by itself, 60 seconds after each try's health check, so this
+# test waits them out. Then Valkey is mended and a required check of the
+# boot option is put into health.toml, so that the same machine now
+# fails at the option: the second search loses its first try to a power
+# cut at the try's first log line, which the next start, the usual one,
+# does not repeat but the health check tries again; the option is named by
+# elimination, and `changes bisect --confirm` confirms it with one try
+# more. After each search the slot state is as it was, and `changes
+# --list` marks every try.
+about = "changes bisect finds the change that broke a start: an update, a boot option and two apps came between a good start and a failed one; it restarts the machine by itself, tries each half, and names the failing app confirmed after two tries, then, with the failure moved to the boot option and a power cut during the first try, the option by elimination, which --confirm confirms; the slot state is as it was after each (ADR 0475)"
+time = "60m"
+fresh = true
+host_needs = ["scp"]
+
+[[step]]
+host = "sh {here}/copy-update.sh bisect {machine} {machine-port:22}"
+expect = "copied: bisect"
+[[step]]
+host = "sh {here}/copy-bundle.sh io.valkey.valkey {machine} {machine-port:22}"
+expect = "copied: io.valkey.valkey"
+[[step]]
+host = "sh {here}/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
+expect = "copied: org.nginx.nginx"
+
+# An update proves itself after 10 seconds here, and Valkey, once it is
+# there, is an essential service.
+[[step]]
+run = '''printf 'essential = ["logd", "authd", "consoled", "netd", "sshd", "valkey"]\nstable = 10\n' > /users/lab/health.toml'''
+[[step]]
+run = "cp /users/lab/health.toml /system/settings/sysupdate/health.toml"
+root = true
+
+# The good start: the update is tried and proved in slot B, and slot A,
+# the default again, starts.
+[[step]]
+run = "sysupdate stage /users/lab/update-bisect"
+root = true
+expect = "-test.bisect in slot B: it starts at the next restart"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate rollback --keep-settings"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+# The record of this start is whole once the check says so.
+[[step]]
+serial = "is seen through"
+[[step]]
+wait = "ready"
+
+# The apps, for everyone and enabled. Valkey's first start copies its
+# settings into its data folder; one it does not know there ends it.
+[[step]]
+run = "sh -c 'bundle install --for-everyone --yes /users/lab/io.valkey.valkey.dkv | tail -1; bundle install --for-everyone --yes /users/lab/org.nginx.nginx.dkv | tail -1'"
+root = true
+expect = ["installed io.valkey.valkey", "installed org.nginx.nginx"]
+[[step]]
+run = "sh -c 'service valkey enable; service nginx enable'"
+root = true
+[[step]]
+run = '''sh -c 'c=/shared/services/io.valkey.valkey/valkey/conf/valkey.conf; i=0; while [ $i -lt 60 ] && [ ! -e $c ]; do sleep 1; i=$((i + 1)); done; echo "lab-bisect-bad yes" >> $c && echo "broken: $((6 * 7))"' '''
+root = true
+expect = "broken: 42"
+
+# The failed start: slot B, the default again, starts with the update's
+# boot option and the apps, and fails at Valkey.
+[[step]]
+run = "sysupdate rollback --keep-settings"
+root = true
+expect = "starts from the next restart on"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "failed its health check: "
+[[step]]
+serial = "(BOOT-102)"
+[[step]]
+wait = "ready"
+# What the failed start kept says how to look into it (ADR 0501), and
+# the search it can offer.
+[[step]]
+run = "cat /system/live/sysupdate/failure"
+root = true
+expect = ["failed its health check: ", "elevate changes bisect", "up to 2 restarts."]
+
+# The plan, looked at and not taken: the question is answered no.
+[[step]]
+run = "sh -c 'echo n | changes bisect'"
+root = true
+exit = 1
+expect = [
+    "failed its health check: ",
+    "From the last good start, ",
+    "these changes can each be left out for one start:",
+    "the system: Dukovo ",
+    "the boot options: ",
+    "bisect.test.fail=1",
+    "app io.valkey.valkey: new, ",
+    "app org.nginx.nginx: new, ",
+    "Finding which one takes up to 2 restarts.",
+    "changes bisect: nothing was written",
+]
+
+# Try 1 leaves out the slot and the options, so Valkey still fails it, as
+# it did the start before. The machine restarts by itself after 60 seconds
+# for try 2, which leaves out Valkey alone and starts well.
+[[step]]
+run = "sh -c '(sleep 2; changes bisect --yes) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "spark: try 1 of changes bisect: leaving out nothing"
+[[step]]
+serial = "failed its health check: "
+[[step]]
+serial = "changes bisect: restarting in 60 seconds for try 2"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "spark: try 2 of changes bisect: leaving out valkey"
+[[step]]
+serial = "is seen through"
+[[step]]
+serial = "changes bisect: The start fails with io.valkey.valkey "
+[[step]]
+wait = "ready"
+[[step]]
+run = "changes bisect --status"
+root = true
+expect = [
+    ", left out 1, 2: it failed as start ",
+    ", left out 3: it started well",
+    "The start fails with io.valkey.valkey ",
+    ", and starts without it.",
+    "Nothing was changed: this start was the last try",
+]
+# The result waits for whoever signs in next (ADR 0504).
+[[step]]
+run = "cat /system/live/sign-in/bisect"
+root = true
+expect = "changes bisect: The start fails with io.valkey.valkey "
+# No search changes the slot state: the update is the default, and slot B
+# starts next.
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot B", "-test.bisect, the default", ", the previous version", "Next start: slot B"]
+[[step]]
+run = "changes --list"
+root = true
+expect = [", slot A, try 1 of changes bisect: failed: ", ", slot B, try 2 of changes bisect: good"]
+
+# The failure moves to the boot option: Valkey is mended, and a required
+# check fails while the update's boot option is on the command line.
+[[step]]
+run = '''sh -c 'sed -i "/lab-bisect-bad/d" /shared/services/io.valkey.valkey/valkey/conf/valkey.conf && echo "mended: $((6 * 8))"' '''
+root = true
+expect = "mended: 48"
+[[step]]
+run = '''printf '#!/bin/sh\nif /system/commands/grep -q bisect.test.fail=1 /kernel/cmdline; then\n  echo "bisect.test.fail=1 is set"\n  exit 1\nfi\n' > /users/lab/bisect-check'''
+[[step]]
+run = '''printf 'essential = ["logd", "authd", "consoled", "netd", "sshd", "valkey"]\nstable = 10\n\n[[check]]\nname = "bisect option"\ncommand = ["/system/commands/sh", "/system/settings/bisect-check"]\nrequired = true\n' > /users/lab/health.toml'''
+[[step]]
+run = "sh -c 'cp /users/lab/bisect-check /system/settings/bisect-check && cp /users/lab/health.toml /system/settings/sysupdate/health.toml'"
+root = true
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "failed its health check: the required check bisect option failed: "
+[[step]]
+serial = "(BOOT-103)"
+[[step]]
+wait = "ready"
+[[step]]
+run = "cat /system/live/sysupdate/failure"
+root = true
+expect = ["failed its health check: the required check bisect option failed", "up to 2 restarts."]
+
+# The second search. The cord comes out at the first log line of try 1,
+# after the boot menu took the try: the next start is the usual one, slot
+# B, and is not the try again; the health check tries it again, as try 2,
+# which leaves out the slot and the options and starts well. Try 3 leaves
+# out the slot alone: the option is still on the command line, and fails
+# the start as it did before.
+[[step]]
+run = "sh -c '(sleep 2; changes bisect --yes) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "spark: try 1 of changes bisect: leaving out nothing"
+[[step]]
+power = "cut"
+[[step]]
+power = "on"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "failed its health check: the required check bisect option failed: "
+[[step]]
+serial = "changes bisect: restarting in 60 seconds for try 2"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "spark: try 2 of changes bisect: leaving out nothing"
+[[step]]
+serial = "is seen through"
+[[step]]
+serial = "changes bisect: restarting in 60 seconds for try 3"
+[[step]]
+serial = "spark: started slot a, @system.a"
+[[step]]
+serial = "spark: try 3 of changes bisect: leaving out nothing"
+[[step]]
+serial = "failed its health check: the required check bisect option failed: "
+[[step]]
+serial = "changes bisect: The start fails with the boot options "
+[[step]]
+wait = "ready"
+[[step]]
+run = "changes bisect --status"
+root = true
+expect = [
+    "Try 1, left out 1, 2: it never reached its health check",
+    ", left out 1, 2: it started well",
+    ", left out 1: it failed as start ",
+    "named by elimination: the tries cleared every other change",
+]
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["-test.bisect, the default", ", the previous version", "Next start: slot B"]
+[[step]]
+run = "changes --list"
+root = true
+expect = [", slot A, try 2 of changes bisect: good", ", slot A, try 3 of changes bisect: failed: "]
+
+# --confirm: one more try, leaving out only the option, which starts well
+# and confirms it.
+[[step]]
+run = "sh -c '(sleep 2; changes bisect --confirm --yes) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "spark: try 4 of changes bisect: leaving out nothing"
+[[step]]
+serial = "is seen through"
+[[step]]
+serial = "changes bisect: The start fails with the boot options "
+[[step]]
+wait = "ready"
+[[step]]
+run = "changes bisect --status"
+root = true
+expect = [", to confirm, left out 2: it started well", ", and starts without it."]
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot B", "-test.bisect, the default", ", the previous version", "Next start: slot B"]
+[[step]]
+run = "changes --list"
+root = true
+expect = [", slot B, try 4 of changes bisect: good"]
+
+# Put back what the test changed.
+[[step]]
+run = "sh -c 'rm -f /system/settings/sysupdate/health.toml /system/settings/bisect-check /users/lab/health.toml /users/lab/bisect-check; bundle remove --for-everyone --purge io.valkey.valkey > /dev/null 2>&1; bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; echo cleaned'"
+root = true
+expect = "cleaned"

@@ -60,6 +60,9 @@
 //! (ADR 0488).
 //! `dumps` saves the kernel's crash dump at the boot after a panic, and
 //! lists, shows and deletes the saved ones (ADR 0483).
+//! `tune` chooses a performance profile, a few of the kernel's settings
+//! with a reason each, and its service applies it at each start (ADR
+//! 0476).
 //! `audiocd` lists, plays and rips music CDs (ADR 0447); `burn` writes
 //! CDs, DVDs and Blu-ray discs, of data or of audio, and `mkiso` makes a
 //! disc image of a folder (ADR 0449).
@@ -210,6 +213,7 @@ mod top;
 mod traceroute;
 mod tree;
 mod troubleshoot;
+mod tune;
 mod unlock;
 mod update;
 mod util;
@@ -394,6 +398,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("traceroute6", traceroute::main6),
     ("tree", tree::main),
     ("troubleshoot", troubleshoot::main),
+    ("tune", tune::main),
     ("umount", mount::umount),
     ("unlock", unlock::main),
     ("update", update::update),

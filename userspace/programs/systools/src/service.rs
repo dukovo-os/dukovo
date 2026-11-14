@@ -28,7 +28,7 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use spark_api::show::{self, HealthState, Holds, State};
+use spark_api::show::{self, HealthState, Holds, State, Usage};
 use spark_api::words::{and_list, ready_once, span, tenths};
 
 use crate::args::{Arg, Args};
@@ -419,6 +419,14 @@ fn status_text(service: &show::Service, clock: &Clock, seen: &Seen) -> String {
     for (at, held) in holds_lines(&service.holds, seen).iter().enumerate() {
         field(&mut text, if at == 0 { "Holds" } else { "" }, held);
     }
+    for (at, limit) in limit_lines(&service.holds).iter().enumerate() {
+        field(&mut text, if at == 0 { "Limits" } else { "" }, limit);
+    }
+    if let Some(usage) = &service.usage {
+        for (at, used) in use_lines(usage, &service.holds).iter().enumerate() {
+            field(&mut text, if at == 0 { "Use" } else { "" }, used);
+        }
+    }
     if let Some(processes) = processes_line(seen.processes) {
         field(&mut text, "Processes", &processes);
     }
@@ -531,12 +539,63 @@ fn holds_lines(holds: &Holds, seen: &Seen) -> Vec<String> {
     if !holds.cards.is_empty() {
         lines.push(format!("drives {}", holds.cards.join(", ")));
     }
+    lines
+}
+
+/// The `Limits:` lines: what the service's file limits its domain to
+/// (ADR 0476), on a line for the CPU, memory, threads and files, and one
+/// for the disks.
+fn limit_lines(holds: &Holds) -> Vec<String> {
     let memory = holds.memory_bytes.map_or_else(
         || String::from("no memory limit"),
         |bytes| format!("memory up to {}", util::human(bytes, false)),
     );
-    lines.push(format!("{memory}; CPU weight {}", holds.cpu_weight));
-    lines
+    let mut cpu_and_memory = vec![
+        memory,
+        format!("CPU weight {}", holds.cpu_weight),
+        format!("at most {} threads", holds.threads),
+    ];
+    cpu_and_memory.extend(holds.open_files.map(|files| format!("{files} open files")));
+    let mut disks = vec![format!("disk weight {}", holds.io_weight)];
+    disks.extend(rate_words("reads", holds.io_read, holds.io_read_ops));
+    disks.extend(rate_words("writes", holds.io_write, holds.io_write_ops));
+    vec![cpu_and_memory.join("; "), disks.join("; ")]
+}
+
+/// What a service may `verb` to disks each second, in bytes and in
+/// requests, if either is limited.
+fn rate_words(verb: &str, bytes: Option<u64>, requests: Option<u64>) -> Option<String> {
+    let bytes = bytes.map(|bytes| format!("{} a second", util::human(bytes, false)));
+    let requests = requests.map(|requests| format!("{requests} requests a second"));
+    let limits: Vec<String> = bytes.into_iter().chain(requests).collect();
+    (!limits.is_empty()).then(|| format!("{verb} up to {}", limits.join(" and ")))
+}
+
+/// The `Use:` lines: what the service's domain has used and been held
+/// to, on a line for its memory, its threads and its disks (ADR 0476).
+fn use_lines(usage: &Usage, holds: &Holds) -> Vec<String> {
+    let human = |bytes| util::human(bytes, false);
+    let mut memory =
+        format!("memory {}, peak {}", human(usage.memory_bytes), human(usage.memory_peak_bytes));
+    match usage.memory_refused {
+        0 => {}
+        1 => memory.push_str("; 1 charge refused"),
+        n => memory.push_str(&format!("; {n} charges refused")),
+    }
+    if usage.stopped_at_limit {
+        memory.push_str("; stopped at its memory limit");
+    }
+    vec![
+        memory,
+        format!("threads {} of {}", usage.threads, holds.threads),
+        format!(
+            "disk read {}, written {}; waited {} for a disk, held {} by its rates",
+            human(usage.read_bytes),
+            human(usage.written_bytes),
+            tenths(usage.waited_ms),
+            tenths(usage.held_ms)
+        ),
+    ]
 }
 
 /// A port or range of ports as `show` writes it, "80" or "8000-8010",
@@ -741,6 +800,9 @@ mod tests {
                 outbound: true,
                 memory_bytes: Some(256 << 20),
                 cpu_weight: 100,
+                io_weight: 100,
+                threads: 4096,
+                open_files: Some(65536),
                 ..Holds::default()
             },
             ..show::Service::default()
@@ -781,7 +843,8 @@ mod tests {
             "           changes /system/state/org.nginx.nginx",
             "           secrets tls-key",
             "           listens on 80 (open), 443; connects out",
-            "           memory up to 256M; CPU weight 100",
+            "   Limits: memory up to 256M; CPU weight 100; at most 4096 threads; 65536 open files",
+            "           disk weight 100",
             "Processes: 2 (57 nginx, 58 nginx), 6.0M of memory, 1.2 s of CPU",
         ];
         for line in expected {
@@ -816,6 +879,56 @@ mod tests {
         assert!(!text.contains("every process") && !text.contains("top of the root"), "{text}");
     }
 
+    /// Each limit its file names, and what its domain used (ADR 0476).
+    #[test]
+    fn status_says_each_limit_and_what_the_domain_used() {
+        let mut web = nginx();
+        web.holds = Holds {
+            memory_bytes: Some(64 << 20),
+            cpu_weight: 100,
+            io_weight: 400,
+            io_read: Some(50 << 20),
+            io_write_ops: Some(200),
+            threads: 64,
+            open_files: Some(10_000),
+            ..Holds::default()
+        };
+        web.usage = Some(Usage {
+            memory_bytes: 12 << 20,
+            memory_peak_bytes: 64 << 20,
+            memory_refused: 3,
+            stopped_at_limit: true,
+            threads: 4,
+            read_bytes: 1 << 20,
+            waited_ms: 1_234,
+            held_ms: 300,
+            ..Usage::default()
+        });
+        let text = status_text(&web, &CLOCK, &seen_with(&[], &|_, _| false));
+        for line in [
+            "   Limits: memory up to 64M; CPU weight 100; at most 64 threads; 10000 open files",
+            "           disk weight 400; reads up to 50M a second; writes up to 200 requests a \
+             second",
+            "      Use: memory 12M, peak 64M; 3 charges refused; stopped at its memory limit",
+            "           threads 4 of 64",
+            "           disk read 1.0M, written 0; waited 1.2 s for a disk, held 0.3 s by its rates",
+        ] {
+            assert!(text.contains(line), "{line:?} in\n{text}");
+        }
+        // One refused charge is one charge, and a service that was not
+        // stopped at its limit says nothing of it.
+        if let Some(usage) = &mut web.usage {
+            usage.memory_refused = 1;
+            usage.stopped_at_limit = false;
+        }
+        let text = status_text(&web, &CLOCK, &seen_with(&[], &|_, _| false));
+        assert!(text.contains("memory 12M, peak 64M; 1 charge refused\n"), "{text}");
+        // Before its domain is made, nothing was used.
+        web.usage = None;
+        let text = status_text(&web, &CLOCK, &seen_with(&[], &|_, _| false));
+        assert!(text.contains("   Limits: ") && !text.contains("Use:"), "{text}");
+    }
+
     #[test]
     fn status_says_who_asked_and_what_a_stopped_one_said_last() {
         let mut web = nginx();
@@ -834,7 +947,7 @@ mod tests {
             "     Last: exited with code 0x1 (\"nginx: [emerg] bind() to 0.0.0.0:80 failed\")",
             "    Holds: the whole tree, with Spark's access",
             "           no network",
-            "           no memory limit; CPU weight 0",
+            "   Limits: no memory limit; CPU weight 0; at most 0 threads",
         ] {
             assert!(text.contains(line), "{line:?} in\n{text}");
         }

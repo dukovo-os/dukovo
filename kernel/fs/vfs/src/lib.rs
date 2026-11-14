@@ -1410,6 +1410,27 @@ pub fn now() -> u64 {
     CLOCK.get().map_or(0, |now| now())
 }
 
+static DIRTIED: radix_sync::Once<fn(u64)> = radix_sync::Once::new();
+
+/// Registers what is told of the pages a write leaves dirty in the page
+/// cache of a file on a disk, which were clean before: for the disk I/O
+/// accounting of the thread that wrote them (ADR 0476), which is the
+/// running thread when it is told, and may wait there to keep to its
+/// domain's write rate. It is told once a write is done, with no lock of
+/// the file held.
+pub fn set_dirtied(tell: fn(u64)) {
+    let _ = DIRTIED.set(tell);
+}
+
+/// Tells of `pages` a write left dirty ([`set_dirtied`]).
+pub(crate) fn dirtied(pages: u64) {
+    if pages > 0
+        && let Some(tell) = DIRTIED.get()
+    {
+        tell(pages);
+    }
+}
+
 static RANDOM: radix_sync::Once<fn(&mut [u8])> = radix_sync::Once::new();
 
 /// Registers the kernel's random bytes, for what a filesystem makes

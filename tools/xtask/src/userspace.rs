@@ -288,6 +288,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/traceroute6", "systools"),
     ("system/commands/tree", "systools"),
     ("system/commands/troubleshoot", "systools"),
+    ("system/commands/tune", "systools"),
     ("system/commands/umount", "systools"),
     ("system/commands/unlock", "systools"),
     ("system/commands/update", "systools"),
@@ -328,6 +329,10 @@ pub const FEATURES_DIR: &str = "system/resources/features";
 /// boot archive they go, beside the rest of the signed system.
 pub const TROUBLESHOOT: &str = "userspace/troubleshoot";
 pub const TROUBLESHOOT_DIR: &str = "system/resources/troubleshoot";
+/// The performance profiles tune(8) applies (ADR 0476), and where in the
+/// boot archive they go, beside the rest of the signed system.
+pub const TUNE: &str = "userspace/tune";
+pub const TUNE_DIR: &str = "system/resources/tune";
 
 /// The console's pages (admind(8), ADR 0514), and where in the boot
 /// archive they go: the folder admind serves. Its `manifest.txt` lists
@@ -610,6 +615,7 @@ pub fn build(ctx: &Ctx, profile: Profile) -> Result<Programs> {
     install_tree(ctx, DEFAULTS, DEFAULTS_DIR, &[], &mut files)?;
     install_tree(ctx, FEATURES, FEATURES_DIR, &[], &mut files)?;
     install_tree(ctx, TROUBLESHOOT, TROUBLESHOOT_DIR, &[], &mut files)?;
+    install_tree(ctx, TUNE, TUNE_DIR, &[], &mut files)?;
     install_admin(ctx, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
     // The root this system trusts its releases by (ADR 0308).

@@ -147,6 +147,8 @@ fn rescue_lines(
             outcome: Outcome::Failed,
             error: None,
             why: None,
+            failing: None,
+            trial: None,
             items: Vec::new(),
             times: None,
         }),
@@ -544,6 +546,8 @@ mod tests {
             outcome,
             error: None,
             why: None,
+            failing: None,
+            trial: None,
             items: Vec::new(),
             times: None,
         }

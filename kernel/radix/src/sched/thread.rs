@@ -23,7 +23,7 @@ use radix_sched::{CpuSet, Split, nice_valid, rt_prio_valid, weight};
 use radix_sync::{Once, RawSpinLock, SpinLock};
 
 use crate::Arch;
-use crate::domains::DomainRef;
+use crate::domains::{DomainRef, JoinError};
 use crate::user::UserRef;
 
 /// A thread, shared.
@@ -511,13 +511,17 @@ impl Thread {
     /// Gives its place among its domain's threads to a thread made to take
     /// its place ([`super::Options::replacing`]): refused while the domain
     /// is being stopped, as a join is; one that has left already lets the
-    /// new thread join instead. A stop that marks the domain meanwhile
-    /// stops the new thread all the same (`make_thread`).
-    pub(super) fn hand_over_domain(&self) -> bool {
+    /// new thread join instead, within the domain's thread limit. A stop
+    /// that marks the domain meanwhile stops the new thread all the same
+    /// (`make_thread`).
+    pub(super) fn hand_over_domain(&self) -> Result<(), JoinError> {
         if self.domain.is_stopping() {
-            return false;
+            return Err(JoinError::Stopping);
         }
-        !self.left.swap(true, Ordering::AcqRel) || self.domain.thread_joined()
+        if self.left.swap(true, Ordering::AcqRel) {
+            return self.domain.thread_joined();
+        }
+        Ok(())
     }
 
     /// Stops counting it among its domain's threads: when it exits, so a

@@ -49,6 +49,7 @@ pub use self::floppy::find as find_floppy_drives;
 use self::removable::Drive;
 use crate::Arch;
 
+pub mod account;
 mod ahci;
 mod floppy;
 mod handed;

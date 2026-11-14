@@ -9,6 +9,8 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use libradix::abi::resource_domain;
+use radix_rt::SYS;
 use spark_api::show::{self, Health, HealthState, Holds, Show};
 
 use super::{
@@ -17,7 +19,8 @@ use super::{
 use crate::services::Spec;
 
 impl Supervisor {
-    /// The answer to `show`, or to `show NAME` with `name`.
+    /// The answer to `show`, or to `show NAME` with `name`, which holds
+    /// what the service's domain has used as well.
     pub(super) fn answer_show(&self, name: Option<&str>) -> String {
         let mut services: Vec<&Service> = match name {
             Some(name) => match self.services.iter().find(|s| s.spec.name == name) {
@@ -38,7 +41,10 @@ impl Supervisor {
         let document = Show {
             show_version: show::VERSION,
             now_ms: time / MS,
-            services: services.into_iter().map(|s| described(s, self.devices)).collect(),
+            services: services
+                .into_iter()
+                .map(|s| described(s, self.devices, name.is_some()))
+                .collect(),
             shutdown,
             trials: self.shown_trials(time),
             undone: self.undone.clone(),
@@ -54,8 +60,9 @@ impl Supervisor {
 }
 
 /// `service` as the document describes it, with `devices` the root
-/// device capability, for the cards it drives.
-fn described(service: &Service, devices: Option<u32>) -> show::Service {
+/// device capability, for the cards it drives, and `used` whether to read
+/// what its domain has used.
+fn described(service: &Service, devices: Option<u32>, used: bool) -> show::Service {
     let spec = &service.spec;
     let state = match service.state {
         State::Starting(_) | State::Running(_) if service.stop_by.is_some() => {
@@ -120,7 +127,26 @@ fn described(service: &Service, devices: Option<u32>) -> show::Service {
         last_line: service.last_line.clone(),
         last_request: service.last_request.clone(),
         holds: holds(spec, devices),
+        usage: if used { usage(service) } else { None },
     }
+}
+
+/// What `service`'s domain has used and been held to, once it has one.
+fn usage(service: &Service) -> Option<show::Usage> {
+    let domain = service.domain?;
+    let memory = resource_domain::info(&SYS, domain).ok()?;
+    let disks = resource_domain::usage(&SYS, domain).ok()?;
+    Some(show::Usage {
+        memory_bytes: memory.usage_pages * 4096,
+        memory_peak_bytes: memory.peak_pages * 4096,
+        memory_refused: memory.refused,
+        stopped_at_limit: service.at_limit,
+        threads: disks.threads,
+        read_bytes: disks.read_bytes,
+        written_bytes: disks.written_bytes,
+        waited_ms: disks.wait_ns / 1_000_000,
+        held_ms: disks.throttled_ns / 1_000_000,
+    })
 }
 
 /// What `spec` gives its service, beyond what every service's view holds.
@@ -131,6 +157,7 @@ fn holds(spec: &Spec, devices: Option<u32>) -> Holds {
         (spec.hardware, "hardware"),
         (spec.time, "time"),
         (spec.firewall, "firewall"),
+        (spec.tune, "kernel settings"),
     ];
     Holds {
         whole_tree: spec.whole_tree,
@@ -158,5 +185,12 @@ fn holds(spec: &Spec, devices: Option<u32>) -> Holds {
         cards: cards_for(devices, spec).iter().map(|card| pci_address(card.address)).collect(),
         memory_bytes: spec.memory_pages.map(|pages| pages * 4096),
         cpu_weight: spec.weight,
+        io_weight: spec.io_weight,
+        io_read: spec.io_read,
+        io_write: spec.io_write,
+        io_read_ops: spec.io_read_ops,
+        io_write_ops: spec.io_write_ops,
+        threads: spec.threads,
+        open_files: spec.open_files,
     }
 }

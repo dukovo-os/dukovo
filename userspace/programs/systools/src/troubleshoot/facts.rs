@@ -380,6 +380,8 @@ mod tests {
             outcome,
             error: error.map(str::to_string),
             why: error.map(|id| format!("it failed ({id})")),
+            failing: None,
+            trial: None,
             items: vec![Item::new("system", "Dukovo", "0.15.0", None)],
             times: None,
         }

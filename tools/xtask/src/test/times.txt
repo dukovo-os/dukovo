@@ -19,6 +19,7 @@ audio-cd 60
 backup 200
 bios-cdrom 12
 bios-usb 11
+bisect 420
 bitlocker 39
 btrfs 32
 btrfs-log 16

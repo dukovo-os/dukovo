@@ -55,6 +55,14 @@ bios-cdrom kernel/lib/bootinfo/ tools/xtask/src/grub.rs
 bios-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/
 bios-usb kernel/drivers/xhci/ kernel/hal/ kernel/lib/acpi/ kernel/lib/bootinfo/
 bios-usb tools/xtask/src/grub.rs
+bisect image/grub/installed.cfg.in image/grub/menu.cfg tools/xtask/src/bundles.rs
+bisect tools/xtask/src/release.rs userspace/programs/slots/ userspace/programs/spark-api/
+bisect userspace/defaults/spark/services/sysupdate.toml userspace/spark/src/views.rs
+bisect userspace/programs/system-release/ userspace/programs/systools/src/bundled.rs
+bisect userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+bisect userspace/programs/systools/src/changes.rs userspace/programs/systools/src/sign_in_notices.rs
+bisect userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+bisect userspace/spark/src/supervisor/starting.rs
 bitlocker kernel/fs/bitlocker/ userspace/programs/systools/src/nvme.rs
 bitlocker userspace/programs/systools/src/unlock.rs userspace/programs/systools/src/volumed.rs
 braille kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/usb/ kernel/radix/src/fs/sysfs/usb.rs ports/brltty/
@@ -310,6 +318,10 @@ installed-uefi image/grub/menu.cfg userspace/programs/slots/ image/grub/rescue.c
 interfaces kernel/drivers/virtio/ kernel/net/ userspace/posix/interfaces.c
 interfaces userspace/programs/systools/src/ip.rs userspace/programs/systools/src/netd.rs
 interfaces userspace/programs/systools/src/ss.rs
+io-weight kernel/fs/block/ kernel/radix/src/domains.rs kernel/radix/src/fs/disk/
+io-weight userspace/posix/diskread.c userspace/programs/manifest/src/service.rs
+io-weight userspace/programs/systools/src/service.rs userspace/spark/src/supervisor.rs
+io-weight userspace/spark/tests/services/io-weight/
 iommu kernel/drivers/nvme/ kernel/drivers/vtd/ kernel/fs/block/ kernel/lib/iopt/
 iommu userspace/programs/systools/src/nvme.rs userspace/storage/
 iommu-amd kernel/drivers/amdvi/ kernel/drivers/nvme/ kernel/fs/block/ kernel/lib/iopt/
@@ -321,6 +333,10 @@ kerberos userspace/programs/systools/src/authd/ userspace/programs/systools/src/
 kerberos userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/netd.rs
 keyring userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
 keyring userspace/programs/systools/src/keyring.rs userspace/programs/systools/src/unlock.rs
+limits kernel/mm/ kernel/radix/src/domains.rs kernel/radix/src/user/posix/limits.rs
+limits userspace/posix/forkbomb.c userspace/posix/hog.c userspace/programs/manifest/src/service.rs
+limits userspace/programs/systools/src/service.rs userspace/spark/src/supervisor.rs
+limits userspace/spark/tests/services/limits/
 live-bios image/grub/live.cfg.in tools/xtask/src/release.rs userspace/programs/system-release/
 live-bios userspace/programs/systools/src/releases.rs
 live-dvd image/grub/live.cfg.in kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/fs/iso9660/
@@ -658,6 +674,10 @@ tls kernel/net/ ports/ca-certificates/ userspace/programs/tls-test/
 troubleshoot userspace/defaults/spark/services/sysupdate.toml userspace/programs/systools/src/changes.rs
 troubleshoot userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/troubleshoot.rs
 troubleshoot userspace/programs/systools/src/troubleshoot/ userspace/troubleshoot/
+tune kernel/radix/src/settings.rs kernel/radix/src/user/settings.rs
+tune userspace/defaults/spark/services/tune.toml userspace/programs/manifest/src/service.rs
+tune userspace/programs/systools/src/sign_in_notices.rs userspace/programs/systools/src/tune.rs
+tune userspace/spark/src/supervisor.rs userspace/tune/
 uefi-cdrom image/grub/grub.cfg.in kernel/arch/ kernel/fs/iso9660/ kernel/hal/ kernel/lib/acpi/
 uefi-cdrom kernel/lib/bootinfo/ kernel/lib/uacpi/ tools/xtask/src/grub.rs
 uefi-usb image/grub/grub.cfg.in kernel/arch/ kernel/drivers/scsi/ kernel/drivers/usb/

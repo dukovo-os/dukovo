@@ -78,12 +78,12 @@ use libradix::abi::errors::Kernel;
 use libradix::abi::file::{self as file_abi, DescriptionFlags};
 use libradix::abi::notification::WaitFlags;
 use libradix::abi::process::{
-    self, ChildWaitFlags, ClockKind, PipeFlags, PollEntry, PollEvents, PollFlags,
+    self, ChildWaitFlags, ClockKind, LimitKind, PipeFlags, PollEntry, PollEvents, PollFlags,
 };
 use libradix::abi::resource_domain::{self, NO_LIMIT};
 use libradix::abi::startup::{
     DEVICE_SLOTS, SLOT_CLOCK, SLOT_DEVICE, SLOT_FD_BASE, SLOT_FIREWALL, SLOT_FIRST_EXTRA, SLOT_LOG,
-    SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT,
+    SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT, SLOT_SETTINGS,
 };
 use libradix::abi::{names as names_abi, network, power, signal, syscalls};
 use radix_rt::fs::{Dir, File};
@@ -92,6 +92,7 @@ use radix_rt::{SYS, println, slots};
 use crate::services::{self, Restart, Spec};
 use crate::{certificates, views};
 use manifest::service::ReadyWhen;
+use spark_api::bisect;
 use spark_api::show::Request;
 use starting::Wanted;
 use watch::{Told, Verb, Watch, say};
@@ -129,6 +130,10 @@ pub const RESCUE_SERVICES: [&str; 8] =
 /// was added, by an app or an administrator, and stays off at a start
 /// with `essentials` (ADR 0501).
 const ESSENTIALS: &str = "system/resources/default-settings/spark/services";
+
+/// Where changes bisect keeps the lists of services a try leaves out
+/// (ADR 0475).
+const BISECT: &str = "system/state/bisect";
 
 /// The hardware watchdog's timeout, unless `--watchdog` gives another.
 pub const WATCHDOG_SECONDS: u32 = 60;
@@ -310,6 +315,46 @@ fn grant_firewall(firewall: Option<u32>, spec: &Spec, child: u32) -> Result<(), 
         .map_err(|status| format!("giving it the firewall failed: {:#x}", status.0))
 }
 
+/// Gives `child` the kernel settings capability in SLOT_SETTINGS if `spec`
+/// asks for admin.tune, with the read and control rights, and the copy
+/// and transfer rights so that it lasts through `fork` (ADR 0476).
+fn grant_settings(settings: Option<u32>, spec: &Spec, child: u32) -> Result<(), String> {
+    if !spec.tune {
+        return Ok(());
+    }
+    let settings = settings.ok_or("Spark has no kernel settings capability to give")?;
+    let rights = Rights::READ.union(Rights::CONTROL).union(Rights::COPY).union(Rights::TRANSFER);
+    process::share(&SYS, child, settings, SLOT_SETTINGS, rights, 0)
+        .map_err(|status| format!("giving it the kernel settings failed: {:#x}", status.0))
+}
+
+/// Gives `domain` the disk weight and rates and the thread limit `spec`'s
+/// file names. A call fails only for a value the file's reading checked or
+/// a capability Spark made itself, so its results cannot matter.
+fn limit_domain(domain: u32, spec: &Spec) {
+    let rate = |limit: Option<u64>| limit.unwrap_or(NO_LIMIT);
+    let rates = [spec.io_read, spec.io_write, spec.io_read_ops, spec.io_write_ops].map(rate);
+    let _ = resource_domain::set_io(
+        &SYS,
+        domain,
+        spec.io_weight,
+        rates[0],
+        rates[1],
+        rates[2],
+        rates[3],
+    );
+    let _ = resource_domain::set_threads(&SYS, domain, spec.threads);
+}
+
+/// Sets `child`'s open files limit, soft and hard, to what `spec`'s file
+/// says before its program starts, if it says (ADR 0476).
+fn limit_files(spec: &Spec, child: u32) -> Result<(), String> {
+    let Some(files) = spec.open_files else { return Ok(()) };
+    let files = u64::from(files);
+    process::start_limit(&SYS, child, LimitKind::Files, files, files)
+        .map_err(|status| format!("setting its open files limit failed: {:#x}", status.0))
+}
+
 /// A card the kernel left for a driver program: its PCI address, vendor
 /// and device.
 #[derive(Clone, Copy, Debug)]
@@ -464,6 +509,12 @@ struct Service {
     killed: bool,
     /// How many times the out-of-memory policy had stopped its domain.
     oom_stops: u32,
+    /// How many charges its domain's memory limit had refused, as of its
+    /// last end.
+    refused: u64,
+    /// Whether its last end was a stop at its memory limit: a charge was
+    /// refused, and the page that needed it ended the process.
+    at_limit: bool,
     /// The text of its file that `spec` was read from, kept as the last
     /// good copy.
     good: services::Texts,
@@ -537,6 +588,8 @@ impl Service {
             stop_by: None,
             killed: false,
             oom_stops: 0,
+            refused: 0,
+            at_limit: false,
             good,
             complaint: None,
             why: None,
@@ -557,6 +610,33 @@ impl Service {
             circle: None,
             reloaded_ns: 0,
             reload_due: false,
+        }
+    }
+
+    /// Reads what its domain's memory limit and the out-of-memory policy
+    /// did since its process last ended, as that process ended with
+    /// `status`, and keeps whether this end was at its memory limit.
+    /// Returns what the end says of it, as a clause after the ending.
+    fn limit_end(&mut self, status: u32) -> &'static str {
+        let info = self.domain.and_then(|d| resource_domain::info(&SYS, d).ok());
+        let (stops, refused) =
+            info.map_or((self.oom_stops, self.refused), |info| (info.oom_stops, info.refused));
+        let killed = status & 0x7f == signal::SIGKILL;
+        let by_policy = killed && stops > self.oom_stops;
+        // A page the limit refused ends the process with SIGKILL, as a
+        // stop that was asked for does, which is no stop at the limit.
+        self.at_limit = killed
+            && !by_policy
+            && refused > self.refused
+            && self.stop_by.is_none()
+            && !self.killed;
+        (self.oom_stops, self.refused) = (stops, refused);
+        if by_policy {
+            " (stopped by the out-of-memory policy)"
+        } else if self.at_limit {
+            " (stopped at its memory limit)"
+        } else {
+            ""
         }
     }
 
@@ -718,6 +798,8 @@ pub struct Supervisor {
     devices: Option<u32>,
     /// The firewall capability (ADR 0334), from the kernel.
     firewall: Option<u32>,
+    /// The kernel settings capability (ADR 0476), from the kernel.
+    settings: Option<u32>,
     /// The notification the kernel signals when a child changes.
     children: Option<u32>,
     /// The notification the kernel signals when the power button is
@@ -754,6 +836,9 @@ pub struct Supervisor {
     /// menu's Troubleshooting asks for with the kernel's `essentials`
     /// (ADR 0501): none an app or an administrator added.
     essentials: bool,
+    /// The try of changes bisect this start is, and the services its list
+    /// leaves out (ADR 0475).
+    bisect_try: Option<(u8, Vec<String>)>,
     /// While the watchdog runs: how often Spark pets it, and when next.
     pets: Option<(u64, u64)>,
     /// The settings being tried, each undone unless it is kept in time
@@ -778,6 +863,7 @@ impl Supervisor {
         let clock = SLOT_FIRST_EXTRA + 6;
         let devices = SLOT_FIRST_EXTRA + 7;
         let firewall = SLOT_FIRST_EXTRA + 8;
+        let settings = SLOT_FIRST_EXTRA + 9;
         let children = slots::take().filter(|&slot| {
             process::create(&SYS, SLOT_PROCESS, ObjectKind::Notification, 0, slot).is_ok()
                 && process::notify_children(&SYS, SLOT_PROCESS, slot).is_ok()
@@ -810,6 +896,7 @@ impl Supervisor {
             clock: holds(clock, ObjectKind::Clock).then_some(clock),
             devices: holds(devices, ObjectKind::Device).then_some(devices),
             firewall: holds(firewall, ObjectKind::Firewall).then_some(firewall),
+            settings: holds(settings, ObjectKind::KernelSettings).then_some(settings),
             children,
             button,
             restart,
@@ -827,6 +914,7 @@ impl Supervisor {
             hang_always: false,
             rescue: false,
             essentials: false,
+            bisect_try: None,
             pets: None,
             trials: Vec::new(),
             undone: Vec::new(),
@@ -844,6 +932,22 @@ impl Supervisor {
     /// file among the system's defaults, as they are set.
     pub fn set_essentials(&mut self) {
         self.essentials = true;
+    }
+
+    /// Makes this start try `number` of changes bisect (ADR 0475): the
+    /// services its list names stay off until they are started. A try
+    /// with no list, or one that does not read, leaves none out.
+    pub fn set_bisect_try(&mut self, number: u8) {
+        let list = self.root.read_file(&format!("{BISECT}/{}", bisect::file(number)));
+        let list = list.ok().and_then(|bytes| String::from_utf8(bytes).ok());
+        self.bisect_try = Some((number, list.map_or_else(Vec::new, |list| bisect::names(&list))));
+    }
+
+    /// The try of changes bisect that leaves service `name` out, if one
+    /// does.
+    pub(super) fn left_out(&self, name: &str) -> Option<u8> {
+        let (number, names) = self.bisect_try.as_ref()?;
+        names.iter().any(|left| left == name).then_some(*number)
     }
 
     /// Whether `name` is one of the system's own services, with a file
@@ -1001,6 +1105,10 @@ impl Supervisor {
                  administrator added stay off until they are started"
             );
         }
+        if let Some((number, names)) = &self.bisect_try {
+            let left = if names.is_empty() { String::from("nothing") } else { names.join(", ") };
+            println!("spark: try {number} of changes bisect: leaving out {left}");
+        }
         self.services.extend(loaded);
         self.settle_graph();
         for index in 0..self.services.len() {
@@ -1008,7 +1116,7 @@ impl Supervisor {
                 continue;
             }
             match self.left_off(&self.services[index].spec.name) {
-                Some(why) => self.services[index].leave_off(String::from(why)),
+                Some(why) => self.services[index].leave_off(why),
                 None => self.want(index, Wanted::Boot),
             }
         }
@@ -1218,7 +1326,10 @@ impl Supervisor {
                 slot,
             );
             match made {
-                Ok(()) => service.domain = Some(slot),
+                Ok(()) => {
+                    service.domain = Some(slot);
+                    limit_domain(slot, spec);
+                }
                 Err(status) => {
                     slots::give_back(slot);
                     return Err(format!("cannot make its domain: {:#x}", status.0));
@@ -1229,6 +1340,7 @@ impl Supervisor {
             // class is its domain's for good.
             let _ = resource_domain::set_weight(&SYS, domain, spec.weight);
             let _ = resource_domain::set_limit(&SYS, domain, spec.memory_pages.unwrap_or(NO_LIMIT));
+            limit_domain(domain, spec);
         }
         // Its account, if not root's (ADR 0385): Spark's root acting for
         // it, through which its program and its view are opened.
@@ -1335,7 +1447,9 @@ impl Supervisor {
             .and_then(|()| grant_platform(self.platform, spec, child))
             .and_then(|()| grant_clock(self.clock, spec, child))
             .and_then(|()| grant_firewall(self.firewall, spec, child))
+            .and_then(|()| grant_settings(self.settings, spec, child))
             .and_then(|()| grant_devices(self.devices, spec, child))
+            .and_then(|()| limit_files(spec, child))
             .and_then(|()| {
                 let block = exec_block(program_path, &args, &environment);
                 process::exec(&SYS, child, program.slot(), &block)
@@ -1536,11 +1650,7 @@ impl Supervisor {
                 service.last_line = Some(kept(said));
             }
         }
-        let stops = service.domain.and_then(|d| resource_domain::info(&SYS, d).ok());
-        let stops = stops.map_or(service.oom_stops, |info| info.oom_stops);
-        let stopped = stops > service.oom_stops && status & 0x7f == signal::SIGKILL;
-        service.oom_stops = stops;
-        let cause = if stopped { " (stopped by the out-of-memory policy)" } else { "" };
+        let cause = service.limit_end(status);
         let line = format!("{} (process {pid}) {}{cause}", service.spec.name, ending(status));
         say(&mut self.told, index, line);
         service.stop_by = None;

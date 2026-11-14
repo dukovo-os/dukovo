@@ -19,7 +19,8 @@ bench = false
 # for the loopback interface, whose packets have no Ethernet header, and
 # which has every card's address with its own; TCP and UDP are programs'
 # sockets (ADR 0183), and TCP's congestion control is CUBIC, as Linux's
-# is, in the kernel patch's integer arithmetic. IPv6 without smoltcp's
+# is, in the kernel patch's integer arithmetic, or Reno, which the
+# kernel setting `net.congestion` chooses (ADR 0476). IPv6 without smoltcp's
 # SLAAC, which makes only addresses from the MAC address: the stack makes
 # its own (ADR 0331), 16 addresses at most, the kernel patch's.
 # Multicast: an interface joins the groups its sockets join, telling the
@@ -34,6 +35,7 @@ smoltcp = { version = "0.14.0", default-features = false, features = [
     "socket-icmp",
     "socket-tcp",
     "socket-tcp-cubic",
+    "socket-tcp-reno",
     "socket-udp",
     "auto-icmp-echo-reply",
     "iface-max-addr-count-16",

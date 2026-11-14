@@ -499,13 +499,16 @@ pub struct TestUpdate {
 
 /// The updates on the [`UPDATE_RELEASES`] disk: one that proves itself,
 /// one whose system log service cannot start, so that the health check
-/// fails it, one whose kernel panics, and one whose Spark stops
-/// responding (spark(8)'s `test-hang`), which the watchdog ends.
-pub const TEST_UPDATES: [TestUpdate; 4] = [
+/// fails it, one whose kernel panics, one whose Spark stops responding
+/// (spark(8)'s `test-hang`), which the watchdog ends, and one that proves
+/// itself and starts with a boot option of its own, `bisect.test.fail=1`,
+/// which nothing reads but the `bisect` test's health check (ADR 0475).
+pub const TEST_UPDATES: [TestUpdate; 5] = [
     TestUpdate { name: "good", flags: "", broken: None },
     TestUpdate { name: "broken", flags: "", broken: Some("commands/logd") },
     TestUpdate { name: "panic", flags: "selftest=page-fault", broken: None },
     TestUpdate { name: "hang", flags: "test-hang", broken: None },
+    TestUpdate { name: "bisect", flags: "bisect.test.fail=1", broken: None },
 ];
 
 /// The boot tests' firmware sets (ADR 0468), by name and version, in the
@@ -567,7 +570,10 @@ macro_rules! lighthouse_answers {
 /// crashes on its first start. lighthouse's service keeps a line for each
 /// start in its data, says its greeting, and answers its health check
 /// through `nc`, except in 2.0.0, which never answers (ADR 0386).
-const SERVICE_BUNDLES: [crate::bundles::TestBundle; 4] = [
+/// bisectbad's service ends at once, with status 1, once its data folder
+/// holds a file `poison`, and runs until then; bisectgood's runs and says
+/// so (the `bisect` test, ADR 0475).
+const SERVICE_BUNDLES: [crate::bundles::TestBundle; 6] = [
     crate::bundles::TestBundle {
         id: "org.example.beacon",
         version: "1.0.0",
@@ -602,6 +608,37 @@ echo \"lighthouse 2.0.0 runs, start $n, and never answers\"
 exec sleep 100000
 ",
     ),
+    crate::bundles::TestBundle {
+        id: "org.example.bisectbad",
+        version: "1.0.0",
+        script: "#!/bin/sh
+if [ -e \"$HOME/poison\" ]; then
+  echo \"bisectbad 1.0.0 cannot start\"
+  exit 1
+fi
+echo \"bisectbad 1.0.0 runs\"
+exec sleep 100000
+",
+        permissions: "{}",
+        services: "{\"name\": \"bisectbad\", \"program\": \"bisectbad\", \"start\": \"at-boot\", \
+                   \"restart\": \"on-failure\"}",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: "",
+    },
+    crate::bundles::TestBundle {
+        id: "org.example.bisectgood",
+        version: "1.0.0",
+        script: "#!/bin/sh\necho \"bisectgood 1.0.0 runs\"\nexec sleep 100000\n",
+        permissions: "{}",
+        services: "{\"name\": \"bisectgood\", \"program\": \"bisectgood\", \"start\": \"at-boot\", \
+                   \"restart\": \"on-failure\"}",
+        provides: "",
+        line: "",
+        add_ons: "",
+        feed: "",
+    },
 ];
 
 /// lighthouse `version`, whose service runs `script` and is checked
@@ -6692,7 +6729,7 @@ fn boot_report(vm: &mut Vm, case: &Case) -> Result<(), String> {
     } else {
         vm.expect("Lock checker: ")?;
     }
-    vm.expect("Capabilities: ready; 24 object kinds, 15 rights")?;
+    vm.expect("Capabilities: ready; 25 object kinds, 15 rights")?;
     vm.expect("User mode: SYSCALL/SYSRET entry, user half ")?;
     vm.expect("Files: the root is a tmpfs; Spark mounts the rest")?;
     // Every test image carries the user test programs.

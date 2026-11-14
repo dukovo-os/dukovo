@@ -58,8 +58,8 @@ Not running as asked: lab-sick and lab-web. `service lab-sick explain` says why.
 The last line, on a terminal, names those not running as asked: given
 up on, waiting to be started again after an end, stopped for a reason,
 or failing their health check. One that is off as it is meant to be, a
-driver the kernel left none of the cards it drives or a service Rescue
-or essentials leave off, is not among them. *--failed* lists those alone and exits 1
+driver the kernel left none of the cards it drives or a service Rescue,
+essentials or a try of *changes bisect* leave off, is not among them. *--failed* lists those alone and exits 1
 when there are some, for scripts. *--json* prints Spark's *show*
 document as it is (*spark*(8)), which has *show_version* for scripts to
 check. In a pipe, the header is left out.
@@ -77,7 +77,11 @@ nginx - nginx web server
            changes /system/state/org.nginx.nginx
            secrets tls-key
            listens on 80 (open), 443 (open); connects out
-           memory up to 256M; CPU weight 100
+   Limits: memory up to 256M; CPU weight 100; at most 4096 threads; 65536 open files
+           disk weight 100
+      Use: memory 12M, peak 14M
+           threads 3 of 4096
+           disk read 1.1M, written 52K; waited 0.0 s for a disk, held 0.0 s by its rates
 Processes: 3 (57 nginx, 58 nginx, 59 nginx), 12.3M of memory, 1.2 s of CPU
   Restart: on-failure, 0 restarts so far
 
@@ -127,7 +131,18 @@ tree and its file names _/processes_, where one that does not sees its
 own processes alone (ADR 0473); its secrets; the ports it may
 listen on, *(open)* for those something listens on now, and whether it
 connects out, or *no network*; the machine's settings it may set, the
-cards it drives; its memory limit and CPU weight. *Processes* counts the
+cards it drives. *Limits* is what its file limits its domain to
+(*service.toml*(5), ADR 0476): its memory, CPU weight, the threads it may
+have and the files each process may have open, when the file names a
+number; and its disk weight, with the bytes and the requests a second it
+may read and write when the file limits them. *Use* is what the domain
+has used since Spark made it, kept after the service ends: its memory now
+and at its peak, with the charges its limit refused and whether the
+service's last end was *stopped at its memory limit*; its threads of those
+it may have; and the bytes it read from disks and wrote (those its writes
+left dirty in the page cache among them), the time its requests waited
+for a disk's room, and the time its rates held it back. A service whose
+domain Spark has not made yet has no *Use*. *Processes* counts the
 processes in its domain, the first five by number and name, and their
 memory and CPU time. The last lines are its records in the log, Spark's
 lines about it among them, as *log -s* _name_ shows them (*log*(1));

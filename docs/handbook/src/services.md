@@ -173,7 +173,11 @@ nginx - nginx web server
            reads /applications/org.nginx.nginx, /shared/www
            changes /system/state/org.nginx.nginx
            listens on 80 (open), 443 (open); connects out
-           memory up to 256M; CPU weight 100
+   Limits: memory up to 256M; CPU weight 100; at most 4096 threads; 65536 open files
+           disk weight 100
+      Use: memory 12M, peak 14M
+           threads 3 of 4096
+           disk read 1.1M, written 52K; waited 0.0 s for a disk, held 0.0 s by its rates
 Processes: 3 (57 nginx, 58 nginx, 59 nginx), 12.3M of memory, 1.2 s of CPU
   Restart: on-failure, 0 restarts so far
 
@@ -183,7 +187,8 @@ Nov 13 10:42:13 spark: nginx is ready (listening) 10.4 s after its start
 
 `Holds` is the whole of what the service may touch beyond what every
 service reads: a port marked `(open)` is one something listens on now.
-A service stopped by hand says who stopped it and when (`Asked`), and
+`Limits` is how much it may use, and `Use` how much it has, as the next
+section explains. A service stopped by hand says who stopped it and when (`Asked`), and
 one that ended says the last line it wrote (`Last`).
 
 ### Why a service is not running
@@ -263,6 +268,72 @@ access`. When a place a service needs is missing from its view, the
 service says so in the log, and the fix is to name it in its file:
 `snap`, for one, logs that the place is not in its view and names
 `service edit snap` as the way to add it.
+## Limiting what a service uses
+
+Every service runs in a resource domain of its own, and its file may say
+how much of the machine the domain may use. The limits go in a
+`[limits]` table, each one optional:
+
+```toml
+[limits]
+memory = "512M"      # memory, with K, M or G; "none" is no limit
+cpu_weight = 100     # a share of the CPUs when they are busy, 1 to 10000
+io_weight = 100      # a share of each disk when services wait for it, 1 to 10000
+io_read = "50M"      # bytes it may read from disks each second
+io_write = "20M"     # bytes it may write each second
+io_read_ops = 2000   # read requests each second
+io_write_ops = 1000  # write requests each second
+threads = 4096       # the most threads, in all its processes together
+open_files = 65536   # the files each of its processes may have open
+```
+
+A service that names none has no limit on memory or on the rate of its
+disk use, a weight of 100 for the CPUs and the disks, 4096 threads, and
+the 1024 open files a program has in any case. The limits take effect at
+the service's next start, so an edit to the file needs `service NAME
+restart`, and `service check` refuses a number outside its range,
+saying which line and column.
+
+What a limit does depends on what it limits:
+
+- Memory: a service that asks for more than its limit is refused it
+  and, as nothing can be done without the memory, ended. Spark logs
+  that it was *stopped at its memory limit*, and `service NAME status`
+  says so, with how many charges the limit refused. It is not the
+  out-of-memory policy, which acts only when the machine itself is out
+  of memory.
+- Threads: a program that tries to start more than the limit gets the
+  error `EAGAIN` from `fork` or `pthread_create`, as it does on Linux
+  with a cgroup's `pids.max`. A fork bomb in a service fills the
+  service's own 4096 and no more, and everything else goes on working.
+- Disk weights: while several services wait for a disk, each gets its
+  share of it by weight, so one that reads 400 gets four times the bytes
+  of one that reads 100. With nothing else waiting a service has the
+  whole disk.
+- Disk rates: a program that goes faster than its rate is held back, and
+  notices only that its reads and writes take longer. The rate is for
+  the service's domain across all the disks together. What the kernel
+  writes back from the page cache later is not held to it.
+- Open files: Spark sets both the soft and the hard limit before the
+  program starts. A server that holds many connections needs more than
+  1024: nginx's file names 65536.
+
+```
+$ service shop status
+...
+   Limits: memory up to 64M; CPU weight 100; at most 4096 threads
+           disk weight 100; reads up to 50M a second
+      Use: memory 64M, peak 64M; 3 charges refused; stopped at its memory limit
+           threads 0 of 4096
+           disk read 8.4M, written 0; waited 0.3 s for a disk, held 41.2 s by its rates
+```
+
+`Use` is counted for the service's domain since Spark made it, and stays
+after the service ends, so it says what a service that was stopped had
+used. `waited` is the time its requests waited for a disk's room, and
+`held` the time its rates held it back. Those two say whether a service
+is slow because the disk is busy or because its file says to be: see
+[Performance profiles](performance.md) for the machine's own settings.
 
 ## Checking a change
 
@@ -491,7 +562,7 @@ This first version of nginx for Dukovo waits for connections with `poll`
 and copies files through its buffers, where nginx on Linux uses epoll
 and sendfile, so a very busy site serves fewer requests a second on the
 same machine. It has no HTTP/3. Each worker may have
-4096 connections and files open, and the service may use 512 MiB.
+65536 files open, and the service may use 512 MiB.
 
 ## The key-value store: Valkey
 

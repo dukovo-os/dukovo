@@ -98,8 +98,9 @@ override:
 *requires* = [_"service"_, ...]
 	The services it requires, by name: each is started first, and this
 	one starts only once each is ready. One that is stopped, that Spark
-	gave up on, that has no file, or that Rescue or a start with only
-	the essentials leaves off keeps it from starting; and when one
+	gave up on, that has no file, or that Rescue, a start with only
+	the essentials or a try of *changes bisect* leaves off keeps it from
+	starting; and when one
 	stops for good, Spark stops this one too (see STARTING AND
 	READINESS). None unless set; version 2.
 
@@ -217,6 +218,49 @@ override:
 		The domain's out-of-memory class: *"service"*, the default, is
 		stopped only after every app domain when memory runs out
 		(*radix-resource-domain*(2)).
+
+	*io_weight* = _number_
+		The domain's share of a disk, 1 to 10000, 100 unless set. While
+		services wait for a disk, those with the larger weight get the
+		larger share of its requests: of weights 400 and 100 reading
+		as fast as they can, the first gets four times the bytes
+		(ADR 0476). A request of a more urgent *ionice*(1) class or
+		level still goes first; weights share the disk between those of
+		the same rank. With nothing waiting a service gets all of the
+		disk, whatever its weight.
+
+	*io_read* = _"size"_ | _bytes_ | *"none"*, *io_write* = _"size"_ | _bytes_ | *"none"*
+		The bytes the domain may read from disks, and write to them, each
+		second, written as *memory* is: *"50M"* is 50 MiB a second. The
+		rate is for the domain across all disks together, and holds a
+		reader or writer back, which its programs notice only as slower
+		reads and writes. No limit unless set. Dirty pages the page
+		cache writes back later are the kernel's and are held to no
+		rate; *service*(8)'s *status* shows the time a service's rates
+		held it.
+
+	*io_read_ops* = _number_ | *"none"*, *io_write_ops* = _number_ | *"none"*
+		The read and write requests the domain may make to disks each
+		second, 1 or more; no limit unless set. A rate of requests holds
+		a program that makes many small ones, which a rate of bytes
+		does not.
+
+	*threads* = _number_
+		The most threads the domain may have, in all its processes
+		together, 1 to 1048576, *4096* unless set. A *fork* or thread
+		creation past it fails with EAGAIN, as Linux's *pids.max* does,
+		so a fork bomb in a service fills its own limit and not the
+		machine's; ADR 0476. The service's own first thread counts.
+
+	*open_files* = _number_
+		The files each of the service's processes may have open at
+		once, 1 to 1048576: Spark sets the soft and the hard limit of
+		RLIMIT_NOFILE to it before the program starts, and what the
+		program starts keeps it. A program has 1024 unless this says
+		more, so a server with many connections, as nginx with
+		*worker_connections*, names its own (*open_files = 65536*).
+		*service check* refuses a number outside 1 to 1048576, naming
+		its line and column.
 
 *permissions*
 	A table of what it may do beyond running, by the names of the
@@ -345,6 +389,14 @@ override:
 		file sets it, and *authd*(8)'s, so that *date*(1)'s *--set*
 		works inside *elevate*(8).
 
+	*admin.tune* = *true* | *false*
+		Whether it holds the kernel settings capability, which lists the
+		kernel's settings and sets them (*radix-kernel-settings*(2),
+		ADR 0476); *false* unless set. Only the *tune* service's file
+		sets it, so that *tune*(8) may give the kernel a performance
+		profile at each boot. Anyone reads the settings' values in
+		_/kernel/settings_.
+
 	*devices.pci* = [_"vendor:device"_, ...]
 		The PCI cards it drives, for a driver program, each by its
 		vendor's and its device's ID in hexadecimal, as *lspci*(8)
@@ -402,7 +454,8 @@ override:
 At boot, Spark wants every service that is turned on (*enabled*), and
 *service* _name_ *start* wants one; a wanted service wants those it
 requires and wants, whether turned on or not, and so on along them.
-Rescue and a start with only the essentials leave theirs off still. Each
+Rescue, a start with only the essentials and a try of *changes bisect*
+(for the services it leaves out) leave theirs off still. Each
 wanted service waits until those it names are settled, and starts once
 it may:
 
@@ -621,7 +674,8 @@ spark: could not start web: its certificate shop.example.com does not exist: cer
 Spark reads every file at boot, and a service's file again each time it
 starts the service, by *service* _name_ *start* or *restart* or after
 the service ended: a changed file takes effect at the service's next
-start. Its CPU weight and memory limit change then too; its
+start. Its limits change then too (its CPU weight, its memory, its
+disk weight and rates, its threads and its open files); its
 out-of-memory class stays its domain's until the next boot. A file added
 since boot is read when its service is first started.
 

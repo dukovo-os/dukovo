@@ -79,6 +79,16 @@ impl Limits {
     pub fn get(&self, kind: LimitKind) -> Limit {
         self.0[kind as usize]
     }
+
+    /// Takes `parent`'s limits, as a child does, but for those `kept`
+    /// names, a bit for each LimitKind, which stay as they are.
+    pub fn inherit(&mut self, parent: &Limits, kept: u32) {
+        for (kind, (mine, theirs)) in self.0.iter_mut().zip(&parent.0).enumerate() {
+            if kept & (1 << kind) == 0 {
+                *mine = *theirs;
+            }
+        }
+    }
 }
 
 /// The smallest stack a new program gets, whatever RLIMIT_STACK says.
@@ -124,6 +134,33 @@ fn change(
         }
     }
     Ok(old)
+}
+
+/// Sets `target`'s limit as radix-process(2)'s `start_limit` asks: before
+/// it starts, as its maker sets it up, with the hard limit raised if
+/// asked, RLIMIT_NOFILE's to at most FILES_MAX. The C library has not
+/// read it yet, so the program it starts takes it as its own, and its
+/// `exec` keeps it where it takes the maker's others ([`Limits::inherit`]).
+pub fn start_limit(target: &ProcessObject, label: u32, args: &[u64; 8]) -> Result<Answer> {
+    let a = process::StartLimitArgs::decode(args)?;
+    if a.current > a.max {
+        return Err(Kernel::InvalidArgument.status(1));
+    }
+    if a.resource == LimitKind::Files && a.max > process::FILES_MAX {
+        return Err(Kernel::InvalidArgument.status(2));
+    }
+    // Its POSIX state, then its state: it does not start meanwhile.
+    let mut posix = target.posix.lock();
+    if !target.not_started() {
+        return Err(error(Kernel::NotPermitted));
+    }
+    posix.limits.0[a.resource as usize] = Limit::of(a.current, a.max);
+    posix.started_limits |= 1 << a.resource as u32;
+    if a.resource == LimitKind::FileSize {
+        target.set_file_size_limit(a.current);
+    }
+    drop(posix);
+    answer(label, 0, [0; 8])
 }
 
 /// The live process `pid`, if `me` may signal it, which is what Linux's

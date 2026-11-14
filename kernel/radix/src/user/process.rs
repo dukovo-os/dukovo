@@ -164,6 +164,11 @@ pub struct ProcessObject {
     /// methods, from files, pipes, sockets and terminals alike.
     read_bytes: AtomicU64,
     written_bytes: AtomicU64,
+    /// The bytes its threads have read from disks and written to them
+    /// (ADR 0476): reads the devices finished for them, and writes they
+    /// left dirty in the page cache or made to a disk directly.
+    disk_read_bytes: AtomicU64,
+    disk_written_bytes: AtomicU64,
     /// RLIMIT_FSIZE's soft limit, as its POSIX state keeps it, for writes,
     /// which read it without that lock: whatever sets that limit sets this
     /// too.
@@ -354,6 +359,8 @@ fn allocate(
         started_ns: sched::now_ns(),
         read_bytes: AtomicU64::new(0),
         written_bytes: AtomicU64::new(0),
+        disk_read_bytes: AtomicU64::new(0),
+        disk_written_bytes: AtomicU64::new(0),
         file_size_limit: AtomicU64::new(UNLIMITED),
         io_priority: AtomicU32::new(0),
         args: SpinLock::new(None),
@@ -460,6 +467,11 @@ impl ProcessObject {
         drop(state);
         drop(before);
         true
+    }
+
+    /// Whether it has not started: made, with no thread of it run yet.
+    pub fn not_started(&self) -> bool {
+        self.state.lock().phase == ProcessState::Created
     }
 
     /// Its name.
@@ -580,6 +592,22 @@ impl ProcessObject {
     /// The bytes its threads have read and written.
     pub fn io_bytes(&self) -> (u64, u64) {
         (self.read_bytes.load(Ordering::Relaxed), self.written_bytes.load(Ordering::Relaxed))
+    }
+
+    /// Counts `bytes` one of its threads read from a disk, or wrote
+    /// (`written`) to one or left dirty in the page cache.
+    #[inline]
+    pub fn note_disk(&self, written: bool, bytes: u64) {
+        let counter = if written { &self.disk_written_bytes } else { &self.disk_read_bytes };
+        counter.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// The bytes its threads have read from disks and written to them.
+    pub fn disk_bytes(&self) -> (u64, u64) {
+        (
+            self.disk_read_bytes.load(Ordering::Relaxed),
+            self.disk_written_bytes.load(Ordering::Relaxed),
+        )
     }
 
     /// Its I/O class and level as radix-process(2)'s `io_priority` sets
@@ -800,6 +828,7 @@ impl ProcessObject {
         let thread =
             sched::spawn(name.as_str(), thread_main, 0, options).map_err(|err| match err {
                 SpawnError::Stopping => error(Kernel::Gone),
+                SpawnError::TooManyThreads => error(Kernel::TooManyThreads),
                 SpawnError::NoCpu | SpawnError::InvalidPolicy => Kernel::InvalidArgument.status(0),
                 _ => error(Kernel::NoMemory),
             })?;

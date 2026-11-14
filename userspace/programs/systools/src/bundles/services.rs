@@ -313,6 +313,9 @@ pub fn file(
         }
     }
     let _ = writeln!(o, "oom = {}", quoted(limits.oom.name()));
+    if let Some(files) = limits.open_files {
+        let _ = writeln!(o, "open_files = {files}");
+    }
     let _ = writeln!(o, "\n[permissions]");
     let _ = writeln!(o, "network.outbound = {}", holds.outbound);
     let ports: Vec<String> = holds.listen.iter().map(|p| quoted(&p.to_string())).collect();
@@ -394,7 +397,7 @@ mod tests {
         let m = manifest(
             r#"{"name": "web", "program": "web", "arguments": ["--port", "8080 \"x\""],
                 "environment": {"MODE": "fast"}, "start": "at-boot", "secrets": ["key"],
-                "limits": {"memory": "64M", "cpu_weight": 50}}"#,
+                "limits": {"memory": "64M", "cpu_weight": 50, "open_files": 65536}}"#,
             r#""network.listen": {"need": "required", "ports": [8080, "9000-9001"]},
                "network.local": {"need": "optional"},
                "files.shared": {"need": "required", "folders": {"photos": "read", "music": "read-write"}},
@@ -410,6 +413,7 @@ mod tests {
         assert_eq!(read.secrets, ["key"]);
         assert_eq!(read.limits.memory, Some(64 << 20));
         assert_eq!(read.limits.cpu_weight, 50);
+        assert_eq!(read.limits.open_files, Some(65536));
         assert!(read.permissions.network.outbound);
         assert_eq!(read.network_grants(), 3);
         let places: Vec<(String, bool)> =

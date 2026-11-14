@@ -8,6 +8,8 @@
 //! tools find it where they look (lspci reads `/sys/bus/pci/devices`):
 //!
 //! - `/kernel/version`, `/kernel/cmdline`, `/kernel/cpus`;
+//! - `/kernel/settings/<name>`: each of the kernel's settings' value
+//!   ([`crate::settings`], ADR 0476);
 //! - `/kernel/block/<name>/size` (in 512-byte sectors) and `ro` (0 or 1),
 //!   for every disk and partition; for a partition, its number in its
 //!   disk's table (`partition`), its first sector (`start`) and its type
@@ -181,6 +183,16 @@ pub fn make() -> Result<FsRef> {
     root.add("cpus", Generated::from_fn(next_id(), cpus)?)?;
     let boot = root.add_dir("boot", next_id())?;
     boot.add("times", Generated::from_fn(next_id(), boot_times)?)?;
+    // The kernel's settings, which everyone reads (ADR 0476).
+    let settings = root.add_dir("settings", next_id())?;
+    for index in 0..crate::settings::count() {
+        let Some(name) = crate::settings::name(index) else { break };
+        let file = value(move |text| {
+            crate::settings::value(index, text)?;
+            text.write_char('\n')
+        })?;
+        settings.add(name, file)?;
+    }
     let block: radix_vfs::mem::KBox<dyn Listing> = mem::boxed(Blocks)?;
     root.add("block", ListedDir::make(next_id(), block)?)?;
     let bus = root.add_dir("bus", next_id())?;

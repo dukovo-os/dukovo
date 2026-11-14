@@ -30,6 +30,7 @@ use libradix::abi::signal;
 use libradix::abi::startup::SLOT_PROCESS;
 use manifest::service::ReadyWhen;
 use radix_rt::{SYS, println};
+use spark_api::bisect;
 use spark_api::graph::{self, Link, Node, Peer, Verdict};
 use spark_api::ready;
 
@@ -88,13 +89,15 @@ impl Supervisor {
         }
     }
 
-    /// Why Rescue or essentials leave service `name` off until it is
-    /// started by a request, if they do.
-    pub(super) fn left_off(&self, name: &str) -> Option<&'static str> {
-        if self.essentials && !self.own(name) {
-            Some("only the essentials start: it stays off until it is started")
+    /// Why Rescue, essentials or a try of changes bisect leave service
+    /// `name` off until it is started by a request, if they do.
+    pub(super) fn left_off(&self, name: &str) -> Option<String> {
+        if let Some(number) = self.left_out(name) {
+            Some(bisect::why(number))
+        } else if self.essentials && !self.own(name) {
+            Some(String::from("only the essentials start: it stays off until it is started"))
         } else if self.rescue && !super::RESCUE_SERVICES.contains(&name) {
-            Some("Rescue leaves it off until it is started")
+            Some(String::from("Rescue leaves it off until it is started"))
         } else {
             None
         }
@@ -279,6 +282,9 @@ impl Supervisor {
             State::Failed => Peer::Off("Spark gave up on"),
             State::Stopped if service.held => Peer::Off("was stopped"),
             State::Stopped => match self.left_off(name) {
+                Some(_) if self.left_out(name).is_some() => {
+                    Peer::Off("is left out for a try of changes bisect")
+                }
                 Some(_) if self.essentials => Peer::Off("is not one of the essentials"),
                 Some(_) => Peer::Off("Rescue leaves off"),
                 None => Peer::Off("is stopped"),

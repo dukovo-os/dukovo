@@ -100,7 +100,9 @@ pub use smoltcp;
 pub use smoltcp::wire::{
     EthernetAddress, IpAddress, IpVersion, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr,
 };
-pub use sockets::{ConnectError, Shown, TcpMemory, UdpMemory};
+pub use sockets::{
+    Congestion, ConnectError, Shown, TcpMemory, UdpMemory, congestion, set_congestion,
+};
 
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};

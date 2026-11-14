@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Gives the kernel the performance profile an administrator chose, at each
+# boot, and ends (tune(8), ADR 0476). `elevate tune set NAME` chooses one
+# and starts this again; without a choice, every setting stays at the value
+# the kernel started with. It also tells the first sign-in of a virtual
+# machine that `tune set vm-guest` suits it.
+#
+# service.toml(5) explains each setting. `service check tune` checks this
+# file, and `service edit tune` checks it as you save.
+
+service_version = 2
+description = "Performance profile"
+program = "/system/commands/tune"
+arguments = ["apply"]
+# After logd, which keeps what it says, and before the services whose
+# work the settings change.
+order = 7
+# It sets the settings and ends: restart waits for that, so that
+# `tune set` can say what it could not set.
+restart = "never"
+ready.when = "ended"
+
+[limits]
+memory = "8M"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# kernel's settings, to set them; the folder of the notices the sign-in
+# screens show, for the notice about virtual machines; the folder it keeps
+# what it could not set in for `tune set` to say; and the folder that
+# remembers the notice was given.
+[permissions]
+admin.tune = true
+files.read-write = ["/system/live/sign-in", "/system/live/tune", "/system/state/tune"]

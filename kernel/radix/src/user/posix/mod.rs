@@ -136,6 +136,10 @@ pub struct PosixState {
     /// Its resource limits, by LimitKind (on the heap: the kernel's stack
     /// frames are too small for them).
     pub limits: Box<limits::Limits, Kmalloc>,
+    /// The limits its maker set with `start_limit` before it started, a
+    /// bit for each LimitKind: `exec` keeps them where it takes the
+    /// maker's others (ADR 0476).
+    pub started_limits: u32,
     /// Its file mode creation mask (`umask`).
     pub file_mask: u32,
     /// Its working directory as the C library last noted it (`exec`,
@@ -191,6 +195,7 @@ impl PosixState {
             posix_timers: Vec::new_in(kmalloc()),
             terminal: None,
             limits: Box::try_new_in(limits::Limits::DEFAULT, kmalloc()).ok()?,
+            started_limits: 0,
             file_mask: 0o022,
             directory: None,
             program: crate::net::firewall::Program::NONE,
@@ -199,10 +204,12 @@ impl PosixState {
     }
 
     /// Takes what a child has of its parent's `parent` (`fork`, or `exec`
-    /// on a created process): its resource limits, file mode mask and,
-    /// unless `exec` noted its own, working directory and program.
+    /// on a created process): its resource limits but those its maker
+    /// set before it started, file mode mask and, unless `exec` noted its
+    /// own, working directory and program.
     pub fn inherit(&mut self, parent: &PosixState) {
-        *self.limits = *parent.limits;
+        self.limits.inherit(&parent.limits, self.started_limits);
+        self.started_limits = 0;
         self.file_mask = parent.file_mask;
         if self.program == crate::net::firewall::Program::NONE {
             self.program = parent.program;
@@ -458,8 +465,8 @@ pub fn method(
 ) -> Result<Answer> {
     let me = &user.process;
     // These act on the caller's own process; `exec` may also start a
-    // created one.
-    if !ProcessRef::ptr_eq(target, me) && label != process::EXEC {
+    // created one, and `start_limit` set its limits before it does.
+    if !ProcessRef::ptr_eq(target, me) && label != process::EXEC && label != process::START_LIMIT {
         return Err(error(Kernel::InvalidArgument));
     }
     match label {
@@ -592,6 +599,7 @@ pub fn method(
         process::LIMITS | process::LIMITS_OF | process::FILE_MASK => {
             limits::method(user, label, args)
         }
+        process::START_LIMIT => limits::start_limit(target, label, args),
         process::TIMES => {
             process::TimesArgs::decode(args)?;
             let (user_ns, system_ns) = me.cpu_times();

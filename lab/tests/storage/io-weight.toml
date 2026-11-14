@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# How services share a disk (ADR 0476), as the io-weight boot test has it:
+# three services read the machine's virtio disk raw at once, 16 threads
+# each, with I/O weights 100 and 400 and with io_read = "10M". From the
+# counters of their domains over 10 seconds (io-weight.sh beside this
+# file), the heavier reads 3 to 5 times the bytes a second of the lighter,
+# and the rated one 9 to 11 MiB a second. The boot test holds the disk to
+# 64 MiB a second with QEMU, so that Dukovo's queue decides the share;
+# here the disk is as fast as the lab's QEMU makes it.
+about = "services reading one disk at once share it by their I/O weights, and a rate holds one back: weights 100 and 400 give 3 to 5 times the bytes a second, io_read = 10M gives 9 to 11 MiB a second (ADR 0476)"
+time = "4m"
+host_needs = ["scp"]
+
+[[step]]
+run = "ls /devices/vda /system/tests/services/io-weight/iow-heavy.toml /system/tests/posix/diskread"
+expect = ["/devices/vda", "iow-heavy.toml", "/system/tests/posix/diskread"]
+or_skip = "needs a virtio disk, vda, and the test programs and their service files in /system/tests"
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/io-weight.sh {machine} {machine-port:22}"
+expect = "copied: io-weight.sh"
+# From nothing: a run before may have left them.
+[[step]]
+run = "sh -c 'for s in iow-light iow-heavy iow-rated; do service $s stop -q > /dev/null 2>&1; done; rm -f /system/settings/spark/services/iow-*.toml; cp /system/tests/services/io-weight/*.toml /system/settings/spark/services/ && echo copied'"
+root = true
+expect = "copied"
+[[step]]
+run = "sh /users/lab/io-weight.sh"
+root = true
+expect = ["MiB/s", "weights-ok", "rate-ok"]
+[[step]]
+run = '''sh -c 'rm -f /system/settings/spark/services/iow-*.toml /users/lab/io-weight.sh; echo "left: $(ls /system/settings/spark/services | grep -c iow-)"' '''
+root = true
+expect = "left: 0"

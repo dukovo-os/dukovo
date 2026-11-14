@@ -244,6 +244,13 @@ pub const FLAGS: &[Flag] = &[
                   before started; Spark puts the settings from before the update back",
     },
     Flag {
+        name: "trial",
+        value: Some("number"),
+        summary: "for Spark and the health check, not the kernel: the boot menu started this try \
+                  of changes bisect, once, in place of the usual start; Spark leaves out the \
+                  services the try lists",
+    },
+    Flag {
         name: "test-hang",
         value: None,
         summary: "for Spark, not the kernel: Spark stops responding at every start, as an update \

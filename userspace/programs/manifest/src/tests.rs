@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use crate::legacy;
-use crate::service::{self, Oom, Override, PciId, Place, Ports, Restart};
+use crate::service::{self, Oom, Override, PciId, Place, Ports, ReadyWhen, Restart};
 use crate::{Error, Source};
 
 /// The service files Dukovo ships, and those of the boot tests.
@@ -41,6 +41,14 @@ const SHIPPED: &[(&str, &str)] = &[
     ("metricsd", include_str!("../../../defaults/spark/services/metricsd.toml")),
     ("alertd", include_str!("../../../defaults/spark/services/alertd.toml")),
     ("admind", include_str!("../../../defaults/spark/services/admind.toml")),
+    ("tune", include_str!("../../../defaults/spark/services/tune.toml")),
+    ("limits-hog", include_str!("../../../spark/tests/services/limits/limits-hog.toml")),
+    ("limits-steady", include_str!("../../../spark/tests/services/limits/limits-steady.toml")),
+    ("limits-bomb", include_str!("../../../spark/tests/services/limits/limits-bomb.toml")),
+    ("limits-files", include_str!("../../../spark/tests/services/limits/limits-files.toml")),
+    ("iow-light", include_str!("../../../spark/tests/services/io-weight/iow-light.toml")),
+    ("iow-heavy", include_str!("../../../spark/tests/services/io-weight/iow-heavy.toml")),
+    ("iow-rated", include_str!("../../../spark/tests/services/io-weight/iow-rated.toml")),
     ("netd", include_str!("../../../defaults/spark/services/netd.toml")),
     ("netd", include_str!("../../../spark/tests/services/dhcp/netd.toml")),
 ];
@@ -169,6 +177,60 @@ fn dumps_reads_the_device_of_the_dump_and_changes_its_folder() {
 }
 
 #[test]
+fn tune_holds_the_kernel_settings_and_waits_to_have_ended() {
+    let (_, text) = SHIPPED.iter().find(|(name, _)| *name == "tune").unwrap();
+    let tune = service::from_toml(text).unwrap();
+    assert_eq!(tune.program, "/system/commands/tune");
+    assert_eq!(tune.arguments, ["apply"]);
+    // After logd, which is 5, and one-shot: `tune set` waits for it to end.
+    assert_eq!((tune.order, tune.restart), (7, Restart::Never));
+    assert_eq!(tune.ready.when, ReadyWhen::Ended);
+    assert!(tune.permissions.admin.tune);
+    assert!(!tune.permissions.runs_with_your_access);
+    let place = |path: &str, write| Place { path: path.into(), write };
+    assert_eq!(
+        tune.permissions.places(),
+        [
+            place("/system/live/sign-in", true),
+            place("/system/live/tune", true),
+            place("/system/state/tune", true)
+        ]
+    );
+    // No other shipped file asks for the kernel's settings.
+    for (name, text) in SHIPPED {
+        let held = service::from_toml(text).unwrap().permissions.admin.tune;
+        assert_eq!(held, *name == "tune", "{name}");
+    }
+}
+
+#[test]
+fn the_limits_boot_tests_services_say_their_limits() {
+    let read = |name: &str| {
+        let (_, text) = SHIPPED.iter().find(|(shipped, _)| *shipped == name).unwrap();
+        service::from_toml(text).unwrap()
+    };
+    let hog = read("limits-hog");
+    assert_eq!((hog.limits.memory, hog.restart), (Some(64 << 20), Restart::Never));
+    let bomb = read("limits-bomb");
+    assert_eq!((bomb.limits.threads, bomb.limits.memory), (64, None));
+    assert_eq!(read("limits-files").limits.open_files, Some(10_000));
+    assert_eq!(read("limits-steady").limits.threads, 4096);
+    // Three readers of one disk: the weights 100 and 400, and a rate.
+    let (light, heavy, rated) = (read("iow-light"), read("iow-heavy"), read("iow-rated"));
+    assert_eq!(
+        (light.limits.io_weight, heavy.limits.io_weight, rated.limits.io_weight),
+        (100, 400, 100)
+    );
+    assert_eq!(rated.limits.io_read, Some(10 << 20));
+    assert_eq!((light.limits.io_read, heavy.limits.io_read), (None, None));
+    for reader in [&light, &heavy, &rated] {
+        assert_eq!(reader.arguments, ["/devices/vda", "16", "64"]);
+        let place = |path: &str, write| Place { path: path.into(), write };
+        assert_eq!(reader.permissions.places(), [place("/devices/vda", false)]);
+    }
+}
+
+#[test]
 fn only_authd_holds_the_names_capability() {
     // The names capability lets its holder act for anyone: authd needs it
     // to start the sessions of those who sign in (ADR 0250), and no other
@@ -246,6 +308,10 @@ fn what_a_file_leaves_out() {
     assert_eq!((service.order, service.enabled, service.restart), (50, true, Restart::Always));
     assert_eq!((service.limits.cpu_weight, service.limits.memory), (100, None));
     assert_eq!(service.limits.oom, Oom::Service);
+    let limits = &service.limits;
+    assert_eq!((limits.io_weight, limits.threads, limits.open_files), (100, 4096, None));
+    assert_eq!((limits.io_read, limits.io_write), (None, None));
+    assert_eq!((limits.io_read_ops, limits.io_write_ops), (None, None));
     assert_eq!(service.network_grants(), 0);
 }
 
@@ -284,6 +350,46 @@ network.listen = [80, "443", "8000-8009"]
     // The same as tables of their own.
     let tables = file("[permissions.network]\noutbound = true\nlisten = [80]\n");
     assert_eq!(service::from_toml(&tables).unwrap().network_grants(), 2);
+}
+
+#[test]
+fn a_service_may_limit_its_disks_threads_and_files() {
+    let text = file(
+        "[limits]\nio_weight = 400\nio_read = \"50M\"\nio_write = 1048576\nio_read_ops = 200\n\
+         io_write_ops = \"none\"\nthreads = 64\nopen_files = 65536\n",
+    );
+    let limits = service::from_toml(&text).unwrap().limits;
+    assert_eq!(limits.io_weight, 400);
+    assert_eq!((limits.io_read, limits.io_write), (Some(50 << 20), Some(1 << 20)));
+    assert_eq!((limits.io_read_ops, limits.io_write_ops), (Some(200), None));
+    assert_eq!((limits.threads, limits.open_files), (64, Some(65536)));
+    // The ends of each range are allowed.
+    let ends = file("[limits]\nio_weight = 10000\nthreads = 1048576\nopen_files = 1048576\n");
+    let limits = service::from_toml(&ends).unwrap().limits;
+    assert_eq!(
+        (limits.io_weight, limits.threads, limits.open_files),
+        (10_000, 1 << 20, Some(1 << 20))
+    );
+    let least = file("[limits]\nio_weight = 1\nthreads = 1\nopen_files = 1\nio_read_ops = 1\n");
+    let limits = service::from_toml(&least).unwrap().limits;
+    assert_eq!((limits.io_weight, limits.threads, limits.open_files), (1, 1, Some(1)));
+    assert_eq!(limits.io_read_ops, Some(1));
+}
+
+#[test]
+fn a_limit_out_of_range_is_placed_on_its_value() {
+    let weight = failure(&file("[limits]\nio_weight = 20000"));
+    assert_eq!(place(&weight), (Some(4), Some(13), 5, Some("limits.io_weight")));
+    assert_eq!(weight.message, "io_weight is from 1 to 10000, not 20000");
+    let threads = failure(&file("[limits]\nthreads = 2000000"));
+    assert_eq!(place(&threads), (Some(4), Some(11), 7, Some("limits.threads")));
+    assert_eq!(threads.message, "threads is from 1 to 1048576, not 2000000");
+    let files = failure(&file("[limits]\nopen_files = 0"));
+    assert_eq!(place(&files), (Some(4), Some(14), 1, Some("limits.open_files")));
+    assert_eq!(files.message, "open_files is from 1 to 1048576, not 0");
+    // The second of two limits is placed on its own line.
+    let second = failure(&file("[limits]\nthreads = 64\nio_read = \"fast\""));
+    assert_eq!(place(&second), (Some(5), Some(11), 6, Some("limits.io_read")));
 }
 
 #[test]
@@ -470,6 +576,24 @@ fn errors_name_their_line_in_plain_words() {
             "line 4: memory is a size such as \"64M\", \"512K\" or \"2G\", or \"none\", not `lots`",
         ),
         ("[limits]\nmemory = 0", "line 4: memory is more than 0 bytes; \"none\" sets no limit"),
+        ("[limits]\nio_weight = 0", "line 4: io_weight is from 1 to 10000, not 0"),
+        ("[limits]\nio_weight = -1", "line 4: io_weight is not below 0"),
+        (
+            "[limits]\nio_read = \"fast\"",
+            "line 4: io_read is a size such as \"64M\", \"512K\" or \"2G\", or \"none\", not `fast`",
+        ),
+        ("[limits]\nio_write = 0", "line 4: io_write is more than 0 bytes; \"none\" sets no limit"),
+        (
+            "[limits]\nio_read_ops = 0",
+            "line 4: io_read_ops is 1 or more a second; \"none\" sets no limit",
+        ),
+        (
+            "[limits]\nio_write_ops = \"many\"",
+            "line 4: io_write_ops is a whole number a second, or \"none\", not `many`",
+        ),
+        ("[limits]\nthreads = 0", "line 4: threads is from 1 to 1048576, not 0"),
+        ("[limits]\nthreads = 1048577", "line 4: threads is from 1 to 1048576, not 1048577"),
+        ("[limits]\nopen_files = 1048577", "line 4: open_files is from 1 to 1048576, not 1048577"),
         ("order = \"first\"", "line 3: invalid type: string \"first\", expected a whole number"),
         ("enabled = \"yes\"", "line 3: invalid type: string \"yes\", expected true or false"),
         (

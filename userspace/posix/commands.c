@@ -148,6 +148,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"troubleshoot", "the troubleshoot boot test's: it names the likely cause of a start that failed, from the records and log of a system installed on a disk, which this test's is not"},
 		{"startup", "the startup boot test's: it says why a start of a system installed on a disk took as long as it did, from the times the health check keeps there, which this test's has none of"},
 		{"admind", "the admin boot test's service: it serves the web console over HTTPS and signs people in through authd"},
+		{"tune", "the tune boot test's service and command: it sets the kernel's settings through a capability only that service holds"},
 };
 
 enum { ELSEWHERE_COUNT = sizeof(ELSEWHERE) / sizeof(ELSEWHERE[0]) };

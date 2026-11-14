@@ -47,7 +47,7 @@ program = "nginx-service"
 account = "nginx"
 restart = "on-failure"
 start = "when-enabled"
-limits = { memory = "512M" }
+limits = { memory = "512M", open_files = 65536 }
 after = ["netd", "resolved"]
 ready = { when = "listening", timeout = 30 }
 

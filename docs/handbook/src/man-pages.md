@@ -29,6 +29,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `sysupdate(8)`, `updates.toml(5)`, `health.toml(5)` | Updates of the system: channels, checking and downloading from the update server, update files, the two slots, staging an update, trying and proving it, the health check and what it asks, falling back, rolling back, and the boot menu |
 | `snap(1)`, `snap.toml(5)` | Snapshots: the daily ones of `/users`, `/shared` and `/system/settings` in `/snapshots`, how many are kept, and restoring a file from one |
 | `service(8)`, `shutdown(8)`, `reboot(8)` | Starting, stopping and looking at services; stopping, restarting or powering off the machine |
+| `tune(8)` | Performance profiles: the kernel's settings for speed, power and waiting, chosen together, and which fits the machine |
 | `consoled(8)` | The virtual consoles on the screen and keyboard, and their keys |
 | `authd(8)`, `user(8)`, `passwd(1)`, `login(1)` | Accounts: the service that keeps them, checks passwords and starts sessions, making and listing accounts, changing a password, signing in at a console, and who may sign in to the web console |
 | `admind(8)`, `admin.toml(5)`, `dukovo-admin(7)` | The web console: reaching it and the first visit, who signs in and how, the sign-in rules, second steps, unlocking, sessions, what the server checks and limits, and the errors it gives |
@@ -52,7 +53,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `dukovo-privacy(7)` | The privacy promise: what Dukovo keeps on the machine and what it sends on its own |
 | `rtrace(1)` | Tracing a process's system calls and capability messages |
 | `radix_cap_call(2)`, `radix_send(2)`, `radix_recv(2)`, `radix_reply_recv(2)`, `radix_notify(2)`, `radix_wait(2)`, `radix_yield(2)`, `radix_map(2)`, `radix_unmap(2)`, `radix_ring_setup(2)`, `radix_ring_enter(2)`, `radix_debug_log(2)` | The twelve system calls, one page each, with their registers and errors |
-| `radix-capability(2)`, `radix-memory(2)`, `radix-address-space(2)`, `radix-thread(2)`, `radix-endpoint(2)`, `radix-notification(2)`, `radix-random(2)`, `radix-ring(2)`, `radix-kernel-log(2)`, `radix-process(2)`, `radix-signal(2)`, `radix-terminal(2)`, `radix-directory(2)`, `radix-file(2)`, `radix-resource-domain(2)`, `radix-framebuffer(2)`, `radix-input(2)`, `radix-power(2)`, `radix-network(2)`, `radix-names(2)`, `radix-trace(2)`, `radix-startup(2)`, `radix-errors(2)` | The interfaces of each kind of object, the start-up page and the kernel's errors |
+| `radix-capability(2)`, `radix-memory(2)`, `radix-address-space(2)`, `radix-thread(2)`, `radix-endpoint(2)`, `radix-notification(2)`, `radix-random(2)`, `radix-ring(2)`, `radix-kernel-log(2)`, `radix-process(2)`, `radix-signal(2)`, `radix-terminal(2)`, `radix-directory(2)`, `radix-file(2)`, `radix-resource-domain(2)`, `radix-kernel-settings(2)`, `radix-framebuffer(2)`, `radix-input(2)`, `radix-power(2)`, `radix-network(2)`, `radix-names(2)`, `radix-trace(2)`, `radix-startup(2)`, `radix-errors(2)` | The interfaces of each kind of object, the start-up page and the kernel's errors |
 
 The software Dukovo ports from elsewhere brings its own pages, such as
 `grep(1)`, `sed(1)`, `tmux(1)`, `nano(1)` and `bsdtar(1)`, and `man -k`

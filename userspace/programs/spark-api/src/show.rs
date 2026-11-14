@@ -120,6 +120,9 @@ pub struct Service {
     pub last_request: Option<Request>,
     /// What its file gives it to reach and do.
     pub holds: Holds,
+    /// What its domain has used and been held to, in the answer to `show
+    /// NAME` alone, once Spark has made the domain.
+    pub usage: Option<Usage>,
 }
 
 /// A request a client made of Spark.
@@ -170,7 +173,7 @@ pub struct Holds {
     /// Whether it may connect out.
     pub outbound: bool,
     /// The machine's settings it may change: "network", "hardware",
-    /// "time" and "firewall".
+    /// "time", "firewall" and "kernel settings".
     pub admin: Vec<String>,
     /// Whether it may give processes and files another user's name.
     pub names: bool,
@@ -180,6 +183,49 @@ pub struct Holds {
     pub memory_bytes: Option<u64>,
     /// Its domain's CPU weight.
     pub cpu_weight: u32,
+    /// Its domain's disk I/O weight (ADR 0476).
+    pub io_weight: u32,
+    /// The bytes it may read from disks each second, if it has a limit.
+    pub io_read: Option<u64>,
+    /// The bytes it may write to disks each second, if it has a limit.
+    pub io_write: Option<u64>,
+    /// The read requests it may make each second, if it has a limit.
+    pub io_read_ops: Option<u64>,
+    /// The write requests it may make each second, if it has a limit.
+    pub io_write_ops: Option<u64>,
+    /// The most threads its domain may have.
+    pub threads: u32,
+    /// The files each of its processes may have open, if its file says.
+    pub open_files: Option<u32>,
+}
+
+/// What a service's domain has used and been held to since Spark made it
+/// (ADR 0476): counted for the domain, so they hold what its processes
+/// before this one did too, and stay after the service ends.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Usage {
+    /// The memory charged to it now, in bytes.
+    pub memory_bytes: u64,
+    /// The most memory charged to it at once, in bytes.
+    pub memory_peak_bytes: u64,
+    /// The charges its memory limit has refused.
+    pub memory_refused: u64,
+    /// Whether its last end was a stop at its memory limit.
+    pub stopped_at_limit: bool,
+    /// Its threads now.
+    pub threads: u32,
+    /// The bytes its processes have read from disks.
+    pub read_bytes: u64,
+    /// The bytes its processes have written to disks, those their writes
+    /// left dirty in the page cache among them.
+    pub written_bytes: u64,
+    /// The time its requests have waited for a disk's room, in
+    /// milliseconds.
+    pub waited_ms: u64,
+    /// The time its rates have held its requests and writers, in
+    /// milliseconds.
+    pub held_ms: u64,
 }
 
 /// What a service is doing.
@@ -358,8 +404,22 @@ mod tests {
                 secrets: ["tls-key".into()].into(),
                 listen: ["80".into(), "8000-8010".into()].into(),
                 cpu_weight: 100,
+                io_weight: 400,
+                io_read: Some(50 << 20),
+                threads: 64,
+                open_files: Some(10_000),
                 ..Holds::default()
             },
+            usage: Some(Usage {
+                memory_bytes: 12 << 20,
+                memory_peak_bytes: 64 << 20,
+                memory_refused: 3,
+                stopped_at_limit: true,
+                threads: 4,
+                read_bytes: 1 << 20,
+                held_ms: 250,
+                ..Usage::default()
+            }),
             ..Service::default()
         }
     }
@@ -420,6 +480,8 @@ mod tests {
         assert!(json.contains(r#""retry_ms":52000"#), "{json}");
         assert!(json.contains(r#""ready_by_ms":61234"#), "{json}");
         assert!(json.contains(r#""listen":["80","8000-8010"]"#), "{json}");
+        assert!(json.contains(r#""io_read":52428800"#), "{json}");
+        assert!(json.contains(r#""stopped_at_limit":true"#), "{json}");
         assert!(json.contains(r#""trials":[{"id":"service.web","#), "{json}");
         assert!(json.contains(r#""undone":[{"id":"network","why":"it was not kept"#), "{json}");
         assert_eq!(parse(&format!("{json}\n")), Ok(show));
@@ -434,6 +496,7 @@ mod tests {
         let logd = &show.services[0];
         assert_eq!((logd.name.as_str(), logd.state, logd.pid), ("logd", State::Running, Some(7)));
         assert_eq!((logd.health.as_ref(), logd.requires.len()), (None, 0));
+        assert_eq!((logd.usage.as_ref(), logd.holds.open_files), (None, None));
     }
 
     #[test]

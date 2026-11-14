@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The io-weight boot test's reader of the default weight: 16 threads read
+# the first 64 MiB of the test's disk round and round, competing for it
+# with iow-heavy, whose weight is four times its own (ADR 0476).
+
+service_version = 1
+description = "Reads a disk at the default I/O weight"
+program = "/system/tests/posix/diskread"
+arguments = ["/devices/vda", "16", "64"]
+restart = "never"
+
+[limits]
+io_weight = 100
+
+# The disk it reads.
+[permissions]
+files.read = ["/devices/vda"]

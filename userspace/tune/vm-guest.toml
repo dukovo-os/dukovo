@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# For a machine that runs in a virtual machine (`tune recommend` says when).
+#
+# A profile lists the kernel settings it sets (radix-kernel-settings(2)),
+# each with the reason it gives that value. Every setting it does not list
+# is put back to the value the kernel started with, so a profile changes
+# nothing it does not name. tune(8) explains how one is chosen, and
+# `tune show vm-guest` says what this one sets.
+
+description = "A virtual machine, whose host sets the CPUs' speed"
+
+[settings]
+# A virtual CPU is shared with other guests: fewer switches waste less.
+"sched.slice_us" = 4000
+# The host's cache reads ahead as well, so a middle value is enough.
+"disk.read_ahead_kib" = 512

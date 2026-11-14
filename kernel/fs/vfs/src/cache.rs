@@ -38,6 +38,8 @@
 //! that one stopped partway is still not split by another write or cut:
 //! an `O_APPEND` write stays in one piece.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use radix_block::mem::CachePage;
 use radix_block::pagemap::PageMap;
 use radix_block::{PAGE_SIZE, Page};
@@ -60,8 +62,25 @@ pub const WRITE_RUN_MAX: usize = 256;
 
 /// The fewest pages a read that misses asks its backing for beyond those
 /// it copies, when it goes on from where the cached pages end or starts
-/// at the file's start: 128 KiB, Linux's default `read_ahead_kb`.
+/// at the file's start, at first: 128 KiB, Linux's default
+/// `read_ahead_kb`. The kernel setting `disk.read_ahead_kib` changes it
+/// ([`set_read_ahead`], ADR 0476).
 pub const READ_AHEAD: usize = 32;
+
+/// The read-ahead in pages: [`READ_AHEAD`] until it is set.
+static READ_AHEAD_PAGES: AtomicUsize = AtomicUsize::new(READ_AHEAD);
+
+/// The fewest pages a read that misses asks for beyond those it copies,
+/// when it goes on from cached pages or starts the file.
+pub fn read_ahead() -> usize {
+    READ_AHEAD_PAGES.load(Ordering::Relaxed)
+}
+
+/// Sets the read-ahead to `pages`, at most [`READ_RUN`], for the reads
+/// from then on.
+pub fn set_read_ahead(pages: usize) {
+    READ_AHEAD_PAGES.store(pages.min(READ_RUN), Ordering::Relaxed);
+}
 
 /// The most pages one read that misses asks its backing for: 1 MiB.
 pub const READ_RUN: usize = 256;
@@ -322,13 +341,32 @@ impl FileCache {
     }
 
     /// Writes `data` at `offset` ([`APPEND`]: at the end); returns the
-    /// bytes written. A fault partway through keeps what was written.
+    /// bytes written. A fault partway through keeps what was written. The
+    /// pages of a file on a disk that it leaves dirty, clean before, are
+    /// told of once it is done ([`crate::set_dirtied`]).
     pub fn write(&self, offset: u64, data: &dyn In, backing: &dyn Backing) -> Result<usize> {
+        let mut dirtied = 0;
+        let written = self.write_counting(offset, data, backing, &mut dirtied);
+        if backing.persistent() {
+            crate::dirtied(dirtied);
+        }
+        written
+    }
+
+    /// [`FileCache::write`], counting in `dirtied` the pages it leaves
+    /// dirty that were clean.
+    fn write_counting(
+        &self,
+        offset: u64,
+        data: &dyn In,
+        backing: &dyn Backing,
+        dirtied: &mut u64,
+    ) -> Result<usize> {
         let _writing = self.writing.lock();
         let mut offset = offset;
         let mut done = 0;
         loop {
-            let (wrote, copied) = self.write_from(&mut offset, data, done, backing);
+            let (wrote, copied) = self.write_from(&mut offset, data, done, backing, dirtied);
             done += wrote;
             let made = match copied {
                 Ok(Copied::All(total)) => return Ok(total),
@@ -342,15 +380,17 @@ impl FileCache {
     }
 
     /// [`FileCache::write`] under the lock, of `data` from `from` bytes on;
-    /// returns the bytes it wrote, with how far it got or what failed.
-    /// `offset` is where `data` starts in the file, [`APPEND`] until the
-    /// first call makes it the end.
+    /// returns the bytes it wrote, with how far it got or what failed, and
+    /// counts in `dirtied` the pages it made dirty. `offset` is where
+    /// `data` starts in the file, [`APPEND`] until the first call makes it
+    /// the end.
     fn write_from(
         &self,
         offset: &mut u64,
         data: &dyn In,
         from: usize,
         backing: &dyn Backing,
+        dirtied: &mut u64,
     ) -> (usize, Result<Copied>) {
         let mut state = self.state.lock();
         if *offset == APPEND {
@@ -425,6 +465,7 @@ impl FileCache {
                     bytes[inside..].fill(0);
                     if inside > 0 && !core::mem::replace(&mut slot.dirty, true) {
                         state.dirty += 1;
+                        *dirtied += 1;
                     } else if reserved && !slot.dirty {
                         backing.release_pages(1);
                     }
@@ -435,6 +476,7 @@ impl FileCache {
             let was_dirty = core::mem::replace(&mut slot.dirty, true);
             if !was_dirty {
                 state.dirty += 1;
+                *dirtied += 1;
             }
             done += n;
         }
@@ -671,7 +713,7 @@ fn load<'s>(
 /// that copies up to page `last`, with the pages after it that one read
 /// of the backing gives: up to `last`, and more when the read starts the
 /// file (three times what it asks for) or goes on from cached pages (as
-/// many as are cached right before it), [`READ_AHEAD`] at least, up to
+/// many as are cached right before it), [`read_ahead`] at least, up to
 /// [`READ_RUN`] in all and no more than the backing reads at once, and
 /// none that is in memory or past the end. Without a disk, or with one
 /// read a page at a time, [`load`]'s.
@@ -692,9 +734,9 @@ fn load_run<'s>(
     let behind =
         (1..=most.min(index)).take_while(|&n| state.pages.get(index - n).is_some()).count();
     let ahead = match (index, behind) {
-        (0, _) => (3 * wanted).max(READ_AHEAD as u64),
+        (0, _) => (3 * wanted).max(read_ahead() as u64),
         (_, 0) => 0,
-        (_, behind) => (behind as u64).max(READ_AHEAD as u64),
+        (_, behind) => (behind as u64).max(read_ahead() as u64),
     };
     let end_page = state.size.div_ceil(PAGE);
     let end = (last + 1).saturating_add(ahead).min(index + most).min(end_page);

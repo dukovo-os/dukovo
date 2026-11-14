@@ -91,9 +91,12 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   PHP is set up (ADR 0520), `index.php`. Until then its settings answer
   every `.php` URL with 404, so a PHP page's code is never sent as text.
   Its HTTPS server is in the settings, turned off, with the commands
-  that make a certificate with openssl until certd gives them. Each
-  worker raises its open files to 4096, the hard limit, as Spark does
-  not set a service's `open_files` yet.
+  that make a certificate with openssl until certd gives them. The
+  service's limits set each worker's open files limit to 65536
+  (`open_files`, which Spark sets as ADR 0476 says; until then each
+  worker raised its own to the hard limit, 4096), of which a process
+  holds up to 4,032 while a capability space has room for no more, well
+  above its 1024 connections.
 
 ## Consequences
 
@@ -118,7 +121,6 @@ its logs in `/var/log/nginx` turned over by logrotate, and its sites in
   - The catalog's commands through elevate, `nginx -t` among them.
   - The services a site needs started first, and readiness, once
     manifests have dependency lines.
-  - Spark setting `open_files`.
   - Log files of a service's own, turned over.
   - nginx on an event queue, with sendfile and thread pools.
   - HTTP/3.

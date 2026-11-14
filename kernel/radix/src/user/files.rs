@@ -888,12 +888,9 @@ pub fn directory_method(
         directory::SYNC => {
             directory::SyncArgs::decode(args)?;
             let dir = directory_of(found, Rights::NONE)?;
-            // A view's are the filesystems of what it attaches.
-            if dir.at.in_view() {
-                vfs()?.sync_view(&dir.at).map_err(fs::status)?;
-            } else {
-                dir.at.mount.fs.sync().map_err(fs::status)?;
-            }
+            // The tree's root's are every filesystem, and a view's those
+            // of what it attaches.
+            vfs()?.sync_at(&dir.at).map_err(fs::status)?;
             answer(label, 0, [0; 8])
         }
         directory::INFO => {

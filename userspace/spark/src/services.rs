@@ -25,9 +25,10 @@
 //! 0190). `admin.hardware = true` gives it the platform capability, which
 //! sets the fans, the LEDs and the ARGB header (ADR 0208), and
 //! `admin.time = true` the clock capability, which sets the time of day
-//! and the real-time clock (ADR 0194), and `admin.firewall = true` the
+//! and the real-time clock (ADR 0194), `admin.firewall = true` the
 //! firewall capability, which gives the packet filter its rules (ADR
-//! 0334). The ports a service listens on take what other machines start:
+//! 0334), and `admin.tune = true` the kernel settings capability, which
+//! changes the kernel's settings (ADR 0476). The ports a service listens on take what other machines start:
 //! they are open while it runs (ADR 0334). A driver program's
 //! `devices.pci` names the cards it drives, and Spark gives it each card
 //! the kernel left for a program that one matches (ADR 0198). It reaches
@@ -73,6 +74,18 @@ pub struct Spec {
     pub memory_pages: Option<u64>,
     /// Its domain's out-of-memory class: service or app.
     pub oom: OomClass,
+    /// Its domain's disk I/O weight.
+    pub io_weight: u32,
+    /// The bytes it may read and write each second, and the read and
+    /// write requests it may make, if its file limits them.
+    pub io_read: Option<u64>,
+    pub io_write: Option<u64>,
+    pub io_read_ops: Option<u64>,
+    pub io_write_ops: Option<u64>,
+    /// The most threads its domain may have.
+    pub threads: u32,
+    /// The files each of its processes may have open, if its file says.
+    pub open_files: Option<u32>,
     /// More of the environment, as `NAME=value`.
     pub environment: Vec<String>,
     pub enabled: bool,
@@ -88,6 +101,8 @@ pub struct Spec {
     pub time: bool,
     /// Whether it gets the firewall capability: admin.firewall.
     pub firewall: bool,
+    /// Whether it gets the kernel settings capability: admin.tune.
+    pub tune: bool,
     /// The places its view holds beyond what every service's does.
     pub places: Vec<Place>,
     /// The places it mounts filesystems beneath, which it gets as
@@ -177,6 +192,13 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
             Oom::Service => OomClass::Service,
             Oom::App => OomClass::App,
         },
+        io_weight: file.limits.io_weight,
+        io_read: file.limits.io_read,
+        io_write: file.limits.io_write,
+        io_read_ops: file.limits.io_read_ops,
+        io_write_ops: file.limits.io_write_ops,
+        threads: file.limits.threads,
+        open_files: file.limits.open_files,
         environment: file
             .environment
             .iter()
@@ -189,6 +211,7 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         hardware: file.permissions.admin.hardware,
         time: file.permissions.admin.time,
         firewall: file.permissions.admin.firewall,
+        tune: file.permissions.admin.tune,
         places: file.permissions.places(),
         mounts: file.permissions.files.mount.clone(),
         whole_tree: file.permissions.runs_with_your_access,
