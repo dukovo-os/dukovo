@@ -269,7 +269,7 @@ fn require_root(user: u32) -> Result<(), Fail> {
         return Ok(());
     }
     Err(fail(
-        "only root may change the console's reach: elevate first, as `sudo admin reach ...`".into(),
+        "only root may change the console's reach: run it with elevate, as `elevate admin reach ...`".into(),
     ))
 }
 
@@ -822,7 +822,7 @@ mod tests {
             let fail = require_root(user).unwrap_err();
             assert_eq!(
                 fail.message,
-                "only root may change the console's reach: elevate first, as `sudo admin reach ...`"
+                "only root may change the console's reach: run it with elevate, as `elevate admin reach ...`"
             );
             assert!(!fail.usage);
         }
