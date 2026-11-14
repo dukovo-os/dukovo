@@ -70,6 +70,12 @@ until nc -z 127.0.0.1 "$port" 2> /dev/null; do
 	i=$((i + 1))
 	if [ "$i" -gt 40 ] || ! kill -0 "$pid" 2> /dev/null; then
 		cat rsyslog.out
+		if grep -q "could not open config file .*Permission denied" rsyslog.out; then
+			# A distribution's AppArmor profile for rsyslogd (Ubuntu's,
+			# Mint's) lets it read only its own configuration.
+			echo "the lab PC's rsyslogd may not read a configuration outside /etc (AppArmor's profile for it)"
+			exit 77
+		fi
 		if grep -qi "gtls" rsyslog.out; then
 			echo "the lab PC's rsyslogd has no gtls driver"
 			exit 77

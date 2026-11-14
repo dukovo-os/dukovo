@@ -1057,6 +1057,17 @@ fn remove_services(id: &str, purge: bool) -> Result<String, String> {
                 let _ = write!(said, "; its account {name} is not removed: {why}");
             }
         }
+        // Its live folder too, which Spark made the account's: left, it
+        // would stay the removed account's, and a later install's account
+        // could not write its sockets or its pid file there.
+        let live = services::live_folder(name);
+        match fs::remove_dir_all(&live) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                let _ = write!(said, "; {live} is not removed: {e}");
+            }
+        }
     }
     if kept {
         fs::remove_dir_all(&data).map_err(|e| format!("{data}: {e}"))?;

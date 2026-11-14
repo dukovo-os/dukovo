@@ -19,15 +19,23 @@
 set -eu
 
 server="${DUKOVO_LAB_UPDATES:-}/update-server"
-if [ -z "${DUKOVO_LAB_UPDATES:-}" ] || [ ! -d "$server/system" ]; then
+if [ -z "${DUKOVO_LAB_UPDATES:-}" ] || [ ! -d "$server/system-before-pull" ]; then
 	echo "no test update server: run the update tests through ./ob lab, which builds it"
 	exit 77
 fi
 
 case "$1" in
 serve)
+	# What the server served before the release keys withdrew its stable
+	# release, which the tests update to; the withdrawal is the boot
+	# tests' to show. It is served as /system, from a folder of this
+	# step's own.
+	served="$PWD/update-server-root"
+	rm -rf "$served"
+	mkdir "$served"
+	ln -s "$server/system-before-pull" "$served/system"
 	echo "serving updates on port $2"
-	exec python3 -m http.server --bind 0.0.0.0 --directory "$server" "$2"
+	exec python3 -m http.server --bind 0.0.0.0 --directory "$served" "$2"
 	;;
 copy-file)
 	key="${XDG_CONFIG_HOME:-$HOME/.config}/dukovo-lab/lab_ed25519"
