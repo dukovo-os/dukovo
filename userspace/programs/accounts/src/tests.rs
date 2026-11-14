@@ -281,7 +281,7 @@ fn passwords_get_warnings_and_no_rules() {
 
 #[test]
 fn requests_go_and_come_back() {
-    let requests = [
+    let requests = vec![
         Request::Check { name: "alice".into(), password: b"s3cret".to_vec() },
         Request::Passwd { name: "alice".into(), current: Vec::new(), new: b"new".to_vec() },
         Request::Add {
