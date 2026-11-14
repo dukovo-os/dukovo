@@ -57,6 +57,12 @@ const TEST_WAIT: Duration = Duration::from_secs(40);
 /// How many changes `history` shows without `-n`.
 const HISTORY_DEFAULT: usize = 20;
 
+/// The alerts that are active now, as `alerts list` shows them, for a
+/// caller that is root.
+pub(crate) fn active() -> Result<Vec<Active>, Fail> {
+    items(&request("list"), WAIT, false)
+}
+
 /// What the command line asks for.
 #[derive(Debug, PartialEq, Eq)]
 enum Command {

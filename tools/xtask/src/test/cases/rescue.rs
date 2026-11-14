@@ -43,7 +43,7 @@ pub const CASE: Case = Case {
 
 /// Where the installed root is in the second boot: the installed disk is
 /// a SATA disk then, and the guided layout's root its fourth partition.
-const ROOT: &str = "sda4";
+pub const ROOT: &str = "sda4";
 
 /// How long a reinstall may take, in seconds: it copies and reads back
 /// the whole system.
@@ -54,7 +54,7 @@ const REINSTALL_SECONDS: u64 = 300;
 const NETWORK_CHECK_SECONDS: u64 = 90;
 
 /// A health check that never ends, so that no start is seen through.
-const NEVER_HEALTHY: &str =
+pub const NEVER_HEALTHY: &str =
     "[[check]]\\nname = \"wait\"\\ncommand = [\"sleep\", \"600\"]\\nrequired = true\\ntimeout = 600\\n";
 
 /// Nothing to do on the host between the boots: the disk check has run.
@@ -63,7 +63,7 @@ fn nothing(_case: &Case, _disks: &[DiskImage]) -> Result<(), String> {
 }
 
 /// Waits for the installed system's sign-in on tty1, and signs alice in.
-fn alice_signs_in(vm: &mut Vm) -> Result<(), String> {
+pub fn alice_signs_in(vm: &mut Vm) -> Result<(), String> {
     vm.expect_anywhere("consoled: started /system/commands/login on tty1 as process ")?;
     vm.expect_screen(&[&format!("{RELEASE} {VERSION}")])?;
     answer_prompt(vm, "Name:", "alice")?;
@@ -71,25 +71,43 @@ fn alice_signs_in(vm: &mut Vm) -> Result<(), String> {
     vm.expect_anywhere("authd: alice signed in on pts/")
 }
 
-/// Waits for Rescue, started by the menu, and signs alice in to it as
-/// the administrator. Gives where in the log Rescue started.
-fn in_rescue(vm: &mut Vm) -> Result<usize, String> {
+/// Waits for Rescue, started by the menu, up to its line about SSH, which
+/// shows `ssh`. Gives where in the log Rescue started.
+pub fn rescue_starts(vm: &mut Vm, ssh: &str) -> Result<usize, String> {
     vm.expect("spark: this is Rescue (ADR 0460): dukovo-rescue(8) runs on the consoles")?;
     let at = vm.log().len();
     vm.expect("spark: Rescue starts only the consoles, the log, the firewall and the reader")?;
     vm.expect_screen(&[&format!("Dukovo Rescue {VERSION}")])?;
     vm.expect_screen(&[&format!(", on {ROOT}.")])?;
+    vm.expect_screen(&[ssh])?;
+    Ok(at)
+}
+
+/// Signs alice in at Rescue's screen as the administrator, and waits for
+/// its menu.
+pub fn sign_in_at_screen(vm: &mut Vm) -> Result<(), String> {
     answer_prompt(vm, "Name:", "alice")?;
     answer_prompt(vm, "Password:", PASSWORD)?;
     vm.expect_screen(&["Rescue: alice is an administrator of this computer."])?;
-    vm.expect_screen(&["What would you like to do?"])?;
+    vm.expect_screen(&["What would you like to do?"])
+}
+
+/// Waits for Rescue, started by the menu, which says `ssh` of SSH, and
+/// signs alice in to it as the administrator. Gives where in the log
+/// Rescue started.
+fn in_rescue(vm: &mut Vm, ssh: &str) -> Result<usize, String> {
+    let at = rescue_starts(vm, ssh)?;
+    sign_in_at_screen(vm)?;
     Ok(at)
 }
 
 /// Chooses `choice` in Rescue's menu.
-fn choose(vm: &mut Vm, choice: &str) -> Result<(), String> {
+pub fn choose(vm: &mut Vm, choice: &str) -> Result<(), String> {
     answer_prompt(vm, "Choose 0 to 13:", choice)
 }
+
+/// What Rescue says of SSH when the installed system had it off.
+const SSH_OFF: &str = "SSH stays off: this computer had it off";
 
 /// The second boot, from the installed disk alone.
 fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
@@ -129,7 +147,7 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         vm.expect("spark: started logd (")?;
         vm.monitor("system_reset")?;
     }
-    let at = in_rescue(vm)?;
+    let at = in_rescue(vm, SSH_OFF)?;
     // Why: the starts the menu counted (ADR 0501), and how far they got.
     vm.expect_screen(&[
         "The last 3 starts were not seen through.",
@@ -151,8 +169,11 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     answer_prompt(vm, "Press Enter to go back to the choices.", "")?;
     vm.expect_screen(&["Back in Rescue."])?;
 
-    // Both slots broken: the health check goes, and the only slot.
+    // Both slots broken: the health check goes, and the only slot. Rescue's
+    // shell shows that nothing listens on port 22, SSH being off.
     choose(vm, "10")?;
+    answer_prompt(vm, "#", "clear; echo \"listening $(ss -tl | grep -c ':22 ')\"")?;
+    vm.expect_screen(&["listening 0"])?;
     answer_prompt(
         vm,
         "#",
@@ -167,7 +188,7 @@ fn rescued(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     choose(vm, "12")?;
 
     // No slot to start: Rescue starts by itself, and reinstalls.
-    in_rescue(vm)?;
+    in_rescue(vm, SSH_OFF)?;
     choose(vm, "3")?;
     answer_prompt(vm, "type the folder or file:", "")?;
     vm.expect_screen(&[&format!("Reinstall Dukovo {VERSION} into slot A?")])?;

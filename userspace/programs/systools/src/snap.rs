@@ -89,7 +89,7 @@ impl Default for Settings {
 
 impl Settings {
     /// The settings in `text`.
-    fn parse(text: &str) -> Result<Settings, String> {
+    pub(crate) fn parse(text: &str) -> Result<Settings, String> {
         let file: File = toml::from_str(text).map_err(|err| err.to_string())?;
         let default = Settings::default();
         Ok(Settings {

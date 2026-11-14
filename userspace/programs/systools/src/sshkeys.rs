@@ -225,6 +225,16 @@ pub fn names(text: &str, key: &[u8], mut skipped: impl FnMut(usize)) -> bool {
     found
 }
 
+/// The key a public key's `line` holds, as `ssh-keygen` writes it in a
+/// `.pub` file: its algorithm, its base64 and maybe a comment. `None` for
+/// a line that holds none, or one of another kind than it says.
+pub fn public_line(line: &str) -> Option<Vec<u8>> {
+    let mut words = line.split_ascii_whitespace();
+    let algorithm = words.next().filter(|word| is_key_type(word))?;
+    let key = STANDARD.decode(words.next()?).ok()?;
+    (algorithm_of(&key) == Some(algorithm)).then_some(key)
+}
+
 /// Whether `word` is a key's algorithm, as an `authorized_keys` line
 /// starts with, rather than options.
 fn is_key_type(word: &str) -> bool {
@@ -274,8 +284,9 @@ fn safe(fd: &OwnedFd, user: &User, what: &str) -> Result<std::fs::Metadata, Stri
 /// the home on. `None` when there is no such file: no key signs in.
 pub fn read_authorized(user: &User) -> Result<Option<String>, String> {
     let absent = |err: &io::Error| err.kind() == io::ErrorKind::NotFound;
-    let home = Path::new(&user.home);
-    let home = match open_at(None, home, true) {
+    // In Rescue, the home in the installed system's root (ADR 0540).
+    let home = accounts::rescue::installed(&user.home);
+    let home = match open_at(None, &home, true) {
         Ok(fd) => fd,
         Err(err) if absent(&err) => return Ok(None),
         Err(err) => return Err(format!("{}: {err}", user.home)),

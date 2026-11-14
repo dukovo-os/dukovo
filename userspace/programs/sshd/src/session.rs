@@ -21,7 +21,7 @@ use std::time::Duration;
 use accounts::request::{self, Answer, Request, SshProof, SshRun};
 use russh::server::Handle;
 use russh::{ChannelId, Sig};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::pipe;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinHandle};
@@ -79,6 +79,20 @@ pub struct Running {
 pub struct Overrun;
 
 impl Running {
+    /// A session whose bytes other tasks pass, as a help screen's are
+    /// ([`crate::help`]): the client's go to `input`, of which `queued`
+    /// counts those not taken yet, and `tasks` pass them, the last of
+    /// them the one that ends the session and closes channel `id`.
+    pub fn of(
+        input: mpsc::UnboundedSender<Vec<u8>>,
+        queued: Arc<AtomicUsize>,
+        tasks: Vec<AbortHandle>,
+        handle: Handle,
+        id: ChannelId,
+    ) -> Running {
+        Running { input: Some(input), queued, master: None, tasks, handle, id }
+    }
+
     /// Passes the client's `bytes` on to the session, without waiting:
     /// they wait for it in a queue, which the window keeps to [`WINDOW`]
     /// bytes, unless the client does not keep to it.
@@ -195,7 +209,7 @@ pub async fn start(
     };
     let (input_sender, input) = mpsc::unbounded_channel();
     let queued = Arc::new(AtomicUsize::new(0));
-    let taken = Taken { queued: Arc::clone(&queued), handle: handle.clone(), id };
+    let taken = Taken::new(Arc::clone(&queued), handle.clone(), id);
     let (master, tasks) = match ends {
         Ends::Terminal(master) => {
             // The master is read and written through copies of it: the
@@ -230,7 +244,12 @@ pub async fn start(
 
 /// Reads what the session writes to `from` and sends it on the channel,
 /// as data or as extended data of type `extended`, until the end.
-async fn read_out(mut from: pipe::Receiver, handle: Handle, id: ChannelId, extended: Option<u32>) {
+pub async fn read_out(
+    mut from: impl AsyncRead + Unpin,
+    handle: Handle,
+    id: ChannelId,
+    extended: Option<u32>,
+) {
     let mut buffer = vec![0u8; 32 * 1024];
     loop {
         let bytes = match from.read(&mut buffer).await {
@@ -266,10 +285,25 @@ fn room(bytes: usize) -> u32 {
 }
 
 /// What the writer tells as the session takes the client's bytes.
-struct Taken {
+pub struct Taken {
     queued: Arc<AtomicUsize>,
     handle: Handle,
     id: ChannelId,
+}
+
+impl Taken {
+    /// What tells the client of channel `id` that the bytes `queued`
+    /// counts were taken.
+    pub fn new(queued: Arc<AtomicUsize>, handle: Handle, id: ChannelId) -> Taken {
+        Taken { queued, handle, id }
+    }
+
+    /// The session took `bytes`: the client has room for as many again.
+    /// `false` once the connection is gone.
+    pub async fn took(&self, bytes: usize) -> bool {
+        self.queued.fetch_sub(bytes, Ordering::Relaxed);
+        self.handle.window_adjust(self.id, room(bytes)).await.is_ok()
+    }
 }
 
 /// Writes the client's bytes, as they come, to the session's `to`, and
@@ -284,15 +318,14 @@ async fn write_in(mut to: pipe::Sender, mut input: mpsc::UnboundedReceiver<Vec<u
             // What comes later is passed over where it comes.
             input.close();
         }
-        taken.queued.fetch_sub(bytes.len(), Ordering::Relaxed);
-        if taken.handle.window_adjust(taken.id, room(bytes.len())).await.is_err() {
+        if !taken.took(bytes.len()).await {
             return;
         }
     }
 }
 
 /// Writes all of `bytes` to `to`.
-pub async fn write_all(to: &mut pipe::Sender, bytes: &[u8]) -> io::Result<()> {
+pub async fn write_all(to: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> io::Result<()> {
     let mut at = 0;
     while at < bytes.len() {
         match to.write(&bytes[at..]).await {

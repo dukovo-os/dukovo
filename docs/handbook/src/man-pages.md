@@ -34,7 +34,9 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `consoled(8)` | The virtual consoles on the screen and keyboard, and their keys |
 | `authd(8)`, `user(8)`, `passwd(1)`, `login(1)` | Accounts: the service that keeps them, checks passwords and starts sessions, making and listing accounts, changing a password, signing in at a console, and who may sign in to the web console |
 | `admind(8)`, `admin.toml(5)`, `dukovo-admin(7)` | The web console: reaching it and the first visit, who signs in and how, the sign-in rules, second steps, unlocking, sessions, what the server checks and limits, and the errors it gives |
-| `elevate(8)`, `sudo(8)` | Running a command as an administrator, after the password once in each terminal pane every 15 minutes |
+| `elevate(8)`, `sudo(8)` | Running a command as an administrator, after the password once in each terminal pane every 15 minutes, and what elevate says in a help screen |
+| `help-session(1)` | Letting a helper who has no account work in your screen over SSH: starting a session with a code or a key, what the helper sees and cannot do, ending it with Ctrl-], the transcript, allowing elevate, and opening SSH for the session |
+| `firewall(8)`, `blocking.toml(5)` | The firewall's rules and what listens, and blocking the addresses that guess passwords: when one is blocked and for how long, the networks that never are, what a block stops, listing and lifting blocks |
 | `bundle(1)`, `bundled(8)`, `manifest.json(5)` | Bundles: making and checking a bundle's manifest, each field and permission it may hold, signing, packing and unpacking bundles, the service that installs, seals and removes them, and running them in their sandbox |
 | `nukesh(1)` | Nukesh, the shell: options, start-up files, scripts, the line editor, history, completion, job control, POSIX mode and its limits |
 | `coreutils(1)`, `7zz(1)` | What the ported core utilities and 7-Zip do on Dukovo |
@@ -45,6 +47,7 @@ for section 2, which `ridlc` generates from the interface definitions in
 | `logd(8)`, `log(1)`, `journalctl(1)`, `logger(1)`, `logtrim(8)`, `log(5)` | The system's log and its audit log: what logd keeps, who reads what, how to read it by service, level, time and boot, how a script writes to it, and how much it keeps |
 | `timerd(8)`, `crontab(1)`, `crontab(5)`, `at(1)`, `atq(1)`, `atrm(1)`, `batch(1)`, `logturn(8)` | Service timers, a person's crontab and `at` jobs, and the turnover of a service's log files: how times are written, what runs while someone is signed out, and what is kept |
 | `dumps(8)` | The kernel's crash dumps: what a panic leaves, saving, listing, showing and deleting the dumps, and testing that a panic is saved |
+| `dukovo-check(8)` | Checking the computer's security and health: what each check looks at, the ID of each warning, the exit status, the result that is kept, and its JSON format |
 | `hardware(8)` | Checking the machine for failing hardware: the memory, disks, processors, sensors, battery and network cards, the full check, the result that is kept, and the ID of each warning and failure |
 | `logforward(8)`, `logforward.toml(5)` | Sending the log to syslog servers over TLS, TCP or UDP: the destinations and what each is sent, the certificate check, how a server that was away is sent what it missed, and the commands that show where each stands and test it |
 | `metricsd(8)`, `metrics(1)`, `metrics.toml(5)` | The machine's history and its early warnings: what is kept and for how long, showing it now and over any time range, the warnings and when each is raised and cleared, and the Prometheus endpoint |

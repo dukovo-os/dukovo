@@ -102,8 +102,9 @@ use libradix::abi::process::{
 };
 use libradix::abi::resource_domain::{self, NO_LIMIT};
 use libradix::abi::startup::{
-    DEVICE_SLOTS, SLOT_CLOCK, SLOT_DEVICE, SLOT_FD_BASE, SLOT_FIREWALL, SLOT_FIRST_EXTRA, SLOT_LOG,
-    SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT, SLOT_SETTINGS,
+    DEVICE_SLOTS, SLOT_CLOCK, SLOT_DEVICE, SLOT_DOMAIN, SLOT_FD_BASE, SLOT_FIREWALL,
+    SLOT_FIRST_EXTRA, SLOT_LOG, SLOT_NETWORK, SLOT_PLATFORM, SLOT_PROCESS, SLOT_RANDOM, SLOT_ROOT,
+    SLOT_SETTINGS,
 };
 use libradix::abi::{names as names_abi, network, power, signal, syscalls};
 use radix_rt::fs::{Dir, File};
@@ -387,6 +388,20 @@ fn grant_settings(settings: Option<u32>, spec: &Spec, child: u32) -> Result<(), 
     let rights = Rights::READ.union(Rights::CONTROL).union(Rights::COPY).union(Rights::TRANSFER);
     process::share(&SYS, child, settings, SLOT_SETTINGS, rights, 0)
         .map_err(|status| format!("giving it the kernel settings failed: {:#x}", status.0))
+}
+
+/// Gives `child` a capability to its own domain, `domain`, in SLOT_DOMAIN
+/// if `spec` asks for the domain permission, with the read and control
+/// rights, and the copy and transfer rights so that it lasts through
+/// `fork` (ADR 0540).
+fn grant_domain(domain: Option<u32>, spec: &Spec, child: u32) -> Result<(), String> {
+    if !spec.domain {
+        return Ok(());
+    }
+    let domain = domain.ok_or("Spark made it no domain to give")?;
+    let rights = Rights::READ.union(Rights::CONTROL).union(Rights::COPY).union(Rights::TRANSFER);
+    process::share(&SYS, child, domain, SLOT_DOMAIN, rights, 0)
+        .map_err(|status| format!("giving it its domain failed: {:#x}", status.0))
 }
 
 /// Gives `domain` the disk weight and rates and the thread limit `spec`'s
@@ -1629,6 +1644,7 @@ impl Supervisor {
             .and_then(|()| grant_clock(self.clock, spec, child))
             .and_then(|()| grant_firewall(self.firewall, spec, child))
             .and_then(|()| grant_settings(self.settings, spec, child))
+            .and_then(|()| grant_domain(service.domain, spec, child))
             .and_then(|()| grant_devices(self.devices, spec, child))
             .and_then(|()| limit_files(spec, child))
             .and_then(|()| {

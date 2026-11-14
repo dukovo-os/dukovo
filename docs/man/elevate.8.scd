@@ -156,6 +156,26 @@ administrator, three wrong passwords, a password needed with *-n*, or
 a command not found. In the elevated process, 126 when the program
 could not be run and 127 when it is not there.
 
+# IN A HELP SESSION
+
+In the screen of a help session (*help-session*(1), ADR 0540), where a
+helper types as the owner, *elevate* never asks for a password, since the
+helper could draw the question and read what the owner types. authd
+tells the screen by its place in the session's domain, and says:
+
+```
+elevate: in a help session, elevate runs only while its owner allows it: help-session allow-elevate
+```
+
+An owner who is an administrator allows it from another terminal, not
+from the screen, with *help-session allow-elevate*, which asks for their
+password there. For the next 15 minutes *elevate* in the help screen runs
+its command with no password, and in the session's domain, so that the end
+of the session ends the command too. An owner who is not an
+administrator cannot allow it, so *elevate* stays refused there. Each
+command is a line of the audit log, as above, and the transcript names
+when elevate was allowed.
+
 # SECURITY
 
 The admin set amounts to the whole machine: an administrator who can
@@ -175,5 +195,5 @@ ends if authd does.
 
 # SEE ALSO
 
-*sudo*(8), *authd*(8), *user*(8), *passwd*(1), *login*(1), *env*(1),
+*sudo*(8), *authd*(8), *help-session*(1), *user*(8), *passwd*(1), *login*(1), *env*(1),
 *logd*(8), *systools*(1)

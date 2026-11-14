@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Security and health check: dukovo-check(8) looks at the computer, as a
+# timer starts it each morning, and keeps what it finds in
+# /system/state/dukovo-check/last.json, which `dukovo-check --last` shows
+# and the web console reads (ADR 0479). It changes nothing else. `elevate
+# dukovo-check` checks at once, and keeps the result in the same way.
+#
+# service.toml(5) explains each setting. `service check dukovo-check`
+# checks this file, and `service edit dukovo-check` checks it as you save.
+
+service_version = 1
+description = "Security and health check"
+program = "/system/commands/dukovo-check"
+# It runs once for each time of its timer, and ends. Its status says what
+# it found (1 a failure, 2 a warning), which is no reason to run it again.
+restart = "never"
+
+[limits]
+memory = "32M"
+
+# At five in the morning and up to an hour after, by an amount that is
+# the same each day and differs between machines, so that a fleet does not
+# check all at once. A machine that was off at the time checks soon after
+# it starts.
+[timer]
+at = ["0 5 * * *"]
+spread = "1h"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, past the owners and modes of files, to read the account
+# files, whose password hashes only root may, and the settings and state
+# that the checks look at, and to give the result it keeps to the group of
+# administrators; and the firewall, to ask which ports other machines
+# reach and which rules are loaded. It asks Spark and alertd what they
+# say of the services and the alerts, and changes nothing but the result.
+[permissions]
+admin.firewall = true
+runs-with-your-access = true

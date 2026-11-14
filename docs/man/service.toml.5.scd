@@ -406,7 +406,10 @@ override:
 	file gives in it, read-only unless one of them that is no socket
 	is in *files.read-write*. Connecting needs no write to the folder,
 	and a socket its service makes again, as *logd*(8) does when it
-	restarts, is found at the same name.
+	restarts, is found at the same name. A device that each open makes
+	anew, _/devices/ptmx_, _/devices/tty_ or _/devices/fuse_, is
+	reached through its folder in the same way, so that each of the
+	service's terminals is a pseudo-terminal of its own.
 
 	*files.mount* = [_"path"_, ...]
 		Places it may read, change and mount filesystems beneath, as
@@ -463,6 +466,13 @@ override:
 		descriptor after those of *files.mount*, and
 		*NAMES_DESCRIPTOR* says which. Only *authd*(8) needs it, to
 		sign people in; a service that held it could act for anyone.
+
+	*domain* = *true* | *false*
+		Whether it holds a capability to its own resource domain, with
+		which it makes domains below it and stops them
+		(*radix-resource-domain*(2)); *false* unless set. Only *authd*(8)'s
+		file sets it, to run each help session in a domain of its own and
+		stop it with everything the helper started (ADR 0540).
 
 	*admin.network* = *true* | *false*
 		Whether it may set the network interfaces up, their addresses

@@ -66,6 +66,7 @@
 #![forbid(unsafe_code)]
 
 mod across;
+pub mod blocks;
 pub mod bpf;
 pub mod filter;
 pub mod ipv6;

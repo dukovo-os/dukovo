@@ -22,17 +22,33 @@
 //! knows from the file each process last ran with radix-process(2)'s
 //! `exec`.
 //!
+//! Before any rule, the firewall asks its list of blocked addresses
+//! (ADR 0479): those authd(8) saw guess passwords, each for a time. A
+//! block stops what its address starts on the ports it names, or, when it
+//! names none, everything, pings too. An address is an IPv4 address, or
+//! an IPv6 network of 64 bits, since one machine holds a whole /64. What a
+//! block stops is dropped, counted and logged as the rules' drops are.
+//!
 //! The kernel gives Spark the one capability to the firewall when it
 //! starts, with the read and control rights. Spark gives a service a copy
 //! in SLOT_FIREWALL when its file asks for admin.firewall
 //! (service.toml(5)), and elevate(8) passes the one it holds to the
 //! command it runs, for firewall(8). Asking needs the read right, and
-//! changing the rules the control right.
+//! changing the rules or the blocks the control right.
 
 module firewall;
 
 /// The most rules the firewall holds.
 const RULES_MAX: u64 = 128;
+
+/// The most addresses it blocks at once.
+const BLOCKS_MAX: u64 = 1024;
+
+/// The most ranges of ports a block names.
+const BLOCK_PORTS: u64 = 4;
+
+/// The longest a block lasts: 30 days.
+const BLOCK_SECONDS_MAX: u64 = 2592000;
 
 /// What a rule does with what it matches.
 enum Action: u32 {
@@ -116,8 +132,30 @@ struct Listener {
     file: u64;
 }
 
-/// The firewall's rules, and what they let in.
-interface firewall = 0x0032 version 1 {
+/// An address blocked for a time, as `set_blocked` takes it and
+/// `blocked` gives it.
+struct Block {
+    /// The version of IP of `from`: 4 or 6.
+    family: u32;
+    /// How many of the ranges of ports it names, up to BLOCK_PORTS: 0
+    /// for every port, and pings too.
+    port_count: u32;
+    /// The address, in network byte order: an IPv4 address in the first
+    /// 4 bytes, the rest zero, or an IPv6 network in the first 8, the
+    /// rest zero.
+    from: [u8; 16];
+    /// The seconds it lasts from now, 1 to BLOCK_SECONDS_MAX, as
+    /// `set_blocked` takes it; those it has left, as `blocked` gives it.
+    seconds: u64;
+    /// The first port of each range: the first `port_count`, the others
+    /// zero.
+    first_ports: [u16; 4];
+    /// The last port of each range, as `first_ports`.
+    last_ports: [u16; 4];
+}
+
+/// The firewall's rules, what they let in, and the addresses it blocks.
+interface firewall = 0x0032 version 2 {
     kind = firewall;
     /// Gives the firewall the rules in `rules`, Rule structures, at most
     /// RULES_MAX, in place of those it had; none leaves the listeners
@@ -138,5 +176,19 @@ interface firewall = 0x0032 version 1 {
     /// Copies the listeners, Listener structures, into `buffer`, as many
     /// as fit: how many there are. Needs the read right.
     method listeners = 4 (buffer: out bytes) -> (count: u32)
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, bad_address];
+    /// Blocks the addresses in `blocks`, Block structures, at most
+    /// BLOCKS_MAX, in place of those it blocked; none lifts every block.
+    /// They are in order of their addresses: the IPv4 ones first, then the
+    /// IPv6 ones, each as a number, each once. Fails with invalid_argument
+    /// for a block that is not one or a list out of order, and
+    /// out_of_range for more than BLOCKS_MAX. Needs the control right.
+    method set_blocked = 5 (blocks: in bytes) -> ()
+        raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
+                bad_address, out_of_range, no_memory];
+    /// Copies the blocks whose time is not up, Block structures in order,
+    /// into `buffer`, as many as fit: how many there are. Needs the read
+    /// right.
+    method blocked = 6 (buffer: out bytes) -> (count: u32)
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, bad_address];
 }

@@ -21,7 +21,7 @@
 //! `drivetest` and `scan` for a disk's self-test and read scan.
 
 mod battery;
-mod check;
+pub(crate) mod check;
 mod cpu;
 mod disks;
 mod drivetest;
@@ -30,7 +30,7 @@ mod monitors;
 mod network;
 mod plan;
 mod run;
-mod saved;
+pub(crate) mod saved;
 mod scan;
 
 use std::io::{self, BufRead, Write};

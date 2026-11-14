@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Blocking the addresses that guess passwords (blocking.toml(5), authd(8),
+# ADR 0479). When `tries` wrong passwords come from one address within
+# `within`, authd has the firewall drop what that address starts on the
+# sign-in ports, the ones sshd, smbd and admind listen on, for `first`.
+# Each block that comes within a day of the one before lasts twice as
+# long, up to `longest`. authd reads this file again when it changes, so
+# there is nothing to restart.
+
+# Whether addresses are blocked at all.
+on = true
+
+# How many wrong passwords from one address block it, from 2 to 100.
+tries = 5
+
+# The time they must come within: a number and a unit, `m` for minutes,
+# `h` for hours, `d` for days, from a minute to a day.
+within = "10m"
+
+# How long the first block lasts, and the longest one lasts, up to 30 days.
+first = "10m"
+longest = "24h"
+
+# Networks that are never blocked, as ["192.168.1.0/24", "2001:db8::/48"],
+# or a single address. `elevate firewall never-block NETWORK` adds one here.
+# This machine's own addresses, and the address an administrator is
+# signed in from while that session lasts, are never blocked either.
+never = []

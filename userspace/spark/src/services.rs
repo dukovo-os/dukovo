@@ -107,6 +107,8 @@ pub struct Spec {
     pub firewall: bool,
     /// Whether it gets the kernel settings capability: admin.tune.
     pub tune: bool,
+    /// Whether it gets a capability to its own domain: domain.
+    pub domain: bool,
     /// The places its view holds beyond what every service's does.
     pub places: Vec<Place>,
     /// The places it mounts filesystems beneath, which it gets as
@@ -234,6 +236,7 @@ pub fn parse(name: &str, text: &str, over: Option<&Override>) -> Result<Spec, St
         time: file.permissions.admin.time,
         firewall: file.permissions.admin.firewall,
         tune: file.permissions.admin.tune,
+        domain: file.permissions.domain,
         places: file.permissions.places(),
         mounts: file.permissions.files.mount.clone(),
         whole_tree: file.permissions.runs_with_your_access,

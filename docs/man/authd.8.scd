@@ -270,8 +270,10 @@ closes the connection, but for a session (below):
 	Whether _password_ is _name_'s, for an SSH client at _connection_,
 	once *sshd_config*(5) lets passwords sign in (ADR 0348). A wrong one
 	is answered as for *check*, but counted for the client's address
-	(WRONG PASSWORDS) and recorded as *failed* on the terminal *ssh*,
-	from it (SIGN-IN RECORDS). An empty password is refused. A right one, of
+	(WRONG PASSWORDS, BLOCKING) and recorded as *failed* on the terminal
+	*ssh*, from it (SIGN-IN RECORDS). A password from an address that is
+	blocked is not read: authd answers *no* and the reason in BLOCKING,
+	which ends the connection. An empty password is refused. A right one, of
 	a person's account that is not disabled, is answered *ok* and a
 	ticket: 32 random bytes, in hexadecimal, that start _name_'s
 	sessions on that connection, asked by the process that asked for
@@ -312,6 +314,83 @@ closes the connection, but for a session (below):
 *ssh-ended* _ticket_
 	The connection given _ticket_ ended: the ticket goes. Only the
 	process it was given to may say so.
+
+*ssh-failed* _connection_ _name_
+	An SSH connection ended that tried to sign in, was refused every
+	time, and never signed in: one failed sign-in for the client's
+	address (BLOCKING). _name_ is the account it last tried, or empty.
+	sshd says it once, as the connection ends, and not when authd
+	counted a password of it already. Only root may, as sshd runs.
+
+*blocked*
+	The addresses blocked now, for *firewall blocked* (BLOCKING): *ok*
+	and for each its address, when it ends in seconds since 1970, how
+	many blocks in a row it has had, and why, a tab between them. Only
+	an administrator may, inside *elevate*(8).
+
+*unblock* _address_
+	Lifts the block of an IPv4 address or an IPv6 network of 64 bits, an
+	IPv6 address standing for its network, and forgets the blocks it had
+	before; *ok* and the address as authd names it, or *no* if it is not
+	blocked. Only an administrator may, inside *elevate*.
+
+*never-block* _network_ [*remove*]
+	Adds _network_ to the *never* list of *blocking.toml*(5), or takes it
+	out with *remove*, and keeps the rest of the file; *ok* and the
+	network, or *no* if it is in the list already, or is not in it. Only
+	an administrator may, inside *elevate*.
+
+*help-start* _minutes_ _key_ _open-ssh_ _term_ _password_
+	Starts a help session (HELP SESSIONS) for the asker, a person, for
+	_minutes_, 5 to 480, with their shell on the terminal that comes
+	with the request, and the ends of two pipes that come with it, which
+	sshd is given: the one it reads the help screen from and the one it
+	writes the helper's typing to. _key_ is a public key as *ssh-key* gives it, or empty
+	for a code. _open-ssh_ is *open-ssh* or empty; with it, and *sshd*
+	off, an administrator's _password_ is checked and sshd is started for
+	help sign-ins alone. _term_ is the asker's terminal type. authd
+	answers *ok*, the session's ID, when it ends in seconds since 1970,
+	its code, or *-* with a key, and sshd's host key fingerprint, or *-*
+	when sshd made none, and then keeps the connection open to write
+	event lines on, until the session ends. Refused for root, for a
+	process in a help screen, for someone who has a session already, and
+	when sshd is off and *open-ssh* is not given.
+
+*help-end*
+	Ends the asker's help session. *ok*.
+
+*help-log* [_id_]
+	Without _id_, the transcripts kept for the asker, or for everyone when
+	root asks, inside *elevate*(8): *ok* and, for each, its ID, owner,
+	start and end in seconds since 1970 (*0* for a session that has not
+	ended), separated by spaces, the sessions by tabs. With _id_, that
+	transcript's lines, separated by tabs, which only its owner and root
+	may ask for.
+
+*help-allow-elevate* _password_
+	Lets *elevate* run in the asker's help screen for 15 minutes, once
+	_password_ is checked as for *check*. Only an administrator, and not
+	from inside the help screen, may. *ok* and the minutes.
+
+*ssh-help-key* _key_
+	Whether a help session waits for a helper with the key _key_, for
+	sshd to ask before a client signs with it. *ok* if one does. Only
+	root may, as sshd runs.
+
+*ssh-help* _connection_ *code* _code_
+*ssh-help* _connection_ *key* _signed_ _signature_
+	Signs a helper in to the help session whose code _code_ is, typed as
+	a person types it, or whose key signed the request, checked as for
+	*ssh-session*. *ok* and the session's ID, with four descriptors: the
+	help screen's two pipes' ends, for sshd to relay to and from the
+	helper; the read end of a pipe of authd's, whose end tells sshd the
+	session ended; and the transcript, to write what they type in. A wrong code is counted and
+	answered as a wrong password is; an address that is blocked is
+	refused unread. Only root may, as sshd runs.
+
+*ssh-help-ended* _id_
+	The helper's connection to session _id_ ended, which ends the session.
+	Only the sshd process that signed them in may say so.
 
 *keyring-set* _name_ _secret_, *keyring-get* _name_, *keyring-list*, *keyring-remove* _name_
 	Keep _secret_, given in hexadecimal, as the entry _name_ of the
@@ -430,6 +509,171 @@ authd answers 64 connections at a time, 4 from one process and 32 from a
 process that runs as root, as admind does, which holds one for each
 command of the console's that runs; one that sends no whole request in
 10 seconds is closed.
+
+The wait slows a guesser who keeps to one account or one address. An
+address that guesses at many accounts is blocked: see BLOCKING.
+
+# BLOCKING
+
+authd counts each failed sign-in from the network for the address it
+came from, whatever account it named, and blocks an address that keeps
+failing (ADR 0479). A failure is a wrong password over SSH, a wrong
+sharing password, a wrong help-session code (*help-session*(1)), a wrong
+password, second-step code or API token at the web console (*admind*(8)
+gives the browser's address), or an SSH connection that tried to sign
+in, was refused every time, and ended (*ssh-failed*). An address is an IPv4
+address or an IPv6 network of 64 bits, since one computer holds a whole
+/64; an IPv4 address written as IPv6 is the IPv4 one.
+
+By default, 5 failures from an address within 10 minutes block it for 10
+minutes, and each block that comes within a day of the end of the one
+before lasts twice as long, up to a day. A right password from an
+address clears its count, but not its record of blocks; at the web
+console the whole sign-in must be right, with its second step, so that
+someone who knows a password and guesses at its codes is still counted.
+The count is in
+memory only, and is bounded: past 4096 addresses authd forgets the
+oldest.
+
+*blocking.toml*(5) sets these numbers, turns blocking off, and names the
+networks that are never blocked. authd looks at the file's time of
+change and length before each request it answers, and reads it again if
+either changed, so a change needs no restart; a file it cannot read is
+logged with its reason and the settings stay as they were. Never
+blocked, besides those networks, are loopback, this computer's own
+addresses, and the address an administrator is signed in from over SSH
+or at the web console while their session lasts, so that a mistyped password cannot lock out
+the person who is fixing the computer. The console and the serial port
+are not on the network, so they are never blocked.
+
+A block goes to the kernel's firewall (*radix-firewall*(2)
+*set_blocked*) as the whole list each time it changes: the address, the
+seconds it has left, and the ports it closes, which are those *sshd*,
+*smbd* and *admind* listen on, as their service files say, or port 22
+when none does. The firewall drops what the address starts on those
+ports before any rule, and no more: the address still reaches every
+other port. The kernel ends a block when its time is up, even if authd
+is late. A block does not end a connection that is open, but authd
+answers its next password with "this address is blocked for guessing
+passwords for" and how long is left, without reading the password, and
+*sshd* ends the connection. The same reason refuses a sharing sign-in.
+
+The blocks are kept in _/system/state/authd/blocked_, mode 0600, so
+that they outlast a restart: authd gives the kernel those whose time is
+not up as it starts. A block is kept for a day after it ends, so that
+the next one lasts longer.
+
+Each block, each unblock and each change of the settings is a line of
+the audit log, and each administrator's next sign-in is told how many
+addresses were blocked since their last (see SESSIONS):
+
+```
+authd: blocked 203.0.113.9 for 10 minutes: 5 wrong passwords over SSH in 2 minutes, for root, admin and test
+authd: unblocked 203.0.113.9, for process 412 (user 0)
+authd: 192.168.1.0/24 is never blocked, for process 413 (user 0)
+```
+
+*firewall blocked* lists the blocks, *firewall unblock* lifts one, and
+*firewall never-block* changes the networks that never are
+(*firewall*(8)).
+
+# HELP SESSIONS
+
+A help session lets a helper who has no account sign in over SSH as
+*help* and work in a shell of the owner's, on the owner's screen, which
+the owner watches and ends with one key (ADR 0540). *help-session*(1)
+asks for it with *help-start*, sending the help screen's terminal and the
+ends of two pipes for sshd.
+
+authd makes a resource domain *help-*_id_ below its own, which Spark gives
+it a capability to because its service file asks for one (*domain =
+true*, *service.toml*(5)), starts the owner's login shell on the terminal
+in that domain, as the owner, with *HELP_SESSION*=_id_, and makes the
+transcript. The help screen's shell is a session as SESSIONS describes,
+but for its domain. A session waits for its helper with a code, made of 16
+letters and digits with no *I*, *O*, *0* or *1*, used once, or with the
+key the owner named. While one waits for a code, authd keeps
+_/system/live/authd/help-waiting_ in place, so that *sshd*(8) offers
+passwords for *help*. When the helper signs in, authd gives sshd the
+socket's other end and the transcript, and tells the owner's connection.
+
+Each wrong code is counted for the address it came from, as a wrong
+password is (BLOCKING), and answered as one is. Five of them spend the
+code, for every session that waited for one, which tells its owner; a
+session that has no key to wait for then ends.
+
+authd writes event lines on the connection that *help-start* left open,
+each ended by a newline: *helper* _address_ _key_ when a helper signs in,
+_key_ being their key's fingerprint or *code*; *left* _minutes_ at 5 and
+1 minutes before the end; *elevate* _minutes_ when the owner allows
+elevate; *spent*; and last *ended* _why_, which is *owner*, *deadline*,
+*helper* (their connection closed), *session* (the shell ended), *spent*
+or *refused*, after which it closes the connection. When the connection
+closes first, authd ends the session.
+
+A session ends when its owner asks (*help-end*, or the key Ctrl-] in
+*help-session*), when its time is up, when the helper's connection or the
+shell ends, and when authd or *sshd* restarts. authd then stops the domain,
+which ends every process the helper started, closes its pipe to sshd,
+which ends the helper's connection, writes the end to the transcript and to the
+audit log. What the helper changed in the owner's files stays.
+
+Nothing in a help screen asks for a password, since the helper could draw
+the question and read the answer. authd tells a process of the screen by
+its place in the session's domain, and refuses what it asks for there,
+except from a process that is root, as an elevated command is:
+*check*, *unlock*, *passwd*, *share-password*, *help-start* and
+*help-allow-elevate* answer
+"in a help session, nothing asks for your password: run it from another
+terminal", and the keyring's requests "in a help session, the keyring
+stays shut: use it from another terminal". *elevate* is refused with
+"in a help session, elevate runs only while its owner allows it:
+help-session allow-elevate". After *help-allow-elevate*, which asks the
+password outside the screen, *elevate* in the screen runs for 15
+minutes with no password, and its command runs in the session's domain,
+so that the end stops it too.
+
+The transcript, _/system/state/help/_*id*_.log_, is mode 0600 and root's,
+and holds a line for each step: *start*, *helper*, *typed*, *elevate*,
+*spent* and *end*, as *help-session*(1) describes. sshd writes the
+helper's lines, and authd the others. The 20 newest of each owner are
+kept; an older one is removed as a new session starts. Each step is also a
+line of the audit log:
+
+```
+authd: alice started help session k7q2mx until 15:04, for a helper with a code: shell process 412
+authd: a helper signed in to alice's help session k7q2mx from 192.168.1.30 with code, for process 431
+authd: a wrong help-session code from 192.168.1.30, for process 433
+authd: help session k7q2mx of alice ended (owner); the helper from 192.168.1.30 with code changed what the transcript shows, which stays
+```
+
+# RESCUE
+
+*dukovo-rescue*(8) starts authd in Rescue when the installed system had SSH
+on, so that its administrators sign in over SSH to repair it (ADR
+0540). Rescue's live system has accounts of its own, but authd then signs
+people in by the installed system's: it takes the users, groups, password
+hashes and keys from the root Rescue mounted, through the link
+_/system/live/rescue/root_, which dukovo-rescue makes in a folder that only
+root writes. A system started without *rescue=* on the kernel's command
+line, or a link that is not root's, reads nothing there.
+
+In Rescue authd answers *ssh-key*, *ssh-password*, *ssh-session*,
+*ssh-failed*, *ssh-ended*, *blocked* and *unblock*, and refuses every other
+request with "Rescue changes no account: authd answers only SSH's
+sign-ins here", the help requests among them. It signs in only the
+root's administrators, a member of _admins_ other than root, and refuses
+anyone else with "only this computer's administrators sign in to Rescue".
+It writes nothing to the root: no sign-in record, no notice, no change of
+an account; its blocks and counts are in Rescue's own memory, and its audit
+lines go to Rescue's log. The sign-in rules over SSH are *sshd*(8)'s, by the
+root's _sshd_config_.
+
+An administrator's session over SSH is not their shell. authd starts
+*dukovo-rescue --ssh* _name_ on their terminal, as root, as an elevated
+command runs, with *SSH_CONNECTION* set and no password asked again; a
+command, SFTP or a forwarder is refused. The menu says who signed in, and
+its choice to open a shell is the shell.
 
 # SESSIONS
 
@@ -851,6 +1095,33 @@ _/system/settings/jobs.toml_
 	The system's default for jobs while their owner is signed out:
 	*keep_running = true* or *false*. Without it, off.
 
+_/system/settings/blocking.toml_
+	When an address that guesses passwords is blocked, and the networks
+	that never are (see BLOCKING).
+
+_/system/state/authd/blocked_
+	The blocks in force and those a day old at most: a line _address_
+	_until_ _started_ _times_ _why_ each. Only root reads it.
+
+_/system/state/help/_*id*_.log_
+	A help session's transcript, mode 0600, root's (see HELP SESSIONS).
+
+_/system/state/help/index_
+	The transcripts kept, a line each. Only root reads it.
+
+_/system/live/authd/help-waiting_
+	Present while a help session waits for a helper with a code, so that
+	*sshd*(8) offers passwords for *help*.
+
+_/system/live/authd/help-only_
+	Present while *sshd* runs for a help session alone, which
+	*help-session start --open-ssh* started it for: it takes sign-ins as
+	*help* and no other.
+
+_/system/live/rescue/root_
+	In Rescue, the link to the installed system's root, which authd reads
+	its accounts through (see RESCUE).
+
 _/system/state/authd/keyrings/_*number*
 	Each person's keyring, sealed (see KEYRINGS).
 
@@ -880,8 +1151,7 @@ exits with 1 if it cannot start.
 
 # SEE ALSO
 
-*login*(1), *sshd*(8), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *keyring*(1), *id*(1), *last*(1),
+*login*(1), *sshd*(8), *help-session*(1), *dukovo-rescue*(8), *elevate*(8), *sudo*(8), *user*(8), *passwd*(1), *keyring*(1), *id*(1), *last*(1),
 *lastlog*(8), *consoled*(8), *admind*(8), *admin.toml*(5), *dukovo-admin*(7), *service*(8),
-*timerd*(8), *crontab*(1),
-*service.toml*(5), *spark*(8), *logd*(8), *radix-names*(2), *radix-posix*(7),
-*systools*(1)
+*timerd*(8), *crontab*(1), *service.toml*(5), *blocking.toml*(5), *firewall*(8), *spark*(8),
+*logd*(8), *radix-names*(2), *radix-firewall*(2), *radix-posix*(7), *systools*(1)

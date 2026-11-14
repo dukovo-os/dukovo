@@ -25,6 +25,7 @@ bios-cdrom 12
 bios-usb 11
 bisect 420
 bitlocker 39
+blocking 220
 btrfs 32
 btrfs-log 16
 btrfs-power-cut 43
@@ -59,6 +60,7 @@ disk-grow 70
 disk-health 25
 disk-raw 17
 disk-raw-4k 16
+dukovo-check 240
 elevate 86
 essentials 150
 exfat-write 42
@@ -76,6 +78,7 @@ git-https 15
 git-keyring 127
 gpio 11
 hardware-check 150
+help-session 160
 i2c 22
 install-beside 150
 install-bios 115
@@ -141,6 +144,7 @@ rcu 21
 rdisk 57
 repair-startup 420
 rescue 330
+rescue-ssh 300
 restic-backup 200
 rgrub-setup 39
 root 49

@@ -69,6 +69,12 @@ bisect userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/
 bisect userspace/spark/src/supervisor/starting.rs
 bitlocker kernel/fs/bitlocker/ userspace/programs/systools/src/nvme.rs
 bitlocker userspace/programs/systools/src/unlock.rs userspace/programs/systools/src/volumed.rs
+blocking kernel/net/ kernel/radix/src/net/firewall.rs ports/openssh/
+blocking userspace/defaults/blocking.toml userspace/defaults/spark/services/netd.toml
+blocking userspace/posix/blockingtest.c userspace/programs/accounts/ userspace/programs/sshd/
+blocking userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+blocking userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/netd.rs
+blocking userspace/spark/tests/services/blocking/
 braille kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/usb/ kernel/radix/src/fs/sysfs/usb.rs ports/brltty/
 braille userspace/defaults/spark/services/brailled.toml userspace/programs/consoled/ userspace/programs/systools/src/braille.rs
 btrfs kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs
@@ -201,6 +207,12 @@ disk-raw-4k kernel/drivers/nvme/ kernel/fs/block/ userspace/programs/systools/sr
 disk-raw-4k userspace/storage/
 disk-readers kernel/drivers/ahci/ kernel/drivers/nvme/ kernel/drivers/virtio/ kernel/fs/block/
 disk-readers kernel/radix/src/fs/disk/queue.rs userspace/posix/diskread.c
+dukovo-check userspace/defaults/spark/services/dukovo-check.toml userspace/programs/accounts/
+dukovo-check userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
+dukovo-check userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/firewall.rs
+dukovo-check userspace/programs/systools/src/snap.rs userspace/programs/systools/src/alerts/command.rs
+dukovo-check userspace/programs/systools/src/timed.rs userspace/programs/systools/src/sysupdate/checked.rs
+dukovo-check userspace/programs/sshd/
 efi-boot-entries kernel/arch/ kernel/lib/bootinfo/ userspace/programs/systools/src/efiboot.rs
 elevate userspace/posix/authd.h userspace/posix/signintest.c userspace/programs/accounts/
 elevate userspace/programs/consoled/ userspace/programs/systools/src/authd.rs
@@ -249,6 +261,11 @@ hardware-check userspace/programs/systools/src/priority.rs userspace/programs/sy
 hardware-check userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/elevate.rs
 hardware-check userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
 hardware-check abi/block.ridl kernel/fs/block/ kernel/radix/src/fs/disk/ahci.rs kernel/radix/src/fs/disk/mod.rs
+help-session userspace/programs/systools/src/help_session.rs userspace/programs/systools/src/authd.rs
+help-session userspace/programs/systools/src/authd/ userspace/programs/sshd/ userspace/programs/accounts/
+help-session userspace/programs/systools/src/elevate.rs userspace/programs/systools/src/signin.rs
+help-session userspace/programs/systools/src/sshkeys.rs userspace/programs/consoled/ userspace/programs/nukesh/
+help-session userspace/defaults/spark/services/authd.toml userspace/defaults/spark/services/sshd.toml
 held-sockets userspace/posix/listenfd.c userspace/posix/connectloop.c userspace/spark/
 held-sockets userspace/spark/tests/services/sockets/ userspace/programs/manifest/
 held-sockets userspace/programs/systools/src/service.rs userspace/programs/systools/src/servicefiles.rs
@@ -579,6 +596,12 @@ rescue userspace/programs/systools/src/bundles/
 rescue userspace/programs/systools/src/netcheck.rs
 rescue userspace/programs/systools/src/troubleshoot.rs userspace/programs/systools/src/troubleshoot/
 rescue userspace/troubleshoot/
+rescue-ssh image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg kernel/lib/bootfs/
+rescue-ssh kernel/fs/btrfs/ kernel/fs/fat/ userspace/programs/accounts/ userspace/programs/consoled/
+rescue-ssh userspace/programs/installer/ userspace/programs/slots/ userspace/programs/system-release/
+rescue-ssh userspace/programs/sshd/ userspace/programs/systools/src/rescue.rs
+rescue-ssh userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/
+rescue-ssh userspace/programs/systools/src/service.rs userspace/programs/systools/src/sysupdate/
 restic-backup kernel/fs/btrfs/ kernel/net/ ports/rust-crates/patches/ userspace/programs/smb/
 restic-backup userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/
 restic-backup userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume.rs

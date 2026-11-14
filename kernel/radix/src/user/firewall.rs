@@ -2,22 +2,25 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The methods of the firewall capability (Phase 12, radix-firewall(2),
-//! ADR 0334): giving the packet filter its rules (`crate::net::firewall`),
-//! and reading them back with what listens. A change is logged, with who
-//! made it.
+//! ADR 0334): giving the packet filter its rules (`crate::net::firewall`)
+//! and the addresses it blocks (ADR 0479), and reading them back with what
+//! listens. A change of the rules is logged, with who made it; authd logs
+//! each block, with why.
 
 use alloc::vec::Vec;
 
 use radix_abi::errors::Kernel;
 use radix_abi::firewall::{
-    self as abi, Action as AbiAction, Listener as AbiListener, ListenerFlags, ListenersArgs,
-    ListenersResults, Match as AbiMatch, RULES_MAX, Rule as AbiRule, RulesArgs, RulesResults,
+    self as abi, Action as AbiAction, BLOCK_SECONDS_MAX, Block as AbiBlock, BlockedArgs,
+    BlockedResults, Listener as AbiListener, ListenerFlags, ListenersArgs, ListenersResults,
+    Match as AbiMatch, RULES_MAX, Rule as AbiRule, RulesArgs, RulesResults, SetBlockedArgs,
     SetRulesArgs, StateArgs, StateResults,
 };
 use radix_cap::{Capability, ObjectKind, Rights};
 use radix_hal::UserMode;
 use radix_klog::info;
 use radix_mm::{Flags, HEAP, Kmalloc};
+use radix_net::blocks::{BLOCK_PORTS, BLOCKS_MAX, Block, Refused};
 use radix_net::{IpAddress, Ipv4Address, Ipv6Address};
 
 use super::methods::{Answer, answer};
@@ -25,6 +28,7 @@ use super::{Result, UserRef, cap_error, error};
 use crate::Arch;
 use crate::net::firewall::{self, Action, LISTENERS_MAX, Match, Program, Rule};
 use crate::net::ports::{Protocol, Versions};
+use crate::sched;
 
 /// Calls the method `label` on `cap`, a firewall capability, for `user`:
 /// kept out of line, so that [`super::methods::call`]'s frame does not
@@ -91,6 +95,43 @@ pub fn method(user: &UserRef, cap: &Capability, label: u32, args: &[u64; 8]) -> 
             let results = ListenersResults { count: count as u32 };
             answer(label, ListenersResults::WORDS, results.encode())
         }
+        abi::SET_BLOCKED => {
+            let a = SetBlockedArgs::decode(args)?;
+            check(Rights::CONTROL)?;
+            let size = AbiBlock::SIZE as u64;
+            if a.blocks.len % size != 0 {
+                return Err(error(Kernel::InvalidArgument));
+            }
+            let count = a.blocks.len / size;
+            if count > BLOCKS_MAX as u64 {
+                return Err(error(Kernel::OutOfRange));
+            }
+            if !radix_ipc::range::user_bytes(a.blocks.address, a.blocks.len) {
+                return Err(error(Kernel::BadAddress));
+            }
+            set_blocked(a.blocks.address, count as usize)?;
+            answer(label, 0, [0; 8])
+        }
+        abi::BLOCKED => {
+            let a = BlockedArgs::decode(args)?;
+            check(Rights::READ)?;
+            let room = out_room(a.buffer.address, a.buffer.len, AbiBlock::SIZE)?;
+            let now = sched::now_ns();
+            let mut count = 0;
+            for at in 0..BLOCKS_MAX {
+                let Some(block) = firewall::block(at) else { break };
+                if block.until_ns <= now {
+                    continue;
+                }
+                if count < room {
+                    put(a.buffer.address, count, &encode_block(&block, now))?;
+                }
+                count += 1;
+            }
+            // At most BLOCKS_MAX.
+            let results = BlockedResults { count: count as u32 };
+            answer(label, BlockedResults::WORDS, results.encode())
+        }
         _ => Err(error(Kernel::NoSuchMethod)),
     }
 }
@@ -127,6 +168,95 @@ fn set_rules(address: u64, count: usize) -> Result<()> {
         let _ = rules.push_within_capacity(rule);
     }
     firewall::set_rules(&rules).map_err(|()| error(Kernel::OutOfRange))
+}
+
+/// Reads `count` Block structures from the caller's `address`, checks
+/// each and gives them to the firewall, each lasting from now.
+fn set_blocked(address: u64, count: usize) -> Result<()> {
+    let mut blocks: Vec<Block, Kmalloc> = Vec::new_in(HEAP.with(Flags::MAY_SLEEP));
+    blocks.try_reserve_exact(count).map_err(|_| error(Kernel::NoMemory))?;
+    let now = sched::now_ns();
+    for at in 0..count {
+        let mut bytes = [0u8; AbiBlock::SIZE];
+        if !Arch::copy_from_user(&mut bytes, address + (at * AbiBlock::SIZE) as u64) {
+            return Err(error(Kernel::BadAddress));
+        }
+        let block = decode_block(&bytes, now).ok_or(error(Kernel::InvalidArgument))?;
+        // Room was reserved for them all.
+        let _ = blocks.push_within_capacity(block);
+    }
+    firewall::set_blocked(&blocks).map_err(|refused| match refused {
+        Refused::TooMany => error(Kernel::OutOfRange),
+        Refused::NotABlock | Refused::OutOfOrder => error(Kernel::InvalidArgument),
+    })
+}
+
+/// What a Block structure says, lasting from `now`, if it is one: its
+/// address's bytes past those of its version, or of an IPv6 network, are
+/// zero, as are its ports past `port_count`.
+fn decode_block(bytes: &[u8; AbiBlock::SIZE], now: u64) -> Option<Block> {
+    let ip = &bytes[AbiBlock::OFFSET_FROM..AbiBlock::OFFSET_FROM + 16];
+    let from = match u32_at(bytes, AbiBlock::OFFSET_FAMILY) {
+        4 if ip[4..].iter().all(|&byte| byte == 0) => {
+            IpAddress::Ipv4(Ipv4Address::new(ip[0], ip[1], ip[2], ip[3]))
+        }
+        6 if ip[8..].iter().all(|&byte| byte == 0) => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(ip);
+            IpAddress::Ipv6(Ipv6Address::from(octets))
+        }
+        _ => return None,
+    };
+    let seconds = u64_at(bytes, AbiBlock::OFFSET_SECONDS);
+    if !(1..=BLOCK_SECONDS_MAX).contains(&seconds) {
+        return None;
+    }
+    let port_count = usize::try_from(u32_at(bytes, AbiBlock::OFFSET_PORT_COUNT)).ok()?;
+    if port_count > BLOCK_PORTS {
+        return None;
+    }
+    let mut ports = [(0, 0); BLOCK_PORTS];
+    for (at, range) in ports.iter_mut().enumerate() {
+        let first = u16_at(bytes, AbiBlock::OFFSET_FIRST_PORTS + 2 * at);
+        let last = u16_at(bytes, AbiBlock::OFFSET_LAST_PORTS + 2 * at);
+        if at >= port_count && (first, last) != (0, 0) {
+            return None;
+        }
+        *range = (first, last);
+    }
+    // At most BLOCK_SECONDS_MAX seconds, which with the clock since the
+    // start fit in 64 bits for centuries.
+    let until_ns = now + seconds * 1_000_000_000;
+    Some(Block { from, until_ns, ports, port_count: port_count as u8 })
+}
+
+/// `block` as a Block structure, with the seconds it has left at `now`,
+/// rounded up.
+fn encode_block(block: &Block, now: u64) -> [u8; AbiBlock::SIZE] {
+    let mut bytes = [0u8; AbiBlock::SIZE];
+    let (family, octets) = match block.from {
+        IpAddress::Ipv4(ip) => {
+            let mut octets = [0u8; 16];
+            octets[..4].copy_from_slice(&ip.octets());
+            (4u32, octets)
+        }
+        IpAddress::Ipv6(ip) => (6, ip.octets()),
+    };
+    bytes[AbiBlock::OFFSET_FAMILY..AbiBlock::OFFSET_FAMILY + 4]
+        .copy_from_slice(&family.to_le_bytes());
+    bytes[AbiBlock::OFFSET_PORT_COUNT..AbiBlock::OFFSET_PORT_COUNT + 4]
+        .copy_from_slice(&u32::from(block.port_count).to_le_bytes());
+    bytes[AbiBlock::OFFSET_FROM..AbiBlock::OFFSET_FROM + 16].copy_from_slice(&octets);
+    let seconds = block.until_ns.saturating_sub(now).div_ceil(1_000_000_000);
+    bytes[AbiBlock::OFFSET_SECONDS..AbiBlock::OFFSET_SECONDS + 8]
+        .copy_from_slice(&seconds.to_le_bytes());
+    for (at, (first, last)) in block.ports.iter().enumerate() {
+        let first_at = AbiBlock::OFFSET_FIRST_PORTS + 2 * at;
+        let last_at = AbiBlock::OFFSET_LAST_PORTS + 2 * at;
+        bytes[first_at..first_at + 2].copy_from_slice(&first.to_le_bytes());
+        bytes[last_at..last_at + 2].copy_from_slice(&last.to_le_bytes());
+    }
+    bytes
 }
 
 fn u16_at(bytes: &[u8], at: usize) -> u16 {

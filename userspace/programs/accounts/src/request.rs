@@ -40,10 +40,37 @@
 //! job\0alice\0crontab alice\0/users/alice\0backup --quiet\0SHELL=/bin/sh\0
 //! keep-running\0
 //! keep-running\0on\0
+//! ssh-failed\0192.0.2.7 51234 192.0.2.1 22\0root\0
+//! blocked\0
+//! unblock\0203.0.113.9\0
+//! never-block\0192.168.1.0/24\0
+//! never-block\0192.168.1.0/24\0remove\0
+//! help-start\060\0\0\0xterm-256color\0\0
+//! help-start\030\000000b7373682d6564...\0open-ssh\0xterm-256color\0her secret\0
+//! help-end\0
+//! help-log\0
+//! help-log\0k7q2mx\0
+//! help-allow-elevate\0her secret\0
+//! ssh-help-key\0000000b7373682d6564...\0
+//! ssh-help\0192.0.2.7 51234 192.0.2.1 22\0code\0KQ7RM2XW9HTP4BZE\0
+//! ssh-help\0192.0.2.7 51234 192.0.2.1 22\0key\000000020...\0000000b...\0
+//! ssh-help-ended\0k7q2mx\0
 //! ```
 //!
 //! The web console's requests, `console` and a verb, are in
 //! [`console`](crate::console) (ADR 0514).
+//!
+//! A `help-start` request (ADR 0540) comes with three descriptors: the
+//! help screen's terminal, where authd starts the owner's shell, and the
+//! read end of the pipe that carries the screen to the helper and the
+//! write end of the one that brings their typing back, which authd hands
+//! sshd once the helper signs in (pipes, as a socket cannot be sent,
+//! ADR 0091). Its answer is `ok` and [`HelpStarted`]'s words, and its
+//! connection then stays open: authd writes it [`HelpEvent`] lines until
+//! the session ends, and ends the session when it closes. A right
+//! `ssh-help` is answered `ok` and the session's ID with four
+//! descriptors: those two pipes' ends, the read end of a pipe whose end
+//! tells sshd the session ended, and the transcript.
 //!
 //! An answer is `ok`, maybe with words after it, or `no` and why, then a
 //! newline. authd tells who asks by the user its connection gives
@@ -526,6 +553,494 @@ pub enum Request {
         /// What they choose.
         chosen: Option<bool>,
     },
+    /// An SSH connection that tried to sign in, was refused each time,
+    /// and ended (ADR 0479): sshd(8)'s to say, which runs as root, once
+    /// as the connection ends, when no password of its was checked, as
+    /// authd counted those already. authd counts it as a failed sign-in
+    /// from the client's address.
+    SshFailed {
+        /// The connection, as SSH_CONNECTION says it.
+        connection: String,
+        /// The account it last tried to sign in to, or empty.
+        name: String,
+    },
+    /// The addresses blocked for guessing passwords (ADR 0479): an
+    /// administrator's to ask, inside elevate. The answer is `ok` and
+    /// each block's [`BlockedEntry::words`], a tab between them.
+    Blocked,
+    /// Lift the block of `address`, an IPv4 address or an IPv6 network of
+    /// 64 bits, and forget its blocks before, so that its next is a
+    /// first: an administrator's to ask, inside elevate.
+    Unblock {
+        /// The address.
+        address: String,
+    },
+    /// Never block `network`, or block it again when `remove`, as
+    /// blocking.toml(5)'s `never` lists it: an administrator's to ask,
+    /// inside elevate.
+    NeverBlock {
+        /// An address, or a network as `192.168.1.0/24`.
+        network: String,
+        /// Whether it is taken out of `never`.
+        remove: bool,
+    },
+    /// Start a help session (ADR 0540) for `minutes`, the asker's, a
+    /// person's, with their shell on the terminal sent with it, for a
+    /// helper who signs in as [`HELP_NAME`] with the code authd answers
+    /// with, or with `key` alone. With `open_ssh`, an administrator's,
+    /// sshd is started for the session when it is off, after their
+    /// `password`.
+    HelpStart {
+        /// How long it lasts: [`HELP_MINUTES_MIN`] to
+        /// [`HELP_MINUTES_MAX`].
+        minutes: u32,
+        /// The helper's SSH public key, as its blob, in place of a code.
+        key: Option<Vec<u8>>,
+        /// Whether sshd is to be started for it alone.
+        open_ssh: bool,
+        /// The terminal type of the asker's terminal, which shows the
+        /// help screen, as TERM says it.
+        term: String,
+        /// The asker's password, with `open_ssh`; empty otherwise.
+        password: Vec<u8>,
+    },
+    /// End the asker's help session.
+    HelpEnd,
+    /// The help sessions' transcripts: the asker's own, or every one for
+    /// root. With `id`, that one's lines; without, the list, each
+    /// [`HelpKept::words`], a tab between them.
+    HelpLog {
+        /// The session.
+        id: Option<String>,
+    },
+    /// Let elevate run in the asker's help screen for
+    /// [`HELP_ELEVATE_MINUTES`], after their `password`: an
+    /// administrator's to ask, from outside the help screen.
+    HelpAllowElevate {
+        /// Their password.
+        password: Vec<u8>,
+    },
+    /// Whether `key` may sign a helper in, before the client signs with
+    /// it: sshd's to ask.
+    SshHelpKey {
+        /// The key, as its blob.
+        key: Vec<u8>,
+    },
+    /// Sign a helper in to the help session `proof` shows, from
+    /// `connection`: sshd's to ask.
+    SshHelp {
+        /// The connection, as SSH_CONNECTION says it.
+        connection: String,
+        /// What the helper signed in with.
+        proof: HelpProof,
+    },
+    /// The helper's connection to the help session `id` ended: sshd's to
+    /// say, from the process that signed them in.
+    SshHelpEnded {
+        /// The session.
+        id: String,
+    },
+}
+
+/// What a helper signs in to a help session with (ADR 0540).
+#[derive(Clone, PartialEq, Eq)]
+pub enum HelpProof {
+    /// The session's code, as typed for the SSH password.
+    Code(String),
+    /// The session's key: what the client signed and its signature, as
+    /// [`SshProof::Key`].
+    Key {
+        /// What the client signed.
+        signed: Vec<u8>,
+        /// The signature.
+        signature: Vec<u8>,
+    },
+}
+
+/// The name a helper signs in with over SSH (ADR 0540): no account's, and
+/// one no account may take.
+pub const HELP_NAME: &str = "help";
+
+/// The shortest help session, in minutes.
+pub const HELP_MINUTES_MIN: u32 = 5;
+
+/// The longest help session, in minutes: 8 hours.
+pub const HELP_MINUTES_MAX: u32 = 480;
+
+/// A help session's length unless it is given one, in minutes.
+pub const HELP_MINUTES_DEFAULT: u32 = 60;
+
+/// How long elevate runs in a help screen once its owner allows it, in
+/// minutes.
+pub const HELP_ELEVATE_MINUTES: u32 = 15;
+
+/// The characters of a help session's code: 32, with no I, O, 0 or 1,
+/// which look alike, so that each holds 5 bits.
+pub const HELP_CODE_LETTERS: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/// How many characters a help session's code has: 80 bits.
+pub const HELP_CODE_LENGTH: usize = 16;
+
+/// The file that is there while a help session waits for a code, which
+/// sshd looks for to take passwords for [`HELP_NAME`].
+pub const HELP_WAITING: &str = "/system/live/authd/help-waiting";
+
+/// The file that is there while sshd runs for a help session alone
+/// (`--open-ssh`): sshd then takes [`HELP_NAME`]'s sign-ins and no other.
+pub const HELP_ONLY: &str = "/system/live/authd/help-only";
+
+/// Where the help sessions' transcripts are kept, `ID.log` each.
+pub const HELP_FOLDER: &str = "/system/state/help";
+
+/// Why authd refuses what would ask for a password inside a help screen,
+/// where the helper could fake the question and read the answer.
+pub const HELP_NO_PASSWORDS: &str = "in a help session, nothing asks for your password: run it \
+                                     from another terminal";
+
+/// `typed`, a help session's code as a person types it, without its
+/// dashes and spaces and in capitals, if it is one.
+#[must_use]
+pub fn help_code(typed: &str) -> Option<String> {
+    let code: String =
+        typed.chars().filter(|c| *c != '-' && *c != ' ').map(|c| c.to_ascii_uppercase()).collect();
+    let letters = code.bytes().all(|b| HELP_CODE_LETTERS.contains(&b));
+    (code.len() == HELP_CODE_LENGTH && letters).then_some(code)
+}
+
+/// `code` as it is shown: in fours, with dashes between them.
+#[must_use]
+pub fn help_code_shown(code: &str) -> String {
+    code.as_bytes()
+        .chunks(4)
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// The most a help session's transcript holds, in bytes: sshd ends the
+/// helper's connection before a line would take it past this, so that
+/// nothing the helper types goes unkept.
+pub const HELP_TRANSCRIPT_MAX: u64 = 1 << 20;
+
+/// A help session's transcript line (ADR 0540): `SECONDS KIND TEXT`,
+/// with what `text` holds that is not printable shown as
+/// [`help_printable`] shows it, so that one line stays one. authd writes
+/// the session's steps, and sshd each line the helper types.
+#[must_use]
+pub fn help_transcript_line(seconds: u64, kind: &str, text: &[u8]) -> String {
+    format!("{seconds} {kind} {}\n", help_printable(text))
+}
+
+/// `bytes` as a transcript keeps them: control characters as `^X`, other
+/// bytes outside printable ASCII as `\xNN`, and a backslash doubled.
+#[must_use]
+pub fn help_printable(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len());
+    for &byte in bytes {
+        match byte {
+            b'\\' => text.push_str("\\\\"),
+            b' '..=b'~' => text.push(char::from(byte)),
+            0..=0x1f => {
+                text.push('^');
+                text.push(char::from(byte + 0x40));
+            }
+            0x7f => text.push_str("^?"),
+            _ => text.push_str(&format!("\\x{byte:02x}")),
+        }
+    }
+    text
+}
+
+/// The longest line of a helper's a transcript keeps as one: a longer
+/// one, such as a paste with no line end, is kept in lines of this many
+/// bytes.
+pub const HELP_LINE_MAX: usize = 1024;
+
+/// What a helper types, cut into the lines a help session's transcript
+/// keeps (ADR 0540): a carriage return or a line feed ends a line, a line
+/// feed right after a carriage return ends none, and a line ends once it
+/// has [`HELP_LINE_MAX`] bytes.
+#[derive(Default)]
+pub struct HelpLines {
+    /// What was typed since the end of the last line.
+    line: Vec<u8>,
+    /// Whether the last byte ended a line with a carriage return.
+    after_return: bool,
+}
+
+impl HelpLines {
+    /// Takes `bytes`, as typed, and gives each line they end.
+    pub fn take(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {
+        let mut ended = Vec::new();
+        for &byte in bytes {
+            match byte {
+                b'\n' if self.after_return => self.after_return = false,
+                b'\r' | b'\n' => {
+                    ended.push(std::mem::take(&mut self.line));
+                    self.after_return = byte == b'\r';
+                }
+                _ => {
+                    self.after_return = false;
+                    self.line.push(byte);
+                    if self.line.len() >= HELP_LINE_MAX {
+                        ended.push(std::mem::take(&mut self.line));
+                    }
+                }
+            }
+        }
+        ended
+    }
+
+    /// The line not ended yet.
+    #[must_use]
+    pub fn rest(&self) -> &[u8] {
+        &self.line
+    }
+
+    /// The line not ended yet, ended, if anything was typed of it: as the
+    /// helper's connection ends.
+    pub fn end(&mut self) -> Option<Vec<u8>> {
+        (!self.line.is_empty()).then(|| std::mem::take(&mut self.line))
+    }
+}
+
+/// What authd answers a `help-start` with: `ID UNTIL CODE HOSTKEY`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelpStarted {
+    /// The session's ID, a few lowercase letters and digits.
+    pub id: String,
+    /// When it ends, in seconds since 1970.
+    pub until: i64,
+    /// The code, or `None` when a key signs the helper in.
+    pub code: Option<String>,
+    /// The fingerprint of sshd's host key, `SHA256:...`, if it has one.
+    pub host_key: Option<String>,
+}
+
+impl HelpStarted {
+    /// Its words in authd's answer.
+    #[must_use]
+    pub fn words(&self) -> String {
+        format!(
+            "{} {} {} {}",
+            self.id,
+            self.until,
+            self.code.as_deref().unwrap_or("-"),
+            self.host_key.as_deref().unwrap_or("-")
+        )
+    }
+
+    /// The answer `words` says, as [`HelpStarted::words`] made them.
+    #[must_use]
+    pub fn from_words(words: &str) -> Option<HelpStarted> {
+        let [id, until, code, host_key] = words.split(' ').collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        let given = |word: &str| (word != "-").then(|| word.to_string());
+        Some(HelpStarted {
+            id: id.to_string(),
+            until: until.parse().ok()?,
+            code: given(code),
+            host_key: given(host_key),
+        })
+    }
+}
+
+/// Why a help session ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelpEnded {
+    /// Its owner ended it: Ctrl-], or `help-session end`.
+    Owner,
+    /// Its time was up.
+    Deadline,
+    /// The helper's connection closed.
+    Helper,
+    /// The shell in the help screen ended.
+    Session,
+    /// Wrong codes spent its code, and no key signs a helper in.
+    Spent,
+    /// It could not start.
+    Refused,
+}
+
+impl HelpEnded {
+    /// Its word in a line.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            HelpEnded::Owner => "owner",
+            HelpEnded::Deadline => "deadline",
+            HelpEnded::Helper => "helper",
+            HelpEnded::Session => "session",
+            HelpEnded::Spent => "spent",
+            HelpEnded::Refused => "refused",
+        }
+    }
+
+    /// The one `word` names.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<HelpEnded> {
+        [
+            HelpEnded::Owner,
+            HelpEnded::Deadline,
+            HelpEnded::Helper,
+            HelpEnded::Session,
+            HelpEnded::Spent,
+            HelpEnded::Refused,
+        ]
+        .into_iter()
+        .find(|ended| ended.word() == word)
+    }
+}
+
+/// What authd tells help-session(1) about its session, a line each.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HelpEvent {
+    /// The helper signed in from `address`, with the key whose
+    /// fingerprint is `key`, or `code`.
+    Helper {
+        /// Their address.
+        address: String,
+        /// Their key's fingerprint, or `code`.
+        key: String,
+    },
+    /// So many minutes are left.
+    Left {
+        /// The minutes.
+        minutes: u32,
+    },
+    /// Its owner let elevate run for so many minutes.
+    Elevate {
+        /// The minutes.
+        minutes: u32,
+    },
+    /// Five wrong codes spent the code.
+    Spent,
+    /// It ended, and why.
+    Ended(HelpEnded),
+}
+
+impl HelpEvent {
+    /// Its line, with its newline.
+    #[must_use]
+    pub fn line(&self) -> String {
+        match self {
+            HelpEvent::Helper { address, key } => format!("helper {address} {key}\n"),
+            HelpEvent::Left { minutes } => format!("left {minutes}\n"),
+            HelpEvent::Elevate { minutes } => format!("elevate {minutes}\n"),
+            HelpEvent::Spent => "spent\n".into(),
+            HelpEvent::Ended(why) => format!("ended {}\n", why.word()),
+        }
+    }
+
+    /// The event `line` says, without its newline.
+    #[must_use]
+    pub fn parse(line: &str) -> Option<HelpEvent> {
+        let words: Vec<&str> = line.trim_end_matches('\n').split(' ').collect();
+        match words[..] {
+            ["helper", address, key] => {
+                Some(HelpEvent::Helper { address: address.into(), key: key.into() })
+            }
+            ["left", minutes] => Some(HelpEvent::Left { minutes: minutes.parse().ok()? }),
+            ["elevate", minutes] => Some(HelpEvent::Elevate { minutes: minutes.parse().ok()? }),
+            ["spent"] => Some(HelpEvent::Spent),
+            ["ended", why] => HelpEnded::from_word(why).map(HelpEvent::Ended),
+            _ => None,
+        }
+    }
+}
+
+/// A help session's transcript, as authd lists them: `ID OWNER STARTED
+/// ENDED`, the times in seconds since 1970, ENDED 0 while it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HelpKept {
+    /// The session's ID.
+    pub id: String,
+    /// Whose it was.
+    pub owner: String,
+    /// When it started.
+    pub started: i64,
+    /// When it ended, or 0.
+    pub ended: i64,
+}
+
+impl HelpKept {
+    /// Its words in authd's answer.
+    #[must_use]
+    pub fn words(&self) -> String {
+        format!("{} {} {} {}", self.id, self.owner, self.started, self.ended)
+    }
+
+    /// The transcript `words` says.
+    #[must_use]
+    pub fn from_words(words: &str) -> Option<HelpKept> {
+        let [id, owner, started, ended] = words.split(' ').collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        Some(HelpKept {
+            id: id.into(),
+            owner: owner.into(),
+            started: started.parse().ok()?,
+            ended: ended.parse().ok()?,
+        })
+    }
+}
+
+/// Why authd refuses a password from an address it blocked (ADR 0479),
+/// unread: the answer begins with it, and says for how long.
+pub const BLOCKED: &str = "this address is blocked for guessing passwords";
+
+/// A block, as authd answers [`Request::Blocked`]: `ADDRESS UNTIL TIMES
+/// WHY`, as `203.0.113.9 1794652320 2 5 wrong passwords over SSH in 2
+/// minutes, for root`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockedEntry {
+    /// The address, or the IPv6 network of 64 bits, as
+    /// `2001:db8:4:7::/64`.
+    pub address: String,
+    /// When it ends, in seconds since 1970.
+    pub until: i64,
+    /// How many blocks of it came one after another, each within a day
+    /// of the end of the one before, this one counted.
+    pub times: u32,
+    /// Why it was blocked.
+    pub why: String,
+}
+
+impl BlockedEntry {
+    /// Its words in authd's answer, kept to one line with no tab.
+    #[must_use]
+    pub fn words(&self) -> String {
+        let why: String = self.why.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        format!("{} {} {} {why}", self.address, self.until, self.times)
+    }
+
+    /// The block `words` says, as [`BlockedEntry::words`] made them.
+    #[must_use]
+    pub fn from_words(words: &str) -> Option<BlockedEntry> {
+        let [address, until, times, why] = words.splitn(4, ' ').collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        Some(BlockedEntry {
+            address: address.to_string(),
+            until: until.parse().ok()?,
+            times: times.parse().ok()?,
+            why: why.to_string(),
+        })
+    }
+
+    /// The answer to [`Request::Blocked`] that lists `entries`.
+    #[must_use]
+    pub fn list(entries: &[BlockedEntry]) -> String {
+        entries.iter().map(BlockedEntry::words).collect::<Vec<_>>().join("\t")
+    }
+
+    /// The blocks an answer to [`Request::Blocked`] lists, those that
+    /// read.
+    #[must_use]
+    pub fn parse_list(answer: &str) -> Vec<BlockedEntry> {
+        answer.split('\t').filter_map(BlockedEntry::from_words).collect()
+    }
 }
 
 /// Whether a person's jobs run while they are signed out (ADR 0478), as
@@ -990,6 +1505,53 @@ impl Request {
                 };
                 vec![b"keep-running", word]
             }
+            Request::SshFailed { connection, name } => {
+                vec![b"ssh-failed", connection.as_bytes(), name.as_bytes()]
+            }
+            Request::Blocked => vec![b"blocked"],
+            Request::Unblock { address } => vec![b"unblock", address.as_bytes()],
+            Request::NeverBlock { network, remove: false } => {
+                vec![b"never-block", network.as_bytes()]
+            }
+            Request::NeverBlock { network, remove: true } => {
+                vec![b"never-block", network.as_bytes(), b"remove"]
+            }
+            Request::HelpStart { minutes, key, open_ssh, term, password } => {
+                number = minutes.to_string();
+                hexed =
+                    [key.as_deref().map_or_else(String::new, hex), String::new(), String::new()];
+                let open: &[u8] = if *open_ssh { b"open-ssh" } else { b"" };
+                vec![
+                    b"help-start",
+                    number.as_bytes(),
+                    hexed[0].as_bytes(),
+                    open,
+                    term.as_bytes(),
+                    password,
+                ]
+            }
+            Request::HelpEnd => vec![b"help-end"],
+            Request::HelpLog { id: None } => vec![b"help-log"],
+            Request::HelpLog { id: Some(id) } => vec![b"help-log", id.as_bytes()],
+            Request::HelpAllowElevate { password } => vec![b"help-allow-elevate", password],
+            Request::SshHelpKey { key } => {
+                hexed = [hex(key), String::new(), String::new()];
+                vec![b"ssh-help-key", hexed[0].as_bytes()]
+            }
+            Request::SshHelp { connection, proof: HelpProof::Code(code) } => {
+                vec![b"ssh-help", connection.as_bytes(), b"code", code.as_bytes()]
+            }
+            Request::SshHelpEnded { id } => vec![b"ssh-help-ended", id.as_bytes()],
+            Request::SshHelp { connection, proof: HelpProof::Key { signed, signature } } => {
+                hexed = [hex(signed), hex(signature), String::new()];
+                vec![
+                    b"ssh-help",
+                    connection.as_bytes(),
+                    b"key",
+                    hexed[0].as_bytes(),
+                    hexed[1].as_bytes(),
+                ]
+            }
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -1297,6 +1859,63 @@ impl Request {
                 };
                 Ok(Request::SetKeepRunning { chosen })
             }
+            [b"ssh-failed", connection, name] => {
+                Ok(Request::SshFailed { connection: text(connection)?, name: text(name)? })
+            }
+            [b"blocked"] => Ok(Request::Blocked),
+            [b"unblock", address] => Ok(Request::Unblock { address: text(address)? }),
+            [b"never-block", network] => {
+                Ok(Request::NeverBlock { network: text(network)?, remove: false })
+            }
+            [b"never-block", network, b"remove"] => {
+                Ok(Request::NeverBlock { network: text(network)?, remove: true })
+            }
+            [b"help-start", minutes, key, open, term, password] => {
+                let minutes = std::str::from_utf8(minutes).ok().and_then(|m| m.parse().ok());
+                let key = match key {
+                    [] => None,
+                    key => {
+                        Some(std::str::from_utf8(key).ok().and_then(unhex).ok_or_else(malformed)?)
+                    }
+                };
+                let open_ssh = match open {
+                    b"open-ssh" => true,
+                    b"" => false,
+                    _ => return Err(malformed()),
+                };
+                Ok(Request::HelpStart {
+                    minutes: minutes.ok_or_else(malformed)?,
+                    key,
+                    open_ssh,
+                    term: text(term)?,
+                    password: password.to_vec(),
+                })
+            }
+            [b"help-end"] => Ok(Request::HelpEnd),
+            [b"ssh-help-ended", id] => Ok(Request::SshHelpEnded { id: text(id)? }),
+            [b"help-log"] => Ok(Request::HelpLog { id: None }),
+            [b"help-log", id] => Ok(Request::HelpLog { id: Some(text(id)?) }),
+            [b"help-allow-elevate", password] => {
+                Ok(Request::HelpAllowElevate { password: password.to_vec() })
+            }
+            [b"ssh-help-key", key] => {
+                let key = std::str::from_utf8(key).ok().and_then(unhex).ok_or_else(malformed)?;
+                Ok(Request::SshHelpKey { key })
+            }
+            [b"ssh-help", connection, b"code", code] => Ok(Request::SshHelp {
+                connection: text(connection)?,
+                proof: HelpProof::Code(text(code)?),
+            }),
+            [b"ssh-help", connection, b"key", signed, signature] => {
+                let unhexed = |f: &[u8]| std::str::from_utf8(f).ok().and_then(unhex);
+                let (Some(signed), Some(signature)) = (unhexed(signed), unhexed(signature)) else {
+                    return Err(malformed());
+                };
+                Ok(Request::SshHelp {
+                    connection: text(connection)?,
+                    proof: HelpProof::Key { signed, signature },
+                })
+            }
             _ => Err(malformed()),
         }
     }
@@ -1331,6 +1950,13 @@ impl Request {
             Request::SshSession { proof: SshProof::Ticket(ticket), .. }
             | Request::SshEnded { ticket } => wipe(ticket),
             Request::KeyringSet { secret, .. } => wipe(secret),
+            Request::HelpStart { password, .. } | Request::HelpAllowElevate { password } => {
+                wipe(password);
+            }
+            Request::SshHelp { proof: HelpProof::Code(code), .. } => {
+                let mut bytes = std::mem::take(code).into_bytes();
+                wipe(&mut bytes);
+            }
             Request::NeedsOwner
             | Request::Forget
             | Request::KeyringGet { .. }
@@ -1357,7 +1983,16 @@ impl Request {
             | Request::SshSession { proof: SshProof::Key { .. }, .. }
             | Request::Job { .. }
             | Request::KeepRunning
-            | Request::SetKeepRunning { .. } => {}
+            | Request::SetKeepRunning { .. }
+            | Request::SshFailed { .. }
+            | Request::Blocked
+            | Request::Unblock { .. }
+            | Request::NeverBlock { .. }
+            | Request::HelpEnd
+            | Request::HelpLog { .. }
+            | Request::SshHelpKey { .. }
+            | Request::SshHelpEnded { .. }
+            | Request::SshHelp { proof: HelpProof::Key { .. }, .. } => {}
         }
     }
 }
@@ -1474,6 +2109,31 @@ impl std::fmt::Debug for Request {
             Request::KeepRunning => write!(f, "KeepRunning"),
             Request::SetKeepRunning { chosen } => {
                 write!(f, "SetKeepRunning {{ chosen: {chosen:?} }}")
+            }
+            Request::SshFailed { connection, name } => {
+                write!(f, "SshFailed {{ connection: {connection:?}, name: {name:?} }}")
+            }
+            Request::Blocked => write!(f, "Blocked"),
+            Request::Unblock { address } => write!(f, "Unblock {{ address: {address:?} }}"),
+            Request::NeverBlock { network, remove } => {
+                write!(f, "NeverBlock {{ network: {network:?}, remove: {remove} }}")
+            }
+            Request::HelpStart { minutes, key, open_ssh, term, .. } => write!(
+                f,
+                "HelpStart {{ minutes: {minutes}, key: {}, open_ssh: {open_ssh}, term: {term:?} }}",
+                key.is_some()
+            ),
+            Request::HelpEnd => write!(f, "HelpEnd"),
+            Request::HelpLog { id } => write!(f, "HelpLog {{ id: {id:?} }}"),
+            Request::HelpAllowElevate { .. } => write!(f, "HelpAllowElevate"),
+            Request::SshHelpKey { .. } => write!(f, "SshHelpKey"),
+            Request::SshHelpEnded { id } => write!(f, "SshHelpEnded {{ id: {id:?} }}"),
+            Request::SshHelp { connection, proof } => {
+                let proof = match proof {
+                    HelpProof::Code(_) => "code",
+                    HelpProof::Key { .. } => "key",
+                };
+                write!(f, "SshHelp {{ connection: {connection:?}, proof: {proof} }}")
             }
         }
     }

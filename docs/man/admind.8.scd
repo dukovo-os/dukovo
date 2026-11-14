@@ -69,7 +69,9 @@ anything comes from the console's own page, by *Origin*,
 body is JSON, at most 64 KiB before sign-in and 1 MiB after (415, 413).
 The sign-in routes also take at most ten requests a minute from one
 address (429, with *Retry-After*), on top of the wait authd puts on a
-wrong password.
+wrong password. authd counts each wrong password, code or API token for
+the browser's address, and an address that keeps failing is blocked at
+the firewall, as over SSH (*blocking.toml*(5)).
 
 Every answer carries a strict *Content-Security-Policy* and the headers
 that go with it, and no *Server* header. The session's cookie is
@@ -147,5 +149,5 @@ not read, or it cannot listen.
 
 # SEE ALSO
 
-*admin.toml*(5), *authd*(8), *certd*(8), *cert*(8), *firewall*(8),
+*admin.toml*(5), *authd*(8), *blocking.toml*(5), *certd*(8), *cert*(8), *firewall*(8),
 *service*(8), *log*(1)

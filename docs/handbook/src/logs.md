@@ -90,7 +90,8 @@ Spark's answers to requests that change something (a service started,
 stopped or restarted, the machine powered off), each with the process
 that asked; the power button; the kernel log cleared; records the
 kernel's ring lost before logd read them; the log trimmed; accounts
-made, passwords changed and wrong passwords; signing in and out; and
+made, passwords changed and wrong passwords; addresses blocked for
+guessing them, and lifted; signing in and out; and
 each command run with `elevate`, and each refusal. Permissions will be,
 as they come.
 
