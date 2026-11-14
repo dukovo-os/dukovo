@@ -39,21 +39,18 @@
 //! new one, is answered.
 
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
-use super::super::console_client::{ALICE_PASSWORD, Browser, Console, Reply, SESSION_COOKIE, elevated};
+use super::super::console_client::{
+    ALICE_PASSWORD, Browser, Console, Pane, Reply, SESSION_COOKIE, elevated,
+};
 use super::super::*;
 
 /// The password of bob, whom alice makes: he may use the console, and is
 /// no administrator.
 const BOB_PASSWORD: &str = "white-rabbit";
-
-/// The host, as the guest's network sees it.
-const HOST: &str = "10.0.2.2";
 
 /// Where admind's log says the host's requests come from.
 const PEER: &str = "10.0.2.2";
@@ -374,78 +371,6 @@ fn quoted(word: &str) -> String {
     let plain = !word.is_empty()
         && word.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"@%+=:,./_-".contains(&byte));
     if plain { word.to_string() } else { format!("'{}'", word.replace('\'', "'\\''")) }
-}
-
-/// What the guest's pane says to the host: nc, at the end of a typed line,
-/// sends what the line's command printed to a port on the host's loopback,
-/// where QEMU's user network lets the guest reach it at 10.0.2.2. The
-/// screen would have to hold it, and cannot hold a list of services.
-struct Pane {
-    listener: TcpListener,
-    port: u16,
-}
-
-impl Pane {
-    fn open() -> Result<Pane, String> {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .map_err(|err| format!("no port for what the pane says: {err}"))?;
-        let port = listener.local_addr().map_err(|err| err.to_string())?.port();
-        listener.set_nonblocking(true).map_err(|err| err.to_string())?;
-        Ok(Pane { listener, port })
-    }
-
-    /// What follows a pipe to send the output to the host: nc half-closes
-    /// the connection at the end of its input, and ends once the host has
-    /// closed its side.
-    fn sink(&self) -> String {
-        format!("nc -N {HOST} {}", self.port)
-    }
-
-    /// Takes what the guest sends over one connection, waiting up to
-    /// `seconds` for the connection and up to 30 for its end.
-    fn take(&self, seconds: u64) -> Result<String, String> {
-        let deadline = Instant::now() + Duration::from_secs(seconds);
-        loop {
-            match self.listener.accept() {
-                Ok((mut stream, _)) => {
-                    stream.set_nonblocking(false).map_err(|err| err.to_string())?;
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(30)))
-                        .map_err(|err| err.to_string())?;
-                    let mut bytes = Vec::new();
-                    stream
-                        .read_to_end(&mut bytes)
-                        .map_err(|err| format!("what the pane sent: {err}"))?;
-                    return Ok(String::from_utf8_lossy(&bytes).into_owned());
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        return Err(format!("the pane sent nothing to port {} in {seconds} s", self.port));
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(err) => return Err(format!("taking what the pane sends: {err}")),
-            }
-        }
-    }
-
-    /// Types `command` in the pane, and returns what it printed.
-    fn output(&self, vm: &mut Vm, command: &str) -> Result<String, String> {
-        answer_prompt(vm, "$", &format!("{command} | {}", self.sink()))?;
-        self.take(120)
-    }
-
-    /// Types `command` in the pane, and returns the status it ended with.
-    fn status(&self, vm: &mut Vm, command: &str) -> Result<i32, String> {
-        answer_prompt(vm, "$", &format!("{command}; echo \"ran $?\" | {}", self.sink()))?;
-        let said = self.take(120)?;
-        ran_status(&said).ok_or_else(|| format!("`{command}` was followed by {said:?}"))
-    }
-}
-
-/// The status in `ran N`, as `Pane::status` has the pane say it.
-fn ran_status(text: &str) -> Option<i32> {
-    text.lines().find_map(|line| line.trim().strip_prefix("ran ")?.trim().parse().ok())
 }
 
 /// The first part of what the shown form of an action prints: the line
@@ -1170,10 +1095,6 @@ mod tests {
 
     #[test]
     fn what_the_pane_says_is_read_back() {
-        assert_eq!(ran_status("ran 0\n"), Some(0));
-        assert_eq!(ran_status("ran 3"), Some(3));
-        assert_eq!(ran_status("noise\nran 1\n"), Some(1));
-        assert_eq!(ran_status(""), None);
         let shown = "Command\nelevate service diskhealth start\n\nAPI\ncurl -sS x\n";
         assert_eq!(command_of_show(shown), Some("elevate service diskhealth start"));
         assert_eq!(command_of_show("API\nx\n"), None);

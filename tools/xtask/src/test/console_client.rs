@@ -12,6 +12,8 @@
 //! other, so a case that makes the machine serve another says so with
 //! [`Console::trust_what_is_served`].
 
+use std::io::Read;
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -305,6 +307,84 @@ impl Reply {
     }
 }
 
+/// The host, as the guest's network sees it.
+const HOST: &str = "10.0.2.2";
+
+/// What the guest's pane says to the host: nc, at the end of a typed line,
+/// sends what the line's command printed to a port on the host's loopback,
+/// where QEMU's user network lets the guest reach it at 10.0.2.2. The
+/// screen would have to hold it, and cannot hold a list of services.
+pub struct Pane {
+    listener: TcpListener,
+    port: u16,
+}
+
+impl Pane {
+    pub fn open() -> Result<Pane, String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .map_err(|err| format!("no port for what the pane says: {err}"))?;
+        let port = listener.local_addr().map_err(|err| err.to_string())?.port();
+        listener.set_nonblocking(true).map_err(|err| err.to_string())?;
+        Ok(Pane { listener, port })
+    }
+
+    /// What follows a pipe to send the output to the host: nc half-closes
+    /// the connection at the end of its input, and ends once the host has
+    /// closed its side.
+    pub fn sink(&self) -> String {
+        format!("nc -N {HOST} {}", self.port)
+    }
+
+    /// Takes what the guest sends over one connection, waiting up to
+    /// `seconds` for the connection and up to 30 for its end.
+    pub fn take(&self, seconds: u64) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            match self.listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).map_err(|err| err.to_string())?;
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(30)))
+                        .map_err(|err| err.to_string())?;
+                    let mut bytes = Vec::new();
+                    stream
+                        .read_to_end(&mut bytes)
+                        .map_err(|err| format!("what the pane sent: {err}"))?;
+                    return Ok(String::from_utf8_lossy(&bytes).into_owned());
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "the pane sent nothing to port {} in {seconds} s",
+                            self.port
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(err) => return Err(format!("taking what the pane sends: {err}")),
+            }
+        }
+    }
+
+    /// Types `command` in the pane, and returns what it printed.
+    pub fn output(&self, vm: &mut Vm, command: &str) -> Result<String, String> {
+        answer_prompt(vm, "$", &format!("{command} | {}", self.sink()))?;
+        self.take(120)
+    }
+
+    /// Types `command` in the pane, and returns the status it ended with.
+    pub fn status(&self, vm: &mut Vm, command: &str) -> Result<i32, String> {
+        answer_prompt(vm, "$", &format!("{command}; echo \"ran $?\" | {}", self.sink()))?;
+        let said = self.take(120)?;
+        ran_status(&said).ok_or_else(|| format!("`{command}` was followed by {said:?}"))
+    }
+}
+
+/// The status in `ran N`, as `Pane::status` has the pane say it.
+pub fn ran_status(text: &str) -> Option<i32> {
+    text.lines().find_map(|line| line.trim().strip_prefix("ran ")?.trim().parse().ok())
+}
+
 // Helpers that read and compute, with no machine to ask: the unit tests
 // below run them alone.
 
@@ -430,6 +510,14 @@ pub fn http_date(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_the_pane_says_is_read_back() {
+        assert_eq!(ran_status("ran 0\n"), Some(0));
+        assert_eq!(ran_status("ran 3"), Some(3));
+        assert_eq!(ran_status("noise\nran 1\n"), Some(1));
+        assert_eq!(ran_status(""), None);
+    }
 
     #[test]
     fn base64_reads_the_rfc_4648_vectors_with_or_without_padding() {
