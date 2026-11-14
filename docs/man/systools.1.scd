@@ -68,6 +68,8 @@ error that starts with the tool's name.
 
 [[ *Tool*
 :- *What it does*
+|  *admin*(8)
+:  the web console's address, its actions and the API tokens of the person who types it
 |  *alertd*(8)
 :  keep the alerts and tell the owner of them
 |  *alerts*(8)

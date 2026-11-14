@@ -79,7 +79,8 @@ const UPKEEP_EVERY: Duration = Duration::from_secs(30);
 const SIGNALS_EVERY: Duration = Duration::from_millis(500);
 
 /// The file consoled shows at its sign-in prompt: where to open the console.
-const ISSUE: &str = "/system/live/admind/issue";
+/// `admin fingerprint` reads it too.
+pub(crate) const ISSUE: &str = "/system/live/admind/issue";
 
 /// Set by SIGTERM: admind stops. Set by SIGHUP: it reads its certificate
 /// again.

@@ -21,6 +21,9 @@
 //!   ends the sessions whose time is up;
 //! - [`routes`] answers each request: the order of its checks, the sign-in
 //!   and the session routes, the account's second step;
+//! - [`actions`] is the list of what the API does, each read and change with
+//!   its arguments, the command it runs and the forms it shows as, which
+//!   admin(8) prints too;
 //! - [`guard`], [`reach`] and [`sessions`] are the security core: whom to
 //!   answer, which requests may change anything, and what a session is;
 //! - [`limits`] counts what keeps admind usable while anyone on the network
@@ -47,10 +50,10 @@
 //! so that the lab can see what an elevated session does. The build that
 //! ships has no such route.
 
-mod actions;
+pub(crate) mod actions;
 mod authd;
 mod caller;
-mod errors;
+pub(crate) mod errors;
 mod files;
 #[cfg(test)]
 mod fixture;
@@ -60,7 +63,7 @@ mod link;
 mod reach;
 mod routes;
 mod run;
-mod scopes;
+pub(crate) mod scopes;
 mod serve;
 mod sessions;
 mod shared;
@@ -68,6 +71,8 @@ mod tls;
 mod webauthn;
 mod who;
 mod worker;
+
+pub(crate) use serve::ISSUE;
 
 use crate::args::{Arg, Args};
 use crate::util::Fail;

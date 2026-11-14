@@ -24,7 +24,7 @@ acpi-power kernel/lib/acpi/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-power userspace/programs/systools/src/power.rs
 acpi-thermal kernel/lib/acpi/ kernel/lib/sensors/ kernel/lib/uacpi/ tools/xtask/src/acpi/
 acpi-thermal userspace/programs/systools/src/power.rs userspace/programs/systools/src/sensors.rs
-admin userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
+admin userspace/programs/systools/src/admin.rs userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
 admin userspace/programs/accounts/ userspace/programs/consoled/ userspace/programs/systools/src/admind.rs
 admin userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin userspace/programs/systools/src/authd/ userspace/programs/systools/src/cert.rs
