@@ -1444,7 +1444,10 @@ impl Authd {
         // From a help screen whose owner allows it, with no password; its
         // command runs in the screen's domain, which the session's end
         // stops (ADR 0540).
-        let help_domain = self.elevate_domain(peer);
+        let help_domain = match self.elevate_domain(peer) {
+            Ok(domain) => domain,
+            Err(why) => return (Answer::Refused(why), now),
+        };
         let in_help = help_domain.is_some();
         let authorized = if in_help {
             Ok(false)

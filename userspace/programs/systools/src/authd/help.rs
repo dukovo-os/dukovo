@@ -140,8 +140,9 @@ pub(super) struct Help {
     cut: Option<OwnedFd>,
     /// The transcript, written at its end.
     transcript: File,
-    /// Its domain, the domain's `/processes`, and a slot to look in it
-    /// with.
+    /// Its domain and the domain's `/processes`. Both stay full while it
+    /// lasts: an empty slot kept between requests is one the kernel may
+    /// put a descriptor sent to authd in.
     slots: signin::Spares,
     /// The shell in the help screen.
     pub(super) shell: i32,
@@ -161,9 +162,10 @@ impl Help {
     }
 
     /// Whether the process `number` runs in its help screen: its domain's
-    /// `/processes` finds it.
-    fn holds(&self, number: u64) -> bool {
-        let (processes, scratch) = (self.slots.slot(1), self.slots.slot(2));
+    /// `/processes` finds it. The look uses the empty slot `scratch`, and
+    /// leaves it empty.
+    fn holds(&self, number: u64, scratch: u32) -> bool {
+        let processes = self.slots.slot(1);
         let name = number.to_string();
         let found = directory::open(
             &SYS,
@@ -309,9 +311,16 @@ fn new_id(list: &[HelpKept]) -> Result<String, String> {
 
 impl Authd {
     /// The help session whose screen runs the process `number`, by its
-    /// place in [`Authd::helps`].
-    pub(super) fn help_of(&self, number: u64) -> Option<usize> {
-        self.helps.iter().position(|help| help.holds(number))
+    /// place in [`Authd::helps`]; why it cannot tell, when it cannot.
+    pub(super) fn help_of(&self, number: u64) -> Result<Option<usize>, String> {
+        if self.helps.is_empty() {
+            return Ok(None);
+        }
+        // A slot for this look alone: see [`Help::slots`].
+        let spare = signin::Spares::new(1).map_err(|err| {
+            format!("cannot tell whether this comes from a help screen: no slots: {err}")
+        })?;
+        Ok(self.helps.iter().position(|help| help.holds(number, spare.slot(0))))
     }
 
     /// What a request from inside a help screen may not do, and why:
@@ -341,7 +350,11 @@ impl Authd {
         if peer.is_root() {
             return None;
         }
-        let at = self.help_of(peer.process)?;
+        let at = match self.help_of(peer.process) {
+            Ok(Some(at)) => at,
+            Ok(None) => return None,
+            Err(why) => return Some(why),
+        };
         if matches!(request, Request::Elevate { .. }) && self.elevate_allowed(at) {
             return None;
         }
@@ -356,9 +369,8 @@ impl Authd {
     /// The domain an elevate from `peer` starts its command in: the help
     /// screen's, when it comes from one, so that the session's end ends
     /// it too.
-    pub(super) fn elevate_domain(&self, peer: Peer) -> Option<u32> {
-        let at = self.help_of(peer.process)?;
-        Some(self.helps[at].domain())
+    pub(super) fn elevate_domain(&self, peer: Peer) -> Result<Option<u32>, String> {
+        Ok(self.help_of(peer.process)?.map(|at| self.helps[at].domain()))
     }
 
     /// Updates [`HELP_WAITING`]: there while a session waits for a
@@ -515,7 +527,7 @@ impl Authd {
             Some(_) => None,
             None => Some(letters_from(&random(HELP_CODE_LENGTH)?, HELP_CODE_LETTERS)),
         };
-        let slots = signin::Spares::new(3).map_err(|err| format!("no slots: {err}"))?;
+        let slots = signin::Spares::new(2).map_err(|err| format!("no slots: {err}"))?;
         let (domain, processes) = (slots.slot(0), slots.slot(1));
         let name = format!("{DOMAIN_PREFIX}{id}");
         resource_domain::create(
