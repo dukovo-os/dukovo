@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! API tokens in requests (ADR 0514): reading one from a request, asking
+//! API tokens in requests (ADR 0515): reading one from a request, asking
 //! authd whose it is and what it may do, and the worker that acts for its
 //! owner.
 //!

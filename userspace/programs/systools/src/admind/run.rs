@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Running an action's command, and what the API answers with what it
-//! did (ADR 0514).
+//! did (ADR 0515).
 //!
 //! An administrator's change runs through authd's `console-elevate`, for
 //! an unlocked session or a token, with four descriptors from admind: its
@@ -279,7 +279,7 @@ mod tests {
     fn an_error_id_is_read_from_the_end_of_a_line() {
         assert_eq!(error_id("nginx could not load blog.conf (SVC-104)"), Some("SVC-104"));
         assert_eq!(error_id("the update did not start (UPD-101)  "), Some("UPD-101"));
-        assert_eq!(error_id("(NET-201)"), Some("NET-201"));
+        assert_eq!(error_id("(NET-122)"), Some("NET-122"));
         for line in [
             "",
             "no ID here",

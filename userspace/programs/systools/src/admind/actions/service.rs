@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The services' actions (ADR 0514): the list, a service's explanation,
+//! The services' actions (ADR 0515): the list, a service's explanation,
 //! and starting, stopping, restarting, enabling and disabling one. Each
 //! runs `service`, service(8), which asks Spark.
 //!

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! An action's route (ADR 0514): its arguments from the address and the
+//! An action's route (ADR 0515): its arguments from the address and the
 //! body, checked; whether the caller may ask for it; its command, run as
 //! the person or as an administrator; and the answer.
 //!

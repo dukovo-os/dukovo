@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Every action of the web console from the console's own page, in each
-# engine (ADR 0514): an administrator signs in and unlocks the console,
+# engine (ADR 0515): an administrator signs in and unlocks the console,
 # and the page itself, with fetch() under the console's content security
 # policy, reads the list of actions that GET /api/1/actions gives and calls
 # the route of each with the arguments of its first good example, as the

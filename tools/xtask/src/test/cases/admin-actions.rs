@@ -3,7 +3,7 @@
 
 //! Every action of the web console, Dukovo Admin, is called through its
 //! route and run as its shown command, and the two are held to the same
-//! (ADR 0514). The test takes the list from GET /api/1/actions, which must
+//! (ADR 0515). The test takes the list from GET /api/1/actions, which must
 //! be the list that admin actions --json prints in alice's pane, and from
 //! it each action's good example, so that an action with a good example is
 //! tested as soon as it is registered. What the pane's commands print

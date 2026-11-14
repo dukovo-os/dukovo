@@ -9,18 +9,22 @@ Dukovo Admin is the machine's web console: pages in a browser, served by
 the machine itself, for the people who run it. Everything in the free
 console stays free, and nothing in it ever moves behind a paywall. This
 chapter covers how to reach it, sign in, add a second step, unlock the
-console to make changes, and what to do when something does not work. The
-references are dukovo-admin(7), admind(8), admin.toml(5), authd(8) and
-user(8); the decision is ADR 0514.
+console to make changes, use its API from a script, and what to do when
+something does not work. The references are dukovo-admin(7), admind(8),
+admin(8), admin.toml(5), authd(8) and user(8); the decisions are ADR 0514
+and ADR 0515.
 
 | Task | How |
 | --- | --- |
 | Open the console | `https://NAME.local:9090` in a browser, with the machine's name |
-| Find its address and fingerprint | The machine's sign-in screen, or `cert show this-machine` |
+| Find its address and fingerprint | The machine's sign-in screen, `admin fingerprint`, or `cert show this-machine` |
 | Let someone who is not an administrator sign in | `elevate user set --console NAME` |
 | Take that away again | `elevate user set --no-console NAME` |
 | Ask everyone for a second step | `second-step = "everyone"` in `/system/settings/admin.toml` |
 | Read what the console did | `elevate log -s admind` and `elevate log --audit` |
+| See what the console can do | `admin actions` |
+| See the command, API call and Ansible task of an action | `admin show service.restart name=nginx` |
+| Make a token for a script | `admin token add NAME --scope services:read` |
 | Start the console again | `elevate service admind restart` |
 
 ## Reaching the console
@@ -46,9 +50,10 @@ welcome banner, once it runs:
  A8:12:C4:7B:69:E0:3D:F1:84:2B:9A:C6:50:17:DE:73
 ```
 
-A machine with no screen shows nothing. Over SSH, `cert show this-machine`
-prints the fingerprint, and `elevate service admind status` says whether
-the console runs.
+A machine with no screen shows nothing. Over SSH, `admin fingerprint`
+prints the same two lines, and `elevate service admind status` says
+whether the console runs. `cert show this-machine` prints the fingerprint
+too.
 
 By default the console answers only this machine, the networks the
 machine is on, and the address ranges that no one reaches from the
@@ -222,7 +227,8 @@ own console. Every command the console runs as an administrator, and every
 unlock, is in the audit log: `elevate log --audit`.
 
 A change that needs an unlocked console, tried while it is locked, says
-**The console is locked** (ADM-106).
+**The console is locked** (ADM-106). A script does not unlock the console:
+it uses an API token (see "Using the API").
 
 ## Trusted browsers
 
@@ -247,13 +253,180 @@ step**, forgets them all, which is the right step when a laptop is lost.
 The sign-in page says why you are back. The console holds 64 sessions at
 once.
 
-## API tokens
+## Using the API
 
-authd keeps API tokens for an account: for scripts, with a name, scopes
-and an end at most 366 days away, shown once when made. A token is never
-more than its owner may do. The console does not take them in this
-release: a request that brings one is refused with **API tokens are not
-accepted yet** (ADM-115). Sign in with a name and a password.
+Whatever the console does to the machine, it does through an action: one
+read or one change, such as `service.restart`, with a route in an API that
+a script can call, and a command that it runs. The page, the API and the
+command typed at a terminal do the same thing, so the console can show you
+the command, the API call and the Ansible task for any action before you
+trust it. The pages of this release have no buttons for the actions yet;
+the API and `admin` are how to use them.
+
+`admin actions` lists the actions:
+
+```
+$ admin actions
+ID                 KIND    RUNS AS        ROUTE
+service.list       read    the person     GET /api/1/services                    e.g. service list --json
+service.explain    read    the person     GET /api/1/services/{name}/explain     e.g. service diskhealth explain --json
+service.start      change  administrator  POST /api/1/services/{name}/start      e.g. elevate service diskhealth start
+service.stop       change  administrator  POST /api/1/services/{name}/stop       e.g. elevate service diskhealth stop
+service.restart    change  administrator  POST /api/1/services/{name}/restart    e.g. elevate service diskhealth restart
+service.enable     change  administrator  POST /api/1/services/{name}/enable     e.g. elevate service diskhealth enable
+service.disable    change  administrator  POST /api/1/services/{name}/disable    e.g. elevate service diskhealth disable
+certificate.list   read    the person     GET /api/1/certificates                e.g. cert list --json
+certificate.show   read    the person     GET /api/1/certificates/{name}         e.g. cert show this-machine --json
+certificate.renew  change  administrator  POST /api/1/certificates/{name}/renew  e.g. elevate cert renew this-machine
+```
+
+`admin actions --json` prints the same list as JSON, with each action's
+area, its error IDs and its examples, for a script to read. A read runs as
+the person who asks, with their own rights. A change runs as an
+administrator.
+
+### Making a token
+
+A script comes in with an API token, a line of text that stands for you
+with the scopes you give it and an end date. Make one at a terminal, as
+yourself:
+
+```
+$ admin token add monitor --scope services:read --days 30
+Password:
+dkv_alice_6c1f0a...
+This token is not shown again: keep it now.
+```
+
+`admin token add` asks for your password, which it does not show. A script
+that makes a token gives the password as the first line of its standard
+input. The token is shown once and is kept only as a hash: if it is lost,
+make another. Keep it where only the script reads it, not in the script
+itself. An account that may sign in to the console keeps 32 tokens at
+most, each named with 1 to 32 letters, digits and hyphens. A token lasts 90 days
+unless `--days` says another number, from 1 to 366.
+
+A scope says what the token may do:
+
+| Scope | What the token may do |
+| --- | --- |
+| `*` | Everything its owner may do |
+| `services` | Read and change the services: the area's name |
+| `services:read` | Read the services, and change nothing |
+
+`--scope` may be given again, or take several scopes joined by commas.
+Each action belongs to an area, which `admin actions --json` names. A read
+needs the area, the area with `:read`, or `*`. A change needs the area or
+`*`. A token is never more than its owner: a change that runs as an
+administrator needs an owner who is an administrator, and the token then
+makes it with no unlock, so give each token the fewest scopes its script
+needs, and a script that only looks `:read`.
+
+### A call
+
+The script gives the token in one header, `Authorization: Bearer`, and
+nowhere else: not in the address, and not with a session's cookie. This is
+what `admin show service.list` gives for a read of the services, with the
+console's address filled in and the token in `DUKOVO_TOKEN`:
+
+```
+$ export DUKOVO_TOKEN=dkv_alice_6c1f0a...
+$ curl -sS -H "Authorization: Bearer $DUKOVO_TOKEN" https://duke-nas.local:9090/api/1/services
+```
+
+It answers the JSON that `service list --json` prints. The machine's own
+certificate is not one that `curl` knows: give `curl` the certificate with
+`--cacert`, after comparing its fingerprint as "The first visit" says.
+`cert show this-machine --pem` prints it.
+
+```
+$ cert show this-machine --pem > console.pem
+$ curl -sS --cacert console.pem -H "Authorization: Bearer $DUKOVO_TOKEN" \
+    https://duke-nas.local:9090/api/1/services
+```
+
+A change is a `POST`, and a token whose scope is `services` or `*` and
+whose owner is an administrator may make it:
+
+```
+$ admin show service.restart name=diskhealth
+Command
+elevate service diskhealth restart
+
+API
+curl -sS -X POST -H "Authorization: Bearer $DUKOVO_TOKEN" -H "Content-Type: application/json" -d '{}' https://duke-nas.local:9090/api/1/services/diskhealth/restart
+...
+```
+
+It answers `{"done": true, "output": [...]}` with the lines the command
+printed. A command that fails is answered as an error, with the command's
+own words (ADM-123).
+
+### An Ansible task
+
+`admin show` gives the same action as a task for a playbook, which does
+not use a token: it runs the command over SSH as an administrator, with
+`become`:
+
+```
+$ admin show service.restart name=diskhealth
+...
+Ansible
+- name: "Restart a service: diskhealth"
+  ansible.builtin.command:
+    argv:
+      - "service"
+      - "diskhealth"
+      - "restart"
+  become: true
+```
+
+Put it in a play's `tasks`. Ansible needs Python on the machine: see
+[Python](python.md). That module cannot tell a change from none, so a
+change task reports "changed" each time it runs, and a read has
+`changed_when: false`. A module of Dukovo's own that tells a change from
+none is a later addition.
+
+### Your tokens
+
+```
+$ admin token list
+NAME     SCOPES                       ENDS
+monitor  services:read, certificates  2026-12-14
+$ admin token remove monitor
+The API token monitor is removed.
+```
+
+A token that has ended is listed with `(ended)` for 30 days and then
+forgotten. Removing one takes effect at once: the next request that brings
+it is refused. Renaming an account ends its tokens.
+
+### What a script may meet
+
+An error is JSON, `{"error": {"id", "title", "detail", "fix"}}`, and each
+has a page in the support center.
+
+- **The request is not right** ([ADM-108](../../errors/ADM-108.md)). A
+  request brings a token and a session's cookie, more than one
+  `Authorization: Bearer` header, a token that is not shaped like one, or
+  arguments the action does not take. Send one header, `Authorization:
+  Bearer dkv_...`, and a JSON body of the arguments the route takes.
+- **The API token is not accepted** ([ADM-115](../../errors/ADM-115.md)).
+  The token is mistyped or cut short, was removed, has ended, or its account
+  may no longer sign in to the console. Check the whole token is sent, and
+  make a new one if it has gone. Ten wrong tokens in a minute from one
+  address stop it for the rest of the minute, with **Too many tries**
+  ([ADM-105](../../errors/ADM-105.md)).
+- **The API token may not do this** ([ADM-124](../../errors/ADM-124.md)).
+  Its scopes do not name the action's area, or it was sent to a route that
+  is not an action: a token reads and changes through the actions, and
+  cannot sign in, unlock or make another token. The detail names the scope
+  it needs; make a token with that scope.
+
+Two more follow from the action itself. **A value cannot work**
+([ADM-125](../../errors/ADM-125.md)) names the field and says what it may
+be, and nothing was run. **The command did not work**
+([ADM-123](../../errors/ADM-123.md)) holds the command's own words.
 
 ## What the console keeps
 
@@ -300,7 +473,7 @@ the machine's own sign-in and SSH ask no second step.
 
 ## Troubleshooting
 
-Each message carries an ID, **ADM-101** to **ADM-121**, and the support
+Each message carries an ID, **ADM-101** to **ADM-125**, and the support
 center has a page for each.
 
 - **The browser cannot connect.** Check the address and the port. Check
@@ -322,11 +495,20 @@ center has a page for each.
 - **This account may not use the console (ADM-104).** Ask an
   administrator for `elevate user set --console NAME`.
 - **Too many tries: wait a moment (ADM-105).** Ten sign-in requests a
-  minute from one address is the most. Wait the seconds the page gives.
+  minute from one address is the most, and so is ten wrong API tokens.
+  Wait the seconds the page gives.
 - **The console is locked (ADM-106).** Press **Unlock**.
+- **This account can look but not change (ADM-122).** The change runs as
+  an administrator and this account is not one. Ask an administrator to
+  make it, or to make this account one (`elevate user set --admin NAME`).
 - **This session has ended (ADM-107).** Sign in again.
 - **The request did not come from the console's page (ADM-109).** Reload
-  the page.
+  the page. A script uses an API token, not a session's cookie (see "Using
+  the API").
+- **The API token is not accepted (ADM-115)**, **The API token may not do
+  this (ADM-124)**, **The request is not right (ADM-108)**, **A value
+  cannot work (ADM-125)** or **The command did not work (ADM-123).** See
+  "What a script may meet", in "Using the API".
 - **authd did not answer (ADM-111)**, **The session's worker did not
   answer (ADM-112)** or **The console could not do that (ADM-121).** Try
   again. If it keeps happening, `elevate log -s admind` and `elevate log -s

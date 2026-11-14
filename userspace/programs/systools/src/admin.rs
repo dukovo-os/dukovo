@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! admin(8): the web console from a terminal (ADR 0514). It says where the
+//! admin(8): the web console from a terminal (ADR 0515). It says where the
 //! console is and which certificate it serves, lists the actions the API
 //! offers, shows an action as the command, the API call and the Ansible
 //! task that do it, and makes, lists and removes the API tokens of the

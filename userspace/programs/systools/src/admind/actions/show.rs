@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Showing an action (ADR 0514): what an action with its arguments would
+//! Showing an action (ADR 0515): what an action with its arguments would
 //! run, in the forms a person copies, and nothing run. `POST /api/1/show`
 //! and `admin show` (admin(8)) both answer with [`shown`], so that the
 //! page and the command say the same.

@@ -9,7 +9,7 @@
 //! go to the control socket, which only root may write to. service(8)
 //! reads through it, so that `service list` and `service NAME status`
 //! work for everyone, and so does the web console, whose reads run as the
-//! person signed in (ADR 0514).
+//! person signed in (ADR 0515).
 //!
 //! It keeps connections of its own, at most ROOM at once, so that a user
 //! who keeps them busy keeps no one out of the control socket, whose

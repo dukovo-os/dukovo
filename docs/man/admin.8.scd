@@ -24,7 +24,7 @@ admin - the web console from a terminal: its address, its actions and its API to
 # DESCRIPTION
 
 *admin* is the command that goes with the web console, Dukovo Admin
-(*admind*(8), *dukovo-admin*(7), ADR 0514). It says where the console is
+(*admind*(8), *dukovo-admin*(7), ADR 0515). It says where the console is
 and which certificate it serves, lists what the console's API does, shows
 what an action runs in the forms a person copies, and makes, lists and
 removes the API tokens of the person who types it.

@@ -221,11 +221,11 @@ own record.
   `-`, its scopes (`*`, an area, or an area with `:read`), the day it ends,
   at most 366 days after it was made, and when it was last used. An account
   keeps 32. Its owner's rights are checked as for a session: a command run as
-  an administrator needs the owner to be an administrator and, in this
-  release, the scope `*`. Renaming an account ends its tokens. admind will
-  take a token only as `Authorization: Bearer`, never in an address or a
-  cookie, and never beside a session's cookie. It takes none in this
-  release: the API that does comes in the next part, and an answer says so.
+  an administrator needs the owner to be an administrator. Renaming an
+  account ends its tokens. admind takes a token only as `Authorization:
+  Bearer`, never in an address or a cookie, and never beside a session's
+  cookie. ADR 0515 says what a token is taken for, and which scopes a
+  command as an administrator needs.
 - **The errors have IDs.** An error is `{"error": {"id", "title",
   "detail", "fix"}}`, `ADM-101` to `ADM-121`, each with a page in
   `docs/errors`. The detail says what happened this time, in authd's own
@@ -281,8 +281,8 @@ own record.
 - Blocking an address at the firewall after failed sign-ins is a deferred
   row for the console's Security page; authd's waits and admind's limits
   slow guessing until it exists.
-- A token has an owner, scopes and an end, and cannot be used yet. The
-  next part adds the `admin` command and the API that take it.
+- A token has an owner, scopes and an end. ADR 0515 says what it is taken
+  for: the API's actions, and the `admin` command that makes one.
 - The error IDs are part of what a person can quote; each page in
   `docs/errors` is checked against the IDs the code gives, as the other
   areas' are (ADR 0420).

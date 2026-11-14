@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! What admind answers (ADR 0514): the order in which a request is
-//! checked, the table of routes, and what each answer carries.
+//! What admind answers (ADRs 0514 and 0515): the order in which a request
+//! is checked, the table of routes, and what each answer carries.
 //!
 //! A request meets these checks, and the first that fails answers it:
 //!

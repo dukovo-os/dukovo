@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # The Ansible task that the web console shows for each action, run from
-# the lab PC (ADR 0514). The lab PC makes an API token for every scope with
+# the lab PC (ADR 0515). The lab PC makes an API token for every scope with
 # `admin token add`, asks admind for the list of actions and for the task
 # that POST /api/1/show gives for each action's first good example, and
 # runs each task with ansible-playbook over SSH as the lab account, with

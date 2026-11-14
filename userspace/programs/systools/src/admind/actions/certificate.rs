@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The certificates' actions (ADR 0514): the list, one certificate, and
+//! The certificates' actions (ADR 0515): the list, one certificate, and
 //! renewing one. Each runs `cert`, cert(8), which reads the store certd
 //! keeps; a renewal runs as an administrator, as `elevate cert renew NAME`
 //! does at a terminal.

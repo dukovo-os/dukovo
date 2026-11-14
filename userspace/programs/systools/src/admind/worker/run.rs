@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The worker's `run`: an action's command, run as the person (ADR 0514).
+//! The worker's `run`: an action's command, run as the person (ADR 0515).
 //!
 //! The command is a list of words that admind's action made, never text
 //! for a shell. Its program is found only in `/system/commands` and

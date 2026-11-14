@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-"""The lab PC's side of web-console/ansible (ADR 0514).
+"""The lab PC's side of web-console/ansible (ADR 0515).
 
     ansible.py MACHINE SSHPORT CONSOLEPORT
 

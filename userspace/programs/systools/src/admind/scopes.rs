@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! What an API token may do (ADR 0514): its scopes, as authd keeps them,
+//! What an API token may do (ADR 0515): its scopes, as authd keeps them,
 //! against the area of an action and whether the action reads or changes.
 //!
 //! A scope is `*`, everything its owner may do; an area's name, such as

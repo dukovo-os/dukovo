@@ -575,7 +575,7 @@ answers any user. Spark listens at _/system/live/spark/read_ too, mode
 control socket, which only root may write to. *service*(8) reads
 through it, so that *service list* and *service* _name_ *status* work
 for everyone, and so does the web console, whose reads run as the
-person signed in (ADR 0514). Four of its connections are served at a
+person signed in (ADR 0515). Four of its connections are served at a
 time, apart from the control socket's, so that a user who keeps them
 busy keeps no one out of the control socket.
 

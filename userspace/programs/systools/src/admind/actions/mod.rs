@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The console's actions (ADR 0514): every read and every change the API
+//! The console's actions (ADR 0515): every read and every change the API
 //! offers, each a typed value that says what it runs.
 //!
 //! An action names its area (the page it belongs to, and the scope a

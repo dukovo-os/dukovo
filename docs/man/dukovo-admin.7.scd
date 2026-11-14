@@ -5,7 +5,7 @@ dukovo-admin(7) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-dukovo-admin - the web console, Dukovo Admin: reaching it, signing in, the second step, unlocking
+dukovo-admin - the web console, Dukovo Admin: signing in, second steps, unlocking, actions, API tokens
 
 # DESCRIPTION
 
@@ -24,12 +24,14 @@ Three programs make it:
   consoles and over SSH, so an account has one password for all.
 - A worker, *admind --worker*, which authd starts for each signed-in
   session, runs as the person, and does what the person's own account
-  may: it asks authd about their second steps.
+  may: it asks authd about their second steps, and runs the commands of
+  the actions that run as the person.
 
 This page says how to reach the console, who may sign in, how, what the
-second steps are, how to unlock the console and what ends a session, and
-where to look when something fails. The handbook's chapter on the web
-console does the same task by task.
+second steps are, how to unlock the console and what ends a session,
+what the actions and the API tokens are, and where to look when something
+fails. The handbook's chapter on the web console does the same task by
+task.
 
 # REACHING THE CONSOLE
 
@@ -238,8 +240,9 @@ never admind. The commands are those in _/system/commands_ and
 _/applications/commands_, never a shell and never a path outside them, with
 at most 64 arguments and 32 KiB between them. Each is in the audit log
 (*log --audit*), with the session that ran it, and has that session's
-first 8 characters in *DUKOVO\_CONSOLE\_SESSION* in its environment. The
-pages of this release run none of their own.
+first 8 characters in *DUKOVO\_CONSOLE\_SESSION* in its environment. What
+runs them is an action (ACTIONS, below); none of this release's pages has
+a button for one.
 
 # SESSIONS ENDING
 
@@ -258,6 +261,47 @@ The console holds 64 sessions at once (ADM-120). Sign-ins under way,
 the challenges given to passkeys and which sessions are unlocked are in
 memory too; a sign-in under way and a challenge last 5 minutes.
 
+# ACTIONS
+
+What the console does to the machine, and what it reads from it, is a list
+of actions (ADR 0515). Each is one read or one change, with an id of its
+area and a verb, such as *service.restart* or *certificate.show*, a route
+in the API, and the command that does it. The services' and the
+certificates' are the actions of this release. A read runs as the person
+who asks, with their own rights. A change runs as an administrator, for
+an unlocked session of an administrator (UNLOCKING THE CONSOLE) or for an
+API token whose owner is one (API TOKENS); an account that is not an
+administrator is told it can look but not change (ADM-122).
+
+*admin actions* lists the actions: each one's id, whether it reads or
+changes, who runs it, its route and an example of its command. *admin
+actions --json* prints the list that *GET /api/1/actions* answers, which
+a script reads to learn what the console does.
+
+*admin show* _action_ [_name_=_value_]... and the console's *Show the
+command*, which asks *POST /api/1/show*, give the same four things for an
+action with its arguments, and run nothing:
+
+- The command, as one line to type at Dukovo's shell or at sh, with
+  *elevate* in front when the action runs as an administrator.
+- The API call, a *curl* line for the action's route, with the token in
+  *DUKOVO\_TOKEN*, against the address the console was asked at.
+- The Ansible task, as the YAML of one task for a playbook. It runs the
+  command with *ansible.builtin.command*, which cannot tell whether a
+  change changed anything, so a change task reports a change each time.
+- The files the change writes, when it writes any.
+
+The command shown is the command that runs: the console runs the same
+words that it shows, never a shell, so the button, the API call and the
+command typed at a terminal do the same thing. *admin*(8) says more, and
+shows an example.
+
+A command that ends with an error is ADM-123, with the command's own
+words, and with the command's own ID when the action lists it. A value that
+cannot work, such as a service's name that starts with a hyphen, is
+ADM-125, and nothing is run. admind's log (*log admind*) has a line for
+each change that was asked for, and for a read that was refused or failed.
+
 # API TOKENS
 
 authd keeps API tokens for scripts, for the account that made them. A
@@ -273,14 +317,47 @@ scopes, a last day at most 366 days after it was made, and the time it
 was last used; an account has 32. A scope is *\**, which stands for all
 that the owner may do, the name of an area, or the name of an area with
 *:read* after it. A token is never more than its owner: it is no use
-when the owner may not sign in, and one that runs commands as an
-administrator needs the scope *\** and an owner who is an administrator.
-Renaming the account ends its tokens.
+when the owner may not sign in, and one that changes something as an
+administrator needs an owner who is an administrator and a scope that is
+*\** or names the area, not its reading alone. Renaming the account ends
+its tokens.
 
-The console's own calls make a token and remove one, and the list of a
-second step names them. None of this release's pages makes one, and
-admind takes none: a request with *Authorization: Bearer* and a token is
-refused (ADM-115), and no part of the console answers to one yet.
+A token is made at a terminal, with *admin token add* _name_ *--scope*
+_scope_, which asks for the account's password and shows the token once;
+*admin token list* lists the account's tokens and *admin token remove*
+_name_ removes one (*admin*(8)). A signed-in session makes and removes
+them with its own calls to _/api/1/account/tokens/add_ and
+_/api/1/account/tokens/remove_ (*admind*(8)), which no page of this
+release does.
+
+A script gives the console a token as
+
+```
+Authorization: Bearer dkv_ACCOUNT_SECRET
+```
+
+in one header, and nowhere else: a token in an address or a cookie is not
+read, and one that comes with a session's cookie is refused (ADM-108).
+The console takes a token for the actions, their list (*GET
+/api/1/actions*) and the showing of an action (*POST /api/1/show*), and
+for no other route: the sign-in, the unlock and the account's own
+routes answer a token with ADM-124. The scopes decide which actions. A
+read needs the action's area, its area with *:read*, or *\**. A change
+needs the area or *\**. The list names each action's area: *services*
+for *service.restart*. A token that is not enough is ADM-124, which
+names the scopes that would do. Showing an action needs the scope that
+reads its area.
+
+authd checks the token on every request, so a token that is removed, that
+has ended, or whose owner may no longer sign in stops working at once
+(ADM-115). Ten wrong tokens in a minute from one address stop that address
+for the rest of the minute (ADM-105), and authd waits after each wrong
+token as it does after a wrong password. A script that reads gets a
+worker of the owner's, which the console keeps for 5 minutes after the
+token's last call. A token that changes something as an administrator
+needs no unlock: its owner chose its scopes and its end when they made
+it, and gave their password to do so. Give each token the fewest scopes
+its script needs.
 
 # WHAT IT KEEPS
 
@@ -307,7 +384,7 @@ a ticket or a token.
 
 # WHEN IT FAILS
 
-Each error the console gives has an ID, *ADM-101* to *ADM-121*, and a
+Each error the console gives has an ID, *ADM-101* to *ADM-125*, and a
 page of its own in the support center that says what to do. The page
 shows the ID with a short title and a sentence on what to do; *admind*(8)
 lists them.
@@ -359,6 +436,6 @@ _/system/state/sign-ins_
 
 # SEE ALSO
 
-*admind*(8), *authd*(8), *admin.toml*(5), *consoled*(8), *user*(8),
+*admind*(8), *admin*(8), *authd*(8), *admin.toml*(5), *consoled*(8), *user*(8),
 *cert*(8), *certd*(8), *elevate*(8), *service*(8), *log*(1), *last*(1),
 *dukovo-certificates*(7)

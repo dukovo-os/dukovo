@@ -495,7 +495,7 @@ to it.
 
 ### The console's actions
 
-Each action of the console's API (ADR 0514) has five tests, which
+Each action of the console's API (ADR 0515) has five tests, which
 `lab/actions.toml` names. The registry in `systools` writes the file, so
 an action is in it as soon as it is registered: its host test
 `actions_toml` fails when the file is stale, and `UPDATE_ACTIONS=1 ./ob

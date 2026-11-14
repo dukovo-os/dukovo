@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 The Dukovo contributors
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
-# The lab PC's way to an API token of the web console (ADR 0514): the
+# The lab PC's way to an API token of the web console (ADR 0515): the
 # tests that ask the console's API from the lab PC (ansible and zap) make
 # one for every scope with `admin token add`, as the lab account, over SSH,
 # and take it away again with `admin token remove`.
