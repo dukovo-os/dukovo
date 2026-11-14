@@ -6,11 +6,12 @@
 //! source tree's paths; ob(1) says what each command does.
 
 use std::io::{BufRead as _, IsTerminal as _, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use catalog_repo::keys::{self, Signers};
 use catalog_repo::{FLAWS_DAYS, Refreshed, Repo, WARN_DAYS, expires_days};
+use system_release::rollout::{Plan, Plans};
 
 const USAGE: &str = "\
 usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAND
@@ -20,8 +21,15 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
        sign [--days N] [--remove PATH]... [--yes] [BUNDLE]...
                                          sign the next targets: one touch a batch,
                                          the bundles in --bundles DIR by default
-       publish --store DIR --out DIR     snapshot, timestamp and the files to serve
-       refresh --store DIR --out DIR     a new timestamp, or all again when needed
+       publish --store DIR --out DIR [--plan FILE]
+                                         snapshot, timestamp and the files to serve,
+                                         the rollouts of the plan signed first
+       refresh --store DIR --out DIR [--plan FILE]
+                                         a new timestamp, or all again when needed
+       rollout --store DIR --out DIR --plan FILE
+               (pause ID VERSION REASON | resume ID VERSION | canary NAME red|green)
+                                         hold or free the waves of a bundle's newest
+                                         version, or of every one, and sign again
        flaws --store DIR --out DIR OSV...
                                          sign the list of the bundles' known flaws
                                          from advisories in the OSV format, and publish
@@ -39,6 +47,7 @@ struct Options {
     store: Option<PathBuf>,
     out: Option<PathBuf>,
     bundles: Option<PathBuf>,
+    plan: Option<PathBuf>,
     rest: Vec<String>,
 }
 
@@ -54,6 +63,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         store: None,
         out: None,
         bundles: None,
+        plan: None,
         rest: Vec::new(),
     };
     let mut args = args.into_iter();
@@ -71,6 +81,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             "--store" => options.store = Some(value()?.into()),
             "--out" => options.out = Some(value()?.into()),
             "--bundles" => options.bundles = Some(value()?.into()),
+            "--plan" => options.plan = Some(value()?.into()),
             "--yes" => options.yes = true,
             "-h" | "--help" => return Err(USAGE.into()),
             _ if arg.starts_with("--") => return Err(format!("unknown option {arg}\n{USAGE}")),
@@ -160,8 +171,11 @@ fn run(options: &Options) -> Result<(), String> {
         ["publish"] => {
             let store = options.store.as_ref().ok_or("--store is needed")?;
             let out = options.out.as_ref().ok_or("--out is needed")?;
+            let signers = signers()?;
+            let plans = sign_rollouts(&repo, options, &signers)?;
             let days = (expires_days("snapshot"), expires_days("timestamp"));
-            let (snapshot, timestamp) = repo.publish(store, out, &signers()?, days)?;
+            let (snapshot, timestamp) = repo.publish(store, out, &signers, days)?;
+            keep_plans(options, plans.as_ref())?;
             println!(
                 "Published snapshot {snapshot} and timestamp {timestamp} in {}.",
                 out.display()
@@ -170,15 +184,14 @@ fn run(options: &Options) -> Result<(), String> {
         ["refresh"] => {
             let store = options.store.as_ref().ok_or("--store is needed")?;
             let out = options.out.as_ref().ok_or("--out is needed")?;
+            let signers = signers()?;
+            let plans = sign_rollouts(&repo, options, &signers)?;
             let days = (expires_days("snapshot"), expires_days("timestamp"));
-            match repo.refresh(store, out, &signers()?, days)? {
-                Refreshed::Timestamp(version) => println!("Signed timestamp {version}."),
-                Refreshed::All { snapshot, timestamp } => println!(
-                    "Published snapshot {snapshot} and timestamp {timestamp} in {}.",
-                    out.display()
-                ),
-            }
+            let refreshed = repo.refresh(store, out, &signers, days)?;
+            keep_plans(options, plans.as_ref())?;
+            say_refreshed(&refreshed, out);
         }
+        ["rollout", words @ ..] => rollout(&repo, options, &signers()?, words)?,
         ["flaws", sources @ ..] => {
             let store = options.store.as_ref().ok_or("--store is needed")?;
             let out = options.out.as_ref().ok_or("--out is needed")?;
@@ -213,6 +226,100 @@ fn run(options: &Options) -> Result<(), String> {
         }
         ["status"] => status(&repo)?,
         _ => return Err(USAGE.into()),
+    }
+    Ok(())
+}
+
+/// Signs the rollouts of the plans in `--plan`, if it was given, and
+/// gives the plans as they are then, to keep once what they say is
+/// published.
+fn sign_rollouts(
+    repo: &Repo,
+    options: &Options,
+    signers: &Signers,
+) -> Result<Option<Plans>, String> {
+    let Some(path) = &options.plan else { return Ok(None) };
+    let store = options.store.as_ref().ok_or("--store is needed")?;
+    let mut plans = Plans::load(path)?;
+    repo.sign_rollouts(store, signers, &mut plans, tuf::time::now())?;
+    Ok(Some(plans))
+}
+
+/// Keeps `plans` where `--plan` says, if it was given.
+fn keep_plans(options: &Options, plans: Option<&Plans>) -> Result<(), String> {
+    match (&options.plan, plans) {
+        (Some(path), Some(plans)) => plans.save(path),
+        _ => Ok(()),
+    }
+}
+
+fn say_refreshed(refreshed: &Refreshed, out: &Path) {
+    match refreshed {
+        Refreshed::Timestamp(version) => println!("Signed timestamp {version}."),
+        Refreshed::All { snapshot, timestamp } => println!(
+            "Published snapshot {snapshot} and timestamp {timestamp} in {}.",
+            out.display()
+        ),
+    }
+}
+
+/// The plan of the rollout of version `version` of bundle `id`, which
+/// only the newest version of a bundle in the catalog has.
+fn plan_of<'a>(plans: &'a mut Plans, id: &str, version: &str) -> Result<&'a mut Plan, String> {
+    plans.releases.get_mut(&format!("{id}/{version}")).ok_or_else(|| {
+        format!(
+            "{id} {version} has no rollout: only the newest version of a bundle in the \
+             published catalog has one"
+        )
+    })
+}
+
+/// `rollout --plan FILE ...`: on the update server, the waves of a
+/// bundle's newest version held or freed, or a canary marked red or
+/// green, and the rollouts signed and published again (ADR 0544).
+fn rollout(
+    repo: &Repo,
+    options: &Options,
+    signers: &Signers,
+    words: &[&str],
+) -> Result<(), String> {
+    let path = options.plan.as_ref().ok_or("--plan is needed")?;
+    let store = options.store.as_ref().ok_or("--store is needed")?;
+    let out = options.out.as_ref().ok_or("--out is needed")?;
+    let mut plans = Plans::load(path)?;
+    let said = match words {
+        ["pause", id, version, reason] => {
+            plan_of(&mut plans, id, version)?.paused = Some((*reason).to_string());
+            format!("{id} {version} is paused: {reason}")
+        }
+        ["resume", id, version] => {
+            plan_of(&mut plans, id, version)?.paused = None;
+            format!("{id} {version} goes on")
+        }
+        ["canary", name, colour @ ("red" | "green")] => {
+            plans.red.retain(|red| red != name);
+            if *colour == "red" {
+                plans.red.push((*name).to_string());
+            }
+            format!("the canary {name} is {colour}")
+        }
+        _ => {
+            return Err("rollout takes pause ID VERSION REASON, resume ID VERSION or canary NAME \
+                        red|green"
+                .into());
+        }
+    };
+    if repo.sign_rollouts(store, signers, &mut plans, tuf::time::now())?.is_none() {
+        return Err("the targets delegate no rollouts: sign the targets again".into());
+    }
+    let days = (expires_days("snapshot"), expires_days("timestamp"));
+    let refreshed = repo.refresh(store, out, signers, days)?;
+    plans.save(path)?;
+    println!("{said}.");
+    say_refreshed(&refreshed, out);
+    for (release, plan) in &plans.releases {
+        let held = plan.paused.as_ref().map_or_else(String::new, |why| format!(", paused: {why}"));
+        println!("{}: wave {} open{held}", release.replace('/', " "), plan.open);
     }
     Ok(())
 }
