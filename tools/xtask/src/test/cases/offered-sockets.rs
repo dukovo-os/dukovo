@@ -4,8 +4,8 @@
 //! Sockets a bundle offers to others (ADRs 0385 and 0477). A second disk
 //! holds seven test bundles: three providers, whose service has listenfd
 //! (userspace/posix/listenfd.c) answer on a socket `echo` that Spark
-//! makes in the service's live folder, offered to `approved`,
-//! `publisher` and `anyone`; a consumer of each, whose service asks the
+//! makes in the service's live folder, offered to `approved`, `publisher`
+//! and `anyone`; a consumer of each, whose service asks the
 //! socket for its line and logs what it got, or `no answer`; and a
 //! stranger, which names no use of the approved provider's socket and
 //! asks it all the same. Alice installs them for everyone, with `--yes`,

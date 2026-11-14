@@ -4,8 +4,8 @@
 //! A service's own log files, turned over (ADR 0478), at the console as
 //! an administrator. turnlog (userspace/spark/tests/services/log-turnover)
 //! writes a number to a file of its logs folder each second, opening the
-//! file for each line, and its file names `logs/*.log` with `keep = 3`.
-//! *service check* reads its `[logs]`. *logturn --now turnlog* runs five
+//! file for each line, and its file names every `.log` file of `logs`,
+//! with `keep = 3`. *service check* reads its `[logs]`. *logturn --now turnlog* runs five
 //! times, with the service writing between the runs: three files are
 //! kept next to the current one, the first of them as written and the
 //! older two compressed with zstd, and none of a fourth. Read from the

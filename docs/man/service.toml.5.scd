@@ -181,37 +181,37 @@ override:
 *sockets* = [{ ... }, ...]
 	The sockets Spark makes and holds for it, as *[[sockets]]* tables,
 	at most 16 (see SOCKETS SPARK HOLDS). Each has one of *port* and
-	*path*:
+	*path*; under *[[sockets]]* each key is written without *sockets.*:
 
-	*port* = _number_
+	*sockets.port* = _number_
 		A TCP socket on that port, which must be one of
 		*network.listen*'s: that list covers TCP and UDP alike.
 		Without *address* it takes every address, IPv6 and IPv4
 		together.
 
-	*address* = _"0.0.0.0"_ | _"::"_ | _"address"_
+	*sockets.address* = _"0.0.0.0"_ | _"::"_ | _"address"_
 		With *port*: every IPv4 address; every IPv6 address and no
 		IPv4; or one IPv4 or IPv6 address, such as _"127.0.0.1"_.
 
-	*udp* = *true* | *false*
+	*sockets.udp* = *true* | *false*
 		With *port*: a UDP socket instead of a TCP one. *false* unless
 		set.
 
-	*path* = _"name"_
+	*sockets.path* = _"name"_
 		A Unix stream socket of that name in the service's live
 		folder (see WHAT A SERVICE SEES). A plain name of letters,
 		digits, underscore, hyphen and dot, not "." or ".." and with no slash.
 
-	*name* = _"word"_
+	*sockets.name* = _"word"_
 		The word for it in *LISTEN_FDNAMES*: letters, digits, underscore,
 		hyphen and dot, with no colon; each once in the file. The
 		port's number or the path unless set.
 
-	*backlog* = _number_
+	*sockets.backlog* = _number_
 		The connections the kernel keeps waiting for the service to
 		accept, 1 to 65535: 4096 unless set.
 
-	*to* = _"anyone"_ | _"system"_
+	*sockets.to* = _"anyone"_ | _"system"_
 		With *path*: who may connect besides the service. *"anyone"*
 		makes the socket root's, mode 0666; *"system"* root's, mode
 		0600, for the system's own programs. Spark also sets the
@@ -220,7 +220,7 @@ override:
 		service's account's, mode 0600. *bundled*(8) writes it for a
 		socket a bundle offers (see *manifest.json*(5)).
 
-	*group* = _"name"_
+	*sockets.group* = _"name"_
 		With *path*: the group whose members may connect, as an
 		account's name is written. The socket is root's, in that
 		group, mode 0660. A group that does not exist is skipped, and
@@ -680,7 +680,7 @@ afresh.
 
 # TIMERS
 
-A service with a *[timer]* is started at times (ADR 0478): *timerd*(8)
+A service with a *timer*, a *[timer]* table, is started at times (ADR 0478): *timerd*(8)
 asks Spark to start it, as *service start --by timer* does. A timer does
 not turn a service on: an enabled service with a timer is off between
 its times, and a start that comes while the last still runs is skipped.
@@ -716,7 +716,8 @@ needs *at* or *every*.
 
 # LOG FILES
 
-A service that writes its own log files names them in *[logs]*, and
+A service that writes its own log files names them in *logs*, a *[logs]*
+table, and
 *logturn*(8) turns them over (ADR 0478): it renames a file that is due,
 has the service open its files again, and compresses the files turned
 over before. The service writes on into the renamed file until it has,
