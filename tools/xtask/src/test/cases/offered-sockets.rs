@@ -55,6 +55,10 @@ fn socket_path(provider: &str) -> String {
     format!("/system/live/services/{provider}/echo")
 }
 
+/// The seven bundles, the providers first. The disk holds the other
+/// tests' bundles too, which this test leaves alone.
+const BUNDLES: &str = "anyprov echoprov pubprov anyuser echouser pubuser stranger";
+
 /// Installs the seven bundles for everyone, as an administrator: the first
 /// elevate asks for her password.
 fn install_all(vm: &mut Vm) -> Result<(), String> {
@@ -62,11 +66,14 @@ fn install_all(vm: &mut Vm) -> Result<(), String> {
         vm,
         "$",
         &format!(
-            "clear; cd {VOLUME}; for f in org.example.*.dkv; do elevate bundle install \
-             --for-everyone --yes $f > /dev/null 2>&1; echo \"installed $f $?\"; done; cd"
+            "clear; cd {VOLUME}; for b in {BUNDLES}; do f=org.example.$b-1.0.0.dkv; elevate \
+             bundle install --for-everyone --yes $f > /dev/null 2>&1; echo \"installed $f $?\"; \
+             done; cd"
         ),
     )?;
     answer_prompt(vm, "org.example.anyprov-1.0.0.dkv:", "queen of hearts")?;
+    // Seven installs take longer than a screen check waits.
+    answer_prompt_within(vm, "$", "", 120)?;
     vm.expect_screen(&["installed org.example.stranger-1.0.0.dkv 0"])
 }
 
