@@ -74,10 +74,10 @@ fn log_turnover(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         vm,
         "#",
         &format!(
-            "clear; cd {LOGS}; sleep 2; ls x.log* | tr '\\n' ' '; echo; ls | grep -c 'x.log.4'"
+            "clear; cd {LOGS}; sleep 2; ls x.log* | tr '\\n' ' '; echo; echo \"fourth $(ls | grep -c 'x.log.4')\""
         ),
     )?;
-    vm.expect_screen(&["x.log x.log.1 x.log.2.zst x.log.3.zst"])?;
+    vm.expect_screen(&["x.log x.log.1 x.log.2.zst x.log.3.zst", "fourth 0"])?;
 
     // Oldest to newest, in order and none twice.
     answer_prompt(

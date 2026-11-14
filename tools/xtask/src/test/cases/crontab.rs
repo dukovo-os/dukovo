@@ -20,6 +20,15 @@ fn wait_for(file: &str) -> String {
     format!("for i in $(seq 1 100); do [ -s {file} ] && break; sleep 1; done")
 }
 
+/// Types `command`, which waits up to 100 seconds for a job, at alice's
+/// prompt; waits for it to end, which a screen check alone does not wait
+/// as long for; and checks that the screen then shows each of `shown`.
+fn waited(vm: &mut Vm, command: &str, shown: &[&str]) -> Result<(), String> {
+    answer_prompt(vm, "$", command)?;
+    answer_prompt_within(vm, "$", "", 130)?;
+    vm.expect_screen(shown)
+}
+
 /// Signs alice out and in again, `seconds` apart.
 fn out_and_in(vm: &mut Vm, seconds: u32) -> Result<(), String> {
     answer_prompt(vm, "$", "clear; exit")?;
@@ -68,8 +77,7 @@ fn crontab(vm: &mut Vm, case: &Case) -> Result<(), String> {
          \"listed $?\"",
     )?;
     vm.expect_screen(&["* * * * * echo alice-ran >> ~/cron.out", "listed 0"])?;
-    answer_prompt(vm, "$", &format!("clear; {}; cat ~/cron.out", wait_for("~/cron.out")))?;
-    vm.expect_screen(&["alice-ran"])?;
+    waited(vm, &format!("clear; {}; cat ~/cron.out", wait_for("~/cron.out")), &["alice-ran"])?;
 
     // An at job runs once, and leaves the queue.
     answer_prompt(
@@ -78,12 +86,11 @@ fn crontab(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "clear; echo 'echo at-ran >> ~/at.out' | at now + 1 minute; echo \"queued $(atq | wc -l)\"",
     )?;
     vm.expect_screen(&["job 1 at ", "queued 1"])?;
-    answer_prompt(
+    waited(
         vm,
-        "$",
         &format!("clear; {}; cat ~/at.out; echo \"queued $(atq | wc -l)\"", wait_for("~/at.out")),
+        &["at-ran", "queued 0"],
     )?;
-    vm.expect_screen(&["at-ran", "queued 0"])?;
     answer_prompt(
         vm,
         "$",
@@ -147,12 +154,7 @@ fn crontab(vm: &mut Vm, case: &Case) -> Result<(), String> {
     )?;
     answer_prompt(vm, "root.cron:", "queen of hearts")?;
     vm.expect_screen(&["root 0"])?;
-    answer_prompt(
-        vm,
-        "$",
-        &format!("clear; {}; cat ~/root.out", wait_for("~/root.out")),
-    )?;
-    vm.expect_screen(&["root-ran"])?;
+    waited(vm, &format!("clear; {}; cat ~/root.out", wait_for("~/root.out")), &["root-ran"])?;
     let log = vm.log();
     for line in [
         "authd: alice's job crontab alice, for process ",
