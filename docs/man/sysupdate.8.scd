@@ -220,7 +220,9 @@ a week.
 service _sysupdate_, after every other. It removes a half-built slot,
 then watches the essential services that *health.toml*(5) names. An
 update being tried proves itself or fails, as above; any other start is
-seen through once those services run. Until a start is seen through,
+seen through once those services have run for 10 seconds (or *stable*,
+if less) with none restarting, so that one that ends at once and is
+started again fails it. Until a start is seen through,
 GRUB shows its menu at the next start, so that a machine that stopped on
 its way up can be started otherwise; after three such starts in a row,
 or with no slot to start, the menu starts Rescue by itself

@@ -7,9 +7,10 @@
 //! update being tried proves itself when they have run for two minutes
 //! without a restart, the required checks of health.toml(5) pass, the
 //! firmware set it names loaded, and every device the last good start
-//! had is there (ADR 0468); any other start is seen through once its
-//! services run, and what is wrong with its firmware or devices is only
-//! logged. Each start seen through keeps its devices as the record the
+//! had is there (ADR 0468); any other start is seen through once each of
+//! its services has run for a few seconds since it last started, which
+//! one that ends at once and is started again never has, and what is
+//! wrong with its firmware or devices is only logged. Each start seen through keeps its devices as the record the
 //! next try is held to ([`super::devices`]). Each start has a record,
 //! begun as the check begins and finished with its outcome
 //! ([`super::starts`], ADR 0500), and each failure names its error ID.
@@ -56,6 +57,14 @@ const EVERY: Duration = Duration::from_secs(2);
 
 /// How many restarts of an essential service fail the check at once.
 const RESTARTS: u64 = 3;
+
+/// The most seconds each essential service of a start that is not an
+/// update being tried must have run, since Spark last started it, before
+/// the start is seen through: `stable` if that is less. Seeing them run
+/// once is not enough, since a service that ends at once runs for a
+/// moment each time Spark starts it again; while the check waits, it
+/// restarts enough to fail it.
+const SEEN_STEADY: u64 = 10;
 
 /// How long the health check waits for a stage that holds the slot
 /// state's lock, in seconds.
@@ -548,9 +557,23 @@ fn remove_half_built(root: &Root) {
     }
 }
 
+/// Whether each essential service that runs has run for `for_ms` since
+/// Spark last started it, as `show` says.
+pub fn settled(essential: &[String], show: &show::Show, for_ms: u64) -> bool {
+    essential
+        .iter()
+        .filter_map(|name| show.services.iter().find(|s| &s.name == name))
+        .filter(|service| service.state == State::Running)
+        .all(|service| {
+            service.started_ms.is_none_or(|started| show.now_ms.saturating_sub(started) >= for_ms)
+        })
+}
+
 /// Waits until the essential services run: for `config.stable` seconds
-/// with no restart when `trying`, and once otherwise.
+/// with no restart when `trying`, and otherwise until each has run for
+/// [`SEEN_STEADY`] seconds, or `stable` if less, since it last started.
 fn watch(config: &Config, trying: bool) -> Result<(), Failure> {
+    let seen_ms = config.stable.min(SEEN_STEADY).saturating_mul(1000);
     let start = Instant::now();
     let mut steady: Option<(Instant, Vec<u64>)> = None;
     loop {
@@ -561,7 +584,11 @@ fn watch(config: &Config, trying: bool) -> Result<(), Failure> {
             Look::Failing(name, why) => {
                 return Err(Failure { why: format!("{why} (BOOT-102)"), failing: Some(name) });
             }
-            Look::Running(_) if !trying => return Ok(()),
+            Look::Running(_) if !trying => {
+                if settled(&config.essential, &document, seen_ms) {
+                    return Ok(());
+                }
+            }
             Look::Running(restarts) => match &steady {
                 Some((since, before)) if *before == restarts => {
                     if since.elapsed() >= Duration::from_secs(config.stable) {
@@ -996,6 +1023,34 @@ mod tests {
                 "Spark gave up on netd: it failed to start 5 times in a row".into()
             )
         );
+    }
+
+    #[test]
+    fn a_start_is_seen_through_once_each_service_has_run_a_while_since_it_last_started() {
+        let essential: Vec<String> = ["logd", "valkey", "netd"].map(String::from).to_vec();
+        let started = |name: &str, state: State, started_ms: u64| show::Service {
+            started_ms: Some(started_ms),
+            ..service(name, state, 0)
+        };
+        let mut show = show::Show {
+            now_ms: 12_000,
+            services: vec![
+                started("logd", State::Running, 1_000),
+                // Started again a moment ago, as one that ends at once is.
+                started("valkey", State::Running, 9_500),
+                // Done, as a setup step is: it does not count.
+                started("netd", State::Done, 11_900),
+            ],
+            ..show::Show::default()
+        };
+        assert!(!settled(&essential, &show, 10_000));
+        assert!(settled(&essential, &show, 2_500));
+        show.now_ms = 19_500;
+        assert!(settled(&essential, &show, 10_000));
+        // One Spark has no start time for counts as settled.
+        show.services[1].started_ms = None;
+        show.now_ms = 12_000;
+        assert!(settled(&essential, &show, 10_000));
     }
 
     #[test]
