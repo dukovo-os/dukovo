@@ -135,7 +135,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     write_program(&dir.join("script"), &format!("cat <<'ROUND'\n{ROUND}ROUND"))?;
     step(&format!("Soaking an installed system for {hours} hours (ADR 0427)"));
     // The boot and the end besides the load's own time.
-    boot_tests_of(ctx, profile, &[&SOAK], length + Duration::from_hours(1))
+    boot_tests_of(ctx, profile, &[&SOAK], length + Duration::from_hours(1), false)
 }
 
 /// Writes a shell script of `body` at `path` that QEMU can run.

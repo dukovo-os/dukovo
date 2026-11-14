@@ -3390,6 +3390,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         None => None,
     };
     let image_only = args.flag("--image-only");
+    let retry = args.flag("--retry");
     let profile = args.profile(&ctx.config)?;
     let which = args.positional();
     args.finish()?;
@@ -3462,7 +3463,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
                 return Ok(());
             }
         }
-        return boot_tests_of(ctx, profile, &cases, Duration::from_secs(timeout));
+        return boot_tests_of(ctx, profile, &cases, Duration::from_secs(timeout), retry);
     }
     if image_only && (which.as_deref() != Some("boot") || selected.is_empty()) {
         crate::bail!(
@@ -3489,6 +3490,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
         crate::bail!("--shard splits the boot tests; give `boot` with it");
+    }
+    if retry && which.as_deref() != Some("boot") {
+        crate::bail!("--retry runs a failed boot test again; give `boot` with it");
     }
     let mut cases: Vec<&Case> = if selected.is_empty() {
         all_cases().collect()
@@ -3522,7 +3526,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         if image_only {
             return case_images(ctx, &built, &cases);
         }
-        boot_tests(ctx, &built, &cases, Duration::from_secs(timeout))?;
+        boot_tests(ctx, &built, &cases, Duration::from_secs(timeout), retry)?;
     }
     Ok(())
 }
@@ -3547,9 +3551,10 @@ fn boot_tests_of(
     profile: crate::config::Profile,
     cases: &[&Case],
     timeout: Duration,
+    retry: bool,
 ) -> Result<()> {
     let built = build_for(ctx, profile, cases)?;
-    boot_tests(ctx, &built, cases, timeout)
+    boot_tests(ctx, &built, cases, timeout, retry)
 }
 
 fn unit_tests(ctx: &Ctx) -> Result<()> {
@@ -4437,7 +4442,21 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
     Ok(())
 }
 
-fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> Result<()> {
+/// The file in out/test that names each boot test that failed once and
+/// passed when `--retry` ran it again, with why it failed: CI shows it as
+/// a warning on the run (.github/workflows/ci.yml).
+const FLAKY_LIST: &str = "flaky.txt";
+
+/// Runs `cases`, each limited to `timeout` or to what test/times.txt gives
+/// it. With `retry`, a case that fails runs once more, and one that then
+/// passes is reported as flaky in [`FLAKY_LIST`] instead of failing the run.
+fn boot_tests(
+    ctx: &Ctx,
+    built: &Built,
+    cases: &[&Case],
+    timeout: Duration,
+    retry: bool,
+) -> Result<()> {
     qemu::require_qemu()?;
     let dir = ctx.out.join("test");
     process::create_dir(&dir)?;
@@ -4454,34 +4473,46 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
         cases.len(),
         if kvm { "KVM" } else { "no KVM, so each boot takes longer" }
     ));
+    let flaky_list = dir.join(FLAKY_LIST);
+    let _ = std::fs::remove_file(&flaky_list);
     let mut failures = 0;
+    let mut flaky = String::new();
     for case in cases {
         let key = (case.image, case.media.is_cd());
         let base = &images.iter().find(|(made, _)| *made == key).expect("built above").1;
-        let started = Instant::now();
         let root = roots.of(case).map(|root| root.path.as_path());
         let budget = case_budget(case, timeout);
-        let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, budget);
-        let secs = started.elapsed().as_secs_f32();
+        let run = || {
+            let started = Instant::now();
+            let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, budget);
+            (outcome, started.elapsed().as_secs_f32())
+        };
+        let (mut outcome, mut secs) = run();
+        if retry && let Err(reason) = outcome.clone() {
+            // The second boot writes the same serial log, so the first is
+            // kept beside it, for the flaky test's own fix.
+            let log = failed_log(&dir, case, &reason);
+            print_failure(ctx, &log, case, &reason, secs);
+            let first = log.with_file_name(format!(
+                "{}-first.log",
+                log.file_stem().unwrap_or_default().to_string_lossy()
+            ));
+            let _ = std::fs::rename(&log, &first);
+            eprintln!("          running it once more (--retry)");
+            (outcome, secs) = run();
+            if outcome.is_ok() {
+                eprintln!("    FLAKY {:<15} failed once, then passed ({secs:.1} s)", case.name);
+                eprintln!("          first serial log: {}", ctx.display(&first));
+                let first_line = reason.lines().next().unwrap_or_default();
+                flaky.push_str(&format!("{}: {first_line}\n", case.name));
+                continue;
+            }
+        }
         match outcome {
             Ok(()) => eprintln!("    PASS  {:<15} {} ({secs:.1} s)", case.name, case.about),
             Err(reason) => {
                 failures += 1;
-                // A case that failed after its reboot failed in the second
-                // boot, whose log is its own.
-                let name = if reason.starts_with(AFTER_THE_REBOOT) {
-                    format!("{}-reboot", case.name)
-                } else {
-                    case.name.to_string()
-                };
-                let log = dir.join(format!("boot-{name}.log"));
-                eprintln!("    FAIL  {:<15} {} ({secs:.1} s)", case.name, case.about);
-                eprintln!("          {reason}");
-                eprintln!("          serial log: {}", ctx.display(&log));
-                let text = clean_log(&std::fs::read_to_string(&log).unwrap_or_default());
-                for line in failure_lines(&text) {
-                    eprintln!("          | {line}");
-                }
+                print_failure(ctx, &failed_log(&dir, case, &reason), case, &reason, secs);
             }
         }
     }
@@ -4489,11 +4520,42 @@ fn boot_tests(ctx: &Ctx, built: &Built, cases: &[&Case], timeout: Duration) -> R
     if let Some(live) = &live {
         let _ = std::fs::remove_file(live);
     }
+    if !flaky.is_empty() {
+        std::fs::write(&flaky_list, &flaky)
+            .context(|| format!("writing {}", flaky_list.display()))?;
+        step(&format!(
+            "{} boot tests failed once and passed when run again; {} names them",
+            flaky.lines().count(),
+            ctx.display(&flaky_list)
+        ));
+    }
     if failures > 0 {
         crate::bail!("{failures} of {} boot tests failed", cases.len());
     }
     step(&format!("All {} boot tests passed", cases.len()));
     Ok(())
+}
+
+/// The serial log of `case`'s boot that failed for `reason`. A case that
+/// failed after its reboot failed in the second boot, whose log is its own.
+fn failed_log(dir: &Path, case: &Case, reason: &str) -> PathBuf {
+    if reason.starts_with(AFTER_THE_REBOOT) {
+        dir.join(format!("boot-{}-reboot.log", case.name))
+    } else {
+        dir.join(format!("boot-{}.log", case.name))
+    }
+}
+
+/// Prints that `case` failed, why, and the lines of its serial `log` that
+/// show where.
+fn print_failure(ctx: &Ctx, log: &Path, case: &Case, reason: &str, secs: f32) {
+    eprintln!("    FAIL  {:<15} {} ({secs:.1} s)", case.name, case.about);
+    eprintln!("          {reason}");
+    eprintln!("          serial log: {}", ctx.display(log));
+    let text = clean_log(&std::fs::read_to_string(log).unwrap_or_default());
+    for line in failure_lines(&text) {
+        eprintln!("          | {line}");
+    }
 }
 
 /// The socket of case `name`'s braille display's line ([`BRAILLE_LINE`])
