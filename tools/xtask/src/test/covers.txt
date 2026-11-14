@@ -38,7 +38,8 @@ admin-actions userspace/programs/systools/src/servicefiles.rs tools/xtask/src/te
 admin-actions userspace/spark/src/supervisor/read.rs userspace/programs/systools/src/power.rs
 admin-actions userspace/programs/systools/src/admin_settings.rs userspace/programs/systools/src/settings_edit.rs
 admin-journal userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_lab.rs userspace/programs/systools/src/admin_put_back.rs
-admin-journal userspace/programs/systools/src/admin_put_back/ userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
+admin-journal userspace/programs/systools/src/admin_put_back/ userspace/programs/systools/src/admin_export.rs ports/git/
+admin-journal userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
 admin-journal userspace/programs/accounts/ userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/
 admin-journal userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/ userspace/programs/systools/src/service.rs
 admin-journal userspace/programs/systools/src/servicefiles.rs userspace/programs/systools/src/settings_edit.rs userspace/programs/systools/src/power.rs

@@ -32,6 +32,11 @@
 //! is the third `by hand` row; the console's own writes, the enable and the
 //! two put backs, are none, so the file has three and no more.
 //!
+//! The command admin export /tmp/dukovo-export, typed by alice without
+//! elevate, makes the settings a Git repository of one commit, "Settings of
+//! NAME at TIME", by the machine's name and an address that is no person's,
+//! with the service file as it is on the machine and a SECRETS.md.
+//!
 //! Tasks need the lab's action, `lab.long`, and a build for people does not
 //! offer it. The image this test boots is such a build, as the case `admin`
 //! says of the lab's route, so there the test asks only that GET
@@ -69,7 +74,7 @@ const PEER: &str = "10.0.2.2";
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-journal",
-    about: "The web console's journal of what changed: enabling the example service through its route is a console row with the file's diff, and Put back writes the file as it was, with admin put-back N and a row of its own; the same file changed by hand is a by hand row, outside the console when no elevated command named the file and alice when one did, which Keep it marks seen and Put back undoes, through the route and typed as the page shows it, and the console's own writes are never taken for hand edits; where the build offers the lab's long action, a task shows its steps and log and is stopped by alice, and one running when admind restarts ends as stopped, the console restarted (ADR 0516)",
+    about: "The web console's journal of what changed: enabling the example service through its route is a console row with the file's diff, and Put back writes the file as it was, with admin put-back N and a row of its own; the same file changed by hand is a by hand row, outside the console when no elevated command named the file and alice when one did, which Keep it marks seen and Put back undoes, through the route and typed as the page shows it, and the console's own writes are never taken for hand edits; admin export makes the settings a repository of one commit by the machine; where the build offers the lab's long action, a task shows its steps and log and is stopped by alice, and one running when admind restarts ends as stopped, the console restarted (ADR 0516)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -109,6 +114,7 @@ fn admin_journal(vm: &mut Vm, case: &Case) -> Result<(), String> {
         .ok_or("a change that is not in the journal is not ADM-127")?;
     console_change(vm, &mut test, &original)?;
     hand_edits(vm, &mut test, &original, latest)?;
+    export(vm, &test, &original)?;
     tasks(vm, &mut test)?;
     the_log(vm, &test)?;
 
@@ -455,6 +461,36 @@ fn hand_edits(vm: &mut Vm, test: &mut Test, original: &str, first: i64) -> Resul
             "the file has {} rows by hand, not the three the test made",
             rows.len()
         ));
+    }
+    Ok(())
+}
+
+/// `admin export` in alice's pane, with her own rights: the settings are a
+/// Git repository of one commit, which the machine made and no person,
+/// with the service file as it is on the machine, and SECRETS.md.
+fn export(vm: &mut Vm, test: &Test, original: &str) -> Result<(), String> {
+    let said = test.pane.output(vm, "admin export /tmp/dukovo-export")?;
+    if !said.contains("files copied to /tmp/dukovo-export") || !said.contains("committed ") {
+        return Err(format!("admin export said {said:?}"));
+    }
+    let log = test.pane.output(vm, "git -C /tmp/dukovo-export log --format='%an <%ae>|%s'")?;
+    let lines: Vec<&str> = log.lines().collect();
+    let made = lines.first().is_some_and(|line| {
+        line.starts_with("Dukovo on ")
+            && line.contains("@")
+            && line.contains(".invalid>|Settings of ")
+            && line.contains(" UTC")
+    });
+    if lines.len() != 1 || !made {
+        return Err(format!("the export is not one commit of the machine's: {log:?}"));
+    }
+    let copy = test.pane.output(vm, &format!("cat /tmp/dukovo-export{FILE}"))?;
+    if copy != original {
+        return Err(format!("the exported {FILE} is {copy:?}, not {original:?}"));
+    }
+    let left_out = test.pane.output(vm, "cat /tmp/dukovo-export/SECRETS.md")?;
+    if !left_out.starts_with("# Left out of the export of ") {
+        return Err(format!("SECRETS.md of the export is {left_out:?}"));
     }
     Ok(())
 }
