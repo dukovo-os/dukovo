@@ -21,7 +21,7 @@ expect = "Made wc-csrf"
 # so that a console that refuses this address, as a wrong port does, says
 # so in the failure.
 [[step]]
-host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk https://{machine}:{machine-port:9090}/api/1/health'"
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 [[step]]
 browser = "csrf.mjs"
