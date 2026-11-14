@@ -1,0 +1,27 @@
+<!--
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+The console's shell. admind answers every path that is no file with this
+page, and app.js draws the view that the path and the session call for. The
+content security policy allows no inline script or style, so nothing here
+carries either.
+-->
+<!doctype html>
+<html lang="en" class="dk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dukovo Admin</title>
+<link rel="icon" href="/mark-dark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/console.css">
+<script src="/theme.js"></script>
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<noscript>
+<p>Dukovo Admin needs JavaScript. Turn it on for this page and reload it.</p>
+</noscript>
+</body>
+</html>

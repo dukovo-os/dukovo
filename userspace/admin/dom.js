@@ -34,17 +34,23 @@ export function waitInWords(seconds) {
   return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
 }
 
+/** The element under a field that an error goes into: announced when it is filled, and able to take focus. */
+export function errorSlot(id) {
+  return h('div', { id, class: 'msg', role: 'alert', tabindex: '-1' });
+}
+
 /**
- * Puts `error` into `slot`, the `role="alert"` element under a field, so
- * that it is announced, and marks `input` as the field it is about. A 429
- * says when to try again.
+ * Puts `error` into `slot`, made by `errorSlot`, and moves focus to it, so
+ * that it is announced and a person at the keyboard lands on it. `input`,
+ * when given, is marked as the field it is about. A 429 says when to try
+ * again.
  */
 export function showError(slot, error, input) {
   const wait = error.retryAfter == null ? '' : `Try again in ${waitInWords(error.retryAfter)}.`;
   slot.replaceChildren(
     icon('warn'),
     h('span', {},
-      h('b', {}, error.title), ' ', error.detail, ' ', error.fix, ' ', wait,
+      h('b', {}, error.title), ' ', [error.detail, error.fix, wait].filter(Boolean).join(' '),
       error.id && h('span', { class: 'mono muted' }, ` ${error.id}`)),
   );
   if (input) {
@@ -52,6 +58,7 @@ export function showError(slot, error, input) {
     input.setAttribute('aria-invalid', 'true');
     input.setAttribute('aria-describedby', slot.id);
   }
+  slot.focus();
 }
 
 /** Takes the error away that `showError` put in `slot` for `input`. */
@@ -75,6 +82,14 @@ export async function busy(buttons, work) {
   } finally {
     for (const button of buttons) button.disabled = false;
   }
+}
+
+let lastId = 0;
+
+/** An `id` for an element of a view that is made more than once, such as a field the form builds. */
+export function uniqueId(prefix) {
+  lastId += 1;
+  return `${prefix}-${lastId}`;
 }
 
 /**
