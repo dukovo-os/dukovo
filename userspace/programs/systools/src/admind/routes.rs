@@ -472,8 +472,12 @@ where
                 shared.refused_request(peer, &format!("{}: {}", failure.kind.id(), failure.detail));
             }
             let reply = Reply::failure(&failure);
-            // A browser told its session has ended forgets its cookie.
-            if failure.kind == Kind::SessionEnded {
+            // A browser told its session has ended forgets its cookie, if
+            // it sent one. One that sent none may still hold one that is
+            // live: its SameSite kept it from a request another site's
+            // page made, and the answer must not sign it out.
+            let sent = brings_cookie(&head.headers, SESSION_COOKIE);
+            if failure.kind == Kind::SessionEnded && sent {
                 reply.with_cookie(guard::clear_cookie(SESSION_COOKIE))
             } else {
                 reply
@@ -544,6 +548,15 @@ fn cookie_of<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         headers.get_all(header::COOKIE).iter().filter_map(|value| value.to_str().ok()),
         name,
     )
+}
+
+/// Whether the request brings the cookie `name` at all, once or more, and
+/// whatever it holds.
+fn brings_cookie(headers: &HeaderMap, name: &str) -> bool {
+    headers.get_all(header::COOKIE).iter().filter_map(|value| value.to_str().ok()).any(|text| {
+        text.split(';')
+            .any(|pair| pair.trim_start().split_once('=').is_some_and(|(key, _)| key == name))
+    })
 }
 
 /// Refuses a request that brings an API token, which the console takes

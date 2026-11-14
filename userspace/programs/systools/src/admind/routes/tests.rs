@@ -724,8 +724,11 @@ fn the_session_says_who_it_is_from_the_account_files_and_how_it_can_unlock() {
         {
             let answered = send(&world, get("/api/1/session").with("cookie", cookie)).await;
             assert_eq!((answered.status, answered.error().as_str()), (401, "ADM-107"));
-            // The browser forgets the cookie it was told is no good.
-            assert_eq!(answered.cookies(), [guard::clear_cookie(SESSION_COOKIE)]);
+            // The browser forgets the cookie it was told is no good. One
+            // that sent none, as SameSite has a browser do for another
+            // site's page, is told nothing: it may hold a live one.
+            let cleared = vec![guard::clear_cookie(SESSION_COOKIE)];
+            assert_eq!(answered.cookies(), if cookie.is_some() { cleared } else { Vec::new() });
         }
     });
 }
