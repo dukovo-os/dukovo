@@ -14,14 +14,18 @@
 //! not as the change had left it, because something changed it again, it
 //! says that too: the earlier text is written over the later one.
 //!
-//! The service a file belongs to is asked to read it again, with Spark's
-//! `reload`: a service file in `/system/settings/spark/services`, and its
-//! override in `settings.d` beside it, is the service of its name, and a
-//! file in a bundle service's data folder, `/shared/services/ID/ACCOUNT`,
-//! is the service whose record bundled keeps for that bundle and account.
-//! A service that does not run reads its file when it starts, and a file
-//! that belongs to no service is only written. When Spark cannot be asked,
-//! the files stay written, the command says so and exits 1.
+//! A service file, in `/system/settings/spark/services` or its override in
+//! `settings.d` beside it, is Spark's, not the service's: Spark reads it
+//! when the service next starts, as it does for `service NAME edit`. Put
+//! back writes it and says so, with the command that puts it to use now,
+//! and asks Spark nothing: a signal such as SIGHUP is for a service's own
+//! files, and a service that does not handle it dies of it. A file in a
+//! bundle service's data folder, `/shared/services/ID/ACCOUNT`, is the
+//! service's own, so each service whose record bundled keeps for that bundle
+//! and account is asked to read it again, with Spark's `reload`. A service
+//! that does not run reads its file when it starts, and a file that belongs
+//! to no service is only written. When Spark cannot be asked, the files stay
+//! written, the command says so and exits 1.
 //!
 //! A change that cannot be put back is said so in words, and nothing is
 //! written: a file the change made, a secret, a file not everyone may
@@ -54,6 +58,8 @@ const NEW_MODE: u32 = 0o644;
 struct Places {
     /// The service files, and `settings.d` in it.
     service_files: PathBuf,
+    /// The bundle services' data folders, `ID/ACCOUNT` in each.
+    data: PathBuf,
     /// bundled's records of the services' files, by name.
     records: PathBuf,
 }
@@ -63,6 +69,7 @@ impl Places {
     fn system() -> Places {
         Places {
             service_files: PathBuf::from(servicefiles::DIR),
+            data: PathBuf::from(services::DATA),
             records: Path::new(registry::STATE).join(services::RECORDS),
         }
     }
@@ -111,15 +118,29 @@ fn put_back(
     for restore in &plan {
         check_path(&restore.path)?;
     }
-    let mut services = Vec::new();
+    let (mut spark_files, mut services) = (Vec::new(), Vec::new());
     for restore in &plan {
         let told = write_back(restore, &change)?;
         say(out, &told)?;
-        for name in services_of(&restore.path, places) {
+        if let Some(name) = service_file_of(&restore.path, places)
+            && !spark_files.contains(&name)
+        {
+            spark_files.push(name);
+        }
+        for name in bundle_services_of(&restore.path, places) {
             if !services.contains(&name) {
                 services.push(name);
             }
         }
+    }
+    for name in &spark_files {
+        say(
+            out,
+            &format!(
+                "Spark reads {name}'s service file when {name} next starts: `service {name} \
+                 restart` puts it to use now"
+            ),
+        )?;
     }
     let mut unreached = Vec::new();
     for name in &services {
@@ -190,22 +211,24 @@ fn write_back(restore: &Restore, change: &Change) -> Result<String, Fail> {
     Ok(told)
 }
 
-/// The services the file at `path` belongs to: the one a service file or
-/// its override is of, or those of the bundle and account whose data
-/// folder holds the file, from bundled's records.
-fn services_of(path: &str, places: &Places) -> Vec<String> {
+/// The service whose service file the file at `path` is, or whose override
+/// in `settings.d`: the service of its name.
+fn service_file_of(path: &str, places: &Places) -> Option<String> {
     let path = Path::new(path);
-    let toml_name = |file: &Path| {
-        let name = file.file_name()?.to_str()?.strip_suffix(".toml")?;
-        (!name.is_empty() && !name.starts_with('.')).then(|| name.to_string())
-    };
-    let Some(folder) = path.parent() else { return Vec::new() };
-    if folder == places.service_files
-        || folder == places.service_files.join(manifest::service::OVERRIDES)
+    let folder = path.parent()?;
+    if folder != places.service_files
+        && folder != places.service_files.join(manifest::service::OVERRIDES)
     {
-        return toml_name(path).into_iter().collect();
+        return None;
     }
-    let Ok(rest) = path.strip_prefix(services::DATA) else { return Vec::new() };
+    let name = path.file_name()?.to_str()?.strip_suffix(".toml")?;
+    (!name.is_empty() && !name.starts_with('.')).then(|| name.to_string())
+}
+
+/// The services whose own file the file at `path` is: those of the bundle
+/// and account whose data folder holds it, from bundled's records.
+fn bundle_services_of(path: &str, places: &Places) -> Vec<String> {
+    let Ok(rest) = Path::new(path).strip_prefix(&places.data) else { return Vec::new() };
     let mut parts = rest.components().filter_map(|part| part.as_os_str().to_str());
     let (Some(id), Some(account), Some(_file)) = (parts.next(), parts.next(), parts.next()) else {
         return Vec::new();

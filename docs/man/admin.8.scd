@@ -216,13 +216,18 @@ remove another's.
 	alone and said so. A file that was changed again after the change is
 	written over, and it says that the later text is gone.
 
-	The service a file belongs to is asked to read it again, as *service*
-	_name_ *reload* does: a service file in
-	_/system/settings/spark/services_, or its override in _settings.d_, is
-	the service of its name, and a file in a bundle service's data folder
-	is that bundle's service. A service that does not run reads its file
-	when it starts. When Spark cannot be asked, the files stay written, it
-	says so, and it exits 1.
+	A service file, in _/system/settings/spark/services_, or its override
+	in _settings.d_, is Spark's: Spark reads it when the service next
+	starts, as it does for *service* _name_ *edit*. *put-back* writes it and
+	says so, with the command that puts it to use now, *service* _name_
+	*restart*, and asks Spark nothing, since a signal such as SIGHUP is for
+	a service's own files and a service that does not handle it dies of it.
+	A file in a bundle service's data folder, _/shared/services/ID/ACCOUNT_,
+	is the service's own: each service that bundled's records name for that
+	bundle and account is asked to read it again, as *service* _name_
+	*reload* does. A service that does not run reads its file when it
+	starts. When Spark cannot be asked, the files stay written, it says so,
+	and it exits 1.
 
 	A change cannot be put back if a file in it was made by it, which has
 	no earlier text; is a secret or a file that not everyone may read,
@@ -233,7 +238,7 @@ remove another's.
 	```
 	$ elevate admin put-back 41
 	put back /system/settings/spark/services/diskhealth.toml
-	asked diskhealth to reload
+	Spark reads diskhealth's service file when diskhealth next starts: `service diskhealth restart` puts it to use now
 	change 41 is put back: 1 file
 	```
 

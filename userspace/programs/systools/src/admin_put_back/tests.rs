@@ -21,14 +21,24 @@ impl Machine {
         let folder = Scratch::new(what);
         fs::create_dir_all(folder.0.join("services/settings.d")).unwrap();
         fs::create_dir_all(folder.0.join("records")).unwrap();
+        fs::create_dir_all(folder.0.join("data")).unwrap();
         Machine { folder, store: Store::in_memory(), asked: RefCell::new(Vec::new()) }
     }
 
     fn places(&self) -> Places {
         Places {
             service_files: self.folder.0.join("services"),
+            data: self.folder.0.join("data"),
             records: self.folder.0.join("records"),
         }
+    }
+
+    /// bundled's record that service `name` is of bundle `id`, account
+    /// `account`, whose files are in `data/ID/ACCOUNT`.
+    fn record(&self, name: &str, id: &str, account: &str) {
+        let record =
+            services::Record { id: id.into(), account: account.into(), written: "sum".into() };
+        fs::write(self.places().records.join(name), record.text()).unwrap();
     }
 
     /// The path of `name` in the folder.
@@ -96,7 +106,8 @@ fn text(bytes: &str) -> Seen {
 #[test]
 fn the_earlier_text_is_written_back_and_what_it_did_is_said() {
     let machine = Machine::new("put-back");
-    let path = machine.path("services/web.toml");
+    machine.record("web", "org.example.web", "web");
+    let path = machine.path("data/org.example.web/web/web.conf");
     let id = machine.changed(&path, "enabled = false\n", "enabled = true\n");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
     let (done, said) = machine.put_back(id, "ok: asked web to reload\n");
@@ -109,6 +120,55 @@ fn the_earlier_text_is_written_back_and_what_it_did_is_said() {
         format!("put back {path}\nasked web to reload\nchange {id} is put back: 1 file\n")
     );
     assert_eq!(*machine.asked.borrow(), ["reload web"]);
+}
+
+#[test]
+fn a_service_file_and_its_override_ask_spark_nothing_and_say_when_it_is_read() {
+    let machine = Machine::new("put-back-service-file");
+    let web = machine.path("services/web.toml");
+    let over = machine.path("services/settings.d/web.toml");
+    let db = machine.path("services/db.toml");
+    let files: Vec<FileChange> = [&web, &over, &db]
+        .iter()
+        .map(|path| {
+            fs::write(path, "new\n").unwrap();
+            machine.store.keep_version(path, b"old\n", 1).unwrap();
+            FileChange { path: (*path).clone(), before: text("old\n"), after: text("new\n") }
+        })
+        .collect();
+    let id = machine
+        .store
+        .add_change(&NewChange {
+            at: 1,
+            who: "alice",
+            how: "console",
+            action: Some("x.y"),
+            argv: None,
+            status: Some(0),
+            task: None,
+            note: None,
+            files: &files,
+        })
+        .unwrap();
+    let (done, said) = machine.put_back(id, "unreachable");
+    assert_eq!(done.unwrap(), 0);
+    for path in [&web, &over, &db] {
+        assert_eq!(fs::read_to_string(path).unwrap(), "old\n");
+    }
+    // Spark is asked nothing: a service file is Spark's, which reads it
+    // when the service starts, and a signal could kill a service that does
+    // not handle it. The line is said once for a file and its override.
+    assert!(machine.asked.borrow().is_empty());
+    assert_eq!(
+        said,
+        format!(
+            "put back {web}\nput back {over}\nput back {db}\n\
+             Spark reads web's service file when web next starts: `service web restart` puts it \
+             to use now\n\
+             Spark reads db's service file when db next starts: `service db restart` puts it to \
+             use now\nchange {id} is put back: 3 files\n"
+        )
+    );
 }
 
 #[test]
@@ -153,17 +213,24 @@ fn a_file_removed_since_is_made_again_with_a_settings_file_s_mode() {
 }
 
 #[test]
-fn each_service_of_the_files_is_asked_once_and_its_answer_is_said() {
+fn each_service_of_the_bundle_files_is_asked_once_and_its_answer_is_said() {
     let machine = Machine::new("put-back-services");
-    let web = machine.path("services/web.toml");
-    let over = machine.path("services/settings.d/web.toml");
-    let db = machine.path("services/db.toml");
-    let files: Vec<FileChange> = [&web, &over, &db]
+    // Two services of one bundle and account, and one of another bundle.
+    machine.record("shop", "org.example.shop", "shop");
+    machine.record("shop-jobs", "org.example.shop", "shop");
+    machine.record("db", "org.example.db", "db");
+    let paths = [
+        machine.path("data/org.example.shop/shop/a.conf"),
+        machine.path("data/org.example.shop/shop/b.conf"),
+        machine.path("data/org.example.db/db/c.conf"),
+    ];
+    let files: Vec<FileChange> = paths
         .iter()
         .map(|path| {
+            fs::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
             fs::write(path, "new\n").unwrap();
             machine.store.keep_version(path, b"old\n", 1).unwrap();
-            FileChange { path: (*path).clone(), before: text("old\n"), after: text("new\n") }
+            FileChange { path: path.clone(), before: text("old\n"), after: text("new\n") }
         })
         .collect();
     let id = machine
@@ -182,10 +249,11 @@ fn each_service_of_the_files_is_asked_once_and_its_answer_is_said() {
         .unwrap();
     let (done, said) = machine.put_back(id, "ok: asked to reload\n");
     assert_eq!(done.unwrap(), 0);
-    assert_eq!(*machine.asked.borrow(), ["reload web", "reload db"]);
+    assert_eq!(*machine.asked.borrow(), ["reload shop", "reload shop-jobs", "reload db"]);
     assert!(
         said.ends_with(&format!(
-            "asked web to reload\nasked db to reload\nchange {id} is put back: 3 files\n"
+            "asked shop to reload\nasked shop-jobs to reload\nasked db to reload\nchange {id} is \
+             put back: 3 files\n"
         )),
         "{said}"
     );
@@ -194,7 +262,8 @@ fn each_service_of_the_files_is_asked_once_and_its_answer_is_said() {
 #[test]
 fn a_service_that_does_not_run_or_that_spark_does_not_know_is_no_failure() {
     let machine = Machine::new("put-back-not-running");
-    let path = machine.path("services/web.toml");
+    machine.record("web", "org.example.web", "web");
+    let path = machine.path("data/org.example.web/web/web.conf");
     let id = machine.changed(&path, "a\n", "b\n");
     let (done, said) = machine.put_back(id, "error: web is not running\n");
     assert_eq!(done.unwrap(), 0);
@@ -211,7 +280,8 @@ fn a_service_that_does_not_run_or_that_spark_does_not_know_is_no_failure() {
 #[test]
 fn a_spark_that_cannot_be_asked_leaves_the_files_written_and_fails_in_words() {
     let machine = Machine::new("put-back-spark");
-    let path = machine.path("services/web.toml");
+    machine.record("web", "org.example.web", "web");
+    let path = machine.path("data/org.example.web/web/web.conf");
     let id = machine.changed(&path, "a\n", "b\n");
     let (done, said) = machine.put_back(id, "unreachable");
     let failed = done.unwrap_err();
@@ -301,41 +371,46 @@ fn a_path_that_is_not_absolute_or_climbs_out_is_refused_before_anything_is_writt
 }
 
 #[test]
-fn the_services_of_a_file_are_found_by_its_place_and_by_bundled_s_records() {
-    let machine = Machine::new("services-of");
+fn a_service_file_is_found_by_its_place() {
+    let machine = Machine::new("service-file-of");
     let places = machine.places();
-    let services = |path: &str| services_of(path, &places);
-    assert_eq!(services(&machine.path("services/web.toml")), ["web"]);
-    assert_eq!(services(&machine.path("services/settings.d/web.toml")), ["web"]);
+    let service = |path: &str| service_file_of(path, &places);
+    assert_eq!(service(&machine.path("services/web.toml")).as_deref(), Some("web"));
+    assert_eq!(service(&machine.path("services/settings.d/web.toml")).as_deref(), Some("web"));
     for none in [
         machine.path("services/web.txt"),
         machine.path("services/.web.toml"),
+        machine.path("services/.toml"),
         machine.path("services/settings.d/more/web.toml"),
         machine.path("elsewhere/web.toml"),
+        machine.path("data/org.example.web/web/web.toml"),
         "/".into(),
     ] {
-        assert!(services(&none).is_empty(), "{none}");
+        assert_eq!(service(&none), None, "{none}");
     }
+}
+
+#[test]
+fn the_services_of_a_bundle_file_are_found_by_bundled_s_records() {
+    let machine = Machine::new("bundle-services-of");
+    let places = machine.places();
+    let services = |path: &str| bundle_services_of(path, &places);
     // A bundle service's data folder is the service whose record names the
     // bundle and the account, and two services of one account are both.
-    for (name, id, account) in [
-        ("shop", "org.example.shop", "shop"),
-        ("shop-jobs", "org.example.shop", "shop"),
-        ("web", "org.example.web", "web"),
-    ] {
-        let record =
-            services::Record { id: id.into(), account: account.into(), written: "sum".into() };
-        fs::write(places.records.join(name), record.text()).unwrap();
-    }
+    machine.record("shop", "org.example.shop", "shop");
+    machine.record("shop-jobs", "org.example.shop", "shop");
+    machine.record("web", "org.example.web", "web");
     fs::write(places.records.join("broken"), "not a record").unwrap();
-    assert_eq!(
-        services("/shared/services/org.example.shop/shop/settings/a.conf"),
-        ["shop", "shop-jobs"]
-    );
-    assert_eq!(services("/shared/services/org.example.web/web/a.conf"), ["web"]);
-    assert!(services("/shared/services/org.example.web/other/a.conf").is_empty());
-    assert!(services("/shared/services/org.example.web/web").is_empty());
-    assert!(services("/shared/services/org.example.shop").is_empty());
+    let data = |name: &str| machine.path(&format!("data/{name}"));
+    assert_eq!(services(&data("org.example.shop/shop/settings/a.conf")), ["shop", "shop-jobs"]);
+    assert_eq!(services(&data("org.example.web/web/a.conf")), ["web"]);
+    assert!(services(&data("org.example.web/other/a.conf")).is_empty());
+    assert!(services(&data("org.example.web/web")).is_empty());
+    assert!(services(&data("org.example.shop")).is_empty());
+    // A service file is Spark's, not a bundle's.
+    assert!(services(&machine.path("services/web.toml")).is_empty());
+    assert!(services("/shared/services/org.example.web/web/a.conf").is_empty());
+    assert!(services("/").is_empty());
 }
 
 #[test]

@@ -11,17 +11,19 @@
 //! 0, the file's text before and after, and a diff that adds the line
 //! enabled = true. Put back, POST /api/1/changes/N/put-back, runs `admin
 //! put-back N` as an administrator for her unlocked session: the answer
-//! shows that command, the file is as it was, the running service is asked
-//! to read it again, and the put back has a row of its own and a line in
-//! admind's log. Keep it is for hand edits, so a console change is ADM-128,
-//! and a change the journal does not have is ADM-127.
+//! shows that command, the file is as it was, the running service is left
+//! as it is (the answer says that Spark reads a service file when the
+//! service next starts, and what puts it to use now), and the put back has
+//! a row of its own and a line in admind's log. Keep it is for hand edits,
+//! so a console change is ADM-128, and a change the journal does not have
+//! is ADM-127.
 //!
 //! A hand edit that no command names: `elevate service diskhealth disable`
 //! in alice's pane writes the same file, but its command names the service
 //! and not the file. The round that looks every 30 seconds adds a `by hand`
 //! row for it, "outside the console", with the diff. Keep it marks it seen
 //! by alice, and marking it again changes nothing. Put back writes the file
-//! as it was, and says the stopped service reads it when it starts.
+//! as it was, and says the same of the stopped service.
 //!
 //! A hand edit that names the file: alice copies a changed copy over it
 //! with `elevate cp`, which authd records with the file's path. admind
@@ -68,13 +70,18 @@ const SERVICE: &str = "diskhealth";
 /// Its service file, which the console's enable and disable write.
 const FILE: &str = "/system/settings/spark/services/diskhealth.toml";
 
+/// What a put back of a service file says of it: Spark is asked nothing,
+/// since it reads the file when the service next starts.
+const READ_WHEN_STARTED: &str = "Spark reads diskhealth's service file when diskhealth next \
+                                 starts: `service diskhealth restart` puts it to use now";
+
 /// Where admind's log says the host's requests come from.
 const PEER: &str = "10.0.2.2";
 
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-journal",
-    about: "The web console's journal of what changed: enabling the example service through its route is a console row with the file's diff, and Put back writes the file as it was, with admin put-back N and a row of its own; the same file changed by hand is a by hand row, outside the console when no elevated command named the file and alice when one did, which Keep it marks seen and Put back undoes, through the route and typed as the page shows it, and the console's own writes are never taken for hand edits; admin export makes the settings a repository of one commit by the machine; where the build offers the lab's long action, a task shows its steps and log and is stopped by alice, and one running when admind restarts ends as stopped, the console restarted (ADR 0516)",
+    about: "The web console's journal of what changed: enabling the example service through its route is a console row with the file's diff, and Put back writes the file as it was, with admin put-back N and a row of its own, and says that Spark reads a service file when the service next starts, leaving the running service alone; the same file changed by hand is a by hand row, outside the console when no elevated command named the file and alice when one did, which Keep it marks seen and Put back undoes, through the route and typed as the page shows it, and the console's own writes are never taken for hand edits; admin export makes the settings a repository of one commit by the machine; where the build offers the lab's long action, a task shows its steps and log and is stopped by alice, and one running when admind restarts ends as stopped, the console restarted (ADR 0516)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -237,17 +244,23 @@ impl Test {
             .ok_or_else(|| format!("the journal has no row for {action} after row {after}"))
     }
 
+    /// The service's state and its process number, as the list of services
+    /// gives them.
+    fn service(&mut self) -> Result<(String, Option<u64>), String> {
+        let list = self.read("/api/1/services")?;
+        let service = list["services"]
+            .as_array()
+            .and_then(|all| all.iter().find(|service| service["name"] == SERVICE))
+            .ok_or_else(|| format!("the list of services has no {SERVICE}"))?;
+        let state = service["state"].as_str().ok_or("a service has no state")?;
+        Ok((state.to_string(), service["pid"].as_u64()))
+    }
+
     /// Waits up to 30 seconds for the service to be running or not.
     fn running(&mut self, wanted: bool) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let list = self.read("/api/1/services")?;
-            let state = list["services"]
-                .as_array()
-                .and_then(|all| all.iter().find(|service| service["name"] == SERVICE))
-                .and_then(|service| service["state"].as_str())
-                .ok_or_else(|| format!("the list of services has no {SERVICE}"))?
-                .to_string();
+            let (state, _) = self.service()?;
             if (state == "running") == wanted && !matches!(state.as_str(), "starting" | "stopping")
             {
                 return Ok(());
@@ -334,7 +347,7 @@ fn is_back(test: &Test, vm: &mut Vm, original: &str, what: &str) -> Result<(), S
 
 /// A change through the console: the route that enables the service
 /// writes its file, and the journal has the row with the diff. Put back
-/// writes the file as it was, and asks the running service to read it.
+/// writes the file as it was and leaves the running service as it is.
 fn console_change(vm: &mut Vm, test: &mut Test, original: &str) -> Result<(), String> {
     test.unlocked()?;
     let before = test.newest()?;
@@ -368,11 +381,20 @@ fn console_change(vm: &mut Vm, test: &mut Test, original: &str) -> Result<(), St
     )?;
     test.post("/api/1/changes/999999/keep")?.refused("keeping no change", 404, "ADM-127")?;
 
+    test.running(true)?;
+    let (_, process) = test.service()?;
     let answer = test.put_back(id)?;
     let said = output_of(&answer);
-    if !said.contains(&format!("put back {FILE}")) || !said.contains("asked diskhealth to reload") {
+    if !said.contains(&format!("put back {FILE}")) || !said.contains(READ_WHEN_STARTED) {
         return Err(format!(
-            "the put back says {said:?}, not that it wrote the file and asked the service"
+            "the put back says {said:?}, not that it wrote the file and when Spark reads it"
+        ));
+    }
+    // Nothing was sent to the service: it is the process it was.
+    let (state, now) = test.service()?;
+    if state != "running" || now != process || process.is_none() {
+        return Err(format!(
+            "{SERVICE} was process {process:?} and is {state}, process {now:?}, after the put back"
         ));
     }
     is_back(test, vm, original, "the put back of the enable")
@@ -402,12 +424,12 @@ fn hand_edits(vm: &mut Vm, test: &mut Test, original: &str, first: i64) -> Resul
         ));
     }
     keep_it(test, id)?;
-    // The service is stopped by the edit, so it reads its file when it
-    // starts.
+    // The service is stopped by the edit, and the put back says the same.
     let answer = test.put_back(id)?;
-    if !output_of(&answer).contains("diskhealth is not running") {
+    if !output_of(&answer).contains(READ_WHEN_STARTED) {
         return Err(format!("the put back of a stopped service says {}", output_of(&answer)));
     }
+    test.running(false)?;
     is_back(test, vm, original, "the put back of the hand edit")?;
     test.unlocked()?;
     test.post(&format!("/api/1/services/{SERVICE}/start"))?.must("the start", 200)?;
