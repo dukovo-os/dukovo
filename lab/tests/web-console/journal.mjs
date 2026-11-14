@@ -4,9 +4,11 @@
 // What web-console/journal drives in each engine, with the lab's browser
 // runner (lab repository, docs/test-files.md, "Browser tests"): a hand edit
 // of a service file, as the console's journal tells it (ADR 0516). The root
-// step of journal.toml before each engine has added a comment line naming
-// the engine to the service file of diskhealth, which no console change
-// explains. An administrator signs in and unlocks the console. The round
+// step of journal.toml before the browsers has added a comment line naming
+// each engine to a service file of the engine's own (diskhealth's for
+// Chromium, nfsd's for Firefox, smbd's for WebKit), half a minute and more
+// apart, so that each is a row of its own, which no console change
+// explains. Each engine reads, keeps and puts back its own. An administrator signs in and unlocks the console. The round
 // that looks for hand edits runs every 30 seconds, so the script asks for
 // GET /api/1/changes every few seconds, for up to 90, until the newest
 // `by hand` row whose diff of the file adds the engine's line is there. The
@@ -40,18 +42,29 @@ import {
 const PASSWORD = "lab-console-password";
 const NAME = "wc-journal";
 
-// The file that journal.toml changes: the service file of diskhealth, which
-// every image runs and nothing needs.
-const FILE = "/system/settings/spark/services/diskhealth.toml";
+// The service whose file journal.toml changes for each engine: services
+// every image has, whose files a comment line leaves as they were.
+const SERVICES = { chromium: "diskhealth", firefox: "nfsd", webkit: "smbd" };
 
 // The account that runs the lab's root steps, and so the person whose
 // elevated command names the file.
 const EDITOR = "lab";
 
-// What a put back says of a service file: Spark is asked nothing, since it
-// reads the file when the service next starts.
-const READ_WHEN_STARTED =
-  "Spark reads diskhealth's service file when diskhealth next starts: `service diskhealth restart` puts it to use now";
+/**
+ * What the test changes for `engine`: the service, its file, the line the
+ * root step added, and what a put back says of the file (Spark is asked
+ * nothing, since it reads the file when the service next starts).
+ */
+function targetOf(engine) {
+  const service = SERVICES[engine];
+  ensure(service !== undefined, `journal.toml changes no file for ${engine}`);
+  return {
+    service,
+    file: `/system/settings/spark/services/${service}.toml`,
+    line: `# lab journal ${engine}`,
+    readWhenStarted: `Spark reads ${service}'s service file when ${service} next starts: \`service ${service} restart\` puts it to use now`,
+  };
+}
 
 // The routes that lab/coverage.toml says this test covers, as the console's
 // table names them: the browser must have called each, with the number of
@@ -90,30 +103,31 @@ async function readChange(page, id) {
   return answer.json;
 }
 
-/** The entry of the service file among the files of `change`. */
-function fileOf(change) {
-  const file = change.files.find((each) => each.path === FILE);
-  ensure(file !== undefined, `change ${change.id} does not name ${FILE}: ${JSON.stringify(change.files)}`);
+/** The entry of the service file `path` among the files of `change`. */
+function fileOf(change, path) {
+  const file = change.files.find((each) => each.path === path);
+  ensure(file !== undefined, `change ${change.id} does not name ${path}: ${JSON.stringify(change.files)}`);
   return file;
 }
 
 /**
- * The lines that the diff of the service file in `change` adds, for `sign`
- * `+`, or removes, for `-`, without their sign.
+ * The lines that the diff of the service file `path` in `change` adds, for
+ * `sign` `+`, or removes, for `-`, without their sign.
  */
-function linesOf(change, sign) {
+function linesOf(change, path, sign) {
   const header = sign.repeat(3);
-  return (fileOf(change).diff ?? "")
+  return (fileOf(change, path).diff ?? "")
     .split("\n")
     .filter((text) => text.startsWith(sign) && !text.startsWith(`${header} `))
     .map((text) => text.slice(1));
 }
 
 /**
- * The newest row made `by hand` whose diff of the service file adds `line`,
- * as `GET /api/1/changes/{id}` gives it, waited for up to `WAIT_SECONDS`.
+ * The newest row made `by hand` whose diff of `target`'s file adds its
+ * line, as `GET /api/1/changes/{id}` gives it, waited for up to
+ * `WAIT_SECONDS`.
  */
-async function handEditAdding(page, line) {
+async function handEditAdding(page, { file: path, line }) {
   const until = Date.now() + WAIT_SECONDS * 1000;
   const others = new Set();
   for (;;) {
@@ -123,14 +137,14 @@ async function handEditAdding(page, line) {
       `GET /api/1/changes was answered ${list.status}: ${list.text}`,
     );
     for (const row of list.json.changes) {
-      if (row.how !== "by hand" || others.has(row.id) || !row.files.some((file) => file.path === FILE)) continue;
+      if (row.how !== "by hand" || others.has(row.id) || !row.files.some((file) => file.path === path)) continue;
       const change = await readChange(page, row.id);
-      if (linesOf(change, "+").includes(line)) return change;
+      if (linesOf(change, path, "+").includes(line)) return change;
       others.add(row.id);
     }
     ensure(
       Date.now() < until,
-      `no row made by hand adds "${line}" to ${FILE} within ${WAIT_SECONDS} seconds`,
+      `no row made by hand adds "${line}" to ${path} within ${WAIT_SECONDS} seconds`,
     );
     await sleep(ASK_EVERY_MILLISECONDS);
   }
@@ -171,10 +185,10 @@ async function keepIt(page, id) {
 }
 
 /**
- * Puts back `edit`, a hand edit that added `line` to the service file, and
+ * Puts back `edit`, a hand edit that added `target`'s line to its file, and
  * checks what the answer and the row of the put back say. Gives that row.
  */
-async function putBack(page, edit, line) {
+async function putBack(page, edit, { file: path, line, readWhenStarted }) {
   const id = edit.id;
   const answer = await fetchAsPage(page, "POST", `/api/1/changes/${id}/put-back`, {});
   ensure(answer.status === 200, `the put back of change ${id} was answered ${answer.status}: ${answer.text}`);
@@ -184,7 +198,7 @@ async function putBack(page, edit, line) {
     `the put back of change ${id} was answered ${answer.text}`,
   );
   ensure(
-    told.output.includes(`put back ${FILE}`) && told.output.includes(READ_WHEN_STARTED),
+    told.output.includes(`put back ${path}`) && told.output.includes(readWhenStarted),
     `the put back says ${JSON.stringify(told.output)}, not that it wrote the file and when Spark reads it`,
   );
 
@@ -199,29 +213,29 @@ async function putBack(page, edit, line) {
       row.note === `puts back change ${id}`,
     `the put back's own row is ${JSON.stringify(row)}`,
   );
-  const [hand, back] = [fileOf(edit), fileOf(row)];
+  const [hand, back] = [fileOf(edit, path), fileOf(row, path)];
   ensure(
     back.before.sha256 === hand.after.sha256 && back.after.sha256 === hand.before.sha256,
-    `the put back took ${FILE} from ${back.before.sha256} to ${back.after.sha256}, not from ${hand.after.sha256} back to ${hand.before.sha256}`,
+    `the put back took ${path} from ${back.before.sha256} to ${back.after.sha256}, not from ${hand.after.sha256} back to ${hand.before.sha256}`,
   );
-  ensure(linesOf(row, "-").includes(line), `the put back's row does not remove "${line}" from ${FILE}`);
+  ensure(linesOf(row, path, "-").includes(line), `the put back's row does not remove "${line}" from ${path}`);
   return row;
 }
 
 /** The test, run once for each engine of the step that names it. */
 export default async function check(t) {
-  const line = `# lab journal ${t.engine}`;
+  const target = targetOf(t.engine);
   const { page, seen: called } = await openConsole(t, "/");
   await signInDone(t, page, NAME, PASSWORD);
   await unlock(page);
   await absentChange(page);
 
   // The hand edit, as the journal tells it.
-  const edit = await handEditAdding(page, line);
+  const edit = await handEditAdding(page, target);
   const id = edit.id;
   ensure(
     edit.who === EDITOR,
-    `the row of the hand edit names ${edit.who}, not ${EDITOR}: admind could not tell who wrote ${FILE} from authd's audit lines`,
+    `the row of the hand edit names ${edit.who}, not ${EDITOR}: admind could not tell who wrote ${target.file} from authd's audit lines`,
   );
   ensure(
     edit.action === null && edit.status === null && edit.seen === null,
@@ -240,7 +254,7 @@ export default async function check(t) {
   await unlock(page);
 
   await keepIt(page, id);
-  const row = await putBack(page, edit, line);
+  const row = await putBack(page, edit, target);
   // The put back is a change of the console's, which is in the journal
   // already: only a hand edit is marked seen.
   const keptPutBack = await fetchAsPage(page, "POST", `/api/1/changes/${row.id}/keep`, {});

@@ -13,19 +13,20 @@
 # Keep it refuses. A change that is not there is refused by all three
 # routes. admind is the service that answers.
 #
-# A browser script cannot run commands on the machine, so the steps
-# alternate: a root step saves a copy of the file, once, and adds a comment
-# line that names the engine; the engine's browser step reads, keeps and
-# puts back; and the next root step starts from the copy again, so that an
-# engine the lab PC lacks, which the runner skips, leaves nothing for the
-# next to find. A step at the end leaves the file as the image has it and
-# removes the copy. Each edit waits a second after its command starts, so
-# that the file's time is never before the second authd's audit gives the
-# command, which is how the row knows the command named the file. The
-# account is one this test makes and removes, so no script needs the lab's
-# password.
+# A browser script cannot run commands on the machine, so a root step
+# first saves copies of three service files and adds a comment line naming
+# an engine to each, one engine to a file (diskhealth's for Chromium,
+# nfsd's for Firefox, smbd's for WebKit). The edits are 45 seconds apart, so
+# that the round finds each alone and each is a row of its own, and the
+# first waits a second after the command starts, so that no file's time is
+# before the second authd's audit gives the command, which is how the row
+# knows the command named the file. Each engine then reads, keeps and puts
+# back its own. A last root step leaves the files as the image has them,
+# also when an engine the lab PC lacks was skipped, and removes the copies.
+# The account is one this test makes and removes, so no script needs the
+# lab's password.
 about = "A service file changed by hand shows in the web console's journal with its diff and who changed it, is marked seen with Keep it and put back, in each engine"
-time = "20m"
+time = "25m"
 host_needs = ["curl"]
 
 [[step]]
@@ -39,28 +40,13 @@ expect = "Made wc-journal"
 host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
 expect = '{"ok":true}'
 [[step]]
-run = "sh -c 'cp /system/settings/spark/services/diskhealth.toml /tmp/lab-journal.toml && sleep 1 && echo \"# lab journal chromium\" >> /system/settings/spark/services/diskhealth.toml'"
+run = "sh -c 'mkdir -p /tmp/lab-journal && cp /system/settings/spark/services/diskhealth.toml /system/settings/spark/services/nfsd.toml /system/settings/spark/services/smbd.toml /tmp/lab-journal/ && sleep 1 && echo \"# lab journal chromium\" >> /system/settings/spark/services/diskhealth.toml && sleep 45 && echo \"# lab journal firefox\" >> /system/settings/spark/services/nfsd.toml && sleep 45 && echo \"# lab journal webkit\" >> /system/settings/spark/services/smbd.toml'"
 root = true
 [[step]]
 browser = "journal.mjs"
-engines = ["chromium"]
 port = 9090
 [[step]]
-run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; sleep 1; echo \"# lab journal firefox\" >> /system/settings/spark/services/diskhealth.toml'"
-root = true
-[[step]]
-browser = "journal.mjs"
-engines = ["firefox"]
-port = 9090
-[[step]]
-run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; sleep 1; echo \"# lab journal webkit\" >> /system/settings/spark/services/diskhealth.toml'"
-root = true
-[[step]]
-browser = "journal.mjs"
-engines = ["webkit"]
-port = 9090
-[[step]]
-run = "sh -c 'cmp -s /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-journal.toml /system/settings/spark/services/diskhealth.toml; rm /tmp/lab-journal.toml'"
+run = "sh -c 'for name in diskhealth nfsd smbd; do cmp -s /tmp/lab-journal/$name.toml /system/settings/spark/services/$name.toml || cp /tmp/lab-journal/$name.toml /system/settings/spark/services/$name.toml || exit 1; done; rm -r /tmp/lab-journal'"
 root = true
 [[step]]
 run = "user remove --delete-home --yes wc-journal"
