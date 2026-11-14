@@ -300,15 +300,20 @@ fn machine(vm: &mut Vm, console: &Console) -> Result<(), String> {
     if named.json()?["fingerprint"].as_str() != Some(console.fingerprint.as_str()) {
         return Err(format!("the console gives {}, not the certificate's fingerprint", named.body));
     }
-    // A name that is not this machine's, and the right name on another
-    // port, are the console's refusal; the log says the first.
-    for host in ["evil.example:9090", "localhost:9091"] {
+    // A name that is not this machine's, and a port no browser can have
+    // opened, are the console's refusal; the log says the first. The
+    // machine's name on another port is answered, as a port forward or an
+    // SSH tunnel sends it.
+    for host in ["evil.example:9090", "localhost:0"] {
         console.send("GET", "/api/1/health", &[("Host".into(), host.into())], None)?.refused(
             &format!("a request for {host}"),
             421,
             "ADM-114",
         )?;
     }
+    console
+        .send("GET", "/api/1/health", &[("Host".into(), "localhost:8443".into())], None)?
+        .must("health through a forwarded port", 200)?;
     vm.expect_anywhere("admind: refused a request from 10.0.2.2: ADM-114")?;
     console.tls_refused()?;
     console.tls_served("1.2")?;
@@ -433,6 +438,7 @@ fn foreign_requests(console: &Console, alice: &mut Browser) -> Result<(), String
         ("no Origin", without("Origin")),
         ("another origin", with("Origin", "https://evil.example")),
         ("the same name over http", with("Origin", "http://localhost:9090")),
+        ("the same name on another port", with("Origin", "https://localhost:8443")),
         ("another site", with("Sec-Fetch-Site", "cross-site")),
         ("a sibling site", with("Sec-Fetch-Site", "same-site")),
         ("a navigation", with("Sec-Fetch-Site", "none")),
