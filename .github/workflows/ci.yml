@@ -255,7 +255,7 @@ jobs:
             qemu-system-x86 ovmf gcc flex gawk
             xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
             udftools udfclient genisoimage
-            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf libsqlite3-dev
 
       # smbcacls has no -p: smbd's unit test and boot test listen on
       # SMB's own port, 445, for it (ADR 0229). Installing samba started

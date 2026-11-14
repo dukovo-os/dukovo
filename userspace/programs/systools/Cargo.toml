@@ -152,6 +152,11 @@ bytes = "1.12.1"
 # The QR code of an address, for login(1)'s failure notice and report(1)'s
 # one-time download to a phone (ADR 0532): Nayuki's qrcodegen (MIT).
 qrcodegen = "1.8.0"
+# admind(8)'s store, its journal and its tasks (ADR 0516), in one SQLite
+# file. Without the `bundled` feature, libsqlite3-sys links the sqlite
+# port's library on Radix and the host's libsqlite3 in unit tests, so
+# there is one SQLite to update (ADR 0511).
+rusqlite = { version = "=0.41.1", default-features = false }
 # logd(8)'s records and requests, as lines of JSON (ADR 0210).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"

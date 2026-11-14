@@ -5122,6 +5122,7 @@ dependencies = [
  "radix-spd",
  "rcgen",
  "ring",
+ "rusqlite",
  "rustc-demangle",
  "rustic_core",
  "rustls",
