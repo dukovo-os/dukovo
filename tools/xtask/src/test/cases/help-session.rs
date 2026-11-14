@@ -386,8 +386,7 @@ fn expect_squeezed(vm: &mut Vm, needles: &[&str]) -> Result<(), String> {
 }
 
 /// alice's account, made at the first start on tty1, which signs her in.
-fn make_alice(vm: &mut Vm, case: &Case) -> Result<(), String> {
-    boot_report(vm, case)?;
+fn make_alice(vm: &mut Vm) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect_anywhere("authd: 0 accounts; answering at /system/live/authd/socket")?;
     vm.expect_anywhere("consoled: started /system/commands/login on tty1 as process ")?;
@@ -568,10 +567,10 @@ fn afterwards(vm: &mut Vm, id: &str) -> Result<(), String> {
     )
 }
 
-fn help_session(vm: &mut Vm, case: &Case) -> Result<(), String> {
+fn help_session(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     let dir = std::env::current_dir().map_err(|err| err.to_string())?.join(DIR);
     let alice_key = keys(&dir)?;
-    make_alice(vm, case)?;
+    make_alice(vm)?;
     let port = free_port()?;
     sshd_on(vm, &alice_key, port)?;
     let host_key_line = scan_host_key(port)?;
