@@ -4,8 +4,8 @@
 //! admind's store (ADR 0516): the one SQLite file, `/system/state/admind/
 //! store.db`, that keeps what the console must not lose with a restart:
 //! the journal of what changed ([`changes`]), the versions of the files it
-//! watches ([`versions`]) and what they were when last looked at, and the
-//! tasks ([`tasks`]).
+//! watches ([`versions`]) and what they were when last looked at
+//! ([`watched`]), and the tasks ([`tasks`]).
 //!
 //! The file uses SQLite's rollback journal, not WAL. WAL keeps its index
 //! in a file that every connection of every process maps shared and
@@ -39,6 +39,7 @@
 pub mod changes;
 pub mod tasks;
 pub mod versions;
+pub mod watched;
 
 use std::fmt;
 use std::fs::OpenOptions;
@@ -93,13 +94,12 @@ const SCHEMA: &[&[&str]] = &[&[
     "CREATE INDEX versions_hash ON versions (hash)",
     // What each watched file was when the console last looked: its size and
     // modification time in nanoseconds, which tell it changed, and what it
-    // held, as a hash or as why no text is kept.
+    // was, as the journal's JSON for one side of a file.
     "CREATE TABLE watched (
         path TEXT PRIMARY KEY,
         size INTEGER NOT NULL,
         mtime INTEGER NOT NULL,
-        hash TEXT,
-        hidden TEXT
+        seen TEXT NOT NULL
     ) STRICT",
     // Long actions. `log` is the last lines the command wrote, one to a
     // line.
