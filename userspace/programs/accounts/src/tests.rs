@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::request::{
-    Answer, CONTINUE, Choice, JOB_TEXT_MAX, KeepRunning, Mode, PROMPT_SHOWN_MAX, Prompt, Prompted,
-    Question, REQUEST_MAX, Relay, Request, SSH_COMMAND_MAX, SshProof, SshRun, ended, ended_status,
-    signal, stopped, stopped_signal,
+    Answer, BlockedEntry, CONTINUE, Choice, JOB_TEXT_MAX, KeepRunning, Mode, PROMPT_SHOWN_MAX,
+    Prompt, Prompted, Question, REQUEST_MAX, Relay, Request, SSH_COMMAND_MAX, SshProof, SshRun,
+    ended, ended_status, signal, stopped, stopped_signal,
 };
 use super::*;
 
@@ -434,6 +434,18 @@ fn requests_go_and_come_back() {
         Request::SetKeepRunning { chosen: Some(true) },
         Request::SetKeepRunning { chosen: Some(false) },
         Request::SetKeepRunning { chosen: None },
+        Request::SshFailed {
+            connection: "2001:db8::7 51234 2001:db8::1 22".into(),
+            name: "root".into(),
+        },
+        Request::SshFailed {
+            connection: "192.0.2.7 51234 192.0.2.1 22".into(),
+            name: String::new(),
+        },
+        Request::Blocked,
+        Request::Unblock { address: "2001:db8:4:7::/64".into() },
+        Request::NeverBlock { network: "192.168.1.0/24".into(), remove: false },
+        Request::NeverBlock { network: "192.168.1.0/24".into(), remove: true },
         Request::SharePassword {
             name: "alice".into(),
             current: b"s3cret".to_vec(),
@@ -802,6 +814,34 @@ fn keep_running_says_its_words_and_reads_them_back() {
     );
     for bad in ["", "on", "on off", "yes off allowed", "on off maybe", "on off allowed x"] {
         assert_eq!(KeepRunning::from_words(bad), None, "{bad}");
+    }
+}
+
+#[test]
+fn a_list_of_blocks_says_its_words_and_reads_them_back() {
+    let entries = [
+        BlockedEntry {
+            address: "203.0.113.9".into(),
+            until: 1_794_652_320,
+            times: 2,
+            why: "5 wrong passwords over SSH in 2 minutes, for root, admin and test".into(),
+        },
+        BlockedEntry {
+            address: "2001:db8:4:7::/64".into(),
+            until: 1_794_650_000,
+            times: 1,
+            why: "5 refused SSH sign-ins in 4 minutes".into(),
+        },
+    ];
+    let answer = BlockedEntry::list(&entries);
+    assert!(!answer.contains('\n'));
+    assert_eq!(BlockedEntry::parse_list(&answer), entries);
+    assert!(BlockedEntry::parse_list("").is_empty());
+    // A reason is kept to its line, whatever it holds.
+    let odd = BlockedEntry { why: "a\tb\nc".into(), ..entries[0].clone() };
+    assert_eq!(BlockedEntry::parse_list(&BlockedEntry::list(&[odd]))[0].why, "a b c");
+    for bad in ["203.0.113.9", "203.0.113.9 soon 1 why", "203.0.113.9 1 -1 why"] {
+        assert_eq!(BlockedEntry::from_words(bad), None, "{bad}");
     }
 }
 

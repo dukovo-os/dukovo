@@ -251,6 +251,9 @@ struct Authd {
     keyrings: HashMap<u32, keyring::Keyring>,
     /// The web console's sign-ins under way and sessions (ADR 0514).
     console: console::State,
+    /// The counts of failed sign-ins from the network, and the addresses
+    /// blocked for them (ADR 0479).
+    blocking: blocking::Blocking,
 }
 
 /// What a ticket for a password over SSH holds (ADR 0348).
@@ -349,6 +352,7 @@ macro_rules! audit {
     ($($arg:tt)*) => { println!("<86>authd: {}", format_args!($($arg)*)) };
 }
 
+mod blocking;
 pub(crate) mod console;
 mod jobs;
 mod keyring;
@@ -687,7 +691,11 @@ impl Authd {
     /// Carries out client `i`'s request.
     fn run(&mut self, i: usize, mut request: Request, now: Instant) {
         let peer = self.clients[i].peer;
-        let (answer, at) = match Files::read() {
+        let files = Files::read();
+        if let Ok(files) = &files {
+            self.check_blocking_settings(files);
+        }
+        let (answer, at) = match files {
             Err(why) => (Answer::Refused(why), now),
             Ok(files) => match &request {
                 Request::Check { name, password } => self.check(&files, name, password, peer, now),
@@ -814,6 +822,14 @@ impl Authd {
                 Request::KeepRunning => (jobs::keep_running(&files, None, peer), now),
                 Request::SetKeepRunning { chosen } => {
                     (jobs::keep_running(&files, Some(*chosen), peer), now)
+                }
+                Request::SshFailed { connection, name } => {
+                    (self.ssh_failed(&files, connection, name, peer), now)
+                }
+                Request::Blocked => (self.blocked_list(&files, peer), now),
+                Request::Unblock { address } => (self.unblock(&files, address, peer), now),
+                Request::NeverBlock { network, remove } => {
+                    (self.never_block(&files, network, *remove, peer), now)
                 }
                 Request::EndShares => {
                     if peer.is_root() {
@@ -1655,6 +1671,9 @@ impl Authd {
                  needs `names = true`",
             );
         };
+        if let Some(why) = self.blocked_why(from) {
+            return refused(&why);
+        }
         let [negotiate, challenge, authenticate] = messages;
         let typed = match ntlm::Authenticate::parse(authenticate) {
             Ok(message) => message.user,
@@ -1689,11 +1708,13 @@ impl Authd {
                     terminal: SHARE_TERMINAL.into(),
                     from: shown(from),
                 };
+                let next = wrong.next;
                 match &user {
                     Some(user) => record(&signins::of(user.uid), user.gid, 0o640, failed),
                     None => record(signins::UNKNOWN, 0, 0o600, failed),
                 }
-                return (Answer::Refused(request::WRONG_PASSWORD.into()), wrong.next);
+                self.sign_in_failed(files, from, blocking::Failed::SharePassword, Some(&typed));
+                return (Answer::Refused(request::WRONG_PASSWORD.into()), next);
             }
             Err(why) => {
                 audit!("refused a share sign-in as {} from {}: {why}", shown(&typed), shown(from));
@@ -1701,6 +1722,7 @@ impl Authd {
             }
         };
         self.wrong.remove(&key);
+        self.sign_in_right(from);
         // A right password is an account's.
         let Some(user) = user else {
             return refused(request::WRONG_PASSWORD);
@@ -1962,6 +1984,9 @@ impl Authd {
         if password.is_empty() {
             return refused("an empty password signs no one in over SSH".into());
         }
+        if let Some(why) = self.blocked_why(from) {
+            return refused(why);
+        }
         if let Err((answer, at)) =
             self.check_password_from(files, name, password, ssh_source(from), peer, now)
         {
@@ -1975,9 +2000,11 @@ impl Authd {
                     Some(user) => record(&signins::of(user.uid), user.gid, 0o640, failed),
                     None => record(signins::UNKNOWN, 0, 0o600, failed),
                 }
+                self.sign_in_failed(files, from, blocking::Failed::SshPassword, Some(name));
             }
             return (answer, at);
         }
+        self.sign_in_right(from);
         let user = match ssh_password_person(files, name) {
             Ok(user) => user,
             Err(why) => {
@@ -2778,6 +2805,20 @@ impl Notices {
         self.0.push((name.to_string(), text));
     }
 
+    /// Counts one more address blocked in `name`'s notice of blocks
+    /// (ADR 0479), adding it if they have none.
+    fn count_block(&mut self, name: &str) {
+        for (whose, text) in &mut self.0 {
+            if whose == name
+                && let Some(count) = blocking::notice_count(text)
+            {
+                *text = blocking::notice(count.saturating_add(1));
+                return;
+            }
+        }
+        self.add(name, &blocking::notice(1));
+    }
+
     /// `name`'s, oldest first.
     fn of(&self, name: &str) -> Vec<String> {
         self.0.iter().filter(|(n, _)| n == name).map(|(_, text)| text.clone()).collect()
@@ -3332,7 +3373,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         tickets: HashMap::new(),
         keyrings: HashMap::new(),
         console: console::State::default(),
+        blocking: blocking::Blocking::default(),
     };
+    authd.start_blocking();
     authd.run_loop().map_err(|e| util::failed(&"authd", e))?;
     let _ = fs::remove_file(accounts::SOCKET);
     // Asked to end: the computer is stopping, as Spark asks each service

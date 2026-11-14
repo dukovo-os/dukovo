@@ -151,9 +151,10 @@ impl Blocks {
             // Every place up to the count holds a block.
             block.map_or((0, 0), |block| place(block.from)).cmp(&wanted)
         });
-        found.ok().and_then(|at| held[at]).is_some_and(|block| {
-            now_ns < block.until_ns && block.closes(packet)
-        })
+        found
+            .ok()
+            .and_then(|at| held[at])
+            .is_some_and(|block| now_ns < block.until_ns && block.closes(packet))
     }
 }
 

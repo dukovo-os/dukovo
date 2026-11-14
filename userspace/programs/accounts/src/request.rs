@@ -40,6 +40,11 @@
 //! job\0alice\0crontab alice\0/users/alice\0backup --quiet\0SHELL=/bin/sh\0
 //! keep-running\0
 //! keep-running\0on\0
+//! ssh-failed\0192.0.2.7 51234 192.0.2.1 22\0root\0
+//! blocked\0
+//! unblock\0203.0.113.9\0
+//! never-block\0192.168.1.0/24\0
+//! never-block\0192.168.1.0/24\0remove\0
 //! ```
 //!
 //! The web console's requests, `console` and a verb, are in
@@ -526,6 +531,94 @@ pub enum Request {
         /// What they choose.
         chosen: Option<bool>,
     },
+    /// An SSH connection that tried to sign in, was refused each time,
+    /// and ended (ADR 0479): sshd(8)'s to say, which runs as root, once
+    /// as the connection ends, when no password of its was checked, as
+    /// authd counted those already. authd counts it as a failed sign-in
+    /// from the client's address.
+    SshFailed {
+        /// The connection, as SSH_CONNECTION says it.
+        connection: String,
+        /// The account it last tried to sign in to, or empty.
+        name: String,
+    },
+    /// The addresses blocked for guessing passwords (ADR 0479): an
+    /// administrator's to ask, inside elevate. The answer is `ok` and
+    /// each block's [`BlockedEntry::words`], a tab between them.
+    Blocked,
+    /// Lift the block of `address`, an IPv4 address or an IPv6 network of
+    /// 64 bits, and forget its blocks before, so that its next is a
+    /// first: an administrator's to ask, inside elevate.
+    Unblock {
+        /// The address.
+        address: String,
+    },
+    /// Never block `network`, or block it again when `remove`, as
+    /// blocking.toml(5)'s `never` lists it: an administrator's to ask,
+    /// inside elevate.
+    NeverBlock {
+        /// An address, or a network as `192.168.1.0/24`.
+        network: String,
+        /// Whether it is taken out of `never`.
+        remove: bool,
+    },
+}
+
+/// Why authd refuses a password from an address it blocked (ADR 0479),
+/// unread: the answer begins with it, and says for how long.
+pub const BLOCKED: &str = "this address is blocked for guessing passwords";
+
+/// A block, as authd answers [`Request::Blocked`]: `ADDRESS UNTIL TIMES
+/// WHY`, as `203.0.113.9 1794652320 2 5 wrong passwords over SSH in 2
+/// minutes, for root`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockedEntry {
+    /// The address, or the IPv6 network of 64 bits, as
+    /// `2001:db8:4:7::/64`.
+    pub address: String,
+    /// When it ends, in seconds since 1970.
+    pub until: i64,
+    /// How many blocks of it came one after another, each within a day
+    /// of the end of the one before, this one counted.
+    pub times: u32,
+    /// Why it was blocked.
+    pub why: String,
+}
+
+impl BlockedEntry {
+    /// Its words in authd's answer, kept to one line with no tab.
+    #[must_use]
+    pub fn words(&self) -> String {
+        let why: String = self.why.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        format!("{} {} {} {why}", self.address, self.until, self.times)
+    }
+
+    /// The block `words` says, as [`BlockedEntry::words`] made them.
+    #[must_use]
+    pub fn from_words(words: &str) -> Option<BlockedEntry> {
+        let [address, until, times, why] = words.splitn(4, ' ').collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        Some(BlockedEntry {
+            address: address.to_string(),
+            until: until.parse().ok()?,
+            times: times.parse().ok()?,
+            why: why.to_string(),
+        })
+    }
+
+    /// The answer to [`Request::Blocked`] that lists `entries`.
+    #[must_use]
+    pub fn list(entries: &[BlockedEntry]) -> String {
+        entries.iter().map(BlockedEntry::words).collect::<Vec<_>>().join("\t")
+    }
+
+    /// The blocks an answer to [`Request::Blocked`] lists, those that
+    /// read.
+    #[must_use]
+    pub fn parse_list(answer: &str) -> Vec<BlockedEntry> {
+        answer.split('\t').filter_map(BlockedEntry::from_words).collect()
+    }
 }
 
 /// Whether a person's jobs run while they are signed out (ADR 0478), as
@@ -990,6 +1083,17 @@ impl Request {
                 };
                 vec![b"keep-running", word]
             }
+            Request::SshFailed { connection, name } => {
+                vec![b"ssh-failed", connection.as_bytes(), name.as_bytes()]
+            }
+            Request::Blocked => vec![b"blocked"],
+            Request::Unblock { address } => vec![b"unblock", address.as_bytes()],
+            Request::NeverBlock { network, remove: false } => {
+                vec![b"never-block", network.as_bytes()]
+            }
+            Request::NeverBlock { network, remove: true } => {
+                vec![b"never-block", network.as_bytes(), b"remove"]
+            }
         };
         let mut bytes = Vec::new();
         for field in fields {
@@ -1297,6 +1401,17 @@ impl Request {
                 };
                 Ok(Request::SetKeepRunning { chosen })
             }
+            [b"ssh-failed", connection, name] => {
+                Ok(Request::SshFailed { connection: text(connection)?, name: text(name)? })
+            }
+            [b"blocked"] => Ok(Request::Blocked),
+            [b"unblock", address] => Ok(Request::Unblock { address: text(address)? }),
+            [b"never-block", network] => {
+                Ok(Request::NeverBlock { network: text(network)?, remove: false })
+            }
+            [b"never-block", network, b"remove"] => {
+                Ok(Request::NeverBlock { network: text(network)?, remove: true })
+            }
             _ => Err(malformed()),
         }
     }
@@ -1357,7 +1472,11 @@ impl Request {
             | Request::SshSession { proof: SshProof::Key { .. }, .. }
             | Request::Job { .. }
             | Request::KeepRunning
-            | Request::SetKeepRunning { .. } => {}
+            | Request::SetKeepRunning { .. }
+            | Request::SshFailed { .. }
+            | Request::Blocked
+            | Request::Unblock { .. }
+            | Request::NeverBlock { .. } => {}
         }
     }
 }
@@ -1474,6 +1593,14 @@ impl std::fmt::Debug for Request {
             Request::KeepRunning => write!(f, "KeepRunning"),
             Request::SetKeepRunning { chosen } => {
                 write!(f, "SetKeepRunning {{ chosen: {chosen:?} }}")
+            }
+            Request::SshFailed { connection, name } => {
+                write!(f, "SshFailed {{ connection: {connection:?}, name: {name:?} }}")
+            }
+            Request::Blocked => write!(f, "Blocked"),
+            Request::Unblock { address } => write!(f, "Unblock {{ address: {address:?} }}"),
+            Request::NeverBlock { network, remove } => {
+                write!(f, "NeverBlock {{ network: {network:?}, remove: {remove} }}")
             }
         }
     }

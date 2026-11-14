@@ -18,6 +18,12 @@
 //! sign in, six tries, and four sessions at most, each a shell, a
 //! command or SFTP.
 //!
+//! authd counts each wrong password for the client's address, and blocks
+//! an address that guesses (ADR 0479); a connection that tried and was
+//! refused each time, with no password authd checked, is told to authd as
+//! it ends, as one failed sign-in. A password from an address authd
+//! blocked is refused unread, and the connection is ended.
+//!
 //! Once someone signed in, their client may forward ports, as the
 //! settings let it (ADR 0349): sshd has the connection's forwarder, which
 //! authd starts as them, make the connections and listen on the ports
@@ -129,6 +135,13 @@ struct Connection {
     signed_in: Option<SignedIn>,
     /// Why the last key was refused, for the log.
     refused: Option<String>,
+    /// The account the last refused try named, empty for a name no
+    /// account may have: authd is told of a connection that tried and
+    /// never signed in (ADR 0479).
+    tried: Option<String>,
+    /// Whether authd checked a password of the connection's, and so
+    /// counted any wrong one itself.
+    password_checked: bool,
     /// The session channels.
     channels: HashMap<ChannelId, session::Channel>,
     /// The forwarding, once the client forwarded a port.
@@ -172,6 +185,8 @@ pub fn run(settings: Settings) -> ExitCode {
         guard: Some(guard),
         signed_in: None,
         refused: None,
+        tried: None,
+        password_checked: false,
         channels: HashMap::new(),
         forwarding: None,
     };
@@ -400,11 +415,11 @@ impl server::Handler for Connection {
             return Ok(Auth::reject());
         }
         if !account_name(user) {
-            self.refused = Some("a name no account has".into());
+            self.refuse("", "a name no account has".into());
             return Ok(Auth::reject());
         }
         if let Err(why) = admitted(&self.settings, user) {
-            self.refused = Some(format!("{user}: {why}"));
+            self.refuse(user, format!("{user}: {why}"));
             return Ok(Auth::reject());
         }
         // The algorithm the client signs with must be the key's own:
@@ -413,7 +428,7 @@ impl server::Handler for Connection {
         if !key_algorithm(offer.algorithm)
             || offer.algorithm.as_str() != offer.public_key.algorithm().as_str()
         {
-            self.refused = Some(format!("{} keys are not taken", offer.algorithm.as_str()));
+            self.refuse(user, format!("{} keys are not taken", offer.algorithm.as_str()));
             return Ok(Auth::reject());
         }
         let key = offer.public_key.to_bytes().map_err(|_| russh::Error::Inconsistent)?;
@@ -422,7 +437,7 @@ impl server::Handler for Connection {
         match authd::ask(&request, &[]).await {
             Ok((Answer::Done(_), _)) => Ok(Auth::Accept),
             Ok((Answer::Refused(why), _)) => {
-                self.refused = Some(format!("key {fingerprint} for {user}: {why}"));
+                self.refuse(user, format!("key {fingerprint} for {user}: {why}"));
                 Ok(Auth::reject())
             }
             Err(why) => {
@@ -458,7 +473,7 @@ impl server::Handler for Connection {
             return Ok(Auth::reject());
         }
         if let Err(why) = admitted(&self.settings, user) {
-            self.refused = Some(format!("{user}: {why}"));
+            self.refuse(user, format!("{user}: {why}"));
             return Ok(Auth::reject());
         }
         let request = Request::SshPassword {
@@ -480,7 +495,15 @@ impl server::Handler for Connection {
                     Ok(Auth::reject())
                 }
             },
+            // A guesser's connection open before its address was blocked
+            // ends.
+            Ok((Answer::Refused(why), _)) if why.starts_with(request::BLOCKED) => {
+                self.refused = Some(format!("a password for {user}: {why}"));
+                Err(russh::Error::Disconnect.into())
+            }
             Ok((Answer::Refused(why), _)) => {
+                // authd counted it, if it was wrong.
+                self.password_checked = true;
                 self.refused = Some(format!("a password for {user}: {why}"));
                 Ok(Auth::reject())
             }
@@ -775,12 +798,29 @@ impl server::Handler for Connection {
     }
 }
 
+impl Connection {
+    /// A try to sign in to `user` refused, `why`: for the log, and for
+    /// authd if no one signs in.
+    fn refuse(&mut self, user: &str, why: String) {
+        self.refused = Some(why);
+        self.tried = Some(user.into());
+    }
+}
+
 impl Drop for Connection {
     fn drop(&mut self) {
         if self.signed_in.is_none()
             && let Some(why) = &self.refused
         {
             eprintln!("sshd: no one signed in from {}: {why}", self.from);
+        }
+        // Tried, refused each time, and gone: one failed sign-in for its
+        // address, unless authd counted its passwords already.
+        if self.signed_in.is_none()
+            && !self.password_checked
+            && let Some(name) = self.tried.take()
+        {
+            authd::tell(&Request::SshFailed { connection: self.connection.clone(), name });
         }
         // A password's ticket holds no longer than its connection.
         if let Some(SignedIn { proof: SshProof::Ticket(ticket), .. }) = self.signed_in.take() {
