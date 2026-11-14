@@ -406,7 +406,10 @@ override:
 	file gives in it, read-only unless one of them that is no socket
 	is in *files.read-write*. Connecting needs no write to the folder,
 	and a socket its service makes again, as *logd*(8) does when it
-	restarts, is found at the same name.
+	restarts, is found at the same name. A device that each open makes
+	anew, _/devices/ptmx_, _/devices/tty_ or _/devices/fuse_, is
+	reached through its folder in the same way, so that each of the
+	service's terminals is a pseudo-terminal of its own.
 
 	*files.mount* = [_"path"_, ...]
 		Places it may read, change and mount filesystems beneath, as
