@@ -6956,7 +6956,9 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.press(&["alt-f2"])?;
     vm.expect("consoled: started /system/commands/nukesh on tty2 as process ")?;
     vm.expect_screen(&["(tty2)"])?;
-    vm.type_text("service --status-all; service consoled status\n")?;
+    // The list of every service and consoled's status are more than a
+    // screen together, so only consoled's line of the list is kept.
+    vm.type_text("clear; service --status-all | grep consoled; service consoled status\n")?;
     vm.expect_screen(&[
         " [ + ]  consoled",
         "consoled - Virtual consoles",
