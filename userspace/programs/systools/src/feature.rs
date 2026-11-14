@@ -14,6 +14,7 @@
 //!   installed for everyone. One with only some of them is *partly*
 //!   added, as when `share off` turned smbd off.
 //! - `feature info ID` says what one does, and each part's state.
+//!   Both take `--json`, which says the same as one document (ADR 0541).
 //! - `feature add ID... [--yes]`, as root, installs each bundle a
 //!   feature lists from the catalogs the system trusts (bundle(1)), and
 //!   turns each service on, now and at each boot (service(8)).
@@ -31,13 +32,14 @@ use std::path::Path;
 
 use manifest::feature::{self, Feature};
 use manifest::service;
+use serde::Serialize;
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail, usage};
-use crate::{bundles, servicefiles};
+use crate::{bundles, json, servicefiles};
 
-const HELP: &str = "Usage: feature [list]
-       feature info ID
+const HELP: &str = "Usage: feature [list] [--json]
+       feature info ID [--json]
        feature add [--yes] ID...
        feature remove [--keep-data | --purge] ID...
 
@@ -46,6 +48,7 @@ on services and installs bundles, as feature.toml(5) describes.
 
   list     the features, and whether each is added
   info     what feature ID does, and the state of each of its parts
+           (list and info take --json, for scripts)
   add      installs its bundles for everyone and turns its services on,
            now and at each boot; --yes installs without asking
   remove   turns its services off and removes its bundles, but those
@@ -61,19 +64,20 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 println!("{HELP}");
                 Ok(0)
             }
+            Some(Arg::Long(l)) if l == "json" => {
+                nothing_more(args)?;
+                list(true)
+            }
             Some(other) => Err(args.unknown(&other)),
-            None => list(),
+            None => list(false),
         };
     };
     match subcommand.to_str() {
-        Some("list") => {
-            nothing_more(args)?;
-            list()
-        }
+        Some("list") => list(only_json(args)?),
         Some("info") => {
-            let ids = ids(args, &[])?;
-            match ids.0.as_slice() {
-                [id] => info(id),
+            let (ids, flags) = ids(args, &["json"])?;
+            match ids.as_slice() {
+                [id] => info(id, flags.contains(&"json")),
                 _ => Err(usage("feature info takes one feature's ID".into())),
             }
         }
@@ -98,6 +102,17 @@ fn nothing_more(args: &mut Args) -> Result<(), Fail> {
         None => Ok(()),
         Some(other) => Err(args.unknown(&other)),
     }
+}
+
+/// Whether `--json` is all `args` holds.
+fn only_json(args: &mut Args) -> Result<bool, Fail> {
+    let json = match args.next()? {
+        None => return Ok(false),
+        Some(Arg::Long(l)) if l == "json" => true,
+        Some(other) => return Err(args.unknown(&other)),
+    };
+    nothing_more(args)?;
+    Ok(json)
 }
 
 /// The IDs in `args`, at least one, and which of the long options
@@ -222,14 +237,73 @@ fn enabled(name: &str) -> bool {
         .is_some_and(|service| service.enabled)
 }
 
-/// `feature list`.
-fn list() -> Result<i32, Fail> {
+/// A feature as `feature list --json` and `feature info --json` say it.
+#[derive(Serialize)]
+struct Described {
+    id: String,
+    name: String,
+    about: String,
+    /// `added`, `partly` or `not added`.
+    state: &'static str,
+    services: Vec<ServicePart>,
+    bundles: Vec<BundlePart>,
+}
+
+/// A service a feature turns on, and whether it is on.
+#[derive(Serialize)]
+struct ServicePart {
+    name: String,
+    on: bool,
+}
+
+/// A bundle a feature installs, and whether it is installed for everyone.
+#[derive(Serialize)]
+struct BundlePart {
+    id: String,
+    installed: bool,
+}
+
+/// The members of `feature list --json` after `format`.
+#[derive(Serialize)]
+struct Listing {
+    features: Vec<Described>,
+}
+
+impl Now {
+    /// `feature` of ID `id`, as the JSON documents say it.
+    fn described(&self, id: &str, feature: &Feature) -> Described {
+        Described {
+            id: id.to_string(),
+            name: feature.name.clone(),
+            about: feature.about.clone(),
+            state: self.state(feature),
+            services: feature
+                .services
+                .iter()
+                .map(|name| ServicePart { name: name.clone(), on: self.services.contains(name) })
+                .collect(),
+            bundles: feature
+                .bundles
+                .iter()
+                .map(|id| BundlePart { id: id.clone(), installed: self.installed(id) })
+                .collect(),
+        }
+    }
+}
+
+/// `feature list`; with `json`, as a document.
+fn list(json: bool) -> Result<i32, Fail> {
     let features = all()?;
-    if features.is_empty() {
+    if features.is_empty() && !json {
         println!("this system has no features");
         return Ok(0);
     }
     let now = Now::of(&features.iter().map(|(_, f)| f).collect::<Vec<_>>())?;
+    if json {
+        let features = features.iter().map(|(id, feature)| now.described(id, feature)).collect();
+        json::print(&Listing { features })?;
+        return Ok(0);
+    }
     let width = features.iter().map(|(id, _)| id.len()).max().unwrap_or(2).max(2);
     println!("{:width$}  {:9}  NAME", "ID", "STATE");
     for (id, feature) in &features {
@@ -238,10 +312,14 @@ fn list() -> Result<i32, Fail> {
     Ok(0)
 }
 
-/// `feature info ID`.
-fn info(id: &str) -> Result<i32, Fail> {
+/// `feature info ID`; with `json`, as a document.
+fn info(id: &str, json: bool) -> Result<i32, Fail> {
     let feature = read(id)?;
     let now = Now::of(&[&feature])?;
+    if json {
+        json::print(&now.described(id, &feature))?;
+        return Ok(0);
+    }
     println!("{} ({id}): {}", feature.name, now.state(&feature));
     println!("{}", feature.about);
     for name in &feature.services {
@@ -387,6 +465,24 @@ mod tests {
             bundles: vec!["org.example.tool".into()],
         };
         assert_eq!(all.state(&feature), "added");
+    }
+
+    #[test]
+    fn the_documents_hold_each_feature_with_its_state_and_parts() {
+        let tools = feature::from_toml(
+            "feature_version = 1\nname = \"Developer tools\"\nabout = \"Compilers.\"\nbundles = \
+             [\"org.example.tool\"]\n",
+        )
+        .unwrap();
+        let now = Now { services: vec!["smbd".into()], bundles: vec!["org.example.tool".into()] };
+        let info = json::line(&now.described("file-sharing", &sharing())).unwrap();
+        json::assert_golden(&info, include_str!("../tests/json/feature-info.json"));
+        let features = vec![
+            now.described("developer-tools", &tools),
+            now.described("file-sharing", &sharing()),
+        ];
+        let list = json::line(&Listing { features }).unwrap();
+        json::assert_golden(&list, include_str!("../tests/json/feature-list.json"));
     }
 
     #[test]

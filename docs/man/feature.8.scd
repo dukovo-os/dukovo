@@ -9,9 +9,9 @@ feature - add and remove what this machine does
 
 # SYNOPSIS
 
-*feature* [*list*]
+*feature* [*list*] [*--json*]
 
-*feature info* _id_
+*feature info* _id_ [*--json*]
 
 *feature add* [*--yes*] _id_...
 
@@ -33,6 +33,9 @@ names installed for everyone), *not added*, or *partly* added, as when
 
 *info* says what a feature does, and whether each of its services is
 on and each of its bundles installed.
+
+*list* and *info* take *--json*, which prints the same as one line of
+JSON (JSON).
 
 *add* installs, for everyone, each bundle a feature lists and is not
 installed, from the catalogs the system trusts (*bundle*(1)), showing
@@ -64,6 +67,39 @@ Shares folders with Windows PCs, Macs and Linux machines over SMB, and with Unix
   service smbd: on
   service nfsd: on
 ```
+
+# JSON
+
+*list --json* and *info --json* print one line of JSON, an object whose
+first member is *format*, 1 (ADR 0541), which scripts and Ansible's
+*dukovo.system* collection read in place of the text. A later field may
+be added without a new *format*. Names are in snake_case. An error is
+told to standard error as without *--json*, with the same exit status,
+and prints no JSON.
+
+*feature list --json* has *features*, a list with an object for each
+feature, by ID; *feature info --json* has the members of that object
+at the top. The members are:
+
+*id*
+	The feature's ID.
+
+*name*
+	Its name.
+
+*about*
+	What it does, as its file says.
+
+*state*
+	*added*, *partly* or *not added*, as *list* shows it.
+
+*services*
+	The services it turns on, each an object with *name* and *on*,
+	whether the service starts at boot.
+
+*bundles*
+	The bundles it installs, each an object with *id* and *installed*,
+	whether it is installed for everyone.
 
 # EXIT STATUS
 
