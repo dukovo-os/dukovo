@@ -859,6 +859,9 @@ update-fallback image/grub/rescue.cfg
 update-fallback userspace/defaults/sysupdate/ userspace/programs/systools/src/subvolume.rs
 update-fallback userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
 update-fallback userspace/spark/src/main.rs
+update-disk-full image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
+update-disk-full userspace/programs/systools/src/df.rs userspace/programs/systools/src/sysupdate.rs
+update-disk-full userspace/programs/systools/src/sysupdate/
 update-first-start-kills image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
 update-first-start-kills tools/xtask/src/writelog.rs userspace/programs/slots/
 update-first-start-kills userspace/programs/system-release/ userspace/programs/systools/src/sysupdate.rs
@@ -873,6 +876,8 @@ update-hang image/grub/rescue.cfg
 update-hang userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs
 update-hang userspace/programs/systools/src/sysupdate/ userspace/spark/src/main.rs
 update-hang userspace/spark/src/supervisor.rs
+update-network-down kernel/net/ userspace/programs/systools/src/netd.rs
+update-network-down userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
 update-offline kernel/fs/fat/ tools/xtask/src/release.rs userspace/programs/slots/
 update-offline userspace/programs/system-release/ userspace/programs/systools/src/sysupdate.rs
 update-offline userspace/programs/systools/src/sysupdate/ userspace/programs/tuf/
@@ -903,6 +908,9 @@ update-power-replay-bios userspace/programs/slots/ userspace/programs/system-rel
 update-power-replay-bios userspace/programs/systools/src/subvolume.rs
 update-power-replay-bios userspace/programs/systools/src/sysupdate.rs
 update-power-replay-bios userspace/programs/systools/src/sysupdate/
+update-root-missing image/grub/installed.cfg.in image/grub/menu.cfg
+update-root-missing userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs
+update-root-missing userspace/programs/systools/src/sysupdate/ userspace/spark/src/main.rs
 update-stage image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/ tools/xtask/src/release.rs
 update-stage image/grub/rescue.cfg
 update-stage userspace/defaults/sysupdate/ userspace/programs/disk/src/esp.rs userspace/programs/slots/

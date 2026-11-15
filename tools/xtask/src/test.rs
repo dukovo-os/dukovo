@@ -530,14 +530,21 @@ pub struct TestUpdate {
 /// fails it, one whose kernel panics, one whose Spark stops responding
 /// (spark(8)'s `test-hang`), which the watchdog ends, and one that proves
 /// itself and starts with a boot option of its own, `bisect.test.fail=1`,
-/// which nothing reads but the `bisect` test's health check (ADR 0475).
-pub const TEST_UPDATES: [TestUpdate; 5] = [
+/// which nothing reads but the `bisect` test's health check (ADR 0475), and
+/// one whose flags name a Dukovo root no disk has ([`NO_ROOT`]).
+pub const TEST_UPDATES: [TestUpdate; 6] = [
     TestUpdate { name: "good", flags: "", broken: None },
     TestUpdate { name: "broken", flags: "", broken: Some("commands/logd") },
     TestUpdate { name: "panic", flags: "selftest=page-fault", broken: None },
     TestUpdate { name: "hang", flags: "test-hang", broken: None },
     TestUpdate { name: "bisect", flags: "bisect.test.fail=1", broken: None },
+    TestUpdate { name: "noroot", flags: NO_ROOT, broken: None },
 ];
+
+/// The flags of the `noroot` test update: a `root=UUID=` that no disk
+/// holds. GRUB puts a slot's flags after its own `root=`, and Spark takes
+/// the last one, so that the slot's starts find no root.
+const NO_ROOT: &str = "root=UUID=0badc0de-0000-4000-8000-00000000dead";
 
 /// The boot tests' firmware sets (ADR 0468), by name and version, in the
 /// repository [`TEST_FIRMWARE_REPO`] beside [`TEST_UPDATES`]: `good` and

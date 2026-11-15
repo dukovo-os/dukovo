@@ -29,7 +29,7 @@ const KILLS: [(&str, &str); 2] = [
 ];
 
 /// The update boot tests that stood before the matrix, run together.
-const UPDATE_CASES: [&str; 7] = [
+const UPDATE_CASES: [&str; 10] = [
     "update-stage",
     "update-power-cut",
     "update-panic",
@@ -37,6 +37,9 @@ const UPDATE_CASES: [&str; 7] = [
     "update-fallback",
     "update-offline",
     "update-online",
+    "update-network-down",
+    "update-root-missing",
+    "update-disk-full",
 ];
 
 /// How long each fuzz target runs, in seconds, in a nightly run and in a
@@ -210,7 +213,8 @@ mod tests {
             runs[4],
             "./ob test boot --case update-stage --case update-power-cut --case update-panic \
              --case update-hang --case update-fallback --case update-offline \
-             --case update-online --retry"
+             --case update-online --case update-network-down --case update-root-missing \
+             --case update-disk-full --retry"
         );
         assert_eq!(runs[5], "./ob test tuf");
         assert_eq!(runs[6], "./ob test fuzz --target release-list --seconds 600");

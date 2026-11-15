@@ -56,7 +56,9 @@ update. The first start of an update, which GRUB takes as a counted try
 - **The nightly sample.** Sixteen power cuts under UEFI and sixteen under
   BIOS, both first-start kill loops, the update boot tests together
   (`update-stage`, `update-power-cut`, `update-panic`, `update-hang`,
-  `update-fallback`, `update-offline` and `update-online`), the TUF
+  `update-fallback`, `update-offline`, `update-online`,
+  `update-network-down`, `update-root-missing` and `update-disk-full`),
+  the TUF
   conformance suite (`tuf-conformance`, `./ob test tuf`), and each fuzz
   target for ten minutes.
 - **A candidate's full run.** Every power cut under each firmware type, in
@@ -156,6 +158,30 @@ update. The first start of an update, which GRUB takes as a counted try
     `./ob test tuf` beside them. The jobs that need no QEMU skip the
     boot tests' packages and ports.
 
+- **Updates meet a broken machine.**
+  - An essential service that fails is `update-fallback`'s case: the
+    update's logd is broken, its health check fails, and slot A starts
+    again with the settings from before it.
+  - `update-network-down`: the machine's network card is on a QEMU hub
+    with no other port, so netd never gets an address. `sysupdate check`
+    against a server it cannot reach fails within its time limit, naming
+    the server and why, and changes nothing. An update staged from the
+    updates' disk then proves itself, as the health check does not wait
+    on the network.
+  - `update-root-missing`: the test update `noroot` names, among its
+    flags, a `root=UUID=` that no disk holds. GRUB puts a slot's flags
+    after its own `root=`, and Spark takes the last one, so each start of
+    slot B finds no root, says so and restarts after 30 seconds. The
+    three tries are used up, and slot A starts with the settings from
+    before the update.
+  - `update-disk-full`: a file written as root takes the root's free
+    space. `sysupdate stage` adds up the sizes of the files the release
+    changes, an eighth more for Btrfs's metadata and 16 MiB, and refuses
+    before it writes anything when the root has less free, saying what it
+    needs and what is free. With the file removed, the stage goes through
+    and the update proves itself. The stage reads each file of the
+    running slot once, for this sum and to choose what it writes.
+
 ## Consequences
 
 - Every change to what an update writes, or the order it writes it in, is
@@ -180,9 +206,7 @@ update. The first start of an update, which GRUB takes as a counted try
   - The upgrade paths from old releases, on a machine full of users,
     settings, apps and services, built once for each release as a fixture
     image.
-  - The cases that break an update on purpose or hurt the machine around
-    it: an essential service that fails, a network that stays down, a root
-    that will not mount, a full disk, a bad network and clock skew, and the
-    metadata attacks of `update-online` beside TUF's conformance suite.
+  - A network that delivers slowly or drops connections, and a clock
+    that is wrong, on `update-online`'s server.
   - The gate: `ob release sign` checking that a candidate's full run is
     green for the exact commit.
