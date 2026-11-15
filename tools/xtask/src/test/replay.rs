@@ -28,7 +28,7 @@ use super::{
 };
 use crate::config::Profile;
 use crate::process::{self, step};
-use crate::writelog::{Cut, Disk, Log, Points, cuts, part_of};
+use crate::writelog::{Cut, Disk, Log, Points, clock_seed, cuts, part_of};
 use crate::{Args, Context as _, Error, Result, qemu};
 
 /// The case `ob test replay` records without `--case`: under UEFI.
@@ -172,13 +172,6 @@ fn parse_marks(text: &str) -> Result<std::ops::Range<usize>, String> {
 fn slot_started(log: &str) -> Option<char> {
     let (_, rest) = log.split_once("spark: started slot ")?;
     rest.chars().next().map(|slot| slot.to_ascii_uppercase())
-}
-
-/// The seed of a run that was not given one: the clock's nanoseconds.
-fn clock_seed() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_nanos() & u128::from(u64::MAX)).unwrap_or(0))
 }
 
 /// The command that boots cut `point` of the recording `log` again.

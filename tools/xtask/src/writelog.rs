@@ -345,6 +345,13 @@ pub enum Points {
     Sample(usize),
 }
 
+/// A seed for a run that was not given one: the clock's nanoseconds.
+pub fn clock_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_nanos() & u128::from(u64::MAX)).unwrap_or(0))
+}
+
 /// A small pseudo-random source (SplitMix64), so that a run can be
 /// repeated from the seed it printed.
 pub struct Random(u64);

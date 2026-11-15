@@ -859,6 +859,15 @@ update-fallback image/grub/rescue.cfg
 update-fallback userspace/defaults/sysupdate/ userspace/programs/systools/src/subvolume.rs
 update-fallback userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
 update-fallback userspace/spark/src/main.rs
+update-first-start-kills image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
+update-first-start-kills tools/xtask/src/writelog.rs userspace/programs/slots/
+update-first-start-kills userspace/programs/system-release/ userspace/programs/systools/src/sysupdate.rs
+update-first-start-kills userspace/programs/systools/src/sysupdate/ userspace/spark/src/main.rs
+update-first-start-kills-bios image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
+update-first-start-kills-bios tools/xtask/src/writelog.rs userspace/programs/slots/
+update-first-start-kills-bios userspace/programs/system-release/
+update-first-start-kills-bios userspace/programs/systools/src/sysupdate.rs
+update-first-start-kills-bios userspace/programs/systools/src/sysupdate/ userspace/spark/src/main.rs
 update-hang image/grub/installed.cfg.in image/grub/menu.cfg kernel/drivers/watchdog/
 update-hang image/grub/rescue.cfg
 update-hang userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs

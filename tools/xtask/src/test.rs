@@ -6663,6 +6663,14 @@ impl Vm {
         }
     }
 
+    /// Moves the place [`Vm::expect`] reads from to the end of the log,
+    /// after a pause for what the machine wrote just before it was reset,
+    /// so that the next wait sees only what the machine says anew.
+    pub fn skip_output(&mut self) {
+        std::thread::sleep(Duration::from_millis(500));
+        self.cursor = self.log().len();
+    }
+
     /// Waits until `needle` appears anywhere in the log, for what a thread
     /// that runs alongside the boot says in an order of its own. The place
     /// [`Vm::expect`] reads from stays where it is.

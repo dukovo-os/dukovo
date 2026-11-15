@@ -209,6 +209,8 @@ tls 22
 uefi-cdrom 11
 uefi-usb 21
 update-fallback 90
+update-first-start-kills 400
+update-first-start-kills-bios 400
 update-hang 150
 update-offline 160
 update-online 240

@@ -54,38 +54,48 @@ pub fn record(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     power_off(vm)
 }
 
-/// What a machine started from the disk of a power cut must do: start
-/// slot A or slot B, name it as the running slot, read back against its
-/// signed list, and, on slot A, stage the update.
-pub fn check_cut(vm: &mut Vm, _case: &Case) -> Result<(), String> {
-    let version = test_update_version("good");
-    let starts =
-        ["spark: started slot a, @system.a", "spark: started slot b, @system.b", PANIC_BANNER];
+/// Waits for slot A or slot B to start and show tty1, and gives which, as
+/// `a` or `b`. A kernel panic first is a failure.
+pub fn started_either(vm: &mut Vm) -> Result<char, String> {
+    let starts = [
+        "spark: started slot a, @system.a",
+        "spark: started slot b, @system.b",
+        PANIC_BANNER,
+    ];
     let slot = vm.expect_first(&starts).map_err(|err| format!("no slot started: {err}"))?;
     if slot == 2 {
         return Err("the kernel panicked".into());
     }
     vm.expect("; tty1 is shown")?;
-    if slot == 0 {
-        run(vm, "sysupdate status", &[&format!("Running:  slot A, Dukovo {VERSION}")])?;
-        run(
-            vm,
-            &format!("sysupdate verify {UPDATES}/{CURRENT_RELEASE}"),
-            &[&format!(
-                "sysupdate: slot A (Dukovo {VERSION}) is the release its signed list names"
-            )],
-        )?;
+    Ok(if slot == 0 { 'a' } else { 'b' })
+}
+
+/// Checks that the running slot, `a` or `b`, is the one *sysupdate status*
+/// names as running, and that *sysupdate verify* reads it back against
+/// its signed list: slot A's from [`CURRENT_RELEASE`], slot B's from the
+/// test update.
+pub fn running_slot_is_whole(vm: &mut Vm, slot: char) -> Result<(), String> {
+    let (name, version, list) = match slot {
+        'a' => ('A', VERSION.to_string(), CURRENT_RELEASE),
+        _ => ('B', test_update_version("good"), "good"),
+    };
+    run(vm, "sysupdate status", &[&format!("Running:  slot {name}, Dukovo {version}")])?;
+    run(
+        vm,
+        &format!("sysupdate verify {UPDATES}/{list}"),
+        &[&format!("sysupdate: slot {name} (Dukovo {version}) is the release its signed list names")],
+    )
+}
+
+/// What a machine started from the disk of a power cut must do: start
+/// slot A or slot B, which is whole, and, on slot A, stage the update
+/// again.
+pub fn check_cut(vm: &mut Vm, _case: &Case) -> Result<(), String> {
+    let slot = started_either(vm)?;
+    running_slot_is_whole(vm, slot)?;
+    if slot == 'a' {
         // A stage takes away a slot a power cut left half built.
         stage(vm, "good")?;
-    } else {
-        run(vm, "sysupdate status", &[&format!("Running:  slot B, Dukovo {version}")])?;
-        run(
-            vm,
-            &format!("sysupdate verify {UPDATES}/good"),
-            &[&format!(
-                "sysupdate: slot B (Dukovo {version}) is the release its signed list names"
-            )],
-        )?;
     }
     no_storage_errors(&vm.log())
 }
@@ -94,7 +104,7 @@ pub fn check_cut(vm: &mut Vm, _case: &Case) -> Result<(), String> {
 /// reports an error: a checksum that does not match, or a tree that is
 /// damaged, as the disk of a cut that took a mix of old and new writes
 /// would show.
-fn no_storage_errors(log: &str) -> Result<(), String> {
+pub fn no_storage_errors(log: &str) -> Result<(), String> {
     if log.contains(PANIC_BANNER) {
         return Err("the kernel panicked".into());
     }
