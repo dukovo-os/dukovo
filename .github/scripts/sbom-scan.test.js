@@ -265,16 +265,38 @@ test('issues that the scan did not make are not touched', async () => {
   assert.deepEqual(repo.mutations().filter((name) => name !== 'issues.createLabel'), []);
 });
 
-test('the ports the scan cannot ask about are named in the summary', async () => {
+test('the ports the scan cannot ask about are named in the summary, each with its reason', async () => {
   const repo = new FakeRepo();
   const core = await runScan(repo, {
     findings: [],
     not_covered: [
-      { port: 'curl', version: '8.9.1', url: 'https://curl.se/x.tar.xz' },
-      { port: 'zlib', version: '1.3.1', url: 'https://zlib.net/x.tar.gz' },
+      { port: 'zip', version: '3.0', url: 'https://example.org/zip30.tar.gz', reason: 'Info-ZIP keeps no public repository, and 3.0 is its last release' },
+      { port: 'mandoc', version: '1.14.6', url: 'https://example.org/mandoc.tar.gz', reason: 'its source is in CVS' },
     ],
   });
-  assert.match(core.summaryText, /Not covered.*curl 8\.9\.1, zlib 1\.3\.1/);
+  assert.match(
+    core.summaryText,
+    /Not covered.*zip 3\.0 \(Info-ZIP keeps no public repository, and 3\.0 is its last release\); mandoc 1\.14\.6 \(its source is in CVS\)\./,
+  );
+});
+
+test('a port with no reason is named alone, and a scan that leaves nothing out says so', async () => {
+  const bare = await runScan(new FakeRepo(), {
+    findings: [],
+    not_covered: [{ port: 'zip', version: '3.0', url: 'https://example.org/zip30.tar.gz' }],
+  });
+  assert.match(bare.summaryText, /Not covered.*: zip 3\.0\./);
+  const whole = await runScan(new FakeRepo(), found());
+  assert.match(whole.summaryText, /Every port with a source is covered\./);
+  assert.doesNotMatch(whole.summaryText, /Not covered/);
+});
+
+test('a reason from a recipe cannot break the summary or mention anybody', async () => {
+  const core = await runScan(new FakeRepo(), {
+    findings: [],
+    not_covered: [{ port: 'x', version: '1', url: 'u', reason: 'kept by @someone |\nin two lines' }],
+  });
+  assert.match(core.summaryText, /x 1 \(kept by @&#8203;someone \\\| in two lines\)/);
 });
 
 test('output that does not parse changes nothing and fails the run', async () => {

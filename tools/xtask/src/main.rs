@@ -744,14 +744,17 @@ to a published advisory.
 `scan` looks for known flaws in what the system is built from: `cargo audit
 --json` on every tracked Cargo.lock (which it does not change) and on the lock
 of every Rust port that `ports audit` audits, and OSV, asked by the commit each
-port's recipe pins. A port pinned by a release archive and no commit cannot be
-asked, and is listed as not covered. A finding has the severity its advisory
-names, or the base score of its CVSS 3 vector gives, and none when the advisory
-gives neither. The text lists the findings, most severe first; --json prints one
-object, with `findings` and `not_covered`, for the daily scan of
+port's recipe pins and each of its extra sources, by the commit of the tag the
+[upstream] of a port pinned by a release archive names (one `git ls-remote` for
+each port), and by name and version for each crate a recipe lists that no
+audited Cargo.lock lists. A port whose [upstream] says none cannot be asked, and
+is listed as not covered, with its reason. A finding has the severity its
+advisory names, or the base score of its CVSS 3 vector gives, and none when the
+advisory gives neither. The text lists the findings, most severe first; --json
+prints one object, with `findings` and `not_covered`, for the daily scan of
 .github/workflows/upstream.yml. --osv-url names another server that answers as
 OSV does. It exits 0 whatever it finds, and non-zero only when it could not run
-(cargo-audit missing, OSV out of reach)."
+(cargo-audit missing, OSV out of reach, a tag it could not resolve)."
         }
         "release" => {
             "Usage: ./ob release server setup [--dukovo]

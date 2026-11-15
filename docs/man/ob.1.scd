@@ -2196,10 +2196,16 @@ _target/userspace/_).
 	0534). It runs *cargo audit --json* on every _Cargo.lock_ the
 	repository tracks, without changing any of them, and on the lock of
 	every Rust port that *ports audit* audits, which *cargo-audit* must
-	be installed for. For each port whose recipe pins a git commit, it
-	asks OSV (_api.osv.dev_, through *curl*) which advisories name that
-	commit. A port pinned by a release archive and no commit cannot be
-	asked, and is listed as not covered. The severity of a finding is the
+	be installed for. It then asks OSV (_api.osv.dev_, through *curl*), in
+	one batch, which advisories name each of these: the commit a port's
+	recipe pins, and the commit of each of its *[[extra]]* sources; for a
+	port pinned by a release archive, the commit of the tag its
+	*[upstream]* names, which *git ls-remote* resolves, once for each
+	port (for an annotated tag, the commit it points to); and each crate a
+	recipe lists (*[[crate]]*), by its name and version on crates.io,
+	unless a _Cargo.lock_ it audited lists that crate. A port whose
+	*[upstream]* says *none* has no commit to ask by, and is listed as not
+	covered, with its reason. The severity of a finding is the
 	one its advisory names, or the base score of its CVSS 3 vector
 	(Critical from 9.0, High from 7.0, Medium from 4.0, Low below); an
 	advisory that gives neither has no severity, and is never guessed at.
@@ -2209,10 +2215,12 @@ _target/userspace/_).
 	_findings_, an array whose entries have _id_, _aliases_, _severity_
 	(_critical_, _high_, _medium_, _low_, or null), _summary_,
 	_component_, _source_ (_cargo-audit_ or _osv_), _url_ and _location_,
-	and _not_covered_, the ports it could not ask. *--osv-url* names
-	another server that answers as OSV does, for a test. *scan* exits 0
-	whatever it finds, and non-zero only when it could not run, such as
-	when OSV cannot be reached. The *sbom-scan* job of
+	and _not_covered_, the ports it could not ask, each with its _port_,
+	_version_, _url_ and _reason_. *--osv-url* names another server that
+	answers as OSV does, for a test. *scan* exits 0 whatever it finds,
+	and non-zero only when it could not run, such as when OSV cannot be
+	reached or when a tag cannot be resolved, in which case it names each
+	port it could not. The *sbom-scan* job of
 	_.github/workflows/upstream.yml_ runs it every day, and opens an
 	issue for each finding (_docs/handbook/src/release-train.md_).
 
