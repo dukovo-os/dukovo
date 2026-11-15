@@ -101,7 +101,4 @@ send a list of packages, or need an account.
   is late, rather than by memory.
 - The previous stable line costs backports only for serious fixes, as
   ADR 0458 intends.
-- **Not yet:**
-  - The release-train, backport and security-clock bots, and the daily
-    scan, which come in the next pull request.
-  - The release train cuts its first branch at 1.0.0.
+- **Not yet:** The release train cuts its first branch at 1.0.0.

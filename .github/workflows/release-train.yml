@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The release train (ADR 0534). Releases are monthly, on the second Tuesday
+# (UTC). Each day this workflow looks at the date: 14 days before a release
+# day it cuts `release/X.Y` from main, where X.Y is the version in the root
+# Cargo.toml, and opens the release's tracking issue with its checklist; on
+# release day it says on that issue whether the release is green, or that
+# it skips the month (ADR 0458).
+#
+# Until .github/release-train.json says "enabled": true, which happens at
+# 1.0.0, it only writes what it would do to the job summary. The logic is
+# in .github/scripts/release-train.js, which CI tests; a dispatch with a
+# date acts as on that day.
+name: Release train
+
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Act as on this UTC day (YYYY-MM-DD), to see what a day does or to catch up on one the schedule missed"
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    name: Cut the branch and report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      # Cut release/X.Y from main.
+      contents: write
+      # The tracking issue, its comments and its label.
+      issues: write
+      # The result of the check run "CI passed" on the branch's head.
+      checks: read
+    steps:
+      - name: Fetch the scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # The date reaches the script through the environment: text typed
+      # into a dispatch is never part of the script.
+      - name: Run the train
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          TRAIN_DATE: ${{ inputs.date }}
+        with:
+          script: |
+            const { run } = require('./.github/scripts/release-train.js');
+            await run({ github, context, core });

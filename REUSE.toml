@@ -22,7 +22,7 @@ SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
 # JSON has no comments.
 [[annotations]]
-path = ["kernel/targets/*.json", "userspace/targets/*.json"]
+path = ["kernel/targets/*.json", "userspace/targets/*.json", ".github/release-train.json"]
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 

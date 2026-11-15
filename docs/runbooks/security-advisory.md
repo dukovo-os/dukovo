@@ -40,6 +40,12 @@ Decide three things, and write them in the report's private thread.
   | High | 7 days | Over 3 days |
   | Medium and Low | The next monthly release | Normal |
 
+  For the public `security` issues, the security clock bot starts the time
+  when an issue is labelled `fix-available`, and keeps the pinned issue
+  "Security clock" with what is due and what is overdue
+  (`docs/handbook/src/release-train.md`). A report that stays private is
+  timed by the person who triages it.
+
   The newest stable release gets every fix. The previous stable release
   gets Critical and High fixes until the next stable release ships. Before
   1.0 only `main` is supported.
@@ -50,6 +56,12 @@ While the flaw is embargoed, work in the report's private fork. The fix
 merges to `main` first, and is then copied to the release branch
 `release/X.Y`, and to the previous one when the severity says so. A
 security fix is a release with a build number: 1.4.1 becomes 1.4.1.1.
+
+The copy is made by the backport bot when the merged pull request has the
+label `backport`, and `backport-previous` too for a Critical or High fix
+(`docs/handbook/src/release-train.md`). The bot works on the repository's
+public pull requests: while the fix is embargoed, copy it by hand in the
+private fork with `git cherry-pick -x`.
 
 ## 4. Write the advisory
 
