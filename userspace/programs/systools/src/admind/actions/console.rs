@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
-use crate::admin_settings::{self, Reach};
+use crate::admin_settings::{self, Reach, Settings};
 
 /// The area of these actions: the scope a token needs, `console`.
 const AREA: &str = "console";
@@ -159,6 +159,21 @@ impl Action for SetReach {
     /// The reach it printed, if it is one.
     fn probed(_: &Reaching, output: &str) -> Option<String> {
         Reach::parse(output.trim()).map(|reach| reach.word().to_string())
+    }
+
+    /// The console's reach is already the one asked for when `admin reach`
+    /// prints it.
+    fn settled(args: &Reaching, now: &str) -> Option<bool> {
+        Some(now == args.reach)
+    }
+
+    /// `admin reach` writes nothing when admin.toml says the reach already,
+    /// and a file with no reach in it, or no file, says `private`. On a
+    /// file that admind would refuse, the command fails, which check mode
+    /// cannot tell of.
+    fn keeps_file(args: &Reaching, _: &str, text: Option<&str>) -> Option<bool> {
+        let settings = Settings::parse(text.unwrap_or_default()).ok()?;
+        Some(settings.console.reach.word() == args.reach)
     }
 
     fn examples() -> Examples<Reaching> {
@@ -379,5 +394,25 @@ mod tests {
             registered().prepare(good[0].clone()).unwrap().argv,
             ["admin", "reach", "private"]
         );
+    }
+
+    #[test]
+    fn a_check_of_the_reach_reads_what_admin_reach_prints_and_admin_toml() {
+        let reach = registered();
+        let any = json!({ "reach": "any" });
+        let private = json!({ "reach": "private" });
+        assert_eq!(reach.settled(&any, "any"), Some(true));
+        assert_eq!(reach.settled(&any, "private"), Some(false));
+        let path = admin_settings::PATH;
+        // No file, and a file with no reach, say private.
+        for text in [None, Some(""), Some("# the console\n[console]\nlisten = 9090\n")] {
+            assert_eq!(reach.keeps_file(&private, path, text), Some(true), "{text:?}");
+            assert_eq!(reach.keeps_file(&any, path, text), Some(false), "{text:?}");
+        }
+        let said = Some("[console]\nreach = \"any\"\n");
+        assert_eq!(reach.keeps_file(&any, path, said), Some(true));
+        assert_eq!(reach.keeps_file(&private, path, said), Some(false));
+        // A file admind refuses fails the command: nothing to tell.
+        assert_eq!(reach.keeps_file(&any, path, Some("[console\n")), None);
     }
 }

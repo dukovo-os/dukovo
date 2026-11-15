@@ -3,8 +3,9 @@
 
 //! The actions' routes, with the actions of `actions::tests`: a read that
 //! runs in the person's worker, and a change that runs as an
-//! administrator, each asked for by a session and by an API token; and the
-//! showing of an action, which runs neither.
+//! administrator, each asked for by a session and by an API token; the
+//! showing of an action, which runs neither; and the checking of one,
+//! which runs only its probe (ADR 0545).
 
 use super::*;
 use crate::admind::actions::tests::LAB;
@@ -666,6 +667,111 @@ fn a_showing_is_a_post_that_a_session_makes_as_every_change_is_made() {
         let both = with_token(show_restart(), TOKEN_ALL)
             .with("cookie", Some(&format!("{SESSION_COOKIE}={}", session.cookie)));
         assert_eq!(send(&world, both).await.error(), "ADM-108");
+        assert!(called(&world).iter().all(|(method, _)| method != "run"));
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+/// A request to check `id` of the lab's actions with `args`.
+fn check(id: &str, args: &Value) -> Req {
+    post("/api/1/check", &json!({ "action": id, "args": args }))
+}
+
+#[test]
+fn a_check_reads_the_probe_as_the_person_and_runs_no_change() {
+    run(async {
+        let world = lab_world("check-session");
+        // Locked, and no administrator at all: neither could run the
+        // change, and both may ask whether it would change anything.
+        for name in ["chase", "dave"] {
+            let session = sign_in(&world, name).await;
+            let steady = send(&world, check("lab.set", &json!({ "name": "steady" })).by(&session));
+            let steady = steady.await;
+            assert_eq!(steady.status, 200, "{name}: {}", steady.body);
+            assert_eq!(steady.json(), json!({ "changed": false, "now": "on" }), "{name}");
+        }
+        // The probe of `moving` reads `off` the first time, which the
+        // change would move.
+        let chase = sign_in(&world, "chase").await;
+        let moving = send(&world, check("lab.set", &json!({ "name": "moving" })).by(&chase)).await;
+        assert_eq!(moving.json(), json!({ "changed": true, "now": "off" }));
+        assert_eq!(
+            ran(&world),
+            ["person: probe steady", "person: probe steady", "person: probe moving"]
+        );
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn a_check_that_cannot_tell_says_null_and_one_with_nothing_to_compare_says_true() {
+    run(async {
+        let world = lab_world("check-cannot-tell");
+        let chase = sign_in(&world, "chase").await;
+        // A probe that fails, and one whose output has nothing the action
+        // picks.
+        for name in ["fails", "unreadable"] {
+            let done = send(&world, check("lab.set", &json!({ "name": name })).by(&chase)).await;
+            assert_eq!(done.status, 200, "{name}: {}", done.body);
+            assert_eq!(done.json(), json!({ "changed": null, "now": null }), "{name}");
+        }
+        // A restart compares nothing: it always does something. A read
+        // changes nothing. Neither runs a probe.
+        let restart = send(&world, check("lab.restart", &json!({ "name": "nginx" })).by(&chase));
+        assert_eq!(restart.await.json(), json!({ "changed": true, "now": null }));
+        let read = send(&world, check("lab.list", &json!({})).by(&chase)).await;
+        assert_eq!(read.json(), json!({ "changed": false, "now": null }));
+        assert_eq!(ran(&world), ["person: probe fails", "person: probe unreadable"]);
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn a_token_checks_an_action_of_an_area_it_reads_with_its_owner_s_worker() {
+    run(async {
+        let world = lab_world("check-token");
+        let steady = || check("lab.set", &json!({ "name": "steady" }));
+        for token in [TOKEN_ALL, TOKEN_READ] {
+            let done = send(&world, with_token(steady(), token)).await;
+            assert_eq!(done.status, 200, "{}", done.body);
+            assert_eq!(done.json(), json!({ "changed": false, "now": "on" }));
+        }
+        let refused = send(&world, with_token(steady(), TOKEN_OTHER)).await;
+        assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-124"));
+        let wrong = "dkv_chase_0000000000000000000000000000000000000000000000000000000000000000";
+        let unknown = send(&world, with_token(steady(), wrong)).await;
+        assert_eq!((unknown.status, unknown.error().as_str()), (401, "ADM-115"));
+        // The refused token ran no probe; the others ran one each.
+        assert_eq!(ran(&world), ["person: probe steady", "person: probe steady"]);
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn a_check_takes_what_a_showing_takes_with_its_guards() {
+    run(async {
+        let world = lab_world("check-guards");
+        let dave = sign_in(&world, "dave").await;
+        let unknown = check("lab.explode", &json!({})).by(&dave);
+        let refused = send(&world, unknown).await;
+        assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-125"));
+        assert_eq!(refused.json()["error"]["field"], "action");
+        let bad = send(&world, check("lab.set", &json!({ "name": "-x" })).by(&dave)).await;
+        assert_eq!(
+            (bad.error().as_str(), &bad.json()["error"]["field"]),
+            ("ADM-125", &json!("name"))
+        );
+        let extra = check("lab.set", &json!({ "name": "steady", "force": true })).by(&dave);
+        assert_eq!(send(&world, extra).await.error(), "ADM-108");
+        let forged = check("lab.set", &json!({ "name": "steady" }))
+            .by(&dave)
+            .with("x-dukovo-csrf", Some("x"));
+        assert_eq!(send(&world, forged).await.error(), "ADM-109");
+        let nobody = send(&world, check("lab.set", &json!({ "name": "steady" }))).await;
+        assert_eq!((nobody.status, nobody.error()), (401, Kind::SessionEnded.id().to_string()));
+        let eve = sign_in(&world, "eve").await;
+        let limited = check("lab.set", &json!({ "name": "steady" })).by(&eve);
+        assert_eq!(send(&world, limited).await.error(), "ADM-118");
         assert!(called(&world).iter().all(|(method, _)| method != "run"));
         assert!(elevations(&world).is_empty());
     });

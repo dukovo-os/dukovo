@@ -265,6 +265,31 @@ pub fn look(store: &Store, path: &str, now: i64) -> Result<(Seen, Option<Stamp>)
     Ok((Seen::Text { sha256: sha256(&bytes), size: bytes.len() as u64 }, Some(stamp)))
 }
 
+/// The most bytes of a file that check mode reads (ADR 0545): more than any
+/// settings file a change names holds.
+const CHECKED_MAX: u64 = 1 << 20;
+
+/// The text of the file at `path` as check mode reads it (ADR 0545), by the
+/// rules [`find`] keeps, and keeping nothing: `Some(None)` when there is no
+/// file there, `Some(Some(text))` when everyone may read it and it is UTF-8
+/// of at most [`CHECKED_MAX`] bytes, and None otherwise, when check mode
+/// cannot tell what a change would do to it. A file that not everyone may
+/// read is None, so that whether a change would keep it says nothing of
+/// its text.
+pub fn current_text(path: &str) -> Option<Option<String>> {
+    let file = match find(path, true) {
+        Found::Absent => return Some(None),
+        Found::Public(Some(file), _) => file,
+        Found::Public(None, _) | Found::Hidden(_) | Found::Unreadable(_) => return None,
+    };
+    let mut bytes = Vec::new();
+    file.take(CHECKED_MAX + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > CHECKED_MAX {
+        return None;
+    }
+    String::from_utf8(bytes).ok().map(Some)
+}
+
 /// The SHA-256 and size of a file whose first bytes are `first` and the
 /// rest of which `file` reads, in pieces.
 fn hash_rest(first: Vec<u8>, mut file: File) -> io::Result<(String, u64)> {

@@ -536,7 +536,7 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 44 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 45 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -595,7 +595,7 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
             Route::TrustedForget,
         ]
     );
-    for api in [Route::Actions, Route::Show] {
+    for api in [Route::Actions, Route::Show, Route::Check] {
         assert_eq!(access(api), Access::Api, "{api:?}");
     }
     for full in [

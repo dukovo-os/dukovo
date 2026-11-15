@@ -712,3 +712,29 @@ fn a_pipe_is_not_opened() {
     assert_eq!(seen, Seen::Unreadable);
     assert!(stamp.is_some());
 }
+
+#[test]
+fn check_mode_reads_a_file_everyone_reads_and_tells_nothing_of_the_rest() {
+    let machine = Machine::new("check-read");
+    let open = machine.path("open.toml");
+    put(&open, "enabled = true\n", 1);
+    assert_eq!(current_text(&open), Some(Some("enabled = true\n".to_string())));
+    assert_eq!(current_text(&machine.path("absent.toml")), Some(None));
+    // One that not everyone reads, one that is not text, one larger than
+    // a check reads and a link: nothing to tell, and nothing kept.
+    let closed = machine.path("closed.toml");
+    put(&closed, "secret = 1\n", 1);
+    fs::set_permissions(&closed, fs::Permissions::from_mode(0o640)).unwrap();
+    assert_eq!(current_text(&closed), None);
+    let binary = machine.path("binary.toml");
+    fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+    assert_eq!(current_text(&binary), None);
+    let large = machine.path("large.toml");
+    fs::write(&large, vec![b'#'; usize::try_from(CHECKED_MAX).unwrap() + 1]).unwrap();
+    assert_eq!(current_text(&large), None);
+    let link = machine.path("linked.toml");
+    std::os::unix::fs::symlink(&open, &link).unwrap();
+    assert_eq!(current_text(&link), None);
+    assert_eq!(current_text("relative.toml"), None);
+    assert_eq!(machine.store.text_size().unwrap(), 0);
+}

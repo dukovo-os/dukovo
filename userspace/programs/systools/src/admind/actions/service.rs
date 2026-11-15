@@ -76,6 +76,53 @@ const STATE: Pick = Some(|service| service.state.word().to_string());
 /// something.
 const ALWAYS: Pick = None;
 
+/// Whether a service in the state `now` is already as a change leaves it,
+/// for check mode (ADR 0545): None when the change cannot tell, as for a
+/// state in passing.
+type Settles = fn(&str) -> Option<bool>;
+
+/// Starting moves a service that does not run, and leaves one that runs.
+/// What a start does to one that is done, listening or between states
+/// depends on the service, and cannot be told from the state alone.
+const STARTED: Settles = |now| match now {
+    "running" => Some(true),
+    "stopped" | "disabled" | "failed" => Some(false),
+    _ => None,
+};
+
+/// Stopping leaves a service that is stopped, and moves one that runs or
+/// is about to. A failed or done service's word after a stop, and one in
+/// the middle of stopping, cannot be told from the state alone.
+const STOPPED: Settles = |now| match now {
+    "stopped" | "disabled" => Some(true),
+    "running" | "starting" | "pending" | "waiting" | "listening" => Some(false),
+    _ => None,
+};
+
+/// Enabling leaves a service that runs; one that does not may be a timer's,
+/// which enabling leaves stopped, so its state cannot tell. The file tells
+/// the rest.
+const ENABLED: Settles = |now| (now == "running").then_some(true);
+
+/// Disabling leaves a service that Spark says is disabled, and moves one
+/// that runs or is about to. Spark's word for a service that is stopped
+/// changes to `disabled` only once Spark reads its file again, so
+/// `stopped` cannot tell.
+const DISABLED: Settles = |now| match now {
+    "disabled" => Some(true),
+    "running" | "starting" | "pending" | "waiting" | "listening" => Some(false),
+    _ => None,
+};
+
+/// Whether `service NAME enable` (`on`) or `disable` would leave the
+/// service's file, which holds `text`, as it is: it writes the file as
+/// [`servicefiles::with_enabled`](crate::servicefiles::with_enabled)
+/// gives it. A service with no file has nothing to turn on or off, and the
+/// command fails, so there is nothing to tell.
+fn keeps_service_file(on: bool, text: Option<&str>) -> Option<bool> {
+    text.map(|text| crate::servicefiles::with_enabled(text, on) == text)
+}
+
 /// The command that reads what Spark says of every service, for the
 /// changes' probes.
 fn probe_argv() -> Vec<String> {
@@ -270,12 +317,14 @@ fn bad_names_and_the_console() -> Vec<Value> {
 /// for the arguments `$args`, with `$bad` for its bad examples. `$undo` is
 /// the other action that puts back what its example did, if there is one:
 /// it takes the same arguments. `$pick` is what it moves, which its
-/// `changed` compares.
+/// `changed` compares, and `$settles` whether the state is already as the
+/// change leaves it. `$turns` is whether the service's file is turned on
+/// (`Some(true)`), off (`Some(false)`), or left alone (`None`).
 macro_rules! change {
     (
         $(#[$doc:meta])*
         $action:ident, $verb:literal, $title:literal, $args:ident, $bad:expr, undo: $undo:expr,
-        file: $file:literal, compares: $pick:expr
+        turns: $turns:expr, compares: $pick:expr, settles: $settles:expr
     ) => {
         $(#[$doc])*
         pub struct $action;
@@ -299,7 +348,8 @@ macro_rules! change {
             }
 
             fn files(args: &$args) -> Vec<String> {
-                if $file { vec![service_file(&args.name)] } else { Vec::new() }
+                let turns: Option<bool> = $turns;
+                if turns.is_some() { vec![service_file(&args.name)] } else { Vec::new() }
             }
 
             fn probe(_: &$args) -> Option<Vec<String>> {
@@ -308,6 +358,16 @@ macro_rules! change {
 
             fn probed(args: &$args, output: &str) -> Option<String> {
                 picked($pick, &args.name, output)
+            }
+
+            fn settled(_: &$args, now: &str) -> Option<bool> {
+                let settles: Option<Settles> = $settles;
+                settles?(now)
+            }
+
+            fn keeps_file(_: &$args, _: &str, text: Option<&str>) -> Option<bool> {
+                let turns: Option<bool> = $turns;
+                keeps_service_file(turns?, text)
             }
 
             fn examples() -> Examples<$args> {
@@ -325,21 +385,21 @@ change! {
     /// `service NAME start`: starts a service. `service.stop` puts back
     /// what its example did.
     Start, "start", "Start a service", Named, bad_names(), undo: Some("service.stop"),
-    file: false, compares: STATE
+    turns: None, compares: STATE, settles: Some(STARTED)
 }
 
 change! {
     /// `service NAME stop`: stops a service, unless it is the console's.
     /// `service.start` puts back what its example did.
     Stop, "stop", "Stop a service", Guarded, bad_names_and_the_console(), undo: Some("service.start"),
-    file: false, compares: STATE
+    turns: None, compares: STATE, settles: Some(STOPPED)
 }
 
 change! {
     /// `service NAME restart`: stops a service and starts it again, unless
     /// it is the console's. Nothing puts back what it did.
     Restart, "restart", "Restart a service", Guarded, bad_names_and_the_console(), undo: None,
-    file: false, compares: ALWAYS
+    turns: None, compares: ALWAYS, settles: None
 }
 
 change! {
@@ -347,7 +407,7 @@ change! {
     /// it keeps in the service's file. `service.disable` puts back what its
     /// example did.
     Enable, "enable", "Enable a service", Named, bad_names(), undo: Some("service.disable"),
-    file: true, compares: STATE
+    turns: Some(true), compares: STATE, settles: Some(ENABLED)
 }
 
 change! {
@@ -355,7 +415,7 @@ change! {
     /// at boot, which it keeps in the service's file, unless it is the
     /// console's. `service.enable` puts back what its example did.
     Disable, "disable", "Disable a service", Guarded, bad_names_and_the_console(), undo: Some("service.enable"),
-    file: true, compares: STATE
+    turns: Some(false), compares: STATE, settles: Some(DISABLED)
 }
 
 #[cfg(test)]
@@ -723,5 +783,74 @@ mod tests {
             assert!(registered(undo.action).prepare(undo.args).is_ok(), "{back}");
         }
         assert!(registered("service.restart").example_values().2.is_none());
+    }
+
+    /// What `id`'s check makes of the state `now` and of the service file
+    /// `text`.
+    fn checked(id: &str, now: &str, text: Option<&str>) -> (Option<bool>, Option<bool>) {
+        let args = json!({ "name": EXAMPLE });
+        let action = registered(id);
+        (action.settled(&args, now), action.keeps_file(&args, &service_file(EXAMPLE), text))
+    }
+
+    #[test]
+    fn a_check_tells_from_the_state_what_each_change_would_leave() {
+        let all = [
+            "stopped",
+            "disabled",
+            "pending",
+            "starting",
+            "running",
+            "done",
+            "waiting",
+            "stopping",
+            "failed",
+            "listening",
+        ];
+        // Every word Spark writes is one of these, and each change says
+        // something of the states it is sure of and nothing of the rest.
+        for state in [State::Stopped, State::Running, State::Listening, State::Done] {
+            assert!(all.contains(&state.word()));
+        }
+        let told = |id: &str, settled: bool| -> Vec<&str> {
+            all.iter().copied().filter(|now| checked(id, now, None).0 == Some(settled)).collect()
+        };
+        assert_eq!(told("service.start", true), ["running"]);
+        assert_eq!(told("service.start", false), ["stopped", "disabled", "failed"]);
+        assert_eq!(told("service.stop", true), ["stopped", "disabled"]);
+        assert_eq!(
+            told("service.stop", false),
+            ["pending", "starting", "running", "waiting", "listening"]
+        );
+        assert_eq!(told("service.enable", true), ["running"]);
+        assert!(told("service.enable", false).is_empty());
+        assert_eq!(told("service.disable", true), ["disabled"]);
+        assert_eq!(
+            told("service.disable", false),
+            ["pending", "starting", "running", "waiting", "listening"]
+        );
+        // A restart compares nothing, so its check never asks.
+        assert!(
+            told("service.restart", true).is_empty() && told("service.restart", false).is_empty()
+        );
+    }
+
+    #[test]
+    fn a_check_of_enable_and_disable_reads_the_file_as_the_command_writes_it() {
+        let on = "program = \"/system/commands/diskhealth\"\nenabled = true\n";
+        let off = "program = \"/system/commands/diskhealth\"\nenabled = false\n";
+        let unsaid = "program = \"/system/commands/diskhealth\"\n";
+        assert_eq!(checked("service.enable", "running", Some(on)).1, Some(true));
+        assert_eq!(checked("service.enable", "running", Some(off)).1, Some(false));
+        assert_eq!(checked("service.disable", "running", Some(off)).1, Some(true));
+        assert_eq!(checked("service.disable", "running", Some(on)).1, Some(false));
+        // A file that does not say is given the line.
+        assert_eq!(checked("service.enable", "running", Some(unsaid)).1, Some(false));
+        // No file: the command fails, which a check cannot tell of.
+        assert_eq!(checked("service.enable", "running", None).1, None);
+        // The others write no file.
+        for id in ["service.start", "service.stop", "service.restart"] {
+            assert!(registered(id).prepare(json!({ "name": EXAMPLE })).unwrap().files.is_empty());
+        }
     }
 }

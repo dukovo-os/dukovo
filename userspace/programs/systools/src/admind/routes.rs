@@ -260,6 +260,7 @@ enum Route {
     PreferencesChange,
     Actions,
     Show,
+    Check,
     Changes,
     Change,
     Keep,
@@ -354,6 +355,7 @@ const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/account/preferences", Route::PreferencesChange, Access::Full),
     entry(Verb::Get, "/api/1/actions", Route::Actions, Access::Api),
     entry(Verb::Post, "/api/1/show", Route::Show, Access::Api),
+    entry(Verb::Post, "/api/1/check", Route::Check, Access::Api),
     entry(Verb::Get, "/api/1/changes", Route::Changes, Access::Full),
     entry(Verb::Get, "/api/1/changes/{id}", Route::Change, Access::Full),
     entry(Verb::Post, "/api/1/changes/{id}/keep", Route::Keep, Access::Full),
@@ -879,6 +881,7 @@ async fn dispatch(
         // For a session or a token, which `check` has let through.
         (Route::Actions, _) => Ok(Reply::json(actions::listed(cx.shared.actions.get()))),
         (Route::Show, _) => act::show(cx, token.as_ref()),
+        (Route::Check, live) => act::check(cx, live, token).await,
         (Route::Changes, _) => changes::list(cx),
         (Route::Change, _) => changes::one(cx),
         (Route::Keep, Some(live)) => changes::keep(cx, &live),

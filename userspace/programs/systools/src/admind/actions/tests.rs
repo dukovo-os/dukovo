@@ -132,6 +132,16 @@ impl Action for Set {
         output.split_once(';').map(|(moved, _)| moved.trim().to_string())
     }
 
+    /// The change leaves what the probe reads `on`; any other word is
+    /// none of the two it knows.
+    fn settled(_: &Named, now: &str) -> Option<bool> {
+        match now {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        }
+    }
+
     fn examples() -> Examples<Named> {
         Examples {
             good: vec![Named { name: "lab-web".into(), wait: None }],

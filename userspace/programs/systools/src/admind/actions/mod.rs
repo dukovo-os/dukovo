@@ -413,6 +413,23 @@ pub trait Action: 'static {
         Some(output.trim().to_string())
     }
 
+    /// Whether `now`, the part of the probe's output that
+    /// [`Action::probed`] picks, is already what the change leaves, so that
+    /// the change would move nothing of it: for check mode (ADR 0545).
+    /// None when it cannot tell, as for a state in passing, which is what
+    /// an action that does not say gives.
+    fn settled(_args: &Self::Args, _now: &str) -> Option<bool> {
+        None
+    }
+
+    /// Whether the change would leave the file at `path`, one of
+    /// [`Action::files`], as it is, when the file holds `text` now (None
+    /// when there is no such file): for check mode (ADR 0545). None when
+    /// it cannot tell, which is what an action that does not say gives.
+    fn keeps_file(_args: &Self::Args, _path: &str, _text: Option<&str>) -> Option<bool> {
+        None
+    }
+
     /// Arguments for the tests that take every action from the list.
     fn examples() -> Examples<Self::Args>;
 }
@@ -462,6 +479,12 @@ pub trait Registered: Sync + fmt::Debug {
     /// `args` moves, as text to compare. None when the output does not say,
     /// or `args` do not read as the action's.
     fn probed(&self, args: &Value, output: &str) -> Option<String>;
+    /// [`Action::settled`], for the prepared `args`; None when they do not
+    /// read as the action's.
+    fn settled(&self, args: &Value, now: &str) -> Option<bool>;
+    /// [`Action::keeps_file`], for the prepared `args`; None when they do
+    /// not read as the action's.
+    fn keeps_file(&self, args: &Value, path: &str, text: Option<&str>) -> Option<bool>;
     /// The examples, as JSON.
     fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>);
 }
@@ -547,6 +570,16 @@ impl<A: Action> Registered for Entry<A> {
     fn probed(&self, args: &Value, output: &str) -> Option<String> {
         let typed: A::Args = serde_json::from_value(args.clone()).ok()?;
         A::probed(&typed, output)
+    }
+
+    fn settled(&self, args: &Value, now: &str) -> Option<bool> {
+        let typed: A::Args = serde_json::from_value(args.clone()).ok()?;
+        A::settled(&typed, now)
+    }
+
+    fn keeps_file(&self, args: &Value, path: &str, text: Option<&str>) -> Option<bool> {
+        let typed: A::Args = serde_json::from_value(args.clone()).ok()?;
+        A::keeps_file(&typed, path, text)
     }
 
     fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>) {
