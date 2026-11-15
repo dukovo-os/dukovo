@@ -5037,6 +5037,7 @@ fn run_case(
         gdb: false,
         qmp: Some(qmp.clone()),
         extra: without_disk(&extra, 0),
+        write_log: None,
         direct: None,
     });
     let machine_with = |extra: Vec<String>| Machine {
@@ -5054,6 +5055,7 @@ fn run_case(
         gdb: false,
         qmp: Some(qmp.clone()),
         extra,
+        write_log: None,
         direct: None,
     };
     // The second boot's machine lacks what was the first boot's alone.
@@ -5092,6 +5094,7 @@ fn run_case(
             gdb: false,
             qmp: Some(dir.join(format!("{}-peer.qmp", case.name))),
             extra: extra.to_vec(),
+            write_log: None,
             direct: None,
         })
     };

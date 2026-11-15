@@ -203,6 +203,7 @@ fn boot(
             "-drive".into(),
             format!("file={},if=virtio,format=raw", qemu::option_value(disk)),
         ],
+        write_log: None,
         direct: Some(DirectBoot {
             kernel: kernel.to_path_buf(),
             initrd: initrd.to_path_buf(),
