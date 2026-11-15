@@ -233,6 +233,15 @@ path = "userspace/programs/systools/src/authd/proofs/fixtures/rsa-2048.pk8"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The web console's terminal recordings: the bytes a program sent to a
+# terminal, built by hand or recorded with `script`, and the screen
+# expected after them, which the emulator's tests replay
+# (userspace/admin/tests/term-replay.mjs).
+[[annotations]]
+path = "userspace/admin/tests/term-fixtures/*"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # The Dukovo logo, for the README. The name and logo are the project's
 # marks: they identify Dukovo and are not covered by the code license.
 [[annotations]]

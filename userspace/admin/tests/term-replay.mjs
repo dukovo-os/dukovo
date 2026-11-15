@@ -25,8 +25,8 @@
 //   NAME.scrollback  optionally, the lines in the scrollback, oldest first
 //
 // A fixture built by hand says so in `source`, and its name starts with
-// `hand-`; one recorded on a program starts with `host-` or `dukovo-`
-// for where it was recorded (the lead adds recordings from Dukovo itself).
+// `hand-`; one recorded on a program starts with `host-` when it was
+// recorded on the build machine and `dukovo-` when on Dukovo.
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

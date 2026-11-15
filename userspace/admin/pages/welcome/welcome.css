@@ -1,4 +1,10 @@
-/* The first sign-in (design 12.1): the board's wizard frame, with the steps as a list to read and not to press. */
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The first sign-in (design 12.1): the board's wizard frame, with the steps
+ * as a list to read and not to press.
+ */
 .dk .welcome .steps { margin: 0; padding: 0; list-style: none; }
 .dk .welcome .step small { display: block; min-height: 1.2em; }
 .dk .welcome .step .ic { font-size: .857rem; }

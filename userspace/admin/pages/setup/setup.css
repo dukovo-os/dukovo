@@ -1,4 +1,10 @@
-/* The machine's first set-up (design 12.2): the board's wizard frame, with a step to press at the left. */
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The machine's first set-up (design 12.2): the board's wizard frame, with a
+ * step to press at the left.
+ */
 .dk .setup .steps { margin: 0; padding: 0; list-style: none; }
 .dk .setup .step { width: 100%; font-family: inherit; font-size: inherit; line-height: inherit; text-align: left; cursor: pointer; }
 .dk .setup .step:not(.cur) { background: none; }
