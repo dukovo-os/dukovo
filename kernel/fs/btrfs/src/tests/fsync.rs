@@ -216,6 +216,46 @@ fn a_power_cut_anywhere_keeps_each_fsync() {
     every_cut_keeps(&disk, &states, 0xfeed);
 }
 
+/// An fsync in a transaction that made a chunk commits: the commit is what
+/// records the chunk, so a log naming data in it, or written into it,
+/// would leave a disk whose replay finds no chunk there. A file the last
+/// commit has, written past what the chunks mkfs made hold, makes the
+/// chunks as its fsync writes it; a power cut anywhere keeps it.
+#[test]
+fn an_fsync_in_a_transaction_that_made_a_chunk_commits() {
+    let image = mkfs_empty(&[]);
+    let disk = mem::arc(CrashDisk::new(&image)).unwrap();
+    let mut states: BTreeMap<usize, Model> = BTreeMap::new();
+    states.insert(0, Model::new());
+    {
+        let fs = mount_crash(&disk);
+        let root = fs.root();
+        let mut model = Model::new();
+        let file = root.create("f", Kind::File, FILE).unwrap();
+        let first = noise(3, 8192);
+        put(&file, 0, &first);
+        model.insert("/f".into(), Thing::File(first));
+        fs.sync().unwrap();
+        states.insert(throughs(&disk), model.clone());
+        // A log of it would take some 33 KiB of checksums, which a log
+        // holds: only the chunks make it commit.
+        let data = noise(4, 32 << 20);
+        put(&file, 8192, &data);
+        put_model(&mut model, "/f", 8192, &data);
+        file.sync().unwrap();
+        assert_eq!(log_root(&disk), 0, "an fsync that made a chunk commits");
+        states.insert(throughs(&disk), model.clone());
+        // After the commit, which recorded them, a log again.
+        let data = noise(5, 4096);
+        put(&file, 0, &data);
+        put_model(&mut model, "/f", 0, &data);
+        file.sync().unwrap();
+        assert_ne!(log_root(&disk), 0, "after the commit, a log");
+        states.insert(throughs(&disk), model.clone());
+    }
+    every_cut_keeps(&disk, &states, 0xc4);
+}
+
 /// The bench's fsync (`posix_btrfs_fsync`): 4 KiB written over a file the
 /// last commit has, and synced, on a disk of 192 MiB whose metadata is
 /// kept twice. Linux's log writes two blocks, each twice, the data and
