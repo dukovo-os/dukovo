@@ -406,8 +406,9 @@ closes the connection, but for a session (below):
 *console* _verb_ _field_...
 	A request of the web console (ADR 0514): *begin*, *trusted*, *code*,
 	*challenge*, *passkey*, *start*, *unlock*, *extend*, *lock*, *end*,
-	*elevate*, *token*, *token-start* and *terminal*, which only
-	*admind*(8) asks, as root, and *steps*, *app-begin*, *app-confirm*, *app-remove*,
+	*elevate*, *token*, *token-start*, *terminal*, *follow* and
+	*follow-end*, which only *admind*(8) asks, as root, and *steps*,
+	*app-begin*, *app-confirm*, *app-remove*,
 	*passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*,
 	*codes*, *trusted-forget*, *token-add* and *token-remove*, which a
 	person asks about their own account, from a process that runs as
@@ -790,7 +791,10 @@ none:
 
 - *boot*: the computer started, with the kernel's release. authd
   records it as it starts, once for each start of the computer, with
-  the kernel's time of the start.
+  the kernel's time of the start, and notes that time in
+  _/system/live/authd/boot_, which *last*(1) tells the start that runs
+  by: a time service that sets the clock after the start moves the
+  start's time as the clock tells it, and the note stays.
 - *down*: authd was asked to end, as Spark asks each service when the
   computer stops. The sessions end with it.
 - *in* and *out*: someone signed in, or their session's first process
@@ -942,6 +946,26 @@ answered for the user the connection gives.
 	second while one runs, sends SIGHUP to its process group, and
 	SIGKILL 5 seconds later to what is left of the group. The audit log
 	has each shell's start and end, and why an administrator's ended.
+
+*follow* _session_ *own*|*all* _service_ _kernel_ _priority_ _grep_, *follow-end* _session_ _process_
+	Follow the log for the console's Logs page (ADR 0518): authd starts
+	*log --output json --follow --lines 0* with the options it is given,
+	on the two descriptors that come with the request, the write ends of
+	the pipes admind reads the output and the errors from. authd checks
+	the options as *log*(1) does and writes the command itself; admind
+	sends no command, and nothing but *log* is started this way. An empty
+	field is an option not given, and _kernel_ is *kernel* or empty.
+	*own* runs as the person, and shows the records of their own
+	programs, as *log* does at their terminal (ADR 0252). *all* runs as
+	root, as *elevate log* does, for an administrator whose session is
+	unlocked, with an audit line for its start and for a refusal; authd
+	ends it when the session locks, its unlock runs out or it ends, as an
+	administrator's shell (*terminal*) ends. A follow of either kind ends
+	with its session. The answer is *ok* _process_, and authd does not
+	hold the request. *follow-end* ends the follow _process_ of
+	_session_, which admind no longer reads: SIGHUP, then SIGKILL 5
+	seconds later; authd, which reaps it, signals it, so that the number
+	is never another process's.
 
 *steps*, *app-begin*, *app-confirm*, *app-remove*, *passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*, *codes*, *trusted-forget*, *token-add*, *token-remove*
 	The person's own second steps and tokens (below). *app-begin*,
@@ -1168,6 +1192,10 @@ _/system/settings/admin.toml_
 
 _/system/state/sign-ins_
 	The sign-in records (see SIGN-IN RECORDS).
+
+_/system/live/authd/boot_
+	The time of the start of the computer that runs, as authd recorded
+	it in the sign-in records.
 
 _/system/live/authd/socket_
 	The socket authd answers at.

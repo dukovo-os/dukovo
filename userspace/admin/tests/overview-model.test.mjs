@@ -1,16 +1,17 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// pages/overview/model.js: the words and lists of the Overview's cards, from
-// fixtures of what admind answers.
+// pages/overview/model.js and change-model.js: the words and lists of the
+// Overview's cards, from fixtures of what admind answers.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { assess } from '../lib/health.js';
 import { makeTime } from '../lib/time.js';
+import { byWords, changedHeading, changeRow } from '../pages/overview/change-model.js';
 import {
-  byWords, changedHeading, changeRow, checkedWords, CHECK_COMMAND, clockWords, hide, healthCard, healthRows, HIDDEN_KEPT,
+  checkedWords, CHECK_COMMAND, clockWords, hide, healthCard, healthRows, HIDDEN_KEPT,
   lookWords, machineWords, noNumbersWords, normalizeNeed, noticeKey, ROW_ORDER, serverRows, SHOWN, topServices, visibleNotices,
 } from '../pages/overview/model.js';
 import { needsOf as serviceNeeds } from '../pages/services/needs.js';
@@ -135,6 +136,7 @@ test('who made a change is said by how it was made', () => {
   assert.equal(byWords({ who: 'chase', how: 'token ci' }), 'By chase with the API token ci');
   assert.equal(byWords({ who: 'alice', how: 'by hand' }), 'alice edited it by hand');
   assert.equal(byWords({ who: 'outside the console', how: 'by hand' }), 'Someone edited it by hand');
+  assert.equal(byWords({ who: 'Spark', how: 'undone' }), 'Spark undid it');
 });
 
 test('a hand edit is a row of its own words with a warning dot until it is kept', () => {
@@ -157,6 +159,11 @@ test('a change through the console says how many files it touched and whether it
   const failed = changeRow({ ...base, status: 1, note: 'the command ended with status 1' }, time());
   assert.deepEqual([failed.dot, failed.sub], ['bad', 'By a in this console · 2 files · it did not work · the command ended with status 1']);
   assert.equal(changeRow({ ...base, status: 0, files: undefined }, time()).sub, 'By a in this console');
+  const undone = { ...base, who: 'Spark', how: 'undone', action: null, note: 'it was not kept in time', files: [{ path: '/system/settings/network' }] };
+  assert.deepEqual(
+    [changeRow(undone, time()).title, changeRow(undone, time()).sub, changeRow(undone, time()).dot],
+    ['network put back: it was being tried', 'Spark undid it · 1 file · it was not kept in time', 'info'],
+  );
 });
 
 // ---- This server ---------------------------------------------------------------------------

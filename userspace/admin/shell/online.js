@@ -4,8 +4,10 @@
 // The offline banner and its looks at the server (design 4.2). `health`
 // asks `GET /api/1/health`; when it answers, `session` reads the session
 // again: the same session means the page is back, a session that is gone
-// is for api.js's handler, which shows the sign-in page.
+// is for api.js's handler, which shows the sign-in page. A look is made at
+// once, and not at its time, when any other call is answered meanwhile.
 
+import { whenAnswered } from '../api.js';
 import { h, icon } from '../dom.js';
 import {
   asOfWords, DISABLED_TIP, makeConnection, offlineWords, restartingWords, tryingWords,
@@ -28,6 +30,11 @@ export function createOnline({ host, region, stale, main, health, session, time,
   const tryNow = h('button', { class: 'btn small', type: 'button', onclick: () => look() }, 'Try now');
   const banner = h('div', { class: 'banner bad', role: 'status' }, icon('warn'), h('div', {}, h('p', {}, words), h('div', { class: 'btns' }, tryNow)));
   const observer = new MutationObserver(() => mark());
+  // Any call that is answered is a server that answers again: look at once.
+  // A restart's quiet time is waited out, since the old console may answer.
+  whenAnswered(() => {
+    if (link.state(Date.now()) === 'offline') look();
+  });
 
   function mark() {
     const offline = link.state(Date.now()) !== 'online';
@@ -115,6 +122,7 @@ export function createOnline({ host, region, stale, main, health, session, time,
     stop() {
       clearInterval(ticker);
       observer.disconnect();
+      whenAnswered(null);
     },
   };
 }

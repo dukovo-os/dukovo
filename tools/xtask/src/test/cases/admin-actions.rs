@@ -11,12 +11,19 @@
 //! QEMU's user network gives the guest at 10.0.2.2.
 //!
 //! Who may: a read answers 200 for bob, who is in group console and no
-//! administrator, and for alice; two reads may answer with their machine's
-//! own words instead (see [`may_refuse`]): checks.last is ADM-123 while
-//! dukovo-check has kept no result, and metrics.usage is ADM-123 on a
-//! machine whose history metricsd has not written yet, which it does every
-//! 10 minutes. A change is ADM-122 for bob and ADM-106
-//! for alice while her session is locked. A name that is no name is ADM-125
+//! administrator, and for alice, with the arguments its address does not
+//! hold in its query; some reads may answer with their machine's own words
+//! instead (see [`may_refuse`]): checks.last is ADM-123 while dukovo-check
+//! has kept no result, metrics.usage, metrics.around and service.usage are
+//! ADM-123 on a machine whose history metricsd has not written yet, which
+//! it does every 10 minutes, and reliability.start is ADM-123 on a machine
+//! that keeps no record of its starts. A change, and a read whose command
+//! runs as an administrator, is ADM-122 for bob and ADM-106 for alice while
+//! her session is locked. A change a person makes with their own rights,
+//! console.export, is theirs to make, locked or not: bob copies the
+//! settings into a folder of his own, and a second copy changes nothing;
+//! alice, locked, types its shown command in her pane, after which the
+//! route finds nothing new to copy, twice. A name that is no name is ADM-125
 //! with the field name, whoever asks, and says so before anyone is asked;
 //! a name with a slash is no address at all, ADM-116. A token made with
 //! admin token add, its password on standard input, shows in admin token
@@ -66,10 +73,14 @@ const BOB_PASSWORD: &str = "white-rabbit";
 /// Where admind's log says the host's requests come from.
 const PEER: &str = "10.0.2.2";
 
+/// This test's name, as an action's `tests.route` names the boot test
+/// that calls its route.
+const ROUTE: &str = "admin-actions";
+
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-actions",
-    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, a change ADM-122 for bob and ADM-106 for alice locked, a name that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; each change's answer says changed, which is true for a restart and a renewal, which compare nothing, and false for the second run of each change whose compares is true, from the state the first left, with changed nothing at the end of its log line; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
+    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, a change or a read an administrator runs ADM-122 for bob and ADM-106 for alice locked, console.export, which a person runs with their own rights, copies the settings for bob and for alice locked and changes nothing the second time, a name that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; each change's answer says changed, which is true for a restart and a renewal, which compare nothing, and false for the second run of each change whose compares is true, from the state the first left, with changed nothing at the end of its log line; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -118,10 +129,12 @@ fn admin_actions(vm: &mut Vm, case: &Case) -> Result<(), String> {
     who_may(&mut test)?;
     tokens(vm, &mut test)?;
     commands_are_shown(vm, &mut test)?;
-    reads_as_commands(vm, &mut test)?;
+    reads_as_commands(vm, &mut test, false)?;
+    own_changes(vm, &mut test)?;
     // The commands that change something need the pane unlocked again
-    // and the console's session too.
+    // and the console's session too, and so do an administrator's reads.
     elevated(vm)?;
+    reads_as_commands(vm, &mut test, true)?;
     service_changes(vm, &mut test)?;
     console_changes(vm, &mut test)?;
     renewing(vm, &mut test)?;
@@ -196,10 +209,8 @@ impl Test {
         };
         if action.changes {
             self.console.post(browser, &path, &Value::Object(body))
-        } else if body.is_empty() {
-            self.console.get(browser, &path)
         } else {
-            Err(format!("{}'s example has arguments that its address does not take", action.id))
+            self.console.get(browser, &format!("{path}{}", query(&body)))
         }
     }
 
@@ -222,7 +233,7 @@ impl Test {
             let body = Value::Object(body).to_string();
             self.console.send("POST", &path, &headers, Some(&body))
         } else {
-            self.console.send("GET", &path, &headers, None)
+            self.console.send("GET", &format!("{path}{}", query(&body)), &headers, None)
         }
     }
 
@@ -309,6 +320,12 @@ struct Action {
     id: String,
     area: String,
     changes: bool,
+    /// Whether its command runs as an administrator, so that a read of it
+    /// is an administrator's too: for an unlocked session only.
+    admin: bool,
+    /// The boot test that calls its route (`tests.route`), which runs a
+    /// change that compares a probe twice.
+    route: String,
     /// Whether the change's `changed` is compared from a probe, and not
     /// always true.
     compares: bool,
@@ -349,8 +366,17 @@ fn actions_of(list: &Value) -> Result<Vec<Action>, String> {
         if actions.iter().any(|have| have.id == id) {
             return Err(format!("{id} is in the list twice"));
         }
+        let admin = match row["runs"].as_str() {
+            Some("as-administrator") => true,
+            Some("as-the-person") => false,
+            _ => return Err(format!("{id} says no one runs it: {}", row["runs"])),
+        };
+        let route = row["tests"]["route"]
+            .as_str()
+            .ok_or_else(|| format!("{id} names no boot test of its route"))?
+            .to_string();
         let (area, path) = (text("area")?, text("path")?);
-        actions.push(Action { area, path, changes, compares, args, undo, id });
+        actions.push(Action { area, path, changes, admin, route, compares, args, undo, id });
     }
     for action in &actions {
         if let Some((undo, _)) = &action.undo
@@ -379,6 +405,23 @@ fn address(template: &str, args: &Value) -> Result<(String, Map<String, Value>),
         }
     }
     Ok((parts.join("/"), rest))
+}
+
+/// The query of a read's address that holds `args`, the arguments its
+/// address does not: `?name=value&...`, each percent-encoded, a number or
+/// a flag as it is written in JSON; nothing when there are none.
+fn query(args: &Map<String, Value>) -> String {
+    let pairs: Vec<String> = args
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                Value::String(text) => percent_encode(text),
+                other => percent_encode(&other.to_string()),
+            };
+            format!("{}={value}", percent_encode(name))
+        })
+        .collect();
+    if pairs.is_empty() { String::new() } else { format!("?{}", pairs.join("&")) }
 }
 
 /// `text` with every byte outside `A-Za-z0-9-._~` written as `%XX`.
@@ -463,13 +506,19 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
 ///   until the dukovo-check service's first morning run or a run by hand,
 ///   and the guest has had neither: the command ends with status 3, and
 ///   the answer is ADM-123, 422.
-/// - `metrics.usage` reads the history metricsd writes every 10 minutes
-///   and when it stops. The guest has run for less, so `metrics show` may
-///   have no points to give and end with status 1: ADM-123, 422.
+/// - `metrics.usage`, `metrics.around` and `service.usage` read the
+///   history metricsd writes every 10 minutes and when it stops. The guest
+///   has run for less, so `metrics show` may have no points to give and
+///   end with status 1: ADM-123, 422.
+/// - `reliability.start` reads a start's record, which the health check
+///   begins (startup(8)). The guest did not start from a Dukovo root on a
+///   disk, so it has no health check and keeps no record: `startup --start
+///   1` ends with status 1, ADM-123, 422.
 fn may_refuse(id: &str) -> Option<(u16, &'static str)> {
     match id {
         "checks.last" => Some((422, "ADM-123")),
-        "metrics.usage" => Some((422, "ADM-123")),
+        "metrics.usage" | "metrics.around" | "service.usage" => Some((422, "ADM-123")),
+        "reliability.start" => Some((422, "ADM-123")),
         _ => None,
     }
 }
@@ -524,7 +573,32 @@ fn projection(id: &str, answer: &Value) -> Value {
         "metrics.usage" => json!(answer.as_array().is_some_and(|all| all
             .iter()
             .all(|one| one["series"].is_string() && one["points"].is_array()))),
+        // What these say moves from one moment to the next: counters,
+        // connections, log lines, starts and times. Their shape holds.
+        "firewall.dropped" | "firewall.status" | "lab.log" | "logs.read" | "logs.read-all"
+        | "metrics.around" | "network.connections" | "network.show" | "reliability.alerts"
+        | "reliability.dumps" | "reliability.failed" | "reliability.start"
+        | "reliability.starts" | "service.status" | "service.timers" | "service.usage" => {
+            shape(answer)
+        }
         _ => answer.clone(),
+    }
+}
+
+/// The shape of `value`: each object's keys with the shapes of their
+/// values, a list as `array`, and any other value as the name of its kind,
+/// a null as itself. Two answers a moment apart have one shape when only
+/// their numbers, words and lists moved.
+fn shape(value: &Value) -> Value {
+    match value {
+        Value::Object(fields) => {
+            Value::Object(fields.iter().map(|(key, value)| (key.clone(), shape(value))).collect())
+        }
+        Value::Array(_) => json!("array"),
+        Value::String(_) => json!("text"),
+        Value::Number(_) => json!("number"),
+        Value::Bool(_) => json!("bool"),
+        Value::Null => Value::Null,
     }
 }
 
@@ -599,10 +673,17 @@ fn who_may(test: &mut Test) -> Result<(), String> {
     problems.end("who may")
 }
 
-/// One action, asked by bob and by alice, locked.
+/// One action, asked by bob and by alice, locked: a read the person runs
+/// is answered to both, and a change or an administrator's read refused.
+/// A change the person makes with their own rights is answered to both
+/// too: [`own_changes`] runs those whose route this test calls, and the
+/// boot test of its route the others.
 fn who_may_ask(test: &mut Test, action: &Action) -> Result<(), String> {
     let id = &action.id;
-    if !action.changes {
+    if action.changes && !action.admin {
+        return Ok(());
+    }
+    if !action.changes && !action.admin {
         for who in [Who::Bob, Who::Alice] {
             let reply = test.run(who, action, &action.args)?;
             read_answer(reply, id, who.name())?;
@@ -766,9 +847,13 @@ fn commands_are_shown(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
 
 /// A read's shown command, typed in alice's pane, prints what the route
 /// answers.
-fn reads_as_commands(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+fn reads_as_commands(vm: &mut Vm, test: &mut Test, admin: bool) -> Result<(), String> {
+    if admin {
+        test.unlocked()?;
+    }
     let mut problems = Problems::default();
-    for action in test.actions.clone().into_iter().filter(|action| !action.changes) {
+    let reads = test.actions.clone().into_iter().filter(|action| !action.changes);
+    for action in reads.filter(|action| action.admin == admin) {
         let Some(command) = test.commands.get(&action.id).cloned() else { continue };
         let result = read_as_command(vm, test, &action, &command);
         problems.note(&format!("{}: {command}", action.id), result);
@@ -788,12 +873,103 @@ fn read_as_command(vm: &mut Vm, test: &mut Test, action: &Action, command: &str)
         return Ok(());
     };
     let printed = test.pane.output(vm, command)?;
-    let printed: Value = serde_json::from_str(printed.trim())
-        .map_err(|err| format!("it printed {printed:?}, which is not JSON: {err}"))?;
+    let printed = printed_value(&printed, answer.is_array())?;
     let (route, typed) = (projection(&action.id, &answer), projection(&action.id, &printed));
     if route != typed {
         return Err(format!("it prints {typed}, and the route answers {route}"));
     }
+    Ok(())
+}
+
+/// What a command printed, as JSON: one value, or, when the route answers
+/// an array and the command does not print one, one value a line, which
+/// the route gives as the array of them (as `log -o json` prints).
+fn printed_value(printed: &str, array: bool) -> Result<Value, String> {
+    let text = printed.trim();
+    if array && !text.starts_with('[') {
+        let lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+        let values: Result<Vec<Value>, String> = lines
+            .map(|line| {
+                serde_json::from_str(line)
+                    .map_err(|err| format!("it printed the line {line:?}, which is not JSON: {err}"))
+            })
+            .collect();
+        return values.map(Value::Array);
+    }
+    serde_json::from_str(text).map_err(|err| format!("it printed {printed:?}, which is not JSON: {err}"))
+}
+
+/// The folder bob's export goes into, which is his.
+const BOB_EXPORT: &str = "/tmp/admin-export-bob";
+
+/// The changes a person makes with their own rights, which no lock holds
+/// back: console.export, which copies what the person can read of the
+/// settings into a folder of theirs, as a Git commit. Bob, no
+/// administrator, copies into a folder of his own, and a second copy
+/// changes nothing. Alice, locked, types the shown command of the example
+/// in her pane, after which the route finds nothing new to copy, twice,
+/// and the folder's newest commit is still the command's. Such a change
+/// whose route another boot test calls is that test's.
+fn own_changes(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    let own: Vec<&str> = test
+        .actions
+        .iter()
+        .filter(|action| action.changes && !action.admin && action.route == ROUTE)
+        .map(|action| action.id.as_str())
+        .collect();
+    if own != ["console.export"] {
+        return Err(format!(
+            "the changes a person makes with their own rights are {own:?}, and the test knows console.export alone"
+        ));
+    }
+    let export = test.action("console.export")?;
+    let folder = export.args["dir"].as_str().ok_or("console.export's example has no dir")?.to_string();
+    if folder == BOB_EXPORT {
+        return Err(format!("console.export's example is {folder}, which is bob's"));
+    }
+    test.console.post(&mut test.alice, "/api/1/lock", &json!({}))?.must("lock", 200)?;
+
+    let bobs = json!({ "dir": BOB_EXPORT });
+    for (first, ended) in [(true, "ended with status 0"), (false, "ended with status 0, changed nothing")] {
+        let what = format!("console.export into {BOB_EXPORT} by bob");
+        let reply = test.run(Who::Bob, &export, &bobs)?.must(&what, 200)?;
+        let changed = changed_of(&reply.json()?)
+            .map_err(|why| format!("{what} was answered {}, which {why}", reply.body))?;
+        if changed != first {
+            return Err(format!("{what} says changed {changed} the {} time", if first { "first" } else { "second" }));
+        }
+        test.said("bob", &export.id, ended);
+    }
+
+    let command = test
+        .commands
+        .get(&export.id)
+        .cloned()
+        .ok_or("the command of console.export was not shown")?;
+    let status = test.pane.status(vm, &command)?;
+    if status != 0 {
+        return Err(format!("the command `{command}` ended with status {status}"));
+    }
+    let newest = format!("git -C {folder} rev-parse --verify -q HEAD");
+    let typed = test.pane.output(vm, &newest)?;
+    if typed.trim().is_empty() {
+        return Err(format!("the command `{command}` made no commit in {folder}"));
+    }
+    for _ in 0..2 {
+        let what = format!("console.export into {folder} by alice, locked");
+        let reply = test.run(Who::Alice, &export, &export.args)?.must(&what, 200)?;
+        let changed = changed_of(&reply.json()?)
+            .map_err(|why| format!("{what} was answered {}, which {why}", reply.body))?;
+        if changed {
+            return Err(format!("{what} says it changed something after `{command}` copied the same"));
+        }
+        test.said("alice", &export.id, "ended with status 0, changed nothing");
+    }
+    let still = test.pane.output(vm, &newest)?;
+    if still.trim() != typed.trim() {
+        return Err(format!("the route moved {folder}'s newest commit from {typed:?} to {still:?}"));
+    }
+    test.twice.push(export.id.clone());
     Ok(())
 }
 
@@ -1116,12 +1292,13 @@ fn changed_of(answer: &Value) -> Result<bool, String> {
     answer["changed"].as_bool().ok_or_else(|| "has no changed, true or false".into())
 }
 
-/// The changes in `actions` that compare a probe and are not in `twice`,
-/// those run a second time.
+/// The changes in `actions` whose route this test calls, that compare a
+/// probe and are not in `twice`, those run a second time. Another boot
+/// test that calls a change's route runs it twice itself.
 fn not_run_twice<'a>(actions: &'a [Action], twice: &[String]) -> Vec<&'a str> {
     actions
         .iter()
-        .filter(|action| action.compares && !twice.contains(&action.id))
+        .filter(|action| action.route == ROUTE && action.compares && !twice.contains(&action.id))
         .map(|action| action.id.as_str())
         .collect()
 }
@@ -1188,15 +1365,19 @@ mod tests {
     fn list() -> Value {
         json!([
             {"id": "service.list", "area": "services", "changes": false, "compares": false,
+             "runs": "as-the-person", "tests": {"route": "admin-actions"},
              "path": "/api/1/services", "examples": {"good": [{}], "undo": null}},
             {"id": "service.start", "area": "services", "changes": true, "compares": true,
+             "runs": "as-administrator", "tests": {"route": "admin-actions"},
              "path": "/api/1/services/{name}/start",
              "examples": {"good": [{"name": "diskhealth"}],
                           "undo": {"action": "service.stop", "args": {"name": "diskhealth"}}}},
             {"id": "service.stop", "area": "services", "changes": true, "compares": true,
+             "runs": "as-administrator", "tests": {"route": "admin-actions"},
              "path": "/api/1/services/{name}/stop",
              "examples": {"good": [{"name": "diskhealth"}], "undo": null}},
             {"id": "service.restart", "area": "services", "changes": true, "compares": false,
+             "runs": "as-administrator", "tests": {"route": "admin-actions"},
              "path": "/api/1/services/{name}/restart",
              "examples": {"good": [{"name": "diskhealth"}], "undo": null}},
         ])
@@ -1218,6 +1399,26 @@ mod tests {
     }
 
     #[test]
+    fn a_read_s_other_arguments_are_its_query() {
+        let (path, rest) =
+            address("/api/1/logs", &json!({"lines": 20, "grep": "a b&c", "kernel": true})).unwrap();
+        assert_eq!(path, "/api/1/logs");
+        assert_eq!(query(&rest), "?grep=a%20b%26c&kernel=true&lines=20");
+        assert_eq!(query(&Map::new()), "");
+    }
+
+    #[test]
+    fn a_command_that_prints_a_value_a_line_is_read_as_the_array_of_them() {
+        let lines = "{\"a\":1}\n\n{\"a\":2}\n";
+        assert_eq!(printed_value(lines, true).unwrap(), json!([{"a": 1}, {"a": 2}]));
+        assert_eq!(printed_value("\n", true).unwrap(), json!([]));
+        assert_eq!(printed_value("[1, 2]\n", true).unwrap(), json!([1, 2]));
+        assert_eq!(printed_value("{\"a\":1}\n", false).unwrap(), json!({"a": 1}));
+        assert!(printed_value(lines, false).is_err());
+        assert!(printed_value("{\"a\":1}\nok\n", true).is_err());
+    }
+
+    #[test]
     fn the_words_admin_show_takes_are_name_equals_value_or_name_colon_equals_json() {
         assert_eq!(show_words(&json!({"name": "diskhealth"})), ["name=diskhealth"]);
         assert_eq!(show_words(&json!({"wait": 5, "name": "a b"})), ["'name=a b'", "wait:=5"]);
@@ -1235,6 +1436,29 @@ mod tests {
         let (undo, args) = actions[1].undo.clone().unwrap();
         assert_eq!((undo.as_str(), args), ("service.stop", json!({"name": "diskhealth"})));
         assert!(actions[0].undo.is_none() && !actions[0].changes && actions[2].changes);
+        let admin: Vec<bool> = actions.iter().map(|action| action.admin).collect();
+        assert_eq!(admin, [false, true, true, true]);
+        assert!(actions.iter().all(|action| action.route == ROUTE));
+        // Who runs it, and the test of its route, are said of each.
+        for (key, why) in [("runs", "no one runs it"), ("tests", "no boot test")] {
+            let mut list = list();
+            list[0].as_object_mut().unwrap().remove(key);
+            assert!(actions_of(&list).unwrap_err().contains(why), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_shape_keeps_the_keys_and_the_kinds_and_not_what_moves() {
+        let at = |pid: u64, lines: Value| {
+            json!({"pid": pid, "name": "a", "up": true, "log": lines, "gone": null})
+        };
+        assert_eq!(shape(&at(4, json!(["x"]))), shape(&at(90, json!([]))));
+        assert_eq!(
+            shape(&at(4, json!([]))),
+            json!({"pid": "number", "name": "text", "up": "bool", "log": "array", "gone": null})
+        );
+        assert_ne!(shape(&at(4, json!([]))), shape(&json!({"pid": 4})));
+        assert_eq!(projection("service.status", &at(4, json!([]))), shape(&at(5, json!([1]))));
     }
 
     #[test]
@@ -1336,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn two_reads_may_say_the_machine_has_nothing_to_show_and_the_others_may_not() {
+    fn some_reads_may_say_the_machine_has_nothing_to_show_and_the_others_may_not() {
         let reply = |status: u16, body: &str| Reply { status, headers: Vec::new(), body: body.into() };
         let refusal = |id: &str| json!({"error": {"id": id}}).to_string();
         // checks.last: ADM-123 for no result kept yet, or its JSON.
@@ -1350,6 +1574,9 @@ mod tests {
         let said = read_answer(reply(422, &refusal("ADM-123")), "metrics.usage", "alice").unwrap();
         assert_eq!(said, None);
         assert!(read_answer(reply(422, &refusal("ADM-129")), "metrics.usage", "alice").is_err());
+        // reliability.start: ADM-123 for a start with no record kept.
+        let said = read_answer(reply(422, &refusal("ADM-123")), "reliability.start", "bob").unwrap();
+        assert_eq!(said, None);
         // Any other read answers 200 or fails the test, whatever it says.
         for id in ["service.list", "console.about", "console.notices", "metrics.now"] {
             assert_eq!(may_refuse(id), None, "{id}");
@@ -1379,6 +1606,12 @@ mod tests {
         let twice = ["service.stop".to_string(), "service.start".to_string()];
         assert!(not_run_twice(&actions, &twice).is_empty());
         assert_eq!(not_run_twice(&actions, &twice[..1]), ["service.start"]);
+        // A change whose route another boot test calls is that test's to
+        // run twice.
+        let mut list = list();
+        list[1]["tests"]["route"] = json!("admin-trials");
+        let actions = actions_of(&list).unwrap();
+        assert_eq!(not_run_twice(&actions, &[]), ["service.stop"]);
     }
 
     #[test]

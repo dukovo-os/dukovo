@@ -4,10 +4,13 @@
 // exec: the program, its arguments and environment, the search path,
 // what a process keeps across it (its number, parent, working directory,
 // descriptors without close-on-exec, ignored signals, its mask and
-// pending signals), scripts, and how it fails.
+// pending signals), scripts, how it fails, and the pages of programs'
+// files, which every process that maps them shares.
 
 #include <fcntl.h>
 #include <limits.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #include "check.h"
 
@@ -162,11 +165,74 @@ static void failures(void) {
 	CHECK(getpid() > 0);
 }
 
+// How many pages this process has read from files at a fault, from its
+// status in /processes; -1 if it cannot tell.
+static long major_faults(void) {
+	char path[64];
+	snprintf(path, sizeof(path), "/processes/%d/status", (int)getpid());
+	FILE *status = fopen(path, "r");
+	if(!status)
+		return -1;
+	char line[128];
+	long faults = -1;
+	while(fgets(line, sizeof(line), status))
+		if(sscanf(line, "major_faults: %ld", &faults) == 1)
+			break;
+	fclose(status);
+	return faults;
+}
+
+// The pages of a program's file, which cannot change, are in memory once
+// for every process that maps them where they may not be written (ADR
+// 0563): a process that maps and reads pages another has read reads
+// nothing from the file, and one that makes them writable and writes to
+// them writes to a copy of its own, which no other process sees, nor a
+// new mapping of the file.
+static void shared_pages(void) {
+	enum { MOST = 8 };
+	int fd = open(HELPER, O_RDONLY);
+	struct stat st;
+	CHECK(fd >= 0 && fstat(fd, &st) == 0 && st.st_size >= 2 * 4096);
+	if(fd < 0 || st.st_size < 2 * 4096)
+		return;
+	// The system's programs cannot change.
+	CHECK_ERROR(open(HELPER, O_WRONLY), EROFS);
+	size_t pages = (size_t)st.st_size / 4096 < MOST ? (size_t)st.st_size / 4096 : MOST;
+	size_t size = pages * 4096;
+	static char file[MOST * 4096];
+	CHECK(pread(fd, file, size, 0) == (ssize_t)size);
+	char *map = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(map != MAP_FAILED && !memcmp(map, file, size));
+	pid_t pid = check_fork();
+	if(pid == 0) {
+		char *mine = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+		CHECK(mine != MAP_FAILED);
+		// Once to bring in what reading the count runs, then to count.
+		major_faults();
+		long before = major_faults();
+		int same = !memcmp(mine, file, size);
+		long after = major_faults();
+		CHECK(same);
+		CHECK(before >= 0 && after == before);
+		CHECK(!mprotect(mine, size, PROT_READ | PROT_WRITE));
+		memset(mine + 4096, 0x5a, 4096);
+		CHECK(mine[4096] == 0x5a && mine[2 * 4096 - 1] == 0x5a);
+		CHECK(!memcmp(mine, file, 4096));
+		check_exit_child();
+	}
+	CHECK_CHILD(pid);
+	CHECK(!memcmp(map, file, size));
+	char *again = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	CHECK(again != MAP_FAILED && !memcmp(again, file, size));
+	CHECK(!munmap(map, size) && !munmap(again, size) && !close(fd));
+}
+
 int main(void) {
 	check_start("exec");
 	RUN(arguments);
 	RUN(keeps);
 	RUN(scripts);
 	RUN(failures);
+	RUN(shared_pages);
 	return check_end();
 }

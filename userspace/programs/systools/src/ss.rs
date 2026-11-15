@@ -6,12 +6,15 @@
 //! as iproute2's ss shows them (ADR 0190): the connected ones, or with
 //! `-l` those that listen and the UDP ones that are bound, or with `-a`
 //! all of them; with `-4` or `-6`, of that version alone. Addresses are
-//! always numbers, as `-n` shows them.
+//! always numbers, as `-n` shows them. With `--json`, the same sockets are
+//! an array of objects, which the web console reads (ADR 0518).
 
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
+
+use serde::Serialize;
 
 use crate::args::{Arg, Args};
 use crate::util::{Fail, fail};
@@ -56,6 +59,52 @@ fn state_name(state: u8) -> &'static str {
         0x0b => "CLOSING",
         _ => "UNKNOWN",
     }
+}
+
+/// A state as `--json` names it: ss(8)'s name in lower case, but whole for
+/// a connection that is up.
+fn state_word(state: u8) -> String {
+    match state {
+        0x01 => "established".to_string(),
+        other => state_name(other).to_ascii_lowercase(),
+    }
+}
+
+/// One end of a socket, in `--json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct End {
+    /// The address as a number, an IPv6 one without brackets.
+    address: String,
+    /// 0 for none: a socket that is not connected has no peer's.
+    port: u16,
+}
+
+/// A socket in `--json`, in this order.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Row {
+    tcp: bool,
+    state: String,
+    local: End,
+    remote: End,
+    send_queue: u32,
+    receive_queue: u32,
+}
+
+/// The JSON array of `sockets`: `[]` for none.
+fn json_of(sockets: &[Socket]) -> Result<String, Fail> {
+    let end = |(address, port): (IpAddr, u16)| End { address: address.to_string(), port };
+    let rows: Vec<Row> = sockets
+        .iter()
+        .map(|socket| Row {
+            tcp: socket.tcp,
+            state: state_word(socket.state),
+            local: end(socket.local),
+            remote: end(socket.remote),
+            send_queue: socket.send_queue,
+            receive_queue: socket.receive_queue,
+        })
+        .collect();
+    serde_json::to_string(&rows).map_err(|error| fail(error.to_string()))
 }
 
 /// `0F02000A:0050`: an address's bytes, in network order, read as a
@@ -198,7 +247,7 @@ fn show(sockets: &[Socket], both: bool, header: bool, out: &mut dyn Write) -> io
 }
 
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let (mut tcp, mut udp, mut header) = (false, false, true);
+    let (mut tcp, mut udp, mut header, mut json) = (false, false, true, false);
     let (mut v4, mut v6) = (false, false);
     let mut which = Which::Connected;
     while let Some(arg) = args.next()? {
@@ -219,6 +268,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 "all" => which = Which::All,
                 "no-header" => header = false,
                 "numeric" => {}
+                "json" => json = true,
                 "ipv4" => v4 = true,
                 "ipv6" => v6 = true,
                 _ => return Err(args.unknown(&Arg::Long(name))),
@@ -245,6 +295,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 .map_err(|error| fail(format!("{path}: {error}")))?;
             sockets.extend(listed.into_iter().filter(|socket| which.shows(socket)));
         }
+    }
+    if json {
+        println!("{}", json_of(&sockets)?);
+        return Ok(0);
     }
     show(&sockets, tcp && udp, header, &mut io::stdout().lock())?;
     Ok(0)
@@ -318,6 +372,78 @@ mod tests {
              LISTEN 0      0               [::]:22           [::]:*\n\
              ESTAB  0      0              [::1]:22          [::1]:50000\n"
         );
+    }
+
+    #[test]
+    fn json_has_each_socket_with_its_state_ends_and_queues_in_that_order() {
+        let all: Vec<Socket> = sockets();
+        let text = json_of(&all).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+            serde_json::json!([
+                {"tcp": true, "state": "listen",
+                 "local": {"address": "0.0.0.0", "port": 22},
+                 "remote": {"address": "0.0.0.0", "port": 0},
+                 "send_queue": 0, "receive_queue": 0},
+                {"tcp": true, "state": "established",
+                 "local": {"address": "10.0.2.15", "port": 22},
+                 "remote": {"address": "10.0.2.2", "port": 54321},
+                 "send_queue": 36, "receive_queue": 0},
+                {"tcp": true, "state": "time-wait",
+                 "local": {"address": "10.0.2.15", "port": 49152},
+                 "remote": {"address": "10.0.2.2", "port": 80},
+                 "send_queue": 0, "receive_queue": 0},
+                {"tcp": false, "state": "unconn",
+                 "local": {"address": "0.0.0.0", "port": 68},
+                 "remote": {"address": "0.0.0.0", "port": 0},
+                 "send_queue": 0, "receive_queue": 512},
+            ])
+        );
+        // The fields are in the order the page's tests expect.
+        let fields = [
+            "\"tcp\":",
+            "\"state\":",
+            "\"local\":",
+            "\"remote\":",
+            "\"send_queue\":",
+            "\"receive_queue\":",
+        ];
+        let at: Vec<usize> = fields.iter().map(|field| text.find(field).unwrap()).collect();
+        assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+        assert_eq!(json_of(&[]).unwrap(), "[]");
+    }
+
+    #[test]
+    fn json_names_the_states_in_lower_case_and_ipv6_addresses_without_brackets() {
+        let socket = |state, address: &str| Socket {
+            tcp: true,
+            state,
+            local: (address.parse().unwrap(), 22),
+            remote: (address.parse().unwrap(), 0),
+            send_queue: 0,
+            receive_queue: 0,
+        };
+        let states: Vec<String> = (1..=0x0b).chain([0x0c]).map(state_word).collect();
+        assert_eq!(
+            states,
+            [
+                "established",
+                "syn-sent",
+                "syn-recv",
+                "fin-wait-1",
+                "fin-wait-2",
+                "time-wait",
+                "unconn",
+                "close-wait",
+                "last-ack",
+                "listen",
+                "closing",
+                "unknown"
+            ]
+        );
+        let value: serde_json::Value =
+            serde_json::from_str(&json_of(&[socket(1, "::1")]).unwrap()).unwrap();
+        assert_eq!(value[0]["local"], serde_json::json!({"address": "::1", "port": 22}));
     }
 
     #[test]

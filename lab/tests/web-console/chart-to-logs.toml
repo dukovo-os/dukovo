@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The view from a chart of the web console in each engine (design 6): an
+# administrator opens the CPU chart from the Overview, moves along it with
+# the arrow keys and chooses a moment with Enter, and the page says what the
+# machine says of that moment. A change made in the browser, the restart of a
+# service, is a mark on the chart at its minute, and choosing the mark shows
+# the journal's row. A service of the test's own, lab-burn, spends a
+# processor for three minutes while a root step writes a warning every ten
+# seconds; at one of its minutes "Busiest at" ranks the service first and
+# "What moved most" lists it risen, and the Logs card lists the warnings of
+# that minute in the person's zone, as the API's read of the same minute
+# does. A reader sees the same moment and the lines of their own programs,
+# and a phone has the short page of one column. Each look is dark, light,
+# high contrast, forced colours and less motion, checked by axe.
+#
+# metricsd writes its history every ten minutes and when it stops, which is
+# all the console reads, so the root step restarts it before the burn, so
+# that the hour before has numbers to compare with, and after it, and the
+# browser restarts it once more as the change that the chart marks. The burn
+# step first waits two and a half minutes, so that a machine that has just
+# booted has some history to compare with. The accounts are an
+# administrator and a reader for each engine, which this test makes and
+# removes, so no script needs the lab's password.
+about = "The web console's view from a chart in each engine: the CPU chart opened from the Overview, a moment chosen with the keys, a change made in the browser marked at its minute, the busiest service and what moved at a minute of a three-minute burn, the log of that minute against the API, a reader, and the phone"
+time = "40m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-chart-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-chart-chromium", "Made wc-chart-firefox", "Made wc-chart-webkit"]
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add wc-chart-reader-$engine && user set --console --yes wc-chart-reader-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-chart-reader-chromium", "wc-chart-reader-chromium is changed", "Made wc-chart-reader-firefox", "wc-chart-reader-firefox is changed", "Made wc-chart-reader-webkit", "wc-chart-reader-webkit is changed"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# The service that spends a processor: a shell that loops.
+[[step]]
+run = "sh -c 'cat > /system/settings/spark/services/lab-burn.toml'"
+root = true
+input = '''
+service_version = 2
+description = "Spends a processor"
+program = "/system/commands/nukesh"
+arguments = ["-c", "while :; do :; done"]
+enabled = false
+'''
+# Two and a half minutes of history first, then the history is written so that the
+# hour before the burn has numbers, and the service runs for three minutes
+# with a warning every ten seconds (tagged lab-mark, which no service has).
+# The history is written again once the service has stopped.
+[[step]]
+run = '''sh -c 'sleep 150; service metricsd restart; service lab-burn start; i=1; while [ $i -le 18 ]; do logger -t lab-mark -p user.warning "lab-mark burning $i"; sleep 10; i=$((i + 1)); done; service lab-burn stop; sleep 5; service metricsd restart; echo burned' '''
+root = true
+expect = "burned"
+[[step]]
+browser = "chart-to-logs.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'service lab-burn stop; rm -f /system/settings/spark/services/lab-burn.toml; echo burn-removed'"
+root = true
+expect = "burn-removed"
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-chart-$engine wc-chart-reader-$engine; do user remove --delete-home --yes $name || exit 1; done; done'"
+root = true
+expect = ["wc-chart-chromium is removed", "wc-chart-reader-chromium is removed", "wc-chart-firefox is removed", "wc-chart-reader-firefox is removed", "wc-chart-webkit is removed", "wc-chart-reader-webkit is removed"]

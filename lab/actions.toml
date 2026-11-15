@@ -33,6 +33,17 @@ compares = false
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
+id = "service.status"
+title = "Show a service"
+area = "services"
+method = "GET"
+path = "/api/1/services/{name}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/services", ansible = "web-console/ansible" }
+
+[[action]]
 id = "service.start"
 title = "Start a service"
 area = "services"
@@ -86,6 +97,28 @@ runs = "as-administrator"
 long = false
 compares = true
 tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.usage"
+title = "Show a service's usage"
+area = "services"
+method = "GET"
+path = "/api/1/services/{name}/usage/{range}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/services", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.timers"
+title = "List the scheduled tasks"
+area = "services"
+method = "GET"
+path = "/api/1/timers"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/services", ansible = "web-console/ansible" }
 
 [[action]]
 id = "certificate.list"
@@ -154,6 +187,17 @@ compares = false
 tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
+id = "console.export"
+title = "Copy the settings to Git"
+area = "console"
+method = "POST"
+path = "/api/1/console/export"
+runs = "as-the-person"
+long = false
+compares = true
+tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
+
+[[action]]
 id = "checks.last"
 title = "Show the last checks"
 area = "security"
@@ -185,3 +229,245 @@ runs = "as-the-person"
 long = false
 compares = false
 tests = { checks = "admind::actions::metrics::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "metrics.around"
+title = "Show the usage around a time"
+area = "metrics"
+method = "GET"
+path = "/api/1/metrics/around/{at}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::metrics::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/chart-to-logs", ansible = "web-console/ansible" }
+
+[[action]]
+id = "logs.read"
+title = "Read your programs' log"
+area = "logs"
+method = "GET"
+path = "/api/1/logs"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::logs::tests", route = "admin-logs", same_as_command = "admin-logs", browser = "web-console/logs", ansible = "web-console/ansible" }
+
+[[action]]
+id = "logs.read-all"
+title = "Read the whole log"
+area = "logs"
+method = "GET"
+path = "/api/1/logs/all"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::logs::tests", route = "admin-logs", same_as_command = "admin-logs", browser = "web-console/logs", ansible = "web-console/ansible" }
+
+[[action]]
+id = "network.show"
+title = "Show the network cards"
+area = "network"
+method = "GET"
+path = "/api/1/network"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::network::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/networking", ansible = "web-console/ansible" }
+
+[[action]]
+id = "network.connections"
+title = "List the connections"
+area = "network"
+method = "GET"
+path = "/api/1/network/connections"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::network::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/networking", ansible = "web-console/ansible" }
+
+[[action]]
+id = "network.set"
+title = "Set a network card"
+area = "network"
+method = "POST"
+path = "/api/1/network/cards/{card}"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::network::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/networking", ansible = "web-console/ansible" }
+
+[[action]]
+id = "network.keep"
+title = "Keep the network settings"
+area = "network"
+method = "POST"
+path = "/api/1/network/trial/keep"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::network::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/networking", ansible = "web-console/ansible" }
+
+[[action]]
+id = "network.undo"
+title = "Undo the network settings"
+area = "network"
+method = "POST"
+path = "/api/1/network/trial/undo"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::network::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/networking", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.list"
+title = "List the firewall's rules"
+area = "firewall"
+method = "GET"
+path = "/api/1/firewall"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.test"
+title = "Test a connection against the firewall"
+area = "firewall"
+method = "GET"
+path = "/api/1/firewall/test"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.status"
+title = "Show what the firewall lets in"
+area = "firewall"
+method = "GET"
+path = "/api/1/firewall/status"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.dropped"
+title = "Show what the firewall dropped"
+area = "firewall"
+method = "GET"
+path = "/api/1/firewall/dropped"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.add"
+title = "Add a firewall rule"
+area = "firewall"
+method = "POST"
+path = "/api/1/firewall/add"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.replace"
+title = "Replace a firewall rule"
+area = "firewall"
+method = "POST"
+path = "/api/1/firewall/replace"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.remove"
+title = "Remove a firewall rule"
+area = "firewall"
+method = "POST"
+path = "/api/1/firewall/remove"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.keep"
+title = "Keep the firewall's rules"
+area = "firewall"
+method = "POST"
+path = "/api/1/firewall/trial/keep"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "firewall.undo"
+title = "Undo the firewall's rules"
+area = "firewall"
+method = "POST"
+path = "/api/1/firewall/trial/undo"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", same_as_command = "admin-actions", browser = "web-console/firewall", ansible = "web-console/ansible" }
+
+[[action]]
+id = "reliability.starts"
+title = "List the starts"
+area = "reliability"
+method = "GET"
+path = "/api/1/starts"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
+
+[[action]]
+id = "reliability.failed"
+title = "Show the failed start"
+area = "reliability"
+method = "GET"
+path = "/api/1/starts/failed"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
+
+[[action]]
+id = "reliability.start"
+title = "Show a start's times"
+area = "reliability"
+method = "GET"
+path = "/api/1/starts/{start}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
+
+[[action]]
+id = "reliability.dumps"
+title = "List the crash dumps"
+area = "reliability"
+method = "GET"
+path = "/api/1/dumps"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
+
+[[action]]
+id = "reliability.alerts"
+title = "Show the alert history"
+area = "reliability"
+method = "GET"
+path = "/api/1/alerts/history"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }

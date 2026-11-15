@@ -48,6 +48,11 @@ admin-journal userspace/programs/accounts/ userspace/programs/systools/src/admin
 admin-journal userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/ userspace/programs/systools/src/service.rs
 admin-journal userspace/programs/systools/src/servicefiles.rs userspace/programs/systools/src/settings_edit.rs userspace/programs/systools/src/power.rs
 admin-journal userspace/programs/systools/src/logd.rs userspace/spark/src/supervisor/read.rs tools/xtask/src/test/console_client.rs ports/netcat/
+admin-logs userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-logs userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-logs userspace/programs/systools/src/log.rs userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
+admin-logs userspace/defaults/admin.toml userspace/defaults/log userspace/defaults/spark/services/admind.toml
+admin-logs userspace/programs/nukesh/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
 admin-terminal userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/admin_settings.rs
 admin-terminal userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/ userspace/programs/accounts/
 admin-terminal userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/last.rs userspace/programs/systools/src/log.rs
@@ -55,6 +60,14 @@ admin-terminal userspace/programs/systools/src/logd.rs userspace/programs/systoo
 admin-terminal userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/spark/src/supervisor/read.rs
 admin-terminal userspace/programs/nukesh/ ports/uutils-coreutils/ ports/netcat/
 admin-terminal tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+admin-trials userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-trials userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-trials userspace/programs/systools/src/network.rs userspace/programs/systools/src/network/ userspace/programs/systools/src/net_errors.rs
+admin-trials userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/firewall/ userspace/programs/systools/src/netd.rs
+admin-trials userspace/programs/systools/src/trial.rs userspace/programs/systools/src/ip.rs userspace/programs/spark-api/
+admin-trials userspace/spark/src/supervisor/ userspace/defaults/admin.toml userspace/defaults/firewall userspace/defaults/network
+admin-trials userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/firewall.toml
+admin-trials userspace/defaults/spark/services/netd.toml tools/xtask/src/test/console_client.rs ports/netcat/
 ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
 ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
 ansible tools/xtask/src/test/ansible/ tools/xtask/src/test/ansible.lock

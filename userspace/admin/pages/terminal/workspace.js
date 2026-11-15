@@ -53,6 +53,11 @@ export class Workspace {
 
   splits = null;
 
+  // Layout changes made here (splits.js), and those admind has yet to answer.
+  edits = 0;
+
+  changing = 0;
+
   view = null;
 
   dom = null;
@@ -156,11 +161,17 @@ export class Workspace {
 
   /** Reads the list and brings the panes, the socket and the page in line with it. */
   async refresh() {
+    const edits = this.edits;
     let answer;
     try {
       answer = await get(API);
     } catch (error) {
       this.view?.problem(error);
+      return;
+    }
+    // A read begun before a layout change here may hold the old layout.
+    if (edits !== this.edits || this.saving || this.changing > 0) {
+      this.later();
       return;
     }
     this.listed = answer.terminals ?? [];
@@ -296,21 +307,6 @@ export class Workspace {
   async needSplits() {
     this.splits ??= await import('./splits.js');
     return this.splits;
-  }
-
-  async setLayout(layout, sizes = []) {
-    clearTimeout(this.saving);
-    this.saving = null;
-    const terminal = this.terminal;
-    if (!terminal) return;
-    Object.assign(terminal, { layout, sizes });
-    this.draw();
-    try {
-      await post(`${API}/${terminal.id}/layout`, { layout, sizes });
-    } catch (error) {
-      this.view?.problem(error);
-      this.refresh();
-    }
   }
 
   async confirm(title, words, yes) {

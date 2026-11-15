@@ -87,11 +87,18 @@ pub enum Kind {
     NoTerminal,
     /// ADM-132: the terminal is not open to this account.
     TerminalClosed,
+    /// ADM-133: the connection a question came by was opened before the
+    /// change it asks about.
+    OldConnection,
+    /// ADM-134: the console follows as many logs as it may.
+    TooManyFollows,
+    /// ADM-135: Spark has no trial by that name.
+    NoTrial,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 32] = [
+    pub const ALL: [Kind; 35] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -124,6 +131,9 @@ impl Kind {
         Kind::TooManyTerminals,
         Kind::NoTerminal,
         Kind::TerminalClosed,
+        Kind::OldConnection,
+        Kind::TooManyFollows,
+        Kind::NoTrial,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -161,6 +171,9 @@ impl Kind {
             Kind::TooManyTerminals => "ADM-130",
             Kind::NoTerminal => "ADM-131",
             Kind::TerminalClosed => "ADM-132",
+            Kind::OldConnection => "ADM-133",
+            Kind::TooManyFollows => "ADM-134",
+            Kind::NoTrial => "ADM-135",
         }
     }
 
@@ -185,20 +198,22 @@ impl Kind {
             | Kind::NotAdmin
             | Kind::OutOfScope
             | Kind::TerminalClosed => 403,
-            Kind::Wait => 429,
+            Kind::Wait | Kind::TooManyFollows => 429,
             Kind::BadRequest | Kind::BadValue => 400,
             // The command was asked for and ran: what it said is the
             // answer, and nothing about the request was wrong.
             Kind::CommandFailed => 422,
-            // What was asked is not now what it can be done to, or the
-            // account holds as many terminals as it may until it ends one.
-            Kind::Cannot | Kind::TooManyTerminals => 409,
+            // What was asked is not now what it can be done to, the
+            // account holds as many terminals as it may until it ends one,
+            // or the connection is one that proves nothing about a change
+            // made after it was opened.
+            Kind::Cannot | Kind::TooManyTerminals | Kind::OldConnection => 409,
             // The console has the action, and this machine not its program.
             Kind::NoProgram => 501,
             Kind::AuthdSilent | Kind::WorkerSilent => 502,
             Kind::TooBig => 413,
             Kind::WrongHost => 421,
-            Kind::NoRoute | Kind::NotKept | Kind::NoTerminal => 404,
+            Kind::NoRoute | Kind::NotKept | Kind::NoTerminal | Kind::NoTrial => 404,
             Kind::NoMethod => 405,
             Kind::NotJson => 415,
             Kind::Busy | Kind::NoStore => 503,
@@ -241,6 +256,9 @@ impl Kind {
             Kind::TooManyTerminals => "Too many terminals",
             Kind::NoTerminal => "There is no such terminal",
             Kind::TerminalClosed => "The terminal is not open to this account",
+            Kind::OldConnection => "This connection was opened before the change",
+            Kind::TooManyFollows => "The console follows as many logs as it may",
+            Kind::NoTrial => "Nothing is being tried by that name",
         }
     }
 
@@ -275,6 +293,10 @@ impl Kind {
             Kind::NoTerminal => {
                 Some("Open the terminal from the Sessions page, or start a new one.")
             }
+            Kind::OldConnection => Some("Ask again: the next request opens a new connection."),
+            Kind::TooManyFollows => {
+                Some("Wait a little, then follow again, or end a follow you no longer need.")
+            }
             Kind::NotJson
             | Kind::BadRequest
             | Kind::Refused
@@ -284,7 +306,8 @@ impl Kind {
             | Kind::NotKept
             | Kind::Cannot
             | Kind::CommandFailed
-            | Kind::TerminalClosed => None,
+            | Kind::TerminalClosed
+            | Kind::NoTrial => None,
         }
     }
 }
@@ -493,6 +516,29 @@ mod tests {
         // what to do; the others have a fix of their own.
         assert_eq!(Kind::TerminalClosed.fix(), None);
         assert!(Kind::NoProgram.fix().is_some_and(|fix| fix.contains("later update")));
+    }
+
+    #[test]
+    fn the_trial_and_the_follow_have_their_own() {
+        let named = [
+            (Kind::OldConnection, "ADM-133", 409),
+            (Kind::TooManyFollows, "ADM-134", 429),
+            (Kind::NoTrial, "ADM-135", 404),
+        ];
+        for (kind, id, status) in named {
+            assert_eq!((kind.id(), kind.status()), (id, status));
+        }
+        // A browser told that its connection is old asks again at once; a
+        // follow refused for the limit waits, as the answer's retry says.
+        assert!(Kind::OldConnection.fix().is_some_and(|fix| fix.contains("new connection")));
+        assert!(Kind::TooManyFollows.fix().is_some_and(|fix| fix.contains("follow again")));
+        assert_eq!(Kind::NoTrial.fix(), None);
+        let refused = Failure {
+            retry_after: Some(30),
+            ..Failure::new(Kind::TooManyFollows, "eight logs are followed already")
+        };
+        assert_eq!(refused.body()["error"]["id"], "ADM-134");
+        assert_eq!(refused.retry_after, Some(30));
     }
 
     #[test]

@@ -60,7 +60,17 @@ use super::store::versions::sha256;
 use super::store::watched::Watched;
 use super::store::{Result, Store};
 use super::terminal::Rooted;
+use super::trials::Undo;
 use crate::bundles::folder::{self, Dir};
+
+/// Who a row of an undo Spark made by itself names, and how it says it
+/// was made.
+pub const SPARK: &str = "Spark";
+pub const UNDONE: &str = "undone";
+
+/// How far apart, in seconds, a row of an undo and the undo may be and
+/// still be the same: the time comes from Spark's clock, read again.
+const SAME_UNDO: i64 = 2;
 
 /// Where the settings are, which the round watches whole.
 pub const SETTINGS: &str = "/system/settings";
@@ -622,6 +632,61 @@ impl Journal {
             self.news.announce(*id, "by hand", now);
         }
         Ok(made.len())
+    }
+
+    /// Adds the row of `undo`, a trial Spark undid by itself (ADR 0518):
+    /// who `Spark`, how `undone`, Spark's words why, and each file it put
+    /// back, as it was at the last look and as it is now, which is the
+    /// file's last look from then on, so that the round does not take the
+    /// change back for a hand edit. Gives the row's number, or none when
+    /// the journal has the row already, from before admind started again.
+    ///
+    /// # Errors
+    ///
+    /// If the store fails; none of it is then kept.
+    pub fn undone(&self, store: &Store, undo: &Undo, now: i64) -> Result<Option<i64>> {
+        let made = store.atomically(|| {
+            let same = |change: &Change| {
+                change.how == UNDONE
+                    && change.who == SPARK
+                    && change.note.as_deref() == Some(undo.why.as_str())
+                    && (change.at - undo.at).abs() <= SAME_UNDO
+                    && change.files.iter().map(|file| &file.path).eq(undo.files.iter())
+            };
+            if store.changes(undo.at - SAME_UNDO, 64)?.iter().any(same) {
+                return Ok(None);
+            }
+            let watched = store.watched()?;
+            let mut files = Vec::with_capacity(undo.files.len());
+            for path in &undo.files {
+                let before = watched.get(path).map_or(Seen::Absent, |noted| noted.seen.clone());
+                let (after, stamp) = look(store, path, now)?;
+                match stamp {
+                    Some(stamp) => store.set_watched(
+                        path,
+                        &Watched { size: stamp.size, mtime: stamp.mtime, seen: after.clone() },
+                    )?,
+                    None => store.forget_watched(path)?,
+                }
+                files.push(FileChange { path: path.clone(), before, after });
+            }
+            let row = store.add_change(&NewChange {
+                at: undo.at,
+                who: SPARK,
+                how: UNDONE,
+                action: None,
+                argv: None,
+                status: None,
+                task: None,
+                note: Some(&undo.why),
+                files: &files,
+            })?;
+            Ok(Some(row))
+        })?;
+        if let Some(id) = made {
+            self.news.announce(id, UNDONE, now);
+        }
+        Ok(made)
     }
 
     /// One round, as the server runs it every 30 seconds: [`scan`], and

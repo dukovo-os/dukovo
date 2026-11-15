@@ -13,8 +13,12 @@
 // the end show in the header and in a notice; a console that does not answer
 // is said so in a banner and is back at one press; a session signed out in
 // another tab shows the sign-in page; a reader is told which pages are for
-// administrators; and at phone width the tab bar and the More sheet do what
-// the header and the navigation do wider.
+// administrators; at phone width the tab bar and the More sheet do what the
+// header and the navigation do wider; and eight tabs of one browser context,
+// each on a page that reads, all show their content with no error view, and one
+// more read in the first tab is answered (the tabs share the browser's
+// connections to the console, which HTTP/2 lets each tab's event stream and
+// reads use together).
 //
 // Each look is the console's own: dark, light, high contrast, forced colours
 // and less motion, each checked by axe (console.mjs's lookAll). Each engine
@@ -29,12 +33,14 @@
 import {
   accountItem,
   ensure,
+  fetchAsPage,
   leaveWelcome,
   look,
   lookAll,
   mustHaveCalled,
   openAccountMenu,
   openConsole,
+  policyStopped,
   press,
   sessionOf,
   sidewaysScroll,
@@ -66,6 +72,19 @@ const ROUTES = [
   "POST /api/1/unlock/extend",
   "POST /api/1/lock",
   "GET /api/1/health",
+];
+
+// The calls the eight tabs make between them: each page's own read, which the
+// browser must have made by the end of that step.
+const TAB_ROUTES = [
+  "GET /api/1/events",
+  "GET /api/1/services",
+  "GET /api/1/network",
+  "GET /api/1/firewall",
+  "GET /api/1/logs",
+  "GET /api/1/terminals",
+  "POST /api/1/terminals",
+  "GET /api/1/account/preferences",
 ];
 
 /** The tab's title, which names the page, the machine and the console. */
@@ -130,7 +149,8 @@ async function landmarks(t, page, host) {
 async function navigation(t, page, session) {
   const names = (await navLinks(page)).map((text) => text.replace(/\s+/g, " ").trim());
   // The terminal's entry is there when the account has a terminal.
-  const wanted = session.terminal ? ["Overview", "Terminal"] : ["Overview"];
+  const pages = ["Overview", "Logs", "Reliability", "Networking", "Firewall", "Services"];
+  const wanted = session.terminal ? [...pages, "Terminal"] : pages;
   ensure(JSON.stringify(names) === JSON.stringify(wanted), `the navigation lists ${names.join(", ")}, not ${wanted.join(", ")}`);
   const current = page.getByRole("navigation", { name: "Pages" }).getByRole("link", { name: "Overview" });
   ensure((await current.getAttribute("aria-current")) === "page", "the navigation does not mark the Overview as the current page");
@@ -502,6 +522,150 @@ async function openMore(t, page) {
   return sheet;
 }
 
+/**
+ * The eight pages of the tabs, each one that reads and the words of the
+ * heading it shows. `ready` runs in the page and says that its content is
+ * there: what the page's own lab test waits for before it looks.
+ */
+const TABS = [
+  {
+    path: "/",
+    heading: "Overview",
+    ready: () => {
+      const bodies = [...document.querySelectorAll(".ov .card-body")].filter((body) => body.offsetParent !== null);
+      return bodies.length > 0 && bodies.every((body) => body.textContent.trim() !== "Loading…");
+    },
+  },
+  {
+    path: "/services",
+    heading: "Services",
+    ready: () => {
+      const table = document.querySelector("table.svc-tbl");
+      return table !== null && !table.hasAttribute("aria-busy") && table.querySelector("tbody tr[data-name]") !== null;
+    },
+  },
+  {
+    // diskhealth is the service that every image runs and nothing needs.
+    path: "/services/diskhealth",
+    heading: "diskhealth",
+    ready: () => {
+      const root = document.querySelector(".svc");
+      return root !== null && !root.hasAttribute("aria-busy");
+    },
+  },
+  {
+    path: "/logs",
+    heading: "Logs",
+    ready: () => {
+      const list = document.querySelector(".loglist");
+      return list !== null && !list.hasAttribute("aria-busy") && document.querySelector(".lskel") === null;
+    },
+  },
+  {
+    path: "/networking",
+    heading: "Networking",
+    ready: () => document.querySelector(".net-card") !== null,
+  },
+  {
+    path: "/firewall",
+    heading: "Firewall",
+    ready: () => {
+      const table = document.querySelector(".fw-rules table");
+      return table !== null && !table.hasAttribute("aria-busy");
+    },
+  },
+  {
+    path: "/terminal",
+    heading: "Terminal",
+    ready: () =>
+      document.querySelector(".tr-pane") !== null &&
+      [...document.querySelectorAll('[role="status"]')].some((status) => status.textContent.includes("Connected")),
+  },
+  {
+    path: "/account",
+    heading: "Your account",
+    ready: () => document.querySelector("main section.card") !== null && document.querySelector("main [aria-busy='true']") === null,
+  },
+];
+
+/**
+ * Waits for `tab` to show the heading of `page` and its content, or an error
+ * view, which fails the step with what it says.
+ */
+async function tabShows(t, tab, page) {
+  await t.see(tab.getByRole("heading", { name: page.heading, level: 1, exact: true }));
+  // The content, or an error view, whichever comes first. Each is waited for
+  // as a function of its own: the content security policy forbids eval, so a
+  // predicate made from a string cannot run in the page.
+  const shown = tab.waitForFunction(page.ready, null, { timeout: 60_000 });
+  const failed = tab.locator("main section.err").first().waitFor({ timeout: 60_000 });
+  // The one that loses ends with its timeout, or when the tab closes.
+  shown.catch(() => {});
+  failed.catch(() => {});
+  await Promise.race([shown, failed]);
+  const errors = await tab.locator("main section.err h2").allInnerTexts();
+  ensure(errors.length === 0, `the tab of ${page.heading} shows an error view: ${errors.join("; ")}`);
+  const stopped = await policyStopped(tab);
+  ensure(stopped.length === 0, `the content security policy stopped ${stopped.join(", ")} on the tab of ${page.heading}`);
+}
+
+/**
+ * A GET of `route` from `tab`, as the page makes it, that gives up after
+ * `milliseconds`: a read that waits for a connection another tab holds does
+ * not come, and the step says so. Gives the status.
+ */
+function readWithin(tab, route, milliseconds) {
+  return tab.evaluate(
+    async ({ route, milliseconds }) => {
+      try {
+        const answer = await fetch(route, { credentials: "same-origin", signal: AbortSignal.timeout(milliseconds) });
+        await answer.text();
+        return answer.status;
+      } catch (error) {
+        return `${error.name}: ${error.message}`;
+      }
+    },
+    { route, milliseconds },
+  );
+}
+
+/**
+ * Eight tabs of one browser context, each on a page that reads, load at
+ * once. Each shows its content with no error view; then one more read in the
+ * first tab is answered, which it is not when the tabs' event streams and
+ * reads wait for each other's connections to the console.
+ */
+async function eightTabs(t, name) {
+  const { page: first, seen } = await openConsole(t, "/");
+  await signInDone(t, first, name, PASSWORD);
+  const session = await sessionOf(first);
+  ensure(session.terminal === true, `${name} has no Terminal, which the eighth tab needs: GET /api/1/session says ${session.terminal}`);
+
+  const context = first.context();
+  const tabs = [first];
+  while (tabs.length < TABS.length) tabs.push(await context.newPage());
+  ensure(context.pages().length === TABS.length, `the context has ${context.pages().length} tabs, not ${TABS.length}`);
+  await Promise.all(tabs.map((tab, at) => tab.goto(new URL(TABS[at].path, first.url()).href)));
+  await Promise.all(tabs.map((tab, at) => tabShows(t, tab, TABS[at])));
+
+  // Every tab holds its event stream, and the first tab still reads.
+  const status = await readWithin(first, "/api/1/services", 30_000);
+  ensure(status === 200, `a read in the first tab, with eight tabs open, was answered ${status}`);
+  mustHaveCalled(seen, TAB_ROUTES);
+
+  // The tabs are closed, and the terminal the Terminal tab made is ended
+  // (a page that is still open would make another).
+  for (const tab of tabs.slice(1)) await tab.close();
+  const terminals = await fetchAsPage(first, "GET", "/api/1/terminals");
+  ensure(terminals.status === 200, `GET /api/1/terminals answered ${terminals.status}`);
+  for (const terminal of terminals.json.terminals) {
+    const ended = await fetchAsPage(first, "POST", `/api/1/terminals/${terminal.id}/end`, {});
+    ensure(ended.status === 200, `the end of terminal ${terminal.id} was answered ${ended.status}: ${ended.text}`);
+  }
+  await signOut(t, first);
+  await context.close();
+}
+
 export default async function check(t) {
   const name = `wc-shell-${t.engine}`;
   const { page, seen } = await openConsole(t, "/");
@@ -533,5 +697,6 @@ export default async function check(t) {
 
   await reader(t, page);
   await phone(t, name);
+  await eightTabs(t, name);
   mustHaveCalled(seen, ROUTES);
 }

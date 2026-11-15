@@ -16,8 +16,14 @@
 //! ([`crate::sysupdate::bisect`], ADR 0475): `--status` follows it,
 //! `--stop` stops it, and `--confirm` makes sure of a change it named by
 //! elimination.
+//!
+//! `--json` goes with `--list`, with `--failed` and with `bisect
+//! --status`, for the web console (changes(1)): what each start, each
+//! change and the search hold, as the records say it.
 
 use std::io::Write as _;
+
+use serde::Serialize;
 
 use crate::args::{Arg, Args};
 use crate::power;
@@ -26,7 +32,8 @@ use crate::sysupdate::starts::{self, Change, Outcome, Start};
 use crate::util::{self, Fail, fail};
 
 const USAGE: &str = "usage: changes [--failed | --between START START | --list]\n       changes \
-                     bisect [--yes | --status | --stop | --confirm [--yes]]";
+                     (--list | --failed) --json\n       changes bisect [--yes | --status \
+                     [--json] | --stop | --confirm [--yes]]";
 
 /// What to compare.
 enum Asked {
@@ -49,8 +56,10 @@ pub fn changes(args: &mut Args) -> Result<i32, Fail> {
         };
     }
     let mut asked = Asked::Now;
+    let mut json = false;
     while let Some(arg) = args.next()? {
         match arg {
+            Arg::Long(name) if name == "json" => json = true,
             Arg::Long(name) if name == "failed" => asked = Asked::Failed,
             Arg::Long(name) if name == "list" => asked = Asked::List,
             Arg::Long(name) if name == "between" => {
@@ -64,6 +73,17 @@ pub fn changes(args: &mut Args) -> Result<i32, Fail> {
             }
             _ => return Err(fail(USAGE.into())),
         }
+    }
+    if json {
+        if matches!(asked, Asked::Now | Asked::Between(..)) {
+            return Err(util::usage(USAGE.into()));
+        }
+        let records = starts::all();
+        return if matches!(asked, Asked::List) {
+            print_json(&list_json(&records))
+        } else {
+            print_json(&failed_json(&records, bisect::kept().as_ref()))
+        };
     }
     let records = starts::all();
     let Some(newest) = records.last() else {
@@ -182,6 +202,155 @@ fn change_line(change: &Change) -> String {
     line
 }
 
+/// A change, in `--json`: what it is about, the version the later start
+/// ran (none for one that is gone) and when that was installed, in Unix
+/// milliseconds, where known.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ChangeJson {
+    what: String,
+    version: Option<String>,
+    at_ms: Option<i64>,
+}
+
+/// A start, in `--json`. Where the record holds nothing for a field it
+/// is `null`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct StartJson {
+    start: u64,
+    /// When the health check began, in Unix milliseconds.
+    at_ms: i64,
+    /// The version of Dukovo it ran.
+    release: Option<String>,
+    slot: String,
+    /// `good`, `failed`, `fell-back` or `bisect-try`; none while the
+    /// health check has not finished it.
+    result: Option<&'static str>,
+    /// The error ID of what failed it.
+    check: Option<String>,
+    /// When its services settled, in milliseconds after the kernel
+    /// started, once its times are kept.
+    ready_ms: Option<u64>,
+    /// What it ran that the start before it did not.
+    changes: Vec<ChangeJson>,
+}
+
+/// What `--failed --json` gives.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct FailedJson {
+    failed: Option<StartJson>,
+    since_good: Vec<ChangeJson>,
+    bisect: BisectJson,
+}
+
+/// A search, in `--json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct BisectJson {
+    running: bool,
+    /// The try the next start is, while one is waited on.
+    #[serde(rename = "try")]
+    attempt: Option<u8>,
+    /// The most tries the search takes, counting those it has made.
+    of: Option<u32>,
+}
+
+/// Writes `value` as a line of JSON.
+fn print_json<T: Serialize>(value: &T) -> Result<i32, Fail> {
+    println!("{}", serde_json::to_string(value).map_err(|e| fail(e.to_string()))?);
+    Ok(0)
+}
+
+/// A change, in `--json`.
+fn change_json(change: &Change) -> ChangeJson {
+    ChangeJson {
+        what: change.name.clone(),
+        version: change.after.clone(),
+        at_ms: change.installed.map(|seconds| seconds.saturating_mul(1000)),
+    }
+}
+
+/// How start `start`, of `records`, ended, in `--json`'s words. A try of
+/// `changes bisect` is one whatever its end. A start that failed `fell-back`
+/// when the next start that is no try ran the other slot: the records do
+/// not say that the machine fell back, and this is how it shows in them.
+fn result_of(records: &[Start], start: &Start) -> Option<&'static str> {
+    if start.trial.is_some() {
+        return Some("bisect-try");
+    }
+    match start.outcome {
+        Outcome::Good => Some("good"),
+        Outcome::Unfinished => None,
+        Outcome::Failed => {
+            let next = records.iter().find(|s| s.number > start.number && s.trial.is_none());
+            Some(if next.is_some_and(|next| next.slot != start.slot) {
+                "fell-back"
+            } else {
+                "failed"
+            })
+        }
+    }
+}
+
+/// The start at place `at` of `records`, in `--json`, with the changes
+/// from the start before it.
+fn start_json(records: &[Start], at: usize) -> StartJson {
+    let start = &records[at];
+    let changes = at.checked_sub(1).map_or_else(Vec::new, |before| {
+        starts::changes(records, &records[before], start).iter().map(change_json).collect()
+    });
+    StartJson {
+        start: start.number,
+        at_ms: start.started.saturating_mul(1000),
+        release: start.items.iter().find(|item| item.kind == "system").map(|i| i.value.clone()),
+        slot: start.slot.clone(),
+        result: result_of(records, start),
+        check: start.error.clone(),
+        ready_ms: start
+            .times
+            .as_ref()
+            .filter(|times| crate::startup::complete(times))
+            .map(|times| times.settled_ms),
+        changes,
+    }
+}
+
+/// `--list --json`: each start kept, newest first.
+fn list_json(records: &[Start]) -> Vec<StartJson> {
+    (0..records.len()).rev().map(|at| start_json(records, at)).collect()
+}
+
+/// `--failed --json`: the newest start that failed and was no try, the
+/// changes from the last good start to it, and the search. With no failed
+/// start, or no good start before it, there is no start, or no change.
+fn failed_json(records: &[Start], search: Option<&Search>) -> FailedJson {
+    let at = records.iter().rposition(|s| s.outcome == Outcome::Failed && s.trial.is_none());
+    let since_good = at
+        .and_then(|at| {
+            let failed = &records[at];
+            let good = starts::last_good(records, failed.number)?;
+            Some(starts::changes(records, good, failed).iter().map(change_json).collect())
+        })
+        .unwrap_or_default();
+    FailedJson {
+        failed: at.map(|at| start_json(records, at)),
+        since_good,
+        bisect: bisect_json(search),
+    }
+}
+
+/// The search `search` is, for `--json`: whether it runs, the try it
+/// waits on, and the most tries it takes in all.
+fn bisect_json(search: Option<&Search>) -> BisectJson {
+    let Some(search) = search else {
+        return BisectJson { running: false, attempt: None, of: None };
+    };
+    let waiting = search.waiting().map(|t| t.number);
+    BisectJson {
+        running: search.end.is_none(),
+        attempt: waiting,
+        of: waiting.map(|number| u32::from(number).saturating_sub(1) + search.restarts_left()),
+    }
+}
+
 /// What `changes bisect` was asked.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bisect {
@@ -194,12 +363,16 @@ enum Bisect {
 /// `changes bisect`.
 fn bisect(args: &mut Args) -> Result<i32, Fail> {
     let mut asked = Bisect::Begin;
-    let mut yes = false;
+    let (mut yes, mut json) = (false, false);
     while let Some(arg) = args.next()? {
         let Arg::Long(name) = arg else { return Err(util::usage(USAGE.into())) };
         let said = match name.as_str() {
             "yes" => {
                 yes = true;
+                continue;
+            }
+            "json" => {
+                json = true;
                 continue;
             }
             "status" => Bisect::Status,
@@ -215,7 +388,11 @@ fn bisect(args: &mut Args) -> Result<i32, Fail> {
     if yes && matches!(asked, Bisect::Status | Bisect::Stop) {
         return Err(util::usage(USAGE.into()));
     }
+    if json && asked != Bisect::Status {
+        return Err(util::usage(USAGE.into()));
+    }
     match asked {
+        Bisect::Status if json => print_json(&bisect_json(bisect::kept().as_ref())),
         Bisect::Status => {
             let Some(search) = bisect::kept() else {
                 println!("changes bisect: no search has run");
@@ -475,5 +652,279 @@ fn fix(search: &Search, lever: &Lever) -> Vec<String> {
             search.failed,
             lever.after
         )],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::*;
+    use crate::sysupdate::starts::{Item, ServiceTime, Times};
+
+    /// What a start ran: a release, and apps with a version and when each
+    /// was installed.
+    fn items(release: &str, apps: &[(&str, &str, Option<i64>)]) -> Vec<Item> {
+        let mut items = vec![
+            Item::new("system", "Dukovo", release, Some(10)),
+            Item::new("options", "boot options", "root=UUID=r panic=10 quiet", None),
+        ];
+        items.extend(apps.iter().map(|(id, version, at)| Item::new("app", id, version, *at)));
+        items
+    }
+
+    /// A start numbered `number`, begun `number` thousand seconds in.
+    fn start(number: u64, slot: &str, outcome: Outcome, items: Vec<Item>) -> Start {
+        let failed = outcome == Outcome::Failed;
+        Start {
+            number,
+            started: i64::try_from(number).unwrap() * 1000,
+            slot: slot.into(),
+            stage: "services".into(),
+            outcome,
+            error: failed.then(|| "BOOT-104".into()),
+            why: failed.then(|| "a required check failed (BOOT-104)".into()),
+            failing: None,
+            trial: None,
+            items,
+            times: None,
+        }
+    }
+
+    /// Seven starts: two good ones with an app updated between them, an
+    /// update that failed and the start that went back, a failure that
+    /// went on in the same slot, a failed try of the search and the
+    /// start that has not finished.
+    fn records() -> Vec<Start> {
+        let nginx = |version: &str, at: i64| ("org.nginx.nginx", version.to_string(), Some(at));
+        let with = |release: &str, apps: &[(&str, String, Option<i64>)]| {
+            let apps: Vec<(&str, &str, Option<i64>)> =
+                apps.iter().map(|(id, v, at)| (*id, v.as_str(), *at)).collect();
+            items(release, &apps)
+        };
+        let mut first = start(1, "a", Outcome::Good, with("0.15.0", &[nginx("1.30.5", 100)]));
+        first.times = Some(Times {
+            settled_ms: 31_200,
+            services: vec![ServiceTime {
+                name: "netd".into(),
+                started_ms: 2000,
+                ready_ms: Some(3000),
+                after: Vec::new(),
+            }],
+            ..Times::default()
+        });
+        let second = start(2, "a", Outcome::Good, with("0.15.0", &[nginx("1.30.6", 5000)]));
+        let third = start(3, "b", Outcome::Failed, with("0.16.0", &[nginx("1.30.6", 5000)]));
+        let fourth = start(4, "a", Outcome::Good, with("0.15.0", &[nginx("1.30.6", 5000)]));
+        let demo = ("org.demo.app", "2.0".to_string(), Some(7000));
+        let fifth = start(5, "a", Outcome::Failed, with("0.15.0", &[nginx("1.30.6", 5000), demo]));
+        let mut sixth = start(6, "a", Outcome::Failed, with("0.15.0", &[nginx("1.30.6", 5000)]));
+        sixth.trial = Some(1);
+        let mut seventh = start(7, "a", Outcome::Unfinished, with("0.15.0", &[]));
+        // A sign-in's time alone is no start's times.
+        seventh.times = Some(Times { sign_in_ms: Some(9000), ..Times::default() });
+        vec![first, second, third, fourth, fifth, sixth, seventh]
+    }
+
+    /// A search over five apps, as it begins.
+    fn search() -> Search {
+        let records = records();
+        let levers = (0..5)
+            .map(|n| Lever {
+                kind: Kind::App,
+                name: format!("org.app{n}"),
+                before: Some("1".into()),
+                after: "2".into(),
+                installed: None,
+                first_used: None,
+                services: Vec::new(),
+            })
+            .collect();
+        Search::new(&records[3], &records[4], levers, Vec::new(), 1000, 7).unwrap()
+    }
+
+    #[test]
+    fn a_start_is_good_failed_fell_back_a_try_or_not_finished() {
+        let records = records();
+        let results: Vec<Option<&str>> = records.iter().map(|s| result_of(&records, s)).collect();
+        assert_eq!(
+            results,
+            [
+                Some("good"),
+                Some("good"),
+                // The update in slot b failed and slot a started after it.
+                Some("fell-back"),
+                Some("good"),
+                // The next start that is no try ran the same slot.
+                Some("failed"),
+                Some("bisect-try"),
+                None,
+            ]
+        );
+        // The newest failed start has none after it.
+        assert_eq!(result_of(&records[..5], &records[4]), Some("failed"));
+    }
+
+    #[test]
+    fn the_list_is_newest_first_with_what_each_start_changed() {
+        let list = list_json(&records());
+        let numbers: Vec<u64> = list.iter().map(|s| s.start).collect();
+        assert_eq!(numbers, [7, 6, 5, 4, 3, 2, 1]);
+        let value = serde_json::to_value(&list).unwrap();
+        // The second start brought nginx 1.30.6, installed at 5000 s.
+        assert_eq!(
+            value[5],
+            serde_json::json!({
+                "start": 2, "at_ms": 2_000_000, "release": "0.15.0", "slot": "a",
+                "result": "good", "check": null, "ready_ms": null,
+                "changes": [{"what": "org.nginx.nginx", "version": "1.30.6", "at_ms": 5_000_000}]
+            })
+        );
+        // The first has none before it to differ from, and its times.
+        assert_eq!(
+            value[6],
+            serde_json::json!({
+                "start": 1, "at_ms": 1_000_000, "release": "0.15.0", "slot": "a",
+                "result": "good", "check": null, "ready_ms": 31_200, "changes": []
+            })
+        );
+        // The failed update: its release, and the error ID that failed it.
+        assert_eq!(value[4]["result"], "fell-back");
+        assert_eq!(value[4]["check"], "BOOT-104");
+        assert_eq!(value[4]["release"], "0.16.0");
+        assert_eq!(value[4]["changes"][0]["what"], "Dukovo");
+        assert_eq!(value[4]["changes"][0]["version"], "0.16.0");
+        assert_eq!(value[4]["changes"][0]["at_ms"], 10_000);
+        // The start before it gone back to what ran two starts before.
+        assert_eq!(value[3]["changes"][0]["version"], "0.15.0");
+        // A start that is not finished says no result, and a sign-in's
+        // time is not when its services settled.
+        assert_eq!(value[0]["result"], serde_json::Value::Null);
+        assert_eq!(value[0]["ready_ms"], serde_json::Value::Null);
+        assert_eq!(value[1]["result"], "bisect-try");
+    }
+
+    #[test]
+    fn a_start_has_the_keys_of_the_design_in_its_order() {
+        let text = serde_json::to_string(&list_json(&records())[6]).unwrap();
+        assert_eq!(
+            text,
+            r#"{"start":1,"at_ms":1000000,"release":"0.15.0","slot":"a","result":"good","check":null,"ready_ms":31200,"changes":[]}"#
+        );
+        assert_eq!(serde_json::to_string(&list_json(&[])).unwrap(), "[]");
+    }
+
+    #[test]
+    fn a_record_with_no_release_or_times_says_null() {
+        let mut bare = start(9, "b", Outcome::Good, Vec::new());
+        bare.times = None;
+        let text = serde_json::to_string(&list_json(&[bare])).unwrap();
+        assert_eq!(
+            text,
+            r#"[{"start":9,"at_ms":9000000,"release":null,"slot":"b","result":"good","check":null,"ready_ms":null,"changes":[]}]"#
+        );
+    }
+
+    #[test]
+    fn failed_is_the_newest_failed_start_that_is_no_try_with_what_came_since_the_good_one() {
+        let records = records();
+        let value = serde_json::to_value(failed_json(&records, None)).unwrap();
+        assert_eq!(value["failed"]["start"], 5);
+        assert_eq!(value["failed"]["result"], "failed");
+        assert_eq!(value["failed"]["check"], "BOOT-104");
+        // Since start 4, the last good: the demo app, and nothing else.
+        assert_eq!(
+            value["since_good"],
+            serde_json::json!([{"what": "org.demo.app", "version": "2.0", "at_ms": 7_000_000}])
+        );
+        assert_eq!(value["bisect"], serde_json::json!({"running": false, "try": null, "of": null}));
+        assert_eq!(
+            serde_json::to_string(&failed_json(&records, None)).unwrap().find("\"failed\":{"),
+            Some(1),
+            "the failed start comes first"
+        );
+    }
+
+    #[test]
+    fn with_no_failed_start_failed_is_null_and_with_no_good_one_there_is_no_change() {
+        let records = records();
+        let good = &records[..2];
+        let value = serde_json::to_value(failed_json(good, None)).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "failed": null, "since_good": [],
+                "bisect": {"running": false, "try": null, "of": null}
+            })
+        );
+        let lone = [start(3, "a", Outcome::Failed, items("0.15.0", &[]))];
+        let value = serde_json::to_value(failed_json(&lone, None)).unwrap();
+        assert_eq!(value["failed"]["start"], 3);
+        assert_eq!(value["since_good"], serde_json::json!([]));
+        let none = serde_json::to_value(failed_json(&[], None)).unwrap();
+        assert_eq!(none["failed"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_bisect_object_has_the_try_waited_on_and_the_most_tries_in_all() {
+        assert_eq!(
+            serde_json::to_string(&bisect_json(None)).unwrap(),
+            r#"{"running":false,"try":null,"of":null}"#
+        );
+        // Five changes take at most three restarts, whichever the cause.
+        assert_eq!(
+            serde_json::to_string(&bisect_json(Some(&search()))).unwrap(),
+            r#"{"running":true,"try":1,"of":3}"#
+        );
+        // The first try failed as the start did: the cause is among the
+        // two changes it kept, and one more try settles it.
+        let mut running = search();
+        running.judge(Verdict::Failed, Some(8), 8);
+        let after = bisect_json(Some(&running));
+        assert_eq!((after.running, after.attempt, after.of), (true, Some(2), Some(2)));
+        // It started well: the cause is among the three it left out, and
+        // two more tries at most.
+        let mut running = search();
+        running.judge(Verdict::Good, Some(8), 8);
+        let after = bisect_json(Some(&running));
+        assert_eq!((after.running, after.attempt, after.of), (true, Some(2), Some(3)));
+        // A search that has ended does not run, and waits on no try.
+        let mut done = search();
+        done.stop();
+        assert_eq!(
+            serde_json::to_string(&bisect_json(Some(&done))).unwrap(),
+            r#"{"running":false,"try":null,"of":null}"#
+        );
+        // The failed object carries it.
+        let value = serde_json::to_value(failed_json(&records(), Some(&search()))).unwrap();
+        assert_eq!(value["bisect"], serde_json::json!({"running": true, "try": 1, "of": 3}));
+    }
+
+    /// Runs `changes` on `items`.
+    fn run(items: &[&str]) -> Result<i32, Fail> {
+        changes(&mut Args::new("changes", items.iter().map(OsString::from).collect()))
+    }
+
+    #[test]
+    fn json_goes_with_list_failed_and_bisect_status_alone() {
+        for refused in [
+            &["--json"][..],
+            &["--json", "--between", "1", "2"],
+            &["--between", "1", "2", "--json"],
+            &["bisect", "--json"],
+            &["bisect", "--stop", "--json"],
+            &["bisect", "--confirm", "--json"],
+            &["bisect", "--yes", "--json"],
+            &["bisect", "--status", "--stop", "--json"],
+        ] {
+            let err = run(refused).err().unwrap_or_else(|| panic!("{refused:?} is refused"));
+            assert!(err.usage, "{refused:?}");
+            assert_eq!(err.message, USAGE, "{refused:?}");
+            assert_eq!(err.code, 1);
+        }
+        let err = run(&["bisect", "--status", "--yes", "--json"]).unwrap_err();
+        assert!(err.usage);
+        assert!(USAGE.contains("(--list | --failed) --json"));
+        assert!(USAGE.contains("--status [--json]"));
     }
 }

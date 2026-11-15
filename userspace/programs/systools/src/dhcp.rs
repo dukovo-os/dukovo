@@ -83,6 +83,12 @@ pub struct Lease {
 }
 
 impl Lease {
+    /// When it ends, in seconds since 1970, if it was given at `obtained`:
+    /// none for a lease that lasts forever.
+    pub(crate) fn ends(&self, obtained: u64) -> Option<u64> {
+        (self.seconds != FOREVER).then(|| obtained + u64::from(self.seconds))
+    }
+
     /// When it ends, renews and rebinds, if it was given at `given`; none
     /// for a lease that lasts forever.
     fn times(&self, given: Instant) -> Option<[Instant; 3]> {
@@ -969,6 +975,23 @@ mod tests {
         assert_eq!((short.seconds, short.renew, short.rebind), (60, 30, 52));
         let ever = lease(&[], |r| r.lease_duration = Some(u32::MAX));
         assert_eq!((ever.renew, ever.rebind), (FOREVER, FOREVER));
+    }
+
+    #[test]
+    fn a_lease_ends_its_seconds_after_it_was_given_and_one_for_ever_never() {
+        let lease = |seconds: u32| Lease {
+            address: Cidr { ip: Ipv4Addr::new(10, 0, 2, 15), prefix: 24 },
+            router: None,
+            dns: Vec::new(),
+            domain: None,
+            server: Ipv4Addr::new(10, 0, 2, 2),
+            seconds,
+            renew: seconds / 2,
+            rebind: seconds / 8 * 7,
+            metered: false,
+        };
+        assert_eq!(lease(3600).ends(1_763_116_400), Some(1_763_120_000));
+        assert_eq!(lease(FOREVER).ends(1_763_116_400), None);
     }
 
     #[test]

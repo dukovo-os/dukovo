@@ -39,8 +39,9 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
+use spark_api::trial;
 
-use super::actions::{self, Field, Registered, Runs};
+use super::actions::{self, Field, Registered, Runs, logs};
 use super::errors::Kind;
 use super::guard::{CSRF_HEADER, SESSION_COOKIE};
 use super::routes::{Access, Entry, Route, TABLE, Verb};
@@ -209,6 +210,11 @@ fn route_operation(entry: &Entry, actions: &[&dyn Registered]) -> Value {
     if let Some(id) = parameters_of(entry.path).next() {
         operation["parameters"] = json!([id_parameter(id, entry.path)]);
     }
+    if entry.route == Route::Follow {
+        let query: Vec<Value> =
+            logs::Follow::FIELDS.iter().map(|field| parameter(field, None, "query")).collect();
+        operation["parameters"] = query.into();
+    }
     if matches!(entry.route, Route::Show | Route::Check) {
         operation["requestBody"] = action_and_arguments(actions);
     }
@@ -247,7 +253,8 @@ fn action_and_arguments(actions: &[&dyn Registered]) -> Value {
 }
 
 /// The operation of `action`: its arguments in the address are its
-/// parameters, and the others its body.
+/// parameters, and the others its body, or for a read the parameters of
+/// its query.
 fn action_operation(action: &dyn Registered) -> Value {
     let (good, _, _) = action.example_values();
     let example = good.first().and_then(Value::as_object);
@@ -262,11 +269,13 @@ fn action_operation(action: &dyn Registered) -> Value {
         "security": security(Access::Api, action.changes()),
         "responses": responses(action_success(action), &action_kinds(action), action.errors()),
     });
-    if !address.is_empty() {
-        let parameters: Vec<Value> = address
-            .iter()
-            .map(|field| path_parameter(field, example.and_then(|given| given.get(field.name))))
-            .collect();
+    let given = |field: &Field| example.and_then(|given| given.get(field.name));
+    let mut parameters: Vec<Value> =
+        address.iter().map(|field| parameter(field, given(field), "path")).collect();
+    if !action.changes() {
+        parameters.extend(body.iter().map(|field| parameter(field, given(field), "query")));
+    }
+    if !parameters.is_empty() {
         operation["parameters"] = parameters.into();
     }
     if action.changes() {
@@ -290,16 +299,18 @@ fn describe(action: &dyn Registered) -> String {
     }
 }
 
-/// The parameter of an action's address that `field` describes.
-fn path_parameter(field: &Field, example: Option<&Value>) -> Value {
+/// The parameter that `field` describes, `place` being `path` for a part
+/// of an action's address, which is always there, and `query` for one of a
+/// read's query, which is there when the field is required.
+fn parameter(field: &Field, example: Option<&Value>, place: &str) -> Value {
     let mut schema = actions::schema(std::slice::from_ref(field))["properties"][field.name].clone();
     if let Value::Object(keywords) = &mut schema {
         keywords.remove("description");
     }
     let mut parameter = json!({
         "name": field.name,
-        "in": "path",
-        "required": true,
+        "in": place,
+        "required": place == "path" || field.required,
         "description": field.about,
         "schema": schema,
     });
@@ -310,8 +321,18 @@ fn path_parameter(field: &Field, example: Option<&Value>) -> Value {
 }
 
 /// The parameter `name` of a route's address, the number the console gave
-/// a change, a task, a terminal or a pane.
+/// a change, a task, a terminal or a pane, or the name of a trial.
 fn id_parameter(name: &str, path: &str) -> Value {
+    if name == "trial" {
+        let pattern = format!("^[A-Za-z0-9][A-Za-z0-9._-]{{0,{}}}$", trial::ID_MAX - 1);
+        return json!({
+            "name": name,
+            "in": "path",
+            "required": true,
+            "description": "The trial's name, as Spark gives it: network, firewall, or service.NAME.",
+            "schema": { "type": "string", "pattern": pattern },
+        });
+    }
     let what = if name == "pane" {
         "pane"
     } else if path.contains("/terminals/") {
@@ -452,6 +473,19 @@ const TERMINAL: &[Kind] = &[
     Kind::Internal,
 ];
 
+/// What a follow of the log can answer with (ADR 0518): a filter that
+/// does not read, the whole log for a session that may not read it, too
+/// many follows, and authd's silence.
+const FOLLOW: &[Kind] = &[
+    Kind::BadRequest,
+    Kind::BadValue,
+    Kind::NotAdmin,
+    Kind::Locked,
+    Kind::TooManyFollows,
+    Kind::AuthdSilent,
+    Kind::Internal,
+];
+
 /// What the Terminal's socket can answer with besides: the opening request
 /// did not come from the console's page with the session's token.
 const SOCKET: &[Kind] = &[
@@ -470,6 +504,10 @@ fn own_kinds(route: Route) -> &'static [Kind] {
         // A probe that does not answer makes check mode say it cannot
         // tell, not an error.
         Route::Show | Route::Check => &[Kind::BadValue, Kind::OutOfScope],
+        Route::Follow => FOLLOW,
+        // A trial's ID that is none, and a connection opened before the
+        // change or a trial that has ended (ADR 0518).
+        Route::Fresh => &[Kind::BadRequest, Kind::OldConnection, Kind::NoTrial, Kind::Internal],
         Route::Terminals
         | Route::TerminalAdd
         | Route::TerminalPanes
@@ -713,6 +751,33 @@ fn success_of(route: Route) -> (&'static str, Value) {
                 "content": { "text/event-stream": {} },
             }),
         ),
+        Route::Follow => (
+            "200",
+            json!({
+                "description": "A stream of server-sent events, a record of the log each, which \
+                    goes on until the tab closes, the session ends or, for the whole log, locks.",
+                "content": { "text/event-stream": {} },
+            }),
+        ),
+        Route::Fresh => ok(
+            "The request came by a connection opened after the change took effect.",
+            Some(json!({
+                "type": "object",
+                "required": ["fresh", "from", "via"],
+                "properties": {
+                    "fresh": { "const": true },
+                    "from": {
+                        "type": "string",
+                        "description": "The address the request came from.",
+                    },
+                    "via": {
+                        "type": ["object", "null"],
+                        "description": "The address and port of this machine it came to, and \
+                            the network card that holds the address.",
+                    },
+                },
+            })),
+        ),
         _ => ok("What the route answers, as JSON.", None),
     }
 }
@@ -774,6 +839,11 @@ fn summary(route: Route) -> &'static str {
         Route::Tasks => "Lists the tasks that run or ran.",
         Route::Task => "One task, with its log.",
         Route::StopTask => "Asks a task to stop.",
+        Route::Follow => "Follows the log as it is written, filtered, as the person may read it.",
+        Route::Fresh => {
+            "Says whether the browser reaches the console by a connection opened after a tried \
+             change took effect."
+        }
         #[cfg(feature = "lab")]
         Route::TestElevate => "Runs a command as an administrator in an unlocked session.",
     }

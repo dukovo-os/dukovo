@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Firewall page of the web console in each engine (design 10): the rules
+# in the order they are checked held to what `firewall list` says, the test of
+# a connection held to `firewall test`, and what was blocked (`firewall
+# dropped`) and what listens for an administrator who unlocks. A rule is
+# added, tried and kept, replaced (`firewall replace`), and removed with Undo
+# now and then for good, with a second administrator's browser watching each
+# try (`firewall keep`, `firewall undo`); a rule begun by a short try is undone by Spark's
+# timer in front of three browsers, a reader's among them; and a rule that
+# denies the console's own port to the browser's own address warns before it
+# is made, is tried for 60 seconds with the console out of reach, and is
+# undone by Spark with the page back at the console, the journal's row of the
+# undo and the browser's tries listed under Blocked, where Allow this fills the
+# form. A reader sees the rules and the test, and a phone at 390 by 844 shows
+# the page and the form. Each look is dark, light, high contrast, forced
+# colours and less motion, checked by axe.
+#
+# The lab PC's side is the browser script's: its tries at the console are the
+# connections the rule stops, and what the machine says of them is read here
+# before and after, by `firewall test` from the lab PC's own address as the
+# machine sees it ({peer}), which says that no rule decides the console's port
+# both times, and by `firewall dropped`, which has the tries afterwards. This
+# test's first step undoes a trial that a run before it may have left, and its
+# last steps wait for Spark to have none, put the rules file back as the image
+# has it and have the firewall read it. The file is saved before the browser
+# opens. The accounts are three that this test makes and removes, two
+# administrators and a reader, so no script needs the lab's password. The script
+# runs each engine one after the other, so that an engine the lab PC lacks is
+# skipped within it and the steps after it still run.
+about = "The web console's Firewall page in each engine: the rules from what firewall list says, the test of a connection, a rule added, replaced and removed with a try that is kept or taken back, one undone by Spark's timer, a rule that would cut off the browser's own connection and is undone within its window, what was blocked, a reader, and the phone"
+time = "35m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-firewall && echo lab-console-password | user add --admin wc-firewall-other && echo lab-console-password | user add wc-firewall-reader && user set --console --yes wc-firewall-reader'"
+root = true
+expect = ["Made wc-firewall", "Made wc-firewall-other", "Made wc-firewall-reader", "wc-firewall-reader is changed"]
+# A change that a run before this one left tried is taken back first.
+[[step]]
+run = "sh -c 'firewall undo > /dev/null 2>&1; echo clean'"
+root = true
+expect = "clean"
+# The file as the image has it, kept to be put back; the image has no rules,
+# and no rule decides the console's port for the lab PC.
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-firewall && cp /system/settings/firewall /tmp/lab-firewall/firewall && firewall list'"
+root = true
+expect = "No rules"
+[[step]]
+run = "firewall test tcp 9090 from {peer}"
+expect = "No rule decides"
+# A tried rule needs the firewall service to have loaded the rules, so that
+# Spark's undo loads them again. It has since the boot, unless a test before
+# this one stopped it, so it loads them again here, and what Spark says of
+# it is shown.
+[[step]]
+run = "sh -c 'service firewall start > /dev/null 2>&1; service firewall status'"
+root = true
+expect = "active (exited)"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "firewall.mjs"
+port = 9090
+# No change is tried any more, whatever an engine that failed halfway left.
+[[step]]
+run = "sh -c 'firewall undo > /dev/null 2>&1; i=0; while [ $i -lt 60 ] && firewall list --json | grep -q left_ms; do sleep 1; i=$((i + 1)); done; firewall list'"
+root = true
+expect = "No rules"
+# The rules are as they were: nothing decides the console's port for the lab PC.
+[[step]]
+run = "firewall test tcp 9090 from {peer}"
+expect = "No rule decides"
+# What the machine says was blocked has the console's port, from the tries the
+# denied rule stopped.
+[[step]]
+run = "firewall dropped --json"
+root = true
+expect = "9090"
+# The file as the image has it, and the firewall reading it again if it was not.
+[[step]]
+run = "sh -c 'cmp -s /tmp/lab-firewall/firewall /system/settings/firewall || { cp /tmp/lab-firewall/firewall /system/settings/firewall && firewall load; }; rm -r /tmp/lab-firewall; echo restored'"
+root = true
+expect = "restored"
+[[step]]
+run = "sh -c 'for name in wc-firewall wc-firewall-other wc-firewall-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-firewall is removed", "wc-firewall-other is removed", "wc-firewall-reader is removed"]

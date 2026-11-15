@@ -21,6 +21,8 @@
 use std::ffi::OsStr;
 use std::io::{self, Write};
 
+use accounts::console::Filter;
+
 use crate::args::{Arg, Args};
 use crate::logd::{self, Boot, Record, Request, Usage};
 use crate::logtrim;
@@ -655,9 +657,142 @@ fn local_seconds(
     (seconds != -1).then_some(seconds)
 }
 
+/// The levels the web console's Logs page names, the most urgent first
+/// (ADR 0518).
+pub const CONSOLE_LEVELS: [&str; 4] = ["error", "warning", "info", "debug"];
+
+/// The most characters of the words the web console's Logs page matches.
+pub const CONSOLE_GREP_MAX: usize = 200;
+
+/// Why the web console's `filter` of the log is refused, if it is: the
+/// option, and words for a person (ADR 0518). admind checks a read's and a
+/// follow's filter with it before anything runs, and authd a follow's
+/// again before it starts one.
+pub fn console_refusal(filter: &Filter) -> Option<(&'static str, String)> {
+    if let Some(service) = &filter.service {
+        if manifest::service::check_name(service).is_err() {
+            let max = radix_abi::resource_domain::NAME_MAX;
+            return Some((
+                "service",
+                format!(
+                    "A service's name has 1 to {max} letters, digits, hyphens, underscores and \
+                     dots, and starts with a letter, a digit or an underscore."
+                ),
+            ));
+        }
+        if filter.kernel {
+            return Some(("kernel", "A service's records or the kernel's, not both.".into()));
+        }
+    }
+    if let Some(priority) = &filter.priority
+        && !CONSOLE_LEVELS.contains(&priority.as_str())
+    {
+        return Some(("priority", "A level is error, warning, info or debug.".into()));
+    }
+    if let Some(grep) = &filter.grep {
+        let length = grep.chars().count();
+        if !(1..=CONSOLE_GREP_MAX).contains(&length) || grep.chars().any(char::is_control) {
+            return Some((
+                "grep",
+                format!(
+                    "The words to match are 1 to {CONSOLE_GREP_MAX} characters, with no control \
+                     characters."
+                ),
+            ));
+        }
+        // As logd compiles it: without regard to case unless it has a
+        // capital.
+        let ignore_case = !grep.chars().any(char::is_uppercase);
+        if let Err(why) = util::Regex::new(grep, ignore_case) {
+            return Some((
+                "grep",
+                format!("The words to match are not a pattern log reads: {why}."),
+            ));
+        }
+    }
+    None
+}
+
+/// `filter`'s options as log(1) takes them, but `--grep`: the service or
+/// the kernel, then the level.
+pub fn console_options(filter: &Filter) -> Vec<String> {
+    let mut words = Vec::new();
+    if let Some(service) = &filter.service {
+        words.extend(["--service".to_string(), service.clone()]);
+    }
+    if filter.kernel {
+        words.push("--kernel".into());
+    }
+    if let Some(priority) = &filter.priority {
+        words.extend(["--priority".to_string(), priority.clone()]);
+    }
+    words
+}
+
+/// The command a follow of the web console's Logs page runs (ADR 0518):
+/// the records from now on as JSON lines, without the hint to a person
+/// who is not root, with `filter`'s options; or why there is none.
+pub fn console_follow(filter: &Filter) -> Result<Vec<String>, String> {
+    if let Some((_, why)) = console_refusal(filter) {
+        return Err(why);
+    }
+    let mut words: Vec<String> =
+        ["log", "--output", "json", "--follow", "--lines", "0", "--quiet"].map(String::from).into();
+    words.extend(console_options(filter));
+    if let Some(grep) = &filter.grep {
+        words.extend(["--grep".to_string(), grep.clone()]);
+    }
+    Ok(words)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_console_follow_is_json_lines_from_now_on_with_the_options_in_order() {
+        let base = ["log", "--output", "json", "--follow", "--lines", "0", "--quiet"];
+        assert_eq!(console_follow(&Filter::default()).unwrap(), base);
+        let filter = Filter {
+            service: Some("nginx".into()),
+            kernel: false,
+            priority: Some("warning".into()),
+            grep: Some("-timed out".into()),
+        };
+        let mut expected = base.to_vec();
+        expected.extend(["--service", "nginx", "--priority", "warning", "--grep", "-timed out"]);
+        assert_eq!(console_follow(&filter).unwrap(), expected);
+        let kernel = Filter { kernel: true, ..Filter::default() };
+        assert_eq!(console_follow(&kernel).unwrap().last().unwrap(), "--kernel");
+    }
+
+    #[test]
+    fn the_console_s_filters_are_checked_before_anything_runs() {
+        let field = |filter: Filter| console_refusal(&filter).map(|(field, _)| field);
+        let both = Filter { service: Some("nginx".into()), kernel: true, ..Filter::default() };
+        assert_eq!(field(both), Some("kernel"));
+        for service in ["", "../x", "a b", "-x", ".x", "a/b", "nginx\n"] {
+            let filter = Filter { service: Some(service.into()), ..Filter::default() };
+            assert_eq!(field(filter), Some("service"), "{service:?}");
+        }
+        for priority in ["", "loud", "0", "err..warning", "ERROR", "notice"] {
+            let filter = Filter { priority: Some(priority.into()), ..Filter::default() };
+            assert_eq!(field(filter), Some("priority"), "{priority:?}");
+        }
+        let long = "x".repeat(CONSOLE_GREP_MAX + 1);
+        for grep in ["", "a\nb", "a\u{7f}", long.as_str(), "(", "a[b"] {
+            let filter = Filter { grep: Some(grep.into()), ..Filter::default() };
+            assert_eq!(field(filter), Some("grep"), "{grep:?}");
+        }
+        let fine = Filter {
+            service: Some("my-app_2".into()),
+            kernel: false,
+            priority: Some("debug".into()),
+            grep: Some("\u{e9}".repeat(CONSOLE_GREP_MAX)),
+        };
+        assert_eq!(console_refusal(&fine), None);
+        assert!(console_follow(&Filter { grep: Some("(".into()), ..Filter::default() }).is_err());
+    }
 
     const NOW: u64 = 1_793_395_501_123_456_000; // 2026-10-30T21:25:01.123456Z
 

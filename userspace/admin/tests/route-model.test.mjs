@@ -122,4 +122,6 @@ test('a click on a link of the console is followed in the page, and the browser 
   assert.equal(followsInPage({ href: '/terminal' }, { ...plain, altKey: true }, origin), false);
   assert.equal(followsInPage({ href: '/terminal' }, { ...plain, button: 1 }, origin), false);
   assert.equal(followsInPage({ href: 'http://[bad' }, plain, origin), false);
+  // A link whose own handler took the click, as Change… while locked.
+  assert.equal(followsInPage({ href: '/networking/net0' }, { ...plain, defaultPrevented: true }, origin), false);
 });

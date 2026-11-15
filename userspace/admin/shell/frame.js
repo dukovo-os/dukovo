@@ -189,7 +189,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   shell.run = (signal) => async (...call) => {
     const { makeRunner } = await import('../lib/action.js');
     return makeRunner({
-      request: (method, path, body) => request(method, path, body, { signal }),
+      request: (method, path, body, more) => request(method, path, body, { ...more, signal }),
       actions: loadActions,
       session: () => session,
       askToUnlock,

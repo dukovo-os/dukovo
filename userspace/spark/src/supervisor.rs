@@ -1186,8 +1186,8 @@ impl Supervisor {
         // A trial the last start left unkept is undone before any file is
         // read; Rescue changes nothing, and the next start undoes it.
         if !self.rescue {
-            for id in trial::undo_left(&self.root) {
-                self.note_undone(id, &spark_api::trial::Why::Restarted);
+            for (id, files) in trial::undo_left(&self.root) {
+                self.note_undone(id, &spark_api::trial::Why::Restarted, files);
             }
         }
         services::convert_old(&self.root, dir);

@@ -11,11 +11,14 @@
 # console that does not answer is said so; a session signed out in another
 # tab shows the sign-in page; a reader is told which pages are for
 # administrators; and a phone at 390 by 844 has its tab bar and its More
-# sheet. Each look is dark, light, high contrast, forced colours and less
-# motion, checked by axe. Each engine has an administrator of its own, and
-# there is one reader, which this test makes and removes, so no script
-# needs the lab's password.
-about = "Browsers sign in to the web console and use its frame: landmarks, the skip link, focus and the title on each route, the header and its menus by the keys, display choices that follow the person, large text, the unlock's warning, a console that does not answer, a session that ends in another tab, a reader, and a phone"
+# sheet. Eight tabs of one browser context, each on a page that reads (the
+# Overview, Services, a service, Logs, Networking, Firewall, the Terminal and
+# the account), load at once, show their content with no error view, and
+# leave one more read in the first tab answered. Each look is dark, light, high
+# contrast, forced colours and less motion, checked by axe. Each engine has
+# an administrator of its own, and there is one reader, which this test makes
+# and removes, so no script needs the lab's password.
+about = "Browsers sign in to the web console and use its frame: landmarks, the skip link, focus and the title on each route, the header and its menus by the keys, display choices that follow the person, large text, the unlock's warning, a console that does not answer, a session that ends in another tab, a reader, a phone, and eight tabs of one browser that all show their pages"
 time = "30m"
 host_needs = ["curl"]
 

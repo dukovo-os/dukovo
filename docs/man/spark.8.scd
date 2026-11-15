@@ -486,7 +486,8 @@ presses.
 	(*end* and *in_seconds*, or *null*) and *trials*, the settings being
 	tried (see *try*): each one's *id*, *files*, *services*, *user* and
 	*left_ms*, the time until it is undone; and *undone*, the last eight
-	trials undone since boot, each with its *id*, *why* and *at_ms*.
+	trials undone since boot, each with its *id*, *why*, *at_ms* (on the
+	clock *now_ms* reads) and *files*, the files Spark put back.
 	Each service has
 	its *name*, *description*, *enabled*, *order*, *restart*,
 	*give_up_after*, *requires*, *wants*, *after* and *ready_when* from

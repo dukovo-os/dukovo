@@ -60,3 +60,29 @@
 .dmap .p4 { background: #5E7690; }
 .dmap .free { background: var(--sunken); color: var(--muted); }
 .chip { display: inline-flex; align-items: center; gap: .357rem; padding: .071rem .571rem; border-radius: .714rem; border: 1px solid var(--border); font-size: .857rem; background: var(--bg); }
+
+/* A chart with its legend and its table of numbers: the Usage card's, and the view from a chart's. */
+.dk { --chart-2: #9A4A00; }
+.dk.dark { --chart-2: #F0A35B; }
+.dk.hc { --chart-2: #66E0FF; }
+.usage-chart { display: flex; flex-direction: column; gap: .286rem; min-width: 0; }
+.chart .line.second { stroke: var(--chart-2); stroke-dasharray: 5 3; }
+.legend { display: flex; flex-wrap: wrap; gap: .286rem .857rem; list-style: none; margin: 0; padding: 0; font-size: .857rem; color: var(--muted); }
+.legend[hidden] { display: none; }
+.legend li { display: flex; align-items: center; gap: .357rem; }
+.key { display: inline-block; width: 1.5rem; border-top: 2px solid var(--accent); }
+.key.second { border-top: 2px dashed var(--chart-2); }
+.usage-chart .btn.link { align-self: flex-start; }
+.numbers { max-height: 16rem; overflow: auto; }
+.numbers .tbl { min-width: 0; }
+.numbers[hidden] { display: none; }
+
+/* Forced colours: the lines are drawn in the text's colour, the second one dashed, and a chart has its border. */
+@media (forced-colors: active) {
+  .dk .chart .line { stroke: CanvasText; forced-color-adjust: none; }
+  .dk .chart .line.second { stroke: CanvasText; stroke-dasharray: 5 3; }
+  .dk .chart .area { fill: CanvasText; fill-opacity: .12; forced-color-adjust: none; }
+  .dk .chart .grid-line { stroke: GrayText; forced-color-adjust: none; }
+  .dk .key, .dk .key.second { border-top-color: CanvasText; }
+  .dk .usage-chart { border: 1px solid CanvasText; }
+}

@@ -432,7 +432,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     };
     let against = if compare {
         let other = match other {
-            Some(number) => find(number)?,
+            Some(number) => Some(find(number)?),
             None => starts::last_good(&records, start.number)
                 .filter(|good| good.times.as_ref().is_some_and(complete))
                 .or_else(|| {
@@ -442,15 +442,23 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                             && record.trial.is_none()
                             && record.times.as_ref().is_some_and(complete)
                     })
-                })
-                .ok_or_else(|| fail("no good start with times is kept to compare with".into()))?,
+                }),
         };
-        let before = other
-            .times
-            .as_ref()
-            .filter(|times| complete(times))
-            .ok_or_else(|| fail(format!("start {} has no times", other.number)))?;
-        Some((other, before))
+        match other {
+            Some(other) => {
+                let before = other
+                    .times
+                    .as_ref()
+                    .filter(|times| complete(times))
+                    .ok_or_else(|| fail(format!("start {} has no times", other.number)))?;
+                Some((other, before))
+            }
+            // The JSON says so with `compared_with: null`, which the web
+            // console shows beside the start's own times, as on a
+            // computer's first start.
+            None if json => None,
+            None => return Err(fail("no good start with times is kept to compare with".into())),
+        }
     } else {
         None
     };

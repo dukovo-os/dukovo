@@ -60,6 +60,12 @@
 //! admind: the new admind has it `stopped`, "the console restarted", says
 //! so in its log, and its command is gone from the guest.
 //!
+//! The row of a change that Spark undid by itself, a tried change that was
+//! not kept in time or that a restart of the machine cut short, is `undone`
+//! by `Spark` with Spark's words as its note. The case admin-trials tries a
+//! firewall change and a card's and reads that row, so this case leaves it
+//! out.
+//!
 //! What the pane's commands print reaches the host through nc, to a port on
 //! the host's loopback that QEMU's user network gives the guest at
 //! 10.0.2.2.

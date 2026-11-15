@@ -7,7 +7,9 @@
 import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
 
-import { ApiError, get, post, setCsrf, whenSessionEnds, whenUnreachable } from '../api.js';
+import {
+  ApiError, get, post, request, setCsrf, whenAnswered, whenSessionEnds, whenUnreachable,
+} from '../api.js';
 
 const realFetch = globalThis.fetch;
 let calls;
@@ -26,6 +28,7 @@ afterEach(() => {
   setCsrf(null);
   whenSessionEnds(null);
   whenUnreachable(null);
+  whenAnswered(null);
 });
 
 test('a GET sends the cookie and no body, token or content type', async () => {
@@ -160,7 +163,7 @@ test('a signal ends the wait and not the call, whose answer is still read', asyn
   own.abort();
   await assert.rejects(waiting, { name: 'AbortError' });
   // The browser was given nothing to abort the request with.
-  assert.equal('signal' in calls[0].options, false);
+  assert.equal(calls[0].options.signal, undefined);
   answer();
   await new Promise((resolve) => { setTimeout(resolve, 0); });
   assert.equal(read, true);
@@ -193,4 +196,38 @@ test('each request that gets no answer is reported to whoever watches for a sile
   await assert.rejects(get('/api/1/session'), { status: 0 });
   await assert.rejects(post('/api/1/lock', {}), { status: 0 });
   assert.deepEqual(heard, [0, 0]);
+});
+
+test('each request that gets an answer, an error too, is reported to whoever waits for the server to answer', async () => {
+  let answers = 0;
+  whenAnswered(() => { answers += 1; });
+  answering(200, { ok: true });
+  await get('/api/1/health');
+  answering(500, { error: { id: 'ADM-100', title: 'Broken' } });
+  await assert.rejects(get('/api/1/health'), { status: 500 });
+  assert.equal(answers, 2);
+  globalThis.fetch = async () => {
+    throw new TypeError('Failed to fetch');
+  };
+  await assert.rejects(get('/api/1/health'), { status: 0 });
+  assert.equal(answers, 2);
+});
+
+test('a call that is abandoned ends the request itself, as one with no answer', async () => {
+  const heard = [];
+  whenUnreachable((error) => heard.push(error.status));
+  calls = [];
+  globalThis.fetch = (path, options) => {
+    calls.push({ path, options });
+    return new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+  };
+  const abandon = new AbortController();
+  const waiting = request('POST', '/api/1/network/net0', { mode: 'fixed' }, { signal: new AbortController().signal, abandon: abandon.signal });
+  abandon.abort();
+  await assert.rejects(waiting, { name: 'ApiError', status: 0, id: null });
+  // The browser was given the signal, so that it closes the connection and sends nothing again.
+  assert.equal(calls[0].options.signal, abandon.signal);
+  assert.deepEqual(heard, [0]);
 });

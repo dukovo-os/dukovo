@@ -1,0 +1,80 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Services pages (design 4): what the list and the page of one service
+ * draw that console.css does not. The phone's layout is the same markup
+ * under the container query the shell uses (4.7). Same rules as console.css:
+ * rem, and px for borders and focus rings.
+ */
+.svc, .svc-list { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+
+/* The list */
+.svc-filter { display: flex; flex-wrap: wrap; gap: .857rem; align-items: flex-end; }
+.svc-filter .field { flex: 1 1 12rem; max-width: 22rem; }
+.svc-tbl th[scope="row"] { text-align: left; font-weight: 600; font-size: 1rem; color: var(--text); background: none; white-space: normal;
+  border-bottom: 1px solid var(--border); vertical-align: top; }
+.svc-tbl tr:last-child th[scope="row"] { border-bottom: 0; }
+.svc-name a { overflow-wrap: anywhere; }
+.svc-tbl td time, .svc-tbl td .st { white-space: nowrap; }
+.svc-none { padding: .571rem 0; }
+.svc-none .btn.link { padding-left: 0; }
+
+/* Grey bars stand where words are read; they are still, and nothing reads them. */
+.svc-bar { display: inline-block; height: .857rem; width: 7rem; max-width: 100%; border-radius: .214rem; background: var(--sunken); }
+.svc-bar.wide { display: block; width: 100%; }
+.svc-body { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+
+/* One service */
+.svc-pills { display: flex; flex-wrap: wrap; gap: .571rem .857rem; align-items: center; }
+.svc-desc { flex-basis: 100%; color: var(--muted); }
+.svc-banners:empty, .svc-warnings:empty { display: none; }
+.svc-warnings { display: flex; flex-direction: column; gap: .571rem; }
+.svc-controls { display: flex; flex-direction: column; gap: .857rem; }
+.svc-controls:empty { display: none; }
+.svc-actions { align-items: flex-start; }
+.svc-action { display: flex; flex-direction: column; gap: .286rem; align-items: flex-start; min-width: 0; }
+.svc-switch .hint { max-width: 40rem; }
+.svc-boot { display: inline-flex; align-items: center; gap: .571rem; min-height: 2rem; padding: 0 .286rem; border: 0; background: none; font: inherit; color: var(--text); cursor: pointer; }
+.svc-boot[aria-disabled="true"] { cursor: default; opacity: .75; }
+.svc-boot[aria-busy="true"] { opacity: .75; }
+.svc-to-log { display: none; }
+.svc-note { display: flex; flex-direction: column; gap: .571rem; max-width: 44rem; }
+.svc-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 21.429rem), 1fr)); }
+.svc-rows dd { overflow-wrap: anywhere; }
+.svc-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .143rem; }
+.svc-items.inline { flex-direction: row; flex-wrap: wrap; gap: .143rem .857rem; }
+.svc-use { grid-column: 1 / -1; }
+.svc-use-numbers:empty, .svc-charts[hidden] { display: none; }
+.svc-use .btns { margin: .571rem 0; }
+.svc-charts { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); }
+.svc-written { display: block; }
+.svc-log-errors:empty, .svc-log-others:empty { display: none; }
+.svc-log-list { display: flex; flex-direction: column; gap: .571rem; min-width: 0; }
+.svc-log-others { display: flex; flex-direction: column; gap: .571rem; }
+.svc-log-others .btns { margin-top: .143rem; }
+
+/* The phone's page of a service (4.7): the buttons fill the width, and the
+   switch is a row of its own. */
+@container (max-width: 51.4rem) {
+  .svc-tbl th[scope="row"] { display: block; padding: .286rem .571rem; border: 0; }
+  .svc-tbl td:empty { display: none; }
+  .svc-filter .field { flex-basis: 100%; max-width: none; }
+  .svc-actions, .svc-action { align-items: stretch; width: 100%; }
+  .svc-actions .btn, .svc-action .btn { width: 100%; }
+  .svc-boot { min-height: 3.143rem; }
+  .svc-to-log { display: inline-flex; align-items: center; justify-content: center; width: 100%; }
+  .svc-cards { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Forced colours: the switch, the state's dot and the bars are drawn in system colours. */
+@media (forced-colors: active) {
+  .dk .svc-boot { border: 1px solid ButtonText; }
+  .dk .svc-boot:focus-visible { outline-color: Highlight; }
+  .dk .svc-boot .sw { border-color: ButtonText; forced-color-adjust: none; background: ButtonFace; }
+  .dk .svc-boot .sw.on { background: Highlight; border-color: Highlight; }
+  .dk .svc-boot .sw.on::after { background: HighlightText; }
+  .dk .svc-bar { background: GrayText; forced-color-adjust: none; }
+  .dk .svc .st::before, .dk .svc-tbl .st::before { forced-color-adjust: none; background: CanvasText; }
+  .dk .svc .st.off::before, .dk .svc-tbl .st.off::before { background: none; border: 1.5px solid CanvasText; }
+}

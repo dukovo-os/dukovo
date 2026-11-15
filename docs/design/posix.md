@@ -102,8 +102,16 @@ to the domain of the space that made it, while it lasts, so that a page
 no space maps at the moment still counts.
 
 `exec` and `mmap` of a file map the file's pages as the process's own
-copy, filled when touched (ADR 0060). A shared writable mapping of a file
-needs the page cache to map its own pages, and is refused until then.
+copy, filled when touched (ADR 0060). A file that cannot change, as the
+system's programs in their read-only slot, is the exception (ADR 0563):
+its whole pages, where the region may not be written, are in memory
+once, kept in the file's `ProgramPages` for every space that maps them,
+which counts as one more sharer of each. A write after `mprotect`, and
+the kernel's relocation of a new program, copy a kept page first, so it
+is never written in place; a region's end frees the kept pages it
+spanned that no space maps any more. A shared writable mapping of a
+file needs the page cache to map its own pages, and is refused until
+then.
 
 Shared memory by name is a filesystem of its own, `shm`, which Spark
 mounts on `/devices/shm` (`/dev/shm`) (ADR 0490). Its files keep their

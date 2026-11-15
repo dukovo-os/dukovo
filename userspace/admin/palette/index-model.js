@@ -35,7 +35,7 @@ export const RECENT_MAX = 8;
 const NOT_FOUND = new Set(['welcome']);
 
 // The icon of an action by its area, for the areas admind has.
-const AREA_ICONS = { services: 'services', certificates: 'certs', security: 'security', console: 'info', metrics: 'reliability' };
+const AREA_ICONS = { services: 'services', certificates: 'certs', security: 'security', console: 'info', metrics: 'reliability', reliability: 'reliability', logs: 'logs', network: 'network', firewall: 'firewall' };
 
 // How a state word is drawn: the board's `st` tones.
 const TONES = {

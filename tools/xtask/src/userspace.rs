@@ -277,6 +277,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/netcheck", "systools"),
     ("system/commands/netd", "systools"),
     ("system/commands/netlog", "systools"),
+    ("system/commands/network", "systools"),
     ("system/commands/nic", "systools"),
     ("system/commands/notifications", "systools"),
     ("system/commands/notify-send", "systools"),

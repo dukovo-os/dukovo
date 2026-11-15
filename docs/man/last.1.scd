@@ -119,6 +119,11 @@ _/system/state/sign-ins/unknown_
 	The wrong passwords typed for names that are no account's, which
 	root reads.
 
+_/system/live/authd/boot_
+	The time of the start that runs, as *authd*(8) recorded it: its
+	sessions are the ones that can still run, whatever a time service
+	has set the clock to since.
+
 # EXIT STATUS
 
 0, or 1 if the records cannot be read, and 1 for a mistake in the

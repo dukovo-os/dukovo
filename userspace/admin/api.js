@@ -32,6 +32,7 @@ export class ApiError extends Error {
 let csrfToken = null;
 let sessionEnded = null;
 let unreachable = null;
+let answered = null;
 
 /** Sets the token the session's POSTs carry, from `GET /api/1/session`. */
 export function setCsrf(token) {
@@ -48,6 +49,11 @@ export function whenUnreachable(handler) {
   unreachable = handler;
 }
 
+/** Calls `handler` each time a request gets an answer. */
+export function whenAnswered(handler) {
+  answered = handler;
+}
+
 function failure(response, body) {
   const retryAfter = Number.parseInt(response.headers.get('Retry-After'), 10);
   const given = body?.error;
@@ -61,9 +67,9 @@ function failure(response, body) {
   });
 }
 
-async function exchange(method, path, body) {
+async function exchange(method, path, body, abandon) {
   const headers = { Accept: 'application/json' };
-  const options = { method, headers, credentials: 'same-origin' };
+  const options = { method, headers, credentials: 'same-origin', signal: abandon };
   if (method !== 'GET') {
     headers['Content-Type'] = 'application/json';
     if (csrfToken) headers['X-Dukovo-CSRF'] = csrfToken;
@@ -81,6 +87,7 @@ async function exchange(method, path, body) {
     unreachable?.(error);
     throw error;
   }
+  answered?.();
   const answer = await response.json().catch(() => null);
   if (response.ok) return answer;
   const error = failure(response, answer);
@@ -92,17 +99,17 @@ async function exchange(method, path, body) {
  * Sends `body` as JSON with `method` to `path` and returns the answer's
  * JSON, or null for an answer with no body. `signal` ends the wait when
  * the page has gone, with the browser's AbortError, and not the call: an
- * aborted fetch closes its connection (ADR 0517).
+ * aborted fetch closes its connection (ADR 0517); `abandon` aborts it.
  *
  * @throws {ApiError} when the server answers with an error or not at all.
  */
-export function request(method, path, body, { signal } = {}) {
-  if (!signal) return exchange(method, path, body);
+export function request(method, path, body, { signal, abandon } = {}) {
+  if (!signal) return exchange(method, path, body, abandon);
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
     const stop = () => reject(signal.reason);
     signal.addEventListener('abort', stop, { once: true });
-    exchange(method, path, body).then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+    exchange(method, path, body, abandon).then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
   });
 }
 

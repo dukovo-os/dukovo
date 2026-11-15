@@ -266,16 +266,18 @@ impl Supervisor {
             let line = format!("error: {name} failed with the change, so Spark undid {}", trial.id);
             self.end_watches(index, &line);
         }
-        self.note_undone(trial.id, why);
+        let files = trial.record.files.iter().map(|kept| kept.path.clone()).collect();
+        self.note_undone(trial.id, why, files);
         words
     }
 
-    /// Keeps that the trial `id` was undone, as `why` says, for `show`.
-    pub(super) fn note_undone(&mut self, id: String, why: &Why) {
+    /// Keeps that the trial `id`, of `files`, was undone, as `why` says,
+    /// for `show`.
+    pub(super) fn note_undone(&mut self, id: String, why: &Why, files: Vec<String>) {
         if self.undone.len() == show::UNDONE_KEPT {
             self.undone.remove(0);
         }
-        self.undone.push(show::Undone { id, why: why.words(), at_ms: now() / MS });
+        self.undone.push(show::Undone { id, why: why.words(), at_ms: now() / MS, files });
     }
 
     /// The trials that run, for `show`.
@@ -301,8 +303,9 @@ impl Supervisor {
 
 /// Undoes each trial a start before this one left unkept, before any
 /// service starts: the machine started again while it ran, as a change
-/// that hangs it or cuts it off would have it do. Returns their names.
-pub fn undo_left(root: &Dir) -> Vec<String> {
+/// that hangs it or cuts it off would have it do. Returns their names,
+/// each with the files its record names.
+pub fn undo_left(root: &Dir) -> Vec<(String, Vec<String>)> {
     let mut undone = Vec::new();
     let Ok(dir) = root.open_dir(TRIALS, Rights::READ) else { return undone };
     let Ok(entries) = dir.entries() else { return undone };
@@ -335,7 +338,7 @@ pub fn undo_left(root: &Dir) -> Vec<String> {
             words.push_str(&format!("; {err}"));
         }
         println!("<86>spark: {words}");
-        undone.push(id.clone());
+        undone.push((id.clone(), record.files.iter().map(|kept| kept.path.clone()).collect()));
     }
     undone
 }

@@ -482,6 +482,10 @@ pub struct Timer {
     pub catch_up: bool,
     /// The time zone `at` is read in; `None` for the system's.
     pub time_zone: Option<String>,
+    /// The schedule as the file writes it, for a person to read: each
+    /// `at` as written, then `every 6h` and `first 10m after boot` where
+    /// the file has them, separated by commas.
+    pub schedule: String,
 }
 
 /// A service file's `[logs]` (ADR 0478): its own log files.
@@ -3224,6 +3228,9 @@ impl TimerFile {
             .collect::<Result<Vec<_>, _>>()?;
         let seconds =
             |text: &Option<String>| text.as_deref().and_then(|t| crate::schedule::duration(t).ok());
+        let mut written = self.at.clone();
+        written.extend(self.every.iter().map(|every| format!("every {every}")));
+        written.extend(self.after_boot.iter().map(|boot| format!("first {boot} after boot")));
         Ok(Timer {
             at,
             every: seconds(&self.every),
@@ -3231,6 +3238,7 @@ impl TimerFile {
             spread: seconds(&self.spread).unwrap_or(0),
             catch_up: self.catch_up.unwrap_or(true),
             time_zone: self.time_zone.clone(),
+            schedule: written.join(", "),
         })
     }
 }

@@ -23,12 +23,16 @@ export function createRouter({ pages, shell, main, asof }) {
   let active = null;
   let url = '';
 
+  // Resolves once each sheet has loaded or failed, so that a page never draws bare.
   function linkStyles(css) {
-    for (const href of css) {
-      if (linked.has(href)) continue;
+    const loads = css.filter((href) => !linked.has(href)).map((href) => new Promise((done) => {
       linked.add(href);
-      document.head.append(h('link', { rel: 'stylesheet', href: `/${href}` }));
-    }
+      const link = h('link', { rel: 'stylesheet', href: `/${href}` });
+      link.addEventListener('load', done);
+      link.addEventListener('error', done);
+      document.head.append(link);
+    }));
+    return Promise.all(loads);
   }
 
   async function resolve(decision, path) {
@@ -82,7 +86,8 @@ export function createRouter({ pages, shell, main, asof }) {
     try {
       found = await resolve(decision, place.pathname);
       if (mine.signal.aborted) return;
-      linkStyles(found.entry.css ?? []);
+      await linkStyles(found.entry.css ?? []);
+      if (mine.signal.aborted) return;
       view.rest = found.rest;
       active = { view, module: found.module, entry: found.entry };
       await found.module.show(view);
@@ -142,7 +147,10 @@ export function createRouter({ pages, shell, main, asof }) {
       document.addEventListener('click', async (event) => {
         const link = event.target.closest?.('a[href^="/"]');
         if (!link) return;
-        const click = { button: event.button, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey };
+        const click = {
+          button: event.button, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey,
+          defaultPrevented: event.defaultPrevented,
+        };
         const where = { href: link.getAttribute('href'), target: link.getAttribute('target'), download: link.hasAttribute('download') };
         if (!followsInPage(where, click, location.origin)) return;
         event.preventDefault();

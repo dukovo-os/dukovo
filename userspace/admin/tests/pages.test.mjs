@@ -51,7 +51,7 @@ test('the paths are one to a page, the root is the Overview\'s and the navigatio
   assert.equal(new Set(orders).size, orders.length);
   assert.deepEqual(
     Object.fromEntries(PAGES.filter((entry) => entry.nav).map((entry) => [entry.id, entry.nav.order])),
-    { overview: 10, terminal: 150 },
+    { overview: 10, logs: 20, reliability: 30, networking: 60, firewall: 70, services: 90, terminal: 150 },
     'the orders of the table at the top of pages.js',
   );
 });
@@ -71,7 +71,7 @@ test('the files an entry links exist, unless its page is still a stand-in', () =
     const page = new URL(`pages/${entry.id}/page.js`, ROOT);
     const standIn = existsSync(page) && readFileSync(page, 'utf8').includes('Coming in this PR');
     for (const css of entry.css) {
-      assert.match(css, /^(?:pages\/[a-z-]+\/)?[a-z-]+\.css$/);
+      assert.match(css, /^(?:(?:pages\/[a-z-]+|lib)\/)?[a-z-]+\.css$/);
       assert.ok(standIn || existsSync(new URL(css, ROOT)), `${entry.id}: ${css} is a file`);
     }
   }

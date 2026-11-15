@@ -94,6 +94,69 @@ export async function busy(buttons, work) {
   }
 }
 
+/** How long after a press is let go its click can still come: a finger's comes a little after a mouse's. */
+export const CLICK_WAIT_MS = 400;
+
+/**
+ * Watches the presses of a pointer on `target`, the document: a press runs
+ * from its pointerdown to the click that ends it, or to a moment after it
+ * is let go when no click comes. Gives `afterPress(work)`, which runs
+ * `work` at once when no press is under way, and as the press ends when
+ * one is. `later` and `cancel` are the timer's, given for a test.
+ */
+export function pressWatch(target, { later = setTimeout, cancel = clearTimeout } = {}) {
+  let pressing = false;
+  let timer = null;
+  const waiting = [];
+  const wait = (ms) => {
+    cancel(timer);
+    timer = later(end, ms);
+  };
+  function end() {
+    cancel(timer);
+    timer = null;
+    pressing = false;
+    for (const work of waiting.splice(0)) work();
+  }
+  target.addEventListener('pointerdown', () => {
+    cancel(timer);
+    timer = null;
+    pressing = true;
+  }, true);
+  target.addEventListener('pointerup', () => {
+    if (pressing) wait(CLICK_WAIT_MS);
+  }, true);
+  target.addEventListener('pointercancel', () => {
+    if (pressing) end();
+  }, true);
+  // In the bubble phase, so the page's own handlers have had the click first.
+  target.addEventListener('click', () => {
+    if (pressing) wait(0);
+  });
+  return {
+    afterPress(work) {
+      if (pressing) waiting.push(work);
+      else work();
+    },
+  };
+}
+
+const presses = globalThis.document ? pressWatch(globalThis.document) : null;
+
+/**
+ * Runs `work`, which shows something that moves the page, once no press is
+ * under way. A sentence that appears under a field as the person leaves it
+ * moves what is below the field; when they leave it by pressing a button
+ * below it, the button would move from under the pointer between the press
+ * and its release, and the browser would give the click to whatever is
+ * under the pointer then, so the press would do nothing. Waiting for the
+ * press's click keeps the button where it was pressed.
+ */
+export function afterPress(work) {
+  if (presses) presses.afterPress(work);
+  else work();
+}
+
 /**
  * Gives focus back when a dialog, drawer or menu closes (design 4.6): to
  * `opener` while it is in the page, else to the element that took its

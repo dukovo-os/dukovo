@@ -6,7 +6,8 @@
 # startup says each step from the
 # kernel to the services settling, the chain of services that set when
 # they settled and the slowest, in words and as JSON. A fresh disk has
-# no earlier good start, so --compare says there is none to compare with.
+# no earlier good start, so --compare says there is none to compare with,
+# and with --json its compared_with is null.
 about = "startup says the steps of a start from the firmware to the sign-in, the chain of services that set when they settled and the slowest, in words and as JSON, and says when no earlier good start is kept to compare with (ADR 0474)"
 time = "5m"
 fresh = true
@@ -37,6 +38,11 @@ expect = ['"steps":', '"chain":', '"slowest":']
 run = "startup --compare"
 exit = 1
 expect = "no good start with times is kept to compare with"
+# The web console's read of the same: the start's own times, and nothing to
+# compare with.
+[[step]]
+run = "startup --compare --json"
+expect = ['"steps":', '"compared_with":null']
 [[step]]
 run = "startup --start 999"
 exit = 1

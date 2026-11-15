@@ -94,7 +94,11 @@ fn server_config(
         .with_no_client_auth()
         .with_single_cert(chain, key)
         .map_err(|err| format!("the certificate and key do not go together: {err}"))?;
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    // HTTP/2 first, which carries every tab's requests and streams on one
+    // connection (ADR 0519); HTTP/1.1 for the Terminal's WebSocket, which a
+    // browser opens on a connection of its own, and for any client
+    // without HTTP/2.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     config.ticketer = rustls::crypto::ring::Ticketer::new()
         .map_err(|err| format!("cannot make the keys of session tickets: {err}"))?;
     Ok(Arc::new(config))
@@ -185,19 +189,28 @@ mod tests {
     }
 
     #[test]
-    fn tls_1_3_and_1_2_both_work_and_the_answer_is_http_1_1() {
+    fn tls_1_3_and_1_2_both_work_with_http_2_first_and_http_1_1_for_who_asks_it() {
         let (folder, roots) = certificate("versions");
         let served = load(&folder.0).unwrap();
         let (version, suite, protocol) =
-            connect(&served, roots.clone(), &[&rustls::version::TLS13], &[b"h2", b"http/1.1"]);
+            connect(&served, roots.clone(), &[&rustls::version::TLS13], &[b"http/1.1", b"h2"]);
         assert_eq!(version, "TLSv1_3");
         assert!(suite.starts_with("TLS13_"), "{suite}");
+        assert_eq!(protocol.as_deref(), Some(&b"h2"[..]));
+        // A browser's WebSocket asks for HTTP/1.1 alone.
+        let (_, _, protocol) =
+            connect(&served, roots.clone(), &[&rustls::version::TLS13], &[b"http/1.1"]);
         assert_eq!(protocol.as_deref(), Some(&b"http/1.1"[..]));
+        // HTTP/2 over TLS 1.2 needs ECDHE and an AEAD (RFC 9113 9.2.2),
+        // which every suite of 1.2 here has.
         let (version, suite, protocol) =
-            connect(&served, roots, &[&rustls::version::TLS12], &[b"http/1.1"]);
+            connect(&served, roots.clone(), &[&rustls::version::TLS12], &[b"h2", b"http/1.1"]);
         assert_eq!(version, "TLSv1_2");
         assert!(suite.contains("ECDHE"), "{suite}");
-        assert_eq!(protocol.as_deref(), Some(&b"http/1.1"[..]));
+        assert_eq!(protocol.as_deref(), Some(&b"h2"[..]));
+        // A client that offers nothing speaks HTTP/1.1, as before.
+        let (_, _, protocol) = connect(&served, roots, &[&rustls::version::TLS13], &[]);
+        assert_eq!(protocol, None);
     }
 
     #[test]

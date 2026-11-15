@@ -37,7 +37,7 @@ use http::{Method, Uri};
 
 use super::*;
 use crate::admind::actions::tests::LAB;
-use crate::admind::actions::{REGISTRY, Registered};
+use crate::admind::actions::{REGISTRY, Registered, Runs};
 use crate::admind::guard::CSRF_HEADER;
 use crate::admind::limits::Tries;
 use crate::admind::reach;
@@ -201,13 +201,38 @@ struct Seed {
     method: &'static str,
     template: &'static str,
     params: Vec<(String, String)>,
+    /// A read's other arguments, as the address's query with its `?`, or
+    /// nothing.
+    query: String,
     body: Option<Value>,
 }
 
 impl Seed {
     fn new(what: &str, method: &'static str, template: &'static str, body: Option<Value>) -> Seed {
-        Seed { what: what.to_string(), method, template, params: Vec::new(), body }
+        Seed {
+            what: what.to_string(),
+            method,
+            template,
+            params: Vec::new(),
+            query: String::new(),
+            body,
+        }
     }
+}
+
+/// `value` percent-encoded but for the characters RFC 3986 leaves as they
+/// are.
+fn encoded(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
 }
 
 /// The address `template` with each `{name}` part filled in from `params`,
@@ -222,16 +247,7 @@ fn fill(template: &str, params: &[(String, String)]) -> String {
                     .iter()
                     .find(|(have, _)| have == name)
                     .map_or("nginx", |(_, value)| value.as_str());
-                value
-                    .bytes()
-                    .map(|byte| {
-                        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-                            char::from(byte).to_string()
-                        } else {
-                            format!("%{byte:02X}")
-                        }
-                    })
-                    .collect()
+                encoded(value)
             }
             None => part.to_string(),
         })
@@ -239,8 +255,27 @@ fn fill(template: &str, params: &[(String, String)]) -> String {
         .join("/")
 }
 
+/// Whether `path` is the address of a read of `actions` that runs as an
+/// administrator, the one kind of read that elevates: the whole log, the
+/// firewall's state and the like. Whether the caller may is the refusals'
+/// to say.
+fn read_as_administrator(actions: &[&'static dyn Registered], path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    actions.iter().any(|action| {
+        let template: Vec<&str> = action.path().split('/').collect();
+        !action.changes()
+            && action.runs() == Runs::AsAdministrator
+            && template.len() == parts.len()
+            && template
+                .iter()
+                .zip(&parts)
+                .all(|(want, have)| (want.starts_with('{') && !have.is_empty()) || want == have)
+    })
+}
+
 /// The seeds of the action `action` with the arguments `args`: on its own
-/// route, with the address's parts taken out of them, and shown and checked.
+/// route, with the address's parts taken out of them and, for a read, the
+/// rest in its query; and shown and checked.
 fn action_seeds(action: &'static dyn Registered, what: &str, args: &Value, seeds: &mut Vec<Seed>) {
     let mut rest = args.as_object().cloned().unwrap_or_default();
     let mut params = Vec::new();
@@ -252,13 +287,25 @@ fn action_seeds(action: &'static dyn Registered, what: &str, args: &Value, seeds
             params.push((name.to_string(), value));
         }
     }
-    let (method, body) =
-        if action.changes() { ("POST", Some(Value::Object(rest))) } else { ("GET", None) };
+    let (method, query, body) = if action.changes() {
+        ("POST", String::new(), Some(Value::Object(rest)))
+    } else {
+        let pairs: Vec<String> = rest
+            .iter()
+            .map(|(name, value)| {
+                let value = value.as_str().map_or_else(|| value.to_string(), ToString::to_string);
+                format!("{}={}", encoded(name), encoded(&value))
+            })
+            .collect();
+        let query = if pairs.is_empty() { String::new() } else { format!("?{}", pairs.join("&")) };
+        ("GET", query, None)
+    };
     seeds.push(Seed {
         what: format!("{} {what}", action.id()),
         method,
         template: action.path(),
         params,
+        query,
         body,
     });
     for route in ["/api/1/show", "/api/1/check"] {
@@ -274,8 +321,8 @@ fn action_seeds(action: &'static dyn Registered, what: &str, args: &Value, seeds
 
 /// Every request the fuzzing starts from: each route of the table with a
 /// body it takes, each action's good and bad examples on its route, shown
-/// and checked, and a few pages. The events, whose answer is a stream that
-/// does not end, are left out.
+/// and checked, and a few pages. The events and a follow of the log, whose
+/// answers are streams that do not end, are left out.
 fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
     let mut seeds = vec![
         Seed::new("page", "GET", "/", None),
@@ -425,6 +472,10 @@ fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
         Seed::new("fingerprint", "GET", "/api/1/fingerprint", None),
         Seed::new("description", "GET", "/api/1/openapi.json", None),
         Seed::new("actions", "GET", "/api/1/actions", None),
+        Seed {
+            params: vec![("trial".into(), "network".into())],
+            ..Seed::new("fresh", "GET", "/api/1/console/fresh/{trial}", None)
+        },
         Seed::new("changes", "GET", "/api/1/changes", None),
         Seed::new("change", "GET", "/api/1/changes/{id}", None),
         Seed::new("keep", "POST", "/api/1/changes/{id}/keep", Some(json!({}))),
@@ -562,7 +613,7 @@ impl Sent {
         }
         Sent {
             method: seed.method.as_bytes().to_vec(),
-            target: fill(seed.template, &seed.params).into_bytes(),
+            target: format!("{}{}", fill(seed.template, &seed.params), seed.query).into_bytes(),
             headers,
             body: seed.body.as_ref().map_or_else(Vec::new, |body| body.to_string().into_bytes()),
         }
@@ -796,7 +847,7 @@ fn bend(rng: &mut Rng, sent: &mut Sent, seed: &Seed, sessions: &Sessions) {
             if let Some(empty) = parts.iter().skip(1).position(String::is_empty) {
                 parts[empty + 1] = part;
             }
-            sent.target = parts.join("/").into_bytes();
+            sent.target = format!("{}{}", parts.join("/"), seed.query).into_bytes();
         }
         11 => {
             sent.method = rng.pick(&[&b"GET"[..], b"POST", b"HEAD", b"PUT", b"OPTIONS"]).to_vec();
@@ -809,6 +860,9 @@ fn bend(rng: &mut Rng, sent: &mut Sent, seed: &Seed, sessions: &Sessions) {
                 "?x",
                 "?&&=",
                 "?since=1&since=2",
+                "?lines=%ff%fe",
+                "?service=a%00b",
+                "?all=yes",
             ]);
             sent.target.extend_from_slice(query.as_bytes());
         }
@@ -884,6 +938,16 @@ const CHANGING: [&str; 12] = [
 
 /// What admind asks authd as a person signs in.
 const SIGN_IN_VERBS: [&str; 6] = ["begin", "trusted", "code", "challenge", "passkey", "start"];
+
+/// The probe of the action of `actions` that the body of a check names,
+/// with its arguments, as admind prepares it: the one command the check may
+/// run.
+fn probe_of(actions: &[&'static dyn Registered], body: &[u8]) -> Option<Value> {
+    let asked: Value = serde_json::from_slice(body).ok()?;
+    let action = actions.iter().find(|action| asked["action"] == action.id())?;
+    let args = asked.get("args").cloned().unwrap_or_else(|| json!({}));
+    action.prepare(args).ok()?.probe.map(|probe| json!(probe))
+}
 
 /// Whether `argv` is a probe of the actions this test has.
 fn is_probe(argv: &Value) -> bool {
@@ -1018,13 +1082,15 @@ fn broken(
         }
     }
     if matches!(sent.method.as_slice(), b"GET" | b"HEAD")
-        && (elevated || after.newest != before.newest)
+        && ((elevated && !read_as_administrator(actions, &path)) || after.newest != before.newest)
     {
         return Some("a read ran a command as an administrator or wrote the journal".into());
     }
     if path == "/api/1/check" {
-        let only_probes =
-            calls.iter().all(|(method, params)| method == "run" && is_probe(&params["argv"]));
+        let own = probe_of(actions, &sent.body);
+        let only_probes = calls.iter().all(|(method, params)| {
+            method == "run" && (is_probe(&params["argv"]) || own.as_ref() == Some(&params["argv"]))
+        });
         if elevated || !only_probes || after.newest != before.newest {
             return Some(format!("a check ran more than probes: {calls:?} {asked:?}"));
         }
@@ -1094,9 +1160,11 @@ fn every_route_of_the_table_has_a_request_to_start_from() {
     let actions: Vec<&'static dyn Registered> = REGISTRY.to_vec();
     let seeds = seeds(&actions);
     for entry in TABLE {
-        // The event stream does not end; the lab's own route is no
-        // installed console's.
-        if entry.path == "/api/1/events" || entry.path.starts_with("/api/1/test/") {
+        // The event stream and a follow of the log do not end; the lab's
+        // own route is no installed console's.
+        if matches!(entry.path, "/api/1/events" | "/api/1/logs/follow")
+            || entry.path.starts_with("/api/1/test/")
+        {
             continue;
         }
         let method = if entry.verb == Verb::Get { "GET" } else { "POST" };

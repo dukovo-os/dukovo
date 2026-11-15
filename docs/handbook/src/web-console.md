@@ -11,12 +11,13 @@ console stays free, and nothing in it ever moves behind a paywall. This
 chapter covers how to reach it, sign in, add a second step and unlock the
 console to make changes; how to find your way, with the header, the
 navigation, the keys and the command palette; the first sign-in of a new
-account and your own preferences; the Overview; what changed on the
-machine, and how to put a change back; showing the command of an action,
-and using the API from a script; following a long task; the terminal; and
-what to do when something goes wrong or does not work. The references are
-dukovo-admin(7), admind(8), admin(8), admin.toml(5), authd(8), user(8),
-who(1) and last(1); the decisions are ADR 0514, ADR 0515, ADR 0516 and
+account and your own preferences; the Overview; the Logs; what changed on
+the machine, and how to put a change back; showing the command of an action,
+and using the API from a script; following a long task; the network cards
+and the firewall; the terminal; and what to do when something goes wrong or
+does not work. The references are dukovo-admin(7), admind(8), admin(8),
+admin.toml(5), authd(8), user(8), who(1), last(1), log(1), network(8),
+network(5) and firewall(8); the decisions are ADR 0514, ADR 0515, ADR 0516 and
 ADR 0517.
 
 | Task | How |
@@ -33,12 +34,20 @@ ADR 0517.
 | Open a shell in the browser | **Terminal** in the list of pages; see "The terminal" |
 | Open root's shell in the browser | **New administrator terminal**, with the console unlocked; see "The terminal" |
 | Read what the console did | `elevate log -s admind` and `elevate log --audit` |
+| Read the machine's log in the browser | **Logs** in the list of pages; see "The Logs" |
+| Watch the log as lines come | **Follow new lines** on the Logs page; see "Following the log" |
+| Keep lines of the log as a file | **Save as file...** on the Logs page; see "Saving lines" |
+| Find what happened at a moment on a chart | **Open CPU** and the others, under the Overview's charts; see "From a chart to the logs" |
 | See what the console can do | `admin actions` |
 | See the command, API call and Ansible task of an action | `admin show service.restart name=nginx`, or `Tab` on its row in the palette; see "Showing the command" |
 | Make a token for a script | `admin token add NAME --scope services:read` |
 | See what changed on the machine, and who changed it | `https://NAME.local:9090/api/1/changes` in a browser that is signed in; see "What changed" |
 | Put a change back | `elevate admin put-back ID` |
 | Follow a long task | **Tasks** in the header; see "Tasks" |
+| See why a service is not running, and start, stop or restart it | **Services**, then the service; see "Services" |
+| See the network cards, or change a card's address | **Networking**, then **Change…**; see "Networking" |
+| Allow or deny a port, or see what the firewall blocked | **Firewall**; see "Firewall" |
+| Undo a network or firewall change that cut the console off | Wait for the time the banner shows, or `elevate network undo` or `elevate firewall undo` at the machine |
 | Keep the settings in your own Git | `admin export DIR` |
 | Find out what an error means | **Help**, then **What error messages mean**; see "When something goes wrong" |
 | Start the console again | `elevate service admind restart` |
@@ -334,14 +343,16 @@ at once (see "Your preferences"); and **Sign out**. When terminals run,
 ### The navigation
 
 The list of pages shows the machine's name above it, then one entry for
-each page the session may use: **Overview**, and **Terminal**, which an
+each page the session may use: **Overview**, **Logs**, **Reliability**,
+**Networking**, **Firewall**, **Services**, and **Terminal**, which an
 account that may not open one does not see (see "The Terminal entry is
 missing"). The page you are on is marked, and the entries under it show
-while you are in it: **Terminal** has **Sessions** and **Terminal
-settings**. A number beside **Sessions** says how many terminals you have,
-and a screen reader says it with the name, "Sessions, 2 running". The
-number is read when the console opens, when a task or a change comes (at
-most once in 30 seconds), and every 5 minutes while the tab is in view.
+while you are in it: **Services** has **Scheduled tasks**, and **Terminal**
+has **Sessions** and **Terminal settings**. A number beside **Sessions**
+says how many terminals you have, and a screen reader says it with the
+name, "Sessions, 2 running". The number is read when the console opens,
+when a task or a change comes (at most once in 30 seconds), and every 5
+minutes while the tab is in view.
 
 A page you ask for that the console does not have says **The console has
 no page at** the address, with **Go to the Overview** and **Search or run a
@@ -455,7 +466,7 @@ argument of it is known. Press `Enter` or press the row:
 | --- | --- |
 | A page, or a terminal | Goes there. **New terminal** opens a new one, and a terminal by its name opens it (see "The terminal") |
 | A read with every argument known | Runs it as you and shows the answer in the palette: a table of its first 50 rows, or its facts, with the JSON of the answer under **The answer as JSON**. **Back** returns to the list |
-| A service | Asks the console to explain it, as `service NAME explain` does, and shows the answer |
+| A service | Opens its page (see "Services") |
 | A certificate | Shows it, as `cert show NAME` does |
 | A change, or a read that needs an argument | Opens the form of the action, with the command it will run in one line under it, and **Run** for a change or **Show the answer** for a read |
 
@@ -637,8 +648,10 @@ Under the ring is **N things to look at**, the first four of them, and **See
 all N** for the rest. The list holds the checks that did not pass and what
 the pages add: a service that gave up, a certificate that is revoked, has
 ended or ends within 14 days, an administrator's account with no second
-step, a task of the last 24 hours that failed or was stopped, and a file
-changed by hand that nobody has marked seen in 7 days. The worst are first:
+step, a task of the last 24 hours that failed or was stopped, a file changed
+by hand that nobody has marked seen in 7 days, and a change that is being
+tried, such as a service's file under `service try`, with the time it is
+undone unless someone keeps it (see "Services"). The worst are first:
 what **Needs you** before what is **Worth a look**. A check that names what
 a page lists already, such as a service that gave up, is not listed twice.
 
@@ -661,6 +674,8 @@ changed" below):
 
 **Keep it**, **Put back** and **Undo** are for administrators, and each asks
 you to unlock the console first. Anyone who signs in can look at the rows.
+**See all** opens the whole journal on the Reliability page (see "The
+journal").
 
 ### Usage
 
@@ -669,7 +684,9 @@ choose with the buttons beside the heading, or with the arrow keys once one
 has focus. The choice is in the address, as `?range=7d`, so a link or a
 reload shows the same one. A screen reader hears each chart as its average
 and its peak, "CPU over the last 24 hours: average 12%, peak 72% at 2:14
-AM". **Show the numbers** opens the points as a table.
+AM". **Show the numbers** opens the points as a table. **Open CPU**, under a
+chart, opens it to choose a moment on it and see what happened then (see
+"From a chart to the logs").
 
 The history is kept for two weeks at one-minute steps, and for a year as
 hourly averages. A machine that has kept none yet says **No numbers yet**,
@@ -721,9 +738,10 @@ each have a row: when, who, how, which files, and what each file was before
 and after.
 
 The Overview shows the newest five changes, with the buttons **Keep it**,
-**Put back**, **Undo** and **See the change** (see "The Overview"). The API
-serves all of the journal, and `admin put-back` puts a change back from a
-terminal. A browser that is signed in to the console reads the journal at
+**Put back**, **Undo** and **See the change** (see "The Overview"), and the
+Reliability page shows all of them, with filters and **Copy as a script** (see
+"Reliability"). The API serves all of the journal, and `admin put-back` puts a
+change back from a terminal. A browser that is signed in to the console reads the journal at
 its address, as the JSON the route answers:
 
 ```
@@ -948,14 +966,14 @@ You meet the command in four places:
 - **Under a button that runs an action, when the Show commands switch is
   on.**
 
-The **Show commands** switch is in the head of the Overview and of the setup
-page. It keeps its state as the `commands` preference, so it is the same on
-every browser you sign in with (see "Your preferences"). When it is on, a
-button that runs an action shows its command in one line under it, which
-opens **Show command** when you press it. The Overview's buttons are the
-journal's, **Keep it**, **Put back** and **Undo**, and not an action's, so
-the switch shows nothing under them: **Put back** names the files and shows
-its command in its own question (see "Put back").
+The **Show commands** switch is in the head of the Overview, of the setup page
+and of the page of a service. It keeps its state as the `commands`
+preference, so it is the same on every browser you sign in with (see "Your
+preferences"). When it is on, a button that runs an action shows its command
+in one line under it, which opens **Show command** when you press it. The
+Overview's buttons are the journal's, **Keep it**, **Put back** and **Undo**,
+and not an action's, so the switch shows nothing under them: **Put back**
+names the files and shows its command in its own question (see "Put back").
 
 ## Using the API
 
@@ -991,7 +1009,11 @@ area, its error IDs, its examples, its `compares` (see "A call"), its
 `long` (whether it runs as a task: see "Tasks") and its `input`, a JSON
 Schema of the arguments it takes, which a script can check what it is about
 to send against. A read runs as the person who asks, with
-their own rights. A change runs as an administrator.
+their own rights, except a read of what only an administrator may see, such
+as the whole log or what the firewall blocked, which runs as an
+administrator, as a change does (ADR 0518): a token reaches it only with
+its area's full scope, never with `area:read`. A change runs as an
+administrator.
 
 ### Making a token
 
@@ -1340,6 +1362,784 @@ administrator. It never stops a task whose action the console no longer
 has, since there is no area to check its scopes against
 ([ADM-124](../../errors/ADM-124.md)).
 
+## Services
+
+**Services**, in the list of pages, shows the services Spark runs on this
+machine, and each has a page of its own. Anyone who signs in can look at
+them. Starting, stopping and restarting are for administrators, who unlock
+the console first (see "Unlocking the console"). The list is at `/services`
+and a service's page at `/services/NAME`.
+
+### The list
+
+The table has a row for each service, with the ones that failed first and the
+rest by name:
+
+| Column | What it says |
+| --- | --- |
+| Service | Its name, which opens its page |
+| Now | Its state, in a word and in a dot that repeats it, so that the colour is not all there is |
+| At boot | **Starts at boot**, or **Off** |
+| Since | When it came to its state, in your time zone. The full date and time are in the tooltip |
+| What it does | Its description |
+
+A service that `service try` is trying a change to has **Being tried** beside
+its state. The states are:
+
+| State | What it is |
+| --- | --- |
+| Running | It has a process |
+| Starting | Its process has begun and is not ready yet |
+| Done | It ran and ended well, as a service that does one job does |
+| Waiting | It has not started, because it waits for a service it needs, or for its turn |
+| Stopping | It was asked to stop and has not ended yet |
+| Failed | It ended badly, or could not start, and Spark gave up on it |
+| Stopped | It was stopped, or it is turned off |
+
+**Filter** keeps the services whose name or description has the words you
+type, found as the command palette finds them: letter by letter and in order,
+capitals and accents not counting (see "The command palette"). **State**
+keeps **Running**, **Failed**, **Stopped**, **Off at boot** or **Being
+tried**. Both are in the address, as `?q=ngi&state=failed`, so a link or a
+reload shows the same rows. A filter that leaves none says **No service
+matches the filter.** and has **Show every service**. A screen reader hears
+how many rows are shown, "Services, 3 shown of 12", a moment after you stop
+typing.
+
+The list is read again every 10 seconds while the tab is shown, and when a
+task or a change comes. It draws a row again only when what the row says
+changes, so a link you are on keeps the focus. A service whose name has a dot,
+such as `php-fpm8.3`, has the dot written `%2E` in its address
+(`/services/php-fpm8%2E3`), as the links of the console write it: an address
+whose last part has a dot is read as a file's.
+
+### One service
+
+The page starts with the service's name, its state, whether it starts at boot
+and what it does. For a service that is not running, or done, a banner says
+why: the sentence that `service NAME explain` gives, such as **nginx is not
+running: its start failed 3 times in a row; it last said: ...**, what to do
+about it, and a link to the service behind it when another one is the cause.
+A service whose health check has failed says so under its state, and one
+whose file has a mistake says that Spark runs the last good copy.
+
+These buttons run the actions of the same names, with the console locked or
+not as any change goes (see "Unlocking the console"):
+
+| Button | When it is there | What it runs |
+| --- | --- | --- |
+| **Run now** | The service has no process and is not stopping | `service NAME start` |
+| **Stop** | The service is running or starting | `service NAME stop` |
+| **Restart** | The service is running or starting | `service NAME restart` |
+| **Starts at boot** | Always, as a switch | Turning it on runs `service NAME enable`, and off `service NAME disable` |
+
+Turning **Starts at boot** on also starts the service now, and turning it off
+also stops it now, as the commands do. The page says so under the switch, and
+a notice says what was done, **diskhealth no longer starts at boot, and is
+stopped.** While **Show commands** is on, each button has its command under
+it, which opens **Show command** when you press it (see "Showing the
+command"). A locked console asks to unlock first and says what for, and
+**Cancel** sends nothing. An account that is not an administrator sees no
+button, and the words **Administrators can start and stop services.**
+
+`admind` and `authd` are what the console is made of, so stopping one would
+end the answer to the press. Their pages have no **Stop** or **Restart**, the
+switch cannot be turned off, and the page says why before anyone tries:
+**The console runs on admind, so this page does not stop it, restart it or
+turn off its start at boot: that is done at a terminal.** It shows the command
+to copy, `elevate service admind restart`. The actions refuse them as well
+([ADM-125](../../errors/ADM-125.md) names the field `name`).
+
+Under the buttons are cards, each of which reads for itself:
+
+| Card | What it shows |
+| --- | --- |
+| Runs | Since when it runs, its processes, how many times it was started again, what started it, how long it took to be ready, and its restart rule, such as **Starts again when it fails, and gives up after 5 starts that fail in a row** |
+| Needs | The services it requires, wants and starts after, and what it waits for now, each a link to that service |
+| Holds | What its file lets it reach and do: the account it acts as, the files it may read and change, the ports it may listen on, and whether it connects out |
+| Use | What it has used and been held to, and charts of its processor and memory |
+| Limits | What its file lets it use, and the command that changes that |
+| Sockets | The sockets Spark holds for it, and whether it listens now. A service that holds none has no such card |
+| Timer | That a timer starts it, and when. A service that no timer starts has no such card |
+| Being tried | There while `service try` is trying a change to its file: when the change is undone unless it is kept, with `elevate service keep NAME` and `elevate service undo NAME` to copy |
+| Recent log | The last 20 lines of the service, and **Open in Logs** |
+
+**Use** has the numbers Spark keeps for the service's resource domain: its
+memory now and the most it used so far, what its memory limit did (the
+requests for more memory that it refused, and whether the service was stopped
+at the limit), its threads, the bytes it read from and wrote to disks, and how
+long its requests waited for a disk and were held back by its rates. They are
+counted since its first start after the machine started, and the page says so
+under them. They come with the page's own reads, every 5 seconds.
+
+Under the numbers are two charts, the service's processor, in percent of one
+processor (a service of several threads may pass 100), and its memory, drawn
+up to its limit when its file sets one. A **1 h**, **24 h**, **7 days** or
+**1 year** control chooses how far back they go, and the range is in the
+address, as `?range=7d`. The charts are read when the card opens and when you
+change the range, not on a timer, and a service that the machine has kept no
+numbers of says **No history yet: the machine keeps it from its first 10
+minutes on.**
+
+**Limits** has a row for what the service's file sets: **Memory** (or **No
+limit**), **CPU weight**, **Threads**, **Open files**, **Disk weight**, the
+rates of disk reads and writes and of their requests, the **Stop signal** and
+**Stop timeout** when the file names them, and **Its file**, the path of the
+file. The limits are changed in the file, and the card gives the command to
+copy, `elevate service try NAME`, which makes a change for a time and undoes
+it unless it is kept (see `service(8)`). The console does not edit the file.
+
+**Timer** says that Spark starts the service at the times its file names, and
+has **Open Scheduled tasks**. To an administrator who has unlocked the
+console it adds **When**, **Next**, **Last** and **Result**, as the Scheduled
+tasks page has them. The timers are read once, when the card first shows, and
+when the console is unlocked or locked. A locked administrator sees **Unlock to
+see its schedule.** with **Unlock**, and anyone else **Administrators see its
+schedule.**
+
+**Recent log** shows the whole log of the service to an administrator who has
+unlocked the console. For one who has not, it shows the lines of the
+administrator's own programs, none as a rule, and **Unlock** under the words
+**You see the lines of your own programs. Unlock to see the service's log.**
+For anyone else it says **Administrators see the service's log.** **Read
+again** reads it again, and so does unlocking or locking the console. It is
+read when the page opens and then only when asked, never on a timer, since
+each look at the whole log is a line in the audit log (`elevate log
+--audit`). **Open in Logs** goes to the Logs page, with the service chosen.
+
+The page is read again every 5 seconds while the tab is shown, after each
+button, and when a task or a change comes. What is drawn changes only when
+what it says does, so a button you are on stays where it is. A name that is no
+service gets **There is no service called NAME** and **Open the list**.
+
+### Scheduled tasks
+
+**Scheduled tasks**, at `/services/scheduled`, lists each service whose file
+has a `[timer]` (see `service.toml(5)`): when it runs, when it runs next and
+last, and how the last run ended. The soonest comes first, and a timer that
+has no time within five years comes last.
+
+| Column | What it says |
+| --- | --- |
+| Task | The service, which opens its page |
+| When | The schedule in words, such as **Every day at 3:30 AM**, **Every 6 hours** or **Monday to Friday at 8:00 AM**, with the schedule as the file writes it under them, `30 3 * * *`, when the words are not the same. A schedule the page does not read is shown as it is written |
+| Next | When it runs next, in your time zone, with the whole time in the tooltip. A dash means that the service runs from its timer now, or that no time comes within five years |
+| Last | When it last ran, or **Never** |
+| Result | **Worked**, **Failed**, or **Not known**. Spark keeps the result of a run only since the machine started, so an earlier one is not known |
+
+A timer runs by the clock of its own `time_zone`, the server's when the file
+names none. When that is not the zone you chose, its times say whose they are
+and the heads of the columns say **on the server's clock**. A server with no
+timers says **No service has a timer.**
+
+Only an administrator who has unlocked the console reads the timers, since
+`timerd` answers an administrator alone. A locked administrator sees **Unlock
+to see the scheduled tasks.** with **Unlock**, and **Cancel** in the dialog
+reads nothing. Anyone else sees **Administrators see the scheduled tasks.**
+The page reads them when it opens, when you press **Read again**, and when
+the console is unlocked or locked, never on a timer.
+
+### On a phone
+
+The page of a service on a phone has the banner first, then the buttons, one
+to a row and as wide as the page, 44 pixels tall at least. **Open its log**
+goes to the card of the log, which is below the others. The list is a stack of
+cards, each service's state and start under its name, and so are the scheduled
+tasks.
+
+## The Logs
+
+The **Logs** page reads the machine's log, which logd keeps, in the
+browser: the newest lines first read, with the words to narrow them, and the
+lines as they come when you ask for that. It runs `log` for you, as you have
+it at a terminal (see log(1)), and what it shows is what that command would
+print. ADR 0252 says who may read which lines.
+
+### Choosing the lines
+
+The filters are above the list. Each change reads again, and the address
+holds them, so a link to the page shows what you saw.
+
+| Filter | What it does |
+| --- | --- |
+| **When** | **Last 15 minutes**, **Last hour** (the start), **Last 24 hours**, **Last 7 days**, **Today** or **Custom range**, with a start and an end that you give as a date and a time; leave the end empty to read up to now |
+| **Importance** | **Errors only**, **Warnings and errors** (the start), **Information** or **Everything** |
+| **Times in** | **Your zone**, **The server's zone** or **UTC**: the zone the times are shown in, and the one a custom range is given in. Changing it does not read again |
+| **From** | **Everything**, **The machine itself** (the kernel), or one service by its name |
+| **Words in the line** | Words that the line holds, matched as you typed them. Upper-case letters make the search match case, as they do for `log -g`. At most 200 characters |
+| **Fold repeated lines** | Lines that follow each other with the same source and text become one row, **repeated 12 times, last at 09:41:07** |
+
+The list shows the newest 200 lines of that time, the oldest at the top and
+the newest at the bottom, and scrolls to the bottom when it opens. A long
+line wraps and stays whole. **Show older lines**, above the list, asks for
+the 200 before the first one shown. When more than 200 lines share one
+second, the page says so, with a link that opens that second alone with up
+to 1,000 lines. A link may hold `lines` for the number a read asks for,
+from 1 to 1,000; the page leaves out a name or value it does not know and
+says which.
+
+Open a row with **Enter** or a click. It shows the time in all three zones,
+the importance, where the line is from, the process and user when it has
+them, the start of the machine's run that it belongs to and its number, and
+these buttons: **Show 5 minutes around this**, which sets a custom range of
+five minutes either side of the line, keeps **From** and clears the words;
+**Open NAME**, for a service's line; **Only this service**, or **Only the
+machine itself**; and **Copy line**. Escape closes the row.
+
+**Show commands**, at the top of the page, shows the command of the read
+under the filters, to copy and run at a terminal (see "Showing the command").
+
+### Who sees which lines
+
+Only an administrator reads the whole log (ADR 0252). Everyone else reads
+the lines of their own programs.
+
+- **An administrator with the console unlocked** reads the whole log. Each
+  change of a filter is one command that runs as an administrator, and so
+  one line of the audit log (see "Unlocking the console"). Typing in
+  **Words in the line** waits for 600 milliseconds after the last key, and
+  **Enter** asks at once, so that a word typed is one read and not one for
+  each letter.
+- **An administrator with the console locked** reads their own lines and
+  sees **You see the lines of your own programs. Unlock to read the whole
+  log.**, with **Unlock**. Unlocking reads again as an administrator, and
+  locking reads again as yourself.
+- **An account that is not an administrator** sees **You see the lines of
+  your own programs. The machine's log is for administrators.** The page
+  has nothing to unlock for that account.
+
+### Following the log
+
+**Follow new lines** shows lines as the machine writes them. It is off
+until you switch it on, so that the page does not read the log while no one
+looks, and **Pause** stops it. A green **Live** mark sits by the button
+while it follows. One follow is one command that runs for as long as you
+follow, and one line of the audit log for an administrator, where reading
+the log again and again would be one line each time.
+
+While you are at the bottom of the list, new lines scroll into view. When
+you have scrolled up, they stay where they are, and a button such as **12
+new lines** takes you to the bottom. A screen reader is told how many came,
+at most every 5 seconds and not at all when none did; it is not read each
+line. Changing a filter while following reads again and follows with the new
+filter. **Show commands** shows the command that the follow runs.
+
+A follow stops by itself, and the page says why, with **Follow again**:
+
+| The page says | Why |
+| --- | --- |
+| **Following stopped: you locked the console.** | Locking ends a follow of the whole log |
+| **Following stopped: your unlock ended.** | The unlock ran out |
+| **Following stopped: this sign-in ended.** | The session ended |
+| **Following stopped: you began following in another window.** | One follow for each sign-in: the newer one stays |
+| **Following stopped: it had run for an hour.** | A follow lasts an hour |
+| **Following stopped: the lines came faster than this page could take them.** | More than 256 KiB were waiting for the browser |
+| **Following stopped: the server is stopping.** | admind is stopping |
+| **Following stopped: the log command ended.** | `log` ended by itself; what it said last follows |
+| **Following stopped: the connection to the server was lost.** | The connection went with no word from the server |
+
+When more than 100 lines come in a second, the page shows the first 100 and
+says how many it left out. A ninth follow on the machine is refused with
+ADM-134, and the page counts down the 30 seconds to wait. The page never
+opens a follow again by itself.
+
+A follow goes with the tab. A tab that stays hidden for a minute closes its
+follow, so that a browser's few connections to the console are free for the
+tab that is shown; a quick look at another tab does not. When you come back,
+the page reads the lines that came while you were away and follows again.
+
+### Saving lines
+
+**Save as file...** saves the lines the list shows, in the zone **Times in**
+shows, as a text file with one line each:
+
+```
+2026-11-14 10:30:00.123456 +0100 warning nginx[312]: upstream timed out
+```
+
+The line has the time to the microsecond with its offset, the importance,
+the source with its process number when there is one, and the text. The
+file is named `log-NAME-YYYYMMDD-HHMM.txt`, for the machine and the time
+you saved it, in the zone shown. The browser saves it as it saves a
+download; the server keeps nothing. Only the lines in the list are saved, so
+**Show older lines** first when you want more, and for a long stretch run
+`log` at a terminal.
+
+### From a chart to the logs
+
+Under each chart of the Usage card on the Overview is a link, **Open CPU**,
+**Open Memory**, **Open Disk** or **Open Network**. It opens the chart on a
+page of its own, under Logs, with the card's range, at
+`/logs/chart/cpu?range=24h`. The buttons **1 h**, **24 h**, **7 days** and
+**1 year** at the top change the range.
+
+Choose a moment on the chart by clicking it. The chart is also a slider, named
+**Choose a moment on the CPU chart**: `Tab` reaches it, `Left` and `Right`
+move one point, `Page Up` and `Page Down` ten, `Home` and `End` go to the
+ends, and `Enter` chooses. A screen reader is told the time and the value of
+each point, such as "2:05 PM, 63 percent". The changes of the journal in that
+time are marked with small triangles above the chart, and listed under it as
+buttons, so that the keyboard reaches them: choosing one chooses its time.
+
+The moment is a step, the chart's point that holds it: one minute on **1 h**,
+15 minutes on **24 h**, 2 hours on **7 days** and a day on **1 year**. The
+page shows four cards for it, and each reads for itself, so a card that cannot
+read says why and the others go on.
+
+| Card | What it shows |
+| --- | --- |
+| **What happened around** | The journal's rows and the log's warnings and errors in the step and the step before it, the newest last; the newest 12 when there are more |
+| **Busiest at** | The five services that used the most CPU and the five that held the most memory in the step, in one table |
+| **What moved most** | The services whose CPU or memory changed most against the hour before the step: the mean over the step against the mean over that hour, ranked by the change over the larger of the two, so that a service that went from 1% to 40% ranks above one that went from 50% to 60%. The top five, each as "from 1% to 40%". A service with no numbers in the hour before is "new"; a share of less than 0.5% CPU or 1 MB is not counted |
+| **Logs** | The warnings and errors of the step, as the Logs page shows them, with **Open in Logs with this time**, which opens the Logs page for that step. When a step holds more than 200 lines, the card says **The newest 200 lines of this step**; the Logs page has them all |
+
+The moment is in the address, `at=` in milliseconds, so a link shows the same
+moment. The times are in your time zone. The Logs card reads as the Logs page
+does: an administrator with the console unlocked reads the whole log, and each
+read is a line of the audit log; everyone else reads their own lines (see "Who
+sees which lines").
+
+## Reliability
+
+**Reliability**, in the list of pages, shows how the machine has fared: its
+health, the problems of each day, what happened on each day, its starts, and
+the journal of changes. Anyone who signs in can look at the starts, the
+changes and one start's page. The errors in the log, the crash dumps and the
+alerts are an administrator's, who unlocks the console first (see "Unlocking
+the console"). The page is at `/reliability`, one start at
+`/reliability/starts/N` and the whole journal at `/reliability/changes`.
+
+The head has **7 days**, **30 days** and **1 year**, which choose how far back
+the page looks, and **Copy settings to Git...**. The range is in the address,
+as `?range=30d`. A year counts by the month, and the others by the day, in
+your time zone. The cards are:
+
+| Card | What it shows |
+| --- | --- |
+| Health | The score of the last checks, as the Overview has it, such as **92, good**, with **How the score works**. Without `dukovo-check` it says **Checks are not on this server yet.**, and an account that is no administrator, **The health score is for administrators.** |
+| Problems a day | A bar for each day (or month) of the failed starts, crashes and errors in the log, with the total over the range in words. **Show the numbers** has them as a table |
+| Events by day | A row each for **Starts**, **Services** (errors in the log), **Updates** (a start whose release is not the one before it), **Changes** (the journal's rows) and **Crashes**, and a column for each day (or month) |
+| Starts | The starts the machine keeps, newest first |
+| A failed start | Only while a start that is kept has failed (see "When a start fails") |
+| Crashes | The kernel crash dumps, newest first |
+| Alerts | The last 20 changes of the alerts, newest first |
+
+The page counts and does not score. The machine keeps no figure for stability,
+so the page makes none up: **Problems a day** is the number of things that went
+wrong, and a day with none has no bar.
+
+Each cell of **Events by day** is a button with a dot and its count in words,
+**3 errors** or **2 starts, 1 failed**. The dot has a shape as well as a
+colour: one for what failed or was taken back, one for a warning, and one for a
+change or a restart. Press a cell and the day opens under the table, with
+everything that happened in it, oldest first, so that the newest is last. The
+errors of one service are one line, **nginx: 3 errors**, with the last of them
+under it. The day has **Logs for this day**, which opens the Logs page for the
+day in your zone, and, for a day, **Changes this day**, which opens the
+journal for it (a month has only the first). Press the same cell again to put
+the day away.
+
+### Errors, crashes and alerts
+
+The errors of the log, the crash dumps and the alerts are read by an
+administrator who has unlocked the console. A locked administrator sees, on
+**Events by day**, **Crashes** and **Alerts**, **Unlock to see errors, crashes
+and alerts.** with **Unlock**, and the rest of the page is drawn; anyone else
+sees **Administrators see errors, crashes and alerts.** A day then has no
+**Services** or **Crashes** count, and the page says that what could not be
+read is not counted.
+
+**Crashes** has each dump's time, size and the first line of its panic, and
+`elevate dumps show NAME` to copy: the text of a dump is long and root's, so
+the page does not show it. Five are listed, and **And 3 older. dumps list
+shows them all.** says how many are left. **No crash dumps are kept.** is what
+a machine that has not crashed says. **Alerts** lists when each change of an
+alert was, whether it was **Raised**, **Cleared** or **Told**, how bad it
+was, where it came from and its title.
+
+The log can be counted for the newest 1,000 errors, and the journal for the
+newest 200 changes; when a read gave the most it may, the page says **Only the
+newest 1,000 errors are counted, so earlier days may have more.**
+
+The page reads each of its sources once when it opens, when you change the
+range, when you press **Try again** under one that failed, and when the
+console is unlocked or locked. It never reads on a timer: each look at the
+whole log is a line in the audit log (`elevate log --audit`).
+
+### Starts
+
+**Starts** has a row for each start the machine keeps, newest first, ten at a
+time, and **Show older (N more)** shows ten more.
+
+| Column | What it says |
+| --- | --- |
+| Started | When the start began, in your time zone, which opens that start's page |
+| Version | The release, with the slot it ran from, as in **1.0.0-alpha.1 (slot A)** |
+| Ready in | How long it took to be ready, or a dash when its time is not known, or **never** for a start that failed |
+| Result | **Good**; **Failed: BOOT-104**, with the ID of the check that failed it; **Fell back**, when the update went back to the release before; **Try 2 of changes bisect**, a restart that a search for a change is making; or **Not finished** |
+
+A start's page has its facts (when it began, its version, how long it took and
+its result), and **Where the time went**: the steps of the start, such as the
+boot loader and sign-in, each with its time. **Compare with** picks the
+start to lay it beside, and the page chooses the last good start. Each step
+then has the time it took in that start and the change, **+2.8 s** or **-0.4
+s**, and a step that took a tenth of a second or more longer is marked as
+slower, which a screen reader says too. Pick **No other start**, or any start that
+has its times, to compare with that one instead. **What took longest** lists
+the services that took longest to become ready, and the chain of services
+that the start waited for, in order.
+
+Only some starts have times. A start without them says **No times are kept for
+this start.**, a number that the machine has no start of says **The machine has
+no record of start N.** with **Open Reliability**, and a start with no good one
+before it says **No good start with times is kept to compare with.**
+
+### When a start fails
+
+When a start that the machine keeps failed its health check, the page has
+**A failed start**: **The start at 9:12 AM failed its health check
+(BOOT-104).** with **Open the start**, and **These changes came since the last
+good start:**, a list of what changed since: the release of Dukovo or Radix,
+a set of firmware, the CPU microcode, the boot options or an app, with its
+version and when.
+
+With two changes or more the card offers to find which one broke the start:
+**Find which change broke it. The machine restarts up to 3 times, and nothing
+is changed for good.** The command to copy is `elevate changes bisect`. It
+restarts the machine, which the page does not do from a button, so the card
+says **Running it from the console comes with the Hardware page.** While the
+search runs, the card says which try it is on, **Changes bisect is running: try
+2 of 3.**, and gives `elevate changes bisect --stop` to end it. Under them are
+`changes --failed`, which lists the changes again, and `troubleshoot`, which
+says what the checks suggest. The card is left out while no start that is kept
+has failed.
+
+### The journal
+
+**See all**, on the Overview's **What changed** card, opens the whole journal at
+`/reliability/changes`: every change the journal has, newest first, fifty at a
+time with **Show older (N more)**. The route holds the newest 200, and the
+page says so when it has that many. Three choices narrow the rows, and are in
+the address, so that a link keeps them:
+
+| Choice | What it keeps |
+| --- | --- |
+| **Who** | The changes of one person, or **Outside the console** |
+| **How** | **In this console**, **By hand**, **Put back** or **Undone by Spark** |
+| **Day** | One day, in your time zone |
+
+A link such as `/reliability/changes?who=alice&how=console&day=2026-11-14`
+opens with them chosen. Each row is the Overview's (see "What changed"): its
+time, who made it and how, a dot, and the buttons that fit it, **See the
+change**, **Keep it**, **Put back** and **Undo**, which ask to unlock first.
+
+**Copy as a script** turns changes that you choose into a shell script that
+makes them again, on another machine, for instance, or on this one after a
+restore. A row can be chosen when it was made in the console, worked, and is
+not a put-back (that names a row of this machine's journal). Tick the rows,
+or press **Choose all shown**, which chooses every row that can be chosen of
+those the filters leave, and press **Copy as a script**. The script is shown
+in a box and copied:
+
+```
+#!/bin/sh
+# Changes made with the Dukovo console, oldest first.
+set -e
+
+# 2026-11-14 09:30:00 UTC: Restart a service
+elevate service diskhealth restart
+
+# 2026-11-14 09:31:12 UTC: Disable a service
+elevate service diskhealth disable
+```
+
+Each change has a comment with its time in UTC and its title, and then its
+command, as **Show command** gives it (see "Showing the command"), with
+`elevate` in front where the action runs as an administrator. The oldest comes
+first. Save it as a file and run it with `sh`, as a person who may `elevate`,
+which asks as it does at any terminal; `set -e` stops it at the first command
+that does not work. A script copies what the console did and no
+more: a change made by hand is not in it, and a file's text is not either, so
+it makes a change to settings on a machine that has the same files and
+services, and no other. **Choose the changes to copy first.** is what the
+page says when none is chosen. A console that could not read which commands
+run as an administrator does not offer the button, and says why.
+
+### Copying the settings to Git
+
+**Copy settings to Git...** in the head opens a form. **Folder** is filled
+with `/users/NAME/HOST-settings`, your own folder, and the form says what it
+does: **Copies the files under /system/settings that everyone may read into
+this folder as a Git commit. Secrets are left out and listed in SECRETS.md.**
+**Copy settings** runs `admin export FOLDER` as you, with no `elevate`, so that
+it reads what you may read and writes in your own folder, and shows the
+command under the form.
+
+The folder becomes a Git repository if it is new or empty, and a folder that
+holds other files and is not a repository is refused, with nothing written in
+it. The files are put at the paths they have on the machine, under
+`system/settings` in the folder, in one commit, **Settings of duke-nas at
+2026-11-14 08:00:00 UTC**, whose author is "Dukovo on duke-nas", the machine's
+and no one's own. An export that changes nothing makes no commit and says
+**The settings are in Git already.** A file that not everyone may read is a
+secret: it is left out by name, and `SECRETS.md` in the folder lists each
+path and why, never what is in it. Each export is a commit, so `git log -p`
+shows what changed between two of them.
+
+### On a phone
+
+The table of events is a list on a phone, a day to an item, newest first, with
+each cell of the day a button 44 pixels tall. The starts and the journal are
+stacks of cards, and the buttons are 44 pixels tall, as they are on the other
+pages.
+
+## Networking
+
+**Networking**, in the list of pages, shows the machine's network cards and
+changes how a card gets its address. Anyone who signs in can look at them.
+Changing a card is for administrators, who unlock the console first (see
+"Unlocking the console"). The cards are at `/networking` and the settings of
+one card at `/networking/NAME`, with the card's name, such as `net0`, or its
+MAC address. The page runs `network show`, `network set`, `network keep` and
+`network undo` (network(8)); what they write is `/system/settings/network`,
+which network(5) describes.
+
+### The cards
+
+There is a section for each card, with its name, which opens its settings,
+and its state: **Connected, 1 Gbit/s**, or **No cable**. The card the console
+is reached through says **You are connected through this card.** Under it are
+what the card has now and how it is set up:
+
+| Row | What it says |
+| --- | --- |
+| Hardware address | The card's MAC address |
+| Set up | **Gets its address by DHCP**, **Has addresses of its own**, or **Left as the machine finds it**; a card that serves DHCP to other machines says so |
+| Addresses | Each address with its prefix and where it came from: DHCP, fixed, IPv6 from the router, link-local, or set another way |
+| Router | The routers it uses |
+| Name servers | The servers the machine asks for names |
+| Metered | **Metered**, **Not metered** or **Decided by itself** |
+| DHCP lease | The address the lease gives, and until when; **which has ended** when the time has gone by |
+
+**Traffic** draws what each card received and sent, in bits a second, over the
+range you choose, the way the Overview does; the range is in the address, as
+`?range=7d`. Without any history yet it says so. **Connections** lists the
+machine's open TCP connections, the other end of each, and its state. The
+connection your own browser has to the console is marked **This browser**.
+
+The page is read again every 10 seconds while the tab is shown, and when a
+change or a trial comes. What is drawn changes only when what it says does,
+so a link you are on keeps the focus. A name that is no card gets **There is
+no such network card** and **Back to the cards**. An account that is not an
+administrator sees no **Change…**, and the editor shows the settings with the
+words **Administrators change the network settings.**
+
+### Changing a card
+
+**Change…** asks to unlock the console first, if it is locked, and says what
+for. The editor starts from what the card does now:
+
+- **From the router (DHCP)**: the card asks for its address when it starts.
+  A card that serves DHCP to other machines cannot choose it, and the editor
+  says why ([NET-178](../../errors/NET-178.md)).
+- **Fixed**: one to four addresses, each with its prefix, such as
+  `192.168.1.10/24`; a router, which is on the network of one of them;
+  up to three name servers, separated by commas or spaces. When you choose
+  **Fixed** the fields start with the addresses, router and servers the card
+  has now.
+- **Metered**: **Decide by itself**, **Yes** or **No**. A metered card waits to
+  download updates and other large things until a time you choose.
+
+The checks are the ones `network set` makes, in the same words, so what the
+page refuses is what the command would refuse. A wrong value is said under its
+field when you leave it, **192.168.1.10 has no prefix: write it as
+ADDRESS/PREFIX, as 192.168.1.10/24**, and again, with focus moved to the field,
+when you press **Try it**; nothing is sent until every field is right. While
+**Show commands** is on, **This runs** under the form holds the command, made
+again a moment after you stop typing (see "Showing the command").
+
+Two buttons make the change:
+
+| Button | What it does |
+| --- | --- |
+| **Try it** | Makes the change and has Spark undo it by itself unless it is kept, within the time chosen under **Undo by itself unless kept within**, 60 seconds to start with |
+| **Apply without trying** | Makes the change for good. It asks first, **Apply without a way back?**, and says to change the card at the machine's screen or over the serial console if it cuts the console off |
+
+### Trying a change
+
+A change that is tried is in force at once, and Spark has put a copy of the
+settings file aside. The page shows a banner at the top, which stays in view as
+you scroll, with the time left, the time the change is undone, a bar that runs
+down, and two buttons:
+
+- **Keep this change** keeps it for good (`network keep`).
+- **Undo now** undoes it at once (`network undo`).
+
+The banner says **Applied** when the settings are in force, and then asks the
+console whether this browser still reaches it over the new settings, over a
+connection opened after the change. A firewall or an address that was changed
+is checked when a connection begins, and a connection that is open goes on, so
+the answer of an old one would prove nothing ([ADM-133](../../errors/ADM-133.md)).
+The page asks again by itself, up to three times at once and then every 3
+seconds, until a new connection gets through: **This browser reached the
+console over the new settings.** **Keep this change** is off until then, and
+says why under the buttons, but **Undo now** is always on. A browser that cannot
+reach the console says **This browser cannot reach the console over the new
+settings. It is undone at 14:32 unless it is kept.**, and the change is undone
+at that time by Spark, which does not need the page for that.
+
+The banner is shown to every session, whoever began the change, so a second
+administrator sees who began it, **Begun by alice in this console**, or **Begun
+at a terminal**, and can keep or undo it; a page that did not begin it asks the
+reach question when **Keep this change** is pressed. An account that is not an
+administrator sees the banner and the words **Administrators keep or undo the
+change.** The form is off while a change is tried, **Keep or undo the change
+being tried first.** (see [NET-176](../../errors/NET-176.md)). When the change
+ends the banner says how: **The change was kept.**, or **The change was undone:
+it was not kept.** A change that was undone has a row in "What changed".
+
+A screen reader hears the time left when the change begins, and at 60, 30 and
+10 seconds, in a quiet voice that does not interrupt; the clock itself is not
+read each second. With less motion chosen in your preferences the bar moves in
+steps, not smoothly.
+
+### When the address changes
+
+A change that takes away the address this browser reaches the console at
+cannot be kept from this page: the page loses the console as soon as the
+change is made. The editor sees that before the change is made, and says so in
+a warning, **This browser reaches the console at 192.168.1.10, which this
+change takes away.** It names the new address as a link, **After Try it, open
+https://192.168.1.50:9090/networking in a new tab, sign in, and keep the change
+there.** The browser asks about the certificate again at the new address, since
+the machine's certificate names the machine, not its addresses (see "The first
+visit"). The same is true of a change to the card's router, when the browser is
+not on the card's own network, and of a change to DHCP, which chooses the
+address itself.
+
+The warning changes what is offered:
+
+- **Apply without trying** is not there.
+- The times to undo by itself are longer: 5 or 10 minutes when you came by an
+  address, and 2, 5 or 10 minutes when you came by the machine's name, which
+  finds the new address within a minute. 5 minutes is chosen.
+- After **Try it** the banner holds the link to the new address. The answer
+  to **Try it** has no way back once the address is gone, so the page waits
+  15 seconds for it, and then shows the change being tried by its own clock,
+  with the link, and says that this browser cannot reach the console over the
+  new settings.
+
+Nothing is lost if you cannot get there: the change is undone at the time the
+banner shows, and the console is where it was. Another session that came by the
+same address loses the console too, and shows the card as it was once the change
+is undone.
+
+## Firewall
+
+**Firewall**, in the list of pages, shows the firewall's rules and the rules'
+effect, and changes them. Anyone who signs in can see the rules and ask what a
+rule would do to a connection. Changing the rules, and seeing what was blocked
+and what listens, are for administrators, who unlock the console first. The
+page is at `/firewall`. It runs `firewall list`, `firewall allow`, `firewall
+deny`, `firewall replace`, `firewall remove`, `firewall keep`, `firewall undo`,
+`firewall test`, `firewall status` and `firewall dropped` (firewall(8)); the
+rules are in `/system/settings/firewall`.
+
+### Rules in order
+
+**Rules** lists the rules in the order they are checked: the first that fits a
+connection decides it. Each is a number and the rule in words, **Allow TCP port
+8080 from 192.168.1.20**, with its command under it while **Show commands** is
+on. Under them the page says what happens when no rule decides: **A ping is
+answered. A connection reaches a port only while a service listens on it with
+the right to be reached; anything else reaches this machine alone.** A line of
+the file that is no rule is listed with the reason, **Line 7 is not a rule:
+...**.
+
+An administrator has **Change** and **Remove** on each rule, and **Add a rule**
+under them. A rule that names a program has neither, since the form has no field
+for it: it says **Changed at a terminal**. **Add a rule** opens a form with:
+
+- **Allow** or **Deny**.
+- A ready-made service to start from, such as **SSH 22** or **Web 443**.
+- The protocol: **TCP**, **UDP**, **TCP and UDP** or **Ping**, which has no
+  port.
+- A port or a range, such as `8000-8100`. A port that is no port is said under
+  its field, **`70000` is not a port, 1 to 65535, or a range of them**.
+- **From**: **Anywhere**, **This network**, the network of the card the console
+  reached you through, or **An address or network…**.
+- **On**: any card, or one.
+- **Undo by itself unless kept within**, as for a network change.
+
+A new rule goes at the end, so the rules above it decide first. **Change** and
+**Remove** open the same form, **Replace rule 2** and **Remove rule 2**. The
+form is in the address, `#add`, `#add?replace=2` and `#add?remove=2`, so that a
+link opens it, and **Escape** closes it and gives focus back.
+
+**Try for 60 seconds** makes the change and has Spark undo it by itself unless
+it is kept, with the banner and the buttons of "Trying a change". **Apply
+without trying** is there only when the page is sure that the change leaves the
+console reachable. While a change is tried the buttons of the rules are off,
+**Keep or undo the change being tried first.** ([NET-177](../../errors/NET-177.md)).
+
+**Test a connection** asks which rule would decide a new connection, before
+anyone makes it: the protocol, the port, the address it comes from, which starts
+as your own, and the card. **Rule 2 decides: allowed.** is what `firewall test`
+says. A rule that names a program is **passed over**, since the test does not
+know which program listens, and the answer says so.
+
+### What was blocked
+
+**Blocked in the last 24 hours** is for an administrator who has unlocked the
+console; a locked one sees **Unlock to see what the firewall blocked.** and
+**Unlock**, and anyone else **Administrators see what the firewall blocked.**
+It groups what the kernel dropped by the address, the protocol, the port and the
+card: **203.0.113.9 tried port 22 on net0 at least 14 times, last 4 minutes
+ago**, with what the kernel said, such as that the program listening for it is
+for this machine alone. **Allow this** opens the form with the rule that would
+have let it in, `allow tcp 22 from 203.0.113.9`, for you to check and try. The
+kernel logs at most five a second, so more were dropped than counted.
+
+Addresses blocked for guessing passwords are listed apart, **Blocked for
+guessing passwords**, with a link to the Security page, where there is one, to
+manage them. **Read again** reads the card again; it is read when the page opens and after an
+unlock, and not on a timer, since each look is a line in the audit log (`elevate
+log --audit`).
+
+**What listens** lists the sockets the machine listens on, with the program and
+who reaches each: **Every machine reaches it**, **Some machines or cards reach
+it**, **No other machine reaches it by rule 3** or **This machine only**. It is
+for administrators in the same way.
+
+### When a rule would cut you off
+
+A firewall is checked when a connection begins, so a rule that denies the
+console's port to your address stops this browser's next connection, and the
+page would lose the console as soon as the rule is made. The form checks the
+rules as they would be after the change, against the connection of this
+browser, before it is made: a connection from your address, through the card
+you came by, to the console's port, which admind answers. When the first rule
+to fit it denies it, the form says so:
+
+**This would cut off your own connection. The console reaches you from
+192.168.1.20 through net0 on port 9090, and rule 2 would deny it.**
+
+The warning is an alert, so a screen reader says it once; **Try for 60 seconds**
+is still there, since a rule you can undo by itself is the way to find out, and
+**Apply without trying** is not. After **Try**, the banner cannot reach the
+console over the new rules and says so, **Keep this change** stays off, and
+Spark takes the rule away at the time shown, with the page back at the console.
+What the browser tried in that time is under **Blocked**, and **Allow this**
+makes the rule that would let it in. At the machine, `elevate firewall undo`
+takes a change back at once.
+
+### On a phone
+
+The cards of Networking and Firewall are a stack, one under the other, and each
+table is a list of cards, the number or the name over its words. The banner
+stays at the top of the screen; its buttons are as wide as the page, 44 pixels
+tall at least. The form's choices are one to a row.
+
 ## The terminal
 
 The **Terminal** page puts a shell in the browser: the login shell of your
@@ -1666,10 +2466,10 @@ What changed and Tasks to see if it ran.**, with **Open Tasks**.
 **What error messages mean**, in the Help menu, lists the error pages by
 area, in the order of their IDs, with the title of each. **Filter by ID or
 words** narrows the list as you type, and a line says how many pages are
-left, **32 pages** or **No page matches.** Each entry opens the page of
+left, **35 pages** or **No page matches.** Each entry opens the page of
 that ID, which is on this machine: it says what the error means and what to
 do, and links to the pages it names. They are the support center's pages,
-[ADM-101](../../errors/ADM-101.md) to [ADM-132](../../errors/ADM-132.md). An
+[ADM-101](../../errors/ADM-101.md) to [ADM-135](../../errors/ADM-135.md). An
 ID that has no page, as `/help/errors/ADM-999` asks, says **There is no
 help page for ADM-999.** with a way back to the list. **What ADM-123
 means**, in the error view, goes to the same page.
@@ -1685,8 +2485,9 @@ changes something waits while the machine does not answer, with the tip
 **The server is not answering**; in this release that is **Stop**, in the
 Tasks drawer. A change asked for in the palette or by a button while the
 machine does not answer is not sent: **The server is not answering. Nothing
-was done.** When the machine answers again, the banner goes, and the
-Overview, Tasks and the numbers in the navigation read again.
+was done.** When the machine answers again, to a look or to anything the
+page asks meanwhile, the banner goes at once, and the Overview, Tasks and the
+numbers in the navigation read again.
 
 ### Tasks that need a look
 
@@ -1843,6 +2644,28 @@ center has a page for each.
   does not answer the page. Look at `elevate service admind status` and
   `elevate log -s admind`. The page tries again by itself (see "When
   something goes wrong").
+- **Logs shows only my own lines.** The machine's log is for
+  administrators (ADR 0252). An administrator whose console is locked sees
+  **Unlock to read the whole log**: press **Unlock**. An account that is
+  not an administrator has no more to unlock; an administrator may read
+  the whole log with `elevate log`, or make the account one (`elevate user
+  set --admin NAME`). See "Who sees which lines".
+- **Logs says "No lines match".** The lines of that time and importance do
+  not hold the words. Try **Last 24 hours**, **Information**, or fewer
+  words; the buttons under the message do the first two. Words are matched
+  as typed, so a dot or a bracket is that character and not a pattern.
+- **The chart says "No numbers yet".** The machine has kept no history,
+  which `metricsd` writes. It comes within 10 minutes of `metricsd`
+  starting; the page says if `metricsd` is not running. There is no moment to
+  choose until it does.
+- **The chart view says "The history has no numbers for ...".** The history
+  has no point for that moment: `metricsd` did not run then, or the address
+  names a time outside the range. What happened around it and its log lines
+  still show, as they do for a change that restarted `metricsd`; for the
+  busiest services, choose another range, or another moment.
+- **Following stopped.** The page says why (see "Following the log"), with
+  **Follow again**. After **The connection to the server was lost**, look
+  at the banner (see "When the console does not answer").
 - **The Terminal entry is missing, or the page says "The terminal is not
   open to this account" (ADM-132).** The list of pages shows **Terminal**
   only to an account that may open one. `allowed` in the `[terminal]` table
@@ -1882,6 +2705,31 @@ center has a page for each.
   does not (ADM-116). The system's files were changed or damaged: update
   the system or restore them (see [Updates, snapshots, backups and
   recovery](updates.md)), then `elevate service admind restart`.
+
+- **A change was undone by itself.** A change to the network settings or the
+  firewall's rules that was tried is undone by Spark at the time its banner
+  shows unless **Keep this change** was pressed first, and also when the
+  machine starts again while it runs. The page says **The change was undone: it
+  was not kept.**, and the list of changes has a row for it (see "What
+  changed"). Make the change again, and keep it; if the page could not reach the
+  console over it, the next entry says what to look at.
+- **I cannot reach the console after a change.** A change to the address, the
+  router or a firewall rule can stop the browser that made it. Wait for the time
+  the banner showed: Spark undoes the change by itself, and the console is where
+  it was. At the machine, `elevate network undo` or `elevate firewall undo`
+  undoes it at once. A change that was applied without trying has nothing to
+  undo it: change it at the machine's screen or over the serial console, with
+  `elevate network set` or `elevate firewall remove`, or put the file back from
+  "What changed" (see "Put back").
+- **Keep this change is off (ADM-133, ADM-135).** The page has not yet reached
+  the console over a new connection since the change, which is what turns
+  **Keep this change** on, and it asks again by itself. Reload the page, or
+  open the console in a new tab, to open new connections; if none gets
+  through, the change cuts this browser off and is undone at its time.
+  **Nothing is being tried any more** means the change was kept or undone
+  already.
+- **The settings are being tried (NET-176, NET-177).** A second change cannot
+  be made while one is tried. Keep or undo the first.
 
 An error whose ID is not here has its own page; the number is the same in
 the message and the file name.

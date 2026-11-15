@@ -3,8 +3,10 @@
 
 // What the palette finds of services (design 3.5): each service Spark runs,
 // with its state to filter by (`state:failed`), and a row of its own for
-// start, stop, restart, enable and disable ("Restart nginx"). Until the
-// Services page is there, Enter on a service explains it.
+// start, stop, restart, enable and disable ("Restart nginx"). Enter on a
+// service opens its page.
+
+import { serviceHref } from './needs.js';
 
 // The words Spark says a service is in, the failed ones first.
 export const STATES = ['failed', 'running', 'stopped', 'disabled', 'starting', 'pending', 'waiting', 'stopping', 'done'];
@@ -19,7 +21,7 @@ export function itemsOf(answer) {
       title: service.name,
       detail: typeof service.description === 'string' ? service.description : '',
       state: typeof service.state === 'string' ? service.state : '',
-      href: `/services/${encodeURIComponent(service.name)}`,
+      href: serviceHref(service.name),
       action: 'service.explain',
       args: { name: service.name },
     }))

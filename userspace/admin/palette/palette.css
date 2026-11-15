@@ -38,6 +38,7 @@ dialog.pal::backdrop { background: var(--scrim); }
 .pal-item .cmd-line { font: .857rem var(--font-mono); color: var(--muted); }
 .pal-item .right { flex: none; }
 .pal-item .st { white-space: nowrap; }
+.mark-hit { font-weight: 700; text-decoration: underline; text-underline-offset: .143rem; }
 mark.mark-hit { background: none; color: inherit; }
 .pal-empty { padding: 1rem; color: var(--muted); }
 .pal-note { padding: .5rem 1rem; color: var(--warn); border-bottom: 1px solid var(--border); font-size: .929rem; }

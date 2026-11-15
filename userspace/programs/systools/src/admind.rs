@@ -67,6 +67,7 @@ pub(crate) mod caller;
 mod diff;
 pub(crate) mod errors;
 mod files;
+pub(crate) mod follow;
 // The console the tests of the routes use, which the console of a fuzz
 // target (`crate::fuzz`) is made from too. Outside the tests, that is all
 // it is for, and most of the rest goes unused.
@@ -90,6 +91,7 @@ pub(crate) mod store;
 mod tasks;
 mod terminal;
 mod tls;
+mod trials;
 pub(crate) mod webauthn;
 pub(crate) mod websocket;
 mod who;

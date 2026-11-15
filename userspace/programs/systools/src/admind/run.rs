@@ -290,12 +290,23 @@ pub fn answer(prepared: &Prepared, ran: &Ran, changed: bool) -> Result<Value, Fa
         return Err(failed(prepared, ran));
     }
     if !action.changes() {
-        return serde_json::from_str(&ran.output).map_err(|_| {
+        let not_json = || {
             Failure::new(
                 Kind::Internal,
                 format!("{} printed something that is not JSON", prepared.argv.join(" ")),
             )
-        });
+        };
+        if action.lines() {
+            return ran
+                .output
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(serde_json::from_str::<Value>)
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array)
+                .map_err(|_| not_json());
+        }
+        return serde_json::from_str(&ran.output).map_err(|_| not_json());
     }
     let lines: Vec<&str> = ran.output.lines().take(LINES_MAX).collect();
     Ok(json!({ "done": true, "changed": changed, "output": lines }))

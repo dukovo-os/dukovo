@@ -11,7 +11,7 @@ service - start, stop and look at the services, and check their files
 
 *service list* [*--failed*] [*--json*] [*--timers*]
 
-*service* _name_ *status* [*-n* _lines_]
+*service* _name_ *status* [*-n* _lines_ | *--json*]
 
 *service* _name_ *explain* [*--json*]
 
@@ -81,7 +81,31 @@ the header is left out.
 last started, as *timerd*(8) keeps them (ADR 0478); a timer that has no
 time within five years says *none*. Only an administrator asks. *status*
 of a service with a timer has a *Timer:* line that says the same, for an
-administrator.
+administrator. *--failed* does not go with *--timers*.
+
+*list --timers --json* prints the same timers as an array for a program to
+read, in the same order, an object for each:
+
+```
+[{"service": "backup", "schedule": "0 3 * * *", "next_ms": 1763258400000,
+  "last_ms": 1763172000000, "last_result": "ok", "zone": "Europe/Prague"}]
+```
+
+Times are Unix milliseconds. *schedule* is the schedule as the service's
+file writes it: each *timer.at* as written, then *every 6h* and *first
+10m after boot* where the file has *timer.every* and *timer.after_boot*,
+separated by commas; it is *null* when the file no longer reads. *next_ms*
+is *null* while the service runs from its timer and when no time comes
+within five years, and *last_ms* is *null* for a timer that never started
+the service. *last_result* is *ok* or *failed*, as Spark says the last
+run that the timer started ended since boot: *null* while it runs, after
+a start by hand or another service, and before the timer has started it
+since boot, since Spark keeps no record of runs across a restart. *zone*
+is the time zone the times of day are read in: the file's *timer.time_zone*,
+or the machine's, as *timedatectl*(1) names it (*null* when
+_/etc/localtime_ is a file of its own and names none). timerd's own answer
+has no schedule, zone or result: they come from the service files, the
+machine and Spark.
 
 *status* shows what Spark knows of a service, what it may reach, its
 processes and its last lines in the log:
@@ -131,7 +155,8 @@ once* _when_*)*; *activating (waiting for* _names_*)*; *activating
 (waiting to start again)*; *inactive (waits for a connection on port* _n_*)*, a service that
 starts at its first connection, with its sockets held (ADR 0477); *deactivating (stopping as process* _n_*)*;
 *failed (Spark gave up on it)*; *inactive (disabled)* or *inactive
-(dead)*; and since when, by the clock and how long ago. *Why* says why
+(dead)*, by its file as *list* says it; and since when, by the clock
+and how long ago. *Why* says why
 it is not running as asked, *Needs* names the services its file names,
 *Started* says whether boot, a request or another service wanted it,
 *Asked* who last asked to start, stop or restart it, *Health* how its
@@ -168,6 +193,24 @@ memory and CPU time. The last lines are its records in the log, Spark's
 lines about it among them, as *log -s* _name_ shows them (*log*(1));
 *-n* _lines_ shows that many, 5 unless it is given, and *-n 0* none.
 Status works when the log does not answer, without the lines.
+
+*status --json* writes one line of JSON, an object of five fields in
+this order, for the web console: *now_ms*, Spark's clock when it
+answered, in milliseconds since the machine started, as the service's
+own times are; *service*, the service as Spark's
+*show* _name_ gives it, which is *service* in the document *list --json*
+prints, with the last line its output wrote and the last failure of its
+health check only for root, as above; *processes*, an array of the
+processes in its domain, the first 50 by number, each an object of
+*pid*, *user* (the name of the user it acts for) and *program* (the first
+word of its command line, or *null*); *listening*, an array of the ports
+of its *network.listen* that a TCP socket listens on now, each an object
+of *port* and *tcp* (always true), for a range the first 1024 of its
+ports; and *trial*, *{"id": "service.NAME", "left_ms": N}* while a
+change to its file is being tried (*try*, below), else *null*. It has
+no log lines, which the web console reads from the log, and *-n* does
+not go with it. It exits 0 for a service Spark knows in any state, as
+the JSON says its state, and 4 for one it does not.
 
 *explain* says why a service is in its state, in one sentence, and what
 to do about it. It follows the service it waits for, or the one that
@@ -397,7 +440,8 @@ ADR 0217). No command shows a value back.
 # EXIT STATUS
 
 0 for a request Spark took and a start, stop or restart that settled as
-asked, for *status* of a service that runs or is done, and for
+asked, for *status* of a service that runs or is done, for *status* with
+*--json* of any service Spark knows, and for
 *explain* of one that is done or runs with its health check not
 failing; 3 for *status* or *explain* of a service that does not run, or
 is not ready yet, and for *explain* of one whose health check fails; 4

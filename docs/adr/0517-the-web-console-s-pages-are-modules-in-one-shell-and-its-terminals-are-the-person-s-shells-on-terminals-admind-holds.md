@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0517. The web console's pages are modules in one shell, and its terminals are the person's shells on terminals admind holds
 
-- Status: Accepted
+- Status: Accepted; each page's entry is in `pages.js` and not in a file of its own, and the styles only some pages draw are in `pages.css`, which their entries name, so that the shell's start stays within its budget
 - Date: 2026-11-14
 
 ## Context

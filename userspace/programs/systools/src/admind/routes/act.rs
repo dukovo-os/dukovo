@@ -29,6 +29,7 @@
 use std::future::Future;
 use std::net::IpAddr;
 use std::rc::Rc;
+use std::time::Instant;
 
 use accounts::console::Elevator;
 use http::StatusCode;
@@ -37,7 +38,7 @@ use serde_json::{Value, json};
 
 use super::{Context, Live, Outcome, Reply, Text, shown};
 use crate::admind::actions::show;
-use crate::admind::actions::{self, Caller, Params, Prepared, Registered, Runs};
+use crate::admind::actions::{self, Caller, Params, Prepared, Registered, Runs, Trial};
 use crate::admind::caller::{self, TokenCall};
 use crate::admind::errors::{Failure, Kind};
 use crate::admind::journal::{self, Ended};
@@ -69,8 +70,15 @@ pub async fn action(
     live: Option<Live>,
     token: Option<TokenCall>,
 ) -> Outcome {
-    let args = actions::arguments(params, &cx.body)?;
+    let args = if action.changes() {
+        actions::arguments(params, &cx.body)?
+    } else {
+        actions::query_arguments(params, &cx.query, action.fields())?
+    };
     let prepared = action.prepare(args)?;
+    if live.is_some() && action.runs() == Runs::AsAdministrator && !action.changes() {
+        from_the_console(cx)?;
+    }
     let (asker, whose) = match (&live, &token) {
         (Some(live), None) => {
             (Asker { who: live.name.clone(), how: "console".into() }, shown(&live.name))
@@ -96,6 +104,17 @@ pub async fn action(
             (None, Some(token)) => for_token(&shared, &prepared, token).await,
             (None, None) => Err(super::ended()),
         };
+        // The time a trial began is kept as soon as its change answers well,
+        // before anything else is awaited: the page asks for it next.
+        if let (Ok(probed), Some(trial)) = (&probed, prepared.trial)
+            && probed.ran.status == 0
+        {
+            let mut trials = shared.trials.borrow_mut();
+            match trial {
+                Trial::Begins(id) => trials.begun(id, Instant::now()),
+                Trial::Ends(id) => trials.ended(id),
+            }
+        }
         // A change that names no files has none that moved.
         let mut files_same = true;
         if let Some(begun) = begun {
@@ -130,6 +149,27 @@ pub async fn action(
     match job.await {
         Ok(answer) => Ok(Reply::json(answer?)),
         Err(_) => Err(Failure::new(Kind::Internal, "the action's task did not end")),
+    }
+}
+
+/// Checks that a session's read that runs as an administrator comes from
+/// the console's own page (ADR 0518). A browser says where a request
+/// comes from in `Sec-Fetch-Site`; one from another site is refused,
+/// though the cookie's `SameSite=Strict` already keeps it from being sent
+/// with one. A client that does not say is let through, as a script with
+/// the cookie is.
+///
+/// # Errors
+///
+/// ADM-109 for a request from another site, or from the same site at
+/// another origin.
+pub(super) fn from_the_console(cx: &Context<'_>) -> Result<(), Failure> {
+    match cx.headers.get("sec-fetch-site").map(http::HeaderValue::as_bytes) {
+        None | Some(b"same-origin") => Ok(()),
+        Some(_) => Err(Failure::new(
+            Kind::ForeignRequest,
+            "a read that runs as an administrator is asked for by the console's own page",
+        )),
     }
 }
 

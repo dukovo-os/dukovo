@@ -15,10 +15,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use manifest::service;
-use spark_api::trial::{self, Request};
+use spark_api::trial;
 
 use crate::service::{self as command, ask, said};
 use crate::servicefiles::{self, Place};
+use crate::trial::{ToUse, Tried, try_file};
 use crate::util::{self, Fail, fail, fail_with, usage};
 
 const USAGE: &str = "Usage: service try NAME [--for SECONDS] | keep NAME | undo NAME";
@@ -57,33 +58,15 @@ pub fn try_change(operands: &[String]) -> Result<i32, Fail> {
 }
 
 /// Puts the checked `copy` in place of `path`, service `name`'s file, as
-/// a trial of `seconds`: asks Spark to keep the file, renames the copy
-/// over it, restarts the service and waits for it, then asks whether to
-/// keep the change.
+/// a trial of `seconds` ([`try_file`]: Spark keeps the file, the copy is
+/// renamed over it, and the service restarts and is waited for), then
+/// asks whether to keep the change.
 pub fn put_in_place(path: &Path, copy: &Path, name: &str, seconds: u32) -> Result<i32, Fail> {
     let id = trial_id(name);
-    let request = Request {
-        id: id.clone(),
-        seconds,
-        files: vec![path.display().to_string()],
-        restart: vec![name.into()],
-        reload: Vec::new(),
-    };
-    ask(&request.line())?;
     let began = Instant::now();
-    if let Err(e) = std::fs::rename(copy, path) {
-        let _ = ask(&format!("undo {id}"));
-        return Err(util::failed(&path.display(), e));
-    }
-    println!("{}: trying the change for {seconds} s", path.display());
-    if let Err(failed) = command::change("restart", name, &[]) {
-        eprintln!("service: {}", failed.message);
-        // Spark undoes it once the start fails; this is for one that was
-        // refused, which never started.
-        let undone = match ask(&format!("undo {id}")) {
-            Ok(answer) => said(&answer).to_string(),
-            Err(_) => format!("Spark undid the change: {name} runs its file as it was"),
-        };
+    if let Tried::Undone { why, undone } = try_file(&id, path, copy, seconds, ToUse::Restart(name))?
+    {
+        eprintln!("service: {why}");
         println!("{undone}");
         return Ok(1);
     }

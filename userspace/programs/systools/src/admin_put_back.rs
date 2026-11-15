@@ -27,6 +27,15 @@
 //! to no service is only written. When Spark cannot be asked, the files stay
 //! written, the command says so and exits 1.
 //!
+//! The two files of the Networking and Firewall pages are put to use too,
+//! as the pages' own changes are (ADR 0518): after `/system/settings/network`
+//! is written, Spark is asked to reload netd, as `service netd reload`
+//! does, which keeps the connections on the addresses that stay; after
+//! `/system/settings/firewall`, the kernel is given the file's rules, as
+//! `firewall load` does, which the command can do because elevate gives it
+//! the firewall capability. When either fails the files stay written, and
+//! the command says so and exits 1.
+//!
 //! A change that cannot be put back is said so in words, and nothing is
 //! written: a file the change made, a secret, a file not everyone may
 //! read, one longer than 1 MiB and one whose earlier text is among the
@@ -46,7 +55,7 @@ use crate::admind::store::{self, Store};
 use crate::args::{Arg, Args};
 use crate::bundles::{registry, services};
 use crate::util::{self, Fail, fail, usage};
-use crate::{power, servicefiles, settings_edit};
+use crate::{firewall, netd, power, servicefiles, settings_edit};
 
 /// What a mistake in the command line is told.
 const USAGE: &str = "usage: admin put-back ID";
@@ -62,6 +71,10 @@ struct Places {
     data: PathBuf,
     /// bundled's records of the services' files, by name.
     records: PathBuf,
+    /// netd's settings, network(5): netd reads them again when asked.
+    network: PathBuf,
+    /// The firewall's rules, which `firewall load` gives the kernel.
+    firewall: PathBuf,
 }
 
 impl Places {
@@ -71,6 +84,8 @@ impl Places {
             service_files: PathBuf::from(servicefiles::DIR),
             data: PathBuf::from(services::DATA),
             records: Path::new(registry::STATE).join(services::RECORDS),
+            network: PathBuf::from(netd::SETTINGS),
+            firewall: PathBuf::from(firewall::SETTINGS),
         }
     }
 }
@@ -97,16 +112,19 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let store = Store::open_read_only(Path::new(store::PATH))
         .map_err(|why| fail(format!("{}: {why}; is admind running?", store::PATH)))?;
     let mut out = std::io::stdout().lock();
-    put_back(&store, id, &Places::system(), &power::request, &mut out)
+    let load_rules = |out: &mut dyn Write| firewall::load(out, true);
+    put_back(&store, id, &Places::system(), &power::request, &load_rules, &mut out)
 }
 
 /// Puts change `id` back, as the module says, and writes what it did to
-/// `out`. `ask` gives Spark's answer to a request.
+/// `out`. `ask` gives Spark's answer to a request, and `load_rules` gives
+/// the kernel the firewall's rules, saying so on the `out` it is given.
 fn put_back(
     store: &Store,
     id: i64,
     places: &Places,
     ask: &dyn Fn(&str) -> Result<String, Fail>,
+    load_rules: &dyn Fn(&mut dyn Write) -> Result<i32, Fail>,
     out: &mut dyn Write,
 ) -> Result<i32, Fail> {
     let change = store
@@ -119,9 +137,12 @@ fn put_back(
         check_path(&restore.path)?;
     }
     let (mut spark_files, mut services) = (Vec::new(), Vec::new());
+    let (mut network, mut rules) = (false, false);
     for restore in &plan {
         let told = write_back(restore, &change)?;
         say(out, &told)?;
+        network |= Path::new(&restore.path) == places.network;
+        rules |= Path::new(&restore.path) == places.firewall;
         if let Some(name) = service_file_of(&restore.path, places)
             && !spark_files.contains(&name)
         {
@@ -142,12 +163,19 @@ fn put_back(
             ),
         )?;
     }
+    // What could not be put to use, in words.
     let mut unreached = Vec::new();
-    for name in &services {
+    // netd reads the settings file itself, as a bundle's service reads its
+    // data file, so it is asked to read it again in the same way.
+    let asked = services.iter().map(String::as_str).chain(network.then_some("netd"));
+    for name in asked {
         match reload(name, ask) {
             Ok(told) => say(out, &told)?,
             Err(why) => unreached.push(why),
         }
+    }
+    if rules && let Err(why) = load_rules(out) {
+        unreached.push(format!("the firewall's rules could not be loaded: {}", why.message));
     }
     if !unreached.is_empty() {
         return Err(fail(format!(

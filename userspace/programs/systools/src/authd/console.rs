@@ -160,6 +160,9 @@ pub(super) struct State {
     /// The shells started on the console's terminals, by their first
     /// processes (ADR 0517).
     shells: HashMap<i32, terminal::Shell>,
+    /// The follows of the log started for the console's Logs page, by
+    /// their processes (ADR 0518).
+    follows: HashMap<i32, follow::Follow>,
 }
 
 /// A sign-in under way: whose, from where, for which admind, and how far.
@@ -255,12 +258,14 @@ impl State {
         }
     }
 
-    /// When authd must next look at the administrators' shells: in a
-    /// second while one runs, so that one ends within a second of its
-    /// session's unlock.
+    /// When authd must next look at the administrators' shells and the
+    /// follows: in a second while one runs, so that an administrator's
+    /// ends within a second of its session's unlock, and a follow within a
+    /// second of its session's end.
     pub(super) fn next_check(&self, now: Instant) -> Option<Instant> {
-        let running = self.shells.values().any(|shell| shell.admin && !shell.killed);
-        running.then(|| now + terminal::CHECK_EVERY)
+        let shells = self.shells.values().any(|shell| shell.admin && !shell.killed);
+        let follows = self.follows.values().any(follow::Follow::watched);
+        (shells || follows).then(|| now + terminal::CHECK_EVERY)
     }
 
     /// The account and source whose wrong tries hold `asked` back, as
@@ -1023,6 +1028,7 @@ impl Authd {
                 Some(live) => {
                     live.unlocked = None;
                     self.end_admin_shells(now);
+                    self.end_follows(now);
                     (Answer::Done(String::new()), now)
                 }
                 None => no(NO_SESSION, now),
@@ -1032,6 +1038,7 @@ impl Authd {
                     audit!("{}'s web console session {} ended", live.name, short(session));
                     signal_command(live.worker, libc::SIGHUP);
                     self.end_admin_shells(now);
+                    self.end_follows(now);
                     (Answer::Done(String::new()), now)
                 }
                 None => no(NO_SESSION, now),
@@ -1043,6 +1050,12 @@ impl Authd {
             Console::TokenStart { token } => self.console_token_start(i, files, token, now),
             Console::Terminal { session, admin, term, language } => {
                 self.console_terminal(i, files, session, *admin, term, language, now)
+            }
+            Console::Follow { session, all, filter } => {
+                self.console_follow(i, files, session, *all, filter, now)
+            }
+            Console::FollowEnd { session, process } => {
+                self.console_follow_end(session, *process, now)
             }
             _ => no("not a request of admind's", now),
         }
@@ -2125,6 +2138,7 @@ impl Authd {
     }
 }
 
+mod follow;
 mod terminal;
 
 #[cfg(test)]

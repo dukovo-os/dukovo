@@ -9,7 +9,8 @@
  * browser's own size); the text size preference sets the root to 98%,
  * 109.375% or 131.25%. Borders and focus rings stay in px. theme.js puts the
  * theme on the root element: light is the base, and dark and hc (high
- * contrast) swap the tokens. Nothing loads from outside the console.
+ * contrast) swap the tokens. Nothing loads from outside the console. What
+ * only some pages draw is in pages.css, which their entries name.
  */
 .dk {
   --page: #F2F5F9; --bg: #FFFFFF; --pane: #F5F8FC; --sunken: #ECF1F6; --border: #D4DDE7; --control: #6B7989;
@@ -71,19 +72,15 @@ html, body { margin: 0; }
 .ic { display: inline-block; width: 1.143rem; height: 1.143rem; flex: none; background: currentColor;
   -webkit-mask: var(--m) center / contain no-repeat; mask: var(--m) center / contain no-repeat; }
 .ic-overview { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Cpath d='M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z'/%3E%3C/svg%3E"); }
+.ic-logs { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Cpath d='M3 3.5h10M3 6.5h10M3 9.5h10M3 12.5h6'/%3E%3C/svg%3E"); }
 .ic-reliability { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 8.5h3l2-5 3.5 10 2-5H15'/%3E%3C/svg%3E"); }
-.ic-storage { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4'%3E%3Cellipse cx='8' cy='4' rx='6' ry='2'/%3E%3Cpath d='M2 4v8c0 1.1 2.7 2 6 2s6-.9 6-2V4M2 8c0 1.1 2.7 2 6 2s6-.9 6-2'/%3E%3C/svg%3E"); }
-.ic-snapshots { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.8 9.5A5.5 5.5 0 1 0 3.5 4.6M3 2v3h3M8 5v3.2l2.2 1.6'/%3E%3C/svg%3E"); }
 .ic-network { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='M2 8h12M8 2c2.2 2.2 2.2 9.8 0 12M8 2c-2.2 2.2-2.2 9.8 0 12'/%3E%3C/svg%3E"); }
 .ic-firewall { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Cpath d='M2 3h12v10H2zM2 6.3h12M2 9.7h12M6 3v3.3M10 6.3v3.4M6 9.7V13'/%3E%3C/svg%3E"); }
 .ic-accounts { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round'%3E%3Ccircle cx='8' cy='5' r='3'/%3E%3Cpath d='M2.5 14c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5'/%3E%3C/svg%3E"); }
 .ic-services { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='2.4'/%3E%3Cpath d='M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4'/%3E%3C/svg%3E"); }
 .ic-certs { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='6' r='4'/%3E%3Cpath d='M5.6 9.2L4.6 14.5 8 13l3.4 1.5-1-5.3'/%3E%3C/svg%3E"); }
 .ic-security { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 1.5l5.5 2v4c0 3.4-2.4 5.9-5.5 7-3.1-1.1-5.5-3.6-5.5-7v-4zM5.6 8l1.7 1.7 3.2-3.4'/%3E%3C/svg%3E"); }
-.ic-hardware { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round'%3E%3Cpath d='M4 4h8v8H4zM6.5 1.5V4M9.5 1.5V4M6.5 12v2.5M9.5 12v2.5M1.5 6.5H4M1.5 9.5H4M12 6.5h2.5M12 9.5h2.5'/%3E%3C/svg%3E"); }
-.ic-updates { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2v8M5 7l3 3 3-3M2.5 11v2.5h11V11'/%3E%3C/svg%3E"); }
 .ic-terminal { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 3h12v10H2zM4.5 6.2l2 1.8-2 1.8M8 10h3.5'/%3E%3C/svg%3E"); }
-.ic-report { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 14.5V2M3.5 2.5h8.5l-1.8 3 1.8 3H3.5'/%3E%3C/svg%3E"); }
 .ic-search { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.4 10.4L14 14'/%3E%3C/svg%3E"); }
 .ic-lock { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'%3E%3Cpath d='M3.5 7.5h9v6.5h-9zM5.5 7.5V5a2.5 2.5 0 0 1 5 0v2.5'/%3E%3C/svg%3E"); }
 .ic-unlock { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linejoin='round'%3E%3Cpath d='M3.5 7.5h9v6.5h-9zM5.5 7.5V5a2.5 2.5 0 0 1 4.9-.7'/%3E%3C/svg%3E"); }
@@ -165,12 +162,6 @@ html, body { margin: 0; }
 .radio-card { display: flex; gap: .714rem; align-items: flex-start; padding: .714rem .857rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--bg); }
 .radio-card.on { border-color: var(--sel-b); background: linear-gradient(var(--sel-1), var(--sel-2)); }
 .radio-card input { margin-top: .214rem; accent-color: var(--accent); }
-.seg { display: inline-flex; border: 1px solid var(--btn-b); border-radius: .214rem; overflow: hidden; }
-.seg button { font: inherit; font-size: .929rem; padding: .286rem .786rem; border: 0; border-right: 1px solid var(--btn-b); background: linear-gradient(var(--btn-1), var(--btn-3)); color: var(--text); }
-.seg button:last-child { border-right: 0; }
-.seg button.on { background: linear-gradient(var(--sel-1), var(--sel-2)); font-weight: 600; }
-.grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(18.571rem, 1fr)); }
-.grid.two { grid-template-columns: repeat(auto-fit, minmax(27.143rem, 1fr)); }
 .card { border: 1px solid var(--border); border-radius: .429rem; background: var(--pane); padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
 .card h2 { font: 600 1rem var(--font-ui); display: flex; align-items: center; gap: .571rem; }
 .card h2 .more { margin-left: auto; font-weight: 400; font-size: .857rem; }
@@ -218,27 +209,17 @@ html, body { margin: 0; }
 .log { margin: 0; padding: .571rem .714rem; border-radius: .286rem; background: var(--code-bg); color: var(--code-text); font: .893rem/1.6 var(--font-mono);
   white-space: pre; overflow-x: auto; }
 .hc .log { border: 1px solid #FFF; }
-.log .t { color: #B4C6DC; }
-.log .e { color: #FFB0A8; }
-.log .w { color: #F0C26E; }
-.log .o { color: #7FD69A; }
-.log .n { color: #9CD0FF; }
-.log .fold { color: #F0C26E; }
-.log .hl { background: rgba(108,178,255,.18); display: inline-block; width: 100%; }
 .cmd { display: flex; flex-direction: column; gap: .429rem; padding: .714rem .857rem; border: 1px dashed var(--sel-b); border-radius: .357rem; background: var(--sunken); }
 .cmd-head { display: flex; align-items: center; gap: .571rem; font-size: .857rem; color: var(--muted); }
 .cmd-head .btns { margin-left: auto; }
 .cmd pre { margin: 0; font: .893rem/1.55 var(--font-mono); white-space: pre-wrap; color: var(--text); }
 .inline-cmd { display: block; margin-top: .286rem; font: .893rem var(--font-mono); color: var(--muted); }
-.over { position: relative; }
-.scrim { position: absolute; inset: 0; background: var(--scrim); display: flex; justify-content: center; align-items: flex-start; padding: 5rem 1.143rem 1.143rem; }
 .dialog { width: 100%; max-width: 44.286rem; border: 1px solid var(--btn-b); border-radius: .5rem; background: var(--bg); box-shadow: var(--shadow); display: flex; flex-direction: column; }
 .dialog-head { display: flex; align-items: center; gap: .714rem; padding: .857rem 1.143rem; border-bottom: 1px solid var(--border); background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-radius: .5rem .5rem 0 0; }
 .dialog-head h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); }
 .dialog-head .btn { margin-left: auto; }
 .dialog-body { padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: .857rem; }
 .dialog-foot { display: flex; flex-wrap: wrap; gap: .571rem; justify-content: flex-end; padding: .857rem 1.143rem; border-top: 1px solid var(--border); background: var(--pane); border-radius: 0 0 .5rem .5rem; }
-.mark-hit { font-weight: 700; text-decoration: underline; text-underline-offset: .143rem; }
 /* The pages C2a built, and what they added to the boards */
 .dk .mark-dark { display: none; }
 .dk.dark .mark-dark, .dk.hc .mark-dark { display: block; }
@@ -449,7 +430,6 @@ button.inline-cmd:hover { text-decoration: underline; }
 /* The account page and /welcome */
 fieldset.choices { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: .429rem; }
 fieldset.choices legend { font-weight: 600; padding: 0; margin-bottom: .286rem; }
-.choice-groups { display: flex; flex-direction: column; gap: 1rem; }
 .cards-row { display: flex; flex-wrap: wrap; gap: .571rem; }
 .radio-card { cursor: pointer; min-height: 2.143rem; align-items: center; }
 .radio-card:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -493,6 +473,9 @@ dialog.sheet .dialog-head { border-radius: 0; }
   .notices { left: .857rem; right: .857rem; bottom: 5.143rem; width: auto; max-width: none; }
   .btn, .menu-item, .radio-card, .tab, .showcmd { min-height: 3.143rem; }
   .btn.link, .btn.small { min-height: 3.143rem; }
+  /* The command under a button, which opens the drawer: a target too. */
+  button.inline-cmd { display: flex; align-items: center; min-height: 3.143rem; }
+  .crumb a { display: inline-flex; align-items: center; min-height: 3.143rem; }
   .tbl.stack thead { display: none; }
   .tbl.stack, .tbl.stack tbody, .tbl.stack tr, .tbl.stack td { display: block; min-width: 0; }
   .tbl.stack tr { border: 1px solid var(--border); border-radius: .429rem; margin: .571rem; padding: .429rem .286rem; background: var(--bg); }
@@ -510,9 +493,7 @@ dialog.sheet .dialog-head { border-radius: 0; }
 @media (forced-colors: active) {
   .dk :focus-visible { outline-color: Highlight; }
   .dk .btn, .dk .input, .dk .select, .dk .iconbtn, .dk .host, .dk .find, .dk .topbtn, .dk .tab, .dk .tabs, .dk .card, .dk .task, .dk .err, .dk .notice, .dk .showcmd,
-  .dk .menu, .dk .popover, .dk .drawer, .dk .dialog, .dk .banner, .dk .radio-card, .dk .tbl-box { border: 1px solid ButtonText; }
-  .dk .seg button { border: 1px solid ButtonText; }
-  .dk .seg button.on { outline: 2px solid Highlight; outline-offset: -2px; }
+  .dk .menu, .dk .popover, .dk .drawer, .dk .dialog, .dk .banner, .dk .radio-card, .dk .tbl-box, .dk button.inline-cmd { border: 1px solid ButtonText; }
   .dk .btn.default, .dk .tab[aria-selected="true"], .dk .menu-item:focus-visible, .dk .menu-item:hover, .dk .tabbar a.cur, .dk .nav.cur { outline: 2px solid Highlight; outline-offset: -2px; }
   .dk .tasks-btn .count-pill, .dk .nav .count { border: 1px solid ButtonText; forced-color-adjust: none; background: ButtonFace; color: ButtonText; }
   .dk .sw::after { background: ButtonText; }

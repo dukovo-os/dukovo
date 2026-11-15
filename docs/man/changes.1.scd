@@ -10,7 +10,8 @@ changes - what changed between two starts of the computer
 # SYNOPSIS
 
 *changes* [*--failed* | *--between* _start_ _start_ | *--list*]++
-*changes bisect* [*--yes* | *--status* | *--stop* | *--confirm* [*--yes*]]
+*changes* (*--list* | *--failed*) *--json*++
+*changes bisect* [*--yes* | *--status* [*--json*] | *--stop* | *--confirm* [*--yes*]]
 
 # DESCRIPTION
 
@@ -57,6 +58,82 @@ are recorded like any start but are never the last good one, and
 	List the starts kept, newest first, each with how it ended. A try
 	of *changes bisect* says so: "slot A, try 2 of changes bisect:
 	good".
+
+*--json*
+	With *--list*, *--failed* or *bisect --status*, print JSON for a
+	program to read, as described under JSON below. Alone, or with
+	*--between*, it is refused with the usage line.
+
+# JSON
+
+*--json* writes one line, and exits 0 as the text does, whoever asks:
+the records are readable by everyone, as the text is. A field that the
+records do not hold is *null*, and none is made up. Times are Unix
+milliseconds.
+
+*--list --json* is an array with an object for each start kept, newest
+first, and an empty array when none is kept:
+
+```
+[{"start": 41, "at_ms": 1763100000000, "release": "0.16.0-dev.412",
+  "slot": "a", "result": "good", "check": null, "ready_ms": 31200,
+  "changes": [{"what": "org.nginx.nginx", "version": "1.30.6",
+               "at_ms": 1763000000000}]}]
+```
+
+_start_ is the start's number, _at_ms_ when the health check began it,
+_release_ the version of Dukovo it ran, and _slot_ its slot, *a* or *b*.
+_result_ is:
+
+*good*
+	The start was seen through, or an update proved itself.
+
+*failed*
+	The health check failed it, and _check_ is the error ID.
+
+*fell-back*
+	It failed, and the next start that is no try ran the other slot: an
+	update that failed its check and the machine went back. The records
+	do not say that the machine fell back; this is how it shows in them,
+	so a start in the other slot that a person chose after a failure
+	reads the same.
+
+*bisect-try*
+	A try of *changes bisect*, whatever its end. Its number is not in
+	the record.
+
+_result_ is *null* for a start that has not finished: the one that runs,
+until its health check is done, or one that never got that far. _check_ is *null* unless the start failed. _ready_ms_ is when the
+services had settled, in milliseconds after the kernel started, as
+*startup*(8) says it, and *null* when no times are kept. _changes_ is
+what the start ran that the start before it, in the list, did not, newest
+first, and an empty array for the oldest start kept. In it, _what_ is the name of
+the thing (an app's ID, or *Dukovo*, *Radix*, *firmware set*, *CPU
+microcode*, *boot options*), _version_ what the start ran of it (*null*
+for one it no longer had) and _at_ms_ when that was installed, where
+known.
+
+*--failed --json* is an object:
+
+```
+{"failed": {"start": 42, "...": "as above"} | null,
+ "since_good": [{"what": "org.nginx.nginx", "version": "1.30.6",
+                 "at_ms": 1763000000000}],
+ "bisect": {"running": true, "try": 2, "of": 3}}
+```
+
+_failed_ is the newest start that failed and is no try, in the form
+above, or *null* when no start kept has failed (the exit status is 0).
+This differs from the text, which also takes a failed try. _since_good_
+is what changed from the last good start before it to it, as in the text,
+and an empty array when none is kept before it or nothing changed. _bisect_ is the
+search, as *bisect --status --json* gives it.
+
+*bisect --status --json* is that object alone: _running_ is whether a
+search waits on a try; _try_ the number of the try the next start is, and
+_of_ the most tries the search takes, counting those made, which falls
+as tries narrow the changes. Both are *null* when none runs, and with no
+search at all _running_ is *false*.
 
 # FINDING THE CHANGE
 
@@ -110,7 +187,8 @@ the next usual start is F's again until the fix is taken.
 
 *--status*
 	Show the search: the failed start, the levers, each try and what
-	it found, and the result once it has ended.
+	it found, and the result once it has ended. With *--json*, only
+	the search's state, as under JSON above.
 
 *--stop*
 	Stop the search. The next start is the usual one.

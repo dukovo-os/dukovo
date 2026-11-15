@@ -208,6 +208,8 @@ error that starts with the tool's name.
 :  set the network cards up, by DHCP or as their settings say
 |  *netlog*(8)
 :  send the log to another computer as it is written
+|  *network*(8)
+:  show the network cards, their addresses and the settings netd gives them
 |  *nic*(8)
 :  a network card's link, driver, rings, offloads and counts, as ethtool
 |  *notifications*(1)

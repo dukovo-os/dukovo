@@ -25,7 +25,8 @@ values at and beyond the limits of every field, the wrong type, no body, a
 body that is not JSON. The third sends the examples alone, since a change
 with made-up arguments would change the machine as it pleased; after each
 example the change's undo is called, and the service the examples use is put
-back as it was found (console.py).
+back as it was found (console.py). It leaves alone the changes at
+LEFT_ALONE: renewing the certificate, and the changes that are tried.
 
 A request that is refused changes nothing, so the first two runs leave the
 machine as it was. What each run checks of every answer: it is not a 5xx,
@@ -104,8 +105,15 @@ SLOWEST_CHANGE = 10
 EXAMPLES = 50
 
 # The changes the third run leaves alone: certificate.renew makes the certificate the console
-# serves anew, which the boot test admin-actions renews.
-LEFT_ALONE = {"certificate.renew"}
+# serves anew, which the boot test admin-actions renews; and the changes that are tried, whose
+# examples give the card and the rules of QEMU's user network, which another machine does not
+# have, and which the boot test admin-trials and the browser tests of Networking and Firewall
+# try, keep and undo.
+TRIED = {
+    "network.set", "network.keep", "network.undo",
+    "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
+}
+LEFT_ALONE = {"certificate.renew"} | TRIED
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
 NOT_READ = ["lab.missing"]

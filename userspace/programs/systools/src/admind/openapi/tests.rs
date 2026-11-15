@@ -43,15 +43,18 @@ fn ids<'a>(operation: &'a Value, status: &str) -> Vec<&'a str> {
     listed.as_array().unwrap().iter().map(|id| id.as_str().unwrap()).collect()
 }
 
-/// The schema of all the arguments of `operation`: its path parameters
-/// and its body's properties, put together as `actions::schema` made them.
+/// The schema of all the arguments of `operation`: its parameters, of
+/// its address and its query, and its body's properties, put together as
+/// `actions::schema` made them.
 fn arguments_of(operation: &Value) -> Value {
     let mut properties = Map::new();
     let mut required = Vec::new();
     for parameter in operation["parameters"].as_array().into_iter().flatten() {
         let name = parameter["name"].as_str().unwrap();
         properties.insert(name.into(), parameter["schema"].clone());
-        required.push(json!(name));
+        if parameter["required"] == true {
+            required.push(json!(name));
+        }
     }
     let body = &operation["requestBody"]["content"]["application/json"]["schema"];
     if body.is_object() {
@@ -101,13 +104,22 @@ fn every_route_of_the_table_is_an_operation_named_for_it_and_there_are_no_others
             assert_eq!(operation["operationId"], format!("{:?}", entry.route), "{}", entry.path);
             assert!(operation["summary"].as_str().is_some_and(|text| !text.is_empty()));
             assert_eq!(operation["tags"], json!([tag(entry.access)]), "{}", entry.path);
-            // Only an address with a number in it has a parameter.
-            let numbered = parameters_of(entry.path).next();
-            assert_eq!(operation["parameters"].is_array(), numbered.is_some(), "{}", entry.path);
-            if let Some(name) = numbered {
-                assert_eq!(operation["parameters"][0]["name"], name);
-                assert_eq!(operation["parameters"][0]["schema"]["type"], "integer");
+            // The address's own parts are its path's parameters: a
+            // number, or a trial's name. Only the follow of the log takes
+            // a query, its filters.
+            let parameters = operation["parameters"].as_array().cloned().unwrap_or_default();
+            let place = |place: &str| -> Vec<&Value> {
+                parameters.iter().filter(|parameter| parameter["in"] == place).collect()
+            };
+            let path: Vec<&str> =
+                place("path").iter().map(|parameter| parameter["name"].as_str().unwrap()).collect();
+            assert_eq!(path, parameters_of(entry.path).collect::<Vec<_>>(), "{}", entry.path);
+            for parameter in place("path") {
+                let kind = if parameter["name"] == "trial" { "string" } else { "integer" };
+                assert_eq!(parameter["schema"]["type"], kind, "{}", entry.path);
             }
+            assert_eq!(place("query").is_empty(), entry.route != Route::Follow, "{}", entry.path);
+            assert_eq!(parameters.len(), place("path").len() + place("query").len());
         }
         let all: usize = document["paths"]
             .as_object()
@@ -134,37 +146,65 @@ fn every_action_is_an_operation_named_by_its_id_with_its_method_and_address() {
 }
 
 #[test]
-fn an_action_s_arguments_are_in_its_address_or_its_body_never_both_and_a_read_has_no_body() {
+fn an_action_s_arguments_are_in_its_address_its_query_or_its_body_and_a_read_has_no_body() {
     for actions in sets() {
         let document = document(actions);
         for action in actions {
             let id = action.id();
             let method = if action.changes() { "post" } else { "get" };
             let operation = operation(&document, method, action.path());
-            let in_address: HashSet<&str> = operation["parameters"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|parameter| {
-                    assert_eq!(parameter["in"], "path", "{id}");
-                    assert_eq!(parameter["required"], true, "{id}");
-                    assert!(parameter["schema"].is_object(), "{id}");
-                    parameter["name"].as_str().unwrap()
-                })
-                .collect();
+            let (mut in_address, mut in_query) = (HashSet::new(), HashSet::new());
+            for parameter in operation["parameters"].as_array().into_iter().flatten() {
+                let name = parameter["name"].as_str().unwrap();
+                let field = action.fields().iter().find(|field| field.name == name).unwrap();
+                assert!(parameter["schema"].is_object(), "{id}");
+                match parameter["in"].as_str() {
+                    Some("path") => {
+                        assert_eq!(parameter["required"], true, "{id}");
+                        in_address.insert(name);
+                    }
+                    // A read's other arguments are its query's, there
+                    // when the action needs them.
+                    Some("query") if !action.changes() => {
+                        assert_eq!(parameter["required"], field.required, "{id}: {name}");
+                        in_query.insert(name);
+                    }
+                    other => panic!("{id}: {name} is in {other:?}"),
+                }
+            }
             assert_eq!(in_address, parameters_of(action.path()).collect::<HashSet<_>>(), "{id}");
             let body = &operation["requestBody"]["content"]["application/json"]["schema"];
             let in_body =
                 if body.is_object() { names(&body["properties"]) } else { HashSet::new() };
             assert!(in_address.is_disjoint(&in_body), "{id}");
             let fields: HashSet<&str> = action.fields().iter().map(|field| field.name).collect();
-            assert_eq!(&in_address | &in_body, fields, "{id}");
+            assert_eq!(&(&in_address | &in_query) | &in_body, fields, "{id}");
             if !action.changes() {
                 assert!(operation.get("requestBody").is_none(), "{id}: a read is a GET");
-                assert!(in_body.is_empty(), "{id}: a read's arguments are in its address");
             }
         }
     }
+}
+
+#[test]
+fn the_log_s_read_takes_its_filters_in_its_query() {
+    let document = document(REGISTRY);
+    let read = operation(&document, "get", "/api/1/logs");
+    let query: Vec<(&str, &Value)> = read["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| {
+            assert_eq!(parameter["in"], "query");
+            (parameter["name"].as_str().unwrap(), &parameter["required"])
+        })
+        .collect();
+    let names: HashSet<&str> = query.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names,
+        HashSet::from(["lines", "service", "kernel", "priority", "since", "until", "grep"])
+    );
+    assert!(query.iter().all(|(_, required)| **required == json!(false)));
 }
 
 #[test]
@@ -180,8 +220,14 @@ fn every_action_s_good_examples_fit_what_the_document_says_and_its_bad_ones_do_n
             for args in &good {
                 validate::validate(&schema, args).unwrap_or_else(|why| panic!("{id}: {why}"));
             }
+            // A bad example a schema cannot refuse, as two times in the
+            // wrong order, has the types the action takes and values its
+            // own check refuses.
             for args in &bad {
-                assert!(validate::validate(&schema, args).is_err(), "{id}: accepts {args}");
+                if validate::validate(&schema, args).is_ok() {
+                    let refused = action.prepare(args.clone()).err().map(|failure| failure.kind);
+                    assert_eq!(refused, Some(Kind::BadValue), "{id}: accepts {args}");
+                }
             }
             // What a tester sends as it is is the first good example.
             assert_eq!(&example_of(operation), &good[0], "{id}");

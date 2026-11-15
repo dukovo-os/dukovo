@@ -38,6 +38,13 @@
 //! (the architecture's held entries), so `mprotect` can take access away
 //! and give it back without losing what the page holds.
 //!
+//! A whole page of a file that cannot change, in a region that may not be
+//! written, is the page every space that maps it shares (ADR 0563,
+//! [`super::program`]): the first space to touch it makes it, and keeps
+//! it in the file's [`ProgramRef`] for the others, which counts as one
+//! more of its sharers. So a page of a program's code is in memory once,
+//! however many processes run the program.
+//!
 //! A page of a private region that only this space maps, lent to no
 //! device, can be swapped out (ADR 0152, [`SpaceObject::swap_out`]): the
 //! swap thread looks for pages no CPU used since its last look, writes
@@ -60,6 +67,7 @@ use alloc::vec::Vec;
 use radix_mm::Kmalloc;
 use radix_sync::Mutex;
 
+use super::program::ProgramRef;
 use super::{Backing, Region, SpaceObject, SpaceRef, first_after, insert, overlaps};
 use crate::Arch;
 use crate::domains::DomainRef;
@@ -98,11 +106,12 @@ pub struct Anon {
     pub segment: Option<crate::fs::shm::Attachment>,
 }
 
-/// How many pages a chunk of a [`SharedPages`] holds the frames of.
-const CHUNK: u64 = 512;
+/// How many pages a chunk of a [`SharedPages`] or a
+/// [`ProgramPages`](super::program::ProgramPages) holds the frames of.
+pub(super) const CHUNK: u64 = 512;
 
 /// A chunk's number, and the frames of its pages (0 for one not made).
-type Chunk = (u64, Vec<u64, Kmalloc>);
+pub(super) type Chunk = (u64, Vec<u64, Kmalloc>);
 
 /// The pages a memory filesystem's files and segments may hold together,
 /// and how many they hold (ADR 0490): what `df` shows of `/devices/shm`.
@@ -395,6 +404,24 @@ pub struct FileSource {
     /// The file's path, for a mapping the program runs (ADR 0530): what
     /// a crash record names it by.
     pub name: Option<crate::fs::MapName>,
+    /// The pages kept of the file for every space that maps it, if it
+    /// cannot change (ADR 0563): [`ProgramPages::of`](super::program::ProgramPages::of).
+    pub kept: Option<ProgramRef>,
+}
+
+impl FileSource {
+    /// The pages kept of the file, and the number of the file's page that
+    /// byte `from` of the source starts, if that page is shared there: a
+    /// whole page of the file, which cannot change, in a region whose
+    /// `access` lets no one write it.
+    fn kept_page(&self, from: u64, access: UserAccess) -> Option<(&ProgramRef, u64)> {
+        let pages = self.kept.as_ref().filter(|pages| pages.usable(&self.node))?;
+        let at = self.base.checked_add(from)?;
+        (access != UserAccess::ReadWrite
+            && self.size.saturating_sub(from) >= PAGE_SIZE
+            && at.is_multiple_of(PAGE_SIZE))
+        .then_some((pages, at / PAGE_SIZE))
+    }
 }
 
 /// Where `map_anonymous` puts what it maps.
@@ -458,7 +485,7 @@ impl Out for FrameOut {
 
 /// Gives back a page of anonymous memory one space lets go of: the last
 /// space to do so frees it.
-fn unshare(phys: u64) {
+pub(super) fn unshare(phys: u64) {
     if let Some(info) = FRAMES.info(phys)
         && info.unshare() == 0
     {
@@ -727,16 +754,26 @@ impl SpaceObject {
         Fault::Resolved
     }
 
-    /// Makes a new page for page `page` of `region`, filled as it says;
-    /// returns its frame. The page is charged to the space.
+    /// Makes a new page for page `page` of `region`, filled as it says,
+    /// to map with `access`; returns its frame. The page is charged to the
+    /// space. A page of a file that cannot change, which the space may not
+    /// write, is the one kept for it if one is, and is kept if it is new.
     fn new_page(
         &self,
         region: &Region,
         anon: &Anon,
         page: u64,
+        access: UserAccess,
         wait: bool,
     ) -> core::result::Result<u64, Fault> {
         self.charge(1).map_err(|_| Fault::NoMemory)?;
+        let from = (region.offset + (page - region.start) / PAGE_SIZE) * PAGE_SIZE;
+        let kept = anon.file.as_ref().and_then(|file| file.kept_page(from, access));
+        if let Some((pages, index)) = kept
+            && let Some(phys) = pages.take(index)
+        {
+            return Ok(phys);
+        }
         let flags = Flags { zero: anon.file.is_none(), ..Flags::MAY_SLEEP };
         // A zeroed page of a region of more than a run, whose page before
         // is there, is likely one of many a buffer has touched in order:
@@ -755,9 +792,8 @@ impl SpaceObject {
                 return Err(fault);
             }
         };
+        let mut filled = 0;
         if let Some(file) = &anon.file {
-            let from = (region.offset + (page - region.start) / PAGE_SIZE) * PAGE_SIZE;
-            let mut filled = 0;
             if from < file.size {
                 let want = (file.size - from).min(PAGE_SIZE) as usize;
                 let mut out = FrameOut { phys };
@@ -781,7 +817,10 @@ impl SpaceObject {
         if let Some(info) = FRAMES.info(phys) {
             info.set_share_count(1);
         }
-        Ok(phys)
+        Ok(match kept {
+            Some((pages, index)) if filled == PAGE_SIZE => pages.keep(index, phys),
+            _ => phys,
+        })
     }
 
     /// Resolves a fault at `address` of this space, by a write or an
@@ -872,6 +911,7 @@ impl SpaceObject {
                     return Fault::NoMemory;
                 }
                 unshare(phys);
+                region.trim_kept_page(page);
                 Fault::Resolved
             }
             Some((phys, None)) => {
@@ -894,7 +934,7 @@ impl SpaceObject {
                 {
                     return self.swap_in(page, slot, Some(access), wait);
                 }
-                let phys = match self.new_page(region, anon, page, wait) {
+                let phys = match self.new_page(region, anon, page, access, wait) {
                     Ok(phys) => phys,
                     Err(fault) => return fault,
                 };
@@ -1034,21 +1074,48 @@ impl SpaceObject {
     }
 
     /// Makes sure the page at `address` of anonymous memory is there, as
-    /// the program would find it, and returns its frame: for writing a new
-    /// program's stack and relocations before any thread runs in the
-    /// space. The page must not be shared.
+    /// the program would find it, and this space's alone, and returns its
+    /// frame: for writing a new program's stack and relocations before any
+    /// thread runs in the space. A page of a program's file kept for every
+    /// space that maps it (ADR 0563) is copied first, as a write would.
     pub fn touch(&self, address: u64) -> Result<u64> {
         let page = address & !(PAGE_SIZE - 1);
-        if let Some((phys, _)) = Arch::query_entry(&self.arch, page) {
+        if Arch::query_entry(&self.arch, page).is_none() {
+            match self.resolve(page, false, false) {
+                Fault::Resolved => {}
+                Fault::Io | Fault::Poisoned => return Err(radix_abi::errors::File::Io.status(0)),
+                Fault::NoMemory | Fault::Short => return Err(error(Kernel::NoMemory)),
+                Fault::Refused => return Err(error(Kernel::BadAddress)),
+            }
+        }
+        let shared = |phys| FRAMES.info(phys).is_some_and(|info| info.share_count() > 1);
+        let (phys, _) = Arch::query_entry(&self.arch, page).ok_or(error(Kernel::BadAddress))?;
+        // No thread runs here and nothing forks the space, so a page only
+        // it maps stays its own.
+        if !shared(phys) {
             return Ok(phys);
         }
-        match self.resolve(page, false, false) {
-            Fault::Resolved => {}
-            Fault::Io | Fault::Poisoned => return Err(radix_abi::errors::File::Io.status(0)),
-            Fault::NoMemory | Fault::Short => return Err(error(Kernel::NoMemory)),
-            Fault::Refused => return Err(error(Kernel::BadAddress)),
+        let regions = self.regions.lock();
+        let (phys, access) =
+            Arch::query_entry(&self.arch, page).ok_or(error(Kernel::BadAddress))?;
+        if !shared(phys) {
+            return Ok(phys);
         }
-        Arch::query_entry(&self.arch, page).map(|(phys, _)| phys).ok_or(error(Kernel::BadAddress))
+        let copy =
+            fault_frame(Flags::MAY_SLEEP, false, true).map_err(|_| error(Kernel::NoMemory))?;
+        Arch::copy_frame(copy, phys);
+        if let Some(info) = FRAMES.info(copy) {
+            info.set_share_count(1);
+        }
+        if Arch::set_entry(&self.arch, page, copy, access, false).is_err() {
+            let _ = FRAMES.free(copy, 0, Owner::Anon);
+            return Err(error(Kernel::NoMemory));
+        }
+        unshare(phys);
+        if let Some(region) = regions.get(first_after(&regions, page)).filter(|r| r.start <= page) {
+            region.trim_kept_page(page);
+        }
+        Ok(copy)
     }
 
     /// Writes `bytes` at `address` of this space, which no thread runs in
@@ -1266,6 +1333,7 @@ impl SpaceObject {
                     if private && anon && Arch::retire_page(&self.arch, virt, phys, swap::POISONED)
                     {
                         unshare(phys);
+                        region.trim_kept_page(virt);
                         self.swapped.fetch_add(1, Ordering::Relaxed);
                     }
                 }

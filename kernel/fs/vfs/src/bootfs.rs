@@ -231,6 +231,12 @@ impl Node for BootNode {
         self.node_kind()
     }
 
+    /// Nothing in the archive ever changes, so a program in it is in
+    /// memory once however many processes run it (ADR 0563).
+    fn read_only(&self) -> bool {
+        true
+    }
+
     fn lookup(&self, name: &str) -> Result<NodeRef> {
         let found = self.with_entries(|nodes, entries| {
             let name_of = |&i: &u32| nodes.get(i as usize).map_or("", |node| node.name);

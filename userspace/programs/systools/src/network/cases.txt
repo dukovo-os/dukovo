@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The checks of the values `network set` takes (network(8)), which the
+# Networking page's editor makes before it asks (network-model.js) and
+# network/set.rs makes as it runs. Both read this file in their tests, so
+# that the page and the command say the same.
+#
+# A case is a line: the words that follow `network set`, ` => `, and
+# `ok`, or the field and the sentence of the first check that fails, as
+# `FIELD: WHY`. The checks run in this order: the card, metered, the
+# mode, the addresses, the router, the DNS servers.
+
+net0 dhcp => ok
+net0 dhcp metered yes => ok
+net0 dhcp metered loud => metered: metered is auto, yes or no, not loud
+52:54:00:12:34:56 dhcp => ok
+eth0.10 dhcp => ok
+../x dhcp => card: a card is named by 1 to 15 letters, digits, ., - and _, or by its MAC address
+.net0 dhcp => card: a card is named by 1 to 15 letters, digits, ., - and _, or by its MAC address
+abcdefghijklmnop dhcp => card: a card is named by 1 to 15 letters, digits, ., - and _, or by its MAC address
+../x fixed 10.0.2.15 metered loud => card: a card is named by 1 to 15 letters, digits, ., - and _, or by its MAC address
+
+net0 fixed 10.0.2.15/24 router 10.0.2.2 dns 10.0.2.3 => ok
+net0 fixed 10.0.2.15/24 metered auto => ok
+net0 fixed 10.0.2.15/24 10.0.3.15/24 2001:db8::15/64 fd00::15/64 => ok
+net0 fixed router 10.0.2.2 => addresses: a card has 1 to 4 addresses of its own
+net0 fixed 10.0.2.15/24 10.0.3.15/24 10.0.4.15/24 10.0.5.15/24 10.0.6.15/24 => addresses: a card has 1 to 4 addresses of its own
+net0 fixed 10.0.2.15 => addresses: 10.0.2.15 has no prefix: write it as ADDRESS/PREFIX, as 192.168.1.10/24
+net0 fixed 10.0.2.15/33 => addresses: 10.0.2.15/33: an IPv4 prefix is 1 to 32
+net0 fixed 10.0.2.15/0 => addresses: 10.0.2.15/0: an IPv4 prefix is 1 to 32
+net0 fixed 10.0.2.15/x => addresses: 10.0.2.15/x: an IPv4 prefix is 1 to 32
+net0 fixed 300.1.1.1/24 => addresses: 300.1.1.1 is not an IP address
+net0 fixed 224.0.0.1/24 => addresses: 224.0.0.1 is not an address a card may have
+net0 fixed 0.0.0.0/8 => addresses: 0.0.0.0 is not an address a card may have
+net0 fixed 169.254.1.1/16 => addresses: 169.254.1.1 is not an address a card may have
+net0 fixed 10.0.2.0/24 => addresses: 10.0.2.0/24 is the network's own address, not a card's
+net0 fixed 10.0.2.255/24 => addresses: 10.0.2.255/24 is the network's broadcast address, not a card's
+net0 fixed 10.0.2.0/31 => ok
+net0 fixed 10.0.2.1/31 => ok
+net0 fixed 10.0.2.15/32 => ok
+net0 fixed 10.0.2.15/24 10.0.2.15/16 => addresses: 10.0.2.15 is given twice
+net0 fixed 2001:db8::15/64 => ok
+net0 fixed 2001:db8::15/129 => addresses: 2001:db8::15/129: an IPv6 prefix is 1 to 128
+net0 fixed 2001:db8::15/0 => addresses: 2001:db8::15/0: an IPv6 prefix is 1 to 128
+net0 fixed fe80::15/64 => addresses: fe80::15 is not an address a card may have
+net0 fixed ff02::1/64 => addresses: ff02::1 is not an address a card may have
+net0 fixed ::/64 => addresses: :: is not an address a card may have
+net0 fixed ::1/128 => addresses: ::1 is not an address a card may have
+
+net0 fixed 10.0.2.15/24 router 192.168.9.1 => router: the router 192.168.9.1 is on none of the networks of the card's addresses
+net0 fixed 10.0.2.15/24 router 10.0.2.15 => router: 10.0.2.15 is the card's own address, not its router
+net0 fixed 10.0.2.15/24 router gateway => router: gateway is not an address a router may have
+net0 fixed 10.0.2.15/24 router 224.0.0.1 => router: 224.0.0.1 is not an address a router may have
+net0 fixed 10.0.2.15/24 router fe80::1 => router: the router fe80::1 is on none of the networks of the card's addresses
+net0 fixed 10.0.2.15/24 2001:db8::15/64 router fe80::1 => ok
+net0 fixed 2001:db8::15/64 router 2001:db8::1 => ok
+net0 fixed 2001:db8::15/64 router 2001:db9::1 => router: the router 2001:db9::1 is on none of the networks of the card's addresses
+
+net0 fixed 10.0.2.15/24 dns 10.0.2.3 10.0.2.3 => dns: 10.0.2.3 is given twice
+net0 fixed 10.0.2.15/24 dns 1.1.1.1 8.8.8.8 9.9.9.9 8.8.4.4 => dns: a card has at most 3 DNS servers
+net0 fixed 10.0.2.15/24 dns 0.0.0.0 => dns: 0.0.0.0 is not an address a DNS server may have
+net0 fixed 10.0.2.15/24 dns resolver => dns: resolver is not an address a DNS server may have
+net0 fixed 10.0.2.15/24 dns 2001:4860:4860::8888 => ok
+net0 fixed 10.0.2.15/24 router 192.168.9.1 dns 0.0.0.0 => router: the router 192.168.9.1 is on none of the networks of the card's addresses
