@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "version": "0.15.1",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "toolchain": "nightly-2026-10-15",
+  "built": "2026-11-06T00:00:00Z",
+  "updates_from": "0.14.0",
+  "files": [
+    {
+      "path": "bin",
+      "kind": "directory",
+      "mode": "0755"
+    },
+    {
+      "path": "bin/dukovo",
+      "kind": "file",
+      "mode": "0755",
+      "size": 9,
+      "sha256": "abababababababababababababababababababababababababababababababab"
+    },
+    {
+      "path": "bin/dk",
+      "kind": "link",
+      "mode": "0777",
+      "target": "bin/dukovo"
+    }
+  ]
+}
