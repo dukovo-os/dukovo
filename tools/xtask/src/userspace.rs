@@ -468,13 +468,18 @@ pub fn cargo(ctx: &Ctx, subcommand: &str) -> std::process::Command {
 /// Radix, which builds for their own target against the sysroot the
 /// rust-std port builds, with the crates the ports patch for Radix in
 /// place of crates.io's, linked by the Radix C compiler (ADR 0070). It
-/// points libsqlite3-sys at the sqlite port's library ([`sqlite_env`]).
+/// points libsqlite3-sys at the sqlite port's library ([`sqlite_env`]),
+/// and runs rustc through `ob` ([`crate::rustc_wrapper`]).
 pub fn std_cargo(ctx: &Ctx, subcommand: &str, toolchain: &ports::Toolchain) -> Command {
     let mut cmd = Command::new(toolchain.cargo());
     cmd.current_dir(&ctx.root)
         .args([subcommand, "--manifest-path", STD_MANIFEST])
         .env("CARGO_TARGET_DIR", ctx.target.join("programs"))
         .envs(sqlite_env(&ctx.out.join("sysroot")));
+    // The crates the ports patch for Radix are path dependencies outside
+    // this workspace, whose identity Cargo would take from where the
+    // checkout is (ADR 0535).
+    crate::rustc_wrapper::configure(ctx, &mut cmd);
     cmd
 }
 
