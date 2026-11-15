@@ -2192,9 +2192,9 @@ _target/userspace/_).
 	_target/fixtures/VERSION/src_, and runs that tree's own *./ob image
 	\--installed \--user alice \--password-file* _file_ *\--test-cost*, so
 	that the disk is the release's own build, with the administrator
-	alice. The worktree starts from this checkout's built ports, GRUB and
-	memtest86+ (copied, sharing the data where the filesystem can), so
-	that only what differs is built again, and is removed afterwards. A
+	alice. The worktree builds everything from its sources, with nothing
+	of this checkout's build, so that nothing newer reaches the old
+	release's disk, and is removed afterwards. A
 	second full build needs about 15 GB of free disk and the time of an
 	image build, and the boot tests do not make it for you: they stop and
 	name this command when the fixture is missing.

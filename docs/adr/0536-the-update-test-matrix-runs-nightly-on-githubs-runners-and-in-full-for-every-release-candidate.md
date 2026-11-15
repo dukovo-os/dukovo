@@ -214,10 +214,10 @@ update. The first start of an update, which GRUB takes as a counted try
     `target/fixtures/VERSION/src`, and runs that tree's own `./ob image
     --installed --user alice --password-file FILE --test-cost`, as it was
     run for that release, so the disk is the release's, not this build's
-    imitation of it. The worktree starts with this checkout's built ports,
-    GRUB and memtest86+, shared where the filesystem allows it, so that
-    only what the old release changed is built again, and it is removed
-    afterwards. `--check` says whether the fixture is there and trusts
+    imitation of it. Nothing of this checkout's build is copied into the
+    worktree, so that nothing newer reaches the old release's disk: it
+    builds its ports, GRUB and memtest86+ from their sources, and it is
+    removed afterwards. `--check` says whether the fixture is there and trusts
     `.cache/release-keys`. A fixture needs a second full build, about 15 GB
     of disk, so a small machine leaves it to CI.
   - **The keys.** A release trusts the root that signs what it is
@@ -260,11 +260,11 @@ update. The first start of an update, which GRUB takes as a counted try
     over the slot the first left, all of it is checked a last time, and
     the machine powers off.
   - **CI.** `update-matrix.yml` has a `fixtures` job that looks the cache
-    `fixture-VERSION-v1` up and, on a miss, fetches the tag, restores the
-    ports cache by its prefix, runs `./ob fixture release VERSION` and
-    saves the fixture and its keys. The jobs of the `update-from-*` cases
-    restore the same cache before `./ob` runs, so that the keys the
-    fixture trusts are the run's, and each is a job of its own in
+    `fixture-VERSION-v1` up and, on a miss, fetches the tag, runs
+    `./ob fixture release VERSION` and saves the fixture and its keys. The
+    jobs of the `update-from-*` cases restore the same cache before `./ob`
+    runs, so that the keys the fixture trusts are the run's, and each is a
+    job of its own in
     `matrix.rs`, in the nightly sample and in a candidate's run. A pull
     request cannot run the workflow until it is on main; it is run by hand
     on the branch.

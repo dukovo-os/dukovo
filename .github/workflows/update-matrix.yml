@@ -136,20 +136,6 @@ jobs:
             udftools udfclient genisoimage
             clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
 
-      - name: Cache GRUB
-        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
-        uses: actions/cache@v4
-        with:
-          path: .cache/grub
-          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
-
-      - name: Cache memtest86+
-        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
-        uses: actions/cache@v4
-        with:
-          path: .cache/memtest
-          key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
-
       - name: Install mdBook
         if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
         run: |
@@ -160,27 +146,9 @@ jobs:
             sudo install "$RUNNER_TEMP/mdbook/bin/mdbook" /usr/local/bin/mdbook
           fi
 
-      - name: Note the port toolchain's version
-        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
-        id: ports-key
-        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
-
-      # The newest ports that main's runs saved (ci.yml's ports job): the
-      # old tree's build starts from them, and builds what they lack.
-      - name: Restore the built ports
-        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            out/sysroot
-            out/toolchain
-            out/ports
-            target/ports/sources
-          key: ${{ format('ports-host-{0}-', steps.ports-key.outputs.clang) }}
-          restore-keys: ${{ format('ports-host-{0}-', steps.ports-key.outputs.clang) }}
-
-      # The old tree builds the disk with its own ./ob, trusting this
-      # checkout's release keys, which ./ob makes first.
+      # The old tree builds the disk with its own ./ob, from its sources
+      # alone, trusting this checkout's release keys, which ./ob makes
+      # first.
       - name: ./ob fixture release 0.15.0
         if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
         run: ./ob fixture release 0.15.0

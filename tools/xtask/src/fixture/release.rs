@@ -7,7 +7,9 @@
 //! The disk is made by that release's own tree: the tag `vVERSION` is
 //! checked out in a git worktree under `target/fixtures/VERSION/src`, and
 //! its own `./ob image --installed --user alice --password-file FILE`
-//! builds it, as it built the release's disk then. The release trusts the
+//! builds it, as it built the release's disk then, from the sources alone:
+//! nothing of this checkout's build is copied into the old tree, so that
+//! nothing newer reaches the old release's disk. The release trusts the
 //! root of the update keys that sign what it is offered, so the keys of
 //! this checkout (`.cache/release-keys`, made first if there are none) are
 //! copied into the old tree before it builds, and a copy of them is kept
@@ -46,18 +48,6 @@ const SOURCE: &str = "src";
 
 /// The file the disk's password is read from while it is made.
 const PASSWORD_FILE: &str = "password";
-
-/// What the old tree's build keeps and this checkout's can seed it with,
-/// so that only what the old release changed is built again: the built
-/// ports and the sources they were built from, GRUB and memtest86+.
-const SEEDS: [&str; 6] = [
-    "out/sysroot",
-    "out/toolchain",
-    "out/ports",
-    "target/ports/sources",
-    ".cache/grub",
-    ".cache/memtest",
-];
 
 /// The folder of the fixture of `version`, in the Cargo output `target`.
 pub fn dir(target: &Path, version: &str) -> PathBuf {
@@ -359,12 +349,6 @@ fn build(ctx: &Ctx, version: &str, local: &Path, folder: &Path, source: &Path) -
     let keys_in = source.join(crate::release::KEYS_DIR);
     copy_dir(local, &keys_in)
         .context(|| format!("copying {} to {}", local.display(), keys_in.display()))?;
-    for seed in SEEDS {
-        let from = ctx.root.join(seed);
-        if from.exists() {
-            seed_from(ctx, &from, &source.join(seed))?;
-        }
-    }
     let password = folder.join(PASSWORD_FILE);
     std::fs::write(&password, format!("{PASSWORD}\n"))
         .context(|| format!("writing {}", password.display()))?;
@@ -388,17 +372,6 @@ fn build(ctx: &Ctx, version: &str, local: &Path, folder: &Path, source: &Path) -
     let to = image(&ctx.target, version);
     std::fs::rename(&built, &to)
         .context(|| format!("moving {} to {}", built.display(), to.display()))
-}
-
-/// Copies `from` to `to` as the old tree's own, sharing the data where
-/// the filesystem allows it.
-fn seed_from(ctx: &Ctx, from: &Path, to: &Path) -> Result<()> {
-    if let Some(parent) = to.parent() {
-        process::create_dir(parent)?;
-    }
-    let mut cp = Command::new("cp");
-    cp.args(["-a", "--reflink=auto"]).arg(from).arg(to);
-    process::run(ctx, &mut cp)
 }
 
 #[cfg(test)]
