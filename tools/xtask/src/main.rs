@@ -45,6 +45,7 @@ mod release;
 mod repro;
 mod riscv;
 mod rootfs;
+mod rustc_wrapper;
 mod scaling;
 mod screen;
 mod security;
@@ -1282,6 +1283,9 @@ fn clean(ctx: &Ctx, all: bool) -> Result<()> {
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = rustc_wrapper::internal(&argv) {
+        return code;
+    }
     if let Some(code) = corpus::internal(&argv) {
         return code;
     }

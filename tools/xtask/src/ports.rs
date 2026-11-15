@@ -1706,6 +1706,10 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         // Rust's compiler, as Cargo's CARGO_ENCODED_RUSTFLAGS has them,
         // separated by the unit separator.
         .env("REMAP_RUSTFLAGS", crate::repro::rustc_flags(ctx).join("\x1f"));
+    // A port's crates and the crates ports patch for Radix are path
+    // dependencies outside its workspace, whose identity Cargo would take
+    // from where the checkout is (ADR 0535).
+    crate::rustc_wrapper::configure(ctx, &mut cmd);
     process::run(ctx, &mut cmd)
         .map_err(|err| Error::new(format!("port {}: {err}", recipe.name)))?;
     if let Some(spec) = &recipe.bundle {
