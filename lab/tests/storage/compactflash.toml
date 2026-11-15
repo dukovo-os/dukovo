@@ -9,13 +9,16 @@ cf = "64M"
 
 # The card is a disk named sd and a letter, and the kernel's log says it
 # is a CompactFlash card, moved by PIO (ADR 0446). Keep its name in the
-# lab's home for the steps below, which root runs: each account has a
-# /tmp of its own. Nothing is formatted unless a card was found.
+# lab's home for the steps below: each account has a /tmp of its own.
+# Only root reads the kernel's log. Nothing is formatted unless a card
+# was found.
 [[step]]
-run = '''sh -c 'dmesg | grep -o "sd[a-z]* is a CompactFlash card" | cut -d" " -f1 > ~/lab-cf && cat ~/lab-cf' '''
+run = '''sh -c 'dmesg | grep -o "sd[a-z]* is a CompactFlash card" | cut -d" " -f1 > /users/lab/lab-cf && cat /users/lab/lab-cf' '''
+root = true
 expect = "sd"
 [[step]]
 run = '''sh -c 'dmesg | grep "is a CompactFlash card"' '''
+root = true
 expect = "by PIO"
 [[step]]
 run = "sh -c 'mkfs-fat -n LABCF /devices/$(cat /users/lab/lab-cf)'"

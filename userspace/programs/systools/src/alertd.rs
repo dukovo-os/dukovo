@@ -224,7 +224,8 @@ impl Alertd {
 
     /// Sends a test alert from `source` to every channel at once, and
     /// says how each went. The test is in the history and on the screen
-    /// too, and is not queued: it is sent here, and not again.
+    /// too, and is not queued: it is sent here, and not again. How each
+    /// went is the channel's newest delivery in `alerts status`.
     fn test(&self, source: &str) -> Vec<Delivery> {
         let alert = Alert {
             key: "test".into(),
@@ -238,10 +239,23 @@ impl Alertd {
             return Vec::new();
         };
         let channels = self.lock().settings.channels.clone();
-        match changes.first() {
-            Some(change) => deliver::test_all(&channels, change, &self.host),
-            None => Vec::new(),
+        let Some(change) = changes.first() else { return Vec::new() };
+        let deliveries = deliver::test_all(&channels, change, &self.host);
+        // Each outcome is the channel's newest, for `alerts status`.
+        let mut guard = self.lock();
+        let at = now();
+        for delivery in &deliveries {
+            let result = match (delivery.ok, &delivery.error) {
+                (true, _) => Ok(()),
+                (false, error) => Err(error.clone().unwrap_or_else(|| "failed".into())),
+            };
+            guard.outbox.tested(&delivery.channel, result, at);
         }
+        let snapshot = Snapshot { outbox: guard.outbox.take_text(), ..Snapshot::default() };
+        let writer = self.store.begin();
+        drop(guard);
+        writer.write(snapshot);
+        deliveries
     }
 
     /// Reads alerts.toml again, and drops the waiting messages of

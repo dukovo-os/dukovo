@@ -16,3 +16,7 @@ depends = ["mlibc", "ncurses"]
 url = "https://www.greenwoodsoftware.com/less/less-668.tar.gz"
 sha256 = "2819f55564d86d542abbecafd82ff61e819a3eec967faa36cd3e68f1596a44b8"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/l/less/less_668.orig.tar.gz"]
+
+[upstream]
+git = "https://github.com/gwsw/less.git"
+tag = "v668"

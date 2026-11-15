@@ -17,21 +17,28 @@
 //! - cargo-audit reads every Cargo.lock of the repository, and the
 //!   Cargo.lock of each Rust bundle's port (`upstream::bundle_locks`),
 //!   against the RustSec advisory database.
-//! - OSV is asked about each port whose recipe pins a git commit, by that
-//!   commit, which covers projects with no package ecosystem through the
-//!   git ranges of OSV's records. A port pinned by a release archive has
-//!   no commit to ask by; it is listed as not covered.
+//! - OSV is asked, in one `querybatch`, about what the recipes pin:
+//!   - a port pinned to a git commit, and each of its extra sources, by
+//!     that commit, which covers projects with no package ecosystem
+//!     through the git ranges of OSV's records;
+//!   - a port pinned by a release archive, by the commit of the tag its
+//!     `[upstream]` names, which `git ls-remote` resolves, one call for
+//!     each port. A port whose `[upstream]` says `none` has no commit to
+//!     ask by, and is listed as not covered, with its reason;
+//!   - each crate a recipe lists (`[[crate]]`), by its crates.io name and
+//!     version, unless a Cargo.lock that cargo-audit read lists it.
 //!
 //! A finding has the severity its advisory gives, which is the severity
 //! its database names or the base score of its CVSS 3 vector, and none
 //! when the advisory gives neither: the scan never rates a flaw itself. The scan
 //! ends well whatever it finds, and fails only when it could not run to
 //! its end, since a scan that missed a source would close issues for
-//! findings it did not look for. When it misbehaves, run it by hand with
-//! `--verbose`: each cargo-audit and curl command is printed.
+//! findings it did not look for: that includes a tag it could not resolve,
+//! which names its port. When it misbehaves, run it by hand with
+//! `--verbose`: each cargo-audit, git and curl command is printed.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -40,7 +47,7 @@ use std::process::{Command, Stdio};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::ports::{self, Recipe};
+use crate::ports::{self, Recipe, Upstream};
 use crate::process::{self, step};
 use crate::{Context, Ctx, Error, Result, bail, release, upstream};
 
@@ -231,7 +238,7 @@ struct Finding {
     /// None when the advisory gives no severity.
     severity: Option<Severity>,
     summary: String,
-    /// A crate and its version, or a port and its commit.
+    /// A crate and its version, or a port and its commit (see [`Asked`]).
     component: String,
     source: Source,
     /// The advisory, where a person reads more of it.
@@ -240,13 +247,16 @@ struct Finding {
     location: String,
 }
 
-/// A port that the scan cannot ask OSV about, since its recipe pins a
-/// release archive and no git commit.
+/// A port that the scan cannot ask OSV about: it is pinned by a release
+/// archive, and the project has no public git repository to find the
+/// archive's commit in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NotCovered {
     port: String,
     version: String,
     url: String,
+    /// Why there is no repository, as the recipe's `[upstream]` says.
+    reason: String,
 }
 
 /// What the scan found, and what it could not look at.
@@ -256,12 +266,67 @@ struct Report {
     not_covered: Vec<NotCovered>,
 }
 
-/// A port whose recipe pins the git commit to ask OSV by.
+/// What OSV is asked, in the form its `querybatch` takes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct PinnedPort {
+enum Query {
+    /// The advisories whose git ranges hold a commit.
+    Commit(String),
+    /// The advisories of a crate of crates.io at a version.
+    Crate { name: String, version: String },
+}
+
+impl Query {
+    /// The query as `querybatch` reads it, asking for the page of a long
+    /// answer that `token` names, if it does.
+    fn json(&self, token: Option<&str>) -> Value {
+        let mut query = match self {
+            Self::Commit(commit) => json!({ "commit": commit }),
+            Self::Crate { name, version } => json!({
+                "package": { "ecosystem": "crates.io", "name": name },
+                "version": version,
+            }),
+        };
+        if let Some(token) = token {
+            query["page_token"] = json!(token);
+        }
+        query
+    }
+}
+
+/// A part of the system that OSV is asked about, and the recipe that pins it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Asked {
+    /// How a finding names it: a port and the commit it is asked by, as
+    /// `bat 0123...`; a port's tag too, for a release archive, and its
+    /// path for an extra source; a crate and its version, as cargo-audit
+    /// names one.
+    component: String,
+    /// The recipe, as a path in the repository.
+    location: String,
+    query: Query,
+}
+
+/// A port pinned by a release archive, with the repository and the tag its
+/// `[upstream]` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArchivePort {
     name: String,
-    version: String,
-    commit: String,
+    git: String,
+    tag: String,
+}
+
+/// What the recipes pin, by how OSV is asked about it.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Plan {
+    /// Ports and extra sources pinned to a git commit.
+    commits: Vec<Asked>,
+    /// Ports pinned by a release archive, whose tag is yet to be resolved
+    /// to a commit.
+    archives: Vec<ArchivePort>,
+    /// The crates that recipes list.
+    crates: Vec<Asked>,
+    /// Ports with no repository to ask by.
+    not_covered: Vec<NotCovered>,
 }
 
 /// The options of `ob security scan`.
@@ -274,7 +339,7 @@ struct ScanOptions {
 /// OSV's address; its API takes `POST /v1/querybatch` and `GET /v1/vulns/<id>`.
 const OSV_URL: &str = "https://api.osv.dev";
 
-/// How many pages of one commit's answers the scan reads: OSV pages an
+/// How many pages of one query's answers the scan reads: OSV pages an
 /// answer that is very long, and a port has far fewer advisories.
 const OSV_PAGES: usize = 20;
 
@@ -302,25 +367,32 @@ fn scan(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let options = scan_options(args)?;
     upstream::require_cargo_audit()?;
     let mut findings = Vec::new();
+    let mut locked = BTreeSet::new();
     let mut fetched = false;
     for (lock, location) in system_locks(ctx)? {
         findings.extend(audit_lock(ctx, &lock, &location, !fetched)?);
+        locked.extend(locked_crates(&lock, &location)?);
         fetched = true;
     }
     for found in upstream::bundle_locks(ctx)? {
         let location = format!("{} {} (its Cargo.lock)", found.port, found.version);
         findings.extend(audit_lock(ctx, &found.lock, &location, !fetched)?);
+        locked.extend(locked_crates(&found.lock, &location)?);
         fetched = true;
     }
 
     let recipes: Vec<Recipe> = ports::recipes(ctx)?.into_iter().map(|(recipe, _)| recipe).collect();
-    let (pinned, not_covered) = split_ports(&recipes);
-    step(&format!("Asking OSV about {} ports by their commits", pinned.len()));
+    let plan = plan(&recipes);
+    step(&format!("Finding the commits of {} release tags", plan.archives.len()));
+    let mut asked = plan.commits;
+    asked.extend(resolve_archives(&plan.archives, &|git, tag| ls_remote(ctx, git, tag))?);
+    asked.extend(unlocked(plan.crates, &locked));
+    step(&format!("Asking OSV about {} ports, sources and crates", asked.len()));
     let osv_url = options.osv_url;
     let ask = |path: &str, body: Option<&str>| curl(ctx, &format!("{osv_url}{path}"), body);
-    findings.extend(osv_findings(&ask, &pinned)?);
+    findings.extend(osv_findings(&ask, &asked)?);
 
-    let report = Report { findings: sorted(findings), not_covered };
+    let report = Report { findings: sorted(findings), not_covered: plan.not_covered };
     if options.json {
         let text = serde_json::to_string_pretty(&report)
             .map_err(|err| Error::new(format!("writing the scan's findings: {err}")))?;
@@ -512,41 +584,184 @@ fn round_up(value: f64) -> f64 {
     }
 }
 
-/// The ports to ask OSV about, which are those whose recipe pins a git
-/// commit, and those it cannot be asked about, which are pinned by a
-/// release archive alone. A port of crates or of other sources has
-/// neither.
-fn split_ports(recipes: &[Recipe]) -> (Vec<PinnedPort>, Vec<NotCovered>) {
-    let mut pinned = Vec::new();
-    let mut not_covered = Vec::new();
+/// What the recipes pin, and how OSV is asked about each part: a port, and
+/// each extra source, that pins a git commit by that commit; a port that
+/// pins a release archive by the tag its `[upstream]` names, which is a
+/// commit once resolved, or as not covered when it says `none`; each
+/// crate a recipe lists by its name and version. A port of other sources
+/// has none of these.
+fn plan(recipes: &[Recipe]) -> Plan {
+    let mut plan = Plan::default();
     for recipe in recipes {
         let source = &recipe.source;
+        let location = format!("ports/{}/recipe.toml", recipe.name);
         if !source.git.is_empty() && !source.commit.is_empty() {
-            pinned.push(PinnedPort {
-                name: recipe.name.clone(),
-                version: recipe.version.clone(),
-                commit: source.commit.clone(),
+            plan.commits.push(Asked {
+                component: format!("{} {}", recipe.name, source.commit),
+                location: location.clone(),
+                query: Query::Commit(source.commit.clone()),
             });
         } else if !source.url.is_empty() {
-            not_covered.push(NotCovered {
-                port: recipe.name.clone(),
-                version: recipe.version.clone(),
-                url: source.url.clone(),
+            let upstream = recipe.upstream.as_ref();
+            if let Some((git, tag)) = upstream.and_then(Upstream::tagged) {
+                plan.archives.push(ArchivePort {
+                    name: recipe.name.clone(),
+                    git: git.to_string(),
+                    tag: tag.to_string(),
+                });
+            } else {
+                plan.not_covered.push(NotCovered {
+                    port: recipe.name.clone(),
+                    version: recipe.version.clone(),
+                    url: source.url.clone(),
+                    reason: upstream
+                        .and_then(|upstream| upstream.none.clone())
+                        .unwrap_or_else(|| "the recipe has no [upstream]".to_string()),
+                });
+            }
+        }
+        for extra in &recipe.extra {
+            plan.commits.push(Asked {
+                component: format!("{} {} {}", recipe.name, extra.path, extra.commit),
+                location: location.clone(),
+                query: Query::Commit(extra.commit.clone()),
+            });
+        }
+        for krate in &recipe.crates {
+            plan.crates.push(Asked {
+                component: format!("{} {}", krate.name, krate.version),
+                location: location.clone(),
+                query: Query::Crate { name: krate.name.clone(), version: krate.version.clone() },
             });
         }
     }
-    (pinned, not_covered)
+    plan
+}
+
+/// The commits of the tags that archive ports name, as `ls_remote(git, tag)`
+/// lists them, each to ask OSV by. It fails, naming every port whose tag it
+/// could not resolve, since a scan that did not see a port must not be
+/// taken for one that saw it.
+fn resolve_archives(
+    ports: &[ArchivePort],
+    ls_remote: &dyn Fn(&str, &str) -> Result<String>,
+) -> Result<Vec<Asked>> {
+    let mut asked = Vec::new();
+    let mut failed = Vec::new();
+    for port in ports {
+        let listing = match ls_remote(&port.git, &port.tag) {
+            Ok(listing) => listing,
+            Err(err) => {
+                failed.push(format!("{}: {err}", port.name));
+                continue;
+            }
+        };
+        let Some(commit) = tag_commit(&listing, &port.tag) else {
+            failed.push(format!("{}: {} has no tag {}", port.name, port.git, port.tag));
+            continue;
+        };
+        asked.push(Asked {
+            component: format!("{} {} {commit}", port.name, port.tag),
+            location: format!("ports/{}/recipe.toml", port.name),
+            query: Query::Commit(commit),
+        });
+    }
+    if failed.is_empty() {
+        return Ok(asked);
+    }
+    Err(Error::new(format!(
+        "could not find the commit of the release of:\n  {}",
+        failed.join("\n  ")
+    ))
+    .hint("the scan reads the tag of each [upstream] from its repository with git ls-remote"))
+}
+
+/// `git ls-remote` of the tag in the repository `git`, and of the commit
+/// the tag points to when it is annotated, tried as
+/// [`upstream::ls_remote`] tries.
+fn ls_remote(ctx: &Ctx, git: &str, tag: &str) -> Result<String> {
+    upstream::ls_remote(
+        ctx,
+        git,
+        &[],
+        &[format!("refs/tags/{tag}"), format!("refs/tags/{tag}^{{}}")],
+    )
+}
+
+/// The commit `tag` names, from the listing `git ls-remote` printed for it.
+/// An annotated tag has the commit it points to on a line of its own,
+/// `refs/tags/<tag>^{}`, and that is the one taken: the tag's own line has
+/// the ID of the tag object, which no advisory names. A tag that is not
+/// annotated names its commit on its own line.
+fn tag_commit(listing: &str, tag: &str) -> Option<String> {
+    let (own, peeled) = (format!("refs/tags/{tag}"), format!("refs/tags/{tag}^{{}}"));
+    let mut found = None;
+    for line in listing.lines() {
+        let Some((id, name)) = line.split_once('\t') else { continue };
+        if !matches!(id.len(), 40 | 64) || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            continue;
+        }
+        if name == peeled {
+            return Some(id.to_string());
+        }
+        if name == own {
+            found = Some(id.to_string());
+        }
+    }
+    found
+}
+
+/// The crates.io crates that a Cargo.lock lists, as name and version: the
+/// packages whose `source` is crates.io's index, which leaves out the
+/// repository's own crates and any from git or from a path.
+fn locked_crates(lock: &Path, location: &str) -> Result<BTreeSet<(String, String)>> {
+    let text = std::fs::read_to_string(lock).context(|| format!("reading {}", lock.display()))?;
+    crates_in_lock(&text, location)
+}
+
+/// The crates of the Cargo.lock whose text is `text`; `location` names the
+/// lock in an error.
+fn crates_in_lock(text: &str, location: &str) -> Result<BTreeSet<(String, String)>> {
+    let document: toml::Table = text
+        .parse()
+        .map_err(|err| Error::new(format!("the Cargo.lock of {location} is not TOML: {err}")))?;
+    let packages = document.get("package").and_then(toml::Value::as_array);
+    Ok(packages
+        .into_iter()
+        .flatten()
+        .filter_map(|package| {
+            let field = |key| package.get(key).and_then(toml::Value::as_str);
+            let (name, version, source) = (field("name")?, field("version")?, field("source")?);
+            source.contains("crates.io").then(|| (name.to_string(), version.to_string()))
+        })
+        .collect())
+}
+
+/// The crates to ask OSV about: each name and version once, though two
+/// ports list it, and none that a Cargo.lock cargo-audit read lists, since
+/// the RustSec database has answered for those, and OSV would name the
+/// same advisories again.
+fn unlocked(crates: Vec<Asked>, locked: &BTreeSet<(String, String)>) -> Vec<Asked> {
+    let mut seen = BTreeSet::new();
+    crates
+        .into_iter()
+        .filter(|asked| {
+            let Query::Crate { name, version } = &asked.query else { return true };
+            let key = (name.clone(), version.clone());
+            !locked.contains(&key) && seen.insert(key)
+        })
+        .collect()
 }
 
 /// Asks OSV: `ask(path, body)` is a GET of the path, or a POST of the body,
 /// answered with the text OSV sent.
 type Ask<'a> = &'a dyn Fn(&str, Option<&str>) -> Result<String>;
 
-/// OSV's advisories for the commits the ports pin, each with the summary,
+/// OSV's advisories for what was asked about, each with the summary,
 /// aliases and severity of its own record.
-fn osv_findings(ask: Ask, ports: &[PinnedPort]) -> Result<Vec<Finding>> {
-    let commits: Vec<&str> = ports.iter().map(|port| port.commit.as_str()).collect();
-    let hits = osv_ids(ask, &commits)?;
+fn osv_findings(ask: Ask, asked: &[Asked]) -> Result<Vec<Finding>> {
+    let queries: Vec<&Query> = asked.iter().map(|asked| &asked.query).collect();
+    let hits = osv_ids(ask, &queries)?;
     let mut records: BTreeMap<String, Value> = BTreeMap::new();
     for id in hits.iter().flatten() {
         if !records.contains_key(id) {
@@ -557,9 +772,9 @@ fn osv_findings(ask: Ask, ports: &[PinnedPort]) -> Result<Vec<Finding>> {
         }
     }
     let mut findings = Vec::new();
-    for (port, ids) in ports.iter().zip(&hits) {
+    for (part, ids) in asked.iter().zip(&hits) {
         for id in ids {
-            if let Some(finding) = osv_finding(&records[id], id, port) {
+            if let Some(finding) = osv_finding(&records[id], id, part) {
                 findings.push(finding);
             }
         }
@@ -567,23 +782,18 @@ fn osv_findings(ask: Ask, ports: &[PinnedPort]) -> Result<Vec<Finding>> {
     Ok(findings)
 }
 
-/// The IDs of the advisories OSV has for each commit, in the order of
-/// `commits`, with the pages of a long answer put together.
-fn osv_ids(ask: Ask, commits: &[&str]) -> Result<Vec<Vec<String>>> {
-    let mut ids: Vec<Vec<String>> = vec![Vec::new(); commits.len()];
-    let mut pending: Vec<(usize, Option<String>)> = (0..commits.len()).map(|n| (n, None)).collect();
+/// The IDs of the advisories OSV has for each query, in the order of
+/// `queries`, with the pages of a long answer put together.
+fn osv_ids(ask: Ask, queries: &[&Query]) -> Result<Vec<Vec<String>>> {
+    let mut ids: Vec<Vec<String>> = vec![Vec::new(); queries.len()];
+    let mut pending: Vec<(usize, Option<String>)> = (0..queries.len()).map(|n| (n, None)).collect();
     for _ in 0..OSV_PAGES {
         if pending.is_empty() {
             return Ok(ids);
         }
-        let queries: Vec<Value> = pending
-            .iter()
-            .map(|(n, token)| match token {
-                Some(token) => json!({ "commit": commits[*n], "page_token": token }),
-                None => json!({ "commit": commits[*n] }),
-            })
-            .collect();
-        let answer = ask("/v1/querybatch", Some(&json!({ "queries": queries }).to_string()))?;
+        let body: Vec<Value> =
+            pending.iter().map(|(n, token)| queries[*n].json(token.as_deref())).collect();
+        let answer = ask("/v1/querybatch", Some(&json!({ "queries": body }).to_string()))?;
         let results = batch_results(&answer, pending.len())?;
         let asked = std::mem::take(&mut pending);
         for ((n, _), (found, next)) in asked.into_iter().zip(results) {
@@ -596,7 +806,7 @@ fn osv_ids(ask: Ask, commits: &[&str]) -> Result<Vec<Vec<String>>> {
     if pending.is_empty() {
         return Ok(ids);
     }
-    bail!("OSV answered with more than {OSV_PAGES} pages for one commit")
+    bail!("OSV answered with more than {OSV_PAGES} pages for one query")
 }
 
 /// The results of a `querybatch` answer: for each of the `asked` queries,
@@ -608,7 +818,7 @@ fn batch_results(answer: &str, asked: usize) -> Result<Vec<(Vec<String>, Option<
     let Some(results) = document["results"].as_array().filter(|results| results.len() == asked)
     else {
         bail!(
-            "OSV's answer to querybatch does not have one result for each of the {asked} commits"
+            "OSV's answer to querybatch does not have one result for each of the {asked} queries"
         );
     };
     Ok(results
@@ -640,9 +850,9 @@ fn path_segment(id: &str) -> String {
     out
 }
 
-/// The finding of OSV's record of `id` for a port, or none for a record
-/// that its database has withdrawn.
-fn osv_finding(record: &Value, id: &str, port: &PinnedPort) -> Option<Finding> {
+/// The finding of OSV's record of `id` for what was asked about, or none
+/// for a record that its database has withdrawn.
+fn osv_finding(record: &Value, id: &str, asked: &Asked) -> Option<Finding> {
     if record["withdrawn"].as_str().is_some() {
         return None;
     }
@@ -658,10 +868,10 @@ fn osv_finding(record: &Value, id: &str, port: &PinnedPort) -> Option<Finding> {
         aliases: strings(&record["aliases"]),
         severity: osv_severity(record),
         summary: summary.trim().to_string(),
-        component: format!("{} {}", port.name, port.commit),
+        component: asked.component.clone(),
         source: Source::Osv,
         url: format!("https://osv.dev/vulnerability/{}", path_segment(id)),
-        location: format!("ports/{}/recipe.toml", port.name),
+        location: asked.location.clone(),
     })
 }
 
@@ -737,7 +947,9 @@ fn sorted(mut findings: Vec<Finding>) -> Vec<Finding> {
 fn render_text(report: &Report) -> String {
     let mut out = String::new();
     if report.findings.is_empty() {
-        out.push_str("No advisory matches the Cargo.lock files or the ports' commits.\n");
+        out.push_str(
+            "No advisory matches the Cargo.lock files, the ports' commits or their crates.\n",
+        );
     } else {
         let _ = writeln!(out, "{} findings:", report.findings.len());
         for finding in &report.findings {
@@ -754,12 +966,12 @@ fn render_text(report: &Report) -> String {
     if !report.not_covered.is_empty() {
         let _ = writeln!(
             out,
-            "\nNot covered, since {} ports are pinned by a release archive and not by a git commit, \
-             which is what OSV is asked by:",
+            "\nNot covered, since {} ports are pinned by a release archive and their project has \
+             no public git repository to find its commit in:",
             report.not_covered.len()
         );
         for port in &report.not_covered {
-            let _ = writeln!(out, "  {} {}", port.port, port.version);
+            let _ = writeln!(out, "  {} {}: {}", port.port, port.version, port.reason);
         }
     }
     out
@@ -1028,37 +1240,313 @@ mod tests {
         assert_eq!(severity(r#"{"severity": []}"#), None);
     }
 
+    fn lua() -> Recipe {
+        recipe("lua", &format!("git = \"https://example.org/lua.git\"\ncommit = \"{COMMIT}\""))
+    }
+
+    const ARCHIVE: &str = "url = \"https://example.org/curl-8.23.0.tar.xz\"\nsha256 = \"ab\"";
+
     #[test]
-    fn ports_are_asked_by_commit_or_listed_as_not_covered() {
-        let recipes = [
-            recipe("lua", &format!("git = \"https://example.org/lua.git\"\ncommit = \"{COMMIT}\"")),
-            recipe("bash", "url = \"https://example.org/bash.tar.gz\"\nsha256 = \"ab\""),
-            // Neither: the recipe pins nothing OSV can be asked about.
-            recipe("rust-src", ""),
-            // A git source with no commit pins nothing either.
-            recipe("loose", "git = \"https://example.org/loose.git\""),
-        ];
-        let (pinned, not_covered) = split_ports(&recipes);
+    fn a_port_is_asked_by_its_commit_and_its_extra_sources_by_theirs() {
+        let other = "0123456789abcdef0123456789abcdef01234567";
+        let nginx = recipe(
+            "nginx",
+            &format!(
+                "git = \"https://example.org/nginx.git\"\ncommit = \"{COMMIT}\"\n\
+                 [[extra]]\npath = \"pcre2\"\ngit = \"https://example.org/pcre2.git\"\n\
+                 commit = \"{other}\"\nlicense = \"BSD-3-Clause\""
+            ),
+        );
+        let plan = plan(&[lua(), nginx]);
+        let asked: Vec<_> =
+            plan.commits.iter().map(|a| (&*a.component, &*a.location, &a.query)).collect();
         assert_eq!(
-            pinned,
-            [PinnedPort {
-                name: "lua".to_string(),
-                version: "1.2.3".to_string(),
-                commit: COMMIT.to_string()
+            asked,
+            [
+                (
+                    &*format!("lua {COMMIT}"),
+                    "ports/lua/recipe.toml",
+                    &Query::Commit(COMMIT.to_string())
+                ),
+                (
+                    &*format!("nginx {COMMIT}"),
+                    "ports/nginx/recipe.toml",
+                    &Query::Commit(COMMIT.to_string())
+                ),
+                (
+                    &*format!("nginx pcre2 {other}"),
+                    "ports/nginx/recipe.toml",
+                    &Query::Commit(other.to_string())
+                ),
+            ]
+        );
+        assert!(plan.archives.is_empty() && plan.crates.is_empty() && plan.not_covered.is_empty());
+    }
+
+    #[test]
+    fn a_port_pinned_by_an_archive_is_asked_by_its_upstream_tag_or_not_covered_with_the_reason() {
+        let curl = recipe(
+            "curl",
+            &format!(
+                "{ARCHIVE}\n[upstream]\ngit = \"https://example.org/curl.git\"\ntag = \"curl-8_23_0\""
+            ),
+        );
+        let zip = recipe("zip", &format!("{ARCHIVE}\n[upstream]\nnone = \"no repository\""));
+        // The check refuses this recipe, so no scan reads it; if one did it
+        // would say why the port is not covered, not leave it out.
+        let bare = recipe("bare", ARCHIVE);
+        // Nothing to ask about: a git source with no commit, a port of no source.
+        let loose = recipe("loose", "git = \"https://example.org/loose.git\"");
+        let none = recipe("rust-src", "");
+        let plan = plan(&[curl, zip, bare, loose, none]);
+        assert_eq!(
+            plan.archives,
+            [ArchivePort {
+                name: "curl".to_string(),
+                git: "https://example.org/curl.git".to_string(),
+                tag: "curl-8_23_0".to_string()
             }]
         );
+        let url = "https://example.org/curl-8.23.0.tar.xz";
+        let not_covered = |port: &str, reason: &str| NotCovered {
+            port: port.to_string(),
+            version: "1.2.3".to_string(),
+            url: url.to_string(),
+            reason: reason.to_string(),
+        };
         assert_eq!(
-            not_covered,
-            [NotCovered {
-                port: "bash".to_string(),
-                version: "1.2.3".to_string(),
-                url: "https://example.org/bash.tar.gz".to_string()
+            plan.not_covered,
+            [
+                not_covered("zip", "no repository"),
+                not_covered("bare", "the recipe has no [upstream]")
+            ]
+        );
+        assert!(plan.commits.is_empty() && plan.crates.is_empty());
+    }
+
+    #[test]
+    fn a_crate_a_recipe_lists_is_asked_by_its_name_and_version() {
+        let crates = recipe(
+            "rust-crates",
+            "rust-src = true\n[[crate]]\nname = \"tokio\"\nversion = \"1.54.1\"\nsha256 = \"ab\"\n\
+             license = \"MIT\"",
+        );
+        let plan = plan(&[crates]);
+        assert_eq!(
+            plan.crates,
+            [Asked {
+                component: "tokio 1.54.1".to_string(),
+                location: "ports/rust-crates/recipe.toml".to_string(),
+                query: Query::Crate { name: "tokio".to_string(), version: "1.54.1".to_string() },
             }]
         );
     }
 
-    fn pinned(name: &str, commit: &str) -> PinnedPort {
-        PinnedPort { name: name.to_string(), version: "1".to_string(), commit: commit.to_string() }
+    /// What `git ls-remote <git> refs/tags/<tag> refs/tags/<tag>^{}` printed
+    /// for a tag of curl, which is annotated, and of jq, which is not.
+    const ANNOTATED: &str = "4c24dd7ba7244e0206d91a72fe414823add8a034\trefs/tags/curl-8_23_0\n\
+                             3163ec065643ba20709f190111f42c3e1fe95273\trefs/tags/curl-8_23_0^{}\n";
+    const LIGHTWEIGHT: &str = "34f7186b86743a083a589741b6cea95293524108\trefs/tags/jq-1.8.2\n";
+
+    #[test]
+    fn the_commit_of_a_tag_is_the_peeled_one_of_an_annotated_tag_else_the_tags_own() {
+        assert_eq!(
+            tag_commit(ANNOTATED, "curl-8_23_0").as_deref(),
+            Some("3163ec065643ba20709f190111f42c3e1fe95273")
+        );
+        // The peeled line first or last, as a server lists it.
+        let lines: Vec<&str> = ANNOTATED.lines().rev().collect();
+        let reversed = lines.join("\n");
+        assert_eq!(tag_commit(&reversed, "curl-8_23_0"), tag_commit(ANNOTATED, "curl-8_23_0"));
+        assert_eq!(
+            tag_commit(LIGHTWEIGHT, "jq-1.8.2").as_deref(),
+            Some("34f7186b86743a083a589741b6cea95293524108")
+        );
+        // The tag of another name, or none, is not found, though other
+        // tags are listed.
+        assert_eq!(tag_commit(ANNOTATED, "curl-8_22_0"), None);
+        assert_eq!(tag_commit(ANNOTATED, "curl-8_23"), None);
+        assert_eq!(tag_commit("", "jq-1.8.2"), None);
+        // A line that is no ID and a name, or has a short or a non-hexadecimal ID, is no tag.
+        let broken = "warning: redirecting\nabc\trefs/tags/jq-1.8.2\n\
+                      zz6f7186b86743a083a589741b6cea95293524108\trefs/tags/jq-1.8.2\n\
+                      34f7186b86743a083a589741b6cea95293524108 refs/tags/jq-1.8.2\n";
+        assert_eq!(tag_commit(broken, "jq-1.8.2"), None);
+        // A repository that hashes with SHA-256 has IDs of 64 digits.
+        let long = format!("{}\trefs/tags/v1\n", "ab".repeat(32));
+        assert_eq!(tag_commit(&long, "v1"), Some("ab".repeat(32)));
+    }
+
+    fn archive(name: &str, git: &str, tag: &str) -> ArchivePort {
+        ArchivePort { name: name.to_string(), git: git.to_string(), tag: tag.to_string() }
+    }
+
+    #[test]
+    fn each_archive_port_is_resolved_with_one_ls_remote_and_asked_by_the_commit_of_its_tag() {
+        let ports = [
+            archive("curl", "https://example.org/curl.git", "curl-8_23_0"),
+            archive("jq", "https://example.org/jq.git", "jq-1.8.2"),
+        ];
+        let calls = std::cell::RefCell::new(Vec::new());
+        let ls = |git: &str, tag: &str| -> Result<String> {
+            calls.borrow_mut().push((git.to_string(), tag.to_string()));
+            Ok(if tag == "jq-1.8.2" { LIGHTWEIGHT } else { ANNOTATED }.to_string())
+        };
+        let asked = resolve_archives(&ports, &ls).unwrap();
+        assert_eq!(
+            *calls.borrow(),
+            [
+                ("https://example.org/curl.git".to_string(), "curl-8_23_0".to_string()),
+                ("https://example.org/jq.git".to_string(), "jq-1.8.2".to_string()),
+            ]
+        );
+        let curl_commit = "3163ec065643ba20709f190111f42c3e1fe95273";
+        assert_eq!(
+            asked,
+            [
+                Asked {
+                    component: format!("curl curl-8_23_0 {curl_commit}"),
+                    location: "ports/curl/recipe.toml".to_string(),
+                    query: Query::Commit(curl_commit.to_string()),
+                },
+                Asked {
+                    component: "jq jq-1.8.2 34f7186b86743a083a589741b6cea95293524108".to_string(),
+                    location: "ports/jq/recipe.toml".to_string(),
+                    query: Query::Commit("34f7186b86743a083a589741b6cea95293524108".to_string()),
+                },
+            ]
+        );
+        assert!(resolve_archives(&[], &ls).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_scan_that_could_not_resolve_a_tag_fails_and_names_each_port_it_could_not() {
+        let ports = [
+            archive("curl", "https://example.org/curl.git", "curl-8_23_0"),
+            archive("gone", "https://example.org/gone.git", "v1"),
+            archive("jq", "https://example.org/jq.git", "jq-1.9.0"),
+            archive("down", "https://example.org/down.git", "v2"),
+        ];
+        let ls = |git: &str, _: &str| -> Result<String> {
+            if git.ends_with("down.git") {
+                return Err(Error::new("unable to access the repository"));
+            }
+            Ok(if git.ends_with("curl.git") { ANNOTATED } else { LIGHTWEIGHT }.to_string())
+        };
+        let err = resolve_archives(&ports, &ls).unwrap_err().to_string();
+        // The tag that the repository does not have, and the repository
+        // that cannot be reached, each by its port; not the ports that were found.
+        assert!(err.contains("gone: https://example.org/gone.git has no tag v1"), "{err}");
+        assert!(err.contains("jq: https://example.org/jq.git has no tag jq-1.9.0"), "{err}");
+        assert!(err.contains("down: unable to access the repository"), "{err}");
+        assert!(!err.contains("curl:"), "{err}");
+    }
+
+    const LOCK: &str = r#"
+version = 4
+
+[[package]]
+name = "tokio"
+version = "1.54.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab"
+
+[[package]]
+name = "serde"
+version = "1.0.230"
+source = "sparse+https://index.crates.io/"
+
+[[package]]
+name = "dukovo-own"
+version = "0.15.0"
+
+[[package]]
+name = "from-git"
+version = "0.1.0"
+source = "git+https://example.org/x.git?rev=ab#0123456789012345678901234567890123456789"
+
+[[package]]
+name = "elsewhere"
+version = "2.0.0"
+source = "registry+https://registry.example.org/index"
+"#;
+
+    #[test]
+    fn the_crates_of_a_lock_are_the_packages_from_crates_io() {
+        let crates = crates_in_lock(LOCK, "Cargo.lock").unwrap();
+        let expected: BTreeSet<(String, String)> = [("tokio", "1.54.1"), ("serde", "1.0.230")]
+            .into_iter()
+            .map(|(name, version)| (name.to_string(), version.to_string()))
+            .collect();
+        assert_eq!(crates, expected);
+        // A lock with no packages lists none, and a lock that is not TOML is an error.
+        assert!(crates_in_lock("version = 4\n", "Cargo.lock").unwrap().is_empty());
+        let err = crates_in_lock("not = [toml", "kernel/Cargo.lock").unwrap_err().to_string();
+        assert!(err.contains("kernel/Cargo.lock"), "{err}");
+    }
+
+    fn crate_asked(port: &str, name: &str, version: &str) -> Asked {
+        Asked {
+            component: format!("{name} {version}"),
+            location: format!("ports/{port}/recipe.toml"),
+            query: Query::Crate { name: name.to_string(), version: version.to_string() },
+        }
+    }
+
+    #[test]
+    fn a_crate_a_lock_lists_is_not_asked_about_and_a_crate_two_ports_list_is_asked_once() {
+        let locked = crates_in_lock(LOCK, "Cargo.lock").unwrap();
+        let crates = vec![
+            crate_asked("rust-crates", "tokio", "1.54.1"),
+            crate_asked("rust-crates", "tokio", "1.40.0"),
+            crate_asked("rust-crates", "nix", "0.31.3"),
+            crate_asked("rust-std", "nix", "0.31.3"),
+            crate_asked("rust-std", "serde", "1.0.230"),
+        ];
+        // Only the version the lock holds is left out; each other crate is
+        // asked once, by the first port that lists it.
+        assert_eq!(
+            unlocked(crates, &locked),
+            [
+                crate_asked("rust-crates", "tokio", "1.40.0"),
+                crate_asked("rust-crates", "nix", "0.31.3")
+            ]
+        );
+        // A commit is not a crate: it is kept.
+        let commit = Asked {
+            component: "lua c1".to_string(),
+            location: "ports/lua/recipe.toml".to_string(),
+            query: Query::Commit("c1".to_string()),
+        };
+        assert_eq!(unlocked(vec![commit.clone()], &locked), [commit]);
+    }
+
+    #[test]
+    fn a_query_is_a_commit_or_a_crate_of_crates_io_with_the_page_of_a_long_answer() {
+        let commit = Query::Commit("c1".to_string());
+        assert_eq!(commit.json(None), json!({"commit": "c1"}));
+        assert_eq!(commit.json(Some("t1")), json!({"commit": "c1", "page_token": "t1"}));
+        let krate = Query::Crate { name: "tokio".to_string(), version: "1.54.1".to_string() };
+        assert_eq!(
+            krate.json(None),
+            json!({"package": {"ecosystem": "crates.io", "name": "tokio"}, "version": "1.54.1"})
+        );
+        assert_eq!(
+            krate.json(Some("t2")),
+            json!({
+                "package": {"ecosystem": "crates.io", "name": "tokio"},
+                "version": "1.54.1",
+                "page_token": "t2"
+            })
+        );
+    }
+
+    fn pinned(name: &str, commit: &str) -> Asked {
+        Asked {
+            component: format!("{name} {commit}"),
+            location: format!("ports/{name}/recipe.toml"),
+            query: Query::Commit(commit.to_string()),
+        }
     }
 
     /// An OSV that answers from a table, and keeps what it was asked.
@@ -1084,11 +1572,12 @@ mod tests {
     }
 
     #[test]
-    fn osv_is_asked_once_for_all_commits_and_once_for_each_advisory() {
+    fn osv_is_asked_once_for_everything_and_once_for_each_advisory() {
         let batch = json!({"results": [
             {"vulns": [{"id": "GHSA-1", "modified": "x"}, {"id": "CVE-2"}]},
             {},
-            {"vulns": [{"id": "GHSA-1"}]}
+            {"vulns": [{"id": "GHSA-1"}]},
+            {"vulns": [{"id": "RUSTSEC-2026-1"}]}
         ]})
         .to_string();
         let ghsa = json!({
@@ -1098,26 +1587,38 @@ mod tests {
         .to_string();
         let cve =
             json!({"id": "CVE-2", "details": "\nFirst line of details.\nSecond."}).to_string();
+        let rustsec = json!({"id": "RUSTSEC-2026-1", "summary": "Leak in tokio"}).to_string();
         let osv = FakeOsv::new(vec![
             ("/v1/querybatch", batch),
             ("/v1/vulns/GHSA-1", ghsa),
             ("/v1/vulns/CVE-2", cve),
+            ("/v1/vulns/RUSTSEC-2026-1", rustsec),
         ]);
-        let ports = [pinned("a", "c1"), pinned("b", "c2"), pinned("c", "c3")];
+        let ports = [
+            pinned("a", "c1"),
+            pinned("b", "c2"),
+            pinned("c", "c3"),
+            crate_asked("rust-crates", "tokio", "1.54.1"),
+        ];
         let found = osv_findings(&|path, body| osv.ask(path, body), &ports).unwrap();
 
         let asked = osv.asked.borrow();
-        // One batch for the three commits, and one record for each ID,
-        // though GHSA-1 matches two ports.
-        assert_eq!(asked.len(), 3);
+        // One batch for the three commits and the crate, and one record for
+        // each ID, though GHSA-1 matches two ports.
+        assert_eq!(asked.len(), 4);
         let sent: Value = serde_json::from_str(asked[0].1.as_deref().unwrap()).unwrap();
         assert_eq!(
             sent,
-            json!({"queries": [{"commit": "c1"}, {"commit": "c2"}, {"commit": "c3"}]})
+            json!({"queries": [
+                {"commit": "c1"},
+                {"commit": "c2"},
+                {"commit": "c3"},
+                {"package": {"ecosystem": "crates.io", "name": "tokio"}, "version": "1.54.1"}
+            ]})
         );
         assert!(asked[1..].iter().all(|(_, body)| body.is_none()));
 
-        assert_eq!(found.len(), 3);
+        assert_eq!(found.len(), 4);
         assert_eq!(found[0].id, "GHSA-1");
         assert_eq!(found[0].component, "a c1");
         assert_eq!(found[0].severity, Some(Severity::High));
@@ -1129,10 +1630,15 @@ mod tests {
         assert_eq!(found[1].summary, "First line of details.");
         assert_eq!(found[1].severity, None);
         assert_eq!(found[2].component, "c c3");
+        // A crate is named as cargo-audit names one, and has its recipe for its place.
+        assert_eq!(found[3].id, "RUSTSEC-2026-1");
+        assert_eq!(found[3].component, "tokio 1.54.1");
+        assert_eq!(found[3].location, "ports/rust-crates/recipe.toml");
+        assert_eq!(found[3].source, Source::Osv);
     }
 
     #[test]
-    fn osv_pages_of_one_commit_are_put_together() {
+    fn osv_pages_of_one_query_are_put_together() {
         let first = json!({"results": [
             {"vulns": [{"id": "A"}], "next_page_token": "t1"}, {}
         ]})
@@ -1140,7 +1646,8 @@ mod tests {
         // The next page asks only for the commit that has one.
         let second = json!({"results": [{"vulns": [{"id": "B"}]}]}).to_string();
         let osv = FakeOsv::new(vec![("/v1/querybatch", first), ("/v1/querybatch", second)]);
-        let ids = osv_ids(&|path, body| osv.ask(path, body), &["c1", "c2"]).unwrap();
+        let queries = [Query::Commit("c1".to_string()), Query::Commit("c2".to_string())];
+        let ids = osv_ids(&|path, body| osv.ask(path, body), &[&queries[0], &queries[1]]).unwrap();
         assert_eq!(ids, [vec!["A".to_string(), "B".to_string()], Vec::<String>::new()]);
         let asked = osv.asked.borrow();
         let again: Value = serde_json::from_str(asked[1].1.as_deref().unwrap()).unwrap();
@@ -1152,14 +1659,15 @@ mod tests {
         let ask_with = |answer: &'static str| {
             move |_: &str, _: Option<&str>| -> Result<String> { Ok(answer.to_string()) }
         };
-        assert!(osv_ids(&ask_with("<html>"), &["c1"]).is_err());
-        // One result for each commit asked.
-        assert!(osv_ids(&ask_with(r#"{"results": []}"#), &["c1"]).is_err());
-        assert!(osv_ids(&ask_with("{}"), &["c1"]).is_err());
+        let c1 = Query::Commit("c1".to_string());
+        assert!(osv_ids(&ask_with("<html>"), &[&c1]).is_err());
+        // One result for each query asked.
+        assert!(osv_ids(&ask_with(r#"{"results": []}"#), &[&c1]).is_err());
+        assert!(osv_ids(&ask_with("{}"), &[&c1]).is_err());
         // A server that never ends its pages is not asked for ever.
         let endless = ask_with(r#"{"results": [{"next_page_token": "t"}]}"#);
-        assert!(osv_ids(&endless, &["c1"]).is_err());
-        // No port is no question.
+        assert!(osv_ids(&endless, &[&c1]).is_err());
+        // Nothing to ask is no question.
         let never = |_: &str, _: Option<&str>| -> Result<String> { panic!("asked") };
         assert!(osv_findings(&never, &[]).unwrap().is_empty());
     }
@@ -1210,13 +1718,14 @@ mod tests {
     }
 
     #[test]
-    fn the_json_is_the_findings_and_the_ports_not_covered() {
+    fn the_json_is_the_findings_and_the_ports_not_covered_with_their_reasons() {
         let report = Report {
             findings: vec![finding("A", Some(Severity::High), "x 1"), finding("B", None, "y 2")],
             not_covered: vec![NotCovered {
-                port: "bash".to_string(),
-                version: "5.2".to_string(),
-                url: "https://example.org/bash.tar.gz".to_string(),
+                port: "zip".to_string(),
+                version: "3.0".to_string(),
+                url: "https://example.org/zip30.tar.gz".to_string(),
+                reason: "no public repository".to_string(),
             }],
         };
         let value = serde_json::to_value(&report).unwrap();
@@ -1229,10 +1738,81 @@ mod tests {
         assert!(first["aliases"].as_array().unwrap().is_empty());
         // No severity is null, which is what a reader that triages looks for.
         assert!(value["findings"][1]["severity"].is_null());
-        assert_eq!(value["not_covered"][0]["port"], "bash");
+        assert_eq!(
+            value["not_covered"],
+            json!([{
+                "port": "zip",
+                "version": "3.0",
+                "url": "https://example.org/zip30.tar.gz",
+                "reason": "no public repository"
+            }])
+        );
         let mut osv = finding("C", None, "lua c1");
         osv.source = Source::Osv;
         assert_eq!(serde_json::to_value(&osv).unwrap()["source"], "osv");
+    }
+
+    /// The scan's parts as `scan` puts them together, with the lookups of
+    /// tags and of advisories answered from tables: the commit of each
+    /// kind of source reaches OSV in one batch, and what OSV says of it
+    /// reaches the report under the recipe that pins it.
+    #[test]
+    fn the_scan_asks_osv_once_by_commit_tag_extra_source_and_crate() {
+        let other = "0123456789abcdef0123456789abcdef01234567";
+        let recipes = [
+            lua(),
+            recipe(
+                "curl",
+                &format!(
+                    "{ARCHIVE}\n[upstream]\ngit = \"https://example.org/curl.git\"\n\
+                     tag = \"curl-8_23_0\"\n[[extra]]\npath = \"pcre2\"\n\
+                     git = \"https://example.org/pcre2.git\"\ncommit = \"{other}\"\n\
+                     license = \"MIT\""
+                ),
+            ),
+            recipe("zip", &format!("{ARCHIVE}\n[upstream]\nnone = \"no repository\"")),
+            recipe(
+                "rust-crates",
+                "rust-src = true\n[[crate]]\nname = \"tokio\"\nversion = \"1.54.1\"\n\
+                 sha256 = \"ab\"\nlicense = \"MIT\"\n[[crate]]\nname = \"nix\"\n\
+                 version = \"0.31.3\"\nsha256 = \"ab\"\nlicense = \"MIT\"",
+            ),
+        ];
+        let plan = plan(&recipes);
+        let ls = |_: &str, _: &str| -> Result<String> { Ok(ANNOTATED.to_string()) };
+        let mut asked = plan.commits;
+        asked.extend(resolve_archives(&plan.archives, &ls).unwrap());
+        // cargo-audit read a lock that holds tokio.
+        let locked = crates_in_lock(LOCK, "Cargo.lock").unwrap();
+        asked.extend(unlocked(plan.crates, &locked));
+
+        let curl_commit = "3163ec065643ba20709f190111f42c3e1fe95273";
+        let batch = json!({"results": [{}, {"vulns": [{"id": "CVE-7"}]}, {}, {}]}).to_string();
+        let cve = json!({"id": "CVE-7", "summary": "Overflow in pcre2"}).to_string();
+        let osv = FakeOsv::new(vec![("/v1/querybatch", batch), ("/v1/vulns/CVE-7", cve)]);
+        let found = osv_findings(&|path, body| osv.ask(path, body), &asked).unwrap();
+
+        let sent: Value =
+            serde_json::from_str(osv.asked.borrow()[0].1.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            json!({"queries": [
+                {"commit": COMMIT},
+                {"commit": other},
+                {"commit": curl_commit},
+                {"package": {"ecosystem": "crates.io", "name": "nix"}, "version": "0.31.3"}
+            ]})
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].component, format!("curl pcre2 {other}"));
+        assert_eq!(found[0].location, "ports/curl/recipe.toml");
+
+        let report = Report { findings: sorted(found), not_covered: plan.not_covered };
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["findings"][0]["id"], "CVE-7");
+        assert_eq!(value["findings"][0]["source"], "osv");
+        assert_eq!(value["not_covered"][0]["port"], "zip");
+        assert_eq!(value["not_covered"][0]["reason"], "no repository");
     }
 
     #[test]
@@ -1246,9 +1826,10 @@ mod tests {
         found.aliases = vec!["CVE-1".to_string()];
         report.findings = vec![found, finding("B", None, "y 2")];
         report.not_covered = vec![NotCovered {
-            port: "bash".to_string(),
-            version: "5.2".to_string(),
+            port: "zip".to_string(),
+            version: "3.0".to_string(),
             url: "u".to_string(),
+            reason: "no public repository".to_string(),
         }];
         let text = render_text(&report);
         assert!(text.starts_with("2 findings:"), "{text}");
@@ -1257,6 +1838,6 @@ mod tests {
         assert!(text.contains("also CVE-1"), "{text}");
         assert!(text.contains("found in Cargo.lock by cargo-audit"), "{text}");
         assert!(text.contains("Not covered, since 1 ports"), "{text}");
-        assert!(text.contains("  bash 5.2"), "{text}");
+        assert!(text.contains("  zip 3.0: no public repository"), "{text}");
     }
 }

@@ -5,14 +5,17 @@
 # `./ob ports outdated` asks each port's repository for its releases, and
 # an issue is opened, or brought up to date, for each port whose upstream
 # has a newer one; a person moves the pin, and signs the commit off, in a
-# pull request that CI tests as any other. Each day, `./ob security scan`
-# asks what the system is built from (ADR 0534): cargo-audit reads every
-# Cargo.lock, including the Rust bundles' ports', against the RustSec
-# advisory database, and OSV is asked about each port that pins a git
-# commit. A finding opens one issue labelled `security` and `sbom-scan`,
-# never a second for the same ID, and the issue is closed when the finding
-# no longer matches. `./ob ports audit` stays as the local check of the
-# bundles' crates.
+# pull request that CI tests as any other. A port pinned by a release
+# archive is asked in the repository its `[upstream]` names. Each day,
+# `./ob security scan` asks what the system is built from (ADR 0534):
+# cargo-audit reads every Cargo.lock, including the Rust bundles' ports',
+# against the RustSec advisory database, and OSV is asked about each port
+# that pins a git commit, each of its extra sources, each port pinned by a
+# release archive (by the commit of the tag its `[upstream]` names) and
+# each crate a recipe lists. A finding opens one issue labelled `security`
+# and `sbom-scan`, never a second for the same ID, and the issue is closed
+# when the finding no longer matches. `./ob ports audit` stays as the
+# local check of the bundles' crates.
 name: Upstream releases and advisories
 
 on:
@@ -63,7 +66,8 @@ jobs:
             title="Port $name: $newer is out (pinned to $pinned)"
             body="Upstream of ports/$name has released $newer; the recipe pins $pinned.
 
-          Move the pin in ports/$name/recipe.toml (commit and tag), check that the
+          Move the pin in ports/$name/recipe.toml (commit and tag, or for a release
+          archive its url and sha256, and the tag of its [upstream]), check that the
           patches still apply and that \`./ob ports --rebuild $name\` builds, and open
           a pull request; CI tests it as any other. Found by \`./ob ports outdated\`
           (ADR 0370)."
@@ -97,7 +101,7 @@ jobs:
         # Keep in step with ADR 0370.
         run: cargo install cargo-audit --version 0.22.1 --locked
 
-      - name: Scan the Cargo.lock files and the ports' commits
+      - name: Scan the Cargo.lock files, the ports' commits and crates
         run: ./ob security scan --json > findings.json
 
       - name: Open, reopen and close the issues

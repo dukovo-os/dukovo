@@ -16,3 +16,6 @@ depends = ["mlibc", "zlib"]
 url = "https://mandoc.bsd.lv/snapshots/mandoc-1.14.6.tar.gz"
 sha256 = "8bf0d570f01e70a6e124884088870cbed7537f36328d512909eb10cd53179d9c"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/universe/m/mdocml/mdocml_1.14.6.orig.tar.gz"]
+
+[upstream]
+none = "its source is in CVS (anonymous CVS and cvsweb at mandoc.bsd.lv), and the project names no git repository"

@@ -15,3 +15,7 @@ depends = ["mlibc", "zlib", "bzip2", "xz", "zstd"]
 url = "https://astron.com/pub/file/file-5.47.tar.gz"
 sha256 = "45672fec165cb4cc1358a2d76b5d57d22876dcb97ab169427ac385cbe1d5597a"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/f/file/file_5.47.orig.tar.gz"]
+
+[upstream]
+git = "https://github.com/file/file.git"
+tag = "FILE5_47"

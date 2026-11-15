@@ -20,3 +20,7 @@ image = ["system/commands/curl", "system/resources/man/man1/curl.1"]
 [source]
 url = "https://github.com/curl/curl/releases/download/curl-8_23_0/curl-8.23.0.tar.xz"
 sha256 = "8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5"
+
+[upstream]
+git = "https://github.com/curl/curl.git"
+tag = "curl-8_23_0"

@@ -184,9 +184,13 @@ image's: its build.sh installs into $PORT_BUNDLE, and ob packs that into a
 signed out/bundles/<id>-<version>.dkv with its manifest, SBOM and licenses
 (ADR 0370).
 
-`outdated` lists the ports pinned to a git tag whose upstream has released
-a newer version (--tsv: name, pin and newer release, for CI). `audit` checks
-the Cargo.lock of each bundle's port in Rust with cargo-audit.
+`outdated` lists the ports whose upstream has released a newer version than
+the tag the recipe pins: a port pinned to a git tag is asked in its own
+repository, and a port pinned by a release archive in the repository its
+[upstream] table names; a recipe's `series`, such as 3.5 for a long-term
+release, limits it to that series (--tsv: name, pin and newer release, for
+CI). `audit`
+checks the Cargo.lock of each bundle's port in Rust with cargo-audit.
 
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
@@ -742,14 +746,17 @@ to a published advisory.
 `scan` looks for known flaws in what the system is built from: `cargo audit
 --json` on every tracked Cargo.lock (which it does not change) and on the lock
 of every Rust port that `ports audit` audits, and OSV, asked by the commit each
-port's recipe pins. A port pinned by a release archive and no commit cannot be
-asked, and is listed as not covered. A finding has the severity its advisory
-names, or the base score of its CVSS 3 vector gives, and none when the advisory
-gives neither. The text lists the findings, most severe first; --json prints one
-object, with `findings` and `not_covered`, for the daily scan of
+port's recipe pins and each of its extra sources, by the commit of the tag the
+[upstream] of a port pinned by a release archive names (one `git ls-remote` for
+each port), and by name and version for each crate a recipe lists that no
+audited Cargo.lock lists. A port whose [upstream] says none cannot be asked, and
+is listed as not covered, with its reason. A finding has the severity its
+advisory names, or the base score of its CVSS 3 vector gives, and none when the
+advisory gives neither. The text lists the findings, most severe first; --json
+prints one object, with `findings` and `not_covered`, for the daily scan of
 .github/workflows/upstream.yml. --osv-url names another server that answers as
 OSV does. It exits 0 whatever it finds, and non-zero only when it could not run
-(cargo-audit missing, OSV out of reach)."
+(cargo-audit missing, OSV out of reach, a tag it could not resolve)."
         }
         "release" => {
             "Usage: ./ob release server setup [--dukovo]
