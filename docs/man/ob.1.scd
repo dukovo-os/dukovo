@@ -2518,12 +2518,6 @@ fails the build.
 *OB_TARGET_DIR*
 	Directory for Cargo output instead of _target/_.
 
-*RUSTC_WRAPPER*
-	A program Cargo runs rustc through, such as *sccache*. *ob* runs
-	Cargo with *RUSTC_WRAPPER* set to itself, which gives each crate an
-	identity that does not depend on where the checkout is (ADR 0535),
-	and runs the program set here in turn.
-
 *OB_UPDATE_SSH*
 	The update server as *ssh*(1) names it, such as
 	_user@updates.dukovo.org_ or a host in _~/.ssh/config_, for *catalog
@@ -2534,6 +2528,12 @@ fails the build.
 	server, as words set apart by blanks, such as *-o Port=2222 -i*
 	_key_: for a server that is not at the usual port or takes a key of
 	its own, as the lab's is. Empty by default.
+
+*RUSTC_WRAPPER*
+	A program Cargo runs rustc through, such as *sccache*. *ob* runs
+	Cargo with *RUSTC_WRAPPER* set to itself, which gives each crate an
+	identity that does not depend on where the checkout is (ADR 0535),
+	and runs the program set here in turn.
 
 *SOURCE_DATE_EPOCH*
 	Timestamp for files in the image, and, with the version and the kind
