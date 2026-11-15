@@ -10,8 +10,9 @@
 # The steps: ready, which waits for the service and has the administrator
 # make the lab account's role; prepare, which makes the roles and databases
 # of pgbench and of PHP's tests; stop, which stops the service with a
-# session open and starts it again; and hook, which has Spark run the
-# service's backup hook. Each prints ok-NAME for each check that held and
+# session open and starts it again; hook, which has Spark run the
+# service's backup hook; and tls, which has the server serve the machine's
+# own certificate and a renewal of it. Each prints ok-NAME for each check that held and
 # FAIL-NAME for each that did not, then `STEP N of M`, N of M checks having
 # held; what failed is in /tmp/postgresql-service.log.
 bin=/applications/org.postgresql.postgresql/bin
@@ -105,6 +106,51 @@ hook_checkpoints() {
 	done
 }
 
+# The machine's own certificate, which certd keeps (ADR 0512), as Spark
+# copies it for the service once its file names it.
+certificate=/system/live/certificates/postgresql/this-machine
+
+# Named in the service's file and in the server's settings, it is served
+# after a restart, which has Spark copy it.
+tls_set_up() {
+	sed -i '/^secrets = /a certificates = ["this-machine"]' /system/settings/spark/services/postgresql.toml &&
+		admin_sql "ALTER SYSTEM SET ssl = on" &&
+		admin_sql "ALTER SYSTEM SET ssl_cert_file = '$certificate/fullchain.pem'" &&
+		admin_sql "ALTER SYSTEM SET ssl_key_file = '$certificate/key.pem'" &&
+		service postgresql restart && wait_ready
+}
+
+# Whether the role bench's session over TCP is encrypted, for a client that
+# trusts the certificate in the file $1 alone and checks that it names
+# localhost, which the machine's own certificate does.
+tls_sql() {
+	PGPASSWORD=bench-pw "$bin/psql" \
+		"host=localhost hostaddr=127.0.0.1 dbname=bench user=bench sslmode=verify-full sslrootcert=$1" \
+		-X -A -t -c 'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()'
+}
+
+tls_served() {
+	cert show this-machine --pem >/tmp/first.pem && test "$(tls_sql /tmp/first.pem)" = t
+}
+
+# certd makes the certificate anew: Spark copies it for the service and
+# sends the server SIGHUP, within 10 seconds of the restart, and the server
+# serves the new one without starting again. A client that trusts only the
+# certificate before is refused.
+tls_renewed() {
+	started=$(admin_sql 'SELECT pg_postmaster_start_time()')
+	cert renew this-machine && cert show this-machine --pem >/tmp/renewed.pem || return 1
+	test "$(cat /tmp/renewed.pem)" != "$(cat /tmp/first.pem)" || return 1
+	tries=0
+	until test "$(tls_sql /tmp/renewed.pem)" = t; do
+		tries=$((tries + 1))
+		[ "$tries" -lt 30 ] || return 1
+		sleep 1
+	done
+	test "$(admin_sql 'SELECT pg_postmaster_start_time()')" = "$started" &&
+		! tls_sql /tmp/first.pem
+}
+
 case "$step" in
 ready)
 	check ready wait_ready
@@ -130,6 +176,11 @@ stop)
 	;;
 hook)
 	check hook hook_checkpoints
+	;;
+tls)
+	check tls_set_up tls_set_up
+	check tls_served tls_served
+	check tls_renewed tls_renewed
 	;;
 esac
 echo "$step $held of $checked"

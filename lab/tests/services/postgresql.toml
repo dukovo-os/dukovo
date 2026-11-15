@@ -20,8 +20,10 @@
 # hook, which checkpoints. PHP's own tests of its PostgreSQL extensions run
 # against it, expecting what php-skips.txt lists to be all that fails, and
 # pgbench loads it with 8 clients for a minute as a role of its own. The
-# tps line it prints stays in the results, to compare with Linux.
-about = "PostgreSQL from the catalog passes its own test suites but for the tests postgresql-skips.txt lists, and its service keeps a cluster, stops quickly and runs PHP's PostgreSQL tests and pgbench (ADRs 0521 and 0522)"
+# tps line it prints stays in the results, to compare with Linux. Last, the
+# server serves the machine's own certificate over TLS, and a renewal of
+# it without a restart.
+about = "PostgreSQL from the catalog passes its own test suites but for the tests postgresql-skips.txt lists, and its service keeps a cluster, stops quickly and runs PHP's PostgreSQL tests and pgbench, then serves TLS with the machine's certificate from certd (ADRs 0512, 0521 and 0522)"
 time = "90m"
 host_needs = ["scp"]
 
@@ -132,6 +134,15 @@ expect = "done in"
 [[step]]
 run = '''sh -c 'PGPASSWORD=bench-pw /applications/org.postgresql.postgresql/bin/pgbench -h 127.0.0.1 -U bench -c 8 -j 4 -T 60 -P 10 bench > /tmp/pgbench.log 2>&1; grep -e "number of failed transactions" -e "^tps" /tmp/pgbench.log' '''
 expect = "number of failed transactions: 0 (0.000%)"
+
+# TLS with the machine's own certificate, which certd keeps, last, as the
+# connections over 127.0.0.1 above are measured without it: a client that
+# trusts that certificate alone and checks the name connects, and a
+# renewal is served without a restart (ADR 0512).
+[[step]]
+run = "sh /users/lab/postgresql-service.sh tls"
+root = true
+expect = "tls 3 of 3"
 
 # The service's cluster goes with the bundle: the purge removes its data.
 [[step]]

@@ -22,7 +22,12 @@
 //! a transaction back. With a session open, stopping the service returns
 //! within ten seconds: the log has the fast shutdown request and the
 //! server shut down, and the start after it needs no recovery. A reload
-//! has the server read its settings again. The power button ends it.
+//! has the server read its settings again. With the machine's own
+//! certificate, which certd keeps, named in the service's file and in the
+//! server's settings, a client that trusts that certificate alone and
+//! checks the machine's name connects over TLS; certd makes it anew, and
+//! the server serves the new one, read again on Spark's SIGHUP, without a
+//! restart. The power button ends it.
 
 use super::super::*;
 
@@ -51,7 +56,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "postgresql-service",
-    about: "PostgreSQL's service runs for the system (ADR 0522): installed for everyone from its .dkv file and enabled, it makes its cluster at its first start and is ready once pg_isready passes; elevate psql -U postgres is the superuser by root's peer authentication and a person with a role is herself; a role with a password owns a database of English's locale of the C library, which sorts as glibc does and has the locales' version, and connects over 127.0.0.1 with its password and not another; a parallel query runs two workers; PHP's pgsql and PDO connect, insert, read and roll back; stopped with a session open it returns within ten seconds by the fast shutdown and starts again without recovery; a reload reads its settings",
+    about: "PostgreSQL's service runs for the system (ADR 0522): installed for everyone from its .dkv file and enabled, it makes its cluster at its first start and is ready once pg_isready passes; elevate psql -U postgres is the superuser by root's peer authentication and a person with a role is herself; a role with a password owns a database of English's locale of the C library, which sorts as glibc does and has the locales' version, and connects over 127.0.0.1 with its password and not another; a parallel query runs two workers; PHP's pgsql and PDO connect, insert, read and roll back; stopped with a session open it returns within ten seconds by the fast shutdown and starts again without recovery; a reload reads its settings; with the machine's certificate from certd it serves TLS to a client that checks the name, and a renewal is served without a restart (ADR 0512)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -194,6 +199,50 @@ reloads() {
 	elevate service postgresql reload && logged 'received SIGHUP, reloading configuration files'
 }
 
+# The machine's own certificate, which certd keeps (ADR 0512), as Spark
+# copies it for the service once its file names it.
+certificate=/system/live/certificates/postgresql/this-machine
+
+# Named in the service's file and in the server's settings, it is served
+# after a restart, which has Spark copy it.
+tls_set_up() {
+	elevate sed -i '/^secrets = /a certificates = ["this-machine"]' /system/settings/spark/services/postgresql.toml &&
+		admin_sql "ALTER SYSTEM SET ssl = on" &&
+		admin_sql "ALTER SYSTEM SET ssl_cert_file = '$certificate/fullchain.pem'" &&
+		admin_sql "ALTER SYSTEM SET ssl_key_file = '$certificate/key.pem'" &&
+		elevate service postgresql restart && wait_ready
+}
+
+# Whether the role shop's session over TCP is encrypted, for a client that
+# trusts the certificate in the file $1 alone and checks that it names
+# localhost, which the machine's own certificate does.
+tls_sql() {
+	PGPASSWORD=shop-pw psql "host=localhost hostaddr=127.0.0.1 dbname=shop user=shop sslmode=verify-full sslrootcert=$1" \
+		-X -A -t -c 'SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()'
+}
+
+tls_served() {
+	cert show this-machine --pem >/tmp/first.pem && test "$(tls_sql /tmp/first.pem)" = t
+}
+
+# certd makes the certificate anew: Spark copies it for the service and
+# sends the server SIGHUP, within 10 seconds of the restart, and the server
+# serves the new one without starting again. A client that trusts only the
+# certificate before is refused.
+tls_renewed() {
+	started=$(admin_sql 'SELECT pg_postmaster_start_time()')
+	elevate cert renew this-machine && cert show this-machine --pem >/tmp/renewed.pem || return 1
+	test "$(cat /tmp/renewed.pem)" != "$(cat /tmp/first.pem)" || return 1
+	tries=0
+	until test "$(tls_sql /tmp/renewed.pem)" = t; do
+		tries=$((tries + 1))
+		[ "$tries" -lt 30 ] || return 1
+		sleep 1
+	done
+	test "$(admin_sql 'SELECT pg_postmaster_start_time()')" = "$started" &&
+		! tls_sql /tmp/first.pem
+}
+
 case "$1" in
 ready)
 	check ready wait_ready
@@ -229,6 +278,11 @@ stop)
 	;;
 reload)
 	check reload reloads
+	;;
+tls)
+	check tls_set_up tls_set_up
+	check tls_served tls_served
+	check tls_renewed tls_renewed
 	;;
 php)
 	php "$here/service.php" >/tmp/php.out 2>&1
@@ -343,6 +397,8 @@ fn postgresql_service(vm: &mut Vm, case: &Case) -> Result<(), String> {
     unlock(vm)?;
     run_step(vm, SCRIPT, "stop", 5, 300)?;
     run_step(vm, SCRIPT, "reload", 1, 120)?;
+    unlock(vm)?;
+    run_step(vm, SCRIPT, "tls", 3, 300)?;
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;

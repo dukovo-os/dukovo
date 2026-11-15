@@ -13,24 +13,25 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 The PostgreSQL bundle (ADR 0521) carries the server and its programs. A
 database is mostly used as a service, which a service bundle runs as an
 account of its own once an administrator enables it (ADRs 0385 and 0386),
-as Valkey (ADR 0492) and PHP-FPM (ADR 0520) are run. What the server asks
-of the system that is not there yet:
+as Valkey (ADR 0492) and PHP-FPM (ADR 0520) are run. What the server
+needs of the system:
 
-- **A stop of its own.** Spark ends every service with SIGTERM and gives
-  it 5 seconds. PostgreSQL takes SIGTERM for a *smart* shutdown, which
-  waits for every client to disconnect: with one connected, Spark's 5
-  seconds pass, Spark ends the whole domain, and the next start recovers
-  from a crash. Its fast shutdown, which ends the sessions, rolls back
-  what they had open, writes a checkpoint and stops, is SIGINT, and the
-  checkpoint writes every changed buffer, which can take longer than 5
-  seconds. PostgreSQL's own systemd unit says `KillMode=mixed`,
-  `KillSignal=SIGINT` and `TimeoutSec=infinity`. Spark already signals only
-  the service's own process, which is the postmaster, as `KillMode=mixed`
-  does; it lacks the signal and the time, per service.
-- **A bundle's hooks around a backup.** A service file can name programs
-  that run before and after a backup (`[backup]`, ADR 0463), but a bundle's
-  manifest has no such key, so a bundle's database cannot checkpoint before
-  a snapshot.
+- **A stop of its own.** Spark ends a service with SIGTERM and gives it 5
+  seconds unless the service's `[stop]` says otherwise (ADR 0477).
+  PostgreSQL takes SIGTERM for a *smart* shutdown, which waits for every
+  client to disconnect: with one connected, the 5 seconds pass, Spark ends
+  the whole domain, and the next start recovers from a crash. Its fast
+  shutdown, which ends the sessions, rolls back what they had open, writes
+  a checkpoint and stops, is SIGINT, and the checkpoint writes every
+  changed buffer, which can take longer than 5 seconds. PostgreSQL's own
+  systemd unit says `KillMode=mixed`, `KillSignal=SIGINT` and
+  `TimeoutSec=infinity`. Spark signals only the service's own process,
+  which is the postmaster, as `KillMode=mixed` does.
+- **A checkpoint before a backup.** A snapshot of a running cluster is a
+  valid backup, as after a crash, and the less log there is to replay
+  since the last checkpoint, the sooner a cluster restored from it
+  starts. A bundle's manifest names programs that run around a backup's
+  snapshot (`backup`, ADRs 0463 and 0477).
 - **A socket folder.** libpq's default folder for the Unix socket is
   `/tmp`. The service's socket belongs in its live folder
   (`/system/live/services/postgres`, ADR 0386), which Spark makes for the
@@ -51,17 +52,15 @@ of the system that is not there yet:
   service bundle's new version answer on the health socket its manifest
   names, within 60 seconds, or the version before comes back with its data.
   The socket PostgreSQL makes is `.s.PGSQL.5432`, whose name a manifest
-  cannot hold (a name starts with a letter or a digit); and a socket named
-  in `health` is one the service offers to others, which waits for the
-  sockets a bundle provides (docs/deferred.md), and may be one that Spark
-  holds for the service, which PostgreSQL cannot take over from it. Its
-  health command, `pg_isready`, tells what is needed, and Spark runs it.
+  cannot hold (a name starts with a letter or a digit), and the server
+  takes a connection on it while it starts up or recovers, only to refuse
+  the session, so a socket that answers says little. Its health command,
+  `pg_isready`, tells what is needed, and Spark runs it.
 - **libpq for PHP.** PHP's `pgsql` and `pdo_pgsql` extensions link libpq,
   which a port finds in the sysroot.
 
-This record changes three earlier ones: the health check after an update
-(ADR 0386), the hooks around a backup (ADR 0463) and the keys of a service
-file (ADR 0470). Their status lines say so.
+This record changes the health check after an update (ADR 0386), whose
+status line says so.
 
 ## Decision
 
@@ -86,18 +85,14 @@ file (ADR 0470). Their status lines say so.
   default for every other service stays as it is.
 - **Stop.** The service stops on SIGINT and has 300 seconds, with the
   `stop` of its manifest (service.toml(5) `[stop]`, manifest.json(5)
-  `stop`), and its `before` hook of `backup` runs `CHECKPOINT`, so that a
-  snapshot of `/shared` holds the cluster as a crash would leave it a
-  moment after a checkpoint, which PostgreSQL documents as a valid backup
-  ("File System Level Backup").
-- **The signal and the time belong to each service,** and Spark's 5
-  seconds stay the default for the rest. A longer wait for every service
-  would hold a machine's shutdown for as long as any one that does not end
-  can be waited for, and a service that ends in a moment gains nothing from
-  it. A service says what it needs: a signal from `SIGTERM`, `SIGINT`,
-  `SIGQUIT`, `SIGUSR1`, `SIGUSR2` and `SIGWINCH`, the ones daemons take as a
-  request to stop (nginx's is `SIGQUIT`, PostgreSQL's `SIGINT`), and
-  a time of 1 to 3600 seconds.
+  `stop`, ADR 0477), and its `before` hook of `backup` runs `CHECKPOINT`,
+  so that a snapshot of `/shared` holds the cluster as a crash would leave
+  it a moment after a checkpoint, which PostgreSQL documents as a valid
+  backup ("File System Level Backup"). 300 seconds, not the upstream
+  unit's endless wait: a machine's shutdown waits as long for the service,
+  and that is time for a checkpoint of gigabytes of changed pages on a slow
+  disk; a stop that takes longer ends the domain, and the next start
+  replays the log, which loses no committed transaction.
 - **Ready and healthy.** The service is ready once `pg_isready` passes,
   with the longest `ready.timeout`, 3600 seconds: a start after a crash
   replays the log first and must not be stopped half way, as the upstream
@@ -124,6 +119,15 @@ file (ADR 0470). Their status lines say so.
   `/system/libraries/locale/VERSION` as their version, which the `locales`
   port installs, `glibc-2.42` today; C and POSIX keep none, as on Linux,
   and so does a system whose file is missing.
+- **TLS with a certificate certd keeps (ADR 0512).** An administrator who
+  opens the server to other machines names the certificate in the
+  service's file (`certificates = ["this-machine"]`, or one from `cert
+  get` or `cert add`) and sets `ssl = on`, `ssl_cert_file` and
+  `ssl_key_file` to the copies Spark gives the service, in
+  `/system/live/certificates/postgresql/NAME`. The server reads them again
+  on the SIGHUP Spark sends when certd renews the certificate, with no
+  restart. The bundle's settings leave TLS off, as the server listens on
+  `localhost` alone.
 - **libpq goes into the sysroot** as a static library with its headers and
   a `libpq.pc`, with the two archives of PostgreSQL's code that libpq
   needs, and PHP is built with `pgsql` and `pdo_pgsql` against it.
@@ -161,13 +165,11 @@ file (ADR 0470). Their status lines say so.
   after a clean stop, takes connections within a few seconds, well inside
   the 60; a start that must replay the log first, after the stop failed to
   be clean, may not, and bundled then goes back.
-- A server that other bundles' services reach over the socket, as PHP-FPM's
-  pages do, waits for the sockets a bundle provides; they connect over
-  `127.0.0.1` with a password meanwhile (docs/deferred.md).
+- Other bundles' services, PHP-FPM's pages among them, connect over
+  `127.0.0.1` with a password: a bundle offers others only a socket that
+  Spark makes and holds for its service (ADR 0477), and the server makes
+  its own (docs/deferred.md).
 - **Not yet:**
-  - TLS with the machine's certificate: the server listens on `localhost`
-    only, and an administrator who opens it sets `ssl_cert_file` and
-    `ssl_key_file` by hand.
   - `pg_upgrade` between two lines of the bundle (ADR 0387): there is one
     major version.
   - A standby tested in the lab: `libpqwalreceiver` is built and

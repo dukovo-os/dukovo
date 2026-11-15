@@ -161,10 +161,13 @@ describes every setting. What differs on Dukovo:
 | Runs as `postgres` | Runs as the account `postgres` |
 
 The server listens on `localhost` only. To take connections from other
-computers, an administrator sets `listen_addresses`, adds a `host` line for
-them to `pg_hba.conf`, and gives the server a certificate to send them over
-TLS (`ssl = on`, with `ssl_cert_file` and `ssl_key_file`): the system does
-not make one for it yet.
+computers, an administrator gives the server a certificate that certd keeps,
+the machine's own or one from an authority, as
+[Certificates](certificates.md#postgresql) shows; sets `listen_addresses`,
+such as `'*'`; adds a `hostssl` line for them to `pg_hba.conf`, with
+`scram-sha-256`; and restarts the service. The firewall lets other
+computers reach what a service listens on, so it needs no rule of its
+own.
 
 ## Stopping and starting
 

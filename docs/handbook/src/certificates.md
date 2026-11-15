@@ -250,7 +250,8 @@ When certd makes a certificate again, or `cert add --replace` swaps it,
 Spark copies it again for each running service that names it and sends
 the service SIGHUP, at most once in 10 seconds, and not in the first 10
 seconds after the service started. A service that serves TLS reads its
-certificates again on SIGHUP, without dropping a connection: nginx does.
+certificates again on SIGHUP, without dropping a connection: nginx and
+PostgreSQL do.
 The copy a service reads is always a whole old pair or a whole new one.
 
 ### nginx
@@ -272,6 +273,26 @@ instead of `this-machine` in the service file and in the two lines (a
 certificate from `cert get` is one). Later
 renewals reach nginx without a restart, and requests being served are not
 lost.
+
+### PostgreSQL
+
+PostgreSQL listens on the machine itself alone, with TLS off. Before you
+open it to other computers, name the certificate in its service file, have
+the server read it and restart it:
+
+```
+$ elevate service edit postgresql     # add: certificates = ["this-machine"]
+$ elevate psql -U postgres -c "ALTER SYSTEM SET ssl = on"
+$ elevate psql -U postgres -c "ALTER SYSTEM SET ssl_cert_file = '/system/live/certificates/postgresql/this-machine/fullchain.pem'"
+$ elevate psql -U postgres -c "ALTER SYSTEM SET ssl_key_file = '/system/live/certificates/postgresql/this-machine/key.pem'"
+$ elevate service postgresql restart
+```
+
+A client checks the server with `sslmode=verify-full`; for the machine's
+own certificate, it also needs the file `cert show this-machine --pem`
+prints, as its `sslrootcert`. Renewals reach the server without a
+restart, and the sessions that are open keep going.
+[PostgreSQL](postgresql.md) says what else opening it takes.
 
 `cert list` names nginx in its USED BY column once the file does, and
 `elevate cert remove` refuses to remove what a service file names,
