@@ -40,7 +40,9 @@ second, POST /api/1/check is asked whether the change would change
 anything: it must say true before the first run, and after the second
 what the module reported, true for a restart and false for the others; a
 change that is a command must not be said to change anything again, since
-check mode reads the state, and it may say it cannot tell.
+check mode reads the state, and it may say it cannot tell. A change whose
+undo is itself with the same arguments, as console.reach's, finds nothing
+to do from the start, so check mode must say false before it too.
 
 The console's own reads run here as the commands they show: console.about
 as `admin about --json`, console.notices as `admin notices --json` and
@@ -254,7 +256,11 @@ def main():
         reported = {action["id"]: (first, second) for action, first, second in changes}
         for action, before_run, after_run in checks:
             first, second = reported[action["id"]]
-            if before_run is not True:
+            undo = action["examples"]["undo"]
+            # console.reach is put back by itself: its example asks for the reach the machine
+            # has, so the change has nothing to do even before it runs.
+            undoes_itself = undo is not None and (undo["action"], undo["args"]) == (action["id"], action["examples"]["good"][0])
+            if before_run is not (False if undoes_itself else True):
                 raise Failure(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
             if round_.is_module(action):
                 wrong = after_run is not bool(second)

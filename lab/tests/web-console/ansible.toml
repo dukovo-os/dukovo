@@ -26,9 +26,10 @@
 # read reports no change. Every task must succeed both times, and the
 # service the examples use is left by each change as its route leaves it,
 # and as the test found it at the end. Check mode, POST /api/1/check, must
-# say each change would change something before its first run, and after
-# its second what the module reported then; a command must not be said to
-# change anything again. certificate.renew is left to the boot test
+# say each change would change something before its first run (false for
+# console.reach, whose undo and example are the same), and after its second
+# what the module reported then; a command must not be said to change
+# anything again. certificate.renew is left to the boot test
 # admin-actions, and checks.last, lab.missing and metrics.usage, which end
 # with a status other than 0 on a lab machine, are not run. Ansible runs Python by its path, as the Python
 # chapter of the handbook says, so the Python bundle of the catalog is
