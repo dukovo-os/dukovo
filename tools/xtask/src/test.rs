@@ -6551,7 +6551,7 @@ impl Vm {
     }
 
     /// Notes in the marks file beside the write log, as a line `name N`,
-    /// how many entries the log holds now, which `ob test replay` takes
+    /// how many entries the log holds, which `ob test replay` takes
     /// for a point in the run. A `sync` in the guest before it makes the
     /// count exact. A machine that keeps no write log notes nothing.
     pub fn mark_write_log(&self, name: &str) -> Result<(), String> {
