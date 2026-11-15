@@ -105,5 +105,10 @@ need holes in the firewall.
 - An outage of the update server's receiver, or of a canary's network,
   pauses the waves. That is the safe way to fail, and Ops' watch says
   so at once.
-- **Not yet:** the three cloud canaries of ADR 0456. Until they are
-  bought, the reference machine and the lab machines are the canaries.
+- **Not yet:**
+  - The three cloud canaries of ADR 0456. Until they are bought, the
+    reference machine and the lab machines are the canaries.
+  - On an update server that runs Dukovo, the receiver runs as nginx's
+    account in a sandbox of its own, until one service can reach
+    another's socket. Its judging jobs run every 5 minutes rather than on
+    each report.
