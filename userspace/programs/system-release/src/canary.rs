@@ -51,10 +51,10 @@ pub const BEHIND_AFTER: i64 = 6 * 60 * 60;
 pub const AHEAD_LIMIT: i64 = 5 * 60;
 
 /// The longest text a report's field may hold, in bytes.
-const FIELD_MAX: usize = 512;
+pub const FIELD_MAX: usize = 512;
 
 /// The most items a report's list may hold.
-const LIST_MAX: usize = 32;
+pub const LIST_MAX: usize = 32;
 
 /// Whether `name` may name a canary: 1 to 32 of `a-z`, `0-9` and `-`,
 /// not starting with `-`. It names the report's file, so nothing else

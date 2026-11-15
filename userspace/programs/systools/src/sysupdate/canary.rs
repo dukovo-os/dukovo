@@ -37,7 +37,8 @@ use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use spark_api::show::Service;
-use system_release::canary::{self, Check, FellBack, Health, Key, Report};
+// FIELD_MAX and LIST_MAX are the bounds the receiver keeps a report to.
+use system_release::canary::{self, Check, FIELD_MAX, FellBack, Health, Key, LIST_MAX, Report};
 
 use super::documents::Facts;
 use super::online::{self, Settings};
@@ -53,13 +54,6 @@ pub(crate) const KEY: &str = "/system/settings/sysupdate/canary.key";
 /// The Spark job that reports (`dukovo-canary-report.toml`): each hour,
 /// and once when updated(8) asks after its first check.
 pub(crate) const SERVICE: &str = "dukovo-canary-report";
-
-/// The longest text a report's field may hold, in bytes, and the most
-/// items a report's list may hold: what the receiver takes
-/// (`system_release::canary` keeps them to itself, and the test of
-/// [`bound`] checks this against its verdict).
-const FIELD_MAX: usize = 512;
-const LIST_MAX: usize = 32;
 
 /// The most bytes of a refusal's words that are read.
 const WORDS_MAX: u64 = 512;
