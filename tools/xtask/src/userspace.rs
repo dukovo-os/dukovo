@@ -382,6 +382,12 @@ pub const TROUBLESHOOT_DIR: &str = "system/resources/troubleshoot";
 pub const TUNE: &str = "userspace/tune";
 pub const TUNE_DIR: &str = "system/resources/tune";
 
+/// The security team's key that `report --security` seals reports to
+/// (reportd(8), ADR 0531), and where in the boot archive it goes: where
+/// reportd looks for it when report.toml(5) names no other file.
+pub const REPORT: &str = "userspace/report";
+pub const REPORT_DIR: &str = "system/resources/report";
+
 /// The console's pages (admind(8), ADR 0514), and where in the boot
 /// archive they go: the folder admind serves. Its `manifest.txt` lists
 /// the SHA-256 of each file, and the folder `tests` beside the pages,
@@ -705,6 +711,7 @@ pub fn build_for(ctx: &Ctx, profile: Profile, lab: bool) -> Result<Programs> {
     install_tree(ctx, FEATURES, FEATURES_DIR, &[], &mut files)?;
     install_tree(ctx, TROUBLESHOOT, TROUBLESHOOT_DIR, &[], &mut files)?;
     install_tree(ctx, TUNE, TUNE_DIR, &[], &mut files)?;
+    install_tree(ctx, REPORT, REPORT_DIR, &[], &mut files)?;
     install_admin(ctx, &mut files)?;
     files.extend(dukovo_catalog(ctx)?);
     files.push(os_release(ctx)?);

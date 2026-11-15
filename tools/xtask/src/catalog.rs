@@ -127,7 +127,7 @@ fn catalog_repo(ctx: &Ctx) -> Result<Command> {
 
 /// Builds catalog-repo for this machine, optimised for the server's when
 /// `release`, and gives its path.
-fn build(ctx: &Ctx, release: bool) -> Result<PathBuf> {
+pub(crate) fn build(ctx: &Ctx, release: bool) -> Result<PathBuf> {
     step("Building catalog-repo for this machine");
     let mut cmd = crate::userspace::host_cargo_of(ctx, "build", &["catalog-repo"]);
     cmd.args(["--bin", "catalog-repo"]);

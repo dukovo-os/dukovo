@@ -72,7 +72,7 @@ const ROLLOUT_SCRIPTS: [&str; 2] = [
 const PUBLISH_WAIT_SECONDS: u32 = 600;
 
 /// Builds system-release for this machine and gives its path.
-fn tool(ctx: &Ctx) -> Result<PathBuf> {
+pub(crate) fn tool(ctx: &Ctx) -> Result<PathBuf> {
     tool_for(ctx, false)
 }
 

@@ -39,7 +39,7 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release pack* *--repo* _dir_ [*--root* _file_] *--version* _version_ *--out* _file_
 
-*system-release served* [*--root* _file_] _url_
+*system-release served* [*--json*] [*--root* _file_] _url_
 
 # DESCRIPTION
 
@@ -184,6 +184,10 @@ system-release: the beta channel offers Dukovo 0.15.1
 *served* reads the repository an update server serves at _url_ as a
 computer online does, from *--root*: every signature, version, hash and
 expiry, every release list and every channel, but none of the files.
+With *--json* it prints, as JSON, each role's version and expiry, every
+release with its rollout and withdrawal, every firmware set with its
+rollout, and every channel: what *ob updates status* reads for Dukovo
+Ops.
 
 # OPTIONS
 

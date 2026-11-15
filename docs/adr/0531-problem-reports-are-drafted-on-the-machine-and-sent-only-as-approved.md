@@ -104,7 +104,9 @@ them.
   age to the security team's X25519 keys before it is queued, and sent
   as `application/age-encryption` with `Report-Box: security`: the
   queue, the server and anyone between hold only what the team can
-  read. With no keys configured, it is refused, naming
+  read. The system brings the team's key in
+  `/system/resources/report/security-recipients.txt`; report.toml may
+  name another file. With no key it can read, the box refuses, naming
   security@dukovo.org.
 - **Status is asked only when the person asks**: `report status` asks
   the server about the person's own reports, with each one's key.
@@ -123,9 +125,7 @@ them.
   - the status asked with the update check, and an update's notes
     saying it fixes a problem the person reported;
   - outbound firewall rules that hold reportd to its server;
-  - the web console's page for reporting a problem;
-  - the security team's own key in the system: until then the box is
-    set up by report.toml.
+  - the web console's page for reporting a problem.
 - Tests:
   - **Units:** a record read and refused field by field; unwinding a
     real stack of the test program by its call frame information and by

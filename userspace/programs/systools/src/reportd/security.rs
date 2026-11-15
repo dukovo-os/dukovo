@@ -99,6 +99,23 @@ mod tests {
     }
 
     #[test]
+    fn the_system_brings_the_teams_key() {
+        // userspace/report/security-recipients.txt, installed as
+        // /system/resources/report/security-recipients.txt.
+        let shipped = include_str!("../../../../report/security-recipients.txt");
+        let keys = recipients(shipped).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(
+            keys[0].to_string(),
+            "age1y902rw3vx0hwgxjm8ep5glzghr0k244upp483ngfnxy4a7ssggkqdxnx6v"
+        );
+        assert_eq!(
+            super::super::settings::RECIPIENTS,
+            "/system/resources/report/security-recipients.txt"
+        );
+    }
+
+    #[test]
     fn a_file_without_a_key_names_the_address() {
         assert!(recipients("# none yet\n").unwrap_err().contains(ADDRESS));
         assert!(recipients("age1nope\n").unwrap_err().contains("line 1"));

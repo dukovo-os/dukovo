@@ -197,8 +197,21 @@ Planned, each to be described here in full before it ships:
 	is made for the report, which lets only the sender ask the server
 	where the report stands and delete it.
 
+	_reports.dukovo.org_ keeps no sender's address. Its web server
+	writes no access log and leaves addresses out of its other logs, and
+	the limit on how often one sender may send knows a sender only as a
+	keyed hash of the address, under a key made at random every 10
+	minutes and forgotten with the counts. It keeps a report 365 days,
+	then deletes it, and the sender may delete it sooner with *report
+	delete*. Its database is copied each night, the copies encrypted
+	to the security team's keys before they leave the server: a deleted
+	report is gone from the server's copies after 7 days, from the
+	hosting provider's weekly copies of the whole server after 4 weeks,
+	and from the security team's offline copies after 30 days.
+
 	*report --security* encrypts the report to the keys of the security
-	team, with age, before it is queued, so that only they can read it.
+	team, with age, before it is queued, so that only they can read it;
+	the server stores it as it came and cannot open it.
 	*report --save* writes the text to a file, or offers it once to a
 	phone on the local network, and sends nothing to a server. A report
 	that cannot be sent waits in a queue on the machine and is tried

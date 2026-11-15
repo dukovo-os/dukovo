@@ -280,9 +280,8 @@ reason.
 reportd reads _/system/settings/report.toml_ when it starts (*report.toml*(5)).
 *service reportd restart* makes it read the file again. A key it does not
 know, and a value it cannot use, are logged and leave the default.
-Without the file, reports go to the project's server. The system brings no
-file of keys for the security box yet, so *report --security* refuses, and
-names the address to write to, until *report.toml*(5) names a file of keys.
+Without the file, reports go to the project's server, and the security box
+encrypts to the Dukovo security team's key, which the system brings.
 
 ## Turning it off
 
@@ -305,8 +304,8 @@ _/system/settings/report.toml_
 	(*report.toml*(5)).
 
 _/system/resources/report/security-recipients.txt_
-	The security box's keys, when the system brings them: a key on each
-	line.
+	The security box's key: the Dukovo security team's, which the system
+	brings.
 
 _/system/state/reports/crashes_
 	The crashes kept, a file each, readable by root alone.
