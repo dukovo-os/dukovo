@@ -1,0 +1,35 @@
+SPDX-FileCopyrightText: 2026 The OpenSSL Project Authors
+SPDX-License-Identifier: Apache-2.0
+
+Commit 1a73dc590cbad62d6f0329ea4779eadaa8d8fd75 of OpenSSL's openssl-3.5
+branch, which fixes CVE-2026-88822. The QUIC stack detects the peer
+address of a connected socket with BIO_CTRL_DGRAM_DETECT_PEER_ADDR,
+which sizes the buffer for getpeername() by a struct sockaddr, 16 bytes,
+too few for IPv6's 28, and returns the bytes of the address beyond those
+getpeername() writes: stack bytes that were never initialized. The patch
+zeroes the address and gives getpeername() its whole size. OpenSSL
+3.5.10 holds the fix; 3.5.9 does not.
+
+From: Neil Horman <nhorman@openssl.org>
+Date: Thu, 5 Nov 2026 15:28:03 -0500
+Subject: crypto/bio/bss_dgram.c: initialise variable in
+ BIO_CTRL_DGRAM_DETECT_PEER_ADDR
+---
+ crypto/bio/bss_dgram.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/crypto/bio/bss_dgram.c b/crypto/bio/bss_dgram.c
+index 968104a..6511219 100644
+--- a/crypto/bio/bss_dgram.c
++++ b/crypto/bio/bss_dgram.c
+@@ -760,8 +760,8 @@ static long dgram_ctrl(BIO *b, int cmd, long num, void *ptr)
+         BIO_ADDR_make(&data->peer, BIO_ADDR_sockaddr((BIO_ADDR *)ptr));
+         break;
+     case BIO_CTRL_DGRAM_DETECT_PEER_ADDR: {
+-        BIO_ADDR xaddr, *p = &data->peer;
+-        socklen_t xaddr_len = sizeof(xaddr.sa);
++        BIO_ADDR xaddr = { 0 }, *p = &data->peer;
++        socklen_t xaddr_len = sizeof(xaddr);
+ 
+         if (BIO_ADDR_family(p) == AF_UNSPEC) {
+             if (getpeername(b->num, (void *)&xaddr.sa, &xaddr_len) == 0
