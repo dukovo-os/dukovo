@@ -17,7 +17,6 @@
 # for it, as pg_regress takes no list of tests to leave out. When a gap
 # closes, its lines go: the gaps waiting on work are in docs/deferred.md.
 #
-# The list is empty until the suites have run, under emulation, once: the
-# lines are the tests that failed there, each with the reason found by
-# reading what it asked for, and the tests that need more time than
-# emulation gives are the ones the first run on hardware adds.
+# The list is empty: every test of the suites passed in a run under
+# emulation. A test that fails on hardware, or after a change, gets its
+# line here only with the reason found by reading what it asked for.

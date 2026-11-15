@@ -121,7 +121,9 @@ had to give any port before:
   of their own. The lab test runs them on real
   hardware, as it runs those of PHP and Python (ADRs 0499 and 0495), leaving
   out only the tests that its skip list names, each with the reason it fails
-  on Dukovo. The TAP tests (`src/test/*/t`) are Perl scripts and are not in
+  on Dukovo. Under emulation every test passes, the core's 243, PL/pgSQL's
+  13, the 139 isolation tests and the 49 suites of the contrib modules, so
+  the list starts empty. The TAP tests (`src/test/*/t`) are Perl scripts and are not in
   the bundle.
 - **Tests of the bundle:** the `postgresql` boot test runs the server by
   hand, as a person developing would, with its cluster and socket in `/tmp`
