@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0217. Each service runs in a view of what its file declares, and gets its secrets as read-only files
 
-- Status: Accepted
+- Status: Accepted; every service's view holds `/devices/shm` since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md)
 - Date: 2026-10-31
 
 ## Context

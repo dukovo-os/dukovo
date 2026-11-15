@@ -427,7 +427,8 @@ override:
 	*files.disks* = *"read"* | *"read-write"*
 		Every disk and partition, as _/devices_ shows them, as they
 		come and go, with the four devices every service has and
-		nothing else of _/devices_, no keyboard among it. Not set
+		nothing else of _/devices_, no keyboard and no _/devices/shm_
+		among it. Not set
 		unless the file says so. *volumed*(8) holds
 		it to mount the disks that are plugged in, and *diskhealth*(8)
 		reads them. Not with *files.efi-system*, and no place of
@@ -436,7 +437,7 @@ override:
 	*files.efi-system* = *"read"* | *"read-write"*
 		The EFI system partitions alone, found by their partition
 		type, as _/devices_, in the same way, and the four devices
-		every service has. *sysupdate*(8) holds it, to keep the
+		every service has, without _/devices/shm_. *sysupdate*(8) holds it, to keep the
 		update state where the firmware finds it, and no other disk.
 
 	*files.root-subvolumes* = [_"name"_, ...]
@@ -779,6 +780,9 @@ at its own path, and what every service has without asking:
   *runs-with-your-access*, and then every process (ADR 0473);
 - _/devices/null_, and _/devices/zero_, _/devices/random_ and
   _/devices/urandom_ read-only;
+- _/devices/shm_, the memory filesystem of shared memory, named
+  semaphores and System V IPC, which every service shares, as Linux's
+  _/dev/shm_ (ADRs 0490, 0522);
 - _/system/live/notify_, read-only, as notifications are always allowed
   (*notifyd*(8));
 - _/system/live/alerts_, read-only, so that the system's services raise

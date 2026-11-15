@@ -32,6 +32,14 @@ needs of the system:
   since the last checkpoint, the sooner a cluster restored from it
   starts. A bundle's manifest names programs that run around a backup's
   snapshot (`backup`, ADRs 0463 and 0477).
+- **Shared memory.** The server and its processes share memory through a
+  small System V segment, which keeps a second server off the same
+  cluster, and the segments of parallel queries (`shm_open`); initdb picks
+  System V for those when `/dev/shm` is not there. Both live on the memory
+  filesystem at `/devices/shm` (ADR 0490), which a process reaches through
+  its root. A service's view held only the devices of ADR 0217's list,
+  without it, so the service's initdb failed: `shmget` answered ENOSYS, as
+  on a Linux built without System V IPC.
 - **A socket folder.** libpq's default folder for the Unix socket is
   `/tmp`. The service's socket belongs in its live folder
   (`/system/live/services/postgres`, ADR 0386), which Spark makes for the
@@ -59,9 +67,10 @@ needs of the system:
 - **libpq for PHP.** PHP's `pgsql` and `pdo_pgsql` extensions link libpq,
   which a port finds in the sysroot.
 
-This record changes the health check after an update (ADR 0386) and adds
-`pgsql` and `pdo_pgsql` to PHP's extensions (ADR 0499); their status lines
-say so.
+This record changes the health check after an update (ADR 0386), adds
+`pgsql` and `pdo_pgsql` to PHP's extensions (ADR 0499) and adds
+`/devices/shm` to what every service's view holds (ADR 0217); their status
+lines say so.
 
 ## Decision
 
@@ -76,6 +85,13 @@ say so.
   PHP-FPM's `conf` folder on purpose, as PostgreSQL rewrites its own
   settings (`ALTER SYSTEM`). The server runs in the foreground, with the
   script's process as its postmaster.
+- **Every service's view holds `/devices/shm`,** read-write, beside
+  `/devices/null` and the others of ADR 0217's list, as Linux's `/dev/shm`
+  is every service's. ADR 0490 meant the services to find their shared
+  memory there. They share one filesystem, as Linux's services share one
+  IPC namespace unless told otherwise: a segment's and a file's owner and
+  mode keep one service's out of another's, and a memory filesystem of
+  each service's own, as an IPC namespace, stays deferred with ADR 0490.
 - **Who may connect.** The shipped `pg_hba.conf` takes the account root,
   inside `elevate`, and the account postgres as the superuser by peer
   authentication on the socket (`pg_ident.conf` maps them), any other

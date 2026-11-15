@@ -367,7 +367,7 @@ machine asks for them.
 | A process's handles freed before its parent is told it ended | ADR 0309 |
 | System V message queues (`msgget`, `msgsnd`, `msgrcv`), which PHP's `sysvmsg` extension needs; libc-test's `ipc_msg` | ADR 0490, ADR 0499 |
 | Folders and symbolic links in `/dev/shm` | ADR 0490 |
-| A memory filesystem, and so System V keys, for each account or view, as Linux's IPC namespaces | ADR 0490 |
+| A memory filesystem, and so System V keys, for each account or view, as Linux's IPC namespaces: every service shares `/devices/shm`, as Linux's services share one namespace unless told otherwise | ADRs 0490, 0522 |
 | `ipcs` and `ipcrm`; `IPC_INFO`, `SHM_INFO`, `SEM_INFO` and the `*_STAT` commands that take an index | ADR 0490 |
 | `shmat`'s `SHM_EXEC` with write access, which Radix never maps together | ADR 0490 |
 | The crash dump written to a disk from the panic path through polled drivers, so that a power cycle or a firmware that clears the RAM keeps it | ADR 0483 |
