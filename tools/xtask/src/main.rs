@@ -289,6 +289,7 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
        ./ob test boot --case <name>... --image-only
        ./ob test replay [--case <name>] [--points all|<n>] [--part <k>/<m>] [--seed <n>]
                  [--log <path> [--point <n>]] [--timeout <seconds>]
+       ./ob test fuzz [--target <name>] [--seconds <n>]
        ./ob test matrix --list [--full]
        ./ob test --list
 
@@ -296,7 +297,8 @@ Runs host unit tests, then the boot tests: QEMU boots a test image under
 UEFI and BIOS, from USB and CD-ROM, with 4 CPUs, and each test follows the
 serial console, types kdb commands and reads the framebuffer from
 screenshots. Logs go to out/test/. Give `unit` or `boot` to run only that
-part; `kani` checks the Kani proof harnesses instead, `tla` the TLA+
+part; `kani` checks the Kani proof harnesses instead (those of the kernel's
+libraries and of the slot state), `tla` the TLA+
 models with TLC, `tuf` the TUF conformance suite against the TUF client
 (it needs Python with venv, and faketime; ob fetches the pinned suite into
 .cache/tuf-conformance), and `corpus` compares Nukesh with dash and bash on
@@ -325,9 +327,13 @@ left it, and boots each: slot A or slot B must start whole (ADR 0536). It
 takes --points all, or a number of cuts (16 without it), --part 3/8 for the
 third of eight shares of them, and --seed for the draw; out/test/replay
 keeps what a failed cut needs, and --log with --point boots that cut again
-from the kept log. `matrix --list` prints the jobs of the nightly update test
-matrix as one line of JSON, which update-matrix.yml runs; --full lists a
-release candidate's.
+from the kept log. `fuzz` runs the cargo-fuzz targets of the update path's
+parsers (userspace/programs/fuzz), each for --seconds (60 without it) on a
+corpus in .cache/fuzz/<target>, which starts from the seeds in git; --target
+runs one. A crash fails the run and leaves its input in out/fuzz/<target>
+(it needs the cargo-fuzz that `ob doctor` names). `matrix --list` prints the
+jobs of the nightly update test matrix as one line of JSON, which
+update-matrix.yml runs; --full lists a release candidate's.
 The boot tests are:
   uefi-usb, bios-usb, uefi-cdrom, bios-cdrom   normal boots (bios-usb with the
                    lock checker on, uefi-cdrom in xAPIC mode, bios-cdrom

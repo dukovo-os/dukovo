@@ -54,12 +54,15 @@ update. The first start of an update, which GRUB takes as a counted try
     the disks of the cuts that failed, compressed with `zstd -19` when
     they come to under 2 GB on disk.
 - **The nightly sample.** Sixteen power cuts under UEFI and sixteen under
-  BIOS, both first-start kill loops, and the update boot tests together
+  BIOS, both first-start kill loops, the update boot tests together
   (`update-stage`, `update-power-cut`, `update-panic`, `update-hang`,
-  `update-fallback`, `update-offline` and `update-online`).
+  `update-fallback`, `update-offline` and `update-online`), the TUF
+  conformance suite (`tuf-conformance`, `./ob test tuf`), and each fuzz
+  target for ten minutes.
 - **A candidate's full run.** Every power cut under each firmware type, in
   eight parts that run at once (`--part k/8`), both kill loops with twenty
-  kills each, and the same update boot tests.
+  kills each, the same update boot tests and conformance suite, and each
+  fuzz target for an hour.
 - **Power cuts are replayed from QEMU's write log.**
   - The boot disk of the `update-power-replay` boot test, and of its BIOS
     twin `update-power-replay-bios`, sits behind QEMU's `blklogwrites`
@@ -107,6 +110,52 @@ update. The first start of an update, which GRUB takes as a counted try
   updates holds a repository of that release, `current`, beside theirs,
   with no files in its store, since `verify` reads the files of the slot.
 
+- **Kani proves the slot state's rules.**
+  - `userspace/programs/slots/src/proofs.rs` states each rule that the
+    comments of `State`'s functions promise as a function over one state.
+    A Kani harness runs it over a symbolic state whose fields hold every
+    value a copy can hold, and a unit test runs it over each of the 648
+    states, so that `cargo test` checks the same logic without Kani.
+  - The rules are: a slot being tried starts only while it has tries left
+    and a start takes exactly one try from it and never adds one
+    (`starts`, `started`); a start chosen by hand takes none (`chose`);
+    of two copies one generation apart the newer is read, whichever file
+    it is in (`newest`); the running slot is never staged or unstaged, and
+    a rollback swaps the default and the previous version and is undone by
+    a second one (`stage`, `unstage`, `rollback`); a check that passes
+    makes the tried slot the default, one that fails leaves it no tries,
+    and a check never adds a try (`checked`); and a slot forgotten is
+    named nowhere (`forget`).
+  - No harness formats a string, so that each ends in seconds. That a copy
+    reads back as it was written is checked by the unit test of every state
+    and by the `slot-state` fuzz target.
+  - `./ob test kani` checks `slots` besides the kernel's libraries, with a
+    host build of the programs' workspace in `target/kani-programs`, and
+    the `kani` job of `ci.yml` runs when `userspace/programs/slots/`
+    changes.
+- **Fuzzing.**
+  - cargo-fuzz runs nine targets, in `userspace/programs/fuzz`, a
+    workspace and a lock of their own: `release-list`, `tuf-root`,
+    `tuf-targets`, `tuf-snapshot`, `tuf-timestamp`, `rollout`,
+    `advisories`, `canary-report` and `slot-state`. The TUF targets feed
+    the trusted-metadata update, from a fixed root with fixed keys and
+    the metadata that follows from it, so that the signature checks run on
+    mutated input. A target with an encoder checks that what it reads it
+    writes back and reads again as it was.
+  - A seed corpus for each target is kept in git, written from the
+    fixtures by `cargo run --bin seeds`.
+  - `./ob test fuzz [--target NAME] [--seconds N]` runs the targets, 60
+    seconds each without `--seconds`, on the corpus in
+    `.cache/fuzz/NAME/`, which starts from the seeds. A crash fails the
+    run and leaves its input in `out/fuzz/NAME/`. `tools/xtask/src/doctor.rs`
+    pins cargo-fuzz as it pins Kani, and `ob doctor` says how to install
+    it.
+  - `update-matrix.yml` has a job for each target, which keeps its corpus
+    in the Actions cache, by target, so that it grows from night to night,
+    and uploads the input of a crash. Its `tuf-conformance` job runs
+    `./ob test tuf` beside them. The jobs that need no QEMU skip the
+    boot tests' packages and ports.
+
 ## Consequences
 
 - Every change to what an update writes, or the order it writes it in, is
@@ -124,8 +173,8 @@ update. The first start of an update, which GRUB takes as a counted try
 - The first start's kills take their time from a draw, so a kill loop has
   no fixed length: its budget is the longest it can take with twenty
   kills.
-- A run of the full matrix is nineteen jobs of the runners' time, and the
-  nightly sample five.
+- A run of the full matrix is twenty-nine jobs of the runners' time, and
+  the nightly sample fifteen.
 
 - **Not yet** (the next part of this decision):
   - The upgrade paths from old releases, on a machine full of users,
@@ -135,8 +184,5 @@ update. The first start of an update, which GRUB takes as a counted try
     it: an essential service that fails, a network that stays down, a root
     that will not mount, a full disk, a bad network and clock skew, and the
     metadata attacks of `update-online` beside TUF's conformance suite.
-  - Kani on the reader of the slot state, and the fuzz targets for release
-    lists, TUF metadata, the rollouts, the advisories index and the canary
-    report.
   - The gate: `ob release sign` checking that a candidate's full run is
     green for the exact commit.

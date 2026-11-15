@@ -337,7 +337,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *matrix* *--list* [*--full*]
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -364,7 +364,9 @@ _target/userspace/_).
 	_docs/design/capabilities.md_, _docs/design/scheduler.md_ and
 	_docs/design/ipc.md_), and of the storage libraries' bounds: block
 	requests and partitions, paths, and FAT's table entries and long
-	names. Each takes
+	names; and of the slot state of _userspace/programs/slots_ (ADR
+	0536), which it builds as a host build of the programs' workspace in
+	_target/kani-programs_. Each takes
 	from seconds to several minutes, so plain *ob test* leaves them out,
 	and CI runs them in a job of their own. It needs the Kani release
 	that *ob doctor* names, installed with *cargo install --locked
@@ -482,15 +484,34 @@ _target/userspace/_).
 	number alone, which is the same whatever *--points* and *--part*
 	chose. *--point* needs *--log*, and leaves out *--points* and *--part*.
 
+	*fuzz* runs the cargo-fuzz targets of the update path's parsers and
+	verifiers (ADR 0536), in _userspace/programs/fuzz_: *release-list*,
+	*tuf-root*, *tuf-targets*, *tuf-snapshot*, *tuf-timestamp*, *rollout*,
+	*advisories*, *canary-report* and *slot-state*. The TUF targets feed
+	mutated metadata through the trusted-metadata update with a fixed root,
+	so that its signature checks run; a target with an encoder checks that
+	what it reads, it writes back and reads again as it was. Each target
+	runs for *--seconds* seconds (60 without it), or only the one *--target*
+	names, on a corpus in a folder of its own under _.cache/fuzz/_, which
+	starts from the seeds kept in git under
+	_userspace/programs/fuzz/corpus/_ and which the run adds to. A crash
+	fails the run, and its input is left in a folder of the target's under
+	_out/fuzz/_: *cargo fuzz run --fuzz-dir userspace/programs/fuzz*
+	_name_ _input_ runs it again. It needs the cargo-fuzz release that
+	*ob doctor* names, installed with *cargo install --locked
+	cargo-fuzz --version* _version_. Plain *ob test* leaves it out.
+
 	*matrix --list* prints the jobs of the update test matrix (ADR 0536) as
 	one line of JSON, an array of objects with a _name_, the _run_ command
 	and, for a job that needs it, an _env_ object of environment variables:
 	_.github/workflows/update-matrix.yml_ takes it as its jobs. The
 	nightly sample is 16 cuts of each firmware type, both first-start kill
-	loops (*update-first-start-kills* and *update-first-start-kills-bios*)
-	and the update boot tests together; *--full*, for a release candidate,
-	is every cut in eight parts of each firmware type, both kill loops with
-	*OB_TEST_KILLS* at 20, and the update boot tests.
+	loops (*update-first-start-kills* and *update-first-start-kills-bios*),
+	the update boot tests together, the TUF conformance suite, and each
+	fuzz target for 600 seconds; *--full*, for a release candidate, is
+	every cut in eight parts of each firmware type, both kill loops with
+	*OB_TEST_KILLS* at 20, the update boot tests, the conformance suite,
+	and each fuzz target for 3600 seconds.
 
 	*uefi-usb*, *bios-usb*, *uefi-cdrom*, *bios-cdrom*
 		Boot with 4 CPUs under each firmware and medium, and check the
@@ -2693,6 +2714,10 @@ _out/test/_
 _out/test/replay/_
 	What *ob test replay* records and replays: the write log, its marks,
 	the disk the recording started with, and what a failed cut leaves.
+
+_out/fuzz/_
+	The input of each crash *ob test fuzz* found, in a folder for its
+	target.
 
 _out/bench/_
 	The benchmark report (_report.md_), its numbers (_results.json_),
