@@ -35,15 +35,6 @@
 //! script generated names that folder in its panics and debug
 //! information, and Cargo's hash in the folder's path differs between
 //! checkouts as the crate's did.
-//!
-//! An rlib's object files are named after its file, Cargo's hash
-//! included (`nix-<hash>.nix.<cgu>.rcgu.o`), and rustc's ThinLTO takes
-//! the crates of a program in the order of those names. Two crates of
-//! one name, such as two versions of nix, or the libc crate of a program
-//! and that of Rust's standard library, then come in an order that
-//! depends on where the checkout is, and the program's symbol table with
-//! them. Once rustc has written an rlib, the wrapper names its object
-//! files by the crate's identity instead, a name of the same length.
 
 use std::fmt::Write as _;
 use std::os::unix::process::CommandExt;
@@ -65,7 +56,7 @@ const NEXT: &str = "OB_REPRO_NEXT_WRAPPER";
 
 /// What the identity's format is called. A change to what goes into an
 /// identity changes this, and with it every hash.
-pub const FORMAT: &str = "dukovo rustc identity 2";
+pub const FORMAT: &str = "dukovo rustc identity 1";
 
 /// The name a build script's output folder is written under, followed
 /// by the package's name.
@@ -131,13 +122,10 @@ pub fn internal(argv: &[String]) -> Option<ExitCode> {
         return None;
     }
     let mut args = args.to_vec();
-    let rlib = match rewrite(&mut args, &decode(&maps), &|key| std::env::var(key).ok()) {
-        Ok(rlib) => rlib,
-        Err(err) => {
-            eprintln!("ob: rustc wrapper: {err}");
-            return Some(ExitCode::FAILURE);
-        }
-    };
+    if let Err(err) = rewrite(&mut args, &decode(&maps), &|key| std::env::var(key).ok()) {
+        eprintln!("ob: rustc wrapper: {err}");
+        return Some(ExitCode::FAILURE);
+    }
     let mut cmd = match std::env::var_os(NEXT) {
         Some(next) => {
             let mut cmd = Command::new(next);
@@ -146,112 +134,9 @@ pub fn internal(argv: &[String]) -> Option<ExitCode> {
         }
         None => Command::new(compiler),
     };
-    cmd.args(&args);
-    let Some(rlib) = rlib else {
-        let err = cmd.exec();
-        eprintln!("ob: rustc wrapper: cannot run {compiler}: {err}");
-        return Some(ExitCode::from(127));
-    };
-    let status = match cmd.status() {
-        Ok(status) => status,
-        Err(err) => {
-            eprintln!("ob: rustc wrapper: cannot run {compiler}: {err}");
-            return Some(ExitCode::from(127));
-        }
-    };
-    if !status.success() {
-        let code = status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1);
-        return Some(ExitCode::from(code.max(1)));
-    }
-    if let Err(err) = rlib.name_members() {
-        eprintln!("ob: rustc wrapper: {err}");
-        return Some(ExitCode::FAILURE);
-    }
-    Some(ExitCode::SUCCESS)
-}
-
-/// An rlib rustc is to write, whose object files the wrapper names by the
-/// crate's identity once it has.
-#[derive(Debug, PartialEq, Eq)]
-struct Rlib {
-    /// The rlib, as Cargo named it.
-    path: PathBuf,
-    /// What follows the crate's name in its object files' names: Cargo's
-    /// `-C extra-filename`, such as `-0123456789abcdef`.
-    cargo: String,
-    /// What follows it instead: `-` and the crate's identity.
-    ours: String,
-}
-
-impl Rlib {
-    /// Names the rlib's object files by the crate's identity, if rustc
-    /// wrote it (a check writes only the metadata).
-    fn name_members(&self) -> Result<(), String> {
-        let Ok(mut data) = std::fs::read(&self.path) else {
-            return Ok(());
-        };
-        let renamed = rename_members(&mut data, &self.cargo, &self.ours)
-            .map_err(|err| format!("{}: {err}", self.path.display()))?;
-        if !renamed {
-            return Ok(());
-        }
-        let mut partial = self.path.as_os_str().to_owned();
-        partial.push(format!(".{}", std::process::id()));
-        let partial = PathBuf::from(partial);
-        std::fs::write(&partial, &data)
-            .and_then(|()| std::fs::rename(&partial, &self.path))
-            .map_err(|err| format!("naming the object files of {}: {err}", self.path.display()))
-    }
-}
-
-/// Writes `ours` for `cargo` in the names of the members of `data`, an ar
-/// archive, where it stands between a crate's name and the rest of an
-/// object file's name: `<crate><cargo>.<cgu>.rcgu.o`. The names are in
-/// the archive's table of long names (`//`), and `ours` is as long as
-/// `cargo`, so that every offset in the archive stays where it is.
-/// Whether a name changed.
-fn rename_members(data: &mut [u8], cargo: &str, ours: &str) -> Result<bool, String> {
-    const MAGIC: &[u8] = b"!<arch>\n";
-    const HEADER: usize = 60;
-    if cargo.len() != ours.len() || cargo == ours {
-        return Ok(false);
-    }
-    if !data.starts_with(MAGIC) {
-        return Err("not an ar archive".into());
-    }
-    let (from, to) = (format!("{cargo}."), format!("{ours}."));
-    let mut renamed = false;
-    let mut at = MAGIC.len();
-    while at + HEADER <= data.len() {
-        let header = &data[at..at + HEADER];
-        if &header[58..60] != b"`\n" {
-            return Err(format!("no member header at byte {at}"));
-        }
-        let size = std::str::from_utf8(&header[48..58])
-            .ok()
-            .and_then(|size| size.trim().parse::<usize>().ok())
-            .ok_or_else(|| format!("the member at byte {at} has no size"))?;
-        let start = at + HEADER;
-        let end = start.checked_add(size).filter(|&end| end <= data.len());
-        let end = end.ok_or_else(|| format!("the member at byte {at} runs past the end"))?;
-        if header[..16].trim_ascii_end() == b"//" {
-            let table = &mut data[start..end];
-            let mut i = 0;
-            while let Some(found) = find(&table[i..], from.as_bytes()) {
-                let place = i + found;
-                table[place..place + to.len()].copy_from_slice(to.as_bytes());
-                renamed = true;
-                i = place + to.len();
-            }
-        }
-        at = end + (size & 1);
-    }
-    Ok(renamed)
-}
-
-/// Where `needle` first is in `haystack`.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    let err = cmd.args(&args).exec();
+    eprintln!("ob: rustc wrapper: cannot run {compiler}: {err}");
+    Some(ExitCode::from(127))
 }
 
 /// Whether `path` is what Cargo runs as rustc: rustc itself, or Clippy's
@@ -264,20 +149,18 @@ fn is_compiler(path: &str) -> bool {
 /// Gives `args`, rustc's arguments, the `-C metadata` of what they
 /// compile, keeps it beside the crate's output for the crates that depend
 /// on it, and names a build script's output folder. Arguments that do not
-/// compile a crate of Cargo's, such as `-vV`, stay as they are. The rlib
-/// they write, if any, whose object files are to be named once it is
-/// written.
+/// compile a crate of Cargo's, such as `-vV`, stay as they are.
 fn rewrite(
     args: &mut Vec<String>,
     maps: &[(String, String)],
     env: &dyn Fn(&str) -> Option<String>,
-) -> Result<Option<Rlib>, String> {
+) -> Result<(), String> {
     let given = args.clone();
     let file = expand_argument_files(args)?;
     let metadata = codegen_values(args, "metadata");
     if metadata.is_empty() {
         *args = given;
-        return Ok(None);
+        return Ok(());
     }
     let hash = hash(&identity(args, maps, env));
     for (at, start) in metadata {
@@ -286,49 +169,17 @@ fn rewrite(
     let extra = codegen_values(args, "extra-filename")
         .first()
         .map(|&(at, start)| args[at][start..].to_string());
-    let mut rlib = None;
     if let (Some(extra), Some(out_dir)) = (extra, flag_value(args, "--out-dir")) {
         keep(Path::new(&out_dir), &extra, &hash)?;
-        if let Some(name) = flag_value(args, "--crate-name").filter(|_| writes_rlib(args)) {
-            let path = Path::new(&out_dir).join(format!("lib{name}{extra}.rlib"));
-            rlib = Some(Rlib { path, cargo: extra, ours: format!("-{hash}") });
-        }
     }
     if let Some(out_dir) = env("OUT_DIR") {
         let package = env("CARGO_PKG_NAME").unwrap_or_default();
         args.push(format!("--remap-path-prefix={out_dir}={OUT_DIR_NAME}/{package}"));
     }
-    if let Some(file) = file {
-        write_argument_file(args, &file)?;
+    match file {
+        Some(file) => write_argument_file(args, &file),
+        None => Ok(()),
     }
-    Ok(rlib)
-}
-
-/// Whether `args` have rustc write an rlib: a library crate, linked (a
-/// check emits only its metadata).
-fn writes_rlib(args: &[String]) -> bool {
-    let values = |flag: &str| -> Vec<String> {
-        let joined = format!("{flag}=");
-        let mut values = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            if arg == flag {
-                values.extend(args.get(i + 1).cloned());
-            } else if let Some(value) = arg.strip_prefix(&joined) {
-                values.push(value.to_string());
-            }
-        }
-        values
-    };
-    let types = values("--crate-type");
-    let library =
-        types.iter().flat_map(|types| types.split(',')).any(|t| t == "lib" || t == "rlib");
-    let emits = values("--emit");
-    let linked = emits.is_empty()
-        || emits
-            .iter()
-            .flat_map(|emit| emit.split(','))
-            .any(|emit| emit.split('=').next() == Some("link"));
-    library && linked
 }
 
 /// Puts the arguments of each `@file` among `args` in its place, one a
@@ -737,120 +588,5 @@ mod tests {
             envs.iter().find(|(name, _)| *name == "RUSTC_WRAPPER").map(|(_, value)| *value);
         let before = std::env::var_os("RUSTC_WRAPPER").filter(|next| !next.is_empty());
         assert_eq!(wrapper, Some(before.as_deref()));
-    }
-
-    /// An rlib as rustc writes one: a symbol table, the long names of its
-    /// object files, the metadata, and the object files.
-    fn rlib(names: &[&str]) -> Vec<u8> {
-        fn member(name: &str, data: &[u8]) -> Vec<u8> {
-            let mut out =
-                format!("{name:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n", 0, 0, 0, 644, data.len())
-                    .into_bytes();
-            out.extend_from_slice(data);
-            if data.len() % 2 == 1 {
-                out.push(b'\n');
-            }
-            out
-        }
-        let mut table = String::new();
-        let mut offsets = Vec::new();
-        for name in names {
-            offsets.push(table.len());
-            table.push_str(name);
-            table.push_str("/\n");
-        }
-        let mut out = b"!<arch>\n".to_vec();
-        out.extend(member("/", b"\0\0\0\x01\0\0\0\x88symbol\0"));
-        out.extend(member("//", table.as_bytes()));
-        out.extend(member("lib.rmeta/", b"rust metadata"));
-        for offset in offsets {
-            out.extend(member(&format!("/{offset}"), b"\x7fELF object"));
-        }
-        out
-    }
-
-    #[test]
-    fn an_rlibs_object_files_are_named_by_the_crates_identity() {
-        let names = [
-            "nix-3e13aca479cc71b7.nix.26fc3ad416bc1ae0-cgu.0.rcgu.o",
-            "nix-3e13aca479cc71b7.nix.26fc3ad416bc1ae0-cgu.1.rcgu.o",
-        ];
-        let before = rlib(&names);
-        let mut after = before.clone();
-        assert!(rename_members(&mut after, "-3e13aca479cc71b7", "-0123456789abcdef").unwrap());
-        let renamed = names.map(|name| name.replace("3e13aca479cc71b7", "0123456789abcdef"));
-        assert_eq!(after, rlib(&renamed.each_ref().map(String::as_str)));
-        assert_eq!(after.len(), before.len());
-        // A second time finds nothing to name.
-        assert!(!rename_members(&mut after, "-3e13aca479cc71b7", "-0123456789abcdef").unwrap());
-    }
-
-    #[test]
-    fn a_name_of_another_length_or_no_archive_is_left_alone() {
-        let names = ["libc-28a9ed642aede354.libc.74b7a02a2394718a-cgu.0.rcgu.o"];
-        let mut data = rlib(&names);
-        assert!(!rename_members(&mut data, "-28a9ed642aede354", "-0123").unwrap());
-        assert_eq!(data, rlib(&names));
-        assert!(rename_members(&mut b"not an archive".to_vec(), "-aa", "-bb").is_err());
-        let mut cut = rlib(&names);
-        cut.truncate(cut.len() - 4);
-        assert!(rename_members(&mut cut, "-28a9ed642aede354", "-0123456789abcdef").is_err());
-    }
-
-    #[test]
-    fn a_library_built_whole_is_named_after_rustc_writes_it_and_a_check_or_program_is_not() {
-        let base = temp("library");
-        let root = base.join("dukovo");
-        let root = root.to_str().unwrap();
-        let args_with = |extra: &[&str]| {
-            let mut args = compile(root, "1111222233334444", "/nowhere/libdep-aaaa.rlib", "std");
-            args.extend(strings(extra));
-            args
-        };
-        let mut args = args_with(&[]);
-        let rlib = rewrite(&mut args, &maps(root, "/home/runner/.cargo"), &env(root)).unwrap();
-        let wrote = |extra: &[&str]| rewrite(&mut args_with(extra), &[], &|_| None).unwrap();
-        let linked = wrote(&["--emit=dep-info,metadata,link"]);
-        let linked_to = wrote(&["--emit", "link=/elsewhere/out.rlib"]);
-        let checked = wrote(&["--emit=dep-info,metadata"]);
-        let mut program = args_with(&[]);
-        let at = program.iter().position(|arg| arg == "lib").unwrap();
-        program[at] = "bin".into();
-        let program = rewrite(&mut program, &[], &|_| None).unwrap();
-        let _ = std::fs::remove_dir_all(&base);
-
-        let out = format!("{root}/target/release/build/app/1111222233334444/out");
-        let rlib = rlib.expect("a library is an rlib");
-        assert_eq!(rlib.path, PathBuf::from(format!("{out}/libapp-1111222233334444.rlib")));
-        assert_eq!(rlib.cargo, "-1111222233334444");
-        assert_eq!(rlib.ours, format!("-{}", metadata(&args)));
-        assert!(linked.is_some());
-        assert!(linked_to.is_some());
-        assert_eq!(checked, None);
-        assert_eq!(program, None);
-    }
-
-    #[test]
-    fn naming_an_rlib_rewrites_it_whole_and_a_missing_one_is_no_error() {
-        let dir = temp("rlib");
-        let path = dir.join("libnix-3e13aca479cc71b7.rlib");
-        let names = ["nix-3e13aca479cc71b7.nix.26fc3ad416bc1ae0-cgu.0.rcgu.o"];
-        std::fs::write(&path, rlib(&names)).unwrap();
-        let rlib_file = Rlib {
-            path: path.clone(),
-            cargo: "-3e13aca479cc71b7".into(),
-            ours: "-0123456789abcdef".into(),
-        };
-        rlib_file.name_members().unwrap();
-        let written = std::fs::read(&path).unwrap();
-        let missing =
-            Rlib { path: dir.join("libnone-aa.rlib"), cargo: "-aa".into(), ours: "-bb".into() };
-        let missing = missing.name_members();
-        let left: Vec<_> =
-            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(written, rlib(&["nix-0123456789abcdef.nix.26fc3ad416bc1ae0-cgu.0.rcgu.o"]));
-        assert!(missing.is_ok());
-        assert_eq!(left.len(), 1, "no partial file is left: {left:?}");
     }
 }

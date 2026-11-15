@@ -2534,9 +2534,8 @@ fails the build.
 *RUSTC_WRAPPER*
 	A program Cargo runs rustc through, such as *sccache*. *ob* runs
 	Cargo with *RUSTC_WRAPPER* set to itself, which gives each crate an
-	identity that does not depend on where the checkout is, and names the
-	object files of each rlib by it (ADR 0535), and runs the program set
-	here in turn.
+	identity that does not depend on where the checkout is (ADR 0535),
+	and runs the program set here in turn.
 
 *SOURCE_DATE_EPOCH*
 	Timestamp for files in the image, and, with the version and the kind

@@ -110,16 +110,6 @@ when it is built in two places:
     chose stay, so Cargo finds what it built. A build script's output
     folder, `OUT_DIR`, is written as `/dukovo-out/<package>`. A wrapper
     already set, such as sccache, runs after it.
-
-    An rlib's object files are named after the rlib, Cargo's hash in
-    it (`nix-<hash>.nix.<cgu>.rcgu.o`), and ThinLTO takes a program's
-    crates in the order of those names. Two crates of one name, such as
-    two versions of nix, or a program's libc and that of Rust's standard
-    library, would come in an order that depends on where the checkout
-    is, and the program's symbol table and build ID with it. Once rustc
-    has written an rlib, the wrapper writes the crate's identity in its
-    object files' names in place of Cargo's hash, a name of the same
-    length, so that nothing else in the archive moves.
   - `terminfo(5)` is edited after ncurses installs it, to give its
     source files as `../include/...`.
   - Each of these changes a stamp: the wrappers' text is part of what
