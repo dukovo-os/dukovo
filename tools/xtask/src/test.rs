@@ -4004,10 +4004,17 @@ fn test_updates(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result
 /// system slot is staged from, in `out/lab/updates`, whose path it gives,
 /// with the test update server, [`TEST_SERVER`], in its `update-server`.
 /// `ob lab` hands the path to the lab's host steps.
+///
+/// The programs are the lab build's, with the console's lab routes, as
+/// `ob image --lab` builds them: an update holds only the files that
+/// differ from the slot it is staged from, so one made from the other
+/// build's `systools` names a file the lab machine does not have.
 pub fn lab_updates(ctx: &Ctx, profile: crate::config::Profile) -> Result<PathBuf> {
     step("Building the test updates, for the lab's update tests");
-    let built =
-        Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
+    let built = Built {
+        kernel: kernel::build(ctx, profile)?,
+        programs: userspace::build_for(ctx, profile, true)?,
+    };
     let dir = ctx.out.join("lab");
     process::create_dir(&dir)?;
     make_test_updates(ctx, &built, &dir)?;

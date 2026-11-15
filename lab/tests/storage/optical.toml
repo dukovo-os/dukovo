@@ -20,9 +20,10 @@ run = "cat /volumes/LABDISC/hello.txt"
 expect = "Read from a disc in the lab."
 # The drive is a `rom`, and says what disc is in it. Keep its name in the
 # lab's home for the steps below, which root runs: each account has a
-# /tmp of its own.
+# /tmp of its own. It is the drive the disc is mounted from: a machine
+# may have more than one, as the lab's QEMU machine has two.
 [[step]]
-run = "lsblk -dn -o NAME,TYPE | awk '$2 == \"rom\" { print $1 }' > ~/lab-drive && cat ~/lab-drive"
+run = "sh -c 'findmnt -n -o SOURCE /volumes/LABDISC | sed \"s|^/devices/||\" > ~/lab-drive && cat ~/lab-drive && lsblk -dn -o NAME,TYPE | grep \"^$(cat ~/lab-drive) *rom\"'"
 expect = "cd"
 [[step]]
 run = "sh -c 'cat /kernel/block/$(cat ~/lab-drive)/disc'"
