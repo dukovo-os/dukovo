@@ -859,6 +859,14 @@ update-fallback image/grub/rescue.cfg
 update-fallback userspace/defaults/sysupdate/ userspace/programs/systools/src/subvolume.rs
 update-fallback userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
 update-fallback userspace/spark/src/main.rs
+update-bad-network tools/xtask/src/test/cases/update-online.rs userspace/programs/systools/src/sysupdate.rs
+update-bad-network userspace/programs/systools/src/sysupdate/ userspace/programs/tuf/ kernel/net/
+update-clock-ahead tools/xtask/src/test/cases/update-online.rs userspace/programs/systools/src/sysupdate.rs
+update-clock-ahead userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/timed.rs
+update-clock-ahead userspace/programs/tuf/ kernel/net/
+update-clock-behind tools/xtask/src/test/cases/update-online.rs userspace/programs/systools/src/sysupdate.rs
+update-clock-behind userspace/programs/systools/src/sysupdate/
+update-clock-behind userspace/programs/systools/src/timed.rs userspace/programs/tuf/ kernel/net/
 update-disk-full image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
 update-disk-full userspace/programs/systools/src/df.rs userspace/programs/systools/src/sysupdate.rs
 update-disk-full userspace/programs/systools/src/sysupdate/

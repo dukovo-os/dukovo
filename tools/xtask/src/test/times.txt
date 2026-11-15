@@ -208,6 +208,9 @@ tlb 15
 tls 22
 uefi-cdrom 11
 uefi-usb 21
+update-bad-network 300
+update-clock-ahead 150
+update-clock-behind 240
 update-disk-full 240
 update-fallback 90
 update-first-start-kills 400

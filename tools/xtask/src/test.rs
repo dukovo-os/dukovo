@@ -105,6 +105,14 @@ const CABLE_DUMP: &str = "<cable dump>";
 /// boots a minute after the first is as far ahead as it would be if the
 /// two started together.
 const RTC_AN_HOUR_AHEAD: &str = "<rtc an hour ahead>";
+/// [`RTC_AN_HOUR_AHEAD`]'s kin for a clock a year (365 days) ahead of the
+/// host's, as a computer's clock is when a battery or a setting is wrong
+/// for that long (`update-clock-ahead`).
+const RTC_A_YEAR_AHEAD: &str = "<rtc a year ahead>";
+/// A clock a year (365 days) behind the host's (`update-clock-behind`).
+const RTC_A_YEAR_BEHIND: &str = "<rtc a year behind>";
+/// Seconds in the year of [`RTC_A_YEAR_AHEAD`] and [`RTC_A_YEAR_BEHIND`].
+const A_YEAR: i64 = 365 * 86_400;
 /// In a case's `qemu`, what comes after this, up to a [`PEER`], is the
 /// first boot's alone: a case's second boot runs without it, as a
 /// machine that lost a device while it was off (`firmware-fallback`).
@@ -3390,21 +3398,40 @@ pub const CASES: &[Case] = &[
     },
 ];
 
-/// Gives each [`RTC_AN_HOUR_AHEAD`] of `args` the date an hour from now.
+/// Gives each of `args` that is [`RTC_AN_HOUR_AHEAD`], [`RTC_A_YEAR_AHEAD`]
+/// or [`RTC_A_YEAR_BEHIND`] the date that long off from now.
 fn start_clocks_ahead(args: &mut [String]) {
-    for arg in args.iter_mut().filter(|arg| arg.as_str() == RTC_AN_HOUR_AHEAD) {
-        *arg = rtc_ahead(3600);
+    for arg in args.iter_mut() {
+        let offset = match arg.as_str() {
+            RTC_AN_HOUR_AHEAD => 3600,
+            RTC_A_YEAR_AHEAD => A_YEAR,
+            RTC_A_YEAR_BEHIND => -A_YEAR,
+            _ => continue,
+        };
+        *arg = rtc_ahead(offset);
     }
 }
 
-/// The value of QEMU's `-rtc` that starts a guest's real-time clock `ahead`
-/// seconds past the host's clock now. The guest's clock then runs on with
-/// the host's.
-fn rtc_ahead(ahead: u64) -> String {
+/// The host's clock now, in seconds since 1970, `ahead` seconds on (or
+/// back, when negative).
+fn host_time_ahead(ahead: i64) -> u64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    rtc_base(now + ahead)
+    now.saturating_add_signed(ahead)
+}
+
+/// The value of QEMU's `-rtc` that starts a guest's real-time clock `ahead`
+/// seconds past the host's clock now (before it, when negative). The
+/// guest's clock then runs on with the host's.
+fn rtc_ahead(ahead: i64) -> String {
+    rtc_base(host_time_ahead(ahead))
+}
+
+/// The year of the host's clock `ahead` seconds from now, which a guest
+/// started with [`rtc_ahead`] of the same offset shows.
+fn year_ahead(ahead: i64) -> u64 {
+    crate::image::civil(host_time_ahead(ahead) / 86_400).0
 }
 
 /// `-rtc`'s `base=` and the date `time` seconds since 1970 is, in UTC,
@@ -12066,6 +12093,14 @@ mod tests {
         assert_eq!(rtc_base(0), "base=1970-01-01T00:00:00");
         assert_eq!(rtc_base(951_782_399), "base=2000-02-28T23:59:59");
         assert!(rtc_ahead(3600).starts_with("base=20"));
+        // A year behind and a year ahead are 730 days apart, a year of 365
+        // days each way.
+        let (behind, ahead) = (host_time_ahead(-A_YEAR), host_time_ahead(A_YEAR));
+        assert_eq!(ahead - behind, 2 * 365 * 86_400);
+        let mut args = [RTC_A_YEAR_BEHIND, "-x", RTC_A_YEAR_AHEAD].map(String::from);
+        start_clocks_ahead(&mut args);
+        assert!(args[0].starts_with("base=20") && args[2].starts_with("base=20"));
+        assert_eq!(args[1], "-x");
     }
 
     #[test]
