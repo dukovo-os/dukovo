@@ -38,7 +38,9 @@
 //! routes that sign a browser in, [`session`] those of a signed-in session,
 //! [`events`] a tab's stream, and [`account`] the person's own second steps,
 //! tokens and preferences, which their worker asks authd or their files
-//! for.
+//! for. [`openapi`](super::openapi) describes the table and the actions as
+//! one OpenAPI document, which `GET /api/1/openapi.json` answers to
+//! anyone.
 //!
 //! When a page gets an error it does not expect, the answer's `id` is in
 //! [`errors`](super::errors), and `log admind` has the refusal with the
@@ -84,6 +86,7 @@ use super::guard::{self, SESSION_COOKIE};
 use super::limits::Held;
 use super::link::Link;
 use super::log;
+use super::openapi;
 use super::reach;
 use super::shared::{Shared, unix_now};
 
@@ -192,7 +195,7 @@ impl Reply {
 
 /// How a request is used: what it takes from the table of routes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Verb {
+pub(super) enum Verb {
     Get,
     Post,
     Head,
@@ -212,7 +215,7 @@ impl Verb {
 
 /// Whom a route is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Access {
+pub(super) enum Access {
     /// Anyone, with no session: the files, and what the page asks first.
     Anyone,
     /// Anyone who is signing in: with the checks of a request that
@@ -229,10 +232,11 @@ enum Access {
 
 /// The routes of the API, and the files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Route {
+pub(super) enum Route {
     File,
     Health,
     Fingerprint,
+    OpenApi,
     SignIn,
     SignInCode,
     SignInPasskeyOptions,
@@ -260,6 +264,7 @@ enum Route {
     PreferencesChange,
     Actions,
     Show,
+    Check,
     Changes,
     Change,
     Keep,
@@ -281,11 +286,11 @@ enum Route {
 
 /// A route in the table.
 #[derive(Debug)]
-struct Entry {
-    verb: Verb,
-    path: &'static str,
-    route: Route,
-    access: Access,
+pub(super) struct Entry {
+    pub(super) verb: Verb,
+    pub(super) path: &'static str,
+    pub(super) route: Route,
+    pub(super) access: Access,
 }
 
 const fn entry(verb: Verb, path: &'static str, route: Route, access: Access) -> Entry {
@@ -299,9 +304,10 @@ const FILE: Entry = entry(Verb::Get, "", Route::File, Access::Anyone);
 /// the handler reads as an argument. The second-step routes, `session`,
 /// `sign-out` and `events` are those a session that may only add a second
 /// step uses.
-const TABLE: &[Entry] = &[
+pub(super) const TABLE: &[Entry] = &[
     entry(Verb::Get, "/api/1/health", Route::Health, Access::Anyone),
     entry(Verb::Get, "/api/1/fingerprint", Route::Fingerprint, Access::Anyone),
+    entry(Verb::Get, "/api/1/openapi.json", Route::OpenApi, Access::Anyone),
     entry(Verb::Post, "/api/1/sign-in", Route::SignIn, Access::SignIn),
     entry(Verb::Post, "/api/1/sign-in/code", Route::SignInCode, Access::SignIn),
     entry(
@@ -354,6 +360,7 @@ const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/account/preferences", Route::PreferencesChange, Access::Full),
     entry(Verb::Get, "/api/1/actions", Route::Actions, Access::Api),
     entry(Verb::Post, "/api/1/show", Route::Show, Access::Api),
+    entry(Verb::Post, "/api/1/check", Route::Check, Access::Api),
     entry(Verb::Get, "/api/1/changes", Route::Changes, Access::Full),
     entry(Verb::Get, "/api/1/changes/{id}", Route::Change, Access::Full),
     entry(Verb::Post, "/api/1/changes/{id}/keep", Route::Keep, Access::Full),
@@ -851,6 +858,7 @@ async fn dispatch(
         (Route::File, _) => file(cx),
         (Route::Health, _) => Ok(Reply::json(json!({ "ok": true }))),
         (Route::Fingerprint, _) => Ok(fingerprint(cx)),
+        (Route::OpenApi, _) => Ok(Reply::json(openapi::document(cx.shared.actions.get()))),
         (Route::SignIn, _) => sign_in::password(cx).await,
         (Route::SignInCode, _) => sign_in::code(cx).await,
         (Route::SignInPasskeyOptions, _) => sign_in::passkey_options(cx).await,
@@ -879,6 +887,7 @@ async fn dispatch(
         // For a session or a token, which `check` has let through.
         (Route::Actions, _) => Ok(Reply::json(actions::listed(cx.shared.actions.get()))),
         (Route::Show, _) => act::show(cx, token.as_ref()),
+        (Route::Check, live) => act::check(cx, live, token).await,
         (Route::Changes, _) => changes::list(cx),
         (Route::Change, _) => changes::one(cx),
         (Route::Keep, Some(live)) => changes::keep(cx, &live),

@@ -14,10 +14,14 @@
 # MACHINE is the machine's address and PORT the lab PC's port that reaches
 # its SSH, as {machine} and {machine-port:22} give them; PLAYBOOK is the
 # name of one of the folder's playbooks, python.yml, site.yml or
-# update.yml. The lab account's password, which elevate asks for, is read
-# from the standard input. The script prints what ansible-playbook printed,
-# then `changed: N`, `unreachable: N` and `failed: N` from its recap, and
-# exits with its status. It runs in the test's own folder.
+# update.yml, or the absolute path of a playbook of another test's own, as
+# web-console/ansible writes one for each task the console shows, for the
+# machine `dukovo`. The lab account's password, which elevate asks for, is
+# read from the standard input. The script prints what ansible-playbook
+# printed, then `changed: N`, `unreachable: N` and `failed: N` from its
+# recap, and exits with its status. It runs in the folder it is started in,
+# where it keeps the inventory, the settings and the playbook's log, so a
+# test that runs it again and again gives each run a folder of its own.
 #
 # A lock may name the collection's tarball by an environment variable, to
 # try one built from a checkout of dukovo-os/ansible; when that variable is
@@ -40,8 +44,12 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/dukovo-lab/ansible"
 lab_key="${XDG_CONFIG_HOME:-$HOME/.config}/dukovo-lab/lab_ed25519"
 work=$(pwd)
 
-if [ ! -f "$playbooks/$playbook" ]; then
-	echo "no playbook $playbook in $playbooks"
+case "$playbook" in
+/*) file="$playbook" ;;
+*) file="$playbooks/$playbook" ;;
+esac
+if [ ! -f "$file" ]; then
+	echo "no playbook $playbook (the folder's are in $playbooks)"
 	exit 2
 fi
 
@@ -167,9 +175,9 @@ export ANSIBLE_COLLECTIONS_PATH="$collections"
 export ANSIBLE_GATHER_SUBSET=min
 export PYTHONUNBUFFERED=1
 
-log="$work/$playbook.log"
+log="$work/$(basename "$file").log"
 status=0
-"$venv/bin/ansible-playbook" "$playbooks/$playbook" "$@" > "$log" 2>&1 || status=$?
+"$venv/bin/ansible-playbook" "$file" "$@" > "$log" 2>&1 || status=$?
 cat "$log"
 recap=$(sed -n '/^PLAY RECAP/,$p' "$log" | grep '^dukovo ' | tail -n 1 || true)
 for key in changed unreachable failed; do

@@ -708,8 +708,15 @@ fn arguments_for(rng: &mut Rng, id: &str) -> Value {
 /// The paths a request asks for, and the few that answer anyone: the
 /// routes, the actions' addresses with a name, and files.
 fn paths() -> (Vec<String>, Vec<&'static str>) {
-    let open =
-        vec!["/", "/index.html", "/app.js", "/manifest.txt", "/api/1/health", "/api/1/fingerprint"];
+    let open = vec![
+        "/",
+        "/index.html",
+        "/app.js",
+        "/manifest.txt",
+        "/api/1/health",
+        "/api/1/fingerprint",
+        "/api/1/openapi.json",
+    ];
     let routes = [
         "/api/1/sign-in",
         "/api/1/sign-in/code",
@@ -1019,9 +1026,9 @@ fn a_few_thousand_random_inputs_through_every_entry_point_do_not_panic() {
         let (status, _) = console.request(&method, &target, &headers, &body);
         *answered.entry(status).or_insert(0) += 1;
         // Nobody is signed in and no token is right: what is answered 2xx
-        // is what is open to anyone, the health and the fingerprint, and
-        // a page of the console, whose first page answers a name that has
-        // no file.
+        // is what is open to anyone, the health, the fingerprint and the
+        // API's description, and a page of the console, whose first page
+        // answers a name that has no file.
         if (200..300).contains(&status) {
             let path = String::from_utf8_lossy(&target);
             let path = path.split('?').next().unwrap_or_default();

@@ -459,9 +459,14 @@ action with its arguments, and run nothing:
   *elevate* in front when the action runs as an administrator.
 - The API call, a *curl* line for the action's route, with the token in
   *DUKOVO\_TOKEN*, against the address the console was asked at.
-- The Ansible task, as the YAML of one task for a playbook. It runs the
-  command with *ansible.builtin.command*, which cannot tell whether a
-  change changed anything, so a change task reports a change each time.
+- The Ansible task, as the YAML of one task for a playbook. For the
+  services' changes it is a task of *dukovo.system.service*, the module
+  of the collection *dukovo.system* (install it from its release at
+  github.com/dukovo-os/ansible, with ansible-core 2.22 or later), which
+  reports a change only when it changed something. For every other
+  action it runs the command with *ansible.builtin.command*, which cannot
+  tell whether a change changed anything, so such a change task reports
+  a change each time.
 - The files the change writes, when it writes any.
 
 The command shown is the command that runs: the console runs the same
@@ -473,8 +478,10 @@ A change answers whether it changed anything, as *changed*, true or false,
 so that a script that asks for what is so learns that nothing was done. The
 console reads what the change moves, as the person, before the command and
 after it, and the files the change names, through the journal, and says
-true when it cannot tell; *admind*(8) says how. An action that the list
-marks *long* answers with a task's number and runs as a task (TASKS).
+true when it cannot tell; *admind*(8) says how. *POST /api/1/check* asks
+the same without making the change, and *GET /api/1/openapi.json*
+describes the whole API for a tool that reads OpenAPI. An action that the
+list marks *long* answers with a task's number and runs as a task (TASKS).
 
 A command that ends with an error is ADM-123, with the command's own
 words, and with the command's own ID when the action lists it. A value that

@@ -10,7 +10,7 @@ use serde_json::json;
 use super::*;
 use crate::admind::run::error_id;
 
-mod validate;
+pub mod validate;
 
 /// An action for the tests alone: restarting a lab service.
 struct Restart;
@@ -130,6 +130,16 @@ impl Action for Set {
 
     fn probed(_: &Named, output: &str) -> Option<String> {
         output.split_once(';').map(|(moved, _)| moved.trim().to_string())
+    }
+
+    /// The change leaves what the probe reads `on`; any other word is
+    /// none of the two it knows.
+    fn settled(_: &Named, now: &str) -> Option<bool> {
+        match now {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        }
     }
 
     fn examples() -> Examples<Named> {

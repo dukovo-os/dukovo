@@ -7,9 +7,10 @@
 //!
 //! It is the oracle of those tests, so it is plain and small, and refuses
 //! a keyword it does not know: a schema that gains one is not quietly
-//! accepted. A pattern is of ECMAScript's kind as far as the actions use
-//! it: characters, `.`, classes with ranges, groups, alternation, `*`, `+`
-//! and `?`, `^` and `$`, and lookahead, `(?=` and `(?!`.
+//! accepted. A pattern is of ECMAScript's kind as far as the actions and
+//! the API's description use it: characters, `.`, classes with ranges,
+//! groups, alternation, `*`, `+`, `?` and counts (`{3}`, `{2,5}`, `{2,}`),
+//! `^` and `$`, and lookahead, `(?=` and `(?!`.
 //!
 //! [`schema`]: super::super::schema
 
@@ -86,7 +87,7 @@ impl Parser {
                 break;
             }
             let atom = self.atom()?;
-            nodes.push(self.repeated(atom));
+            nodes.push(self.repeated(atom)?);
         }
         Ok(nodes)
     }
@@ -121,15 +122,42 @@ impl Parser {
         })
     }
 
-    fn repeated(&mut self, node: Node) -> Node {
-        let (min, max) = match self.peek() {
-            Some('*') => (0, None),
-            Some('+') => (1, None),
-            Some('?') => (0, Some(1)),
-            _ => return node,
+    fn repeated(&mut self, node: Node) -> Result<Node, String> {
+        let (min, max) = if self.eat("*") {
+            (0, None)
+        } else if self.eat("+") {
+            (1, None)
+        } else if self.eat("?") {
+            (0, Some(1))
+        } else if self.eat("{") {
+            self.count()?
+        } else {
+            return Ok(node);
         };
-        self.at += 1;
-        Node::Repeat { node: Box::new(node), min, max }
+        Ok(Node::Repeat { node: Box::new(node), min, max })
+    }
+
+    /// A count after its `{`: `3`, `2,5` or `2,`, and the `}` that ends it.
+    fn count(&mut self) -> Result<(usize, Option<usize>), String> {
+        let min = self.number()?;
+        let max = if self.eat(",") {
+            if self.peek() == Some('}') { None } else { Some(self.number()?) }
+        } else {
+            Some(min)
+        };
+        if !self.eat("}") {
+            return Err("a count is not closed".into());
+        }
+        Ok((min, max))
+    }
+
+    fn number(&mut self) -> Result<usize, String> {
+        let start = self.at;
+        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            self.at += 1;
+        }
+        let digits: String = self.chars[start..self.at].iter().collect();
+        digits.parse().map_err(|_| "a count has no number".to_string())
     }
 
     /// A class, after its `[`. A `-` that ends it is itself.
@@ -370,6 +398,21 @@ mod tests {
     }
 
     #[test]
+    fn a_count_repeats_an_atom_that_many_times() {
+        assert!(is("^a{3}$", "aaa"));
+        assert!(!is("^a{3}$", "aa"));
+        assert!(!is("^a{3}$", "aaaa"));
+        assert!(is("^[A-Z]{2,5}-[0-9]{3}$", "SVC-104"));
+        assert!(is("^[A-Z]{2,5}-[0-9]{3}$", "AB-104"));
+        assert!(!is("^[A-Z]{2,5}-[0-9]{3}$", "A-104"));
+        assert!(!is("^[A-Z]{2,5}-[0-9]{3}$", "ABCDEF-104"));
+        assert!(!is("^[A-Z]{2,5}-[0-9]{3}$", "SVC-10"));
+        assert!(is("^(ab){2,}$", "ababab"));
+        assert!(!is("^(ab){2,}$", "ab"));
+        assert!(is("^a{0}b$", "b"));
+    }
+
+    #[test]
     fn a_lookahead_looks_without_taking() {
         let name = "^(?!(check|new)$)[a-z]+$";
         assert!(is(name, "nginx"));
@@ -384,7 +427,9 @@ mod tests {
 
     #[test]
     fn a_pattern_that_does_not_read_is_an_error() {
-        for pattern in ["(a", "a)", "[a", "*a", "a\\", "(?!a"] {
+        for pattern in
+            ["(a", "a)", "[a", "*a", "a\\", "(?!a", "a{", "a{2", "a{,3}", "a{x}", "a{2,3"]
+        {
             assert!(matches(pattern, "a").is_err(), "{pattern}");
         }
     }

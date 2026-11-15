@@ -593,7 +593,7 @@ mod tests {
              API\n\
              curl -sS -X POST -H \"Authorization: Bearer $DUKOVO_TOKEN\" -H \"Content-Type: application/json\" -d '{}' https://nas.example:9090/api/1/services/diskhealth/restart\n\n\
              Ansible\n\
-             - name: \"Restart a service: diskhealth\"\n  ansible.builtin.command:\n    argv:\n      - \"service\"\n      - \"diskhealth\"\n      - \"restart\"\n  become: true\n\n\
+             - name: \"Restart a service: diskhealth\"\n  dukovo.system.service:\n    name: \"diskhealth\"\n    state: \"restarted\"\n  become: true\n\n\
              Files\n\
              none\n"
         );

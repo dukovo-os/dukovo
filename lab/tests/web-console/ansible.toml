@@ -2,21 +2,39 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # The Ansible task that the web console shows for each action, run from
-# the lab PC (ADR 0515). The lab PC makes an API token for every scope with
-# `admin token add`, asks admind for the list of actions and for the task
-# that POST /api/1/show gives for each action's first good example, and
-# runs each task with ansible-playbook over SSH as the lab account, with
-# sudo for a task that becomes root, twice. Every task must succeed both
-# times; a read reports no change; the service the examples use is left
-# by each change as its route leaves it. The shown task is
-# ansible.builtin.command with argv, which cannot tell whether a change
-# changed anything, so a change reports "changed" the second time too, as
-# the first: the test says so, and claims no more, until thread A's
-# dukovo.system collection gives the actions modules of their own
-# (docs/deferred.md). certificate.renew is left to the boot test
-# admin-actions. Ansible runs Python by its path, as the Python chapter of
-# the handbook says, so the Python bundle of the catalog is installed for
-# everyone first and taken away at the end.
+# the lab PC (ADR 0515, ADR 0545). The lab PC makes an API token for every
+# scope with `admin token add`, asks admind for the list of actions and for
+# the task that POST /api/1/show gives for each action's first good
+# example, and runs each task twice in a row with ansible-playbook over SSH
+# as the lab account, with sudo for a task that becomes root. Ansible is
+# what tests/system/ansible.sh sets up, as for system/ansible: the
+# ansible-core that the boot test pins, in a virtual environment of the
+# lab's cache, and the collection dukovo.system that
+# tools/xtask/src/test/ansible.lock pins. Without Python 3.13 or later on
+# the lab PC, which ansible-core needs, or where the lock names a tarball
+# by an environment variable that is not set, the test is skipped as that
+# one is.
+#
+# The five changes of the services are tasks of the collection's module
+# dukovo.system.service, which reads what is there and does nothing when
+# the service is as asked. Before a change is run, its undo is done by its
+# route, so that it has something to do; it must report a change the first
+# time, and none the second time, except the restart, which always does
+# something. A change that is a command, as console.reach is, runs
+# ansible.builtin.command with argv, which cannot tell whether it changed
+# anything, so it reports "changed" the second time too, as the first. A
+# read reports no change. Every task must succeed both times, and the
+# service the examples use is left by each change as its route leaves it,
+# and as the test found it at the end. Check mode, POST /api/1/check, must
+# say each change would change something before its first run (false for
+# console.reach, whose undo and example are the same), and after its second
+# what the module reported then; a command must not be said to change
+# anything again, unless it compares nothing, as lab.long, which check
+# mode says changes each time. certificate.renew is left to the boot test
+# admin-actions, and checks.last, lab.missing and metrics.usage, which end
+# with a status other than 0 on a lab machine, are not run. Ansible runs Python by its path, as the Python
+# chapter of the handbook says, so the Python bundle of the catalog is
+# installed for everyone first and taken away at the end.
 #
 # What Ansible says to sudo: `sudo -H -S -p PROMPT -u root` (-n instead of
 # the prompt when it has no password), and Dukovo's sudo(8) takes every
@@ -29,9 +47,9 @@
 # lab PC has none, as when the lab was started with an image of its own,
 # the test is skipped. The token is taken away again, and no account is
 # made.
-about = "Ansible on the lab PC runs the task that the web console shows for each action, over SSH with sudo, twice: every task succeeds, a read changes nothing and a change leaves its service as its route does"
-time = "20m"
-host_needs = ["ansible-playbook", "curl", "ssh", "scp", "python3"]
+about = "Ansible on the lab PC runs the task that the web console shows for each action, over SSH with sudo, twice in a row: every task succeeds, a read changes nothing, a change of a service by the module dukovo.system.service reports no change the second time (a restart always does something), a command reports changed both times, each leaves its service as its route does, and check mode agrees with Ansible"
+time = "40m"
+host_needs = ["python3", "ssh", "ssh-keyscan", "sha256sum", "scp", "curl"]
 
 [[step]]
 host = "sh {here}/../services/copy-bundle.sh org.python.python {machine} {machine-port:22}"
@@ -53,8 +71,10 @@ expect = [
     "pass 1: every task succeeded",
     "pass 2: every task succeeded",
     "reads reported no change",
-    "changes reported changed both times",
+    "changes with a module reported no change the second time",
+    "commands reported changed both times",
     "state after each change is what its route leaves",
+    "check mode agreed with Ansible on each change",
 ]
 [[step]]
 run = "bundle remove --for-everyone --purge org.python.python"

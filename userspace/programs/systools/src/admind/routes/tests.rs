@@ -25,6 +25,7 @@ use crate::admind::shared::unix_now;
 
 mod act;
 mod changes;
+mod fuzz;
 mod tasks;
 mod terminals;
 
@@ -522,6 +523,7 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
         let reads = [
             Route::Health,
             Route::Fingerprint,
+            Route::OpenApi,
             Route::Session,
             Route::Events,
             Route::Steps,
@@ -536,7 +538,7 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 44 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 46 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -561,9 +563,9 @@ fn files_are_for_get_and_head_alone_and_a_post_to_a_page_is_the_wrong_verb() {
 }
 
 #[test]
-fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
+fn before_sign_in_only_health_fingerprint_the_description_and_the_sign_in_routes_are_open() {
     let access = |route: Route| TABLE.iter().find(|entry| entry.route == route).unwrap().access;
-    for open in [Route::Health, Route::Fingerprint] {
+    for open in [Route::Health, Route::Fingerprint, Route::OpenApi] {
         assert_eq!(access(open), Access::Anyone);
     }
     for sign in
@@ -595,7 +597,7 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
             Route::TrustedForget,
         ]
     );
-    for api in [Route::Actions, Route::Show] {
+    for api in [Route::Actions, Route::Show, Route::Check] {
         assert_eq!(access(api), Access::Api, "{api:?}");
     }
     for full in [
@@ -688,6 +690,29 @@ fn the_fingerprint_is_the_certificates_with_the_machines_name() {
         let answered = send(&world, get("/api/1/fingerprint")).await;
         let expected = world.console.shared.certificate.borrow().fingerprint.clone();
         assert_eq!(answered.json(), json!({ "host": "nas", "fingerprint": expected }));
+    });
+}
+
+#[test]
+fn the_description_of_the_api_is_answered_to_anyone_and_names_every_route() {
+    run(async {
+        let world = world("openapi");
+        let answered = send(&world, get("/api/1/openapi.json")).await;
+        assert_eq!(answered.status, 200);
+        assert_eq!(answered.header("content-type"), Some("application/json"));
+        assert_eq!(answered.header("cache-control"), Some("no-store"));
+        let described = answered.json();
+        assert_eq!(described["openapi"], "3.1.0");
+        assert_eq!(described, openapi::document(world.console.shared.actions.get()));
+        for entry in TABLE {
+            assert!(described["paths"][entry.path].is_object(), "{}", entry.path);
+        }
+        // An API token has no use of it: it is for the actions.
+        let with_token =
+            send(&world, get("/api/1/openapi.json").with("authorization", Some("Bearer dkv_abc")))
+                .await;
+        assert_eq!(with_token.status, 403);
+        assert_eq!(with_token.json()["error"]["id"], "ADM-124");
     });
 }
 

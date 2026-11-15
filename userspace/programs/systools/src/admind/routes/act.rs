@@ -6,6 +6,9 @@
 //! the person or as an administrator; and the answer.
 //!
 //! The showing of an action, which runs nothing, is here too: [`show`].
+//! So is the checking of one (ADR 0545), which runs only its probe as the
+//! person and reads its files, and says whether the change would change
+//! anything: [`check`].
 //!
 //! A change says whether it changed anything ([`changed`]): an action
 //! with a probe has it run as the person before the command and after it,
@@ -37,7 +40,7 @@ use crate::admind::actions::show;
 use crate::admind::actions::{self, Caller, Params, Prepared, Registered, Runs};
 use crate::admind::caller::{self, TokenCall};
 use crate::admind::errors::{Failure, Kind};
-use crate::admind::journal::Ended;
+use crate::admind::journal::{self, Ended};
 use crate::admind::link::Link;
 use crate::admind::log;
 use crate::admind::run::{self, Ran};
@@ -396,6 +399,77 @@ pub fn show(cx: &Context<'_>, token: Option<&TokenCall>) -> Outcome {
     Ok(Reply::json(show::shown(&prepared, &cx.origin)))
 }
 
+/// Answers `POST /api/1/check` (ADR 0545), which takes what
+/// `/api/1/show` takes: whether the action with the arguments would change
+/// anything, for any session that is signed in, locked or not, or for the
+/// API token `token` when its scopes let it read the action's area. The
+/// change is not made: its probe runs as the person, as the change's own
+/// does, and the files it names are read as the journal reads them. The
+/// answer is `changed`, true, false or null when the action cannot tell,
+/// and `now`, what the probe reads of what the change moves.
+pub async fn check(cx: &Context<'_>, live: Option<Live>, token: Option<TokenCall>) -> Outcome {
+    let showing: Showing = cx.json()?;
+    let action = show::lookup(cx.shared.actions.get(), &showing.action)?;
+    let prepared = action.prepare(showing.args)?;
+    let probes = match (&live, &token) {
+        (Some(live), None) => Probes::Session(&live.link),
+        (None, Some(token)) => {
+            actions::token_may(&token.name, &token.scopes, action.area(), false)?;
+            Probes::Token(token)
+        }
+        _ => return Err(super::ended()),
+    };
+    if !action.changes() {
+        return Ok(Reply::json(json!({ "changed": false, "now": null })));
+    }
+    let now = match prepared.probe.as_deref() {
+        Some(probe) => probes
+            .read(cx.shared, probe)
+            .await
+            .and_then(|output| action.probed(&prepared.args, &output)),
+        None => None,
+    };
+    let kept: Vec<Option<bool>> = prepared
+        .files
+        .iter()
+        .map(|path| {
+            let text = journal::current_text(path)?;
+            action.keeps_file(&prepared.args, path, text.as_deref())
+        })
+        .collect();
+    let changed = would_change(&prepared, now.as_deref(), &kept);
+    Ok(Reply::json(json!({ "changed": changed, "now": now })))
+}
+
+/// Whether the change `prepared` would change anything (ADR 0545), from
+/// what its probe picks now (`now`, None when it has no probe or the probe
+/// did not tell) and whether it would keep each file it names (`kept`,
+/// None for one it cannot tell of).
+///
+/// It would when any part it compares would move, and would not only when
+/// every part is settled; otherwise it cannot tell, None. A change that
+/// compares nothing always does something, as its `changed` says once it
+/// runs, and a read changes nothing.
+fn would_change(prepared: &Prepared, now: Option<&str>, kept: &[Option<bool>]) -> Option<bool> {
+    if !prepared.action.changes() {
+        return Some(false);
+    }
+    if prepared.probe.is_none() && prepared.files.is_empty() {
+        return Some(true);
+    }
+    let mut settled = kept.to_vec();
+    if prepared.probe.is_some() {
+        settled.push(now.and_then(|now| prepared.action.settled(&prepared.args, now)));
+    }
+    if settled.contains(&Some(false)) {
+        Some(true)
+    } else if settled.iter().all(|part| *part == Some(true)) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,5 +542,33 @@ mod tests {
         // A read changed nothing.
         let list = prepared("lab.list", serde_json::json!({}), &[]);
         assert!(!changed(&list, None, true));
+    }
+
+    #[test]
+    fn a_check_says_would_change_when_a_part_moves_and_not_only_when_every_part_is_settled() {
+        let name = serde_json::json!({ "name": "lab-web" });
+        // A probe alone: what `settled` says of what it reads.
+        let set = prepared("lab.set", name.clone(), &[]);
+        assert_eq!(would_change(&set, Some("on"), &[]), Some(false));
+        assert_eq!(would_change(&set, Some("off"), &[]), Some(true));
+        assert_eq!(would_change(&set, Some("?"), &[]), None);
+        assert_eq!(would_change(&set, None, &[]), None);
+        // A probe and a file: one part that moves is enough, and both must
+        // be settled for no change.
+        let set_file = prepared("lab.set", name.clone(), &["/s/lab-web.toml"]);
+        assert_eq!(would_change(&set_file, Some("on"), &[Some(true)]), Some(false));
+        assert_eq!(would_change(&set_file, Some("on"), &[Some(false)]), Some(true));
+        assert_eq!(would_change(&set_file, None, &[Some(false)]), Some(true));
+        assert_eq!(would_change(&set_file, Some("off"), &[None]), Some(true));
+        assert_eq!(would_change(&set_file, Some("on"), &[None]), None);
+        // No probe and a file: the file alone says.
+        let restart_file = prepared("lab.restart", name.clone(), &["/s/lab-web.toml"]);
+        assert_eq!(would_change(&restart_file, None, &[Some(true)]), Some(false));
+        assert_eq!(would_change(&restart_file, None, &[None]), None);
+        // Nothing to compare: it always does something. A read never does.
+        let restart = prepared("lab.restart", name, &[]);
+        assert_eq!(would_change(&restart, None, &[]), Some(true));
+        let list = prepared("lab.list", serde_json::json!({}), &[]);
+        assert_eq!(would_change(&list, None, &[]), Some(false));
     }
 }

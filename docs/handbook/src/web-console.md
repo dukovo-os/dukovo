@@ -1076,33 +1076,88 @@ actions can tell. A long action's task says `changed` when it is done, from
 its files alone. A command that fails is answered as an error, with the
 command's own words (ADM-123).
 
+### Checking a change first
+
+`POST /api/1/check` takes what `show` takes, `{"action": ..., "args": ...}`,
+for the same callers, and changes nothing. It runs the probe that the
+action's `changed` is found from, as you, and reads the files the change
+would write, and answers whether the change would do anything:
+
+```
+$ curl -sS -X POST -H "Authorization: Bearer $DUKOVO_TOKEN" -H "Content-Type: application/json" \
+    -d '{"action": "service.start", "args": {"name": "diskhealth"}}' \
+    https://duke-nas.local:9090/api/1/check
+{"changed": false, "now": "running"}
+```
+
+`changed` is `false` when everything the change moves is as it leaves it,
+`true` when it would move something (a restart always does), and `null`
+when the console cannot tell: the probe failed, the action has no way to
+compare, or a file could not be read. `now` is the part of the probe's
+answer that the action compares, here the service's state, and `null` when
+there is none. A read is always `false`. A check leaves no row in the
+journal and no line in the log.
+
+### What the API says of itself
+
+`GET /api/1/openapi.json` answers a description of every route and action
+as OpenAPI 3.1, to anyone, since it says only what this chapter and
+admind(8) say. For each one it gives the method and address, the arguments
+with their limits, the security it needs (a session with its token, or an
+API token, for the routes that take one), and for each status the route can
+answer the error IDs that come with it. A tool that reads OpenAPI, such as
+a client generator, a mock server or a tester, can use it:
+
+```
+$ curl -sS --cacert console.pem https://duke-nas.local:9090/api/1/openapi.json > dukovo.json
+```
+
+The lab test `web-console/fuzz` sends requests made from this document and
+nothing else to a machine, signed out and with tokens, and fails on any
+answer the document does not describe.
+
 ### An Ansible task
 
 `admin show` gives the same action as a task for a playbook, which does
-not use a token: it runs the command over SSH as an administrator, with
-`become`:
+not use a token: it runs over SSH as an administrator, with `become`. The
+services' changes, `service.start`, `stop`, `restart`, `enable` and
+`disable`, are tasks of the module `service` of the collection
+`dukovo.system`:
 
 ```
 $ admin show service.restart name=diskhealth
 ...
 Ansible
 - name: "Restart a service: diskhealth"
-  ansible.builtin.command:
-    argv:
-      - "service"
-      - "diskhealth"
-      - "restart"
+  dukovo.system.service:
+    name: "diskhealth"
+    state: "restarted"
   become: true
 ```
 
-Put it in a play's `tasks`. Ansible needs Python on the machine: see
-[Python](python.md). That module cannot tell a change from none, so a
-change task reports "changed" each time it runs, and a read has
-`changed_when: false`. A read whose command answers with another status
-too, such as `service NAME explain`, which ends with 3 for a service that
-does not run well, registers its result and has a `failed_when` that names
-the statuses it answers with. A module of Dukovo's own that tells a change from
-none is a later addition.
+`enable` gives `state: "started"` with `enabled: true`, and `disable`
+`state: "stopped"` with `enabled: false`. The module reads what Spark says
+of the service and does what is not so yet, so the task reports "changed"
+only when it changed something, and a second run of a `start` reports
+nothing; a `restart` always does something. `--check` says what it would do.
+
+Install the collection from its release, on the machine that runs Ansible,
+which needs ansible-core 2.22 or later and so Python 3.13 or later:
+
+```
+$ ansible-galaxy collection install https://github.com/dukovo-os/ansible/releases/download/v0.1.0/dukovo-system-0.1.0.tar.gz
+```
+
+Put the task in a play's `tasks`. Ansible needs Python on the machine: see
+[Python](python.md). Every other action's task is the module
+`ansible.builtin.command` with the command's words as `argv`. That module
+cannot tell a change from none, so such a change task reports "changed"
+each time it runs, and a read has `changed_when: false`. A read whose
+command answers with another status too, such as `service NAME explain`,
+which ends with 3 for a service that does not run well, registers its
+result and has a `failed_when` that names the statuses it answers with. The
+collection's modules for certificates and for the console's reach are a
+later addition.
 
 ### Your tokens
 
@@ -1136,9 +1191,11 @@ has a page in the support center.
   ([ADM-105](../../errors/ADM-105.md)).
 - **The API token may not do this** ([ADM-124](../../errors/ADM-124.md)).
   Its scopes do not name the action's area, or it was sent to a route that
-  is not an action or a task: a token reads and changes through the
-  actions, and reads and stops tasks, but cannot sign in, unlock, read the
-  journal or make another token. The detail names the scope it needs; make
+  is not for a token (the actions, their list, their showing and checking,
+  and the tasks): a token reads and changes through the actions, and reads
+  and stops tasks, but cannot sign in, unlock, read the journal or make
+  another token, and the description of the API, which anyone may read, is
+  asked for without one. The detail names the scope it needs; make
   a token with that scope.
 
 Two more follow from the action itself. **A value cannot work**
@@ -1751,6 +1808,10 @@ center has a page for each.
   this (ADM-124)**, **The request is not right (ADM-108)**, **A value
   cannot work (ADM-125)** or **The command did not work (ADM-123).** See
   "What a script may meet", in "Using the API".
+- **Ansible says it cannot resolve the module `dukovo.system.service`.**
+  The collection is not installed on the machine that runs Ansible.
+  Install it as "An Ansible task" says; it needs ansible-core 2.22 or
+  later, which `ansible --version` shows.
 - **authd did not answer (ADM-111)**, **The session's worker did not
   answer (ADM-112)** or **The console could not do that (ADM-121).** Try
   again. If it keeps happening, `elevate log -s admind` and `elevate log -s

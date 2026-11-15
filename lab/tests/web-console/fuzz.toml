@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's API fuzzed from its own description (ADR 0545): the
+# machine answers GET /api/1/openapi.json, an OpenAPI 3.1 document made from
+# its table of routes and its actions, and Schemathesis, which the lab PC
+# runs from a pinned release, makes its requests from that document alone.
+# It is run three times: signed out, with a token that only reads (every
+# operation of the API, in every phase of Schemathesis, among them the
+# action and arguments that POST /api/1/show and POST /api/1/check take),
+# and with a token that changes, which sends only the example of each
+# change, one at a time, since a change with made-up arguments would change
+# the machine as it pleased; the service the examples use is put back with
+# each example's undo. Every answer must be as the document says: no 5xx, a
+# status, a content type and headers that the document lists for it, a body
+# that fits its schema, and none slower than 2 seconds (10 for a change,
+# which waits for Spark). Afterwards admind must answer and must not have
+# been started again (`service list --json` says the same process and
+# start), the journal must hold the changes the test made as its token and
+# nothing else, and the service must be as it was found. A lab machine's
+# lab.missing, which is answered 501 by design, is not read.
+#
+# Schemathesis is pinned: release 4.33.4, with every package it needs by
+# hash in fuzz-requirements.txt, installed once into a virtual environment
+# of the lab PC's cache with pip's --require-hashes. A lab PC without Python
+# 3.11 or later, or that cannot reach the package index, skips the test; a
+# file whose hash is not listed fails it. A failure names the seed, which
+# LAB_FUZZ_SEED=N sends again. The tokens are the lab account's, made with
+# `admin token add` over SSH with the lab password, which no step shows, and
+# taken away at the end; the administrator wc-fuzz, which a root step makes
+# and removes, reads the journal, which no token may.
+about = "Schemathesis, from the web console's own OpenAPI description, signed out, with a token that reads and with a token that changes, finds no answer that is a 5xx, that the description does not give, that is slower than 2 seconds, and leaves admind running as it was, a journal of the test's own changes and the service as found"
+time = "30m"
+host_needs = ["python3", "ssh", "curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-fuzz'"
+root = true
+expect = "Made wc-fuzz"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+host = "python3 {here}/fuzz.py {machine} {machine-port:22} {machine-port:9090}"
+expect = [
+    "fuzz: the description is OpenAPI 3.1 and has",
+    "fuzz: signed out: no failure in",
+    "fuzz: a token that reads: no failure in",
+    "fuzz: a token that changes: no failure in",
+    "fuzz: admind answers, and has not been started again",
+    "fuzz: the journal has the test's own changes, and nothing else",
+    "fuzz: the service is as it was found",
+]
+[[step]]
+run = "user remove --delete-home --yes wc-fuzz"
+root = true
+expect = "wc-fuzz is removed"

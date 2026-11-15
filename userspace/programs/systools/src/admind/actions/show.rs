@@ -333,15 +333,30 @@ mod tests {
 
     #[test]
     fn the_task_is_one_mapping_in_a_list_with_its_keys_in_order() {
-        let change = show("service.restart", json!({ "name": "nginx" }));
+        let change = show("certificate.renew", json!({ "name": "this-machine" }));
         assert_eq!(
             change["ansible"],
-            "- name: \"Restart a service: nginx\"\n  ansible.builtin.command:\n    argv:\n      - \"service\"\n      - \"nginx\"\n      - \"restart\"\n  become: true\n"
+            "- name: \"Renew a certificate: this-machine\"\n  ansible.builtin.command:\n    argv:\n      - \"cert\"\n      - \"renew\"\n      - \"this-machine\"\n  become: true\n"
         );
         let read = show("service.explain", json!({ "name": "nginx" }));
         assert_eq!(
             read["ansible"],
             "- name: \"Explain a service: nginx\"\n  ansible.builtin.command:\n    argv:\n      - \"service\"\n      - \"nginx\"\n      - \"explain\"\n      - \"--json\"\n  register: answer\n  changed_when: false\n  failed_when: \"answer.rc not in [0, 3]\"\n"
+        );
+    }
+
+    #[test]
+    fn a_service_change_is_a_task_of_the_collection_s_module_with_no_changed_when() {
+        let restart = show("service.restart", json!({ "name": "nginx" }));
+        assert_eq!(
+            restart["ansible"],
+            "- name: \"Restart a service: nginx\"\n  dukovo.system.service:\n    name: \"nginx\"\n    state: \"restarted\"\n  become: true\n"
+        );
+        // The parameters are in the order of their names.
+        let enable = show("service.enable", json!({ "name": "nginx" }));
+        assert_eq!(
+            enable["ansible"],
+            "- name: \"Enable a service: nginx\"\n  dukovo.system.service:\n    enabled: true\n    name: \"nginx\"\n    state: \"started\"\n  become: true\n"
         );
     }
 
