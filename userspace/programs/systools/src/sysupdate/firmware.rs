@@ -143,8 +143,9 @@ enum Source {
 
 /// `sysupdate firmware stage`: the set `version` of the repository folder
 /// `repo`, or the newest there, or, with no folder, the set the update
-/// server's channel offers or `version`, staged in the spare slot as a
-/// snapshot of the running one that names it.
+/// server's channel offers, once its wave reaches this machine, or
+/// `version`, staged in the spare slot as a snapshot of the running one
+/// that names it.
 pub(crate) fn stage(root: &Root, repo: Option<&Path>, version: Option<&str>) -> Result<(), Fail> {
     let _lock = place::lock()?;
     let (copies, state) = place::state(root)?;
@@ -164,12 +165,20 @@ pub(crate) fn stage(root: &Root, repo: Option<&Path>, version: Option<&str>) -> 
             let server = connected.settings.server.clone();
             let version = match version {
                 Some(version) => version.to_string(),
-                None => connected.channel()?.firmware.ok_or_else(|| {
-                    fail(format!(
-                        "the {} channel of {server} offers no firmware set",
-                        connected.settings.channel
-                    ))
-                })?,
+                None => {
+                    let offered = connected.channel()?.firmware.ok_or_else(|| {
+                        fail(format!(
+                            "the {} channel of {server} offers no firmware set",
+                            connected.settings.channel
+                        ))
+                    })?;
+                    // The channel's set waits for its wave; one asked for
+                    // by version does not (ADR 0544).
+                    if let Some(lines) = online::firmware_waiting(&mut connected, &offered)? {
+                        return Err(fail(format!("firmware {offered}: {}", lines.join("; "))));
+                    }
+                    offered
+                }
             };
             let (set, list) = connected
                 .firmware(&version)?

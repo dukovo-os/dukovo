@@ -55,6 +55,18 @@ admin-terminal userspace/programs/systools/src/logd.rs userspace/programs/systoo
 admin-terminal userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/spark/src/supervisor/read.rs
 admin-terminal userspace/programs/nukesh/ ports/uutils-coreutils/ ports/netcat/
 admin-terminal tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
+ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
+ansible tools/xtask/src/test/ansible/ tools/xtask/src/test/ansible.lock
+ansible userspace/programs/dkv/ userspace/programs/manifest/ userspace/programs/sshd/
+ansible userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles.rs
+ansible userspace/programs/systools/src/bundles/ userspace/programs/systools/src/elevate.rs
+ansible userspace/programs/systools/src/feature.rs userspace/programs/systools/src/json.rs
+ansible userspace/programs/systools/src/service.rs userspace/programs/systools/src/snap.rs
+ansible userspace/programs/systools/src/snap/ userspace/programs/systools/src/sysupdate.rs
+ansible userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/update.rs
+ansible userspace/programs/systools/src/update/ userspace/programs/systools/src/authd.rs
+ansible userspace/programs/systools/src/authd/ userspace/programs/systools/src/sshkeys.rs
 aml-off kernel/lib/acpi/ userspace/programs/systools/src/power.rs
 audio-cd kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/ kernel/radix/src/fs/disk/optical.rs
 audio-cd kernel/radix/src/fs/disk/removable.rs kernel/radix/src/fs/disk/usb.rs tools/xtask/src/disc_drive/
@@ -167,6 +179,11 @@ catalog-install userspace/programs/catalog-repo/ userspace/programs/dkv/
 catalog-install userspace/programs/manifest/ userspace/programs/systools/src/bundled.rs
 catalog-install userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
 catalog-install catalog/
+catalog-waves tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs userspace/programs/dkv/
+catalog-waves userspace/programs/catalog-repo/ userspace/programs/manifest/
+catalog-waves userspace/programs/system-release/src/rollout.rs userspace/programs/systools/src/bundled.rs
+catalog-waves userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/
+catalog-waves userspace/programs/tuf/ catalog/
 certificates userspace/defaults/spark/services/certd.toml userspace/programs/manifest/src/service.rs
 certificates userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/
 certificates userspace/programs/systools/src/certd.rs userspace/programs/systools/src/servicefiles.rs

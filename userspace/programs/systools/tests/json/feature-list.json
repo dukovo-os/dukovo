@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "features": [
+    {
+      "id": "developer-tools",
+      "name": "Developer tools",
+      "about": "Compilers.",
+      "state": "added",
+      "services": [],
+      "bundles": [
+        {"id": "org.example.tool", "installed": true}
+      ]
+    },
+    {
+      "id": "file-sharing",
+      "name": "File sharing",
+      "about": "x",
+      "state": "partly",
+      "services": [
+        {"name": "smbd", "on": true},
+        {"name": "nfsd", "on": false}
+      ],
+      "bundles": [
+        {"id": "org.example.tool", "installed": true}
+      ]
+    }
+  ]
+}

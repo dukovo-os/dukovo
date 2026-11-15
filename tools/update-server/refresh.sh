@@ -4,8 +4,11 @@
 
 # Signs the catalog's timestamp again (ADR 0382), as the user
 # dukovo-catalog, every six hours: a timestamp alone while the snapshot is
-# good for two more days, everything again when it is not. Nothing until
-# the first deploy brings a root.
+# good for two more days, everything again when it is not. The rollouts
+# of each bundle's newest version are signed first, so that the next wave
+# opens on its day (ADR 0544); the plan of every one, kept in rollout.json
+# beside the online key, is never served. Nothing until the first deploy
+# brings a root.
 set -eu
 
 # shellcheck source=tools/update-server/site.sh
@@ -15,4 +18,4 @@ if [ ! -e "$home/repo/metadata/root.json" ]; then
 	echo "No catalog has been deployed yet."
 	exit 0
 fi
-sign_site refresh --store "$home/store"
+sign_site refresh --store "$home/store" --plan "$home/rollout.json"

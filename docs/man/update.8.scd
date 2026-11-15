@@ -9,12 +9,12 @@ update - see, take, hold back and undo every update: the system, its firmware se
 
 # SYNOPSIS
 
-*update* [*check*]++
+*update* [*check*] [*--json*]++
 *update apply* [*--yes*]++
 *update undo* _item_ [*--settings-from-before* | *--keep-settings*]++
 *update hold* _item_++
 *update unhold* _item_++
-*update history*
+*update history* [*--json*]
 
 _item_ is *system*, *firmware* or an app's ID.
 
@@ -32,7 +32,8 @@ signatures of *troubleshoot*(8) that the update server offers.
 	date, and whether the release it runs was withdrawn. *Firmware*:
 	the firmware set the channel offers for this machine (ADR 0467).
 	*Apps*: the updates of the apps installed for everyone, as *bundle
-	update --check* lists them. Anyone may check.
+	update --check* lists them. Anyone may check. With *--json*, one
+	document says it all; see *JSON*.
 
 *apply* [*--yes*]
 	Stages the system update into the spare slot, to start at the
@@ -68,6 +69,86 @@ signatures of *troubleshoot*(8) that the update server offers.
 	Each change of the system and the firmware set, by the start that
 	first ran it, from the starts' records (ADR 0500), with how that
 	start ended; then the apps' history, as *bundle history* gives it.
+	With *--json*, one document says both; see *JSON*.
+
+# JSON
+
+*--json* with *check*, or no word at all, and with *history*, prints one
+line of JSON, an object whose first member is *format*, 1 (ADR 0541),
+which scripts and Ansible's *dukovo.system* collection read in place of
+the text. A later field may be added without a new *format*. Names are in
+snake_case, times are RFC 3339 in UTC, and a value that is not known is
+*null*. An error is told to standard error as without *--json*, with the
+same exit status.
+
+*check --json* has:
+
+*offers*
+	A list with an object for each part, the system first, then the
+	firmware set, then each app of the person's own with a newer
+	version in its catalog or its own feed, as *bundle update --check*
+	lists them. Each has *item*, *from* and *to*, and *state*, which
+	is *current* when nothing newer is offered, *update* when
+	*update apply* takes it, *waiting* when it reaches this machine in
+	a wave not open yet, *held* when a hold keeps it back, or
+	*withdrawn*. The rest depends on the item.
+
+	*system*: *item* is *system*; *from* is the release the system
+	runs and *to* the one the channel offers. *wave_day* is the day
+	after the release on which this machine's wave opens, and
+	*waves_held* why no further wave opens when the rollout holds
+	them, both with *waiting*. *withdrawn* is why the release was
+	withdrawn. *bridge* is the release *update apply* stages first,
+	when *to* updates only from a later release than the system
+	runs. *download* is what staging fetches, *files* and *bytes*,
+	with *update*. Each is *null* where it does not apply.
+
+	*firmware*: *item* is *firmware*; *from* is the set the running
+	slot names and *to* the set the channel offers, each *null* for
+	none. *state* is *current*, *update* or *held*.
+
+	An app: *item* is its ID; *from* is the version installed and *to*
+	the newest its catalog lists. *state* is *update*, or *held*
+	when *bundle hold* holds it at its version. *catalog* is the
+	catalog it updates from, or *null* for its own feed.
+
+*running_withdrawn*
+	*null*, or, when the release keys withdrew the release this system
+	runs, *version*, *reason*, and *advice*, *rollback* to go back to
+	the version before it or *stay* to stay on it until the next
+	release.
+
+*unchecked*
+	A list with an object for each part that could not be checked,
+	*item*, *system*, *firmware* or *apps*, and *why*. The other parts
+	are still checked, as the text form does, and the exit status is
+	0.
+
+*notes*
+	Lines for a person that no other member holds: what *bundle
+	update --check* says besides, and what the read of the
+	troubleshoot signatures says.
+
+*history --json* has:
+
+*changes*
+	A list with an object for each change of the system or the
+	firmware set, oldest first, by the start that first ran it:
+	*start*, its number; *time*, when it began; *item*, *system* or
+	*firmware*; *from* and *to*, what ran before and after, *null*
+	for no firmware set; *outcome*, *good*, *unfinished* or *failed*;
+	and *error*, the error ID that told why a start failed, or *null*.
+
+*starts_kept*
+	How many starts are kept, which the changes are among.
+
+*apps*
+	A list with an object for each thing bundled did to the person's
+	bundles and everyone's, oldest first, as *bundle history* gives
+	them: *time*, *id*, *for_everyone*, *what* (*installed*,
+	*updated*, *rolled-back*, *removed*, *held*, *released*, *waiting*,
+	*failed* or *flawed*), *from* and *to*, *by_user*, the user ID of
+	who asked, or *null* when bundled did it by itself, and *note*.
 
 # EXIT STATUS
 

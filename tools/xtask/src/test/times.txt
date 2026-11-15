@@ -20,6 +20,7 @@ acpi-power 31
 acpi-thermal 32
 admin-journal 270
 admin-terminal 360
+ansible 300
 aml-off 16
 audio-cd 60
 backup 200
@@ -47,6 +48,7 @@ caps 15
 card-reader 70
 catalog-bundles 64
 catalog-install 70
+catalog-waves 70
 certificates 120
 consoles 38
 crash-dump 140

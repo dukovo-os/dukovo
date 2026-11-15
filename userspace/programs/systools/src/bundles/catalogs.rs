@@ -19,11 +19,17 @@
 //!   each day, is fetched each time it is read, and kept beside the index
 //!   while it is good: of a bundle it does not list, a catalog tells
 //!   nothing.
+//! - Its update server also signs, in the role `rollout`, which wave of
+//!   machines may take the newest version of each bundle (ADR 0544). An
+//!   update waits for this machine's wave, unless it ends a known flaw of
+//!   the version that runs ([`waiting`]); a catalog that signs no
+//!   rollouts has every update taken at once.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 
 use dkv::flaws::{List, Severity};
+use system_release::rollout::{self, Rollout};
 use tuf::metadata::Targets;
 use tuf::{Updater, Url};
 
@@ -43,11 +49,13 @@ pub const ROOT_FILE: &str = "root.json";
 pub const OFF_FILE: &str = "off";
 
 /// In a catalog's state: the client's metadata, the root it started from,
-/// the index, and files on their way in.
+/// the index, the list of flaws, the rollouts fetched, and files on their
+/// way in.
 const TUF_DIR: &str = "tuf";
 const FIRST_ROOT: &str = "first-root.json";
 const INDEX: &str = "index";
 const FLAWS: &str = "flaws.json";
+const ROLLOUTS: &str = "rollouts";
 const DOWNLOADS: &str = "downloads";
 
 /// The targets a catalog's bundles are, by path.
@@ -405,6 +413,53 @@ pub fn flags(list: Option<&List>, id: &str, version: &str) -> Flags {
     if count == 0 { Flags::None } else { Flags::Known { count, worst } }
 }
 
+/// Whether taking `to`, an ID and version, in place of `from` ends a high
+/// or critical flaw that `list` knows in `from` and names no more in `to`
+/// (ADR 0544). A version the list did not look at is not known to be
+/// without the flaw, so it is no fix.
+#[must_use]
+pub fn fixes_a_flaw(list: Option<&List>, from: (&str, &str), to: (&str, &str)) -> bool {
+    let Some(list) = list.filter(|l| l.checked(to.0, to.1)) else { return false };
+    let names = |flaw: &dkv::flaws::Flaw| -> Vec<String> {
+        std::iter::once(flaw.id.clone()).chain(flaw.aliases.iter().cloned()).collect()
+    };
+    list.of(from.0, from.1).filter(|flaw| flaw.severity >= Severity::High).any(|flaw| {
+        let known = names(flaw);
+        !list.of(to.0, to.1).any(|left| names(left).iter().any(|n| known.contains(n)))
+    })
+}
+
+/// Why the update of bundle `id` to `version` waits for this machine's
+/// wave, in the lines to show, or none when it is taken now (ADR 0544).
+/// It is taken when the catalog signs no `rollout` of that version, when
+/// the wave open in it reaches the machine numbered `number` or the
+/// machine is a `canary`, and when it `fixes` a known flaw of the
+/// version that runs, which a wave never holds back.
+#[must_use]
+pub fn waiting(
+    id: &str,
+    version: &str,
+    rollout: Option<&Rollout>,
+    number: u16,
+    canary: bool,
+    fixes: bool,
+) -> Option<Vec<String>> {
+    if fixes {
+        return None;
+    }
+    let rollout = rollout?;
+    if rollout::reaches(rollout, number, canary) {
+        return None;
+    }
+    let day = rollout::day_for(number);
+    let mut lines = vec![format!(
+        "{id} {version} reaches machines in waves; this machine's opens on day {day}"
+    )];
+    lines.extend(rollout.held.as_ref().map(|why| format!("the waves are held: {why}")));
+    lines.push(format!("`bundle update {id}` takes it now"));
+    Some(lines)
+}
+
 /// A catalog's client, brought up to date.
 pub struct Open {
     updater: Updater,
@@ -511,6 +566,41 @@ fn fetch_flaws(updater: &mut Updater, file: &Path) -> Result<(), String> {
 }
 
 impl Open {
+    /// The rollout the catalog signs of `entry`, the newest version of a
+    /// bundle: which waves of machines may take it (ADR 0544). None when
+    /// the catalog signs none of it, as when its targets delegate none.
+    ///
+    /// # Errors
+    ///
+    /// If the rollout cannot be fetched, does not check, or is another
+    /// version's.
+    pub fn rollout(&mut self, entry: &Entry) -> Result<Option<Rollout>, String> {
+        let listed = self
+            .updater
+            .trusted()
+            .snapshot()
+            .is_some_and(|s| s.signed.meta.contains_key(&format!("{}.json", rollout::ROLE)));
+        if !listed {
+            return Ok(None);
+        }
+        let release = format!("{}/{}", entry.id, entry.version);
+        let path = rollout::target_path(&release);
+        let Some(target) = self.updater.target(&path).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let file = Updater::target_path(&self.dir.join(ROLLOUTS), &path);
+        if !Updater::cached(&file, &target) {
+            self.updater.download_target(&path, &target, &file).map_err(|e| e.to_string())?;
+        }
+        let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let rollout: Rollout =
+            serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        if rollout.release != release || rollout.wave > rollout::LAST {
+            return Err(format!("{path} is not a rollout of {} {}", entry.id, entry.version));
+        }
+        Ok(Some(rollout))
+    }
+
     /// Fetches `entry` into this catalog's downloads, checked against its
     /// length and SHA-256 as its targets give them, and gives its path.
     ///
@@ -546,6 +636,8 @@ pub fn tidy(state: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use system_release::rollout::Plans;
+
     use super::*;
 
     #[test]
@@ -671,5 +763,185 @@ mod tests {
         assert_eq!(catalogs[1].url, "https://example.org/c/");
         assert_eq!(errors.len(), 1, "{errors:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bundle file of `org.example.app` at `version`, in `dir`.
+    fn bundle_file(dir: &Path, version: &str) -> PathBuf {
+        let manifest =
+            format!(r#"{{"id": "org.example.app", "version": "{version}", "name": "App"}}"#);
+        let sbom = "PackageName: org.example.app\n\
+                    ExternalRef: PACKAGE-MANAGER purl pkg:cargo/regex@1.10.2\n";
+        let path = dir.join(format!("app-{version}.dkv"));
+        let mut zip = dkv::zip::Writer::new(std::fs::File::create(&path).unwrap());
+        let files = [
+            (dkv::MANIFEST, manifest.as_bytes()),
+            ("bin/app", version.as_bytes()),
+            (dkv::sbom::SBOM, sbom.as_bytes()),
+        ];
+        for (name, data) in files {
+            zip.add(&dkv::zip::Input { path: name, executable: false, data }).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    /// A catalog of two versions of a bundle, signed and published into
+    /// `dir/site`, with the rollouts of `plans` signed too when `rolled`;
+    /// its address and the root it starts from.
+    fn catalog_with(dir: &Path, plans: Option<&mut Plans>) -> (String, Vec<u8>) {
+        use catalog_repo::keys::{KeyFile, Signers, from_minisign, minisign_key};
+        let secret = dkv::minisign::SecretKey::generate(&[11u8; 40]).unwrap();
+        let repo = catalog_repo::Repo::new(&dir.join("repository"));
+        let roles = catalog_repo::ROLES.iter().map(|r| (*r).to_string()).collect();
+        let key = KeyFile {
+            name: "publisher".into(),
+            roles,
+            yubikey: None,
+            key: minisign_key(&secret.public()),
+        };
+        key.write(&repo.keys_dir()).unwrap();
+        let mut signers = Signers::default();
+        signers.add(from_minisign(&secret).unwrap());
+        repo.sign_root(&signers, 365).unwrap();
+        let files = [bundle_file(dir, "1.0.0"), bundle_file(dir, "1.1.0")];
+        let changes = repo.changes(&files, &[]).unwrap();
+        let store = dir.join("store");
+        repo.sign_targets(&changes, &files, &store, &signers, 30).unwrap();
+        if let Some(plans) = plans {
+            let signed =
+                repo.sign_rollouts(&store, &signers, Some(plans), tuf::time::now()).unwrap();
+            assert!(signed.is_some());
+        }
+        repo.publish(&store, &dir.join("site"), &signers, (30, 30)).unwrap();
+        let first = std::fs::read(dir.join("site/metadata/1.root.json")).unwrap();
+        (format!("file://{}/site/", dir.display()), first)
+    }
+
+    #[test]
+    fn a_rollout_is_read_through_the_catalogs_client() {
+        let dir = std::env::temp_dir().join(format!("catalogs-rollout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut plans = Plans::default();
+        let release = "org.example.app/1.1.0";
+        plans.releases.insert(
+            release.into(),
+            rollout::Plan { released: tuf::time::now(), open: 0, paused: Some("bad logs".into()) },
+        );
+        let (address, first) = catalog_with(&dir, Some(&mut plans));
+        let mut read = open_dir(&dir.join("state"), &address, Some(&first)).unwrap();
+        let newest = read.index.newest("org.example.app").cloned().unwrap();
+        assert_eq!(newest.version, "1.1.0");
+        let rolled = read.rollout(&newest).unwrap().unwrap();
+        assert_eq!(rolled.release, release);
+        assert_eq!(rolled.wave, 0);
+        assert_eq!(rolled.held.as_deref(), Some("paused: bad logs"));
+        // A machine that is not in wave 0 waits, and is told why; read
+        // again from what is kept, it says the same.
+        let lines = waiting(&newest.id, &newest.version, Some(&rolled), 700, false, false).unwrap();
+        assert!(lines.iter().any(|l| l.contains("opens on day 7")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("paused: bad logs")), "{lines:?}");
+        assert!(read.rollout(&newest).unwrap().is_some());
+        // The version before it has no rollout: it is not the newest.
+        let older = Entry { version: "1.0.0".into(), ..newest.clone() };
+        assert_eq!(read.rollout(&older).unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_catalog_that_signs_no_rollouts_has_every_update_taken() {
+        let dir = std::env::temp_dir().join(format!("catalogs-no-rollout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (address, first) = catalog_with(&dir, None);
+        let mut read = open_dir(&dir.join("state"), &address, Some(&first)).unwrap();
+        let newest = read.index.newest("org.example.app").cloned().unwrap();
+        assert_eq!(read.rollout(&newest).unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn flaw(version: &str, id: &str, aliases: &[&str], severity: Severity) -> dkv::flaws::Flaw {
+        dkv::flaws::Flaw {
+            bundle: "org.example.app".into(),
+            version: version.into(),
+            id: id.into(),
+            aliases: aliases.iter().map(|a| (*a).to_string()).collect(),
+            component: "zlib 1.2.11".into(),
+            severity,
+            summary: "a flaw".into(),
+            fixed: None,
+        }
+    }
+
+    fn list(checked: &[&str], flaws: Vec<dkv::flaws::Flaw>) -> List {
+        List {
+            made: "2026-11-14T00:00:00Z".into(),
+            checked: checked.iter().map(|v| ("org.example.app".to_string(), (*v).into())).collect(),
+            flaws,
+        }
+    }
+
+    #[test]
+    fn a_version_that_ends_a_high_flaw_is_a_fix() {
+        let app = "org.example.app";
+        let high = flaw("1.0.0", "RUSTSEC-2026-0001", &["CVE-2026-1"], Severity::High);
+        let low = flaw("1.0.0", "RUSTSEC-2026-0002", &[], Severity::Low);
+        let same = flaw("1.1.0", "RUSTSEC-2026-0001", &[], Severity::High);
+        let renamed = flaw("1.1.0", "GHSA-xxxx", &["CVE-2026-1"], Severity::High);
+        let from = (app, "1.0.0");
+        let to = (app, "1.1.0");
+        // The newer version is looked at and has none of it.
+        let fixed = list(&["1.0.0", "1.1.0"], vec![high.clone(), low.clone()]);
+        assert!(fixes_a_flaw(Some(&fixed), from, to));
+        // It still has it, by its ID or by another name of it.
+        let kept = list(&["1.0.0", "1.1.0"], vec![high.clone(), same]);
+        assert!(!fixes_a_flaw(Some(&kept), from, to));
+        let kept = list(&["1.0.0", "1.1.0"], vec![high.clone(), renamed]);
+        assert!(!fixes_a_flaw(Some(&kept), from, to));
+        // Ending a low flaw alone is no fix.
+        let minor = list(&["1.0.0", "1.1.0"], vec![low]);
+        assert!(!fixes_a_flaw(Some(&minor), from, to));
+        // A newer version the list did not look at is not known to be
+        // without the flaw; a catalog with no list tells nothing.
+        let unseen = list(&["1.0.0"], vec![high]);
+        assert!(!fixes_a_flaw(Some(&unseen), from, to));
+        assert!(!fixes_a_flaw(None, from, to));
+    }
+
+    fn at_wave(wave: u8, held: Option<&str>) -> Rollout {
+        Rollout { release: "org.example.app/1.1.0".into(), wave, held: held.map(str::to_string) }
+    }
+
+    #[test]
+    fn an_update_waits_for_the_wave_that_reaches_the_machine() {
+        let app = "org.example.app";
+        let wait = |r: Option<&Rollout>, number, canary, fixes| {
+            waiting(app, "1.1.0", r, number, canary, fixes)
+        };
+        // A catalog that signs no rollout has every update taken at once.
+        assert_eq!(wait(None, 999, false, false), None);
+        // A wave that is open for the machine.
+        assert_eq!(wait(Some(&at_wave(1, None)), 5, false, false), None);
+        assert!(wait(Some(&at_wave(0, None)), 5, false, false).is_some(), "wave 0 is canaries");
+        assert_eq!(wait(Some(&at_wave(2, None)), 99, false, false), None);
+        assert_eq!(wait(Some(&at_wave(4, None)), 999, false, false), None);
+        // One not open yet says on which day it opens.
+        let lines = wait(Some(&at_wave(0, None)), 700, false, false).unwrap();
+        assert_eq!(
+            lines,
+            [
+                "org.example.app 1.1.0 reaches machines in waves; this machine's opens on day 7",
+                "`bundle update org.example.app` takes it now",
+            ]
+        );
+        let lines = wait(Some(&at_wave(1, None)), 50, false, false).unwrap();
+        assert!(lines[0].ends_with("opens on day 3"), "{lines:?}");
+        // A hold says why.
+        let lines = wait(Some(&at_wave(0, Some("paused: bad logs"))), 700, false, false).unwrap();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines[1], "the waves are held: paused: bad logs");
+        // A canary is in every wave, and a fix is held by none.
+        assert_eq!(wait(Some(&at_wave(0, Some("paused: x"))), 900, true, false), None);
+        assert_eq!(wait(Some(&at_wave(0, Some("paused: x"))), 900, false, true), None);
     }
 }

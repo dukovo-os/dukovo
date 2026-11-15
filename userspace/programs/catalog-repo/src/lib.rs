@@ -15,6 +15,11 @@
 //! are published: `publish` lays out what a server serves, every file by
 //! its version or hash, and reads it back with the client before it is
 //! done.
+//!
+//! The online key also signs two delegated roles, whose files wait in the
+//! store too: the list of known flaws (ADR 0389), and the rollout of the
+//! newest version of each bundle (ADR 0544), which says which wave of
+//! machines may take it ([`Repo::sign_rollouts`]).
 
 pub mod keys;
 
@@ -22,7 +27,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use tuf::metadata::{Root, Signed, Targets};
+use system_release::rollout::{self, Plan, Plans};
+use tuf::metadata::{Delegator as _, Root, Signed, TargetFile, Targets};
 use tuf::repo::{self, Signer};
 
 use crate::keys::{KeyFile, Signers};
@@ -50,6 +56,19 @@ pub const FLAWS_TARGET: &str = dkv::flaws::TARGET;
 pub const FLAWS_DAYS: i64 = 7;
 /// Where the store keeps the flaws role's metadata.
 const FLAWS_METADATA: &str = "flaws.role.json";
+/// The target paths the targets delegate to the rollout role, whose
+/// rollouts are `rollout/ID/VERSION.json`. TUF matches a pattern part by
+/// part, so this reaches paths of three parts, the last a `.json` file,
+/// and no others.
+const ROLLOUT_PATHS: &str = "rollout/*/*.json";
+/// How long the rollout role is good for, in days: the update server
+/// signs it each time it refreshes, as the waves open on schedule.
+pub const ROLLOUT_DAYS: i64 = 1;
+/// How long the rollout role must still be good for [`Repo::sign_rollouts`]
+/// to keep it as it is: two refreshes.
+const ROLLOUT_MARGIN: i64 = 12 * 3600;
+/// Where the store keeps the rollout role's metadata.
+const ROLLOUT_METADATA: &str = "rollout.role.json";
 
 /// The days `role`'s metadata is good for, by default.
 #[must_use]
@@ -299,7 +318,8 @@ impl Repo {
 
     /// Signs the next targets with `changes`, with one key: one touch of a
     /// YubiKey for the whole batch. The new bundles' bytes are put in
-    /// `store`, to be published.
+    /// `store`, to be published. The targets delegate the list of flaws
+    /// and the rollouts to the online key.
     ///
     /// # Errors
     ///
@@ -343,7 +363,7 @@ impl Repo {
         }
         listed.extend(changes.added.clone());
         let mut signed = repo::targets(version, &repo::expires_in(days), &listed);
-        signed["delegations"] = flaws_delegation(&root.signed.signed, &keys)?;
+        signed["delegations"] = online_delegations(&root.signed.signed, &keys)?;
         let bytes = repo::sign(&signed, &[signer.as_ref()])?;
         let new = Signed::<Targets>::parse(&bytes).map_err(|e| e.to_string())?;
         new.verified_by(&root.signed.signed, "targets").map_err(|e| e.to_string())?;
@@ -411,11 +431,99 @@ impl Repo {
         Ok((version, count))
     }
 
+    /// Signs the rollout of the newest version of each bundle the targets
+    /// list (ADR 0544), as `plans` hold them at `now`, with the online
+    /// key: `rollout/ID/VERSION.json`, the highest wave open, which
+    /// [`rollout::next`] gives. A version seen for the first time is added
+    /// to `plans`, released `now`, and the plans of versions that are no
+    /// longer the newest are dropped. The rollouts go in `store`, and
+    /// the rollout role that lists them beside them, signed anew only when
+    /// what it lists changed or it has less than twelve hours left, for
+    /// [`Repo::publish`] to serve. Returns the role's version, or none
+    /// when the targets delegate no rollouts, as those of a catalog signed
+    /// before them do not: every machine then takes its updates as it did.
+    /// Without `plans`, every version has every wave open: targets that
+    /// delegate the rollouts need them signed, or no computer reads the
+    /// catalog, and a server not yet given a plan must not stop it.
+    ///
+    /// # Errors
+    ///
+    /// If there is no root or targets yet, a file cannot be written,
+    /// nothing here signs for the online key, or the role does not check
+    /// against the targets.
+    pub fn sign_rollouts(
+        &self,
+        store: &Path,
+        signers: &Signers,
+        plans: Option<&mut Plans>,
+        now: i64,
+    ) -> Result<Option<u64>, String> {
+        let root = self.root()?.ok_or("there is no root yet")?;
+        let targets = self.targets()?.ok_or("no targets have been signed yet")?;
+        if targets.signed.signed.role(rollout::ROLE).is_none() {
+            return Ok(None);
+        }
+        let keys = keys::read_all(&self.keys_dir())?;
+        let signer = online_signer(&root, &keys, signers, "timestamp")?;
+        let role = store.join(ROLLOUT_METADATA);
+        let old = read::<Targets>(&role)?;
+        // Before the first rollouts every version reached every computer
+        // the day it was listed: those listed then start with every wave
+        // open, and only the versions listed later go through the waves.
+        let mut unplanned = Plans::default();
+        let (plans, first) = match plans {
+            Some(plans) if old.is_some() => (plans, 0),
+            Some(plans) => (plans, rollout::LAST),
+            None => (&mut unplanned, rollout::LAST),
+        };
+        let mut listed = BTreeMap::new();
+        let mut newest = Vec::new();
+        for (id, version) in newest_versions(&targets.signed.signed) {
+            let release = format!("{id}/{version}");
+            let plan = plans.releases.entry(release.clone()).or_insert(Plan {
+                released: now,
+                open: first,
+                paused: None,
+            });
+            let signed = rollout::next(&release, plan, &plans.red, now);
+            plan.open = signed.wave;
+            let mut bytes = serde_json::to_vec_pretty(&signed).map_err(|e| e.to_string())?;
+            bytes.push(b'\n');
+            let path = rollout::target_path(&release);
+            write(&store.join(&path), &bytes)?;
+            listed.insert(path, repo::file_info(&bytes));
+            newest.push(release);
+        }
+        plans.releases.retain(|release, _| newest.contains(release));
+        if let Some(old) = &old {
+            // The role is kept only while it follows from these targets: a
+            // new online key makes the delegation another.
+            let file: Value = serde_json::from_slice(&old.bytes).map_err(|e| e.to_string())?;
+            if file["signed"]["targets"] == json!(listed)
+                && old.signed.expires > now + ROLLOUT_MARGIN
+                && old.signed.verified_by(&targets.signed.signed, rollout::ROLE).is_ok()
+            {
+                return Ok(Some(old.signed.version));
+            }
+        }
+        let version = old.map_or(1, |old| old.signed.version + 1);
+        let expires = tuf::time::format(now + ROLLOUT_DAYS * 86_400);
+        let signed = repo::targets(version, &expires, &listed);
+        let bytes = repo::sign(&signed, &[signer.as_ref()])?;
+        let new = Signed::<Targets>::parse(&bytes).map_err(|e| e.to_string())?;
+        new.verified_by(&targets.signed.signed, rollout::ROLE)
+            .map_err(|e| format!("the rollouts do not check against the targets: {e}"))?;
+        write(&role, &bytes)?;
+        Ok(Some(version))
+    }
+
     /// Lays out in `out` what a server serves, with consistent snapshots:
     /// every root by its version, the targets by theirs, a new snapshot
     /// and timestamp signed by `signers`' online key, and each target
-    /// from `store` by its SHA-256. The client then reads it all back
-    /// from `out`, starting from the first root, as a new computer does.
+    /// from `store` by its SHA-256, the flaws and the rollouts among them
+    /// once the server has signed them and while they are good. The
+    /// client then reads it all back from `out`, starting from the first
+    /// root, as a new computer does.
     ///
     /// # Errors
     ///
@@ -445,22 +553,7 @@ impl Repo {
         let targets_version = targets.signed.version;
         write(&out.join(format!("metadata/{targets_version}.targets.json")), &targets.bytes)?;
         for (path, target) in &targets.signed.signed.targets {
-            let data = std::fs::read(store.join(path)).map_err(|e| format!("{path}: {e}"))?;
-            tuf::metadata::check_file(&data, Some(target.length), Some(&target.hashes))
-                .map_err(|e| format!("{path} in the store: {e}"))?;
-            let (_, sha256) = target
-                .hashes
-                .0
-                .iter()
-                .find(|(name, _)| name == "sha256")
-                .ok_or(format!("{path} has no SHA-256"))?;
-            let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
-            let served = if dir.is_empty() {
-                format!("{sha256}.{name}")
-            } else {
-                format!("{dir}/{sha256}.{name}")
-            };
-            write(&out.join("targets").join(served), &data)?;
+            serve_target(store, out, path, target)?;
         }
         let previous: Option<Value> = std::fs::read(out.join("metadata/timestamp.json"))
             .ok()
@@ -478,23 +571,23 @@ impl Repo {
         )]);
         // The list of flaws, once the server has signed one for these
         // targets, while it is good (ADR 0389).
-        if let Some((parsed, bytes)) = &flaws_role(store, &targets.signed.signed) {
-            let list = std::fs::read(store.join(FLAWS_TARGET))
-                .map_err(|e| format!("{FLAWS_TARGET}: {e}"))?;
+        if let Some((parsed, bytes)) =
+            &online_role(store, FLAWS_METADATA, FLAWS_ROLE, &targets.signed.signed)
+        {
             let target =
                 parsed.signed.targets.get(FLAWS_TARGET).ok_or("the flaws role lists no list")?;
-            tuf::metadata::check_file(&list, Some(target.length), Some(&target.hashes))
-                .map_err(|e| format!("{FLAWS_TARGET} in the store: {e}"))?;
-            let sha256 = &target
-                .hashes
-                .0
-                .iter()
-                .find(|(name, _)| name == "sha256")
-                .ok_or("the list of flaws has no SHA-256")?
-                .1;
-            write(&out.join(format!("targets/flaws/{sha256}.flaws.json")), &list)?;
+            serve_target(store, out, FLAWS_TARGET, target)?;
             write(&out.join(format!("metadata/{}.{FLAWS_ROLE}.json", parsed.version)), bytes)?;
             meta.insert(format!("{FLAWS_ROLE}.json"), repo::meta(parsed.version, bytes));
+        }
+        // The rollouts, on the same terms (ADR 0544).
+        let rollouts = online_role(store, ROLLOUT_METADATA, rollout::ROLE, &targets.signed.signed);
+        if let Some((parsed, bytes)) = &rollouts {
+            for (path, target) in &parsed.signed.targets {
+                serve_target(store, out, path, target)?;
+            }
+            write(&out.join(format!("metadata/{}.{}.json", parsed.version, rollout::ROLE)), bytes)?;
+            meta.insert(format!("{}.json", rollout::ROLE), repo::meta(parsed.version, bytes));
         }
         let snapshot = repo::sign(
             &repo::snapshot(snapshot_version, &repo::expires_in(days.0), &meta),
@@ -511,14 +604,16 @@ impl Repo {
             &[timestamp_signer.as_ref()],
         )?;
         write(&out.join("metadata/timestamp.json"), &timestamp)?;
-        check_served(out, &targets.signed.signed)?;
+        let rollouts = rollouts.as_ref().map(|(parsed, _)| &parsed.signed);
+        check_served(out, &targets.signed.signed, rollouts)?;
         Ok((snapshot_version, timestamp_version))
     }
 
     /// Keeps what `out` serves current, as the update server does every
-    /// six hours: a new timestamp alone while `out` serves this root and
-    /// a snapshot of these targets good for more than [`RENEW_DAYS`], and
-    /// everything again, as [`Repo::publish`], otherwise.
+    /// six hours: a new timestamp alone while `out` serves this root, a
+    /// snapshot of these targets and the flaws and rollouts of `store`,
+    /// good for more than [`RENEW_DAYS`], and everything again, as
+    /// [`Repo::publish`], otherwise.
     ///
     /// # Errors
     ///
@@ -532,11 +627,13 @@ impl Repo {
     ) -> Result<Refreshed, String> {
         let root = self.root()?.ok_or("there is no root yet")?;
         let targets = self.targets()?.ok_or("no targets have been signed yet")?;
+        let flaws = online_role(store, FLAWS_METADATA, FLAWS_ROLE, &targets.signed.signed);
+        let rollouts = online_role(store, ROLLOUT_METADATA, rollout::ROLE, &targets.signed.signed);
         if let Some(served) = Served::read(out)
             && served.root == root.bytes
             && served.targets_version == Some(targets.signed.version)
-            && served.flaws_version
-                == flaws_role(store, &targets.signed.signed).map(|(flaws, _)| flaws.version)
+            && served.flaws_version == flaws.map(|(flaws, _)| flaws.version)
+            && served.rollout_version == rollouts.as_ref().map(|(role, _)| role.version)
             && served.snapshot_expires.is_some_and(|t| t - tuf::time::now() > RENEW_DAYS * 86_400)
         {
             let keys = keys::read_all(&self.keys_dir())?;
@@ -552,7 +649,8 @@ impl Repo {
                 &[signer.as_ref()],
             )?;
             write(&out.join("metadata/timestamp.json"), &timestamp)?;
-            check_served(out, &targets.signed.signed)?;
+            let rollouts = rollouts.as_ref().map(|(role, _)| &role.signed);
+            check_served(out, &targets.signed.signed, rollouts)?;
             return Ok(Refreshed::Timestamp(version));
         }
         let (snapshot, timestamp) = self.publish(store, out, signers, days)?;
@@ -572,7 +670,7 @@ impl Repo {
         let targets = self.targets()?.ok_or("no targets have been signed yet")?;
         let url = if url.ends_with('/') { url.to_string() } else { format!("{url}/") };
         let base = tuf::Url::parse(&url).map_err(|e| format!("{url}: {e}"))?;
-        check_at(&base, &first, &targets.signed.signed)?;
+        check_at(&base, &first, &targets.signed.signed, None)?;
         Ok(targets.signed.signed.targets.len())
     }
 }
@@ -604,6 +702,7 @@ struct Served {
     snapshot: Vec<u8>,
     targets_version: Option<u64>,
     flaws_version: Option<u64>,
+    rollout_version: Option<u64>,
     snapshot_expires: Option<i64>,
 }
 
@@ -623,42 +722,93 @@ impl Served {
             targets_version: parsed["signed"]["meta"]["targets.json"]["version"].as_u64(),
             flaws_version: parsed["signed"]["meta"][format!("{FLAWS_ROLE}.json")]["version"]
                 .as_u64(),
+            rollout_version: parsed["signed"]["meta"][format!("{}.json", rollout::ROLE)]["version"]
+                .as_u64(),
             snapshot_expires: parsed["signed"]["expires"].as_str().and_then(tuf::time::parse),
             snapshot,
         })
     }
 }
 
-/// The flaws role in `store` that [`Repo::publish`] serves with
-/// `targets`, with its bytes: once the server has signed one, while it
-/// follows from these targets and has not expired. A list a week old is
-/// left out, not served: the catalog stays good, and clients say they
-/// cannot tell the flaws (ADR 0389).
-fn flaws_role(store: &Path, targets: &Targets) -> Option<(Signed<Targets>, Vec<u8>)> {
-    let bytes = std::fs::read(store.join(FLAWS_METADATA)).ok()?;
+/// The online key's role `role`, kept in `store` as `file`, that
+/// [`Repo::publish`] serves with `targets`, with its bytes: once the
+/// server has signed one, while it follows from these targets and has
+/// not expired. A list of flaws a week old is left out, not served: the
+/// catalog stays good, and clients say they cannot tell the flaws (ADR
+/// 0389); rollouts a day old are, and every machine then takes its
+/// updates at once (ADR 0544).
+fn online_role(
+    store: &Path,
+    file: &str,
+    role: &str,
+    targets: &Targets,
+) -> Option<(Signed<Targets>, Vec<u8>)> {
+    let bytes = std::fs::read(store.join(file)).ok()?;
     let parsed = Signed::<Targets>::parse(&bytes).ok()?;
-    parsed.verified_by(targets, FLAWS_ROLE).ok()?;
+    parsed.verified_by(targets, role).ok()?;
     (!parsed.expired(tuf::time::now())).then_some((parsed, bytes))
 }
 
-/// The targets' delegation of the list of flaws to the online key, the
-/// key `root` gives timestamp (ADR 0389): `flaws/` alone, and no further.
-fn flaws_delegation(root: &Root, keys: &[KeyFile]) -> Result<Value, String> {
-    let ids = &root.roles["timestamp"].keyids;
-    let online = keys
+/// Writes the target `path`, as `target` lists it, from `store` into what
+/// `out` serves, named by its SHA-256 as consistent snapshots name files.
+fn serve_target(store: &Path, out: &Path, path: &str, target: &TargetFile) -> Result<(), String> {
+    let data = std::fs::read(store.join(path)).map_err(|e| format!("{path}: {e}"))?;
+    tuf::metadata::check_file(&data, Some(target.length), Some(&target.hashes))
+        .map_err(|e| format!("{path} in the store: {e}"))?;
+    let (_, sha256) = target
+        .hashes
+        .0
         .iter()
-        .find(|k| ids.contains(&k.key.id()))
-        .ok_or("keys/ has no file of the online key, which signs the list of flaws")?;
+        .find(|(name, _)| name == "sha256")
+        .ok_or(format!("{path} has no SHA-256"))?;
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let served =
+        if dir.is_empty() { format!("{sha256}.{name}") } else { format!("{dir}/{sha256}.{name}") };
+    write(&out.join("targets").join(served), &data)
+}
+
+/// The newest version of each bundle `targets` list, by full ID, as a
+/// client reads them (ADR 0383): of two versions that order alike, the
+/// one whose path comes last.
+fn newest_versions(targets: &Targets) -> BTreeMap<String, String> {
+    let by_path: BTreeMap<_, _> = targets.targets.iter().collect();
+    let mut newest: BTreeMap<String, String> = BTreeMap::new();
+    for target in by_path.values() {
+        let custom = target.custom.as_ref();
+        let text = |key: &str| custom.and_then(|c| c.get(key)?.as_str());
+        let (Some(id), Some(version)) = (text("id"), text("version")) else { continue };
+        match newest.get_mut(id) {
+            Some(held) if dkv::flaws::compare(held, version).is_gt() => {}
+            Some(held) => *held = version.to_string(),
+            None => {
+                newest.insert(id.to_string(), version.to_string());
+            }
+        }
+    }
+    newest
+}
+
+/// The targets' delegation of the list of flaws and of the rollouts to
+/// the online key, the key `root` gives timestamp (ADRs 0389 and 0544):
+/// `flaws/` and [`ROLLOUT_PATHS`] alone, and no further.
+fn online_delegations(root: &Root, keys: &[KeyFile]) -> Result<Value, String> {
+    let ids = &root.roles["timestamp"].keyids;
+    let online = keys.iter().find(|k| ids.contains(&k.key.id())).ok_or(
+        "keys/ has no file of the online key, which signs the list of flaws and the rollouts",
+    )?;
     let id = online.key.id();
-    Ok(json!({
-        "keys": { id.clone(): online.key },
-        "roles": [{
-            "name": FLAWS_ROLE,
+    let role = |name: &str, paths: &str| {
+        json!({
+            "name": name,
             "keyids": [id],
             "threshold": 1,
-            "paths": ["flaws/*"],
+            "paths": [paths],
             "terminating": true,
-        }],
+        })
+    };
+    Ok(json!({
+        "keys": { id.clone(): online.key },
+        "roles": [role(FLAWS_ROLE, "flaws/*"), role(rollout::ROLE, ROLLOUT_PATHS)],
     }))
 }
 
@@ -678,19 +828,35 @@ fn online_signer<'a>(
 }
 
 /// Reads `out` with the client, from its first root, as a new computer
-/// would, and finds every target there.
-fn check_served(out: &Path, targets: &Targets) -> Result<(), String> {
+/// would, and finds every target there, and each the rollout role
+/// `rollouts` lists.
+fn check_served(out: &Path, targets: &Targets, rollouts: Option<&Targets>) -> Result<(), String> {
     let first = std::fs::read(out.join("metadata/1.root.json")).map_err(|e| e.to_string())?;
     let absolute = std::fs::canonicalize(out).map_err(|e| format!("{}: {e}", out.display()))?;
     let base =
         tuf::Url::parse(&format!("file://{}/", absolute.display())).map_err(|e| e.to_string())?;
-    check_at(&base, &first, targets)
+    check_at(&base, &first, targets, rollouts)
+}
+
+/// A new folder for the client's metadata while it reads a repository,
+/// one for each read, since reads may run at once.
+fn client_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("catalog-repo-check-{}-{n}", std::process::id()))
 }
 
 /// Reads the repository at `base` with the client, from the root `first`,
-/// in a folder of its own, and fetches every target `targets` lists.
-fn check_at(base: &tuf::Url, first: &[u8], targets: &Targets) -> Result<(), String> {
-    let client = std::env::temp_dir().join(format!("catalog-repo-check-{}", std::process::id()));
+/// in a folder of its own, and fetches every target `targets` lists, and
+/// each the rollout role `rollouts` lists.
+fn check_at(
+    base: &tuf::Url,
+    first: &[u8],
+    targets: &Targets,
+    rollouts: Option<&Targets>,
+) -> Result<(), String> {
+    let client = client_dir();
     let client = client.as_path();
     let _ = std::fs::remove_dir_all(client);
     tuf::init(client, first).map_err(|e| e.to_string())?;
@@ -706,7 +872,8 @@ fn check_at(base: &tuf::Url, first: &[u8], targets: &Targets) -> Result<(), Stri
             .snapshot()
             .is_some_and(|s| s.signed.meta.contains_key(&format!("{FLAWS_ROLE}.json")));
         let flaws = (targets.delegations.is_some() && listed).then_some(FLAWS_TARGET);
-        for path in targets.targets.keys().map(String::as_str).chain(flaws) {
+        let rolled = rollouts.into_iter().flat_map(|role| role.targets.keys().map(String::as_str));
+        for path in targets.targets.keys().map(String::as_str).chain(flaws).chain(rolled) {
             let target = updater
                 .target(path)
                 .map_err(|e| e.to_string())?
@@ -760,7 +927,13 @@ mod tests {
     }
 
     fn bundle(dir: &Path, id: &str, version: &str, content: &[u8]) -> PathBuf {
-        let manifest = format!(r#"{{"id": "{id}", "version": "{version}", "name": "Test"}}"#);
+        bundle_in(dir, id, "", version, content)
+    }
+
+    /// A bundle of the line `line`, if it is not empty.
+    fn bundle_in(dir: &Path, id: &str, line: &str, version: &str, content: &[u8]) -> PathBuf {
+        let line = if line.is_empty() { String::new() } else { format!(r#", "line": "{line}""#) };
+        let manifest = format!(r#"{{"id": "{id}", "version": "{version}", "name": "Test"{line}}}"#);
         let path = dir.join(format!("{id}-{version}-{}.dkv", content.len()));
         let mut zip = dkv::zip::Writer::new(std::fs::File::create(&path).unwrap());
         let sbom = format!(
@@ -896,6 +1069,227 @@ mod tests {
         );
         assert_eq!(repo.check_url(&format!("file://{}", served.display())), Ok(1));
         assert_eq!(repo.refresh(&store, &out, &online_only, (7, 1)), Ok(Refreshed::Timestamp(10)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A catalog in `dir` whose targets list `bundles`, signed with a fake
+    /// YubiKey and the online key's file: its repository, its store, the
+    /// signers for everything and the signers for the online key alone.
+    fn catalog_of(dir: &Path, bundles: &[PathBuf]) -> (Repo, PathBuf, Signers, Signers) {
+        let repo = Repo::new(&dir.join("catalog"));
+        let helper = fake_yubikey(dir);
+        keys::from_yubikey(&helper, None).unwrap().write(&repo.keys_dir()).unwrap();
+        let online_file = dir.join("online.key");
+        let roles = vec!["snapshot".to_string(), "timestamp".to_string()];
+        keys::new_file_key("online", roles, &online_file).unwrap().write(&repo.keys_dir()).unwrap();
+        let both = Signers::new(Some(&helper), std::slice::from_ref(&online_file)).unwrap();
+        repo.sign_root(&both, 365).unwrap();
+        let changes = repo.changes(bundles, &[]).unwrap();
+        let store = dir.join("store");
+        repo.sign_targets(&changes, bundles, &store, &both, 182).unwrap();
+        let online = Signers::new(None, std::slice::from_ref(&online_file)).unwrap();
+        (repo, store, both, online)
+    }
+
+    /// The rollout at `path` that the client reads from what `out` serves,
+    /// starting from the root `first`; none if it finds none. Each read has
+    /// a client folder of its own, as the tests that read run at once in
+    /// one process.
+    fn read_rollout(out: &Path, first: &[u8], path: &str) -> Option<rollout::Rollout> {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let work = scratch(&format!("client-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+        tuf::init(&work, first).unwrap();
+        let absolute = std::fs::canonicalize(out).unwrap();
+        let base = tuf::Url::parse(&format!("file://{}/", absolute.display())).unwrap();
+        let metadata = base.resolve("metadata/").unwrap();
+        let mut updater =
+            tuf::Updater::new(&work, &metadata, Some(&base.resolve("targets/").unwrap())).unwrap();
+        updater.refresh().unwrap();
+        let found = updater.target(path).unwrap().map(|target| {
+            let file = work.join("target");
+            updater.download_target(path, &target, &file).unwrap();
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap()
+        });
+        std::fs::remove_dir_all(&work).unwrap();
+        found
+    }
+
+    #[test]
+    fn the_targets_delegate_the_rollouts_to_the_online_key_alone() {
+        let dir = scratch("delegation");
+        let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let (repo, ..) = catalog_of(&dir, &[ripgrep]);
+        let root = repo.root().unwrap().unwrap();
+        let targets = repo.targets().unwrap().unwrap();
+        let delegations = targets.signed.signed.delegations.as_ref().unwrap();
+        let role = |name: &str| delegations.roles.iter().flatten().find(|r| r.name == name);
+        let rollouts = role(rollout::ROLE).unwrap();
+        assert_eq!(rollouts.keyids, root.signed.signed.roles["timestamp"].keyids);
+        assert_eq!((rollouts.threshold, rollouts.terminating), (1, true));
+        for path in [
+            "rollout/org.dukovo.ripgrep/14.1.1.json",
+            "rollout/org.nodejs.node@22/22.1.0-rc.1+b5.json",
+        ] {
+            assert!(rollouts.delegates(path), "{path}");
+        }
+        // The system's own shape, one part too many or few, another kind
+        // of file, and the other roles' paths are none of its.
+        for path in [
+            "rollout/14.1.1.json",
+            "rollout/org/dukovo/14.1.1.json",
+            "rollout/org.dukovo.ripgrep/14.1.1.txt",
+            "rollout",
+            "flaws/flaws.json",
+            "bundles/org.dukovo.ripgrep-14.1.1.dkv",
+        ] {
+            assert!(!rollouts.delegates(path), "{path}");
+        }
+        let flaws = role(FLAWS_ROLE).unwrap();
+        assert!(flaws.delegates(FLAWS_TARGET));
+        assert!(!flaws.delegates("rollout/org.dukovo.ripgrep/14.1.1.json"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rollouts_open_wave_by_wave_and_are_read_back_by_the_client() {
+        let dir = scratch("rollouts");
+        let older = bundle(&dir, "org.dukovo.ripgrep", "14.1.0", b"rg, older");
+        let newer = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let bat_file = bundle(&dir, "org.dukovo.bat", "0.25.0", b"bat");
+        let (repo, store, both, online) = catalog_of(&dir, std::slice::from_ref(&older));
+        let (out, first) = (dir.join("site"), std::fs::read(repo.metadata("1.root.json")).unwrap());
+        let (now, day) = (tuf::time::now(), 86_400);
+        let mut plans = Plans::default();
+        let rolled = |when: i64, plans: &mut Plans| {
+            assert!(repo.sign_rollouts(&store, &online, Some(plans), when).unwrap().is_some());
+            repo.refresh(&store, &out, &online, (7, 1)).unwrap()
+        };
+        let (ripgrep, bat) = ("org.dukovo.ripgrep/14.1.1", "org.dukovo.bat/0.25.0");
+        let read = |release: &str| read_rollout(&out, &first, &rollout::target_path(release));
+        let at =
+            |release: &str, wave| rollout::Rollout { release: release.into(), wave, held: None };
+
+        // A version listed before the first rollouts reached every
+        // computer the day it was listed: every wave is open.
+        assert_eq!(rolled(now, &mut plans), Refreshed::All { snapshot: 1, timestamp: 1 });
+        let listed_before = "org.dukovo.ripgrep/14.1.0";
+        assert_eq!(read(listed_before), Some(at(listed_before, rollout::LAST)));
+        let added = [newer, bat_file];
+        let changes = repo.changes(&added, &[]).unwrap();
+        repo.sign_targets(&changes, &added, &store, &both, 182).unwrap();
+
+        // The newest version of each bundle listed after them opens to the
+        // canaries on its first day, and an older one has no rollout.
+        assert_eq!(rolled(now, &mut plans), Refreshed::All { snapshot: 2, timestamp: 2 });
+        assert_eq!(read(ripgrep), Some(at(ripgrep, 0)));
+        assert_eq!(read(bat), Some(at(bat, 0)));
+        assert_eq!(plans.releases[ripgrep].released, now);
+        assert_eq!(read("org.dukovo.ripgrep/14.1.0"), None);
+        assert!(!plans.releases.contains_key("org.dukovo.ripgrep/14.1.0"));
+        // Nothing outside the rollouts' paths is found through the
+        // delegation, nor a version the catalog never listed.
+        for path in ["rollout/14.1.1.json", "rollout/a/b/c.json", "rollout/a/b.txt"] {
+            assert_eq!(read_rollout(&out, &first, path), None, "{path}");
+        }
+        assert_eq!(read("org.dukovo.ripgrep/9.9.9"), None);
+
+        // With nothing new to sign, a refresh signs a timestamp alone.
+        assert!(repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap().is_some());
+        assert_eq!(repo.refresh(&store, &out, &online, (7, 1)), Ok(Refreshed::Timestamp(3)));
+
+        // Wave 1 on the second day; a pause holds it there while the
+        // schedule goes on for the other bundle.
+        assert_eq!(rolled(now + day, &mut plans), Refreshed::All { snapshot: 3, timestamp: 4 });
+        assert_eq!(read(ripgrep), Some(at(ripgrep, 1)));
+        plans.releases.get_mut(ripgrep).unwrap().paused = Some("disk errors".into());
+        rolled(now + 3 * day, &mut plans);
+        let held = read(ripgrep).unwrap();
+        assert_eq!((held.wave, held.held.as_deref()), (1, Some("paused: disk errors")));
+        assert_eq!(read(bat), Some(at(bat, 2)));
+        plans.releases.get_mut(ripgrep).unwrap().paused = None;
+        rolled(now + 5 * day, &mut plans);
+        assert_eq!(read(ripgrep), Some(at(ripgrep, 3)));
+
+        // The role is signed anew once it has less than twelve hours left,
+        // and not before.
+        let version = repo.sign_rollouts(&store, &online, Some(&mut plans), now + 5 * day).unwrap();
+        let later = now + 6 * day - 11 * 3600;
+        assert_ne!(repo.sign_rollouts(&store, &online, Some(&mut plans), later).unwrap(), version);
+
+        // A newer version takes the place of the newest: the plan of the
+        // one before goes, and the new one opens to the canaries.
+        let third = bundle(&dir, "org.dukovo.ripgrep", "14.2.0", b"rg, newer still");
+        let changes = repo.changes(std::slice::from_ref(&third), &[]).unwrap();
+        repo.sign_targets(&changes, &[third], &store, &both, 182).unwrap();
+        let (newest, released) = ("org.dukovo.ripgrep/14.2.0", now + 5 * day);
+        rolled(released, &mut plans);
+        assert_eq!(read(newest), Some(at(newest, 0)));
+        assert_eq!(read(ripgrep), None);
+        assert_eq!(plans.releases.keys().collect::<Vec<_>>(), [bat, newest]);
+        assert_eq!(plans.releases[newest].released, released);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_lines_id_and_a_builds_version_make_a_rollout_path_the_client_reads() {
+        let dir = scratch("rollout-paths");
+        let node = bundle_in(&dir, "org.nodejs.node", "22", "22.1.0+b5", b"node");
+        let (repo, store, _, online) = catalog_of(&dir, &[node]);
+        let (out, first) = (dir.join("site"), std::fs::read(repo.metadata("1.root.json")).unwrap());
+        let mut plans = Plans::default();
+        repo.sign_rollouts(&store, &online, Some(&mut plans), tuf::time::now()).unwrap().unwrap();
+        repo.publish(&store, &out, &online, (7, 1)).unwrap();
+        let release = "org.nodejs.node@22/22.1.0+b5";
+        let found = read_rollout(&out, &first, &rollout::target_path(release));
+        let wave = rollout::LAST;
+        assert_eq!(found, Some(rollout::Rollout { release: release.into(), wave, held: None }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn without_a_plan_a_new_version_has_every_wave_open() {
+        let dir = scratch("unplanned");
+        let older = bundle(&dir, "org.dukovo.ripgrep", "14.1.0", b"rg, older");
+        let (repo, store, both, online) = catalog_of(&dir, std::slice::from_ref(&older));
+        let (out, first) = (dir.join("site"), std::fs::read(repo.metadata("1.root.json")).unwrap());
+        let now = tuf::time::now();
+        let mut plans = Plans::default();
+        repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap().unwrap();
+        // A version listed after the first rollouts, signed by a server
+        // that was given no plan.
+        let newer = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let changes = repo.changes(std::slice::from_ref(&newer), &[]).unwrap();
+        repo.sign_targets(&changes, &[newer], &store, &both, 182).unwrap();
+        repo.sign_rollouts(&store, &online, None, now).unwrap().unwrap();
+        repo.publish(&store, &out, &online, (7, 1)).unwrap();
+        let release = "org.dukovo.ripgrep/14.1.1";
+        let found = read_rollout(&out, &first, &rollout::target_path(release));
+        let wave = rollout::LAST;
+        assert_eq!(found, Some(rollout::Rollout { release: release.into(), wave, held: None }));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_catalog_whose_targets_delegate_no_rollouts_serves_none() {
+        let dir = scratch("no-rollouts");
+        let ripgrep = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let (repo, store, _, online) = catalog_of(&dir, &[ripgrep]);
+        let mut plans = Plans::default();
+        let now = tuf::time::now();
+        assert!(repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap().is_some());
+        // Targets as an older catalog signed them, with the flaws alone.
+        let path = repo.metadata("targets.json");
+        let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let roles = file["signed"]["delegations"]["roles"].as_array_mut().unwrap();
+        roles.retain(|role| role["name"] == FLAWS_ROLE);
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        let mut plans = Plans::default();
+        assert_eq!(repo.sign_rollouts(&store, &online, Some(&mut plans), now), Ok(None));
+        assert!(plans.releases.is_empty());
+        let targets = repo.targets().unwrap().unwrap();
+        let kept = online_role(&store, ROLLOUT_METADATA, rollout::ROLE, &targets.signed.signed);
+        assert!(kept.is_none(), "rollouts are not served for targets that do not delegate them");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -55,9 +55,9 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle default* _name_ [_line_ | *--clear*] [*--for-everyone*]
 
-*bundle list*
+*bundle list* [*--json*]
 
-*bundle info* _id_
+*bundle info* _id_ [*--json*]
 
 *bundle remove* _id_ [*--for-everyone*] [*--keep-data* | *--purge*]
 
@@ -225,17 +225,22 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	catalog it came from lists; see UPDATES. One that asks for no more
 	than the version it replaces updates without a question; one that
 	asks for more shows its sheet and asks, which *--yes* answers. A held
-	one is left as it is, and bundle says so. A service bundle's new
-	version that fails its health check goes back by itself, with its
-	data, and is held (*bundled*(8)). With *--check*, it lists
-	what would update, with the version installed, the newest and the
-	catalog, or *its own feed*, and changes nothing.
+	one is left as it is, and bundle says so. With no _id_, one whose
+	catalog sends its newest version out in waves waits for this
+	computer's wave, and bundle says on which day it opens and why the
+	waves are held, if they are; one named is taken at once (WAVES). A
+	service bundle's new version that fails its health check goes back
+	by itself, with its data, and is held (*bundled*(8)). With *--check*,
+	it lists what would update, with the version installed, the newest
+	and the catalog, or *its own feed*, and, for each that waits for its
+	wave, why and how to take it now, and changes nothing.
 
 *update --automatic* *on*|*off* [*--for-everyone*]
 	Says whether your bundles, or everyone's, through *elevate*(8),
 	update by themselves, daily; it is off unless you turn it on. Turned
-	on, they update at once. One whose new version asks for more waits
-	for you to run *bundle update*, and *bundle history* says so.
+	on, they update at once, and each one whose wave has not opened
+	waits for it (WAVES). One whose new version asks for more waits for
+	you to run *bundle update*, and *bundle history* says so.
 
 *rollback* _id_ [*--for-everyone*]
 	Goes back to the version the last update replaced, and holds the
@@ -265,15 +270,17 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	the working folder and why, the lines installed, the defaults, and
 	the files a project chooses with.
 
-*list*
+*list* [*--json*]
 	Lists the bundles you can run, yours and everyone's: ID, version,
-	whose, its known flaws (FLAWS), and name.
+	whose, its known flaws (FLAWS), and name. *--json* prints them as
+	one line of JSON (JSON).
 
-*info* _id_
+*info* _id_ [*--json*]
 	Shows an installed bundle's sheet, with every known flaw of its
 	version, what you said of its permissions
 	and since when, when it was installed, where, and where its data is,
-	which version it can go back to, and whether it is held.
+	which version it can go back to, and whether it is held. *--json*
+	prints the same facts as one line of JSON (JSON).
 
 *remove* _id_ [*--for-everyone*] [*--keep-data* | *--purge*]
 	Removes your bundle, or with *--for-everyone* one installed for
@@ -556,6 +563,44 @@ Updating by themselves, once turned on, runs some minutes after
 the version it replaces never installs by itself: it waits for *bundle
 update*.
 
+# WAVES
+
+A catalog's update server may send the newest version of a bundle out in
+waves (ADR 0544), as Dukovo's own releases go out (*sysupdate*(8)): the
+project's canary computers take it first, and the rest on days 1, 3, 5
+and 7 after the server first saw that version, a few at first and then
+everyone, each computer by the number it draws and keeps in
+_/system/state/sysupdate/wave_. A computer is a canary by *canary* in
+_updates.toml_ (*updates.toml*(5)). If something goes wrong, the server's
+operator pauses the waves, and the computers not reached yet wait. A
+catalog that signs no waves has every update taken at once.
+
+The updates by themselves and *bundle update* with no _id_ wait for the
+wave. Of an update that waits, bundle says which version it is, on which
+day after its release this computer's wave opens, why the waves are
+held, if they are, and what takes it now; *bundle update --check* says
+it in place of a row of its table, and counts it apart:
+
+```
+$ bundle update --check
+org.example.app 2.1.0 reaches machines in waves; this machine's opens on day 7
+  the waves are held: paused: crashes on start
+  `bundle update org.example.app` takes it now
+0 to update, 0 up to date, 1 waiting for their wave
+```
+
+Three updates do not wait. *bundle update* _id_, which names the bundle,
+takes it at once, as *sysupdate stage --version* does for the system.
+An update that fixes a known flaw goes at once, whatever its wave: when
+the catalog's list of flaws (FLAWS) names a high or critical flaw in the
+version installed that it does not name in the newer version, which the
+list looked at, a computer running the flawed version does not wait up
+to a week for the fix. And a bundle installed anew, with *bundle install*
+_id_, takes the newest version, since waves are for updates. A bundle
+from its own feed (OWN FEEDS) has no waves. A rollout that cannot be
+read holds the update back, and bundle says why; naming the bundle takes
+it.
+
 # OWN FEEDS
 
 A bundle that no catalog lists can still update, from a feed its
@@ -586,6 +631,111 @@ and the publisher's own signed version installs only once this one is
 removed. A file whose signature fails is never overridden: someone
 changed it after it was signed. A folder with no signature is signed by
 *bundle pack*, which makes its file.
+
+# JSON
+
+*list --json* and *info --json* print one line of JSON, an object whose
+first member is *format*, 1 (ADR 0541), which scripts and Ansible's
+*dukovo.system* collection read in place of the text. A later field may
+be added without a new *format*; read the members you know. Names are in
+snake_case, times are RFC 3339 in UTC, sizes are bytes, and a value that
+is not known is *null*. An error is told to standard error as without
+*--json*, with the same exit status, and prints no JSON.
+
+*bundle list --json* has *bundles*, a list with an object for each
+bundle you can run, by ID and then yours before everyone's:
+
+*id*
+	The bundle's ID, with its line when it has one (*org.nodejs.node@22*).
+
+*name*
+	Its name, as it says it.
+
+*version*
+	The version installed.
+
+*for_everyone*
+	*true* for one installed for everyone, *false* for yours.
+
+*catalog*
+	The catalog it is bound to, or *null* for one that updates from its
+	own feed or from none (UPDATES).
+
+*held*
+	Whether it is held at its version.
+
+*update*
+	The newest version its catalog listed when bundled last read it, if
+	that is newer than *version*, else *null*. The list reads no
+	network; *bundle update --check* reads the catalogs anew.
+
+*flaws*
+	What the catalog's list of known flaws says of this version
+	(FLAWS), an object: *state*, *unknown* when it says nothing, *none*,
+	or *known*; *count*, how many it knows; and *worst*, the worst
+	severity, *low*, *medium*, *high*, *critical* or *unknown*, or *null*
+	when it knows none.
+
+*bundle info* _id_ *--json* is one bundle's facts, as the sheet shows them:
+
+*id*, *name*, *version*, *publisher*, *summary*, *for_everyone*
+	As in *list*, with the publisher's name and the bundle's summary.
+
+*key*
+	The key that signed it.
+
+*trust*
+	Why the key is trusted, an object: *kind*, one of *catalog*,
+	*developer*, *bound* (its first install here), *bound_for_everyone*
+	and *unknown*; *catalog*, its name for *catalog*; and *since*, from
+	when, when that is known.
+
+*files*, *bytes*
+	How many files it has, and the bytes they take.
+
+*support*
+	Where its publisher takes problem reports, or *null*.
+
+*update_feed*
+	Its own feed, for a bundle no catalog lists, or *null*.
+
+*flaws*
+	An object: *state*, *unknown* when the catalog's list says nothing
+	of this version or there is none, *none*, or *listed*; *list_made*,
+	when the list was made; and *known*, each flaw as an object with
+	*id*, *severity*, *component*, *fixed* (the version of the
+	component that fixes it, or *null*) and *summary*.
+
+*permissions*
+	Each permission it asks for, an object: *name*; *lets*, what it
+	lets the bundle do, in the system's words; *tier*, when it is
+	asked; *need*, *required* or *optional*; *folders*, each with
+	*folder* and *access*; *ports*; *apps*; and *why*, in the bundle's
+	own words, or *null*.
+
+*commands*, *commands_with_your_access*
+	The names of the commands that run in the sandbox, and of those
+	that run with your access, outside it.
+
+*services*
+	What each of its services is, in a line, as the sheet says it.
+
+*grants*
+	What you said of its permissions, each an object: *permission*,
+	*said* (*allow* or *never*), *since*, and *given*, what it gives, in
+	words.
+
+*installed*
+	When it was installed.
+
+*folder*, *data*
+	Where it is, and where its data is, in words.
+
+*previous*
+	The version it can go back to, or *null*.
+
+*held*
+	Whether it is held at its version.
 
 # FILES
 

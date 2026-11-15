@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# An update from the update server, which the lab's system/ansible test
+# points the machine at, on the stable channel: staged into the spare slot, the machine restarted
+# into it as the reboot module restarts one, and a check that the machine
+# came back on the new version, in the other slot.
+
+- name: dukovo.system.update restarts the machine into an update
+  hosts: dukovo
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Learn what runs
+      dukovo.system.facts:
+
+    - name: Remember it
+      ansible.builtin.set_fact:
+        dukovo_first:
+          version: "{{ ansible_facts.dukovo.version }}"
+          slot: "{{ ansible_facts.dukovo.slot }}"
+
+    - name: Follow the stable channel, which the update server offers
+      dukovo.system.update:
+        state: channel
+        channel: stable
+
+    - name: See what the update server offers
+      dukovo.system.update:
+        state: checked
+      register: dukovo_offered
+
+    - name: It offers a system update
+      ansible.builtin.assert:
+        that:
+          - dukovo_offered is not changed
+          - dukovo_offered.updates.offers | selectattr('item', 'equalto', 'system') | selectattr('state', 'equalto', 'update') | list | length == 1
+
+    - name: Stage the update, restart into it and see that it runs
+      dukovo.system.update:
+        state: applied
+        reboot: true
+        reboot_timeout: 900
+      register: dukovo_applied
+
+    - name: The machine came back on the update, in the other slot
+      ansible.builtin.assert:
+        that:
+          - dukovo_applied is changed
+          - dukovo_applied.rebooted
+          - dukovo_applied.running_version != dukovo_first.version
+          - dukovo_applied.running_slot != dukovo_first.slot
+
+    - name: Learn what runs now
+      dukovo.system.facts:
+
+    - name: It says the same
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.dukovo.version == dukovo_applied.running_version
+          - ansible_facts.dukovo.slot == dukovo_applied.running_slot

@@ -607,6 +607,7 @@ version = "0.15.0"
 dependencies = [
  "dkv",
  "serde_json",
+ "system-release",
  "tuf",
 ]
 

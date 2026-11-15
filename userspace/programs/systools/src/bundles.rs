@@ -36,6 +36,7 @@
 pub(crate) use dkv::{base64, minisign, sbom, signed, sums, zip};
 pub(crate) mod catalogs;
 pub(crate) mod confine;
+pub(crate) mod documents;
 pub(crate) mod feeds;
 pub(crate) mod folder;
 pub(crate) mod grants;
@@ -89,8 +90,8 @@ const USAGE: &str =
        bundle unhold ID [--for-everyone]
        bundle history [ID]
        bundle default NAME [LINE | --clear] [--for-everyone]
-       bundle list
-       bundle info ID
+       bundle list [--json]
+       bundle info ID [--json]
        bundle remove ID [--for-everyone] [--keep-data | --purge]
        bundle run [--command NAME] ID [ARGUMENT...]
        bundle grant ID PERMISSION [FOLDER=read|read-write | APP-ID]...
@@ -143,9 +144,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut clear = false;
     let mut days = None;
     let mut unsigned = false;
+    let mut json = false;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "check" => check_only = true,
+            Arg::Long(l) if l == "json" => json = true,
             Arg::Long(l) if l == "clear" => clear = true,
             Arg::Long(l) if l == "automatic" && automatic.is_none() => {
                 automatic = Some(match args.text()?.as_str() {
@@ -192,10 +195,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let output_ok = sub == Some("pack") || output.is_none();
     let days_ok = sub == Some("feed") || days.is_none();
     let unsigned_ok = sub == Some("install") || !unsigned;
+    let json_ok = matches!(sub, Some("list" | "info")) || !json;
     if !key_ok
         || !output_ok
         || !days_ok
         || !unsigned_ok
+        || !json_ok
         || (confined && (sub != Some("unpack") || !operands.is_empty()))
     {
         return Err(usage(USAGE.into()));
@@ -242,8 +247,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("catalog"), []) => list_catalogs(),
         (Some("catalog"), [add, name, url, root]) if add == "add" => add_catalog(name, url, root),
         (Some("catalog"), [remove, name]) if remove == "remove" => remove_catalog(name),
-        (Some("list"), []) => list(),
-        (Some("info"), [id]) => info(id),
+        (Some("list"), []) => list(json),
+        (Some("info"), [id]) => info(id, json),
         (Some("remove"), [id]) => remove(id, everyone, data),
         (Some("update"), []) if let Some(on) = automatic => {
             simple(&Request::Automatic { everyone, on }, "bundle")
@@ -901,28 +906,67 @@ fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32,
     Ok(0)
 }
 
-/// `bundle history`: what bundled did to this person's bundles and
-/// everyone's, or to one, the newest last.
-fn history(id: Option<String>) -> Result<i32, Fail> {
-    let (_stream, mut input) = ask(&Request::History { id }, None).map_err(fail)?;
-    // SAFETY: getuid has no failure and touches no memory.
-    let me = unsafe { libc::getuid() };
-    let mut shown = 0;
+/// What `bundle update --check` finds for this person's bundles.
+pub(crate) struct Pending {
+    /// Each bundle whose catalog, or feed, lists a newer version.
+    pub(crate) rows: Vec<Available>,
+    /// What bundled says besides, for a person.
+    pub(crate) notes: Vec<String>,
+}
+
+/// The updates waiting for this person's bundles, as `bundle update
+/// --check` finds them, for `update --json`.
+pub(crate) fn pending_updates() -> Result<Pending, Fail> {
+    let request = Request::Update { ids: Vec::new(), everyone: false, check: true, yes: false };
+    let (_stream, mut input) = ask(&request, None).map_err(fail)?;
+    let mut found = Pending { rows: Vec::new(), notes: Vec::new() };
     loop {
         match answer(&mut input)? {
-            Answer::Event(event) => {
-                println!("{}", history_line(&event, me));
-                shown += 1;
+            Answer::Available(row) => found.rows.push(row),
+            Answer::Note(note) => found.notes.push(note),
+            Answer::Ok(said) => {
+                // The summary, then what came with it.
+                found.notes.extend(said.split("; ").skip(1).map(str::to_string));
+                return Ok(found);
             }
-            Answer::Ok(_) => break,
-            Answer::Error(why) => {
-                eprintln!("bundle: {why}");
-                return Ok(1);
-            }
+            Answer::Error(why) => return Err(fail(why)),
             _ => return Err(fail("bundled answered out of turn".into())),
         }
     }
-    if shown == 0 {
+}
+
+/// What bundled did to this person's bundles and everyone's, or to one,
+/// the newest last; or bundled's words when it refuses. `Err` when it
+/// cannot be asked.
+pub(crate) fn history_events(id: Option<String>) -> Result<Result<Vec<Event>, String>, Fail> {
+    let (_stream, mut input) = ask(&Request::History { id }, None).map_err(fail)?;
+    let mut events = Vec::new();
+    loop {
+        match answer(&mut input)? {
+            Answer::Event(event) => events.push(event),
+            Answer::Ok(_) => return Ok(Ok(events)),
+            Answer::Error(why) => return Ok(Err(why)),
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
+}
+
+/// `bundle history`: what bundled did to this person's bundles and
+/// everyone's, or to one, the newest last.
+fn history(id: Option<String>) -> Result<i32, Fail> {
+    let events = match history_events(id)? {
+        Ok(events) => events,
+        Err(why) => {
+            eprintln!("bundle: {why}");
+            return Ok(1);
+        }
+    };
+    // SAFETY: getuid has no failure and touches no memory.
+    let me = unsafe { libc::getuid() };
+    for event in &events {
+        println!("{}", history_line(event, me));
+    }
+    if events.is_empty() {
         println!("bundled has done nothing to your bundles yet");
     }
     Ok(0)
@@ -995,8 +1039,9 @@ pub(crate) fn installed_for_everyone() -> Result<Vec<String>, Fail> {
     }
 }
 
-/// `bundle list`: the bundles this person can run, theirs and everyone's.
-fn list() -> Result<i32, Fail> {
+/// `bundle list`: the bundles this person can run, theirs and everyone's;
+/// with `json`, as the document bundle(1) describes.
+fn list(json: bool) -> Result<i32, Fail> {
     let (_stream, mut input) = ask(&Request::List, None).map_err(fail)?;
     let mut rows = Vec::new();
     loop {
@@ -1009,6 +1054,10 @@ fn list() -> Result<i32, Fail> {
             }
             _ => return Err(fail("bundled answered out of turn".into())),
         }
+    }
+    if json {
+        crate::json::print(&documents::List::of(rows))?;
+        return Ok(0);
     }
     if rows.is_empty() {
         println!("no bundles are installed");
@@ -1167,13 +1216,16 @@ fn said_line(grant: &grants::Grant) -> String {
 }
 
 /// `bundle info ID`: an installed bundle's sheet, what you said of its
-/// permissions, where it is and when it was installed.
-fn info(id: &str) -> Result<i32, Fail> {
+/// permissions, where it is and when it was installed; with `json`, those
+/// facts as bundled's document.
+fn info(id: &str, json: bool) -> Result<i32, Fail> {
     bundle::check_full_id(id).map_err(usage)?;
-    let (_stream, mut input) = ask(&Request::Info { id: id.into() }, None).map_err(fail)?;
+    let (_stream, mut input) = ask(&Request::Info { id: id.into(), json }, None).map_err(fail)?;
     let mut said = Vec::new();
     loop {
         match answer(&mut input)? {
+            Answer::Document(text) => println!("{text}"),
+            Answer::Ok(_) if json => return Ok(0),
             Answer::Sheet(text) => print!("{text}"),
             Answer::Granted(grant) => said.push(grant),
             Answer::Ok(what) => {

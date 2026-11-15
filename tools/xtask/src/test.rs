@@ -483,6 +483,16 @@ const UPDATE_FILE: u8 = 31;
 /// FAT32.
 const PHP_FILES: u8 = 33;
 
+/// [`Disk::fat`] for an [`UPDATE_SITE`] disk whose catalog also signs the
+/// rollouts of its newest versions, the waves each goes out in
+/// ([`waves_site_disk`], ADR 0544): the waves have just begun, and
+/// diary 1.1.0's are held ([`WAVES_PAUSE`]).
+const WAVES_SITE: u8 = 34;
+
+/// What the [`WAVES_SITE`] catalog's plan holds: diary 1.1.0's waves, with
+/// this reason.
+const WAVES_PAUSE: (&str, &str, &str) = ("org.example.diary", "1.1.0", "bad logs");
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1229,6 +1239,13 @@ const fn update_site_disk(kib: u64, label: &'static str) -> Disk {
 }
 
 /// A virtio disk of `kib` KiB, labelled `label`, holding a test catalog of
+/// two versions of each test bundle that signs their rollouts
+/// ([`WAVES_SITE`]), which Spark mounts at `/volumes/<disk>`.
+const fn waves_site_disk(kib: u64, label: &'static str) -> Disk {
+    Disk { fat: WAVES_SITE, ..fat_disk(kib, 32, label, Table::None, Bus::Virtio) }
+}
+
+/// A virtio disk of `kib` KiB, labelled `label`, holding a test catalog of
 /// two lines of a test bundle ([`LINES_SITE`]), which Spark mounts at
 /// `/volumes/<disk>`.
 const fn lines_site_disk(kib: u64, label: &'static str) -> Disk {
@@ -1863,7 +1880,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "consoles",
-        about: "a normal boot shows a shell on consoled's virtual consoles; typing, notifications on the bottom line, Alt+F2, a German keyboard layout, poweroff",
+        about: "a normal boot shows a shell on consoled's virtual consoles; typing, /etc/os-release names Dukovo and its version, notifications on the bottom line, Alt+F2, a German keyboard layout, poweroff",
         firmware: Firmware::Uefi,
         media: Media::Usb,
         // No program: Spark starts the services, as on a normal boot.
@@ -4140,7 +4157,7 @@ fn test_update_server(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> 
 /// the release keys' own timestamp key, so that a machine walks from the
 /// first root to the third. The repository offers
 /// [`TEST_SERVER_RELEASES`], with the stable channel on `year` and the
-/// beta channel on `old`. It is deployed to the server as `ob release
+/// [`TEST_FIRMWARE`] set `good`, and the beta channel on `old`. It is deployed to the server as `ob release
 /// deploy` deploys, and published, signed again after a timestamp was
 /// kept to replay, its stable release paused, refused a damaged deploy
 /// and then given the release keys' withdrawal of the stable release by
@@ -4264,6 +4281,25 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         let version = test_server_version(name);
         crate::release::system_release(ctx, &repo_args(&["channel", channel, &version]))?;
     }
+    // The stable channel's firmware set, which goes out in waves of its
+    // own (ADR 0544).
+    let microcode = staging.join("intel-ucode.bin");
+    write(microcode.clone(), &test_microcode())?;
+    let set = test_firmware_version("good");
+    let microcode = microcode.display().to_string();
+    crate::release::system_release(
+        ctx,
+        &repo_args(&[
+            "firmware",
+            "--version",
+            set,
+            "--microcode",
+            &microcode,
+            "--license",
+            "LicenseRef-Test",
+        ]),
+    )?;
+    crate::release::system_release(ctx, &repo_args(&["channel", "--firmware", set, "stable"]))?;
     deploy_to_test_server(ctx, &repo, &incoming)?;
     server_script(ctx, &server, "system-publish.sh", &[], true)?;
     let served = out.join("system");
@@ -5230,12 +5266,17 @@ fn make_disks(
             continue;
         }
         if disk.fat == UPDATE_SITE {
-            make_site(ctx, disk, &image.path, &UPDATE_BUNDLES, &["1.0.0"])?;
+            make_site(ctx, disk, &image.path, &UPDATE_BUNDLES, &["1.0.0"], None)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == WAVES_SITE {
+            make_site(ctx, disk, &image.path, &UPDATE_BUNDLES, &["1.0.0"], Some(WAVES_PAUSE))?;
             made.push(image);
             continue;
         }
         if disk.fat == LINES_SITE {
-            make_site(ctx, disk, &image.path, &LINE_BUNDLES, &["1.0.0", "2.0.0"])?;
+            make_site(ctx, disk, &image.path, &LINE_BUNDLES, &["1.0.0", "2.0.0"], None)?;
             made.push(image);
             continue;
         }
@@ -5943,7 +5984,7 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
         .ok_or_else(|| {
             format!("{} holds no ripgrep bundle (run `./ob ports`)", bundles.display())
         })?;
-    let dir = crate::catalog::test_site(ctx, &[ripgrep], Some(TEST_ADVISORIES))
+    let dir = crate::catalog::test_site(ctx, &[ripgrep], Some(TEST_ADVISORIES), None, &[])
         .map_err(|e| e.to_string())?;
     let image = path.display().to_string();
     host_tool(
@@ -5961,21 +6002,36 @@ fn make_catalog_site(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> 
     .map(drop)
 }
 
-/// Makes an [`UPDATE_SITE`] or [`LINES_SITE`] disk: a test catalog of
-/// `bundles`, its root, and the versions `copied` as files.
+/// Makes an [`UPDATE_SITE`], [`WAVES_SITE`] or [`LINES_SITE`] disk: a test
+/// catalog of `bundles`, which signs their rollouts, with one's waves
+/// held, when `paused` names it (as [`crate::catalog::test_site`] says),
+/// its root, and the versions `copied` as files.
 fn make_site(
     ctx: &Ctx,
     disk: &Disk,
     path: &Path,
     bundles: &[crate::bundles::TestBundle],
     copied: &[&str],
+    paused: Option<(&str, &str, &str)>,
 ) -> Result<(), String> {
     let files = bundles
         .iter()
         .map(|bundle| crate::bundles::pack_test(ctx, bundle))
         .collect::<Result<Vec<PathBuf>>>()
         .map_err(|e| e.to_string())?;
-    let dir = crate::catalog::test_site(ctx, &files, None).map_err(|e| e.to_string())?;
+    // Each bundle's newest version goes out in waves just begun.
+    let mut newest: Vec<&crate::bundles::TestBundle> = Vec::new();
+    for bundle in bundles {
+        match newest.iter_mut().find(|held| held.id == bundle.id) {
+            Some(held) if version_numbers(held.version) >= version_numbers(bundle.version) => {}
+            Some(held) => *held = bundle,
+            None => newest.push(bundle),
+        }
+    }
+    let begun: Vec<String> =
+        newest.iter().map(|bundle| format!("{}/{}", bundle.id, bundle.version)).collect();
+    let dir =
+        crate::catalog::test_site(ctx, &files, None, paused, &begun).map_err(|e| e.to_string())?;
     let mut mkfs = std::process::Command::new(fat_tool("mkfs.fat"));
     mkfs.args(["-F", "32", "-n", disk.label, "-i", "4f525448", "-C"])
         .arg(path)
@@ -5993,6 +6049,11 @@ fn make_site(
         }
     }
     Ok(())
+}
+
+/// The numbers of a test bundle's version, such as 1.1.0, to compare.
+fn version_numbers(version: &str) -> Vec<u64> {
+    version.split('.').map(|part| part.parse().unwrap_or(0)).collect()
 }
 
 /// Makes a [`SERVICE_FILES`] disk: the files of [`SERVICE_BUNDLES`].
@@ -7025,7 +7086,8 @@ fn screen_log(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
 /// A normal boot: Spark starts consoled, which takes the screen and shows
 /// a shell on tty1. Types a command on the PS/2 keyboard and reads its
-/// answer off the screen, switches to tty2, restarts consoled with
+/// answer off the screen, reads `/etc/os-release`, which scripts read to
+/// tell which system they run on, switches to tty2, restarts consoled with
 /// service(8), and powers the machine off from the shell.
 fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
@@ -7040,6 +7102,9 @@ fn consoles(vm: &mut Vm, case: &Case) -> Result<(), String> {
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
     vm.type_text("echo $((6 * 7)) consoles\n")?;
     vm.expect_screen(&["# echo $((6 * 7)) consoles", "42 consoles"])?;
+    // os-release(5): the link in /etc leads to the file the release carries.
+    vm.type_text("clear; cat /etc/os-release\n")?;
+    vm.expect_screen(&["ID=dukovo", &format!("PRETTY_NAME=\"Dukovo {VERSION}\"")])?;
     // notifyd's notifications on the bottom line (ADR 0212): one for its
     // time, a critical one until a key is pressed, and both in the list.
     vm.expect_anywhere("consoled: showing notifications from notifyd")?;

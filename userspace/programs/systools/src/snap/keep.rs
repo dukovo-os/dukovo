@@ -26,13 +26,17 @@ impl Kept {
         self.newest || self.daily || self.weekly
     }
 
+    /// Its reasons, as words: `newest`, `daily` and `weekly`.
+    pub fn reasons(self) -> Vec<&'static str> {
+        [(self.newest, "newest"), (self.daily, "daily"), (self.weekly, "weekly")]
+            .into_iter()
+            .filter_map(|(on, word)| on.then_some(word))
+            .collect()
+    }
+
     /// Its reasons, as `snap list` writes them: `newest, daily, weekly`.
     pub fn words(self) -> String {
-        let words: Vec<&str> =
-            [(self.newest, "newest"), (self.daily, "daily"), (self.weekly, "weekly")]
-                .into_iter()
-                .filter_map(|(on, word)| on.then_some(word))
-                .collect();
+        let words = self.reasons();
         if words.is_empty() { "goes at the next prune".into() } else { words.join(", ") }
     }
 }

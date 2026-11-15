@@ -11,7 +11,9 @@
 //! It also sets up the update server, an Ubuntu one or a Dukovo one, and
 //! deploys to it (ADR 0382), over the signer's own SSH login: the signed
 //! bundles exist only on the machine that signed them, so they go from
-//! there, with the copying `deploy.rs` does.
+//! there, with the copying `deploy.rs` does. `rollout` pauses or frees
+//! the waves a bundle's new version goes out in (ADR 0544), on the server
+//! itself.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -62,9 +64,11 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
         ["deploy"] => return deploy(ctx),
         ["check"] => return check(ctx, URL),
         ["check", url] => return check(ctx, url),
-        ["server" | "deploy" | "check", ..] => {
-            bail!("usage: ./ob catalog server setup [--dukovo] | deploy | check [<url>]")
-        }
+        ["rollout", rest @ ..] if !rest.is_empty() => return rollout(ctx, rest),
+        ["server" | "deploy" | "check" | "rollout", ..] => bail!(
+            "usage: ./ob catalog server setup [--dukovo] | deploy | check [<url>] | rollout \
+             (pause <id> <version> <reason> | resume <id> <version> | canary <name> red|green)"
+        ),
         _ => {}
     }
     // `sign` signs the bundles `ob ports` packs unless it is named others,
@@ -79,6 +83,29 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
     cmd.args(args);
     process::run(ctx, &mut cmd)
 }
+
+/// `ob catalog rollout ...`: on the update server, through sudo as its
+/// catalog user, pauses or resumes the waves of a bundle's newest
+/// version, or marks a canary red or green, and signs the rollouts again
+/// (ADR 0544); needs no key of the signer's.
+fn rollout(ctx: &Ctx, args: &[&str]) -> Result<()> {
+    let words: Vec<String> = args.iter().map(|word| deploy::quote(word)).collect();
+    let [ubuntu, dukovo] = ROLLOUT_SCRIPTS;
+    let words = words.join(" ");
+    let script = format!(
+        "if [ -x {ubuntu} ]; then sudo -u dukovo-catalog {ubuntu} {words}; \
+         else elevate sh {dukovo} {words}; fi"
+    );
+    // A terminal, for sudo or elevate to ask for the password.
+    process::run(ctx, &mut Server::from_environment().ssh_terminal(&script))
+}
+
+/// Where `rollout` finds the catalog's rollout script: on an Ubuntu
+/// server, and on a Dukovo one, where a wrapper gives it the jobs' places.
+const ROLLOUT_SCRIPTS: [&str; 2] = [
+    "/usr/local/lib/dukovo-catalog/catalog-rollout.sh",
+    "/var/lib/dukovo-update-server/catalog-rollout",
+];
 
 /// Builds catalog-repo for this machine and gives the command that runs
 /// it with the source tree's paths.
@@ -322,8 +349,20 @@ pub fn publish_to(ctx: &Ctx, server: &Server, repo: &Path, store: &Path) -> Resu
 /// `out/test/catalog`: `site/`, laid out as the update server serves it,
 /// listing `bundles`, and `root.json`, its first root (ADR 0383). With
 /// `advisories`, OSV advisories as JSON, it also lists the bundles' known
-/// flaws, as the update server does each day (ADR 0389).
-pub fn test_site(ctx: &Ctx, bundles: &[PathBuf], advisories: Option<&str>) -> Result<PathBuf> {
+/// flaws, as the update server does each day (ADR 0389). With `paused`,
+/// a bundle's ID, a version of it and a reason, it also signs the
+/// rollouts of the releases `begun`, each `ID/VERSION`, with the waves
+/// just begun, and the waves of that one held, as the server's plan would
+/// be after `ob catalog rollout pause` (ADR 0544). A release the first
+/// rollouts list without a plan has every wave open, so those are planned
+/// before the first are signed.
+pub fn test_site(
+    ctx: &Ctx,
+    bundles: &[PathBuf],
+    advisories: Option<&str>,
+    paused: Option<(&str, &str, &str)>,
+    begun: &[String],
+) -> Result<PathBuf> {
     let dir = ctx.out.join("test/catalog");
     if dir.exists() {
         std::fs::remove_dir_all(&dir).context(|| format!("removing {}", dir.display()))?;
@@ -346,7 +385,19 @@ pub fn test_site(ctx: &Ctx, bundles: &[PathBuf], advisories: Option<&str>) -> Re
     sign.extend([os("--store"), store.as_os_str()]);
     sign.extend(bundles.iter().map(|b| b.as_os_str()));
     run(&sign)?;
-    run(&[
+    let plan = dir.join("rollout.json");
+    if paused.is_some() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let releases: serde_json::Map<String, serde_json::Value> = begun
+            .iter()
+            .map(|release| (release.clone(), serde_json::json!({ "released": now, "open": 0 })))
+            .collect();
+        let text = serde_json::json!({ "releases": releases }).to_string();
+        std::fs::write(&plan, text).context(|| format!("writing {}", plan.display()))?;
+    }
+    let mut publish = vec![
         os("publish"),
         os("--key"),
         online_key.as_os_str(),
@@ -354,7 +405,29 @@ pub fn test_site(ctx: &Ctx, bundles: &[PathBuf], advisories: Option<&str>) -> Re
         store.as_os_str(),
         os("--out"),
         site.as_os_str(),
-    ])?;
+    ];
+    if paused.is_some() {
+        publish.extend([os("--plan"), plan.as_os_str()]);
+    }
+    run(&publish)?;
+    if let Some((id, version, reason)) = paused {
+        let word = std::ffi::OsStr::new;
+        run(&[
+            os("rollout"),
+            os("--key"),
+            online_key.as_os_str(),
+            os("--store"),
+            store.as_os_str(),
+            os("--out"),
+            site.as_os_str(),
+            os("--plan"),
+            plan.as_os_str(),
+            os("pause"),
+            word(id),
+            word(version),
+            word(reason),
+        ])?;
+    }
     if let Some(advisories) = advisories {
         let file = dir.join("advisories.json");
         std::fs::write(&file, advisories).context(|| format!("writing {}", file.display()))?;

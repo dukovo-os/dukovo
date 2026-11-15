@@ -1,0 +1,137 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The document `bundle list --json` prints (ADR 0541), made from what
+//! bundled lists: the bundles this person can run, theirs and everyone's.
+//! `bundle info --json` is bundled's own document ([`super::sheet::Details`]),
+//! since only bundled holds its facts. bundle(1) describes both, and
+//! `dukovo.system.bundle` reads them.
+
+use serde::Serialize;
+
+use super::protocol::{Flags, Listed};
+use super::registry::Place;
+
+/// The members of `bundle list --json` after `format`.
+#[derive(Serialize)]
+pub(crate) struct List {
+    bundles: Vec<Bundle>,
+}
+
+/// An installed bundle.
+#[derive(Serialize)]
+struct Bundle {
+    id: String,
+    name: String,
+    version: String,
+    for_everyone: bool,
+    /// The catalog it is bound to; none when it updates from its own
+    /// feed, or from none.
+    catalog: Option<String>,
+    held: bool,
+    /// The newest version the catalog listed when bundled last read it,
+    /// when that is newer than `version`.
+    update: Option<String>,
+    flaws: Flaws,
+}
+
+/// What the catalog's list of known flaws says of the version: `unknown`
+/// when it says nothing, `none`, or `known` with the count and the
+/// worst severity.
+#[derive(Serialize)]
+struct Flaws {
+    state: &'static str,
+    count: u32,
+    worst: Option<&'static str>,
+}
+
+impl Flaws {
+    fn of(flags: Flags) -> Flaws {
+        match flags {
+            Flags::Unknown => Flaws { state: "unknown", count: 0, worst: None },
+            Flags::None => Flaws { state: "none", count: 0, worst: None },
+            Flags::Known { count, worst } => {
+                Flaws { state: "known", count, worst: Some(worst.word()) }
+            }
+        }
+    }
+}
+
+impl List {
+    /// The bundles `rows` list, by ID and then place, as `bundle list`
+    /// shows them.
+    pub(crate) fn of(mut rows: Vec<Listed>) -> List {
+        rows.sort_by(|a, b| a.id.cmp(&b.id).then(a.place.cmp(&b.place)));
+        let bundles = rows
+            .into_iter()
+            .map(|row| Bundle {
+                id: row.id,
+                name: row.name,
+                version: row.version,
+                for_everyone: row.place == Place::Everyone,
+                catalog: row.catalog,
+                held: row.held,
+                update: row.update,
+                flaws: Flaws::of(row.flags),
+            })
+            .collect();
+        List { bundles }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dkv::flaws::Severity;
+
+    use super::*;
+    use crate::bundles::minisign::SecretKey;
+
+    fn row(place: Place, id: &str, version: &str, flags: Flags) -> Listed {
+        let mut random = [9u8; 40];
+        random[0] = 1;
+        Listed {
+            place,
+            id: id.into(),
+            version: version.into(),
+            key: SecretKey::generate(&random).unwrap().public(),
+            when: 1_793_000_000,
+            name: id.rsplit('.').next().unwrap().into(),
+            flags,
+            catalog: None,
+            held: false,
+            update: None,
+        }
+    }
+
+    #[test]
+    fn the_document_holds_each_bundle_with_its_catalog_hold_update_and_flaws() {
+        let rows = vec![
+            Listed {
+                catalog: Some("dukovo".into()),
+                update: Some("1.3.0".into()),
+                ..row(
+                    Place::Everyone,
+                    "org.nginx.nginx",
+                    "1.2.0",
+                    Flags::Known { count: 2, worst: Severity::High },
+                )
+            },
+            row(Place::User(1000), "org.example.notes", "0.1.0", Flags::Unknown),
+            Listed {
+                catalog: Some("dukovo".into()),
+                held: true,
+                ..row(Place::User(1000), "org.nginx.nginx", "1.1.0", Flags::None)
+            },
+        ];
+        let line = crate::json::line(&List::of(rows)).unwrap();
+        crate::json::assert_golden(&line, include_str!("../../tests/json/bundle-list.json"));
+    }
+
+    #[test]
+    fn no_bundles_are_an_empty_list() {
+        assert_eq!(
+            crate::json::line(&List::of(Vec::new())).unwrap(),
+            r#"{"format":1,"bundles":[]}"#
+        );
+    }
+}

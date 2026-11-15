@@ -126,6 +126,13 @@ the project withdraws is never staged, and `sysupdate check` says why;
 one staged before the withdrawal is unstaged at the next daily check,
 and the console tells you so.
 
+An app from a catalog goes out in waves of its own, on the same
+schedule and by the same number, and `update` lists one waiting for its
+wave in its Apps part, with the day it opens; `bundle update` and
+`apps = "auto"` leave it until then, unless it ends a known flaw of the
+version you run ([Bundles and permissions](bundles.md#updates)). A
+canary takes each on its first day.
+
 For a machine with no network, an update file holds a whole release,
 `dukovo-0.15.2.update`. Copy it to a USB stick, then:
 

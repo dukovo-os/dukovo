@@ -635,6 +635,24 @@ jobs:
           path: .cache/memtest
           key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
 
+      # The ansible boot test's controller: ansible-core 2.22 needs Python
+      # 3.13 or later, and Ubuntu 24.04's python3 is 3.12. Only the name
+      # python3.13 is added to the path, where src/ansible.rs looks for it,
+      # so every other test keeps the system's python3.
+      - name: Install Python 3.13 for the ansible boot test
+        id: python313
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          update-environment: false
+
+      - name: Name it python3.13
+        run: |
+          mkdir -p "$RUNNER_TEMP/python313"
+          ln -s "${{ steps.python313.outputs.python-path }}" "$RUNNER_TEMP/python313/python3.13"
+          echo "$RUNNER_TEMP/python313" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/python313/python3.13" -m venv --help > /dev/null
+
       # ./ob setup runs ./ob doctor, which asks for mdBook too.
       - name: Install mdBook
         run: |

@@ -8,6 +8,7 @@
 //! ob(1); `docs/man/ob.1.scd` is the source of that page.
 
 mod account;
+mod ansible;
 mod baseline;
 mod bench;
 mod btrfs;

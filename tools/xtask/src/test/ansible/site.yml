@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# One of each of the collection dukovo.system's modules, for the boot test
+# `ansible` and the lab's tests/system/ansible.toml. Run twice, it changes
+# the machine the first time and nothing the second, and with --check it says
+# what would change and changes nothing.
+#
+# dukovo_bundle and dukovo_catalog name a bundle of a catalog the machine
+# has, which the test adds first: `-e` says them.
+
+- name: dukovo.system manages a Dukovo machine
+  hosts: dukovo
+  gather_facts: true
+  # Setup's other subsets read Linux's /proc and /sys, which Dukovo's
+  # /processes and /kernel only lead to.
+  gather_subset: [min]
+  become: true
+  vars:
+    dukovo_feature: file-sharing
+    dukovo_service: discoverd
+    dukovo_bundle: io.github.burntsushi.ripgrep
+    dukovo_catalog: test
+    dukovo_snapshot_place: /users
+    dukovo_snapshot_name: ansible
+    dukovo_channel: beta
+  tasks:
+    - name: Setup names the system as uname does
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == "Dukovo"
+
+    - name: Learn what Dukovo says of itself
+      dukovo.system.facts:
+
+    - name: It says what runs
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.dukovo.version is string
+          - ansible_facts.dukovo.slot in ["a", "b"]
+          - ansible_facts.dukovo.features[dukovo_feature] is defined
+          - ansible_facts.dukovo.services[dukovo_service] is defined
+
+    - name: A feature is added
+      dukovo.system.feature:
+        name: "{{ dukovo_feature }}"
+        state: present
+
+    - name: A service is on, now and at each boot
+      dukovo.system.service:
+        name: "{{ dukovo_service }}"
+        state: started
+        enabled: true
+
+    - name: A bundle is installed from the catalog
+      dukovo.system.bundle:
+        id: "{{ dukovo_bundle }}"
+        catalog: "{{ dukovo_catalog }}"
+        state: present
+
+    - name: A snapshot is made
+      dukovo.system.snapshot:
+        place: "{{ dukovo_snapshot_place }}"
+        name: "{{ dukovo_snapshot_name }}"
+        state: present
+
+    - name: The machine follows a channel
+      dukovo.system.update:
+        state: channel
+        channel: "{{ dukovo_channel }}"
+
+    - name: Learn what Dukovo says of itself now
+      dukovo.system.facts:
+
+    # What the modules would do is not done in check mode, so what the
+    # machine says is only looked at when they did it.
+    - name: It says what was done
+      when: not ansible_check_mode
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.dukovo.features[dukovo_feature] == "added"
+          - ansible_facts.dukovo.services[dukovo_service] == "running"
+          - ansible_facts.dukovo.channel == dukovo_channel
+          - ansible_facts.dukovo.bundles | selectattr('id', 'equalto', dukovo_bundle) | selectattr('for_everyone') | list | length == 1

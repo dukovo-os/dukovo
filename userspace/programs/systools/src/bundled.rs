@@ -1634,14 +1634,29 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
         .collect();
     let state = Path::new(catalogs::STATE);
     let mut lists = std::collections::HashMap::new();
+    let mut indexes = std::collections::HashMap::new();
     for i in &installed {
         let name = installed_manifest(i.place, &i.id).map_or_else(|_| "?".into(), |m| m.name.0);
-        let bound = shared.lock().catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
-        let flags = bound.map_or(Flags::Unknown, |catalog| {
+        let (bound, held) = {
+            let registry = shared.lock();
+            let bound = registry.catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
+            (bound, registry.held(i.place, &i.id).is_some())
+        };
+        let flags = bound.clone().map_or(Flags::Unknown, |catalog| {
             let list = lists
                 .entry(catalog)
                 .or_insert_with_key(|catalog| catalogs::read_flaws(state, catalog));
             catalogs::flags(list.as_ref(), &i.id, &i.version)
+        });
+        // As the catalog was when bundled last read it: `list` reaches
+        // for no network, and `bundle update --check` reads it anew.
+        let update = bound.clone().and_then(|catalog| {
+            let index = indexes
+                .entry(catalog)
+                .or_insert_with_key(|catalog| catalogs::read_index(state, catalog));
+            let newest = index.as_ref()?.newest(&i.id)?;
+            (catalogs::compare_versions(&newest.version, &i.version) == std::cmp::Ordering::Greater)
+                .then(|| newest.version.clone())
         });
         let listed = Listed {
             place: i.place,
@@ -1651,17 +1666,23 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
             when: i.when,
             name: sheet::shown(&name, 60),
             flags,
+            catalog: bound,
+            held,
+            update,
         };
         connection.send(&Answer::Listed(listed)).map_err(|e| format!("{e}"))?;
     }
     Ok(format!("{} bundles", installed.len()))
 }
 
+/// `bundle info`: the bundle's sheet, what the asker said of its
+/// permissions and where it is; with `json`, those facts as one document.
 fn info(
     shared: &Shared,
     connection: &mut Connection,
     asker: u32,
     id: &str,
+    json: bool,
 ) -> Result<String, String> {
     let (installed, trust) = {
         let registry = shared.lock();
@@ -1699,20 +1720,34 @@ fn info(
         flaws: flaws.as_ref(),
         all_flaws: true,
     };
-    connection.send(&Answer::Sheet(sheet::write(&facts))).map_err(|e| format!("{e}"))?;
-    send_grants(shared, connection, asker, id, &installed.key)?;
     let data = match installed.place {
         Place::Everyone => format!("each person's {APP_DATA}/{id}"),
         Place::User(_) => account(asker)
             .map_or_else(|_| format!("{APP_DATA}/{id}"), |u| format!("{}/{APP_DATA}/{id}", u.home)),
     };
-    let when =
-        util::time_text(i64::try_from(installed.when).unwrap_or(0), "%Y-%m-%d %H:%M UTC", true);
     let (kept, held) = {
         let registry = shared.lock();
         let kept = registry.previous(installed.place, id).map(|p| p.version.clone());
         (kept, registry.held(installed.place, id).is_some())
     };
+    if json {
+        let said = shared.grants().of(asker, id, &installed.key);
+        let installation = sheet::Installation {
+            installed: installed.when,
+            folder: &folder,
+            data: &data,
+            previous: kept.as_deref(),
+            held,
+        };
+        let document = crate::json::line(&sheet::details(&facts, &said, &installation))
+            .map_err(|fail| fail.message)?;
+        connection.send(&Answer::Document(document)).map_err(|e| format!("{e}"))?;
+        return Ok("its facts".into());
+    }
+    connection.send(&Answer::Sheet(sheet::write(&facts))).map_err(|e| format!("{e}"))?;
+    send_grants(shared, connection, asker, id, &installed.key)?;
+    let when =
+        util::time_text(i64::try_from(installed.when).unwrap_or(0), "%Y-%m-%d %H:%M UTC", true);
     let kept = kept.map_or_default(|v| format!("; it can go back to {v}"));
     let held = if held { "; held at its version" } else { "" };
     Ok(format!("installed on {when}; in {folder}; its data: {data}{kept}{held}"))
@@ -2220,8 +2255,58 @@ struct Pending {
     catalog: Option<String>,
     newest: String,
     held: bool,
+    /// Why it waits for this machine's wave, in the lines to say, or none
+    /// when it is taken now (ADR 0544).
+    waits: Option<Vec<String>>,
     /// The newer version, fetched and checked by the client.
     file: Option<std::path::PathBuf>,
+}
+
+/// Why the update of `installed` to `entry`, the newest version `catalog`
+/// lists, waits for this machine's wave, in the lines to say, or none
+/// when it is taken now (ADR 0544): when the catalog signs no rollout of
+/// it, the wave open reaches this machine, or it ends a known flaw of the
+/// version that runs. A rollout that cannot be read holds it back, with
+/// why, unless it is a fix.
+fn waits_for_wave(
+    read: &mut catalogs::Open,
+    catalog: &str,
+    installed: &Installed,
+    entry: &catalogs::Entry,
+) -> Option<Vec<String>> {
+    let rollout = match read.rollout(entry) {
+        Ok(None) => return None,
+        Ok(Some(rollout)) => Ok(rollout),
+        Err(why) => Err(why),
+    };
+    let flaws = catalogs::read_flaws(Path::new(catalogs::STATE), catalog);
+    let fixes = catalogs::fixes_a_flaw(
+        flaws.as_ref(),
+        (&installed.id, &installed.version),
+        (&entry.id, &entry.version),
+    );
+    match rollout {
+        Ok(rollout) => {
+            let canary = crate::sysupdate::online::Settings::load().is_ok_and(|s| s.canary);
+            let number = crate::sysupdate::online::wave_number();
+            catalogs::waiting(&entry.id, &entry.version, Some(&rollout), number, canary, fixes)
+        }
+        Err(why) => (!fixes).then(|| {
+            vec![
+                format!("{} {}: its rollout cannot be read: {why}", entry.id, entry.version),
+                format!("`bundle update {}` takes it now", entry.id),
+            ]
+        }),
+    }
+}
+
+/// What a waiting update says, a line each: the first as it is, the
+/// others set in.
+fn wave_lines(lines: &[String]) -> impl Iterator<Item = String> + '_ {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(n, line)| if n == 0 { line.clone() } else { format!("  {line}") })
 }
 
 /// The list of known flaws kept of the catalog a bundle is trusted as
@@ -2340,8 +2425,11 @@ fn check_flaws(shared: &Shared) {
 }
 
 /// The bundles of `place`, or those of `ids`, whose catalogs list a newer
-/// version, each fetched when `fetch` and it is not held; what could not
-/// be read; and how many are up to date. The caller holds the catalogs.
+/// version, each fetched when `fetch` and it is neither held nor waiting
+/// for its wave; what could not be read; and how many are up to date. The
+/// caller holds the catalogs. A catalog's rollout (ADR 0544) holds back
+/// the update of a bundle not named in `ids`: one that is named is taken
+/// at once, as a version named to `sysupdate stage` is.
 fn find_updates(
     shared: &Shared,
     place: Place,
@@ -2382,6 +2470,7 @@ fn find_updates(
     }
     let mut pending = Vec::new();
     let mut current = 0;
+    let named = !ids.is_empty();
     for (installed, catalog, held) in candidates {
         let Some(catalog) = catalog else {
             match from_feed(place, &installed, held, fetch, ids.contains(&installed.id)) {
@@ -2401,7 +2490,9 @@ fn find_updates(
             current += 1;
             continue;
         };
-        let file = if fetch && !held {
+        let waits =
+            if held || named { None } else { waits_for_wave(read, &catalog, &installed, &entry) };
+        let file = if fetch && !held && waits.is_none() {
             match read.fetch(&entry) {
                 Ok(file) => Some(file),
                 Err(why) => {
@@ -2413,7 +2504,7 @@ fn find_updates(
             None
         };
         let catalog = Some(catalog);
-        pending.push(Pending { installed, catalog, newest: entry.version, held, file });
+        pending.push(Pending { installed, catalog, newest: entry.version, held, waits, file });
     }
     Ok((pending, notes, current))
 }
@@ -2465,6 +2556,7 @@ fn from_feed(
         catalog: None,
         newest: entry.version,
         held,
+        waits: None,
         file,
     })))
 }
@@ -2502,8 +2594,18 @@ fn update(
         find_updates(shared, place, ids, !check)?
     };
     let mut said = String::new();
+    let waiting = pending.iter().filter(|p| p.waits.is_some()).count();
+    // What waits for its wave is neither to update nor up to date.
+    let waits =
+        if waiting == 0 { String::new() } else { format!(", {waiting} waiting for their wave") };
     if check {
         for p in &pending {
+            if let Some(lines) = &p.waits {
+                for line in wave_lines(lines) {
+                    connection.send(&Answer::Note(line)).map_err(|e| format!("{e}"))?;
+                }
+                continue;
+            }
             let available = Available {
                 place,
                 id: p.installed.id.clone(),
@@ -2520,7 +2622,7 @@ fn update(
             let note = format!("{whose} bundles update by themselves, daily, since {day}");
             connection.send(&Answer::Note(note)).map_err(|e| format!("{e}"))?;
         }
-        said += &format!("{} to update, {current} up to date", pending.len());
+        said += &format!("{} to update, {current} up to date{waits}", pending.len() - waiting);
     } else {
         let (mut updated, mut left) = (0, 0);
         for p in pending {
@@ -2532,6 +2634,12 @@ fn update(
                 );
                 connection.send(&Answer::Note(note)).map_err(|e| format!("{e}"))?;
                 left += 1;
+                continue;
+            }
+            if let Some(lines) = &p.waits {
+                for line in wave_lines(lines) {
+                    connection.send(&Answer::Note(line)).map_err(|e| format!("{e}"))?;
+                }
                 continue;
             }
             let Some(file) = p.file else {
@@ -2563,7 +2671,7 @@ fn update(
             };
             connection.send(&Answer::Note(note)).map_err(|e| format!("{e}"))?;
         }
-        said += &format!("{updated} updated, {left} not, {current} up to date");
+        said += &format!("{updated} updated, {left} not, {current} up to date{waits}");
     }
     for note in notes {
         said += &format!("; {note}");
@@ -2592,6 +2700,16 @@ fn update_by_themselves(shared: &Shared) {
             eprintln!("bundled: updating by themselves: {note}");
         }
         for p in pending.into_iter().filter(|p| !p.held) {
+            if let Some(lines) = &p.waits {
+                // Taken the day its wave opens; said each day it waits.
+                eprintln!(
+                    "bundled: {} for {} waits: {}",
+                    p.installed.id,
+                    whom(place),
+                    lines.join("; ")
+                );
+                continue;
+            }
             let Some(file) = p.file else { continue };
             let (asker, everyone) = match place {
                 Place::Everyone => (0, true),
@@ -3053,7 +3171,7 @@ fn serve(shared: &Shared, stream: UnixStream) {
             set_default(shared, asker, &name, line.as_deref(), everyone)
         }
         Ok(Request::List) => list(shared, &mut connection, asker),
-        Ok(Request::Info { id }) => info(shared, &mut connection, asker, &id),
+        Ok(Request::Info { id, json }) => info(shared, &mut connection, asker, &id, json),
         Ok(Request::Remove { id, everyone, purge }) => remove(shared, asker, &id, everyone, purge),
         Ok(Request::Run { find: what }) => find(shared, &mut connection, asker, &what),
         Ok(Request::AddOns) => link_commands(&shared.lock(), add_on_place(asker))

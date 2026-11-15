@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "id": "file-sharing",
+  "name": "File sharing",
+  "about": "x",
+  "state": "partly",
+  "services": [
+    {"name": "smbd", "on": true},
+    {"name": "nfsd", "on": false}
+  ],
+  "bundles": [
+    {"id": "org.example.tool", "installed": true}
+  ]
+}

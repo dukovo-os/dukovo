@@ -494,7 +494,7 @@ impl Client {
         let rollout: Rollout =
             serde_json::from_slice(&bytes).map_err(|err| fail(format!("{path}: {err}")))?;
         if rollout.release != version || rollout.wave > rollout::LAST {
-            return Err(fail(format!("{path} is not a rollout of Dukovo {version}")));
+            return Err(fail(format!("{path} is not a rollout of {}", rollout::named(version))));
         }
         Ok(Some(rollout))
     }
@@ -687,6 +687,28 @@ fn choose(client: &mut Client, running: &str, version: Option<&str>) -> Result<P
     Err(fail(format!("Dukovo {offered} is more than {MOST_BRIDGES} bridges away")))
 }
 
+/// Why the firmware set `set` does not reach this machine yet, if it
+/// does not, in lines as [`waiting`] says them, when the server signs a rollout
+/// of it whose wave for this machine is not open (ADR 0544). A set with no
+/// rollout reaches every machine.
+///
+/// # Errors
+///
+/// If the rollout does not check.
+pub fn firmware_waiting(client: &mut Client, set: &str) -> Result<Option<Vec<String>>, Fail> {
+    let Some(rollout) = client.rollout(&rollout::firmware_name(set))? else { return Ok(None) };
+    let number = wave_number();
+    if rollout::reaches(&rollout, number, client.settings.canary) {
+        return Ok(None);
+    }
+    let day = rollout::day_for(number);
+    let mut lines =
+        vec![format!("it reaches machines in waves; this machine's opens on day {day}")];
+    lines.extend(rollout.held.map(|why| format!("the waves are held: {why}")));
+    lines.push(format!("`sysupdate firmware stage --version {set}` takes it now"));
+    Ok(Some(lines))
+}
+
 /// The lines that say the release `offered` reaches this machine in a
 /// wave not open yet, on `day` after its release, and why the waves are
 /// `held`, if they are.
@@ -702,15 +724,20 @@ pub fn waiting(offered: &str, day: i64, held: Option<&str>) -> Vec<String> {
 /// Where this machine keeps its wave number.
 pub const WAVE: &str = "/system/state/sysupdate/wave";
 
+/// The number [`WAVE`] keeps, if this machine has drawn one; `sysupdate
+/// status` says it without drawing.
+pub fn wave_kept() -> Option<u16> {
+    std::fs::read_to_string(WAVE)
+        .ok()
+        .and_then(|text| text.trim().parse::<u16>().ok())
+        .filter(|n| *n < 1000)
+}
+
 /// This machine's number from 0 to 999, which places it in a wave (ADR
 /// 0456): drawn the first time it is needed, so that machines cloned from
 /// one image draw their own, and kept to itself.
 pub fn wave_number() -> u16 {
-    if let Some(number) = std::fs::read_to_string(WAVE)
-        .ok()
-        .and_then(|text| text.trim().parse::<u16>().ok())
-        .filter(|n| *n < 1000)
-    {
+    if let Some(number) = wave_kept() {
         return number;
     }
     let mut bytes = [0u8; 2];

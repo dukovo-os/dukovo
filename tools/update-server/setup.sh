@@ -17,7 +17,10 @@
 # - The person running it, through sudo, may deploy: what they copy into
 #   /var/lib/dukovo-catalog-incoming or /var/lib/dukovo-system-incoming
 #   is published when `ready` appears there.
-# - Every six hours each timestamp is signed again.
+# - Every six hours each timestamp is signed again, and the catalog's
+#   rollouts, which say which wave of machines may take each bundle's
+#   newest version (ADR 0544); catalog-rollout.sh, as the user
+#   dukovo-catalog, pauses or frees them (`ob catalog rollout`).
 # - Each day the user dukovo-flaws fetches OSV's advisories, and the list
 #   of the bundles' known flaws is signed from them (ADR 0389).
 #
@@ -88,7 +91,8 @@ install -d -o root -g root -m 0755 /usr/local/lib/dukovo-system /usr/local/share
 echo "==> The program and the scripts"
 install -o root -g root -m 0755 "$here/catalog-repo" /usr/local/lib/dukovo-catalog/catalog-repo
 install -o root -g root -m 0755 "$here/publish.sh" "$here/refresh.sh" \
-	"$here/flaws-fetch.sh" "$here/flaws.sh" /usr/local/lib/dukovo-catalog/
+	"$here/flaws-fetch.sh" "$here/flaws.sh" "$here/catalog-rollout.sh" \
+	/usr/local/lib/dukovo-catalog/
 install -o root -g root -m 0644 "$here/site.sh" /usr/local/lib/dukovo-catalog/
 install -o root -g root -m 0755 "$here/system-release" "$here/system-publish.sh" \
 	"$here/system-refresh.sh" "$here/system-rollout.sh" /usr/local/lib/dukovo-system/

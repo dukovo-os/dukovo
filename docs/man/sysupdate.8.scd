@@ -9,7 +9,7 @@ sysupdate - fetch, stage, try, prove and roll back updates of Dukovo's system
 
 # SYNOPSIS
 
-*sysupdate status*
+*sysupdate status* [*--json*]
 
 *sysupdate check* [*--version* _version_]
 
@@ -273,6 +273,10 @@ update is being tried, and *changes bisect* does not begin one then.
 	when a repository holds several. It must be newer than the running
 	version.
 
+*--json*
+	With *status*, print the document of *JSON* below in place of the
+	text.
+
 # FIRMWARE
 
 Closed firmware, such as CPU microcode, stays out of _/system_: it comes
@@ -289,8 +293,10 @@ names; only *sysupdate firmware stage* changes it.
 *sysupdate firmware stage* [*--version* _version_] [_repository_]
 	Stages the set _version_, or the newest, of the repository folder
 	_repository_; with no folder, the set the update server's channel
-	offers, or _version_ from the server. The set must be newer than the
-	running slot's. The spare slot becomes a snapshot of the running one
+	offers, once its wave reaches this machine, or _version_ from the
+	server at once. A firmware set goes out in waves of its own, as a
+	release does, which a pause of the release does not hold (ADR 0544).
+	The set must be newer than the running slot's. The spare slot becomes a snapshot of the running one
 	that names the set, staged as an update: its first start is a try,
 	and if it does not prove itself, the slot before it starts again,
 	with the set before it.
@@ -320,6 +326,72 @@ version it updates, *(without the update)*, and leaves the tries as they
 are. The previous version's entry starts it once, without making it the
 default. After the slots' entries, *Rescue (Dukovo* _version_*)* starts
 Rescue.
+
+# JSON
+
+*status --json* prints one line of JSON, an object whose first member is
+*format*, 1 (ADR 0541), which scripts and Ansible's *dukovo.system*
+collection read in place of the text. A later field may be added without
+a new *format*. Names are in snake_case, times are RFC 3339 in UTC, and a
+value that is not known is *null*. An error is told to standard error as
+without *--json*, with the same exit status. The members:
+
+*running*, *default*
+	The slot that runs and the slot that starts unless an update is
+	being tried, each *a* or *b*.
+
+*previous*
+	The slot that holds the version before the default, which *rollback*
+	goes back to, or *null*.
+
+*staged*
+	An update that has not proved itself, or *null*: *slot*, and
+	*tries_left*, the starts it has left to prove itself in. With none,
+	the next start runs the default.
+
+*next*
+	The slot the next start runs.
+
+*unfinished_start*
+	The slot whose start was not seen through, or *null*; the boot menu
+	shows at the next start while it is set.
+
+*slots*
+	A list with an object for each slot, *a* then *b*: *slot*,
+	*version*, the release it says it is, and *firmware*, the firmware
+	set it names. Each is *null* for a slot that is empty or says
+	nothing, or names no set. The firmware set the system runs is the
+	running slot's.
+
+*channel*, *canary*
+	The channel this system follows, and whether it is one of the
+	project's canaries, which take each release on its first day.
+
+*wave*
+	This machine's number from 0 to 999, which places it in a wave of
+	a release, or *null* before the machine has drawn it. Asking for the
+	status does not draw it.
+
+*held*
+	The versions *update hold* holds back: *system* and *firmware*, each
+	a version or *null*.
+
+*last_health_check*
+	The health check's last result, or *null*: *time*, *passed*, and
+	*detail*, what it found.
+
+*last_update*
+	The last update, or *null*: *from*, *to*, *slot*, and
+	*settings_restored*, whether a fallback put the settings from before
+	it back.
+
+*rescue*
+	The release Rescue holds, or *null* before it is written.
+
+*slot_state*
+	A list with an object for each partition that holds the slot state:
+	*partition*, and *generation*, that of its newest whole copy, or
+	*null* when it has none.
 
 # EXIT STATUS
 

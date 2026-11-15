@@ -181,6 +181,26 @@ $ bundle update --automatic on
 An update that asks for more still waits for you then, and `bundle
 history` says so.
 
+A catalog may send a new version out in waves, as Dukovo's own releases
+go out: its canary computers take it first, and the rest over the
+following week, each by a number it draws and keeps to itself (ADR
+0544). If something goes wrong, the catalog pauses the waves, and the
+computers not reached yet wait. `bundle update` with no name, and
+updating by themselves, leave such an update until your computer's wave
+opens, and `bundle update --check` says on which day, and why the waves
+are held:
+
+```
+$ bundle update --check
+org.example.notes 2.1.0 reaches machines in waves; this machine's opens on day 3
+  `bundle update org.example.notes` takes it now
+0 to update, 0 up to date, 1 waiting for their wave
+```
+
+Naming the bundle, `bundle update org.example.notes`, takes it at once.
+So does an update that ends a high or critical known flaw of the version
+you run: a flawed version does not wait a week for its fix.
+
 The version an update replaced is kept, sealed, to go back to:
 
 ```

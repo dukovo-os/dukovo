@@ -1,0 +1,42 @@
+{
+  "format": 1,
+  "place": "/users",
+  "folder": "/snapshots/users",
+  "snapshots": [
+    {
+      "name": "2026-11-12-0300",
+      "made": "2026-11-12T03:00:00Z",
+      "named": false,
+      "kept": [],
+      "prunable": true
+    },
+    {
+      "name": "before-the-upgrade",
+      "made": "2026-11-12T20:15:00Z",
+      "named": true,
+      "kept": [],
+      "prunable": false
+    },
+    {
+      "name": "2026-11-13-0300",
+      "made": "2026-11-13T03:00:00Z",
+      "named": false,
+      "kept": ["daily"],
+      "prunable": false
+    },
+    {
+      "name": "2026-11-14-0300",
+      "made": "2026-11-14T03:00:00Z",
+      "named": false,
+      "kept": ["newest", "daily", "weekly"],
+      "prunable": false
+    },
+    {
+      "name": "unknown-time",
+      "made": null,
+      "named": true,
+      "kept": [],
+      "prunable": false
+    }
+  ]
+}

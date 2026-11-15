@@ -74,6 +74,11 @@ is there to edit. A setting already in
 `/system/settings` is never replaced, so an update adds new settings
 without undoing your edits.
 
+One of those settings is a link: `/etc/os-release`, which scripts read to
+tell which system they run on, leads to `/usr/lib/os-release`, the file
+each release carries. It says `ID=dukovo` and the version that runs, so
+it changes with each update.
+
 ## Dukovo's root on a disk
 
 An installed system's disk, which the installer makes and

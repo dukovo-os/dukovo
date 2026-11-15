@@ -142,7 +142,8 @@ stages a withdrawn release. A withdrawal is never undone, and the
 version is never used again.
 
 With *--plan*, *refresh* and *publish* also sign the rollout of each
-release a channel offers (ADR 0469): the highest of its waves open, from
+release a channel offers (ADR 0469), and of each firmware set one offers,
+as *firmware-*_version_ (ADR 0544): the highest of its waves open, from
 the update server's plan in _file_, which they keep up to date. The
 waves open on days 0, 1, 3, 5 and 7 after a channel first offered the
 release: to the canaries, then to the machines numbered below 10, 100,
@@ -151,8 +152,9 @@ newest root gives timestamp, which signs the rollouts; the role is good
 for a day, and is signed anew when what it lists changes or it has
 twelve hours left. *rollout* changes the plan and signs the rollouts at
 once: *pause* holds a release's waves where they are, with a reason
-machines show; *resume* lets them open on schedule again; and *canary*
-marks a canary *red*, which holds every release's waves, or *green*.
+machines show (*pause firmware-2026.2.1* a firmware set's); *resume* lets
+them open on schedule again; and *canary* marks a canary *red*, which
+holds every release's and set's waves, or *green*.
 
 ```
 $ system-release rollout --repo /srv/dukovo-system/system.8Fw1 --online-key online.key --plan rollout.json pause 0.15.1 "disk errors on NVMe"
