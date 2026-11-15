@@ -75,6 +75,21 @@ pub fn configure(ctx: &Ctx, cmd: &mut Command) {
     cmd.env("RUSTC_WRAPPER", exe).env(MAPS, encode(&crate::repro::maps(ctx)));
 }
 
+/// Undoes [`configure`] for `cmd`, a Cargo command whose compiler is not
+/// rustc, such as Kani's `kani-compiler`, which the wrapper does not
+/// run: what it checks is no part of a release. The wrapper Cargo would
+/// have run before, if any, runs again.
+pub fn unconfigure(cmd: &mut Command) {
+    cmd.env_remove(MAPS).env_remove(NEXT);
+    let exe = std::env::current_exe().ok();
+    match std::env::var_os("RUSTC_WRAPPER")
+        .filter(|next| !next.is_empty() && exe.as_deref() != Some(Path::new(next)))
+    {
+        Some(next) => cmd.env("RUSTC_WRAPPER", next),
+        None => cmd.env_remove("RUSTC_WRAPPER"),
+    };
+}
+
 /// The maps of [`crate::repro::maps`] as [`MAPS`] holds them.
 fn encode(maps: &[(PathBuf, &str)]) -> String {
     let mut text = String::new();
@@ -550,5 +565,22 @@ mod tests {
         assert!(is_compiler("/root/.rustup/toolchains/nightly/bin/clippy-driver"));
         assert!(!is_compiler("build"));
         assert!(!is_compiler("corpus-run"));
+    }
+
+    #[test]
+    fn an_unconfigured_command_runs_the_wrapper_from_before_and_not_ob() {
+        let mut cmd = Command::new("cargo");
+        cmd.env("RUSTC_WRAPPER", "/checkout/target/debug/xtask")
+            .env(MAPS, "/checkout\t/dukovo\n")
+            .env(NEXT, "sccache");
+        unconfigure(&mut cmd);
+        let envs: Vec<_> = cmd.get_envs().collect();
+        for name in [MAPS, NEXT] {
+            assert!(envs.contains(&(std::ffi::OsStr::new(name), None)), "{name}");
+        }
+        let wrapper =
+            envs.iter().find(|(name, _)| *name == "RUSTC_WRAPPER").map(|(_, value)| *value);
+        let before = std::env::var_os("RUSTC_WRAPPER").filter(|next| !next.is_empty());
+        assert_eq!(wrapper, Some(before.as_deref()));
     }
 }
