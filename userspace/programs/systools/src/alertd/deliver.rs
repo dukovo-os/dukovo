@@ -246,6 +246,22 @@ impl Outbox {
         lines
     }
 
+    /// Takes the outcome of a test alert sent to `channel`, which is not
+    /// queued and so never reaches [`Outbox::finish`]: it counts as the
+    /// channel's newest delivery, so that `alerts status` says when the
+    /// channel last worked or last failed, and why.
+    pub fn tested(&mut self, channel: &str, result: Result<(), String>, now: u64) {
+        match result {
+            Ok(()) => {
+                self.last_ok.insert(channel.to_string(), now);
+            }
+            Err(why) => {
+                self.last_error.insert(channel.to_string(), (now, why));
+            }
+        }
+        self.changed = true;
+    }
+
     /// Where each of `channels` stands, for `alerts status`.
     pub fn status(&self, channels: &[Configured]) -> Vec<Standing> {
         channels
@@ -655,6 +671,32 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_test_alert_counts_as_the_channels_newest_delivery() {
+        let channels = [open("a"), open("b")];
+        let mut outbox = Outbox::default();
+        outbox.tested("a", Ok(()), 40);
+        outbox.tested("b", Err("discord answered 403 Forbidden".into()), 41);
+        assert!(outbox.take_text().is_some(), "the outcome is kept on disk");
+        assert_eq!(
+            outbox.status(&channels),
+            [
+                Standing { channel: "a".into(), last_ok: Some(40), last_error: None, waiting: 0 },
+                Standing {
+                    channel: "b".into(),
+                    last_ok: None,
+                    last_error: Some((41, "discord answered 403 Forbidden".into())),
+                    waiting: 0
+                },
+            ]
+        );
+        // A later test that works is the newest, and the failure stays
+        // with its time.
+        outbox.tested("b", Ok(()), 50);
+        let b = &outbox.status(&channels)[1];
+        assert_eq!((b.last_ok, b.last_error.as_ref().map(|e| e.0)), (Some(50), Some(41)));
     }
 
     #[test]

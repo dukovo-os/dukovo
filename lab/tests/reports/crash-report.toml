@@ -55,14 +55,14 @@ expect = ["crash-test", "fault_here"]
 # The report goes to the lab PC, which keeps what was sent: the text
 # the draft had, with the crash's frames.
 [[step]]
-run = "/system/tests/report/crash-test send \"crash-test stopped in the lab\""
+run = "/system/tests/report/crash-test send \"crash-test stopped on purpose\""
 expect = "sent 1"
 [[step]]
 host = "python3 -I {here}/report-server.py show reports 1"
-expect = ["Dukovo problem report", "crash-test stopped in the lab", "== Crash", "SIGSEGV", "fault_here", "outer"]
+expect = ["Dukovo problem report", "crash-test stopped on purpose", "== Crash", "SIGSEGV", "fault_here", "outer"]
 [[step]]
 run = "report list"
-expect = "crash-test stopped in the lab"
+expect = "crash-test stopped on purpose"
 
 # What the server says is read back: received, and then fixed in the
 # version the lab PC names, as the people who handle reports set it.

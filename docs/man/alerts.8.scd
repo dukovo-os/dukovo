@@ -80,8 +80,9 @@ start*.
 
 *status*
 	Shows each channel and how it stands: when it last sent a message,
-	when it last failed and why, and how many messages wait to be
-	tried again (*alertd*(8) says when):
+	when it last failed and why, a test alert counting as any other,
+	and how many messages wait to be tried again (*alertd*(8) says
+	when):
 
 	```
 	# alerts status
