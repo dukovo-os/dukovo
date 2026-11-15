@@ -225,11 +225,14 @@ static void files(void) {
 	OUTPUT("", "system\n", "/bin/readlink", "/usr");
 	OUTPUT("", "/system/commands\n", "/bin/realpath", "/usr/bin");
 	// The root's Unix names are links its .hidden lists (ADR 0113): ls
-	// leaves them out unless asked for every name.
-	OUTPUT("", "applications\ndevices\nkernel\nprocesses\nshared\nsystem\ntmp\nusers\nvolumes\n",
+	// leaves them out unless asked for every name. /snapshots is there
+	// with no root's @snapshots on it, as here (spark(8)).
+	OUTPUT("",
+			"applications\ndevices\nkernel\nprocesses\nshared\nsnapshots\nsystem\ntmp\nusers\n"
+			"volumes\n",
 			"/bin/ls", "/");
 	OUTPUT("", ".hidden\napplications\nbin\ndev\ndevices\netc\nkernel\nproc\nprocesses\nrun\n"
-			   "sbin\nshared\nsys\nsystem\ntmp\nusers\nusr\nvar\nvolumes\n",
+			   "sbin\nshared\nsnapshots\nsys\nsystem\ntmp\nusers\nusr\nvar\nvolumes\n",
 			"/bin/ls", "-A", "/");
 	OUTPUT("", "/dev\n", "/bin/ls", "-d", "/dev");
 	// So are those of /system (ADR 0114).
