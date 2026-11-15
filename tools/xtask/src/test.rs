@@ -4284,8 +4284,9 @@ pub fn test_advisory(fixed: &str) -> String {
 /// deploys a catalog.
 pub const TEST_SERVER_CATALOG_KEY: &str = "catalog-key";
 
-/// The boot test that reads [`TEST_SERVER`] over the network.
-const TEST_SERVER_CASE: &str = "update-online";
+/// The boot tests that read [`TEST_SERVER`] over the network.
+const TEST_SERVER_CASES: [&str; 4] =
+    ["update-online", "update-bad-network", "update-clock-ahead", "update-clock-behind"];
 
 /// The releases the test update server offers, by their version's last
 /// word: `bridge`, this build with three files added, which updates from
@@ -4309,7 +4310,8 @@ pub fn test_update_file() -> String {
 /// Makes [`TEST_SERVER`] in `dir` if a case of `cases` reads it.
 fn test_update_server(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<()> {
     let wanted = cases.iter().any(|case| {
-        case.name == TEST_SERVER_CASE || case.disks.iter().any(|disk| disk.fat == UPDATE_FILE)
+        TEST_SERVER_CASES.contains(&case.name)
+            || case.disks.iter().any(|disk| disk.fat == UPDATE_FILE)
     });
     if wanted { make_update_server(ctx, built, dir) } else { Ok(()) }
 }
@@ -11953,6 +11955,27 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_case_that_starts_the_test_update_server_has_it_made() {
+        let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/test/cases");
+        let mut starting = Vec::new();
+        for entry in std::fs::read_dir(&cases).unwrap() {
+            let path = entry.unwrap().path();
+            let source = std::fs::read_to_string(&path).unwrap();
+            if source.contains("Server::start(") {
+                let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+                starting.push(name);
+            }
+        }
+        starting.sort();
+        let mut made = TEST_SERVER_CASES.to_vec();
+        made.sort_unstable();
+        assert_eq!(starting, made);
+        for name in TEST_SERVER_CASES {
+            assert!(all_cases().any(|case| case.name == name), "{name} is no case");
+        }
+    }
 
     #[test]
     fn a_prompt_waits_with_or_without_the_shells_hint() {
