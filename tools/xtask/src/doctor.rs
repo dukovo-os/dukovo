@@ -928,4 +928,15 @@ mod tests {
         let pin = format!("KANI_VERSION={KANI_VERSION}");
         assert!(ci.contains(&pin), ".github/workflows/ci.yml pins another Kani");
     }
+
+    #[test]
+    fn the_update_matrix_pins_the_same_cargo_fuzz() {
+        let matrix =
+            include_str!("../../../.github/workflows/update-matrix.yml").replace(": ", "=");
+        let pin = format!("CARGO_FUZZ_VERSION={CARGO_FUZZ_VERSION}");
+        assert!(
+            matrix.contains(&pin),
+            ".github/workflows/update-matrix.yml pins another cargo-fuzz"
+        );
+    }
 }

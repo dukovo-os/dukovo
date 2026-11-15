@@ -7,15 +7,19 @@
 # Each night on main it runs a sample: sixteen power cuts of an update
 # replayed from QEMU's write log under UEFI and under BIOS, the first start
 # of an update killed again and again under each, and the update boot
-# tests that stood before the matrix. Dispatched by hand, with `full`, on a
+# tests that stood before the matrix, the TUF conformance suite, and each
+# fuzz target for ten minutes. Dispatched by hand, with `full`, on a
 # release branch, it runs every power cut, in eight parts for each
-# firmware type, and twenty kills of the first start, for a release
-# candidate.
+# firmware type, twenty kills of the first start, and each fuzz target for
+# an hour, for a release candidate.
 #
 # The jobs come from `./ob test matrix --list`, so that what runs is
 # written once, in tools/xtask/src/test/matrix.rs. They run on GitHub's
 # standard runners, each under the six hours a job may take: a power cut
-# replay is a boot of QEMU a cut, with KVM.
+# replay is a boot of QEMU a cut, with KVM. The conformance suite and the
+# fuzz targets run on the host alone, so they skip what the boot tests
+# need. A fuzz target's corpus is kept in the Actions cache, by target, and
+# grows with each run; the input of a crash is uploaded.
 name: Update matrix
 
 on:
@@ -40,6 +44,8 @@ env:
   # Keep in step with ci.yml's, tools/container/Containerfile and
   # tools/xtask/src/doctor.rs.
   MDBOOK_VERSION: 0.4.52
+  # Keep in step with tools/xtask/src/doctor.rs (ADR 0536).
+  CARGO_FUZZ_VERSION: 0.13.2
 
 jobs:
   # The matrix's jobs, as `./ob test matrix --list` prints them.
@@ -83,7 +89,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The boot tests and the replays need QEMU and the ports; the
+      # conformance suite and the fuzz targets do not.
+      - name: Note what the job needs
+        id: kind
+        env:
+          RUN: ${{ matrix.run }}
+        run: |
+          case "$RUN" in
+            "./ob test fuzz "*) echo kind=fuzz ;;
+            "./ob test tuf") echo kind=tuf ;;
+            *) echo kind=boot ;;
+          esac >> "$GITHUB_OUTPUT"
+
       - name: Allow QEMU to use KVM
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         run: |
           if [ -e /dev/kvm ]; then
             echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
@@ -96,6 +116,7 @@ jobs:
       # boot job installs them, without the servers only other boot tests
       # use.
       - name: Install host packages
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         uses: ./.github/actions/apt-install
         with:
           packages: >-
@@ -107,6 +128,7 @@ jobs:
       # GRUB, which ./ob builds from its pinned source for the images
       # (ADR 0306): built once for each change to its recipe.
       - name: Cache GRUB
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         uses: actions/cache@v4
         with:
           path: .cache/grub
@@ -116,6 +138,7 @@ jobs:
       # from its pinned source (ADR 0488): once for each change to its
       # recipe.
       - name: Cache memtest86+
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         uses: actions/cache@v4
         with:
           path: .cache/memtest
@@ -123,6 +146,7 @@ jobs:
 
       # ./ob setup runs ./ob doctor, which asks for mdBook too.
       - name: Install mdBook
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         run: |
           # GitHub's release downloads sometimes answer 504 for a while;
           # build the same pinned version from crates.io when they do.
@@ -140,12 +164,14 @@ jobs:
           save-if: ${{ github.ref_name == 'main' && strategy.job-index == 0 }}
 
       - name: Note the port toolchain's version
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         id: ports-key
         run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
 
       # The newest ports that main's runs saved (ci.yml's ports job):
       # ./ob ports builds whatever they lack.
       - name: Restore the built ports
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -157,13 +183,58 @@ jobs:
           restore-keys: ${{ format('ports-host-{0}-', steps.ports-key.outputs.clang) }}
 
       - name: ./ob setup
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         run: ./ob setup
 
       # Should the cache not restore, the ports build here, in about 30
       # minutes that must not count against the job's time for the tests.
       - name: ./ob ports
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
         timeout-minutes: 60
         run: ./ob ports
+
+      # Some of the TUF suite's tests run the client under faketime, and
+      # it runs in a Python virtual environment.
+      - name: Install Python's venv and faketime
+        if: ${{ steps.kind.outputs.kind == 'tuf' }}
+        uses: ./.github/actions/apt-install
+        with:
+          packages: python3-venv faketime
+
+      - name: Cache the conformance suite
+        if: ${{ steps.kind.outputs.kind == 'tuf' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/tuf-conformance
+          key: tuf-conformance-${{ hashFiles('tools/xtask/src/tuf.rs') }}
+
+      # cargo-fuzz's binary goes outside ~/.cargo/bin, which rust-cache
+      # prunes of anything it did not restore before this cache is saved.
+      - name: Cache cargo-fuzz
+        id: fuzz-tool
+        if: ${{ steps.kind.outputs.kind == 'fuzz' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo-fuzz-bin
+          key: cargo-fuzz-${{ env.CARGO_FUZZ_VERSION }}-${{ runner.os }}
+
+      - name: Install cargo-fuzz
+        if: ${{ steps.kind.outputs.kind == 'fuzz' && steps.fuzz-tool.outputs.cache-hit != 'true' }}
+        run: cargo +stable install --locked --root ~/.cargo-fuzz-bin cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+
+      - name: Put cargo-fuzz on the PATH
+        if: ${{ steps.kind.outputs.kind == 'fuzz' }}
+        run: echo "$HOME/.cargo-fuzz-bin/bin" >> "$GITHUB_PATH"
+
+      # The corpus the target grew in earlier runs: the newest of its
+      # target's, which this run's saves under its own ID.
+      - name: Restore the fuzz corpus
+        if: ${{ steps.kind.outputs.kind == 'fuzz' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/fuzz
+          key: ${{ matrix.name }}-corpus-${{ github.run_id }}
+          restore-keys: ${{ matrix.name }}-corpus-
 
       # The environment the matrix's entry names, as OB_TEST_KILLS.
       - name: Set the entry's environment
@@ -178,7 +249,7 @@ jobs:
         run: ${{ matrix.run }}
 
       - name: Show the host's processes and kernel log
-        if: failure()
+        if: ${{ failure() && steps.kind.outputs.kind == 'boot' }}
         run: |
           # pgrep cannot print these columns.
           # shellcheck disable=SC2009
@@ -189,7 +260,7 @@ jobs:
       # marks and the serial logs of its cuts, and, if they are under 2 GB
       # on disk, the disks of the cuts that failed, compressed.
       - name: Gather the logs and the failed cuts' disks
-        if: failure()
+        if: ${{ failure() && steps.kind.outputs.kind == 'boot' }}
         run: |
           pack="$RUNNER_TEMP/update-matrix-logs"
           mkdir -p "$pack"
@@ -203,10 +274,20 @@ jobs:
           fi
 
       - name: Upload the logs and the failed cuts
-        if: failure()
+        if: ${{ failure() && steps.kind.outputs.kind == 'boot' }}
         uses: actions/upload-artifact@v4
         with:
           name: update-matrix-${{ matrix.name }}
           path: ${{ runner.temp }}/update-matrix-logs
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # The input a fuzz target failed on, in out/fuzz/<target>/.
+      - name: Upload the crash inputs
+        if: ${{ failure() && steps.kind.outputs.kind == 'fuzz' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-matrix-${{ matrix.name }}
+          path: out/fuzz
           retention-days: 14
           if-no-files-found: ignore

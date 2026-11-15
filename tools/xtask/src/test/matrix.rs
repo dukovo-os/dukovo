@@ -6,13 +6,15 @@
 //! `strategy.matrix` (ADR 0536).
 //!
 //! The nightly run takes a sample: sixteen power cuts of each firmware
-//! type, the first-start kills, and the update boot tests that ran
-//! before the matrix did. `--full`, for a release candidate, takes every
-//! power cut, in eight parts of each firmware type that run at once, and
-//! twenty kills of the first start.
+//! type, the first-start kills, the update boot tests that ran before the
+//! matrix did, the TUF conformance suite, and each fuzz target for ten
+//! minutes. `--full`, for a release candidate, takes every power cut, in
+//! eight parts of each firmware type that run at once, twenty kills of the
+//! first start, and each fuzz target for an hour.
 
 use serde_json::{Value, json};
 
+use super::fuzz;
 use crate::{Args, Result};
 
 /// The power cut replays, by firmware type: the case, and a name for the
@@ -36,6 +38,10 @@ const UPDATE_CASES: [&str; 7] = [
     "update-offline",
     "update-online",
 ];
+
+/// How long each fuzz target runs, in seconds, in a nightly run and in a
+/// candidate's.
+const FUZZ_SECONDS: (u64, u64) = (600, 3600);
 
 /// How many cuts of each firmware type a nightly run boots.
 const NIGHTLY_POINTS: usize = 16;
@@ -101,6 +107,14 @@ fn jobs(full: bool) -> Vec<Job> {
     }
     let cases: Vec<String> = UPDATE_CASES.iter().map(|case| format!("--case {case}")).collect();
     jobs.push(Job::new("update-cases", format!("./ob test boot {} --retry", cases.join(" "))));
+    jobs.push(Job::new("tuf-conformance", "./ob test tuf"));
+    let seconds = if full { FUZZ_SECONDS.1 } else { FUZZ_SECONDS.0 };
+    for target in fuzz::TARGETS {
+        jobs.push(Job::new(
+            format!("fuzz-{target}"),
+            format!("./ob test fuzz --target {target} --seconds {seconds}"),
+        ));
+    }
     jobs
 }
 
@@ -187,7 +201,7 @@ mod tests {
     #[test]
     fn the_nightly_sample_is_sixteen_cuts_of_each_firmware_and_the_rest() {
         let runs: Vec<String> = jobs(false).into_iter().map(|job| job.run).collect();
-        assert_eq!(runs.len(), 5);
+        assert_eq!(runs.len(), 5 + 1 + fuzz::TARGETS.len());
         assert_eq!(runs[0], "./ob test replay --case update-power-replay --points 16");
         assert_eq!(runs[1], "./ob test replay --case update-power-replay-bios --points 16");
         assert_eq!(runs[2], "./ob test boot --case update-first-start-kills");
@@ -198,13 +212,30 @@ mod tests {
              --case update-hang --case update-fallback --case update-offline \
              --case update-online --retry"
         );
+        assert_eq!(runs[5], "./ob test tuf");
+        assert_eq!(runs[6], "./ob test fuzz --target release-list --seconds 600");
         assert!(jobs(false).iter().all(|job| job.env.is_empty()));
+    }
+
+    #[test]
+    fn each_fuzz_target_runs_for_ten_minutes_and_a_candidates_for_an_hour() {
+        for (full, seconds) in [(false, 600), (true, 3600)] {
+            let jobs = jobs(full);
+            for target in fuzz::TARGETS {
+                let run = format!("./ob test fuzz --target {target} --seconds {seconds}");
+                let job = jobs.iter().find(|job| job.run == run).unwrap();
+                assert_eq!(job.name, format!("fuzz-{target}"));
+            }
+            let fuzzing = jobs.iter().filter(|job| job.run.starts_with("./ob test fuzz ")).count();
+            assert_eq!(fuzzing, fuzz::TARGETS.len());
+            assert_eq!(jobs.iter().filter(|job| job.run == "./ob test tuf").count(), 1);
+        }
     }
 
     #[test]
     fn the_full_run_boots_every_cut_in_eight_parts_of_each_firmware() {
         let jobs = jobs(true);
-        assert_eq!(jobs.len(), 2 * PARTS + 2 + 1);
+        assert_eq!(jobs.len(), 2 * PARTS + 2 + 1 + 1 + fuzz::TARGETS.len());
         for (case, _) in REPLAYS {
             for part in 1..=PARTS {
                 let run =
