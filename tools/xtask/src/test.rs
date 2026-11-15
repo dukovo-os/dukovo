@@ -3708,6 +3708,7 @@ fn kani(ctx: &Ctx) -> Result<()> {
     for program in PROVED_PROGRAMS {
         step(&format!("Checking the Kani proofs of {program}"));
         let mut cmd = process::cargo(ctx);
+        crate::rustc_wrapper::unconfigure(&mut cmd);
         // `cargo kani` takes no `--config`, so the lock of the host builds
         // of the programs (userspace::host_cargo_of) goes in the
         // environment, and the build gets a directory apart from the
