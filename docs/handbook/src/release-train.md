@@ -191,7 +191,17 @@ second issue, open or closed:
   with a comment, unless it was closed as not planned, which is a
   decision to live with the finding;
 - an open issue whose ID no longer matches is closed with a comment that
-  says so.
+  says why: the part that had it has moved to a version without it, the
+  advisory was withdrawn, the scan does not ask about the part, or a
+  statement says Dukovo is not affected (see below). The job reopens an
+  issue that was closed this way when its ID matches again.
+
+The job writes one issue, comment or label at a time, a second apart, as
+GitHub asks of a client that creates content. When GitHub answers with
+its secondary rate limit, the job waits for the seconds of the response's
+`retry-after` header, or a minute when there is none, and tries the write
+again, three times at most. A limit that does not lift fails the job. The
+issues made before the limit stay, and the next run carries on from them.
 
 An issue labelled `needs-triage` waits for a maintainer, who reads the
 advisory and adds `severity:critical`, `severity:high`, `severity:medium`
@@ -234,10 +244,66 @@ A project with no public git repository says why instead, in one line:
 none = "Info-ZIP publishes release archives and keeps no public repository"
 ```
 
-The scan cannot ask OSV about such a port. It lists the port as not
-covered, with the reason, in its output and in the job summary, and a new
+The scan cannot ask OSV about such a port. It lists the port as not asked
+about, with the reason, in its output and in the job summary, and an
 advisory against it is found by reading the project's release
 announcements. `docs/deferred.md` keeps the list of these ports.
+
+A port that takes only data from its source, such as the locale tables of
+glibc and none of its code, says so with `data_only`, and a reason of one
+line:
+
+```toml
+data_only = "only the locale sources and character maps are taken, and the host's localedef compiles them; no glibc code is built"
+```
+
+The flaws of the project are in code the port does not build, so the scan
+does not ask about them. It lists the port as not asked about, with the
+reason, as it does a port with no repository. A port with `data_only` has
+a source, and lists no crates.
+
+#### Findings that do not affect Dukovo
+
+An advisory can match a part of the system that it does not affect: its
+record names no fixed commit, though the commit the port pins has the fix,
+or the vulnerable code is in a part of the project the port does not
+build. A statement in `security/vex.json`, an
+[OpenVEX](https://openvex.dev) 0.2.0 document, says so. A pull request
+adds it, with:
+
+- the advisory's ID, as the issue's title gives it;
+- the product, as the issue's table names it in the column Product: a
+  package URL with the recipe's version, `pkg:generic/<port>@<version>`
+  for a port, or `pkg:cargo/<name>@<version>` for a crate;
+- the status, `not_affected` or `fixed`;
+- the reason, in `status_notes` or `impact_statement`. A statement of
+  `not_affected` also has a `justification`, one of OpenVEX's, or an
+  `impact_statement`.
+
+The statement for the espeak-ng issue of CVE-2023-49990 is:
+
+```json
+{
+  "vulnerability": { "name": "CVE-2023-49990" },
+  "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+  "status": "fixed",
+  "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+}
+```
+
+`./ob security check` checks the file, and CI runs it. The next scan
+leaves the finding out of its `findings` and lists it under
+`not_affected`, with the statement. The `sbom-scan` job closes the
+issue as completed, with a comment that quotes the statement. The
+support site publishes the file as `security/vex.json`, so that a scanner
+that reads OpenVEX reads the same statements.
+
+The product names a version. A statement lapses when the port moves to
+another one, and the advisory is weighed again for the version the port
+moves to. A statement that clears no finding is listed under `unused_statements`, and
+in the job summary, to be corrected or removed. The issue that a statement
+closed is opened again when the statement is withdrawn, or when the ID
+matches in another product.
 
 Run it on a machine with `cargo-audit` installed:
 

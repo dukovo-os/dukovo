@@ -11,7 +11,7 @@
 # bundles that need them, such as nginx's, link them from the port's
 # folder (ADR 0491).
 name = "openssl"
-version = "3.5.4"
+version = "3.5.9"
 # The long-term release's series: ports outdated offers its fixes, not 3.6 or 4.
 series = "3.5"
 summary = "openssl, OpenSSL's command for keys, certificates and TLS"
@@ -20,9 +20,9 @@ homepage = "https://openssl-library.org"
 depends = ["mlibc"]
 
 [source]
-url = "https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz"
-sha256 = "967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99"
+url = "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz"
+sha256 = "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
 
 [upstream]
 git = "https://github.com/openssl/openssl.git"
-tag = "openssl-3.5.4"
+tag = "openssl-3.5.9"

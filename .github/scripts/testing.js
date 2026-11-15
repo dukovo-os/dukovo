@@ -10,9 +10,10 @@
 'use strict';
 
 class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, headers = {}) {
     super(message);
     this.status = status;
+    this.response = { status, headers };
   }
 }
 
@@ -64,9 +65,12 @@ class FakeRepo {
     this.github = this.makeGithub();
   }
 
-  /** Makes `method` fail with `status` the next time a script calls it. */
-  failWith(method, status, message = 'failed') {
-    this.failOn[method] = new ApiError(status, message);
+  /**
+   * Makes `method` fail with `status` the next time a script calls it.
+   * `headers` are those of the response, as Octokit keeps them on an error.
+   */
+  failWith(method, status, message = 'failed', headers = {}) {
+    this.failOn[method] = new ApiError(status, message, headers);
   }
 
   addIssue({ title, body = '', labels = [], state = 'open', stateReason = null, events = [], createdAt, pullRequest = false, ...extra }) {

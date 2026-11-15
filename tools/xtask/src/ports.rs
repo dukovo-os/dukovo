@@ -85,6 +85,13 @@ pub struct Recipe {
     /// leading numbers are these. Without it, any newer release counts.
     #[serde(default)]
     pub series: Option<String>,
+    /// For a port that takes only data from its source, such as locale
+    /// tables, and builds none of the project's code: why, in one line.
+    /// `ob security scan` does not ask about the project's flaws, which are
+    /// in code the port does not build, and lists the port as not asked
+    /// about, with this reason.
+    #[serde(default)]
+    pub data_only: Option<String>,
     /// More sources, unpacked inside the port's source tree.
     #[serde(default)]
     pub extra: Vec<Extra>,
@@ -433,6 +440,9 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
     if let Some(problem) = series_problem(recipe) {
         return Err(Error::new(format!("{what}: {problem}")));
     }
+    if let Some(problem) = data_only_problem(recipe) {
+        return Err(Error::new(format!("{what}: {problem}")));
+    }
     if let Some(path) = outside_path(recipe) {
         return Err(Error::new(format!(
             "{what}: `{path}` is not a path inside the tree it is taken from"
@@ -466,12 +476,6 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// What is wrong with the recipe's `[upstream]`, if anything. A port
-/// pinned by a release archive has one: the project's repository and the
-/// release's tag, or `none` with the reason there is no repository, so that
-/// a missing repository is a decision in the recipe and not an oversight.
-/// A port pinned by git has none, as its source is its upstream; a port
-/// with no source of its own has none either.
 /// What is wrong with `recipe`'s `series`, if anything: it is one or more
 /// numbers set apart by dots, and the version the recipe pins is in it.
 fn series_problem(recipe: &Recipe) -> Option<String> {
@@ -493,6 +497,30 @@ fn series_problem(recipe: &Recipe) -> Option<String> {
     None
 }
 
+/// What is wrong with `recipe`'s `data_only`, if anything: its reason is
+/// one line, and the port has a source to take the data from.
+fn data_only_problem(recipe: &Recipe) -> Option<String> {
+    let reason = recipe.data_only.as_deref()?;
+    if reason.trim().is_empty() || reason.contains(['\n', '\r']) {
+        return Some("data_only needs a reason of one line".to_string());
+    }
+    if recipe.source.git.is_empty() && recipe.source.url.is_empty() {
+        return Some(
+            "data_only goes with a source, git or url, that the data comes from".to_string(),
+        );
+    }
+    if !recipe.crates.is_empty() {
+        return Some("a port that takes only data builds no crates".to_string());
+    }
+    None
+}
+
+/// What is wrong with the recipe's `[upstream]`, if anything. A port
+/// pinned by a release archive has one: the project's repository and the
+/// release's tag, or `none` with the reason there is no repository, so that
+/// a missing repository is a decision in the recipe and not an oversight.
+/// A port pinned by git has none, as its source is its upstream; a port
+/// with no source of its own has none either.
 fn upstream_problem(recipe: &Recipe) -> Option<String> {
     let archive = !recipe.source.url.is_empty();
     let Some(upstream) = &recipe.upstream else {
@@ -2010,6 +2038,38 @@ mod tests {
             let problem = series_problem(&with(series))
                 .unwrap_or_else(|| panic!("`{series}` was not refused"));
             assert!(problem.contains(expected), "`{series}` gave `{problem}`, not `{expected}`");
+        }
+    }
+
+    #[test]
+    fn a_port_that_takes_only_data_says_why_and_has_a_source_and_no_crates() {
+        let with = |data_only: &str, rest: &str| -> Recipe {
+            toml::from_str(&format!(
+                "name = \"locales\"\nversion = \"2.42\"\nsummary = \"s\"\nlicense = \"MIT\"\n\
+                 homepage = \"https://example.org\"\ndata_only = \"{data_only}\"\n{rest}\n"
+            ))
+            .unwrap()
+        };
+        let git = "[source]\ngit = \"https://example.org/glibc.git\"\n\
+                   commit = \"0123456789012345678901234567890123456789\"";
+        assert_eq!(data_only_problem(&with("only the locale sources", git)), None);
+        assert_eq!(data_only_problem(&curl_recipe(CURL_UPSTREAM)), None);
+        for (data_only, rest, expected) in [
+            ("", git, "a reason of one line"),
+            (" ", git, "a reason of one line"),
+            ("two\\nlines", git, "a reason of one line"),
+            ("tables", "", "goes with a source"),
+            (
+                "tables",
+                &format!(
+                    "{git}\n[[crate]]\nname = \"x\"\nversion = \"1\"\nsha256 = \"ab\"\nlicense = \"MIT\""
+                ),
+                "builds no crates",
+            ),
+        ] {
+            let problem = data_only_problem(&with(data_only, rest))
+                .unwrap_or_else(|| panic!("`{data_only}` with `{rest}` was not refused"));
+            assert!(problem.contains(expected), "`{problem}`, not `{expected}`");
         }
     }
 

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the bots share (ADR 0534): the labels they use and create, the
-// plain text they make of what others wrote, and the job summary.
+// plain text they make of what others wrote, the job summary, and the pace
+// of their writes.
 //
 // The text that reaches an issue, a pull request or a summary from outside
 // (a pull request's title, an advisory's summary) goes through `oneLine`
@@ -83,13 +84,70 @@ function severityLabel(severity) {
   return `severity:${severity}`;
 }
 
+/** A promise that is kept after `ms` milliseconds. */
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Whether an error of the GitHub API is its secondary rate limit. */
+function isSecondaryRateLimit(error) {
+  if (error?.status !== 403 && error?.status !== 429) {
+    return false;
+  }
+  return /secondary rate limit/i.test(error.message ?? '') || error.response?.headers?.['retry-after'] !== undefined;
+}
+
+/**
+ * How long to wait after a secondary rate limit, in milliseconds: the
+ * seconds of the `retry-after` header when the error has one, else
+ * `waitMs`.
+ */
+function waitAfter(error, waitMs) {
+  const seconds = Number(error.response?.headers?.['retry-after']);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : waitMs;
+}
+
+/**
+ * The writer of a run: GitHub allows 80 requests a minute that create
+ * content and 500 an hour, wants them one after another with at least a
+ * second between them, and answers one too many with a secondary rate
+ * limit. `write(request)` leaves `gapMs` since the write before, runs
+ * `request`, and returns what it returns. After a secondary rate limit it
+ * waits what `retry-after` says, or `waitMs` when the error has no such
+ * header, and runs the request again, at most `tries` times in all. Any
+ * other error is thrown at once. A caller awaits each write before it
+ * makes the next. `sleep` is there for tests.
+ */
+function pacedWriter({ sleep = delay, gapMs = 1000, waitMs = 60000, tries = 3 } = {}) {
+  let first = true;
+  return async function write(request) {
+    if (!first) {
+      await sleep(gapMs);
+    }
+    first = false;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await request();
+      } catch (error) {
+        if (!isSecondaryRateLimit(error) || attempt >= tries) {
+          throw error;
+        }
+        await sleep(waitAfter(error, waitMs));
+      }
+    }
+  };
+}
+
 /**
  * Creates each of the labels in `names` that the repository lacks. A name
- * that LABELS does not hold is a mistake in the bot, so it throws.
+ * that LABELS does not hold is a mistake in the bot, so it throws. The
+ * labels are made through `write` when the caller has a paced one.
  *
  * @returns the names it created.
  */
-async function ensureLabels({ github, context }, names) {
+async function ensureLabels({ github, context, write = (request) => request() }, names) {
   const { owner, repo } = context.repo;
   const unknown = names.filter((name) => !LABELS[name]);
   if (unknown.length > 0) {
@@ -107,7 +165,7 @@ async function ensureLabels({ github, context }, names) {
       continue;
     }
     try {
-      await github.rest.issues.createLabel({ owner, repo, name, ...LABELS[name] });
+      await write(() => github.rest.issues.createLabel({ owner, repo, name, ...LABELS[name] }));
       created.push(name);
     } catch (error) {
       // A label made by someone else between the list and the call is as
@@ -138,9 +196,11 @@ function oneLine(text, max = 200) {
 /**
  * Text that came from outside, as one line for a body or a table cell:
  * `oneLine`, with no table bar and no mention that would notify somebody.
+ * An at sign inside a word, as in `pkg:generic/openssl@3.5.4`, is no
+ * mention and stays.
  */
 function inline(text, max = 200) {
-  return oneLine(text, max).replace(/\|/g, '\\|').replace(/@/g, '@&#8203;');
+  return oneLine(text, max).replace(/\|/g, '\\|').replace(/(?<!\w)@/g, '@&#8203;');
 }
 
 /** The label names of an issue or pull request from the API. */
@@ -166,6 +226,7 @@ module.exports = {
   inline,
   labelNames,
   oneLine,
+  pacedWriter,
   severityLabel,
   summarize,
 };

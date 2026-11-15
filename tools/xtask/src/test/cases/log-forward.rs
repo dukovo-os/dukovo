@@ -87,13 +87,16 @@ fn log_forward(vm: &mut Vm, case: &Case) -> Result<(), String> {
 
 /// Checks that the logforwardtest of machine `who` passed, by its log and
 /// its exit code. What failed comes with what logforwardtest said about
-/// it, such as how a command ended, as the log's tail may not hold it.
+/// it, such as how a command ended or, for a record the UDP server never
+/// got, what each machine's sockets, cards and processes showed, as the
+/// log's tail may not hold it.
 fn passed(vm: &Vm, who: &str, code: &str) -> Result<(), String> {
     let log = vm.log();
     let failed: Vec<&str> = log
         .lines()
         .filter(|line| {
             line.contains("logforwardtest: FAILED")
+                || line.contains("logforwardtest: why: ")
                 || (line.contains("logforwardtest: `")
                     && (line.contains("never said") || line.contains("never moved")))
         })

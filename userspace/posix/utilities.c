@@ -851,7 +851,7 @@ static void versioning(void) {
 	for(size_t i = 0; i < sizeof(ENV) / sizeof(ENV[0]); i++)
 		setenv(ENV[i][0], ENV[i][1], 1);
 	STATUS(0, "/bin/mkdir", "-p", "/tmp/git/home");
-	CONTAINS("git version 2.55.0", "/bin/git", "--version");
+	CONTAINS("git version 2.56.1", "/bin/git", "--version");
 	OUTPUT("", "refs/heads/main\n", "/bin/sh", "-c",
 			"git init -q /tmp/git/a && git -C /tmp/git/a symbolic-ref HEAD");
 	OUTPUT("", "cc06e7d412c7d2cc7fccdd86964e3543048ab5e6 First\n", "/bin/sh", "-c",

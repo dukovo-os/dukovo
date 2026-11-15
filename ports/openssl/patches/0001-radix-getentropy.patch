@@ -10,12 +10,12 @@ so that it can go upstream as it is.
 
 --- a/providers/implementations/rands/seeding/rand_unix.c
 +++ b/providers/implementations/rands/seeding/rand_unix.c
-@@ -395,7 +395,7 @@
+@@ -394,7 +394,7 @@
      return getrandom(buf, buflen, 0);
- #  elif (defined(__FreeBSD__) || defined(__NetBSD__)) && defined(KERN_ARND)
+ #elif (defined(__FreeBSD__) || defined(__NetBSD__)) && defined(KERN_ARND)
      return sysctl_random(buf, buflen);
--#  elif defined(__wasi__)
-+#  elif defined(__wasi__) || defined(__radix__)
+-#elif defined(__wasi__) || defined(__EMSCRIPTEN__)
++#elif defined(__wasi__) || defined(__EMSCRIPTEN__) || defined(__radix__)
      if (getentropy(buf, buflen) == 0)
-       return (ssize_t)buflen;
+         return (ssize_t)buflen;
      return -1;

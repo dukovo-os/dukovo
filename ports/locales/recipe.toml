@@ -21,6 +21,9 @@ license = "Unicode-3.0"
 homepage = "https://www.gnu.org/software/libc/"
 image = ["system/libraries/locale/"]
 notices = ["localedata/unicode-gen/unicode-license.txt"]
+# glibc's flaws are in its code, which this port does not build, so the
+# daily scan does not ask about them (ADR 0537).
+data_only = "only the locale sources and character maps are taken, and the host's localedef compiles them; no glibc code is built"
 
 # The GitHub mirror of https://sourceware.org/git/glibc.git.
 [source]

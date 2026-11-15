@@ -60,6 +60,12 @@ the release that fixes it and what to do. It is published in two forms:
   <https://dukovo.org/support/security/feed.xml>, to follow in a feed
   reader.
 
+Advisories of other projects that match a part of Dukovo but do not affect
+it, because the flaw is fixed in the version Dukovo ships or its code is
+not used, are stated in `security/vex.json` (ADR 0537), which the support
+center publishes at <https://dukovo.org/support/security/vex.json> in the
+OpenVEX format that scanners read.
+
 Severity sets the clock for the fix, which starts when a fix exists,
 whether upstream's or Dukovo's own. ADR 0458 has the table:
 
