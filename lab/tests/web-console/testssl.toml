@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# testssl.sh against the web console's port (ADR 0514): admind takes TLS
+# 1.2 and 1.3 and no other version, offers ciphers with forward secrecy and
+# no other, offers no weak cipher, and serves a certificate that names the
+# machine and is valid now. The scan fails on any finding of MEDIUM or
+# worse that testssl-accepted.txt does not list with its reason; the
+# machine's own certificate, which certd makes and no authority signed, is
+# one that it lists. admind is the service that answers.
+#
+# testssl.sh is pinned to the release v3.2.5, by its tag and by the commit
+# the tag names, in testssl-run.sh, which clones it into the lab PC's cache
+# on the first run. The lab PC needs git, bash, openssl and python3, and
+# one of dig, host, drill and nslookup, which testssl.sh looks names up
+# with; the script skips the test where one is missing or it cannot clone
+# the release. No account is made.
+about = "testssl.sh finds the web console's TLS to be 1.2 and 1.3 only, with forward secrecy and no weak cipher, and its certificate named and valid, and nothing of MEDIUM or worse that testssl-accepted.txt does not list"
+time = "20m"
+host_needs = ["git", "bash", "openssl", "python3", "curl"]
+
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+host = "sh {here}/testssl-run.sh {here}/testssl-accepted.txt {machine} {machine-port:9090}"
+expect = [
+    "testssl: TLS 1.2 and 1.3 only",
+    "testssl: forward secrecy only",
+    "testssl: no weak cipher",
+    "testssl: the certificate's names and dates are right",
+    "testssl: nothing of MEDIUM or worse that testssl-accepted.txt does not list",
+]

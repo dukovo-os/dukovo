@@ -57,6 +57,9 @@ system-release = { path = "../system-release" }
 slots = { path = "../slots" }
 # health.toml(5).
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
+# The web console changes a settings file with its comments and order
+# kept (ADR 0516): toml_edit, the toml crate's sibling.
+toml_edit = { version = "0.25.17", default-features = false, features = ["parse", "display"] }
 # bundle feed signs a bundle's own update feed, a small TUF repository, as
 # the catalog's is signed (ADRs 0381 and 0390).
 catalog-repo = { path = "../catalog-repo" }
@@ -149,6 +152,11 @@ bytes = "1.12.1"
 # The QR code of an address, for login(1)'s failure notice and report(1)'s
 # one-time download to a phone (ADR 0532): Nayuki's qrcodegen (MIT).
 qrcodegen = "1.8.0"
+# admind(8)'s store, its journal and its tasks (ADR 0516), in one SQLite
+# file. Without the `bundled` feature, libsqlite3-sys links the sqlite
+# port's library on Radix and the host's libsqlite3 in unit tests, so
+# there is one SQLite to update (ADR 0511).
+rusqlite = { version = "=0.41.1", default-features = false }
 # logd(8)'s records and requests, as lines of JSON (ADR 0210).
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.140"
@@ -169,8 +177,17 @@ smoltcp = { version = "=0.14.0", default-features = false, features = [
 
 [features]
 # admind's `POST /api/1/test/elevate`, which the lab tests use to run an
-# elevated command; a build for people leaves it out (ADR 0514).
+# elevated command, the console's long action `lab.long` and the command it
+# runs, `admin lab-steps`, which its task tests use (ADRs 0514 and 0516).
+# `ob image --lab` builds the lab image with this feature, as
+# `--features systools/lab` (xtask's `userspace::build_for`), and no other
+# image has it: the boot tests' images and every image for people are built
+# without it, and the lab tests that need it fail on an image that has not.
 lab = []
+# The entry points a fuzz target links to (ADR 0515): admind's request
+# handling on a console with no socket, and the parsers of what a client
+# sends. A build for people leaves it out.
+fuzz = []
 
 [lints]
 workspace = true

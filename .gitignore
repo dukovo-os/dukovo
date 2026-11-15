@@ -10,3 +10,6 @@
 
 # Caches used by ./ob --container
 /.cache/
+
+# Python leaves these beside the lab's scripts when it runs them.
+__pycache__/

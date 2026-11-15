@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A long action of the web console as a task (ADR 0516), in each engine: an
+# administrator asks for the lab's long action, which admind runs as a task
+# for 150 seconds and answers with 202 and the task's number. A second
+# browser, signed in as another administrator, sees the task run, its step,
+# its words, its log and the `event: task` of the event stream; the first
+# browser closes, and its session locks a minute later, while the task goes
+# on; the second browser's administrator stops it, and the journal has the
+# action's row with the task's number. admind is the service that answers.
+# The lab's action is in a build made with systools' `lab` feature, which
+# `ob image --lab` turns on for the lab image; the test needs it, and fails
+# on an image built without. Each engine has two administrators of its own,
+# which this test makes and removes, so no script needs the lab's password.
+about = "A long action of the web console runs as a task that outlives the browser that asked for it, shows from a second browser with its steps, log and events, and is stopped by another administrator"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-tasks-$engine wc-tasks-other-$engine; do echo lab-console-password | user add --admin $name || exit 1; done; done'"
+root = true
+expect = ["Made wc-tasks-chromium", "Made wc-tasks-other-chromium", "Made wc-tasks-firefox", "Made wc-tasks-other-firefox", "Made wc-tasks-webkit", "Made wc-tasks-other-webkit"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "tasks.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-tasks-$engine wc-tasks-other-$engine; do user remove --delete-home --yes $name || exit 1; done; done'"
+root = true
+expect = ["wc-tasks-chromium is removed", "wc-tasks-other-chromium is removed", "wc-tasks-firefox is removed", "wc-tasks-other-firefox is removed", "wc-tasks-webkit is removed", "wc-tasks-other-webkit is removed"]

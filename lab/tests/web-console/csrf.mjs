@@ -5,7 +5,7 @@
 // runner (lab repository, docs/test-files.md, "Browser tests"): every
 // route of the console that changes anything, asked for as another site
 // would ask, and refused. An administrator signs in, and the test posts to
-// each of the 20 routes with what a forger can send: no Origin, the Origin
+// each of the 24 routes with what a forger can send: no Origin, the Origin
 // of another site, the console's own Origin said to come from another
 // site, no token, a token that is not the session's. Every one is refused
 // with 403, and the session still stands afterwards, locked or unlocked as
@@ -30,6 +30,7 @@ import {
   openConsole,
   originOf,
   postAsPage,
+  routeOf,
   sessionOf,
   signInDone,
   signInHeading,
@@ -40,6 +41,11 @@ import {
 // The password that csrf.toml gives the account it makes.
 const PASSWORD = "lab-console-password";
 const NAME = "wc-csrf";
+
+// What stands for the `{id}` of a task's or a change's route: any number
+// does, since the console refuses the forgery before it looks for the task
+// or the change.
+const ANY_ID = 1;
 
 // The routes that sign a browser in. They have no session yet, so they
 // have no token: the Origin and the Sec-Fetch-Site of the request are all
@@ -70,10 +76,14 @@ const SESSION_ROUTES = [
   ["POST /api/1/account/second-step/trusted/forget", {}],
   ["POST /api/1/account/tokens/add", { proof: PASSWORD, name: "forged" }],
   ["POST /api/1/account/tokens/remove", { id: "00" }],
+  ["POST /api/1/account/preferences", { theme: "light" }],
+  ["POST /api/1/changes/{id}/keep", {}],
+  ["POST /api/1/changes/{id}/put-back", {}],
+  ["POST /api/1/tasks/{id}/stop", {}],
 ];
 
-/** The path of a route written as `METHOD /path`. */
-const pathOf = (route) => route.split(" ")[1];
+/** The path of a route written as `METHOD /path`, with a number for each `{id}`. */
+const pathOf = (route) => routeOf(route.split(" ")[1], ANY_ID);
 
 /**
  * The headers of the forgeries to try on a route, by what they get wrong.
@@ -247,5 +257,7 @@ export default async function check(t) {
   await look(t, page, "signed-out");
 
   // The browser posted to every route, where it had a page to do it from.
-  if (another) mustHaveCalled(seen, [...SIGN_IN_ROUTES, ...SESSION_ROUTES].map(([route]) => route));
+  if (another) {
+    mustHaveCalled(seen, [...SIGN_IN_ROUTES, ...SESSION_ROUTES].map(([route]) => routeOf(route, ANY_ID)));
+  }
 }

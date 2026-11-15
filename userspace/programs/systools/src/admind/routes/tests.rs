@@ -23,6 +23,10 @@ use crate::admind::link::Fault;
 use crate::admind::sessions;
 use crate::admind::shared::unix_now;
 
+mod act;
+mod changes;
+mod tasks;
+
 /// The browser's address, and what it asks for.
 const PEER: &str = "192.0.2.7";
 const HOST: &str = "nas.example:9090";
@@ -37,8 +41,19 @@ struct World {
     calls: Calls,
 }
 
-/// What the test worker answers.
-fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
+/// The preferences the test worker has after `change`: the defaults, and
+/// what the change gave.
+fn preferences(change: &Value) -> Value {
+    let mut all = json!({ "theme": "dark", "text": 100, "motion": "full", "zone": "" });
+    for (key, value) in change.as_object().into_iter().flatten() {
+        all[key] = value.clone();
+    }
+    all
+}
+
+/// What the test worker answers. `calls` holds what it has been asked,
+/// this call the last of them.
+fn worker_answers(method: &str, params: &Value, calls: &Calls) -> Result<Value, Fault> {
     match method {
         "steps" => Ok(json!({
             "app": { "added": 1 }, "passkeys": [], "recovery": null, "trusted": 0,
@@ -57,15 +72,59 @@ fn worker_answers(method: &str, params: &Value) -> Result<Value, Fault> {
         "passkey-add" => Ok(json!({ "codes": [] })),
         "trusted-forget" => Ok(json!({ "forgotten": 2 })),
         "token-add" => Ok(json!({ "token": "dkv_chase_aa" })),
+        "preferences" => Ok(preferences(&json!({}))),
+        // A theme that the worker cannot keep, as a file it cannot write.
+        "preferences-change" if params["theme"] == "device" => Err(Fault::new(
+            Kind::Internal,
+            "cannot write /home/chase/.config/dukovo-admin/settings.toml: permission denied",
+        )),
+        "preferences-change" => Ok(preferences(params)),
+        "run" if params["argv"] == json!(["service", "list", "--json"]) => {
+            Ok(json!({ "status": 0, "output": "[{\"name\":\"nginx\"}]\n", "errors": "" }))
+        }
+        "run" if params["argv"][0] == "probe" => {
+            Ok(probe_answer(params["argv"][1].as_str().unwrap_or_default(), calls))
+        }
+        "run" => Err(Fault::new(Kind::BadRequest, "there is no command that")),
         _ => Ok(json!({ "done": true })),
     }
 }
 
-/// What the test authd answers: three accounts that sign in, as
-/// `chase` (an administrator), `alice` (who has a second step) and `eve`
-/// (who needs to add one), with the password `right`; the code `123456`;
+/// What the test worker prints for `probe NAME`, which a change's probe
+/// runs: a part that the change moves, a semicolon, and a part that moves
+/// by itself, the number of times the probe has been asked for. By its
+/// name, `moving` says `off` the first time and `on` after, `unreadable`
+/// says something that is not what the change moves, `fails` ends with
+/// status 1, `fails-after` does from its second time, and any other name
+/// says `on` every time.
+fn probe_answer(name: &str, calls: &Calls) -> Value {
+    let asked = json!({ "argv": ["probe", name] });
+    let nth = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(method, params)| method == "run" && *params == asked)
+        .count();
+    let (status, output) = match (name, nth) {
+        ("moving", 1) => (0, format!("off; {nth}")),
+        ("unreadable", _) => (0, "?".to_string()),
+        ("fails", _) | ("fails-after", 2..) => (1, String::new()),
+        _ => (0, format!("on; {nth}")),
+    };
+    let errors = if status == 0 { "" } else { "probe: cannot read\n" };
+    json!({ "status": status, "output": format!("{output}\n"), "errors": errors })
+}
+
+/// What the test authd answers: four accounts that sign in, as
+/// `chase` (an administrator), `alice` (who has a second step), `eve`
+/// (who needs to add one) and `dave` (who is not an administrator), with
+/// the password `right`; the code `123456`;
 /// the trusted browser `aa55bb66`.
 fn script(calls: Calls) -> Arc<fixture::Script> {
+    let answers: Arc<fixture::Answer> = {
+        let calls = Arc::clone(&calls);
+        Arc::new(move |method: &str, params: &Value| worker_answers(method, params, &calls))
+    };
     Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| -> Vec<String> {
         let no = |why: &str| vec![format!("no {why}")];
         let ok = || vec![String::from("ok")];
@@ -75,6 +134,7 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 ("chase", "right") => vec!["ok done 0a0b01".into()],
                 ("alice", "right") => vec!["ok step 0a0b02 app,recovery".into()],
                 ("eve", "right") => vec!["ok needs-step 0a0b03".into()],
+                ("dave", "right") => vec!["ok done 0a0b04".into()],
                 ("bob", "right") => no("bob may not use the web console"),
                 _ => no(WRONG_PASSWORD),
             },
@@ -85,11 +145,7 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
             "start" => {
                 let session = format!("{:0<32}", asked.text(0));
                 let trust = if asked.text(1) == "trust" { " aa55bb66" } else { "" };
-                fixture::worker(
-                    fixture::ends(&mut fds),
-                    Arc::clone(&calls),
-                    Arc::new(worker_answers),
-                );
+                fixture::worker(fixture::ends(&mut fds), Arc::clone(&calls), Arc::clone(&answers));
                 vec![format!("ok 4242 {session}{trust}")]
             }
             "unlock" => match (asked.text(1).as_str(), asked.text(2).as_str()) {
@@ -99,23 +155,135 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
             },
             "extend" => in_15_minutes(),
             "lock" | "end" => ok(),
-            // The lab's elevated command: the four descriptors are its
-            // input, its output, its error output and its relay. It
-            // writes to the output and ends with the status 3.
-            #[cfg(feature = "lab")]
-            "elevate" if asked.text(3) == "/system/commands/locked" => {
-                no("the session is locked: unlock it to make changes")
+            "token" => match token_answer(&asked.text(0)) {
+                Some(answer) => vec![format!("ok {answer}")],
+                None => no("that API token is not known"),
+            },
+            "token-start" => {
+                fixture::worker(fixture::ends(&mut fds), Arc::clone(&calls), Arc::clone(&answers));
+                ok()
             }
-            #[cfg(feature = "lab")]
-            "elevate" => {
-                use std::io::Write;
-                let mut output = std::fs::File::from(fds.remove(1));
-                output.write_all(format!("{}\n", asked.text(4)).as_bytes()).unwrap();
-                vec!["ok 4321".into(), "ended 768".into()]
-            }
+            "elevate" => elevated(asked, fds, &calls),
             _ => no("the test's authd does not answer that"),
         }
     })
+}
+
+/// The API tokens the test authd knows: chase's `ci`, which may do
+/// anything, `reader`, which may read services, and `other`, which may read
+/// the firewall.
+const TOKEN_ALL: &str = "dkv_chase_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TOKEN_READ: &str = "dkv_chase_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const TOKEN_OTHER: &str = "dkv_chase_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+/// What authd answers for the token whose hex is `hex`.
+fn token_answer(hex: &str) -> Option<&'static str> {
+    let is = |token: &str| accounts::request::hex(token.as_bytes()) == hex;
+    if is(TOKEN_ALL) {
+        Some("chase ci * 1800000000")
+    } else if is(TOKEN_READ) {
+        Some("chase reader services:read 1800000000")
+    } else if is(TOKEN_OTHER) {
+        Some("chase other firewall:read 1800000000")
+    } else {
+        None
+    }
+}
+
+/// The test authd's elevated command, whose four descriptors are its
+/// input, its output, its error output and its relay. `.../locked` is
+/// refused as a locked session's; a token's command for `guarded` is
+/// refused as authd refuses one its scopes do not name; `broken` fails
+/// with a service's error ID; `/system/commands/echo` writes its words
+/// and ends with the status 3; anything else writes its words and ends
+/// well. The command is noted in `calls` as a call of `elevate`, so that a
+/// test sees it among the worker's.
+fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
+    use std::io::Write;
+    let fields: Vec<String> = (0..asked.fields.len()).map(|at| asked.text(at)).collect();
+    let command = &fields[fields.iter().position(|field| field == "--").unwrap() + 1..];
+    calls.lock().unwrap().push(("elevate".into(), json!(command)));
+    if command[0] == "/system/commands/locked" {
+        return vec!["no the session is locked: unlock it to make changes".into()];
+    }
+    if fields[0] == "token" && command.get(1).is_some_and(|word| word == "guarded") {
+        return vec![format!("no the API token may not change {} as an administrator", fields[2])];
+    }
+    let mut output = std::fs::File::from(fds.remove(1));
+    let mut errors = std::fs::File::from(fds.remove(1));
+    if command.get(1).is_some_and(|word| word == "broken") {
+        errors.write_all(b"starting broken\nbroken.conf did not load (SVC-104)\n").unwrap();
+        return vec!["ok 4321".into(), "ended 256".into()];
+    }
+    if command[0] == "admin" && command.get(1).is_some_and(|word| word == "lab-steps") {
+        let mode = command.get(2).and_then(|word| word.parse().ok()).unwrap_or(0);
+        return lab_steps(mode, output, errors, fds);
+    }
+    output.write_all(format!("{}\n", command[1..].join(" ")).as_bytes()).unwrap();
+    let status = if command[0] == "/system/commands/echo" { 768 } else { 0 };
+    vec!["ok 4321".into(), format!("ended {status}")]
+}
+
+/// What `admin lab-steps N` does in the test authd, by `mode` N, which
+/// is not the seconds it means: 1 runs well and ends at once, 2 writes an
+/// error and fails, 3 runs until SIGTERM and ends well, 4 ignores SIGTERM
+/// and ends when its relay is closed, as hung up, and 5 writes 2,500
+/// lines and ends well. `fds` are its input and its relay.
+fn lab_steps(
+    mode: u32,
+    mut output: std::fs::File,
+    mut errors: std::fs::File,
+    mut fds: Vec<OwnedFd>,
+) -> Vec<String> {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    let mut relay = std::fs::File::from(fds.remove(1));
+    let ended = |status: u32| vec!["ok 4321".to_string(), format!("ended {status}")];
+    match mode {
+        1 => {
+            output
+                .write_all(b"step 1 of 2: One\nprogress 50%\na log line\nstep 2 of 2: Two\nprogress 100%\n")
+                .unwrap();
+            ended(0)
+        }
+        2 => {
+            output.write_all(b"step 1 of 3: Begin\n").unwrap();
+            errors.write_all(b"lab-steps: it broke\n").unwrap();
+            ended(256)
+        }
+        5 => {
+            for line in 0..2500 {
+                writeln!(output, "line {line}").unwrap();
+            }
+            ended(0)
+        }
+        _ => {
+            output.write_all(b"step 1 of 4: Getting ready\nprogress 10%\nworking\n").unwrap();
+            fixture::then(move || {
+                let (mut got, mut buffer) = (String::new(), [0u8; 64]);
+                for _ in 0..1500 {
+                    let mut poll =
+                        libc::pollfd { fd: relay.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                    // SAFETY: one pollfd, which lives through the call.
+                    let ready = unsafe { libc::poll(&raw mut poll, 1, 20) };
+                    if ready <= 0 {
+                        continue;
+                    }
+                    match relay.read(&mut buffer).unwrap_or(0) {
+                        // The relay was closed: authd hangs the command up.
+                        0 => return vec!["ended 1".to_string()],
+                        n => got.push_str(&String::from_utf8_lossy(&buffer[..n])),
+                    }
+                    if mode == 3 && got.contains("signal 15\n") {
+                        output.write_all(b"stopping\n").unwrap();
+                        return vec!["ended 0".to_string()];
+                    }
+                }
+                vec!["ended 2".to_string()]
+            });
+            vec!["ok 4321".to_string()]
+        }
+    }
 }
 
 fn world(what: &str) -> World {
@@ -248,6 +416,19 @@ async fn sign_in(world: &World, name: &str) -> Session {
     Session { csrf: shown.json()["csrf"].as_str().unwrap().into(), cookie }
 }
 
+/// Signs `name` in with the right password, when what is left to do is to
+/// add a second step.
+async fn sign_in_to_add_a_step(world: &World, name: &str) -> Session {
+    let body = json!({ "name": name, "password": "right" });
+    let answered = send(world, post("/api/1/sign-in", &body)).await;
+    assert_eq!(answered.json(), json!({ "needs_step": true }));
+    let cookie = answered.cookie(SESSION_COOKIE).expect("a session cookie");
+    let header = format!("{SESSION_COOKIE}={cookie}");
+    let shown = send(world, get("/api/1/session").with("cookie", Some(&header))).await;
+    assert_eq!(shown.json()["needs_step"], json!(true));
+    Session { csrf: shown.json()["csrf"].as_str().unwrap().into(), cookie }
+}
+
 /// The calls the worker has had, as `method params`.
 fn called(world: &World) -> Vec<(String, Value)> {
     world.calls.lock().unwrap().clone()
@@ -256,29 +437,48 @@ fn called(world: &World) -> Vec<(String, Value)> {
 // The table and the small decisions.
 
 #[test]
-fn every_route_is_found_by_its_own_verb_and_no_other_and_each_address_is_one_route() {
-    let mut paths = HashSet::new();
+fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_table_twice() {
+    let mut routes = HashSet::new();
     for entry in TABLE {
-        assert!(paths.insert(entry.path), "{} twice", entry.path);
+        assert!(routes.insert(entry.route as usize), "{:?} twice", entry.route);
+        let twins = TABLE.iter().filter(|other| other.path == entry.path);
+        assert_eq!(
+            twins.filter(|other| other.verb == entry.verb).count(),
+            1,
+            "{} {:?} twice",
+            entry.path,
+            entry.verb
+        );
         assert!(entry.path.starts_with("/api/1/"), "{}", entry.path);
         assert!(
-            matches!(lookup(entry.verb, entry.path), Lookup::Found(found) if found.route == entry.route)
+            matches!(lookup(entry.verb, entry.path), Lookup::Found(found, _) if found.route == entry.route)
         );
-        let other = if entry.verb == Verb::Get { Verb::Post } else { Verb::Get };
-        assert!(matches!(lookup(other, entry.path), Lookup::WrongVerb), "{}", entry.path);
+        // No verb that the table does not give the address finds it.
+        assert!(matches!(lookup(Verb::Head, entry.path), Lookup::WrongVerb), "{}", entry.path);
         // What only reads is a GET, and what changes anything is a POST.
-        let reads =
-            [Route::Health, Route::Fingerprint, Route::Session, Route::Events, Route::Steps];
+        let reads = [
+            Route::Health,
+            Route::Fingerprint,
+            Route::Session,
+            Route::Events,
+            Route::Steps,
+            Route::Preferences,
+            Route::Actions,
+            Route::Changes,
+            Route::Change,
+            Route::Tasks,
+            Route::Task,
+        ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 25 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 36 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/2/health"), Lookup::Missing));
     // A path that only starts like the API's is a file's.
     assert!(
-        matches!(lookup(Verb::Get, "/apiary"), Lookup::Found(entry) if entry.route == Route::File)
+        matches!(lookup(Verb::Get, "/apiary"), Lookup::Found(entry, _) if entry.route == Route::File)
     );
 }
 
@@ -287,7 +487,7 @@ fn files_are_for_get_and_head_alone_and_a_post_to_a_page_is_the_wrong_verb() {
     for path in ["/", "/app.js", "/accounts/users", "/x.png"] {
         for verb in [Verb::Get, Verb::Head] {
             assert!(
-                matches!(lookup(verb, path), Lookup::Found(entry) if entry.route == Route::File),
+                matches!(lookup(verb, path), Lookup::Found(entry, _) if entry.route == Route::File),
                 "{path}"
             );
         }
@@ -330,6 +530,9 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
             Route::TrustedForget,
         ]
     );
+    for api in [Route::Actions, Route::Show] {
+        assert_eq!(access(api), Access::Api, "{api:?}");
+    }
     for full in [
         Route::Unlock,
         Route::UnlockPasskeyOptions,
@@ -337,29 +540,11 @@ fn before_sign_in_only_health_fingerprint_and_the_sign_in_routes_are_open() {
         Route::Lock,
         Route::TokenAdd,
         Route::TokenRemove,
+        Route::Preferences,
+        Route::PreferencesChange,
     ] {
         assert_eq!(access(full), Access::Full, "{full:?}");
     }
-}
-
-#[test]
-fn an_api_token_is_a_bearer_of_dkv_and_nothing_else_is() {
-    let with = |value: &str| {
-        let mut headers = HeaderMap::new();
-        headers.append(header::AUTHORIZATION, HeaderValue::from_str(value).unwrap());
-        offers_token(&headers)
-    };
-    assert!(with("Bearer dkv_chase_00ff"));
-    assert!(with("bearer   dkv_chase_00ff"));
-    assert!(!with("Bearer abc"));
-    assert!(!with("Basic dkv_chase_00ff"));
-    assert!(!with("dkv_chase_00ff"));
-    assert!(!offers_token(&HeaderMap::new()));
-    // A second header cannot hide a token behind a first that is none.
-    let mut two = HeaderMap::new();
-    two.append(header::AUTHORIZATION, HeaderValue::from_static("Basic abc"));
-    two.append(header::AUTHORIZATION, HeaderValue::from_static("Bearer dkv_a_00"));
-    assert!(offers_token(&two));
 }
 
 #[test]
@@ -502,25 +687,31 @@ fn a_host_that_is_not_this_machines_is_not_answered_whatever_it_asks_for() {
 }
 
 #[test]
-fn an_api_token_is_refused_and_a_token_with_a_session_is_a_bad_request() {
+fn an_api_token_is_for_the_actions_alone_and_never_with_a_session() {
     run(async {
         let world = world("tokens");
-        let token = get("/api/1/health").with("authorization", Some("Bearer dkv_chase_00ff"));
-        let answered = send(&world, token).await;
-        assert_eq!((answered.status, answered.error().as_str()), (401, "ADM-115"));
-        let both = get("/api/1/health")
-            .with("authorization", Some("Bearer dkv_chase_00ff"))
+        let bearer = format!("Bearer {TOKEN_ALL}");
+        // A route of the table is for the console's pages.
+        let health = get("/api/1/health").with("authorization", Some(&bearer));
+        let answered = send(&world, health).await;
+        assert_eq!((answered.status, answered.error().as_str()), (403, "ADM-124"));
+        let session = get("/api/1/session").with("authorization", Some(&bearer));
+        assert_eq!(send(&world, session).await.error(), "ADM-124");
+        let both = get("/api/1/actions")
+            .with("authorization", Some(&bearer))
             .with("cookie", Some("__Host-dukovo=abc"));
         let answered = send(&world, both).await;
         assert_eq!((answered.status, answered.error().as_str()), (400, "ADM-108"));
-        // Another kind of authorization is no token.
+        // Another kind of authorization is no token, and is let be.
         let basic = get("/api/1/health").with("authorization", Some("Basic YTpi"));
         assert_eq!(send(&world, basic).await.status, 200);
         // The host is checked before the token is.
-        let elsewhere = get("/api/1/health")
+        let elsewhere = get("/api/1/actions")
             .with("host", Some("evil.example"))
-            .with("authorization", Some("Bearer dkv_chase_00ff"));
+            .with("authorization", Some(&bearer));
         assert_eq!(send(&world, elsewhere).await.status, 421);
+        // None of it asked authd about the token.
+        assert!(!world.console.authd.verbs().contains(&"token".to_string()));
     });
 }
 
@@ -797,15 +988,7 @@ fn a_browser_that_is_trusted_is_trusted_for_30_days_and_skips_the_step_until_it_
 fn a_session_that_may_only_add_a_second_step_may_do_that_and_sign_out_and_nothing_more() {
     run(async {
         let world = world("needs-step");
-        let body = json!({ "name": "eve", "password": "right" });
-        let answered = send(&world, post("/api/1/sign-in", &body)).await;
-        assert_eq!(answered.json(), json!({ "needs_step": true }));
-        let cookie = answered.cookie(SESSION_COOKIE).unwrap();
-        let header = format!("{SESSION_COOKIE}={cookie}");
-        let shown = send(&world, get("/api/1/session").with("cookie", Some(&header))).await;
-        let csrf = shown.json()["csrf"].as_str().unwrap().to_string();
-        assert_eq!(shown.json()["needs_step"], json!(true));
-        let session = Session { cookie, csrf };
+        let session = sign_in_to_add_a_step(&world, "eve").await;
         // What it may use.
         assert_eq!(send(&world, get("/api/1/account/second-step").by(&session)).await.status, 200);
         let begun = send(
@@ -944,11 +1127,11 @@ fn authd_answering_a_time_that_does_not_read_is_not_an_unlock() {
             Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| match asked.verb.as_str() {
                 "begin" => vec!["ok done 0a0b01".into()],
                 "start" => {
-                    fixture::worker(
-                        fixture::ends(&mut fds),
-                        Arc::clone(&shared_calls),
-                        Arc::new(worker_answers),
-                    );
+                    let calls = Arc::clone(&shared_calls);
+                    let answers = Arc::new(move |method: &str, params: &Value| {
+                        worker_answers(method, params, &calls)
+                    });
+                    fixture::worker(fixture::ends(&mut fds), Arc::clone(&shared_calls), answers);
                     vec![format!("ok 1 {:0<32}", asked.text(0))]
                 }
                 "unlock" => vec!["ok soon".into()],
@@ -1102,6 +1285,145 @@ fn what_authd_refuses_through_the_worker_is_told_by_its_words_and_logged() {
     });
 }
 
+// The person's preferences, through the worker.
+
+#[test]
+fn one_address_takes_a_get_and_a_post_and_no_other_verb() {
+    let found = |verb| match lookup(verb, "/api/1/account/preferences") {
+        Lookup::Found(entry, _) => Some(entry.route),
+        Lookup::WrongVerb => None,
+        Lookup::Missing => panic!("the address is in the table"),
+    };
+    assert_eq!(found(Verb::Get), Some(Route::Preferences));
+    assert_eq!(found(Verb::Post), Some(Route::PreferencesChange));
+    assert_eq!(found(Verb::Head), None);
+}
+
+#[test]
+fn preferences_are_read_and_changed_by_the_worker_for_a_session_that_is_locked() {
+    run(async {
+        let world = world("preferences");
+        let session = sign_in(&world, "chase").await;
+        let seen = called(&world).len();
+        let path = "/api/1/account/preferences";
+        let defaults = json!({ "theme": "dark", "text": 100, "motion": "full", "zone": "" });
+        let shown = send(&world, get(path).by(&session)).await;
+        assert_eq!(shown.status, 200);
+        assert_eq!(shown.json(), defaults);
+        let body = json!({ "theme": "light", "text": 112 });
+        let changed = send(&world, post(path, &body).by(&session)).await;
+        let both = json!({ "theme": "light", "text": 112, "motion": "full", "zone": "" });
+        assert_eq!(changed.status, 200);
+        assert_eq!(changed.json(), both);
+        // No key is a change of nothing, and still all of them are told;
+        // an empty zone is the person having none.
+        let nothing = send(&world, post(path, &json!({})).by(&session)).await;
+        assert_eq!(nothing.json(), defaults);
+        let none = send(&world, post(path, &json!({ "zone": "" })).by(&session)).await;
+        assert_eq!(none.json(), defaults);
+        // The worker is told what the page gave, and no more, with no
+        // unlock: the file is the person's own.
+        let seen = called(&world).split_off(seen);
+        assert_eq!(
+            seen,
+            [
+                ("preferences".to_string(), Value::Null),
+                ("preferences-change".to_string(), body),
+                ("preferences-change".to_string(), json!({})),
+                ("preferences-change".to_string(), json!({ "zone": "" })),
+            ]
+        );
+        assert!(!world.console.authd.verbs().contains(&"unlock".to_string()));
+    });
+}
+
+#[test]
+fn a_value_that_cannot_work_is_refused_before_the_worker_hears_of_it() {
+    run(async {
+        let world = world("preferences-values");
+        let session = sign_in(&world, "chase").await;
+        let seen = called(&world).len();
+        let path = "/api/1/account/preferences";
+        // The test machine has no zone database, so no zone but none is one.
+        for (body, field) in [
+            (json!({ "theme": "purple" }), "theme"),
+            (json!({ "theme": "" }), "theme"),
+            (json!({ "text": 130 }), "text"),
+            (json!({ "text": -1 }), "text"),
+            (json!({ "motion": "none" }), "motion"),
+            (json!({ "zone": "Mars/Base" }), "zone"),
+            (json!({ "zone": "../../etc/passwd" }), "zone"),
+            (json!({ "theme": "light", "text": 99 }), "text"),
+        ] {
+            let refused = send(&world, post(path, &body).by(&session)).await;
+            assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-125"), "{body}");
+            assert_eq!(refused.json()["error"]["field"], field, "{body}");
+        }
+        // A body that is not what the route takes is the browser's mistake.
+        for body in [
+            json!({ "themes": "light" }),
+            json!({ "text": "112" }),
+            json!({ "text": 112.5 }),
+            json!({ "theme": ["light"] }),
+            json!("light"),
+            json!(null),
+        ] {
+            let refused = send(&world, post(path, &body).by(&session)).await;
+            assert_eq!((refused.status, refused.error().as_str()), (400, "ADM-108"), "{body}");
+        }
+        let mut empty = post(path, &json!({})).by(&session);
+        empty.body.clear();
+        assert_eq!(send(&world, empty).await.error(), "ADM-108");
+        assert_eq!(called(&world).len(), seen);
+    });
+}
+
+#[test]
+fn a_file_the_worker_cannot_write_is_told_in_its_words_and_logged() {
+    run(async {
+        let world = world("preferences-fault");
+        let session = sign_in(&world, "chase").await;
+        let path = "/api/1/account/preferences";
+        let answered = send(&world, post(path, &json!({ "theme": "device" })).by(&session)).await;
+        assert_eq!((answered.status, answered.error().as_str()), (500, "ADM-121"));
+        let detail = answered.json()["error"]["detail"].as_str().unwrap().to_string();
+        assert!(detail.starts_with("cannot write /home/chase/.config/dukovo-admin/"), "{detail}");
+    });
+}
+
+#[test]
+fn preferences_are_for_a_signed_in_session_that_may_do_all_and_not_for_a_token() {
+    run(async {
+        let world = world("preferences-access");
+        let path = "/api/1/account/preferences";
+        // Nobody is signed in.
+        assert_eq!(send(&world, get(path)).await.error(), "ADM-107");
+        let anonymous = post(path, &json!({})).with("cookie", Some("__Host-dukovo=abc"));
+        assert_eq!(send(&world, anonymous).await.error(), "ADM-107");
+        // A token is for the actions.
+        let bearer = format!("Bearer {TOKEN_ALL}");
+        for request in [get(path), post(path, &json!({}))] {
+            let answered = send(&world, request.with("authorization", Some(&bearer))).await;
+            assert_eq!((answered.status, answered.error().as_str()), (403, "ADM-124"));
+        }
+        // A change that does not come from the console's own page is refused.
+        let session = sign_in(&world, "chase").await;
+        let seen = called(&world).len();
+        let foreign = post(path, &json!({ "theme": "light" })).by(&session).with("origin", None);
+        assert_eq!(send(&world, foreign).await.error(), "ADM-109");
+        assert_eq!(called(&world).len(), seen);
+        // A session that may only add a second step may not.
+        let eve = sign_in_to_add_a_step(&world, "eve").await;
+        let seen = called(&world).len();
+        for request in [get(path), post(path, &json!({}))] {
+            let refused = send(&world, request.by(&eve)).await;
+            assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-118"));
+        }
+        // The worker was asked for none of it.
+        assert_eq!(called(&world).len(), seen);
+    });
+}
+
 // The stream of events.
 
 #[test]
@@ -1245,10 +1567,7 @@ fn the_lab_route_runs_a_command_for_an_unlocked_session_and_gives_its_output_and
         };
         let done = send(&world, run(json!(["/system/commands/echo", "hello there"]))).await;
         assert_eq!(done.status, 200, "{}", done.body);
-        assert_eq!(
-            done.json(),
-            json!({ "process": "4321", "output": "hello there\n", "status": 3 })
-        );
+        assert_eq!(done.json(), json!({ "output": "hello there\n", "errors": "", "status": 3 }));
         // One line of words is the same command.
         let line = send(&world, run(json!("/system/commands/echo hi"))).await;
         assert_eq!(line.json()["output"], "hi\n");

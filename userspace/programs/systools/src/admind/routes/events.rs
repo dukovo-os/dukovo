@@ -3,9 +3,15 @@
 
 //! A tab's stream of events (ADR 0514), `GET /api/1/events`, as
 //! server-sent events: `unlock` with the seconds left when the session's
-//! unlock changes, `session` with why it ended when it does, and a comment
-//! every 25 seconds so that nothing between the browser and admind closes
-//! a stream that says nothing.
+//! unlock changes, `session` with why it ended when it does, `task` for
+//! each change of a task's state, step or progress (ADR 0516), and a
+//! comment every 25 seconds so that nothing between the browser and admind
+//! closes a stream that says nothing.
+//!
+//! A tab that opens is told where each task is that waits, runs or ended
+//! in the last minute, so that it has no gap between what it asked for and
+//! what came after. Later a task is told at most four times a second: what
+//! comes sooner waits, and only the latest is sent.
 //!
 //! An open stream is a tab: while a session has one, it is not idle, and
 //! once its last stream has closed and 60 seconds have passed, an
@@ -31,6 +37,7 @@ use super::{Content, Live, Outcome, Reply};
 use crate::admind::authd;
 use crate::admind::log;
 use crate::admind::shared::{Shared, seconds_left, unix_now};
+use crate::admind::tasks::Told;
 
 /// How long a stream may say nothing.
 const KEEP_TIME: Duration = Duration::from_secs(25);
@@ -107,21 +114,33 @@ async fn tell(sender: &mpsc::Sender<Bytes>, event: Bytes) -> bool {
 enum Woken {
     /// A session ended or an unlock changed.
     Changed,
+    /// A task changed.
+    Tasks,
     /// The tab has gone, or admind is stopping.
     Gone,
 }
 
-/// Waits until `changes` has news or `sender`'s tab has gone.
-async fn woken(changes: &mut watch::Receiver<()>, sender: &mpsc::Sender<Bytes>) -> Woken {
+/// Waits until `changes` or `tasks` has news or `sender`'s tab has gone.
+async fn woken(
+    changes: &mut watch::Receiver<()>,
+    tasks: &mut watch::Receiver<()>,
+    sender: &mpsc::Sender<Bytes>,
+) -> Woken {
     let mut changed = pin!(changes.changed());
+    let mut task_news = pin!(tasks.changed());
     let mut closed = pin!(sender.closed());
     std::future::poll_fn(|cx| {
         if closed.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Woken::Gone);
         }
         match changed.as_mut().poll(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(Woken::Changed),
+            Poll::Ready(Ok(())) => return Poll::Ready(Woken::Changed),
             // Every sender has gone: admind is stopping.
+            Poll::Ready(Err(_)) => return Poll::Ready(Woken::Gone),
+            Poll::Pending => {}
+        }
+        match task_news.as_mut().poll(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Woken::Tasks),
             Poll::Ready(Err(_)) => Poll::Ready(Woken::Gone),
             Poll::Pending => Poll::Pending,
         }
@@ -133,8 +152,11 @@ async fn woken(changes: &mut watch::Receiver<()>, sender: &mpsc::Sender<Bytes>) 
 /// counts the tab out.
 async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc::Sender<Bytes>) {
     let mut changes = shared.changes.subscribe();
-    // The unlock last told, so that only a change is.
+    let mut task_news = shared.tasks.subscribe();
+    // The unlock last told, so that only a change is, and what of each
+    // task.
     let mut told = None;
+    let mut told_tasks = Told::default();
     loop {
         let Some(until) = shared.with_session(&cookie, |session| session.unlocked_until) else {
             let reason = shared.endings.borrow().reason(&authd);
@@ -149,9 +171,23 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
                 break;
             }
         }
-        match tokio::time::timeout(KEEP_TIME, woken(&mut changes, &sender)).await {
-            Ok(Woken::Changed) => {}
+        let (due, held) = shared.tasks.events(&mut told_tasks, tokio::time::Instant::now());
+        let mut gone = false;
+        for event in due {
+            if !tell(&sender, event).await {
+                gone = true;
+                break;
+            }
+        }
+        if gone {
+            break;
+        }
+        let wait = held.map_or(KEEP_TIME, |held| held.min(KEEP_TIME));
+        match tokio::time::timeout(wait, woken(&mut changes, &mut task_news, &sender)).await {
+            Ok(Woken::Changed | Woken::Tasks) => {}
             Ok(Woken::Gone) => break,
+            // A task's event was held back, and its time has come.
+            Err(_) if held.is_some() => {}
             Err(_) => {
                 if !tell(&sender, Bytes::from_static(b": keep\n\n")).await {
                     break;

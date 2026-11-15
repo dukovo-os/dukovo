@@ -49,9 +49,12 @@ use super::limits::Slot;
 use super::log;
 use super::reach;
 use super::routes;
-use super::shared::{Identity, Shared};
+use super::shared::{Identity, Shared, unix_now};
+use super::store::{self, Store};
+use super::tasks;
 use super::tls::{self, Certificate};
 use crate::admin_settings::{Reach, Settings};
+use crate::logd;
 use crate::util::{self, Fail, fail};
 
 /// How long a connection has for its TLS handshake and the head of its
@@ -79,7 +82,8 @@ const UPKEEP_EVERY: Duration = Duration::from_secs(30);
 const SIGNALS_EVERY: Duration = Duration::from_millis(500);
 
 /// The file consoled shows at its sign-in prompt: where to open the console.
-const ISSUE: &str = "/system/live/admind/issue";
+/// `admin fingerprint` reads it too.
+pub(crate) const ISSUE: &str = "/system/live/admind/issue";
 
 /// Set by SIGTERM: admind stops. Set by SIGHUP: it reads its certificate
 /// again.
@@ -164,11 +168,17 @@ fn write_issue(text: &str) -> io::Result<()> {
 /// What the server keeps up with, and has said already.
 #[derive(Default)]
 struct Upkeep {
+    /// Whether a round of the journal is under way: it waits for logd, and
+    /// the next is not started until it has ended.
+    round: Rc<Cell<bool>>,
     /// The issue file as last written.
     issue: String,
     /// The last words the settings gave when they did not read, so that
     /// the log says them once and not every 30 seconds.
     complained: Option<String>,
+    /// The Unix time old tasks were last forgotten, which is done once a
+    /// day.
+    forgot: i64,
 }
 
 impl Upkeep {
@@ -208,7 +218,28 @@ impl Upkeep {
         let names = shared.certificate.borrow().names.clone();
         *shared.identity.borrow_mut() = Identity::read(&names);
         shared.maintain(std::time::Instant::now());
+        shared.tasks.prune(tokio::time::Instant::now());
+        if let Some(store) = &shared.store
+            && unix_now() - self.forgot >= 24 * 3600
+        {
+            self.forgot = unix_now();
+            tasks::forget_old(store);
+        }
         self.issue(shared);
+    }
+
+    /// Starts the journal's round, which looks for files changed by hand
+    /// and, if there are any, asks logd who changed them. It runs as a
+    /// task, so that logd's answer is not waited for here.
+    fn hand_edits(&self, shared: &Rc<Shared>) {
+        if shared.store.is_none() || self.round.replace(true) {
+            return;
+        }
+        let (shared, round) = (Rc::clone(shared), Rc::clone(&self.round));
+        tokio::task::spawn_local(async move {
+            journal_round(&shared).await;
+            round.set(false);
+        });
     }
 
     /// What SIGHUP does: reads the settings and the certificate again, and
@@ -233,6 +264,36 @@ impl Upkeep {
             }
         }
         self.issue(shared);
+    }
+}
+
+/// One round of the journal: the files changed by hand since the last,
+/// with who changed them, as rows. Said in the log when it made any, and
+/// when the store failed.
+async fn journal_round(shared: &Shared) {
+    let Some(store) = &shared.store else { return };
+    match shared.journal.round(store, logd::QUERY, unix_now()).await {
+        Ok(0) => {}
+        Ok(rows) => log(6, &format!("{rows} changes made by hand are in the journal")),
+        Err(why) => log(4, &format!("the journal could not look at the files: {why}")),
+    }
+}
+
+/// Opens the store. One that does not open is said, and the console goes
+/// on without a journal and tasks: signing in and the actions do not
+/// depend on it.
+fn open_store() -> Option<Store> {
+    match Store::open(Path::new(store::PATH)) {
+        Ok(store) => {
+            // The commands of the tasks an admind left running were hung up
+            // with it.
+            tasks::restarted(&store);
+            Some(store)
+        }
+        Err(why) => {
+            log(3, &format!("{why}: the console keeps no journal and runs no tasks"));
+            None
+        }
     }
 }
 
@@ -446,6 +507,9 @@ fn start_line(address: &str, fingerprint: &str, kind: Reach) -> String {
 async fn serve(shared: Rc<Shared>) -> Result<(), String> {
     let sockets = listen(shared.port)?;
     let mut upkeep = Upkeep::default();
+    // The files as they are now are what later changes are compared with;
+    // a file changed while admind was away is a change.
+    journal_round(&shared).await;
     upkeep.issue(&shared);
     {
         let (certificate, identity) = (shared.certificate.borrow(), shared.identity.borrow());
@@ -465,6 +529,7 @@ async fn serve(shared: Rc<Shared>) -> Result<(), String> {
         if last.elapsed() >= UPKEEP_EVERY {
             last = Instant::now();
             upkeep.tick(&shared);
+            upkeep.hand_edits(&shared);
         }
     }
     log(6, &format!("stops: it ends {} sessions", shared.sessions.borrow().len()));
@@ -500,7 +565,8 @@ pub fn run() -> Result<i32, Fail> {
     }
     log(6, &format!("serves {} files of the console", files.len()));
     let identity = Identity::read(&certificate.names);
-    let shared = Shared::new(settings, identity, certificate, files, accounts::SOCKET);
+    let shared =
+        Shared::new(settings, identity, certificate, files, accounts::SOCKET, open_store());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -9,6 +9,8 @@
 //! gives its default; a key with a value out of its range is refused, so
 //! that a typo never loosens a rule unnoticed.
 
+use std::path::Path;
+
 use serde::Deserialize;
 
 /// The file.
@@ -37,6 +39,21 @@ pub enum Reach {
     Private,
     /// Any machine.
     Any,
+}
+
+impl Reach {
+    /// The word admin.toml and the console's API write it with.
+    pub fn word(self) -> &'static str {
+        match self {
+            Reach::Private => "private",
+            Reach::Any => "any",
+        }
+    }
+
+    /// The reach that `word` names.
+    pub fn parse(word: &str) -> Option<Reach> {
+        [Reach::Private, Reach::Any].into_iter().find(|reach| reach.word() == word)
+    }
 }
 
 /// The `[sign-in]` table.
@@ -109,10 +126,16 @@ impl Settings {
 
     /// The settings in [`PATH`], or the defaults when it is not there.
     pub fn read() -> Result<Settings, String> {
-        match std::fs::read_to_string(PATH) {
+        Settings::read_at(Path::new(PATH))
+    }
+
+    /// The settings in the file `path`, which a test keeps elsewhere than
+    /// [`PATH`], or the defaults when it is not there.
+    pub fn read_at(path: &Path) -> Result<Settings, String> {
+        match std::fs::read_to_string(path) {
             Ok(text) => Settings::parse(&text),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
-            Err(err) => Err(format!("cannot read {PATH}: {err}")),
+            Err(err) => Err(format!("cannot read {}: {err}", path.display())),
         }
     }
 }
@@ -130,6 +153,34 @@ mod tests {
         assert_eq!(settings.console.listen, 9090);
         assert_eq!(settings.console.reach, Reach::Private);
         assert_eq!(settings.console.certificate, "this-machine");
+    }
+
+    #[test]
+    fn a_reach_is_named_by_the_word_the_file_reads_it_by() {
+        for reach in [Reach::Private, Reach::Any] {
+            let text = format!("[console]\nreach = \"{}\"\n", reach.word());
+            assert_eq!(Settings::parse(&text).unwrap().console.reach, reach);
+            assert_eq!(Reach::parse(reach.word()), Some(reach));
+        }
+        for word in ["", "Any", "public", "private ", "everyone"] {
+            assert_eq!(Reach::parse(word), None, "{word:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_is_not_there_gives_the_defaults_and_one_that_is_gives_its_settings() {
+        let dir = std::env::temp_dir().join(format!("admin-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("admin.toml");
+        assert_eq!(Settings::read_at(&path).unwrap(), Settings::default());
+        std::fs::write(&path, "[console]\nreach = \"any\"\n").unwrap();
+        assert_eq!(Settings::read_at(&path).unwrap().console.reach, Reach::Any);
+        let unreadable = Settings::read_at(&dir).unwrap_err();
+        assert!(
+            unreadable.starts_with(&format!("cannot read {}: ", dir.display())),
+            "{unreadable}"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

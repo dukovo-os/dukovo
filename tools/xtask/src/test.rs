@@ -1641,6 +1641,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 // a file of its own, so that two pull requests do not add theirs at the
 // same place in CASES. They run after CASES, in the order of the phases.
 mod affected;
+mod console_client;
 mod phase11;
 mod phase12;
 mod phase13;
@@ -11218,27 +11219,40 @@ fn answer_prompt_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> 
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
         let screen = vm.screen()?;
-        // The cursor's block, after the prompt, reads as no character: `?`.
-        // Nukesh's right prompt (how long the last command took, the
-        // jobs) sits after a wide gap at the line's end: it is not the
-        // prompt's end.
-        let shown = |line: &str| {
-            let line = line.trim_end();
-            let line = line.split("      ").next().unwrap_or(line).trim_end();
-            line.strip_suffix('?').unwrap_or(line).trim_end().to_string()
-        };
-        let last = screen.iter().rev().map(|line| shown(line)).find(|line| !line.is_empty());
-        if last.as_ref().is_some_and(|line| line.ends_with(prompt)) {
+        let (ready, last) = prompt_waits(&screen, prompt);
+        if ready {
             return vm.type_text(&format!("{text}\n"));
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "the screen does not end with the prompt \"{prompt}\"; its last line: {}",
-                last.unwrap_or_default()
+                "the screen does not end with the prompt \"{prompt}\"; its last line: {last}"
             ));
         }
         std::thread::sleep(Duration::from_millis(300));
     }
+}
+
+/// Whether the last line of `screen` with anything on it is `prompt`
+/// waiting for a line, and that line as [`answer_prompt`] reads it.
+///
+/// The cursor's block, after the prompt, reads as no character: `?`.
+/// Nukesh's right prompt (how long the last command took, the jobs) sits
+/// after a wide gap at the line's end: it is not the prompt's end. On an
+/// empty line nukesh may show, faded, the command usually run next or a
+/// failed one fixed (ADR 0280): the cursor then stands on the hint's first
+/// letter, right after the prompt and its space, and nothing is typed yet.
+fn prompt_waits(screen: &[String], prompt: &str) -> (bool, String) {
+    let shown = |line: &str| {
+        let line = line.trim_end();
+        let line = line.split("      ").next().unwrap_or(line).trim_end();
+        line.strip_suffix('?').unwrap_or(line).trim_end().to_string()
+    };
+    let Some(last) = screen.iter().rev().map(|line| shown(line)).find(|line| !line.is_empty())
+    else {
+        return (false, String::new());
+    };
+    let hinted = last.contains(&format!("{prompt} ?"));
+    (last.ends_with(prompt) || hinted, last)
 }
 
 /// Types `command` after the prompt, and waits for up to `seconds` until it
@@ -11495,6 +11509,27 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prompt_waits_with_or_without_the_shells_hint() {
+        let screen = |lines: &[&str]| lines.iter().copied().map(String::from).collect::<Vec<_>>();
+        // A prompt with the cursor after it, and a right prompt past a gap.
+        let plain =
+            screen(&["alice@dukovo ~ $ ls", "a  b", "alice@dukovo ~ $ ?            took 3.1s", ""]);
+        assert_eq!(prompt_waits(&plain, "$"), (true, "alice@dukovo ~ $".to_string()));
+        // The faded hint of what usually comes next, the cursor on its first letter.
+        let hinted =
+            screen(&["alice@dukovo ~ $ ?at /system/settings/admin.toml | nc -N 10.0.2.2 34269"]);
+        assert!(prompt_waits(&hinted, "$").0);
+        // A typed line that has not ended, and a command that runs, are no prompt.
+        assert!(
+            !prompt_waits(&screen(&["alice@dukovo ~ $ cat /system/settings/admin.toml?"]), "$").0
+        );
+        assert!(!prompt_waits(&screen(&["alice@dukovo ~ $ sleep 5", "?"]), "$").0);
+        assert_eq!(prompt_waits(&screen(&["", " "]), "$"), (false, String::new()));
+        // A password's prompt, which echoes nothing.
+        assert!(prompt_waits(&screen(&["Password: ?"]), "Password:").0);
+    }
 
     #[test]
     fn a_keys_bytes_go_to_the_serial_port_together() {

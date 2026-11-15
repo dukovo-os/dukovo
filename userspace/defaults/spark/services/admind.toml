@@ -45,10 +45,11 @@ memory = "64M"
 
 # What it holds beyond what every service reads, which includes the
 # console's own files in /system/resources/admin (service.toml(5)): its
-# port, authd's socket, its state folder, which holds nothing yet, and the
-# folder where it writes the address and fingerprint that the screen's
-# sign-in text shows.
+# port, authd's socket, logd's socket, where it asks who changed a file by
+# hand (the audit log is only root's), its state folder, which holds the
+# store of the journal and the tasks, and the folder where it writes the
+# address and fingerprint that the screen's sign-in text shows.
 [permissions]
 network.listen = [9090]
-files.read = ["/system/live/authd"]
+files.read = ["/system/live/authd", "/system/live/log"]
 files.read-write = ["/system/state/admind", "/system/live/admind"]

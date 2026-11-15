@@ -1,0 +1,132 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Every action of the web console, in the order of its registry
+# (userspace/programs/systools/src/admind/actions), with the five tests
+# that cover it: its host test of the arguments, the boot test that calls
+# its route and the one that runs its shown command, the lab test that uses
+# it in each browser, and the lab test that runs its Ansible task twice.
+# `./ob lab coverage --check` fails when a test named here is not in the
+# tree. The registry makes this file: change an action, then run
+# `UPDATE_ACTIONS=1 ./ob test unit` to write it again.
+
+[[action]]
+id = "service.list"
+title = "List the services"
+area = "services"
+method = "GET"
+path = "/api/1/services"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.explain"
+title = "Explain a service"
+area = "services"
+method = "GET"
+path = "/api/1/services/{name}/explain"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.start"
+title = "Start a service"
+area = "services"
+method = "POST"
+path = "/api/1/services/{name}/start"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.stop"
+title = "Stop a service"
+area = "services"
+method = "POST"
+path = "/api/1/services/{name}/stop"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.restart"
+title = "Restart a service"
+area = "services"
+method = "POST"
+path = "/api/1/services/{name}/restart"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.enable"
+title = "Enable a service"
+area = "services"
+method = "POST"
+path = "/api/1/services/{name}/enable"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "service.disable"
+title = "Disable a service"
+area = "services"
+method = "POST"
+path = "/api/1/services/{name}/disable"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::service::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.list"
+title = "List the certificates"
+area = "certificates"
+method = "GET"
+path = "/api/1/certificates"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.show"
+title = "Show a certificate"
+area = "certificates"
+method = "GET"
+path = "/api/1/certificates/{name}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.renew"
+title = "Renew a certificate"
+area = "certificates"
+method = "POST"
+path = "/api/1/certificates/{name}/renew"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "console.reach"
+title = "Set whom the console answers"
+area = "console"
+method = "POST"
+path = "/api/1/console/reach"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }

@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Ansible task that the web console shows for each action, run from
+# the lab PC (ADR 0515). The lab PC makes an API token for every scope with
+# `admin token add`, asks admind for the list of actions and for the task
+# that POST /api/1/show gives for each action's first good example, and
+# runs each task with ansible-playbook over SSH as the lab account, with
+# sudo for a task that becomes root, twice. Every task must succeed both
+# times; a read reports no change; the service the examples use is left
+# by each change as its route leaves it. The shown task is
+# ansible.builtin.command with argv, which cannot tell whether a change
+# changed anything, so a change reports "changed" the second time too, as
+# the first: the test says so, and claims no more, until thread A's
+# dukovo.system collection gives the actions modules of their own
+# (docs/deferred.md). certificate.renew is left to the boot test
+# admin-actions. Ansible runs Python by its path, as the Python chapter of
+# the handbook says, so the Python bundle of the catalog is installed for
+# everyone first and taken away at the end.
+#
+# What Ansible says to sudo: `sudo -H -S -p PROMPT -u root` (-n instead of
+# the prompt when it has no password), and Dukovo's sudo(8) takes every
+# one: elevate.rs reads -H as a flag that does nothing, since the home it
+# runs with is always root's. sudo.8 does not list -H in its synopsis;
+# nothing here sets become_flags.
+#
+# The lab account's own password becomes root for Ansible, and makes the
+# token: it comes from the lab PC's file, which no step shows. Where the
+# lab PC has none, as when the lab was started with an image of its own,
+# the test is skipped. The token is taken away again, and no account is
+# made.
+about = "Ansible on the lab PC runs the task that the web console shows for each action, over SSH with sudo, twice: every task succeeds, a read changes nothing and a change leaves its service as its route does"
+time = "20m"
+host_needs = ["ansible-playbook", "curl", "ssh", "scp", "python3"]
+
+[[step]]
+host = "sh {here}/../services/copy-bundle.sh org.python.python {machine} {machine-port:22}"
+expect = "copied: org.python.python"
+# From nothing: a run before may have left it installed.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; bundle install --for-everyone --yes /users/lab/org.python.python.dkv | tail -1'"
+root = true
+expect = "installed org.python.python"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+host = "python3 {here}/ansible.py {machine} {machine-port:22} {machine-port:9090}"
+expect = [
+    "pass 1: every task succeeded",
+    "pass 2: every task succeeded",
+    "reads reported no change",
+    "changes reported changed both times",
+    "state after each change is what its route leaves",
+]
+[[step]]
+run = "bundle remove --for-everyone --purge org.python.python"
+root = true
+expect = "removed org.python.python"

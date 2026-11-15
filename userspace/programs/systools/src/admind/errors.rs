@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The console's errors (ADR 0514), all in this one place. Each has an ID
-//! a person can quote, a title, the HTTP status it is answered with, and
-//! a fix the person can try. The detail is the sentence for this one
-//! time: where authd refused, its own words, which are written for people
-//! already. Both admind's routes and the worker's methods fail with these,
-//! so the page sees one shape whichever of them said no:
+//! The console's errors (ADRs 0514 and 0515), all in this one place. Each
+//! has an ID a person can quote, a title, the HTTP status it is answered
+//! with, and a fix the person can try. The detail is the sentence for this
+//! one time: where authd refused, its own words, which are written for
+//! people already. Both admind's routes and the worker's methods fail with
+//! these, so the page sees one shape whichever of them said no:
 //! `{"error": {"id", "title", "detail", "fix"}}`.
 
 use accounts::request::WRONG_PASSWORD;
@@ -43,8 +43,9 @@ pub enum Kind {
     TooBig,
     /// ADM-114: the request names a host that is not this machine's.
     WrongHost,
-    /// ADM-115: an API token came, and the console takes none yet.
-    NoTokens,
+    /// ADM-115: an API token came that is not one: unknown, ended, or of
+    /// an account that may not sign in.
+    TokenRefused,
     /// ADM-116: there is nothing at that address.
     NoRoute,
     /// ADM-117: the route does not take that method.
@@ -58,11 +59,29 @@ pub enum Kind {
     /// ADM-121: the console could not do what it is for, for a reason of
     /// its own.
     Internal,
+    /// ADM-122: the person may read what an area holds, and the change
+    /// needs an administrator.
+    NotAdmin,
+    /// ADM-123: an action's command ran and did not work.
+    CommandFailed,
+    /// ADM-124: an API token's scopes do not name what it asked for.
+    OutOfScope,
+    /// ADM-125: an argument's value cannot work.
+    BadValue,
+    /// ADM-126: the console's store is not open, so it keeps no journal
+    /// and no tasks.
+    NoStore,
+    /// ADM-127: the change or the task asked for is not one the console
+    /// keeps.
+    NotKept,
+    /// ADM-128: what was asked cannot be done to this change or task as
+    /// it is.
+    Cannot,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 21] = [
+    pub const ALL: [Kind; 28] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -77,13 +96,20 @@ impl Kind {
         Kind::WorkerSilent,
         Kind::TooBig,
         Kind::WrongHost,
-        Kind::NoTokens,
+        Kind::TokenRefused,
         Kind::NoRoute,
         Kind::NoMethod,
         Kind::SecondStepOnly,
         Kind::NotJson,
         Kind::Busy,
         Kind::Internal,
+        Kind::NotAdmin,
+        Kind::CommandFailed,
+        Kind::OutOfScope,
+        Kind::BadValue,
+        Kind::NoStore,
+        Kind::NotKept,
+        Kind::Cannot,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -103,13 +129,20 @@ impl Kind {
             Kind::WorkerSilent => "ADM-112",
             Kind::TooBig => "ADM-113",
             Kind::WrongHost => "ADM-114",
-            Kind::NoTokens => "ADM-115",
+            Kind::TokenRefused => "ADM-115",
             Kind::NoRoute => "ADM-116",
             Kind::NoMethod => "ADM-117",
             Kind::SecondStepOnly => "ADM-118",
             Kind::NotJson => "ADM-119",
             Kind::Busy => "ADM-120",
             Kind::Internal => "ADM-121",
+            Kind::NotAdmin => "ADM-122",
+            Kind::CommandFailed => "ADM-123",
+            Kind::OutOfScope => "ADM-124",
+            Kind::BadValue => "ADM-125",
+            Kind::NoStore => "ADM-126",
+            Kind::NotKept => "ADM-127",
+            Kind::Cannot => "ADM-128",
         }
     }
 
@@ -125,21 +158,28 @@ impl Kind {
             | Kind::WrongCode
             | Kind::PasskeyRefused
             | Kind::SessionEnded
-            | Kind::NoTokens => 401,
+            | Kind::TokenRefused => 401,
             Kind::NotAllowed
             | Kind::Locked
             | Kind::ForeignRequest
             | Kind::Refused
-            | Kind::SecondStepOnly => 403,
+            | Kind::SecondStepOnly
+            | Kind::NotAdmin
+            | Kind::OutOfScope => 403,
             Kind::Wait => 429,
-            Kind::BadRequest => 400,
+            Kind::BadRequest | Kind::BadValue => 400,
+            // The command was asked for and ran: what it said is the
+            // answer, and nothing about the request was wrong.
+            Kind::CommandFailed => 422,
+            // What was asked is not now what it can be done to.
+            Kind::Cannot => 409,
             Kind::AuthdSilent | Kind::WorkerSilent => 502,
             Kind::TooBig => 413,
             Kind::WrongHost => 421,
-            Kind::NoRoute => 404,
+            Kind::NoRoute | Kind::NotKept => 404,
             Kind::NoMethod => 405,
             Kind::NotJson => 415,
-            Kind::Busy => 503,
+            Kind::Busy | Kind::NoStore => 503,
             Kind::Internal => 500,
         }
     }
@@ -161,13 +201,20 @@ impl Kind {
             Kind::WorkerSilent => "The session's worker did not answer",
             Kind::TooBig => "That is too big",
             Kind::WrongHost => "This is not the name of this machine",
-            Kind::NoTokens => "API tokens are not accepted yet",
+            Kind::TokenRefused => "The API token is not accepted",
             Kind::NoRoute => "There is nothing at that address",
             Kind::NoMethod => "That method is not used here",
             Kind::SecondStepOnly => "This session may only add a second step",
             Kind::NotJson => "The request is not JSON",
             Kind::Busy => "The console is full",
             Kind::Internal => "The console could not do that",
+            Kind::NotAdmin => "This account can look but not change",
+            Kind::CommandFailed => "The command did not work",
+            Kind::OutOfScope => "The API token may not do this",
+            Kind::BadValue => "A value cannot work",
+            Kind::NoStore => "The console keeps no journal or tasks now",
+            Kind::NotKept => "The console has no such change or task",
+            Kind::Cannot => "That cannot be done to this one",
         }
     }
 
@@ -185,16 +232,27 @@ impl Kind {
             Kind::AuthdSilent => Some("Try again in a moment."),
             Kind::WorkerSilent => Some("Sign out and sign in again."),
             Kind::WrongHost => Some("Open the console by this machine's name or its address."),
-            Kind::NoTokens => Some("Sign in with a name and a password."),
+            Kind::TokenRefused => {
+                Some("Check the token, or make a new one: a token ends on its date.")
+            }
+            Kind::NotAdmin => {
+                Some("Ask an administrator to make the change, or to make this account one.")
+            }
+            Kind::OutOfScope => Some("Make a token whose scopes name this area."),
+            Kind::BadValue => Some("Change the value, then try again."),
             Kind::SecondStepOnly => Some("Add a second step: you sign in again once it is added."),
             Kind::Busy => Some("Try again when someone has signed out."),
             Kind::Internal => Some("Try again; if it keeps happening, look in the log of admind."),
+            Kind::NoStore => Some("Look in the log of admind for why its store did not open."),
             Kind::NotJson
             | Kind::BadRequest
             | Kind::Refused
             | Kind::TooBig
             | Kind::NoRoute
-            | Kind::NoMethod => None,
+            | Kind::NoMethod
+            | Kind::NotKept
+            | Kind::Cannot
+            | Kind::CommandFailed => None,
         }
     }
 }
@@ -208,28 +266,73 @@ pub struct Failure {
     pub detail: String,
     /// For [`Kind::Wait`], the seconds after which to try again.
     pub retry_after: Option<u64>,
+    /// For [`Kind::BadValue`], the argument whose value cannot work, which
+    /// the page shows the detail under.
+    pub field: Option<&'static str>,
+    /// For [`Kind::CommandFailed`], the ID the command gave, when its
+    /// action names it: the answer's `id` instead of ADM-123.
+    pub own_id: Option<String>,
+    /// For [`Kind::CommandFailed`], the command: `{argv, status, stderr}`,
+    /// its words, its status and its error output, for the page's "the
+    /// program's own words".
+    pub command: Option<Value>,
 }
 
 impl Failure {
     /// A failure of `kind`, with `detail`.
     pub fn new(kind: Kind, detail: impl Into<String>) -> Failure {
-        Failure { kind, detail: detail.into(), retry_after: None }
+        Failure {
+            kind,
+            detail: detail.into(),
+            retry_after: None,
+            field: None,
+            own_id: None,
+            command: None,
+        }
+    }
+
+    /// A [`Kind::CommandFailed`] failure: `argv` ended with `status`,
+    /// saying `errors`; `detail` is its last line, and `id` the error ID
+    /// that line gave, if the action names it.
+    pub fn command(
+        id: Option<&str>,
+        detail: String,
+        argv: &[String],
+        status: i32,
+        errors: &str,
+    ) -> Failure {
+        Failure {
+            own_id: id.map(str::to_string),
+            command: Some(json!({ "argv": argv, "status": status, "stderr": errors })),
+            ..Failure::new(Kind::CommandFailed, detail)
+        }
+    }
+
+    /// A [`Kind::BadValue`] failure of the argument `field`, saying `why`.
+    pub fn bad_value(field: &'static str, why: impl Into<String>) -> Failure {
+        Failure { field: Some(field), ..Failure::new(Kind::BadValue, why) }
     }
 
     /// A [`Kind::Wait`] failure that says to try again in `seconds`.
     pub fn wait(detail: impl Into<String>, seconds: u64) -> Failure {
-        Failure { kind: Kind::Wait, detail: detail.into(), retry_after: Some(seconds) }
+        Failure { retry_after: Some(seconds), ..Failure::new(Kind::Wait, detail) }
     }
 
     /// The answer's JSON.
     pub fn body(&self) -> Value {
         let mut error = json!({
-            "id": self.kind.id(),
+            "id": self.own_id.as_deref().unwrap_or(self.kind.id()),
             "title": self.kind.title(),
             "detail": self.detail,
         });
         if let Some(fix) = self.kind.fix() {
             error["fix"] = fix.into();
+        }
+        if let Some(field) = self.field {
+            error["field"] = field.into();
+        }
+        if let Some(command) = &self.command {
+            error["command"] = command.clone();
         }
         json!({ "error": error })
     }
@@ -259,6 +362,12 @@ const NOT_ALLOWED: [&str; 3] =
 /// may, which is the console being full as much as admind's own limit.
 const FULL: &str = "web console sessions are signed in already";
 
+/// How authd refuses an unlock, or a command as an administrator, to an
+/// account that is no administrator: for a session's unlock and for an API
+/// token whose owner is not one, as admind itself refuses a session's
+/// change, ADM-122.
+const NOT_ADMIN: &str = "is not an administrator, and makes no changes";
+
 /// The failure that authd's refusal `why` is, for what `attempt` was. authd
 /// words every refusal for a person, so the detail is its own sentence; the
 /// kind is what the page tells apart.
@@ -271,6 +380,8 @@ pub fn refusal(attempt: Attempt, why: &str) -> Failure {
         Kind::Locked
     } else if why.ends_with("sign in again") {
         Kind::SessionEnded
+    } else if why.ends_with(NOT_ADMIN) {
+        Kind::NotAdmin
     } else if NOT_ALLOWED.iter().any(|phrase| why.contains(phrase)) {
         Kind::NotAllowed
     } else if why.ends_with(FULL) {
@@ -335,6 +446,14 @@ mod tests {
         // A kind with nothing to try has no fix at all, not an empty one.
         let bad = Failure::new(Kind::BadRequest, "no JSON").body();
         assert!(bad["error"].get("fix").is_none());
+        // A command that failed says its words, status and error output as
+        // the page reads them.
+        let argv = ["service".to_string(), "nginx".into(), "restart".into()];
+        let failed = Failure::command(None, "nginx: no".into(), &argv, 1, "nginx: no\n").body();
+        assert_eq!(
+            failed["error"]["command"],
+            json!({ "argv": ["service", "nginx", "restart"], "status": 1, "stderr": "nginx: no\n" })
+        );
         assert_eq!(Failure::wait("slow down", 7).retry_after, Some(7));
     }
 
@@ -395,7 +514,7 @@ mod tests {
                 Kind::SecondStepOnly,
             ),
             (Attempt::Other, "64 web console sessions are signed in already", Kind::Busy),
-            (Attempt::Other, "chase is not an administrator, and makes no changes", Kind::Refused),
+            (Attempt::Other, "chase is not an administrator, and makes no changes", Kind::NotAdmin),
         ];
         for (attempt, why, kind) in cases {
             let failure = refusal(attempt, why);
@@ -410,6 +529,7 @@ mod tests {
         let authd = include_str!("../authd/console.rs");
         for phrase in NOT_ALLOWED.into_iter().chain([
             FULL,
+            NOT_ADMIN,
             "may only add a second step",
             "the session is locked",
             ": sign in again",

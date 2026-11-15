@@ -890,10 +890,13 @@ answered for the user the connection gives.
 	past *session-hours* does not unlock, and an end by *idle-minutes*
 	is admind's to say. Unlocked sessions are kept in memory only.
 
-*elevate* *session*|*token* _by_ [_language_...] *--* _command_...
+*elevate* *session* _session_|*token* _token_ _area_ [_language_...] *--* _command_...
 	Runs _command_ as an administrator for an unlocked session, or for
-	a token that has the scope *\**, as *elevate* does for a pane
-	(ELEVATE), with its four descriptors, and answers as it does. The
+	a token whose scopes name _area_, the console's area of the action
+	that runs it, or are *\**, as *elevate* does for a pane (ELEVATE),
+	with its four descriptors, and answers as it does. A scope that only
+	reads, such as *services:read*, is never enough, and _area_ is never
+	*\** itself. The
 	account must be an administrator's, and one that may sign in. The
 	command is found in _/system/commands_ and _/applications/commands_
 	only, by a path with no *.*, *..* or empty part, and is never a
@@ -901,13 +904,17 @@ answered for the user the connection gives.
 	command has at most 64 arguments and 32 KiB. The command's
 	environment, as *elevate*(8)'s, has *DUKOVO\_CONSOLE\_SESSION* too: the
 	first 8 characters of the session's ID, or *token* and the token's
-	name. The audit log says whose right ran it.
+	name. The audit log says whose right ran it, and for a token, the
+	area.
 
 *token* _token_ _address_, *token-start* _token_
 	Check an API token, which has the form dkv_ACCOUNT_SECRET, with
 	SECRET 64 hexadecimal digits, and start a worker for its owner as
-	*start* does. A wrong token waits as a wrong password does. admind takes no
-	token in this release (ADM-115), so the console asks neither.
+	*start* does. A wrong token waits as a wrong password does. admind
+	asks *token* for each request that brings one, so that a token that
+	is removed or ends, or whose account may no longer sign in, stops at
+	once, and *token-start* only when an action runs as the token's
+	owner. The answer to *token* is *ok* _owner_ _name_ _scopes_ _until_.
 
 *steps*, *app-begin*, *app-confirm*, *app-remove*, *passkey-begin*, *passkey-add*, *passkey-remove*, *passkey-rename*, *codes*, *trusted-forget*, *token-add*, *token-remove*
 	The person's own second steps and tokens (below). *app-begin*,

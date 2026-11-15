@@ -26,6 +26,7 @@ use super::files::Files;
 use super::link::{self, Fault};
 use super::reach::Network;
 use super::shared::{Identity, Shared, unix_now};
+use super::store::Store;
 use super::tls;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -138,6 +139,29 @@ fn answer(stream: &UnixStream, script: &Script, record: &Mutex<Vec<String>>) {
             return;
         }
     }
+    // What the script left for after its answer: a command's end.
+    if let Some(later) = LATER.take() {
+        for line in later() {
+            if stream.write_all(format!("{line}\n").as_bytes()).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// What a script has left to say after its lines are written.
+type Later = Box<dyn FnOnce() -> Vec<String> + Send>;
+
+thread_local! {
+    /// The connection's thread runs its script and then this.
+    static LATER: std::cell::Cell<Option<Later>> = const { std::cell::Cell::new(None) };
+}
+
+/// For a script: has `later` run after the script's own lines are
+/// written, and writes the lines it gives. That is how a command that
+/// takes time ends after authd has answered that it started.
+pub fn then(later: impl FnOnce() -> Vec<String> + Send + 'static) {
+    LATER.set(Some(Box::new(later)));
 }
 
 /// The worker's ends of a link, as authd is sent them: the first two of
@@ -187,15 +211,17 @@ pub struct Console {
     pub _folder: Scratch,
 }
 
-/// The accounts the tests sign in: an administrator, a person who is
-/// not, and the account of the second step.
+/// The accounts the tests sign in: administrators, people who are not,
+/// and the account of the second step.
 pub const PASSWD: &str = "root:x:0:0:root:/system/root:/system/commands/nukesh\n\
                           chase:x:1000:1000:Chase Y,,:/users/chase:/system/commands/nukesh\n\
                           bob:x:1001:1001::/users/bob:/system/commands/nukesh\n\
                           alice:x:1002:1002:Alice,,:/users/alice:/system/commands/nukesh\n\
-                          eve:x:1003:1003::/users/eve:/system/commands/nukesh\n";
+                          eve:x:1003:1003::/users/eve:/system/commands/nukesh\n\
+                          dave:x:1004:1004::/users/dave:/system/commands/nukesh\n";
 /// Their groups.
 pub const GROUP: &str = "root:x:0:\nchase:x:1000:\nbob:x:1001:\nalice:x:1002:\neve:x:1003:\n\
+                         dave:x:1004:\n\
                          admins:x:10:chase,alice\n";
 
 /// The page the test console serves.
@@ -235,8 +261,14 @@ impl Console {
         let loopback = Network { ip: [127, 0, 0, 1].into(), prefix: 8 };
         let identity = Identity::new("nas", vec![loopback], &certificate.names);
         let authd = Authd::start(what, script);
-        let mut shared =
-            Shared::new(Settings::default(), identity, certificate, files, &authd.path);
+        let mut shared = Shared::new(
+            Settings::default(),
+            identity,
+            certificate,
+            files,
+            &authd.path,
+            Some(Store::in_memory()),
+        );
         let passwd = folder.0.join("passwd");
         let group = folder.0.join("group");
         std::fs::write(&passwd, PASSWD).unwrap();

@@ -677,6 +677,24 @@ through this socket*, and the attempt is logged as a security event.
 One of its connections is served at a time, beside the control
 socket's.
 
+# READ SOCKET
+
+Anyone may ask Spark what it knows, as Linux's *systemctl status*
+answers any user. Spark listens at _/system/live/spark/read_ too, mode
+0666, as *logd*(8)'s query socket is. It answers *status* and
+*show* [_name_] as the control socket does, and any other request with
+*error: the read socket answers status and show*; those go to the
+control socket, which only root may write to. *service*(8) reads
+through it, so that *service list* and *service* _name_ *status* work
+for everyone, and so does the web console, whose reads run as the
+person signed in (ADR 0515). Four of its connections are served at a
+time, apart from the control socket's, so that a user who keeps them
+busy keeps no one out of the control socket.
+
+What a service's own output said is root's, as its records in the log
+are: for anyone else, *show* leaves out each service's *last_line* and
+its health check's *last_failure*.
+
 Spark reads what certd keeps trusting nothing in it: a certificate's
 name must be a symbolic link to one of its own generations in certd's
 folder, and its two files regular files of 64 KiB or less, none a link.
@@ -992,6 +1010,9 @@ _/system/settings/spark/services/_*name*_.service_
 
 _/system/live/spark/control_
 	The control socket (see *CONTROL SOCKET*).
+
+_/system/live/spark/read_
+	The read socket (see *READ SOCKET*).
 
 _/system/live/spark/root_
 	Which root this is: its disk, UUID and partitions (see *WHAT A

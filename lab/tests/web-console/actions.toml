@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Every action of the web console from the console's own page, in each
+# engine (ADR 0515): an administrator signs in and unlocks the console,
+# and the page itself, with fetch() under the console's content security
+# policy, reads the list of actions that GET /api/1/actions gives and calls
+# the route of each with the arguments of its first good example, as the
+# page's buttons do, with the session's cookie and token. A read is
+# answered 200 with JSON; a change is answered 200 and done, saying whether
+# it changed anything, and the action that its examples name puts back what
+# it did. The list is the one that `admin actions --json` prints at a
+# terminal, so a new action is tried here once it is registered.
+# certificate.renew is left to the boot test admin-actions: it makes the
+# certificate that admind serves anew, and the browser accepted the old
+# one. admind is the service that answers. Each engine has an administrator
+# of its own, which this test makes and removes, so no script needs the
+# lab's password.
+about = "Browsers call every action of the web console from its own page, under its content security policy: each read is answered with JSON, each change is done and its undo puts it back"
+time = "15m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-actions-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-actions-chromium", "Made wc-actions-firefox", "Made wc-actions-webkit"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "actions.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do user remove --delete-home --yes wc-actions-$engine || exit 1; done'"
+root = true
+expect = ["wc-actions-chromium is removed", "wc-actions-firefox is removed", "wc-actions-webkit is removed"]

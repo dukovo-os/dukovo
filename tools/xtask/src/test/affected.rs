@@ -53,6 +53,10 @@ const NOTHING: &[&str] = &[
     "tools/xtask/src/lab.rs",
     "tools/xtask/src/lab_net.rs",
     "tools/xtask/src/lab_net/",
+    // The entry points of a fuzz target: only a build with systools' `fuzz`
+    // feature has them, and no image is built with it (ADR 0515).
+    "userspace/programs/systools/src/fuzz.rs",
+    "userspace/programs/systools/src/fuzz/",
     // Other jobs' tools and checks.
     "deny.toml",
     "kernel/deny.toml",
@@ -100,6 +104,7 @@ const CORE: &[&str] = &[
     "userspace/programs/Cargo.toml",
     "userspace/programs/Cargo.lock",
     "userspace/programs/systools/src/main.rs",
+    "userspace/programs/systools/src/lib.rs",
     "tools/xtask/",
     "image/",
     "ob",

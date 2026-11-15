@@ -20,16 +20,27 @@
 //! - [`serve`] listens, checks who may connect, speaks TLS and HTTP, and
 //!   ends the sessions whose time is up;
 //! - [`routes`] answers each request: the order of its checks, the sign-in
-//!   and the session routes, the account's second step;
+//!   and the session routes, the account's second step and preferences;
+//! - [`actions`] is the list of what the API does, each read and change with
+//!   its arguments, the command it runs and the forms it shows as, which
+//!   admin(8) prints too;
 //! - [`guard`], [`reach`] and [`sessions`] are the security core: whom to
 //!   answer, which requests may change anything, and what a session is;
 //! - [`limits`] counts what keeps admind usable while anyone on the network
 //!   may knock, and [`shared`] holds what the connections share;
 //! - [`authd`], [`link`] and [`worker`] are the asking: authd's requests
 //!   and the frames between admind and a session's worker;
+//! - [`preferences`] is what a person prefers of the console, kept in
+//!   their own `~/.config/dukovo-admin/settings.toml`, which their worker
+//!   reads and writes (ADR 0516);
 //! - [`errors`] is the table of error IDs, `ADM-101` and on, each with its
 //!   status; [`files`], [`tls`] and [`webauthn`] read the console's files,
-//!   the certificate and a browser's passkey JSON.
+//!   the certificate and a browser's passkey JSON;
+//! - [`store`] is the one SQLite file that keeps what a restart must not
+//!   lose (ADR 0516): [`journal`] with [`audit`] and [`diff`] makes "What
+//!   changed" from the console's own changes and the files changed by
+//!   hand, and [`tasks`] runs the long actions, their progress and their
+//!   logs.
 //!
 //! When something is wrong, `log admind` has a line for each start, sign-in,
 //! sign-out and refusal, with the browser's address and never a password,
@@ -39,37 +50,63 @@
 //!
 //! SIGHUP (`service admind reload`) reads admin.toml and the certificate
 //! again, for the connections that come after. SIGTERM ends the sessions
-//! and stops. The tests of what the console must refuse are in
+//! and stops; a task that runs then is hung up with admind, and ends as
+//! stopped, "the console restarted", when admind starts again. The tests of what the console must refuse are in
 //! `lab/tests/web-console`.
 //!
 //! Only the lab's build, made with the `lab` feature of systools, has
 //! `POST /api/1/test/elevate`, which runs a command in an unlocked session
-//! so that the lab can see what an elevated session does. The build that
-//! ships has no such route.
+//! so that the lab can see what an elevated session does, and `lab.long`,
+//! a long action for the tests of tasks. The build that ships has neither.
 
+pub(crate) mod actions;
+mod audit;
 mod authd;
-mod errors;
+pub(crate) mod caller;
+mod diff;
+pub(crate) mod errors;
 mod files;
-#[cfg(test)]
-mod fixture;
+// The console the tests of the routes use, which the console of a fuzz
+// target (`crate::fuzz`) is made from too. Outside the tests, that is all
+// it is for, and most of the rest goes unused.
+#[cfg(any(test, feature = "fuzz"))]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod fixture;
 mod guard;
+pub(crate) mod journal;
 mod limits;
 mod link;
+pub(crate) mod preferences;
 mod reach;
-mod routes;
+pub(crate) mod routes;
+mod run;
+pub(crate) mod scopes;
 mod serve;
 mod sessions;
 mod shared;
+pub(crate) mod store;
+mod tasks;
 mod tls;
-mod webauthn;
+pub(crate) mod webauthn;
 mod who;
 mod worker;
+
+pub(crate) use serve::ISSUE;
 
 use crate::args::{Arg, Args};
 use crate::util::Fail;
 
+/// Whether [`log`] says nothing, which the console of a fuzz target asks
+/// for: it answers millions of requests and no one reads its log.
+#[cfg(feature = "fuzz")]
+pub(crate) static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Says `text` in the log at syslog level `level`.
 fn log(level: u8, text: &str) {
+    #[cfg(feature = "fuzz")]
+    if QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     eprintln!("<{level}>admind: {text}");
 }
 

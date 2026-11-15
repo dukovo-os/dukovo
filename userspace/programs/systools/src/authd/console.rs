@@ -700,6 +700,18 @@ fn scope_ok(scope: &str) -> bool {
             && area.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
 }
 
+/// Whether a token of `scopes` may change what the area `area` holds as
+/// an administrator: its scopes are `*` or name the area itself, not its
+/// reading alone. admind names the area of the action it runs, and checks
+/// the same before it asks; this keeps a mistake there from running a
+/// command a token was not given.
+fn may_change(scopes: &[String], area: &str) -> bool {
+    scope_ok(area)
+        && !area.ends_with(":read")
+        && area != "*"
+        && scopes.iter().any(|scope| scope == "*" || scope == area)
+}
+
 /// The most arguments, and bytes of them, of a console's elevated
 /// command.
 const ARGUMENTS_MAX: usize = 64;
@@ -1582,17 +1594,18 @@ impl Authd {
                 Ok(_) => return no("the session is locked: unlock it to make changes", now),
                 Err(why) => return no(why, now),
             },
-            Elevator::Token(token) => match find_token(token, unix_now()) {
-                Ok(given) if given.scopes.iter().any(|s| s == "*") => (
+            Elevator::Token { token, area } => match find_token(token, unix_now()) {
+                Ok(given) if may_change(&given.scopes, area) => (
                     given.owner,
-                    format!("with the API token \"{}\"", given.name),
+                    format!("with the API token \"{}\", for {}", given.name, shown(area)),
                     format!("token {}", given.name),
                 ),
                 Ok(given) => {
                     return no(
                         format!(
-                            "the API token \"{}\" may not run commands as an administrator",
-                            given.name
+                            "the API token \"{}\" may not change {} as an administrator",
+                            given.name,
+                            shown(area)
                         ),
                         now,
                     );

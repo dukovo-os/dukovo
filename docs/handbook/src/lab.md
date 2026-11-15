@@ -498,7 +498,9 @@ anything that falls short:
 - a test that never names what it covers: each word of the name, as a
   whole word, in the test's file, in a script beside it that the test
   runs as `{here}/NAME`, or in the script of a `browser` step;
-- an entry of a command or service the tree no longer has.
+- an entry of a command or service the tree no longer has;
+- an action of the console's API with a test missing, which the next
+  section says.
 
 The console's pages and the API's routes have no list in the tree to
 compare with, so their entries are held to their tests alone, and each
@@ -506,3 +508,53 @@ change that adds one adds its entry. A subcommand that does something of
 its own, as `service explain` does, gets an entry of its own as well.
 `lab/before-phase-16.txt` holds what there was before; nothing is added
 to it.
+
+### The console's actions
+
+Each action of the console's API (ADR 0515) has five tests, which
+`lab/actions.toml` names. The registry in `systools` writes the file, so
+an action is in it as soon as it is registered: its host test
+`actions_toml` fails when the file is stale, and `UPDATE_ACTIONS=1 ./ob
+test unit` rewrites it. An action's tests are:
+
+- `checks`, the Rust module of host tests that holds its examples, as
+  `admind::actions::service::tests`: a module path under
+  `userspace/programs/systools/src` that declares `mod tests` with a
+  `#[test]` in it;
+- `route`, a boot test case, which calls the action through its route;
+- `same_as_command`, a boot test case, which shows that the action
+  does what its command does at a terminal;
+- `browser`, a lab test, as `web-console/actions`, which runs the action
+  from a button in the console;
+- `ansible`, a lab test, which runs the Ansible task that the console
+  shows for the action.
+
+`./ob lab coverage --check` reads the file and fails for each test that is
+not in the tree, once, naming the first three actions that name it and
+how many more do. Boot test cases are looked for by name, and lab tests
+by category and name in `lab/tests`.
+
+### The console's scans
+
+Two lab tests in `lab/tests/web-console` scan the console's HTTPS port
+instead of using it as a person does. Both fail on a finding that their
+accepted list does not name, and each name in the list has its reason on
+the same line.
+
+- `zap` runs ZAP's baseline scan, which only watches, against the console
+  signed out and against its API with an API token for every scope.
+  `zap-rules.tsv` lists the rules that are no fault, as ZAP's own
+  configuration file does. ZAP is pinned to a release by the digest of its
+  image, which the lab PC pulls through Docker the first time.
+- `testssl` runs testssl.sh, pinned to a release tag, and checks that the
+  console offers TLS 1.2 and 1.3 only, forward secrecy only and no weak
+  cipher, and that its certificate names `localhost` and is valid now. It
+  also fails on any finding of severity MEDIUM or worse that
+  `testssl-accepted.txt` does not list; the certificate being self-signed
+  is listed.
+
+The console's actions have a third kind of test beside these: `ansible`
+runs the Ansible task that the console shows for each action, against the
+machine over SSH, with a token the test makes. Its change tasks report
+"changed" on every run, because `ansible.builtin.command` cannot tell a
+change from none.

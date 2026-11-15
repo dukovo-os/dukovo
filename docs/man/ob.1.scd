@@ -230,7 +230,12 @@ _target/userspace/_).
 		whose password, the lab's own, lets tests run commands as root
 		through *elevate*(8); sshd turned on by an override file; and a
 		sign-in banner that says the image is a test image (ADRs 0401 and
-		0408). *lab run* tests it. Never give it to anyone as a release.
+		0408). Its systools is built with the *lab* feature, which gives
+		the web console the route the lab's tests run an elevated command
+		by, _POST /api/1/test/elevate_, and the long action *lab.long*
+		that its task tests run (ADRs 0514 and 0516); no other image,
+		the boot tests' images included, has either. *lab run* tests it.
+		Never give it to anyone as a release.
 
 	*--lab-key* _file_
 		The lab's public key, one *ssh-ed25519* line, instead of
@@ -1617,7 +1622,14 @@ _target/userspace/_).
 	test that is not in _lab/tests_; a test that never names what it
 	covers, in its file, in a script beside it that it runs as
 	_{here}/NAME_ or in the script of its *browser* step; or an entry of
-	something the tree no longer has.
+	something the tree no longer has. It also holds each action of the
+	web console's API, as _lab/actions.toml_ lists them, to its five
+	tests: a Rust module of host tests (*checks*), two boot test cases
+	(*route* and *same_as_command*) and two lab tests (*browser* and
+	*ansible*), and exits 1 for each that is not in the tree, naming
+	the actions that name it. The host test *actions_toml* writes the
+	file from the registry; *UPDATE_ACTIONS=1 ./ob test unit* rewrites
+	it.
 
 	For *run* and *ui*, also build the ports and pack the catalog's
 	bundles, for the service bundles' tests, and name their folders to

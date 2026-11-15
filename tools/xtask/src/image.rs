@@ -275,7 +275,8 @@ pub fn build_release(
         crate::bail!("the lab key goes into the lab image, and the lab image needs one");
     }
     let kernel = kernel::build(ctx, profile)?;
-    let programs = userspace::build(ctx, profile)?;
+    // The lab's tests need systools' lab routes, which no other image has.
+    let programs = userspace::build_for(ctx, profile, kind == Kind::Lab)?;
     let (root, live) = (ctx.out.join("root.btrfs"), ctx.out.join("live.btrfs"));
     let rescue = ctx.out.join("rescue-staging");
     let menu = match kind {

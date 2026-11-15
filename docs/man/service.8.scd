@@ -39,12 +39,19 @@ service - start, stop and look at the services, and check their files
 
 # DESCRIPTION
 
-service asks Spark, over its control socket _/system/live/spark/control_
-(*spark*(8)), about the services it supervises: the programs that
-_/system/settings/spark/services_ describes, a file each.
+service asks Spark about the services it supervises: the programs that
+_/system/settings/spark/services_ describes, a file each (*spark*(8)).
+Anyone may look: *list*, *status*, *explain* and *--status-all* ask
+through Spark's read socket, _/system/live/spark/read_, as Linux's
+*systemctl status* answers any user. What a service's own output said,
+its last line and the last a failed health check wrote, is root's, as
+its records in the log are (*logd*(8)). The rest asks through the
+control socket, _/system/live/spark/control_, which only root may write
+to: one who is not root runs it with *elevate*(8), and is otherwise
+told so, with status 4.
 
 *list* shows every service, by name, with its state, whether it starts
-at boot and since when it is in that state:
+at boot, as its file says, and since when it is in that state:
 
 ```
 SERVICE   STATE                    AT BOOT  SINCE     DESCRIPTION
@@ -61,8 +68,13 @@ or failing their health check. One that is off as it is meant to be, a
 driver the kernel left none of the cards it drives or a service Rescue,
 essentials or a try of *changes bisect* leave off, is not among them. *--failed* lists those alone and exits 1
 when there are some, for scripts. *--json* prints Spark's *show*
-document as it is (*spark*(8)), which has *show_version* for scripts to
-check. In a pipe, the header is left out.
+document (*spark*(8)), which has *show_version* for scripts to check,
+with each service's *enabled* as its file says. Spark reads a service's
+file again only as it starts the service, so its own copy does not
+follow *disable* of a service that is stopped or *enable* of one that
+runs until then; *list* reads the files, which the next boot follows,
+and says *disabled* of a stopped service whose file is off. In a pipe,
+the header is left out.
 
 *list --timers* lists instead the services whose files have a *[timer]*
 (*service.toml*(5)), by name, with the time each starts next and when it

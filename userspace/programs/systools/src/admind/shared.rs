@@ -3,9 +3,10 @@
 
 //! What all of admind's connections share (ADR 0514): the sessions, the
 //! counts that keep it usable, the certificate it serves, the machine's
-//! names, and the console's files. admind runs on one thread, so the
-//! parts are `RefCell`s in an `Rc`; none is borrowed across an `await`,
-//! so that two connections never meet in one.
+//! names, the console's files, and the store of the journal and the tasks
+//! (ADR 0516). admind runs on one thread, so the parts are `RefCell`s in
+//! an `Rc`; none is borrowed across an `await`, so that two connections
+//! never meet in one.
 //!
 //! This is also where sessions end. Whatever ends one (sign-out, the
 //! hours or idle time of the sign-in rules, its worker going, admind
@@ -14,8 +15,9 @@
 //! stream learns of it, and of an unlock that changed, from
 //! [`Shared::changes`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,14 +25,19 @@ use accounts::console::Console;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use super::actions::{self, Registered};
 use super::authd;
+use super::caller::TokenWorkers;
 use super::errors::{Failure, Kind};
 use super::files::Files;
+use super::journal::{Journal, SETTINGS};
 use super::limits::{Connections, Endings, Quiet, Tickets, Tries};
 use super::link::Link;
 use super::log;
 use super::reach::{self, Network};
 use super::sessions::{Session, Sessions};
+use super::store::Store;
+use super::tasks::Tasks;
 use super::tls::Certificate;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -145,9 +152,21 @@ pub struct Shared {
     /// Sent to when a session ends or its unlock changes, which the event
     /// streams of the session's tabs wait for.
     pub changes: watch::Sender<()>,
-    /// The elevated commands of the test route running now.
-    #[cfg(feature = "lab")]
-    pub elevating: std::cell::Cell<usize>,
+    /// The wrong API tokens each address gave in the last minute.
+    pub wrong_tokens: RefCell<Tries>,
+    /// The workers of the API tokens in use.
+    pub token_workers: RefCell<TokenWorkers>,
+    /// The elevated commands running now, of every session and token.
+    pub elevating: Cell<usize>,
+    /// The actions the API offers: [`actions::offered`], or a test's own.
+    pub actions: Cell<&'static [&'static dyn Registered]>,
+    /// The store of the journal and the tasks; none when it would not
+    /// open, which the log says.
+    pub store: Option<Store>,
+    /// What the journal keeps in memory.
+    pub journal: Journal,
+    /// The tasks that wait, run or ended lately.
+    pub tasks: Tasks,
 }
 
 impl Shared {
@@ -158,6 +177,7 @@ impl Shared {
         certificate: Certificate,
         files: Files,
         authd: &str,
+        store: Option<Store>,
     ) -> Rc<Shared> {
         Rc::new(Shared {
             port: settings.console.listen,
@@ -175,8 +195,13 @@ impl Shared {
             connections: Rc::default(),
             endings: RefCell::default(),
             changes: watch::channel(()).0,
-            #[cfg(feature = "lab")]
-            elevating: std::cell::Cell::new(0),
+            wrong_tokens: RefCell::default(),
+            token_workers: RefCell::default(),
+            elevating: Cell::new(0),
+            actions: Cell::new(actions::offered()),
+            store,
+            journal: Journal::new(Path::new(SETTINGS)),
+            tasks: Tasks::new(),
         })
     }
 
@@ -281,9 +306,11 @@ impl Shared {
             drop(self.finish(session, reason));
         }
         self.tries.borrow_mut().tidy(now);
+        self.wrong_tokens.borrow_mut().tidy(now);
         self.tickets.borrow_mut().tidy(now);
         self.quiet.borrow_mut().tidy(now);
         self.refused.borrow_mut().tidy(now);
+        self.token_workers.borrow_mut().tidy(now);
     }
 
     /// Ends every session, as admind stops, waiting a moment for authd to

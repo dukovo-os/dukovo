@@ -82,7 +82,7 @@ fn unbase64(what: &str, text: &str) -> Result<Vec<u8>, Failure> {
 
 /// The challenge that `client_data`, a browser's client data JSON, says it
 /// answers.
-fn challenge_of(client_data: &[u8]) -> Result<Vec<u8>, Failure> {
+pub(crate) fn challenge_of(client_data: &[u8]) -> Result<Vec<u8>, Failure> {
     #[derive(Deserialize)]
     struct Data {
         challenge: String,

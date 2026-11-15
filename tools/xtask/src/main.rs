@@ -552,7 +552,8 @@ dukovo-lab is found on PATH, in ~/.cargo/bin, or at OB_LAB (which plain
 service, console page and API route new since 0.15 beside the lab tests
 that cover it (lab/coverage.toml). With --check, as CI runs it, it exits
 1 while one has no entry, an entry's tests are missing or never name it,
-or an entry is of something the tree no longer has.
+or an entry is of something the tree no longer has, or an action in
+lab/actions.toml names a test (host, boot or lab) that is not in the tree.
 
   --no-build         Test the lab image already in out/
   --image <file>     Test this image instead of building one
