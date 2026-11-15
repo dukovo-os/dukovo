@@ -80,7 +80,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("test", "Run unit tests, then boot the image in QEMU under UEFI and BIOS"),
     ("catalog", "Make and sign the catalog's TUF repository, with YubiKeys"),
     ("release", "Deploy the system's releases to the update server, and check what it serves"),
-    ("security", "Check the security advisories, and start a new one"),
+    ("security", "Check the security advisories, start a new one, and scan for known flaws"),
     (
         "updates",
         "Show what the update server serves: the catalog, the system's releases, rollouts and when signatures run out",
@@ -725,6 +725,7 @@ when something needs you."
         "security" => {
             "Usage: ./ob security check
        ./ob security advisory new
+       ./ob security scan [--json] [--osv-url <url>]
 
 The project's security advisories, DKSA (ADR 0534): one OSV 1.6 file each, as
 security/advisories/DKSA-YYYY-NNNN.json. `check` reads every one of them as
@@ -736,7 +737,19 @@ exits 1 when one does not check. CI runs it. `advisory new` writes the next free
 number of this year, from a template with today's date and the severity medium,
 whose text says TODO where an advisory needs writing: the check refuses it until
 it is written. The runbook docs/runbooks/security-advisory.md goes from a report
-to a published advisory."
+to a published advisory.
+
+`scan` looks for known flaws in what the system is built from: `cargo audit
+--json` on every tracked Cargo.lock (which it does not change) and on the lock
+of every Rust port that `ports audit` audits, and OSV, asked by the commit each
+port's recipe pins. A port pinned by a release archive and no commit cannot be
+asked, and is listed as not covered. A finding has the severity its advisory
+names, or the base score of its CVSS 3 vector gives, and none when the advisory
+gives neither. The text lists the findings, most severe first; --json prints one
+object, with `findings` and `not_covered`, for the daily scan of
+.github/workflows/upstream.yml. --osv-url names another server that answers as
+OSV does. It exits 0 whatever it finds, and non-zero only when it could not run
+(cargo-audit missing, OSV out of reach)."
         }
         "release" => {
             "Usage: ./ob release server setup [--dukovo]

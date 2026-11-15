@@ -9,13 +9,16 @@
 //!   port it lists; a person, who signs the commit off, moves the pin.
 //! - `ob ports audit` checks the Cargo.lock of each bundle's port in Rust,
 //!   with the port's patches, against the RustSec advisory database with
-//!   cargo-audit, which CI runs each day, so that a flaw in a crate a
-//!   bundle links is known the day it is published. A vulnerability fails
-//!   it; a crate that is only unmaintained or unsound is shown, not
-//!   failed on, since a port often cannot leave it.
+//!   cargo-audit, so that a flaw in a crate a bundle links is known the day
+//!   it is published. A vulnerability fails it; a crate that is only
+//!   unmaintained or unsound is shown, not failed on, since a port often
+//!   cannot leave it. CI runs `ob security scan` each day instead, which
+//!   audits these locks with every other Cargo.lock of the system, and
+//!   takes the locks from [`bundle_locks`].
 
 use std::cmp::Ordering;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::ports::{self, Recipe};
@@ -150,23 +153,39 @@ fn rust_bundle(recipe: &Recipe) -> bool {
     recipe.bundle.is_some() && !recipe.source.git.is_empty()
 }
 
-/// `ob ports audit`: cargo-audit over the Cargo.lock of each bundle's
-/// port in Rust, at the commit its recipe pins.
-pub fn audit(ctx: &Ctx) -> Result<()> {
+/// The Cargo.lock of a bundle's port in Rust.
+pub struct PortLock {
+    /// The port's name.
+    pub port: String,
+    /// The port's version.
+    pub version: String,
+    /// The lock file, in the port's source as it builds.
+    pub lock: PathBuf,
+}
+
+/// Fails, with the command that installs it, unless cargo-audit is.
+pub fn require_cargo_audit() -> Result<()> {
     let installed = Command::new("cargo").args(["audit", "--version"]).output();
-    if !installed.is_ok_and(|o| o.status.success()) {
-        return Err(
-            Error::new("cargo-audit is not installed").hint("cargo install cargo-audit --locked")
-        );
+    if installed.is_ok_and(|o| o.status.success()) {
+        Ok(())
+    } else {
+        Err(Error::new("cargo-audit is not installed").hint("cargo install cargo-audit --locked"))
     }
-    let mut failed = Vec::new();
+}
+
+/// The Cargo.lock of each bundle's port in Rust, from the port's source at
+/// the commit its recipe pins, fetched, with the port's patches applied
+/// since they may move crates, as the port builds. The source is exported
+/// into `ports/audit/<port>` of the target folder. A bundle whose source
+/// has no Cargo.lock is not in Rust and is left out.
+pub fn bundle_locks(ctx: &Ctx) -> Result<Vec<PortLock>> {
+    let mut locks = Vec::new();
     for (recipe, _) in ports::recipes(ctx)? {
         if !rust_bundle(&recipe) {
             continue;
         }
         let source = &recipe.source;
         let fetched = ports::fetch(ctx, &recipe.name, &source.git, &source.commit, &source.paths)?;
-        // As the port builds it: with its patches, which may move crates.
         let dir = ctx.target.join("ports/audit").join(&recipe.name);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).context(|| format!("removing {}", dir.display()))?;
@@ -174,14 +193,24 @@ pub fn audit(ctx: &Ctx) -> Result<()> {
         ports::export(ctx, &fetched, &dir, &source.paths)?;
         ports::apply_patches(ctx, &ctx.root.join("ports").join(&recipe.name), &dir)?;
         let lock = dir.join("Cargo.lock");
-        if !lock.is_file() {
-            continue;
+        if lock.is_file() {
+            locks.push(PortLock { port: recipe.name, version: recipe.version, lock });
         }
-        step(&format!("Auditing the crates of {} {}", recipe.name, recipe.version));
+    }
+    Ok(locks)
+}
+
+/// `ob ports audit`: cargo-audit over the Cargo.lock of each bundle's
+/// port in Rust, at the commit its recipe pins.
+pub fn audit(ctx: &Ctx) -> Result<()> {
+    require_cargo_audit()?;
+    let mut failed = Vec::new();
+    for found in bundle_locks(ctx)? {
+        step(&format!("Auditing the crates of {} {}", found.port, found.version));
         let mut cmd = Command::new("cargo");
-        cmd.args(["audit", "--file"]).arg(&lock);
+        cmd.args(["audit", "--file"]).arg(&found.lock);
         if process::run(ctx, &mut cmd).is_err() {
-            failed.push(recipe.name.clone());
+            failed.push(found.port);
         }
     }
     if failed.is_empty() {

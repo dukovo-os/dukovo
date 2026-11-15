@@ -2170,7 +2170,7 @@ _target/userspace/_).
 *fmt*
 	Format all Rust code with rustfmt.
 
-*security* *check* | *advisory* *new*
+*security* *check* | *advisory* *new* | *scan* [*--json*] [*--osv-url* _url_]
 	The project's security advisories, DKSA (ADR 0534): one OSV 1.6 file
 	each in _security/advisories_, as _DKSA-YYYY-NNNN.json_.
 	*check* reads every one of them as *system-release*(8), built for
@@ -2186,6 +2186,30 @@ _target/userspace/_).
 	report to a published advisory. *release channel* and *release
 	advisories* sign the advisories for machines, and *docs site* builds
 	their pages and feed.
+
+	*scan* looks for known flaws in what the system is built from (ADR
+	0534). It runs *cargo audit --json* on every _Cargo.lock_ the
+	repository tracks, without changing any of them, and on the lock of
+	every Rust port that *ports audit* audits, which *cargo-audit* must
+	be installed for. For each port whose recipe pins a git commit, it
+	asks OSV (_api.osv.dev_, through *curl*) which advisories name that
+	commit. A port pinned by a release archive and no commit cannot be
+	asked, and is listed as not covered. The severity of a finding is the
+	one its advisory names, or the base score of its CVSS 3 vector
+	(Critical from 9.0, High from 7.0, Medium from 4.0, Low below); an
+	advisory that gives neither has no severity, and is never guessed at.
+	A warning of *cargo-audit* about a crate that is unmaintained or
+	yanked is no finding. The text lists the findings, most severe first,
+	and the ports not covered. With *--json* it prints one JSON object:
+	_findings_, an array whose entries have _id_, _aliases_, _severity_
+	(_critical_, _high_, _medium_, _low_, or null), _summary_,
+	_component_, _source_ (_cargo-audit_ or _osv_), _url_ and _location_,
+	and _not_covered_, the ports it could not ask. *--osv-url* names
+	another server that answers as OSV does, for a test. *scan* exits 0
+	whatever it finds, and non-zero only when it could not run, such as
+	when OSV cannot be reached. The *sbom-scan* job of
+	_.github/workflows/upstream.yml_ runs it every day, and opens an
+	issue for each finding (_docs/handbook/src/release-train.md_).
 
 *signoff* [_base_]
 	Check that every commit after _base_ carries a *Signed-off-by:* line,
