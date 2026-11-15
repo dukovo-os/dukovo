@@ -168,6 +168,10 @@ slot, and names it the update to try at the next restart:
   _/system/resources/updates/root.json_, and refuses a release that is
   not newer than the running version, or that the running version cannot
   update to directly.
+. It adds up the sizes of the files the release changes, an eighth more
+  for Btrfs's metadata and 16 MiB, and refuses if the Dukovo root has
+  less than that free, before it writes anything: "the update needs N MiB
+  on the Dukovo root, and M MiB are free".
 . It snapshots the running slot as _@system.new_, writes only the files
   the release changes, from the files fetched, the repository's _files/_
   or the update file, and removes those it no longer has.

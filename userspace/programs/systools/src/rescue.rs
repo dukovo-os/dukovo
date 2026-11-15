@@ -1108,7 +1108,7 @@ fn build_slot(
             None => subvolume::make(&building),
         }
         .map_err(|why| why.message)?;
-        stage::build(&building, release, files).map_err(|why| why.message)
+        stage::build(&building, release, files, None).map_err(|why| why.message)
     };
     println!("Rescue: building the slot, checking every file; this takes a few minutes");
     let written = match fresh(slot.is_dir().then_some(slot.as_path())) {
