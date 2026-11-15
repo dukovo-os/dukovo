@@ -152,6 +152,12 @@ impl Tries {
     pub fn tidy(&mut self, now: Instant) {
         self.windows.retain(|_, (start, _)| now.saturating_duration_since(*start) < TRIES_WINDOW);
     }
+
+    /// The tries counted for `address` in its minute, for the tests.
+    #[cfg(test)]
+    pub fn count(&self, address: IpAddr) -> u32 {
+        self.windows.get(&address).map_or(0, |&(_, count)| count)
+    }
 }
 
 /// A sign-in that was given a second step to take.

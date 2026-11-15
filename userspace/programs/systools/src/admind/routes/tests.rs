@@ -25,6 +25,7 @@ use crate::admind::shared::unix_now;
 
 mod act;
 mod changes;
+mod fuzz;
 mod tasks;
 mod terminals;
 
