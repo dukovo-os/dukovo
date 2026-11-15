@@ -9,7 +9,7 @@
 set -eu
 
 # shellcheck source=tools/update-server/site.sh
-. /usr/local/lib/dukovo-catalog/site.sh
+. "$(dirname "$0")/site.sh"
 
 if [ ! -e "$home/repo/metadata/root.json" ]; then
 	echo "No catalog has been deployed yet."

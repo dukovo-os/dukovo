@@ -50,7 +50,45 @@ pub fn write(answers: &Answers, target: &Target) -> Result<(), String> {
         write_file(&target.settings.join("network"), &network(answers), 0o644)?;
     }
     accessibility(answers, target, machine::with_speech())?;
+    server_preset(answers, target, machine::under_hypervisor())?;
     accounts(answers, target)
+}
+
+/// The server preset's files, in `preset/`: each one says in its own
+/// comments what it sets and how to change it, and `ob image --cloud`
+/// writes the same ones.
+const PRESET_JOBS: &str = include_str!("../preset/jobs.toml");
+const PRESET_TUNE: &str = include_str!("../preset/tune.toml");
+const PRESET_UPDATES: &str = include_str!("../preset/updates.toml");
+const PRESET_CHECK: &str = include_str!("../preset/dukovo-check.toml");
+
+/// What the server preset writes, for a profile that has it: that the
+/// jobs of crontab and at run while their owner is signed out (authd(8)),
+/// the performance profile `throughput`, or `vm-guest` when the computer
+/// `under_hypervisor` (tune(8)), updates that stage and restart at 03:30
+/// by themselves (updates.toml(5)), and dukovo-check's daily run turned
+/// on explicitly (dukovo-check(8)).
+fn server_preset(answers: &Answers, target: &Target, under_hypervisor: bool) -> Result<(), String> {
+    if !answers.profile.server_preset() {
+        return Ok(());
+    }
+    write_file(&target.settings.join("jobs.toml"), PRESET_JOBS, 0o644)?;
+    let profile = if under_hypervisor { "vm-guest" } else { "throughput" };
+    write_file(
+        &target.settings.join("tune.toml"),
+        &PRESET_TUNE.replace("@PROFILE@", profile),
+        0o644,
+    )?;
+    let sysupdate = target.settings.join("sysupdate");
+    make_dir(&sysupdate, 0o755)?;
+    write_file(&sysupdate.join("updates.toml"), PRESET_UPDATES, 0o644)?;
+    // An override file, which changes the service without a copy of its
+    // file, so that a later release's file still reaches the machine.
+    for dir in ["spark", "spark/services", "spark/services/settings.d"] {
+        make_dir(&target.settings.join(dir), 0o755)?;
+    }
+    let check = target.settings.join("spark/services/settings.d/dukovo-check.toml");
+    write_file(&check, PRESET_CHECK, 0o644)
 }
 
 /// What reader.toml(5) holds when the install turns the screen reader on:
@@ -166,6 +204,8 @@ pub fn write_file(path: &Path, text: &str, mode: u32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use crate::answers::tests::EXAMPLE;
 
@@ -241,6 +281,112 @@ mod tests {
         let console = fs::read_to_string(dir.join("settings/console/accessibility.toml")).unwrap();
         assert!(console.contains("text-size = \"largest\"\n"), "{console}");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A target with the folders the preset writes into, and its answers
+    /// for `profile`.
+    fn preset_target(name: &str, profile: &str) -> (PathBuf, Answers) {
+        let dir = std::env::temp_dir().join(format!("installer-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("settings")).unwrap();
+        let text = EXAMPLE
+            .replace("\"version\": 1,", &format!("\"version\": 1, \"profile\": \"{profile}\","));
+        (dir, Answers::parse(text.as_bytes()).unwrap())
+    }
+
+    /// The settings `file` holds, without its comments, as a table.
+    fn table(dir: &Path, file: &str) -> toml::Table {
+        let text = fs::read_to_string(dir.join("settings").join(file)).unwrap();
+        toml::from_str(&text).unwrap()
+    }
+
+    fn mode_of(dir: &Path, file: &str) -> u32 {
+        fs::metadata(dir.join("settings").join(file)).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn the_server_profile_lets_jobs_run_signed_out() {
+        let (dir, answers) = preset_target("preset-jobs", "server");
+        let target = Target { slot: &dir, settings: &dir.join("settings"), state: &dir };
+        server_preset(&answers, &target, false).unwrap();
+        let jobs = table(&dir, "jobs.toml");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs["keep_running"].as_bool(), Some(true));
+        assert_eq!(mode_of(&dir, "jobs.toml"), 0o644);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_server_profile_tunes_for_throughput_and_a_virtual_machine_for_its_guest() {
+        let (dir, answers) = preset_target("preset-tune", "server");
+        let target = Target { slot: &dir, settings: &dir.join("settings"), state: &dir };
+        server_preset(&answers, &target, false).unwrap();
+        let tune = table(&dir, "tune.toml");
+        assert_eq!(tune.len(), 1);
+        assert_eq!(tune["profile"].as_str(), Some("throughput"));
+        server_preset(&answers, &target, true).unwrap();
+        assert_eq!(table(&dir, "tune.toml")["profile"].as_str(), Some("vm-guest"));
+        assert_eq!(mode_of(&dir, "tune.toml"), 0o644);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_server_profile_stages_updates_and_restarts_into_them_at_night() {
+        let (dir, answers) = preset_target("preset-updates", "server");
+        let target = Target { slot: &dir, settings: &dir.join("settings"), state: &dir };
+        server_preset(&answers, &target, false).unwrap();
+        let updates = table(&dir, "sysupdate/updates.toml");
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates["unattended"].as_bool(), Some(true));
+        assert_eq!(updates["restart"].as_str(), Some("03:30"));
+        assert_eq!(mode_of(&dir, "sysupdate/updates.toml"), 0o644);
+        assert_eq!(mode_of(&dir, "sysupdate"), 0o755);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_server_profile_turns_the_daily_check_on_with_an_override() {
+        let (dir, answers) = preset_target("preset-check", "server");
+        let target = Target { slot: &dir, settings: &dir.join("settings"), state: &dir };
+        server_preset(&answers, &target, false).unwrap();
+        let check = table(&dir, "spark/services/settings.d/dukovo-check.toml");
+        assert_eq!(check.len(), 1);
+        assert_eq!(check["enabled"].as_bool(), Some(true));
+        assert_eq!(mode_of(&dir, "spark/services/settings.d/dukovo-check.toml"), 0o644);
+        // Nothing but the override: the service's own file is Spark's to copy.
+        assert!(!dir.join("settings/spark/services/dukovo-check.toml").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_cloud_profile_has_the_preset_and_the_minimal_one_has_none() {
+        let (dir, cloud) = preset_target("preset-cloud", "cloud");
+        let target = Target { slot: &dir, settings: &dir.join("settings"), state: &dir };
+        server_preset(&cloud, &target, true).unwrap();
+        assert!(dir.join("settings/jobs.toml").is_file());
+        assert!(dir.join("settings/tune.toml").is_file());
+        assert!(dir.join("settings/sysupdate/updates.toml").is_file());
+        fs::remove_dir_all(&dir).unwrap();
+
+        let (dir, minimal) = preset_target("preset-minimal", "minimal");
+        let target = Target { slot: &dir, settings: &dir.join("settings"), state: &dir };
+        server_preset(&minimal, &target, false).unwrap();
+        assert_eq!(fs::read_dir(dir.join("settings")).unwrap().count(), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn every_file_of_the_preset_says_how_to_change_it() {
+        for (name, text) in [
+            ("jobs.toml", PRESET_JOBS),
+            ("tune.toml", PRESET_TUNE),
+            ("updates.toml", PRESET_UPDATES),
+            ("dukovo-check.toml", PRESET_CHECK),
+        ] {
+            let comments = text.lines().filter(|line| line.starts_with('#')).count();
+            assert!(comments >= 5, "{name} has {comments} lines of comment");
+            assert!(text.starts_with("# SPDX-FileCopyrightText:"), "{name}");
+        }
     }
 
     #[test]

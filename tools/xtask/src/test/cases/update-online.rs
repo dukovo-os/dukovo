@@ -22,7 +22,9 @@
 //! health check proves it, and `sysupdate check` then counts what `year`
 //! needs: one file moved within the slot is copied, not fetched. An
 //! older release, asked for or offered by the beta channel, is never
-//! staged.
+//! staged. Once the bridge proves itself, Rescue is written again from it
+//! (ADR 0543), from the metadata the client kept, which reads from the
+//! machine's first root through the roots it walked to.
 //!
 //! The stable channel's release is paused on its first day (ADR 0469):
 //! the machine, which is no canary and whose wave opens on day 7, is told
@@ -46,7 +48,7 @@ use super::update_stage::{power_off, restart, run, started};
 
 pub const CASE: Case = Case {
     name: "update-online",
-    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, and stages nothing once the release is withdrawn, which updated unstages once staged (ADR 0469); update holds it back and lets it go, and updated says it is ready (ADR 0502)",
+    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, and stages nothing once the release is withdrawn, which updated unstages once staged (ADR 0469); Rescue is written again from the bridge it proved, from the metadata its client kept (ADR 0543); update holds it back and lets it go, and updated says it is ready (ADR 0502)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -342,6 +344,15 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     restart(vm)?;
     started(vm, 'b')?;
     vm.expect(&format!("sysupdate: slot B (Dukovo {bridge}) proved itself: it is now the default"))?;
+    vm.expect(&format!("sysupdate: Rescue is being written from Dukovo {bridge}"))?;
+    run(
+        vm,
+        &format!(
+            "while service sysupdate-stage status > /dev/null; do sleep 2; done; echo \"written \
+             $(log sysupdate-stage | grep -c 'holds Dukovo {bridge} now')\"; sysupdate status"
+        ),
+        &["written 1", &format!("Rescue: Dukovo {bridge}")],
+    )?;
     run(vm, "cat /system/resources/test-update/notes.txt", &["bridge"])?;
     run(vm, "sysupdate check", &[
         &format!("sysupdate: the stable channel offers Dukovo {year}; this system runs Dukovo {bridge}"),

@@ -32,8 +32,10 @@ memory = "256M"
 # partitions, its own state and its lock; and the root's settings, state
 # and snapshots, which it snapshots for a fallback; and the network, to
 # reach the update server; and the troubleshoot signatures, which an
-# update file may carry (ADR 0474). It holds no home folder, so nothing
-# that stages a system update can reach one.
+# update file may carry (ADR 0474); and a place to mount the EFI system
+# partitions beneath, to write Rescue again from a release that proved
+# itself (ADR 0543). It holds no home folder, so nothing that stages a
+# system update can reach one.
 [permissions]
 files.root-subvolumes = [
     "@system.a",
@@ -51,4 +53,5 @@ files.read-write = [
     "/system/live/sysupdate",
 ]
 files.read = ["/system/live/spark/root", "/processes"]
+files.mount = ["/system/live/sysupdate-esp"]
 network.outbound = true

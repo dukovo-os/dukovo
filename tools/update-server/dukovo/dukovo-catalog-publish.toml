@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Publishes the catalog a deploy copied into the incoming folder (ADR
+# 0382), as `ob catalog deploy` asks by putting `ready` there: a timer
+# starts publish.sh each minute, and it ends at once when there is no
+# `ready`. It takes the public keys and metadata the YubiKeys signed and
+# the bundles, signs a snapshot and timestamp with the online key, and
+# reads the catalog back as a client would before it is served as
+# /catalog/ (nginx). It has no network.
+#
+# service.toml(5) explains each setting, `service check dukovo-catalog-publish` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Publish the catalog a deploy brought"
+program = "/system/commands/sh"
+arguments = ["/system/state/lib/dukovo-update-server/publish.sh"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+# This job's own copy of the online key, as base64: a secret loses a
+# trailing newline and a key is binary. `service secret set` puts it in.
+secrets = ["online-key"]
+
+[environment]
+DUKOVO_CATALOG_HOME = "/system/state/lib/dukovo-catalog"
+DUKOVO_CATALOG_INCOMING = "/system/state/lib/dukovo-catalog-incoming"
+DUKOVO_CATALOG_PROGRAM = "/system/state/lib/dukovo-update-server/catalog-repo"
+DUKOVO_CATALOG_SITE = "/system/state/lib/dukovo-catalog-site"
+DUKOVO_LOCK = "/system/live/dukovo-update-server/catalog.lock"
+
+[limits]
+memory = "1G"
+
+[timer]
+every = "1m"
+after_boot = "2m"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# script and the update server's own folders it works in, and nothing
+# else of the system's.
+[permissions]
+files.read = ["/system/state/lib/dukovo-update-server"]
+files.read-write = ["/system/state/lib/dukovo-catalog", "/system/state/lib/dukovo-catalog-incoming", "/system/state/lib/dukovo-catalog-site", "/system/live/dukovo-update-server"]

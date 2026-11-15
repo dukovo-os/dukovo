@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The server preset: the machine stages each system update by itself and
+# restarts into it at 03:30, local time, when nobody is at the desk
+# (updates.toml(5)). `unattended = false` makes an update wait until you
+# stage it; without `restart`, a staged update waits for a restart you
+# choose.
+
+unattended = true
+restart = "03:30"

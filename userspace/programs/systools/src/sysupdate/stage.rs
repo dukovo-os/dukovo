@@ -25,6 +25,7 @@ use system_release::archive::Archive;
 use system_release::list::{Entry, Kind, Release, sha256_file};
 use system_release::store::Store;
 
+use super::keep_rescue;
 use super::online::{self, Plan};
 use super::place::{self, BUILDING, Root};
 use crate::subvolume;
@@ -144,6 +145,13 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
     let (copies, _) = place::state(root)?;
     place::write(&copies, next)?;
     super::firmware::collect(root);
+    // Rescue is written from it once it proves itself (ADR 0543).
+    let source = match (asked.repo, &store) {
+        (Some(_), Files::Archive(archive)) => keep_rescue::Source::File(archive),
+        (Some(repo), _) => keep_rescue::Source::Folder(repo),
+        (None, _) => keep_rescue::Source::Server,
+    };
+    keep_rescue::keep(&source, &release);
     say(&format!(
         "staged Dukovo {} in slot {}: it starts at the next restart, with {} tries to prove \
          itself, and Dukovo {} starts again if it does not",

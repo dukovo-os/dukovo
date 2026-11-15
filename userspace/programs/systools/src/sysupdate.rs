@@ -28,6 +28,7 @@ pub(crate) mod checked;
 mod devices;
 pub(crate) mod firmware;
 pub mod health;
+pub(crate) mod keep_rescue;
 pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod request;
@@ -190,6 +191,11 @@ fn status() -> Result<i32, Fail> {
         })
         .collect();
     println!("Slot state: on {}", partitions.join(", "));
+    // What Rescue was last written from or found to hold (ADR 0543).
+    match keep_rescue::held() {
+        Some(version) => println!("Rescue: Dukovo {version}"),
+        None => println!("Rescue: not written since the install"),
+    }
     Ok(0)
 }
 

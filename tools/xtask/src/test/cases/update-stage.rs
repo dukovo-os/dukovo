@@ -13,13 +13,20 @@
 //! rollback --settings-from-before* then makes slot A the default again,
 //! and it starts at the next restart with the settings from before the
 //! update, the changed ones kept aside (ADR 0454).
+//!
+//! Once the update proves itself, the health check has the stage write
+//! Rescue again from it (ADR 0543), from the signed metadata the stage
+//! kept of the update folder and the files of slot B; `sysupdate status`
+//! then names it, and `sysupdate verify` reads the slot back against
+//! Rescue's copy of the signed list. The rollback leaves Rescue on the
+//! newer release.
 
 use super::super::*;
 use super::crash_dump::answer_within;
 
 pub const CASE: Case = Case {
     name: "update-stage",
-    about: "an update is staged into slot B while slot A runs, starts at the restart as a try, proves itself to the health check and becomes the default, and reads back as its signed list says; a rollback with the settings from before the update then starts slot A again, a setting changed since kept aside (ADRs 0451 to 0454)",
+    about: "an update is staged into slot B while slot A runs, starts at the restart as a try, proves itself to the health check and becomes the default, and reads back as its signed list says; Rescue is written again from it and verify reads Rescue's copy of the list (ADR 0543); a rollback with the settings from before the update then starts slot A again, a setting changed since kept aside, and Rescue stays on the newer release (ADRs 0451 to 0454)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -140,6 +147,23 @@ fn update_stage(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     run(vm, &format!("sysupdate verify {UPDATES}/good"), &[&format!(
         "sysupdate: slot B (Dukovo {version}) is the release its signed list names"
     )])?;
+    // Rescue follows it (ADR 0543): the stage writes it while the machine
+    // goes on, and verify then reads Rescue's copy of the signed list.
+    vm.expect(&format!("sysupdate: Rescue is being written from Dukovo {version}"))?;
+    run(
+        vm,
+        &format!(
+            "while service sysupdate-stage status > /dev/null; do sleep 2; done; echo \"written \
+             $(log sysupdate-stage | grep -c 'holds Dukovo {version} now')\"; sysupdate status"
+        ),
+        &["written 1", &format!("Rescue: Dukovo {version}")],
+    )?;
+    run(
+        vm,
+        "sysupdate verify > /tmp/verified; echo \"verify $? $(grep -c \"from Rescue's copy\" \
+         /tmp/verified)\"",
+        &["verify 0 1"],
+    )?;
 
     // Back to the version before, with the settings from before the
     // update: one changed since is kept aside.
@@ -175,6 +199,7 @@ fn update_stage(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             &format!("Slot A:   Dukovo {VERSION}, the default"),
             &format!("Slot B:   Dukovo {version}, the previous version"),
             "Next start: slot A",
+            &format!("Rescue: Dukovo {version}"),
         ],
     )?;
     power_off(vm)

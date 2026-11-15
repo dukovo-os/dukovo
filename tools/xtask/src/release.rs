@@ -20,6 +20,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::deploy::{self, Server};
 use crate::process::{self, step};
 use crate::{Context, Ctx, Result, VERSION, bail};
 
@@ -43,18 +44,31 @@ pub const REPO: &str = "releases";
 /// Where the update server serves the system's releases.
 pub const URL: &str = "https://updates.dukovo.org/system/";
 
-/// The server's folder a deploy copies into (tools/update-server/).
+/// The server's folder a deploy copies into (tools/update-server/): the
+/// same on an Ubuntu server and a Dukovo one, where `/var` is the
+/// system's state.
 const INCOMING: &str = "/var/lib/dukovo-system-incoming";
 
-/// The repository the server serves, whose store a deploy skips the
-/// files of.
-const SERVED: &str = "/srv/dukovo-system/system/";
+/// The folders of files the server serves, whose names a deploy skips: an
+/// Ubuntu server's and a Dukovo server's.
+const SERVED_FILES: [&str; 2] =
+    ["/srv/dukovo-system/system/files", "/var/lib/dukovo-system-site/system/files"];
 
-/// The online key's public half, as the server's setup leaves it.
-pub const SERVER_ONLINE_KEY: &str = "/usr/local/share/dukovo-system/online.json";
+/// The online key's public half, as the server's setup leaves it: an
+/// Ubuntu server's and a Dukovo server's.
+pub const SERVER_ONLINE_KEYS: [&str; 2] =
+    ["/usr/local/share/dukovo-system/online.json", "/var/lib/dukovo-system/online.json"];
+
+/// The script that signs the rollouts again, on an Ubuntu server and on a
+/// Dukovo one.
+const ROLLOUT_SCRIPTS: [&str; 2] = [
+    "/usr/local/lib/dukovo-system/system-rollout.sh",
+    "/var/lib/dukovo-update-server/system-rollout",
+];
 
 /// How long a deploy waits for the server to publish: it hashes every
-/// new file as it takes it.
+/// new file as it takes it, and a Dukovo server starts its publish job
+/// once a minute.
 const PUBLISH_WAIT_SECONDS: u32 = 600;
 
 /// Builds system-release for this machine and gives its path.
@@ -77,33 +91,43 @@ pub fn tool_for(ctx: &Ctx, release: bool) -> Result<PathBuf> {
 }
 
 /// `ob release`: sets up the update server, deploys an update repository
-/// to it, or checks what it serves.
+/// to it, or checks what it serves. `send` is `deploy` for a server that is
+/// not the project's, a test's or a lab's: any first root, and no read-back
+/// from updates.dukovo.org; with `--copy-only` it stops before it says the
+/// deploy is ready, which the lab's test of the move shows is never published.
 pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["server", "setup"] => crate::catalog::server_setup(ctx),
+        ["server", "setup"] => crate::catalog::server_setup(ctx, false),
+        ["server", "setup", "--dukovo"] => crate::catalog::server_setup(ctx, true),
         ["deploy", dir] => deploy(ctx, Path::new(dir)),
-        ["check"] => check(ctx, URL),
-        ["check", url] => check(ctx, url),
+        ["send", dir] => publish_to(ctx, &Server::from_environment(), Path::new(dir)),
+        ["send", "--copy-only", dir] => copy_to(ctx, &Server::from_environment(), Path::new(dir)),
+        ["check"] => check(ctx, None, URL),
+        ["check", url] => check(ctx, None, url),
+        ["check", "--root", root, url] => check(ctx, Some(Path::new(root)), url),
         ["rollout", rest @ ..] if !rest.is_empty() => rollout(ctx, rest),
         _ => bail!(
-            "usage: ./ob release server setup | deploy <repository> | check [<url>] | rollout \
-             (pause <version> <reason> | resume <version> | canary <name> red|green)"
+            "usage: ./ob release server setup [--dukovo] | deploy <repository> \
+             | send [--copy-only] <repository> | check [--root <file>] [<url>] \
+             | rollout (pause <version> <reason> | resume <version> | canary <name> red|green)"
         ),
     }
 }
 
-/// `ob release rollout ...`: on the update server, through sudo as its
-/// user, pauses or resumes a release's waves, or marks a canary red or
-/// green, and signs the rollouts again (ADR 0469); needs no release key.
+/// `ob release rollout ...`: on the update server, as its user (through
+/// sudo, or through elevate on a Dukovo server), pauses or resumes a
+/// release's waves, or marks a canary red or green, and signs the
+/// rollouts again (ADR 0469); needs no release key.
 fn rollout(ctx: &Ctx, args: &[&str]) -> Result<()> {
-    let dest = crate::catalog::ssh_destination();
-    let words: Vec<String> = args.iter().map(|word| crate::catalog::quote(word)).collect();
+    let words: Vec<String> = args.iter().map(|word| deploy::quote(word)).collect();
+    let [ubuntu, dukovo] = ROLLOUT_SCRIPTS;
+    let words = words.join(" ");
     let script = format!(
-        "sudo -u dukovo-system /usr/local/lib/dukovo-system/system-rollout.sh {}",
-        words.join(" ")
+        "if [ -x {ubuntu} ]; then sudo -u dukovo-system {ubuntu} {words}; \
+         else elevate sh {dukovo} {words}; fi"
     );
-    // A terminal, for sudo to ask for the password.
-    process::run(ctx, Command::new("ssh").args(["-t", "--", &dest, &script]))
+    // A terminal, for sudo or elevate to ask for the password.
+    process::run(ctx, &mut Server::from_environment().ssh_terminal(&script))
 }
 
 /// The production first root, which every repository deployed must start
@@ -135,61 +159,64 @@ fn deploy(ctx: &Ctx, dir: &Path) -> Result<()> {
         ),
         Err(_) => bail!("{} is not an update repository: it has no first root", dir.display()),
     }
-    let dest = crate::catalog::ssh_destination();
-    step(&format!("Copying the repository to {dest}"));
-    // Made first, so that the server's user may read them, whatever the
-    // login's umask.
-    let folders =
-        format!("mkdir -p -m 2770 {INCOMING}/metadata {INCOMING}/targets {INCOMING}/files");
-    process::run(ctx, &mut crate::catalog::ssh(&dest, &folders))?;
-    let mut cmd = Command::new("rsync");
-    cmd.args(["-rtp", "--delete", "--chmod=D2770,F0660"])
-        .arg(dir.join("metadata"))
-        .arg(dir.join("targets"))
-        .arg(format!("{dest}:{INCOMING}/"));
-    process::run(ctx, &mut cmd)?;
-    // Files are named by their SHA-256, so one the store holds is not
-    // copied again, and none is ever taken away from it.
-    let mut cmd = Command::new("rsync");
-    cmd.args(["-rtp", "--size-only", "--chmod=D2770,F0660"])
-        .arg(format!("--compare-dest={SERVED}"))
-        .arg(dir.join("files"))
-        .arg(format!("{dest}:{INCOMING}/"));
-    process::run(ctx, &mut cmd)?;
+    publish_to(ctx, &Server::from_environment(), dir)?;
+    check(ctx, None, URL)
+}
 
-    step("Publishing it on the server");
-    let script = format!(
-        "rm -f {INCOMING}/result && touch {INCOMING}/ready && \
-         i=0; while [ ! -e {INCOMING}/result ] && [ $i -lt {PUBLISH_WAIT_SECONDS} ]; do \
-         sleep 1; i=$((i + 1)); done; \
-         if [ -e {INCOMING}/result ]; then cat {INCOMING}/result; else echo waiting; fi"
-    );
-    let output = process::output(ctx, &mut crate::catalog::ssh(&dest, &script))?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let (status, rest) = text.split_once('\n').unwrap_or((text.trim_end(), ""));
-    if !rest.trim().is_empty() {
-        println!("{}", rest.trim_end());
-    }
-    match status {
-        "published" => {}
-        "waiting" => bail!(
-            "the server did not publish in {PUBLISH_WAIT_SECONDS} seconds: \
-             `systemctl status dukovo-system-publish` on the server says why"
-        ),
-        _ => bail!(
-            "the server could not publish the releases, as the output above says; it serves what \
-             it did before"
-        ),
-    }
-    check(ctx, URL)
+/// Copies the update repository at `dir` to `server` and has it publish
+/// it, whatever root it starts from: [`deploy`] checks that, and the boot
+/// tests deploy repositories of roots of their own.
+///
+/// # Errors
+///
+/// If the server does not take the repository or could not publish it.
+pub fn publish_to(ctx: &Ctx, server: &Server, dir: &Path) -> Result<()> {
+    copy_to(ctx, server, dir)?;
+    deploy::publish(
+        ctx,
+        server,
+        INCOMING,
+        PUBLISH_WAIT_SECONDS,
+        "system releases",
+        "dukovo-system-publish",
+    )
+}
+
+/// Copies the update repository at `dir` into the server's incoming
+/// folder, which [`publish_to`] does before it says the deploy is ready:
+/// the boot tests leave a deploy there, to see that the server publishes
+/// nothing of it.
+///
+/// # Errors
+///
+/// If the server does not take the repository.
+pub fn copy_to(ctx: &Ctx, server: &Server, dir: &Path) -> Result<()> {
+    step(&format!("Copying the repository to {}", server.dest()));
+    deploy::replace(ctx, server, dir, &["metadata", "targets"], INCOMING, INCOMING)?;
+    // Files are named by their SHA-256, so one the server holds is not
+    // sent again, and none is ever taken away from it.
+    deploy::add_missing(
+        ctx,
+        server,
+        &dir.join("files"),
+        deploy::is_sha256_name,
+        INCOMING,
+        &format!("{INCOMING}/files"),
+        &SERVED_FILES,
+    )
 }
 
 /// `ob release check`: reads the repository `url` serves as a computer
-/// online would, from the production first root: every release list and
-/// channel.
-fn check(ctx: &Ctx, url: &str) -> Result<()> {
-    production_root(ctx)?;
-    let root = ctx.root.join(REPO).join("metadata/1.root.json");
+/// online would, from the production first root, or from the first root in
+/// `root` for a server of a test or a lab: every release list and channel.
+fn check(ctx: &Ctx, root: Option<&Path>, url: &str) -> Result<()> {
+    let root = match root {
+        Some(root) => root.to_path_buf(),
+        None => {
+            production_root(ctx)?;
+            ctx.root.join(REPO).join("metadata/1.root.json")
+        }
+    };
     let mut cmd = Command::new(tool(ctx)?);
     cmd.arg("served").arg("--root").arg(root).arg(url);
     process::run(ctx, &mut cmd)

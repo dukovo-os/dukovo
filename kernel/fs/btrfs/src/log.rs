@@ -189,7 +189,12 @@ impl Writer {
             return Ok(true);
         }
         let committed = volume.superblock_bytes()?;
+        // A chunk made since the last commit is in no tree until the next
+        // records it, and the chunk tree's root moves only then: a log
+        // naming data in it, or written into it, would leave a disk whose
+        // replay finds no chunk there.
         if self.logging.overflow
+            || !self.grown.made.is_empty()
             || u64_at(&committed, at::CHUNK_ROOT) != volume.chunk_root().bytenr
             || self.incompat & !u64_at(&committed, at::INCOMPAT) != 0
         {

@@ -88,9 +88,16 @@ if ! command -v cc >/dev/null 2>&1; then
 fi
 
 target_dir=${OB_TARGET_DIR:-$root/target}
+case $target_dir in
+    /*) ;;
+    *) target_dir=$PWD/$target_dir ;;
+esac
 binary="$target_dir/debug/xtask"
 if [ ! -x "$binary" ]; then
     echo "==> Building the ob build tool (first run only)" >&2
 fi
-cargo build --quiet --manifest-path "$root/tools/xtask/Cargo.toml" --target-dir "$target_dir"
+# Built from the root, so that rustup takes the tree's pinned toolchain
+# (rust-toolchain.toml) when ob is run from another folder, where it would
+# take the default one.
+(cd "$root" && cargo build --quiet --manifest-path tools/xtask/Cargo.toml --target-dir "$target_dir")
 OB_ROOT=$root OB_TARGET_DIR=$target_dir exec "$binary" "$@"

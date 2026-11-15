@@ -68,7 +68,11 @@ edge to edge and the keys' hints on a steel bar along the bottom (ADR
   services it turns on, and those that install bundles dimmed, to add
   after the first boot with *feature add*; and whether to turn on the
   web console, which the profile chooses until it is changed and which
-  release 0.16 brings (ADR 0317).
+  release 0.16 brings (ADR 0317). Server and Cloud also write the server
+  preset into the new system's settings: jobs that run while their owner
+  is signed out, the *throughput* performance profile (*vm-guest* under
+  a hypervisor), updates that stage by themselves and restart at 03:30,
+  and the daily *dukovo-check* (*install-answers*(5)).
 . *You*: the administrator, whose user name follows the name typed
   until it is typed itself, a password typed twice, whether the saved
   answers keep the passwords' hashes, and other people.

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0382. The update server publishes what the signer deploys over SSH
 
-- Status: Accepted
+- Status: Accepted; the server runs on Dukovo, with nginx and Spark's services, and a deploy sends only what the server lacks, without rsync, since [0542](0542-the-update-server-runs-on-dukovo-and-a-deploy-sends-only-what-it-lacks-without-rsync.md)
 - Date: 2026-11-03
 
 ## Context

@@ -3738,6 +3738,21 @@ fn build_installed_test_image(
     std::fs::read(&output).map_err(|err| Error::new(format!("reading {}: {err}", output.display())))
 }
 
+/// Writes `bytes` to a new file at `path`, leaving each MiB of zeros a
+/// hole: an installed system's image is mostly its empty EFI system
+/// partition, which each case would otherwise write out whole.
+fn write_with_holes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    let file = std::fs::File::create(path)?;
+    file.set_len(bytes.len() as u64)?;
+    for (n, piece) in bytes.chunks(1 << 20).enumerate() {
+        if piece.iter().any(|byte| *byte != 0) {
+            file.write_all_at(piece, (n as u64) << 20)?;
+        }
+    }
+    Ok(())
+}
+
 /// The placeholder for the kernel command line in the test images.
 fn cmdline_slot() -> String {
     format!("{:-<CMDLINE_SLOT$}", "ob-test-cmdline")
@@ -4058,8 +4073,10 @@ fn make_test_firmware(ctx: &Ctx, staging: &Path, out: &Path) -> Result<()> {
 /// scripts published and signed what it serves; `system/`, a link to the
 /// repository it serves; `keys/`, the release keys; `stale-timestamp.json`,
 /// a timestamp it signed before its newest, to replay; `expected.toml`,
-/// how many files each update fetches; and the bridge release's update
-/// file.
+/// how many files each update fetches; `repository-before-pull/` and
+/// `repository-after-pull/`, the release keys' repository as it was before
+/// the withdrawal and after it; `catalog-key/`, a catalog online key the
+/// server never used; and the bridge release's update file.
 pub const TEST_SERVER: &str = "update-server";
 
 /// Why [`TEST_SERVER`]'s stable release is paused.
@@ -4070,6 +4087,21 @@ pub const TEST_PULL: &str = "a test withdrawal";
 
 /// [`TEST_SERVER`]'s repository as it was served before the withdrawal.
 pub const TEST_SERVER_BEFORE_PULL: &str = "system-before-pull";
+
+/// The update repository the release keys signed, as it was before the
+/// withdrawal, to deploy to another update server: the lab test that moves
+/// [`TEST_SERVER`]'s releases to a Dukovo server sends it (`ob release
+/// send`).
+pub const TEST_SERVER_REPOSITORY: &str = "repository-before-pull";
+
+/// The same repository after the withdrawal of the stable release, which
+/// that test sends to see what a deploy not told ready leaves unpublished.
+pub const TEST_SERVER_REPOSITORY_PULLED: &str = "repository-after-pull";
+
+/// A catalog online key `catalog-repo` made for [`TEST_SERVER`], beside the
+/// system's: the files of a server's setup take both, though the test never
+/// deploys a catalog.
+pub const TEST_SERVER_CATALOG_KEY: &str = "catalog-key";
 
 /// The boot test that reads [`TEST_SERVER`] over the network.
 const TEST_SERVER_CASE: &str = "update-online";
@@ -4146,6 +4178,7 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         process::copy(&ctx.root.join("tools/update-server").join(script), &lib.join(script))?;
     }
     process::copy(&crate::release::tool_for(ctx, false)?, &lib.join("system-release"))?;
+    crate::catalog::test_online_key(ctx, &out.join(TEST_SERVER_CATALOG_KEY))?;
     let online = home.join("online.json");
     crate::release::system_release(
         ctx,
@@ -4249,6 +4282,7 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         .context(|| "reading the served timestamp".to_string())?;
     let forged = incoming.join("files").join("0".repeat(64));
     write(forged.clone(), b"not this file\n")?;
+    write(incoming.join("ready"), b"")?;
     server_script(ctx, &server, "system-publish.sh", &[], false)?;
     let after = std::fs::read(served.join("metadata/timestamp.json"))
         .context(|| "reading the served timestamp".to_string())?;
@@ -4265,10 +4299,16 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         ctx,
         std::process::Command::new("cp").arg("-al").arg(served.join(".")).arg(&before),
     )?;
+    // The repository that signed it, which the keys' own folder does not
+    // keep: files are written new, never changed, so links to them do.
+    let kept = out.join(TEST_SERVER_REPOSITORY);
+    process::run(ctx, std::process::Command::new("cp").arg("-al").arg(&repo).arg(&kept))?;
     crate::release::system_release(
         ctx,
         &repo_args(&["pull", "--version", &year, "--reason", TEST_PULL, "--advice", "rollback"]),
     )?;
+    let pulled = out.join(TEST_SERVER_REPOSITORY_PULLED);
+    process::run(ctx, std::process::Command::new("cp").arg("-al").arg(&repo).arg(&pulled))?;
     for folder in ["metadata", "targets", "files"] {
         let old = incoming.join(folder);
         if old.exists() {
@@ -4430,7 +4470,7 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
         let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
         let path = dir.join(format!("{}.{}", case.name, if iso { "iso" } else { "img" }));
         let image = with_cmdline(base, case.cmdline).map_err(Error::new)?;
-        std::fs::write(&path, image)
+        write_with_holes(&path, &image)
             .map_err(|err| Error::new(format!("writing {}: {err}", path.display())))?;
         let root = roots.of(case).map(|root| root.path.as_path());
         append_own(case, &path, root, live.as_deref()).map_err(Error::new)?;
@@ -4967,7 +5007,7 @@ fn run_case(
         if again && first_disk {
             bytes = booting_first_disk(bytes)?;
         }
-        std::fs::write(&image, bytes)
+        write_with_holes(&image, &bytes)
             .map_err(|err| format!("writing {}: {err}", image.display()))?;
         append_own(case, &image, root, live)?;
         run(&machine, name, script)
@@ -11720,6 +11760,23 @@ mod tests {
         let lines = failure_lines(&log);
         assert_eq!((lines.len(), lines[0]), (100, "line 20"));
         assert!(lines[10].starts_with(PANIC_BANNER));
+    }
+
+    #[test]
+    fn an_image_written_with_holes_reads_back_as_its_bytes() {
+        let dir = std::env::temp_dir().join(format!("ob-holes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("image");
+        // A MiB of data, two of zeros, and a short tail of data.
+        let mut bytes = vec![7u8; 1 << 20];
+        bytes.extend(vec![0u8; 2 << 20]);
+        bytes.extend(b"tail");
+        write_with_holes(&path, &bytes).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        // Written again over a longer file, it is no longer.
+        write_with_holes(&path, b"short").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"short");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

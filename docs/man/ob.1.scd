@@ -1825,7 +1825,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* | *server* *setup* | *deploy* | *check* [_url_]
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_]
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1856,21 +1856,31 @@ _target/userspace/_).
 	yubikey-manager (the *yubikey-manager* package on Debian, Ubuntu and
 	Linux Mint) and the system's Python.
 
-	The update server (ADR 0382) is reached with *ssh*(1) and *rsync*(1)
-	as *$OB_UPDATE_SSH*, by default _updates.dukovo.org_, with the login
+	The update server (ADR 0382) is reached with *ssh*(1) as
+	*$OB_UPDATE_SSH*, by default _updates.dukovo.org_, with the login
 	of whoever signs: the signed bundles exist only on that computer.
-	*server setup* copies _tools/update-server/_, catalog-repo and
-	system-release, built for release, to _~/dukovo-update-server/_ there
-	and runs its _setup.sh_ through *sudo*(8), which installs Caddy to
-	serve the catalog and the system's releases over https, makes the
-	server's online keys the first time, and lets that login deploy; then
-	it writes the catalog's online key's public half to
-	_catalog/keys/online.json_, for the next root to list, and the system
-	releases' to _releases/keys/online.json_ (see *release*), and fails if
-	a different one is there. It can run again, to update the server.
-	*deploy* copies _catalog/keys/_, _catalog/metadata/_ and the signed
-	bundles in _out/catalog/store/_ to the server, which publishes them
-	with its online key, or keeps what it served and says why; then it
+	Only *ssh*, *sh* and *tar* need be on the server, which may be an
+	Ubuntu one or a Dukovo one. *server setup* copies
+	_tools/update-server/_, catalog-repo and system-release, built for
+	release, to _~/dukovo-update-server/_ there and runs its _setup.sh_
+	through *sudo*(8), which installs Caddy to serve the catalog and the
+	system's releases over https, makes the server's online keys the
+	first time, and lets that login deploy. With *--dukovo* it copies
+	_tools/update-server/dukovo/_, the scripts they run and a catalog-repo
+	built for Radix instead (Dukovo's image has system-release already),
+	and runs _dukovo/setup_ through *elevate*(8), which asks for the
+	password: it installs nginx from the catalog, asks *certd*(8) for the
+	host's certificate, and makes the server's jobs services of Spark
+	with the online keys as their secrets. Either way it then writes the
+	catalog's online key's public half to _catalog/keys/online.json_, for
+	the next root to list, and the system releases' to
+	_releases/keys/online.json_ (see *release*), and fails if a different
+	one is there. It can run again, to update the server. *deploy* sends
+	_catalog/keys/_ and _catalog/metadata/_ whole, as one *tar* stream
+	that replaces the folders the server held, and the signed bundles in
+	_out/catalog/store/_ that the server does not hold yet, which it is
+	asked for by name, as another; the server publishes them with its
+	online key, or keeps what it served and says why; then *deploy*
 	checks what the server serves. The server signs the timestamp again
 	every six hours, and the snapshot when it has two days left. Each day
 	it also fetches OSV's advisories and signs the list of the bundles'
@@ -1880,7 +1890,7 @@ _target/userspace/_).
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
 	the first root in _catalog/metadata/_, and fetches every bundle.
 
-*release* *server* *setup* | *deploy* _repository_ | *check* [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*)
+*release* *server* *setup* [*--dukovo*] | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*)
 	Deploy the system's releases to the update server and check what it
 	serves (ADR 0467), over the same SSH login as *catalog*.
 	*server setup* is *catalog server setup*, which sets up both; it
@@ -1889,9 +1899,11 @@ _target/userspace/_).
 	for snapshot and timestamp beside their own keys (*system-release*(8)
 	*keys --online*), and fails if a different one is there.
 
-	*deploy* copies the update _repository_ that *system-release add* and
-	*channel* signed to the server's incoming folder, skipping the files
-	the server's store holds already, and waits up to ten minutes for the
+	*deploy* sends the update _repository_ that *system-release add* and
+	*channel* signed to the server's incoming folder with *tar*: its
+	metadata and targets whole, replacing those the server held, and the
+	files the server's store and incoming folder do not hold yet, which
+	it is asked for by name. It then waits up to ten minutes for the
 	server: it takes the roots, targets, release lists, channels and
 	files, each file checked against its SHA-256, signs a snapshot and
 	timestamp with its online key, reads it all back from the first root,
@@ -1902,11 +1914,23 @@ _target/userspace/_).
 	hours, and the snapshot when it has two days left. *check* reads the
 	releases served at _url_, by default
 	_https://updates.dukovo.org/system/_, as a computer online would, from
-	that first root: every release list and channel.
+	that first root: every release list and channel. With *--root*, it
+	reads from the first root in _file_ instead, for the update server of
+	a test or of the lab.
+
+	*send* does what *deploy* does to the server *$OB_UPDATE_SSH* names,
+	for any repository whatever its first root is, and reads nothing back
+	from the project's address: for the update server of a test or of the
+	lab (_lab/tests/updates/server-on-dukovo.toml_), which
+	*$OB_UPDATE_SSH_OPTIONS* may reach at a port with a key of its own.
+	With *--copy-only* it stops once the files are in the server's incoming
+	folder, before it says the deploy is *ready*: the server publishes
+	nothing of it until a later *send* does.
 
 	*rollout* holds or frees the waves on the server (ADR 0469), with no
 	release key: it runs the server's _system-rollout.sh_ as its user,
-	through *sudo*, which asks for the password. *pause* keeps a
+	through *sudo*, or through *elevate* on a Dukovo server, which asks
+	for the password. *pause* keeps a
 	release's waves where they are, with a reason machines show;
 	*resume* lets them open on schedule again; *canary* marks a canary
 	*red*, which holds every release's waves, or *green*. The rollouts
@@ -2268,6 +2292,12 @@ fails the build.
 	The update server as *ssh*(1) names it, such as
 	_user@updates.dukovo.org_ or a host in _~/.ssh/config_, for *catalog
 	server setup* and *catalog deploy*; _updates.dukovo.org_ by default.
+
+*OB_UPDATE_SSH_OPTIONS*
+	More options for the *ssh*(1) and *scp*(1) that reach the update
+	server, as words set apart by blanks, such as *-o Port=2222 -i*
+	_key_: for a server that is not at the usual port or takes a key of
+	its own, as the lab's is. Empty by default.
 
 *SOURCE_DATE_EPOCH*
 	Timestamp for files in the image. By default *ob* uses the time of the

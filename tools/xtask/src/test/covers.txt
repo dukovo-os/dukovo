@@ -625,6 +625,13 @@ rgrub-setup image/grub/ tools/xtask/src/grub.rs userspace/programs/disk/
 rgrub-setup userspace/programs/systools/src/mkfs.rs userspace/programs/systools/src/rgrub.rs
 root kernel/fs/block/ kernel/fs/btrfs/ userspace/programs/systools/src/btrfs.rs
 root userspace/programs/systools/src/nvme.rs userspace/storage/
+runbook-update-server-move ports/nginx/ tools/update-server/ tools/xtask/src/catalog.rs tools/xtask/src/deploy.rs
+runbook-update-server-move tools/xtask/src/release.rs userspace/programs/catalog-repo/ userspace/programs/system-release/
+runbook-update-server-move userspace/programs/systools/src/timerd.rs userspace/programs/systools/src/timerd/
+runbook-update-server-move userspace/programs/systools/src/service.rs userspace/programs/systools/src/servicefiles.rs
+runbook-update-server-move userspace/programs/sshd/ userspace/programs/tuf/ userspace/spark/src/
+runbook-update-server-move userspace/defaults/spark/services/certd.toml userspace/programs/systools/src/cert.rs
+runbook-update-server-move userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs
 sched-balance kernel/sched/
 sched-fair kernel/sched/
 sched-mutex kernel/lib/sync/ kernel/sched/

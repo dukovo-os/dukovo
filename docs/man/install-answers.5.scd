@@ -129,11 +129,19 @@ it does not know is a problem, so that a mistyped one is not missed.
 
 *profile*
 	What the machine is for: *minimal*, the base system with nothing
-	listening; *server*, Minimal and the web console; or *cloud*,
-	Server set up at first boot from the cloud's data, with the web
-	console off. *minimal* if not given. A profile is a starting set
-	of features; each of this release's starts with none, and offers
-	them all.
+	listening; *server*, Minimal, the web console and the settings of a
+	machine nobody watches; or *cloud*, Server set up at first boot
+	from the cloud's data, with the web console off. *minimal* if not
+	given. A profile is a starting set of features; each of this
+	release's starts with none, and offers them all. The settings of
+	*server* and *cloud*, the server preset, are in the new system's
+	_/system/settings_: _jobs.toml_ with *keep_running = true*, so that
+	the jobs of *crontab*(1) and *at*(1) run with their owner signed
+	out (*authd*(8)); _tune.toml_ with the profile *throughput*, or
+	*vm-guest* when the computer runs under a hypervisor (*tune*(8));
+	_sysupdate/updates.toml_ with *unattended = true* and *restart =
+	"03:30"* (*updates.toml*(5)); and an override that has *dukovo-check*
+	run each morning (*dukovo-check*(8)). *minimal* writes none of them.
 
 *features*
 	The features added to the profile's, by their IDs in *add*, and

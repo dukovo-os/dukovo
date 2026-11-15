@@ -13,9 +13,9 @@
 set -eu
 
 # shellcheck source=tools/update-server/site.sh
-. /usr/local/lib/dukovo-catalog/site.sh
+. "$(dirname "$0")/site.sh"
 
-advisories=/var/lib/dukovo-flaws
+advisories=${DUKOVO_FLAWS_DIR:-/var/lib/dukovo-flaws}
 
 if [ ! -e "$home/repo/metadata/root.json" ]; then
 	echo "No catalog has been deployed yet."
