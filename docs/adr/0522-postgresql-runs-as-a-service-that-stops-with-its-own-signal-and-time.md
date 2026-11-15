@@ -59,8 +59,9 @@ needs of the system:
 - **libpq for PHP.** PHP's `pgsql` and `pdo_pgsql` extensions link libpq,
   which a port finds in the sysroot.
 
-This record changes the health check after an update (ADR 0386), whose
-status line says so.
+This record changes the health check after an update (ADR 0386) and adds
+`pgsql` and `pdo_pgsql` to PHP's extensions (ADR 0499); their status lines
+say so.
 
 ## Decision
 
