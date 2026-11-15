@@ -5,9 +5,14 @@
 # `./ob ports outdated` asks each port's repository for its releases, and
 # an issue is opened, or brought up to date, for each port whose upstream
 # has a newer one; a person moves the pin, and signs the commit off, in a
-# pull request that CI tests as any other. Each day, `./ob ports audit`
-# checks the crates of the catalog's bundles in Rust against the RustSec
-# advisory database, and an advisory fails the run.
+# pull request that CI tests as any other. Each day, `./ob security scan`
+# asks what the system is built from (ADR 0534): cargo-audit reads every
+# Cargo.lock, including the Rust bundles' ports', against the RustSec
+# advisory database, and OSV is asked about each port that pins a git
+# commit. A finding opens one issue labelled `security` and `sbom-scan`,
+# never a second for the same ID, and the issue is closed when the finding
+# no longer matches. `./ob ports audit` stays as the local check of the
+# bundles' crates.
 name: Upstream releases and advisories
 
 on:
@@ -43,7 +48,7 @@ jobs:
         id: find
         run: |
           if [ "${{ github.event_name }}" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
-            echo "Not Monday: only the audit runs today."
+            echo "Not Monday: only the scan runs today."
             exit 0
           fi
           ./ob ports outdated --tsv > outdated.tsv
@@ -71,9 +76,16 @@ jobs:
             fi
           done < outdated.tsv
 
-  audit:
-    name: ./ob ports audit
+  # The daily scan of what the system is built from (ADR 0534). It fails
+  # when the scan could not run to its end, as when an advisory source
+  # cannot be reached, and then the issues are left as they are: an open
+  # issue is closed only by a scan that ran.
+  sbom-scan:
+    name: ./ob security scan
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -85,5 +97,12 @@ jobs:
         # Keep in step with ADR 0370.
         run: cargo install cargo-audit --version 0.22.1 --locked
 
-      - name: Check the bundles' crates against RustSec
-        run: ./ob ports audit
+      - name: Scan the Cargo.lock files and the ports' commits
+        run: ./ob security scan --json > findings.json
+
+      - name: Open, reopen and close the issues
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const { run } = require('./.github/scripts/sbom-scan.js');
+            await run({ github, context, core });
