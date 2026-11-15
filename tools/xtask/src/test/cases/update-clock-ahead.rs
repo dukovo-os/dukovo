@@ -12,7 +12,7 @@
 
 use super::super::*;
 use super::update_online::Server;
-use super::update_stage::{power_off, run, started};
+use super::update_stage::{SLOT_STATE, power_off, run, seen_through, started};
 
 pub const CASE: Case = Case {
     name: "update-clock-ahead",
@@ -81,7 +81,8 @@ fn update_clock_ahead(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     let server = Server::start(&dir.join(TEST_SERVER_BEFORE_PULL))?;
     let year = year_ahead(A_YEAR);
     start_with_a_wrong_clock(vm, &server, year)?;
-    run(vm, "sysupdate status > /tmp/before; echo \"kept: $((7 * 7))\"", &["kept: 49"])?;
+    seen_through(vm)?;
+    run(vm, &format!("{SLOT_STATE} > /tmp/before; echo \"kept: $((7 * 7))\""), &["kept: 49"])?;
 
     run(
         vm,
@@ -89,7 +90,7 @@ fn update_clock_ahead(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             "sysupdate check > /tmp/check 2>&1; echo \"check $?\"; echo \"expired: $(grep -c \
              'expired at 20' /tmp/check)\"; echo \"clock: $(grep -c 'clock says {year}-' \
              /tmp/check)\"; echo \"set: $(grep -c 'timedatectl set-time' /tmp/check)\"; echo \
-             \"unchanged: $(grep -c 'nothing was changed' /tmp/check)\"; sysupdate status > \
+             \"unchanged: $(grep -c 'nothing was changed' /tmp/check)\"; {SLOT_STATE} > \
              /tmp/after; cmp /tmp/before /tmp/after && echo \"same: $((8 * 8))\""
         ),
         &["check 1", "expired: 1", "clock: 1", "set: 1", "unchanged: 1", "same: 64"],

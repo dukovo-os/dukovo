@@ -14,7 +14,9 @@
 
 use super::super::*;
 use super::crash_dump::answer_within;
-use super::update_stage::{UPDATE_DISKS, power_off, restart, run, stage, started, type_command};
+use super::update_stage::{
+    SLOT_STATE, UPDATE_DISKS, power_off, restart, run, seen_through, stage, started, type_command,
+};
 
 pub const CASE: Case = Case {
     name: "update-network-down",
@@ -54,13 +56,16 @@ fn update_network_down(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         ),
         &["set: 42"],
     )?;
-    run(vm, "sysupdate status > /tmp/before; echo \"kept: $((7 * 7))\"", &["kept: 49"])?;
+    seen_through(vm)?;
+    run(vm, &format!("{SLOT_STATE} > /tmp/before; echo \"kept: $((7 * 7))\""), &["kept: 49"])?;
 
     // The check fails within its time limit, naming the server and why.
     type_command(
         vm,
-        "sysupdate check; echo \"check $?\"; sysupdate status > /tmp/after; cmp /tmp/before \
-         /tmp/after && echo \"unchanged: $((8 * 8))\"",
+        &format!(
+            "sysupdate check; echo \"check $?\"; {SLOT_STATE} > /tmp/after; cmp /tmp/before \
+             /tmp/after && echo \"unchanged: $((8 * 8))\""
+        ),
     )?;
     answer_within(vm, "#", "", CHECK_SECONDS)?;
     vm.expect_screen(&[SERVER, "nothing was changed", "check 1", "unchanged: 64"])
