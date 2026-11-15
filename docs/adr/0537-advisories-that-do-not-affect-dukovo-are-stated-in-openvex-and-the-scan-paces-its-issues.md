@@ -38,8 +38,10 @@ that create content and 500 an hour, made one after another.
     leave out what a supplier states does not apply.
   - A statement names the advisory, by its ID and any aliases, and each
     product by the package URL the scan gives it:
-    `pkg:generic/<port>@<version>` for a port and its extra sources,
-    and `pkg:cargo/<crate>@<version>` for a crate.
+    `pkg:generic/<port>@<version>` for a port,
+    `pkg:generic/<repository>@<commit>` for an extra source, by the
+    repository's name and the commit pinned, and
+    `pkg:cargo/<crate>@<version>` for a crate.
   - The version is part of the name. A statement lapses when the part
     moves to another version, and the advisory is weighed again then.
   - `fixed` and `not_affected` clear the advisory. `not_affected` has a

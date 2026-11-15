@@ -274,7 +274,8 @@ adds it, with:
 - the advisory's ID, as the issue's title gives it;
 - the product, as the issue's table names it in the column Product: a
   package URL with the recipe's version, `pkg:generic/<port>@<version>`
-  for a port, or `pkg:cargo/<name>@<version>` for a crate;
+  for a port, `pkg:generic/<repository>@<commit>` for an extra source,
+  with the commit pinned, or `pkg:cargo/<name>@<version>` for a crate;
 - the status, `not_affected` or `fixed`;
 - the reason, in `status_notes` or `impact_statement`. A statement of
   `not_affected` also has a `justification`, one of OpenVEX's, or an

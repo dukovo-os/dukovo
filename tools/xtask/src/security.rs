@@ -670,7 +670,7 @@ fn plan(recipes: &[Recipe]) -> Plan {
         for extra in &recipe.extra {
             plan.commits.push(Asked {
                 component: format!("{} {} {}", recipe.name, extra.path, extra.commit),
-                product: product.clone(),
+                product: vex::port_product(repository_name(&extra.git), &extra.commit),
                 location: location.clone(),
                 query: Query::Commit(extra.commit.clone()),
             });
@@ -685,6 +685,17 @@ fn plan(recipes: &[Recipe]) -> Plan {
         }
     }
     plan
+}
+
+/// The name of the repository at `git`, the last part of its URL without
+/// `.git`, as `pcre2` of `https://github.com/PCRE2Project/pcre2.git`: an
+/// extra source's product is named by it and by the commit pinned, so that
+/// a statement about an extra source lapses when its pin moves, whatever
+/// the port's own version.
+fn repository_name(git: &str) -> &str {
+    let path = git.trim_end_matches('/');
+    let last = path.rsplit('/').next().unwrap_or(path);
+    last.strip_suffix(".git").unwrap_or(last)
 }
 
 /// The report of `findings`: those a statement clears are moved to its
@@ -1385,7 +1396,23 @@ mod tests {
                 ),
             ]
         );
+        let products: Vec<_> = plan.commits.iter().map(|a| &*a.product).collect();
+        assert_eq!(
+            products,
+            [
+                "pkg:generic/lua@1.2.3",
+                "pkg:generic/nginx@1.2.3",
+                &*format!("pkg:generic/pcre2@{other}")
+            ]
+        );
         assert!(plan.archives.is_empty() && plan.crates.is_empty() && plan.not_covered.is_empty());
+    }
+
+    #[test]
+    fn a_repository_is_named_by_the_last_part_of_its_url() {
+        assert_eq!(repository_name("https://github.com/PCRE2Project/pcre2.git"), "pcre2");
+        assert_eq!(repository_name("https://github.com/antirez/linenoise.git/"), "linenoise");
+        assert_eq!(repository_name("https://gitlab.example.org/group/frigg"), "frigg");
     }
 
     #[test]
@@ -1952,7 +1979,7 @@ source = "registry+https://registry.example.org/index"
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].component, format!("curl pcre2 {other}"));
         assert_eq!(found[0].location, "ports/curl/recipe.toml");
-        assert_eq!(found[0].product, "pkg:generic/curl@1.2.3");
+        assert_eq!(found[0].product, format!("pkg:generic/pcre2@{other}"));
 
         let report = report(&vex::Document::default(), sorted(found), plan.not_covered);
         let value = serde_json::to_value(&report).unwrap();
