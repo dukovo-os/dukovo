@@ -14,7 +14,7 @@ set -eu
 
 cd "$PORT_BUILD"
 src=$PORT_SRC
-version=0.95
+version=0.96
 
 cat >config.h <<CONFIG
 /* What mtr's configure finds on Radix (ports/mtr/build.sh). */
