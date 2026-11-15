@@ -133,7 +133,7 @@ had to give any port before:
 - An administrator installs the bundle for everyone, as it has a service
   (ADR 0385), and any account then runs its programs: `initdb` and `pg_ctl`
   make and run a server of a person's own, `psql` and `pg_dump` talk to one.
-- The bundle's file is about 32 MB, of which the test suites' files, which
+- The bundle's file is about 29 MB, of which the test suites' files, which
   are text for the most part, are a few MB, and the contrib modules and
   the programs the rest.
 - A server built without huge pages, the processes' titles and backtraces,
