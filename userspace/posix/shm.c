@@ -24,6 +24,12 @@
 #define PAGE 4096
 #define NAME "/posix-shm-test"
 
+// Linux's flag for huge pages, which <sys/mman.h> names only with mlibc's
+// Linux interfaces; a program may pass its number all the same.
+#ifndef MAP_HUGETLB
+#define MAP_HUGETLB 0x40000
+#endif
+
 union semun {
 	int val;
 	struct semid_ds *buf;

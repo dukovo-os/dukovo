@@ -104,10 +104,12 @@ had to give any port before:
 - **Patch 0001** takes the program's path from the kernel's auxiliary vector
   (`AT_EXECFN`) when it is absolute, before the search of the PATH, as
   Python's and PHP's patches do. Patches 0002 and 0003 are ADR 0522's.
-- **No huge pages.** The C library's `mmap` refuses `MAP_HUGETLB` with
-  `ENOMEM`, as Linux does when no huge page is reserved, so
+- **No huge pages.** The C library's `<sys/mman.h>` has no `MAP_HUGETLB`,
+  so the server is built as for a system without huge pages:
   `huge_pages = try` maps ordinary pages and `huge_pages_status` says off,
   and `huge_pages = on` stops the server with PostgreSQL's own message.
+  `mmap` refuses Linux's number for the flag with `ENOMEM`, as Linux does
+  when no huge page is reserved.
 - **The test suites are in the bundle,** in `tests`: `pg_regress`,
   `pg_isolation_regress` and `isolationtester`, with the main suite's files
   and its test module, the isolation suite's, PL/pgSQL's and each contrib
