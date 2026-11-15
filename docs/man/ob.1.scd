@@ -2391,7 +2391,9 @@ _build.sh_
 	Meson cross files (*CROSS_FILE*, *LIBC_CROSS_FILE*), the CMake
 	toolchain file (*CMAKE_TOOLCHAIN_FILE*), *RUST_TARGET* (the target
 	specification of programs on Rust's standard library), pkg-config's
-	settings for the sysroot and *SOURCE_DATE_EPOCH*; the host's own
+	settings for the sysroot and *SOURCE_DATE_EPOCH*, which is
+	2026-01-01 00:00:00 UTC for every port at every commit, so that a port
+	cached at one commit is the port another builds; the host's own
 	*CPPFLAGS*, *LDFLAGS* and *PKG_CONFIG_PATH* are taken away.
 
 Sources are fetched once into _target/ports/_: with git by commit, and
@@ -2539,7 +2541,7 @@ fails the build.
 	Timestamp for files in the image, and, with the version and the kind
 	of image, what the identifiers of its disks and filesystems are made
 	from (ADR 0535). By default *ob* uses the time of the current Git
-	commit.
+	commit. Ports are built at a time of their own, whatever this says.
 
 # FILES
 

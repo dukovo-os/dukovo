@@ -1252,11 +1252,20 @@ const BUILD_TOOLS: [(&str, &str); 7] = [
     ("OBJCOPY", "objcopy"),
 ];
 
+/// The time every port is built at, as `SOURCE_DATE_EPOCH`: 2026-01-01
+/// 00:00:00 UTC, whatever the commit. What a port records of its build,
+/// a `__DATE__` or a manual page's date, is then the same at every
+/// commit, so that a port cached by its stamp at one commit is the port
+/// another builds from the same recipe (ADR 0535). It is part of every
+/// port's stamp: changing it builds every port again.
+pub const PORT_TIME: &str = "1767225600";
+
 /// What went into a port's build: its directory's files, the toolchain
 /// (its version, and the wrappers, cross files and site file ob writes),
 /// what the environment ob gives build.sh names the toolchain's programs
-/// and how its Rust crates are named, the kernel's system call headers,
-/// and the builds of the ports it needs.
+/// and how its Rust crates are named, the time it is built at
+/// ([`PORT_TIME`]), the kernel's system call headers, and the builds of
+/// the ports it needs.
 fn inputs_hash(
     ctx: &Ctx,
     dir: &Path,
@@ -1289,6 +1298,7 @@ fn inputs_hash(
     toolchain.builtins.hash(&mut hasher);
     BUILD_TOOLS.hash(&mut hasher);
     crate::rustc_wrapper::FORMAT.hash(&mut hasher);
+    PORT_TIME.hash(&mut hasher);
     if recipe.source.rust_src {
         rust_src(ctx)?.1.hash(&mut hasher);
     }
@@ -1712,7 +1722,7 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env_remove("PKG_CONFIG_PATH")
         .env("PKG_CONFIG_LIBDIR", sysroot.join("system/libraries/pkgconfig"))
         .env("PKG_CONFIG_SYSROOT_DIR", &sysroot)
-        .env("SOURCE_DATE_EPOCH", crate::image::source_date_epoch(ctx).unwrap_or("0".into()))
+        .env("SOURCE_DATE_EPOCH", PORT_TIME)
         // What a recipe that sets compiler flags itself, and does not use
         // the toolchain's wrappers, adds to them so that what it builds
         // does not record where it was built (ADR 0535): the flags for
@@ -1828,6 +1838,13 @@ pub fn image_files(ctx: &Ctx, recipe: &Recipe, sysroot: &Path) -> Result<Vec<(St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ports_are_built_at_the_start_of_2026() {
+        // 56 years from 1970, 14 of them leap years, in seconds.
+        let days = 56 * 365 + 14;
+        assert_eq!(PORT_TIME.parse::<u64>().unwrap(), days * 86_400);
+    }
 
     #[test]
     fn header_hash_ignores_comments_but_not_code() {

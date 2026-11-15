@@ -64,7 +64,12 @@ when it is built in two places:
   Nothing in this decision touches them: only `ob` seeds an identifier,
   and only for the images it writes.
 - **Times come from the commit.** `SOURCE_DATE_EPOCH` is the commit's
-  time unless it is set. Files newer than it are dated by it in the FAT of
+  time unless it is set. Ports are the exception: every port is built at
+  2026-01-01 00:00:00 UTC (`PORT_TIME` in `tools/xtask/src/ports.rs`),
+  which is part of each port's stamp. A port is cached by its stamp, and
+  one built at an earlier commit would otherwise hold that commit's time
+  in each `__DATE__` and `__TIME__` and each manual page it dates, and
+  differ from the port the same recipe builds now. Files newer than it are dated by it in the FAT of
   the EFI system partition, in Btrfs and on an ISO, as `tar
   --clamp-mtime` does, and a folder `ob` makes takes the image's time.
   The boot archive records the same owner, a mode of 0755 or 0644, and
@@ -112,7 +117,8 @@ when it is built in two places:
     builds every port, about 30 minutes, once.
   - The archiver (`llvm-ar` keeps no times or owners by default), the
     time a C file's `__DATE__` gives (Clang takes `SOURCE_DATE_EPOCH`,
-    which every port is built with) and the directory walks of `ob` that
+    which every port is built with, at `PORT_TIME`) and the directory
+    walks of `ob` that
     decide what an archive or a filesystem holds (each sorts the names it
     reads) needed no change.
 - **`./ob release build [--out DIR]` makes what the builds are compared

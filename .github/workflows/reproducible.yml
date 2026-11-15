@@ -328,6 +328,10 @@ jobs:
             timeout --kill-after=30 600 diffoscope --html "report/$name.html" \
               "first/tree/$path" "second/tree/$path" > /dev/null < /dev/null || status=$?
             echo "diffoscope exit status $status"
+            # The text each holds that the other does not, which names a
+            # path or a time a build wrote down without the report.
+            diff <(strings -n 8 "first/tree/$path" | sort -u) \
+              <(strings -n 8 "second/tree/$path" | sort -u) | grep '^[<>]' | head -n 40 || true
           done < content.txt
           ls -l report
 
