@@ -45,8 +45,9 @@ had to give any port before:
   image, with the server, the client and administration programs, libpq,
   the contrib modules and the test suites. Its service is ADR 0522's.
 - **The source is PostgreSQL's git tree,** pinned to the commit of a tag:
-  the release candidate `REL_19_RC2`, which is built under the release's
-  version, 19.0, until the pin moves to `REL_19_0`.
+  the release candidate `REL_19_RC2`, whose bundle is the pre-release
+  19.0-rc.2, which a catalog orders before 19.0, until the pin moves to
+  `REL_19_0`.
 - **The linux template.** Radix's ABI is Linux's, so `configure` takes
   `--with-template=linux`: unnamed POSIX semaphores, `-fPIC` for shared
   code, Linux's shared library rules and its `fdatasync` for the log. The

@@ -12,7 +12,7 @@
 # are the system's, read from /system/resources/zoneinfo when the programs
 # run: tzdata is not built against, so it is not in depends.
 name = "postgresql"
-version = "19.0"
+version = "19.0-rc.2"
 summary = "the PostgreSQL database server and its client programs"
 # PostgreSQL's code is under the PostgreSQL License. What its tree has from
 # others: Henry Spencer's regular expression package, with parts under
@@ -53,9 +53,10 @@ notices = [
 # PostgreSQL's release archives, are not reachable from the build
 # machines; a tree from git has no generated parsers or catalogs, which
 # bison, flex and Perl, which the build machine has, write (see
-# build.sh). This is the release candidate REL_19_RC2, which builds under
-# the version of the release until the pin moves to REL_19_0, planned for
-# 2026-11-19; the tag is a lightweight one, so this is its commit.
+# build.sh). This is the release candidate REL_19_RC2, so the bundle's
+# version is the pre-release 19.0-rc.2, which a catalog orders before
+# 19.0, until the pin moves to REL_19_0, planned for 2026-11-19; the tag
+# is a lightweight one, so this is its commit.
 [source]
 git = "https://github.com/postgres/postgres.git"
 commit = "dffcca2e3c81178c64d4c1f44543a3507d0b7508"
