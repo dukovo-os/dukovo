@@ -57,7 +57,8 @@ update. The first start of an update, which GRUB takes as a counted try
   BIOS, both first-start kill loops, the update boot tests together
   (`update-stage`, `update-power-cut`, `update-panic`, `update-hang`,
   `update-fallback`, `update-offline`, `update-online`,
-  `update-network-down`, `update-root-missing` and `update-disk-full`),
+  `update-network-down`, `update-root-missing`, `update-disk-full`,
+  `update-bad-network`, `update-clock-ahead` and `update-clock-behind`),
   the TUF
   conformance suite (`tuf-conformance`, `./ob test tuf`), and each fuzz
   target for ten minutes.
@@ -181,6 +182,27 @@ update. The first start of an update, which GRUB takes as a counted try
     needs and what is free. With the file removed, the stage goes through
     and the update proves itself. The stage reads each file of the
     running slot once, for this sum and to choose what it writes.
+  - `update-bad-network`: `update-online`'s test server is at fault for
+    the whole fetch. Every answer comes after a wait of a second, the
+    first 64 KiB of its body 2 KiB at a time, 50 ms apart, which is far
+    below the 30 seconds the client gives a read. The first request for
+    each file of the release is answered 503, and the connection of every
+    third answer with a body of more than 300 bytes is dropped after 300.
+    Each file takes its four tries at most: a 503 and a dropped
+    connection count as a try, and a dropped file goes on from where it
+    stopped. The update stages the files the slot lacks, each once,
+    starts at the restart and proves itself. The test checks that the
+    server did each of these things.
+  - `update-clock-ahead` and `update-clock-behind`: timed is given no
+    servers, so the clock stays as QEMU's `-rtc base=` sets it, a year
+    (365 days) ahead or behind the host's. A year ahead, `sysupdate
+    check` refuses the timestamp, which is good for a day, and says when
+    it expired, what the computer's clock says and that the clock is to be
+    set with `timedatectl set-time`; no file of a release is fetched, and
+    `sysupdate status` is as it was. A year behind, TUF has no rule that
+    refuses the metadata, so the check works, a replayed older timestamp
+    is still refused by its version, and the update stages, starts and
+    proves itself.
 
 ## Consequences
 
@@ -206,7 +228,5 @@ update. The first start of an update, which GRUB takes as a counted try
   - The upgrade paths from old releases, on a machine full of users,
     settings, apps and services, built once for each release as a fixture
     image.
-  - A network that delivers slowly or drops connections, and a clock
-    that is wrong, on `update-online`'s server.
   - The gate: `ob release sign` checking that a candidate's full run is
     green for the exact commit.
