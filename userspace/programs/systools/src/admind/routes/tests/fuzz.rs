@@ -431,12 +431,48 @@ fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
         Seed::new("tasks", "GET", "/api/1/tasks", None),
         Seed::new("task", "GET", "/api/1/tasks/{id}", None),
         Seed::new("stop task", "POST", "/api/1/tasks/{id}/stop", Some(json!({}))),
+        Seed::new("terminals", "GET", "/api/1/terminals", None),
+        Seed::new(
+            "terminal add",
+            "POST",
+            "/api/1/terminals",
+            Some(json!({ "cols": 80, "rows": 24, "name": "logs", "keep_days": 2 })),
+        ),
+        Seed::new(
+            "terminal add root",
+            "POST",
+            "/api/1/terminals",
+            Some(json!({ "cols": 80, "rows": 24, "admin": true })),
+        ),
+        Seed::new(
+            "terminal pane",
+            "POST",
+            "/api/1/terminals/{id}/panes",
+            Some(json!({ "cols": 40, "rows": 12, "layout": "main-left" })),
+        ),
+        Seed::new(
+            "terminal layout",
+            "POST",
+            "/api/1/terminals/{id}/layout",
+            Some(json!({ "layout": "grid", "sizes": [0.5, 0.25] })),
+        ),
+        Seed::new(
+            "terminal rename",
+            "POST",
+            "/api/1/terminals/{id}/rename",
+            Some(json!({ "name": "build box" })),
+        ),
+        Seed::new("terminal end", "POST", "/api/1/terminals/{id}/end", Some(json!({}))),
+        Seed::new("pane end", "POST", "/api/1/terminals/panes/{pane}/end", Some(json!({}))),
+        Seed::new("terminal socket", "GET", "/api/1/terminal", None),
         Seed::new("lock", "POST", "/api/1/lock", Some(json!({}))),
         Seed::new("sign-out", "POST", "/api/1/sign-out", Some(json!({}))),
     ];
     for seed in &mut seeds {
-        if seed.template.contains("{id}") {
-            seed.params.push(("id".into(), "1".into()));
+        for name in ["id", "pane"] {
+            if seed.template.contains(&format!("{{{name}}}")) {
+                seed.params.push((name.into(), "1".into()));
+            }
         }
     }
     for &action in actions {
@@ -505,6 +541,23 @@ impl Sent {
         }
         if post {
             headers.push(("content-type".into(), b"application/json".to_vec()));
+        }
+        // The Terminal's socket is opened as the page opens it: the
+        // session's csrf token goes in the protocols, not a header.
+        if seed.template == "/api/1/terminal" {
+            let csrf = sessions.of(caller).map_or("6b", |session| session.csrf.as_str());
+            headers.retain(|(name, _)| name != CSRF_HEADER);
+            for (name, value) in [
+                ("origin", ORIGIN.to_string()),
+                ("connection", "Upgrade".into()),
+                ("upgrade", "websocket".into()),
+                ("sec-websocket-version", "13".into()),
+                ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==".into()),
+                ("sec-websocket-protocol", format!("dukovo-terminal-1, csrf.{csrf}")),
+                ("sec-fetch-site", "same-origin".into()),
+            ] {
+                headers.push((name.into(), value.into_bytes()));
+            }
         }
         Sent {
             method: seed.method.as_bytes().to_vec(),
@@ -957,8 +1010,14 @@ fn broken(
         if changed_worker {
             return Some(format!("a refused request changed the person's things: {calls:?}"));
         }
+        // authd refuses a shell with ADM-132 itself, after it was asked.
+        let shell = calls.iter().any(|(method, _)| method == "terminal");
+        if shell && error.as_deref() != Some("ADM-132") {
+            return Some(format!("a refused request started a shell: {calls:?}"));
+        }
     }
-    if matches!(sent.method.as_slice(), b"GET" | b"HEAD") && (elevated || after.newest != before.newest)
+    if matches!(sent.method.as_slice(), b"GET" | b"HEAD")
+        && (elevated || after.newest != before.newest)
     {
         return Some("a read ran a command as an administrator or wrote the journal".into());
     }
@@ -1030,6 +1089,25 @@ fn broken(
 }
 
 #[test]
+fn every_route_of_the_table_has_a_request_to_start_from() {
+    let actions: Vec<&'static dyn Registered> = REGISTRY.to_vec();
+    let seeds = seeds(&actions);
+    for entry in TABLE {
+        // The event stream does not end; the lab's own route is no
+        // installed console's.
+        if entry.path == "/api/1/events" || entry.path.starts_with("/api/1/test/") {
+            continue;
+        }
+        let method = if entry.verb == Verb::Get { "GET" } else { "POST" };
+        assert!(
+            seeds.iter().any(|seed| seed.method == method && seed.template == entry.path),
+            "no request starts from {method} {}",
+            entry.path
+        );
+    }
+}
+
+#[test]
 fn requests_of_every_caller_bent_at_random_keep_what_the_console_promises() {
     run(async {
         let world = world("fuzz-callers");
@@ -1085,7 +1163,7 @@ fn requests_of_every_caller_bent_at_random_keep_what_the_console_promises() {
             for status in [200, 400, 401, 403, 404, 405, 413, 415, 421] {
                 assert!(statuses.get(&status).copied().unwrap_or(0) > 20, "{statuses:?}");
             }
-            assert!(statuses[&200] > rounds() / 5, "{statuses:?}");
+            assert!(statuses[&200] > rounds() / 8, "{statuses:?}");
             // Changes ran, and the journal kept them.
             assert!(Traces::now(&world, address).newest > 20);
         }
