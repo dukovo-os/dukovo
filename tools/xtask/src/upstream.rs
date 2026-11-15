@@ -79,7 +79,7 @@ fn survey(
         let Some((git, tag)) = tracked(recipe) else { continue };
         match tags_of(git) {
             Ok(tags) => found.push(Found {
-                newer: newest(tag, &tags).filter(|newest| newest != tag),
+                newer: newest(tag, &tags, recipe.series.as_deref()).filter(|newest| newest != tag),
                 name: recipe.name.clone(),
                 pinned: tag.to_string(),
             }),
@@ -117,13 +117,39 @@ fn render(found: &[Found], tsv: bool) -> String {
 
 /// The tags of the repository `git`, by name.
 fn tags(ctx: &Ctx, git: &str) -> Result<Vec<String>> {
-    let mut cmd = Command::new("git");
-    cmd.args(["ls-remote", "--tags", "--refs", git]);
-    let output = process::output(ctx, &mut cmd)?;
-    Ok(String::from_utf8_lossy(&output.stdout)
+    let output = ls_remote(ctx, git, &["--tags", "--refs"], &[])?;
+    Ok(output
         .lines()
         .filter_map(|line| line.split('\t').nth(1)?.strip_prefix("refs/tags/").map(str::to_string))
         .collect())
+}
+
+/// How many times `git ls-remote` is tried before a repository counts as
+/// out of reach: a host that drops one connection should not fail the
+/// day's scan.
+const LS_REMOTE_TRIES: u32 = 3;
+
+/// What `git ls-remote <options> <git> <patterns>` prints, tried up to
+/// [`LS_REMOTE_TRIES`] times, 2 and then 4 seconds apart. It never asks
+/// for a password and gives up on a connection that has stopped.
+pub fn ls_remote(ctx: &Ctx, git: &str, options: &[&str], patterns: &[String]) -> Result<String> {
+    let mut tried = 0;
+    loop {
+        let mut cmd = Command::new("git");
+        cmd.args(["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60"]);
+        cmd.arg("ls-remote").args(options).arg(git).args(patterns);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        match process::output(ctx, &mut cmd) {
+            Ok(output) => return Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+            Err(err) => {
+                tried += 1;
+                if tried == LS_REMOTE_TRIES {
+                    return Err(err);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2 << (tried - 1)));
+            }
+        }
+    }
 }
 
 /// A release tag's numbers, and what comes before them (such as `v` or
@@ -176,14 +202,20 @@ fn same_series(numbers: &[u64], base: &[u64]) -> bool {
 }
 
 /// The newest of `tags` in `pinned`'s series, if any tag is newer than or
-/// equal to it.
-fn newest(pinned: &str, tags: &[String]) -> Option<String> {
+/// equal to it. With `follows`, such as `3.5`, only a tag whose leading
+/// numbers are those counts.
+fn newest(pinned: &str, tags: &[String], follows: Option<&str>) -> Option<String> {
     let (prefix, base) = release(pinned)?;
+    let follows: Vec<u64> = match follows {
+        Some(series) => series.split('.').map(str::parse).collect::<Result<_, _>>().ok()?,
+        None => Vec::new(),
+    };
     let mut best: Option<(&String, Vec<u64>)> = None;
     for tag in tags {
         let Some((p, numbers)) = release(tag) else { continue };
         if p != prefix
             || !same_series(&numbers, &base)
+            || !numbers.starts_with(&follows)
             || compare(&numbers, &base) == Ordering::Less
         {
             continue;
@@ -290,17 +322,36 @@ mod tests {
     #[test]
     fn the_newest_release_of_the_series_is_found() {
         let tags = list(&["14.1.1", "15.0.0", "15.2.0", "15.10.0-rc1", "15.9.1", "nightly"]);
-        assert_eq!(newest("15.2.0", &tags).as_deref(), Some("15.9.1"));
+        assert_eq!(newest("15.2.0", &tags, None).as_deref(), Some("15.9.1"));
         let tags = list(&["v0.25.0", "v0.26.1", "v0.26.10", "0.99.0"]);
-        assert_eq!(newest("v0.26.1", &tags).as_deref(), Some("v0.26.10"));
+        assert_eq!(newest("v0.26.1", &tags, None).as_deref(), Some("v0.26.10"));
         let tags = list(&["curl-8_17_0", "curl-8_9_1", "tiny-curl-9_0"]);
-        assert_eq!(newest("curl-8_9_1", &tags).as_deref(), Some("curl-8_17_0"));
-        assert_eq!(newest("3.5a", &list(&["3.5a", "3.6"])).as_deref(), Some("3.6"));
-        assert_eq!(newest("1.0", &list(&["0.9"])), None);
-        assert_eq!(newest("2026a", &list(&["2025z", "2026a", "2026f"])).as_deref(), Some("2026f"));
-        assert_eq!(newest("v6_6", &list(&["v6_6", "v6_6_20261031"])).as_deref(), Some("v6_6"));
+        assert_eq!(newest("curl-8_9_1", &tags, None).as_deref(), Some("curl-8_17_0"));
+        assert_eq!(newest("3.5a", &list(&["3.5a", "3.6"]), None).as_deref(), Some("3.6"));
+        assert_eq!(newest("1.0", &list(&["0.9"]), None), None);
+        // A port that follows a series is offered only that series'
+        // releases: OpenSSL 3.5, a long-term release, is not moved to 4.
+        let openssl = list(&["openssl-3.5.4", "openssl-3.5.6", "openssl-3.6.1", "openssl-4.1.0"]);
+        assert_eq!(newest("openssl-3.5.4", &openssl, None).as_deref(), Some("openssl-4.1.0"));
+        assert_eq!(
+            newest("openssl-3.5.4", &openssl, Some("3.5")).as_deref(),
+            Some("openssl-3.5.6")
+        );
+        assert_eq!(
+            newest("openssl-3.5.4", &openssl[..1], Some("3.5")).as_deref(),
+            Some("openssl-3.5.4")
+        );
+        assert_eq!(newest("openssl-3.5.4", &openssl, Some("3")).as_deref(), Some("openssl-3.6.1"));
+        assert_eq!(
+            newest("2026a", &list(&["2025z", "2026a", "2026f"]), None).as_deref(),
+            Some("2026f")
+        );
+        assert_eq!(
+            newest("v6_6", &list(&["v6_6", "v6_6_20261031"]), None).as_deref(),
+            Some("v6_6")
+        );
         let tags = list(&["glibc-2.42", "glibc-2.42.9000", "glibc-2.43"]);
-        assert_eq!(newest("glibc-2.42", &tags).as_deref(), Some("glibc-2.43"));
+        assert_eq!(newest("glibc-2.42", &tags, None).as_deref(), Some("glibc-2.43"));
     }
 
     #[test]
@@ -315,16 +366,16 @@ mod tests {
         assert_eq!(release("release-2.1.13-stable"), Some(("release-", vec![2, 1, 13])));
         assert_eq!(release("release-2.2.1-alpha"), None);
         assert_eq!(
-            newest("release-2.1.13-stable", &tags).as_deref(),
+            newest("release-2.1.13-stable", &tags, None).as_deref(),
             Some("release-2.1.13-stable")
         );
         assert_eq!(
-            newest("release-2.1.12-stable", &tags).as_deref(),
+            newest("release-2.1.12-stable", &tags, None).as_deref(),
             Some("release-2.1.13-stable")
         );
         let later = list(&["release-2.1.13-stable", "release-2.1.14-stable"]);
         assert_eq!(
-            newest("release-2.1.13-stable", &later).as_deref(),
+            newest("release-2.1.13-stable", &later, None).as_deref(),
             Some("release-2.1.14-stable")
         );
     }
@@ -339,26 +390,26 @@ mod tests {
             assert_eq!(release(tag), None, "{tag}");
         }
         let bzip2 = list(&["bzip2-1.0.6", "bzip2-1.0.8", "bzip2-1.0.8-rc1", "bzip2-1.1.0"]);
-        assert_eq!(newest("bzip2-1.0.6", &bzip2).as_deref(), Some("bzip2-1.1.0"));
-        assert_eq!(newest("bzip2-1.0.8", &bzip2[..3]).as_deref(), Some("bzip2-1.0.8"));
+        assert_eq!(newest("bzip2-1.0.6", &bzip2, None).as_deref(), Some("bzip2-1.1.0"));
+        assert_eq!(newest("bzip2-1.0.8", &bzip2[..3], None).as_deref(), Some("bzip2-1.0.8"));
     }
 
     #[test]
     fn the_tags_of_archive_ports_are_compared_by_the_series_rules() {
         // Tags as the projects' repositories list them.
         let file = list(&["FILE5_46", "FILE5_47", "FILE5_48", "pre-rrt-big-changes-post-4-23"]);
-        assert_eq!(newest("FILE5_47", &file).as_deref(), Some("FILE5_48"));
+        assert_eq!(newest("FILE5_47", &file, None).as_deref(), Some("FILE5_48"));
         let tmux = list(&["3.7", "3.7b", "3.7c", "3.8", "3.8-rc"]);
-        assert_eq!(newest("3.7c", &tmux).as_deref(), Some("3.8"));
+        assert_eq!(newest("3.7c", &tmux, None).as_deref(), Some("3.8"));
         let jq = list(&["jq-1.8.1", "jq-1.8.2", "jq-1.8.2rc1"]);
-        assert_eq!(newest("jq-1.8.2", &jq).as_deref(), Some("jq-1.8.2"));
+        assert_eq!(newest("jq-1.8.2", &jq, None).as_deref(), Some("jq-1.8.2"));
         let zip = list(&["25.01", "26.02", "26.06"]);
-        assert_eq!(newest("26.02", &zip).as_deref(), Some("26.06"));
+        assert_eq!(newest("26.02", &zip, None).as_deref(), Some("26.06"));
         let less = list(&["v668", "v710", "v710-rel", "v712"]);
-        assert_eq!(newest("v668", &less).as_deref(), Some("v712"));
+        assert_eq!(newest("v668", &less, None).as_deref(), Some("v712"));
         // A tag the numbers cannot be read from is not compared, and the
         // port is then never listed as behind.
-        assert_eq!(newest("nightly", &less), None);
+        assert_eq!(newest("nightly", &less, None), None);
     }
 
     fn recipe(text: &str) -> Recipe {

@@ -129,7 +129,8 @@ _target/userspace/_).
 	Ask each port's git repository for its tags and list, for each port,
 	whether its upstream has released a newer version of the same series
 	than the release the recipe pins; snapshots and development versions
-	do not count. A port pinned to a tag of git is asked in its own
+	do not count, and for a port with a *series*, nor does a release
+	outside it. A port pinned to a tag of git is asked in its own
 	repository. A port pinned by a release archive is asked in the
 	repository, and by the tag, that its *[upstream]* table names (see
 	*PORTS*). A port whose *[upstream]* says *none*, a port pinned to a
@@ -2267,7 +2268,9 @@ _recipe.toml_
 	repository (the archive stays what is built; *security scan* asks
 	OSV by the tag's commit, and *ports outdated* reads the repository's
 	tags for a newer release); a port pinned by git has no *[upstream]*,
-	since its source is its upstream; any
+	since its source is its upstream; *series*, the leading numbers of
+	the releases a port follows, such as *3.5* for a long-term release,
+	which hold its version and limit what *ports outdated* offers; any
 	*extra* sources unpacked inside its tree, each with its own commit
 	and license (a port with no source of its own but *extra* ones builds
 	only those); crates from crates.io unpacked inside it (*[[crate]]*:

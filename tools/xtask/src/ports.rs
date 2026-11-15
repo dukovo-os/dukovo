@@ -80,6 +80,11 @@ pub struct Recipe {
     /// its git repository, which the archive does not say.
     #[serde(default)]
     pub upstream: Option<Upstream>,
+    /// The release series the port follows, such as `3.5` for OpenSSL's
+    /// long-term release: `ob ports outdated` offers only releases whose
+    /// leading numbers are these. Without it, any newer release counts.
+    #[serde(default)]
+    pub series: Option<String>,
     /// More sources, unpacked inside the port's source tree.
     #[serde(default)]
     pub extra: Vec<Extra>,
@@ -425,6 +430,9 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
     if let Some(problem) = upstream_problem(recipe) {
         return Err(Error::new(format!("{what}: {problem}")));
     }
+    if let Some(problem) = series_problem(recipe) {
+        return Err(Error::new(format!("{what}: {problem}")));
+    }
     if let Some(path) = outside_path(recipe) {
         return Err(Error::new(format!(
             "{what}: `{path}` is not a path inside the tree it is taken from"
@@ -464,6 +472,27 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
 /// a missing repository is a decision in the recipe and not an oversight.
 /// A port pinned by git has none, as its source is its upstream; a port
 /// with no source of its own has none either.
+/// What is wrong with `recipe`'s `series`, if anything: it is one or more
+/// numbers set apart by dots, and the version the recipe pins is in it.
+fn series_problem(recipe: &Recipe) -> Option<String> {
+    let series = recipe.series.as_deref()?;
+    let numbers: Option<Vec<&str>> = series
+        .split('.')
+        .map(|part| (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())).then_some(part))
+        .collect();
+    let Some(numbers) = numbers else {
+        return Some(format!("series {series} is not numbers set apart by dots, such as 3.5"));
+    };
+    let version: Vec<&str> = recipe.version.split(['.', '-', '+']).collect();
+    if !version.starts_with(&numbers) {
+        return Some(format!(
+            "series {series} does not hold the version the recipe pins, {}",
+            recipe.version
+        ));
+    }
+    None
+}
+
 fn upstream_problem(recipe: &Recipe) -> Option<String> {
     let archive = !recipe.source.url.is_empty();
     let Some(upstream) = &recipe.upstream else {
@@ -1955,6 +1984,32 @@ mod tests {
             let problem = upstream_problem(&curl_recipe(rest))
                 .unwrap_or_else(|| panic!("`{rest}` was not refused"));
             assert!(problem.contains(expected), "`{rest}` gave `{problem}`, not `{expected}`");
+        }
+    }
+
+    #[test]
+    fn a_series_is_numbers_that_hold_the_version() {
+        let with = |series: &str| {
+            let mut recipe = curl_recipe(CURL_UPSTREAM);
+            recipe.series = Some(series.to_string());
+            recipe
+        };
+        assert_eq!(series_problem(&curl_recipe(CURL_UPSTREAM)), None);
+        assert_eq!(series_problem(&with("8")), None);
+        assert_eq!(series_problem(&with("8.23")), None);
+        assert_eq!(series_problem(&with("8.23.0")), None);
+        for (series, expected) in [
+            ("8.22", "does not hold the version"),
+            ("8.2", "does not hold the version"),
+            ("9", "does not hold the version"),
+            ("8.x", "not numbers"),
+            ("8..23", "not numbers"),
+            ("", "not numbers"),
+            ("v8", "not numbers"),
+        ] {
+            let problem = series_problem(&with(series))
+                .unwrap_or_else(|| panic!("`{series}` was not refused"));
+            assert!(problem.contains(expected), "`{series}` gave `{problem}`, not `{expected}`");
         }
     }
 

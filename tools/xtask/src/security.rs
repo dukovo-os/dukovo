@@ -677,16 +677,15 @@ fn resolve_archives(
 }
 
 /// `git ls-remote` of the tag in the repository `git`, and of the commit
-/// the tag points to when it is annotated. It never asks for a password
-/// and gives up on a connection that has stopped.
+/// the tag points to when it is annotated, tried as
+/// [`upstream::ls_remote`] tries.
 fn ls_remote(ctx: &Ctx, git: &str, tag: &str) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60"]);
-    cmd.args(["ls-remote", git]);
-    cmd.arg(format!("refs/tags/{tag}")).arg(format!("refs/tags/{tag}^{{}}"));
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    let output = process::output(ctx, &mut cmd)?;
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    upstream::ls_remote(
+        ctx,
+        git,
+        &[],
+        &[format!("refs/tags/{tag}"), format!("refs/tags/{tag}^{{}}")],
+    )
 }
 
 /// The commit `tag` names, from the listing `git ls-remote` printed for it.

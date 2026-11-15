@@ -169,6 +169,9 @@ image; `ports/lua` is a short example. A port pinned to a release
 archive also has an `[upstream]` table: its project's git repository
 and the tag of the release, or `none` and the reason there is no
 repository. The daily security scan and `./ob ports outdated` read it.
+A port that stays on one release series, such as OpenSSL's long-term
+release, says so with `series = "3.5"`, and `./ob ports outdated` then
+offers only that series' fixes.
 `./ob ports` builds them all, each again only when it changed. Check the
 license before starting a port: system programs must
 have permissive licenses, and every port's license and notices go into

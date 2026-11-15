@@ -12,6 +12,8 @@
 # folder (ADR 0491).
 name = "openssl"
 version = "3.5.4"
+# The long-term release's series: ports outdated offers its fixes, not 3.6 or 4.
+series = "3.5"
 summary = "openssl, OpenSSL's command for keys, certificates and TLS"
 license = "Apache-2.0"
 homepage = "https://openssl-library.org"
