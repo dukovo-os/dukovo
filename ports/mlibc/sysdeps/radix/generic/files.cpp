@@ -1180,8 +1180,7 @@ int Sysdeps<Fdatasync>::operator()(int fd) {
 }
 
 void Sysdeps<Sync>::operator()() {
-	// The root's filesystem; each writes its changes back every five
-	// seconds anyway (radix-file(2)).
+	// A sync of the tree's root syncs every filesystem (radix-files(7)).
 	radix_directory_sync(radix::SLOT_ROOT);
 }
 

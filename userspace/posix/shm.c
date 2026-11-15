@@ -6,7 +6,7 @@
 // with their sizes, rights and SIGBUS past their ends; named and
 // process-shared semaphores in them; and System V shared memory and
 // semaphores, with Linux's keys, numbers, attachments, waits, undos and
-// removals.
+// removals. Huge pages are refused, as on a Linux that has none reserved.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -466,6 +466,29 @@ static void sets(void) {
 	CHECK(semctl(keyed, 0, IPC_RMID) == 0);
 }
 
+// MAP_HUGETLB asks for huge pages, of which Radix has none: memory, shared
+// or private, fails with ENOMEM, as on a Linux with none reserved, and a
+// file fails with EINVAL, as one not on hugetlbfs does. A program such as
+// PostgreSQL then maps ordinary pages.
+static void huge_pages(void) {
+	enum { HUGE = 2 << 20 };
+	int flags[] = {MAP_SHARED, MAP_PRIVATE};
+	for(size_t i = 0; i < sizeof(flags) / sizeof(flags[0]); i++) {
+		errno = 0;
+		void *memory = mmap(NULL, HUGE, PROT_READ | PROT_WRITE,
+				flags[i] | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+		CHECK(memory == MAP_FAILED && errno == ENOMEM);
+	}
+	int fd = shm_open(NAME, O_RDWR | O_CREAT | O_EXCL, 0600);
+	CHECK(fd >= 0 && ftruncate(fd, PAGE) == 0);
+	errno = 0;
+	CHECK(mmap(NULL, PAGE, PROT_READ, MAP_SHARED | MAP_HUGETLB, fd, 0) == MAP_FAILED);
+	CHECK(errno == EINVAL);
+	char *plain = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	CHECK(plain != MAP_FAILED && munmap(plain, PAGE) == 0);
+	CHECK(close(fd) == 0 && shm_unlink(NAME) == 0);
+}
+
 int main(void) {
 	check_start("shm");
 	RUN(objects);
@@ -474,5 +497,6 @@ int main(void) {
 	RUN(semaphores);
 	RUN(segments);
 	RUN(sets);
+	RUN(huge_pages);
 	return check_end();
 }

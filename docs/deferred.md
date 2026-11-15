@@ -308,7 +308,6 @@ These come from finished work; the releases themselves are in the
 | nmap in the catalog | NPSL license | Legal review |
 | Advisories for ecosystems other than crates.io; bundles over 4 GiB (ADRs 0222, 0389) | npm's export and large bundles need ZIP64 in `dkv` | A need |
 | mlibc functions with no code, which end the program (posix design note) | Each is written when a port needs it, upstream where general | A port |
-| `mmap(2)` with `MAP_HUGETLB` in mlibc (`Sysdeps<VmMap>` in `ports/mlibc/sysdeps/radix/generic/core.cpp`) | The flag is ignored and ordinary pages are mapped, where Linux fails with `ENOMEM` when no huge page is reserved, which is the answer PostgreSQL's `huge_pages = try` takes for none; PostgreSQL is built without the flag meanwhile (its patch 0004, ADR 0521) | The next change to mlibc, after which the patch can go |
 | `crypt(3)`, for nginx's `auth_basic` with `$5$` and `$6$` hashes (ADR 0491) | The C library has none; nginx's own schemes, `$apr1$` among them, work | A port that needs it, or upstream |
 | jemalloc for Valkey, with its active defragmentation: Valkey uses the C library's allocator (ADR 0492) | jemalloc has no port for Radix | A jemalloc port |
 | Valkey's own test suite (`runtest --host`) run against the machine from the lab PC; the lab test `services/valkey` stores and reads back keys with a client of its own meanwhile (ADR 0492) | Needs Tcl and Valkey's tests at the bundle's version on the lab PC; many of them need the `DEBUG` command, which Valkey keeps off unless its settings turn it on | A lab step that fetches them |
@@ -543,4 +542,3 @@ finding or removed.
 | A scheduled check of the support center's links to other sites (ADR 0420) | Pull requests check only the links between the site's own pages; outside links need a job of their own |
 | The *Known limits* sections of `docs/design/posix.md` and `docs/design/storage.md`, and radix-posix(7) | They still describe Phases 7 to 9: no network sockets, no users, no hot plug, no exFAT, no Btrfs quotas, locales "until Phase 12" |
 | The roadmap's catalog ports paragraph says Go comes with release 1.1 | Go is Phase 17 |
-| The comment on mlibc's `sync()` in `ports/mlibc/sysdeps/radix/generic/files.cpp` says it syncs the root's filesystem alone | A sync of the tree's root has synced every filesystem since Phase 16; a change to mlibc rebuilds every port, so the comment waits for the next one |

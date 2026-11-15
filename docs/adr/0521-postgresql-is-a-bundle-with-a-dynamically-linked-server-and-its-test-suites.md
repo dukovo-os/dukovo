@@ -103,12 +103,11 @@ had to give any port before:
   library's, which the `locales` port provides, and the builtin provider's.
 - **Patch 0001** takes the program's path from the kernel's auxiliary vector
   (`AT_EXECFN`) when it is absolute, before the search of the PATH, as
-  Python's and PHP's patches do. **Patch 0004** builds the server as a system
-  without `MAP_HUGETLB`: the C library's `mmap` ignores the flag and would
-  grant huge pages it does not give, so `huge_pages = try` uses ordinary
-  pages and reports it, and `on` fails with PostgreSQL's own message. The
-  patch goes when `mmap` refuses the flag with `ENOMEM`, as Linux does
-  (docs/deferred.md). Patches 0002 and 0003 are ADR 0522's.
+  Python's and PHP's patches do. Patches 0002 and 0003 are ADR 0522's.
+- **No huge pages.** The C library's `mmap` refuses `MAP_HUGETLB` with
+  `ENOMEM`, as Linux does when no huge page is reserved, so
+  `huge_pages = try` maps ordinary pages and `huge_pages_status` says off,
+  and `huge_pages = on` stops the server with PostgreSQL's own message.
 - **The test suites are in the bundle,** in `tests`: `pg_regress`,
   `pg_isolation_regress` and `isolationtester`, with the main suite's files
   and its test module, the isolation suite's, PL/pgSQL's and each contrib
@@ -137,7 +136,7 @@ had to give any port before:
 - The bundle's file is about 29 MB, of which the test suites' files, which
   are text for the most part, are a few MB, and the contrib modules and
   the programs the rest.
-- A server built without huge pages, the processes' titles and backtraces,
+- A server without huge pages, the processes' titles and backtraces,
   with `poll` where Linux uses epoll and `*_flush_after` off, differs from
   PostgreSQL on Linux in what an administrator can see and tune. The reasons
   are in `build.sh` and docs/deferred.md.
