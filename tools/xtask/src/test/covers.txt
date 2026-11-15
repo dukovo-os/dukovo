@@ -883,6 +883,17 @@ update-panic userspace/programs/systools/src/sysupdate/ userspace/spark/src/main
 update-power-cut kernel/fs/btrfs/ userspace/programs/slots/ userspace/programs/system-release/
 update-power-cut userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/sysupdate.rs
 update-power-cut userspace/programs/systools/src/sysupdate/
+update-power-replay image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
+update-power-replay tools/xtask/src/qemu.rs tools/xtask/src/test/replay.rs tools/xtask/src/writelog.rs
+update-power-replay userspace/programs/slots/ userspace/programs/system-release/
+update-power-replay userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/sysupdate.rs
+update-power-replay userspace/programs/systools/src/sysupdate/
+update-power-replay-bios image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
+update-power-replay-bios tools/xtask/src/qemu.rs tools/xtask/src/test/replay.rs tools/xtask/src/writelog.rs
+update-power-replay-bios userspace/programs/slots/ userspace/programs/system-release/
+update-power-replay-bios userspace/programs/systools/src/subvolume.rs
+update-power-replay-bios userspace/programs/systools/src/sysupdate.rs
+update-power-replay-bios userspace/programs/systools/src/sysupdate/
 update-stage image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/ tools/xtask/src/release.rs
 update-stage image/grub/rescue.cfg
 update-stage userspace/defaults/sysupdate/ userspace/programs/disk/src/esp.rs userspace/programs/slots/

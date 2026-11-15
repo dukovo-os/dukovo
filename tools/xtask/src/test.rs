@@ -469,7 +469,8 @@ const BLANK: u8 = 29;
 /// tests' signed updates of the installed system ([`update_releases_disk`],
 /// ADR 0451): a repository of each of [`TEST_UPDATES`] in a folder of its
 /// name, holding only the files that differ from the installed slot's,
-/// all a stage needs ([`test_updates`]).
+/// all a stage needs, and the installed release's own list
+/// ([`CURRENT_RELEASE`], [`test_updates`]).
 const UPDATE_RELEASES: u8 = 30;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding the update
@@ -550,6 +551,12 @@ pub const TEST_FIRMWARE: [(&str, &str); 3] =
 /// The folder of the firmware sets' repository on the [`UPDATE_RELEASES`]
 /// disk.
 pub const TEST_FIRMWARE_REPO: &str = "firmware";
+
+/// The folder of the repository of this build's own release on the
+/// [`UPDATE_RELEASES`] disk, with no file in its store: the signed list
+/// that `sysupdate verify` reads slot A back against, as the test image
+/// holds no Rescue to take it from (ADR 0536).
+pub const CURRENT_RELEASE: &str = "current";
 
 /// The version of the test firmware set `name` of [`TEST_FIRMWARE`].
 pub fn test_firmware_version(name: &str) -> &'static str {
@@ -1679,6 +1686,7 @@ mod console_client;
 mod phase11;
 mod phase12;
 mod phase13;
+mod replay;
 pub mod soak;
 mod stall;
 
@@ -3433,6 +3441,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let image_only = args.flag("--image-only");
     let retry = args.flag("--retry");
     let profile = args.profile(&ctx.config)?;
+    let replay_options = replay::Options::take(args)?;
     let which = args.positional();
     args.finish()?;
     if plan && affected.is_none() {
@@ -3511,6 +3520,14 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             "--image-only writes the images of boot tests; give `boot` and --case with it"
         );
     }
+    if which.as_deref() == Some("replay") {
+        if shard.is_some() || retry || image_only {
+            crate::bail!("`replay` takes --case, --points, --part, --seed, --log and --point");
+        }
+        let timeout = Duration::from_secs(timeout);
+        return replay::command(ctx, profile, &selected, &replay_options, timeout);
+    }
+    replay_options.none_given()?;
     let (unit, boot) = match which.as_deref() {
         None if selected.is_empty() => (true, true),
         None | Some("boot") => (false, true),
@@ -3525,8 +3542,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
-            "unknown test suite `{other}`; use `unit`, `boot`, `kani`, `tla`, `tuf`, `corpus`, \
-             `riscv` or `lab-writer`"
+            "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `kani`, `tla`, `tuf`, \
+             `corpus`, `riscv` or `lab-writer`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
@@ -4051,8 +4068,9 @@ pub fn lab_updates(ctx: &Ctx, profile: crate::config::Profile) -> Result<PathBuf
     Ok(updates_dir(&dir))
 }
 
-/// Makes the repositories of [`TEST_UPDATES`] in [`updates_dir`] of
-/// `dir`, with the slot staged from `built` as the one installed.
+/// Makes the repositories of [`TEST_UPDATES`], and [`CURRENT_RELEASE`], in
+/// [`updates_dir`] of `dir`, with the slot staged from `built` as the one
+/// installed.
 fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     let out = updates_dir(dir);
     if out.exists() {
@@ -4080,17 +4098,27 @@ fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         }
         let repository = out.join(update.name);
         crate::release::make_as(ctx, &tree, &repository, &version, VERSION)?;
-        let store = repository.join("files");
-        for entry in std::fs::read_dir(&store).context(|| format!("reading {}", store.display()))? {
-            let entry = entry.context(|| format!("reading {}", store.display()))?;
-            if installed.contains(&entry.file_name().to_string_lossy().into_owned()) {
-                std::fs::remove_file(entry.path())
-                    .context(|| format!("removing {}", entry.path().display()))?;
-            }
-        }
+        keep_new_files(&repository, &installed)?;
     }
+    let current = out.join(CURRENT_RELEASE);
+    crate::release::make(ctx, &base, &current)?;
+    keep_new_files(&current, &installed)?;
     make_test_firmware(ctx, &staging.join("firmware"), &out.join(TEST_FIRMWARE_REPO))?;
     std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
+}
+
+/// Removes from the store of `repository` the files whose names `installed`
+/// holds, which the installed slot has already.
+fn keep_new_files(repository: &Path, installed: &std::collections::HashSet<String>) -> Result<()> {
+    let store = repository.join("files");
+    for entry in std::fs::read_dir(&store).context(|| format!("reading {}", store.display()))? {
+        let entry = entry.context(|| format!("reading {}", store.display()))?;
+        if installed.contains(&entry.file_name().to_string_lossy().into_owned()) {
+            std::fs::remove_file(entry.path())
+                .context(|| format!("removing {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Makes the repository of [`TEST_FIRMWARE`] at `out`, signed with this
@@ -4639,7 +4667,8 @@ fn boot_tests(
         let budget = case_budget(case, timeout);
         let run = || {
             let started = Instant::now();
-            let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, budget);
+            let roots = (root, live.as_deref());
+            let outcome = run_case(ctx, case, base, roots, &dir, (kvm, budget), None);
             (outcome, started.elapsed().as_secs_f32())
         };
         let (mut outcome, mut secs) = run();
@@ -4837,10 +4866,13 @@ fn run_case(
     base: &[u8],
     (root, live): (Option<&Path>, Option<&Path>),
     dir: &Path,
-    kvm: bool,
-    timeout: Duration,
+    (kvm, timeout): (bool, Duration),
+    replaying: Option<&replay::Replaying>,
 ) -> Result<(), String> {
-    let image = dir.join(format!("{}.img", case.name));
+    let image = replaying.map_or_else(
+        || dir.join(format!("{}.img", case.name)),
+        |replaying| replaying.image.clone(),
+    );
     let qmp = dir.join(format!("{}.qmp", case.name));
     let disks = make_disks(ctx, dir, case, base, root)?;
     let mut extra: Vec<String> = case.qemu.iter().map(ToString::to_string).collect();
@@ -5055,7 +5087,7 @@ fn run_case(
         gdb: false,
         qmp: Some(qmp.clone()),
         extra,
-        write_log: None,
+        write_log: replaying.and_then(|replaying| replaying.write_log.clone()),
         direct: None,
     };
     // The second boot's machine lacks what was the first boot's alone.
@@ -5141,7 +5173,11 @@ fn run_case(
     };
     // A second boot by the stick's Boot from first disk.
     let first_disk = case.disks.first().is_some_and(|disk| disk.fat == INSTALL_FIRST_DISK);
+    let prepared = replaying.is_some();
     let boot = |name: &str, cmdline: &str, script: Script, again: bool| -> Result<(), String> {
+        if prepared {
+            return run(&machine, name, script);
+        }
         let mut bytes = with_cmdline(base, cmdline)?;
         if again && first_disk {
             bytes = booting_first_disk(bytes)?;
@@ -5151,7 +5187,8 @@ fn run_case(
         append_own(case, &image, root, live)?;
         run(&machine, name, script)
     };
-    let mut result = boot(case.name, case.cmdline, case.script, false);
+    let script = replaying.and_then(|replaying| replaying.script).unwrap_or(case.script);
+    let mut result = boot(case.name, case.cmdline, script, false);
     if let (Ok(()), Some(second)) = (&result, &case.second) {
         let name = format!("{}-reboot", case.name);
         result = (second.before)(case, &disks)
@@ -5167,7 +5204,9 @@ fn run_case(
                 format!("{AFTER_THE_REBOOT}: {err} (serial log: {})", ctx.display(&log))
             });
     }
-    let _ = std::fs::remove_file(&image);
+    if !prepared {
+        let _ = std::fs::remove_file(&image);
+    }
     let _ = std::fs::remove_file(&peer_image);
     let _ = std::fs::remove_file(&cable_path);
     if result.is_ok() {
@@ -6092,7 +6131,8 @@ fn make_update_releases(disk: &Disk, path: &Path, updates: &Path) -> Result<(), 
         .arg(disk.kib.to_string());
     host_tool(&mut mkfs)?;
     let image = path.display().to_string();
-    for name in TEST_UPDATES.iter().map(|update| update.name).chain([TEST_FIRMWARE_REPO]) {
+    let names = TEST_UPDATES.iter().map(|update| update.name);
+    for name in names.chain([TEST_FIRMWARE_REPO, CURRENT_RELEASE]) {
         host_tool(
             std::process::Command::new("mcopy")
                 .args(["-s", "-i", &image])
@@ -6391,6 +6431,8 @@ pub struct Vm {
     peer: Option<Box<Vm>>,
     /// That machine, until [`Vm::boot_peer`] boots it.
     pending: Option<Box<Pending>>,
+    /// The write log of the machine's boot image, if it keeps one.
+    write_log: Option<PathBuf>,
 }
 
 /// A peer machine (a case's [`PEER`]) not yet booted.
@@ -6485,6 +6527,7 @@ impl Vm {
             kvm: machine.kvm,
             peer: None,
             pending: None,
+            write_log: machine.write_log.clone(),
         })
     }
 
@@ -6501,6 +6544,26 @@ impl Vm {
             Vm::spawn(pending.verbose, &pending.machine, self.dir(), &pending.name, self.timeout)?;
         self.peer = Some(Box::new(peer));
         Ok(())
+    }
+
+    /// Notes in the marks file beside the write log, as a line `name N`,
+    /// how many entries the log holds now, which `ob test replay` takes
+    /// for a point in the run. A `sync` in the guest before it makes the
+    /// count exact. A machine that keeps no write log notes nothing.
+    pub fn mark_write_log(&self, name: &str) -> Result<(), String> {
+        let Some(log) = &self.write_log else {
+            return Ok(());
+        };
+        let entries =
+            crate::writelog::Log::entries_at_superblock(log).map_err(|err| err.to_string())?;
+        let marks = replay::marks_file(log);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&marks)
+            .map_err(|err| format!("opening {}: {err}", marks.display()))?;
+        writeln!(file, "{name} {entries}")
+            .map_err(|err| format!("writing {}: {err}", marks.display()))
     }
 
     /// The machine beside this one, once [`Vm::boot_peer`] has booted it.
@@ -6548,6 +6611,15 @@ impl Vm {
 
     /// Waits until `needle` appears after the previous match.
     pub fn expect(&mut self, needle: &str) -> Result<(), String> {
+        self.expect_first(&[needle]).map(|_| ())
+    }
+
+    /// Waits until one of `needles` appears after the previous match, and
+    /// gives the place in `needles` of the one that comes first in the
+    /// log: for a start that may take either of two ways.
+    pub fn expect_first(&mut self, needles: &[&str]) -> Result<usize, String> {
+        let wanted = needles.iter().map(|needle| format!("\"{needle}\"")).collect::<Vec<_>>();
+        let wanted = wanted.join(" or ");
         // How much QEMU had printed at the last look. The log is cleaned
         // and searched again only once there is more: cleaning all of a
         // Radix boot's log every 50 ms took 1 to 5 ms of a host CPU each
@@ -6560,9 +6632,13 @@ impl Vm {
             if looked != Some(printed) {
                 looked = Some(printed);
                 let log = self.log();
-                if let Some(at) = log.get(self.cursor..).and_then(|rest| rest.find(needle)) {
-                    self.cursor += at + needle.len();
-                    return Ok(());
+                let found = log.get(self.cursor..).and_then(|rest| {
+                    let at = |(place, needle): (usize, &&str)| Some((rest.find(needle)?, place));
+                    needles.iter().enumerate().filter_map(at).min()
+                });
+                if let Some((at, place)) = found {
+                    self.cursor += at + needles[place].len();
+                    return Ok(place);
                 }
             }
             if let Some(status) = self.exited() {
@@ -6572,15 +6648,15 @@ impl Vm {
                     continue;
                 }
                 return Err(format!(
-                    "QEMU exited ({status}) before printing \"{needle}\"{}",
+                    "QEMU exited ({status}) before printing {wanted}{}",
                     self.qemu_stderr()
                 ));
             }
             if Instant::now() >= self.deadline {
                 return Err(if late {
-                    format!("no \"{needle}\": {}", self.ran_out())
+                    format!("no {wanted}: {}", self.ran_out())
                 } else {
-                    format!("no \"{needle}\" within {} s", self.timeout.as_secs())
+                    format!("no {wanted} within {} s", self.timeout.as_secs())
                 });
             }
             std::thread::sleep(Duration::from_millis(50));

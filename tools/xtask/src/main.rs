@@ -60,7 +60,6 @@ mod upstream;
 mod userspace;
 mod vex;
 mod vt;
-#[allow(dead_code)] // Read by `ob test replay`.
 mod writelog;
 
 use std::fmt;
@@ -288,6 +287,8 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                  [--retry] [--debug | --release]
        ./ob test boot --affected <commit> [--shard <part>/<parts> | --list | --plan] [--retry]
        ./ob test boot --case <name>... --image-only
+       ./ob test replay [--case <name>] [--points all|<n>] [--part <k>/<m>] [--seed <n>]
+                 [--log <path> [--point <n>]] [--timeout <seconds>]
        ./ob test --list
 
 Runs host unit tests, then the boot tests: QEMU boots a test image under
@@ -316,7 +317,14 @@ machines they need. `boot --case smbd
 --image-only` boots nothing: it writes the case's image, its command line in
 place, to out/test/smbd.img, for CI's Windows job to boot. --list names every
 boot test; those that Phases 11 to 13 add from now on are listed only there
-(ob(1) has them all). The boot tests are:
+(ob(1) has them all). `replay` records the update-power-replay boot test (or
+update-power-replay-bios, with --case) with its boot disk behind QEMU's write
+log, rebuilds the disk as a power cut at each point of the log would have
+left it, and boots each: slot A or slot B must start whole (ADR 0536). It
+takes --points all, or a number of cuts (16 without it), --part 3/8 for the
+third of eight shares of them, and --seed for the draw; out/test/replay
+keeps what a failed cut needs, and --log with --point boots that cut again
+from the kept log. The boot tests are:
   uefi-usb, bios-usb, uefi-cdrom, bios-cdrom   normal boots (bios-usb with the
                    lock checker on, uefi-cdrom in xAPIC mode, bios-cdrom
                    without KASLR and PCIDs)

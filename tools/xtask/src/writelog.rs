@@ -182,11 +182,6 @@ impl Log {
         Ok(read_superblock(&file, path)?.entries)
     }
 
-    /// The entries, in the order the disk completed them.
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
-    }
-
     /// The indices of the flushes among the entries in `range`.
     pub fn flushes(&self, range: Range<usize>) -> Vec<usize> {
         let end = range.end.min(self.entries.len());
@@ -334,8 +329,8 @@ impl Cut {
     /// What kind of cut it is, for a line of output.
     pub fn kind(&self) -> &'static str {
         match self {
-            Cut::AtFlush(_) => "at a flush",
-            Cut::Within { .. } => "between two flushes",
+            Cut::AtFlush(_) => "flush",
+            Cut::Within { .. } => "part of a flush interval",
         }
     }
 }
@@ -555,14 +550,14 @@ mod tests {
         log.entry(0, 0, FLAG_FUA | FLAG_FLUSH, &[]);
         let count = log.entries;
         let log = Log::open(&log.save("kinds.log", count)).unwrap();
-        let kinds: Vec<Kind> = log.entries().iter().map(|entry| entry.kind).collect();
+        let kinds: Vec<Kind> = log.entries.iter().map(|entry| entry.kind).collect();
         assert_eq!(kinds, [Kind::Write, Kind::Write, Kind::Discard, Kind::Flush, Kind::Flush]);
-        let first = log.entries()[0];
+        let first = log.entries[0];
         assert_eq!((first.sector, first.sectors, first.data), (8, 2, 2 * SECTOR as u64));
         // The next entry's description follows the two sectors of data.
-        assert_eq!(log.entries()[1].data, 5 * SECTOR as u64);
+        assert_eq!(log.entries[1].data, 5 * SECTOR as u64);
         // A discard has no data, so the entry after it is next door.
-        assert_eq!(log.entries()[3].data, log.entries()[2].data + SECTOR as u64);
+        assert_eq!(log.entries[3].data, log.entries[2].data + SECTOR as u64);
     }
 
     #[test]
@@ -572,7 +567,7 @@ mod tests {
         log.flush();
         log.write(1, 2, 1);
         let path = log.save("stale.log", 2);
-        assert_eq!(Log::open(&path).unwrap().entries().len(), 2);
+        assert_eq!(Log::open(&path).unwrap().entries.len(), 2);
         assert_eq!(Log::entries_at_superblock(&path).unwrap(), 2);
     }
 
@@ -604,8 +599,8 @@ mod tests {
         log.entry(5, 1, FLAG_FUA, &[1; SECTOR]);
         log.entry(0, 1, FLAG_MARK, &[0; SECTOR]);
         let log = Log::open(&log.save("marks.log", 2)).unwrap();
-        assert_eq!(log.entries()[0].kind, Kind::Write);
-        assert_eq!(log.entries()[1].kind, Kind::Mark);
+        assert_eq!(log.entries[0].kind, Kind::Write);
+        assert_eq!(log.entries[1].kind, Kind::Mark);
     }
 
     #[test]
@@ -652,7 +647,7 @@ mod tests {
     #[test]
     fn flushes_are_found_in_a_range() {
         let log = sample_log("flushes.log");
-        assert_eq!(log.flushes(0..log.entries().len()), [1, 5, 7]);
+        assert_eq!(log.flushes(0..log.entries.len()), [1, 5, 7]);
         assert_eq!(log.flushes(2..7), [5]);
         assert_eq!(log.flushes(2..100), [5, 7]);
     }
@@ -763,7 +758,7 @@ mod tests {
         }
         let count = log.entries;
         let log = Log::open(&log.save("sample.log", count)).unwrap();
-        let end = log.entries().len();
+        let end = log.entries.len();
         let all = cuts(&log, 0..end, Points::All, 11);
         for seed in 0..20 {
             let sample = cuts(&log, 0..end, Points::Sample(8), seed);
