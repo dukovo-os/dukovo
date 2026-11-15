@@ -67,6 +67,14 @@ when the page is closed, because a long command must not die with a tab.
   address, or import that is not relative. admind serves each file with
   the manifest's hash as its `ETag` and answers 304 when the browser
   holds it, so a reload fetches only what changed.
+- **The pages cost an idle machine nothing.** admind checks each file
+  against the manifest when it starts, as ADR 0514 says, but keeps none
+  of them: it reads a file from the disk each time it sends it, checks
+  it against the manifest again, and serves nothing that has changed
+  since it started. A 304 reads nothing. Every page a later PR adds is
+  bytes on the disk, not in admind's memory, which the idle machine's
+  budget of 100 MiB (ADR 0427) counts. This supersedes the words of ADR
+  0514 that admind keeps the files in memory.
 - **A page that goes stops waiting, and its calls go on.** A page's
   signal ends its timers and listeners, and the wait for its calls, but
   not the calls: admind speaks HTTP/1.1, where a fetch the browser

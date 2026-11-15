@@ -747,7 +747,10 @@ _/system/settings/admin.toml_
 
 _/system/resources/admin_
 	The console's pages. Its _manifest.txt_ lists the SHA-256 of each
-	file, and admind serves only the files that match. A file's *ETag*
+	file, and admind serves only the files that match. It checks each
+	when it starts and reads it again, and checks it again, each time it
+	sends it, keeping none in memory: a file changed since admind started
+	is not served, and the log says so. A file's *ETag*
 	is its hash from the manifest, in quotes, and a request whose
 	*If-None-Match* names it, or is a single star, is answered 304 with
 	the *ETag* and *Cache-Control: no-cache* and no body, so that a reload

@@ -954,17 +954,28 @@ fn tags_held(headers: &HeaderMap) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join(", "))
 }
 
-/// The console's file for the address asked for, or 304 with no body when
-/// the browser holds it already: the file's `ETag` is among the tags it
-/// sent. A 304 has the file's headers, which [`render`] gives it.
+/// The console's file for the address asked for, read from the disk, or
+/// 304 with no body when the browser holds it already: the file's `ETag`
+/// is among the tags it sent. A 304 has the file's headers, which
+/// [`render`] gives it. A file that no longer reads as the manifest lists
+/// it is not served, and the log says why.
 fn file(cx: &Context<'_>) -> Outcome {
-    let Some(file) = cx.shared.files.get(&cx.path) else {
-        return Err(Failure::new(Kind::NoRoute, "the console has no such page"));
+    let no_page = || Failure::new(Kind::NoRoute, "the console has no such page");
+    let Some(listed) = cx.shared.files.get(&cx.path) else {
+        return Err(no_page());
     };
-    let held = cx.if_none_match.as_deref().is_some_and(|tags| file.matches(tags));
+    let held = cx.if_none_match.as_deref().is_some_and(|tags| listed.matches(tags));
+    let file = if held {
+        listed.held()
+    } else {
+        cx.shared.files.load(listed).map_err(|why| {
+            log(4, &format!("the console's files: {why}"));
+            no_page()
+        })?
+    };
     Ok(Reply {
         status: if held { StatusCode::NOT_MODIFIED } else { StatusCode::OK },
-        content: Content::File(file.clone()),
+        content: Content::File(file),
         cookies: Vec::new(),
         retry_after: None,
     })

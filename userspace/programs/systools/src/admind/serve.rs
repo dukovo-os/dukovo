@@ -570,11 +570,11 @@ pub fn run() -> Result<i32, Fail> {
     // A console with no files still answers its API, and says why the
     // pages are missing.
     let files = Files::read(Path::new(files::FOLDER), &mut said).unwrap_or_else(|why| {
-        log(3, &why);
+        log(3, &format!("the console's files: {why}"));
         Files::default()
     });
     for line in said {
-        log(4, &line);
+        log(4, &format!("the console's files: {line}"));
     }
     log(6, &format!("serves {} files of the console", files.len()));
     let identity = Identity::read(&certificate.names);

@@ -240,9 +240,10 @@ own record.
   `last` and a person's next "Last sign-in" say them (ADR 0254).
 - **The console's files are checked when admind starts.** The build
   installs them in `/system/resources/admin` with a `manifest.txt` of
-  each file's SHA-256, and admind keeps in memory the files that match
-  it and serves no other, so that a file changed on the disk does not
-  become a page of the console. They are plain modules and style sheets
+  each file's SHA-256, and admind serves only the files that match it,
+  so that a file changed on the disk does not become a page of the
+  console. (ADR 0517: admind reads each file when it sends it, and
+  checks it again then, rather than keeping the files in memory.) They are plain modules and style sheets
   with no framework, no build step and no file from another site.
 - **The machine's own sign-in screen says where to open the console.**
   admind writes its address and the certificate's fingerprint to
