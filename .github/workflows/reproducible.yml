@@ -181,8 +181,13 @@ jobs:
           sudo install -d -o builder -g builder /srv/repro
           sudo chown -R builder:builder /srv/dukovo-second
           # The user's home, which Cargo and rustup keep their files in, is
-          # its own: the first build's is the runner's.
-          sudo -u builder -H env "PATH=$HOME/.cargo/bin:$PATH" \
+          # its own: the first build's is the runner's, which other users
+          # cannot enter. The runner's rustup installs itself for the user
+          # when it is named rustup-init.
+          sudo install -m 0755 "$(command -v rustup)" /usr/local/bin/rustup-init
+          sudo -u builder -H rustup-init -y --no-modify-path --profile minimal \
+            --default-toolchain none
+          sudo -u builder -H env "PATH=/home/builder/.cargo/bin:$PATH" \
             bash -c 'cd /srv/dukovo-second && rustup toolchain install'
 
       - name: ./ob release build
@@ -192,7 +197,7 @@ jobs:
           # order the jobs of a build finish in is not the same.
           jobs=$(( $(nproc) > 1 ? $(nproc) - 1 : 1 ))
           sudo -u builder -H env \
-              "PATH=$HOME/.cargo/bin:$PATH" TZ=Pacific/Auckland LC_ALL=C.UTF-8 \
+              "PATH=/home/builder/.cargo/bin:$PATH" TZ=Pacific/Auckland LC_ALL=C.UTF-8 \
               "CARGO_BUILD_JOBS=$jobs" \
               bash -c 'umask 0002 && cd /srv/dukovo-second &&
                 exec taskset -c "0-$(($1 - 1))" ./ob release build --out /srv/repro/out' \
