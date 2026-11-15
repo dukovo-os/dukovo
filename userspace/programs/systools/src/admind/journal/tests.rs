@@ -34,7 +34,12 @@ impl Machine {
     /// rows it made.
     fn round(&self, now: i64, who: &[(&str, &str)]) -> Vec<Change> {
         let scan = self.journal.scan(&self.store, now).unwrap();
-        let who = who.iter().map(|(path, who)| (path.to_string(), who.to_string())).collect();
+        let who = who
+            .iter()
+            .map(|(path, who)| {
+                (path.to_string(), Editor { name: who.to_string(), in_terminal: false })
+            })
+            .collect();
         let before = self.store.changes(0, 1000).unwrap().len();
         self.journal.record(&self.store, &scan, &who, now).unwrap();
         let rows = self.store.changes(0, 1000).unwrap();
@@ -170,6 +175,35 @@ fn a_change_no_one_is_found_for_is_outside_the_console() {
     put(&path, "b\n", 1_010);
     let rows = machine.round(1_030, &[]);
     assert_eq!(rows[0].who, "outside the console");
+}
+
+#[test]
+fn a_change_in_an_administrators_terminal_has_a_row_of_its_own_that_says_so() {
+    let machine = Machine::new("terminal");
+    let (a, b) = (machine.path("a"), machine.path("b"));
+    for path in [&a, &b] {
+        put(path, "old\n", 100);
+    }
+    machine.round(1_000, &[]);
+    for path in [&a, &b] {
+        put(path, "new\n", 1_010);
+    }
+    let scan = machine.journal.scan(&machine.store, 1_030).unwrap();
+    let elevated = Editor { name: "alice".into(), in_terminal: false };
+    let mut who = BTreeMap::from([(a.clone(), elevated)]);
+    let rooted = [Rooted { account: "alice".into(), started: 1_005, ended: None }];
+    audit::add_terminal_editors(&mut who, &rooted, &scan.times(1_030));
+    machine.journal.record(&machine.store, &scan, &who, 1_030).unwrap();
+    let rows = machine.store.changes(0, 10).unwrap();
+    let mut found: Vec<(&str, Option<&str>, &str)> = rows[..2]
+        .iter()
+        .map(|row| (row.who.as_str(), row.note.as_deref(), row.files[0].path.as_str()))
+        .collect();
+    found.sort();
+    assert_eq!(
+        found,
+        [("alice", None, a.as_str()), ("alice", Some(audit::IN_TERMINAL), b.as_str())]
+    );
 }
 
 #[test]
@@ -348,6 +382,66 @@ fn a_file_two_changes_are_under_way_on_is_left_alone_until_both_have_ended() {
     assert!(machine.round(1_030, &[]).is_empty());
     drop(two);
     assert_eq!(machine.round(1_060, &[]).len(), 1);
+}
+
+#[test]
+fn a_row_that_ends_is_announced_once_with_its_number_how_and_time() {
+    let machine = Machine::new("news");
+    let path = machine.path("a.toml");
+    put(&path, "a\n", 100);
+    machine.round(1_000, &[]);
+    assert_eq!(machine.journal.news.since(0).1, []);
+    // A console change.
+    let begun = machine.journal.begin(Some(&machine.store), std::slice::from_ref(&path), 1_010);
+    put(&path, "b\n", 1_012);
+    let ended = Ended {
+        who: "alice",
+        how: "console",
+        action: "x.y",
+        argv: &[],
+        status: Some(0),
+        task: None,
+        note: None,
+    };
+    let id = begun.end(Some(&machine.store), &ended, 1_020).row.unwrap();
+    // A hand edit, in the next round.
+    put(&path, "c\n", 1_030);
+    let hand = machine.round(1_040, &[(&path, "chase")]);
+    assert_eq!(hand.len(), 1);
+    let (_, told) = machine.journal.news.since(0);
+    assert_eq!(
+        told,
+        [
+            Row { id, how: "console".into(), at: 1_020 },
+            Row { id: hand[0].id, how: "by hand".into(), at: 1_040 },
+        ]
+    );
+    // A round with nothing to record announces nothing.
+    machine.round(1_070, &[]);
+    assert_eq!(machine.journal.news.since(0).1.len(), 2);
+}
+
+#[test]
+fn a_row_by_token_is_announced_as_the_token_made_it_and_a_row_not_kept_is_not() {
+    let machine = Machine::new("news-token");
+    let path = machine.path("a.toml");
+    put(&path, "a\n", 100);
+    let ended = |how| Ended {
+        who: "alice",
+        how,
+        action: "x.y",
+        argv: &[],
+        status: Some(1),
+        task: Some(3),
+        note: None,
+    };
+    let begun = machine.journal.begin(Some(&machine.store), std::slice::from_ref(&path), 1);
+    let id = begun.end(Some(&machine.store), &ended("token ci"), 2).row.unwrap();
+    assert_eq!(machine.journal.news.since(0).1, [Row { id, how: "token ci".into(), at: 2 }]);
+    // A change cancelled has no row, and none with no store.
+    machine.journal.begin(Some(&machine.store), std::slice::from_ref(&path), 3).cancel();
+    machine.journal.begin(None, std::slice::from_ref(&path), 4).end(None, &ended("console"), 5);
+    assert_eq!(machine.journal.news.since(0).1.len(), 1);
 }
 
 #[test]

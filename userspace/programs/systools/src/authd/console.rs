@@ -157,6 +157,9 @@ pub(super) struct State {
     apps: HashMap<u32, NewApp>,
     /// The console sessions signed in, by their IDs.
     live: HashMap<String, Live>,
+    /// The shells started on the console's terminals, by their first
+    /// processes (ADR 0517).
+    shells: HashMap<i32, terminal::Shell>,
 }
 
 /// A sign-in under way: whose, from where, for which admind, and how far.
@@ -237,6 +240,27 @@ impl State {
     /// Forgets the console session whose worker, `process`, ended.
     pub(super) fn worker_ended(&mut self, process: i32) {
         self.live.retain(|_, live| live.worker != process);
+    }
+
+    /// Takes in that the shell `process` of a console's terminal ended,
+    /// if it was one. An administrator's shell that was hung up stays
+    /// until what is left of its process group is killed.
+    pub(super) fn shell_ended(&mut self, process: i32) {
+        match self.shells.get_mut(&process) {
+            Some(shell) if shell.hung_up.is_some() && !shell.killed => shell.reaped = true,
+            Some(_) => {
+                self.shells.remove(&process);
+            }
+            None => {}
+        }
+    }
+
+    /// When authd must next look at the administrators' shells: in a
+    /// second while one runs, so that one ends within a second of its
+    /// session's unlock.
+    pub(super) fn next_check(&self, now: Instant) -> Option<Instant> {
+        let running = self.shells.values().any(|shell| shell.admin && !shell.killed);
+        running.then(|| now + terminal::CHECK_EVERY)
     }
 
     /// The account and source whose wrong tries hold `asked` back, as
@@ -998,6 +1022,7 @@ impl Authd {
             Console::Lock { session } => match self.console.live.get_mut(session) {
                 Some(live) => {
                     live.unlocked = None;
+                    self.end_admin_shells(now);
                     (Answer::Done(String::new()), now)
                 }
                 None => no(NO_SESSION, now),
@@ -1006,6 +1031,7 @@ impl Authd {
                 Some(live) => {
                     audit!("{}'s web console session {} ended", live.name, short(session));
                     signal_command(live.worker, libc::SIGHUP);
+                    self.end_admin_shells(now);
                     (Answer::Done(String::new()), now)
                 }
                 None => no(NO_SESSION, now),
@@ -1015,6 +1041,9 @@ impl Authd {
             }
             Console::Token { token, from } => self.console_token(files, token, from, now),
             Console::TokenStart { token } => self.console_token_start(i, files, token, now),
+            Console::Terminal { session, admin, term, language } => {
+                self.console_terminal(i, files, session, *admin, term, language, now)
+            }
             _ => no("not a request of admind's", now),
         }
     }
@@ -2095,6 +2124,8 @@ impl Authd {
         }
     }
 }
+
+mod terminal;
 
 #[cfg(test)]
 mod tests;

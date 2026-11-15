@@ -20,7 +20,10 @@
 //!
 //! [`Link`] is admind's end: each call waits at most [`CALL_TIME`] for its
 //! answer, and [`Link::closed`] says when the worker has gone, so that
-//! admind ends the session. [`serve`] is the worker's. When a session
+//! admind ends the session. A task of the link's own writes the calls, a
+//! whole frame at a time: a call is given up when its browser goes or its
+//! time is up, and one given up while its frame was half written would
+//! leave the worker reading the rest as the next frame. [`serve`] is the worker's. When a session
 //! seems stuck, look in the log for the lines that begin `admind: the
 //! worker` and `admind: the link`.
 
@@ -38,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::unix::pipe::{Receiver, Sender};
-use tokio::sync::{Mutex, oneshot, watch};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::errors::Kind;
@@ -238,7 +241,7 @@ pub enum CallError {
     Gone,
 }
 
-/// What admind's end of a link and its reading task share.
+/// What admind's end of a link and its reading and writing tasks share.
 struct State {
     /// The calls waiting for their answers.
     waiting: RefCell<HashMap<u64, oneshot::Sender<Outcome>>>,
@@ -246,11 +249,23 @@ struct State {
     closed: watch::Sender<bool>,
 }
 
+impl State {
+    /// Has each waiting call end as gone, and says the worker's end has
+    /// gone.
+    fn close(&self) {
+        // Dropping the senders has each waiting call end as gone.
+        self.waiting.borrow_mut().clear();
+        self.closed.send_replace(true);
+    }
+}
+
 struct Inner {
-    writer: Mutex<Sender>,
+    /// The calls' frames, for the writing task.
+    calls: mpsc::Sender<Vec<u8>>,
     next: Cell<u64>,
     state: Rc<State>,
     reader: JoinHandle<()>,
+    writer: JoinHandle<()>,
 }
 
 impl Drop for Inner {
@@ -258,6 +273,7 @@ impl Drop for Inner {
     /// worker.
     fn drop(&mut self) {
         self.reader.abort();
+        self.writer.abort();
     }
 }
 
@@ -294,8 +310,10 @@ impl Link {
         let (reader, writer) = ours.open()?;
         let (closed, _) = watch::channel(false);
         let state = Rc::new(State { waiting: RefCell::new(HashMap::new()), closed });
+        let (calls, frames) = mpsc::channel(CALLS_MAX);
         let reader = tokio::task::spawn_local(read_replies(reader, Rc::clone(&state)));
-        Ok(Link(Rc::new(Inner { writer: Mutex::new(writer), next: Cell::new(1), state, reader })))
+        let writer = tokio::task::spawn_local(write_calls(writer, frames, Rc::clone(&state)));
+        Ok(Link(Rc::new(Inner { calls, next: Cell::new(1), state, reader, writer })))
     }
 
     /// Has the worker run `method` with `params`, and waits [`CALL_TIME`]
@@ -314,24 +332,23 @@ impl Link {
         params: Value,
         limit: Duration,
     ) -> Result<Value, CallError> {
+        if self.is_closed() {
+            return Err(CallError::Gone);
+        }
         let id = self.0.next.get();
         self.0.next.set(id + 1);
+        let call = Call { id, method: method.into(), params };
+        let bytes = serde_json::to_vec(&call).map_err(|_| CallError::Gone)?;
+        if bytes.len() > FRAME_MAX {
+            let detail = format!("a request of {} bytes is too big for the worker", bytes.len());
+            return Err(CallError::Worker(Fault::new(Kind::TooBig, detail)));
+        }
         let (answer, reply) = oneshot::channel();
         self.0.state.waiting.borrow_mut().insert(id, answer);
         let _waiting = Waiting { id, state: &self.0.state };
+        // Handing a frame over is all or nothing, however the call ends.
         let sent = async {
-            let call = Call { id, method: method.into(), params };
-            let bytes = serde_json::to_vec(&call).map_err(|_| CallError::Gone)?;
-            let mut writer = self.0.writer.lock().await;
-            match write_frame(&mut *writer, &bytes).await {
-                Ok(()) => {}
-                Err(FrameError::TooBig(length)) => {
-                    let detail = format!("a request of {length} bytes is too big for the worker");
-                    return Err(CallError::Worker(Fault::new(Kind::TooBig, detail)));
-                }
-                Err(_) => return Err(CallError::Gone),
-            }
-            drop(writer);
+            self.0.calls.send(bytes).await.map_err(|_| CallError::Gone)?;
             reply.await.map_err(|_| CallError::Gone)
         };
         match tokio::time::timeout(limit, sent).await {
@@ -379,9 +396,19 @@ async fn read_replies(mut reader: Receiver, state: Rc<State>) {
             let _ = waiter.send(reply.outcome);
         }
     }
-    // Dropping the senders has each waiting call end as gone.
-    state.waiting.borrow_mut().clear();
-    state.closed.send_replace(true);
+    state.close();
+}
+
+/// Writes the calls' frames to the worker, each whole and in the order
+/// they came, until the link is dropped or the pipe fails.
+async fn write_calls(mut writer: Sender, mut frames: mpsc::Receiver<Vec<u8>>, state: Rc<State>) {
+    while let Some(frame) = frames.recv().await {
+        if let Err(err) = write_frame(&mut writer, &frame).await {
+            log(4, &format!("the link to a worker broke: {err}"));
+            state.close();
+            return;
+        }
+    }
 }
 
 /// Why the worker's end of a link ended.
@@ -570,6 +597,52 @@ mod tests {
             }
             assert_eq!(first.await.unwrap().unwrap(), json!({"of": "one"}));
             assert_eq!(second.await.unwrap().unwrap(), json!({"of": "two"}));
+        });
+    }
+
+    #[test]
+    fn a_call_given_up_while_its_frame_is_written_leaves_no_half_frame() {
+        run(async {
+            let (link, mut calls, _replies) = linked();
+            // More than a pipe holds, so that writing it waits for the
+            // worker to read, and the call's time is up before it does.
+            let big = "x".repeat(1 << 20);
+            let given_up =
+                link.call_within("big", json!({ "text": big }), Duration::from_millis(5)).await;
+            assert_eq!(given_up, Err(CallError::Silent));
+            let next = {
+                let link = link.clone();
+                tokio::task::spawn_local(async move { link.call("next", Value::Null).await })
+            };
+            let first = read_frame(&mut calls).await.unwrap().unwrap();
+            let first = serde_json::from_slice::<Call>(&first).unwrap();
+            assert_eq!(
+                (first.method.as_str(), first.params["text"].as_str().map(str::len)),
+                ("big", Some(1 << 20))
+            );
+            let second = read_frame(&mut calls).await.unwrap().unwrap();
+            assert_eq!(serde_json::from_slice::<Call>(&second).unwrap().method, "next");
+            next.abort();
+        });
+    }
+
+    #[test]
+    fn a_call_too_big_for_a_frame_is_refused_and_the_link_goes_on() {
+        run(async {
+            let (link, mut calls, _replies) = linked();
+            let refused = link.call("big", json!({ "text": "x".repeat(FRAME_MAX) })).await;
+            assert!(
+                matches!(&refused, Err(CallError::Worker(fault)) if fault.id == Kind::TooBig.id()),
+                "{refused:?}"
+            );
+            assert!(link.0.state.waiting.borrow().is_empty());
+            let next = {
+                let link = link.clone();
+                tokio::task::spawn_local(async move { link.call("next", Value::Null).await })
+            };
+            let frame = read_frame(&mut calls).await.unwrap().unwrap();
+            assert_eq!(serde_json::from_slice::<Call>(&frame).unwrap().method, "next");
+            next.abort();
         });
     }
 

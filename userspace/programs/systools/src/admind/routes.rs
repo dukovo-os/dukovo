@@ -33,7 +33,8 @@
 //!    and a token needs the scope that reads the action's area.
 //!
 //! Every answer carries [`guard::headers`] and no `Server` header; an answer
-//! of the API is `no-store`, a file `no-cache`. [`sign_in`] holds the
+//! of the API is `no-store`, a file `no-cache` with its `ETag`, and a
+//! file the browser holds already is 304. [`sign_in`] holds the
 //! routes that sign a browser in, [`session`] those of a signed-in session,
 //! [`events`] a tab's stream, and [`account`] the person's own second steps,
 //! tokens and preferences, which their worker asks authd or their files
@@ -52,7 +53,9 @@ mod lab;
 mod session;
 mod sign_in;
 mod tasks;
+mod terminals;
 
+use std::cell::RefCell;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::ops::Deref;
@@ -66,7 +69,8 @@ use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use http::request::Parts;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::combinators::UnsyncBoxBody;
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Empty, Full, Limited};
+use hyper::upgrade::OnUpgrade;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -77,6 +81,7 @@ use super::caller::{self, TokenCall};
 use super::errors::{self, Attempt, Failure, Kind};
 use super::files::File;
 use super::guard::{self, SESSION_COOKIE};
+use super::limits::Held;
 use super::link::Link;
 use super::log;
 use super::reach;
@@ -131,6 +136,9 @@ enum Content {
     Json(Value),
     File(File),
     Events(events::Events),
+    /// The Terminal's socket, with its `Sec-WebSocket-Accept`: the
+    /// connection is handed over once the answer, 101, is sent.
+    Socket(String),
 }
 
 /// An answer, before its headers.
@@ -161,6 +169,17 @@ impl Reply {
             content: Content::Json(failure.body()),
             cookies: Vec::new(),
             retry_after: failure.retry_after,
+        }
+    }
+
+    /// The 101 that hands the connection to the Terminal's socket, whose
+    /// accept key is `accept`.
+    fn socket(accept: String) -> Reply {
+        Reply {
+            status: StatusCode::SWITCHING_PROTOCOLS,
+            content: Content::Socket(accept),
+            cookies: Vec::new(),
+            retry_after: None,
         }
     }
 
@@ -248,6 +267,14 @@ enum Route {
     Tasks,
     Task,
     StopTask,
+    Terminals,
+    TerminalAdd,
+    TerminalPanes,
+    TerminalLayout,
+    TerminalRename,
+    TerminalEnd,
+    PaneEnd,
+    TerminalSocket,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -334,6 +361,14 @@ const TABLE: &[Entry] = &[
     entry(Verb::Get, "/api/1/tasks", Route::Tasks, Access::Api),
     entry(Verb::Get, "/api/1/tasks/{id}", Route::Task, Access::Api),
     entry(Verb::Post, "/api/1/tasks/{id}/stop", Route::StopTask, Access::Api),
+    entry(Verb::Get, "/api/1/terminals", Route::Terminals, Access::Full),
+    entry(Verb::Post, "/api/1/terminals", Route::TerminalAdd, Access::Full),
+    entry(Verb::Post, "/api/1/terminals/{id}/panes", Route::TerminalPanes, Access::Full),
+    entry(Verb::Post, "/api/1/terminals/{id}/layout", Route::TerminalLayout, Access::Full),
+    entry(Verb::Post, "/api/1/terminals/{id}/rename", Route::TerminalRename, Access::Full),
+    entry(Verb::Post, "/api/1/terminals/{id}/end", Route::TerminalEnd, Access::Full),
+    entry(Verb::Post, "/api/1/terminals/panes/{pane}/end", Route::PaneEnd, Access::Full),
+    entry(Verb::Get, "/api/1/terminal", Route::TerminalSocket, Access::Full),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
@@ -466,6 +501,15 @@ struct Context<'a> {
     /// The trust cookie, if the browser sent one.
     trust: Option<String>,
     user_agent: String,
+    /// The request's headers.
+    headers: &'a HeaderMap,
+    /// What hands the connection over, for the Terminal's socket.
+    upgrade: RefCell<Option<OnUpgrade>>,
+    /// The connection's place, which the socket takes; none in the tests.
+    held: Option<Held>,
+    /// What the browser's `If-None-Match` lines say, as one list, if it
+    /// sent any: the tags of the file it holds.
+    if_none_match: Option<String>,
 }
 
 impl Context<'_> {
@@ -544,6 +588,23 @@ fn ended() -> Failure {
     Failure::new(Kind::SessionEnded, "this browser has no session, or it has ended")
 }
 
+/// The failure for the session of `cookie`, which is no more, saying why
+/// when admind remembers: a tab that was not listening when it ended, as
+/// one whose event stream was reconnecting, still says that you signed
+/// out. The words follow the page's for the event stream's `session`.
+fn ended_for(shared: &Shared, cookie: Option<&str>) -> Failure {
+    let why = cookie.and_then(|cookie| shared.endings.borrow().reason_of_cookie(cookie));
+    let detail = match why {
+        Some("signed-out") => "you signed out",
+        Some("expired") => "the session reached its time limit",
+        Some("idle") => "no console tab was open for a while",
+        Some("restarted") => "the console restarted",
+        Some("worker") => "the process that works for your session stopped",
+        _ => return ended(),
+    };
+    Failure::new(Kind::SessionEnded, detail)
+}
+
 /// The session of `cookie`, as a request sees it; its last use is now.
 fn live(shared: &Shared, cookie: &str) -> Option<Live> {
     shared.with_session(cookie, |session| {
@@ -576,7 +637,9 @@ fn single<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Option<&'a str> {
     value.to_str().ok()
 }
 
-/// Answers `request` from `peer`.
+/// Answers `request` from `peer`, on no connection of the server's: the
+/// tests and the fuzz targets.
+#[cfg(any(test, feature = "fuzz"))]
 pub async fn handle<B>(
     shared: Rc<Shared>,
     peer: IpAddr,
@@ -586,13 +649,29 @@ where
     B: http_body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    let (head, body) = request.into_parts();
-    let reply = match answer(&shared, peer, &head, body).await {
+    handle_on(shared, peer, None, request).await
+}
+
+/// Answers `request` from `peer`, on the connection whose place is
+/// `held`.
+pub async fn handle_on<B>(
+    shared: Rc<Shared>,
+    peer: IpAddr,
+    held: Option<Held>,
+    request: Request<B>,
+) -> Result<Response<Body>, Infallible>
+where
+    B: http_body::Body<Data = Bytes>,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let (mut head, body) = request.into_parts();
+    let upgrade = head.extensions.remove::<OnUpgrade>();
+    let reply = match answer(&shared, peer, &head, body, (upgrade, held)).await {
         Ok(reply) => reply,
         Err(failure) => {
             let said = [Kind::ForeignRequest, Kind::WrongHost, Kind::Wait, Kind::TokenRefused];
             if said.contains(&failure.kind) {
-                shared.refused_request(peer, &format!("{}: {}", failure.kind.id(), failure.detail));
+                shared.refused_request(peer, failure.kind.id(), &failure.detail);
             }
             let reply = Reply::failure(&failure);
             // A browser told its session has ended forgets its cookie, if
@@ -610,8 +689,15 @@ where
     Ok(render(&shared, reply))
 }
 
-/// What a request is answered with, or why it is not.
-async fn answer<B>(shared: &Rc<Shared>, peer: IpAddr, head: &Parts, body: B) -> Outcome
+/// What a request is answered with, or why it is not; `handover` is what
+/// the Terminal's socket takes the connection with.
+async fn answer<B>(
+    shared: &Rc<Shared>,
+    peer: IpAddr,
+    head: &Parts,
+    body: B,
+    handover: (Option<OnUpgrade>, Option<Held>),
+) -> Outcome
 where
     B: http_body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -635,7 +721,15 @@ where
         None => None,
     };
     let live = cookie.and_then(|cookie| live(shared, cookie));
-    check(shared, peer, head, access, live.as_ref(), token.is_some(), &origin)?;
+    check(shared, peer, head, access, live.as_ref(), token.is_some(), &origin).map_err(
+        |failure| {
+            if matches!(failure.kind, Kind::SessionEnded) {
+                ended_for(shared, cookie)
+            } else {
+                failure
+            }
+        },
+    )?;
     let signed_in = matches!(access, Access::Limited | Access::Full | Access::Api);
     let body = if verb == Verb::Post {
         read_body(&head.headers, body, signed_in).await?
@@ -657,6 +751,10 @@ where
         body,
         trust: cookie_of(&head.headers, guard::TRUST_COOKIE).map(str::to_string),
         user_agent: single(&head.headers, &header::USER_AGENT).unwrap_or_default().to_string(),
+        if_none_match: tags_held(&head.headers),
+        headers: &head.headers,
+        upgrade: RefCell::new(handover.0),
+        held: handover.1,
     };
     match target {
         Target::Route(entry, _) => dispatch(&cx, entry.route, live, token).await,
@@ -788,6 +886,14 @@ async fn dispatch(
         (Route::Tasks, _) => tasks::list(cx, token.as_ref()),
         (Route::Task, _) => tasks::one(cx, token.as_ref()),
         (Route::StopTask, live) => tasks::stop(cx, live.as_ref(), token.as_ref()),
+        (Route::Terminals, Some(live)) => terminals::list(cx, &live),
+        (Route::TerminalAdd, Some(live)) => terminals::add(cx, &live).await,
+        (Route::TerminalPanes, Some(live)) => terminals::add_pane(cx, &live).await,
+        (Route::TerminalLayout, Some(live)) => terminals::layout(cx, &live),
+        (Route::TerminalRename, Some(live)) => terminals::rename(cx, &live),
+        (Route::TerminalEnd, Some(live)) => terminals::end(cx, &live),
+        (Route::PaneEnd, Some(live)) => terminals::end_pane(cx, &live),
+        (Route::TerminalSocket, Some(live)) => terminals::open(cx, &live),
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which
@@ -837,17 +943,42 @@ where
     }
 }
 
-/// The console's file for the address asked for.
+/// The entity tags a request's `If-None-Match` lines list, as one list,
+/// or None when it has none that read as text.
+fn tags_held(headers: &HeaderMap) -> Option<String> {
+    let lines: Vec<&str> = headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|line| line.to_str().ok())
+        .collect();
+    (!lines.is_empty()).then(|| lines.join(", "))
+}
+
+/// The console's file for the address asked for, read from the disk, or
+/// 304 with no body when the browser holds it already: the file's `ETag`
+/// is among the tags it sent. A 304 has the file's headers, which
+/// [`render`] gives it. A file that no longer reads as the manifest lists
+/// it is not served, and the log says why.
 fn file(cx: &Context<'_>) -> Outcome {
-    match cx.shared.files.get(&cx.path) {
-        Some(file) => Ok(Reply {
-            status: StatusCode::OK,
-            content: Content::File(file.clone()),
-            cookies: Vec::new(),
-            retry_after: None,
-        }),
-        None => Err(Failure::new(Kind::NoRoute, "the console has no such page")),
-    }
+    let no_page = || Failure::new(Kind::NoRoute, "the console has no such page");
+    let Some(listed) = cx.shared.files.get(&cx.path) else {
+        return Err(no_page());
+    };
+    let held = cx.if_none_match.as_deref().is_some_and(|tags| listed.matches(tags));
+    let file = if held {
+        listed.held()
+    } else {
+        cx.shared.files.load(listed).map_err(|why| {
+            log(4, &format!("the console's files: {why}"));
+            no_page()
+        })?
+    };
+    Ok(Reply {
+        status: if held { StatusCode::NOT_MODIFIED } else { StatusCode::OK },
+        content: Content::File(file),
+        cookies: Vec::new(),
+        retry_after: None,
+    })
 }
 
 /// What a page shows the first time it is opened: the machine's name and
@@ -861,16 +992,28 @@ fn fingerprint(cx: &Context<'_>) -> Reply {
 /// `reply` as the response that goes out, with the headers every answer
 /// carries.
 fn render(shared: &Shared, reply: Reply) -> Response<Body> {
+    if let Content::Socket(accept) = &reply.content {
+        return switching(shared, accept);
+    }
+    let mut etag = None;
     let (kind, caching, body) = match reply.content {
         Content::Json(value) => (
-            "application/json",
+            Some("application/json"),
             "no-store",
             Full::new(Bytes::from(value.to_string())).boxed_unsync(),
         ),
         Content::File(file) => {
-            (file.content_type, "no-cache", Full::new(file.bytes).boxed_unsync())
+            etag = HeaderValue::from_str(&file.etag).ok();
+            // A 304 names the file by its tag and carries none of it, and
+            // none of what its bytes are.
+            if reply.status == StatusCode::NOT_MODIFIED {
+                (None, "no-cache", Full::new(Bytes::new()).boxed_unsync())
+            } else {
+                (Some(file.content_type), "no-cache", Full::new(file.bytes).boxed_unsync())
+            }
         }
-        Content::Events(events) => ("text/event-stream", "no-store", events.boxed_unsync()),
+        Content::Events(events) => (Some("text/event-stream"), "no-store", events.boxed_unsync()),
+        Content::Socket(_) => (None, "no-store", Empty::new().boxed_unsync()),
     };
     let mut response = Response::new(body);
     *response.status_mut() = reply.status;
@@ -878,8 +1021,13 @@ fn render(shared: &Shared, reply: Reply) -> Response<Body> {
     for (key, value) in guard::headers(shared.authority()) {
         headers.insert(HeaderName::from_static(key), HeaderValue::from_static(value));
     }
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    if let Some(kind) = kind {
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));
+    }
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(caching));
+    if let Some(etag) = etag {
+        headers.insert(header::ETAG, etag);
+    }
     for cookie in reply.cookies {
         if let Ok(value) = HeaderValue::from_str(&cookie) {
             headers.append(header::SET_COOKIE, value);
@@ -888,6 +1036,27 @@ fn render(shared: &Shared, reply: Reply) -> Response<Body> {
     if let Some(seconds) = reply.retry_after {
         headers.insert(header::RETRY_AFTER, HeaderValue::from(seconds));
     }
+    response
+}
+
+/// The 101 that hands a connection to the Terminal's socket: its accept
+/// key, its one protocol, and no extension, so no compression.
+fn switching(shared: &Shared, accept: &str) -> Response<Body> {
+    let mut response = Response::new(Empty::new().boxed_unsync());
+    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+    let headers = response.headers_mut();
+    for (key, value) in guard::headers(shared.authority()) {
+        headers.insert(HeaderName::from_static(key), HeaderValue::from_static(value));
+    }
+    headers.insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+    headers.insert(header::CONNECTION, HeaderValue::from_static("Upgrade"));
+    if let Ok(accept) = HeaderValue::from_str(accept) {
+        headers.insert(header::SEC_WEBSOCKET_ACCEPT, accept);
+    }
+    headers.insert(
+        header::SEC_WEBSOCKET_PROTOCOL,
+        HeaderValue::from_static(super::websocket::PROTOCOL),
+    );
     response
 }
 

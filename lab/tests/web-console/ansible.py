@@ -29,9 +29,15 @@ so a change reports "changed" on the second pass too, as the first;
 nothing here claims it is idempotent. That waits for the dukovo.system
 collection (docs/deferred.md), whose modules will.
 
+The console's own reads run here as the commands they show: console.about
+as `admin about --json`, console.notices as `admin notices --json` and
+metrics.now as `metrics now --json`.
+
 certificate.renew is not run: it makes the certificate the console serves
 anew, and the API calls that follow would have to be made again with
-another certificate. The boot test admin-actions renews it.
+another certificate. The boot test admin-actions renews it. checks.last,
+lab.missing and metrics.usage are not run either, for the reasons at
+LEFT_ALONE.
 """
 
 import json
@@ -47,7 +53,13 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LEFT_ALONE = {"certificate.renew"}
+# The tasks this test leaves alone, each with its reason: certificate.renew
+# makes the machine's certificate anew; checks.last runs dukovo-check, which
+# a machine has only once an update brings the checks, and lab.missing runs
+# a command that no image has, so both end with a status other than 0; and
+# metrics.usage ends with 1 on a machine that has run for less than the 10
+# minutes in which metricsd writes the history it reads.
+LEFT_ALONE = {"certificate.renew", "checks.last", "lab.missing", "metrics.usage"}
 TOKEN_NAME = "lab-ansible"
 CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "dukovo-lab")
 PASSWORD_FILE = os.path.join(CONFIG, "lab_password")

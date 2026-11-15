@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# Where the web console puts an error, and the pages that say what each
+# error ID means, in the lab PC's browsers (design 9): the console shows the
+# pages of docs/errors, which the build copies onto the machine, at
+# /help/errors, with a filter and a link from one page to another; a time
+# zone that the machine does not have is refused with ADM-125 and the words
+# stand under the field; the answers admind gives for the other errors are
+# shown as the error view, a banner, plain words in place, a countdown, the
+# helper that stopped and the unlock dialog. Each look of the console is
+# checked by axe. Each engine has an administrator of its own, which this
+# test makes and removes, so no script needs the lab's password.
+about = "Browsers read the web console's pages on what each error means, see an invalid time zone refused under its field, and see each other error put where it belongs"
+time = "20m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-errors-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-errors-chromium", "Made wc-errors-firefox", "Made wc-errors-webkit"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "errors.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do user remove --delete-home --yes wc-errors-$engine || exit 1; done'"
+root = true
+expect = ["wc-errors-chromium is removed", "wc-errors-firefox is removed", "wc-errors-webkit is removed"]

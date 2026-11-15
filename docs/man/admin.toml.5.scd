@@ -16,9 +16,10 @@ _/system/settings/admin.toml_
 *authd*(8) reads this file for the rules of signing in to the web console
 (ADR 0514), each time someone signs in, and *admind*(8) for where it
 answers and whom, and for the same rules to end sessions, every 30
-seconds. The file that comes with the system holds only comments, so the
-defaults apply until a setting is uncommented. The file is TOML, in two
-tables. *service admind reload* (*service*(8)) has admind read the
+seconds. authd reads the *[terminal]* table again at each terminal the
+console asks it for, and admind every 30 seconds. The file that comes with
+the system holds only comments, so the defaults apply until a setting is
+uncommented. The file is TOML, in three tables. *service admind reload* (*service*(8)) has admind read the
 certificate again, and a new port takes *service admind restart*.
 
 A value out of its range, or a name that is not a setting, is refused, so
@@ -36,6 +37,10 @@ idle-minutes = 30
 listen = 9090
 reach = "private"
 certificate = "this-machine"
+
+[terminal]
+allowed = "everyone"
+sessions-per-account = 32
 ```
 
 # THE [sign-in] TABLE
@@ -75,6 +80,23 @@ certificate = "this-machine"
 	*list*): *"this-machine"*, the default, which a browser warns about
 	once, or one from an authority for the console's own name. The
 	service file's *certificates* must name it too.
+
+# THE [terminal] TABLE
+
+The console's Terminal page shows shells in the browser (*admind*(8),
+Terminals).
+
+*allowed =* _text_
+	Who may open one: *"everyone"*, the default, each account that may
+	use the console and has a shell, as at the machine's screen and over
+	SSH; *"administrators"*; or *"nobody"*. A shell has no more rights
+	than its person, and an administrator's root shell needs the
+	console unlocked, as any change does.
+
+*sessions-per-account =* _number_
+	How many terminals each account may keep, 1 to 64; 32 by default.
+	Each holds up to four shells, and authd starts at most four times
+	this many for an account.
 
 # SEE ALSO
 

@@ -1,0 +1,10 @@
+{
+  "source": "hand-built from what reedline and crossterm are known to send, the xterm-256color terminfo entry and the design (13.11): not a recording",
+  "program": "nukesh (reedline 0.3x over crossterm)",
+  "what": "a prompt, typing, moving left and inserting, Enter, and a second prompt with a right prompt",
+  "cols": 40,
+  "rows": 8,
+  "cursor": [20, 2],
+  "title": "chase@duke-nas: ~",
+  "replies": "\u001b[?1;2c\u001b[1;1R"
+}

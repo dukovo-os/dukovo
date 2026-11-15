@@ -1,0 +1,29 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The first sign-in (design 12.1): the board's wizard frame, with the steps
+ * as a list to read and not to press.
+ */
+.dk .welcome .steps { margin: 0; padding: 0; list-style: none; }
+.dk .welcome .step small { display: block; min-height: 1.2em; }
+.dk .welcome .step .ic { font-size: .857rem; }
+.dk .welcome .zone-now { display: flex; flex-wrap: wrap; align-items: center; gap: .571rem .857rem; }
+.dk .welcome .zone-now p { margin: 0; }
+.dk .welcome .panel h2:focus, .dk .welcome .offer h2:focus { outline: none; }
+.dk .welcome .panel h2:focus-visible, .dk .welcome .offer h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.dk .welcome .second { display: flex; flex-direction: column; gap: 1rem; }
+.dk .welcome .offer { max-width: 40rem; }
+
+@container (max-width: 51.4rem) {
+  /* The steps become one line of dots and names above the step, so that the form has the width. */
+  .dk .welcome .wiz > .steps-col { max-width: none; padding: .571rem; }
+  .dk .welcome .steps { flex-direction: row; flex-wrap: wrap; gap: .286rem; }
+  .dk .welcome .step small { display: none; }
+  .dk .welcome .step { padding: .286rem .571rem; }
+}
+
+@media (forced-colors: active) {
+  .dk .welcome .step.cur { border: 2px solid Highlight; background: none; }
+  .dk .welcome .step.done .dot { forced-color-adjust: none; background: Canvas; border-color: CanvasText; color: CanvasText; }
+}

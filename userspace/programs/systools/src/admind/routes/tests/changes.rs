@@ -411,6 +411,102 @@ fn a_change_that_runs_has_a_row_with_who_how_and_the_command_and_one_not_run_has
     });
 }
 
+/// A stream of events as `session` opens it: each call of the closure
+/// gives the next event's bytes as text, and the first, the unlock, is
+/// taken.
+async fn tab(world: &World, session: &Session) -> impl AsyncFnMut() -> String {
+    let request = build(get("/api/1/events").by(session));
+    let Ok(response) =
+        handle(Rc::clone(&world.console.shared), PEER.parse().unwrap(), request).await;
+    let mut body = response.into_body();
+    let mut next = async move || {
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame()).await.unwrap();
+        String::from_utf8(frame.unwrap().unwrap().into_data().unwrap().to_vec()).unwrap()
+    };
+    assert!(next().await.starts_with("event: unlock"));
+    next
+}
+
+/// The fields of the `change` event `told`, in the order they are sent.
+fn change(told: &str) -> Value {
+    let data = told
+        .strip_prefix("event: change\ndata: ")
+        .and_then(|rest| rest.strip_suffix("\n\n"))
+        .unwrap_or_else(|| panic!("not a change event: {told:?}"));
+    serde_json::from_str(data).unwrap()
+}
+
+#[test]
+fn every_signed_in_tab_is_told_of_a_row_as_it_ends_with_no_person_action_or_file() {
+    run(async {
+        let world = lab_world("changes-told");
+        let restart = |name: &str| post(&format!("/api/1/lab/{name}/restart"), &json!({}));
+        let dave = sign_in(&world, "dave").await;
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        // Dave is not an administrator and has not unlocked; both are told.
+        let mut dave_tab = tab(&world, &dave).await;
+        let mut chase_tab = tab(&world, &chase).await;
+        let mut other_tab = tab(&world, &chase).await;
+        assert_eq!(send(&world, restart("nginx").by(&chase)).await.status, 200);
+        let row = store(&world).changes(0, 10).unwrap().pop().unwrap();
+        for next in [&mut dave_tab, &mut chase_tab, &mut other_tab] {
+            let told = next().await;
+            let event = change(&told);
+            assert_eq!(event, json!({ "id": row.id, "how": "console", "at": row.at }), "{told}");
+            // The same three fields and no more, in the text as well.
+            assert_eq!(told.matches('"').count(), 8, "{told}");
+            for secret in ["chase", "restart", "nginx", "service"] {
+                assert!(!told.contains(secret), "{told}");
+            }
+        }
+        // A token's change is told as the token's, a failed command's as well,
+        // and each row once.
+        let by_token = send(&world, with_token(restart("nginx"), TOKEN_ALL)).await;
+        assert_eq!(by_token.status, 200, "{}", by_token.body);
+        assert_eq!(send(&world, restart("broken").by(&chase)).await.status, 422);
+        // The newest is first on the list; the tabs are told oldest first.
+        let mut rows = store(&world).changes(0, 10).unwrap();
+        rows.reverse();
+        assert_eq!(rows.len(), 3);
+        for next in [&mut dave_tab, &mut chase_tab] {
+            for made in &rows[1..] {
+                let told = change(&next().await);
+                assert_eq!(told["id"], made.id);
+                assert_eq!(told["how"], made.how.as_str());
+            }
+        }
+        assert_eq!(rows[1].how, "token ci");
+        assert_eq!(rows[2].how, "console");
+        // A read is not a row, and no stream has more to tell.
+        send(&world, get("/api/1/lab").by(&dave)).await;
+        assert!(tokio::time::timeout(Duration::from_millis(100), dave_tab()).await.is_err());
+    });
+}
+
+#[test]
+fn a_tab_that_opens_is_not_told_of_the_rows_from_before_and_is_told_of_each_that_comes_after() {
+    run(async {
+        let world = lab_world("changes-told-late");
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        let restart = post("/api/1/lab/nginx/restart", &json!({}));
+        assert_eq!(send(&world, restart.by(&chase)).await.status, 200);
+        let mut tab = tab(&world, &chase).await;
+        assert!(tokio::time::timeout(Duration::from_millis(100), tab()).await.is_err());
+        // The round of hand edits keeps rows and announces them as it does;
+        // some come at once, and the tab is told of each, in order.
+        let news = &world.console.shared.journal.news;
+        news.announce(7, "by hand", 2_000_000_030);
+        news.announce(8, "by hand", 2_000_000_030);
+        for id in [7, 8] {
+            let told = change(&tab().await);
+            assert_eq!(told, json!({ "id": id, "how": "by hand", "at": 2_000_000_030 }));
+        }
+        assert!(tokio::time::timeout(Duration::from_millis(100), tab()).await.is_err());
+    });
+}
+
 #[test]
 fn a_console_without_a_store_still_changes_things_and_answers_adm_126_for_the_journal() {
     run(async {

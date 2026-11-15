@@ -175,10 +175,14 @@ function formPlace() {
  * a session that the sign-in rules limited to this page, once a second step
  * is added. Returns the elements of the page, which load their own
  * contents.
+ *
+ * `embedded` is for the first sign-in, which holds the cards in a frame of
+ * its own: the heading is an h2 and the page's head is left out. `changed()`
+ * is called each time a change has been made and the cards are read again.
  */
-export function secondStepView({ session, signInAgain }) {
+export function secondStepView({ session, signInAgain, embedded = false, changed = () => {} }) {
   const needsStep = session.needs_step;
-  const heading = h('h1', { tabindex: '-1' }, 'Second step');
+  const heading = h(embedded ? 'h2' : 'h1', { tabindex: '-1' }, 'Second step');
   const status = h('p', { class: 'small', role: 'status' });
   const failure = errorSlot('steps-error');
   let codesShown = null;
@@ -226,6 +230,7 @@ export function secondStepView({ session, signInAgain }) {
     } else {
       heading.focus();
     }
+    changed();
   }
 
   function appCard({ app }) {
@@ -421,7 +426,7 @@ export function secondStepView({ session, signInAgain }) {
 
   load();
   return [
-    h('div', { class: 'ph' },
+    embedded ? heading : h('div', { class: 'ph' },
       h('div', { class: 'title' },
         !needsStep && h('span', { class: 'crumb' }, h('a', { href: '/' }, 'Home'), ' › Second step'),
         heading)),

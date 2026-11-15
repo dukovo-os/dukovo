@@ -38,7 +38,10 @@ use super::reach::{self, Network};
 use super::sessions::{Session, Sessions};
 use super::store::Store;
 use super::tasks::Tasks;
+use super::terminal::Terminals;
+use super::terminal::protocol::Why;
 use super::tls::Certificate;
+use super::websocket::Code;
 use super::who::Sources;
 use crate::admin_settings::Settings;
 use crate::cert::machine;
@@ -110,11 +113,19 @@ async fn tell_end(socket: String, session: String) {
     }
 }
 
-/// Writes the log line for a refusal that `table` says is due.
-fn say_refusal(table: &RefCell<Quiet>, what: &str, address: IpAddr, why: &str) {
-    let Some(count) = table.borrow_mut().note(address, Instant::now()) else { return };
+/// Writes the log line for a refusal that `table` says is due: `why`,
+/// then `detail` when there is one.
+fn say_refusal(
+    table: &RefCell<Quiet>,
+    what: &str,
+    address: IpAddr,
+    why: &'static str,
+    detail: &str,
+) {
+    let Some(count) = table.borrow_mut().note(address, why, Instant::now()) else { return };
+    let detail = if detail.is_empty() { String::new() } else { format!(": {detail}") };
     let times = if count > 1 { format!(" ({count} since the last line)") } else { String::new() };
-    log(6, &format!("refused {what} from {address}: {why}{times}"));
+    log(6, &format!("refused {what} from {address}: {why}{detail}{times}"));
 }
 
 /// Everything the connections share.
@@ -141,9 +152,10 @@ pub struct Shared {
     /// The sign-in requests of each address.
     pub tries: RefCell<Tries>,
     /// What the log has said of each address whose connections were
-    /// refused.
+    /// refused, for each reason.
     pub quiet: RefCell<Quiet>,
-    /// What it has said of each address whose requests were refused.
+    /// What it has said of each address whose requests were refused, for
+    /// each kind of error.
     pub refused: RefCell<Quiet>,
     /// The connections held.
     pub connections: Rc<RefCell<Connections>>,
@@ -167,6 +179,8 @@ pub struct Shared {
     pub journal: Journal,
     /// The tasks that wait, run or ended lately.
     pub tasks: Tasks,
+    /// The console's terminals, their panes and their sockets.
+    pub terminals: RefCell<Terminals>,
 }
 
 impl Shared {
@@ -202,6 +216,7 @@ impl Shared {
             store,
             journal: Journal::new(Path::new(SETTINGS)),
             tasks: Tasks::new(),
+            terminals: RefCell::default(),
         })
     }
 
@@ -223,8 +238,16 @@ impl Shared {
     /// Notes that the session of `cookie` is unlocked until the Unix time
     /// `until`, or locked, as authd answered, and tells its tabs.
     pub fn set_unlocked(&self, cookie: &str, until: Option<i64>) {
-        if self.with_session(cookie, |session| session.unlocked_until = until).is_some() {
-            self.changes.send_replace(());
+        let set = self.with_session(cookie, |session| {
+            session.unlocked_until = until;
+            session.authd.clone()
+        });
+        let Some(authd) = set else { return };
+        self.changes.send_replace(());
+        // The administrators' panes end with the unlock, here as authd
+        // ends their shells.
+        if until.is_none_or(|until| until <= unix_now()) {
+            self.terminals.borrow_mut().end_admin_panes(&authd, Why::Locked);
         }
     }
 
@@ -241,9 +264,18 @@ impl Shared {
             6,
             &format!("{}'s console session from {} ended: {reason}", session.name, session.from),
         );
-        self.endings.borrow_mut().note(&session.authd, reason);
+        self.endings.borrow_mut().note(&session.authd, session.key, reason);
         let authd = session.authd.clone();
         drop(session);
+        let (code, why) = match reason {
+            "signed-out" => (Code::SessionEnded, Why::SignedOut),
+            "restarted" => (Code::Stopping, Why::Restart),
+            _ => (Code::SessionEnded, Why::Idle),
+        };
+        let mut terminals = self.terminals.borrow_mut();
+        terminals.close_session(&authd, code);
+        terminals.end_admin_panes(&authd, why);
+        drop(terminals);
         self.changes.send_replace(());
         tokio::task::spawn_local(tell_end(self.authd.clone(), authd))
     }
@@ -268,14 +300,16 @@ impl Shared {
     }
 
     /// Says in the log that a connection from `address` was refused for
-    /// `why`, the first time and then once a minute with how many came.
-    pub fn refused_connection(&self, address: IpAddr, why: &str) {
-        say_refusal(&self.quiet, "a connection", address, why);
+    /// `why` (and `detail`, which may be empty), the first time and then
+    /// once a minute with how many came for that reason.
+    pub fn refused_connection(&self, address: IpAddr, why: &'static str, detail: &str) {
+        say_refusal(&self.quiet, "a connection", address, why, detail);
     }
 
-    /// Says the same of a request, which was answered with an error.
-    pub fn refused_request(&self, address: IpAddr, why: &str) {
-        say_refusal(&self.refused, "a request", address, why);
+    /// Says the same of a request, which was answered with an error of
+    /// kind `id`.
+    pub fn refused_request(&self, address: IpAddr, id: &'static str, detail: &str) {
+        say_refusal(&self.refused, "a request", address, id, detail);
     }
 
     /// Ends the session `authd` once its worker's `link` is closed.
@@ -313,9 +347,26 @@ impl Shared {
         self.token_workers.borrow_mut().tidy(now);
     }
 
+    /// What is looked at every moment the server wakes: the terminals'
+    /// [`Terminals::tick`], with the sessions unlocked now.
+    pub fn look_at_terminals(&self) {
+        let now = unix_now();
+        let unlocked = |authd: &str| self.unlocked_at(authd, now);
+        self.terminals.borrow_mut().tick((Instant::now(), now), unlocked);
+    }
+
+    /// Whether the console session that authd names `authd` is unlocked at
+    /// the Unix time `now`.
+    pub fn unlocked_at(&self, authd: &str, now: i64) -> bool {
+        self.sessions.borrow().any(|session| {
+            session.authd == authd && session.unlocked_until.is_some_and(|until| until > now)
+        })
+    }
+
     /// Ends every session, as admind stops, waiting a moment for authd to
-    /// be told.
+    /// be told. The terminals end first.
     pub async fn end_all(&self) {
+        self.terminals.borrow_mut().end_all();
         if self.sessions.borrow().is_empty() {
             return;
         }

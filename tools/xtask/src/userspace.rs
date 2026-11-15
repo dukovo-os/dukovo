@@ -355,6 +355,12 @@ pub const ADMIN: &str = "userspace/admin";
 pub const ADMIN_DIR: &str = "system/resources/admin";
 const ADMIN_TESTS: &str = "tests";
 
+/// The error pages, one for each ID, and the folder of the console's
+/// pages that the build copies them into, with `index.json`, a list of
+/// each page's ID, title and area, for the help pages (`/help/errors`).
+const ERROR_PAGES: &str = "docs/errors";
+const ERROR_PAGES_DIR: &str = "system/resources/admin/help/errors";
+
 /// The service files of the boot tests that Spark is pointed at with
 /// `--service-dir` (spark(8)), and where in the boot archive they go.
 pub const TEST_SERVICES: &str = "userspace/spark/tests/services";
@@ -799,15 +805,122 @@ fn install_tree(
 }
 
 /// Installs the console's pages like [`install_tree`], less their tests,
+/// with the error pages and their `index.json` ([`install_error_pages`]),
 /// and writes `manifest.txt` beside them, which admind checks the files
-/// against when it starts (`systools/src/admind/files.rs`).
+/// against when it starts (`systools/src/admind/files.rs`) and lists
+/// every one of them in.
 fn install_admin(ctx: &Ctx, files: &mut Vec<(String, PathBuf)>) -> Result<()> {
     let first = files.len();
     install_tree(ctx, ADMIN, ADMIN_DIR, &[ADMIN_TESTS], files)?;
+    install_error_pages(ctx, files)?;
     let manifest = admin_manifest(ctx, &files[first..])?;
     let path = ctx.out.join("sysroot").join(ADMIN_DIR).join("manifest.txt");
     std::fs::write(&path, manifest).context(|| format!("writing {}", path.display()))?;
     files.push((format!("{ADMIN_DIR}/manifest.txt"), path));
+    Ok(())
+}
+
+/// One error page, as the help pages list it.
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+struct ErrorPage {
+    /// The ID, such as `ADM-123`, which names the page's file.
+    id: String,
+    /// The page's heading after the ID.
+    title: String,
+    /// The area of the ID's letters, in `docs/errors/README.md`'s table.
+    area: String,
+}
+
+/// Whether `name` is an error ID: two to five capitals, a hyphen and three
+/// digits.
+fn is_error_id(name: &str) -> bool {
+    let Some((letters, digits)) = name.split_once('-') else { return false };
+    (2..=5).contains(&letters.len())
+        && letters.bytes().all(|b| b.is_ascii_uppercase())
+        && digits.len() == 3
+        && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The area of each ID's letters in the table of `readme`, such as
+/// `` | `UPD` | Updates of the system | 0.15.0 | ``: the area's name, which
+/// is its words up to the first colon.
+fn error_areas(readme: &str) -> std::collections::BTreeMap<String, String> {
+    let mut areas = std::collections::BTreeMap::new();
+    for line in readme.lines() {
+        let Some(row) = line.strip_prefix('|') else { continue };
+        let mut cells = row.split('|').map(str::trim);
+        let (Some(letters), Some(area)) = (cells.next(), cells.next()) else { continue };
+        let letters = letters.trim_matches('`');
+        let named = area.split(':').next().unwrap_or(area).trim();
+        let is_letters =
+            (2..=5).contains(&letters.len()) && letters.bytes().all(|b| b.is_ascii_uppercase());
+        if is_letters && !named.is_empty() {
+            areas.insert(letters.to_string(), named.to_string());
+        }
+    }
+    areas
+}
+
+/// The title of the page `text` of the error `id`: what follows the ID in
+/// its first heading, `# ID: The title`.
+fn error_title(id: &str, text: &str) -> Option<String> {
+    let heading = text.lines().find_map(|line| line.strip_prefix("# "))?;
+    let title = heading.strip_prefix(id)?.strip_prefix(':')?.trim();
+    (!title.is_empty()).then(|| title.to_string())
+}
+
+/// Copies each page of `docs/errors` (`UPD-101.md`, and not the README)
+/// into [`ERROR_PAGES_DIR`] and writes `index.json` beside them: a list
+/// of `{id, title, area}` in the order of the IDs, for the help pages.
+/// Each file goes into `files` as [`install_tree`] puts its own, so the
+/// manifest lists them. A page whose heading does not give its title, or
+/// whose ID's letters are in no row of the README's table, stops the
+/// build: the help pages cannot list it.
+fn install_error_pages(ctx: &Ctx, files: &mut Vec<(String, PathBuf)>) -> Result<()> {
+    let from = ctx.root.join(ERROR_PAGES);
+    let readme_path = from.join("README.md");
+    let readme = std::fs::read_to_string(&readme_path)
+        .context(|| format!("reading {}", readme_path.display()))?;
+    let areas = error_areas(&readme);
+    let mut names: Vec<String> = std::fs::read_dir(&from)
+        .context(|| format!("reading {}", from.display()))?
+        .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
+        .filter(|name| name.strip_suffix(".md").is_some_and(is_error_id))
+        .collect();
+    names.sort();
+    let into = ctx.out.join("sysroot").join(ERROR_PAGES_DIR);
+    let mut index = Vec::with_capacity(names.len());
+    for name in names {
+        let id = name.trim_end_matches(".md");
+        let page = from.join(&name);
+        let text =
+            std::fs::read_to_string(&page).context(|| format!("reading {}", page.display()))?;
+        let title = error_title(id, &text).ok_or_else(|| {
+            Error::new(format!(
+                "{}: the first heading is not `# {id}: The title`, which the console's help \
+                 pages list the error by",
+                page.display()
+            ))
+        })?;
+        let letters = id.split_once('-').map_or(id, |(letters, _)| letters);
+        let area = areas.get(letters).ok_or_else(|| {
+            Error::new(format!(
+                "{}: the letters {letters} are in no row of {}'s table, which gives the error \
+                 pages' areas",
+                page.display(),
+                readme_path.display()
+            ))
+        })?;
+        let installed = into.join(&name);
+        process::copy(&page, &installed)?;
+        files.push((format!("{ERROR_PAGES_DIR}/{name}"), installed));
+        index.push(ErrorPage { id: id.to_string(), title, area: area.clone() });
+    }
+    let path = into.join("index.json");
+    let mut json = serde_json::to_string(&index).expect("a list of strings is JSON");
+    json.push('\n');
+    std::fs::write(&path, json).context(|| format!("writing {}", path.display()))?;
+    files.push((format!("{ERROR_PAGES_DIR}/index.json"), path));
     Ok(())
 }
 
@@ -1315,6 +1428,11 @@ mod tests {
         std::fs::write(pages.join("app.js"), "console.log(1)").unwrap();
         std::fs::write(pages.join("css/console.css"), "body{}").unwrap();
         std::fs::write(pages.join("tests/app.test.mjs"), "a test").unwrap();
+        let errors = root.join(ERROR_PAGES);
+        std::fs::create_dir_all(&errors).unwrap();
+        for (name, text) in ERROR_FIXTURE {
+            std::fs::write(errors.join(name), text).unwrap();
+        }
         let ctx = Ctx {
             out: root.join("out"),
             target: root.join("target"),
@@ -1326,9 +1444,13 @@ mod tests {
         let mut files = vec![("system/commands/spark".to_string(), other.clone())];
         let installed = install_admin(&ctx, &mut files);
         let placed: Vec<&str> = files.iter().map(|(place, _)| place.as_str()).collect();
-        let manifest =
-            std::fs::read_to_string(root.join("out/sysroot").join(ADMIN_DIR).join("manifest.txt"));
-        let left_out = root.join("out/sysroot").join(ADMIN_DIR).join(ADMIN_TESTS).exists();
+        let sysroot = root.join("out/sysroot").join(ADMIN_DIR);
+        let manifest = std::fs::read_to_string(sysroot.join("manifest.txt"));
+        let left_out = sysroot.join(ADMIN_TESTS).exists();
+        let index = std::fs::read_to_string(sysroot.join("help/errors/index.json"));
+        let copied = std::fs::read_to_string(sysroot.join("help/errors/ADM-101.md"));
+        let readme_copied = sysroot.join("help/errors/README.md").exists();
+        let notes_copied = sysroot.join("help/errors/notes.md").exists();
         std::fs::remove_dir_all(&root).unwrap();
         installed.unwrap();
         assert_eq!(
@@ -1338,20 +1460,193 @@ mod tests {
                 "system/resources/admin/app.js",
                 "system/resources/admin/css/console.css",
                 "system/resources/admin/index.html",
+                "system/resources/admin/help/errors/ADM-101.md",
+                "system/resources/admin/help/errors/UPD-101.md",
+                "system/resources/admin/help/errors/index.json",
                 "system/resources/admin/manifest.txt",
             ]
         );
         assert!(!left_out, "the tests folder is not installed");
-        // The sums are `sha256sum`'s, for the three files' contents; the line of
+        // The error pages are copied as they are, the README and a file
+        // that is no page are not, and the index lists each page.
+        assert_eq!(copied.unwrap(), ERROR_FIXTURE[1].1);
+        assert!(!readme_copied && !notes_copied);
+        assert_eq!(
+            index.unwrap(),
+            "[{\"id\":\"ADM-101\",\"title\":\"The name or the password is wrong\",\
+             \"area\":\"The web console, Dukovo Admin\"},\
+             {\"id\":\"UPD-101\",\"title\":\"The update does not fit: free space\",\
+             \"area\":\"Updates of the system\"}]\n"
+        );
+        // The sums are `sha256sum`'s, for the files' contents; the line of
         // a file in a folder names its path inside the pages' folder, and the
-        // manifest does not list itself or files that are not pages.
+        // manifest lists the error pages and their index, and does not list
+        // itself or files that are not pages.
         assert_eq!(
             manifest.unwrap(),
             "0a286891c11c056e1ab5bfc25bf5d6b2f5b06d38eac10944f678fd8a2e70c393  app.js\n\
              7c98040a541657584690ae2a1cc3b42a8b53b159cc60c5d3abbfecbaeac6c94a  css/console.css\n\
+             352ef3b530c670a4dd3483bd9589d50c82593ec34a66fa886984754df3d2ea43  help/errors/ADM-101.md\n\
+             f73461180c58f3179e5c504a880f3b4540e7dc542c5c112d1fa487d96555def7  help/errors/UPD-101.md\n\
+             80a9bb19e975d1c0922a597ecf9aeadbedb678e76ce8344aa1cee074c28718ef  help/errors/index.json\n\
              b7d082ee12e91b756ea22e8513b8594eebcf5d39fab813da3cb55794dc888ad7  index.html\n"
         );
         assert_eq!(files[0].1, other);
+    }
+
+    /// The files of a `docs/errors` for the tests: a README with the table
+    /// of areas, two pages, and a file that is no page.
+    const ERROR_FIXTURE: [(&str, &str); 4] = [
+        (
+            "README.md",
+            "# Error pages\n\n| Letters | Area | Since |\n| --- | --- | --- |\n\
+             | `ADM` | The web console, Dukovo Admin: its sign-in | 0.16.0 |\n\
+             | `UPD` | Updates of the system | 0.15.0 |\n",
+        ),
+        ("ADM-101.md", "# ADM-101: The name or the password is wrong\n\nWhat it means.\n"),
+        ("UPD-101.md", "# UPD-101: The update does not fit: free space\n\nWhat it means.\n"),
+        ("notes.md", "# Notes\n"),
+    ];
+
+    /// A context whose root holds `docs/errors` of `files`, in a folder of
+    /// the test's own.
+    fn errors_ctx(what: &str, files: &[(&str, &str)]) -> Ctx {
+        let root = std::env::temp_dir().join(format!("ob-errors-{what}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let errors = root.join(ERROR_PAGES);
+        std::fs::create_dir_all(&errors).unwrap();
+        for (name, text) in files {
+            std::fs::write(errors.join(name), text).unwrap();
+        }
+        Ctx {
+            out: root.join("out"),
+            target: root.join("target"),
+            root,
+            config: crate::config::Config::default(),
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn an_error_is_named_by_its_letters_and_three_digits() {
+        for id in ["ADM-101", "UPD-101", "FW-101", "ABCDE-999"] {
+            assert!(is_error_id(id), "{id}");
+        }
+        for odd in [
+            "README",
+            "adm-101",
+            "A-101",
+            "ABCDEF-101",
+            "ADM-10",
+            "ADM-1011",
+            "ADM-10a",
+            "ADM",
+            "-101",
+            "",
+        ] {
+            assert!(!is_error_id(odd), "{odd}");
+        }
+    }
+
+    #[test]
+    fn the_areas_are_the_names_in_the_readmes_table_up_to_the_first_colon() {
+        let areas = error_areas(ERROR_FIXTURE[0].1);
+        assert_eq!(areas.len(), 2);
+        assert_eq!(areas["ADM"], "The web console, Dukovo Admin");
+        assert_eq!(areas["UPD"], "Updates of the system");
+        // The header and the rule are no rows, and words that are not
+        // capitals are not letters.
+        let text = "| Letters | Area | Since |\n| --- | --- | --- |\n| `x` | no | 1 |\n\
+                    | `NET` | Networking: the layers | 0.16.0 |\n| `HW` |\n";
+        let areas = error_areas(text);
+        assert_eq!(areas.keys().collect::<Vec<_>>(), ["NET"]);
+        assert_eq!(areas["NET"], "Networking");
+    }
+
+    #[test]
+    fn a_title_is_what_follows_the_id_in_the_first_heading() {
+        let id = "ADM-105";
+        let page = |text: &str| error_title(id, text);
+        assert_eq!(
+            page("# ADM-105: Too many tries: wait a moment\n\ntext"),
+            Some("Too many tries: wait a moment".into())
+        );
+        assert_eq!(page("<!-- c -->\n\n# ADM-105:   Spaced  \n"), Some("Spaced".into()));
+        assert_eq!(page("text\n# ADM-105: Later heading\n"), Some("Later heading".into()));
+        for odd in [
+            "",
+            "# ADM-105\n",
+            "# ADM-105:\n",
+            "# ADM-105:  \n",
+            "# ADM-106: Another\n",
+            "## ADM-105: Second level\n",
+            "ADM-105: no hash\n",
+        ] {
+            assert_eq!(page(odd), None, "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn a_page_the_help_pages_cannot_list_stops_the_build() {
+        let readme = ERROR_FIXTURE[0].1;
+        let adm = ERROR_FIXTURE[1];
+        // A page with no title.
+        let ctx = errors_ctx("no-title", &[("README.md", readme), ("ADM-101.md", "# ADM-101\n")]);
+        let said = install_error_pages(&ctx, &mut Vec::new()).unwrap_err().to_string();
+        std::fs::remove_dir_all(&ctx.root).unwrap();
+        assert!(said.contains("ADM-101.md") && said.contains("# ADM-101: The title"), "{said}");
+        // An area that the table does not have.
+        let ctx = errors_ctx(
+            "no-area",
+            &[("README.md", readme), adm, ("XYZ-101.md", "# XYZ-101: A title\n")],
+        );
+        let said = install_error_pages(&ctx, &mut Vec::new()).unwrap_err().to_string();
+        std::fs::remove_dir_all(&ctx.root).unwrap();
+        assert!(said.contains("XYZ-101.md") && said.contains("the letters XYZ"), "{said}");
+        // No README, and no folder.
+        let ctx = errors_ctx("no-readme", &[adm]);
+        let said = install_error_pages(&ctx, &mut Vec::new()).unwrap_err().to_string();
+        std::fs::remove_dir_all(&ctx.root).unwrap();
+        assert!(said.contains("README.md"), "{said}");
+        let ctx = errors_ctx("no-folder", &[]);
+        std::fs::remove_dir_all(ctx.root.join(ERROR_PAGES)).unwrap();
+        let said = install_error_pages(&ctx, &mut Vec::new()).unwrap_err().to_string();
+        std::fs::remove_dir_all(&ctx.root).unwrap();
+        assert!(said.contains("reading "), "{said}");
+    }
+
+    /// The tree's own pages are what the build takes: each has a title and
+    /// an area, so that `ob build` does not stop at one.
+    #[test]
+    fn every_error_page_of_the_tree_has_a_title_and_an_area_the_help_pages_can_list() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let ctx = errors_ctx("tree", &[]);
+        let ctx = Ctx { root, ..ctx };
+        let mut files = Vec::new();
+        let done = install_error_pages(&ctx, &mut files);
+        let index = std::fs::read_to_string(
+            ctx.out.join("sysroot").join(ERROR_PAGES_DIR).join("index.json"),
+        );
+        let _ = std::fs::remove_dir_all(ctx.out.parent().unwrap());
+        done.unwrap();
+        let index: Vec<serde_json::Value> = serde_json::from_str(&index.unwrap()).unwrap();
+        // One page for each ID, and the index with them.
+        assert_eq!(files.len(), index.len() + 1);
+        assert!(index.len() > 70, "{}", index.len());
+        let ids: Vec<&str> = index.iter().map(|page| page["id"].as_str().unwrap()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted);
+        for page in &index {
+            let id = page["id"].as_str().unwrap();
+            assert!(is_error_id(id), "{id}");
+            for key in ["title", "area"] {
+                assert!(!page[key].as_str().unwrap().is_empty(), "{id} {key}");
+            }
+        }
+        let adm = index.iter().find(|page| page["id"] == "ADM-129").unwrap();
+        assert_eq!(adm["title"], "This server does not have that command yet");
+        assert_eq!(adm["area"], "The web console, Dukovo Admin");
     }
 
     #[test]

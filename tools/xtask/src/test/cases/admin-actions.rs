@@ -11,7 +11,11 @@
 //! QEMU's user network gives the guest at 10.0.2.2.
 //!
 //! Who may: a read answers 200 for bob, who is in group console and no
-//! administrator, and for alice. A change is ADM-122 for bob and ADM-106
+//! administrator, and for alice; two reads may answer with their machine's
+//! own words instead (see [`may_refuse`]): checks.last is ADM-123 while
+//! dukovo-check has kept no result, and metrics.usage is ADM-123 on a
+//! machine whose history metricsd has not written yet, which it does every
+//! 10 minutes. A change is ADM-122 for bob and ADM-106
 //! for alice while her session is locked. A name that is no name is ADM-125
 //! with the field name, whoever asks, and says so before anyone is asked;
 //! a name with a slash is no address at all, ADM-116. A token made with
@@ -23,7 +27,10 @@
 //!
 //! Same as the command: POST /api/1/show gives each action's command, and
 //! admin show prints that line. A read's command, typed in alice's pane,
-//! prints what the route answers. A change's command, typed in the pane
+//! prints what the route answers (for what moves from one reading to the
+//! next, the seconds up and the metrics' values, what the two have in
+//! common: see [`projection`]), and a read the route refused is a command
+//! that fails. A change's command, typed in the pane
 //! that one elevate unlocked with her password, leaves the example service
 //! as the route does; the route's undo, which examples.undo names, puts
 //! back what the change did, and the log has a line for each change asked
@@ -449,6 +456,37 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
     })
 }
 
+/// A read that may answer with the machine's own words instead of 200 and
+/// JSON, as this test boots it: its status and error ID.
+///
+/// - `checks.last` runs `dukovo-check --last`, which has no kept result
+///   until the dukovo-check service's first morning run or a run by hand,
+///   and the guest has had neither: the command ends with status 3, and
+///   the answer is ADM-123, 422.
+/// - `metrics.usage` reads the history metricsd writes every 10 minutes
+///   and when it stops. The guest has run for less, so `metrics show` may
+///   have no points to give and end with status 1: ADM-123, 422.
+fn may_refuse(id: &str) -> Option<(u16, &'static str)> {
+    match id {
+        "checks.last" => Some((422, "ADM-123")),
+        "metrics.usage" => Some((422, "ADM-123")),
+        _ => None,
+    }
+}
+
+/// A read's answer: its JSON for a 200, or None for the refusal that
+/// [`may_refuse`] names for the action.
+fn read_answer(reply: Reply, id: &str, what: &str) -> Result<Option<Value>, String> {
+    let what = format!("{id} read by {what}");
+    match may_refuse(id) {
+        Some((status, error)) if reply.status == status => {
+            reply.refused(&what, status, error)?;
+            Ok(None)
+        }
+        _ => reply.must(&what, 200)?.json().map(Some),
+    }
+}
+
 /// What a read's answer holds that does not change from one moment to the
 /// next: for the services, each one's name and state (their times and
 /// process numbers do), for an explanation, what it follows and says to
@@ -469,6 +507,23 @@ fn projection(id: &str, answer: &Value) -> Value {
         "service.explain" => {
             json!({"chain": answer["chain"], "root": answer["root"], "fix": answer["fix"]})
         }
+        // The seconds up are not the same a moment later.
+        "console.about" => {
+            let mut about = answer.clone();
+            if let Value::Object(fields) = &mut about {
+                let up = fields.get("up").is_some_and(Value::is_u64);
+                fields.insert("up".into(), json!(up));
+            }
+            about
+        }
+        // The values move at each step of metricsd, and a series may be
+        // there in one reading and not in the next: what holds is that
+        // every value is a number.
+        "metrics.now" => json!(answer.as_object().is_some_and(|all| all.values().all(Value::is_number))),
+        // The points are those of the range ending now.
+        "metrics.usage" => json!(answer.as_array().is_some_and(|all| all
+            .iter()
+            .all(|one| one["series"].is_string() && one["points"].is_array()))),
         _ => answer.clone(),
     }
 }
@@ -550,7 +605,7 @@ fn who_may_ask(test: &mut Test, action: &Action) -> Result<(), String> {
     if !action.changes {
         for who in [Who::Bob, Who::Alice] {
             let reply = test.run(who, action, &action.args)?;
-            reply.must(&format!("{id} read by {}", who.name()), 200)?.json()?;
+            read_answer(reply, id, who.name())?;
         }
         return Ok(());
     }
@@ -722,7 +777,16 @@ fn reads_as_commands(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
 }
 
 fn read_as_command(vm: &mut Vm, test: &mut Test, action: &Action, command: &str) -> Result<(), String> {
-    let answer = test.run(Who::Alice, action, &action.args)?.must("the route's read", 200)?.json()?;
+    let reply = test.run(Who::Alice, action, &action.args)?;
+    let Some(answer) = read_answer(reply, &action.id, "alice")? else {
+        // The route says the machine has nothing to show, and the command
+        // typed says it too: it does not end well.
+        let status = test.pane.status(vm, command)?;
+        if status == 0 {
+            return Err("the route refused it, and the command ended with status 0".into());
+        }
+        return Ok(());
+    };
     let printed = test.pane.output(vm, command)?;
     let printed: Value = serde_json::from_str(printed.trim())
         .map_err(|err| format!("it printed {printed:?}, which is not JSON: {err}"))?;
@@ -1243,6 +1307,58 @@ mod tests {
             projection("service.explain", &explained("a ran for 9 s."))
         );
         assert_eq!(projection("certificate.list", &json!([1])), json!([1]));
+    }
+
+    #[test]
+    fn what_moves_in_the_overview_s_reads_is_left_out_of_the_comparison() {
+        let about = |up: u64| json!({"host": "nas", "up": up, "port": 9090});
+        assert_eq!(projection("console.about", &about(5)), projection("console.about", &about(90)));
+        assert_ne!(
+            projection("console.about", &about(5)),
+            projection("console.about", &json!({"host": "other", "up": 5, "port": 9090}))
+        );
+        // A machine that does not say how long it has been up says so in both.
+        assert_ne!(
+            projection("console.about", &json!({"host": "nas", "up": null})),
+            projection("console.about", &about(5))
+        );
+        let now = |cpu: f64| json!({"cpu": cpu, "memory.used": 1.0e9});
+        assert_eq!(projection("metrics.now", &now(3.0)), projection("metrics.now", &now(40.5)));
+        assert_ne!(projection("metrics.now", &now(3.0)), projection("metrics.now", &json!({"cpu": "x"})));
+        assert_ne!(projection("metrics.now", &now(3.0)), projection("metrics.now", &json!([])));
+        let usage = |points: Value| json!([{"series": "cpu", "points": points}]);
+        assert_eq!(
+            projection("metrics.usage", &usage(json!([[1, 2.0]]))),
+            projection("metrics.usage", &usage(json!([[5, 9.0], [6, 1.0]])))
+        );
+        assert_ne!(projection("metrics.usage", &usage(json!(3))), projection("metrics.usage", &usage(json!([]))));
+        assert_eq!(projection("console.notices", &json!({"notices": []})), json!({"notices": []}));
+    }
+
+    #[test]
+    fn two_reads_may_say_the_machine_has_nothing_to_show_and_the_others_may_not() {
+        let reply = |status: u16, body: &str| Reply { status, headers: Vec::new(), body: body.into() };
+        let refusal = |id: &str| json!({"error": {"id": id}}).to_string();
+        // checks.last: ADM-123 for no result kept yet, or its JSON.
+        let said = read_answer(reply(422, &refusal("ADM-123")), "checks.last", "bob").unwrap();
+        assert_eq!(said, None);
+        let said = read_answer(reply(200, "{\"score\": 100}"), "checks.last", "bob").unwrap();
+        assert_eq!(said, Some(json!({"score": 100})));
+        assert!(read_answer(reply(501, &refusal("ADM-129")), "checks.last", "bob").is_err());
+        assert!(read_answer(reply(422, &refusal("ADM-129")), "checks.last", "bob").is_err());
+        // metrics.usage: ADM-123 for no history yet.
+        let said = read_answer(reply(422, &refusal("ADM-123")), "metrics.usage", "alice").unwrap();
+        assert_eq!(said, None);
+        assert!(read_answer(reply(422, &refusal("ADM-129")), "metrics.usage", "alice").is_err());
+        // Any other read answers 200 or fails the test, whatever it says.
+        for id in ["service.list", "console.about", "console.notices", "metrics.now"] {
+            assert_eq!(may_refuse(id), None, "{id}");
+            assert!(read_answer(reply(501, &refusal("ADM-129")), id, "bob").is_err(), "{id}");
+            assert!(read_answer(reply(403, &refusal("ADM-124")), id, "bob").is_err(), "{id}");
+            assert!(read_answer(reply(200, "{}"), id, "bob").unwrap().is_some(), "{id}");
+        }
+        // A 200 that is not JSON is no answer.
+        assert!(read_answer(reply(200, "ok"), "service.list", "bob").is_err());
     }
 
     #[test]

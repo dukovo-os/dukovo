@@ -44,7 +44,13 @@ fn the_list_of_actions_is_for_a_session_or_a_token_and_no_one_else() {
             listed.json().as_array().unwrap().iter().map(|a| a["id"].clone()).collect();
         assert_eq!(
             ids,
-            [json!("lab.restart"), json!("lab.list"), json!("lab.long"), json!("lab.set")]
+            [
+                json!("lab.restart"),
+                json!("lab.list"),
+                json!("lab.long"),
+                json!("lab.set"),
+                json!("lab.missing")
+            ]
         );
         let by_token = send(&world, with_token(get("/api/1/actions"), TOKEN_READ)).await;
         assert_eq!(by_token.json(), listed.json());
@@ -74,6 +80,96 @@ fn a_read_runs_in_the_person_s_worker_and_answers_the_json_its_command_printed()
         let mut head = get("/api/1/lab").by(&session);
         head.method = "HEAD";
         assert_eq!(send(&world, head).await.status, 405);
+    });
+}
+
+#[test]
+fn a_read_whose_program_is_not_there_is_adm_129_naming_it() {
+    run(async {
+        let world = lab_world("actions-missing");
+        let session = sign_in(&world, "dave").await;
+        let read = send(&world, get("/api/1/lab/missing").by(&session)).await;
+        assert_eq!(read.status, 501, "{}", read.body);
+        let error = &read.json()["error"];
+        assert_eq!(error["id"], "ADM-129");
+        assert_eq!(error["detail"], "lab-missing: command not found");
+        assert_eq!(error["fix"], "It comes with a later update of Dukovo.");
+        // Nothing ran, so there is no command's output to show.
+        assert!(error.get("command").is_none(), "{error}");
+        assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn the_last_checks_are_adm_129_until_their_command_is_in_this_tree() {
+    run(async {
+        // The console's own list, not the tests'.
+        let world = world("actions-checks");
+        let dave = sign_in(&world, "dave").await;
+        let read = send(&world, get("/api/1/checks/last").by(&dave)).await;
+        assert_eq!(read.status, 501, "{}", read.body);
+        let error = &read.json()["error"];
+        assert_eq!(error["id"], "ADM-129");
+        assert_eq!(error["detail"], "dukovo-check: command not found");
+        assert_eq!(error["fix"], "It comes with a later update of Dukovo.");
+        let argv = json!({ "argv": ["dukovo-check", "--last", "--json"] });
+        assert!(called(&world).contains(&("run".into(), argv)), "{:?}", called(&world));
+        // A token reads it with the security scope alone, and no other.
+        let refused = send(&world, with_token(get("/api/1/checks/last"), TOKEN_READ)).await;
+        assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-124"));
+        assert!(refused.json()["error"]["detail"].as_str().unwrap().contains("security:read"));
+        let all = send(&world, with_token(get("/api/1/checks/last"), TOKEN_ALL)).await;
+        assert_eq!((all.status, all.error().as_str()), (501, "ADM-129"));
+    });
+}
+
+#[test]
+fn the_new_reads_run_their_commands_in_the_person_s_worker_and_never_as_an_administrator() {
+    run(async {
+        let world = world("actions-reads");
+        let dave = sign_in(&world, "dave").await;
+        let usage = "/api/1/metrics/usage/7d";
+        let asked: [(&str, &str); 4] = [
+            ("/api/1/console/about", "admin about --json"),
+            ("/api/1/console/notices", "admin notices --json"),
+            ("/api/1/metrics/now", "metrics now --json"),
+            (
+                usage,
+                "metrics show cpu memory.used memory.available disk.read disk.write net.rx \
+                 net.tx --since 7d --every 2h --json",
+            ),
+        ];
+        for (path, command) in asked {
+            // The test worker has no such programs: what is asked of it is
+            // what the route made of the address.
+            let read = send(&world, get(path).by(&dave)).await;
+            assert_eq!(read.status, 501, "{path}: {}", read.body);
+            let words: Vec<&str> = command.split(' ').collect();
+            let argv = json!({ "argv": words });
+            assert!(called(&world).contains(&("run".into(), argv)), "{path} {:?}", called(&world));
+        }
+        assert!(elevations(&world).is_empty());
+        // A word that is no range is refused before the worker hears of it,
+        // with its field.
+        let before = called(&world).len();
+        let bad = send(&world, get("/api/1/metrics/usage/2h").by(&dave)).await;
+        assert_eq!((bad.status, bad.error().as_str()), (400, "ADM-125"));
+        assert_eq!(bad.json()["error"]["field"], "range");
+        assert_eq!(called(&world).len(), before);
+        // The address takes the word whole.
+        for path in
+            ["/api/1/metrics/usage", "/api/1/metrics/usage/7d/more", "/api/1/metrics/usage/"]
+        {
+            let missing = send(&world, get(path).by(&dave)).await;
+            assert_eq!(missing.status, 404, "{path}");
+        }
+        let posted = send(&world, post(usage, &json!({})).by(&dave)).await;
+        assert_eq!((posted.status, posted.error().as_str()), (405, "ADM-117"));
+        // A token for metrics alone reads the usage and is refused the rest.
+        let metrics = send(&world, with_token(get("/api/1/metrics/now"), TOKEN_ALL)).await;
+        assert_eq!(metrics.status, 501);
+        let other = send(&world, with_token(get("/api/1/metrics/now"), TOKEN_OTHER)).await;
+        assert_eq!((other.status, other.error().as_str()), (403, "ADM-124"));
     });
 }
 

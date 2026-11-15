@@ -10,7 +10,8 @@
 //! runs with the worker's own environment, no terminal, and input that
 //! ends at once; its output and its error output are kept as admind's
 //! elevated ones are. At most 8 run at once for a worker, and each has 30
-//! seconds, after which it is killed.
+//! seconds, after which it is killed. A program that is in neither folder
+//! is ADM-129, said as authd says it of an elevated one.
 
 use std::cell::Cell;
 use std::fs::File;
@@ -22,7 +23,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::unix::pipe::Receiver;
 
-use crate::admind::errors::Kind;
+use crate::admind::errors::{Kind, NOT_FOUND};
 use crate::admind::link::Fault;
 use crate::admind::run::{RUN_TIME, exit_code, read_both};
 
@@ -79,7 +80,7 @@ pub async fn run(params: Value) -> Result<Value, Fault> {
 async fn run_in(argv: &[String], folders: &[&str]) -> Result<Value, Fault> {
     check(argv)?;
     let program = find(&argv[0], folders)
-        .ok_or_else(|| Fault::new(Kind::BadRequest, format!("there is no command {}", argv[0])))?;
+        .ok_or_else(|| Fault::new(Kind::NoProgram, format!("{}{NOT_FOUND}", argv[0])))?;
     let _place = Place::take()
         .ok_or_else(|| Fault::new(Kind::Wait, "too many commands at once for this session"))?;
     let internal = |err: std::io::Error| Fault::new(Kind::Internal, format!("{}: {err}", argv[0]));
@@ -169,6 +170,27 @@ mod tests {
     }
 
     #[test]
+    fn the_lab_s_missing_command_is_in_neither_folder_of_commands() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let program = crate::admind::actions::lab::MISSING_PROGRAM;
+        let fault = runtime.block_on(run(json!({ "argv": [program, "--json"] }))).unwrap_err();
+        assert_eq!(fault.id, Kind::NoProgram.id());
+        assert_eq!(fault.detail, format!("{program}: command not found"));
+    }
+
+    #[test]
+    fn the_checks_command_is_in_neither_folder_of_commands_yet() {
+        // checks.last runs it. This test is the one to change, with the
+        // route's in routes/tests/act.rs, when the command is installed.
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let program = crate::admind::actions::checks::PROGRAM;
+        let fault =
+            runtime.block_on(run(json!({ "argv": [program, "--last", "--json"] }))).unwrap_err();
+        assert_eq!(fault.id, Kind::NoProgram.id());
+        assert_eq!(fault.detail, "dukovo-check: command not found");
+    }
+
+    #[test]
     fn a_command_has_a_program_and_limits() {
         let words = |n: usize| vec!["w".to_string(); n];
         assert!(check(&words(1)).is_ok());
@@ -193,7 +215,11 @@ mod tests {
         let ran = runtime.block_on(run_in(&argv(&["tool", "a b"]), &folders)).unwrap();
         assert_eq!(ran, json!({ "status": 3, "output": "out a b\n", "errors": "err\n" }));
         let missing = runtime.block_on(run_in(&argv(&["nothing"]), &folders)).unwrap_err();
-        assert_eq!(missing.id, Kind::BadRequest.id());
+        assert_eq!(missing.id, Kind::NoProgram.id());
+        assert_eq!(missing.detail, "nothing: command not found");
+        // A path is no program's name, and is said the same.
+        let path = runtime.block_on(run_in(&argv(&["/bin/sh"]), &folders)).unwrap_err();
+        assert_eq!(path.id, Kind::NoProgram.id());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

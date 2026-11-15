@@ -60,14 +60,16 @@ machine, the networks of its own cards, and the address ranges no one
 reaches from the internet: loopback, link-local, 10.0.0.0/8,
 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 (where Tailscale puts
 machines) and fc00::/7. Any other connection is closed with no word, and
-the log says so once a minute for each address, never once for each try.
+the log says so once a minute for each address and reason, never once for
+each try.
 *reach = "any"* answers all.
 
 It serves at most 512 connections at once and 32 from one address (an
-IPv6 address counts by its /64). A client has 10 seconds from its
-connection for the TLS handshake and the head of its first request, a
-head is at most 16 KiB and 64 headers, and a connection that sends no
-head for 60 seconds is closed.
+IPv6 address counts by its /64). A client has 20 seconds from its
+connection for the TLS handshake and the head of its first request, which
+is longer than a browser keeps a connection it opened ahead and has not
+used. A head is at most 16 KiB and 64 headers, and a connection that sends
+no head for 60 seconds is closed.
 
 ## What it checks
 
@@ -161,6 +163,39 @@ areas'. Besides the routes of the actions there are two:
 	and *files*, the paths a change writes. Any signed-in session may ask,
 	locked or not, and so may a token whose scopes read the action's
 	area. *admin show* prints the same.
+
+The Overview and the pages that show the machine read it with five actions
+of their own. Each runs a command as the person, so any signed-in session
+may ask, an administrator or not, and a token needs the read scope of its
+area:
+
+*GET /api/1/console/about* (*console.about*, area *console*)
+	*admin about --json*: the machine's *host*, *addresses*, console *port*
+	and certificate *fingerprint*, the *release* and whether this start is
+	the other slot's *fallback*, the *machine* (*maker*, *model*), *processor*,
+	*memory*, seconds *up*, the *zone*, whether the *clock* is *synchronized*,
+	the *ssh\_host\_key*, the *last\_good\_start* and the person's last two
+	*sign\_ins*. What the person may not read is null, never an error.
+
+*GET /api/1/console/notices* (*console.notices*, area *console*)
+	*admin notices --json*: *{"notices": [{"name", "lines", "at"}]}*, the
+	notices that the consoles show at sign-in, and the failed start's.
+
+*GET /api/1/checks/last* (*checks.last*, area *security*)
+	*dukovo-check --last --json*: the last result of the health checks, as
+	printed, also when a check failed or warned (status 1 or 2). Before
+	any result is kept the answer is 422 (ADM-123) with the command's
+	status 3. A machine that does not have *dukovo-check* answers 501
+	(ADM-129).
+
+*GET /api/1/metrics/now* (*metrics.now*, area *metrics*)
+	*metrics now --json*: the latest values.
+
+*GET /api/1/metrics/usage/{range}* (*metrics.usage*, area *metrics*)
+	*metrics show --json* of the seven series of the Usage card, over
+	*range*, one of *1h*, *24h*, *7d* or *1y*, with a point for each minute,
+	15 minutes, 2 hours or day. Any other word is ADM-125. A machine that has
+	kept no history yet answers ADM-123 with *metrics*'s own words.
 
 An action's arguments are the parts of its address, such as _name_ above,
 and the members of the JSON object in its body, which may be empty,
@@ -318,9 +353,12 @@ found and one for the rest. The person is the one whose elevated command
 named the file's path, as a whole word, in the 10 minutes before the file
 changed, by the audit log (*log --audit*), which only root reads and which
 admind asks logd for; if more than one did, the last. A change that no such
-command names is *outside the console*: an edit by *service* _name_ *edit*,
-which names the service and not the path, an editor run as root at the
-machine's own console, or a file copied in. Names that begin with a dot,
+command names, made while one account's administrator's terminal of the
+console ran (Terminals), is that account's, with the note *in an
+administrator's terminal of this console*; when two accounts' ran, it is no
+one's. A change that none of these names is *outside the console*: an edit
+by *service* _name_ *edit*, which names the service and not the path, an
+editor run as root at the machine's own console, or a file copied in. Names that begin with a dot,
 which an editor's work file has on its way to its name, and links are not
 looked at. A file changed and changed back between two looks is not seen,
 and two changes between two looks are one row. The first look at a store
@@ -469,29 +507,43 @@ check the scopes against).
 ## Preferences
 
 A person's preferences are their own, not the machine's: how the console
-looks to them and the time zone it shows times in.
+looks to them, the time zone it shows times in, whether pages show the
+command an action runs, and how their terminals are.
 
 *GET /api/1/account/preferences*
-	Answers *{"theme", "text", "motion", "zone"}*.
+	Answers *{"theme", "text", "motion", "zone", "commands", "terminal"}*,
+	where *terminal* is *{"size", "scrollback", "copy-on-select",
+	"keep-days", "announce", "shortcuts"}*.
 
 *POST /api/1/account/preferences*
-	Takes any of the four and answers all of them. A member that is not
-	given stays as it was. A member that the route does not have, or of
-	the wrong type, is ADM-108; a value that cannot work is ADM-125 with
-	the *field*, before the person's worker is asked.
+	Takes any of them, and any of the terminal's, and answers all of them.
+	A member that is not given stays as it was. A member that the route
+	does not have, or of the wrong type, is ADM-108; a value that cannot
+	work is ADM-125 with the *field*, such as *terminal.size*, before the
+	person's worker is asked.
 
 *theme* is *dark* (the default), *light*, *high-contrast* or *device*, which
 follows the device's own. *text* is the size of the text in percent: 100
 (the default), 112, 125 or 150. *motion* is *full* (the default) or *less*.
 *zone* is a time zone of the machine's own database, such as
-*Europe/Berlin*, or empty (the default) for none.
+*Europe/Berlin*, or empty (the default) for none. *commands* is *hidden*
+(the default) or *shown*: whether pages show the command an action runs.
+
+The terminal's are a *[terminal]* table in the file: *size* of the text in
+pixels, 12 to 20 (14); *scrollback*, the lines the browser keeps, 1000 to
+50000 (10000); *copy-on-select*, whether a selection is copied as soon as it
+is made (false); *keep-days*, how many days a terminal that no page is
+attached to is kept before it ends, 1 to 30 (7); *announce*, whether new
+output is read aloud (false); and *shortcuts*, whether the terminal's
+Alt+Shift keys are on (true).
 
 They are in _~/.config/dukovo-admin/settings.toml_, mode 0600 in a folder
 that is 0700, which the person's worker reads and writes as them, through
 the same editing as a settings file has: a comment the person wrote stays,
 and a change that changes nothing writes nothing. The file is theirs to edit
 by hand. A key that is missing or has a value that is none of the above
-reads as its default, so that a typo costs a preference and never the page;
+reads as its default, a number out of its range included, so that a typo
+costs a preference and never the page;
 a file that is not TOML is told with its line (ADM-121) and left as it is.
 Any signed-in session may read and change them, locked or not, but not a
 session that may only add a second step (ADM-118), and not a token
@@ -519,10 +571,145 @@ a signed-in session. It tells:
 	only the latest is sent. A stream that opens is told where each task is
 	that waits, runs, or ended in the last minute.
 
+*event: change*
+	*{"id": 41, "how": "console", "at": 1790000000}*, a row of the journal
+	that has ended: its number, how it was made (*console*, *token* and the
+	token's name, or *by hand*) and when, in seconds since 1970. It is told
+	once to every stream of every signed-in session, as the journal is
+	everyone's to read, and says no person, action or file. A stream that
+	opens is told of the rows after it opened; the page reads the rest from
+	*GET /api/1/changes*.
+
 A comment line, *: keep*, comes every 25 seconds, so that nothing between
 the browser and admind closes a stream that says nothing. A session with a
 stream open is not idle; once its last stream has closed and a minute has
 passed, an unlocked session locks itself.
+
+## Terminals
+
+The Terminal page shows shells in the browser: each terminal has a name and
+one to four panes, each a shell on a terminal (_/devices/pts/N_) that admind
+holds, as *sshd*(8) holds an SSH session's. *authd*(8) starts the shell: a
+person's own login shell, with a sign-in record that *who*(1) and *last*(1)
+show from the browser's address, or, for an administrator whose session is
+unlocked, root's. A terminal is the account's, not the session's: the
+person's own panes go on when the page closes and when the session ends, and
+any of the account's sessions shows them. An administrator's pane is its
+session's alone: another session does not see it, and it ends when the
+session locks, its unlock runs out, or it ends. A terminal that no page has
+shown for its *keep\_days* (7 unless asked, 1 to 30) ends, and all of them
+end when admind stops or restarts.
+
+*admin.toml*(5)'s *[terminal] allowed* says who may have one (everyone, the
+administrators, or no one), and *sessions-per-account* how many each account
+keeps (32 unless set). An account with no shell has none (ADM-132). The
+routes are for a signed-in session that may do all that is a person's: a
+token never may (ADM-124), since a terminal is a person's and a script has
+SSH. Each POST needs the session's token, as every change does.
+
+*GET /api/1/terminals*
+	*{"terminals": [...], "most": 32, "sockets": {"open": 1, "most": 4}}*:
+	the account's terminals, each with *id*, *name*, *made*, *used* (Unix
+	times), *from* (the address it was opened from), *keep\_days*, *layout*,
+	*sizes* and *panes*, each pane with *id*, *admin*, *cols*, *rows*,
+	*busy* (whether a program other than the shell runs in it, or null when
+	that cannot be told), *started* and *attached* (how many pages show it).
+	An administrator's pane of another session is left out, and so is a
+	terminal with no pane left to show.
+
+*POST /api/1/terminals* *{"cols": 80, "rows": 24, "name": "logs",
+"admin": false, "keep\_days": 7}*
+	A new terminal with one pane, of 2 to 500 columns and 1 to 300 rows;
+	*name* (1 to 40 characters, none a control character) is the account's
+	name and the machine's unless given, or *root@* and the machine's for
+	an administrator's. The answer is *{"terminal": {...}}*. An
+	administrator's pane needs an administrator (ADM-122) whose session is
+	unlocked (ADM-106). ADM-130 when the account has as many terminals as
+	it may keep, or admind holds 256 panes.
+
+*POST /api/1/terminals/{id}/panes* *{"cols": 80, "rows": 24, "admin":
+false, "layout": "columns"}*
+	One more pane, four at most (ADM-130). A terminal of one pane is laid
+	out in columns unless *layout* says otherwise.
+
+*POST /api/1/terminals/{id}/layout* *{"layout": "grid", "sizes": [0.5]}*
+	The layout, one of *one*, *columns*, *rows*, *main-left* and *grid*,
+	and up to three sizes between the panes, each 0.2 to 0.8.
+
+*POST /api/1/terminals/{id}/rename* *{"name": "build"}*
+	A new name.
+
+*POST /api/1/terminals/{id}/end*, *POST /api/1/terminals/panes/{pane}/end*
+	Ends the terminal, or one pane, and its shell. A terminal whose last
+	pane ends ends too. *{"done": true}*.
+
+A terminal or pane that is not there, has ended, or is another account's is
+ADM-131, the same for each, so that one cannot tell them apart.
+
+*GET /api/1/terminal* opens the WebSocket (RFC 6455) that shows the panes.
+The request must ask for the protocol *dukovo-terminal-1* and carry the
+session's token as another protocol, *csrf.* and the token, since a page can
+set no other header on it; it must come from the console's own page, by
+*Origin* and *Sec-Fetch-Site* (ADM-109), and the session may have four open
+(ADM-130). The answer is 101, with no extension: nothing is compressed.
+admind takes masked frames of at most 64 KiB a message, and closes the
+socket with 1002 for a frame that breaks the protocol, 1007 for text that
+is not UTF-8, 1008 for a message that is not one below, 1009 for one too
+big, 1011 when the page does not take what is sent, 1001 as admind stops,
+and 4001 when the session ends. It pings every 25 seconds and closes a
+socket that has answered none for 60 (1008).
+
+A page sends JSON text and binary messages of typing:
+
+*{"attach": 12, "cols": 120, "rows": 40, "since": 81920}*
+	Shows pane 12. Without *since*, the page is sent the last output the
+	pane keeps (64 KiB), from the start of a line; with it, the output from
+	that offset on, if the pane still keeps it. The pane takes the size
+	asked when no other page shows it.
+
+*{"detach": 12}*, *{"resize": 12, "cols": 120, "rows": 40}*
+	Stops showing a pane; gives it a size.
+
+*{"ack": 12, "offset": 90112}*
+	How much of the pane's output the page has taken in.
+
+Binary: the pane as 4 bytes, big-endian, then what was typed, 16 KiB at most.
+
+admind sends:
+
+*{"attached": 12, "terminal": 3, "name": "alice@nas", "admin": false,
+"cols": 120, "rows": 40, "offset": 65536, "replay": true, "modes": "..."}*
+	The pane is shown, from *offset*. A replay has *modes*: the sequences
+	that put a new screen in the modes the pane's program set (the
+	alternate screen, the cursor keys, the mouse, bracketed paste), to be
+	read before the output. The program is then given the size again, one
+	row less and back, so that a full-screen program draws itself anew.
+
+*{"ended": 12, "why": "exited"}*
+	The pane ended: *exited* (its shell ended), *ended* (it was ended),
+	*locked*, *signed-out*, *idle* (the session ended), or *restart*. A
+	*status*, the shell's exit status, is there only when admind knows it,
+	which it does not yet: authd reaps the shell.
+
+*{"detached": 12, "why": "slow"}*
+	The page did not take the pane's output for 30 seconds.
+
+*{"changed": 3}*
+	Terminal 3's name, layout or panes changed: read the list again.
+
+*{"error": {...}, "pane": 12}*
+	What asked of pane 12 could not be done, such as ADM-131 or ADM-130
+	for a seventeenth pane on one socket.
+
+Binary: the pane as 4 bytes, the offset of the first byte as 8, both
+big-endian, then the output, 16 KiB at most.
+
+While a page has not taken 256 KiB of a pane's output, admind stops reading
+the pane, so that its program waits, as on a slow line; reading goes on
+once the page is within 64 KiB. A page that stays behind for 30 seconds is
+detached from the pane, so that other pages go on. At most 64 KiB of typing
+waits for a pane; past that, admind reads no more from that page until the
+shell has taken some.
 
 ## Errors
 
@@ -544,7 +731,9 @@ the console could not do that, *ADM-122* the account can look but not
 change, *ADM-123* the command did not work, *ADM-124* the API token may
 not do this, *ADM-125* a value cannot work, *ADM-126* the console keeps no
 journal or tasks now, *ADM-127* it has no such change or task, *ADM-128*
-that cannot be done to this change or task. *detail* says what happened
+that cannot be done to this change or task, *ADM-129* this machine does not
+have the program yet, *ADM-130* too many terminals, *ADM-131* no such
+terminal, *ADM-132* the terminal is not open to this account. *detail* says what happened
 this time, in authd's own words where authd refused. ADM-125 also has the
 *field* whose value cannot work, and ADM-123 the *command* with its words,
 status and error output. Each ID has a page in the support center that
@@ -558,7 +747,16 @@ _/system/settings/admin.toml_
 
 _/system/resources/admin_
 	The console's pages. Its _manifest.txt_ lists the SHA-256 of each
-	file, and admind serves only the files that match.
+	file, and admind serves only the files that match. It checks each
+	when it starts and reads it again, and checks it again, each time it
+	sends it, keeping none in memory: a file changed since admind started
+	is not served, and the log says so. A file's *ETag*
+	is its hash from the manifest, in quotes, and a request whose
+	*If-None-Match* names it, or is a single star, is answered 304 with
+	the *ETag* and *Cache-Control: no-cache* and no body, so that a reload
+	fetches only what changed. Its _help/errors_ folder holds the error pages of
+	the support center, as _ID.md_ files, and _index.json_, a list of each
+	one's *id*, *title* and *area*.
 
 _/system/live/admind/issue_
 	The address and the certificate's fingerprint, for the sign-in
@@ -628,6 +826,14 @@ or the journal could not do: *the journal could not look at the files*, *the
 journal could not keep* an action's change, *the journal cannot tell who
 changed a file* (logd did not answer, so the rows say *outside the
 console*), and *task 42 could not be saved*.
+
+Each terminal's pane has a line as it opens, such as *terminal 3 pane 12
+opened for alice as an administrator from 192.0.2.7 (pts/7)*, as a page
+shows it and stops (*pane 12 attached*, *pane 12 detached*), and as it ends,
+with why: *terminal 3 pane 12 (pts/7) ended: exited*. A socket has a line as
+it opens, and one when it is closed because it answered no ping. Nothing
+typed or shown is ever in the log. authd's audit log has each shell's start
+and end.
 
 # EXIT STATUS
 

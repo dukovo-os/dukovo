@@ -96,9 +96,43 @@ fn each_edit_is_given_its_own_person_or_none() {
     let commands = [elevated("alice", "vi /a", 100), elevated("bob", "vi /b", 100)];
     let edits = [("/a".to_string(), 150), ("/b".to_string(), 150), ("/c".to_string(), 150)];
     let who = who_edited_each(&commands, &edits);
-    assert_eq!(who.get("/a").map(String::as_str), Some("alice"));
-    assert_eq!(who.get("/b").map(String::as_str), Some("bob"));
-    assert_eq!(who.get("/c"), None);
+    let name = |path: &str| who.get(path).map(|editor| (editor.name.as_str(), editor.note()));
+    assert_eq!(name("/a"), Some(("alice", None)));
+    assert_eq!(name("/b"), Some(("bob", None)));
+    assert_eq!(name("/c"), None);
+}
+
+fn rooted(account: &str, started: i64, ended: Option<i64>) -> Rooted {
+    Rooted { account: account.into(), started, ended }
+}
+
+#[test]
+fn a_change_while_one_accounts_administrator_terminal_ran_is_that_accounts() {
+    let panes = [rooted("alice", 100, Some(200)), rooted("alice", 150, None)];
+    assert_eq!(who_in_terminal(&panes, 100), Some("alice"));
+    assert_eq!(who_in_terminal(&panes, 5_000), Some("alice"));
+    // An editor hung up as its pane ends may save a moment later.
+    assert_eq!(who_in_terminal(&panes[..1], 202), Some("alice"));
+    assert_eq!(who_in_terminal(&panes[..1], 203), None);
+    assert_eq!(who_in_terminal(&panes, 99), None);
+    // Two accounts' panes: the journal does not guess.
+    let both = [rooted("alice", 100, None), rooted("bob", 120, Some(300))];
+    assert_eq!(who_in_terminal(&both, 110), Some("alice"));
+    assert_eq!(who_in_terminal(&both, 200), None);
+    assert_eq!(who_in_terminal(&both, 400), Some("alice"));
+    assert_eq!(who_in_terminal(&[], 400), None);
+}
+
+#[test]
+fn an_elevated_command_names_its_person_before_a_terminal_does() {
+    let commands = [elevated("bob", "vi /a", 100)];
+    let edits = [("/a".to_string(), 150), ("/b".to_string(), 150), ("/c".to_string(), 50)];
+    let mut who = who_edited_each(&commands, &edits);
+    add_terminal_editors(&mut who, &[rooted("alice", 90, None)], &edits);
+    assert_eq!(who["/a"], Editor { name: "bob".into(), in_terminal: false });
+    assert_eq!(who["/b"], Editor { name: "alice".into(), in_terminal: true });
+    assert_eq!(who["/b"].note(), Some(IN_TERMINAL));
+    assert!(!who.contains_key("/c"));
 }
 
 /// A socket path of the test's own.

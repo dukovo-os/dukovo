@@ -1,0 +1,97 @@
+/* SPDX-FileCopyrightText: 2026 The Dukovo contributors */
+/* SPDX-License-Identifier: Apache-2.0 OR MIT */
+
+/* The command palette (design 11): a modal <dialog> drawn as the Palette
+   board. The board's own classes (.pal, .pal-in, .pal-group, .pal-item and
+   .pal-foot) come first, then what a palette that works needs: the list that
+   scrolls, the run and result views, and the phone's layout. The file is
+   linked when the palette is first opened, so the shell's start does not
+   carry it. */
+
+.pal { width: 100%; max-width: 47.143rem; border: 1px solid var(--btn-b); border-radius: .571rem; background: var(--bg); box-shadow: var(--shadow); overflow: hidden; }
+.pal-in { display: flex; align-items: center; gap: .714rem; padding: .857rem 1rem; border-bottom: 1px solid var(--border); }
+.pal-in input { flex: 1; border: 0; background: none; font: 1.143rem var(--font-ui); color: var(--text); outline: none; }
+.pal-group { padding: .429rem 0; border-bottom: 1px solid var(--border); }
+.pal-group > b { display: block; padding: .286rem 1rem; font-size: .857rem; font-weight: 700; letter-spacing: .04em; color: var(--muted); }
+.pal-item { display: flex; align-items: center; gap: .714rem; padding: .5rem 1rem; color: var(--text); text-decoration: none; }
+.pal-item.on { background: linear-gradient(var(--sel-1), var(--sel-2)); box-shadow: inset 3px 0 0 var(--accent); }
+.pal-item small { color: var(--muted); }
+.pal-item .right { margin-left: auto; display: flex; gap: .571rem; align-items: center; }
+.pal-foot { display: flex; gap: 1.143rem; flex-wrap: wrap; padding: .571rem 1rem; font-size: .857rem; color: var(--muted); background: var(--pane); }
+dialog.pal [hidden] { display: none !important; }
+dialog.pal { padding: 0; margin: 5rem auto 1rem; width: calc(100% - 1.143rem); max-height: calc(100vh - 6rem); max-height: calc(100dvh - 6rem); color: var(--text); }
+dialog.pal[open] { display: flex; flex-direction: column; }
+dialog.pal::backdrop { background: var(--scrim); }
+.pal-in { flex: none; }
+.pal-in input { min-width: 0; min-height: 2.286rem; }
+.pal-in input:focus-visible { outline: none; }
+.pal-in input::placeholder { color: var(--muted); opacity: 1; }
+.pal-item:not(.on) .right .kbd { display: none; }
+/* The board draws no outline on the field; the row it sits in carries the focus instead. */
+.pal-in:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
+.pal-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.pal-group:last-child { border-bottom: 0; }
+.pal-group > b { text-transform: uppercase; }
+.pal-item { cursor: pointer; }
+.pal-item > .ic { flex: none; }
+.pal-text { min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.pal-item .cmd-line { font: .857rem var(--font-mono); color: var(--muted); }
+.pal-item .right { flex: none; }
+.pal-item .st { white-space: nowrap; }
+mark.mark-hit { background: none; color: inherit; }
+.pal-empty { padding: 1rem; color: var(--muted); }
+.pal-note { padding: .5rem 1rem; color: var(--warn); border-bottom: 1px solid var(--border); font-size: .929rem; }
+.pal-foot { flex: none; }
+
+/* The run view and the result view. */
+.pal-head { flex: none; display: flex; align-items: center; gap: .714rem; padding: .714rem 1rem; border-bottom: 1px solid var(--border);
+  background: linear-gradient(var(--cmd-1), var(--cmd-2)); }
+.pal-head h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); min-width: 0; overflow-wrap: anywhere; }
+.pal-head h2:focus { outline: none; }
+.pal-pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: .857rem; }
+.pal-pane form { display: flex; flex-direction: column; gap: .857rem; }
+.schema-form { display: flex; flex-direction: column; gap: .857rem; }
+.pal-view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.pal-run-actions { display: flex; flex-wrap: wrap; gap: .571rem; justify-content: flex-end; }
+.pal-cmd { display: flex; flex-direction: column; gap: .286rem; }
+.pal-cmd button.inline-cmd { margin-top: 0; font: .893rem var(--font-mono); color: var(--muted); }
+.pal-result { display: flex; flex-direction: column; gap: .857rem; }
+.pal-result .tbl-box { max-height: 24rem; overflow: auto; }
+.pal-result .rows { margin: 0; }
+.pal-json > summary { cursor: pointer; min-height: 1.857rem; display: flex; align-items: center; font-weight: 600; }
+.pal-json pre { margin-top: .429rem; max-height: 20rem; overflow: auto; padding: .714rem; border: 1px solid var(--border); border-radius: .286rem; background: var(--sunken); }
+
+/* High contrast marks the row in hand with a line round it, as there is no tint to see. */
+.hc .pal-item.on { outline: 2px solid var(--sel-b); outline-offset: -2px; }
+
+/* Forced colours: no tint and no shadow are drawn, so the row in hand has an outline. */
+@media (forced-colors: active) {
+  .dk .pal-item.on { outline: 2px solid Highlight; outline-offset: -2px; }
+  .dk .pal-in:focus-within { outline-color: Highlight; }
+  /* The browser's colours for a marked word are black on black here; the mark is drawn by weight and underline alone. */
+  .dk mark.mark-hit { forced-color-adjust: none; color: CanvasText; background: Canvas; }
+  .dk dialog.pal { border: 1px solid CanvasText; }
+  .dk .pal .btn, .dk .pal .input { border: 1px solid ButtonText; }
+  .dk .pal-json pre { border: 1px solid CanvasText; }
+}
+
+/* Under 720 px at 100% text: a palette that fills the screen, rows and buttons of 44 px. */
+@media (max-width: 45rem) {
+  dialog.pal { margin: .571rem auto; max-height: calc(100vh - 1.143rem); max-height: calc(100dvh - 1.143rem); }
+  .pal-item { min-height: 3.143rem; padding: .571rem .857rem; flex-wrap: wrap; }
+  .pal-item .right { flex-basis: 100%; margin-left: 1.857rem; flex-wrap: wrap; }
+  .pal-item .right .kbd, .pal-foot .keys { display: none; }
+  .pal-in input { min-height: 3.143rem; }
+  .pal-head .btn, .pal-run-actions .btn, .pal-pane .btn, .pal-pane .tab { min-height: 3.143rem; }
+  .pal-cmd button.inline-cmd { min-height: 3.143rem; display: flex; align-items: center; }
+  .pal-json > summary { min-height: 3.143rem; }
+  .pal-pane .input { min-height: 3.143rem; }
+  .pal-pane .check { min-height: 3.143rem; align-items: center; }
+  .pal-foot { gap: .571rem; }
+  .pal-result .tbl { min-width: 0; }
+  .pal-result .tbl thead { display: none; }
+  .pal-result .tbl, .pal-result .tbl tbody, .pal-result .tbl tr, .pal-result .tbl td { display: block; }
+  .pal-result .tbl tr { border: 1px solid var(--border); border-radius: .429rem; margin: .571rem; padding: .429rem .286rem; background: var(--bg); }
+  .pal-result .tbl td { border: 0; padding: .286rem .571rem; }
+  .pal-result .tbl td::before { content: attr(data-label); display: block; font-size: .857rem; color: var(--muted); }
+}

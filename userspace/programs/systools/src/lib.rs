@@ -90,6 +90,7 @@
 
 mod account;
 mod admin;
+mod admin_about;
 mod admin_export;
 #[cfg(feature = "lab")]
 mod admin_lab;

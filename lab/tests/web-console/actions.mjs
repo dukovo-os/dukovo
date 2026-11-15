@@ -43,6 +43,19 @@ const PASSWORD = "lab-console-password";
 // (web-console/tasks), so it is left alone too.
 const SKIPPED = new Set(["certificate.renew"]);
 
+// The reads that may be answered with the machine's own words, by error
+// ID, where the rest are 200: checks.last runs `dukovo-check --last`, which
+// has no kept result until the checks' first morning run or a run by hand
+// (ADM-123, the command's status 3); lab.missing, which a lab build has, is
+// a read of a command that no image has (ADM-129); metrics.usage reads the
+// history that metricsd writes every 10 minutes, which a machine that has
+// run for less has no points of (ADM-123).
+const MAY_REFUSE = new Map([
+  ["checks.last", "ADM-123"],
+  ["lab.missing", "ADM-129"],
+  ["metrics.usage", "ADM-123"],
+]);
+
 /** `text` with every byte outside `A-Za-z0-9-._~` written as `%XX`. */
 const percentEncode = (text) =>
   Array.from(new TextEncoder().encode(text), (byte) =>
@@ -116,9 +129,48 @@ export default async function check(t) {
   // The reads first.
   for (const action of actions.filter((each) => !each.changes)) {
     const answer = await call(action, action.examples.good[0]);
+    if (MAY_REFUSE.has(action.id) && answer.json?.error?.id === MAY_REFUSE.get(action.id)) continue;
     ensure(answer.status === 200, `${action.id} from the page was answered ${answer.status}: ${answer.text}`);
     ensure(answer.json !== null, `${action.id} from the page was answered ${answer.text}, which is not JSON`);
   }
+
+  // The console's own reads, which the Overview shows, have the shapes it
+  // reads. GET /api/1/console/about names the keys of `admin about --json`,
+  // GET /api/1/console/notices a list of notices, and GET /api/1/metrics/now
+  // is JSON. GET /api/1/metrics/usage/{range} takes a word of a list, 1h,
+  // 24h, 7d or 1y, and is answered with the points or, on a machine that has
+  // kept no history yet, with metrics's own words (ADM-123); any other word
+  // is ADM-125 with the field named.
+  const own = async (path, check) => {
+    called.push(`GET ${path}`);
+    const answer = await fetchAsPage(page, "GET", path, null);
+    ensure(answer.status === 200, `GET ${path} was answered ${answer.status}: ${answer.text}`);
+    check(answer.json, answer.text);
+  };
+  await own("/api/1/console/about", (json, text) => {
+    const keys = ["host", "addresses", "port", "fingerprint", "release", "fallback", "machine", "processor", "memory", "up", "zone", "clock", "ssh_host_key", "last_good_start", "sign_ins"];
+    for (const key of keys) ensure(json !== null && key in json, `GET /api/1/console/about has no ${key}: ${text}`);
+  });
+  await own("/api/1/console/notices", (json, text) => {
+    ensure(Array.isArray(json?.notices), `GET /api/1/console/notices does not give a list of notices: ${text}`);
+    for (const notice of json.notices) ensure(typeof notice.name === "string" && Array.isArray(notice.lines) && "at" in notice, `a notice is ${JSON.stringify(notice)}`);
+  });
+  await own("/api/1/metrics/now", (json, text) => ensure(json !== null && typeof json === "object", `GET /api/1/metrics/now gave ${text}`));
+  for (const range of ["1h", "24h", "7d", "1y"]) {
+    const path = `/api/1/metrics/usage/${range}`;
+    called.push(`GET ${path}`);
+    const answer = await fetchAsPage(page, "GET", path, null);
+    ensure(answer.status === 200 || answer.json?.error?.id === "ADM-123", `GET /api/1/metrics/usage/{range} for ${range} was answered ${answer.status}: ${answer.text}`);
+  }
+  called.push("GET /api/1/metrics/usage/2h");
+  const odd = await fetchAsPage(page, "GET", "/api/1/metrics/usage/2h", null);
+  ensure(odd.status === 400 && odd.json?.error?.id === "ADM-125" && odd.json?.error?.field === "range", `GET /api/1/metrics/usage/{range} for 2h was answered ${odd.status}: ${odd.text}`);
+  // GET /api/1/checks/last is dukovo-check's last result, or ADM-123 with
+  // the command's status 3 while no result is kept.
+  called.push("GET /api/1/checks/last");
+  const checks = await fetchAsPage(page, "GET", "/api/1/checks/last", null);
+  const noneKept = checks.json?.error?.id === "ADM-123" && checks.json?.error?.command?.status === 3;
+  ensure(checks.status === 200 || noneKept, `GET /api/1/checks/last was answered ${checks.status}: ${checks.text}`);
 
   // Then each change, and what puts it back.
   const before = await stateNow();

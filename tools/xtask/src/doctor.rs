@@ -573,6 +573,13 @@ fn requirements() -> Vec<Requirement> {
             fallback: None,
         },
         Requirement {
+            name: "Python 3",
+            purpose: "runs the WebSocket client that the web console's boot tests use",
+            found: |_| program_version("python3", "--version"),
+            packages: all("python3"),
+            fallback: None,
+        },
+        Requirement {
             name: "xz",
             purpose: "unpacks the ports' .tar.xz release archives",
             found: |_| program_version("xz", "--version"),

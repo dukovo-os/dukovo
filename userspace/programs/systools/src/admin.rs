@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! admin(8): the web console from a terminal (ADR 0515). It says where the
-//! console is and which certificate it serves, lists the actions the API
-//! offers, shows an action as the command, the API call and the Ansible
-//! task that do it, says or sets whom the console answers, makes, lists
-//! and removes the API tokens of the person who runs it, and, for root,
-//! puts back a change of the console's journal (`admin_put_back`, ADR
-//! 0516).
+//! console is and which certificate it serves, tells what the Overview
+//! shows of the machine and what is kept for the next sign-in
+//! (`admin_about`), lists the actions the API offers, shows an action as
+//! the command, the API call and the Ansible task that do it, says or sets
+//! whom the console answers, makes, lists and removes the API tokens of
+//! the person who runs it, and, for root, puts back a change of the
+//! console's journal (`admin_put_back`, ADR 0516).
 //!
 //! The list and the forms an action shows as are those of the console
 //! itself, from `admind::actions`, so that what is printed here is what the
@@ -38,6 +39,7 @@ use serde_json::{Map, Value};
 use toml_edit::DocumentMut;
 
 use crate::account::{self, Input};
+use crate::admin_about;
 use crate::admin_export;
 use crate::admin_put_back;
 use crate::admin_settings::{self, Reach, Settings};
@@ -51,7 +53,8 @@ use crate::settings_edit::{self, Changed};
 use crate::util::{self, Fail, fail, usage};
 
 /// What a mistake in the command line is told.
-const USAGE: &str = "usage: admin fingerprint\n       admin actions [--json]\n       \
+const USAGE: &str = "usage: admin fingerprint\n       admin about [--json]\n       \
+                     admin notices [--json]\n       admin actions [--json]\n       \
                      admin show ACTION [NAME=VALUE | NAME:=JSON]...\n       \
                      admin reach [private | any]\n       \
                      admin token add NAME --scope SCOPE... [--days N]\n       \
@@ -82,6 +85,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     };
     match subcommand.to_str() {
         Some("fingerprint") => fingerprint(args),
+        Some("about") => admin_about::main(args, admin_about::Which::About),
+        Some("notices") => admin_about::main(args, admin_about::Which::Notices),
         Some("actions") => list_actions(args),
         Some("show") => show_action(args),
         Some("reach") => reach(args),
@@ -553,7 +558,8 @@ mod tests {
              lab.restart  change  administrator  POST /api/1/lab/{name}/restart  e.g. elevate service lab-web restart\n\
              lab.list     read    the person     GET /api/1/lab                  e.g. service list --json\n\
              lab.long     change  administrator  POST /api/1/lab/long            e.g. elevate admin lab-steps 20\n\
-             lab.set      change  administrator  POST /api/1/lab/{name}/set      e.g. elevate service lab-web set\n"
+             lab.set      change  administrator  POST /api/1/lab/{name}/set      e.g. elevate service lab-web set\n\
+             lab.missing  read    the person     GET /api/1/lab/missing          e.g. lab-missing --json\n"
         );
     }
 

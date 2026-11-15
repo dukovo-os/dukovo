@@ -31,9 +31,11 @@
 //! `admin actions` and `lab/actions.toml` are all made from it.
 
 mod certificate;
+pub mod checks;
 mod console;
 #[cfg(any(test, feature = "lab"))]
 pub mod lab;
+mod metrics;
 mod service;
 pub mod show;
 
@@ -575,18 +577,25 @@ registry![
     certificate::Show,
     certificate::Renew,
     console::SetReach,
+    console::About,
+    console::Notices,
+    checks::Last,
+    metrics::Now,
+    metrics::Usage,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
-/// lab's own, which the tests of tasks run ([`lab`]).
+/// lab's own, which the tests of tasks and of the error view run ([`lab`]).
 pub fn offered() -> &'static [&'static dyn Registered] {
     #[cfg(feature = "lab")]
     {
         static ALL: std::sync::LazyLock<Vec<&'static dyn Registered>> =
             std::sync::LazyLock::new(|| {
                 static LONG: Entry<lab::Long> = Entry::new();
+                static MISSING: Entry<lab::Missing> = Entry::new();
                 let mut all: Vec<&'static dyn Registered> = REGISTRY.to_vec();
                 all.push(&LONG);
+                all.push(&MISSING);
                 all
             });
         &ALL

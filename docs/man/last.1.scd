@@ -36,7 +36,10 @@ A session of the web console (*dukovo-admin*(7)) has the terminal
 those sessions alone. A session begins
 when the person signs in and ends when they sign out, or when the session
 does. A wrong password, or a wrong code of the second step, at the web
-console's sign-in is a line of *lastb* on the same terminal.
+console's sign-in is a line of *lastb* on the same terminal. A shell in
+one of the web console's terminals is a session of its own, on its
+terminal (*pts/N*) and from the browser's address, as an SSH session
+with a terminal is; it ends when its shell does.
 
 With names or terminals, only their lines show; *last reboot* shows
 the starts alone.

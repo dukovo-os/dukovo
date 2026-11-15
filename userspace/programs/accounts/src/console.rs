@@ -20,6 +20,7 @@
 //! console\0extend\03f9a...\0
 //! console\0elevate\0session\03f9a...\0LANG=C.UTF-8\0--\0service\0restart\0nginx\0
 //! console\0token\0dkv_ansible_...\0192.0.2.7\0
+//! console\0terminal\03f9a...\0own\0xterm-256color\0LANG=en_US.UTF-8\0
 //! console\0steps\0
 //! console\0token-add\0\0ansible\0*\0365\0
 //! ```
@@ -204,6 +205,22 @@ pub enum Console {
     TokenStart {
         /// The token.
         token: Vec<u8>,
+    },
+    /// Start a shell for session `session` on the terminal sent, the one
+    /// descriptor, whose other side admind keeps (ADR 0517): the person's
+    /// own login shell, as an SSH session's on a terminal, or, with
+    /// `admin`, root's login shell for an administrator whose session is
+    /// unlocked, which ends when the session locks. The answer is `ok
+    /// PROCESS`; authd does not hold the request.
+    Terminal {
+        /// The console session.
+        session: String,
+        /// Whether it is root's shell.
+        admin: bool,
+        /// The terminal's type, as `TERM`.
+        term: String,
+        /// The browser's language settings, as `NAME=value`.
+        language: Vec<String>,
     },
     /// The asker's own second steps and tokens, as lines of the answer.
     Steps,
@@ -414,6 +431,12 @@ impl Console {
                 words(&[b"token", hex(token).as_bytes(), from.as_bytes()])
             }
             Console::TokenStart { token } => words(&[b"token-start", hex(token).as_bytes()]),
+            Console::Terminal { session, admin, term, language } => {
+                let whose: &[u8] = if *admin { b"admin" } else { b"own" };
+                let mut fields = words(&[b"terminal", session.as_bytes(), whose, term.as_bytes()]);
+                fields.extend(language.iter().map(|s| s.as_bytes().to_vec()));
+                fields
+            }
             Console::Steps => words(&[b"steps"]),
             Console::AppBegin { proof, host } => words(&[b"app-begin", proof, host.as_bytes()]),
             Console::AppConfirm { code } => words(&[b"app-confirm", code]),
@@ -517,6 +540,14 @@ impl Console {
                 Console::Token { token: from_hex(token)?, from: text(from)? }
             }
             [b"token-start", token] => Console::TokenStart { token: from_hex(token)? },
+            [b"terminal", session, whose @ (b"own" | b"admin"), term, ref language @ ..] => {
+                Console::Terminal {
+                    session: text(session)?,
+                    admin: whose == b"admin",
+                    term: text(term)?,
+                    language: language.iter().map(|f| text(f)).collect::<Option<Vec<_>>>()?,
+                }
+            }
             [b"steps"] => Console::Steps,
             [b"app-begin", proof, host] => {
                 Console::AppBegin { proof: proof.to_vec(), host: text(host)? }
@@ -577,6 +608,7 @@ impl Console {
                 | Console::Elevate { .. }
                 | Console::Token { .. }
                 | Console::TokenStart { .. }
+                | Console::Terminal { .. }
         )
     }
 
@@ -613,6 +645,7 @@ impl Console {
             | Console::Lock { .. }
             | Console::End { .. }
             | Console::Elevate { by: Elevator::Session(_), .. }
+            | Console::Terminal { .. }
             | Console::Steps
             | Console::PasskeyAdd { .. }
             | Console::PasskeyRename { .. }
@@ -637,6 +670,7 @@ impl Console {
             Console::Elevate { .. } => "elevate",
             Console::Token { .. } => "token",
             Console::TokenStart { .. } => "token-start",
+            Console::Terminal { .. } => "terminal",
             Console::Steps => "steps",
             Console::AppBegin { .. } => "app-begin",
             Console::AppConfirm { .. } => "app-confirm",
@@ -754,6 +788,18 @@ mod tests {
             },
             Console::Token { token: vec![5; 40], from: "2001:db8::7".into() },
             Console::TokenStart { token: vec![5; 40] },
+            Console::Terminal {
+                session: "3f9a".into(),
+                admin: false,
+                term: "xterm-256color".into(),
+                language: vec!["LANG=en_US.UTF-8".into(), "LC_TIME=de_DE.UTF-8".into()],
+            },
+            Console::Terminal {
+                session: "3f9a".into(),
+                admin: true,
+                term: "xterm-256color".into(),
+                language: vec![],
+            },
             Console::Steps,
             Console::AppBegin { proof: Vec::new(), host: "duke-nas".into() },
             Console::AppConfirm { code: b"123456".to_vec() },
@@ -806,6 +852,9 @@ mod tests {
             &[b"elevate", b"password", b"s", b"--", b"id"],
             &[b"token-add", b"", b"n", b"*", b"many"],
             &[b"steps", b"more"],
+            &[b"terminal", b"s", b"root", b"xterm"],
+            &[b"terminal", b"s", b"own"],
+            &[b"terminal", b"s", b"own", b"xterm", b"\xff"],
             &[b"nothing"],
         ] {
             assert_eq!(Console::decode(fields), None, "{fields:?}");

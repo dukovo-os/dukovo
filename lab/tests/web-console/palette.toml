@@ -1,0 +1,74 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's command palette in the lab PC's Chromium (design 11):
+# Ctrl+K opens it with the focus in its field, and Esc closes it and gives
+# the focus back; a page is found by its words and gone to; "rest diskh"
+# finds Restart diskhealth first, with the command it runs in one line under
+# the row, which equals what `POST /api/1/show` answers; Tab opens the form
+# with the Show command panel; Enter asks to unlock, a cancel keeps the form,
+# and Enter after the unlock runs the restart, closes the palette and says it
+# is done; the next opening has the Recent group; `state:failed` finds the
+# service that Spark gave up on; a read that needs a name says so under its
+# field, and then shows what admind explains; a read that needs nothing shows
+# its table; a reader sees "Administrators only" and has no Run button; and a
+# phone at 390 by 844 has rows and buttons of 44 px. Each look is dark, light,
+# high contrast, forced colours and less motion, checked by axe. The account
+# of the administrator is one this test makes and removes, and so is the
+# reader's, so no script needs the lab's password. lab-broken, the service
+# that fails at once, is the one of the explain test; it is put in place
+# before the browser opens and taken away after.
+about = "Chromium opens the web console's command palette by Ctrl+K, finds pages and services by a few letters, shows the command under a row, runs a restart after the unlock, lists what failed, shows an answer and a table, tells a reader that a change is for administrators, and fits a phone"
+time = "30m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-palette-chromium'"
+root = true
+expect = "Made wc-palette-chromium"
+# An account that signs in to the console without being an administrator.
+[[step]]
+run = "sh -c 'echo lab-console-password | user add wc-palette-reader && user set --console --yes wc-palette-reader'"
+root = true
+expect = ["Made wc-palette-reader", "wc-palette-reader is changed"]
+# A service that Spark has given up on, for `state:failed` to find.
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/../services/lab-broken.service {machine} {machine-port:22}"
+expect = "copied: lab-broken.service"
+# From nothing: a run before may have left it.
+[[step]]
+run = "sh -c 'cd /system/settings/spark/services && rm -f lab-broken.toml && cp /users/lab/lab-broken.service lab-broken.toml && echo installed'"
+root = true
+expect = "installed"
+[[step]]
+run = "sh -c 'service lab-broken start 2>&1; true'"
+root = true
+expect = "lab-broken"
+# Spark gives up on lab-broken after its second start.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! service lab-broken status | grep -q \"Active: failed\"; do sleep 1; i=$((i + 1)); done; service lab-broken status'"
+root = true
+exit = 3
+expect = "Active: failed (Spark gave up on it)"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "palette.mjs"
+port = 9090
+# The restart that the palette ran left diskhealth running.
+[[step]]
+run = "service diskhealth status"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'service lab-broken stop; cd /system/settings/spark/services && rm -f lab-broken.toml /users/lab/lab-broken.service; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-palette-chromium wc-palette-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-palette-chromium is removed", "wc-palette-reader is removed"]

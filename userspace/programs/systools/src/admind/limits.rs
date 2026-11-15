@@ -11,12 +11,14 @@
 //! [`reach::counted`](super::reach::counted) gives: an IPv4 address, or an
 //! IPv6 address's /64.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::net::IpAddr;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+use super::sessions;
 
 /// The most connections at once, and the most from one address.
 pub const CONNECTIONS_MAX: usize = 512;
@@ -42,11 +44,11 @@ pub const TICKETS_MAX: usize = 128;
 /// ended.
 const ENDINGS_MAX: usize = 128;
 
-/// How often one address's refusals are said in the log.
+/// How often one address's refusals for one reason are said in the log.
 const QUIET_TIME: Duration = Duration::from_mins(1);
 
-/// The most addresses whose refusals are counted for the log.
-const QUIET_ADDRESSES_MAX: usize = 4096;
+/// The most addresses and reasons whose refusals are counted for the log.
+const QUIET_MAX: usize = 4096;
 
 /// The connections held now.
 #[derive(Default)]
@@ -61,6 +63,11 @@ pub struct Slot {
     connections: Rc<RefCell<Connections>>,
     address: IpAddr,
 }
+
+/// A connection's place as its requests see it: a request that makes the
+/// connection a WebSocket takes it, and the socket holds it until it
+/// closes.
+pub type Held = Rc<Cell<Option<Slot>>>;
 
 impl Slot {
     /// A place for a connection from `address`, or `None` when there are
@@ -200,48 +207,59 @@ impl Tickets {
     }
 }
 
-/// Why sessions ended lately, by authd's name for them, so that a tab
-/// whose session went can say why.
+/// Why sessions ended lately, by authd's name for them and by the key of
+/// their cookie, so that a tab whose session went can say why: one whose
+/// event stream was open hears it there, and one that asks afterwards
+/// hears it in its refusal.
 #[derive(Default)]
 pub struct Endings {
-    reasons: VecDeque<(String, &'static str)>,
+    reasons: VecDeque<(String, [u8; 32], &'static str)>,
 }
 
 impl Endings {
-    /// Notes that session `authd` ended for `reason`.
-    pub fn note(&mut self, authd: &str, reason: &'static str) {
+    /// Notes that session `authd`, kept by `key`, ended for `reason`.
+    pub fn note(&mut self, authd: &str, key: [u8; 32], reason: &'static str) {
         if self.reasons.len() >= ENDINGS_MAX {
             self.reasons.pop_front();
         }
-        self.reasons.push_back((authd.into(), reason));
+        self.reasons.push_back((authd.into(), key, reason));
     }
 
     /// Why session `authd` ended; `expired` when it is not remembered.
     pub fn reason(&self, authd: &str) -> &'static str {
-        self.reasons.iter().rev().find(|(id, _)| id == authd).map_or("expired", |(_, why)| why)
+        self.reasons.iter().rev().find(|(id, ..)| id == authd).map_or("expired", |(.., why)| why)
+    }
+
+    /// Why the session of `cookie` ended, when it is remembered.
+    pub fn reason_of_cookie(&self, cookie: &str) -> Option<&'static str> {
+        let key = sessions::key(cookie)?;
+        self.reasons.iter().rev().find(|(_, kept, _)| *kept == key).map(|(.., why)| *why)
     }
 }
 
 /// The log's rule for a refusal from an address: it is said when it first
 /// happens, and then once a minute, with how many there were, however
-/// many tries come.
+/// many tries come. Each reason has its own minute, so that a refusal of
+/// one kind does not hide another: a browser that did not trust the
+/// certificate, then too many connections from the same address.
 #[derive(Default)]
 pub struct Quiet {
-    said: HashMap<IpAddr, (Instant, u32)>,
+    said: HashMap<(IpAddr, &'static str), (Instant, u32)>,
 }
 
 impl Quiet {
-    /// Notes a refusal of `address` at `now`: how many refusals the line
-    /// to write now stands for, or `None` when one was said less than a
-    /// minute ago.
-    pub fn note(&mut self, address: IpAddr, now: Instant) -> Option<u32> {
-        if !self.said.contains_key(&address) && self.said.len() >= QUIET_ADDRESSES_MAX {
+    /// Notes a refusal of `address` for `why` at `now`: how many refusals
+    /// the line to write now stands for, or `None` when one for the same
+    /// reason was said less than a minute ago.
+    pub fn note(&mut self, address: IpAddr, why: &'static str, now: Instant) -> Option<u32> {
+        let key = (address, why);
+        if !self.said.contains_key(&key) && self.said.len() >= QUIET_MAX {
             self.tidy(now);
-            if self.said.len() >= QUIET_ADDRESSES_MAX {
+            if self.said.len() >= QUIET_MAX {
                 return None;
             }
         }
-        match self.said.entry(address) {
+        match self.said.entry(key) {
             Entry::Vacant(first) => {
                 first.insert((now, 0));
                 Some(1)
@@ -258,7 +276,7 @@ impl Quiet {
         }
     }
 
-    /// Forgets the addresses that have been quiet for a minute.
+    /// Forgets the addresses and reasons that have been quiet for a minute.
     pub fn tidy(&mut self, now: Instant) {
         self.said.retain(|_, (said_at, _)| now.saturating_duration_since(*said_at) < QUIET_TIME);
     }
@@ -378,15 +396,28 @@ mod tests {
     fn an_ending_is_remembered_by_the_session_and_the_latest_wins() {
         let mut endings = Endings::default();
         assert_eq!(endings.reason("3f9a"), "expired");
-        endings.note("3f9a", "idle");
-        endings.note("5b2c", "signed-out");
+        endings.note("3f9a", [1; 32], "idle");
+        endings.note("5b2c", [2; 32], "signed-out");
         assert_eq!(endings.reason("3f9a"), "idle");
         assert_eq!(endings.reason("5b2c"), "signed-out");
         for n in 0..ENDINGS_MAX {
-            endings.note(&format!("s{n}"), "worker");
+            endings.note(&format!("s{n}"), [3; 32], "worker");
         }
         assert_eq!(endings.reason("3f9a"), "expired");
         assert_eq!(endings.reason("s5"), "worker");
+    }
+
+    #[test]
+    fn an_ending_is_found_by_its_cookie_and_not_by_another() {
+        let cookie = "A".repeat(43);
+        let key = sessions::key(&cookie).unwrap();
+        let mut endings = Endings::default();
+        assert_eq!(endings.reason_of_cookie(&cookie), None);
+        endings.note("3f9a", key, "signed-out");
+        assert_eq!(endings.reason_of_cookie(&cookie), Some("signed-out"));
+        assert_eq!(endings.reason_of_cookie(&"B".repeat(43)), None);
+        // A cookie admind did not make has no key.
+        assert_eq!(endings.reason_of_cookie("not-a-cookie"), None);
     }
 
     #[test]
@@ -394,16 +425,47 @@ mod tests {
         let mut quiet = Quiet::default();
         let start = Instant::now();
         let address = ip("198.51.100.4");
-        assert_eq!(quiet.note(address, start), Some(1));
+        let busy = "there are as many connections as it takes";
+        assert_eq!(quiet.note(address, busy, start), Some(1));
         for second in 1..60 {
-            assert_eq!(quiet.note(address, start + Duration::from_secs(second)), None);
+            assert_eq!(quiet.note(address, busy, start + Duration::from_secs(second)), None);
         }
         // 59 more came; this one is the 60th and the minute is up.
-        assert_eq!(quiet.note(address, start + Duration::from_secs(60)), Some(60));
-        assert_eq!(quiet.note(address, start + Duration::from_secs(61)), None);
+        assert_eq!(quiet.note(address, busy, start + Duration::from_secs(60)), Some(60));
+        assert_eq!(quiet.note(address, busy, start + Duration::from_secs(61)), None);
         // Another address has its own line.
-        assert_eq!(quiet.note(ip("198.51.100.5"), start + Duration::from_secs(61)), Some(1));
+        assert_eq!(quiet.note(ip("198.51.100.5"), busy, start + Duration::from_secs(61)), Some(1));
         quiet.tidy(start + Duration::from_secs(200));
         assert!(quiet.said.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_for_one_reason_does_not_hide_one_for_another() {
+        let mut quiet = Quiet::default();
+        let start = Instant::now();
+        let address = ip("198.51.100.4");
+        let untrusted = "its TLS handshake failed";
+        let busy = "there are as many connections as it takes";
+        assert_eq!(quiet.note(address, untrusted, start), Some(1));
+        assert_eq!(quiet.note(address, busy, start + Duration::from_secs(1)), Some(1));
+        assert_eq!(quiet.note(address, untrusted, start + Duration::from_secs(2)), None);
+        assert_eq!(quiet.note(address, busy, start + Duration::from_secs(3)), None);
+    }
+
+    #[test]
+    fn the_table_of_refusals_has_a_bound() {
+        let mut quiet = Quiet::default();
+        let start = Instant::now();
+        for n in 0..u32::try_from(QUIET_MAX).unwrap() {
+            let address = IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 | n));
+            assert_eq!(quiet.note(address, "why", start), Some(1));
+        }
+        // A new address is not counted while the table is full of recent ones,
+        let late = ip("198.51.100.4");
+        assert_eq!(quiet.note(late, "why", start + Duration::from_secs(1)), None);
+        assert_eq!(quiet.said.len(), QUIET_MAX);
+        // and is once the old ones have been quiet for a minute.
+        assert_eq!(quiet.note(late, "why", start + Duration::from_secs(60)), Some(1));
+        assert_eq!(quiet.said.len(), 1);
     }
 }

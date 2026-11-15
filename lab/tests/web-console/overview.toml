@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Overview of the web console in each engine (design 10): the cards of
+# Health, Finish setting up, What changed, Usage, This server and Using the
+# most memory, each read from what the machine answers (admin about, admin
+# notices, the kept checks, metrics now and metrics usage), and the phone's
+# short Overview at 390 by 844. The cards that say what the machine says are
+# held to what the API gives the same page at the same time; the states a
+# lab machine may not be in (a score in each band, checks that are not on the
+# machine, a notice to dismiss, usage over each range) are answered by the
+# test's own routes in the browser, and drawn as the machine's would be.
+#
+# A service file changed by hand is the one thing that needs the machine: a
+# browser script cannot run commands on it, so a root step adds a comment
+# line naming each engine to a service file of that engine's own
+# (diskhealth's for Chromium, nfsd's for Firefox, smbd's for WebKit), 45
+# seconds apart, as journal.toml does, so that the console's round, which
+# looks for hand edits every 30 seconds, finds each alone and makes each a
+# row of its own. One browser step then runs every engine, so that an engine
+# the lab PC lacks is skipped within it and the steps after it still run (a
+# step of that engine alone would be skipped, and the steps after it too). The
+# script waits for the row of its engine's edit, up to 90 seconds, and then
+# finds it in the Health list and in What changed, looks at its diff, marks
+# it seen with Keep it, which asks to unlock first, and puts it back, which
+# asks first what it will write back. The step waits a second after its
+# command starts, so that no file's time is before the second authd's audit
+# gives the command, which is how the row knows who changed the file. The
+# same step saves copies of the three service files first, and the last one
+# leaves them as the image has them, also when an engine was skipped, and
+# removes the copies. A reader sees the cards and no button that
+# changes anything. Each look is dark, light, high contrast, forced colours
+# and less motion, checked by axe. admind is the service that answers.
+# The accounts are two this test makes and removes, an administrator and a
+# reader, so no script needs the lab's password.
+about = "The web console's Overview in each engine: its cards from what the machine answers, a service file changed by hand found, looked at, kept and put back, the states of Health, Usage and the notices, a reader, and the phone's Overview"
+time = "45m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-overview && echo lab-console-password | user add wc-overview-reader && user set --console --yes wc-overview-reader'"
+root = true
+expect = ["Made wc-overview", "Made wc-overview-reader", "wc-overview-reader is changed"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-overview && cp /system/settings/spark/services/diskhealth.toml /system/settings/spark/services/nfsd.toml /system/settings/spark/services/smbd.toml /tmp/lab-overview/ && sleep 1 && echo \"# lab overview chromium\" >> /system/settings/spark/services/diskhealth.toml && sleep 45 && echo \"# lab overview firefox\" >> /system/settings/spark/services/nfsd.toml && sleep 45 && echo \"# lab overview webkit\" >> /system/settings/spark/services/smbd.toml'"
+root = true
+[[step]]
+browser = "overview.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for name in diskhealth nfsd smbd; do cmp -s /tmp/lab-overview/$name.toml /system/settings/spark/services/$name.toml || cp /tmp/lab-overview/$name.toml /system/settings/spark/services/$name.toml || exit 1; done; rm -r /tmp/lab-overview'"
+root = true
+[[step]]
+run = "sh -c 'for name in wc-overview wc-overview-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-overview is removed", "wc-overview-reader is removed"]

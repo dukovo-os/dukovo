@@ -146,8 +146,10 @@ static LIST: Entry<List> = Entry::new();
 static SET: Entry<Set> = Entry::new();
 /// The lab's long action, whose own module is also in lab builds.
 static LONG: Entry<lab::Long> = Entry::new();
+/// The lab's action whose command is not there, likewise.
+static MISSING: Entry<lab::Missing> = Entry::new();
 /// These tests' actions, which the route tests use too.
-pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG, &SET];
+pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG, &SET, &MISSING];
 
 #[test]
 fn an_address_finds_its_action_and_gives_its_arguments() {
@@ -305,7 +307,8 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             ("lab.restart", &json!(false)),
             ("lab.list", &json!(false)),
             ("lab.long", &json!(false)),
-            ("lab.set", &json!(true))
+            ("lab.set", &json!(true)),
+            ("lab.missing", &json!(false))
         ]
     );
     let console = listed(REGISTRY);
@@ -444,6 +447,38 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
 fn every_action_keeps_the_rules() {
     keeps_the_rules(LAB);
     keeps_the_rules(REGISTRY);
+}
+
+/// The first heading of the error page `id`, if the page is there:
+/// `# ID: The title`.
+fn error_page_heading(id: &str) -> Option<String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/errors");
+    let text = std::fs::read_to_string(path.join(format!("{id}.md"))).ok()?;
+    text.lines().find_map(|line| line.strip_prefix("# ")).map(str::to_string)
+}
+
+#[test]
+fn every_error_an_action_names_has_a_page_whose_heading_starts_with_its_id() {
+    for action in offered() {
+        for id in action.errors() {
+            let heading = error_page_heading(id).unwrap_or_else(|| {
+                panic!("{}'s error {id} has no page in docs/errors", action.id())
+            });
+            assert!(heading.starts_with(&format!("{id}: ")), "{id}'s heading: {heading}");
+        }
+    }
+    // The check finds a page that is there and one that is not.
+    assert!(error_page_heading("ADM-101").is_some());
+    assert!(error_page_heading("NOPE-999").is_none());
+}
+
+#[test]
+fn every_error_the_console_gives_has_a_page_titled_as_the_console_says() {
+    for kind in crate::admind::errors::Kind::ALL {
+        let heading = error_page_heading(kind.id())
+            .unwrap_or_else(|| panic!("{} has no page in docs/errors", kind.id()));
+        assert_eq!(heading, format!("{}: {}", kind.id(), kind.title()));
+    }
 }
 
 /// The golden list of the actions, from the repository's root.

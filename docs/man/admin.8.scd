@@ -11,6 +11,10 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin fingerprint*
 
+*admin about* [*--json*]
+
+*admin notices* [*--json*]
+
 *admin actions* [*--json*]
 
 *admin show* _action_ [_name_=_value_ | _name_:=_json_]...
@@ -31,7 +35,9 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin* is the command that goes with the web console, Dukovo Admin
 (*admind*(8), *dukovo-admin*(7), ADR 0515). It says where the console is
-and which certificate it serves, lists what the console's API does, shows
+and which certificate it serves, tells what the console's Overview shows of
+the machine and what is kept for the next sign-in, lists what the console's
+API does, shows
 what an action runs in the forms a person copies, says or sets whom the
 console answers, makes, lists and removes the API tokens of the person who
 types it, keeps the machine's settings in a Git repository of that
@@ -42,7 +48,8 @@ as *service.restart*. Each has an _id_ of its area and a verb. The
 console runs an action's command, which is the command *show* prints: the
 button, the API call and the command typed at a terminal do the same.
 
-*actions*, *show* and *reach* with no word need no rights. *reach* with a
+*about*, *notices*, *actions*, *show* and *reach* with no word need no
+rights. *reach* with a
 word is root's, as the file it changes is: *elevate*(8) it. *token* is the
 person's own, asked of *authd*(8) as that person, so it can never make or
 remove another's.
@@ -66,6 +73,80 @@ remove another's.
 	When admind has not written the file, which is when it is not
 	running, it says *The web console is not running: start it with
 	elevate service admind start.*
+
+*about* [*--json*]
+	Prints what the console's Overview shows of this machine, as the
+	person who types it, a line for each thing the machine says:
+
+	```
+	$ admin about
+	Name             duke-nas
+	Addresses        192.168.1.20, fd00::5
+	Console port     9090
+	Fingerprint      SHA-256 3A:9F:0C:...:71:E2
+	Release          Dukovo Server 0.16.0
+	Machine          Dell Inc. OptiPlex 7040
+	Processor        Intel Core i5-6500 CPU @ 3.20GHz
+	Memory           7.7 GiB
+	Up               3 days 4 hours 5 minutes
+	Time zone        Europe/Prague, clock synchronized
+	SSH host key     SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA
+	Last good start  2026-11-11 08:02:14 CET
+	Last sign-in     2026-11-14 09:12:40 CET on pts/0 from 192.168.1.25
+	Before that      2026-11-13 21:12:09 CET on pts/1
+	```
+
+	The addresses are those of the cards that reach beyond their own
+	network: IPv4 ones, and IPv6 ones that are not link-local or still
+	being tested, each without its prefix length. The port is the one
+	*admin.toml*(5) gives, and the fingerprint is the one *fingerprint*
+	prints, left out while the console is not running. The release says
+	*(started as a fallback)* when the kernel's command line has
+	*fallback=*, which is when an update did not prove itself and the other
+	slot started (*sysupdate*(8)). The SSH host key is the fingerprint of the
+	first public key in _/system/state/sshd_, so that an owner can check it
+	at a first SSH connection. The last good start is when the newest good
+	start before this one began, from the records of the starts that
+	*changes*(1) reads. The sign-ins are the person's own two newest, from
+	the record only they and root may read.
+
+	A thing that the person cannot read, or that the machine does not say,
+	is a line left out of the text and *null* in the JSON. It is never an
+	error.
+
+	With *--json* it prints one JSON object, the answer of the console's
+	*console.about* action, *GET /api/1/console/about*: *host*,
+	*addresses* (a list of text), *port*, *fingerprint*, *release* (text,
+	such as *Dukovo Server 0.16.0*), *fallback* (true or false), *machine*
+	(an object with *maker* and *model*), *processor*, *memory* (bytes),
+	*up* (seconds), *zone*, *clock* (an object with *synchronized*, true or
+	false), *ssh\_host\_key*, *last\_good\_start* (seconds since 1970) and
+	*sign\_ins* (a list of at most two objects with *at*, in seconds since
+	1970, *terminal* and *from*, the newest first; *from* is *null* at the
+	computer itself).
+
+*notices* [*--json*]
+	Prints the notices that the consoles show above the sign-in prompt,
+	which are kept for the next sign-in (ADR 0504): first the notice of a
+	start that failed (ADR 0501), then each of those that other services
+	keep, such as a backup that failed or is overdue. Each is its name and
+	when it was written, with its lines under it:
+
+	```
+	$ admin notices
+	failed-start (2026-11-14 08:00:41 CET)
+	  Start 7 failed (FW-101).
+	  The previous version runs.
+	backup (2026-11-14 03:10:02 CET)
+	  The last backup failed: Duke-NAS cannot reach the S3 bucket.
+	```
+
+	With no notice it says *No notices.* With *--json* it prints
+	*{"notices":[{"name":...,"lines":[...],"at":...}]}*, the answer of the
+	console's *console.notices* action, *GET /api/1/console/notices*, where
+	*at* is in seconds since 1970 and *null* when the machine does not say.
+	The notices of a start that did not fail are gone at the next start, or
+	when whoever wrote them takes them back.
 
 *actions* [*--json*]
 	Lists the actions, each with its id, whether it reads or changes,
@@ -301,7 +382,13 @@ _/system/live/admind/issue_
 
 _/system/settings/admin.toml_
 	The console's settings, which *admin reach* reads and, as root,
-	changes (*admin.toml*(5)).
+	changes (*admin.toml*(5)), and *admin about* reads for the port.
+
+_/system/live/sign-in/_, _/system/live/sysupdate/failure_
+	The notices *admin notices* lists.
+
+_/system/state/sign-ins/_number
+	The person's own sign-ins, of which *admin about* tells the newest two.
 
 _/system/state/authd/console/_*name*.toml
 	The account's second steps and tokens, as hashes, which only root

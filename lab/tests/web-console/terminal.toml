@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Terminal page of the web console in the lab PC's browsers, in each
+# engine: an administrator opens the page and a terminal is made, with the
+# account's own shell in it, where a command is typed and its output read;
+# Read the screen has the text; the page splits into panes and takes each
+# layout; Alt+Shift and the arrows move between panes, and Alt+Shift+Up
+# leaves a pane for the tabs; the page closed and opened again shows the
+# output, and so does a second browser of the account; read-aloud output
+# reaches the live region; a pasted list of lines asks first; after Unlock a
+# pane is an administrator's shell, where `id -u` says 0, and Lock asks and
+# then ends it; Sessions lists, renames and ends terminals; Settings keeps
+# the choices and refuses a number out of range; a phone has one pane at a
+# time, its key bar and targets of 44 px; a page of another origin cannot
+# open the socket; and an account that is not the first one's is told there
+# is no such terminal. Each look is dark, light, high contrast, forced
+# colours and less motion, checked by axe. Each engine has an administrator
+# of its own, and an account that is no administrator, which this test makes
+# and removes, so no script needs the lab's password.
+about = "Browsers use the web console's Terminal page: a shell with its output, Read the screen, panes, layouts and the Alt+Shift keys, the output after the page was closed and in a second browser, announcements, a pasted list that asks first, an administrator's pane that Lock asks about and ends, Sessions, Settings, a phone with the key bar, a page of another origin that cannot open the socket, and an account that finds no one else's terminal"
+time = "40m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-term-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-term-chromium", "Made wc-term-firefox", "Made wc-term-webkit"]
+# Accounts that sign in to the console without being administrators: each
+# has a shell, which is what a terminal needs.
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add wc-term-other-$engine && user set --console --yes wc-term-other-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-term-other-chromium", "wc-term-other-chromium is changed", "Made wc-term-other-firefox", "wc-term-other-firefox is changed", "Made wc-term-other-webkit", "wc-term-other-webkit is changed"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "terminal.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-term-$engine wc-term-other-$engine; do user remove --delete-home --yes $name || exit 1; done; done'"
+root = true
+expect = ["wc-term-chromium is removed", "wc-term-other-chromium is removed", "wc-term-firefox is removed", "wc-term-other-firefox is removed", "wc-term-webkit is removed", "wc-term-other-webkit is removed"]

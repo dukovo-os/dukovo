@@ -1,0 +1,117 @@
+user@host:~$ less lessfile.txt
+[?1049h[22;0;0t[?1h=line 01 of the file for the pager
+line 02 of the file for the pager
+line 03 of the file for the pager
+line 04 of the file for the pager
+line 05 of the file for the pager
+line 06 of the file for the pager
+line 07 of the file for the pager
+line 08 of the file for the pager
+line 09 of the file for the pager
+line 10 is long: the quick brown fox jumps over the lazy dog the quick brown fox  jumps over the lazy dog the quick brown fox jumps over the lazy dog 
+line 11 of the file for the pager
+line 12 of the file for the pager
+line 13 of the file for the pager
+line 14 of the file for the pager
+line 15 of the file for the pager
+line 16 of the file for the pager
+line 17 of the file for the pager
+line 18 of the file for the pager
+line 19 of the file for the pager
+line 20 holds a tab and a naïve café, 中文 and a box ┌─┐
+line 21 of the file for the pager
+line 22 of the file for the pager
+[7mlessfile.txt[27m[K[Kline 23 of the file for the pager
+line 24 of the file for the pager
+line 25 of the file for the pager
+line 26 of the file for the pager
+line 27 of the file for the pager
+line 28 of the file for the pager
+line 29 of the file for the pager
+line 30 of the file for the pager
+line 31 of the file for the pager
+line 32 of the file for the pager
+line 33 of the file for the pager
+line 34 of the file for the pager
+line 35 of the file for the pager
+line 36 of the file for the pager
+line 37 of the file for the pager
+line 38 of the file for the pager
+line 39 of the file for the pager
+line 40 of the file for the pager
+line 41 of the file for the pager
+line 42 of the file for the pager
+line 43 of the file for the pager
+line 44 of the file for the pager
+line 45 of the file for the pager
+:[K[K/[Kll[Kii[Knn[Kee[K  [K55[K00[K[1;1Hline 23 of the file for the pager
+[2;1Hline 24 of the file for the pager
+[3;1Hline 25 of the file for the pager
+[4;1Hline 26 of the file for the pager
+[5;1Hline 27 of the file for the pager
+[6;1Hline 28 of the file for the pager
+[7;1Hline 29 of the file for the pager
+[8;1Hline 30 of the file for the pager
+[9;1Hline 31 of the file for the pager
+[10;1Hline 32 of the file for the pager
+[11;1Hline 33 of the file for the pager
+[12;1Hline 34 of the file for the pager
+[13;1Hline 35 of the file for the pager
+[14;1Hline 36 of the file for the pager
+[15;1Hline 37 of the file for the pager
+[16;1Hline 38 of the file for the pager
+[17;1Hline 39 of the file for the pager
+[18;1Hline 40 of the file for the pager
+[19;1Hline 41 of the file for the pager
+[20;1Hline 42 of the file for the pager
+[21;1Hline 43 of the file for the pager
+[22;1Hline 44 of the file for the pager
+[23;1Hline 45 of the file for the pager
+[24;1H[1;1Hline 23 of the file for the pager
+[2;1Hline 24 of the file for the pager
+[3;1Hline 25 of the file for the pager
+[4;1Hline 26 of the file for the pager
+[5;1Hline 27 of the file for the pager
+[6;1Hline 28 of the file for the pager
+[7;1Hline 29 of the file for the pager
+[8;1Hline 30 of the file for the pager
+[9;1Hline 31 of the file for the pager
+[10;1Hline 32 of the file for the pager
+[11;1Hline 33 of the file for the pager
+[12;1Hline 34 of the file for the pager
+[13;1Hline 35 of the file for the pager
+[14;1Hline 36 of the file for the pager
+[15;1Hline 37 of the file for the pager
+[16;1Hline 38 of the file for the pager
+[17;1Hline 39 of the file for the pager
+[18;1Hline 40 of the file for the pager
+[19;1Hline 41 of the file for the pager
+[20;1Hline 42 of the file for the pager
+[21;1Hline 43 of the file for the pager
+[22;1Hline 44 of the file for the pager
+[23;1Hline 45 of the file for the pager
+[24;1H...skipping...
+[7mline 50[27m of the file for the pager
+line 51 of the file for the pager
+line 52 of the file for the pager
+line 53 of the file for the pager
+line 54 of the file for the pager
+line 55 of the file for the pager
+line 56 of the file for the pager
+line 57 of the file for the pager
+line 58 of the file for the pager
+line 59 of the file for the pager
+line 60 of the file for the pager
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[1m~[0m
+[7m(END)[27m[K

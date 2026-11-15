@@ -20,6 +20,9 @@ pub struct Who {
     pub admin: bool,
     /// The groups they are in, their own first.
     pub groups: Vec<String>,
+    /// Whether they have a shell a terminal can start: one is named, and
+    /// it is not the one that refuses every sign-in.
+    pub shell: bool,
 }
 
 /// Which account to find.
@@ -74,6 +77,7 @@ pub fn find(passwd: &str, group: &str, account: Account) -> Result<Who, String> 
         full_name: full_name.to_string(),
         admin: accounts::is_admin(user, &groups),
         groups: theirs,
+        shell: !user.shell.is_empty() && user.shell != accounts::NO_SHELL,
     })
 }
 
@@ -128,6 +132,10 @@ mod tests {
         assert!(!bob.admin);
         assert_eq!(bob.full_name, "");
         assert_eq!(bob.groups, ["bob", "console"]);
+        assert!(chase.shell && bob.shell);
+        let nobody = "svc:x:900:900::/:/system/commands/false\nnone:x:901:901::/:\n";
+        assert!(!find(nobody, GROUP, Account::Name("svc")).unwrap().shell);
+        assert!(!find(nobody, GROUP, Account::Name("none")).unwrap().shell);
         assert_eq!(
             chase.json(),
             json!({"name": "chase", "full_name": "Chase Y", "admin": true, "groups": ["chase", "admins"]})

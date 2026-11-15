@@ -1,17 +1,15 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// The console's router. It asks admind who is signed in and draws the view
-// that answer calls for: the sign-in page when nobody is, the page that adds
-// a second step when the sign-in rules limit the session to that, else the
-// signed-in frame with its page. It follows the session's event stream for
-// as long as the session lasts, which also tells admind that a tab is open.
+// The console's start. It asks admind who is signed in and shows what that
+// calls for: the sign-in page when nobody is, the second step's page alone
+// when the sign-in rules limit the session to that, else the shell
+// (shell/frame.js). It follows the session's event stream while the session
+// lasts, which also tells admind that a tab is open.
 
-import { secondStepView } from './account-steps.js';
 import { get, post, setCsrf, whenSessionEnds } from './api.js';
-import { errorSlot, h, marks, showError } from './dom.js';
-import { showSignIn } from './sign-in.js';
-import { accessControl, setUnlockSeconds } from './unlock.js';
+import { enterShell } from './shell/frame.js';
+import { setUnlockSeconds } from './unlock.js';
 
 const app = document.getElementById('app');
 
@@ -24,59 +22,61 @@ const ENDED = {
   worker: 'the process that works for your session stopped.',
 };
 
-// How long to wait before asking again when the event stream is closed
-// for good, so that a server that keeps refusing it is not asked in a loop.
-const STREAM_RETRY_MS = 5000;
-
 let session = null;
 let events = null;
-let main = null;
-// Whether this page has had a session. A 401 on the first request is a
-// person who has not signed in yet, and needs no notice; a 401 after one
-// is a session that ended where the page could not see it.
+let shell = null;
+// Counts the starts, so that one overtaken by a later one does not draw over it.
+let started = 0;
+// Whether this page has had a session: a 401 on the first request is a person
+// who has not signed in and needs no notice; a later one is a session that
+// ended where the page could not see it.
 let hadSession = false;
 
-/** Ends what belongs to the signed-in session: its stream, unlock state and open dialogs. */
+// The tabs of this browser share its session's cookie, which a sign-out
+// clears. A tab whose request then finds no session cannot learn why from
+// admind, and its stream may not have said so first: the tab that signs out
+// tells the others, which say "you signed out" in place of not knowing.
+const otherTabs = typeof BroadcastChannel === 'function' ? new BroadcastChannel('dukovo-admin-session') : null;
+// Whether the sign-in page shows an end whose reason admind did not give.
+let endedUnknown = false;
+
+/** Ends what belongs to the signed-in session: its stream, shell, unlock state and open dialogs. */
 function forgetSession() {
   events?.close();
   events = null;
+  shell?.stop();
+  shell = null;
   session = null;
   setUnlockSeconds(null);
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
 }
 
-function showSignInPage(notice) {
+// The sign-in page, the second step's frame and the failure page are other
+// modules, read when they are needed: a signed-in console does not carry them.
+async function showSignInPage(notice, { unknown = false } = {}) {
+  endedUnknown = unknown;
   forgetSession();
+  const { showSignIn } = await import('./sign-in.js');
   showSignIn(app, { notice, onSignedIn: start });
 }
 
-function showFailure(error) {
-  const problem = errorSlot('start-error');
-  document.title = 'Dukovo Admin';
-  app.replaceChildren(
-    h('main', { class: 'sign-in' },
-      h('div', { class: 'sign-in-dialogs' },
-        h('div', { class: 'dialog narrow' },
-          h('div', { class: 'dialog-body roomy' },
-            h('h1', { class: 'dialog-title' }, 'The console could not start'),
-            problem,
-            h('button', { class: 'btn default block', type: 'button', onclick: start }, 'Try again'))))));
-  showError(problem, error);
+/** The sign-in page for a session that ended, with the reason (a key of ENDED) in words. */
+function sessionEnded(why, { error } = {}) {
+  const reason = ENDED[why] ?? 'the session ended.';
+  // The terminals are the account's and go on after its session, except
+  // when the console restarted, which ends them.
+  const terminals = why !== 'restarted' && shell?.terminals() > 0 ? ' Your terminals are still running.' : '';
+  if (error && !shell?.wasOffline()) {
+    showSignInPage({ title: error.title, detail: error.detail }, { unknown: true });
+    return;
+  }
+  showSignInPage({ title: 'Sign in again:', detail: `${reason}${terminals}` });
 }
 
-function followEvents() {
-  const source = new EventSource('/api/1/events');
-  source.addEventListener('unlock', (event) => setUnlockSeconds(JSON.parse(event.data).unlock_seconds));
-  source.addEventListener('session', (event) => {
-    const { ended } = JSON.parse(event.data);
-    showSignInPage({ title: 'Sign in again:', detail: ENDED[ended] ?? 'the session ended.' });
-  });
-  source.addEventListener('error', () => {
-    // The browser reconnects a lost stream by itself, and gives up only on
-    // an answer that is not a stream, such as a session that is gone.
-    if (source.readyState === EventSource.CLOSED) setTimeout(start, STREAM_RETRY_MS);
-  });
-  return source;
+/** The page for a start that failed, which another module draws. */
+async function showFailure(error) {
+  const { showFailure: draw } = await import('./limited.js');
+  draw({ app, error, retry: start });
 }
 
 /** Signs the session out and shows the sign-in page, with `notice` if given. */
@@ -90,78 +90,77 @@ async function signOut(notice) {
       return;
     }
   }
+  otherTabs?.postMessage('signed-out');
   showSignInPage(notice);
 }
 
-function homeView() {
-  return [
-    h('div', { class: 'ph' }, h('div', { class: 'title' }, h('h1', { tabindex: '-1' }, session.host))),
-    h('p', {},
-      'Signed in as ', h('b', {}, session.name), session.full_name && ` (${session.full_name})`, '. ',
-      session.admin
-        ? 'This account is an administrator: unlock the console from the header to make changes.'
-        : 'This account may look but not change anything: it is not an administrator.'),
-    h('section', { class: 'card' },
-      h('h2', {}, 'Second step'),
-      h('p', { class: 'muted' }, 'An authenticator app, passkeys and recovery codes for signing in.'),
-      h('div', { class: 'btns' }, h('a', { class: 'btn', href: '/second-step' }, 'Manage the second step'))),
-  ];
-}
+otherTabs?.addEventListener('message', (event) => {
+  if (event.data === 'signed-out' && (session !== null || endedUnknown)) sessionEnded('signed-out');
+});
 
-function topBar() {
-  return h('header', { class: 'top' },
-    h('a', { class: 'brand', href: '/' }, ...marks(17, 22), 'Dukovo Admin'),
-    h('span', { class: 'spacer' }),
-    !session.needs_step && accessControl(session),
-    h('span', {}, session.name),
-    h('button', { class: 'topbtn', type: 'button', onclick: () => signOut() }, 'Sign out'));
-}
+const signInAgain = () => signOut({ title: 'The second step is added.', detail: 'Sign in again to use it.' });
 
-/** Draws the page that the address and the session call for, inside the signed-in frame. */
-function route() {
-  if (!main?.isConnected) {
-    main = h('main', { class: 'main' });
-    app.replaceChildren(topBar(), h('div', { class: 'shell' }, main));
-  }
-  const secondStep = session.needs_step || location.pathname === '/second-step';
-  document.title = `${secondStep ? 'Second step' : session.host} · Dukovo Admin`;
-  main.replaceChildren(...(secondStep
-    ? secondStepView({
-      session,
-      signInAgain: () => signOut({ title: 'The second step is added.', detail: 'Sign in again to use it.' }),
-    })
-    : homeView()));
-  main.querySelector('h1').focus();
+/** The frame of a session that the sign-in rules limit to adding a second step, which another module draws. */
+async function limitedFrame() {
+  const { showLimited } = await import('./limited.js');
+  events = await showLimited({
+    app,
+    session,
+    still: () => session !== null,
+    signOut: () => signOut(),
+    signInAgain,
+    onEnded: (reason) => sessionEnded(reason),
+    onClosed: start,
+  });
 }
 
 async function start() {
-  events?.close();
+  started += 1;
+  const mine = started;
+  forgetSessionKeepingPage();
   try {
     session = await get('/api/1/session');
   } catch (error) {
+    if (mine !== started) return;
     if (error.status === 401) {
-      showSignInPage(hadSession ? { title: error.title, detail: error.detail } : undefined);
+      showSignInPage(hadSession ? { title: error.title, detail: error.detail } : undefined, { unknown: hadSession });
     } else {
       showFailure(error);
     }
     return;
   }
+  if (mine !== started) return;
   hadSession = true;
   setCsrf(session.csrf);
   setUnlockSeconds(session.unlock_seconds);
-  events = followEvents();
-  route();
+  if (session.needs_step) {
+    await limitedFrame();
+    return;
+  }
+  const entered = await enterShell({
+    app,
+    session,
+    signOut,
+    signInAgain,
+    onEnded: (ended) => sessionEnded(ended),
+    onClosed: start,
+    onFailure: showFailure,
+  });
+  if (mine !== started) {
+    entered?.stop();
+    return;
+  }
+  shell = entered;
 }
 
-// A link to another view of the console is opened here, without a page load.
-document.addEventListener('click', (event) => {
-  const link = event.target.closest?.('a[href^="/"]');
-  if (!session || !link || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey) return;
-  event.preventDefault();
-  history.pushState(null, '', link.getAttribute('href'));
-  route();
-});
-window.addEventListener('popstate', () => session && route());
-whenSessionEnds((error) => session && showSignInPage({ title: error.title, detail: error.detail }));
+/** Stops the stream and the shell of an earlier start without clearing the page, which the next one draws over. */
+function forgetSessionKeepingPage() {
+  events?.close();
+  events = null;
+  shell?.stop();
+  shell = null;
+}
+
+whenSessionEnds((error) => session && sessionEnded('restarted', { error }));
 
 start();

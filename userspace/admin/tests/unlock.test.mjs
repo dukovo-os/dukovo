@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach, mock } from 'node:test';
 
-import { isUnlocked, onUnlockChange, setUnlockSeconds } from '../unlock.js';
+import { isUnlocked, onUnlockChange, setUnlockSeconds, unlockMinutes } from '../unlock.js';
 
 const realPerformance = Object.getOwnPropertyDescriptor(globalThis, 'performance');
 let now;
@@ -90,4 +90,22 @@ test('one that stopped following is not told', () => {
   forget();
   setUnlockSeconds(900);
   assert.equal(heard, 0);
+});
+
+test('the minutes left count a started minute, and are null while it is locked', () => {
+  assert.equal(unlockMinutes(), null);
+  setUnlockSeconds(900);
+  assert.equal(unlockMinutes(), 15);
+  pass(1);
+  assert.equal(unlockMinutes(), 15);
+  pass(59);
+  assert.equal(unlockMinutes(), 14);
+  pass(60 * 12 + 1);
+  assert.equal(unlockMinutes(), 2);
+  pass(60);
+  assert.equal(unlockMinutes(), 1);
+  pass(58);
+  assert.equal(unlockMinutes(), 1);
+  pass(1);
+  assert.equal(unlockMinutes(), null);
 });

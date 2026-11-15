@@ -130,3 +130,58 @@ runs = "as-administrator"
 long = false
 compares = true
 tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "console.about"
+title = "Show this server"
+area = "console"
+method = "GET"
+path = "/api/1/console/about"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "console.notices"
+title = "Show the sign-in notices"
+area = "console"
+method = "GET"
+path = "/api/1/console/notices"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "checks.last"
+title = "Show the last checks"
+area = "security"
+method = "GET"
+path = "/api/1/checks/last"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::checks::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "metrics.now"
+title = "Show the latest metrics"
+area = "metrics"
+method = "GET"
+path = "/api/1/metrics/now"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::metrics::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "metrics.usage"
+title = "Show the usage"
+area = "metrics"
+method = "GET"
+path = "/api/1/metrics/usage/{range}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::metrics::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }

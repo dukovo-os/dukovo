@@ -4,14 +4,18 @@
 //! A tab's stream of events (ADR 0514), `GET /api/1/events`, as
 //! server-sent events: `unlock` with the seconds left when the session's
 //! unlock changes, `session` with why it ended when it does, `task` for
-//! each change of a task's state, step or progress (ADR 0516), and a
-//! comment every 25 seconds so that nothing between the browser and admind
-//! closes a stream that says nothing.
+//! each change of a task's state, step or progress (ADR 0516), `change` for
+//! each row of the journal that ends, a console change's or a hand edit's,
+//! and a comment every 25 seconds so that nothing between the browser and
+//! admind closes a stream that says nothing.
 //!
 //! A tab that opens is told where each task is that waits, runs or ended
 //! in the last minute, so that it has no gap between what it asked for and
 //! what came after. Later a task is told at most four times a second: what
-//! comes sooner waits, and only the latest is sent.
+//! comes sooner waits, and only the latest is sent. A row is told once to
+//! every open tab of every session, as the journal is everyone's to read,
+//! and says its number, how it was made and when, with no file's name and
+//! no person's; a tab that opens is told of the rows after it opened.
 //!
 //! An open stream is a tab: while a session has one, it is not idle, and
 //! once its last stream has closed and 60 seconds have passed, an
@@ -35,6 +39,7 @@ use tokio::sync::{mpsc, watch};
 
 use super::{Content, Live, Outcome, Reply};
 use crate::admind::authd;
+use crate::admind::journal::Row;
 use crate::admind::log;
 use crate::admind::shared::{Shared, seconds_left, unix_now};
 use crate::admind::tasks::Told;
@@ -79,6 +84,13 @@ fn session_event(reason: &str) -> Bytes {
     Bytes::from(format!("event: session\ndata: {data}\n\n"))
 }
 
+/// The event that says the journal has the row `row`, made as it says and
+/// ended at its time.
+fn change_event(row: &Row) -> Bytes {
+    let data = json!({ "id": row.id, "how": row.how, "at": row.at });
+    Bytes::from(format!("event: change\ndata: {data}\n\n"))
+}
+
 /// `GET /api/1/events`: counts the tab in and starts its stream.
 ///
 /// # Panics
@@ -116,18 +128,23 @@ enum Woken {
     Changed,
     /// A task changed.
     Tasks,
+    /// A row of the journal ended.
+    Rows,
     /// The tab has gone, or admind is stopping.
     Gone,
 }
 
-/// Waits until `changes` or `tasks` has news or `sender`'s tab has gone.
+/// Waits until `changes`, `tasks` or `rows` has news or `sender`'s tab has
+/// gone.
 async fn woken(
     changes: &mut watch::Receiver<()>,
     tasks: &mut watch::Receiver<()>,
+    rows: &mut watch::Receiver<()>,
     sender: &mpsc::Sender<Bytes>,
 ) -> Woken {
     let mut changed = pin!(changes.changed());
     let mut task_news = pin!(tasks.changed());
+    let mut row_news = pin!(rows.changed());
     let mut closed = pin!(sender.closed());
     std::future::poll_fn(|cx| {
         if closed.as_mut().poll(cx).is_ready() {
@@ -140,7 +157,12 @@ async fn woken(
             Poll::Pending => {}
         }
         match task_news.as_mut().poll(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(Woken::Tasks),
+            Poll::Ready(Ok(())) => return Poll::Ready(Woken::Tasks),
+            Poll::Ready(Err(_)) => return Poll::Ready(Woken::Gone),
+            Poll::Pending => {}
+        }
+        match row_news.as_mut().poll(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Woken::Rows),
             Poll::Ready(Err(_)) => Poll::Ready(Woken::Gone),
             Poll::Pending => Poll::Pending,
         }
@@ -153,10 +175,12 @@ async fn woken(
 async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc::Sender<Bytes>) {
     let mut changes = shared.changes.subscribe();
     let mut task_news = shared.tasks.subscribe();
-    // The unlock last told, so that only a change is, and what of each
-    // task.
+    let mut row_news = shared.journal.news.subscribe();
+    // The unlock last told, so that only a change is, what of each task,
+    // and where in the journal's news the tab is.
     let mut told = None;
     let mut told_tasks = Told::default();
+    let mut told_rows = shared.journal.news.position();
     loop {
         let Some(until) = shared.with_session(&cookie, |session| session.unlocked_until) else {
             let reason = shared.endings.borrow().reason(&authd);
@@ -182,9 +206,25 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
         if gone {
             break;
         }
+        let (position, rows) = shared.journal.news.since(told_rows);
+        told_rows = position;
+        for row in &rows {
+            if !tell(&sender, change_event(row)).await {
+                gone = true;
+                break;
+            }
+        }
+        if gone {
+            break;
+        }
         let wait = held.map_or(KEEP_TIME, |held| held.min(KEEP_TIME));
-        match tokio::time::timeout(wait, woken(&mut changes, &mut task_news, &sender)).await {
-            Ok(Woken::Changed | Woken::Tasks) => {}
+        match tokio::time::timeout(
+            wait,
+            woken(&mut changes, &mut task_news, &mut row_news, &sender),
+        )
+        .await
+        {
+            Ok(Woken::Changed | Woken::Tasks | Woken::Rows) => {}
             Ok(Woken::Gone) => break,
             // A task's event was held back, and its time has come.
             Err(_) if held.is_some() => {}
@@ -253,6 +293,21 @@ mod tests {
         );
         // An unlock that ran out is a lock, whether or not authd was told.
         assert_eq!(unlock_event(Some(999), 1_000), unlock_event(None, 1_000));
+    }
+
+    #[test]
+    fn a_row_is_told_as_its_number_how_it_was_made_and_when_and_nothing_else() {
+        let row = Row { id: 41, how: "token ci".into(), at: 1_800_000_000 };
+        assert_eq!(
+            change_event(&row),
+            Bytes::from(
+                "event: change\ndata: {\"at\":1800000000,\"how\":\"token ci\",\"id\":41}\n\n"
+            )
+        );
+        // The words of a person's name are text in JSON, not the event's.
+        let odd = Row { id: 1, how: "by hand\nevent: unlock".into(), at: 2 };
+        let told = String::from_utf8(change_event(&odd).to_vec()).unwrap();
+        assert_eq!(told.matches('\n').count(), 3, "{told:?}");
     }
 
     #[test]

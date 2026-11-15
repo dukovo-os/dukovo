@@ -23,7 +23,9 @@ Radix keeps no utmp file. A session is a session leader with a
 controlling terminal, as _/processes_ shows it (*radix-proc*(5)), which began
 when its leader started: a login shell on a terminal. Its user is the
 one its leader acts for, who signed in on that terminal (*login*(1)).
-users lists them sorted, once per session.
+users lists them sorted, once per session. A shell in one of the web
+console's terminals (*dukovo-admin*(7)) is such a session, on a
+terminal of its own.
 
 # OPTIONS
 
@@ -52,4 +54,4 @@ nothing.
 
 # SEE ALSO
 
-*w*(1), *uptime*(1), *last*(1), *systools*(1)
+*w*(1), *uptime*(1), *last*(1), *systools*(1), *dukovo-admin*(7)

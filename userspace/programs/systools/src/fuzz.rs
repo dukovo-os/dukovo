@@ -35,7 +35,9 @@
 //! - [`webauthn_client_data`], [`webauthn_authenticator_data`],
 //!   [`webauthn_key`], [`webauthn_attestation`], [`webauthn_assertion`],
 //!   [`webauthn_challenge`] and [`webauthn_json`]: what a browser's passkey
-//!   sends, as admind passes it on and as authd checks it.
+//!   sends, as admind passes it on and as authd checks it;
+//! - [`websocket_opening`] and [`websocket_frames`]: the request that opens
+//!   the Terminal's socket, and the frames a browser sends on it.
 //!
 //! Each parser that checks is given the console's own name, origin and
 //! challenge ([`ORIGIN`], [`CHALLENGE`]), so that a check that passes can
@@ -63,6 +65,7 @@ use crate::admind::fixture;
 use crate::admind::preferences::{Change, Preferences};
 use crate::admind::scopes::Scopes;
 use crate::admind::webauthn::{self, Credential, Made};
+use crate::admind::websocket::{self, Frames, MESSAGE_MAX};
 use crate::admind::{QUIET, caller, routes};
 use crate::authd::proofs::{self, Ceremony, Expected};
 use crate::{settings_edit, timedatectl};
@@ -419,6 +422,50 @@ pub fn webauthn_json(create: bool, json: &[u8]) -> Result<(), String> {
             .map(drop)
             .map_err(|failure| said(&failure))
     }
+}
+
+/// Whether the headers `pairs`, names and values, open the Terminal's
+/// socket, and the session's token they bring.
+///
+/// # Errors
+///
+/// The refusal's words, for headers that do not.
+pub fn websocket_opening(pairs: &[(&[u8], &[u8])]) -> Result<String, String> {
+    let mut headers = HeaderMap::new();
+    for (name, value) in pairs {
+        let name = HeaderName::from_bytes(name).map_err(|_| "not a header's name")?;
+        let value = HeaderValue::from_bytes(value).map_err(|_| "not a header's value")?;
+        headers.append(name, value);
+    }
+    websocket::opening(&headers).map(|opening| opening.csrf).map_err(str::to_string)
+}
+
+/// The messages a browser's bytes make on the Terminal's socket, read in
+/// pieces of `piece` bytes as the socket reads them: how many, and the
+/// close code of the rule they broke, if one.
+///
+/// # Panics
+///
+/// If what is held while the next message waits for its bytes is ever
+/// more than one message and a frame's head: memory a browser could grow.
+pub fn websocket_frames(bytes: &[u8], piece: usize) -> (usize, Option<u16>) {
+    /// A frame's longest head, and a control frame's longest body, which
+    /// may come between a message's fragments.
+    const SLACK: usize = 14 + 125;
+    let mut frames = Frames::new();
+    let mut messages = 0;
+    for chunk in bytes.chunks(piece.max(1)) {
+        frames.push(chunk);
+        loop {
+            match frames.next() {
+                Ok(Some(_)) => messages += 1,
+                Ok(None) => break,
+                Err(code) => return (messages, Some(code.number())),
+            }
+        }
+        assert!(frames.held() <= MESSAGE_MAX + SLACK, "{} bytes held", frames.held());
+    }
+    (messages, None)
 }
 
 #[cfg(test)]

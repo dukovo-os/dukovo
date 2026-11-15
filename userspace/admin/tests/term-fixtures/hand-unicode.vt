@@ -1,0 +1,10 @@
+# hand-built: wide characters, combining marks and the edge. A wide character
+# between narrow ones, one that does not fit in the last column and wraps,
+# a letter with a combining accent, an emoji, one that exactly fits and
+# leaves the wait to wrap. 10 columns, 8 rows.
+\e[H\e[2J
+a\u4e2db\r\n
+123456789\u4e2d\r\n
+e\u0301x\r\n
+\u{1F600}x\r\n
+12345678\u4e2dz

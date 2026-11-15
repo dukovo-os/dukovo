@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The web console's Show command in the lab PC's browsers, in each engine
+# (design 6): an administrator starts the lab's long action, which the
+# Tasks drawer lists with its command in one line under the card; pressing
+# the line opens the Show command drawer with its four tabs (the command, the
+# call to the API, the Ansible task and the files), each holding what admind
+# answers to `POST /api/1/show`; the arrow keys, Home and End move through
+# the tabs; Copy puts a tab's text on the clipboard. Each look of the
+# console is checked by axe. Each engine has an administrator of its own,
+# which this test makes and removes, so no script needs the lab's password.
+# The lab's action is in a build made with systools' `lab` feature, which
+# `ob image --lab` turns on for the lab image; the test needs it.
+about = "Browsers open the web console's Show command from a task's card, read its four tabs against what the API answers, move through them by the keys and copy each one"
+time = "20m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-show-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-show-chromium", "Made wc-show-firefox", "Made wc-show-webkit"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "show-command.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do user remove --delete-home --yes wc-show-$engine || exit 1; done'"
+root = true
+expect = ["wc-show-chromium is removed", "wc-show-firefox is removed", "wc-show-webkit is removed"]

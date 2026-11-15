@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The console's errors (ADRs 0514 and 0515), all in this one place. Each
+//! The console's errors (ADRs 0514, 0515 and 0517), all in this one place. Each
 //! has an ID a person can quote, a title, the HTTP status it is answered
 //! with, and a fix the person can try. The detail is the sentence for this
 //! one time: where authd refused, its own words, which are written for
@@ -77,11 +77,21 @@ pub enum Kind {
     /// ADM-128: what was asked cannot be done to this change or task as
     /// it is.
     Cannot,
+    /// ADM-129: an action's program is not on this machine: it comes
+    /// with a later update.
+    NoProgram,
+    /// ADM-130: the account, the terminal or the console holds as many
+    /// terminals or panes as it may.
+    TooManyTerminals,
+    /// ADM-131: there is no such terminal or pane for this account.
+    NoTerminal,
+    /// ADM-132: the terminal is not open to this account.
+    TerminalClosed,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 28] = [
+    pub const ALL: [Kind; 32] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -110,6 +120,10 @@ impl Kind {
         Kind::NoStore,
         Kind::NotKept,
         Kind::Cannot,
+        Kind::NoProgram,
+        Kind::TooManyTerminals,
+        Kind::NoTerminal,
+        Kind::TerminalClosed,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -143,6 +157,10 @@ impl Kind {
             Kind::NoStore => "ADM-126",
             Kind::NotKept => "ADM-127",
             Kind::Cannot => "ADM-128",
+            Kind::NoProgram => "ADM-129",
+            Kind::TooManyTerminals => "ADM-130",
+            Kind::NoTerminal => "ADM-131",
+            Kind::TerminalClosed => "ADM-132",
         }
     }
 
@@ -165,18 +183,22 @@ impl Kind {
             | Kind::Refused
             | Kind::SecondStepOnly
             | Kind::NotAdmin
-            | Kind::OutOfScope => 403,
+            | Kind::OutOfScope
+            | Kind::TerminalClosed => 403,
             Kind::Wait => 429,
             Kind::BadRequest | Kind::BadValue => 400,
             // The command was asked for and ran: what it said is the
             // answer, and nothing about the request was wrong.
             Kind::CommandFailed => 422,
-            // What was asked is not now what it can be done to.
-            Kind::Cannot => 409,
+            // What was asked is not now what it can be done to, or the
+            // account holds as many terminals as it may until it ends one.
+            Kind::Cannot | Kind::TooManyTerminals => 409,
+            // The console has the action, and this machine not its program.
+            Kind::NoProgram => 501,
             Kind::AuthdSilent | Kind::WorkerSilent => 502,
             Kind::TooBig => 413,
             Kind::WrongHost => 421,
-            Kind::NoRoute | Kind::NotKept => 404,
+            Kind::NoRoute | Kind::NotKept | Kind::NoTerminal => 404,
             Kind::NoMethod => 405,
             Kind::NotJson => 415,
             Kind::Busy | Kind::NoStore => 503,
@@ -215,6 +237,10 @@ impl Kind {
             Kind::NoStore => "The console keeps no journal or tasks now",
             Kind::NotKept => "The console has no such change or task",
             Kind::Cannot => "That cannot be done to this one",
+            Kind::NoProgram => "This server does not have that command yet",
+            Kind::TooManyTerminals => "Too many terminals",
+            Kind::NoTerminal => "There is no such terminal",
+            Kind::TerminalClosed => "The terminal is not open to this account",
         }
     }
 
@@ -244,6 +270,11 @@ impl Kind {
             Kind::Busy => Some("Try again when someone has signed out."),
             Kind::Internal => Some("Try again; if it keeps happening, look in the log of admind."),
             Kind::NoStore => Some("Look in the log of admind for why its store did not open."),
+            Kind::NoProgram => Some("It comes with a later update of Dukovo."),
+            Kind::TooManyTerminals => Some("End a terminal you no longer use, then try again."),
+            Kind::NoTerminal => {
+                Some("Open the terminal from the Sessions page, or start a new one.")
+            }
             Kind::NotJson
             | Kind::BadRequest
             | Kind::Refused
@@ -252,7 +283,8 @@ impl Kind {
             | Kind::NoMethod
             | Kind::NotKept
             | Kind::Cannot
-            | Kind::CommandFailed => None,
+            | Kind::CommandFailed
+            | Kind::TerminalClosed => None,
         }
     }
 }
@@ -368,10 +400,23 @@ const FULL: &str = "web console sessions are signed in already";
 /// change, ADM-122.
 const NOT_ADMIN: &str = "is not an administrator, and makes no changes";
 
+/// How a program that is in neither folder of commands is told, after its
+/// name: authd refuses an elevated command with it (`elevate::plan`), and
+/// the worker uses it for a command it was to run as the person, so that
+/// ADM-129 says the same whichever of them looked.
+pub const NOT_FOUND: &str = ": command not found";
+
 /// The failure that authd's refusal `why` is, for what `attempt` was. authd
 /// words every refusal for a person, so the detail is its own sentence; the
 /// kind is what the page tells apart.
 pub fn refusal(attempt: Attempt, why: &str) -> Failure {
+    // A refusal authd gives an ID of the console's own, as the terminal
+    // request's: `ADM-130: words`.
+    if let Some((id, words)) = why.split_once(": ")
+        && let Some(kind) = Kind::of(id)
+    {
+        return Failure::new(kind, words);
+    }
     let kind = if why == WRONG_PASSWORD {
         Kind::WrongPassword
     } else if why.contains("may only add a second step") {
@@ -382,6 +427,8 @@ pub fn refusal(attempt: Attempt, why: &str) -> Failure {
         Kind::SessionEnded
     } else if why.ends_with(NOT_ADMIN) {
         Kind::NotAdmin
+    } else if why.ends_with(NOT_FOUND) {
+        Kind::NoProgram
     } else if NOT_ALLOWED.iter().any(|phrase| why.contains(phrase)) {
         Kind::NotAllowed
     } else if why.ends_with(FULL) {
@@ -429,6 +476,23 @@ mod tests {
         for (kind, id, status) in named {
             assert_eq!((kind.id(), kind.status()), (id, status));
         }
+    }
+
+    #[test]
+    fn a_missing_program_and_the_terminals_have_their_own() {
+        let named = [
+            (Kind::NoProgram, "ADM-129", 501),
+            (Kind::TooManyTerminals, "ADM-130", 409),
+            (Kind::NoTerminal, "ADM-131", 404),
+            (Kind::TerminalClosed, "ADM-132", 403),
+        ];
+        for (kind, id, status) in named {
+            assert_eq!((kind.id(), kind.status()), (id, status));
+        }
+        // ADM-132's detail says which of its two reasons it is, and so
+        // what to do; the others have a fix of their own.
+        assert_eq!(Kind::TerminalClosed.fix(), None);
+        assert!(Kind::NoProgram.fix().is_some_and(|fix| fix.contains("later update")));
     }
 
     #[test]
@@ -515,6 +579,7 @@ mod tests {
             ),
             (Attempt::Other, "64 web console sessions are signed in already", Kind::Busy),
             (Attempt::Other, "chase is not an administrator, and makes no changes", Kind::NotAdmin),
+            (Attempt::Other, "dukovo-check: command not found", Kind::NoProgram),
         ];
         for (attempt, why, kind) in cases {
             let failure = refusal(attempt, why);
@@ -535,6 +600,28 @@ mod tests {
             ": sign in again",
         ]) {
             assert!(authd.contains(phrase), "authd no longer says {phrase:?}");
+        }
+    }
+
+    #[test]
+    fn a_program_authd_cannot_find_is_adm_129_with_authds_words_naming_it() {
+        // The refusal is the one elevate::plan gives for a command that is in
+        // neither folder, which authd passes on as its refusal.
+        let root = crate::elevate::root_account(std::iter::empty());
+        let command = [b"dukovo-check".to_vec(), b"--last".to_vec()];
+        let why = crate::elevate::plan(accounts::request::Mode::Command, &command, b"/", &root)
+            .unwrap_err();
+        let failure = refusal(Attempt::Other, &why);
+        assert_eq!(failure.kind, Kind::NoProgram);
+        assert_eq!(failure.detail, "dukovo-check: command not found");
+        assert_eq!(failure.body()["error"]["id"], "ADM-129");
+        // Any other refusal of a command is still authd's own.
+        for other in [
+            "the web console runs the system's and the apps' commands alone, not /bin/ls",
+            "the web console runs commands, never a shell",
+            "command not found",
+        ] {
+            assert_eq!(refusal(Attempt::Other, other).kind, Kind::Refused, "{other}");
         }
     }
 }

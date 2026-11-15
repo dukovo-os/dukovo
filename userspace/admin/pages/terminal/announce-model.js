@@ -1,0 +1,74 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+// What a screen reader is told of a terminal's new output (design 13.10):
+// the text without its escape sequences, handed over at most every 500 ms
+// and 500 characters at a time, with "\u2026and 40 more lines" for what was cut.
+
+export const EVERY_MS = 500;
+export const MOST_CHARS = 500;
+
+// Complete sequences: strings (OSC, DCS, SOS, PM, APC), CSI, and the others (ESC, intermediates, a final
+// that does not start a longer one).
+const STRINGS = /\x1b[\]PX^_][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const SEQUENCES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-OQ-WYZ\\`-~]/g;
+const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f]/g;
+// A sequence the output ended in the middle of, kept for the next piece.
+const CARRY_MOST = 4096;
+
+export class Announcer {
+  #pending = [];
+
+  #carry = '';
+
+  #last = -Infinity;
+
+  /** Adds `text` the program wrote, escape sequences and all. */
+  push(text) {
+    let all = this.#carry + text;
+    this.#carry = '';
+    all = all.replace(STRINGS, '').replace(SEQUENCES, '');
+    const cut = all.indexOf('\x1b');
+    if (cut >= 0) {
+      const rest = all.slice(cut);
+      if (rest.length <= CARRY_MOST) this.#carry = rest;
+      all = all.slice(0, cut);
+    }
+    all = all.replace(/\r\n/g, '\n').replace(/\t/g, ' ').replace(CONTROLS, '');
+    if (all.trim() !== '') this.#pending.push(all);
+  }
+
+  /** Whether there is something to say. */
+  get waiting() {
+    return this.#pending.length > 0;
+  }
+
+  /** How long until something may be said, in milliseconds. */
+  wait(now) {
+    return Math.max(0, this.#last + EVERY_MS - now);
+  }
+
+  /** The words to say now, or null when there are none or it is too soon. */
+  take(now) {
+    if (!this.waiting || this.wait(now) > 0) return null;
+    const lines = this.#pending.join('').split('\n').map((line) => line.trim()).filter(Boolean);
+    this.#pending = [];
+    this.#last = now;
+    let said = '';
+    let used = 0;
+    for (const line of lines) {
+      const next = said === '' ? line : `${said}\n${line}`;
+      if (next.length > MOST_CHARS) {
+        if (said === '') {
+          said = line.slice(0, MOST_CHARS);
+          used += 1;
+        }
+        break;
+      }
+      said = next;
+      used += 1;
+    }
+    const more = lines.length - used;
+    return more > 0 ? `${said}\n\u2026and ${more} more ${more === 1 ? 'line' : 'lines'}` : said;
+  }
+}

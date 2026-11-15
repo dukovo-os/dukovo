@@ -17,11 +17,17 @@
 //!
 //! The reach says whether it changed anything by reading `admin reach`
 //! before and after (ADR 0515).
+//!
+//! Two reads are in the area too: `console.about`, what the Overview shows
+//! of this server, and `console.notices`, what is kept for the next
+//! sign-in. They run `admin about` and `admin notices` with `--json` as
+//! the person, which print what the person can read of the machine, and
+//! `null` for the rest, so they are answered 200 on any machine.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{Action, Args, Bad, Examples, Field, Runs, Tests, Undo};
+use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
 use crate::admin_settings::{self, Reach};
 
 /// The area of these actions: the scope a token needs, `console`.
@@ -35,6 +41,54 @@ const TESTS: Tests = Tests {
     browser: "web-console/actions",
     ansible: "web-console/ansible",
 };
+
+/// `admin about --json`: what the Overview shows of this server.
+pub struct About;
+
+impl Action for About {
+    const ID: &'static str = "console.about";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/console/about";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show this server";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["admin", "about", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples {
+            good: vec![Nothing {}],
+            bad: vec![json!({ "host": "nas" }), json!({ "all": true })],
+            undo: None,
+        }
+    }
+}
+
+/// `admin notices --json`: what is kept for the next sign-in.
+pub struct Notices;
+
+impl Action for Notices {
+    const ID: &'static str = "console.notices";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/console/notices";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the sign-in notices";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["admin", "notices", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "name": "backup" })], undo: None }
+    }
+}
 
 /// Whom the console is to answer.
 #[derive(Debug, Deserialize, Serialize)]
@@ -136,6 +190,74 @@ mod tests {
     /// The action, which is in the registry.
     fn registered() -> &'static dyn Registered {
         *REGISTRY.iter().find(|action| action.id() == "console.reach").unwrap()
+    }
+
+    /// The registered action `id`.
+    fn action(id: &str) -> &'static dyn Registered {
+        *REGISTRY.iter().find(|action| action.id() == id).unwrap()
+    }
+
+    #[test]
+    fn about_and_notices_are_reads_of_the_person_that_ask_the_admin_command_for_json() {
+        for (id, path, word, title) in [
+            ("console.about", "/api/1/console/about", "about", "Show this server"),
+            ("console.notices", "/api/1/console/notices", "notices", "Show the sign-in notices"),
+        ] {
+            let action = action(id);
+            assert_eq!(
+                (action.changes(), action.runs(), action.area(), action.long()),
+                (false, Runs::AsThePerson, "console", false),
+                "{id}"
+            );
+            assert_eq!((action.path(), action.title()), (path, title));
+            assert!(action.errors().is_empty(), "{id}");
+            assert!(!action.compares(), "{id}");
+            let prepared = action.prepare(json!({})).unwrap();
+            assert_eq!(prepared.argv, ["admin", word, "--json"], "{id}");
+            assert_eq!(prepared.probe, None);
+            assert!(prepared.files.is_empty());
+            assert_eq!(prepared.ansible.name, title);
+            assert_eq!(prepared.ansible.module, "ansible.builtin.command");
+            assert_eq!(prepared.ansible.params["argv"], json!(["admin", word, "--json"]));
+            assert!(!prepared.ansible.become_root);
+            assert_eq!(prepared.ansible.changed_when.as_deref(), Some("false"));
+        }
+    }
+
+    #[test]
+    fn about_and_notices_take_nothing() {
+        for id in ["console.about", "console.notices"] {
+            let (good, bad, undo) = action(id).example_values();
+            assert_eq!((good, undo), (vec![json!({})], None), "{id}");
+            for args in bad {
+                let failure = action(id).prepare(args.clone()).unwrap_err();
+                assert_eq!(failure.kind, Kind::BadRequest, "{id} {args}");
+            }
+            assert_eq!(action(id).fields().len(), 0);
+        }
+    }
+
+    #[test]
+    fn a_token_reads_them_with_the_console_scope_or_its_read_scope() {
+        for id in ["console.about", "console.notices"] {
+            let call = |list: &str| {
+                let scopes = Scopes::parse(list).unwrap();
+                let caller = super::super::Caller::Token { name: "ci", scopes: &scopes };
+                super::super::authorize(&caller, action(id))
+            };
+            for list in ["console", "console:read", "*"] {
+                assert!(call(list).is_ok(), "{id} {list}");
+            }
+            for list in ["services", "metrics:read", "security"] {
+                let refused = call(list).unwrap_err();
+                assert_eq!(refused.kind, Kind::OutOfScope, "{id} {list}");
+                assert_eq!(
+                    refused.detail,
+                    "the API token \"ci\" may not do this: it needs the scope console:read, \
+                     console or *"
+                );
+            }
+        }
     }
 
     #[test]

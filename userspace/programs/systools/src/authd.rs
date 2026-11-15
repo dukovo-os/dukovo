@@ -1313,6 +1313,7 @@ impl Authd {
             if self.help_shell_ended(process, now) {
                 continue;
             }
+            self.console.shell_ended(process);
             if let Some(session) = self.sessions.remove(&process) {
                 if session.terminal == console::TERMINAL && !session.elevated {
                     self.console.worker_ended(process);
@@ -1995,19 +1996,9 @@ impl Authd {
         let theirs = if shell { notices.of(&user.name) } else { Vec::new() };
         let missed = if shell { jobs::missed_at_sign_in(user) } else { None };
         if let Some(tty) = terminal.as_ref().filter(|_| shell) {
-            let records = read_text(&signins::of(user.uid)).unwrap_or_default();
-            let mut lines =
-                latest_lines(&signins::latest(&signins::parse(&records)), &user.name, |time| {
-                    util::local_time(time, WHEN)
-                });
-            lines.extend(theirs.iter().cloned());
+            let mut lines = theirs.clone();
             lines.extend(missed.iter().map(|(line, _)| line.clone()));
-            if !lines.is_empty()
-                && let Ok(copy) = tty.try_clone()
-            {
-                let text = format!("\n{}\n\n", lines.join("\n"));
-                let _ = File::from(copy).write_all(text.as_bytes());
-            }
+            greet(tty, user, &lines);
         }
         let started = match forwarder {
             Some(pipes) => signin::start_forwarder(names, user, &groups, pipes, env),
@@ -2946,6 +2937,23 @@ impl Notices {
 /// 2026`.
 const WHEN: &str = "%a %b %e %H:%M %Y";
 
+/// Writes on the terminal `tty`, where `user`'s shell is to start, what a
+/// console's sign-in shows first: their last sign-in, the wrong passwords
+/// since, and `notices`, those kept for them.
+fn greet(tty: &OwnedFd, user: &User, notices: &[String]) {
+    let records = read_text(&signins::of(user.uid)).unwrap_or_default();
+    let mut lines = latest_lines(&signins::latest(&signins::parse(&records)), &user.name, |time| {
+        util::local_time(time, WHEN)
+    });
+    lines.extend(notices.iter().cloned());
+    if !lines.is_empty()
+        && let Ok(copy) = tty.try_clone()
+    {
+        let text = format!("\n{}\n\n", lines.join("\n"));
+        let _ = File::from(copy).write_all(text.as_bytes());
+    }
+}
+
 /// Adds a record of `event`, now, to the sign-in records' file at `path`
 /// (ADR 0254): root's and `group`'s, with `mode`, made if it is not
 /// there, and trimmed once it grew past [`signins::FILE_MAX`]. A record
@@ -3290,6 +3298,7 @@ impl Authd {
             self.wrong.retain(|_, wrong| now.saturating_duration_since(wrong.next) < FORGET);
             self.unlocked.retain(|_, until| *until > now);
             self.console.tidy(now);
+            self.end_admin_shells(now);
             for client in &mut self.clients {
                 if client.deadline <= now {
                     client.done = true;
@@ -3339,6 +3348,7 @@ impl Authd {
                 })
                 .flatten()
                 .chain(self.helps.iter().map(help::Help::next))
+                .chain(self.console.next_check(now))
                 .min();
             let timeout = next.map_or(-1, |at| {
                 at.saturating_duration_since(now).as_millis().min(60_000) as libc::c_int + 1

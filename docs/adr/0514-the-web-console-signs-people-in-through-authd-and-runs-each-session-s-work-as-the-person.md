@@ -148,11 +148,13 @@ own record.
   this machine, its cards' networks, loopback, link-local, 10.0.0.0/8,
   172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7, and an IPv4
   address carried in IPv6 as itself. `reach = "any"` answers all. The log
-  says what it closed once a minute for each address, never once for each
-  try.
+  says what it closed once a minute for each address and reason, never
+  once for each try.
 - **Limits before sign-in.** 512 connections at once and 32 from one
-  address (an IPv6 address counts by its /64); 10 seconds for the TLS
-  handshake and the first request's head together; a head of at most 16
+  address (an IPv6 address counts by its /64); 20 seconds for the TLS
+  handshake and the first request's head together, longer than a
+  browser keeps a connection it opened ahead and has not used (10
+  seconds in Chromium), so the browser closes it first; a head of at most 16
   KiB and 64 headers; 60 seconds of keep-alive; an address of at most 2
   KiB; a body of at most 64 KiB before sign-in and 1 MiB after; ten
   sign-in requests a minute from one address, on top of authd's waits.
@@ -238,9 +240,10 @@ own record.
   `last` and a person's next "Last sign-in" say them (ADR 0254).
 - **The console's files are checked when admind starts.** The build
   installs them in `/system/resources/admin` with a `manifest.txt` of
-  each file's SHA-256, and admind keeps in memory the files that match
-  it and serves no other, so that a file changed on the disk does not
-  become a page of the console. They are plain modules and style sheets
+  each file's SHA-256, and admind serves only the files that match it,
+  so that a file changed on the disk does not become a page of the
+  console. (ADR 0517: admind reads each file when it sends it, and
+  checks it again then, rather than keeping the files in memory.) They are plain modules and style sheets
   with no framework, no build step and no file from another site.
 - **The machine's own sign-in screen says where to open the console.**
   admind writes its address and the certificate's fingerprint to
