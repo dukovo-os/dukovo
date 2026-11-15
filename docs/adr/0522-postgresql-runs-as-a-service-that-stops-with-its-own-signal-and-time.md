@@ -40,6 +40,10 @@ needs of the system:
   its root. A service's view held only the devices of ADR 0217's list,
   without it, so the service's initdb failed: `shmget` answered ENOSYS, as
   on a Linux built without System V IPC.
+- **Signals between its processes.** Each process the postmaster starts
+  has a session of its own and wakes the others with signals, which the
+  kernel refused across sessions; ADR 0526 lets a process signal its
+  user's processes in its own resource domain, as the service's are.
 - **A socket folder.** libpq's default folder for the Unix socket is
   `/tmp`. The service's socket belongs in its live folder
   (`/system/live/services/postgres`, ADR 0386), which Spark makes for the

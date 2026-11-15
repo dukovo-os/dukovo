@@ -2217,7 +2217,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "services",
-        about: "service files in TOML: every shipped one reads with service check and is kept as Spark's last good copy; Spark converts a file of before Phase 13 with its comments as it starts its service; service new writes a template and service edit puts a file in place only once it reads; a file broken under a running service leaves its last good copy running; a service sees only the view its file declares, and reads there the secret service secret set kept for it",
+        about: "service files in TOML: every shipped one reads with service check and is kept as Spark's last good copy; Spark converts a file of before Phase 13 with its comments as it starts its service; service new writes a template and service edit puts a file in place only once it reads; a file broken under a running service leaves its last good copy running; a service sees only the view its file declares, and reads there the secret service secret set kept for it; its processes signal each other from sessions of their own, and not Spark",
         firmware: Firmware::Bios,
         media: Media::Usb,
         cmdline: "lockdep -- --services --posix /system/tests/posix/servicetest",

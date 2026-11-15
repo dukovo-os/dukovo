@@ -214,10 +214,10 @@ their pull requests conflicted.
 | [0211](0211-the-audit-log-and-trimming-the-log.md) | Security events of the kernel and Spark go to an audit log, and logd trims the log by age and size | Accepted |
 | [0212](0212-notifications-and-the-privacy-promise.md) | notifyd passes notifications to the console's bottom line, naming the sender as the kernel does, and the privacy promise | Accepted |
 | [0213](0213-files-have-owners-groups-and-modes.md) | Files have owners, groups and modes, which Btrfs, ext4 and tmpfs keep | Accepted |
-| [0214](0214-names-and-the-second-gate.md) | Processes and capabilities act for names, which the names capability gives, and owners and modes narrow what a capability reaches | Accepted |
+| [0214](0214-names-and-the-second-gate.md) | Processes and capabilities act for names, which the names capability gives, and owners and modes narrow what a capability reaches | Accepted; `kill` also reaches the user's processes in the caller's resource domain since [0526](0526-a-process-may-signal-its-user-s-processes-in-its-own-resource-domain.md) |
 | [0215](0215-views-directories-made-of-attached-capabilities.md) | Views: directories made of attached capabilities, which a walk crosses onto as onto mounts | Accepted |
 | [0216](0216-service-files-in-toml.md) | Service files are TOML, read by one crate, and a file that does not read never takes a service down | Accepted |
-| [0217](0217-each-service-runs-in-a-view-of-what-its-file-declares.md) | Each service runs in a view of what its file declares, and gets its secrets as read-only files | Accepted |
+| [0217](0217-each-service-runs-in-a-view-of-what-its-file-declares.md) | Each service runs in a view of what its file declares, and gets its secrets as read-only files | Accepted; every service's view holds `/devices/shm` since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md) |
 | [0218](0218-authd-keeps-the-accounts-and-passwords-are-argon2id-hashes.md) | authd keeps the accounts, and passwords are Argon2id hashes only it reads | Accepted |
 | [0219](0219-elevate-runs-a-command-as-an-administrator.md) | elevate runs a command as an administrator, through authd | Accepted |
 | [0230](0230-sensors-and-lsusb-with-the-usb-id-database.md) | sensors and lsusb are systools, with the USB ID database as a port | Accepted |

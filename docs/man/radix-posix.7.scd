@@ -169,7 +169,9 @@ memory ends the process as SIGKILL would.
 Real-time signals queue with their values, up to 1,024 per process
 (what *RLIMIT_SIGPENDING* says), and are taken lowest number first and
 in order within a number. *kill* may signal the caller, its descendants and the
-processes of its session that act for the same user (EPERM otherwise);
+processes that act for the same user and share its session or its resource
+domain, which a service's processes do, as do the processes of the
+sign-ins authd starts (EPERM otherwise, ADR 0526);
 *kill(-1, ...)* signals all of those but the caller and process 1.
 Tracing (*rtrace*(1)) reaches only the caller's descendants, as Linux's
 Yama has it at level 1 (ADR 0214).

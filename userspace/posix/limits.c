@@ -373,18 +373,8 @@ static void other_processes(void) {
 	int status = check_wait(child);
 	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 100);
 	unlink("/tmp/limits-other");
-
-	// Another session's processes are out of reach, as they are of kill:
-	// Spark, process 1, is in one.
-	pid_t stranger = check_fork();
-	if(stranger == 0) {
-		CHECK(setsid() == getpid());
-		CHECK_ERROR(prlimit(1, RLIMIT_CORE, NULL, &limit), EPERM);
-		struct rlimit none = {0, 0};
-		CHECK_ERROR(prlimit(1, RLIMIT_CORE, &none, NULL), EPERM);
-		check_exit_child();
-	}
-	CHECK_CHILD(stranger);
+	// What is out of reach, as it is of kill, the services boot test
+	// checks from a service's domain (ADR 0526).
 }
 
 static void file_mask(void) {

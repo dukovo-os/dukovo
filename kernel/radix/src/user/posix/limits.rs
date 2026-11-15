@@ -19,7 +19,7 @@ use radix_abi::errors::Kernel;
 use radix_abi::process::{self, LimitKind, UNLIMITED};
 use radix_posix::signal::QUEUE_MAX;
 
-use super::{find, join, same_user, with_tree};
+use super::{find, join, same_domain, same_user, with_tree};
 use crate::user::methods::{Answer, answer};
 use crate::user::process::{ProcessObject, ProcessRef};
 use crate::user::{Result, UserRef, error};
@@ -169,7 +169,7 @@ fn other_process(me: &ProcessRef, pid: u64) -> Result<ProcessRef> {
     with_tree(|tree| {
         join(tree, me)?;
         let target = find(tree, pid).ok_or(error(Kernel::NoSuchProcess))?;
-        if !tree.may_signal(me.number(), pid, same_user) {
+        if !tree.may_signal(me.number(), pid, same_user, same_domain) {
             return Err(error(Kernel::NotPermitted));
         }
         Ok(target)

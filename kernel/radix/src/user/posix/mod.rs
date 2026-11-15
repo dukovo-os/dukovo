@@ -157,9 +157,17 @@ pub struct PosixState {
 }
 
 /// Whether two processes act for the same user, which `kill` asks of
-/// those in the sender's session (ADR 0214).
+/// those in the sender's session (ADR 0214) or resource domain (ADR 0526).
 pub(super) fn same_user(one: &ProcessRef, other: &ProcessRef) -> bool {
     one.user() == other.user()
+}
+
+/// Whether two processes charge the same resource domain: those of one
+/// service, which Spark starts in a domain of its own, or of the sign-ins
+/// authd starts in its. `kill` lets them signal each other when they act
+/// for the same user, as a service's processes do on Linux (ADR 0526).
+pub(super) fn same_domain(one: &ProcessRef, other: &ProcessRef) -> bool {
+    alloc::sync::Arc::ptr_eq(one.account().domain(), other.account().domain())
 }
 
 /// A working directory's path, as [`PosixState::directory`] keeps it.
@@ -799,7 +807,7 @@ fn kill(me: &ProcessRef, pid: i64, sig: u32, info: Info) -> Result<()> {
         let mut allowed = 0;
         let mut failed = false;
         let count = tree.targets(sender, group, pid, &mut |member| {
-            if !tree.may_signal(sender, member.pid, same_user) {
+            if !tree.may_signal(sender, member.pid, same_user, same_domain) {
                 return;
             }
             allowed += 1;
