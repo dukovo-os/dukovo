@@ -37,8 +37,10 @@ that the update server offers.
 	update --check* lists them. *Security*: a line for each security
 	advisory that applies to the release the system runs, with how its
 	fix stands, and how many flaws the apps have, which *advisories*
-	lists (ADR 0534). Anyone may check. With *--json*, one document says
-	it all; see *JSON*.
+	lists (ADR 0534). Anyone may check: a check not run as root reads
+	the server from a copy of the metadata the system trusts, in the
+	caller's own */tmp*, and keeps nothing, so it never changes what the
+	system trusts. With *--json*, one document says it all; see *JSON*.
 
 *apply* [*--yes*]
 	Stages the system update into the spare slot, to start at the

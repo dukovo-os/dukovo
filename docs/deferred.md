@@ -178,7 +178,6 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| `update` (and `update check`, `update history`) for an ordinary user, which update(8) says anyone may run: it finds the system's root by reading the disk's Btrfs UUID from `/devices`, which only root may read, so it says "this system did not start from a Dukovo root on a disk"; it could ask updated(8) instead, or take the UUID from the kernel's command line | Found on the OptiPlex 7040 by `updates/updater`, which fails at step 3 until then | 16a |
 | A bundle that offers a socket its program makes itself, as PostgreSQL makes `.s.PGSQL.5432`: ADR 0477 offers only a socket Spark holds, and a program that takes no inherited socket cannot serve on one | Spark would set the group and mode of the socket once the service has made it; the catalog's PostgreSQL is reached over TCP meanwhile | The first bundle that offers such a socket, 16a |
 | `batch`: jobs that wait for a low load (ADR 0478) | `at` and `crontab` run jobs at a time; a job that waits for the load to fall needs the load average the scheduler can read, and no job asks for it yet | 16a |
 | updated's and backup's own schedules moved to timers (ADR 0478) | They keep their own clocks, which work; a timer in each service's file is the same schedule in one place, and moves them when their settings do | 16a |

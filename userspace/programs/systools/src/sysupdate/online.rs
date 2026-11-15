@@ -66,6 +66,27 @@ pub(crate) fn metadata_dir() -> PathBuf {
     Path::new(STATE).join("metadata")
 }
 
+/// Copies the trusted metadata in `from`, its `.json` files, to the new
+/// folder `to`; when `from` is not there, as before the first check,
+/// `to` is left out, and the client starts from the built-in root.
+fn copy_trusted(from: &Path, to: &Path) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(from) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    std::fs::create_dir(to)?;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        if entry.file_type()?.is_file() && Path::new(&name).extension().is_some_and(|e| e == "json")
+        {
+            std::fs::copy(entry.path(), to.join(&name))?;
+        }
+    }
+    Ok(())
+}
+
 /// Where each root the client walked to is kept by version, for Rescue's
 /// copy of the metadata (ADR 0543).
 pub(crate) fn roots_dir() -> PathBuf {
@@ -387,10 +408,22 @@ pub struct Client {
     updater: tuf::Updater,
     base: tuf::Url,
     /// The state folder it keeps what it reads in: [`STATE`], or in
-    /// Rescue the root's.
+    /// Rescue the root's, or for a caller who may not write there a
+    /// folder of its own ([`Private`]).
     state: PathBuf,
     /// The settings it was made from.
     pub settings: Settings,
+    /// The caller's own state folder, removed with the client.
+    private: Option<Private>,
+}
+
+/// A state folder in the caller's own /tmp, which goes when it is dropped.
+struct Private(PathBuf);
+
+impl Drop for Private {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 impl Client {
@@ -403,8 +436,36 @@ impl Client {
     /// by keys this system trusts, has expired, or is older than what
     /// this system has read before.
     pub fn connect(settings: Settings) -> Result<Client, Fail> {
-        let mut client = Client::open_in(settings, Path::new(STATE))?;
+        // SAFETY: geteuid has no arguments and cannot fail.
+        let mut client = if unsafe { libc::geteuid() } == 0 {
+            Client::open_in(settings, Path::new(STATE))?
+        } else {
+            Client::private(settings)?
+        };
         client.refresh()?;
+        Ok(client)
+    }
+
+    /// A client for a caller who is not root, as `update` run by anyone
+    /// (update(8)): it may read [`STATE`] but not write the metadata it
+    /// reads, so it starts from a copy of the trusted metadata kept there,
+    /// in a folder of its own in the caller's /tmp, and keeps nothing.
+    /// The copy is what root last trusted, so the server cannot take this
+    /// check back to older metadata either; with none kept yet, it starts
+    /// from the root this system was built with, as root's first check.
+    fn private(settings: Settings) -> Result<Client, Fail> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        let folder = std::env::temp_dir().join(format!("update-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&folder)
+            .map_err(|err| util::failed(&folder.display(), err))?;
+        let private = Private(folder);
+        copy_trusted(&metadata_dir(), &private.0.join("metadata"))
+            .map_err(|err| util::failed(&private.0.display(), err))?;
+        let mut client = Client::open_in(settings, &private.0)?;
+        client.private = Some(private);
         Ok(client)
     }
 
@@ -433,7 +494,7 @@ impl Client {
         let updater = tuf::Updater::new(&dir, &url("metadata/")?, Some(&url("targets/")?))
             .map_err(|err| fail(format!("the trusted metadata in {}: {err}", dir.display())))?
             .keeping_roots(&state.join("roots"));
-        Ok(Client { updater, base, state: state.to_path_buf(), settings })
+        Ok(Client { updater, base, state: state.to_path_buf(), settings, private: None })
     }
 
     /// Reads the server's newest metadata: each root after the one
@@ -1109,6 +1170,29 @@ pub fn mib(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_private_check_starts_from_a_copy_of_the_trusted_metadata_alone() {
+        let dir = std::env::temp_dir().join(format!("sysupdate-trusted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (from, to) = (dir.join("metadata"), dir.join("copy"));
+        std::fs::create_dir_all(from.join("nested.json")).unwrap();
+        for (name, text) in [("root.json", "r"), ("timestamp.json", "t"), ("notes.txt", "n")] {
+            std::fs::write(from.join(name), text).unwrap();
+        }
+        copy_trusted(&from, &to).unwrap();
+        let mut names: Vec<_> = std::fs::read_dir(&to)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["root.json", "timestamp.json"]);
+        assert_eq!(std::fs::read_to_string(to.join("timestamp.json")).unwrap(), "t");
+        // None kept yet: no copy, and the client starts from the built-in root.
+        copy_trusted(&dir.join("none"), &dir.join("copy-of-none")).unwrap();
+        assert!(!dir.join("copy-of-none").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn the_releases_between_two_come_from_the_signed_targets_in_order() {
