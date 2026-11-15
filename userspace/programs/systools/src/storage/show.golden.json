@@ -1,0 +1,176 @@
+{
+  "format": 1,
+  "disks": [
+    {
+      "name": "sdb",
+      "model": null,
+      "serial": null,
+      "size": 8388608,
+      "removable": true,
+      "rotational": null,
+      "bus": null,
+      "partitions": [],
+      "free_after": null,
+      "health": null
+    },
+    {
+      "name": "vda",
+      "model": "Dukovo Boot",
+      "serial": "BOOT0001",
+      "size": 2147483648,
+      "removable": false,
+      "rotational": false,
+      "bus": "virtio",
+      "partitions": [
+        {
+          "name": "vda1",
+          "number": 1,
+          "start": 1048576,
+          "size": 67108864,
+          "type": "efi",
+          "gpt_name": "EFI",
+          "filesystem": "vfat",
+          "label": "BOOT",
+          "uuid": "ABCD-1234",
+          "mounts": ["/system/boot"]
+        },
+        {
+          "name": "vda2",
+          "number": 2,
+          "start": 68157440,
+          "size": 536870912,
+          "type": "11111111-2222-3333-4444-555555555555",
+          "gpt_name": "spare",
+          "filesystem": null,
+          "label": null,
+          "uuid": null,
+          "mounts": []
+        }
+      ],
+      "free_after": 1542438400,
+      "health": {
+        "verdict": "passed",
+        "checked_ms": 1763120000000,
+        "hours": 120,
+        "temperature_c": null,
+        "moved": null,
+        "waiting": null,
+        "offline": null,
+        "media_errors": 0,
+        "used_percent": 3,
+        "rose": null
+      }
+    },
+    {
+      "name": "vdb",
+      "model": "Mirror A",
+      "serial": "WD-A1",
+      "size": 1073741824,
+      "removable": false,
+      "rotational": true,
+      "bus": "virtio",
+      "partitions": [
+        {
+          "name": "vdb1",
+          "number": 1,
+          "start": 1048576,
+          "size": 536870912,
+          "type": "linux",
+          "gpt_name": "lab-a",
+          "filesystem": "btrfs",
+          "label": "LAB",
+          "uuid": "8f0c2a4e-6d1b-4c7e-9a52-3b1f0e5d7c64",
+          "mounts": ["/volumes/LAB", "/users", "/shared"]
+        }
+      ],
+      "free_after": 535805440,
+      "health": {
+        "verdict": "warning",
+        "checked_ms": 1763120000000,
+        "hours": 21804,
+        "temperature_c": 38,
+        "moved": 8,
+        "waiting": 0,
+        "offline": 0,
+        "media_errors": null,
+        "used_percent": null,
+        "rose": {
+          "at_ms": 1763080000000,
+          "title": "vdb moved 8 worn-out sectors to spares"
+        }
+      }
+    },
+    {
+      "name": "vdc",
+      "model": "Mirror B",
+      "serial": null,
+      "size": 1073741824,
+      "removable": null,
+      "rotational": true,
+      "bus": "virtio",
+      "partitions": [
+        {
+          "name": "vdc1",
+          "number": 1,
+          "start": 1048576,
+          "size": 536870912,
+          "type": "linux",
+          "gpt_name": "lab-b",
+          "filesystem": "btrfs",
+          "label": "LAB",
+          "uuid": "8f0c2a4e-6d1b-4c7e-9a52-3b1f0e5d7c64",
+          "mounts": []
+        }
+      ],
+      "free_after": 535805440,
+      "health": null
+    }
+  ],
+  "volumes": [
+    {
+      "uuid": "8f0c2a4e-6d1b-4c7e-9a52-3b1f0e5d7c64",
+      "label": "LAB",
+      "mount": "/volumes/LAB",
+      "size": 1073741824,
+      "used": 644245095,
+      "free": 400000000,
+      "devices": ["vdb1", "vdc1"],
+      "disks": 2,
+      "missing": 0,
+      "behind": 0,
+      "profiles": {
+        "data": ["raid1"],
+        "metadata": ["raid1"],
+        "system": ["raid1"]
+      },
+      "holds": ["/users", "/shared"],
+      "scrub": {
+        "at_ms": 1761980000000,
+        "seconds": 10512,
+        "bytes": 1240000000000,
+        "errors": 0,
+        "fixed": 0,
+        "unfixable": 0,
+        "result": "ok"
+      }
+    }
+  ],
+  "filesystems": [
+    {
+      "mount": "/system/boot",
+      "type": "vfat",
+      "device": "vda1",
+      "size": 66043904,
+      "used": 6043904,
+      "free": 60000000
+    },
+    {
+      "mount": "/mnt/usb",
+      "type": "ext4",
+      "device": "sdb",
+      "size": null,
+      "used": null,
+      "free": null
+    }
+  ]
+}

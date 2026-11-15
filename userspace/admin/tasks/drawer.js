@@ -3,11 +3,14 @@
 
 // The Tasks indicator and drawer (design 8): the model of lib/tasks-model.js
 // kept current by `GET /api/1/tasks` and `event: task`, the pill on the
-// header's button and a notice when a task the person started ends. The
+// header's button and a notice when a task the person started ends, which
+// takes the place of the one that said it runs. The
 // drawer's list is tasks/cards.js, read when the drawer first opens.
 
 import { keep, recall } from '../lib/store.js';
-import { lookIds, makeTasks, noticeWords, pillOf } from '../lib/tasks-model.js';
+import {
+  isRunning, lookIds, makeTasks, noticeWords, pillOf,
+} from '../lib/tasks-model.js';
 
 /** How many ids of tasks seen are kept per browser. */
 const SEEN_KEPT = 200;
@@ -23,6 +26,8 @@ export function createTasks({ get, post, session, time, notice, problem, command
   let seen = recall('tasks.seen', []);
   let cards = null;
   let looking = false;
+  // What closes the notice that a task this tab started runs, by its id.
+  const startNotices = new Map();
 
   const pill = () => pillOf(model.all(), seen);
 
@@ -40,10 +45,18 @@ export function createTasks({ get, post, session, time, notice, problem, command
     cards?.render();
   }
 
+  /** Closes the notice that said the task `id` runs, as it has ended. */
+  function closeStarted(id) {
+    startNotices.get(id)?.();
+    startNotices.delete(id);
+  }
+
   /** Reads one task whole: an event holds no title, arguments or log. */
   async function learn(id) {
     try {
-      model.put(await get(`/api/1/tasks/${id}`));
+      const task = await get(`/api/1/tasks/${id}`);
+      model.put(task);
+      if (!isRunning(task)) closeStarted(id);
       changed();
     } catch {
       // The task is gone or the server does not answer; the next list has it.
@@ -66,6 +79,7 @@ export function createTasks({ get, post, session, time, notice, problem, command
         learn(data.id);
         return;
       }
+      if (found.ended) closeStarted(found.task.id);
       if (found.ended && found.task.who === session().name) {
         const failed = found.task.state === 'failed';
         notice(noticeWords(found.task), {
@@ -78,6 +92,12 @@ export function createTasks({ get, post, session, time, notice, problem, command
 
     /** Reads a task the shell has just been told of, so that the list has it. */
     learn,
+
+    /** Reads a task this tab started; `close` closes the notice that it runs, when it ends. */
+    started(id, close) {
+      startNotices.set(id, close);
+      return learn(id);
+    },
 
     pill,
 

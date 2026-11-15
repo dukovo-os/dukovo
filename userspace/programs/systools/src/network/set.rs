@@ -367,7 +367,7 @@ fn card_of(interfaces: &[ip::Interface], wanted: &str) -> Option<Card> {
 
 /// The key of a settings line, if it is one: not a comment, a section or
 /// blank.
-fn key_of(line: &str) -> Option<&str> {
+pub(crate) fn key_of(line: &str) -> Option<&str> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
         return None;
@@ -376,7 +376,7 @@ fn key_of(line: &str) -> Option<&str> {
 }
 
 /// The section a line starts, in lower case, if it starts one.
-fn section_name(line: &str) -> Option<String> {
+pub(crate) fn section_name(line: &str) -> Option<String> {
     let line = line.trim();
     line.strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))

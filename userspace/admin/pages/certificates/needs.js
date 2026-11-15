@@ -32,7 +32,7 @@ function endsWords(days) {
 /**
  * The needs of the Overview for the certificates of `answer`: one that was
  * revoked, one that has ended, and one with `WARN_DAYS` or fewer left. The
- * most urgent come first. `covers` says that the health check MET-104, which
+ * most urgent come first. `covers` says that the health check MET-107, which
  * warns of a certificate that ends soon, is not listed again beside these.
  */
 export function needsOf(answer) {
@@ -55,7 +55,7 @@ export function needsOf(answer) {
         severity: days <= URGENT_DAYS ? 'bad' : 'warn',
         title: ended ? `${name} has ended` : `${name} ${endsWords(days)}`,
         detail: [ended ? `It ended ${-days} ${days === -1 ? 'day' : 'days'} ago.` : '', used, certificate.kind === 'added' ? 'It was added by hand: add a new one.' : 'Renew it.'].filter(Boolean).join(' '),
-        covers: ['MET-104'],
+        covers: ['MET-107'],
         days,
       });
     }

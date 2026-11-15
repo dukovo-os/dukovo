@@ -6,7 +6,9 @@
 // is done, and at the right the form of the step shown, the command it runs,
 // and Set up, Skip for now and Back to the Overview. The page knows no step:
 // each page that has one gives it through its overview part, and a server
-// whose pages have none has nothing to show here.
+// whose pages have none has nothing to show here. A step whose form has
+// `args: null` is done on a page of its own: its form's `href` is offered as
+// "Continue on its page" in place of Set up.
 
 import { busy, h, icon, uniqueId } from '../../dom.js';
 import { assess } from '../../lib/health.js';
@@ -68,6 +70,7 @@ export async function show(view) {
   const formBox = h('div', { class: 'step-form' });
   const commandBox = h('div', { class: 'cmd-box' });
   const run = h('button', { class: 'btn default', type: 'button' });
+  const onPage = h('a', { class: 'btn default', href: '/', hidden: true }, 'Continue on its page');
   const skip = h('button', { class: 'btn', type: 'button' });
   const status = h('span', { class: 'small', role: 'status' });
   let waiting = null;
@@ -93,9 +96,13 @@ export async function show(view) {
   }
 
   function drawButtons() {
+    const elsewhere = form !== null && form.args === null && typeof form.href === 'string';
     run.textContent = runWords(current);
     run.setAttribute('aria-label', `${runWords(current)}: ${current.title}`);
-    run.hidden = !current.action;
+    run.hidden = !current.action || elsewhere;
+    onPage.hidden = !elsewhere;
+    if (elsewhere) onPage.setAttribute('href', form.href);
+    onPage.setAttribute('aria-label', `Continue on its page: ${current.title}`);
     skip.textContent = moveOnWords(current);
     // A step that is done and has no other left to go to has nothing to move on to.
     skip.hidden = current.done && stepAfter(steps, current.id) === null;
@@ -156,13 +163,22 @@ export async function show(view) {
     let args;
     try {
       args = form ? form.args() : {};
-    } catch {
+    } catch (error) {
+      // A form that names what is missing says so; one that has nothing to say leaves the status as it is.
+      status.textContent = error?.words ?? '';
       return;
     }
     status.textContent = '';
     const result = await view.api.run(current.action, args, { button: run });
     if (result?.ok) {
       status.textContent = startedWords(result.result);
+      // A step whose answer is shown once (a recovery key) shows it before the page moves on.
+      try {
+        await form?.after?.(result.result);
+      } catch {
+        // The step is done; what it answered (a recovery key) is shown again on the page of what it made.
+        status.textContent = `${startedWords(result.result)} Its answer could not be shown here: open what it made to see it again.`;
+      }
       if (!result.task) reload();
     }
   });
@@ -186,7 +202,7 @@ export async function show(view) {
       h('div', { class: 'form-col' },
         formBox,
         commandBox,
-        h('div', { class: 'btns' }, run, skip, status, h('span', { class: 'spacer' }), back))));
+        h('div', { class: 'btns' }, run, onPage, skip, status, h('span', { class: 'spacer' }), back))));
 
   select(current.id, { focus: false });
 }

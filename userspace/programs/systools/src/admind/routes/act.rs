@@ -45,6 +45,7 @@ use crate::admind::journal::{self, Ended};
 use crate::admind::link::Link;
 use crate::admind::log;
 use crate::admind::run::{self, Ran};
+use crate::admind::serve::look_at_trials;
 use crate::admind::shared::{Shared, unix_now};
 use crate::admind::tasks;
 use crate::admind::who::{self, Account};
@@ -70,7 +71,9 @@ pub async fn action(
     live: Option<Live>,
     token: Option<TokenCall>,
 ) -> Outcome {
-    let args = if action.changes() {
+    // A change's arguments, and those of a read that takes or answers a
+    // secret, are in the body of a POST (ADR 0561).
+    let args = if action.posts() {
         actions::arguments(params, &cx.body)?
     } else {
         actions::query_arguments(params, &cx.query, action.fields())?
@@ -105,14 +108,22 @@ pub async fn action(
             (None, None) => Err(super::ended()),
         };
         // The time a trial began is kept as soon as its change answers well,
-        // before anything else is awaited: the page asks for it next.
+        // before anything else is awaited: the page asks for it next. The
+        // open tabs are told at once of one that ends, and of one that begins
+        // when Spark has been read, which has the time it has left.
         if let (Ok(probed), Some(trial)) = (&probed, prepared.trial)
             && probed.ran.status == 0
         {
-            let mut trials = shared.trials.borrow_mut();
             match trial {
-                Trial::Begins(id) => trials.begun(id, Instant::now()),
-                Trial::Ends(id) => trials.ended(id),
+                Trial::Begins(id) => {
+                    shared.trials.borrow_mut().begun(id, Instant::now());
+                    let reading = Rc::clone(&shared);
+                    tokio::task::spawn_local(async move { look_at_trials(&reading).await });
+                }
+                Trial::Ends(id) => {
+                    shared.trials.borrow_mut().ended(id);
+                    shared.tell_trials(Instant::now());
+                }
             }
         }
         // A change that names no files has none that moved.
@@ -224,11 +235,12 @@ async fn for_session(
     match prepared.action.runs() {
         Runs::AsAdministrator => {
             let by = session_elevator(live);
-            let command = run::elevated(shared, by, &prepared.argv, run::RUN_TIME);
+            let input = prepared.input.as_ref();
+            let command = run::elevated(shared, by, &prepared.argv, input, run::RUN_TIME);
             probed(shared, prepared, &probes, command).await
         }
         Runs::AsThePerson => {
-            let command = run::as_the_person(&live.link, &prepared.argv);
+            let command = run::as_the_person(&live.link, &prepared.argv, prepared.input.as_ref());
             probed(shared, prepared, &probes, command).await
         }
     }
@@ -247,12 +259,13 @@ async fn for_token(
     match prepared.action.runs() {
         Runs::AsAdministrator => {
             let by = token_elevator(prepared, token);
-            let command = run::elevated(shared, by, &prepared.argv, run::RUN_TIME);
+            let input = prepared.input.as_ref();
+            let command = run::elevated(shared, by, &prepared.argv, input, run::RUN_TIME);
             probed(shared, prepared, &probes, command).await
         }
         Runs::AsThePerson => {
             let link = caller::worker(shared, token).await?;
-            let command = run::as_the_person(&link, &prepared.argv);
+            let command = run::as_the_person(&link, &prepared.argv, prepared.input.as_ref());
             probed(shared, prepared, &probes, command).await
         }
     }
@@ -293,7 +306,7 @@ impl Probes<'_> {
             Probes::Session(link) => (*link).clone(),
             Probes::Token(token) => caller::worker(shared, token).await.ok()?,
         };
-        let ran = run::as_the_person(&link, argv).await.ok()?;
+        let ran = run::as_the_person(&link, argv, None).await.ok()?;
         (ran.status == 0).then_some(ran.output)
     }
 }
@@ -348,11 +361,31 @@ fn changed(prepared: &Prepared, probe_same: Option<bool>, files_same: bool) -> b
 /// not stream what a command writes (a unit test keeps the actions to
 /// that).
 ///
+/// A refusal is in the log as a short action's is ([`said`]).
+///
 /// # Errors
 ///
 /// As [`actions::authorize`], ADM-126 when there is no store, ADM-105
 /// when 64 tasks wait already.
 fn long(
+    shared: &Rc<Shared>,
+    peer: IpAddr,
+    prepared: Prepared,
+    asker: &Asker,
+    whose: &str,
+    live: Option<&Live>,
+    token: Option<&TokenCall>,
+) -> Outcome {
+    let action = prepared.action.id();
+    let started = start_task(shared, peer, prepared, asker, whose, live, token);
+    if let Err(failure) = &started {
+        log(6, &format!("{whose} from {peer}: {action} was not run: {}", failure.kind.id()));
+    }
+    started
+}
+
+/// [`long`], but for the log's line of a refusal.
+fn start_task(
     shared: &Rc<Shared>,
     peer: IpAddr,
     prepared: Prepared,
@@ -428,11 +461,13 @@ fn no_arguments() -> Value {
 /// Answers `POST /api/1/show`: the command, the API call, the Ansible task
 /// and the files of the action with the arguments, for any session that is
 /// signed in, locked or not, or for the API token `token` when its scopes
-/// let it read the action's area. Nothing is run.
+/// let it read the action's area. Nothing is run, and a secret is neither
+/// needed nor kept: it is shown as what is typed when asked
+/// ([`show::prepare`]).
 pub fn show(cx: &Context<'_>, token: Option<&TokenCall>) -> Outcome {
     let showing: Showing = cx.json()?;
     let action = show::lookup(cx.shared.actions.get(), &showing.action)?;
-    let prepared = action.prepare(showing.args)?;
+    let prepared = show::prepare(action, showing.args)?;
     if let Some(token) = token {
         actions::token_may(&token.name, &token.scopes, action.area(), false)?;
     }

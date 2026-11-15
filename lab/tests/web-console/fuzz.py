@@ -26,7 +26,8 @@ body that is not JSON. The third sends the examples alone, since a change
 with made-up arguments would change the machine as it pleased; after each
 example the change's undo is called, and the service the examples use is put
 back as it was found (console.py). It leaves alone the changes at
-LEFT_ALONE: renewing the certificate, and the changes that are tried.
+LEFT_ALONE: renewing the certificate, the changes that are tried, and those
+whose examples need what only their own tests set up.
 
 A request that is refused changes nothing, so the first two runs leave the
 machine as it was. What each run checks of every answer: it is not a 5xx,
@@ -113,7 +114,16 @@ TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
 }
-LEFT_ALONE = {"certificate.renew"} | TRIED
+# The actions of the Snapshots, Backups and Move pages whose examples need what only their own
+# tests set up: a snapshot, a backup place on a second disk, or the folder of another machine's
+# backups (web-console/ansible.py says which each needs). The boot tests admin-backups and
+# admin-move and the browser tests of Snapshots and Move run them.
+SET_UP = {
+    "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
+    "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
+    "move.plan", "move.stage", "move.cancel",
+}
+LEFT_ALONE = {"certificate.renew"} | TRIED | SET_UP
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
 NOT_READ = ["lab.missing"]

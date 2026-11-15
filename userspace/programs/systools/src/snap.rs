@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! snap(1): makes, lists, restores, removes and prunes read-only
+//! snap(1): makes, lists, browses, restores, removes and prunes read-only
 //! snapshots of Btrfs subvolumes (ADR 0461).
 //!
 //! A place is a subvolume's top folder, as `/users`. Its snapshots are in
@@ -22,7 +22,9 @@
 //! `service edit snap` is the fix for, and `snap list` says which places
 //! the service's view lacks, from Spark's `show` document.
 
-mod keep;
+mod beside;
+mod browse;
+pub(crate) mod keep;
 
 use std::fs;
 use std::io::{self, Write};
@@ -37,7 +39,7 @@ use crate::args::{Arg, Args};
 use crate::service::shown;
 use crate::subvolume::{self, Info, is_top};
 use crate::util::{self, Fail};
-use crate::{json, proc};
+use crate::{backup, backup_errors, json, proc};
 
 use keep::Kept;
 
@@ -70,7 +72,7 @@ struct File {
 }
 
 /// What snap.toml says, with the defaults for what it leaves out.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct Settings {
     pub(crate) places: Vec<String>,
     daily: usize,
@@ -220,14 +222,20 @@ pub(crate) fn place(path: &Path) -> Result<Place, Fail> {
 
 /// The snapshots of `place`, oldest first.
 pub(crate) fn snapshots(place: &Place) -> Result<Vec<Snapshot>, Fail> {
-    let entries = match fs::read_dir(&place.shown) {
+    snapshots_in(&place.shown)
+}
+
+/// The snapshots in `folder`, oldest first; none when there is no such
+/// folder.
+fn snapshots_in(folder: &Path) -> Result<Vec<Snapshot>, Fail> {
+    let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(util::failed(&place.shown.display(), err)),
+        Err(err) => return Err(util::failed(&folder.display(), err)),
     };
     let mut found = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|e| util::failed(&place.shown.display(), e))?;
+        let entry = entry.map_err(|e| util::failed(&folder.display(), e))?;
         let path = entry.path();
         let Some(name) = entry.file_name().to_str().map(String::from) else { continue };
         if !is_top(&path) {
@@ -282,6 +290,12 @@ fn civil(day: i64) -> (i64, u32, u32) {
 pub(crate) fn local_day(ns: u64) -> i64 {
     let (year, month, day, _, _) = local((ns / 1_000_000_000) as i64);
     keep::day_number(year, month, day)
+}
+
+/// When a snapshot was made, as a document writes it, or none when the
+/// filesystem does not say.
+fn made_json(info: &Info) -> Option<String> {
+    (info.made != 0).then(|| json::time(i64::try_from(info.made / 1_000_000_000).unwrap_or(0)))
 }
 
 /// When a snapshot was made, as `snap list` writes it.
@@ -536,8 +550,13 @@ fn outside_the_service(places: &[String]) -> Vec<&String> {
 /// The members of `snap list --json` after `format`, for each place
 /// snap.toml names.
 #[derive(Serialize)]
-struct Places {
+struct Places<'a> {
     places: Vec<PlaceRow>,
+    /// What snap.toml says, with the defaults for what it leaves out.
+    settings: &'a Settings,
+    /// The snapshots the last update made before it was staged (ADR
+    /// 0454), oldest first.
+    update: Vec<UpdateRow>,
 }
 
 /// A place of snap.toml.
@@ -547,8 +566,22 @@ struct PlaceRow {
     snapshots: usize,
     /// The name of the newest, or none.
     newest: Option<String>,
+    /// When the newest was made, or none.
+    newest_made: Option<String>,
     /// Where its snapshots are read.
     folder: String,
+    /// Whether the snap service's view holds it; its daily round skips
+    /// a place that it does not.
+    in_service: bool,
+}
+
+/// A snapshot of `@snapshots/update`: the settings or the state from
+/// before the last update, or the settings of an attempt that fell back.
+#[derive(Serialize)]
+struct UpdateRow {
+    name: String,
+    /// When it was made, or none when the filesystem does not say.
+    made: Option<String>,
 }
 
 /// The members of `snap list PLACE --json` after `format`.
@@ -571,6 +604,9 @@ struct SnapshotRow {
     kept: Vec<&'static str>,
     /// Whether the next prune removes it.
     prunable: bool,
+    /// Whether `backup restore` put it here, named `restored-` and the
+    /// backup's time.
+    restored: bool,
 }
 
 /// `snap list`: each place snap.toml names, or the snapshots of one; with
@@ -584,26 +620,30 @@ fn list(place_path: Option<&Path>, settings: &Settings, json: bool) -> Result<i3
 
 /// `snap list` with no place: each place snap.toml names, how many
 /// snapshots it has and which is newest, and the places that cannot be
-/// read, one to a line of standard error.
+/// read, one to a line of standard error. With `json`, also the settings
+/// and the update's snapshots.
 fn list_places(settings: &Settings, json: bool) -> Result<i32, Fail> {
     let mut rows = vec![["PLACE", "SNAPSHOTS", "NEWEST", "FOLDER"].map(String::from).to_vec()];
     let mut places = Vec::new();
     let mut status = 0;
+    let outside = outside_the_service(&settings.places);
     for path in &settings.places {
         match place(Path::new(path)).and_then(|p| Ok((snapshots(&p)?, p))) {
             Ok((snaps, place)) => {
-                let newest = snaps.last().map(|s| s.name.clone());
+                let newest = snaps.last();
                 rows.push(vec![
                     path.clone(),
                     snaps.len().to_string(),
-                    newest.clone().unwrap_or_else(|| "-".into()),
+                    newest.map_or_else(|| "-".into(), |s| s.name.clone()),
                     place.shown.display().to_string(),
                 ]);
                 places.push(PlaceRow {
                     place: path.clone(),
                     snapshots: snaps.len(),
-                    newest,
+                    newest: newest.map(|s| s.name.clone()),
+                    newest_made: newest.and_then(|s| made_json(&s.info)),
                     folder: place.shown.display().to_string(),
+                    in_service: !outside.contains(&path),
                 });
             }
             Err(fail) => {
@@ -613,16 +653,33 @@ fn list_places(settings: &Settings, json: bool) -> Result<i32, Fail> {
         }
     }
     if json {
-        json::print(&Places { places })?;
+        let update = match snapshots_in(&Path::new(SHOWN).join(UPDATE)) {
+            Ok(snaps) => update_rows(&snaps),
+            Err(fail) => {
+                eprintln!("snap: {}", fail.message);
+                status = 1;
+                Vec::new()
+            }
+        };
+        json::print(&Places { places, settings, update })?;
     } else {
         write_rows(&mut io::stdout().lock(), &rows)?;
     }
-    for place in outside_the_service(&settings.places) {
+    for place in outside {
         eprintln!(
             "snap: {place} is not in the snap service's view: add it with `service edit snap`"
         );
     }
     Ok(status)
+}
+
+/// The rows of `snap list --json`'s `update` for the snapshots of
+/// `@snapshots/update`, oldest first.
+fn update_rows(snaps: &[Snapshot]) -> Vec<UpdateRow> {
+    snaps
+        .iter()
+        .map(|snap| UpdateRow { name: snap.name.clone(), made: made_json(&snap.info) })
+        .collect()
 }
 
 /// The rows of `snap list PLACE --json` for `snaps`, oldest first, with
@@ -635,12 +692,11 @@ fn snapshot_rows(snaps: &[Snapshot], kept: &[(usize, Kept)]) -> Vec<SnapshotRow>
             let why = kept.iter().find(|(at, _)| *at == i).map(|(_, why)| *why);
             SnapshotRow {
                 name: snap.name.clone(),
-                made: (snap.info.made != 0).then(|| {
-                    json::time(i64::try_from(snap.info.made / 1_000_000_000).unwrap_or(0))
-                }),
+                made: made_json(&snap.info),
                 named: !snap.timed(),
                 kept: why.map_or_else(Vec::new, Kept::reasons),
                 prunable: why.is_some_and(|why| !why.any()),
+                restored: snap.name.starts_with(backup::RESTORED),
             }
         })
         .collect()
@@ -674,6 +730,71 @@ fn list_snapshots(path: &Path, settings: &Settings, json: bool) -> Result<i32, F
     Ok(0)
 }
 
+/// `snap browse`: the entries of `folder`, or of the top of `place_path`,
+/// as the snapshot `snapshot` of the place has them, each compared with
+/// the same path now. As JSON with `json`.
+///
+/// `folder` must be the place or within it, by the paths as given; what
+/// the snapshot holds is read with the caller's own rights, as the rest
+/// of snap is.
+fn browse(
+    place_path: &Path,
+    snapshot: &str,
+    folder: Option<&Path>,
+    json: bool,
+) -> Result<(), Fail> {
+    let place_path = absolute(place_path)?;
+    let folder = match folder {
+        Some(folder) => absolute(folder)?,
+        None => place_path.clone(),
+    };
+    let Some(inside) = browse::within(&place_path, &folder) else {
+        return Err(util::usage(format!(
+            "{} is not {} or within it",
+            folder.display(),
+            place_path.display()
+        )));
+    };
+    let place = place(&place_path)?;
+    let root = place.shown.join(snapshot);
+    let named = Path::new(snapshot).components().eq([Component::Normal(snapshot.as_ref())]);
+    if !named || !is_top(&root) {
+        return Err(backup_errors::no_such_snapshot(snapshot, &place_path.display().to_string()));
+    }
+    // A folder's own path, without the trailing slash that joining
+    // nothing would leave.
+    let under = |base: &Path| {
+        if inside.as_os_str().is_empty() { base.to_path_buf() } else { base.join(&inside) }
+    };
+    let (then, now) = (under(&root), under(&place.top));
+    browse::no_links(&root, &inside)?;
+    let found = browse::entries(&then, &now, browse::ENTRIES_MOST)
+        .map_err(|e| util::failed(&then.display(), e))?;
+    let mut out = io::stdout().lock();
+    let written = if json {
+        let shown = browse::json(
+            &place_path.to_string_lossy(),
+            snapshot,
+            &folder.to_string_lossy(),
+            &found,
+        );
+        writeln!(out, "{shown}")
+    } else {
+        write_rows(&mut out, &browse::rows(&found)).and_then(|()| {
+            if found.more {
+                writeln!(
+                    out,
+                    "more than {} entries here; these are the first",
+                    browse::ENTRIES_MOST
+                )
+            } else {
+                Ok(())
+            }
+        })
+    };
+    written.map_err(|e| util::failed(&"standard output", e))
+}
+
 /// Writes `rows` in columns two spaces apart, the last as it is.
 fn write_rows(out: &mut impl Write, rows: &[Vec<String>]) -> io::Result<()> {
     let columns = rows.first().map_or(0, Vec::len);
@@ -696,11 +817,12 @@ fn write_rows(out: &mut impl Write, rows: &[Vec<String>]) -> io::Result<()> {
 
 /// snap(1).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let usage = || util::usage("say create, list, restore, delete, prune or auto (snap(1))".into());
+    let usage =
+        || util::usage("say create, list, browse, restore, delete, prune or auto (snap(1))".into());
     let Some(action) = args.subcommand() else { return Err(usage()) };
     let action = action.to_str().unwrap_or("").to_string();
-    let (mut name, mut from, mut to, mut watch) = (None, None, None, false);
-    let mut json = false;
+    let (mut name, mut from, mut to, mut watch, mut json) = (None, None, None, false, false);
+    let mut beside = None;
     let mut operands = Vec::new();
     while let Some(arg) = args.next()? {
         match arg {
@@ -709,8 +831,13 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(long) if long == "to" && action == "restore" => {
                 to = Some(PathBuf::from(args.value()?));
             }
+            Arg::Long(long) if long == "beside" && action == "restore" => {
+                beside = Some(args.text()?);
+            }
             Arg::Long(long) if long == "watch" && action == "auto" => watch = true,
-            Arg::Long(long) if long == "json" && action == "list" => json = true,
+            Arg::Long(long) if long == "json" && matches!(action.as_str(), "browse" | "list") => {
+                json = true;
+            }
             Arg::Operand(operand) => operands.push(PathBuf::from(operand)),
             other => return Err(args.unknown(&other)),
         }
@@ -734,6 +861,21 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         ("list", []) => list(None, &settings()?, json),
         ("list", [path]) => list(Some(path), &settings()?, json),
+        ("restore", paths) if !paths.is_empty() && beside.is_some() => {
+            let (Some(label), Some(from), None) = (&beside, &from, &to) else {
+                return Err(util::usage("--beside takes --from SNAPSHOT, and not --to".into()));
+            };
+            beside::restore(from, label, paths)?;
+            Ok(0)
+        }
+        ("browse", [place, snapshot]) => {
+            browse(place, &snapshot.to_string_lossy(), None, json)?;
+            Ok(0)
+        }
+        ("browse", [place, snapshot, folder]) => {
+            browse(place, &snapshot.to_string_lossy(), Some(folder), json)?;
+            Ok(0)
+        }
         ("restore", [path]) => {
             restore(path, from.as_deref(), to.as_deref())?;
             Ok(0)
@@ -806,31 +948,40 @@ mod tests {
 
     #[test]
     fn the_documents_hold_each_place_and_each_snapshot_with_its_retention() {
+        let made = |seconds: u64| Info { made: seconds * 1_000_000_000, ..Info::default() };
+        let snap = |name: &str, seconds: u64| Snapshot { name: name.into(), info: made(seconds) };
+        let settings =
+            Settings { places: vec!["/users".into(), "/shared".into()], ..Settings::default() };
         let places = Places {
             places: vec![
                 PlaceRow {
                     place: "/users".into(),
                     snapshots: 3,
                     newest: Some("2026-11-14-0300".into()),
+                    newest_made: made_json(&made(1_794_625_200)),
                     folder: "/snapshots/users".into(),
+                    in_service: true,
                 },
                 PlaceRow {
-                    place: "/shared".into(),
+                    place: "/volumes/sdb1".into(),
                     snapshots: 0,
                     newest: None,
-                    folder: "/snapshots/shared".into(),
+                    newest_made: None,
+                    folder: "/volumes/sdb1/@snapshots/top".into(),
+                    in_service: false,
                 },
             ],
+            settings: &settings,
+            update: update_rows(&[snap("settings", 1_794_514_400), snap("state", 1_794_514_401)]),
         };
         let line = json::line(&places).unwrap();
         json::assert_golden(&line, include_str!("../tests/json/snap-list.json"));
-        let made = |seconds: u64| Info { made: seconds * 1_000_000_000, ..Info::default() };
-        let snap = |name: &str, seconds: u64| Snapshot { name: name.into(), info: made(seconds) };
         let snaps = [
             snap("2026-11-12-0300", 1_794_452_400),
             snap("before-the-upgrade", 1_794_514_500),
             snap("2026-11-13-0300", 1_794_538_800),
             snap("2026-11-14-0300", 1_794_625_200),
+            snap("restored-2026-11-10-030000", 1_794_630_000),
             Snapshot { name: "unknown-time".into(), info: Info::default() },
         ];
         let kept = [
@@ -914,5 +1065,27 @@ mod tests {
             assert!(!held(place, &holds), "{place}");
         }
         assert!(held("/applications", &Holds { whole_tree: true, ..Holds::default() }));
+    }
+
+    #[test]
+    fn a_browse_of_a_folder_outside_the_place_is_a_usage_mistake() {
+        let outside = |place: &str, folder: &str| {
+            browse(Path::new(place), "s", Some(Path::new(folder)), true).unwrap_err()
+        };
+        let fail = outside("/users", "/shared");
+        assert!(fail.usage);
+        assert_eq!(fail.message, "/shared is not /users or within it");
+        // The paths are read as the rest of snap reads them: `..` takes the
+        // name before it, and a folder that only starts like the place is
+        // not within it.
+        assert_eq!(
+            outside("/users/../shared", "/users").message,
+            "/users is not /shared or within it"
+        );
+        assert_eq!(outside("/users", "/users2/a").message, "/users2/a is not /users or within it");
+        assert_eq!(
+            outside("/users/a", "/users/a/../b").message,
+            "/users/b is not /users/a or within it"
+        );
     }
 }

@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Move to new hardware page of the web console in each engine (design 6):
+# the four steps at /move, from the backups on a plugged-in disk to Staged,
+# held to what `backup find` and `backup restore --machine --plan` say
+# (`GET /api/1/move/sources` and `POST /api/1/move/plan`). The key is typed and
+# then a key file: the typed key is sent in the body of `move.plan` and
+# `move.stage` and nowhere else, and is asked for again at Stage it; the key
+# file, which is named after the machine, is chosen by itself and is sent as a
+# path. A key that is not the backups' is refused (BAK-103). Stage it is a task
+# (`POST /api/1/move/stage`); Cancel takes what it staged away (`POST
+# /api/1/move/cancel`); a restore staged first by another tab makes the page's
+# own stage a task that fails (BAK-104), and the page shows that one as Staged;
+# a restore that is staged is shown as Staged on opening the page, with Stage it
+# off. A console that is locked is asked to unlock before the disks are read, a
+# reader is told the page is for administrators, and a phone at 390 by 844 has
+# one column. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe.
+#
+# The lab runs one machine in a test, so this one moves from its own backups:
+# its backups are made to a Btrfs on a USB stick, and the key of the place is
+# copied to the stick as `HOSTNAME-recovery.key`, which is the name that the
+# page chooses a key file by. A second place, which holds nothing, gives a key
+# that is valid and is not the backups': the wrong key. What a restart then
+# does, the machine's name and accounts and the network under the new card, is
+# the boot test admin-move's, which has two machines; the restart that the
+# page's last step names (`elevate reboot`) is not pressed here, and nothing
+# is left staged at the end. This test's last steps put the machine back: the
+# places and their keys removed, the stick unplugged and the accounts
+# removed. The script runs each engine one after the other, so that an engine
+# the lab PC lacks is skipped within it and the steps after it still run.
+about = "The web console's Move to new hardware page in each engine: the backups on a plugged-in disk, the key typed and as a file, a wrong key, what comes across and what differs, Stage it as a task, Cancel, a restore that is staged already, a console that is locked, a reader, and the phone"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-move && echo lab-console-password | user add wc-move-reader && user set --console --yes wc-move-reader'"
+root = true
+expect = ["Made wc-move", "Made wc-move-reader", "wc-move-reader is changed"]
+
+# A USB stick of 2 GB with a Btrfs on it, mounted where `backup find` looks.
+[[step]]
+usb = "plug"
+blank = "2G"
+[[step]]
+wait = "5s"
+[[step]]
+run = "lsblk -dbn -o NAME,SIZE,TYPE | awk '$2 == \"2147483648\" && $3 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+[[step]]
+run = '''sh -c 'printf "g\nn\n\n\n\nw\n" | rdisk /devices/$(cat /users/lab/lab-stick) || exit 1' '''
+root = true
+expect = ["Partition 1 is added", "The kernel has read it"]
+[[step]]
+run = "sh -c 'b=$(cat /users/lab/lab-stick); mkfs-btrfs -f -L LABMOVE /devices/${b}1 && mkdir -p /volumes/LABMOVE && mount /devices/${b}1 /volumes/LABMOVE && echo mounted'"
+root = true
+expect = "mounted"
+
+# This machine backs itself up to the stick, as the machine that is moved
+# from. backup(8) keeps a folder's backups in its dukovo-backup folder, by
+# the machine's name: the folder that `backup find` lists is
+# /volumes/LABMOVE/dukovo-backup/HOSTNAME.
+[[step]]
+run = "sh -c 'backup add --every hand --verify never lab-move /volumes/LABMOVE > /dev/null && backup run lab-move'"
+root = true
+expect = ["backup: lab-move: /users: ", "backup: lab-move: done"]
+
+# The place's key, as a file on the stick named after the machine, the way a
+# person keeps it. A second place holds the wrong key.
+[[step]]
+run = "sh -c 'cp /system/settings/backup/lab-move.key /volumes/LABMOVE/$(hostname)-recovery.key && ls /volumes/LABMOVE'"
+root = true
+expect = ["-recovery.key", "dukovo-backup"]
+# `backup find` lists the backups and the key file on the stick, which the page
+# offers.
+[[step]]
+run = "backup find --json"
+root = true
+expect = ["LABMOVE", "dukovo-backup", "-recovery.key"]
+[[step]]
+run = "sh -c 'rm -rf /tmp/lab-move-wrong && mkdir -p /tmp/lab-move-wrong && backup add --every hand --verify never lab-wrong /tmp/lab-move-wrong > /dev/null && echo made-lab-wrong'"
+root = true
+expect = "made-lab-wrong"
+# Nothing is staged to begin with.
+[[step]]
+run = "sh -c 'backup restore --machine --cancel; echo ended'"
+root = true
+expect = "ended"
+
+# The console answers within seconds of the boot; its last answer is shown so
+# that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "move.mjs"
+port = 9090
+
+# What the page left on the machine: nothing staged, and the backups where
+# they were.
+[[step]]
+run = "sh -c 'backup restore --machine --cancel; echo cancelled'"
+root = true
+expect = "cancelled"
+[[step]]
+run = "backup list"
+root = true
+expect = ["lab-move", "lab-wrong"]
+
+# The machine as it was: the places and their keys, the stick and the accounts.
+[[step]]
+run = "sh -c 'backup remove lab-move > /dev/null && backup remove lab-wrong > /dev/null && rm -rf /tmp/lab-move-wrong && rm -f /volumes/LABMOVE/*-recovery.key && echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'umount /volumes/LABMOVE && rmdir /volumes/LABMOVE; rm -f /users/lab/lab-stick; echo unmounted'"
+root = true
+expect = "unmounted"
+[[step]]
+usb = "unplug"
+[[step]]
+run = "sh -c 'for name in wc-move wc-move-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-move is removed", "wc-move-reader is removed"]

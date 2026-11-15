@@ -1,7 +1,26 @@
 {
   "format": 1,
   "places": [
-    {"place": "/users", "snapshots": 3, "newest": "2026-11-14-0300", "folder": "/snapshots/users"},
-    {"place": "/shared", "snapshots": 0, "newest": null, "folder": "/snapshots/shared"}
+    {
+      "place": "/users",
+      "snapshots": 3,
+      "newest": "2026-11-14-0300",
+      "newest_made": "2026-11-14T03:00:00Z",
+      "folder": "/snapshots/users",
+      "in_service": true
+    },
+    {
+      "place": "/volumes/sdb1",
+      "snapshots": 0,
+      "newest": null,
+      "newest_made": null,
+      "folder": "/volumes/sdb1/@snapshots/top",
+      "in_service": false
+    }
+  ],
+  "settings": {"places": ["/users", "/shared"], "daily": 7, "weekly": 4},
+  "update": [
+    {"name": "settings", "made": "2026-11-12T20:13:20Z"},
+    {"name": "state", "made": "2026-11-12T20:13:21Z"}
   ]
 }

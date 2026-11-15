@@ -1207,6 +1207,17 @@ fn trim(
     Ok(())
 }
 
+/// What the log takes now, as logd says it: to root only.
+pub fn disk_usage() -> Result<Usage, Fail> {
+    let mut usage: Option<Usage> = None;
+    let request = Request { ask: "usage".into(), ..Request::default() };
+    ask(&request, |line| {
+        usage = serde_json::from_str(line).ok();
+        Ok(false)
+    })?;
+    usage.ok_or_else(|| fail("logd did not say".into()))
+}
+
 /// Sends `request` to logd and calls `each` with each line of the answer
 /// until logd closes the connection or `each` says to stop.
 pub fn ask(

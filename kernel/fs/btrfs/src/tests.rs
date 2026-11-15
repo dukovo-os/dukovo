@@ -571,6 +571,7 @@ mod fsync;
 mod links;
 mod log;
 mod make;
+mod profiles;
 mod quota;
 mod raid;
 mod rw;

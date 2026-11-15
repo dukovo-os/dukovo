@@ -245,6 +245,13 @@ path = [
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# What `storage show --json` prints for the machine its tests build
+# (userspace/programs/systools/src/storage/show.rs).
+[[annotations]]
+path = "userspace/programs/systools/src/storage/show.golden.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # The RSA key the passkey tests sign with (ADR 0514): a throwaway key
 # OpenSSL made (`openssl genpkey -algorithm RSA`, as PKCS #8 DER), since
 # ring makes no RSA keys.

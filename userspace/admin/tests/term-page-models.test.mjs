@@ -178,6 +178,42 @@ test('escape sequences, controls and carriage returns are not read', () => {
   assert.equal(said.take(0), 'error: no such file\ndone !');
 });
 
+test('a line the shell draws again at each key is said as it was drawn last', () => {
+  // nukesh's line editor, as a person types fast: each key draws the prompt
+  // and the line from the first column, and Enter runs it.
+  const said = new Announcer();
+  const typed = "printf 'lab-%s\\n' announced";
+  for (let at = 1; at <= typed.length; at += 1) {
+    said.push(`\u001b[?25l\u001b[1;2H\u001b[J\u001b[1;1H\u001b]133;A;k=i\u001b\\\u001b[32mroot\u001b[0m@vm ~ # \u001b]133;B\u001b\\${typed.slice(0, at)}\u001b7\u001b[90mx\u001b[0m\u001b8\u001b[?25h`);
+  }
+  said.push('\u001b[J\r\n\u001b]133;C\u001b\\lab-announced\r\n\u001b]133;D;0\u001b\\');
+  assert.equal(said.take(0), `root@vm ~ # ${typed}x\nlab-announced`);
+});
+
+test('a line drawn over after a carriage return, or a move to the first column, is said as drawn last', () => {
+  const said = new Announcer();
+  said.push('copying 10%\rcopying 50%\r');
+  said.push('copying 100%\r\ndone\n');
+  said.push('row\u001b[5Grow five\u001b[Gfirst\u001b[1Gagain\n');
+  assert.equal(said.take(0), 'copying 100%\ndone\nagain');
+  // A return the cursor goes back to after drawing leaves the line as drawn.
+  const progress = new Announcer();
+  progress.push('50%\r');
+  assert.equal(progress.take(0), '50%');
+  // A return in a piece of its own still draws the next piece over the line.
+  const split = new Announcer();
+  split.push('$ l');
+  split.push('\u001b[1;');
+  split.push('1H');
+  split.push('$ ls\n');
+  assert.equal(split.take(0), '$ ls');
+  // Returns and nothing else say nothing.
+  const blank = new Announcer();
+  blank.push('\r \r');
+  assert.equal(blank.take(0), null);
+  assert.equal(blank.waiting, false);
+});
+
 test('a sequence cut in two pieces is not read in either', () => {
   const said = new Announcer();
   said.push('a\u001b[3');

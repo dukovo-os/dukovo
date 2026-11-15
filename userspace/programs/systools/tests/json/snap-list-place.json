@@ -8,35 +8,48 @@
       "made": "2026-11-12T03:00:00Z",
       "named": false,
       "kept": [],
-      "prunable": true
+      "prunable": true,
+      "restored": false
     },
     {
       "name": "before-the-upgrade",
       "made": "2026-11-12T20:15:00Z",
       "named": true,
       "kept": [],
-      "prunable": false
+      "prunable": false,
+      "restored": false
     },
     {
       "name": "2026-11-13-0300",
       "made": "2026-11-13T03:00:00Z",
       "named": false,
       "kept": ["daily"],
-      "prunable": false
+      "prunable": false,
+      "restored": false
     },
     {
       "name": "2026-11-14-0300",
       "made": "2026-11-14T03:00:00Z",
       "named": false,
       "kept": ["newest", "daily", "weekly"],
-      "prunable": false
+      "prunable": false,
+      "restored": false
+    },
+    {
+      "name": "restored-2026-11-10-030000",
+      "made": "2026-11-14T04:20:00Z",
+      "named": true,
+      "kept": [],
+      "prunable": false,
+      "restored": true
     },
     {
       "name": "unknown-time",
       "made": null,
       "named": true,
       "kept": [],
-      "prunable": false
+      "prunable": false,
+      "restored": false
     }
   ]
 }

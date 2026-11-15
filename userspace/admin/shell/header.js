@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // The header (design 4.3 and 4.7): the brand, the host with its popover,
-// Find, access, Tasks, Help and the account menu. At phone width it holds
-// the mark, the host, a find icon, an access icon and the Tasks icon while
-// tasks run or need a look; Help and the account menu are in More.
+// Find, access, a trial's chip, Tasks, Help and the account menu. At phone
+// width it holds the mark, the host, a find icon, an access icon, the chip
+// and the Tasks icon while tasks run or need a look; Help and the account
+// menu are in More.
 
 import { post } from '../api.js';
 import { fill, h, icon, marks, uniqueId } from '../dom.js';
@@ -42,7 +43,7 @@ function hostPopover({ host, get }) {
  * Makes the header from `shell`'s `session()`, `host`, `prefs`, `tasks`,
  * `notice`, `openPalette()`, `openShortcuts()`, `openAbout()`, `pageHelp()`,
  * `openPageHelp()`, `signOut()` and `togglePages()`. Gives `{element,
- * tasksButton, pagesButton, accountItems, helpItems}`.
+ * tasksButton, pagesButton, accountItems, helpItems, trials}`.
  */
 export function createHeader(shell) {
   const session = shell.session();
@@ -89,6 +90,15 @@ export function createHeader(shell) {
   });
   drawAccess();
   onUnlockChange(drawAccess);
+
+  // The chip is another module, read when a trial first runs.
+  const trialSlot = h('span', { class: 'trial-slot', hidden: true });
+  let chip = null;
+  const trials = async (list) => {
+    if (!chip && list.length === 0) return;
+    chip ??= import('./trial-chip.js').then(({ trialChip }) => trialChip(trialSlot, shell));
+    (await chip).show(list);
+  };
 
   // Tasks: the count in a pill, and the words for a screen reader.
   const pillText = h('span', { class: 'count-pill', 'aria-hidden': 'true' });
@@ -144,8 +154,9 @@ export function createHeader(shell) {
     findIcon,
     h('span', { class: 'access-wide' }, accessControl(session)),
     accessIcon,
+    trialSlot,
     tasksButton,
     h('span', { class: 'help-wide' }, help.element),
     h('span', { class: 'account-wide' }, account.element));
-  return { element, tasksButton, pagesButton, accountItems, helpItems };
+  return { element, tasksButton, pagesButton, accountItems, helpItems, trials };
 }

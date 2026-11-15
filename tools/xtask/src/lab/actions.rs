@@ -55,6 +55,8 @@ struct Action {
     #[allow(dead_code)] // As above.
     area: String,
     #[allow(dead_code)] // As above.
+    changes: bool,
+    #[allow(dead_code)] // As above.
     method: String,
     #[allow(dead_code)] // As above.
     path: String,
@@ -298,7 +300,8 @@ mod tests {
     fn action(id: &str, tests: [&str; 5]) -> String {
         let [checks, route, same, browser, ansible] = tests;
         format!(
-            "[[action]]\nid = \"{id}\"\ntitle = \"T\"\narea = \"services\"\nmethod = \"GET\"\n\
+            "[[action]]\nid = \"{id}\"\ntitle = \"T\"\narea = \"services\"\nchanges = false\n\
+             method = \"GET\"\n\
              path = \"/api/1/x\"\nruns = \"as-the-person\"\nlong = false\ncompares = false\n\
              tests = {{ checks = \"{checks}\", route = \"{route}\", same_as_command = \"{same}\", \
              browser = \"{browser}\", ansible = \"{ansible}\" }}\n"

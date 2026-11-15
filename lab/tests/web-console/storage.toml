@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Storage pages of the web console in each engine (design 4): the disks
+# at /storage held to what `storage show` says and to what `lsblk` lists, a
+# card of use for each volume, and one disk's page at /storage/{disk}. The
+# machine has one disk of its own, and the lab's driver takes one USB stick at
+# a time, so this test makes the mirror from a USB stick and a memory card in
+# the card reader: a partition on each, a Btrfs on the card's, the stick's added
+# and the data and the metadata turned into RAID1 (`device add`, `balance
+# start`), which the page says in words, "Mirror healthy" on the two disks. The
+# mirror is scrubbed from the page to done (`scrub`), the stick's
+# partition grows into the room after it (`storage grow`, with `rdisk` and
+# `device resize` under it), the log's limits are changed and put back and the
+# log is trimmed (`logtrim`), and a disk's health is checked where a disk
+# gives it (`diskhealth`). A reader sees the cards and the disks and no
+# button, and a phone at 390 by 844 shows the list and a disk. Each look is
+# dark, light, high contrast, forced colours and less motion, checked by axe.
+#
+# This test's first steps keep the log's settings file to put back after, and
+# its last steps put it back, take the mirror down, take the card out and pull
+# the stick. The accounts are two that this test makes and removes, an
+# administrator and a reader, so no script needs the lab's password. The script
+# runs each engine one after the other, so that an engine the lab PC lacks is
+# skipped within it and the steps after it still run.
+about = "The web console's Storage pages in each engine: the disks from what storage show says and lsblk lists, the mirror of a memory card and a stick in words, a disk's panel, Scrub the mirror to done, Grow into it, the log's limits changed and Trim now, the steps for a new disk, a disk that is not there, a reader, and the phone"
+time = "25m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-storage && echo lab-console-password | user add wc-storage-reader && user set --console --yes wc-storage-reader'"
+root = true
+expect = ["Made wc-storage", "Made wc-storage-reader", "wc-storage-reader is changed"]
+# The log's settings as the image has them, kept to be put back.
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-storage && cp /system/settings/log /tmp/lab-storage/log && logtrim --show --json'"
+root = true
+expect = "keep_days"
+
+# The card reader with no card in it is a drive of no size whose medium comes
+# and goes (ADR 0430): its name is kept in the lab's home for the steps below,
+# which root runs, as card-reader.toml does. A card of 512 MB goes in it and a
+# stick of 1 GB into a USB port, sizes that no system disk has and that differ,
+# so that each is found by its own.
+[[step]]
+run = "lsblk -dbn -o NAME,SIZE,RM | awk '$2 == \"0\" && $3 == \"1\" { print $1 }' > ~/lab-card && cat ~/lab-card"
+expect = "sd"
+[[step]]
+card = "insert"
+blank = "512M"
+[[step]]
+usb = "plug"
+blank = "1G"
+[[step]]
+wait = "5s"
+[[step]]
+run = "sh -c 'lsblk -dbn -o SIZE /devices/$(cat ~/lab-card)'"
+expect = "536870912"
+[[step]]
+run = "lsblk -dbn -o NAME,SIZE,TYPE | awk '$2 == \"1073741824\" && $3 == \"disk\" { print $1 }' > ~/lab-stick && cat ~/lab-stick"
+expect = "sd"
+# A GPT with one partition of 128 MiB at the start of the card and of the
+# stick, the rest of each free.
+[[step]]
+run = '''sh -c 'for s in card stick; do printf "g\nn\n\n\n+128M\nw\n" | rdisk /devices/$(cat /users/lab/lab-$s) || exit 1; done' '''
+root = true
+expect = ["Partition 1 is added", "The kernel has read it"]
+# A Btrfs on the card, mounted; the stick added to it and the data and the
+# metadata turned into RAID1, which is the mirror.
+[[step]]
+run = "sh -c 'a=$(cat /users/lab/lab-card); b=$(cat /users/lab/lab-stick); mkfs-btrfs -f -L LABMIRROR /devices/${a}1 && mkdir -p /volumes/lab-mirror && mount /devices/${a}1 /volumes/lab-mirror && device add /devices/${b}1 /volumes/lab-mirror && balance start -dconvert=raid1 -mconvert=raid1 /volumes/lab-mirror && echo kept > /volumes/lab-mirror/kept && echo mirrored'"
+root = true
+expect = "mirrored"
+# What the machine says of its disks has each disk that lsblk lists, and the
+# volume that was just made.
+[[step]]
+run = "for d in $(lsblk -dn | awk '$4 == \"disk\" { print $1 }'); do storage show | grep -qw $d || { echo missing $d; exit 1; }; done; echo all-listed"
+expect = "all-listed"
+[[step]]
+run = "storage show"
+expect = ["LABMIRROR", "raid1"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "storage.mjs"
+port = 9090
+
+# The scrub left a result, and the files are all there after the scrub and
+# the grown partition.
+[[step]]
+run = "sh -c 'scrub status /volumes/lab-mirror; cat /volumes/lab-mirror/kept'"
+root = true
+expect = "kept"
+# The log's settings as the image has them, and the log trimmed by them again.
+[[step]]
+run = "sh -c 'cp /tmp/lab-storage/log /system/settings/log && rm -r /tmp/lab-storage && logtrim --show --json'"
+root = true
+expect = "keep_days"
+# The machine as it was: the mirror down, the card out and the stick pulled.
+[[step]]
+run = "sh -c 'umount /volumes/lab-mirror && rmdir /volumes/lab-mirror; rm -f /users/lab/lab-card /users/lab/lab-stick; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+card = "remove"
+[[step]]
+usb = "unplug"
+[[step]]
+run = "sh -c 'for name in wc-storage wc-storage-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-storage is removed", "wc-storage-reader is removed"]

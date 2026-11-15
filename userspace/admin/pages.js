@@ -36,6 +36,27 @@ const ENTRIES = [
     load: () => import('./pages/reliability/page.js'),
   },
   {
+    id: 'storage', title: 'Storage', path: '/storage', icon: 'storage', nav: { order: 40 },
+    keywords: ['disk', 'space', 'mirror', 'health', 'grow', 'shared folders'],
+    css: ['pages.css', 'pages/storage/sto.css'],
+    load: () => import('./pages/storage/page.js'),
+    parts: { overview: () => import('./pages/storage/overview.js') },
+  },
+  {
+    id: 'snapshots', title: 'Snapshots and backups', path: '/snapshots', icon: 'snapshots', nav: { order: 50 },
+    keywords: ['backup', 'restore', 'snapshot', 'older copies', 'recovery key'],
+    children: [{ title: 'Backups', path: '/snapshots/backups' }],
+    css: ['pages.css', 'pages/snapshots/snap.css'],
+    load: () => import('./pages/snapshots/page.js'),
+    parts: { overview: () => import('./pages/snapshots/overview.js') },
+  },
+  {
+    id: 'move', title: 'Move to new hardware', path: '/move', icon: 'server', needs: 'admin',
+    keywords: ['migrate', 'new machine', 'old machine', 'restore everything'],
+    css: ['pages.css', 'pages/move/move.css'],
+    load: () => import('./pages/move/page.js'),
+  },
+  {
     id: 'networking', title: 'Networking', path: '/networking', icon: 'network', nav: { order: 60 },
     keywords: ['address', 'ip', 'dns', 'router', 'dhcp'],
     css: ['pages.css', 'lib/trial-banner.css', 'pages/networking/net.css'],
@@ -46,6 +67,12 @@ const ENTRIES = [
     keywords: ['port', 'rule', 'allow', 'deny', 'blocked'],
     css: ['pages.css', 'lib/trial-banner.css', 'pages/firewall/fw.css'],
     load: () => import('./pages/firewall/page.js'),
+  },
+  {
+    id: 'accounts', title: 'Accounts', path: '/accounts', icon: 'accounts', nav: { order: 80 },
+    keywords: ['user', 'people', 'group', 'administrator', 'ssh key', 'sessions', 'tokens'],
+    css: ['pages.css', 'pages/accounts/acc.css'],
+    load: () => import('./pages/accounts/page.js'),
   },
   {
     id: 'welcome', title: 'Welcome', path: '/welcome', icon: 'info',
@@ -106,6 +133,13 @@ const ENTRIES = [
       overview: () => import('./pages/certificates/overview.js'),
       palette: () => import('./pages/certificates/palette.js'),
     },
+  },
+  {
+    id: 'security', title: 'Security', path: '/security', icon: 'security', nav: { order: 120 },
+    keywords: ['checks', 'ssh', 'blocked', 'unblock', 'wireguard', 'private access', 'sign-in rules'],
+    css: ['boards.css', 'pages.css', 'pages/security/sec.css'],
+    load: () => import('./pages/security/page.js'),
+    parts: { overview: () => import('./pages/security/overview.js') },
   },
 ];
 

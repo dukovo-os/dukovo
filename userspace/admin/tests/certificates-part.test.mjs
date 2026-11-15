@@ -40,7 +40,7 @@ test('the words say what uses it and what to do, by the kind of certificate', ()
 
 test('the check that warns of a certificate that ends soon is covered, and a revoked one covers none', () => {
   const found = needsOf(certificates);
-  assert.deepEqual(found.find((one) => one.id === 'certificate-ends-blog').covers, ['MET-104']);
+  assert.deepEqual(found.find((one) => one.id === 'certificate-ends-blog').covers, ['MET-107']);
   assert.equal(found.find((one) => one.id === 'certificate-revoked-stolen').covers, undefined);
 });
 

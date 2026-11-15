@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0464. A whole machine is restored at a start, from its backups and its record
 
-- Status: Accepted
+- Status: Accepted; a record carries authd's files of the accounts too since [0564](0564-a-machine-s-record-carries-authd-s-files-of-the-accounts.md)
 - Date: 2026-11-11
 
 ## Context

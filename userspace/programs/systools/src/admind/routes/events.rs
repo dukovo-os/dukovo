@@ -6,8 +6,8 @@
 //! unlock changes, `session` with why it ended when it does, `task` for
 //! each change of a task's state, step or progress (ADR 0516), `change` for
 //! each row of the journal that ends, a console change's or a hand edit's,
-//! and a comment every 25 seconds so that nothing between the browser and
-//! admind closes a stream that says nothing.
+//! `trial` with the trials that run, and a comment every 25 seconds so that
+//! nothing between the browser and admind closes a stream that says nothing.
 //!
 //! A tab that opens is told where each task is that waits, runs or ended
 //! in the last minute, so that it has no gap between what it asked for and
@@ -16,6 +16,14 @@
 //! every open tab of every session, as the journal is everyone's to read,
 //! and says its number, how it was made and when, with no file's name and
 //! no person's; a tab that opens is told of the rows after it opened.
+//!
+//! The trials that run are told to every open tab of every session, as a
+//! trial is the machine's and names no one: to a tab that opens while one
+//! runs, whenever [`Shared::tell_trials`] has been called since the stream
+//! last told them (a change that begins or ends a trial, and the round of
+//! admind's upkeep, which tells them every time while one runs and once
+//! more, with none, when the last has ended). Each tells the time left of
+//! each trial as of when it is sent, so that a tab corrects its countdown.
 //!
 //! An open stream is a tab: while a session has one, it is not idle, and
 //! once its last stream has closed and 60 seconds have passed, an
@@ -43,6 +51,7 @@ use crate::admind::journal::Row;
 use crate::admind::log;
 use crate::admind::shared::{Shared, seconds_left, unix_now};
 use crate::admind::tasks::Told;
+use crate::admind::trials::Running;
 
 /// How long a stream may say nothing.
 const KEEP_TIME: Duration = Duration::from_secs(25);
@@ -89,6 +98,12 @@ fn session_event(reason: &str) -> Bytes {
 fn change_event(row: &Row) -> Bytes {
     let data = json!({ "id": row.id, "how": row.how, "at": row.at });
     Bytes::from(format!("event: change\ndata: {data}\n\n"))
+}
+
+/// The event that tells the trials that run, `[]` when none does.
+fn trial_event(running: &[Running]) -> Bytes {
+    let data = json!({ "trials": running });
+    Bytes::from(format!("event: trial\ndata: {data}\n\n"))
 }
 
 /// `GET /api/1/events`: counts the tab in and starts its stream.
@@ -177,10 +192,12 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
     let mut task_news = shared.tasks.subscribe();
     let mut row_news = shared.journal.news.subscribe();
     // The unlock last told, so that only a change is, what of each task,
-    // and where in the journal's news the tab is.
+    // where in the journal's news the tab is, and how often the trials had
+    // been told when this stream last sent them: none, until it has.
     let mut told = None;
     let mut told_tasks = Told::default();
     let mut told_rows = shared.journal.news.position();
+    let mut told_trials = None;
     loop {
         let Some(until) = shared.with_session(&cookie, |session| session.unlocked_until) else {
             let reason = shared.endings.borrow().reason(&authd);
@@ -194,6 +211,17 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
             if !tell(&sender, unlock_event(until, unix_now())).await {
                 break;
             }
+        }
+        let (times, running) = {
+            let trials = shared.trials.borrow();
+            (trials.times_told(), trials.running(Instant::now()))
+        };
+        // A tab that opens is told only if a trial runs; after that, each time
+        // they have been told.
+        let trials_due = told_trials.map_or(!running.is_empty(), |told| told != times);
+        told_trials = Some(times);
+        if trials_due && !tell(&sender, trial_event(&running)).await {
+            break;
         }
         let (due, held) = shared.tasks.events(&mut told_tasks, tokio::time::Instant::now());
         let mut gone = false;
@@ -310,6 +338,36 @@ mod tests {
         let odd = Row { id: 1, how: "by hand\nevent: unlock".into(), at: 2 };
         let told = String::from_utf8(change_event(&odd).to_vec()).unwrap();
         assert_eq!(told.matches('\n').count(), 3, "{told:?}");
+    }
+
+    #[test]
+    fn the_trials_that_run_are_told_with_their_time_left_page_and_words_and_none_as_an_empty_list()
+    {
+        let running = [
+            Running {
+                id: "firewall".into(),
+                left_ms: 41_000,
+                page: "/firewall".into(),
+                what: "The firewall's rules".into(),
+            },
+            Running {
+                id: "service.web".into(),
+                left_ms: 5_000,
+                page: "/services/web".into(),
+                what: "web's service file".into(),
+            },
+        ];
+        assert_eq!(
+            trial_event(&running),
+            Bytes::from(
+                "event: trial\ndata: {\"trials\":[\
+                 {\"id\":\"firewall\",\"left_ms\":41000,\"page\":\"/firewall\",\
+                 \"what\":\"The firewall's rules\"},\
+                 {\"id\":\"service.web\",\"left_ms\":5000,\"page\":\"/services/web\",\
+                 \"what\":\"web's service file\"}]}\n\n"
+            )
+        );
+        assert_eq!(trial_event(&[]), Bytes::from("event: trial\ndata: {\"trials\":[]}\n\n"));
     }
 
     #[test]

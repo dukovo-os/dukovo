@@ -511,6 +511,22 @@ pub fn partition_ids(read: &mut Read<'_>, block: u64, number: u32) -> PartitionI
     found.unwrap_or_default()
 }
 
+/// The devices that hold the filesystem whose UUID is `uuid`, as
+/// `devices` names them: a Btrfs filesystem has one on each of its
+/// disks. A device that cannot be read holds none, as far as this can
+/// tell.
+pub fn holding(uuid: &str) -> Vec<String> {
+    let Ok(all) = devices() else { return Vec::new() };
+    all.into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            reader(name)
+                .and_then(|mut read| filesystem(&mut read))
+                .is_some_and(|found| found.uuid.as_deref() == Some(uuid))
+        })
+        .collect()
+}
+
 /// A device's line in `/kernel/block/<name>/<what>`, trimmed.
 pub fn block_text(name: &str, what: &str) -> Option<String> {
     fs::read_to_string(format!("{BLOCKS}/{name}/{what}")).ok().map(|t| t.trim().to_string())

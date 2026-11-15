@@ -176,10 +176,12 @@ fn before_the_restore(vm: &mut Vm, case: &Case) -> Result<(), String> {
     answer_prompt(vm, "$", "clear; hostname; ls /applications | grep -c example; ls work; true")?;
     vm.expect_screen(&["other", "0", "No such file or directory"])?;
 
-    // Another key, or a changed tag, is refused; the recovery key stages.
+    // Another key, which does not open the record, or a changed tag, is
+    // refused; the recovery key stages.
     elevated(vm, "restore.sh", RESTORE, false)?;
     vm.expect_screen(&[
-        "is not the destination's own key, the recovery key",
+        "this key does not open these backups",
+        "(BAK-103)",
         "other key 1",
         "its tag does not match",
         "changed tag 1",

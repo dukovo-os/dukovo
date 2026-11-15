@@ -287,7 +287,7 @@ fn action_seeds(action: &'static dyn Registered, what: &str, args: &Value, seeds
             params.push((name.to_string(), value));
         }
     }
-    let (method, query, body) = if action.changes() {
+    let (method, query, body) = if action.posts() {
         ("POST", String::new(), Some(Value::Object(rest)))
     } else {
         let pairs: Vec<String> = rest
@@ -974,6 +974,16 @@ struct Got {
     body: Vec<u8>,
 }
 
+/// Waits, for at most 10 seconds, until no task waits or runs.
+async fn tasks_end(shared: &Shared) {
+    for _ in 0..1000 {
+        if shared.tasks.unfinished() == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// What admind answers `request` with, as a task of its own so that a
 /// panic is caught and told; an answer that does not end in ten seconds
 /// is a failure too.
@@ -1210,6 +1220,11 @@ fn requests_of_every_caller_bent_at_random_keep_what_the_console_promises() {
             let Some(request) = sent.request() else { continue };
             let before = Traces::now(&world, address);
             let got = answer(&world.console.shared, request).await;
+            // A task runs its command after the answer: what it does is the
+            // request's that began it, and not the next one's.
+            if got.as_ref().is_ok_and(|got| got.status == 202) {
+                tasks_end(&world.console.shared).await;
+            }
             let after = Traces::now(&world, address);
             let failure = |why: &str| {
                 format!("round {round}, {caller:?}, from {}: {why}\n{}", seed.what, sent.describe())

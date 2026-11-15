@@ -212,7 +212,7 @@ pub fn mount_path(m: &Mount) -> PathBuf {
 }
 
 /// The mount a path is on.
-fn mount_of<'a>(mounts: &'a [Mount], path: &Path) -> Option<&'a Mount> {
+pub(crate) fn mount_of<'a>(mounts: &'a [Mount], path: &Path) -> Option<&'a Mount> {
     mounts
         .iter()
         .filter(|m| path.starts_with(mount_path(m)))

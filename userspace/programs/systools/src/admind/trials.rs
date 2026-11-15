@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The trials of the network's settings and the firewall's rules, as the
-//! console sees them (ADR 0518).
+//! The trials of settings, as the console sees them (ADR 0518): the
+//! network's settings and the firewall's rules, and from C5 SSH's, the
+//! console's reach and a service's file.
 //!
 //! A change tried from the Networking or Firewall page is undone by Spark
 //! unless it is kept (ADR 0472). Before the page lets the person keep it,
@@ -21,11 +22,20 @@
 //!
 //! Spark's `show` document, which lists the trials and the last ones
 //! undone, comes from Spark's read socket, which answers anyone.
+//!
+//! The open tabs are told which trials run, with the time each has left,
+//! as `event: trial` (`routes::events`): when a trial begins or ends by a
+//! console action, at each round of admind's upkeep, which reads Spark and
+//! so sees a trial begun, ended or undone elsewhere, and while any runs,
+//! at every round, which corrects the countdowns the tabs keep. A trial
+//! is told with the page that has its banner and the words for the
+//! header's chip.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use spark_api::show::{self, Show};
 use spark_api::trial::Why;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -48,6 +58,42 @@ const DOCUMENT_MAX: u64 = 4 << 20;
 /// within it.
 const SAME_END: Duration = Duration::from_secs(2);
 
+/// The page that draws the banner of each trial the console knows the
+/// way to, and what it says is being tried, in words that start a
+/// sentence. A service's trial is `service.NAME` ([`owner`]).
+const KNOWN: [(&str, &str, &str); 4] = [
+    ("network", "/networking", "The network settings"),
+    ("firewall", "/firewall", "The firewall's rules"),
+    ("ssh", "/security#ssh", "SSH's settings"),
+    ("console", "/security#reach", "Who may reach the console"),
+];
+
+/// The page that owns the trial `id` and the words for what it tries.
+/// A trial the console does not know the way to is a change on the
+/// services' page.
+fn owner(id: &str) -> (String, String) {
+    if let Some((_, page, what)) = KNOWN.iter().find(|(known, ..)| *known == id) {
+        return (page.to_string(), what.to_string());
+    }
+    match id.strip_prefix("service.").filter(|name| !name.is_empty()) {
+        Some(name) => (format!("/services/{name}"), format!("{name}'s service file")),
+        None => ("/services".to_string(), "A change".to_string()),
+    }
+}
+
+/// A trial that runs, as `event: trial` tells a tab.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Running {
+    /// Its ID: `network`, `firewall`, `ssh`, `console` or `service.NAME`.
+    pub id: String,
+    /// How long until Spark undoes it unless it is kept, in milliseconds.
+    pub left_ms: u64,
+    /// The page that has its banner.
+    pub page: String,
+    /// What is being tried, in words that start a sentence.
+    pub what: String,
+}
+
 /// What admind knows of one trial.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Began {
@@ -63,6 +109,12 @@ struct Began {
 #[derive(Debug, Default)]
 pub struct Trials {
     began: BTreeMap<String, Began>,
+    /// The trials the open tabs were last told run, by their IDs, so that
+    /// the round tells them once more when the last has ended.
+    told: BTreeSet<String>,
+    /// How many times the tabs have been told, which each tab's stream
+    /// compares with the number it has sent.
+    times_told: u64,
     /// The undos of Spark's list that the journal has, by their IDs and
     /// times on Spark's clock.
     noted: BTreeSet<(String, u64)>,
@@ -127,6 +179,41 @@ impl Trials {
     /// tried.
     pub fn fresh(&self, id: &str, accepted: Instant) -> Option<bool> {
         self.began.get(id).map(|began| accepted > began.at)
+    }
+
+    /// The trials that run at `now`, with the time each has left, by their
+    /// IDs. One whose end admind does not know yet (the console's action
+    /// that began it answered, and Spark has not been read since) is not
+    /// among them, nor is one whose end has passed.
+    pub fn running(&self, now: Instant) -> Vec<Running> {
+        self.began
+            .iter()
+            .filter_map(|(id, began)| {
+                let left =
+                    began.ends?.checked_duration_since(now).filter(|left| !left.is_zero())?;
+                let (page, what) = owner(id);
+                let left_ms = u64::try_from(left.as_millis()).unwrap_or(u64::MAX);
+                Some(Running { id: id.clone(), left_ms, page, what })
+            })
+            .collect()
+    }
+
+    /// The open tabs are told, at `now`, which trials run.
+    pub fn tell(&mut self, now: Instant) {
+        self.told = self.running(now).into_iter().map(|trial| trial.id).collect();
+        self.times_told += 1;
+    }
+
+    /// How many times the tabs have been told.
+    pub fn times_told(&self) -> u64 {
+        self.times_told
+    }
+
+    /// Whether a round that has read Spark tells the tabs at `now`: while
+    /// a trial runs, every time, and once more when the last has ended, with
+    /// none.
+    pub fn round_tells(&self, now: Instant) -> bool {
+        !self.told.is_empty() || !self.running(now).is_empty()
     }
 
     /// The undos of Spark's `document`, read at the Unix time `now`, that
@@ -275,6 +362,107 @@ mod tests {
         assert_eq!(trials.fresh("network", start + 5 * SECOND), Some(false));
         assert_eq!(trials.fresh("network", start + 11 * SECOND), Some(true));
         assert_eq!(trials.fresh("firewall", start + 11 * SECOND), None, "kept or undone");
+    }
+
+    /// What a running trial is told as, by its words alone.
+    fn told_as(id: &str) -> (String, String) {
+        let mut trials = Trials::default();
+        let start = Instant::now();
+        trials.listed([(id, 60_000)], start);
+        let [only] = <[Running; 1]>::try_from(trials.running(start)).unwrap();
+        assert_eq!((only.id.as_str(), only.left_ms), (id, 60_000));
+        (only.page, only.what)
+    }
+
+    #[test]
+    fn each_trial_is_told_with_the_page_that_has_its_banner_and_words_that_start_a_sentence() {
+        let told = |id| told_as(id);
+        assert_eq!(told("network"), ("/networking".into(), "The network settings".into()));
+        assert_eq!(told("firewall"), ("/firewall".into(), "The firewall's rules".into()));
+        assert_eq!(told("ssh"), ("/security#ssh".into(), "SSH's settings".into()));
+        assert_eq!(told("console"), ("/security#reach".into(), "Who may reach the console".into()));
+        assert_eq!(
+            told("service.nginx"),
+            ("/services/nginx".into(), "nginx's service file".into())
+        );
+        assert_eq!(
+            told("service.php-fpm.8"),
+            ("/services/php-fpm.8".into(), "php-fpm.8's service file".into())
+        );
+        // A trial the table does not know, and a service's with no name,
+        // are a change on the services' page.
+        assert_eq!(told("backup"), ("/services".into(), "A change".into()));
+        assert_eq!(told("service."), ("/services".into(), "A change".into()));
+    }
+
+    #[test]
+    fn the_time_left_is_as_of_the_moment_it_is_asked_and_a_trial_with_none_left_does_not_run() {
+        let start = Instant::now();
+        let mut trials = Trials::default();
+        trials.listed([("network", 60_000), ("firewall", 5_000)], start);
+        let left = |at: Instant| -> Vec<(String, u64)> {
+            trials.running(at).into_iter().map(|trial| (trial.id, trial.left_ms)).collect()
+        };
+        assert_eq!(left(start), [("firewall".into(), 5_000), ("network".into(), 60_000)]);
+        assert_eq!(
+            left(start + 4 * SECOND),
+            [("firewall".into(), 1_000), ("network".into(), 56_000)]
+        );
+        assert_eq!(left(start + 5 * SECOND), [("network".into(), 55_000)], "its end has come");
+        assert_eq!(left(start + 61 * SECOND), []);
+    }
+
+    #[test]
+    fn a_trial_the_console_began_does_not_run_until_spark_has_said_how_long_it_has() {
+        let start = Instant::now();
+        let mut trials = Trials::default();
+        trials.begun("network", start);
+        assert_eq!(trials.running(start + SECOND), []);
+        trials.listed([("network", 59_000)], start + SECOND);
+        let running = trials.running(start + SECOND);
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].left_ms, 59_000);
+        trials.ended("network");
+        assert_eq!(trials.running(start + SECOND), []);
+    }
+
+    #[test]
+    fn the_tabs_are_counted_as_told_and_the_round_tells_while_a_trial_runs_and_once_more_after() {
+        let start = Instant::now();
+        let mut trials = Trials::default();
+        assert!(!trials.round_tells(start), "nothing runs and nothing was told");
+        assert_eq!(trials.times_told(), 0);
+        trials.listed([("network", 40_000)], start);
+        assert!(trials.round_tells(start), "begun elsewhere");
+        trials.tell(start);
+        assert_eq!(trials.times_told(), 1);
+        // Told again at each round while it runs, to correct the countdown.
+        assert!(trials.round_tells(start + 30 * SECOND));
+        trials.tell(start + 30 * SECOND);
+        // Spark undid it between two rounds: the tabs are told none, once.
+        trials.listed([], start + 60 * SECOND);
+        assert!(trials.round_tells(start + 60 * SECOND));
+        trials.tell(start + 60 * SECOND);
+        assert_eq!(trials.times_told(), 3);
+        assert!(!trials.round_tells(start + 90 * SECOND));
+        assert!(!trials.round_tells(start + 120 * SECOND));
+    }
+
+    #[test]
+    fn a_trial_that_ends_by_a_keep_is_told_as_none_though_spark_is_not_asked() {
+        let start = Instant::now();
+        let mut trials = Trials::default();
+        trials.listed([("firewall", 50_000), ("network", 20_000)], start);
+        trials.tell(start);
+        trials.ended("firewall");
+        trials.tell(start + SECOND);
+        assert_eq!(trials.running(start + SECOND).len(), 1);
+        trials.ended("network");
+        // The round that follows finds the tabs told of the last one and
+        // tells none; the action's own call has done so already.
+        trials.tell(start + 2 * SECOND);
+        assert!(trials.running(start + 2 * SECOND).is_empty());
+        assert!(!trials.round_tells(start + 3 * SECOND));
     }
 
     fn undone(id: &str, why: &str, at_ms: u64) -> show::Undone {

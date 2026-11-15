@@ -695,6 +695,18 @@ fn arguments_for(rng: &mut Rng, id: &str) -> Value {
                     json!(min + i64::try_from(rng.below(10)).unwrap().min(max - min))
                 }
                 actions::Type::Flag => Value::Bool(rng.chance(50)),
+                // A secret of one line, or now and then one with a line
+                // break, which is refused before anything reads it.
+                actions::Type::Secret { max } => {
+                    let length = 1 + rng.below(max.min(40));
+                    let mut secret: String = (0..length)
+                        .map(|_| char::from(b'!' + u8::try_from(rng.below(94)).unwrap()))
+                        .collect();
+                    if rng.chance(10) {
+                        secret.insert(secret.len() / 2, '\n');
+                    }
+                    Value::String(secret)
+                }
             }
         };
         object.insert(field.name.to_string(), value);

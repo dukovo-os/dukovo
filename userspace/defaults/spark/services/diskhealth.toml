@@ -3,7 +3,8 @@
 #
 # Disk health: diskhealth(8) reads each disk's SMART record or NVMe health
 # log at boot and every half hour, and writes a line to the kernel log
-# when a disk's verdict changes, as smartd(8) does on Linux.
+# when a disk's verdict changes, as smartd(8) does on Linux. It also
+# writes each disk's summary for anyone to read (storage(8) shows it).
 #
 # service.toml(5) explains each setting. `service check diskhealth`
 # checks this file, and `service edit diskhealth` checks it as you save.
@@ -19,7 +20,8 @@ restart = "on-failure"
 
 # What it holds beyond what every service reads (service.toml(5)): the
 # disks, as they come and go, to read their health, and nothing else of
-# /devices (ADR 0473); and its folder in the state.
+# /devices (ADR 0473); its folder in the state; and the folder of the
+# summaries it writes.
 [permissions]
 files.disks = "read"
-files.read-write = ["/system/state/diskhealth"]
+files.read-write = ["/system/state/diskhealth", "/system/live/diskhealth"]

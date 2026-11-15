@@ -87,8 +87,9 @@ const KEEP_ALIVE: Duration = Duration::from_secs(60);
 const PROBE_EVERY: Duration = Duration::from_secs(15);
 
 /// The most bytes a request's head may have, and the most headers.
-const HEAD_MAX: usize = 16 << 10;
-const HEADERS_MAX: usize = 64;
+/// A head over either is answered 431, with no body (`openapi::head_too_large`).
+pub(super) const HEAD_MAX: usize = 16 << 10;
+pub(super) const HEADERS_MAX: usize = 64;
 
 /// The most streams one HTTP/2 connection has open at once: a browser's
 /// tabs share it, each with its event stream and a few requests.
@@ -307,9 +308,12 @@ async fn journal_round(shared: &Shared) {
 }
 
 /// Reads Spark's trials, for the pages that ask whether their browser
-/// reaches the console over a change being tried, and gives the journal a
-/// row for each trial Spark undid by itself (ADR 0518).
-async fn look_at_trials(shared: &Shared) {
+/// reaches the console over a change being tried, tells the open tabs of
+/// the trials that run when they are due to be told
+/// ([`trials::Trials::round_tells`]), and gives the journal a row for each
+/// trial Spark undid by itself (ADR 0518). A change that begins a trial
+/// calls it too, since how long the trial has left is Spark's to say.
+pub(super) async fn look_at_trials(shared: &Shared) {
     let document = match trials::document(shared.spark.get()).await {
         Ok(document) => document,
         Err(why) => {
@@ -323,11 +327,15 @@ async fn look_at_trials(shared: &Shared) {
         log(6, "Spark answers again: the console reads what is being tried");
     }
     let now = unix_now();
-    let undos = {
+    let read_at = Instant::now().into_std();
+    let (undos, tells) = {
         let mut trials = shared.trials.borrow_mut();
-        trials.read(&document, Instant::now().into_std());
-        trials.undos(&document, now)
+        trials.read(&document, read_at);
+        (trials.undos(&document, now), trials.round_tells(read_at))
     };
+    if tells {
+        shared.tell_trials(read_at);
+    }
     let Some(store) = &shared.store else { return };
     for undo in undos {
         match shared.journal.undone(store, &undo, now) {

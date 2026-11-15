@@ -7,7 +7,8 @@
 //! page and the command say the same.
 //!
 //! - the command, as one line for Dukovo's shell and for sh, with
-//!   `elevate` in front when the action runs as an administrator;
+//!   `elevate` in front when the action runs as an administrator, and
+//!   what is typed when the command asks, for one that reads a secret;
 //! - the API call, as a `curl` line against the console's address;
 //! - the Ansible task, as YAML text;
 //! - the files a change writes.
@@ -15,9 +16,16 @@
 //! The command is the argv that runs, quoted ([`shell_word`]); the other
 //! forms are made from the same prepared action, so none can say what
 //! another does not.
+//!
+//! A secret is never shown, and is not needed to show an action (ADR
+//! 0561): [`prepare`] puts `(secret)` in its place. The command says that
+//! it is typed when asked, the `curl` line takes it from a variable of the
+//! field's name in capitals (`$PASSWORD`), and the Ansible task from the
+//! playbook's (`{{ password }}`), with `no_log`.
 
 use serde_json::{Map, Value, json};
 
+use super::secret::SHOWN;
 use super::{Ansible, Prepared, Registered, Runs};
 use crate::admind::errors::Failure;
 
@@ -38,15 +46,67 @@ pub fn lookup(
     })
 }
 
-/// What `prepared` shows as: `command`, `api` for the console at `origin`
-/// (`https://host:port`), `ansible` and `files`.
+/// `action` prepared with `args` for showing: each secret field that
+/// `args` gives, and each that is required, holds `(secret)` in place of
+/// its value, so that a page need not send a secret to show the command
+/// and none that is sent is kept. A page gives an optional secret that
+/// will be typed as empty text, which says that it is given.
+///
+/// # Errors
+///
+/// As [`Registered::prepare`].
+pub fn prepare(action: &'static dyn Registered, args: Value) -> Result<Prepared, Failure> {
+    let mut args = args;
+    if let Value::Object(given) = &mut args {
+        for field in action.fields().iter().filter(|field| field.is_secret()) {
+            let present = given.get(field.name).is_some_and(|value| !value.is_null());
+            if present || field.required {
+                given.insert(field.name.into(), SHOWN.into());
+            }
+        }
+    }
+    action.prepare(args)
+}
+
+/// What `prepared` shows as: `command`; `typed`, what is typed when the
+/// command asks, or null; `api` for the console at `origin`
+/// (`https://host:port`); `ansible`; and `files`.
 pub fn shown(prepared: &Prepared, origin: &str) -> Value {
     json!({
         "command": command(prepared),
+        "typed": typed(prepared),
         "api": curl(prepared, origin),
         "ansible": yaml(&prepared.ansible),
         "files": prepared.files,
     })
+}
+
+/// The names of the secret fields that `prepared`'s arguments give, in the
+/// order of the fields: what its command reads on its input.
+fn secrets_given(prepared: &Prepared) -> Vec<&'static str> {
+    prepared
+        .action
+        .fields()
+        .iter()
+        .filter(|field| field.is_secret())
+        .filter(|field| prepared.args.get(field.name).is_some_and(|value| !value.is_null()))
+        .map(|field| field.name)
+        .collect()
+}
+
+/// What a person types when the command asks, after running it: "then the
+/// password, typed when asked". None for a command that reads no secret.
+pub fn typed(prepared: &Prepared) -> Option<String> {
+    let names: Vec<String> = secrets_given(prepared)
+        .into_iter()
+        .map(|name| format!("the {}", name.replace('_', " ")))
+        .collect();
+    let list = match names.as_slice() {
+        [] => return None,
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    Some(format!("then {list}, typed when asked"))
 }
 
 /// `word` as one word of a line for sh. A word of `A-Za-z0-9@%+=:,./_-`
@@ -72,19 +132,62 @@ pub fn command(prepared: &Prepared) -> String {
 
 /// The `curl` line that asks the console at `origin` for the action, as a
 /// script with a token does. A read's arguments that the address does not
-/// hold go in its query, a change's in its body.
+/// hold go in its query, a change's in its body, as do those of a read that
+/// takes or answers a secret. A secret is the shell's variable of its
+/// field's name in capitals, inside a body in double quotes.
 fn curl(prepared: &Prepared, origin: &str) -> String {
     let action = prepared.action;
-    let (path, rest) = address(action.path(), &prepared.args);
+    let (path, mut rest) = address(action.path(), &prepared.args);
     let bearer = r#"-H "Authorization: Bearer $DUKOVO_TOKEN""#;
-    if !action.changes() {
+    if !action.posts() {
         let url = shell_word(&format!("{origin}{path}{}", query(&rest)));
         return format!("curl -sS {bearer} {url}");
     }
     let url = shell_word(&format!("{origin}{path}"));
-    let body = shell_word(&Value::Object(rest).to_string());
+    let secrets = secrets_given(prepared);
+    let body = if secrets.is_empty() {
+        shell_word(&Value::Object(rest).to_string())
+    } else {
+        for name in &secrets {
+            rest.remove(*name);
+        }
+        body_with_variables(&rest, &secrets)
+    };
     let json = r#"-H "Content-Type: application/json""#;
     format!("curl -sS -X POST {bearer} {json} -d {body} {url}")
+}
+
+/// The JSON object of `plain` and of each of `secrets` as the shell's
+/// variable of its name in capitals, as one word in double quotes for sh:
+/// `"{\"name\":\"bob\",\"password\":\"$PASSWORD\"}"`. The variable's
+/// value goes in as it is, so it is text that a JSON string holds as it is.
+pub(super) fn body_with_variables(plain: &Map<String, Value>, secrets: &[&str]) -> String {
+    let text = Value::Object(plain.clone()).to_string();
+    // `{...}` without its closing brace, to which the secrets are added.
+    let open = &text[..text.len() - 1];
+    let mut word = format!("\"{}", double_quoted(open));
+    for (at, name) in secrets.iter().enumerate() {
+        if at > 0 || !plain.is_empty() {
+            word.push(',');
+        }
+        let key = double_quoted(&format!("{}:\"", Value::from(*name)));
+        word.push_str(&format!("{key}${}\\\"", name.to_ascii_uppercase()));
+    }
+    word.push_str("}\"");
+    word
+}
+
+/// `text` as it is written inside double quotes for sh: `\`, `"`, `$` and
+/// `` ` `` each with a backslash in front.
+fn double_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '"' | '$' | '`') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The address of `template` with each `{name}` part filled in from `args`
@@ -151,6 +254,9 @@ pub fn yaml(task: &Ansible) -> String {
     }
     if task.become_root {
         out.push_str("  become: true\n");
+    }
+    if task.no_log {
+        out.push_str("  no_log: true\n");
     }
     if let Some(name) = task.register {
         out.push_str(&format!("  register: {name}\n"));
@@ -431,10 +537,11 @@ mod tests {
             changed_when: Some("result.rc != 0".into()),
             register: Some("result"),
             failed_when: Some("result.rc not in [0, 3]".into()),
+            no_log: true,
         };
         assert_eq!(
             yaml(&task),
-            "- name: \"Do\"\n  dukovo.system.service:\n    empty: []\n    enabled: true\n    limits:\n      memory: \"64M\"\n      nested:\n        - [1]\n        - {\"a\":2}\n    name: \"nginx\"\n    none: null\n    \"odd key\": \"x\"\n    ports:\n      - 80\n      - 443\n    wait: 30\n  become: true\n  register: result\n  changed_when: \"result.rc != 0\"\n  failed_when: \"result.rc not in [0, 3]\"\n"
+            "- name: \"Do\"\n  dukovo.system.service:\n    empty: []\n    enabled: true\n    limits:\n      memory: \"64M\"\n      nested:\n        - [1]\n        - {\"a\":2}\n    name: \"nginx\"\n    none: null\n    \"odd key\": \"x\"\n    ports:\n      - 80\n      - 443\n    wait: 30\n  become: true\n  no_log: true\n  register: result\n  changed_when: \"result.rc != 0\"\n  failed_when: \"result.rc not in [0, 3]\"\n"
         );
     }
 

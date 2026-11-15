@@ -4,15 +4,17 @@
 // A tried change (design 8): what Spark's document says of it, the words of
 // the countdown, who began it, how it ended, the windows on offer, and the
 // machine that asks whether the browser still reaches the console. The
-// machine is run against fakes of the call and of the timer.
+// machine is run against fakes of the call and of the timer. The header's
+// chip (C5 design 3.4) has its words here too.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  announceAt, ASKS_AT_ONCE, begunWords, clockWords, endedHow, leftWords, makeReach, momentWords, percentLeft, reachRound, reachWords,
-  trialOf, triedBy, undoneAt, windowsFor,
+  announceAt, ASKS_AT_ONCE, begunWords, chipWords, clockWords, endedHow, endsWords, heldTrials, leftWords, makeReach, momentWords,
+  OVERDUE_MS, percentLeft, reachRound, reachWords, stillShown, trialOf, triedBy, undoneAt, windowsFor,
 } from '../lib/trial-model.js';
+import { makeTime } from '../lib/time.js';
 
 /** Spark's document with a network trial and the last undone ones. */
 const DOCUMENT = {
@@ -319,4 +321,87 @@ test('the banner\'s sentence for each state, and why Keep is off', () => {
   assert.match(reachWords({ kind: 'unsure' }, '14:32').words, /^Cannot tell yet/);
   assert.match(reachWords({ kind: 'gone' }, '14:32').words, /^Nothing is being tried/);
   assert.match(reachWords({ kind: 'over' }, '14:32').keep, /over/);
+});
+
+// ---- the header's chip -----------------------------------------------------
+
+// 14:28:00 UTC, and the person's clock in Prague, an hour ahead.
+const NOW = Date.UTC(2026, 10, 14, 14, 28, 0);
+const clock = makeTime('Europe/Prague', () => NOW).clock;
+
+/** The `trial` event's list, as the chip holds it when it came at `NOW`. */
+const held = (...trials) => heldTrials(trials, NOW);
+const network = { id: 'network', left_ms: 252_000, page: '/networking', what: 'The network settings' };
+const firewall = { id: 'firewall', left_ms: 65_000, page: '/firewall', what: 'The firewall\'s rules' };
+const ssh = { id: 'ssh', left_ms: 300_000, page: '/security#ssh', what: 'SSH\'s settings' };
+const seen = (list, route = '/', now = NOW) => chipWords(list, { route, now, clock });
+
+test('a trial is held with the time it ends by this browser\'s clock, and an entry that is not a trial is left out', () => {
+  assert.deepEqual(held(network), [{ page: '/networking', what: 'The network settings', endsMs: NOW + 252_000 }]);
+  assert.deepEqual(heldTrials([{ id: 'x', left_ms: 'soon', page: '/x', what: 'X' }, { left_ms: 5, page: 7, what: 'X' }, null, { left_ms: 5, page: '/x' }], NOW), []);
+  assert.deepEqual(heldTrials(undefined, NOW), []);
+  assert.deepEqual(heldTrials([], NOW), []);
+});
+
+test('a trial that ended is shown for a minute more, until admind says so, and then it is gone', () => {
+  const list = held(network);
+  assert.equal(stillShown(list, NOW + 252_000).length, 1);
+  assert.equal(stillShown(list, NOW + 252_000 + OVERDUE_MS - 1).length, 1);
+  assert.equal(stillShown(list, NOW + 252_000 + OVERDUE_MS).length, 0);
+});
+
+test('one trial is a link to its page, in words, with the time left as a clock and the end in the accessible name', () => {
+  assert.deepEqual(seen(held(network)), {
+    words: 'Trying: the network settings',
+    clock: '4:12',
+    label: 'Trying: the network settings, undone at 3:32 PM unless kept',
+    href: '/networking',
+    items: [{ label: 'The network settings, undone at 3:32 PM', href: '/networking' }],
+  });
+  assert.equal(endsWords(NOW + 65_000, clock), 'undone at 3:29 PM');
+});
+
+test('the words after "Trying:" start with a small letter only where the first word is an ordinary one', () => {
+  const words = (what) => seen(held({ left_ms: 1000, page: '/x', what })).words;
+  assert.equal(words('The firewall\'s rules'), 'Trying: the firewall\'s rules');
+  assert.equal(words('Who may reach the console'), 'Trying: who may reach the console');
+  assert.equal(words('A change'), 'Trying: a change');
+  assert.equal(words('SSH\'s settings'), 'Trying: SSH\'s settings');
+  assert.equal(words('nginx\'s service file'), 'Trying: nginx\'s service file');
+  assert.equal(words('PostgreSQL\'s service file'), 'Trying: PostgreSQL\'s service file');
+});
+
+test('two trials are one chip of "Trying 2 changes" with the time left of the soonest, and a list of both, the soonest first', () => {
+  const both = seen(held(network, firewall));
+  assert.equal(both.words, 'Trying 2 changes');
+  assert.equal(both.clock, '1:05');
+  assert.equal(both.href, null);
+  assert.equal(both.label, 'Trying 2 changes, the soonest undone at 3:29 PM unless kept');
+  assert.deepEqual(both.items, [
+    { label: 'The firewall\'s rules, undone at 3:29 PM', href: '/firewall' },
+    { label: 'The network settings, undone at 3:32 PM', href: '/networking' },
+  ]);
+  assert.equal(seen(held(network, firewall, ssh)).words, 'Trying 3 changes');
+});
+
+test('the page that owns a trial does not show it, with or without the place on the page, and the others are shown', () => {
+  assert.equal(seen(held(network), '/networking'), null);
+  assert.equal(seen(held(ssh), '/security'), null);
+  assert.notEqual(seen(held(ssh), '/security/other'), null, 'a page under another is not the owner');
+  const rest = seen(held(network, firewall), '/firewall');
+  assert.equal(rest.words, 'Trying: the network settings');
+  assert.equal(rest.href, '/networking');
+  assert.equal(seen([], '/'), null);
+});
+
+test('time passing changes the digits and nothing else, and a trial that has run out reads 0:00', () => {
+  const list = held(network);
+  const first = seen(list, '/', NOW);
+  for (const passed of [1000, 59_000, 252_000, 300_000]) {
+    const later = seen(list, '/', NOW + passed);
+    assert.deepEqual({ ...later, clock: '' }, { ...first, clock: '' });
+  }
+  assert.equal(seen(list, '/', NOW + 1000).clock, '4:11');
+  assert.equal(seen(list, '/', NOW + 252_000).clock, '0:00');
+  assert.equal(seen(list, '/', NOW + 300_000).clock, '0:00');
 });

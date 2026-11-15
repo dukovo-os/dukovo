@@ -76,7 +76,8 @@ pub struct About {
     /// The subvolumes staged, in the order of [`SUBVOLUMES`].
     pub subvolumes: Vec<String>,
     /// Folders of the state whose files are removed before the state's
-    /// files are written: `grants`.
+    /// files are written: `grants`, and `authd/keyrings` and
+    /// `authd/console` (ADR 0564).
     pub clear: Vec<String>,
     /// The state's files, by their path in the state, with their modes.
     pub state: Vec<(u16, String)>,
@@ -127,7 +128,7 @@ impl About {
                 {
                     about.subvolumes.push(rest.into());
                 }
-                "clear" if is_plain(rest) && !rest.contains('/') => about.clear.push(rest.into()),
+                "clear" if is_plain(rest) => about.clear.push(rest.into()),
                 "state" => {
                     let (mode, path) = rest.split_once(' ').unwrap_or(("", ""));
                     let mode = u16::from_str_radix(mode, 8).ok().filter(|m| *m <= 0o777);
@@ -252,8 +253,13 @@ mod tests {
             staged: "2026-11-12-101500".into(),
             machine: "web1".into(),
             subvolumes: vec!["settings".into(), "users".into()],
-            clear: vec!["grants".into()],
-            state: vec![(0o644, "bundled/installed".into()), (0o600, "grants/1000".into())],
+            clear: vec!["grants".into(), "authd/keyrings".into(), "authd/console".into()],
+            state: vec![
+                (0o644, "bundled/installed".into()),
+                (0o600, "grants/1000".into()),
+                (0o600, "authd/passwords".into()),
+                (0o600, "authd/console/owner.toml".into()),
+            ],
         }
     }
 
@@ -281,6 +287,10 @@ mod tests {
             ("state 0600 grants/1000", "state 1777 grants/1000"),
             ("state 0600 grants/1000", "state rw grants/1000"),
             ("clear grants", "clear ../settings"),
+            ("clear authd/console", "clear authd/../../settings"),
+            ("clear authd/console", "clear /system/state/authd/console"),
+            ("clear authd/console", "clear authd//console"),
+            ("state 0600 authd/passwords", "state 0600 authd/../../settings/passwd"),
             ("time 2026-11-11-030000", "time yesterday"),
             ("machine web1", "machine ../web1"),
             ("machine web1", "owner root"),

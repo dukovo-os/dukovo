@@ -33,6 +33,19 @@ fn superblock(file: &File) -> Option<[u8; 0x100]> {
     (&bytes[MAGIC_AT..MAGIC_AT + 8] == MAGIC).then_some(bytes)
 }
 
+/// The device ID a Btrfs superblock `bytes` gives its disk.
+fn devid_in(bytes: &[u8; 0x100]) -> u64 {
+    u64::from_le_bytes(bytes[DEVID_AT..DEVID_AT + 8].try_into().unwrap_or([0; 8]))
+}
+
+/// The device ID the Btrfs filesystem on `/devices/NAME` gave that disk,
+/// which `resize` takes; `None` for a device that holds no Btrfs, or
+/// that cannot be read.
+pub(crate) fn devid_of(name: &str) -> Option<u64> {
+    let file = File::open(format!("/devices/{name}")).ok()?;
+    superblock(&file).map(|bytes| devid_in(&bytes))
+}
+
 /// What a failed call on `path` says, as btrfs-progs words it.
 fn message(status: Status, what: &str, path: &str) -> String {
     match (Kernel::from_status(status), FileError::from_status(status)) {
@@ -81,7 +94,7 @@ fn remove(dir: &File, disk: &OsString, path: &str) -> Result<(), Fail> {
             let file = File::open(disk).map_err(|e| util::failed(&shown, e))?;
             let bytes = superblock(&file)
                 .ok_or_else(|| util::fail(format!("{shown}: not a btrfs device")))?;
-            u64::from_le_bytes(bytes[DEVID_AT..DEVID_AT + 8].try_into().unwrap_or([0; 8]))
+            devid_in(&bytes)
         }
     };
     directory::remove_disk(&SYS, sys::slot_of(dir.as_raw_fd()), devid)
@@ -193,5 +206,13 @@ mod tests {
         for refused in ["+1G", "-1G", "2:-1G", "x:max", "0", "most", ""] {
             assert!(resize_amount(refused).is_err(), "{refused}");
         }
+    }
+
+    #[test]
+    fn the_device_id_is_where_the_superblock_keeps_it() {
+        let mut bytes = [0u8; 0x100];
+        bytes[DEVID_AT..DEVID_AT + 8].copy_from_slice(&2u64.to_le_bytes());
+        assert_eq!(devid_in(&bytes), 2);
+        assert_eq!(DEVID_AT, 0xc9);
     }
 }

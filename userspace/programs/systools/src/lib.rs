@@ -105,6 +105,7 @@ mod at;
 mod audiocd;
 mod authd;
 mod backup;
+mod backup_errors;
 mod balance;
 mod blkid;
 mod blockdev;
@@ -129,6 +130,7 @@ mod dhcp_server;
 mod dig;
 mod discover;
 mod discoverd;
+mod disk_errors;
 mod diskhealth;
 mod dmesg;
 mod dukofetch;
@@ -235,6 +237,7 @@ mod ss;
 mod ssh_askpass;
 mod sshkeys;
 mod startup;
+mod storage;
 mod subvolume;
 mod swap;
 mod sys;
@@ -432,6 +435,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("ss", ss::main),
     ("ssh-askpass-keyring", ssh_askpass::main),
     ("startup", startup::main),
+    ("storage", storage::main),
     ("subvolume", subvolume::main),
     ("sudo", elevate::main),
     ("swapoff", swap::swapoff),

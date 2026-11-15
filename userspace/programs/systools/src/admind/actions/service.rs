@@ -976,6 +976,7 @@ mod tests {
             changed_when: None,
             register: None,
             failed_when: None,
+            no_log: false,
         }
     }
 

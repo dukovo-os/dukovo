@@ -18,7 +18,9 @@ keeps, and how long it keeps the security events of the audit log (ADR
 0211). Each line is *setting = value*; a line starting with *#* is a
 comment, and blank lines are skipped. A setting the file does not give
 keeps its default, and 0 lifts a limit. *service logd reload* reads the
-file again; logd says in the log what it could not read.
+file again; logd says in the log what it could not read. *logtrim set*
+changes the settings in this file, keeping its comments, and has logd
+read it again; *logtrim --show* tells what the settings come to.
 
 *keep-days =* _days_
 	How many days the log keeps records: 90 unless set.

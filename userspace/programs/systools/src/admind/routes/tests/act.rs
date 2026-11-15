@@ -513,6 +513,7 @@ fn a_wrong_token_is_refused_and_ten_in_a_minute_stop_the_address_before_authd_he
 fn shown_restart() -> Value {
     json!({
         "command": "elevate service nginx restart",
+        "typed": null,
         "api": "curl -sS -X POST -H \"Authorization: Bearer $DUKOVO_TOKEN\" \
                 -H \"Content-Type: application/json\" -d '{}' \
                 https://nas.example:9090/api/1/lab/nginx/restart",

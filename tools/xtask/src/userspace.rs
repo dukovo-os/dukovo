@@ -321,6 +321,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/ss", "systools"),
     ("system/commands/ssh-askpass-keyring", "systools"),
     ("system/commands/startup", "systools"),
+    ("system/commands/storage", "systools"),
     ("system/commands/subvolume", "systools"),
     ("system/commands/sudo", "systools"),
     ("system/commands/swapoff", "systools"),

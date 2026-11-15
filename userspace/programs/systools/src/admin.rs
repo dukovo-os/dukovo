@@ -245,19 +245,22 @@ fn show_action(args: &mut Args) -> Result<i32, Fail> {
 fn show_for(id: &str, given: &[String], origin: &str) -> Result<String, Fail> {
     let refused = |failure: Failure| fail(format!("{} ({})", failure.detail, failure.kind.id()));
     let action = show::lookup(REGISTRY, id).map_err(refused)?;
-    let prepared = action.prepare(Value::Object(arguments(given)?)).map_err(refused)?;
+    // A secret is not needed, and one given is not kept (ADR 0561).
+    let prepared = show::prepare(action, Value::Object(arguments(given)?)).map_err(refused)?;
     Ok(shown_text(&show::shown(&prepared, origin)))
 }
 
 /// What `shown` (the answer of `POST /api/1/show`) says, as text with a
-/// heading for each part.
+/// heading for each part. What is typed when the command asks follows the
+/// command, on a line of its own.
 fn shown_text(shown: &Value) -> String {
     let part = |key: &str| shown[key].as_str().unwrap_or_default().trim_end();
     let files: Vec<&str> =
         shown["files"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     let files = if files.is_empty() { "none".to_string() } else { files.join("\n") };
+    let typed = shown["typed"].as_str().map_or_default(|typed| format!("\n{typed}"));
     format!(
-        "Command\n{}\n\nAPI\n{}\n\nAnsible\n{}\n\nFiles\n{files}\n",
+        "Command\n{}{typed}\n\nAPI\n{}\n\nAnsible\n{}\n\nFiles\n{files}\n",
         part("command"),
         part("api"),
         part("ansible"),

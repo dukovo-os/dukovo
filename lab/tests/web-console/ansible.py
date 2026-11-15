@@ -64,6 +64,22 @@ has no state to begin from and come back to as this round's changes do,
 and its keep and undo need a trial running. Their tasks are the commands
 the console shows, which the boot test admin-trials runs, and the browser
 tests web-console/networking and web-console/firewall try, keep and undo.
+
+Nor are the snapshots', backups' and move's actions whose examples need
+what only their own tests set up (SET_UP): a snapshot, a backup place on a
+second disk, or the folder of another machine's backups. Their tasks are
+the commands the console shows, which the boot tests admin-backups and
+admin-move run, and the browser tests web-console/snapshots and
+web-console/move use. The four that read what any machine has are run:
+snapshots.list, backups.list, backups.ssh-key and move.find.
+
+Nor is storage.grow (ON_A_SECOND_DISK): its example grows vdb, a boot
+test's second disk with room after its last partition, which a lab machine
+has not, and a grow of the machine's own disk cannot be undone. The boot
+test admin-storage runs its command, and web-console/storage grows the
+lab's USB stick. storage.health asks after the machine's own disk
+(`on_this_machine`): its example names vda, the boot tests' disk, and a lab
+machine's disks are named by their controller, sda or nvme0n1.
 """
 
 import os
@@ -91,16 +107,54 @@ from console import (
 # a command that no image has, so both end with a status other than 0;
 # metrics.usage, metrics.around and service.usage end with 1 on a machine
 # that has run for less than the 10 minutes in which metricsd writes the
-# history they read; and the changes that are tried (TRIED) need a trial.
+# history they read; the changes that are tried (TRIED) need a trial; the
+# actions of the Snapshots, Backups and Move pages whose examples need what
+# only their tests set up (SET_UP); and the grow of a second disk
+# (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
 }
-LEFT_ALONE = {"certificate.renew", "checks.last", "lab.missing", "metrics.usage", "metrics.around", "service.usage"} | TRIED
-# The changes that compare nothing, so that the console counts each run as a change and
-# check mode says each would change something, whatever the machine is like: a restart,
-# and a lab build's lab.long, which runs its steps each time.
-ALWAYS_CHANGES = {"service.restart", "lab.long"}
+# The examples of these name the snapshot lab-before of /users, which
+# snapshots.take makes after the reads have run and which has no undo to
+# bring a second pass back to; files of lab-reader that a lab machine has
+# not; the backup place lab, which backups.add makes in /volumes/vdb, the
+# folder of a second disk that a lab machine has not (its undo is
+# backups.remove, which the place must be there for); and a move from
+# /volumes/LAB/dukovo-backup/lab-machine, which no machine has. A round, a
+# check and a restore of a place, and a staged move, are tasks of minutes
+# that write backups and the next start's places. snapshots.list,
+# backups.list, backups.ssh-key and move.find read what any machine has, and
+# are run.
+SET_UP = {
+    "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
+    "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
+    "move.plan", "move.stage", "move.cancel",
+}
+# storage.grow's example grows vdb, a boot test's second disk with room after its last
+# partition; a lab machine has no such disk, and a grow of its own cannot be undone.
+ON_A_SECOND_DISK = {"storage.grow"}
+LEFT_ALONE = (
+    {"certificate.renew", "checks.last", "lab.missing", "metrics.usage", "metrics.around", "service.usage"}
+    | TRIED
+    | SET_UP
+    | ON_A_SECOND_DISK
+)
+# The reads whose example names a disk of the boot tests, vda, which ask after this machine's own disk instead.
+ON_THIS_MACHINE = {"storage.health"}
+
+
+def always_changes(action):
+    """Whether a change compares nothing, as GET /api/1/actions says.
+
+    The console counts each run of such a change as a change, and check mode
+    says each would change something, whatever the machine is like: a restart,
+    a scrub, a trim of the log, and a lab build's lab.long, which runs its
+    steps each time.
+    """
+    return action["changes"] and not action["compares"]
+
+
 TOKEN_NAME = "lab-ansible"
 ANSIBLE_SH = os.path.join(HERE, "..", "system", "ansible.sh")
 MODULE = "dukovo.system."
@@ -129,6 +183,22 @@ def count(name, output):
             value = line[len(name) + 2 :].strip()
             return int(value) if value.isdigit() else None
     return None
+
+
+def on_this_machine(console, actions):
+    """Gives the first good example of each action of ON_THIS_MACHINE this machine's own disk.
+
+    The first disk that GET /api/1/storage lists and that is not removable,
+    or the first disk when every one is (a machine started from a stick).
+    """
+    disks = console.ask("GET", "/api/1/storage")["disks"]
+    fixed = [disk["name"] for disk in disks if not disk.get("removable")]
+    names = fixed or [disk["name"] for disk in disks]
+    if not names:
+        raise Failure("GET /api/1/storage lists no disk")
+    for action in actions:
+        if action["id"] in ON_THIS_MACHINE:
+            action["examples"]["good"][0] = {**action["examples"]["good"][0], "disk": names[0]}
 
 
 class Round:
@@ -195,6 +265,7 @@ def main():
         actions = [action for action in console.ask("GET", "/api/1/actions") if action["id"] not in LEFT_ALONE]
         if not actions:
             raise Failure("GET /api/1/actions gave no actions")
+        on_this_machine(console, actions)
         service = service_of_the_examples(actions)
 
         def state():
@@ -255,10 +326,10 @@ def main():
         for action, first, second in modules:
             if first != 1:
                 raise Failure(f"{action['id']} did nothing the first time, from the state its undo leaves: changed {first}")
-            wanted = 1 if action["id"] in ALWAYS_CHANGES else 0
+            wanted = 1 if always_changes(action) else 0
             if second != wanted:
                 raise Failure(f"{action['id']} reported changed {second} the second time, and it is {wanted}")
-        left_out = sorted(action["id"] for action, _, _ in modules if action["id"] in ALWAYS_CHANGES)
+        left_out = sorted(action["id"] for action, _, _ in modules if always_changes(action))
         said = f" ({', '.join(left_out)} always does something, and is the exception)" if left_out else ""
         print(f"changes with a module reported no change the second time{said}")
 
@@ -282,14 +353,14 @@ def main():
             # A change with no undo starts from what the machine has: console.export's folder may
             # be a repository from a run before, and check mode cannot tell whether the settings
             # moved since, so it may say so.
-            unknown_start = undo is None and action["id"] not in ALWAYS_CHANGES
+            unknown_start = undo is None and not always_changes(action)
             if unknown_start:
                 wrong = before_run is False
             else:
                 wrong = before_run is not (False if undoes_itself else True)
             if wrong:
                 raise Failure(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
-            if action["id"] in ALWAYS_CHANGES:
+            if always_changes(action):
                 wrong = after_run is not True
             elif round_.is_module(action):
                 wrong = after_run is not bool(second)

@@ -287,7 +287,7 @@ async fn put_back_run(
 ) -> Result<Value, Failure> {
     let argv = put_back_argv(id);
     let begun = shared.journal.begin(shared.store.as_ref(), files, unix_now());
-    let ran = run::elevated(shared, Elevator::Session(authd), &argv, run::RUN_TIME).await;
+    let ran = run::elevated(shared, Elevator::Session(authd), &argv, None, run::RUN_TIME).await;
     let what = match &ran {
         Ok(ran) => format!("ended with status {}", ran.status),
         Err(failure) => format!("was not run: {}", failure.kind.id()),

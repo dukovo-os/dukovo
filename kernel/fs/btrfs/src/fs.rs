@@ -49,6 +49,7 @@ use radix_sync::{Mutex, MutexGuard};
 use radix_vfs::mem::{self, Alloc, KArc, KBox, KVec};
 use radix_vfs::{Error, FileSystem, FsInfo, FsKind, Kind, Node, NodeRef, Result, SocketBinding};
 
+use crate::chunk::Profiles;
 use crate::cow::Writer;
 use crate::dir::Entries;
 use crate::files::Files;
@@ -227,6 +228,11 @@ impl BtrfsFs {
     /// until a scrub has caught them up (ADR 0153).
     pub fn behind(&self) -> usize {
         self.inner.volume.disks().iter().filter(|d| d.present() && d.behind()).count()
+    }
+
+    /// The profiles of its chunks, for each kind of block group.
+    pub fn profiles(&self) -> Profiles {
+        self.inner.volume.with_chunks(|map| Profiles::of(map.chunks().iter().map(|c| c.kind)))
     }
 
     /// Whether `device` is one of its disks, there now.

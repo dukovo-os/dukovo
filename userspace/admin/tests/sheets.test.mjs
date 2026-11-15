@@ -5,10 +5,13 @@
 // shell draws, pages.css what only some pages draw, and each of those pages
 // names pages.css in its entry. The checks read the sources, so a page that
 // draws a class of pages.css without naming it, or a class that moves back
-// into the shell's files, fails here and not as an unstyled page.
+// into the shell's files, fails here and not as an unstyled page. Every icon
+// is a file of icons/ with one line of console.css, so that none is a
+// drawing in the shell's start (C5 design 3.1); the checks hold the two
+// together.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import test from 'node:test';
 
@@ -21,11 +24,17 @@ const consoleCss = stripComments(read(`${ROOT}console.css`));
 const pagesCss = stripComments(read(`${ROOT}pages.css`));
 
 const classesOf = (css) => new Set([...css.matchAll(/\.([A-Za-z][\w-]*)/g)].map((found) => found[1]));
-const iconsIn = (css) => new Set([...classesOf(css)].filter((name) => name.startsWith('ic-')).map((name) => name.slice(3)));
 const inShell = classesOf(consoleCss);
 // A class both sheets have a rule for (`.on`, which the range control shares with others) is the shell's.
-const heldByPages = new Set([...classesOf(pagesCss)].filter((name) => !name.startsWith('ic-') && !inShell.has(name)));
-const iconsInPages = iconsIn(pagesCss);
+const heldByPages = new Set([...classesOf(pagesCss)].filter((name) => !inShell.has(name)));
+
+// An icon's rule is one line, `.ic-NAME { --m: url("/icons/NAME.svg"); }`. The
+// address is absolute: a relative url() in a custom property resolves against
+// the sheet that uses it in some engines and against the one that sets it in
+// others.
+const ICON_RULE = /^\.ic-([a-z][a-z-]*) \{ --m: url\("([^"]*)"\); \}$/;
+const iconLines = consoleCss.split('\n').filter((line) => line.startsWith('.ic-'));
+const iconNamesWithRules = iconLines.map((line) => ICON_RULE.exec(line)?.[1]).filter(Boolean);
 
 /** The words a source gives a class attribute or `classList`: the quoted pieces after `class:`, `className` and `classList.x(`. */
 function classWords(source) {
@@ -43,9 +52,6 @@ function classWords(source) {
   }
   return words;
 }
-
-/** The icon names a source draws with `icon('name')`. */
-const iconNames = (source) => new Set([...source.matchAll(/\bicon\(\s*'([a-z-]+)'\s*\)/g)].map((found) => found[1]));
 
 /** Every file reached from `roots` by imports, `follow` deciding which are entered. */
 function reach(roots, follow) {
@@ -80,9 +86,41 @@ function filesOfPage(entry) {
   return reach(paths.map((path) => resolve(ROOT, path)), exists);
 }
 
-test('every page\'s icon is drawn by console.css, since the navigation and the palette draw it before any page\'s sheet is linked', () => {
-  const drawn = iconsIn(consoleCss);
-  for (const entry of PAGES) assert.ok(drawn.has(entry.icon), `${entry.id}: console.css has no .ic-${entry.icon}`);
+test('every icon rule is one line that names the icon\'s own file', () => {
+  assert.ok(iconLines.length > 0, 'console.css has icon rules');
+  for (const line of iconLines) {
+    const found = ICON_RULE.exec(line);
+    assert.ok(found, `${line.slice(0, 70)} is not \`.ic-NAME { --m: url("/icons/NAME.svg"); }\``);
+    assert.equal(found[2], `/icons/${found[1]}.svg`, `.ic-${found[1]} names ${found[2]}`);
+  }
+});
+
+test('every icon rule has its file in icons/ and every file has its rule', () => {
+  const files = readdirSync(`${ROOT}icons`).sort();
+  assert.deepEqual(files, iconNamesWithRules.map((name) => `${name}.svg`).sort());
+  assert.equal(new Set(iconNamesWithRules).size, iconNamesWithRules.length, 'a rule is made twice');
+});
+
+test('every icon file is a 16 by 16 SVG with the licence comment, no script and no reference to anything else', () => {
+  for (const name of iconNamesWithRules) {
+    const text = read(`${ROOT}icons/${name}.svg`);
+    assert.match(text, /^<!--\nSPDX-FileCopyrightText: .+\nSPDX-License-Identifier: .+\n-->\n<svg /, `${name}.svg starts with the licence comment and the svg element`);
+    assert.match(text, /<svg xmlns=(["'])http:\/\/www\.w3\.org\/2000\/svg\1 /, `${name}.svg has the SVG namespace`);
+    assert.match(text, /\bviewBox=(["'])0 0 16 16\1/, `${name}.svg has the viewBox 0 0 16 16`);
+    const drawing = text.replace(/<!--[\s\S]*?-->/g, '').replace(/\bxmlns=(["'])http:\/\/www\.w3\.org\/2000\/svg\1/, '');
+    assert.doesNotMatch(drawing, /<(?:script|style|image|use|foreignObject)\b|\bhref\s*=|xlink|\bon[a-z]+\s*=|url\(|https?:|data:|@import/i, `${name}.svg draws with paths only`);
+  }
+});
+
+test('every page\'s icon has a rule in console.css and a file, since the navigation and the palette draw it before any page\'s sheet is linked', () => {
+  for (const entry of PAGES) {
+    assert.ok(iconNamesWithRules.includes(entry.icon), `${entry.id}: console.css has no .ic-${entry.icon}`);
+    assert.ok(exists(`${ROOT}icons/${entry.icon}.svg`), `${entry.id}: icons/${entry.icon}.svg is not a file`);
+  }
+});
+
+test('pages.css has no icon rule', () => {
+  assert.doesNotMatch(pagesCss, /\.ic-/);
 });
 
 test('no rule is in both sheets', () => {
@@ -92,24 +130,20 @@ test('no rule is in both sheets', () => {
   }
 });
 
-test('no file of the shell draws a class or an icon that only pages.css has', () => {
+test('no file of the shell draws a class that only pages.css has', () => {
   for (const file of shellFiles) {
-    const source = read(file);
-    const drawn = classWords(source);
+    const drawn = classWords(read(file));
     for (const name of heldByPages) assert.equal(drawn.has(name), false, `${relative(ROOT, file)} draws .${name}, which only pages.css has`);
-    for (const name of iconNames(source)) assert.equal(iconsInPages.has(name), false, `${relative(ROOT, file)} draws the icon ${name}, which only pages.css has`);
   }
 });
 
-test('a page whose files draw a class or an icon of pages.css names pages.css, before its own sheets', () => {
+test('a page whose files draw a class of pages.css names pages.css, before its own sheets', () => {
   for (const entry of PAGES) {
     const files = [...filesOfPage(entry)].filter((file) => !shellFiles.has(file));
     const draws = [];
     for (const file of files) {
-      const source = read(file);
-      const classes = classWords(source);
+      const classes = classWords(read(file));
       for (const name of heldByPages) if (classes.has(name)) draws.push(`.${name} in ${relative(ROOT, file)}`);
-      for (const name of iconNames(source)) if (iconsInPages.has(name)) draws.push(`the icon ${name} in ${relative(ROOT, file)}`);
     }
     if (draws.length === 0) continue;
     assert.ok(entry.css.includes('pages.css'), `${entry.id} draws ${draws.join(', ')}, and does not name pages.css`);

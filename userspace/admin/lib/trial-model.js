@@ -5,7 +5,9 @@
 // the trial, the words of its countdown, who began it, how it ended, the
 // windows a person may choose, and the machine that finds out whether the
 // browser still reaches the console over the new settings. lib/trial-banner.js
-// draws it. The trials are `network` and `firewall`.
+// draws it. The trials are `network` and `firewall`. The words of the header's
+// chip, which shows every running trial on every page (shell/trial-chip.js),
+// are here too.
 
 import { addressOfHost } from './address-model.js';
 
@@ -282,4 +284,63 @@ export function reachWords(state, ends) {
         keep: 'Keep is on once this browser has reached the console over the new settings.',
       };
   }
+}
+
+// ---- the header's chip -------------------------------------------------------
+
+/** How long after its end a trial is still shown, in milliseconds: admind says that it ended within its 30-second round, so a longer silence means the stream missed it. */
+export const OVERDUE_MS = 60_000;
+
+/**
+ * The trials of a `trial` event, `[{id, left_ms, page, what}]`, as the chip
+ * holds them: `{page, what, endsMs}`, with the time each ends by this
+ * browser's clock, `now` being when the event came. An entry that is not
+ * `{left_ms, page, what}` is left out.
+ */
+export function heldTrials(list, now) {
+  return (Array.isArray(list) ? list : [])
+    .filter((trial) => Number.isFinite(trial?.left_ms) && typeof trial.page === 'string' && typeof trial.what === 'string')
+    .map((trial) => ({ page: trial.page, what: trial.what, endsMs: now + trial.left_ms }));
+}
+
+/** The trials of `held` that are not over by more than `OVERDUE_MS` at `now`. */
+export const stillShown = (held, now) => held.filter((trial) => trial.endsMs + OVERDUE_MS > now);
+
+/** `what` as it reads after "Trying:": a first word of one capital and small letters ("The", "Who") starts with a small one; "SSH's" and a service's name stay as they are. */
+const inSentence = (what) => (/^[A-Z][a-z]*(?:\s|$)/.test(what) ? what[0].toLowerCase() + what.slice(1) : what);
+
+/** When a trial is undone, as the person's clock reads it: "undone at 2:32 PM"; `clock(seconds)` is the person's zone's clock (lib/time.js). */
+export const endsWords = (endsMs, clock) => `undone at ${clock(Math.floor(endsMs / 1000))}`;
+
+/** The part of `page` before the `#`: the route that owns a trial. */
+const routeOf = (page) => page.split('#')[0];
+
+/**
+ * What the header's chip says for the trials `held` (`heldTrials`) at `now`
+ * on the route `route`; a trial whose own page is the route is left out,
+ * since the page has its banner. Gives null when none is left; else
+ * `{words, clock, label, href, items}`:
+ *
+ * - `words` and `clock`: what is seen, "Trying: the network settings" and
+ *   "4:12", the time left of the soonest. With more than one trial `words` is
+ *   "Trying 2 changes";
+ * - `label`: the accessible name, which holds the words and the time of the
+ *   end, since the seconds are hidden from a screen reader;
+ * - `href`: where the chip goes, null with more than one trial, which it
+ *   lists in `items`, `{label, href}` for each, the soonest first.
+ */
+export function chipWords(held, { route, now, clock }) {
+  const shown = held.filter((trial) => routeOf(trial.page) !== route).sort((a, b) => a.endsMs - b.endsMs);
+  if (shown.length === 0) return null;
+  const [soonest] = shown;
+  const several = shown.length > 1;
+  const words = several ? `Trying ${shown.length} changes` : `Trying: ${inSentence(soonest.what)}`;
+  const label = `${words}, ${several ? 'the soonest ' : ''}${endsWords(soonest.endsMs, clock)} unless kept`;
+  return {
+    words,
+    clock: clockWords(soonest.endsMs - now),
+    label,
+    href: several ? null : soonest.page,
+    items: shown.map((trial) => ({ label: `${trial.what}, ${endsWords(trial.endsMs, clock)}`, href: trial.page })),
+  };
 }

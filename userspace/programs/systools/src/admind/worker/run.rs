@@ -8,10 +8,11 @@
 //! `/applications/commands`, as authd finds an elevated one, so a word
 //! that names a path, or a program of the person's own, is refused. It
 //! runs with the worker's own environment, no terminal, and input that
-//! ends at once; its output and its error output are kept as admind's
-//! elevated ones are. At most 8 run at once for a worker, and each has 30
-//! seconds, after which it is killed. A program that is in neither folder
-//! is ADM-129, said as authd says it of an elevated one.
+//! holds the secrets the action takes, if any, and then ends (ADR 0561);
+//! its output and its error output are kept as admind's elevated ones are.
+//! At most 8 run at once for a worker, and each has 30 seconds, after
+//! which it is killed. A program that is in neither folder is ADM-129,
+//! said as authd says it of an elevated one.
 
 use std::cell::Cell;
 use std::fs::File;
@@ -23,9 +24,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::net::unix::pipe::Receiver;
 
+use crate::admind::actions::Secret;
+use crate::admind::actions::secret::INPUT_MAX;
 use crate::admind::errors::{Kind, NOT_FOUND};
 use crate::admind::link::Fault;
-use crate::admind::run::{RUN_TIME, exit_code, read_both};
+use crate::admind::run::{RUN_TIME, exit_code, read_both, typed_and_ended};
 
 /// Where a command's program may be, in the order they are looked in.
 const PROGRAM_FOLDERS: [&str; 2] = ["/system/commands", "/applications/commands"];
@@ -67,26 +70,48 @@ impl Drop for Place {
 #[serde(deny_unknown_fields)]
 struct Params {
     argv: Vec<String>,
+    /// What the command reads on its input: the secrets of the action.
+    #[serde(default)]
+    input: Option<Secret>,
 }
 
-/// `run {argv}` -> `{status, output, errors}`.
+/// `run {argv, input?}` -> `{status, output, errors}`.
 pub async fn run(params: Value) -> Result<Value, Fault> {
-    let Params { argv } = serde_json::from_value(params)
-        .map_err(|err| Fault::new(Kind::BadRequest, format!("run does not take that: {err}")))?;
-    run_in(&argv, &PROGRAM_FOLDERS).await
+    // serde's words are not given: they could quote the input.
+    let Params { argv, input } = serde_json::from_value(params).map_err(|_| {
+        Fault::new(Kind::BadRequest, "run takes argv, a list of words, and input, text")
+    })?;
+    run_in(&argv, input.as_ref(), &PROGRAM_FOLDERS).await
 }
 
-/// Runs `argv`, its program found in `folders`.
-async fn run_in(argv: &[String], folders: &[&str]) -> Result<Value, Fault> {
+/// Runs `argv`, its program found in `folders`, with `input` on its
+/// standard input.
+async fn run_in(argv: &[String], input: Option<&Secret>, folders: &[&str]) -> Result<Value, Fault> {
     check(argv)?;
+    if input.is_some_and(|input| input.bytes().len() > INPUT_MAX) {
+        return Err(Fault::new(
+            Kind::BadRequest,
+            format!("a command's input is at most {INPUT_MAX} bytes"),
+        ));
+    }
     let program = find(&argv[0], folders)
         .ok_or_else(|| Fault::new(Kind::NoProgram, format!("{}{NOT_FOUND}", argv[0])))?;
     let _place = Place::take()
         .ok_or_else(|| Fault::new(Kind::Wait, "too many commands at once for this session"))?;
     let internal = |err: std::io::Error| Fault::new(Kind::Internal, format!("{}: {err}", argv[0]));
+    // The input is written to a pipe of its own before the command starts,
+    // which holds it all (INPUT_MAX), and the pipe is closed.
+    let stdin = match input {
+        Some(input) => {
+            let (reading, typed) = std::io::pipe().map_err(internal)?;
+            typed_and_ended(typed, Some(input)).map_err(internal)?;
+            Stdio::from(reading)
+        }
+        None => Stdio::null(),
+    };
     let mut child = Command::new(&program)
         .args(&argv[1..])
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -191,6 +216,43 @@ mod tests {
     }
 
     #[test]
+    fn a_command_reads_its_input_and_then_its_end_and_without_one_reads_its_end_at_once() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("admind-input-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("lines");
+        // Each line read, and how the input ended: `cat` waits for its end.
+        std::fs::write(
+            &tool,
+            "#!/bin/sh\nwhile read -r line; do echo \"[$line]\"; done\ncat\necho end\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let folders = [dir.to_str().unwrap()];
+        let argv = vec!["lines".to_string()];
+        let (current, new) =
+            (Secret::from("old one".to_string()), Secret::from("n\u{e9}w".to_string()));
+        let input = Secret::lines(&[&current, &new]);
+        let ran = runtime.block_on(run_in(&argv, Some(&input), &folders)).unwrap();
+        assert_eq!(ran["output"], "[old one]\n[n\u{e9}w]\nend\n");
+        let ran = runtime.block_on(run_in(&argv, None, &folders)).unwrap();
+        assert_eq!(ran["output"], "end\n");
+        // The call admind makes: its input is text in the JSON.
+        let call = json!({ "argv": ["lines"], "input": "one\n" });
+        let params: Params = serde_json::from_value(call).unwrap();
+        assert_eq!(params.input.unwrap().bytes(), b"one\n");
+        // One that is more than a pipe holds is refused before anything runs.
+        let long = Secret::from("x".repeat(INPUT_MAX + 1));
+        let refused = runtime.block_on(run_in(&argv, Some(&long), &folders)).unwrap_err();
+        assert_eq!(refused.id, Kind::BadRequest.id());
+        // What run does not take is refused without quoting it.
+        let wrong = runtime.block_on(run(json!({ "argv": ["lines"], "input": 5 }))).unwrap_err();
+        assert!(!wrong.detail.contains('5'), "{}", wrong.detail);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_command_has_a_program_and_limits() {
         let words = |n: usize| vec!["w".to_string(); n];
         assert!(check(&words(1)).is_ok());
@@ -212,13 +274,13 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let folders = [dir.to_str().unwrap()];
         let argv = |words: &[&str]| words.iter().map(ToString::to_string).collect::<Vec<_>>();
-        let ran = runtime.block_on(run_in(&argv(&["tool", "a b"]), &folders)).unwrap();
+        let ran = runtime.block_on(run_in(&argv(&["tool", "a b"]), None, &folders)).unwrap();
         assert_eq!(ran, json!({ "status": 3, "output": "out a b\n", "errors": "err\n" }));
-        let missing = runtime.block_on(run_in(&argv(&["nothing"]), &folders)).unwrap_err();
+        let missing = runtime.block_on(run_in(&argv(&["nothing"]), None, &folders)).unwrap_err();
         assert_eq!(missing.id, Kind::NoProgram.id());
         assert_eq!(missing.detail, "nothing: command not found");
         // A path is no program's name, and is said the same.
-        let path = runtime.block_on(run_in(&argv(&["/bin/sh"]), &folders)).unwrap_err();
+        let path = runtime.block_on(run_in(&argv(&["/bin/sh"]), None, &folders)).unwrap_err();
         assert_eq!(path.id, Kind::NoProgram.id());
         std::fs::remove_dir_all(&dir).unwrap();
     }

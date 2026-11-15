@@ -9,6 +9,8 @@
 //! The chunks that hold the chunk tree itself are also in the
 //! superblock's system chunk array, which is where reading starts.
 
+use core::fmt::{self, Write};
+
 use radix_vfs::mem::{self, KVec};
 use radix_vfs::{Error, Result};
 
@@ -41,6 +43,80 @@ pub mod kind {
 
     /// The profile bits; none of them is "single", one copy.
     pub const PROFILE: u64 = RAID0 | RAID1 | DUP | RAID10 | RAID5 | RAID6 | RAID1C3 | RAID1C4;
+}
+
+/// The profiles, by the chunk bit that marks each and the name `btrfs
+/// filesystem df` gives it: `single` is a chunk with none of the bits. The
+/// order is that of the words in a line of [`Profiles::write`].
+const PROFILES: [(u64, &str); 9] = [
+    (0, "single"),
+    (kind::RAID0, "raid0"),
+    (kind::RAID1, "raid1"),
+    (kind::DUP, "dup"),
+    (kind::RAID10, "raid10"),
+    (kind::RAID5, "raid5"),
+    (kind::RAID6, "raid6"),
+    (kind::RAID1C3, "raid1c3"),
+    (kind::RAID1C4, "raid1c4"),
+];
+
+/// What the chunks hold, by the bit that marks it and its name, in the
+/// order of the lines of [`Profiles::write`].
+const GROUPS: [(u64, &str); 3] =
+    [(kind::DATA, "data"), (kind::METADATA, "metadata"), (kind::SYSTEM, "system")];
+
+/// The profiles the chunks of each kind of block group use.
+///
+/// A kind has one profile in a filesystem at rest. While a balance
+/// converts it, the chunks moved have the new profile and the rest the old
+/// one, so it has two, and a balance stopped and begun again may leave
+/// more. A chunk that holds both data and metadata (a mixed filesystem)
+/// counts for both kinds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Profiles {
+    /// For each of [`GROUPS`], which of [`PROFILES`] some chunk of it has,
+    /// as the bit of its place in that list.
+    sets: [u16; 3],
+}
+
+impl Profiles {
+    /// The profiles of chunks of `kinds`, the [`Chunk::kind`] of each.
+    pub fn of(kinds: impl IntoIterator<Item = u64>) -> Profiles {
+        let mut sets = [0u16; 3];
+        for kind in kinds {
+            let Some(profile) = PROFILES.iter().position(|&(bit, _)| bit == kind & kind::PROFILE)
+            else {
+                // More than one bit: a chunk the checks in `Chunk::read` refuse.
+                continue;
+            };
+            for (set, &(group, _)) in sets.iter_mut().zip(&GROUPS) {
+                if kind & group != 0 {
+                    *set |= 1 << profile;
+                }
+            }
+        }
+        Profiles { sets }
+    }
+
+    /// Writes a line for each kind that has chunks, in the order data,
+    /// metadata, system: its name, then the name of each profile its
+    /// chunks have, as `data raid1` or, while a balance converts it, `data
+    /// single raid1`.
+    pub fn write(&self, out: &mut dyn Write) -> fmt::Result {
+        for (&(_, group), &set) in GROUPS.iter().zip(&self.sets) {
+            if set == 0 {
+                continue;
+            }
+            out.write_str(group)?;
+            for (place, &(_, name)) in PROFILES.iter().enumerate() {
+                if set & (1 << place) != 0 {
+                    write!(out, " {name}")?;
+                }
+            }
+            out.write_char('\n')?;
+        }
+        Ok(())
+    }
 }
 
 /// The size of a chunk item before its stripes.

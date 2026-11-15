@@ -947,7 +947,8 @@ fn restore_settings(root: &Dir, disk: &str, fallback: Option<Slot>, asked: bool)
 /// before any service starts (ADR 0464), on the root on
 /// `/volumes/<disk>`: each staged subvolume in the place of the one
 /// there, which is kept, read-only, beside it, then the state's files the
-/// machine's record carried: the app registry and the grants. Each step
+/// machine's record carried: the app registry, the grants and authd's
+/// files of the accounts (ADR 0564). Each step
 /// is decided from what is there ([`machine::next`]), so a power cut
 /// between two leaves the next start to carry on; once the mark that the
 /// restore is done is written, what was staged is removed.
@@ -1029,7 +1030,7 @@ fn restore_machine(root: &Dir, disk: &str) {
             }
         }
         if let Err(err) = restore_state(root, &top(machine::STATE_SUBVOLUME), &staged, &about) {
-            println!("spark: cannot put the restored apps' registry and grants in place: {err}");
+            println!("spark: cannot put the restored state's files in place: {err}");
             return;
         }
         if let Err(err) = root.write_file(&done, b"restored\n") {

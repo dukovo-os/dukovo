@@ -10,6 +10,7 @@ use serde_json::json;
 use super::*;
 use crate::admind::run::error_id;
 
+pub mod secrets;
 pub mod validate;
 
 /// An action for the tests alone: restarting a lab service.
@@ -151,6 +152,67 @@ impl Action for Set {
     }
 }
 
+/// A change for the tests alone that begins a trial, as the firewall's
+/// rules do when they are tried for a window.
+struct Try;
+
+impl Action for Try {
+    const ID: &'static str = "lab.try";
+    const AREA: &'static str = "services";
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/lab/{name}/try";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Try a lab service";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        vec!["service".into(), args.name.clone(), "try".into()]
+    }
+
+    fn trial(_: &Named) -> Option<Trial> {
+        Some(Trial::Begins("firewall"))
+    }
+
+    fn examples() -> Examples<Named> {
+        Examples {
+            good: vec![Named { name: "lab-web".into(), wait: None }],
+            bad: vec![],
+            undo: None,
+        }
+    }
+}
+
+/// A change for the tests alone that keeps what [`Try`] began.
+struct Keep;
+
+impl Action for Keep {
+    const ID: &'static str = "lab.keep";
+    const AREA: &'static str = "services";
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/lab/{name}/keep";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Keep a lab service";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        vec!["service".into(), args.name.clone(), "keep".into()]
+    }
+
+    fn trial(_: &Named) -> Option<Trial> {
+        Some(Trial::Ends("firewall"))
+    }
+
+    fn examples() -> Examples<Named> {
+        Examples {
+            good: vec![Named { name: "lab-web".into(), wait: None }],
+            bad: vec![],
+            undo: None,
+        }
+    }
+}
+
 /// A read that runs as an administrator, takes its arguments from the
 /// address's query, and answers in lines, as `logs.read-all` does.
 struct Log;
@@ -236,6 +298,11 @@ static MISSING: Entry<lab::Missing> = Entry::new();
 static LOG: Entry<Log> = Entry::new();
 /// These tests' actions, which the route tests use too.
 pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG, &SET, &MISSING, &LOG];
+static TRY: Entry<Try> = Entry::new();
+static KEEP: Entry<Keep> = Entry::new();
+/// The actions that begin and end a trial, for the route tests that watch
+/// the trials told; apart from [`LAB`], whose tests count its actions.
+pub static TRYING: &[&dyn Registered] = &[&TRY, &KEEP];
 
 #[test]
 fn an_address_finds_its_action_and_gives_its_arguments() {
@@ -421,6 +488,10 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "firewall.replace",
             "firewall.remove",
             "firewall.undo",
+            "storage.grow",
+            "storage.log-set",
+            "backups.add",
+            "backups.remove",
         ]
     );
     for action in console.as_array().unwrap() {
@@ -484,7 +555,7 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
     for action in actions {
         let id = action.id();
         assert!(ids.insert(id), "{id} is in the list twice");
-        assert!(routes.insert((action.changes(), action.path())), "{id}'s route is another's");
+        assert!(routes.insert((action.posts(), action.path())), "{id}'s route is another's");
         let (area, verb) = id.split_once('.').unwrap_or_else(|| panic!("{id} is area.verb"));
         assert!(!area.is_empty() && !verb.is_empty(), "{id}");
         assert!(crate::admind::scopes::area_name_ok(action.area()), "{id}'s area");
@@ -509,6 +580,7 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
             "{id}: a long action is a change that runs as an administrator, which is all a task \
              runs as"
         );
+        secrets::keeps_secrets(*action);
         let (good, _, undo) = action.example_values();
         assert!(!good.is_empty(), "{id} has an example the tests can run");
         if let Some(undo) = &undo {
@@ -541,9 +613,11 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
                         && argv.windows(2).any(|pair| pair[0] == "--output" && pair[1] == "json");
                 assert!(json, "{id}: a read asks for JSON, or for JSON lines");
             }
-            // An action has a probe for every example or for none, which
-            // `compares` says, and a read has none.
-            assert_eq!(prepared.probe.is_some(), action.compares(), "{id}: its probe");
+            // An action has a probe, or names the files it writes, for every
+            // example or for none, which `compares` says, and a read has
+            // neither.
+            let compared = prepared.probe.is_some() || !prepared.files.is_empty();
+            assert_eq!(compared, action.compares(), "{id}: its probe and files");
             if let Some(probe) = &prepared.probe {
                 assert!(!probe.is_empty() && action.changes(), "{id}: its probe");
             }
@@ -554,6 +628,7 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
 #[test]
 fn every_action_keeps_the_rules() {
     keeps_the_rules(LAB);
+    keeps_the_rules(secrets::SECRETS);
     keeps_the_rules(REGISTRY);
 }
 
@@ -614,12 +689,14 @@ fn golden(actions: &[&dyn Registered]) -> String {
     for action in listed(actions).as_array().into_iter().flatten() {
         let tests = &action["tests"];
         text.push_str(&format!(
-            "\n[[action]]\nid = {}\ntitle = {}\narea = {}\nmethod = {}\npath = {}\nruns = {}\n\
+            "\n[[action]]\nid = {}\ntitle = {}\narea = {}\nchanges = {}\nmethod = {}\npath = {}\n\
+             runs = {}\n\
              long = {}\ncompares = {}\ntests = {{ checks = {}, route = {}, same_as_command = {}, browser = {}, \
              ansible = {} }}\n",
             action["id"],
             action["title"],
             action["area"],
+            action["changes"],
             action["method"],
             action["path"],
             action["runs"],
@@ -662,7 +739,8 @@ fn the_golden_list_is_toml_that_says_what_the_registry_says() {
         assert_eq!(table["id"].as_str(), Some(action.id()));
         assert_eq!(table["title"].as_str(), Some(action.title()));
         assert_eq!(table["area"].as_str(), Some(action.area()));
-        assert_eq!(table["method"].as_str(), Some(if action.changes() { "POST" } else { "GET" }));
+        assert_eq!(table["changes"].as_bool(), Some(action.changes()));
+        assert_eq!(table["method"].as_str(), Some(if action.posts() { "POST" } else { "GET" }));
         assert_eq!(table["path"].as_str(), Some(action.path()));
         assert_eq!(table["long"].as_bool(), Some(action.long()));
         assert_eq!(table["compares"].as_bool(), Some(action.compares()));
@@ -934,6 +1012,7 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
                 Type::OneOf(list) => words(list),
                 Type::Number { min, max } => numbers(min, max),
                 Type::Flag => vec![json!(true), json!(false), json!(0), json!("true"), json!(null)],
+                Type::Secret { max } => secrets::candidates(max),
             };
             for candidate in candidates {
                 // A `null` is an optional argument left out, which the
@@ -981,6 +1060,7 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
 #[test]
 fn every_action_s_fields_are_true_to_its_types() {
     fields_are_true_to_the_types(LAB);
+    fields_are_true_to_the_types(secrets::SECRETS);
     fields_are_true_to_the_types(REGISTRY);
 }
 
@@ -1008,6 +1088,8 @@ fn the_service_patterns_are_made_of_the_words_the_checks_refuse() {
 /// describes, which is all the schema promises a client; one the schema
 /// describes may still be refused.
 const CODE_DECIDES: &[(&str, &str)] = &[
+    // The tests' read takes the key or its file, which one is the code's.
+    ("lab.unlock", "file"),
     ("metrics.around", "at"),
     ("network.set", "card"),
     ("network.set", "mode"),
@@ -1027,6 +1109,25 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("firewall.replace", "new_protocol"),
     ("firewall.replace", "new_ports"),
     ("firewall.replace", "new_from"),
+    // A snapshot's name and a path are counted in bytes, which a schema
+    // counts as characters; a name given to a snapshot is also not a
+    // time, and a restore's paths are 1 to 100, each as a path is.
+    ("snapshots.browse", "snapshot"),
+    ("snapshots.browse-all", "snapshot"),
+    ("snapshots.take", "name"),
+    ("snapshots.restore", "snapshot"),
+    ("snapshots.restore", "paths"),
+    ("snapshots.restore-all", "snapshot"),
+    ("snapshots.restore-all", "paths"),
+    // The place is a folder or an address `backup add` reads, which it says.
+    ("backups.add", "to"),
+    // A source's name is counted in bytes, as a path is, and what it is
+    // given with decides whether the key is: a key and its file are one or
+    // the other, which only `check` says.
+    ("move.plan", "source"),
+    ("move.plan", "key"),
+    ("move.stage", "source"),
+    ("move.stage", "key"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1034,7 +1135,10 @@ const CODE_DECIDES: &[(&str, &str)] = &[
 /// compile, and a value that the clock, a parser or the other fields rule
 /// out.
 const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
+    ("lab.unlock", "{}"),
     ("metrics.around", r#"{"at":1,"range":"1h"}"#),
+    ("storage.scrub", r#"{"mount":"/volumes/../etc"}"#),
+    ("storage.log-set", "{}"),
     ("network.set", r#"{"card":"net0","mode":"fixed"}"#),
     ("network.set", r#"{"addresses":"10.0.2.15/24","card":"net0","mode":"dhcp"}"#),
     (
@@ -1070,6 +1174,49 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("logs.read-all", r#"{"since":1763103600,"until":1763100000}"#),
     ("logs.read-all", r#"{"grep":"("}"#),
     ("logs.read-all", r#"{"kernel":true,"service":"diskhealth"}"#),
+    // A folder within the place, a name that is not a time, a place that is
+    // a folder or an address, and no more than a hundred paths: the code's.
+    ("snapshots.browse", r#"{"folder":"/shared","place":"/users","snapshot":"lab-before"}"#),
+    ("snapshots.browse-all", r#"{"folder":"/shared","place":"/users","snapshot":"lab-before"}"#),
+    ("snapshots.take", r#"{"name":"2026-11-11-0300","place":"/users"}"#),
+    (
+        "snapshots.restore",
+        r#"{"label":"lab","paths":"/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a","snapshot":"lab-before"}"#,
+    ),
+    (
+        "snapshots.restore-all",
+        r#"{"label":"lab","paths":"/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a\n/a","snapshot":"lab-before"}"#,
+    ),
+    ("backups.add", r#"{"every":"hand","name":"lab","to":"s3://bucket/x","verify":"never"}"#),
+    ("backups.add", r#"{"every":"hand","name":"lab","to":"relative/folder","verify":"never"}"#),
+    // The key as a file and typed, or as neither; a card choice that is no
+    // card of this machine; and no more than eight of them: the code's.
+    ("move.plan", r#"{"source":"/volumes/LAB/dukovo-backup/lab-machine"}"#),
+    ("move.stage", r#"{"source":"/volumes/LAB/dukovo-backup/lab-machine"}"#),
+    (
+        "move.plan",
+        r#"{"key":"AGE-SECRET-KEY-1TEST","key_file":"/system/settings/backup/lab.key","source":"/volumes/LAB/dukovo-backup/lab-machine"}"#,
+    ),
+    (
+        "move.stage",
+        r#"{"key":"AGE-SECRET-KEY-1TEST","key_file":"/system/settings/backup/lab.key","source":"/volumes/LAB/dukovo-backup/lab-machine"}"#,
+    ),
+    (
+        "move.plan",
+        r#"{"cards":"52:54:00:aa:00:01=net0","key_file":"/system/settings/backup/lab.key","source":"/volumes/LAB/dukovo-backup/lab-machine"}"#,
+    ),
+    (
+        "move.stage",
+        r#"{"cards":"52:54:00:aa:00:01=net0","key_file":"/system/settings/backup/lab.key","source":"/volumes/LAB/dukovo-backup/lab-machine"}"#,
+    ),
+    (
+        "move.plan",
+        r#"{"cards":"a=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic","key_file":"/system/settings/backup/lab.key","source":"/volumes/LAB/dukovo-backup/lab-machine"}"#,
+    ),
+    (
+        "move.stage",
+        r#"{"cards":"a=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic\na=automatic","key_file":"/system/settings/backup/lab.key","source":"/volumes/LAB/dukovo-backup/lab-machine"}"#,
+    ),
 ];
 
 fn lab_action(id: &str) -> &'static dyn Registered {

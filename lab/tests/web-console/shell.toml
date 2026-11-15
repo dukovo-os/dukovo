@@ -15,11 +15,21 @@
 # Overview, Services, a service, Logs, Networking, Firewall, the Terminal and
 # the account), load at once, show their content with no error view, and
 # leave one more read in the first tab answered. Each look is dark, light, high
-# contrast, forced colours and less motion, checked by axe. Each engine has
-# an administrator of its own, and there is one reader, which this test makes
-# and removes, so no script needs the lab's password.
-about = "Browsers sign in to the web console and use its frame: landmarks, the skip link, focus and the title on each route, the header and its menus by the keys, display choices that follow the person, large text, the unlock's warning, a console that does not answer, a session that ends in another tab, a reader, a phone, and eight tabs of one browser that all show their pages"
-time = "30m"
+# contrast, forced colours and less motion, checked by axe. Every icon of the
+# navigation is drawn: its mask image was asked for and is served as an image.
+# Each engine has an administrator of its own, and there is one reader, which
+# this test makes and removes, so no script needs the lab's password.
+#
+# The header's chip for a change being tried is checked after that, one engine
+# at a time, since a script cannot begin a trial at the machine's own console:
+# a root step begins a trial of the firewall's rules (`firewall deny tcp 7
+# --try 150`, a rule nothing meets), and then shell-trial.mjs, in one engine,
+# opens three tabs. Each shows the chip within 35 seconds, which counts the
+# time down and opens /firewall, where it is hidden; when nobody keeps the
+# trial and Spark undoes it, the chip goes from the tabs still open. Before and
+# after each, a root step takes a trial that is left back.
+about = "Browsers sign in to the web console and use its frame: landmarks, the skip link, focus and the title on each route, the header and its menus by the keys, every icon of the navigation drawn, display choices that follow the person, large text, the unlock's warning, a console that does not answer, a session that ends in another tab, a reader, a phone, eight tabs of one browser that all show their pages, and the header's chip while a change is tried"
+time = "45m"
 host_needs = ["curl"]
 
 [[step]]
@@ -40,6 +50,52 @@ expect = '{"ok":true}'
 [[step]]
 browser = "shell.mjs"
 port = 9090
+# A change that an earlier engine or run left tried is taken back; then a
+# trial of the firewall's rules begins at the machine's own console, and the
+# chip is looked at in chromium.
+[[step]]
+run = "sh -c 'firewall undo > /dev/null 2>&1; echo clean'"
+root = true
+expect = "clean"
+[[step]]
+run = "firewall deny tcp 7 --try 150"
+root = true
+expect = "trying the change for 150 s"
+[[step]]
+browser = "shell-trial.mjs"
+engines = ["chromium"]
+port = 9090
+# The same in firefox.
+[[step]]
+run = "sh -c 'firewall undo > /dev/null 2>&1; echo clean'"
+root = true
+expect = "clean"
+[[step]]
+run = "firewall deny tcp 7 --try 150"
+root = true
+expect = "trying the change for 150 s"
+[[step]]
+browser = "shell-trial.mjs"
+engines = ["firefox"]
+port = 9090
+# The same in webkit.
+[[step]]
+run = "sh -c 'firewall undo > /dev/null 2>&1; echo clean'"
+root = true
+expect = "clean"
+[[step]]
+run = "firewall deny tcp 7 --try 150"
+root = true
+expect = "trying the change for 150 s"
+[[step]]
+browser = "shell-trial.mjs"
+engines = ["webkit"]
+port = 9090
+# No change is tried any more, whatever an engine that failed halfway left.
+[[step]]
+run = "sh -c 'firewall undo > /dev/null 2>&1; i=0; while [ $i -lt 60 ] && firewall list --json | grep -q left_ms; do sleep 1; i=$((i + 1)); done; firewall list'"
+root = true
+expect = "No rules"
 [[step]]
 run = "sh -c 'for name in wc-shell-chromium wc-shell-firefox wc-shell-webkit wc-shell-reader; do user remove --delete-home --yes $name || exit 1; done'"
 root = true

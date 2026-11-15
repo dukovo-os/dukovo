@@ -274,16 +274,42 @@ _/kernel/firmware/memmap/_*n*_/start_, _end_, _type_
 	*System RAM*, *Reserved*, *ACPI Tables*, *ACPI Non-volatile Storage*
 	or *Unusable memory*. *lsmem*(1) reads it.
 
-_/kernel/fs/btrfs/_*uuid*_/label_, _disks_, _missing_, _behind_
+_/kernel/fs/btrfs/_*uuid*_/label_, _disks_, _missing_, _behind_, _profiles_, _devices_
 	A directory for each Btrfs filesystem mounted, named by its ID as
 	Linux's _/sys/fs/btrfs_ names it (*2f3c9a61-0b7e-4d2a-9c11-5e8f0a7d4b23*),
 	and read anew each time a file is opened (ADR 0484): its label, or an
 	empty line; how many disks it has; how many of them are missing,
 	missing at the mount or failed since (ADR 0153), so that it holds a
-	second copy of nothing they held until each is replaced; and how many
-	missed changes, which are read last until a scrub catches them up.
-	*metricsd*(8) watches them, and raises an alert when a disk is
-	missing.
+	second copy of nothing they held until each is replaced; how many
+	missed changes, which are read last until a scrub catches them up;
+	how its block groups keep their copies; and the disks and partitions
+	it is on now, a name of _/devices_ a line, as Linux's _devices_
+	folder has them, so that anyone may tell which disks a volume uses
+	without opening them. *metricsd*(8) watches the counts, and raises an
+	alert when a disk is missing. *storage*(8) reads all of them.
+
+	*profiles* has a line for each kind of block group the filesystem
+	has: *data*, *metadata* and *system*, in that order, and after the
+	kind the profile of its chunks: *single* (one copy), *dup* (two
+	copies on one disk), *raid0*, *raid1*, *raid1c3*, *raid1c4*, *raid10*,
+	*raid5* or *raid6*, as *btrfs filesystem df* names them. While a
+	balance (*balance*(8)) converts a kind from one profile to another, some
+	of its chunks have the old profile and some the new, and the line has
+	both: always in the order *single*, *raid0*, *raid1*, *dup*,
+	*raid10*, *raid5*, *raid6*, *raid1c3*, *raid1c4*, which is not the
+	order of the conversion. A kind with no chunk has no line.
+
+```
+data raid1
+metadata raid1
+system raid1
+```
+
+```
+data single raid1
+metadata dup
+system dup
+```
 
 _/kernel/fs/space_
 	How full each filesystem mounted is (ADR 0484), a line each in the

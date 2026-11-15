@@ -7,7 +7,7 @@
 // at a terminal, both with its plain line reader (TERM=dumb) and with its
 // line editor, typed at through a pseudo-terminal: commands, job control
 // with ^Z and ^C, completion of commands and of a program's options,
-// history and the exit status.
+// history and the exit status, and a resize that comes with keys.
 
 #include <dirent.h>
 #include <errno.h>
@@ -165,6 +165,8 @@ struct session {
 	// Where in an escape sequence the last read stopped: 0 outside one,
 	// 1 after ESC, 2 inside a CSI sequence, 3 inside an OSC string.
 	int escape;
+	// How many times the line editor has asked where the cursor is.
+	int asked;
 };
 
 // Keeps the text the terminal shows and drops its escape sequences, so
@@ -248,8 +250,10 @@ static void pump(struct session *s, int ms) {
 		if(n <= 0)
 			break;
 		data[n] = 0;
-		for(char *q = data; (q = strstr(q, "\033[6n")); q += 4)
+		for(char *q = data; (q = strstr(q, "\033[6n")); q += 4) {
 			CHECK(write(s->master, "\033[1;1R", 6) == 6);
+			s->asked++;
+		}
 		keep_text(s, data, (size_t)n);
 		ms = 50;
 	}
@@ -426,6 +430,40 @@ static void editor(void) {
 	jobs(s, "\r");
 	send(s, "exit 5\r");
 	finish(s, 5);
+	free(s);
+}
+
+// A resize that comes with keys. The shell is stopped while its terminal
+// gets a new size and a line is typed, so that when it goes on, one wait
+// of its line editor can find both the resize and the keys. Whichever it
+// takes first, the other must still be waited for after: the line runs,
+// and a later resize still makes the line editor ask where the cursor is.
+// (crossterm's patch in ports/rust-crates: when one was handled, the
+// other was no longer waited for, and a shell took no more keys.)
+static void resized_with_keys(void) {
+	struct session *s = calloc(1, sizeof(*s));
+	CHECK(start(s, "xterm") == 0);
+	EXPECT(s, PROMPT);
+	pump(s, 300);
+	int status;
+	CHECK(kill(s->pid, SIGSTOP) == 0);
+	CHECK(waitpid(s->pid, &status, WUNTRACED) == s->pid && WIFSTOPPED(status));
+	struct winsize size = {.ws_row = 30, .ws_col = 100};
+	CHECK(ioctl(s->master, TIOCSWINSZ, &size) == 0);
+	send(s, "echo $((6*7))keys\r");
+	CHECK(kill(s->pid, SIGCONT) == 0);
+	EXPECT(s, "42keys");
+	EXPECT(s, PROMPT);
+	pump(s, 300);
+	int asked = s->asked;
+	size.ws_col = 90;
+	CHECK(ioctl(s->master, TIOCSWINSZ, &size) == 0);
+	for(int i = 0; i < 100 && s->asked == asked; i++)
+		pump(s, 50);
+	if(s->asked == asked)
+		check_failed(__FILE__, __LINE__, "a resize after the keys made the line editor ask", 0);
+	send(s, "exit 3\r");
+	finish(s, 3);
 	free(s);
 }
 
@@ -621,6 +659,7 @@ int main(void) {
 	RUN(scripts);
 	RUN(plain);
 	RUN(editor);
+	RUN(resized_with_keys);
 	RUN(features);
 	RUN(gitting);
 	return check_end();

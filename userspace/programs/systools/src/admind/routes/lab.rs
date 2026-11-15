@@ -54,10 +54,11 @@ pub async fn elevate(cx: &Context<'_>, live: &Live) -> Outcome {
     let body: Body = cx.json()?;
     let argv = words(&body.command)?;
     let by = Elevator::Session(live.authd.clone());
-    let ran = run::elevated(cx.shared, by, &argv, run::RUN_TIME).await.map_err(|failure| {
-        let what = format!("to run a command for {}", shown(&live.name));
-        if failure.kind.status() == 403 { refused(cx, &what, failure) } else { failure }
-    })?;
+    let ran =
+        run::elevated(cx.shared, by, &argv, None, run::RUN_TIME).await.map_err(|failure| {
+            let what = format!("to run a command for {}", shown(&live.name));
+            if failure.kind.status() == 403 { refused(cx, &what, failure) } else { failure }
+        })?;
     Ok(Reply::json(json!({ "output": ran.output, "errors": ran.errors, "status": ran.status })))
 }
 
