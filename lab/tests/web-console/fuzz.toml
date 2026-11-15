@@ -7,17 +7,18 @@
 # runs from a pinned release, makes its requests from that document alone.
 # It is run three times: signed out, with a token that only reads (every
 # operation of the API, in every phase of Schemathesis, among them the
-# action and arguments that POST /api/1/show takes), and with a token
-# that changes, which sends only the example of each change, one at a time,
-# since a change with made-up arguments would change the machine as it
-# pleased; the service the examples use is put back with each example's
-# undo. Every answer must be as the document says: no 5xx, a status, a
-# content type and headers that the document lists for it, a body that fits
-# its schema, and none slower than 2 seconds (10 for a change, which waits
-# for Spark). Afterwards admind must answer and must not have been started
-# again (`service list --json` says the same process and start), the journal
-# must hold the changes the test made as its token and nothing else, and the
-# service must be as it was found.
+# action and arguments that POST /api/1/show and POST /api/1/check take),
+# and with a token that changes, which sends only the example of each
+# change, one at a time, since a change with made-up arguments would change
+# the machine as it pleased; the service the examples use is put back with
+# each example's undo. Every answer must be as the document says: no 5xx, a
+# status, a content type and headers that the document lists for it, a body
+# that fits its schema, and none slower than 2 seconds (10 for a change,
+# which waits for Spark). Afterwards admind must answer and must not have
+# been started again (`service list --json` says the same process and
+# start), the journal must hold the changes the test made as its token and
+# nothing else, and the service must be as it was found. A lab machine's
+# lab.missing, which is answered 501 by design, is not read.
 #
 # Schemathesis is pinned: release 4.33.4, with every package it needs by
 # hash in fuzz-requirements.txt, installed once into a virtual environment
