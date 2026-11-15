@@ -4382,10 +4382,7 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     // Then the release keys sign an advisory that the stable release
     // fixes, deployed with the withdrawal (ADR 0534).
     let advisories = out.join(TEST_ADVISORY);
-    write(
-        advisories.join(format!("{TEST_ADVISORY}.json")),
-        test_advisory(&year).as_bytes(),
-    )?;
+    write(advisories.join(format!("{TEST_ADVISORY}.json")), test_advisory(&year).as_bytes())?;
     crate::release::system_release(
         ctx,
         &repo_args(&["advisories", &advisories.display().to_string()]),
