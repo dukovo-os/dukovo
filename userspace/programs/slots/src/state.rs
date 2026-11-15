@@ -469,36 +469,8 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
-
     use super::*;
-
-    /// Every state a copy can hold.
-    fn every_state() -> Vec<State> {
-        let maybe = [None, Some(Slot::A), Some(Slot::B)];
-        let mut all = Vec::new();
-        for generation in 0..3 {
-            for default in [Slot::A, Slot::B] {
-                for previous in maybe {
-                    for trying in maybe {
-                        for tries in 0..=TRIES {
-                            for boot in maybe {
-                                all.push(State {
-                                    generation,
-                                    default,
-                                    previous,
-                                    trying,
-                                    tries,
-                                    boot,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        all
-    }
+    use crate::proofs::every_state;
 
     #[test]
     fn every_state_reads_back_as_written() {

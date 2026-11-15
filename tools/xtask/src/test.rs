@@ -3665,6 +3665,10 @@ pub const PROVED_LIBRARIES: &[&str] = &[
     "radix-net",
 ];
 
+/// The programs on Rust's standard library with Kani proof harnesses,
+/// checked as a host build of their workspace.
+pub const PROVED_PROGRAMS: &[&str] = &["slots"];
+
 /// `ob test kani`: checks the Kani proof harnesses. They take minutes each,
 /// so plain `ob test` leaves them to this suite (and to their CI job).
 fn kani(ctx: &Ctx) -> Result<()> {
@@ -3690,6 +3694,20 @@ fn kani(ctx: &Ctx) -> Result<()> {
         // own instead of sharing the kernel's.
         cmd.arg("--target-dir").arg(ctx.target.join("kani"));
         cmd.args(["-p", library, "--output-format", "terse"]);
+        process::run(ctx, &mut cmd)?;
+    }
+    for program in PROVED_PROGRAMS {
+        step(&format!("Checking the Kani proofs of {program}"));
+        let mut cmd = process::cargo(ctx);
+        // `cargo kani` takes no `--config`, so the lock of the host builds
+        // of the programs (userspace::host_cargo_of) goes in the
+        // environment, and the build gets a directory apart from the
+        // kernel libraries' and from the programs' tests'.
+        cmd.args(["kani", "--manifest-path", userspace::STD_MANIFEST])
+            .env("CARGO_RESOLVER_LOCKFILE_PATH", ctx.root.join(userspace::HOST_LOCK))
+            .arg("--target-dir")
+            .arg(ctx.target.join("kani-programs"))
+            .args(["-p", program, "--output-format", "terse"]);
         process::run(ctx, &mut cmd)?;
     }
     Ok(())

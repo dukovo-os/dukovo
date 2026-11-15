@@ -27,7 +27,7 @@
 //! sysupdate(8) does. When an update will not stage or a start falls
 //! back, `sysupdate status` shows the state both copies hold.
 
-#![no_std]
+#![cfg_attr(not(any(test, kani)), no_std)]
 
 extern crate alloc;
 
@@ -42,5 +42,8 @@ pub mod serial;
 pub mod state;
 pub mod trial;
 pub mod version;
+
+#[cfg(any(test, kani))]
+mod proofs;
 
 pub use state::{Slot, State};

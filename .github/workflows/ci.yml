@@ -894,8 +894,9 @@ jobs:
           }
           {
             # The Kani proofs are in the kernel's libraries, which build
-            # from kernel/ and tools/ridlc/ alone; doctor.rs pins Kani.
-            echo "kani=$(needs '^(kernel/|tools/ridlc/|tools/xtask/src/doctor\.rs|rust-toolchain\.toml)')"
+            # from kernel/ and tools/ridlc/ alone, and in the slots
+            # program; doctor.rs pins Kani.
+            echo "kani=$(needs '^(kernel/|tools/ridlc/|userspace/programs/slots/|tools/xtask/src/doctor\.rs|rust-toolchain\.toml)')"
             # TLC checks the models in the tla/ folders, not the code.
             echo "tla=$(needs '(^|/)tla/|^tools/xtask/src/tla\.rs')"
             echo "container=$(needs '^(tools/container/|tools/xtask/src/(doctor|ports)\.rs|ports/|rust-toolchain\.toml)')"
