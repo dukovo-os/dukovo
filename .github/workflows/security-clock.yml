@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The security clock (ADR 0534, ADR 0458). The clock of an open issue
+# labelled `security` starts when `fix-available` is added to it, and runs
+# by its `severity:` label: Critical 72 hours, High 7 days, Medium and Low
+# until the end of the next release day. One pinned issue, "Security
+# clock", lists them with the time left, and a late issue is labelled
+# `overdue`. This runs each day, and when an issue is labelled, unlabelled,
+# closed or reopened. The logic is in .github/scripts/security-clock.js,
+# which CI tests.
+name: Security clock
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+  issues:
+    types: [labeled, unlabeled, closed, reopened]
+
+permissions: {}
+
+# A run is written for the issues as they are when it reads them, so a
+# burst of label changes needs one run after it, not one each: the run
+# waiting is the newest.
+concurrency:
+  group: security-clock
+  cancel-in-progress: false
+
+jobs:
+  clock:
+    name: Keep the clock
+    # The labels the bot sets itself change no clock.
+    if: >-
+      github.event_name != 'issues'
+      || (github.event.label.name != 'overdue' && github.event.label.name != 'security-clock')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The clock issue, and the label `overdue`.
+      issues: write
+    steps:
+      - name: Fetch the scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Keep the clock
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        with:
+          script: |
+            const { run } = require('./.github/scripts/security-clock.js');
+            await run({ github, context, core });
