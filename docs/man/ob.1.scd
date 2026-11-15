@@ -337,7 +337,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list*
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *matrix* *--list* [*--full*]
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -445,6 +445,52 @@ _target/userspace/_).
 	network GRUB as *lab* does, and its logs go to
 	_out/lab-writer-check_. Plain *ob test* leaves it out, and CI runs it
 	in the job that holds the Linux of *bench*.
+
+	*replay* checks that a power cut at any point of an update leaves the
+	old system or the new one (ADR 0536). It records the boot test
+	*update-power-replay*, or with *--case* *update-power-replay-bios*,
+	which stages the test update, restarts into it and lets it prove
+	itself, with the boot disk behind QEMU's *blklogwrites* driver, which
+	logs every write, zero write, discard and flush that reaches it. It
+	then rebuilds the disk as a power cut at each flush of the update, or
+	between two flushes, would leave it, boots each on a snapshot, and
+	checks that the machine starts slot A or slot B and nothing else, with
+	no kernel panic and no Btrfs error; that *sysupdate status* names the
+	slot as the running one; that *sysupdate verify* reads it back against
+	its signed list; and, on slot A, that a stage goes through. A cut
+	between two flushes keeps a part of the writes since the first, never
+	none and never all, as a disk that was not told to flush may. Every
+	cut runs, and the exit status is not zero if any failed.
+
+	*--points* _n_ takes a sample of _n_ cuts, which always holds the
+	first and the last flush of the update, and *--points all* every cut;
+	without it, 16. *--part* _k_/_m_ takes every _m_-th of those cuts,
+	starting with the _k_-th, so that _m_ runs on _m_ machines boot each cut
+	once. *--seed* _n_ sets the draw of the sample and of the writes a cut
+	keeps; the run prints it, and without *--seed* it comes from the
+	clock.
+
+	The recording and the cuts leave their files in _out/test/replay/_:
+	_case.log_, the write log; _case.marks_, the entries of the log at the
+	start and at the end of the update; and _case.base.img_, the disk the
+	recording started with, which the log is applied to. A run in which
+	every cut passes removes the log and the disk. A cut that fails keeps
+	them with its own disk, _case-cut-N.img_, and its serial log,
+	_case-cut-N.log_, and prints the command that boots it again without
+	recording: *--log* _path_ takes that recording, whose _case.marks_ and
+	_case.base.img_ lie beside it, and *--point* _n_ boots the cut of that
+	number alone, which is the same whatever *--points* and *--part*
+	chose. *--point* needs *--log*, and leaves out *--points* and *--part*.
+
+	*matrix --list* prints the jobs of the update test matrix (ADR 0536) as
+	one line of JSON, an array of objects with a _name_, the _run_ command
+	and, for a job that needs it, an _env_ object of environment variables:
+	_.github/workflows/update-matrix.yml_ takes it as its jobs. The
+	nightly sample is 16 cuts of each firmware type, both first-start kill
+	loops (*update-first-start-kills* and *update-first-start-kills-bios*)
+	and the update boot tests together; *--full*, for a release candidate,
+	is every cut in eight parts of each firmware type, both kill loops with
+	*OB_TEST_KILLS* at 20, and the update boot tests.
 
 	*uefi-usb*, *bios-usb*, *uefi-cdrom*, *bios-cdrom*
 		Boot with 4 CPUs under each firmware and medium, and check the
@@ -2529,6 +2575,16 @@ fails the build.
 *OB_TARGET_DIR*
 	Directory for Cargo output instead of _target/_.
 
+*OB_TEST_KILLS*
+	How many times the boot tests *update-first-start-kills* and
+	*update-first-start-kills-bios* reset the machine during the first
+	start of an update (ADR 0536); 6 by default.
+
+*OB_TEST_SEED*
+	The seed of the random times, between 1 and 40 seconds, that those
+	boot tests wait before each reset. They print it, so that a failure can
+	be run again; by default it comes from the clock.
+
 *OB_UPDATE_SSH*
 	The update server as *ssh*(1) names it, such as
 	_user@updates.dukovo.org_ or a host in _~/.ssh/config_, for *catalog
@@ -2633,6 +2689,10 @@ _out/qemu/radix.gdb_
 
 _out/test/_
 	Test images, serial logs and screenshots from *ob test*.
+
+_out/test/replay/_
+	What *ob test replay* records and replays: the write log, its marks,
+	the disk the recording started with, and what a failed cut leaves.
 
 _out/bench/_
 	The benchmark report (_report.md_), its numbers (_results.json_),
