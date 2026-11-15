@@ -1683,6 +1683,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 // same place in CASES. They run after CASES, in the order of the phases.
 mod affected;
 mod console_client;
+mod fuzz;
 mod matrix;
 mod phase11;
 mod phase12;
@@ -3446,6 +3447,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let retry = args.flag("--retry");
     let profile = args.profile(&ctx.config)?;
     let replay_options = replay::Options::take(args)?;
+    let fuzz_options = fuzz::Options::take(args)?;
     let which = args.positional();
     args.finish()?;
     if plan && affected.is_none() {
@@ -3531,7 +3533,14 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         let timeout = Duration::from_secs(timeout);
         return replay::command(ctx, profile, &selected, &replay_options, timeout);
     }
+    if which.as_deref() == Some("fuzz") {
+        if shard.is_some() || retry || image_only || !selected.is_empty() {
+            crate::bail!("`fuzz` takes --target and --seconds");
+        }
+        return fuzz::command(ctx, &fuzz_options);
+    }
     replay_options.none_given()?;
+    fuzz_options.none_given()?;
     let (unit, boot) = match which.as_deref() {
         None if selected.is_empty() => (true, true),
         None | Some("boot") => (false, true),
@@ -3546,8 +3555,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
-            "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `kani`, `tla`, \
-             `tuf`, `corpus`, `riscv` or `lab-writer`"
+            "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `fuzz`, `kani`, \
+             `tla`, `tuf`, `corpus`, `riscv` or `lab-writer`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
