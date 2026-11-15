@@ -605,8 +605,11 @@ mode 0644. A put back that cannot be done writes nothing, and says why
 ([ADM-128](../../errors/ADM-128.md)): a file the change made has no earlier
 text; a secret, a file not everyone may read, a file the console could not
 read and a file longer than 1 MiB have none kept; the console keeps the last
-20 versions of a file, so an old change may have lost its text; and a change
-that changed no file has nothing to put back. A change's answer says
+20 versions of a file, so an old change may have lost its text; the account
+files, `/system/settings/passwd` and `group`, are written only with each
+account's password and home, through `elevate user`, and a change to them
+is a row of its own; and a change that changed no file has nothing to put
+back. A change's answer says
 beforehand, in `put_back`, whether it can be put back, and why not.
 
 A put back made through the console has a row of its own, which says which

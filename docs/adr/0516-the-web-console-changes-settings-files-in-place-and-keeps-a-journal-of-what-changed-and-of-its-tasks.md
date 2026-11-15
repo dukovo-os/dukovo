@@ -83,8 +83,9 @@ which belong to them, not to the machine.
   way on it is a `by hand` row. The person is found in authd's audit log:
   the person whose elevated command named the file's path, as a whole
   word, in the 10 minutes before; the rest are "outside the console".
-  Names that begin with a dot, an editor's file on its way to its name,
-  are not looked at.
+  The account files, `/system/settings/passwd` and `group`, which authd
+  writes, are a row of their own. Names that begin with a dot, an
+  editor's file on its way to its name, are not looked at.
 - **Everyone signed in reads the journal; no one reads a secret in it.**
   The journal names people and files, not the contents of secrets. A file
   under a service's `secrets`, one that not everyone may read, and one in
@@ -107,8 +108,12 @@ which belong to them, not to the machine.
   text is gone, and asks a bundle service whose folder holds the file to
   reload. A Spark service file is only written: Spark reads it when the
   service next starts, as after `service NAME edit`. It refuses a file the
-  change made, a secret, a file longer than 1 MiB and a version the store
-  has forgotten, and says why.
+  change made, a secret, a file longer than 1 MiB, a version the store
+  has forgotten and the account files, and says why. authd writes the
+  account files together with each account's password, home and sharing
+  password, so a list written back alone could take an account away, or
+  an administrator's group, and leave the rest of it behind: accounts
+  change through `user`.
 - **A long action is a task.** An action marked long answers 202
   `{"task": ID}` at once. admind runs its command as an administrator
   through `console-elevate`, without the 30 seconds a short command gets,

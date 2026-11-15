@@ -236,9 +236,13 @@ remove another's.
 	A change cannot be put back if a file in it was made by it, which has
 	no earlier text; is a secret or a file that not everyone may read,
 	which the console never keeps; is one that *admind*(8) could not read;
-	is longer than 1 MiB; or is one whose earlier text is among the
-	versions the console has forgotten, as it keeps the last 20 of a file.
-	Nor can a change that changed no file. It says which, and writes
+	is longer than 1 MiB; is one whose earlier text is among the versions
+	the console has forgotten, as it keeps the last 20 of a file; or is
+	one of the account files, _/system/settings/passwd_ and
+	_/system/settings/group_, which *authd*(8) writes together with each
+	account's password and home, and which change through *user*(8). The
+	journal gives a change to the account files a row of its own. Nor can
+	a change that changed no file be put back. It says which, and writes
 	nothing.
 
 	```

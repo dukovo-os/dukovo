@@ -40,6 +40,15 @@ impl Machine {
         let rows = self.store.changes(0, 1000).unwrap();
         rows[..rows.len() - before].to_vec()
     }
+
+    /// The rows that recording `scan`, by no one, at the Unix time `now`
+    /// made.
+    fn round_of(&self, scan: &Scan, now: i64) -> Vec<Change> {
+        let before = self.store.changes(0, 1000).unwrap().len();
+        self.journal.record(&self.store, scan, &BTreeMap::new(), now).unwrap();
+        let rows = self.store.changes(0, 1000).unwrap();
+        rows[..rows.len() - before].to_vec()
+    }
 }
 
 use crate::admind::store::changes::Change;
@@ -474,6 +483,41 @@ fn a_change_with_no_earlier_text_to_write_says_why_and_writes_nothing() {
     assert!(none.contains("nothing to put back"), "{none}");
     let same = FileChange { path: "/s".into(), before: text("x\n"), after: text("x\n") };
     assert!(restore_plan(&machine.store, &change_of(vec![same])).is_err());
+}
+
+#[test]
+fn the_account_files_are_a_row_of_their_own_which_is_never_put_back() {
+    // An account made at the first sign-in, and a service file changed by
+    // hand, in the same round and by no one the audit names: put back, one
+    // row would take the account away with the service's setting.
+    let machine = Machine::new("accounts");
+    let service = machine.path("spark/services/diskhealth.toml");
+    let made = |path: &str, body: &str| {
+        machine.store.keep_version(path, body.as_bytes(), 1).unwrap();
+        Edited { path: path.into(), before: Seen::Absent, after: text(body), stamp: None }
+    };
+    let scan = Scan {
+        edits: vec![
+            made(accounts::GROUP, "admins:x:10:alice\n"),
+            made(accounts::PASSWD, "alice:x:1000:1000::/users/alice:/x\n"),
+            made(&service, "enabled = false\n"),
+        ],
+    };
+    let rows = machine.round_of(&scan, 1_030);
+    let found: Vec<Vec<&str>> =
+        rows.iter().map(|row| row.files.iter().map(|f| f.path.as_str()).collect()).collect();
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found.contains(&vec![accounts::GROUP, accounts::PASSWD]), "{found:?}");
+    assert!(found.contains(&vec![service.as_str()]), "{found:?}");
+    assert!(rows.iter().all(|row| row.who == "outside the console"));
+    // Neither file is ever written back, alone or with others.
+    let ok = kept(&machine, "/ok", "a\n", "b\n");
+    for path in [accounts::PASSWD, accounts::GROUP] {
+        let file = kept(&machine, path, "before\n", "after\n");
+        let why = restore_plan(&machine.store, &change_of(vec![ok.clone(), file])).unwrap_err();
+        assert!(why.starts_with(&format!("{path} is one of the account files")), "{why}");
+        assert!(why.contains("elevate user"), "{why}");
+    }
 }
 
 #[test]

@@ -538,14 +538,16 @@ impl Journal {
     ) -> Result<usize> {
         store.atomically(|| {
             let watched = store.watched()?;
-            let mut by_person: BTreeMap<&str, Vec<FileChange>> = BTreeMap::new();
+            // A row for each person, and the account files in rows of
+            // their own: a change to them is never put back with others.
+            let mut by_person: BTreeMap<(&str, bool), Vec<FileChange>> = BTreeMap::new();
             for edit in &scan.edits {
                 let noted = watched.get(&edit.path).map_or(&Seen::Absent, |noted| &noted.seen);
                 if self.is_pending(&edit.path) || *noted != edit.before {
                     continue;
                 }
                 let person = who.get(&edit.path).map_or(NOBODY, String::as_str);
-                by_person.entry(person).or_default().push(FileChange {
+                by_person.entry((person, is_accounts(&edit.path))).or_default().push(FileChange {
                     path: edit.path.clone(),
                     before: edit.before.clone(),
                     after: edit.after.clone(),
@@ -558,7 +560,7 @@ impl Journal {
                     None => store.forget_watched(&edit.path)?,
                 }
             }
-            for (person, files) in &by_person {
+            for ((person, _), files) in &by_person {
                 store.add_change(&NewChange {
                     at: now,
                     who: person,
@@ -690,6 +692,16 @@ pub struct Restore {
     pub text: Vec<u8>,
 }
 
+/// Whether `path` is one of the account files, the accounts' and the
+/// groups' lists, which authd writes together with each account's
+/// password, home and sharing password. The journal shows a change to
+/// them, in a row of its own, and never puts one back: a list written
+/// back alone could take away an account, or an administrator's group,
+/// and leave the rest of it behind.
+pub fn is_accounts(path: &str) -> bool {
+    path == accounts::PASSWD || path == accounts::GROUP
+}
+
 /// What putting `change` back writes: the earlier text of each file it
 /// changed, in the order the row names them.
 ///
@@ -697,14 +709,22 @@ pub struct Restore {
 ///
 /// In words, why it cannot be put back: a file it made has no earlier
 /// text; a secret, a file not everyone may read, one admind could not
-/// read and one longer than the store keeps have none kept; and the
-/// store keeps only the last 20 versions of a file.
+/// read and one longer than the store keeps have none kept; the store
+/// keeps only the last 20 versions of a file; and the account files are
+/// authd's ([`is_accounts`]).
 pub fn restore_plan(store: &Store, change: &Change) -> std::result::Result<Vec<Restore>, String> {
     let mut plan = Vec::new();
     for file in &change.files {
         let path = &file.path;
         if file.before.same_as(&file.after) {
             continue;
+        }
+        if is_accounts(path) {
+            return Err(format!(
+                "{path} is one of the account files, which authd keeps together with each \
+                 account's password and home, so the console never writes it: change accounts \
+                 with `elevate user`, as user(8) says"
+            ));
         }
         let hash = match &file.before {
             Seen::Text { sha256, .. } => sha256,
