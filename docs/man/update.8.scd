@@ -14,7 +14,8 @@ update - see, take, hold back and undo every update: the system, its firmware se
 *update undo* _item_ [*--settings-from-before* | *--keep-settings*]++
 *update hold* _item_++
 *update unhold* _item_++
-*update history* [*--json*]
+*update history* [*--json*]++
+*update advisories* [*--json*]
 
 _item_ is *system*, *firmware* or an app's ID.
 
@@ -28,13 +29,16 @@ the apps are *bundle*(1)'s; update asks each and says it in one place.
 that the update server offers.
 
 *check*, or no word at all
-	Says what waits, under three headings. *System*: the release the
+	Says what waits, under four headings. *System*: the release the
 	channel offers (*updates.toml*(5)), or that the system is up to
 	date, and whether the release it runs was withdrawn. *Firmware*:
 	the firmware set the channel offers for this machine (ADR 0467).
 	*Apps*: the updates of the apps installed for everyone, as *bundle
-	update --check* lists them. Anyone may check. With *--json*, one
-	document says it all; see *JSON*.
+	update --check* lists them. *Security*: a line for each security
+	advisory that applies to the release the system runs, with how its
+	fix stands, and how many flaws the apps have, which *advisories*
+	lists (ADR 0534). Anyone may check. With *--json*, one document says
+	it all; see *JSON*.
 
 *apply* [*--yes*]
 	Stages the system update into the spare slot, to start at the
@@ -72,10 +76,42 @@ that the update server offers.
 	start ended; then the apps' history, as *bundle history* gives it.
 	With *--json*, one document says both; see *JSON*.
 
+*advisories*
+	Says which Dukovo Security Advisories, DKSA, apply to this
+	machine (ADR 0534). The update server signs each advisory and an
+	index of them as targets of the repository, and the command reads
+	both through the same client, and the same *updates.toml*(5), as
+	*check* does. The advisories are matched here: nothing about the
+	machine is sent. An advisory that names the package *dukovo*
+	applies when the release the system runs is in one of its ranges,
+	in Dukovo's version order, so that 1.4.1 comes before 1.4.1.1,
+	which comes before 1.4.2. One that names an app's ID applies when
+	the version installed is in a range, for the apps this person can run.
+	The flaws that the apps' catalogs list as known (*bundle*(1)) are
+	listed with them, and one with the same ID or alias as an advisory
+	is listed once.
+
+	For each, it says the ID, the severity (*critical*, *high*,
+	*medium* or *low*), what is wrong, the other names it is known by,
+	and how the fix stands. For the system the fix is one of: staged
+	in the spare slot, so that a restart finishes it; offered by the
+	channel, which *apply* stages; offered, and waiting for this
+	machine's wave or held back by *hold*; or not offered, with the
+	releases that have it, if there are any. The advisory's own words
+	on what to do follow. For an app it names the version of the app
+	that has the fix when its catalog offers one. With nothing to say it
+	says that no advisory applies. Anyone may run it. With *--json*, one
+	document says it all; see *JSON*.
+
+	When the update server cannot be reached, or its advisories do not
+	check, it says so and still lists the flaws that the catalogs' lists
+	give the apps, as bundled last kept them. The system's part is then
+	not checked, and the document says so in *unchecked*.
+
 # JSON
 
-*--json* with *check*, or no word at all, and with *history*, prints one
-line of JSON, an object whose first member is *format*, 1 (ADR 0541),
+*--json* with *check*, or no word at all, and with *history* and
+*advisories*, prints one line of JSON, an object whose first member is *format*, 1 (ADR 0541),
 which scripts and Ansible's *dukovo.system* collection read in place of
 the text. A later field may be added without a new *format*. Names are in
 snake_case, times are RFC 3339 in UTC, and a value that is not known is
@@ -130,6 +166,12 @@ same exit status.
 	update --check* says besides, and what the read of the
 	troubleshoot signatures says.
 
+*security*
+	An object with *system*, the list of advisories that apply to the
+	system, each as *advisories --json* gives them, and *app_flaws*,
+	how many flaws the apps have. A part that could not be checked is
+	named in *unchecked* with the *item* *security*.
+
 *history --json* has:
 
 *changes*
@@ -151,10 +193,42 @@ same exit status.
 	*failed* or *flawed*), *from* and *to*, *by_user*, the user ID of
 	who asked, or *null* when bundled did it by itself, and *note*.
 
+*advisories --json* has:
+
+*system*
+	A list with an object for each advisory that applies to the system,
+	the worst first: *id*, *DKSA-YYYY-NNNN*; *severity*, *critical*,
+	*high*, *medium* or *low*; *summary*; *aliases*, the other IDs it is
+	known by; *fixed_in*, the releases that have the fix, the oldest
+	first; *action*, what the advisory says to do, or *null*; *fix*,
+	*staged*, *offered*, *waiting*, *held* or *none*, as *advisories*
+	above says; and *release*, the release that has the fix with the
+	first four, or *null* with *none*.
+
+*apps*
+	A list with an object for each flaw of an app installed, the worst
+	first: *item*, the app's ID; *version*, the version installed; *id*,
+	*severity* (with *unknown* for a catalog that does not say),
+	*summary*, *aliases* and *action* as above; *source*, *dksa* for an
+	advisory or *catalog* for a flaw its catalog lists; *fixed_in*, the
+	versions of the app that have the fix for a *dksa*, and of its
+	*component* for a *catalog*; *component*, the component of the app
+	that has the flaw as *NAME VERSION*, or *null*; and
+	*fixed_by_update*, the version its catalog offers when it has the
+	fix, or *null*.
+
+*unchecked*
+	As for *check*, with the *item* *system* or *apps*.
+
 # EXIT STATUS
 
 0 when it did what was asked, 1 when it could not, with why on standard
 error, and 2 for a usage error.
+
+*advisories* ends with 0 when no advisory applies and no flaw is known in
+the apps, 1 when one does, and 3 when none was found but a part could not be
+checked, such as the system's with no update server to read, which it says
+on standard output. 2 is a usage error, as for the others.
 
 # EXAMPLES
 
@@ -170,6 +244,17 @@ update: firmware 2026.3.1 is offered; this system runs firmware 2026.2.1: `updat
 
 Apps:
 0 to update, 4 up to date
+```
+
+Which security advisories apply, and what to do:
+
+```
+$ update advisories
+update: Dukovo: DKSA-2026-0007, high: A local user can read another user's files (CVE-2026-12345)
+update:   Dukovo 2026.3.1 has the fix and is offered: `update apply` stages it
+update:   Update to Dukovo 2026.3.1 with `update apply`, then restart.
+$ echo $?
+1
 ```
 
 Hold the system back for a week of travel, then lift it:
@@ -201,6 +286,12 @@ _/system/settings/sysupdate/updates.toml_
 _/system/state/starts_
 	The starts' records that *history* reads (*changes*(1)).
 
+_/system/state/sysupdate/lists_
+	The files read from the update server, kept as they were signed,
+	among them the security advisories and their index that
+	*advisories* reads.
+
 # SEE ALSO
 
-*updated*(8), *sysupdate*(8), *bundle*(1), *updates.toml*(5), *changes*(1)
+*updated*(8), *sysupdate*(8), *bundle*(1), *updates.toml*(5), *changes*(1),
+*system-release*(8)

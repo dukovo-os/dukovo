@@ -1024,6 +1024,21 @@ pub fn count() -> Option<usize> {
     }
 }
 
+/// The bundles this person can run, theirs and everyone's, as `bundle
+/// list` gives them.
+pub(crate) fn installed() -> Result<Vec<protocol::Listed>, Fail> {
+    let (_stream, mut input) = ask(&Request::List, None).map_err(fail)?;
+    let mut rows = Vec::new();
+    loop {
+        match answer(&mut input)? {
+            Answer::Listed(listed) => rows.push(listed),
+            Answer::Ok(_) => return Ok(rows),
+            Answer::Error(why) => return Err(fail(format!("bundled: {why}"))),
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
+}
+
 /// The IDs of the bundles installed for everyone, as feature(8) asks.
 pub(crate) fn installed_for_everyone() -> Result<Vec<String>, Fail> {
     let (_stream, mut input) = ask(&Request::List, None).map_err(fail)?;

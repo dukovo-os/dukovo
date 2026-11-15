@@ -59,6 +59,11 @@
 //! nor that it is silent. A body that is no report is refused with 400,
 //! and one that is too large with 413, both sent from the host through the
 //! same path, and the folder of reports keeps no other file.
+//!
+//! Before that, the machine reads the security advisory that the release
+//! keys signed with the withdrawal (ADR 0534), through its TUF client:
+//! *update advisories* names it, as high, with the withdrawn release as
+//! its fix, which no channel offers, and ends with status 1.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -76,7 +81,7 @@ use super::update_stage::{power_off, restart, run, started};
 
 pub const CASE: Case = Case {
     name: "update-online",
-    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, as it does the channel's firmware set (ADR 0544), and stages nothing once the release is withdrawn, which updated unstages once staged (ADR 0469); Rescue is written again from the bridge it proved, from the metadata its client kept (ADR 0543); update holds it back and lets it go, and updated says it is ready (ADR 0502); last, it enrols as a canary and reports, first as a dry run that sends nothing and then to the update server's receiver, which keeps the signed report and shows the canary with the release it runs and the channel it follows, and refuses a body that is no report and one that is too large (ADR 0533)",
+    about: "an update from the update server's stable channel (ADRs 0466, 0467): the machine walks from its root to the server's third, is told a bridge release comes first, refuses a changed file, a changed list and a replayed timestamp, goes on with a fetch cut short, fetches only the files it lacks, stages the bridge, starts it and proves it, and never takes an older release; it waits for its wave while the release is paused and takes it as a canary, as it does the channel's firmware set (ADR 0544), and stages nothing once the release is withdrawn, which updated unstages once staged (ADR 0469); Rescue is written again from the bridge it proved, from the metadata its client kept (ADR 0543); update holds it back and lets it go, and updated says it is ready (ADR 0502); last, it enrols as a canary and reports, first as a dry run that sends nothing and then to the update server's receiver, which keeps the signed report and shows the canary with the release it runs and the channel it follows, and refuses a body that is no report and one that is too large (ADR 0533); before that, update advisories names the signed advisory the bridge has the flaw of, with its fix (ADR 0534)",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -838,6 +843,14 @@ fn update_online(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         &format!("the beta channel offers Dukovo {old}, older than this system's {bridge}: nothing to do"),
     ])?;
     run(vm, "sysupdate channel", &["Channel: beta", &format!("Server:  http://10.0.2.2:{}/system/", server.port)])?;
+    // The release keys signed an advisory with the withdrawal, which the
+    // withdrawn release fixes (ADR 0534): the bridge has its flaw, and no
+    // channel offers the fix. Only the advisories are fetched to say so.
+    run(vm, "update advisories; echo \"advisories $?\"", &[
+        &format!("Dukovo: {TEST_ADVISORY}, high: "),
+        &format!("fixed in Dukovo {year}; this system"),
+        "advisories 1",
+    ])?;
 
     // Last, the machine, which runs the bridge on the beta channel now,
     // enrols as a canary and reports to the update server's receiver (ADR

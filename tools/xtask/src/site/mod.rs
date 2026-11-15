@@ -7,9 +7,12 @@
 //! Every page comes from a file the code's own pull requests change: the
 //! man pages (docs/man and those made from abi/*.ridl), the handbook, the
 //! design notes, the decision records and the roadmap, plus the guides,
-//! tutorials, runbooks and error pages once their folders exist. The
-//! result is a static site in out/docs/site that dukovo.org/support serves.
+//! tutorials, runbooks and error pages once their folders exist, and the
+//! security advisories of security/advisories, with their feed (ADR
+//! 0534). The result is a static site in out/docs/site that
+//! dukovo.org/support serves.
 
+mod advisories;
 pub mod check;
 mod layout;
 mod man;
@@ -169,6 +172,11 @@ pub fn build(ctx: &Ctx, version: Option<&str>, check: bool) -> Result<()> {
     groups.push(Group { title: "How it works".into(), links: how });
     docs.push(adr_index(&records));
 
+    // The security advisories, with their feed (ADR 0534).
+    let advisories::Pages { docs: advisory_docs, group, feed } = advisories::build(ctx)?;
+    docs.extend(advisory_docs);
+    groups.push(group);
+
     let mut road = markdown_doc(ctx, &roadmap, "Project", &sites)?;
     road.path = "roadmap.html".into();
     docs.push(road);
@@ -208,6 +216,7 @@ pub fn build(ctx: &Ctx, version: Option<&str>, check: bool) -> Result<()> {
             home,
         ),
     )?;
+    advisories::write_feed(&out, &feed)?;
     write(&out.join("search-index.js"), &search_index(&docs))?;
     for asset in ["site.css", "site.js"] {
         let from = ctx.root.join("docs/site").join(asset);
@@ -516,6 +525,8 @@ fn wanted_searches(docs: &[Doc]) -> Vec<(String, String)> {
         } else if doc.kind == "Error" {
             let id = doc.path.trim_start_matches("errors/").trim_end_matches(".html");
             wanted.push((id.to_string(), doc.path.clone()));
+        } else if doc.kind == advisories::KIND {
+            wanted.push((doc.title.clone(), doc.path.clone()));
         }
     }
     wanted

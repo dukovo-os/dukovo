@@ -13,13 +13,16 @@
 //! targets/firmware/<sha256>.<version>.json each firmware set's list (ADR 0468)
 //! targets/channels/<sha256>.<name>.json  a channel: the release it offers,
 //!                                        and the firmware set
+//! targets/advisories/<sha256>.index.json the security advisories' index
+//! targets/advisories/<sha256>.DKSA-YYYY-NNNN.json  each advisory (ADR 0534)
 //! files/<sha256>                         every file of every release and set, once
 //! ```
 //!
 //! [`add`] adds a release that `make` signed, [`add_firmware`] a firmware
 //! set, [`set_channel`] points a channel at a release and
-//! [`set_channel_firmware`] at a set, and [`refresh`] signs a new
-//! snapshot and timestamp, as
+//! [`set_channel_firmware`] at a set, [`set_advisories`] signs the
+//! security advisories (a channel's change can sign them in the same
+//! targets version), and [`refresh`] signs a new snapshot and timestamp, as
 //! a server does every few hours. Each signs the next version of what it
 //! changes and writes the timestamp last, so that a client reading the
 //! repository while it changes sees the old one or the new one.
@@ -36,6 +39,7 @@ use serde_json::Value;
 use slots::version::Version;
 use tuf::repo as signing;
 
+use crate::advisory::{self, Source};
 use crate::archive::{Archive, Writer};
 use crate::canary;
 use crate::firmware::{self, Load, Set};
@@ -495,6 +499,25 @@ pub fn set_channel(
     version: &str,
     now: i64,
 ) -> Result<(), String> {
+    set_channel_with(dir, keys, channel, version, None, now).map(|_| ())
+}
+
+/// [`set_channel`], with the security advisories `advisories` among the
+/// targets it signs, as [`set_advisories`] puts them: one new version of
+/// the targets, so one touch of the hardware keys. Gives what the
+/// advisories changed, when they were given.
+///
+/// # Errors
+///
+/// As [`set_channel`], or if an advisory cannot be written.
+pub fn set_channel_with(
+    dir: &Path,
+    keys: &Keys,
+    channel: &str,
+    version: &str,
+    advisories: Option<&[Source]>,
+    now: i64,
+) -> Result<Option<Advised>, String> {
     if !CHANNELS.contains(&channel) {
         return Err(format!("no channel called {channel}; they are {}", CHANNELS.join(", ")));
     }
@@ -504,7 +527,7 @@ pub fn set_channel(
     }
     let firmware = held_channel(dir, &current, channel)?.and_then(|held| held.firmware);
     let channel = Channel { channel: channel.into(), version: version.into(), firmware };
-    write_channel(dir, keys, &current, &channel, now)
+    write_channel(dir, keys, &current, &channel, advisories, now)
 }
 
 /// Points the channel `channel` of the repository at `dir`, which offers
@@ -522,6 +545,23 @@ pub fn set_channel_firmware(
     firmware: Option<&str>,
     now: i64,
 ) -> Result<(), String> {
+    set_channel_firmware_with(dir, keys, channel, firmware, None, now).map(|_| ())
+}
+
+/// [`set_channel_firmware`], with the security advisories `advisories`
+/// signed in the same targets version, as [`set_channel_with`] does.
+///
+/// # Errors
+///
+/// As [`set_channel_firmware`], or if an advisory cannot be written.
+pub fn set_channel_firmware_with(
+    dir: &Path,
+    keys: &Keys,
+    channel: &str,
+    firmware: Option<&str>,
+    advisories: Option<&[Source]>,
+    now: i64,
+) -> Result<Option<Advised>, String> {
     let current = current(dir)?.ok_or_else(|| format!("{} offers no release", dir.display()))?;
     let held = held_channel(dir, &current, channel)?.ok_or_else(|| {
         format!("the {channel} channel of {} offers no release yet", dir.display())
@@ -532,25 +572,131 @@ pub fn set_channel_firmware(
         return Err(format!("{} does not offer firmware {version}", dir.display()));
     }
     let channel = Channel { firmware: firmware.map(String::from), ..held };
-    write_channel(dir, keys, &current, &channel, now)
+    write_channel(dir, keys, &current, &channel, advisories, now)
 }
 
 /// Writes `channel`'s file among the targets of the repository at `dir`,
-/// and signs them anew.
+/// and signs them anew, with the advisories `advisories`, if given.
 fn write_channel(
     dir: &Path,
     keys: &Keys,
     current: &Current,
     channel: &Channel,
+    advisories: Option<&[Source]>,
     now: i64,
-) -> Result<(), String> {
+) -> Result<Option<Advised>, String> {
     let bytes = channel.to_bytes();
     let name = hex(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref());
     write(&dir.join(format!("targets/channels/{name}.{}.json", channel.channel)), &bytes)?;
     let mut targets = current.targets.clone();
     targets.insert(channel_path(&channel.channel), signing::file_info(&bytes));
+    let mut advised =
+        advisories.map(|sources| put_advisories(dir, &mut targets, sources)).transpose()?;
     sign(dir, keys, Some(current), Some(&targets), None, now)?;
-    Ok(())
+    if let Some(advised) = advised.as_mut() {
+        advised.signed = true;
+    }
+    Ok(advised)
+}
+
+/// What [`set_advisories`] did to the advisories among the targets.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Advised {
+    /// How many advisories the repository offers now.
+    pub count: usize,
+    /// The ids offered now that were not before.
+    pub added: Vec<String>,
+    /// The ids offered before and now, whose file is another.
+    pub changed: Vec<String>,
+    /// The ids offered before and not now.
+    pub removed: Vec<String>,
+    /// Whether the targets were signed anew: [`set_advisories`] signs
+    /// nothing when they held these advisories already.
+    pub signed: bool,
+}
+
+/// The targets under `advisories/`.
+fn advisory_targets(targets: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    targets
+        .iter()
+        .filter(|(path, _)| path.starts_with("advisories/"))
+        .map(|(path, info)| (path.clone(), info.clone()))
+        .collect()
+}
+
+/// Makes the advisories among `targets` those of `sources` and no others:
+/// each advisory's file and the index that lists them are written under
+/// their hash among the files of `dir`, and are a target each. An
+/// advisory that is not in `sources` leaves the targets.
+fn put_advisories(
+    dir: &Path,
+    targets: &mut BTreeMap<String, Value>,
+    sources: &[Source],
+) -> Result<Advised, String> {
+    let before = advisory_targets(targets);
+    targets.retain(|path, _| !path.starts_with("advisories/"));
+    let index = advisory::Index::of(sources).to_bytes();
+    let mut files = vec![(advisory::INDEX_TARGET.to_string(), "index.json", index.as_slice())];
+    for source in sources {
+        files.push((
+            advisory::target_path(&source.advisory.id),
+            source.file.as_str(),
+            source.bytes.as_slice(),
+        ));
+    }
+    for (path, name, bytes) in files {
+        let sha256 = hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref());
+        let file = dir.join(format!("targets/advisories/{sha256}.{name}"));
+        // Named by its hash: a file there is this one.
+        if !file.exists() {
+            write(&file, bytes)?;
+        }
+        targets.insert(path, signing::file_info(bytes));
+    }
+    let now = advisory_targets(targets);
+    let id_of = |path: &String| advisory::id_of_target(path).map(str::to_string);
+    let mut advised = Advised::default();
+    for (path, info) in &now {
+        let Some(id) = id_of(path) else { continue };
+        advised.count += 1;
+        match before.get(path) {
+            None => advised.added.push(id),
+            Some(old) if old != info => advised.changed.push(id),
+            Some(_) => {}
+        }
+    }
+    advised.removed =
+        before.keys().filter(|path| !now.contains_key(*path)).filter_map(id_of).collect();
+    Ok(advised)
+}
+
+/// Signs the security advisories `sources` as targets of the repository at
+/// `dir`, in one new version of the targets (ADR 0534): the index
+/// `advisories/index.json`, which lists them, and `advisories/<id>.json`
+/// for each, written under their hash like every target. An advisory that
+/// is not in `sources` leaves the targets, and sources that are those the
+/// targets hold already sign nothing new. The repository need not offer a
+/// release yet.
+///
+/// # Errors
+///
+/// If a file cannot be written or the repository's metadata cannot be
+/// read.
+pub fn set_advisories(
+    dir: &Path,
+    keys: &Keys,
+    sources: &[Source],
+    now: i64,
+) -> Result<Advised, String> {
+    let current = current(dir)?;
+    let mut targets = current.as_ref().map_or_else(BTreeMap::new, |c| c.targets.clone());
+    let mut advised = put_advisories(dir, &mut targets, sources)?;
+    if current.as_ref().is_some_and(|c| c.targets == targets) {
+        return Ok(advised);
+    }
+    sign(dir, keys, current.as_ref(), Some(&targets), None, now)?;
+    advised.signed = true;
+    Ok(advised)
 }
 
 /// The file of the channel `name` that the newest targets of the
@@ -804,6 +950,8 @@ pub struct Deployed {
     pub firmware: Vec<String>,
     /// Each channel, and the release and firmware set it offers.
     pub channels: Vec<Channel>,
+    /// Every security advisory offered, by id (ADR 0534).
+    pub advisories: Vec<advisory::Entry>,
     /// How many files of the deploy the store did not hold already.
     pub new_files: usize,
     /// How the repository was signed.
@@ -834,7 +982,13 @@ pub fn publish(
     now: i64,
 ) -> Result<Deployed, String> {
     take_metadata(&incoming.join("metadata"), &dir.join("metadata"))?;
-    for folder in ["targets/system", "targets/firmware", "targets/channels", "targets/withdrawn"] {
+    for folder in [
+        "targets/system",
+        "targets/firmware",
+        "targets/channels",
+        "targets/withdrawn",
+        "targets/advisories",
+    ] {
         take_named(&incoming.join(folder), &dir.join(folder), false)?;
     }
     let new_files = take_named(&incoming.join("files"), &dir.join("files"), true)?;
@@ -842,9 +996,9 @@ pub fn publish(
     let first = keys.roots()[0].clone();
     let signed = refresh(dir, &keys, plans, now)?;
     let store = dir.join("files");
-    let Offered { releases, firmware, channels } =
+    let Offered { releases, firmware, channels, advisories } =
         offered(repo::read_targets(dir, &first)?, Some(&store))?;
-    Ok(Deployed { releases, firmware, channels, new_files, signed })
+    Ok(Deployed { releases, firmware, channels, advisories, new_files, signed })
 }
 
 /// What a repository offers, as a computer reads it.
@@ -856,6 +1010,8 @@ pub struct Offered {
     pub firmware: Vec<String>,
     /// Each channel, and the release and firmware set it offers.
     pub channels: Vec<Channel>,
+    /// Every security advisory, by id (ADR 0534).
+    pub advisories: Vec<advisory::Entry>,
 }
 
 /// Reads the repository an update server serves at `base` as a computer
@@ -887,6 +1043,8 @@ pub struct ServedStatus {
     pub firmware: Vec<FirmwareStatus>,
     /// Every channel.
     pub channels: Vec<ChannelStatus>,
+    /// Every security advisory, by id (ADR 0534).
+    pub advisories: Vec<advisory::Entry>,
 }
 
 /// A rollout as the update server signed it.
@@ -1006,14 +1164,17 @@ pub fn status(base: &tuf::Url, root: &[u8]) -> Result<ServedStatus, String> {
         releases,
         firmware,
         channels,
+        advisories: offered.advisories,
     })
 }
 
-/// The releases, firmware sets and channels among `targets`, as the
-/// client read them: each list where its version says, each channel
-/// offering a release and a set listed, and, with `store`, every file of
-/// every release and set there, of its size.
+/// The releases, firmware sets, channels and advisories among `targets`,
+/// as the client read them: each list where its version says, each
+/// channel offering a release and a set listed, each advisory the one its
+/// path and the index say, and, with `store`, every file of every release
+/// and set there, of its size.
 fn offered(targets: Vec<(String, Vec<u8>)>, store: Option<&Path>) -> Result<Offered, String> {
+    let advisories = advisory::check_served(&targets)?;
     let held = |sha256: &str, size: u64| {
         store.is_none_or(|store| {
             std::fs::metadata(store.join(sha256)).is_ok_and(|m| m.len() == size)
@@ -1076,7 +1237,7 @@ fn offered(targets: Vec<(String, Vec<u8>)>, store: Option<&Path>) -> Result<Offe
         (Some(a), Some(b)) => a.cmp(&b),
         _ => a.cmp(b),
     });
-    Ok(Offered { releases, firmware, channels })
+    Ok(Offered { releases, firmware, channels, advisories })
 }
 
 /// The update server's keys for the repository at `dir`: its online key,
@@ -1707,6 +1868,205 @@ mod tests {
         let (_, wrong) = signing::Ed25519::generate().unwrap();
         let err = publish(&server, &maintainer, &wrong, None, now).unwrap_err();
         assert!(err.contains("does not name this server's online key"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The advisories of `ids`, as the tree's folder `name` of `dir` holds
+    /// them.
+    fn advisories(dir: &Path, name: &str, ids: &[(&str, &str)]) -> Vec<Source> {
+        let list: Vec<(&str, &str, &str)> =
+            ids.iter().map(|(id, modified)| (*id, *modified, "high")).collect();
+        advisory::tests::folder(&dir.join(name), &list)
+    }
+
+    const FIRST: (&str, &str) = ("DKSA-2026-0001", "2026-11-15T09:30:00Z");
+    const SECOND: (&str, &str) = ("DKSA-2026-0002", "2026-11-16T09:30:00Z");
+
+    #[test]
+    fn advisories_are_signed_with_their_index_and_leave_when_they_are_removed() {
+        let dir = scratch("updates-advisories");
+        let keys = Keys::create(&dir.join("keys"), BUILT).unwrap();
+        let repo_dir = dir.join("repo");
+        let now = tuf::time::now();
+        let ids = |advised: &Advised| {
+            (advised.added.clone(), advised.changed.clone(), advised.removed.clone())
+        };
+        let version = || current(&repo_dir).unwrap().unwrap().targets_version;
+        let served = || {
+            let targets = repo::read_targets(&repo_dir, keys.root()).unwrap();
+            advisory::check_served(&targets).unwrap()
+        };
+
+        // A repository that offers no release can offer advisories: each
+        // one and their index, hash-prefixed among the files, one version.
+        let two = advisories(&dir, "two", &[FIRST, SECOND]);
+        let first = set_advisories(&repo_dir, &keys, &two, now).unwrap();
+        assert_eq!((first.signed, first.count), (true, 2));
+        assert_eq!(ids(&first).0, ["DKSA-2026-0001", "DKSA-2026-0002"]);
+        assert_eq!(version(), 1);
+        for source in &two {
+            let name = format!("{}.{}", source.sha256, source.file);
+            assert_eq!(
+                std::fs::read(repo_dir.join("targets/advisories").join(name)).unwrap(),
+                source.bytes
+            );
+        }
+        let held = current(&repo_dir).unwrap().unwrap();
+        let paths: Vec<&str> = held.targets.keys().map(String::as_str).collect();
+        assert_eq!(
+            paths,
+            [
+                "advisories/DKSA-2026-0001.json",
+                "advisories/DKSA-2026-0002.json",
+                "advisories/index.json"
+            ]
+        );
+        let entries = served();
+        assert_eq!(entries, advisory::Index::of(&two).advisories);
+        let index = std::fs::read_dir(repo_dir.join("targets/advisories")).unwrap().count();
+        assert_eq!(index, 3);
+
+        // The same advisories sign nothing new: not a version, not a file.
+        let again = set_advisories(&repo_dir, &keys, &two, now + 60).unwrap();
+        assert_eq!((again.signed, again.count, ids(&again)), (false, 2, (vec![], vec![], vec![])));
+        assert_eq!(version(), 1);
+        assert_eq!(std::fs::read_dir(repo_dir.join("targets/advisories")).unwrap().count(), 3);
+
+        // One that changed is signed anew, and the other is left as it is;
+        // the old file stays beside the new, which the targets do not list.
+        let changed =
+            advisories(&dir, "changed", &[FIRST, ("DKSA-2026-0002", "2026-11-17T00:00:00Z")]);
+        let second = set_advisories(&repo_dir, &keys, &changed, now).unwrap();
+        assert_eq!(
+            (second.signed, ids(&second)),
+            (true, (vec![], vec!["DKSA-2026-0002".to_string()], vec![]))
+        );
+        assert_eq!(version(), 2);
+        assert_eq!(served()[1].modified, "2026-11-17T00:00:00Z");
+
+        // One removed from the folder leaves the targets.
+        let one = advisories(&dir, "one", &[FIRST]);
+        let third = set_advisories(&repo_dir, &keys, &one, now).unwrap();
+        assert_eq!(ids(&third), (vec![], vec![], vec!["DKSA-2026-0002".to_string()]));
+        assert!(
+            !current(&repo_dir)
+                .unwrap()
+                .unwrap()
+                .targets
+                .contains_key("advisories/DKSA-2026-0002.json")
+        );
+        assert_eq!(served().len(), 1);
+
+        // No advisory at all is a signed, empty index: not the same as a
+        // server that has none to serve.
+        let none = set_advisories(&repo_dir, &keys, &[], now).unwrap();
+        assert_eq!((none.count, ids(&none).2), (0, vec!["DKSA-2026-0001".to_string()]));
+        assert!(served().is_empty());
+        assert!(current(&repo_dir).unwrap().unwrap().targets.contains_key("advisories/index.json"));
+        assert!(!set_advisories(&repo_dir, &keys, &[], now).unwrap().signed);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_channel_signs_the_advisories_in_the_same_version_of_the_targets() {
+        let dir = scratch("updates-channel-advisories");
+        let keys = Keys::create(&dir.join("keys"), BUILT).unwrap();
+        tree(&dir.join("slot"));
+        made(&keys, &dir.join("slot"), "0.15.0", &dir.join("r1"));
+        let repo_dir = dir.join("repo");
+        let now = tuf::time::now();
+        add(&repo_dir, &keys, &dir.join("r1"), now).unwrap();
+        firmware_set(&repo_dir, &keys, "2026.11.12", b"microcode");
+        let version = || current(&repo_dir).unwrap().unwrap().targets_version;
+        let before = version();
+        let two = advisories(&dir, "two", &[FIRST, SECOND]);
+
+        // The release the channel offers and the advisories are one new
+        // version of the targets.
+        let advised =
+            set_channel_with(&repo_dir, &keys, "stable", "0.15.0", Some(&two), now).unwrap();
+        assert_eq!(version(), before + 1);
+        let advised = advised.unwrap();
+        assert_eq!((advised.signed, advised.count, advised.added.len()), (true, 2, 2));
+        let targets = repo::read_targets(&repo_dir, keys.root()).unwrap();
+        let read = offered(targets, None).unwrap();
+        assert_eq!(read.channels[0].version, "0.15.0");
+        assert_eq!(read.advisories.len(), 2);
+
+        // So is the firmware set's, and without advisories the channel
+        // keeps those it signed.
+        let one = advisories(&dir, "one", &[FIRST]);
+        let advised = set_channel_firmware_with(
+            &repo_dir,
+            &keys,
+            "stable",
+            Some("2026.11.12"),
+            Some(&one),
+            now,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(version(), before + 2);
+        assert_eq!(advised.removed, ["DKSA-2026-0002"]);
+        set_channel(&repo_dir, &keys, "stable", "0.15.0", now).unwrap();
+        assert_eq!(version(), before + 3);
+        let read = offered(repo::read_targets(&repo_dir, keys.root()).unwrap(), None).unwrap();
+        assert_eq!(read.advisories.len(), 1);
+        assert_eq!(read.channels[0].firmware.as_deref(), Some("2026.11.12"));
+        // Advisories do not stop a channel from refusing a release it lacks.
+        assert!(
+            set_channel_with(&repo_dir, &keys, "stable", "0.16.0", Some(&two), now)
+                .unwrap_err()
+                .contains("does not offer")
+        );
+        assert_eq!(version(), before + 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_server_publishes_the_advisories_of_a_deploy() {
+        let dir = scratch("updates-server-advisories");
+        let keys_dir = dir.join("keys");
+        Keys::create(&keys_dir, BUILT).unwrap();
+        let (online, secret) = signing::Ed25519::generate().unwrap();
+        let now = tuf::time::now();
+        let keys = Keys::set_online(&keys_dir, signing::Signer::key(&online), now).unwrap();
+        tree(&dir.join("slot"));
+        made(&keys, &dir.join("slot"), "0.15.0", &dir.join("r1"));
+        let maintainer = dir.join("maintainer");
+        add(&maintainer, &keys, &dir.join("r1"), now).unwrap();
+        let two = advisories(&dir, "two", &[FIRST, SECOND]);
+        set_channel_with(&maintainer, &keys, "stable", "0.15.0", Some(&two), now).unwrap();
+
+        // The server takes targets/advisories with the other folders, and a
+        // computer reads the advisories from the first root.
+        let server = dir.join("server");
+        let deployed = publish(&server, &maintainer, &secret, None, now).unwrap();
+        assert_eq!(deployed.advisories, advisory::Index::of(&two).advisories);
+        assert_eq!(std::fs::read_dir(server.join("targets/advisories")).unwrap().count(), 3);
+        let first = keys.roots()[0].clone();
+        let targets = repo::read_targets(&server, &first).unwrap();
+        assert_eq!(advisory::check_served(&targets).unwrap().len(), 2);
+
+        // One removed, and another deploy: the server's targets list one,
+        // and it never takes a file away.
+        let one = advisories(&dir, "one", &[FIRST]);
+        set_advisories(&maintainer, &keys, &one, now).unwrap();
+        let again = publish(&server, &maintainer, &secret, None, now).unwrap();
+        assert_eq!(again.advisories.len(), 1);
+        // The index is a new file; the files of before stay.
+        assert_eq!(std::fs::read_dir(server.join("targets/advisories")).unwrap().count(), 4);
+
+        // A file that is not named by its hash is not part of a deploy.
+        std::fs::write(maintainer.join("targets/advisories/notes.json"), b"{}").unwrap();
+        let err = publish(&server, &maintainer, &secret, None, now).unwrap_err();
+        assert!(err.contains("notes.json is not part of a deploy"), "{err}");
+        std::fs::remove_file(maintainer.join("targets/advisories/notes.json")).unwrap();
+        // One that is not the file its name says is refused.
+        let name = format!("{}.DKSA-2026-0009.json", "ab".repeat(32));
+        std::fs::write(maintainer.join("targets/advisories").join(name), b"{}").unwrap();
+        let err = publish(&server, &maintainer, &secret, None, now).unwrap_err();
+        assert!(err.contains("is not the file its name says"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -23,9 +23,13 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release add* *--repo* _dir_ *--keys* _dir_ _release_
 
-*system-release channel* *--repo* _dir_ *--keys* _dir_ _channel_ _version_
+*system-release channel* *--repo* _dir_ *--keys* _dir_ [*--advisories* _dir_] _channel_ _version_
 
-*system-release channel* *--repo* _dir_ *--keys* _dir_ *--firmware* _version_|*none* _channel_
+*system-release channel* *--repo* _dir_ *--keys* _dir_ [*--advisories* _dir_] *--firmware* _version_|*none* _channel_
+
+*system-release advisories* *--repo* _dir_ *--keys* _dir_ _dir_
+
+*system-release advisories* *--check* _dir_
 
 *system-release firmware* *--repo* _dir_ *--keys* _dir_ *--version* _version_ *--microcode* _file_ *--license* _license_
 
@@ -99,8 +103,8 @@ one POSIX tar archive, for a machine with no network or for a mirror
 (ADR 0466). It holds the metadata with every root, the list and every
 file, once, and is read where it is; Linux's *tar* lists and unpacks it.
 
-*make*, *keys*, *online-key*, *add*, *channel*, *refresh*, *publish*,
-*pack* and *served* are for the machines that build Dukovo and serve
+*make*, *keys*, *online-key*, *add*, *channel*, *advisories*, *refresh*,
+*publish*, *pack* and *served* are for the machines that build Dukovo and serve
 its updates, where *ob*(1) and the update server's scripts run them. *make* lists the slot staged in the folder *--tree*, signs the
 list with the keys in *--keys* and lays out its repository in *--out*,
 which it makes afresh, then reads the repository back as *check* does.
@@ -142,6 +146,27 @@ root has been added, as the update server does every six hours, with
 the keys in *--keys* or the online key in *--online-key*. *pack* writes
 one release as an update file, and reads it back from *--root*, by
 default the repository's first root.
+
+*advisories* signs the security advisories of a folder as targets of the
+repository (ADR 0534), and *channel --advisories* does the same in the one
+targets version that offers the release. The folder, such as the source
+tree's _security/advisories_, holds one OSV 1.6 file for each, named
+_DKSA-YYYY-NNNN.json_ for its id. Each is read as *ob security check* reads
+it: valid, with Dukovo's fields (the system is the package *dukovo*, an app is
+named by its ID, the ranges are in Dukovo's version order), the id its
+file's name, a number of its own, and no text that still says TODO. If one
+does not check, each problem is named by its file and nothing is signed.
+The targets are _advisories/DKSA-YYYY-NNNN.json_ for each, and
+_advisories/index.json_, the list of them with each one's time of change,
+severity, summary and SHA-256, which a machine reads first (*update*(8)).
+Files are named by their SHA-256 on disk, like the other targets, so that the
+server never replaces one. An advisory changed in the folder is signed
+again, one removed leaves the targets, and a folder as the repository has it
+already signs nothing: the command says so. *advisories --check* only checks
+the folder, and prints how many advisories there are and the worst severity.
+The update server takes _targets/advisories_ with the other folders of a
+deploy, and refuses a file there that is not named by its hash or is not the
+advisory its name says.
 
 *pull* withdraws a release the repository offers (ADR 0469): it signs
 _withdrawn/version.json_ among the targets, with the reason and the
@@ -256,11 +281,12 @@ reasons, which stay on the server.
 
 *served* reads the repository an update server serves at _url_ as a
 computer online does, from *--root*: every signature, version, hash and
-expiry, every release list and every channel, but none of the files.
+expiry, every release list and every channel, and the security advisories
+with their index, which must agree, but none of the files.
 With *--json* it prints, as JSON, each role's version and expiry, every
 release with its rollout and withdrawal, every firmware set with its
-rollout, and every channel: what *ob updates status* reads for Dukovo
-Ops.
+rollout, every channel and every security advisory's index entry: what
+*ob updates status* reads for Dukovo Ops.
 
 # OPTIONS
 
@@ -300,6 +326,13 @@ Ops.
 
 *--json*
 	With *served* and *canaries show*, print JSON.
+
+*--advisories* _dir_
+	With *channel*, the folder of security advisories to sign with the
+	channel.
+
+*--check*
+	With *advisories*, only check the folder.
 
 *--tree* _dir_
 	The slot to make a release of: what _/system_ will hold.
@@ -364,5 +397,5 @@ _/system/resources/updates/root.json_
 
 # SEE ALSO
 
-*sysupdate*(8), *dukovo-boot*(7), *dukovo-rescue*(8), *spark*(8),
-*rdisk*(8), *ob*(1)
+*sysupdate*(8), *update*(8), *dukovo-boot*(7), *dukovo-rescue*(8),
+*spark*(8), *rdisk*(8), *ob*(1)
