@@ -22,11 +22,14 @@
 //! ([`firmware`]).
 
 pub mod archive;
+pub mod canary;
 pub mod cli;
 pub mod firmware;
 pub mod list;
+pub mod receiver;
 pub mod repo;
 pub mod rescue;
 pub mod rollout;
 pub mod store;
 pub mod updates;
+pub mod verdict;

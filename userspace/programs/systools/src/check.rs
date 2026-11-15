@@ -41,7 +41,7 @@ use crate::args::{Arg, Args};
 use crate::logger;
 use crate::util::{self, Fail, fail, usage};
 use context::Context;
-use line::{Area, Counts, Line, Outcome};
+use line::{Area, Counts, Line, Outcome, Verdict};
 use saved::Saved;
 
 const USAGE: &str = "usage: dukovo-check [--json]\n       dukovo-check --last [--json]";
@@ -117,6 +117,37 @@ fn run(checks: &[Check], context: &Context, mut show: impl FnMut(&Line)) -> Vec<
         }
     }
     lines
+}
+
+/// The checks, run now, and the services Spark knows, as the checks read
+/// them: for a canary's report (ADR 0533), which keeps no result and
+/// logs no line. A check that cannot ask its source says so in its own
+/// line, as in a run of `dukovo-check`.
+pub(crate) fn run_now() -> (Vec<Line>, Result<Vec<spark_api::show::Service>, String>) {
+    let context = Context::gather();
+    let lines = run(&CHECKS, &context, |_| {});
+    (lines, context.services)
+}
+
+/// What a canary reports of `lines`, a run of the checks: how many
+/// failed and how many warned, and each that failed as `area: check:
+/// detail`. `None` when no check could run, as dukovo-check ends with
+/// status 3 then.
+pub(crate) fn for_canary(lines: &[Line]) -> Option<system_release::canary::Check> {
+    let counts = Counts::of(lines);
+    if counts.status() == 3 {
+        return None;
+    }
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Some(system_release::canary::Check {
+        failures: count(counts.failed),
+        warnings: count(counts.warning),
+        failed: lines
+            .iter()
+            .filter(|line| line.outcome.verdict == Verdict::Failed)
+            .map(|line| format!("{}: {}: {}", line.area.name(), line.check, line.outcome.detail))
+            .collect(),
+    })
 }
 
 /// Keeps the result of a run and logs its line. Neither fails the run:
@@ -244,5 +275,30 @@ mod tests {
         let first: Vec<&str> = lines.iter().take(3).map(|line| line.check.as_str()).collect();
         assert_eq!(first, ["reachable", "firewall rules", "firewall on"]);
         assert_eq!(lines.last().map(|line| line.check.as_str()), Some("snapshots"));
+    }
+
+    #[test]
+    fn a_canary_reports_the_failures_and_warnings_of_a_run_and_how_each_failure_reads() {
+        let entry = |area, check: &str, outcome| Line { area, check: check.into(), outcome };
+        let lines = [
+            entry(Area::Time, "clock", Outcome::passed("ok")),
+            entry(
+                Area::Ssh,
+                "passwords",
+                Outcome::warning(line::Problem::SshPasswords, "passwords sign in"),
+            ),
+            entry(
+                Area::Health,
+                "hardware",
+                Outcome::repeating(Verdict::Failed, "disk sda: worn out", None, None),
+            ),
+            entry(Area::Backups, "snapshots", Outcome::skipped("no snapshots")),
+        ];
+        let found = for_canary(&lines).unwrap();
+        assert_eq!((found.failures, found.warnings), (1, 1));
+        assert_eq!(found.failed, ["health: hardware: disk sda: worn out"]);
+        // Nothing that ran: the checks did not run.
+        assert_eq!(for_canary(&[lines[3].clone()]), None);
+        assert_eq!(for_canary(&[]), None);
     }
 }

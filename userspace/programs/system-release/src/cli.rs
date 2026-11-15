@@ -8,9 +8,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::canary::{self, Canaries, Colour, Standing};
 use crate::list::{About, Release};
 use crate::repo::{self, Keys};
-use crate::updates;
+use crate::rollout::Plans;
+use crate::{updates, verdict};
 
 /// Where a Dukovo system keeps the root of the releases it trusts.
 pub const TRUSTED_ROOT: &str = "/system/resources/updates/root.json";
@@ -31,7 +33,15 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
        system-release refresh --repo DIR (--keys DIR | --online-key SECRET [--plan FILE])
        system-release publish --repo DIR --online-key SECRET [--plan FILE] INCOMING
        system-release rollout --repo DIR --online-key SECRET --plan FILE
-                              (pause VERSION REASON | resume VERSION | canary NAME red|green)
+                              (pause VERSION REASON | resume VERSION
+                               | canaries --canaries FILE --reports DIR)
+       system-release canary-receive --socket PATH --canaries FILE --reports DIR
+       system-release canary --canaries FILE
+                             (add NAME KEY | remove NAME | NAME red REASON
+                              | NAME green REASON | NAME auto)
+       system-release canaries show --canaries FILE --reports DIR
+                                    [--repo DIR --plan FILE] [--json]
+       system-release canaries changed --canaries FILE --reports DIR --repo DIR --plan FILE
        system-release pack --repo DIR [--root FILE] --version VERSION --out FILE
        system-release check [--root FILE] [--version VERSION] REPOSITORY|FILE
        system-release served [--json] [--root FILE] URL
@@ -67,6 +77,12 @@ pub fn run(args: &[String]) -> i32 {
         "refresh" => refresh(&options),
         "publish" => publish(&options),
         "rollout" => rollout(&options),
+        "canary-receive" => canary_receive(&options),
+        "canary" => canary(&options),
+        "canaries" => match canaries(&options) {
+            Ok(status) => return status,
+            Err(why) => Err(why),
+        },
         "pack" => pack(&options),
         "check" => check(&options),
         "served" => served(&options),
@@ -111,6 +127,11 @@ struct Options {
     reason: Option<String>,
     advice: Option<String>,
     plan: Option<PathBuf>,
+    canaries: Option<PathBuf>,
+    reports: Option<PathBuf>,
+    socket: Option<PathBuf>,
+    /// For tests: the time the canaries are judged at, in place of now.
+    now: Option<i64>,
     json: bool,
     operands: Vec<String>,
 }
@@ -140,6 +161,16 @@ impl Options {
                 "--reason" => options.reason = Some(value()?),
                 "--advice" => options.advice = Some(value()?),
                 "--plan" => options.plan = Some(value()?.into()),
+                "--canaries" => options.canaries = Some(value()?.into()),
+                "--reports" => options.reports = Some(value()?.into()),
+                "--socket" => options.socket = Some(value()?.into()),
+                "--now" => {
+                    let text = value()?;
+                    let seconds = text
+                        .parse()
+                        .map_err(|_| format!("--now takes seconds since 1970, not {text}"))?;
+                    options.now = Some(seconds);
+                }
                 "--json" => options.json = true,
                 "--built" => {
                     let text = value()?;
@@ -416,8 +447,10 @@ fn save_plans(options: &Options, plans: Option<&crate::rollout::Plans>) -> Resul
 }
 
 /// `rollout --repo DIR --online-key SECRET --plan FILE ...`: on the
-/// update server, a release's waves paused or resumed, or a canary red
-/// or green, and the rollouts signed again (ADR 0469).
+/// update server, a release's waves paused or resumed, or held for the
+/// canaries that are not green as their reports and the releases the
+/// channels offer show them, and the rollouts signed again (ADRs 0469
+/// and 0533).
 fn rollout(options: &Options) -> Result<(), String> {
     let dir = needed(&options.repo, "--repo")?;
     let path = needed(&options.plan, "--plan")?;
@@ -445,18 +478,20 @@ fn rollout(options: &Options) -> Result<(), String> {
             plan.paused = None;
             format!("{} goes on", crate::rollout::named(version))
         }
-        ["canary", name, colour @ ("red" | "green")] => {
-            plans.red.retain(|red| red != name);
-            if *colour == "red" {
-                plans.red.push((*name).to_string());
-            }
-            format!("the canary {name} is {colour}")
+        ["canaries"] => {
+            let canaries = needed(&options.canaries, "--canaries")?;
+            let reports = needed(&options.reports, "--reports")?;
+            let offered = updates::offers(dir, &plans)?;
+            let now = options.now.unwrap_or_else(tuf::time::now);
+            let standings = verdict::standings(canaries, reports, &offered, now)?;
+            plans.red = canary::red(&standings);
+            verdict::said(&plans.red)
         }
+        ["canary", ..] => return Err(verdict::BY_HAND.into()),
         _ => {
-            return Err(
-                "rollout takes pause VERSION REASON, resume VERSION or canary NAME red|green"
-                    .into(),
-            );
+            return Err("rollout takes pause VERSION REASON, resume VERSION or canaries \
+                        --canaries FILE --reports DIR"
+                .into());
         }
     };
     let refreshed = updates::refresh(dir, &keys, Some(&mut plans), tuf::time::now())?;
@@ -508,6 +543,141 @@ fn publish(options: &Options) -> Result<(), String> {
         println!("{}", channel_line(channel));
     }
     Ok(())
+}
+
+/// `canary-receive --socket PATH --canaries FILE --reports DIR`: on the
+/// update server, the receiver that keeps each listed canary's newest
+/// report, until it is stopped (ADR 0533).
+fn canary_receive(options: &Options) -> Result<(), String> {
+    let socket = needed(&options.socket, "--socket")?;
+    let paths = crate::receiver::Paths {
+        canaries: needed(&options.canaries, "--canaries")?.clone(),
+        reports: needed(&options.reports, "--reports")?.clone(),
+    };
+    crate::receiver::serve(socket, &paths)
+}
+
+/// `canary --canaries FILE ...`: on the update server, a canary added to
+/// the list with its public key, taken off it, or its colour set by hand
+/// or given back to its reports (ADR 0533).
+fn canary(options: &Options) -> Result<(), String> {
+    let path = needed(&options.canaries, "--canaries")?;
+    let mut list = Canaries::load(path)?;
+    let now = options.now.unwrap_or_else(tuf::time::now);
+    let operands: Vec<&str> = options.operands.iter().map(String::as_str).collect();
+    let said = match operands.as_slice() {
+        ["add", name, key] => {
+            if matches!(*name, "add" | "remove" | "red" | "green" | "auto") {
+                return Err(format!(
+                    "`{name}` is a word of this command: name the canary otherwise"
+                ));
+            }
+            list.add(name, key, now)?;
+            format!("canary {name} added; it holds the waves until its first report is green")
+        }
+        ["remove", name] => {
+            list.remove(name)?;
+            format!("canary {name} removed; it holds the waves no longer")
+        }
+        [name, colour @ ("red" | "green"), reason @ ..] => {
+            let (colour, said) =
+                if *colour == "red" { (Colour::Red, "red") } else { (Colour::Green, "green") };
+            let reason = reason.join(" ");
+            list.set_override(name, Some((colour, &reason)), now)?;
+            format!("canary {name} is {said} by hand: {}", reason.trim())
+        }
+        [name, "auto"] => {
+            list.set_override(name, None, now)?;
+            format!("canary {name} goes by its reports again")
+        }
+        _ => {
+            return Err("canary takes add NAME KEY, remove NAME, NAME red REASON, NAME green \
+                        REASON or NAME auto"
+                .into());
+        }
+    };
+    list.save(path)?;
+    println!("system-release: {said}");
+    Ok(())
+}
+
+/// `canaries show|changed ...`: what the canaries' reports make of the
+/// waves, read only. The exit status, which `changed` sets (ADR 0533).
+fn canaries(options: &Options) -> Result<i32, String> {
+    let operands: Vec<&str> = options.operands.iter().map(String::as_str).collect();
+    match operands.as_slice() {
+        ["show"] => show(options).map(|()| 0),
+        ["changed"] => changed(options),
+        _ => Err("canaries takes show or changed".into()),
+    }
+}
+
+/// The standing of each canary as `--canaries` and `--reports` show it
+/// at `--now`, and, with `--repo` and `--plan`, the releases the
+/// channels offer and since when, for the rule on a release not taken;
+/// and the plans, if `--plan` named them.
+fn standings_of(options: &Options) -> Result<(Vec<Standing>, Option<Plans>), String> {
+    let canaries = needed(&options.canaries, "--canaries")?;
+    let reports = needed(&options.reports, "--reports")?;
+    let plans = options.plan.as_deref().map(Plans::load).transpose()?;
+    let offered = match (&options.repo, &plans) {
+        (Some(dir), Some(plans)) => updates::offers(dir, plans)?,
+        (Some(_), None) => {
+            return Err(
+                "--repo needs --plan: the plan says when a channel first offered a release".into(),
+            );
+        }
+        (None, _) => Vec::new(),
+    };
+    let now = options.now.unwrap_or_else(tuf::time::now);
+    Ok((verdict::standings(canaries, reports, &offered, now)?, plans))
+}
+
+/// `canaries show --canaries FILE --reports DIR [--repo DIR --plan FILE]
+/// [--json]`: each canary's colour and why, when it last reported, what
+/// it runs and a colour set by hand, and, with `--plan`, whether the plan
+/// holds the waves for the canaries that are not green.
+fn show(options: &Options) -> Result<(), String> {
+    let (standings, plans) = standings_of(options)?;
+    let held = plans.as_ref().map(|plans| plans.red.as_slice());
+    if options.json {
+        let shown = verdict::json(&standings, held);
+        println!("{}", serde_json::to_string(&shown).map_err(|err| err.to_string())?);
+        return Ok(());
+    }
+    if standings.is_empty() {
+        println!("system-release: no canary is listed: nothing holds the waves");
+    }
+    for standing in &standings {
+        println!("system-release: {}", verdict::line(standing));
+    }
+    if let Some(held) = held {
+        let red = canary::red(&standings);
+        let step = if verdict::differs(held, &red) {
+            "out of step: the next check signs the waves again"
+        } else {
+            "in step"
+        };
+        println!("system-release: the plan holds the waves for {}; {step}", verdict::listed(held));
+    }
+    Ok(())
+}
+
+/// `canaries changed --canaries FILE --reports DIR --repo DIR --plan
+/// FILE`: 0 and one line when the canaries that are not green are not
+/// those the plan holds the waves for, so that the rollouts are to be
+/// signed again; [`verdict::UNCHANGED`] and nothing when they are the
+/// same.
+fn changed(options: &Options) -> Result<i32, String> {
+    needed(&options.repo, "--repo")?;
+    let (standings, plans) = standings_of(options)?;
+    let plans = plans.ok_or("--plan is needed")?;
+    let red = canary::red(&standings);
+    if !verdict::differs(&plans.red, &red) {
+        return Ok(verdict::UNCHANGED);
+    }
+    println!("system-release: {}", verdict::change_line(&plans.red, &red));
+    Ok(0)
 }
 
 /// `pack --repo DIR --version VERSION --out FILE`: the update file of one
@@ -771,6 +941,237 @@ mod tests {
             run(&strings(&["check", "--root", &root, "--version", "0.13.0", &path("updates")])),
             1
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The canary `ref-box`'s key and the list that names it, in `dir`.
+    fn listed_canary(dir: &Path) -> (crate::canary::Key, String) {
+        let key = crate::canary::Key::from_pkcs8(&crate::canary::Key::generate().unwrap()).unwrap();
+        let list = dir.join("canaries.json").display().to_string();
+        let add = ["canary", "--canaries", &list, "add", "ref-box", &key.public_hex()];
+        assert_eq!(run(&strings(&add)), 0);
+        (key, list)
+    }
+
+    #[test]
+    fn the_canary_list_is_changed_by_hand_one_line_at_a_time() {
+        let dir = scratch("cli-canary");
+        let (key, list) = listed_canary(&dir);
+        let canary = |words: &[&str]| {
+            let mut all = strings(&["canary", "--canaries", &list]);
+            all.extend(strings(words));
+            run(&all)
+        };
+        let read = || crate::canary::Canaries::load(Path::new(&list)).unwrap();
+        assert_eq!(read().canaries["ref-box"].key, key.public_hex());
+        // A name or key twice, a word of the command as a name, a bad key.
+        assert_eq!(canary(&["add", "ref-box", &key.public_hex()]), 1);
+        assert_eq!(canary(&["add", "other", &key.public_hex()]), 1);
+        assert_eq!(canary(&["add", "auto", &"ab".repeat(32)]), 1);
+        assert_eq!(canary(&["add", "other", "abcd"]), 1);
+        // A colour by hand needs its reason, which may be several words.
+        assert_eq!(canary(&["ref-box", "red"]), 1);
+        assert_eq!(canary(&["ref-box", "red", "disk", "swap"]), 0);
+        let over = read().canaries["ref-box"].over.clone().unwrap();
+        assert_eq!((over.colour, over.reason.as_str()), (Colour::Red, "disk swap"));
+        assert_eq!(canary(&["ref-box", "green", "swapped"]), 0);
+        assert_eq!(read().canaries["ref-box"].over.as_ref().unwrap().colour, Colour::Green);
+        assert_eq!(canary(&["ref-box", "auto"]), 0);
+        assert!(read().canaries["ref-box"].over.is_none());
+        assert_eq!(canary(&["nobody", "auto"]), 1);
+        assert_eq!(canary(&["nobody", "red", "why"]), 1);
+        assert_eq!(canary(&["ref-box", "blue", "why"]), 1);
+        assert_eq!(canary(&["remove", "nobody"]), 1);
+        assert_eq!(canary(&["remove", "ref-box"]), 0);
+        assert!(read().canaries.is_empty());
+        assert_eq!(canary(&[]), 1);
+        assert_eq!(run(&strings(&["canary", "add", "ref-box", &key.public_hex()])), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An update repository `updates` in `dir` offering release 0.14.0 on
+    /// stable, with the keys in `keys`, whose plan is `plan`; and the
+    /// arguments that name the repository and its keys.
+    fn offering(dir: &Path) -> (String, Vec<String>) {
+        let path = |name: &str| dir.join(name).display().to_string();
+        tree(&dir.join("slot"));
+        assert_eq!(run(&strings(&["keys", &path("keys")])), 0);
+        let make = [
+            "make",
+            "--tree",
+            &path("slot"),
+            "--keys",
+            &path("keys"),
+            "--out",
+            &path("release"),
+            "--version",
+            "0.14.0",
+            "--commit",
+            "01d66b7",
+            "--toolchain",
+            "nightly-2026-10-15",
+            "--built",
+            "1793923200",
+        ];
+        assert_eq!(run(&strings(&make)), 0);
+        let repo = strings(&["--repo", &path("updates"), "--keys", &path("keys")]);
+        let with = |words: &[&str]| -> Vec<String> {
+            let mut all = strings(&words[..1]);
+            all.extend(repo.clone());
+            all.extend(strings(&words[1..]));
+            all
+        };
+        assert_eq!(run(&with(&["add", &path("release")])), 0);
+        assert_eq!(run(&with(&["channel", "stable", "0.14.0"])), 0);
+        let plan = path("plan.json");
+        assert_eq!(run(&with(&["refresh", "--plan", &plan])), 0);
+        (plan, repo)
+    }
+
+    #[test]
+    fn the_canaries_hold_the_waves_and_the_plan_follows_them() {
+        let dir = scratch("cli-canaries");
+        let (plan, repo) = offering(&dir);
+        let (key, list) = listed_canary(&dir);
+        let reports = dir.join("reports");
+        std::fs::create_dir(&reports).unwrap();
+        let reports_arg = reports.display().to_string();
+        let now = tuf::time::now();
+        let with_repo = |words: &[&str]| -> Vec<String> {
+            let mut all = strings(&words[..1]);
+            all.extend(repo.clone());
+            all.extend(strings(&["--plan", &plan]));
+            all.extend(strings(&words[1..]));
+            all
+        };
+        let canaries_args = |now: i64| -> Vec<String> {
+            strings(&["--canaries", &list, "--reports", &reports_arg, "--now", &now.to_string()])
+        };
+        // `changed`: 0 when the rollouts are to be signed again, 3 when
+        // they are not, 1 when it cannot say.
+        let changed = |now: i64| {
+            let mut all = strings(&["canaries", "changed"]);
+            all.extend(canaries_args(now));
+            all.extend(strings(&["--repo", &repo[1], "--plan", &plan]));
+            run(&all)
+        };
+        let rollout = |now: i64| {
+            let mut all = with_repo(&["rollout"]);
+            all.push("canaries".into());
+            all.extend(canaries_args(now));
+            run(&all)
+        };
+        let held = |dir: &Path| {
+            let base = tuf::Url::parse(&format!(
+                "file://{}/",
+                std::path::absolute(dir.join("updates")).unwrap().display()
+            ))
+            .unwrap();
+            let root = std::fs::read(dir.join("keys/root.json")).unwrap();
+            let status = updates::status(&base, &root).unwrap();
+            status.releases[0].rollout.as_ref().and_then(|r| r.held.clone())
+        };
+        let seal = |time: i64, healthy: bool| {
+            let mut report = crate::canary::Report::new("ref-box", time, "0.14.0", "stable");
+            report.health =
+                Some(crate::canary::Health { passed: healthy, time, detail: String::new() });
+            report.check = Some(crate::canary::Check { failures: 0, warnings: 0, failed: vec![] });
+            std::fs::write(reports.join("ref-box.json"), key.seal(&report)).unwrap();
+        };
+
+        // A canary that has not reported holds the waves; signing again
+        // says so, and then nothing is to be signed.
+        assert_eq!(changed(now), 0);
+        assert_eq!(rollout(now), 0);
+        assert_eq!(held(&dir).as_deref(), Some("canaries not green: ref-box"));
+        assert_eq!(Plans::load(Path::new(&plan)).unwrap().red, ["ref-box"]);
+        assert_eq!(changed(now), verdict::UNCHANGED);
+        // Its first healthy report frees them.
+        seal(now - 60, true);
+        assert_eq!(changed(now), 0);
+        assert_eq!(rollout(now), 0);
+        assert_eq!(held(&dir), None);
+        assert_eq!(changed(now), verdict::UNCHANGED);
+        // Three hours on, with no report since, it is silent.
+        assert_eq!(changed(now + 3 * 3600), 0);
+        // A failed health check is red, and a report of the canary that
+        // is newer and healthy is green.
+        seal(now, false);
+        assert_eq!(changed(now), 0);
+        assert_eq!(rollout(now), 0);
+        assert_eq!(held(&dir).as_deref(), Some("canaries not green: ref-box"));
+        // A colour set by hand wins, until it is taken away.
+        let by_hand = |words: &[&str]| {
+            let mut all = strings(&["canary", "--canaries", &list]);
+            all.extend(strings(words));
+            run(&all)
+        };
+        assert_eq!(by_hand(&["ref-box", "green", "known"]), 0);
+        assert_eq!(changed(now), 0);
+        assert_eq!(rollout(now), 0);
+        assert_eq!(held(&dir), None);
+        assert_eq!(by_hand(&["ref-box", "auto"]), 0);
+        assert_eq!(changed(now), 0);
+        // Taking the canary off the list frees the waves.
+        assert_eq!(rollout(now), 0);
+        assert_eq!(by_hand(&["remove", "ref-box"]), 0);
+        assert_eq!(changed(now), 0);
+        assert_eq!(rollout(now), 0);
+        assert_eq!(held(&dir), None);
+        assert_eq!(changed(now), verdict::UNCHANGED);
+        // `changed` needs the repository and the plan.
+        let mut bare = strings(&["canaries", "changed"]);
+        bare.extend(canaries_args(now));
+        assert_eq!(run(&bare), 1);
+        // The old way of marking a canary names the new one.
+        assert_eq!(run(&with_repo(&["rollout", "canary", "ref-box", "red"])), 1);
+        assert_eq!(run(&strings(&["canaries", "sleep"])), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn show_says_each_canarys_standing_and_whether_the_plan_is_in_step() {
+        let dir = scratch("cli-show");
+        let (plan, repo) = offering(&dir);
+        let (key, list) = listed_canary(&dir);
+        let reports = dir.join("reports");
+        std::fs::create_dir(&reports).unwrap();
+        let (reports_arg, now) = (reports.display().to_string(), tuf::time::now());
+        let args = |extra: &[&str]| -> Options {
+            let mut all = strings(&["--canaries", &list, "--reports", &reports_arg]);
+            all.extend(strings(extra));
+            Options::parse(&all).unwrap()
+        };
+        let (standings, plans) = standings_of(&args(&[])).unwrap();
+        assert!(plans.is_none());
+        assert_eq!(standings.len(), 1);
+        assert!(!standings[0].green);
+        assert_eq!(standings[0].reasons, ["no report since it was added"]);
+        assert!(verdict::json(&standings, None).get("in_step").is_none());
+        // With the plan, which holds nothing, it is out of step.
+        let (standings, plans) =
+            standings_of(&args(&["--plan", &plan, "--repo", &repo[1]])).unwrap();
+        let held = plans.as_ref().map(|p| p.red.as_slice());
+        let shown = verdict::json(&standings, held);
+        assert_eq!(shown["in_step"], false);
+        assert_eq!(shown["red"][0], "ref-box");
+        // A report that is fresh and healthy, at an evaluation time given.
+        let mut report = crate::canary::Report::new("ref-box", now - 5, "0.14.0", "stable");
+        report.check = Some(crate::canary::Check { failures: 0, warnings: 0, failed: vec![] });
+        std::fs::write(reports.join("ref-box.json"), key.seal(&report)).unwrap();
+        let (standings, _) = standings_of(&args(&["--now", &now.to_string()])).unwrap();
+        assert!(standings[0].green, "{:?}", standings[0].reasons);
+        let line = verdict::line(&standings[0]);
+        assert!(line.starts_with("ref-box: green; last report "), "{line}");
+        assert!(line.ends_with("running 0.14.0 on stable"), "{line}");
+        // The repository without the plan is a mistake, not a guess.
+        assert!(standings_of(&args(&["--repo", &repo[1]])).is_err());
+        // Both forms print and succeed.
+        let mut show =
+            strings(&["canaries", "show", "--canaries", &list, "--reports", &reports_arg]);
+        assert_eq!(run(&show), 0);
+        show.extend(strings(&["--json", "--plan", &plan, "--repo", &repo[1]]));
+        assert_eq!(run(&show), 0);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

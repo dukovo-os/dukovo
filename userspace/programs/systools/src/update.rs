@@ -29,7 +29,10 @@
 //! is unattended and has a restart time. A staged release the release
 //! keys withdraw is unstaged at the next check; just before an
 //! unattended restart into a staged release, updated asks the server
-//! once more, and waits while its waves are held (ADRs 0456, 0469).
+//! once more, and waits while its waves are held (ADRs 0456, 0469). A
+//! canary checks every hour, and after its first check starts the job
+//! that reports its state to the update server, so that a restart into a
+//! new release is reported soon (ADR 0533).
 //! Once a week it reads the running slot back against its signed list,
 //! as `sysupdate verify` does.
 //!
@@ -66,6 +69,16 @@ const FIRST: Duration = Duration::from_mins(10);
 
 /// How long it waits between checks.
 const EVERY: Duration = Duration::from_hours(24);
+
+/// How long a canary waits between checks: it takes each release as its
+/// channel offers it, and the project learns of a bad one from it first
+/// (ADR 0533).
+const EVERY_CANARY: Duration = Duration::from_hours(1);
+
+/// How long `settings` have updated wait between checks.
+fn every(settings: &Settings) -> Duration {
+    if settings.canary { EVERY_CANARY } else { EVERY }
+}
 
 /// What netd(8) says of the connection: `yes` on the first line while the
 /// one that carries the default route is metered.
@@ -473,6 +486,7 @@ pub fn updated(args: &mut Args) -> Result<i32, Fail> {
     if !once {
         std::thread::sleep(FIRST);
     }
+    let mut first = true;
     loop {
         let settings = Settings::load()?;
         // The weekly read of the slot is the service's, not a single
@@ -490,6 +504,12 @@ pub fn updated(args: &mut Args) -> Result<i32, Fail> {
         };
         if once {
             return Ok(0);
+        }
+        // A canary reports once the machine has started and checked, so
+        // that a restart into a new release is reported soon, not at the
+        // job's next hour.
+        if std::mem::take(&mut first) {
+            report_canary(&settings);
         }
         match (&settings.restart, staged) {
             (Some(restart), true) if settings.unattended => {
@@ -512,8 +532,26 @@ pub fn updated(args: &mut Args) -> Result<i32, Fail> {
                     }
                 }
             }
-            _ => std::thread::sleep(EVERY),
+            _ => std::thread::sleep(every(&settings)),
         }
+    }
+}
+
+/// Has the job that reports a canary's state do so now, when `settings`
+/// name this machine a canary that reports; the job runs on its own each
+/// hour as well (ADR 0533). It is not waited for: what it says is in its
+/// log.
+fn report_canary(settings: &Settings) {
+    if !settings.canary || settings.canary_name.is_none() {
+        return;
+    }
+    let started = crate::service::change(
+        "start",
+        sysupdate::canary::SERVICE,
+        &["--no-wait".to_string(), "--quiet".to_string()],
+    );
+    if let Err(why) = started {
+        println!("updated: cannot start {}: {}", sysupdate::canary::SERVICE, why.message);
     }
 }
 
@@ -827,6 +865,16 @@ mod tests {
 
     fn settings(check: Check, unattended: bool, metered: Metered, apps: Apps) -> Settings {
         Settings { check, unattended, metered, apps, ..Settings::default() }
+    }
+
+    #[test]
+    fn a_canary_checks_every_hour_and_any_other_machine_once_a_day() {
+        let canary = Settings { canary: true, ..Settings::default() };
+        assert_eq!(every(&canary), Duration::from_hours(1));
+        assert_eq!(every(&Settings::default()), Duration::from_hours(24));
+        // The name alone, which `canary = true` makes a canary of, changes nothing.
+        let named = Settings { canary_name: Some("ref-box".into()), ..Settings::default() };
+        assert_eq!(every(&named), Duration::from_hours(24));
     }
 
     #[test]

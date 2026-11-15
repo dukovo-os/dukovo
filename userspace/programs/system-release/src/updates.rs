@@ -37,6 +37,7 @@ use slots::version::Version;
 use tuf::repo as signing;
 
 use crate::archive::{Archive, Writer};
+use crate::canary;
 use crate::firmware::{self, Load, Set};
 use crate::list::{Release, hex, sha256_file};
 use crate::repo::{self, Keys, Published, expires};
@@ -561,6 +562,34 @@ fn held_channel(dir: &Path, current: &Current, name: &str) -> Result<Option<Chan
         .ok_or_else(|| format!("{}: the {name} channel is listed without a hash", dir.display()))?;
     let bytes = read(&dir.join(format!("targets/channels/{sha256}.{name}.json")))?;
     Channel::parse(&bytes, name).map(Some)
+}
+
+/// The releases the channels of the repository at `dir` offer, each with
+/// the time `plans` say a channel first offered it: what the canaries'
+/// rule on a release not taken needs (ADR 0533). A release the plans do
+/// not know yet was not offered long enough to judge, and one the release
+/// keys withdrew is never staged, so a canary that did not take it is
+/// not behind. Firmware sets are left out. None for a repository that
+/// offers nothing.
+///
+/// # Errors
+///
+/// If the repository's metadata cannot be read.
+pub fn offers(dir: &Path, plans: &rollout::Plans) -> Result<Vec<canary::Offer>, String> {
+    let Some(current) = current(dir)? else { return Ok(Vec::new()) };
+    let mut offers = Vec::new();
+    for name in CHANNELS {
+        let Some(channel) = held_channel(dir, &current, name)? else { continue };
+        let withdrawn = current.targets.contains_key(&rollout::withdrawal_path(&channel.version));
+        if let Some(plan) = plans.releases.get(&channel.version).filter(|_| !withdrawn) {
+            offers.push(canary::Offer {
+                channel: name.to_string(),
+                version: channel.version,
+                since: plan.released,
+            });
+        }
+    }
+    Ok(offers)
 }
 
 /// What [`add_firmware`] did.
@@ -1432,6 +1461,52 @@ mod tests {
         let current = current(&repo_dir).unwrap().unwrap();
         assert!(current.targets.contains_key("channels/stable.json"));
         assert_eq!(current.targets.len(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn offers_are_the_releases_the_channels_name_that_the_plans_know() {
+        let dir = scratch("updates-offers");
+        let keys = Keys::create(&dir.join("keys"), BUILT).unwrap();
+        tree(&dir.join("slot"));
+        made(&keys, &dir.join("slot"), "0.15.0", &dir.join("r1"));
+        std::fs::write(dir.join("slot/commands/spark"), b"spark, newer").unwrap();
+        made(&keys, &dir.join("slot"), "0.15.1", &dir.join("r2"));
+        let repo_dir = dir.join("repo");
+        let now = tuf::time::now();
+        let plan = |released| rollout::Plan { released, open: 0, paused: None };
+        let mut plans = rollout::Plans::default();
+        // A repository that offers nothing has no offers.
+        assert!(offers(&repo_dir, &plans).unwrap().is_empty());
+        add(&repo_dir, &keys, &dir.join("r1"), now).unwrap();
+        add(&repo_dir, &keys, &dir.join("r2"), now).unwrap();
+        set_channel(&repo_dir, &keys, "stable", "0.15.1", now).unwrap();
+        set_channel(&repo_dir, &keys, "beta", "0.15.0", now).unwrap();
+        // A release the plans do not know was not offered long enough to
+        // judge.
+        assert!(offers(&repo_dir, &plans).unwrap().is_empty());
+        plans.releases.insert("0.15.1".into(), plan(1000));
+        plans.releases.insert("0.15.0".into(), plan(500));
+        // Firmware sets, which the plans name beside the releases, are
+        // not offers.
+        plans.releases.insert(rollout::firmware_name("2026.11.12"), plan(7));
+        let offered = |plans: &rollout::Plans| {
+            offers(&repo_dir, plans)
+                .unwrap()
+                .into_iter()
+                .map(|o| (o.channel, o.version, o.since))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            offered(&plans),
+            [
+                ("stable".to_string(), "0.15.1".to_string(), 1000),
+                ("beta".to_string(), "0.15.0".to_string(), 500)
+            ]
+        );
+        // A withdrawn release is never staged, so none is behind on it.
+        withdraw(&repo_dir, &keys, "0.15.1", "boots badly", rollout::Advice::Stay, now).unwrap();
+        assert_eq!(offered(&plans), [("beta".to_string(), "0.15.0".to_string(), 500)]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

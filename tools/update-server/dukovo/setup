@@ -24,10 +24,14 @@
 # - The person running it, through elevate, may deploy: what they copy into
 #   the folders dukovo-catalog-incoming or dukovo-system-incoming of
 #   /system/state/lib is published when `ready` appears there.
-# - Six service files (README.md) publish, sign the timestamps again every
-#   six hours and list the known flaws. They have no account of their own,
-#   since Dukovo has no way to make one that no one signs in to, and run
-#   with nothing but the folders and the secret each names.
+# - Eight service files (README.md) publish, sign the timestamps again every
+#   six hours, list the known flaws and hold the waves by what the canaries
+#   report (ADR 0533). They have no account of their own, since Dukovo has
+#   no way to make one that no one signs in to, and run with nothing but
+#   the folders and the secret each names. A ninth, the receiver of the
+#   canaries' reports, runs as nginx's account, which nginx passes them to;
+#   the list of canaries, /system/settings/dukovo-update-server/canaries.json,
+#   is made empty here if there is none, and `ob release canary` changes it.
 #
 # It can run again, to update the scripts and these files.
 set -eu
@@ -114,6 +118,7 @@ if [ -n "$keys" ]; then
 fi
 
 state=/system/state/lib
+settings=/system/settings
 services=/system/settings/spark/services
 secrets=/system/state/spark/secrets
 nginx_data=/shared/services/org.nginx.nginx/nginx
@@ -159,13 +164,15 @@ done
 say "The program and the scripts"
 put 0755 "$top/catalog-repo" "$program_dir/catalog-repo"
 for script in publish.sh refresh.sh flaws-fetch.sh flaws.sh catalog-rollout.sh \
-	system-publish.sh system-refresh.sh system-rollout.sh; do
+	catalog-canaries.sh system-publish.sh system-refresh.sh system-rollout.sh \
+	system-canaries.sh canaries.sh; do
 	put 0755 "$top/$script" "$program_dir/$script"
 done
 put 0644 "$top/site.sh" "$program_dir/site.sh"
 put 0644 "$top/system-site.sh" "$program_dir/system-site.sh"
 put 0755 "$here/system-rollout" "$program_dir/system-rollout"
 put 0755 "$here/catalog-rollout" "$program_dir/catalog-rollout"
+put 0755 "$here/canaries" "$program_dir/canaries"
 
 say "The service files"
 service check "$here"/dukovo-*.toml
@@ -244,9 +251,10 @@ keep_key() {
 
 say "The online keys"
 keep_key catalog "$state/dukovo-catalog/online.json" \
-	dukovo-catalog-publish dukovo-catalog-refresh dukovo-catalog-flaws
+	dukovo-catalog-publish dukovo-catalog-refresh dukovo-catalog-flaws \
+	dukovo-catalog-canaries
 keep_key system "$state/dukovo-system/online.json" \
-	dukovo-system-publish dukovo-system-refresh
+	dukovo-system-publish dukovo-system-refresh dukovo-system-canaries
 if [ -n "$keys" ]; then rmdir "$keys" 2>/dev/null || true; fi
 
 say "nginx"
@@ -314,7 +322,7 @@ nginx_settings() {
 $certificates
 
 [permissions]
-files.read = ["/applications/org.nginx.nginx", "/system/live/certd", "/system/state/lib/dukovo-catalog-site", "/system/state/lib/dukovo-system-site"]
+files.read = ["/applications/org.nginx.nginx", "/system/live/certd", "/system/state/lib/dukovo-catalog-site", "/system/state/lib/dukovo-system-site", "/system/live/dukovo-canary-receive/receive.sock"]
 OVERRIDE
 	override="$services/settings.d/nginx.toml"
 	if [ -e "$override" ] && ! grep -q 'dukovo-update-server setup writes' "$override"; then
@@ -368,6 +376,20 @@ if [ "$stage" = plain ]; then
 	else
 		certificate=no
 	fi
+fi
+
+# After nginx, whose account the receiver runs as and the reports belong to:
+# the receiver alone writes them, and every account may read them. The list
+# of canaries is root's, and made empty only when there is none.
+say "The canaries"
+mkdir -p "$state/dukovo-canaries/reports" "$settings/dukovo-update-server"
+chown nginx "$state/dukovo-canaries/reports"
+chmod 0755 "$state/dukovo-canaries" "$state/dukovo-canaries/reports" \
+	"$settings/dukovo-update-server"
+list=$settings/dukovo-update-server/canaries.json
+if [ ! -e "$list" ]; then
+	printf '{"canaries": {}}\n' >"$work/canaries.json"
+	put 0644 "$work/canaries.json" "$list"
 fi
 
 say "The jobs"

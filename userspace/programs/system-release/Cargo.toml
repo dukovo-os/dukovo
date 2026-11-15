@@ -11,6 +11,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The canaries' receiver reads each request's head with httparse
+# (ADR 0533), as hyper does.
+httparse = "1.10.1"
 # Rescue's boot archive (ADR 0460), written a header at a time.
 radix-bootfs = { path = "../../../kernel/lib/bootfs", features = ["write"] }
 # The SHA-256 of every file, ring's, which ob patches in from the

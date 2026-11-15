@@ -64,10 +64,11 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
         ["deploy"] => return deploy(ctx),
         ["check"] => return check(ctx, URL),
         ["check", url] => return check(ctx, url),
+        ["rollout", "canary", ..] => bail!("{}", crate::release::CANARY_MOVED),
         ["rollout", rest @ ..] if !rest.is_empty() => return rollout(ctx, rest),
         ["server" | "deploy" | "check" | "rollout", ..] => bail!(
             "usage: ./ob catalog server setup [--dukovo] | deploy | check [<url>] | rollout \
-             (pause <id> <version> <reason> | resume <id> <version> | canary <name> red|green)"
+             (pause <id> <version> <reason> | resume <id> <version>)"
         ),
         _ => {}
     }
@@ -86,8 +87,8 @@ pub fn command(ctx: &Ctx, args: Vec<String>) -> Result<()> {
 
 /// `ob catalog rollout ...`: on the update server, through sudo as its
 /// catalog user, pauses or resumes the waves of a bundle's newest
-/// version, or marks a canary red or green, and signs the rollouts again
-/// (ADR 0544); needs no key of the signer's.
+/// version and signs the rollouts again (ADR 0544); needs no key of the
+/// signer's. The canaries are changed with `ob release canary`.
 fn rollout(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let words: Vec<String> = args.iter().map(|word| deploy::quote(word)).collect();
     let [ubuntu, dukovo] = ROLLOUT_SCRIPTS;

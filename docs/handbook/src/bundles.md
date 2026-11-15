@@ -184,7 +184,8 @@ history` says so.
 A catalog may send a new version out in waves, as Dukovo's own releases
 go out: its canary computers take it first, and the rest over the
 following week, each by a number it draws and keeps to itself (ADR
-0544). If something goes wrong, the catalog pauses the waves, and the
+0544). If something goes wrong, the catalog pauses the waves, as does a
+canary that reports a failure or goes quiet (ADR 0533), and the
 computers not reached yet wait. `bundle update` with no name, and
 updating by themselves, leave such an update until your computer's wave
 opens, and `bundle update --check` says on which day, and why the waves

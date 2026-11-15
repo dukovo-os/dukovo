@@ -32,7 +32,7 @@
 # timer ran twice: the one sent is the withdrawal of the stable release,
 # which the machine would see at once. Told ready, the next deploy is
 # published, and it does.
-about = "The update server moved to Dukovo (ADR 0542), over the lab network and HTTP: nginx's bundle and the setup run through elevate for the old server's online keys make the six jobs with their timers; the old server's metadata and rollout plans are seeded; the lab PC deploys the test releases with ob's tar over ssh and reads them back from the first root; a machine that read the old server takes the new one's metadata, still paused, with no refusal for a lower version; a deploy not told ready publishes nothing, and is published when told"
+about = "The update server moved to Dukovo (ADR 0542), over the lab network and HTTP: nginx's bundle and the setup run through elevate for the old server's online keys make the eight jobs with their timers and the canaries' receiver; the old server's metadata and rollout plans are seeded; the lab PC deploys the test releases with ob's tar over ssh and reads them back from the first root; a machine that read the old server takes the new one's metadata, still paused, with no refusal for a lower version; a deploy not told ready publishes nothing, and is published when told"
 time = "50m"
 fresh = true
 host_needs = ["python3", "ssh", "scp", "tar", "curl", "base64", "cmp", "cargo"]
@@ -70,9 +70,10 @@ expect = ["snapshot.json", "timestamp.json"]
 
 # NEW, steps 4 and 5: nginx's bundle, which setup would fetch from the
 # catalog, the files of the setup copied as ob copies them, the online keys
-# in the lab account's own /tmp, and setup run through elevate. The six
+# in the lab account's own /tmp, and setup run through elevate. The eight
 # jobs are service files with timers that timerd starts; each online key is
-# a secret of the jobs that sign with it.
+# a secret of the jobs that sign with it. The receiver of the canaries'
+# reports (ADR 0533) is a ninth service file, with no timer.
 [[step]]
 host = "sh {here}/../services/copy-bundle.sh org.nginx.nginx {machine} {machine-port:22}"
 expect = "copied: org.nginx.nginx"
@@ -104,10 +105,12 @@ expect = [
 run = "service list --timers"
 root = true
 expect = [
+    "dukovo-catalog-canaries",
     "dukovo-catalog-flaws",
     "dukovo-catalog-publish",
     "dukovo-catalog-refresh",
     "dukovo-flaws-fetch",
+    "dukovo-system-canaries",
     "dukovo-system-publish",
     "dukovo-system-refresh",
 ]
@@ -221,9 +224,9 @@ run = "sysupdate check"
 root = true
 expect = "-test.year was withdrawn: a test withdrawal; nothing to do"
 
-# What the test set up, taken down: the jobs and nginx stop, and the
+# What the test set up, taken down: the jobs, the receiver and nginx stop, and the
 # machine's wave is its own again.
 [[step]]
-run = '''sh -c 'rm -f /system/state/sysupdate/wave; for job in dukovo-catalog-flaws dukovo-catalog-publish dukovo-catalog-refresh dukovo-flaws-fetch dukovo-system-publish dukovo-system-refresh nginx; do service $job disable; done; echo "taken down: $((6 * 7))"' '''
+run = '''sh -c 'rm -f /system/state/sysupdate/wave; for job in dukovo-canary-receive dukovo-catalog-canaries dukovo-catalog-flaws dukovo-catalog-publish dukovo-catalog-refresh dukovo-flaws-fetch dukovo-system-canaries dukovo-system-publish dukovo-system-refresh nginx; do service $job disable; done; echo "taken down: $((6 * 7))"' '''
 root = true
 expect = "taken down: 42"

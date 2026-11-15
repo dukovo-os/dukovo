@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Holds or frees the waves of the catalog's bundles by what the canaries
+# report (ADR 0533): the same canaries as the system's, from the same list
+# (/system/settings/dukovo-update-server/canaries.json) and reports
+# (/var/lib/dukovo-canaries/reports), and when the canaries not green are
+# not those the plan holds the waves for, the rollouts are signed again.
+# On an Ubuntu server a path unit starts this when a report arrives; Spark
+# has none, so a timer starts it every 5 minutes. Nothing until the first
+# deploy brings a root. It has no network.
+#
+# service.toml(5) explains each setting, `service check dukovo-catalog-canaries` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Hold or free the catalog's waves by what the canaries report"
+program = "/system/commands/sh"
+arguments = ["/system/state/lib/dukovo-update-server/catalog-canaries.sh"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+# This job's own copy of the online key, as base64: a secret loses a
+# trailing newline and a key is binary. `service secret set` puts it in.
+secrets = ["online-key"]
+
+[environment]
+DUKOVO_CATALOG_HOME = "/system/state/lib/dukovo-catalog"
+DUKOVO_CATALOG_INCOMING = "/system/state/lib/dukovo-catalog-incoming"
+DUKOVO_CATALOG_PROGRAM = "/system/state/lib/dukovo-update-server/catalog-repo"
+DUKOVO_CATALOG_SITE = "/system/state/lib/dukovo-catalog-site"
+DUKOVO_CANARIES = "/system/settings/dukovo-update-server/canaries.json"
+DUKOVO_CANARY_REPORTS = "/system/state/lib/dukovo-canaries/reports"
+DUKOVO_LOCK = "/system/live/dukovo-update-server/catalog.lock"
+
+[limits]
+memory = "512M"
+
+[timer]
+every = "5m"
+after_boot = "5m"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# script, the update server's own folders it works in, and the canaries'
+# reports, which it reads; and nothing else of the system's. The list of
+# canaries is in /system/settings, which every service reads.
+[permissions]
+files.read = ["/system/state/lib/dukovo-update-server", "/system/state/lib/dukovo-canaries"]
+files.read-write = ["/system/state/lib/dukovo-catalog", "/system/state/lib/dukovo-catalog-site", "/system/live/dukovo-update-server"]

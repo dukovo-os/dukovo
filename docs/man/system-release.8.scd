@@ -5,7 +5,7 @@ system-release(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-system-release - check, sign, offer, publish, pack, keep Rescue of and make keys for Dukovo's system releases
+system-release - check, sign, offer, publish, pack, keep Rescue of and make keys for Dukovo's system releases, and receive and judge the reports of its canaries
 
 # SYNOPSIS
 
@@ -35,7 +35,15 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 
 *system-release publish* *--repo* _dir_ *--online-key* _secret_ [*--plan* _file_] _incoming_
 
-*system-release rollout* *--repo* _dir_ *--online-key* _secret_ *--plan* _file_ *pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*
+*system-release rollout* *--repo* _dir_ *--online-key* _secret_ *--plan* _file_ *pause* _version_ _reason_ | *resume* _version_ | *canaries* *--canaries* _file_ *--reports* _dir_
+
+*system-release canary-receive* *--socket* _path_ *--canaries* _file_ *--reports* _dir_
+
+*system-release canary* *--canaries* _file_ *add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*
+
+*system-release canaries show* *--canaries* _file_ *--reports* _dir_ [*--repo* _dir_ *--plan* _file_] [*--json*]
+
+*system-release canaries changed* *--canaries* _file_ *--reports* _dir_ *--repo* _dir_ *--plan* _file_
 
 *system-release pack* *--repo* _dir_ [*--root* _file_] *--version* _version_ *--out* _file_
 
@@ -153,8 +161,11 @@ for a day, and is signed anew when what it lists changes or it has
 twelve hours left. *rollout* changes the plan and signs the rollouts at
 once: *pause* holds a release's waves where they are, with a reason
 machines show (*pause firmware-2026.2.1* a firmware set's); *resume* lets
-them open on schedule again; and *canary* marks a canary *red*, which
-holds every release's and set's waves, or *green*.
+them open on schedule again; and *canaries* works out which canaries
+are not green from the list and their reports (see CANARIES below) and
+holds every release's and set's waves while there is one, or frees them.
+The old *canary* _name_ *red*|*green* is refused: *canary* below changes
+the list.
 
 ```
 $ system-release rollout --repo /srv/dukovo-system/system.8Fw1 --online-key online.key --plan rollout.json pause 0.15.1 "disk errors on NVMe"
@@ -180,6 +191,68 @@ system-release: /srv/dukovo-system/system.5Kq2 offers 3 releases, newest Dukovo 
 system-release: the stable channel offers Dukovo 0.15.1
 system-release: the beta channel offers Dukovo 0.15.1
 ```
+
+# CANARIES
+
+The canaries are the project's own machines that take each release
+first. Each signs a report every hour (ADR 0533), and a release's waves
+open on schedule only while every canary is green. The update server
+judges them, with these commands, and holds the waves of every release
+and set, and of the catalog's bundles, while one is not.
+
+*canary-receive* is the receiver of the reports, which the web server
+passes _POST /canary/v1/report_ to through the unix socket _path_,
+which it makes readable and writable by its owner and group. It holds
+no key and needs no network. A report is kept, as that canary's one
+file in _dir_, only when its envelope is no larger than 16 KiB, its key is on the
+list in _file_, its signature verifies, the name that key was enrolled
+under is the name in the report, its time is no more than 5 minutes
+ahead of the server's clock and it is newer than the report kept. It
+answers 200 when it keeps one, and otherwise the reason: 400 for a
+request that is not a report or whose time is ahead, 403 for a key that is
+not on the list, a signature that does not verify or another canary's
+name, 409 for a report that is not newer, 413 for one that is too large
+and 503 when it is busy. It reads the list for each request, and takes no
+chunked body: the web server sends the length. A request with any other
+key writes nothing.
+
+*canary* changes the list in _file_, which belongs to root: *add* puts the
+canary _name_ on it with the public key, in hex, that *sysupdate canary
+enrol* prints (ADR 0533); *remove* takes it off; _name_ *red* or *green*
+sets its colour by hand, with the reason, which wins over its reports;
+and _name_ *auto* goes back to them. A canary added is not green until
+its first report is. A name is 1 to 32 of a-z, 0-9 and -, not first -.
+
+*canaries show* prints each canary on the list: its colour and why, when
+it last reported, the release it runs and a colour set by hand. With
+*--repo*, the repository the update server serves, and *--plan*, it also
+says whether the plan holds the waves for the canaries not green. With
+*--json* it prints the same as JSON.
+
+A canary is not green when any of these holds:
+
+- it is red by hand;
+- it has never reported;
+- its newest report is more than 2 hours old;
+- its last health check failed;
+- its last update fell back;
+- *dukovo-check* found failures, or did not run;
+- a service has failed;
+- with *--repo* and *--plan*, its channel has offered a newer release for
+  more than 6 hours, as the plan says, and it still runs an older one.
+
+A colour set by hand wins over all of them. A report is checked again
+against the list each time it is judged, so a canary taken off the list
+counts for nothing and a report the list does not vouch for is not
+a green one.
+
+*canaries changed* prints one line and exits 0 when the canaries that are
+not green are not those the plan in _file_ holds the waves for, so that
+*rollout canaries* is to sign the rollouts again; it prints nothing and
+exits 3 when they are the same. The update server runs it after a
+report or a change of the list and every few minutes besides, and signs
+only when it says so. The signed rollout names the canaries, never the
+reasons, which stay on the server.
 
 *served* reads the repository an update server serves at _url_ as a
 computer online does, from *--root*: every signature, version, hash and
@@ -215,6 +288,18 @@ Ops.
 
 *--plan* _file_
 	The update server's plan of the waves, which is never served.
+
+*--canaries* _file_
+	The list of canaries, root's file on the update server.
+
+*--reports* _dir_
+	The folder of the canaries' reports, one file for each canary.
+
+*--socket* _path_
+	The unix socket *canary-receive* listens on.
+
+*--json*
+	With *served* and *canaries show*, print JSON.
 
 *--tree* _dir_
 	The slot to make a release of: what _/system_ will hold.
@@ -267,6 +352,10 @@ Ops.
 
 2
 	The command line was wrong.
+
+3
+	With *canaries changed*, the canaries that are not green are the
+	ones the plan already holds the waves for: nothing to sign.
 
 # FILES
 

@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[Unit]
+Description=Check the Dukovo catalog's canaries when one reports or the list changes (ADR 0533)
+
+[Path]
+# A report is written whole beside its place and renamed into it, as the
+# list is, so each is a change of its folder.
+PathChanged=/var/lib/dukovo-canaries/reports
+PathChanged=/etc/dukovo-update-server/canaries.json
+Unit=dukovo-catalog-canaries.service
+
+[Install]
+WantedBy=multi-user.target

@@ -5074,6 +5074,7 @@ dependencies = [
 name = "system-release"
 version = "0.15.0"
 dependencies = [
+ "httparse",
  "radix-bootfs",
  "ring",
  "serde",
