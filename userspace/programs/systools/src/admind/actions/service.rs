@@ -112,12 +112,14 @@ const STOPPED: Settles = |now| match now {
 /// the rest.
 const ENABLED: Settles = |now| (now == "running").then_some(true);
 
-/// Disabling leaves a service that Spark says is disabled, and moves one
-/// that runs or is about to. Spark's word for a service that is stopped
-/// changes to `disabled` only once Spark reads its file again, so
-/// `stopped` cannot tell.
+/// Disabling writes the service's file and asks Spark to stop it, so it
+/// leaves a service that is stopped or disabled, and moves one that runs
+/// or is about to. Spark's word for a stopped service turns to `disabled`
+/// only when Spark reads the file again, which disabling does not ask, so
+/// a stopped service stays `stopped`; the file tells the rest. What a stop
+/// does to a failed or done service cannot be told from the state alone.
 const DISABLED: Settles = |now| match now {
-    "disabled" => Some(true),
+    "stopped" | "disabled" => Some(true),
     "running" | "starting" | "pending" | "waiting" | "listening" => Some(false),
     _ => None,
 };
@@ -922,7 +924,7 @@ mod tests {
         );
         assert_eq!(told("service.enable", true), ["running"]);
         assert!(told("service.enable", false).is_empty());
-        assert_eq!(told("service.disable", true), ["disabled"]);
+        assert_eq!(told("service.disable", true), ["stopped", "disabled"]);
         assert_eq!(
             told("service.disable", false),
             ["pending", "starting", "running", "waiting", "listening"]
