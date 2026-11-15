@@ -325,6 +325,8 @@ These come from finished work; the releases themselves are in the
 | A cap on the memory a user's pipes hold (Linux's `pipe-user-pages-soft`) (ADR 0497) | Pipe buffers are kernel memory, not yet charged to a resource domain | Charging kernel memory to resource domains |
 | The RTS5260 card reader; UHS-I, MultiMediaCards and Memory Sticks on Realtek readers (ADR 0448) | Only GPL drivers describe them | Realtek's documentation or a BSD driver |
 | AML fixes reach Dukovo when uACPI is vendored again (ADR 0200) | `aml=off` works around a firmware table uACPI cannot run until then | Upstream |
+| eSpeak NG is pinned to a commit of master after 1.52.0 (`ports/espeak-ng`, version `1.53.0~git20261108`); the pin moves to the 1.53.0 release | No release holds the fixes of nine memory-safety flaws that OSS-Fuzz's records name, and `ob ports outdated` does not watch a port pinned to a commit alone, so the move is done when the release is tagged | The 1.53.0 release |
+| OSS-Fuzz's records OSV-2021-1041 (global-buffer-overflow in SetUpPhonemeTable) and OSV-2023-467 (stack-buffer-overflow in SetPitchGradient) of eSpeak NG | They name no fix, upstream or in Dukovo, so the daily scan keeps their issues open until one exists | A fix of either flaw in eSpeak NG |
 
 ## Waiting on a need
 

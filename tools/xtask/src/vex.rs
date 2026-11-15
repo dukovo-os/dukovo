@@ -9,7 +9,8 @@
 //!
 //! A statement names the advisory, by its ID and any aliases, and each
 //! product it is about, by the package URL the scan gives the part:
-//! `pkg:generic/<port>@<version>` for a port and its extra sources, and
+//! `pkg:generic/<port>@<version>` for a port,
+//! `pkg:generic/<repository>@<commit>` for an extra source, and
 //! `pkg:cargo/<crate>@<version>` for a crate. The version is part of the
 //! name, so a statement lapses when the part moves to another version,
 //! and the advisory is weighed again then. A statement whose status is
@@ -142,7 +143,8 @@ pub fn read(root: &Path) -> Result<Document> {
     }
 }
 
-/// The package URL the scan gives a port, and a statement names it by.
+/// The package URL the scan gives a port, and a statement names it by; an
+/// extra source's is its repository's name and the commit pinned.
 pub fn port_product(name: &str, version: &str) -> String {
     format!("pkg:generic/{}@{}", encode(name), encode(version))
 }

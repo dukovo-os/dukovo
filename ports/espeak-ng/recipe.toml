@@ -5,8 +5,12 @@
 # with, readerd(8) running it as a program of its own for each thing it
 # says. It is under version 3 of the GPL or later, its voice data too;
 # the Unicode character data built into it is under Unicode's license.
+# The pin is a commit of master after 1.52.0, for fixes of memory-safety
+# flaws that no release holds yet: its version is the CMake project's,
+# 1.53.0, with the commit's date. It moves to the 1.53.0 release once that
+# is tagged.
 name = "espeak-ng"
-version = "1.52.0"
+version = "1.53.0~git20261108"
 summary = "eSpeak NG, the speech synthesizer, and its voices"
 license = "GPL-3.0-or-later AND Unicode-DFS-2016"
 homepage = "https://github.com/espeak-ng/espeak-ng"
@@ -15,5 +19,4 @@ notices = ["COPYING", "COPYING.UCD"]
 
 [source]
 git = "https://github.com/espeak-ng/espeak-ng.git"
-commit = "4870adfa25b1a32b4361592f1be8a40337c58d6c"
-tag = "1.52.0"
+commit = "688cb60368d6e0998f3632af8d1c3c2ad4191fc2"

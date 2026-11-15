@@ -2,38 +2,112 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://dukovo.org/support/security/vex.json",
   "author": "Dukovo security team",
-  "timestamp": "2026-11-15T15:00:00Z",
-  "version": 1,
+  "timestamp": "2026-11-15T16:00:00Z",
+  "version": 2,
   "statements": [
     {
       "vulnerability": { "name": "CVE-2023-49990" },
-      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.53.0~git20261108" }],
       "status": "fixed",
-      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 and the commit pinned hold. OSV's record names no fixed commit, so it matches every commit of the project."
     },
     {
       "vulnerability": { "name": "CVE-2023-49991" },
-      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.53.0~git20261108" }],
       "status": "fixed",
-      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 and the commit pinned hold. OSV's record names no fixed commit, so it matches every commit of the project."
     },
     {
       "vulnerability": { "name": "CVE-2023-49992" },
-      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.53.0~git20261108" }],
       "status": "fixed",
-      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 and the commit pinned hold. OSV's record names no fixed commit, so it matches every commit of the project."
     },
     {
       "vulnerability": { "name": "CVE-2023-49993" },
-      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.53.0~git20261108" }],
       "status": "fixed",
-      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 and the commit pinned hold. OSV's record names no fixed commit, so it matches every commit of the project."
     },
     {
       "vulnerability": { "name": "CVE-2023-49994" },
-      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.53.0~git20261108" }],
       "status": "fixed",
-      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 and the commit pinned hold. OSV's record names no fixed commit, so it matches every commit of the project."
+    },
+    {
+      "vulnerability": { "name": "OSV-2024-395" },
+      "products": [{ "@id": "pkg:generic/libpcap@1.10.7" }],
+      "status": "fixed",
+      "status_notes": "Release 1.10.7 holds commit af077f9e, \"Initialize the scratch memory store to 0\", the 1.10 branch's copy of commit 360f7fa6, which gives pcapint_filter_with_aux_data's scratch memory a value before a filter reads it. OSV's record names no fixed commit, so it matches every commit after the one that brought the flaw."
+    },
+    {
+      "vulnerability": { "name": "OSV-2026-343" },
+      "products": [{ "@id": "pkg:generic/pcre2@6f9d7c1373262c541324a16a358785b33ef116cf" }],
+      "status": "fixed",
+      "status_notes": "The commit pinned, nginx's PCRE2 at release 10.49, holds commit ec9c286, \"Fix compiler integer overflows\" (GHSA-fmgr-6ggq-9859), of OSS-Fuzz's fixed range a2b146a3..e19e76ad. The commits of that range that 10.49 lacks change no code of pcre2_compile: they are release bookkeeping, CI, CMake, pcre2test, pcre2grep, and a fix of pcre2_convert, which nginx does not call. nginx builds only PCRE2's 8-bit library, so pcre2_compile_32 is not built. OSV's range ends at a commit of the main branch that 10.49's release branch does not hold, so it matches 10.49."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-119586" },
+      "products": [{ "@id": "pkg:generic/sqlite@3.54.1" }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The flaw is in the .recover command of SQLite's shell. Dukovo's shell, which the sqlite-cli port builds from this source's shell.c, is compiled with the options of the sqlite port's library, and they leave out SQLITE_ENABLE_DBPAGE_VTAB. The shell has .recover only with that option (SQLITE_SHELL_HAVE_RECOVER, src/shell.c.in), so Dukovo's has none; the lab's SQLite test checks that the shell refuses .recover."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-93658", "aliases": ["GHSA-cgg3-923w-v53m"] },
+      "products": [{ "@id": "pkg:generic/uutils-coreutils@0.9.0" }],
+      "status": "not_affected",
+      "impact_statement": "install sets a file's mode before its owner, and leaves the file set-user-ID if changing the owner fails. Radix has no set-user-ID execution: a process keeps its name through exec, and a name is given only when a process is started (ADR 0214, ADR 0219). A file left set-user-ID gives no one any privilege on Dukovo."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-14461" },
+      "products": [{ "@id": "pkg:generic/mtr@0.96" }],
+      "status": "fixed",
+      "status_notes": "Patch 0001 of the mtr port carries upstream commit 48e17944, which limits the length ipinfo_lookup reads to PACKETSZ. No release of mtr holds it yet."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-95692" },
+      "products": [{ "@id": "pkg:generic/openssl@3.5.9" }],
+      "status": "fixed",
+      "status_notes": "Patch 0002 of the openssl port carries commit 257a3427 of OpenSSL's 3.5 branch, the fix of OpenSSL's advisory of 10 November 2026, which release 3.5.10 holds."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-88823" },
+      "products": [{ "@id": "pkg:generic/openssl@3.5.9" }],
+      "status": "fixed",
+      "status_notes": "Patch 0003 of the openssl port carries commit 159e1de0 of OpenSSL's 3.5 branch, the fix of OpenSSL's advisory of 10 November 2026, which release 3.5.10 holds."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-88822" },
+      "products": [{ "@id": "pkg:generic/openssl@3.5.9" }],
+      "status": "fixed",
+      "status_notes": "Patch 0004 of the openssl port carries commit 1a73dc59 of OpenSSL's 3.5 branch, the fix of OpenSSL's advisory of 10 November 2026, which release 3.5.10 holds."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-95691" },
+      "products": [{ "@id": "pkg:generic/openssl@3.5.9" }],
+      "status": "fixed",
+      "status_notes": "Patch 0005 of the openssl port carries commit f6244675 of OpenSSL's 3.5 branch, the fix of OpenSSL's advisory of 10 November 2026, which release 3.5.10 holds."
+    },
+    {
+      "vulnerability": { "name": "CVE-2026-124249" },
+      "products": [{ "@id": "pkg:generic/python@3.15.2" }],
+      "status": "fixed",
+      "status_notes": "Patch 0006 of the python port carries commit 4e9d037f of CPython's 3.15 branch, which makes http.cookiejar check an expired cookie against the policy before it removes the stored one. No release of 3.15 holds it yet."
+    },
+    {
+      "vulnerability": { "name": "OSV-2021-777" },
+      "products": [{ "@id": "pkg:generic/libxml2@2.15.4" }],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The use after free is on the path of xmlXIncludeCopyRange, which copied an XPointer range into the document. libxml2 removed XPointer locations, and that function with them, in commit 669bd349, which release 2.14.0 and every later one hold, so 2.15.4 has no such path. OSV's record names no fixed commit, so it matches every commit after the one that brought the flaw."
+    },
+    {
+      "vulnerability": { "name": "OSV-2024-698" },
+      "products": [{ "@id": "pkg:generic/libxml2@2.15.4" }],
+      "status": "fixed",
+      "status_notes": "Commit 36ea881b made xmlOutputBufferCreateFilename close the encoding handler on failure, which htmlSaveFileFormat closed again; commit a530ff12 removed the second close three days later. Every release that holds the first holds the second, so no release has the flaw. In 2.15.4 xmlOutputBufferCreateFilename leaves the handler to its caller on failure (commit fcb7a777), and htmlSaveFileFormat closes it once. OSV's record names no fixed commit, so it matches every commit after the one that brought the flaw."
     }
   ]
 }

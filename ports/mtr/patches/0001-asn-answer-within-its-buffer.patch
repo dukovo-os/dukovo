@@ -1,0 +1,31 @@
+SPDX-FileCopyrightText: 2026 R.E. Wolff <R.E.Wolff@BitWizard.nl>
+SPDX-License-Identifier: GPL-2.0-only
+
+Upstream's commit 48e1794414d338ce47abc0f27c25ade8788af9c3 (mtr's master
+branch, 2026-06-16), which fixes CVE-2026-14461: ipinfo_lookup() in
+ui/asn.c, which the AS lookups of -y and -z run, reads the reply to its
+DNS query with the length res_query() returns, and that can be longer
+than the PACKETSZ bytes of the buffer the reply is in, so it reads past
+the end of the buffer. The length is clipped to the buffer's. mtr 0.96
+does not hold the fix, and no release holds it.
+
+From: R.E. Wolff <R.E.Wolff@BitWizard.nl>
+Date: Tue, 16 Jun 2026 11:03:39 +0200
+Subject: Fixed possible buffer overrun in asn code-- Michał Majchrowicz
+---
+ ui/asn.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/ui/asn.c b/ui/asn.c
+index 111c394..487d9e8 100644
+--- a/ui/asn.c
++++ b/ui/asn.c
+@@ -94,6 +94,8 @@ static char *ipinfo_lookup(
+             DEB_syslog(LOG_INFO, "Malloc-txt: %s", UNKN);
+         return xstrdup(UNKN);
+     }
++    // Clip len to PACKETSZ. -- Michał Majchrowicz
++    if (len > PACKETSZ) len = PACKETSZ;
+ 
+     pt = answer + sizeof(HEADER);
+ 

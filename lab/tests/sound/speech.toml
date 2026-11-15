@@ -13,7 +13,7 @@ time = "2m"
 
 [[step]]
 run = '''sh -c 'espeak-ng --version; n=$(espeak-ng --voices | wc -l); echo "voices $n"; [ "$n" -gt 100 ] && echo "voices"-found' '''
-expect = ["eSpeak NG text-to-speech: 1.52.0", "/system/resources/espeak-ng-data", "voices-found"]
+expect = ["eSpeak NG text-to-speech: 1.53.0", "/system/resources/espeak-ng-data", "voices-found"]
 [[step]]
 run = '''sh -c 'f=/tmp/lab-speech.wav; espeak-ng -w $f "The disk is ready." && s=$(stat -c %s $f); echo "bytes $s"; rm -f $f; [ "$s" -gt 20000 ] && echo "wav"-written' '''
 expect = "wav-written"

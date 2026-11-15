@@ -8,17 +8,17 @@
 # here, so espeak-ng is first built for the build machine, which compiles
 # it: the compiled data is the same on any little-endian machine. Only
 # the espeak-ng program is built for Radix, with the library built into
-# it, and without what readerd(8) does not need: MBROLA voices, libsonic,
-# a sound output of its own (it writes WAV with --stdout, which readerd
-# plays), the asynchronous mode and speechPlayer (a C++ engine; the
-# Klatt voices stay). Russian's extended word list is left out: it makes
-# its dictionary 8 MiB of the data's 19, and the live system holds the
-# data in memory. Russian is still spoken, by its rules and its main
-# list, as with eSpeak NG's --with-extdict-ru=no.
+# it, and without what readerd(8) does not need: its tests, MBROLA
+# voices, libsonic, a sound output of its own (it writes WAV with
+# --stdout, which readerd plays), the asynchronous mode and speechPlayer
+# (a C++ engine; the Klatt voices stay). Russian's extended word list is
+# left out: it makes its dictionary 8 MiB of the data's 19, and the live
+# system holds the data in memory. Russian is still spoken, by its rules
+# and its main list, as with eSpeak NG's --with-extdict-ru=no.
 set -eu
 
 options="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF
--DUSE_MBROLA=OFF -DUSE_LIBSONIC=OFF -DUSE_LIBPCAUDIO=OFF -DUSE_ASYNC=OFF
+-DENABLE_TESTS=OFF -DUSE_MBROLA=OFF -DUSE_LIBSONIC=OFF -DUSE_LIBPCAUDIO=OFF -DUSE_ASYNC=OFF
 -DUSE_SPEECHPLAYER=OFF -DUSE_KLATT=ON -DESPEAK_BUILD_MANPAGES=OFF -DEXTRA_ru=OFF -Wno-dev"
 
 # The build machine's espeak-ng, and the data it compiles. CMake would
@@ -36,10 +36,14 @@ host=$PORT_BUILD/host
 
 # Radix's espeak-ng, which looks for the data where Dukovo keeps it
 # (patches/0001).
+# mlibc's sys/endian.h is an empty file, which eSpeak NG's check takes
+# for the BSDs' header and reads le16toh() from: it is told the header is
+# not there, and reads <endian.h>, where mlibc defines them.
 radix=$PORT_BUILD/radix
 # shellcheck disable=SC2086
 {
 	cmake -S "$PORT_SRC" -B "$radix" $options -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
+		-DHAVE_SYS_ENDIAN_H=0 \
 		-DCMAKE_INSTALL_PREFIX="$PREFIX" -DESPEAK_DATA_DIR="$PREFIX/resources/espeak-ng-data" &&
 		cmake --build "$radix" -j "$JOBS" --target espeak-ng-bin
 } >"$PORT_BUILD/radix.log" 2>&1 || {

@@ -52,16 +52,48 @@ const PASSWORD: &str = "queen of hearts";
 /// How long the install may take, in seconds: it copies the whole system.
 const INSTALL_SECONDS: u64 = 240;
 
+/// What the installer's startup screen names as each of its checks
+/// begins, in order (its messages `starting-release`, `starting-machine`
+/// and `starting-setup`).
+const STARTUP: [&str; 3] = [
+    "Checking the signed system release",
+    "Looking at this computer's disks and network cards",
+    "Looking for setup files",
+];
+
+/// Checks that what readerd said before `welcome`, the first page, in
+/// `log` is the console's name and the startup screen's checks, in their
+/// order. A check is named as it begins, which says it over what was
+/// being said and drops what waited to be said: one that ends before the
+/// reader has started on it is never heard. On a fast machine, as under
+/// KVM, that can be any of them, so none is required.
+fn startup_heard(log: &str, welcome: &str) -> Result<(), String> {
+    let started = log.find("consoled: started /system/commands/dukovo-install").unwrap_or(0);
+    let end = log[started..].find(welcome).map_or(log.len(), |at| started + at);
+    let mut next = 0;
+    for line in log[started..end].lines() {
+        let Some((_, said)) = line.split_once("readerd: says: ") else { continue };
+        if said == "Console 1" {
+            continue;
+        }
+        match STARTUP[next..].iter().position(|check| said.starts_with(check)) {
+            Some(at) => next += at + 1,
+            None => return Err(format!("before the first page the screen reader said {said:?}")),
+        }
+    }
+    Ok(())
+}
+
 /// The first boot, from the stick: the screens, heard and answered by
 /// keys.
 fn with_speech(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.expect_anywhere("consoled: the screen reader is listening")?;
     vm.expect_anywhere("consoled: started /system/commands/dukovo-install on tty1 as process ")?;
     // The startup screen's checks, then the first page whole.
-    vm.expect_anywhere("readerd: says: Checking the signed system release")?;
-    vm.expect(&format!(
-        "readerd: says: Install Dukovo {VERSION}. Welcome, step 1 of 6. This installs Dukovo"
-    ))?;
+    let welcome =
+        format!("readerd: says: Install Dukovo {VERSION}. Welcome, step 1 of 6. This installs Dukovo");
+    vm.expect(&welcome)?;
+    startup_heard(&vm.log(), &welcome)?;
     // The screen is read as ASCII: the list's marks, as the focus's, are
     // not.
     vm.expect_screen(&["Step 1 of 6", "[x] Screen reader", "Normal"])?;
@@ -194,4 +226,29 @@ fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     vm.press_power_button()?;
     vm.expect("spark: every service has stopped")?;
     vm.expect_exit(QEMU_EXIT_POWER_OFF)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_startup_checks_may_be_dropped_but_not_reordered() {
+        let welcome = "readerd: says: Install Dukovo 1.0. Welcome";
+        let log = |said: &[&str]| {
+            let mut log = String::from("consoled: started /system/commands/dukovo-install\n");
+            for s in said {
+                log.push_str("readerd: says: ");
+                log.push_str(s);
+                log.push('\n');
+            }
+            log + welcome + "\n"
+        };
+        let all = log(&["Console 1", STARTUP[0], STARTUP[1], STARTUP[2]]);
+        assert_eq!(startup_heard(&all, welcome), Ok(()));
+        assert_eq!(startup_heard(&log(&["Console 1", STARTUP[2]]), welcome), Ok(()));
+        assert_eq!(startup_heard(&log(&[]), welcome), Ok(()));
+        assert!(startup_heard(&log(&[STARTUP[1], STARTUP[0]]), welcome).is_err());
+        assert!(startup_heard(&log(&[STARTUP[0], "queen"]), welcome).is_err());
+    }
 }

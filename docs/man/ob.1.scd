@@ -2222,9 +2222,10 @@ _target/userspace/_).
 	yanked is no finding.
 
 	Each finding has a product, a package URL:
-	_pkg:generic/<port>@<version>_, with the recipe's version, for a port
-	and each of its extra sources, and _pkg:cargo/<name>@<version>_ for a
-	crate. A statement of _security/vex.json_ (OpenVEX, ADR 0537) names an
+	_pkg:generic/<port>@<version>_, with the recipe's version, for a port;
+	_pkg:generic/<repository>@<commit>_, with the name of its repository
+	and the commit pinned, for an extra source; and
+	_pkg:cargo/<name>@<version>_ for a crate. A statement of _security/vex.json_ (OpenVEX, ADR 0537) names an
 	advisory, by its ID or one of its aliases, and a product, and has a
 	status of _not_affected_ or _fixed_ and the reason. A finding that a
 	statement names in this way is left out of the findings and listed as

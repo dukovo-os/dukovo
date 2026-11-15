@@ -11,7 +11,7 @@
 # decoders are under BSD-3-Clause and xxHash's under BSD-2-Clause, and
 # some files are in the public domain.
 name = "7zip"
-version = "26.02"
+version = "26.06"
 summary = "the 7-Zip archiver"
 license = "LGPL-2.1-or-later AND BSD-3-Clause AND BSD-2-Clause"
 homepage = "https://www.7-zip.org"
@@ -19,12 +19,12 @@ depends = ["mlibc", "llvm-runtimes"]
 notices = ["DOC/License.txt", "DOC/copying.txt"]
 
 [source]
-url = "https://deb.debian.org/debian/pool/main/7/7zip/7zip_26.02+dfsg.orig.tar.xz"
-sha256 = "cbd9aef3b1a6596aafece29601df759f05c4d1b5619619b42ece125b8fe4d9a8"
-mirrors = ["https://archive.ubuntu.com/ubuntu/pool/universe/7/7zip/7zip_26.02+dfsg.orig.tar.xz"]
+url = "https://deb.debian.org/debian/pool/main/7/7zip/7zip_26.06+dfsg.orig.tar.xz"
+sha256 = "a7840bea960366d153359863732dc216b518f223c0d0e666921be726e9996e7c"
+mirrors = ["https://archive.ubuntu.com/ubuntu/pool/universe/7/7zip/7zip_26.06+dfsg.orig.tar.xz"]
 
 # 7-Zip's own repository, which 7-zip.org names. Debian's +dfsg archive is
 # this tag without the unRAR code.
 [upstream]
 git = "https://github.com/ip7z/7zip.git"
-tag = "26.02"
+tag = "26.06"
