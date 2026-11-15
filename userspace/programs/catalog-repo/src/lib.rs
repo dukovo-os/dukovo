@@ -1092,9 +1092,13 @@ mod tests {
     }
 
     /// The rollout at `path` that the client reads from what `out` serves,
-    /// starting from the root `first`; none if it finds none.
+    /// starting from the root `first`; none if it finds none. Each read has
+    /// a client folder of its own, as the tests that read run at once in
+    /// one process.
     fn read_rollout(out: &Path, first: &[u8], path: &str) -> Option<rollout::Rollout> {
-        let work = scratch("client");
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let work = scratch(&format!("client-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
         tuf::init(&work, first).unwrap();
         let absolute = std::fs::canonicalize(out).unwrap();
         let base = tuf::Url::parse(&format!("file://{}/", absolute.display())).unwrap();
