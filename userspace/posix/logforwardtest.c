@@ -541,12 +541,53 @@ static void configure(void) {
 	CHECK(ask_state("rogue", "waiting"));
 }
 
+// Prints what `command` on a writes, on one line, as a line the boot test
+// shows with the failure.
+static void say_why(const char *what, const char *command) {
+	static char said[4096];
+	output(command, said, sizeof(said));
+	for(char *c = said; *c; c++)
+		if(*c == '\n')
+			*c = '|';
+	printf("logforwardtest: why: %s: %s\n", what, said);
+}
+
+// Says what may tell why a record never reached the UDP server: what that
+// server got, each machine's UDP sockets and card counts, the processor
+// time each process took, and what b's datagrams destination says.
+static void explain_datagrams(void) {
+	say_why("a's UDP server got", "cut -c 18-110 " UDP_OUT);
+	say_why("a's UDP sockets", "ss -u -a -n");
+	say_why("a's net0", "ip -s link show dev net0");
+	say_why("a's processes", "ps -e -o pid,time,comm");
+	static const char *const commands[][2] = {
+		{"b's UDP sockets", "run ss -u -a -n | tr '\\n' '|'"},
+		{"b's net0", "run ip -s link show dev net0 | tr '\\n' '|'"},
+		{"b's processes", "run ps -e -o pid,time,comm | tr '\\n' '|'"},
+		{"b's datagrams destination", "run logforward status datagrams | tr '\\n' '|'"},
+	};
+	for(size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+		ask(commands[i][1], "ok ");
+		printf("logforwardtest: why: %s: %s\n", commands[i][0], answer);
+	}
+}
+
+// Waits for the UDP server to have the message of `text` from `logger`,
+// as wait_for_message does: how many it has, saying what may tell why if
+// none.
+static int wait_for_datagram(const char *text) {
+	int count = wait_for_message(UDP_OUT, 0, LOGGER_PREFIX, FROM_LOGGER, text, 30);
+	if(count == 0)
+		explain_datagrams();
+	return count;
+}
+
 // The record `logger` writes on b reaches the TLS, TCP and UDP servers.
 static void first_record(void) {
 	CHECK(ask("run logger -t forwardtest first", "ok 0"));
 	CHECK(wait_for_message(TLS_OUT, 1, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("first"), 30) == 1);
 	CHECK(wait_for_message(TCP_OUT, 1, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("first"), 30) == 1);
-	CHECK(wait_for_message(UDP_OUT, 0, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("first"), 30) == 1);
+	CHECK(wait_for_datagram(LOGGER_TEXT("first")) == 1);
 	printf("logforwardtest: the TLS, TCP and UDP servers got the record, as RFC 5424 has it, "
 			"with its length in front over TLS and TCP\n");
 }
@@ -582,7 +623,7 @@ static void queue(void) {
 	CHECK(logged_count(TLS_OUT, 1, LOGGER_TEXT("first")) == 1);
 	// The other servers had them as they were logged.
 	CHECK(wait_for_message(TCP_OUT, 1, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("third"), 30) == 1);
-	CHECK(wait_for_message(UDP_OUT, 0, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("third"), 30) == 1);
+	CHECK(wait_for_datagram(LOGGER_TEXT("third")) == 1);
 	printf("logforwardtest: records logged while the TLS server was away arrived in order when it "
 			"was back\n");
 }
@@ -598,7 +639,7 @@ static void restart(void) {
 	CHECK(ask("run logger -t forwardtest fourth", "ok 0"));
 	CHECK(wait_for_message(TLS_OUT, 1, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("fourth"), 30) == 1);
 	CHECK(wait_for_message(TCP_OUT, 1, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("fourth"), 30) == 1);
-	CHECK(wait_for_message(UDP_OUT, 0, LOGGER_PREFIX, FROM_LOGGER, LOGGER_TEXT("fourth"), 30) == 1);
+	CHECK(wait_for_datagram(LOGGER_TEXT("fourth")) == 1);
 	const char *texts[] = {LOGGER_TEXT("first"), LOGGER_TEXT("second"), LOGGER_TEXT("third")};
 	for(int i = 0; i < 3; i++) {
 		int tls = logged_count(TLS_OUT, 1, texts[i]);
