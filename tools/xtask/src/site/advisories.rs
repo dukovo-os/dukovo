@@ -12,6 +12,10 @@
 //! reader has no site to resolve them against. A tree with no advisory
 //! gets an index that says none has been published and a feed with no
 //! item, which is still a valid feed.
+//!
+//! The statements of `security/vex.json` (ADR 0537), which say what in
+//! the tree a scanner's advisory does not affect, are published as the
+//! file is, in OpenVEX, at the same path on the site.
 
 use std::path::Path;
 
@@ -19,7 +23,7 @@ use serde_json::Value;
 
 use super::layout::{self, Group};
 use super::{Doc, read, write};
-use crate::{Context, Ctx, Error, Result};
+use crate::{Context, Ctx, Error, Result, process};
 
 /// Where the support center is served, which the feed's links start with.
 pub const SUPPORT_URL: &str = "https://dukovo.org/support/";
@@ -32,6 +36,9 @@ const FOLDER: &str = "security";
 
 /// The feed's path on the site.
 pub const FEED: &str = "security/feed.xml";
+
+/// The OpenVEX statements' path, in the tree and on the site.
+pub const STATEMENTS: &str = "security/vex.json";
 
 /// The kind search shows an advisory's page as.
 pub const KIND: &str = "Advisory";
@@ -86,6 +93,16 @@ pub fn build(ctx: &Ctx) -> Result<Pages> {
 /// Writes the feed, which is not a page.
 pub fn write_feed(out: &Path, feed: &str) -> Result<()> {
     write(&out.join(FEED), feed)
+}
+
+/// Publishes `security/vex.json` at the same path of the site, byte for
+/// byte, when the tree has the file.
+pub fn write_statements(ctx: &Ctx, out: &Path) -> Result<()> {
+    let from = ctx.root.join(STATEMENTS);
+    if !from.is_file() {
+        return Ok(());
+    }
+    process::copy(&from, &out.join(STATEMENTS))
 }
 
 /// Every `DKSA-*.json` of the tree, newest first.
@@ -390,6 +407,9 @@ fn index(advisories: &[Advisory]) -> Doc {
          an <a href=\"https://ossf.github.io/osv-schema/\">OSV</a> file, so that OSV scanners \
          read it as it is. To report a flaw, see <a \
          href=\"https://github.com/dukovo-os/dukovo/blob/main/SECURITY.md\">SECURITY.md</a>.</p>\
+         <p>Advisories that match a part of Dukovo but do not affect it, because the flaw is \
+         fixed in the version Dukovo ships or its code is not used, are stated in <a \
+         href=\"vex.json\">vex.json</a>, in the OpenVEX format that scanners read.</p>\
          <h2 id=\"advisories\">Advisories</h2>",
     );
     if advisories.is_empty() {
@@ -643,6 +663,7 @@ mod tests {
         assert!(index.body.contains("<td>2026-11-12</td>"));
         assert!(index.body.contains("A later flaw &amp; its &lt;fix&gt;"));
         assert!(index.body.contains("href=\"feed.xml\""));
+        assert!(index.body.contains("href=\"vex.json\">vex.json</a>, in the OpenVEX format"));
         assert!(!index.body.contains("No security advisory"));
         // A page for each, and the group links the index and the feed.
         let paths: Vec<&str> = built.docs.iter().map(|d| d.path.as_str()).collect();
@@ -728,6 +749,42 @@ mod tests {
         assert!(feed.contains("<category>critical</category>"));
         assert!(feed.contains("Fixed in Dukovo (the system): 1.4.2, 1.3.9.1."));
         assert_eq!(pages(&[later(), fixture()]).feed, *feed);
+    }
+
+    /// A tree whose root is an empty folder, for the writes of the site.
+    fn tree(name: &str) -> Ctx {
+        let root =
+            std::env::temp_dir().join(format!("ob-advisories-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("security")).unwrap();
+        Ctx {
+            out: root.join("out"),
+            target: root.join("target"),
+            root,
+            config: crate::config::Config::default(),
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn the_statements_are_published_byte_for_byte() {
+        let ctx = tree("statements");
+        // Not tidy on purpose: the copy is not a rewrite of the JSON.
+        let text = b"{ \"@context\":\"https://openvex.dev/ns/v0.2.0\",\r\n  \"statements\" : [ ] }\n\n\xe2\x80\xa6";
+        std::fs::write(ctx.root.join(STATEMENTS), text).unwrap();
+        let out = ctx.out.join("docs/site");
+        write_statements(&ctx, &out).unwrap();
+        assert_eq!(std::fs::read(out.join("security/vex.json")).unwrap(), text);
+        std::fs::remove_dir_all(&ctx.root).unwrap();
+    }
+
+    #[test]
+    fn a_tree_with_no_statements_publishes_none() {
+        let ctx = tree("none");
+        let out = ctx.out.join("docs/site");
+        write_statements(&ctx, &out).unwrap();
+        assert!(!out.join(STATEMENTS).exists());
+        std::fs::remove_dir_all(&ctx.root).unwrap();
     }
 
     #[test]

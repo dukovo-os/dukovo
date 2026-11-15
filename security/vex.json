@@ -1,0 +1,39 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://dukovo.org/support/security/vex.json",
+  "author": "Dukovo security team",
+  "timestamp": "2026-11-15T15:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": { "name": "CVE-2023-49990" },
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "status": "fixed",
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+    },
+    {
+      "vulnerability": { "name": "CVE-2023-49991" },
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "status": "fixed",
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+    },
+    {
+      "vulnerability": { "name": "CVE-2023-49992" },
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "status": "fixed",
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+    },
+    {
+      "vulnerability": { "name": "CVE-2023-49993" },
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "status": "fixed",
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+    },
+    {
+      "vulnerability": { "name": "CVE-2023-49994" },
+      "products": [{ "@id": "pkg:generic/espeak-ng@1.52.0" }],
+      "status": "fixed",
+      "status_notes": "Fixed upstream by commit 58f1e0b6 (espeak-ng #1846, for issues #1823 to #1827), which release 1.52.0 holds. OSV's record names no fixed commit, so it matches every commit of the project."
+    }
+  ]
+}

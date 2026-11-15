@@ -9,8 +9,8 @@
 //! design notes, the decision records and the roadmap, plus the guides,
 //! tutorials, runbooks and error pages once their folders exist, and the
 //! security advisories of security/advisories, with their feed (ADR
-//! 0534). The result is a static site in out/docs/site that
-//! dukovo.org/support serves.
+//! 0534) and the statements of security/vex.json (ADR 0537). The result
+//! is a static site in out/docs/site that dukovo.org/support serves.
 
 mod advisories;
 pub mod check;
@@ -217,6 +217,7 @@ pub fn build(ctx: &Ctx, version: Option<&str>, check: bool) -> Result<()> {
         ),
     )?;
     advisories::write_feed(&out, &feed)?;
+    advisories::write_statements(ctx, &out)?;
     write(&out.join("search-index.js"), &search_index(&docs))?;
     for asset in ["site.css", "site.js"] {
         let from = ctx.root.join("docs/site").join(asset);

@@ -55,6 +55,7 @@ mod tuf;
 mod updates;
 mod upstream;
 mod userspace;
+mod vex;
 mod vt;
 
 use std::fmt;
@@ -737,11 +738,16 @@ system-release, which ob builds for this machine, reads them when it signs them
 for the update server: the file must be valid OSV with Dukovo's fields, have the
 id its file is named for and a number of its own, give versions in Dukovo's
 order, and say no TODO. It prints how many there are and the worst severity, and
-exits 1 when one does not check. CI runs it. `advisory new` writes the next free
-number of this year, from a template with today's date and the severity medium,
-whose text says TODO where an advisory needs writing: the check refuses it until
-it is written. The runbook docs/runbooks/security-advisory.md goes from a report
-to a published advisory.
+exits 1 when one does not check. It checks security/vex.json too (ADR 0537): an
+OpenVEX 0.2.0 document whose statements each have a status of not_affected,
+fixed, affected or under_investigation, products named as package URLs with a
+version, a reason in status_notes or impact_statement, a justification or an
+impact_statement when the status is not_affected, and an action_statement when
+it is affected. CI runs it. `advisory new` writes the next free number of this
+year, from a template with today's date and the severity medium, whose text says
+TODO where an advisory needs writing: the check refuses it until it is written.
+The runbook docs/runbooks/security-advisory.md goes from a report to a published
+advisory.
 
 `scan` looks for known flaws in what the system is built from: `cargo audit
 --json` on every tracked Cargo.lock (which it does not change) and on the lock
@@ -750,13 +756,21 @@ port's recipe pins and each of its extra sources, by the commit of the tag the
 [upstream] of a port pinned by a release archive names (one `git ls-remote` for
 each port), and by name and version for each crate a recipe lists that no
 audited Cargo.lock lists. A port whose [upstream] says none cannot be asked, and
-is listed as not covered, with its reason. A finding has the severity its
-advisory names, or the base score of its CVSS 3 vector gives, and none when the
-advisory gives neither. The text lists the findings, most severe first; --json
-prints one object, with `findings` and `not_covered`, for the daily scan of
-.github/workflows/upstream.yml. --osv-url names another server that answers as
-OSV does. It exits 0 whatever it finds, and non-zero only when it could not run
-(cargo-audit missing, OSV out of reach, a tag it could not resolve)."
+a port with `data_only` takes only data from its source, so the scan does not
+ask about the project's flaws; each is listed as not asked about, with its
+reason. A finding has the severity its advisory names, or the base score of its
+CVSS 3 vector gives, and none when the advisory gives neither, and a product:
+the package URL pkg:generic/<port>@<version> for a port and its extra sources,
+pkg:cargo/<name>@<version> for a crate. A finding that a statement of
+security/vex.json clears, by an ID or alias it names and the product, with the
+status not_affected or fixed, is left out of the findings and listed as not
+affected; a statement that clears no finding is listed too, so that it can be
+removed. The text lists the findings, most severe first; --json prints one
+object, with `findings`, `not_affected`, `not_covered` and `unused_statements`,
+for the daily scan of .github/workflows/upstream.yml. --osv-url names another
+server that answers as OSV does. It exits 0 whatever it finds, and non-zero only
+when it could not run (cargo-audit missing, OSV out of reach, a tag it could not
+resolve)."
         }
         "release" => {
             "Usage: ./ob release server setup [--dukovo]

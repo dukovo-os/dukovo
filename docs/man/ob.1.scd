@@ -2184,8 +2184,14 @@ _target/userspace/_).
 	file is valid OSV with Dukovo's fields, has the id its file is named
 	for and a number of its own, gives versions in Dukovo's order, and says
 	no TODO. It prints how many there are and the worst severity, and
-	exits 1 when one does not check. CI runs it. *advisory new* writes the
-	next free number of this year from a template, with today's date and
+	exits 1 when one does not check. It checks _security/vex.json_ too (ADR
+	0537): an OpenVEX 0.2.0 document, each of whose statements has a status
+	of _not_affected_, _fixed_, _affected_ or _under_investigation_, names
+	its products as package URLs with a version, says why in
+	_status_notes_ or _impact_statement_, has a justification or an
+	_impact_statement_ when its status is _not_affected_, and has an
+	_action_statement_ when it is _affected_. CI runs it. *advisory new*
+	writes the next free number of this year from a template, with today's date and
 	the severity *medium*, in which text that needs writing says TODO, so
 	that *check* refuses it until it is written. _security/advisories/README.md_
 	describes the format, and _docs/runbooks/security-advisory.md_ goes from a
@@ -2205,19 +2211,44 @@ _target/userspace/_).
 	port (for an annotated tag, the commit it points to); and each crate a
 	recipe lists (*[[crate]]*), by its name and version on crates.io,
 	unless a _Cargo.lock_ it audited lists that crate. A port whose
-	*[upstream]* says *none* has no commit to ask by, and is listed as not
-	covered, with its reason. The severity of a finding is the
+	*[upstream]* says *none* has no commit to ask by, and a port with
+	*data_only* takes only data from its source, so the scan does not ask
+	about the project's flaws; each is listed as not asked about, with its
+	reason. The severity of a finding is the
 	one its advisory names, or the base score of its CVSS 3 vector
 	(Critical from 9.0, High from 7.0, Medium from 4.0, Low below); an
 	advisory that gives neither has no severity, and is never guessed at.
 	A warning of *cargo-audit* about a crate that is unmaintained or
-	yanked is no finding. The text lists the findings, most severe first,
-	and the ports not covered. With *--json* it prints one JSON object:
-	_findings_, an array whose entries have _id_, _aliases_, _severity_
-	(_critical_, _high_, _medium_, _low_, or null), _summary_,
-	_component_, _source_ (_cargo-audit_ or _osv_), _url_ and _location_,
-	and _not_covered_, the ports it could not ask, each with its _port_,
-	_version_, _url_ and _reason_. *--osv-url* names another server that
+	yanked is no finding.
+
+	Each finding has a product, a package URL:
+	_pkg:generic/<port>@<version>_, with the recipe's version, for a port
+	and each of its extra sources, and _pkg:cargo/<name>@<version>_ for a
+	crate. A statement of _security/vex.json_ (OpenVEX, ADR 0537) names an
+	advisory, by its ID or one of its aliases, and a product, and has a
+	status of _not_affected_ or _fixed_ and the reason. A finding that a
+	statement names in this way is left out of the findings and listed as
+	not affected, with the statement's status and reason. The statement
+	names the version, so that it lapses when the part moves to another
+	version, and the advisory is weighed again then. A statement that
+	clears no finding, because the advisory does not match the product or
+	the product has moved to another version, is listed too, so that it
+	can be removed or corrected.
+
+	The text lists the findings, most severe first, those that statements
+	clear, the ports not asked about, and the statements that clear
+	nothing. With *--json* it prints one JSON object: _findings_, an array
+	whose entries have _id_, _aliases_, _severity_ (_critical_, _high_,
+	_medium_, _low_, or null), _summary_, _component_, _product_, _source_
+	(_cargo-audit_ or _osv_), _url_ and _location_; _not_affected_, the
+	findings that statements clear, each with its _id_, _product_,
+	_component_, _status_ (_not_affected_ or _fixed_), _justification_
+	(one of OpenVEX's, or null) and _statement_, the reason the statement
+	gives; _not_covered_, the ports it did not ask about, each with its
+	_port_, _version_, _url_ and _reason_, a phrase that says whether only
+	data is taken, there is no repository to ask or the recipe has no
+	*[upstream]*; and _unused_statements_, the _id_ and _product_ of each
+	statement that clears no finding. *--osv-url* names another server that
 	answers as OSV does, for a test. *scan* exits 0 whatever it finds,
 	and non-zero only when it could not run, such as when OSV cannot be
 	reached or when a tag cannot be resolved, in which case it names each
@@ -2270,7 +2301,13 @@ _recipe.toml_
 	tags for a newer release); a port pinned by git has no *[upstream]*,
 	since its source is its upstream; *series*, the leading numbers of
 	the releases a port follows, such as *3.5* for a long-term release,
-	which hold its version and limit what *ports outdated* offers; any
+	which hold its version and limit what *ports outdated* offers;
+	*data_only*, a reason of one line, for a port that takes only data
+	from its source, such as locale tables, and builds none of the
+	project's code, so that the project's flaws are not the system's:
+	*security scan* does not ask about them, and lists the port as not
+	asked about, with the reason; a port with *data_only* has a source
+	and lists no crates; any
 	*extra* sources unpacked inside its tree, each with its own commit
 	and license (a port with no source of its own but *extra* ones builds
 	only those); crates from crates.io unpacked inside it (*[[crate]]*:

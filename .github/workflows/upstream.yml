@@ -12,10 +12,13 @@
 # against the RustSec advisory database, and OSV is asked about each port
 # that pins a git commit, each of its extra sources, each port pinned by a
 # release archive (by the commit of the tag its `[upstream]` names) and
-# each crate a recipe lists. A finding opens one issue labelled `security`
-# and `sbom-scan`, never a second for the same ID, and the issue is closed
-# when the finding no longer matches. `./ob ports audit` stays as the
-# local check of the bundles' crates.
+# each crate a recipe lists. A port that takes only data (`data_only`) is
+# not asked about. A finding opens one issue labelled `security` and
+# `sbom-scan`, never a second for the same ID, and the issue is closed
+# when the finding no longer matches, or when `security/vex.json` states
+# that Dukovo is not affected (ADR 0537). The bot writes a second apart
+# and waits out GitHub's secondary rate limit. `./ob ports audit` stays as
+# the local check of the bundles' crates.
 name: Upstream releases and advisories
 
 on:

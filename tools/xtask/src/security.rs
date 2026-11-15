@@ -49,7 +49,7 @@ use serde_json::{Value, json};
 
 use crate::ports::{self, Recipe, Upstream};
 use crate::process::{self, step};
-use crate::{Context, Ctx, Error, Result, bail, release, upstream};
+use crate::{Context, Ctx, Error, Result, bail, release, upstream, vex};
 
 /// Where the advisories are in the source tree.
 pub const DIR: &str = "security/advisories";
@@ -66,8 +66,11 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
 
 /// `ob security check`: every advisory in [`DIR`] must parse as OSV 1.6
 /// with Dukovo's fields, have the id its file is named for and a number
-/// of its own, name versions of Dukovo's order, and say no TODO.
+/// of its own, name versions of Dukovo's order, and say no TODO; and
+/// [`vex::FILE`] must be OpenVEX 0.2.0 as [`vex`] reads it.
 fn check(ctx: &Ctx) -> Result<()> {
+    let statements = vex::read(&ctx.root)?;
+    step(&format!("{} has {} statements", vex::FILE, statements.statements.len()));
     let args = ["advisories".into(), "--check".into(), ctx.root.join(DIR).into_os_string()];
     release::system_release::<std::ffi::OsString>(ctx, &args)
 }
@@ -240,6 +243,9 @@ struct Finding {
     summary: String,
     /// A crate and its version, or a port and its commit (see [`Asked`]).
     component: String,
+    /// The package URL of the part, as a statement of [`vex::FILE`] names
+    /// it (see [`vex::port_product`]).
+    product: String,
     source: Source,
     /// The advisory, where a person reads more of it.
     url: String,
@@ -247,23 +253,49 @@ struct Finding {
     location: String,
 }
 
-/// A port that the scan cannot ask OSV about: it is pinned by a release
-/// archive, and the project has no public git repository to find the
-/// archive's commit in.
+/// A port that the scan does not ask OSV about: one pinned by a release
+/// archive of a project with no public git repository to find the
+/// archive's commit in, or one that takes only data from its source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct NotCovered {
     port: String,
     version: String,
     url: String,
-    /// Why there is no repository, as the recipe's `[upstream]` says.
+    /// Why, from the recipe: its `[upstream]`'s `none` or its `data_only`.
     reason: String,
 }
 
-/// What the scan found, and what it could not look at.
+/// A finding that a statement of [`vex::FILE`] clears, left out of the
+/// findings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NotAffected {
+    id: String,
+    product: String,
+    component: String,
+    /// `not_affected` or `fixed`.
+    status: &'static str,
+    justification: Option<String>,
+    /// Why, as the statement says.
+    statement: String,
+}
+
+/// A product of a statement of [`vex::FILE`] that clears no finding: the
+/// advisory no longer matches it, or the part has moved to another
+/// version, so the statement can go.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct Unused {
+    id: String,
+    product: String,
+}
+
+/// What the scan found, what of it the statements clear, what it did not
+/// look at, and which statements cleared nothing.
 #[derive(Debug, Serialize)]
 struct Report {
     findings: Vec<Finding>,
+    not_affected: Vec<NotAffected>,
     not_covered: Vec<NotCovered>,
+    unused_statements: Vec<Unused>,
 }
 
 /// What OSV is asked, in the form its `querybatch` takes.
@@ -301,6 +333,8 @@ struct Asked {
     /// path for an extra source; a crate and its version, as cargo-audit
     /// names one.
     component: String,
+    /// Its package URL (see [`vex::port_product`]).
+    product: String,
     /// The recipe, as a path in the repository.
     location: String,
     query: Query,
@@ -311,6 +345,7 @@ struct Asked {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ArchivePort {
     name: String,
+    product: String,
     git: String,
     tag: String,
 }
@@ -365,20 +400,18 @@ fn scan_options(args: &[&str]) -> Result<ScanOptions> {
 /// `ob security scan [--json] [--osv-url <url>]`: see the module's text.
 fn scan(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let options = scan_options(args)?;
+    let statements = vex::read(&ctx.root)?;
     upstream::require_cargo_audit()?;
     let mut findings = Vec::new();
     let mut locked = BTreeSet::new();
-    let mut fetched = false;
     for (lock, location) in system_locks(ctx)? {
-        findings.extend(audit_lock(ctx, &lock, &location, !fetched)?);
+        findings.extend(audit_lock(ctx, &lock, &location)?);
         locked.extend(locked_crates(&lock, &location)?);
-        fetched = true;
     }
     for found in upstream::bundle_locks(ctx)? {
         let location = format!("{} {} (its Cargo.lock)", found.port, found.version);
-        findings.extend(audit_lock(ctx, &found.lock, &location, !fetched)?);
+        findings.extend(audit_lock(ctx, &found.lock, &location)?);
         locked.extend(locked_crates(&found.lock, &location)?);
-        fetched = true;
     }
 
     let recipes: Vec<Recipe> = ports::recipes(ctx)?.into_iter().map(|(recipe, _)| recipe).collect();
@@ -392,7 +425,7 @@ fn scan(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let ask = |path: &str, body: Option<&str>| curl(ctx, &format!("{osv_url}{path}"), body);
     findings.extend(osv_findings(&ask, &asked)?);
 
-    let report = Report { findings: sorted(findings), not_covered: plan.not_covered };
+    let report = report(&statements, sorted(findings), plan.not_covered);
     if options.json {
         let text = serde_json::to_string_pretty(&report)
             .map_err(|err| Error::new(format!("writing the scan's findings: {err}")))?;
@@ -428,15 +461,14 @@ fn lock_files(listing: &str) -> Vec<String> {
     found
 }
 
-/// `cargo audit --json` on one lock file, which only reads it. The first
-/// call fetches the advisory database; the others use what it fetched.
-fn audit_lock(ctx: &Ctx, lock: &Path, location: &str, fetch: bool) -> Result<Vec<Finding>> {
+/// `cargo audit --json` on one lock file, which only reads it. Each call
+/// brings the advisory database up to date, which costs a moment, and the
+/// crates.io index's entries for the lock's crates, without which
+/// cargo-audit's check for yanked crates reports an error for each crate.
+fn audit_lock(ctx: &Ctx, lock: &Path, location: &str) -> Result<Vec<Finding>> {
     step(&format!("Auditing {location}"));
     let mut cmd = Command::new("cargo");
     cmd.args(["audit", "--json"]);
-    if !fetch {
-        cmd.arg("--no-fetch");
-    }
     cmd.arg("--file").arg(lock).stderr(Stdio::inherit());
     if ctx.verbose {
         eprintln!("+ {}", process::render(&cmd));
@@ -484,6 +516,7 @@ fn cargo_finding(item: &Value, location: &str) -> Result<Finding> {
         severity: advisory["cvss"].as_str().and_then(cvss3_base_score).map(Severity::from_score),
         summary: advisory["title"].as_str().unwrap_or(id).to_string(),
         component: format!("{name} {version}"),
+        product: vex::crate_product(name, version),
         source: Source::CargoAudit,
         url,
         location: location.to_string(),
@@ -588,16 +621,28 @@ fn round_up(value: f64) -> f64 {
 /// each extra source, that pins a git commit by that commit; a port that
 /// pins a release archive by the tag its `[upstream]` names, which is a
 /// commit once resolved, or as not covered when it says `none`; each
-/// crate a recipe lists by its name and version. A port of other sources
-/// has none of these.
+/// crate a recipe lists by its name and version. A port that takes only
+/// data from its source is not asked about, and is listed as not covered
+/// with its reason. A port of other sources has none of these.
 fn plan(recipes: &[Recipe]) -> Plan {
     let mut plan = Plan::default();
     for recipe in recipes {
         let source = &recipe.source;
         let location = format!("ports/{}/recipe.toml", recipe.name);
+        let product = vex::port_product(&recipe.name, &recipe.version);
+        if let Some(reason) = &recipe.data_only {
+            plan.not_covered.push(NotCovered {
+                port: recipe.name.clone(),
+                version: recipe.version.clone(),
+                url: if source.git.is_empty() { source.url.clone() } else { source.git.clone() },
+                reason: format!("only data is taken: {reason}"),
+            });
+            continue;
+        }
         if !source.git.is_empty() && !source.commit.is_empty() {
             plan.commits.push(Asked {
                 component: format!("{} {}", recipe.name, source.commit),
+                product: product.clone(),
                 location: location.clone(),
                 query: Query::Commit(source.commit.clone()),
             });
@@ -606,6 +651,7 @@ fn plan(recipes: &[Recipe]) -> Plan {
             if let Some((git, tag)) = upstream.and_then(Upstream::tagged) {
                 plan.archives.push(ArchivePort {
                     name: recipe.name.clone(),
+                    product: product.clone(),
                     git: git.to_string(),
                     tag: tag.to_string(),
                 });
@@ -614,15 +660,17 @@ fn plan(recipes: &[Recipe]) -> Plan {
                     port: recipe.name.clone(),
                     version: recipe.version.clone(),
                     url: source.url.clone(),
-                    reason: upstream
-                        .and_then(|upstream| upstream.none.clone())
-                        .unwrap_or_else(|| "the recipe has no [upstream]".to_string()),
+                    reason: upstream.and_then(|upstream| upstream.none.as_ref()).map_or_else(
+                        || "the recipe has no [upstream]".to_string(),
+                        |none| format!("no git repository to ask by: {none}"),
+                    ),
                 });
             }
         }
         for extra in &recipe.extra {
             plan.commits.push(Asked {
                 component: format!("{} {} {}", recipe.name, extra.path, extra.commit),
+                product: product.clone(),
                 location: location.clone(),
                 query: Query::Commit(extra.commit.clone()),
             });
@@ -630,12 +678,55 @@ fn plan(recipes: &[Recipe]) -> Plan {
         for krate in &recipe.crates {
             plan.crates.push(Asked {
                 component: format!("{} {}", krate.name, krate.version),
+                product: vex::crate_product(&krate.name, &krate.version),
                 location: location.clone(),
                 query: Query::Crate { name: krate.name.clone(), version: krate.version.clone() },
             });
         }
     }
     plan
+}
+
+/// The report of `findings`: those a statement clears are moved to its
+/// `not_affected`, and each product of a clearing statement that cleared
+/// no finding is listed as unused.
+fn report(
+    statements: &vex::Document,
+    findings: Vec<Finding>,
+    not_covered: Vec<NotCovered>,
+) -> Report {
+    let mut kept = Vec::new();
+    let mut not_affected = Vec::new();
+    let mut used = BTreeSet::new();
+    for finding in findings {
+        let mut ids = vec![finding.id.as_str()];
+        ids.extend(finding.aliases.iter().map(String::as_str));
+        let Some(statement) = statements.clearing(&ids, &finding.product) else {
+            kept.push(finding);
+            continue;
+        };
+        used.insert((statement.ids[0].clone(), finding.product.clone()));
+        not_affected.push(NotAffected {
+            id: finding.id,
+            product: finding.product,
+            component: finding.component,
+            status: statement.status.name(),
+            justification: statement.justification.clone(),
+            statement: statement.reason.clone(),
+        });
+    }
+    not_affected.dedup();
+    let unused_statements = statements
+        .statements
+        .iter()
+        .filter(|statement| statement.status.clears())
+        .flat_map(|statement| {
+            statement.products.iter().map(|product| (statement.ids[0].clone(), product.clone()))
+        })
+        .filter(|key| !used.contains(key))
+        .map(|(id, product)| Unused { id, product })
+        .collect();
+    Report { findings: kept, not_affected, not_covered, unused_statements }
 }
 
 /// The commits of the tags that archive ports name, as `ls_remote(git, tag)`
@@ -662,6 +753,7 @@ fn resolve_archives(
         };
         asked.push(Asked {
             component: format!("{} {} {commit}", port.name, port.tag),
+            product: port.product.clone(),
             location: format!("ports/{}/recipe.toml", port.name),
             query: Query::Commit(commit),
         });
@@ -869,6 +961,7 @@ fn osv_finding(record: &Value, id: &str, asked: &Asked) -> Option<Finding> {
         severity: osv_severity(record),
         summary: summary.trim().to_string(),
         component: asked.component.clone(),
+        product: asked.product.clone(),
         source: Source::Osv,
         url: format!("https://osv.dev/vulnerability/{}", path_segment(id)),
         location: asked.location.clone(),
@@ -963,15 +1056,27 @@ fn render_text(report: &Report) -> String {
             let _ = writeln!(out, "  {}", finding.url);
         }
     }
-    if !report.not_covered.is_empty() {
+    if !report.not_affected.is_empty() {
         let _ = writeln!(
             out,
-            "\nNot covered, since {} ports are pinned by a release archive and their project has \
-             no public git repository to find its commit in:",
-            report.not_covered.len()
+            "\n{} findings are cleared by statements of {}:",
+            report.not_affected.len(),
+            vex::FILE
         );
+        for cleared in &report.not_affected {
+            let _ = writeln!(out, "  {} in {}: {}", cleared.id, cleared.product, cleared.status);
+        }
+    }
+    if !report.not_covered.is_empty() {
+        let _ = writeln!(out, "\nNot asked about, {} ports:", report.not_covered.len());
         for port in &report.not_covered {
             let _ = writeln!(out, "  {} {}: {}", port.port, port.version, port.reason);
+        }
+    }
+    if !report.unused_statements.is_empty() {
+        let _ = writeln!(out, "\nStatements of {} that clear no finding, which can go:", vex::FILE);
+        for unused in &report.unused_statements {
+            let _ = writeln!(out, "  {} in {}", unused.id, unused.product);
         }
     }
     out
@@ -1303,6 +1408,7 @@ mod tests {
             plan.archives,
             [ArchivePort {
                 name: "curl".to_string(),
+                product: "pkg:generic/curl@1.2.3".to_string(),
                 git: "https://example.org/curl.git".to_string(),
                 tag: "curl-8_23_0".to_string()
             }]
@@ -1317,7 +1423,7 @@ mod tests {
         assert_eq!(
             plan.not_covered,
             [
-                not_covered("zip", "no repository"),
+                not_covered("zip", "no git repository to ask by: no repository"),
                 not_covered("bare", "the recipe has no [upstream]")
             ]
         );
@@ -1336,6 +1442,7 @@ mod tests {
             plan.crates,
             [Asked {
                 component: "tokio 1.54.1".to_string(),
+                product: "pkg:cargo/tokio@1.54.1".to_string(),
                 location: "ports/rust-crates/recipe.toml".to_string(),
                 query: Query::Crate { name: "tokio".to_string(), version: "1.54.1".to_string() },
             }]
@@ -1378,7 +1485,12 @@ mod tests {
     }
 
     fn archive(name: &str, git: &str, tag: &str) -> ArchivePort {
-        ArchivePort { name: name.to_string(), git: git.to_string(), tag: tag.to_string() }
+        ArchivePort {
+            name: name.to_string(),
+            product: format!("pkg:generic/{name}@1"),
+            git: git.to_string(),
+            tag: tag.to_string(),
+        }
     }
 
     #[test]
@@ -1406,11 +1518,13 @@ mod tests {
             [
                 Asked {
                     component: format!("curl curl-8_23_0 {curl_commit}"),
+                    product: "pkg:generic/curl@1".to_string(),
                     location: "ports/curl/recipe.toml".to_string(),
                     query: Query::Commit(curl_commit.to_string()),
                 },
                 Asked {
                     component: "jq jq-1.8.2 34f7186b86743a083a589741b6cea95293524108".to_string(),
+                    product: "pkg:generic/jq@1".to_string(),
                     location: "ports/jq/recipe.toml".to_string(),
                     query: Query::Commit("34f7186b86743a083a589741b6cea95293524108".to_string()),
                 },
@@ -1488,6 +1602,7 @@ source = "registry+https://registry.example.org/index"
     fn crate_asked(port: &str, name: &str, version: &str) -> Asked {
         Asked {
             component: format!("{name} {version}"),
+            product: format!("pkg:cargo/{name}@{version}"),
             location: format!("ports/{port}/recipe.toml"),
             query: Query::Crate { name: name.to_string(), version: version.to_string() },
         }
@@ -1515,6 +1630,7 @@ source = "registry+https://registry.example.org/index"
         // A commit is not a crate: it is kept.
         let commit = Asked {
             component: "lua c1".to_string(),
+            product: "pkg:generic/lua@1".to_string(),
             location: "ports/lua/recipe.toml".to_string(),
             query: Query::Commit("c1".to_string()),
         };
@@ -1544,6 +1660,7 @@ source = "registry+https://registry.example.org/index"
     fn pinned(name: &str, commit: &str) -> Asked {
         Asked {
             component: format!("{name} {commit}"),
+            product: format!("pkg:generic/{name}@1"),
             location: format!("ports/{name}/recipe.toml"),
             query: Query::Commit(commit.to_string()),
         }
@@ -1697,6 +1814,7 @@ source = "registry+https://registry.example.org/index"
             severity,
             summary: format!("{id} summary"),
             component: component.to_string(),
+            product: format!("pkg:generic/{}@1", component.split(' ').next().unwrap_or_default()),
             source: Source::CargoAudit,
             url: format!("https://example.org/{id}"),
             location: "Cargo.lock".to_string(),
@@ -1721,11 +1839,23 @@ source = "registry+https://registry.example.org/index"
     fn the_json_is_the_findings_and_the_ports_not_covered_with_their_reasons() {
         let report = Report {
             findings: vec![finding("A", Some(Severity::High), "x 1"), finding("B", None, "y 2")],
+            not_affected: vec![NotAffected {
+                id: "CVE-3".to_string(),
+                product: "pkg:generic/z@1".to_string(),
+                component: "z c3".to_string(),
+                status: "not_affected",
+                justification: Some("vulnerable_code_not_present".to_string()),
+                statement: "Not built.".to_string(),
+            }],
             not_covered: vec![NotCovered {
                 port: "zip".to_string(),
                 version: "3.0".to_string(),
                 url: "https://example.org/zip30.tar.gz".to_string(),
                 reason: "no public repository".to_string(),
+            }],
+            unused_statements: vec![Unused {
+                id: "CVE-4".to_string(),
+                product: "pkg:generic/w@2".to_string(),
             }],
         };
         let value = serde_json::to_value(&report).unwrap();
@@ -1735,6 +1865,7 @@ source = "registry+https://registry.example.org/index"
         assert_eq!(first["source"], "cargo-audit");
         assert_eq!(first["component"], "x 1");
         assert_eq!(first["url"], "https://example.org/A");
+        assert_eq!(first["product"], "pkg:generic/x@1");
         assert!(first["aliases"].as_array().unwrap().is_empty());
         // No severity is null, which is what a reader that triages looks for.
         assert!(value["findings"][1]["severity"].is_null());
@@ -1746,6 +1877,21 @@ source = "registry+https://registry.example.org/index"
                 "url": "https://example.org/zip30.tar.gz",
                 "reason": "no public repository"
             }])
+        );
+        assert_eq!(
+            value["not_affected"],
+            json!([{
+                "id": "CVE-3",
+                "product": "pkg:generic/z@1",
+                "component": "z c3",
+                "status": "not_affected",
+                "justification": "vulnerable_code_not_present",
+                "statement": "Not built."
+            }])
+        );
+        assert_eq!(
+            value["unused_statements"],
+            json!([{"id": "CVE-4", "product": "pkg:generic/w@2"}])
         );
         let mut osv = finding("C", None, "lua c1");
         osv.source = Source::Osv;
@@ -1806,21 +1952,106 @@ source = "registry+https://registry.example.org/index"
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].component, format!("curl pcre2 {other}"));
         assert_eq!(found[0].location, "ports/curl/recipe.toml");
+        assert_eq!(found[0].product, "pkg:generic/curl@1.2.3");
 
-        let report = Report { findings: sorted(found), not_covered: plan.not_covered };
+        let report = report(&vex::Document::default(), sorted(found), plan.not_covered);
         let value = serde_json::to_value(&report).unwrap();
         assert_eq!(value["findings"][0]["id"], "CVE-7");
         assert_eq!(value["findings"][0]["source"], "osv");
         assert_eq!(value["not_covered"][0]["port"], "zip");
-        assert_eq!(value["not_covered"][0]["reason"], "no repository");
+        assert_eq!(value["not_covered"][0]["reason"], "no git repository to ask by: no repository");
+        assert!(value["not_affected"].as_array().unwrap().is_empty());
+    }
+
+    /// The JSON of a statement document with one statement of `status` of
+    /// `id` in `products`.
+    fn statements(id: &str, status: &str, products: &[&str]) -> vex::Document {
+        let products: Vec<Value> = products.iter().map(|p| json!({ "@id": p })).collect();
+        let text = json!({
+            "@context": "https://openvex.dev/ns/v0.2.0",
+            "@id": "https://example.org/vex.json",
+            "author": "a",
+            "timestamp": "2026-11-15T00:00:00Z",
+            "version": 1,
+            "statements": [{
+                "vulnerability": { "name": id },
+                "products": products,
+                "status": status,
+                "status_notes": "Fixed before this release.",
+                "action_statement": "Move on."
+            }]
+        });
+        vex::parse(&text.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_statement_moves_the_findings_it_clears_out_and_one_that_clears_none_is_listed() {
+        let mut aliased = finding("GHSA-1", Some(Severity::High), "espeak-ng c1");
+        aliased.aliases = vec!["CVE-1".to_string()];
+        let elsewhere = finding("CVE-1", Some(Severity::High), "other c2");
+        let unrelated = finding("CVE-2", None, "espeak-ng c1");
+        let found = vec![aliased, elsewhere.clone(), unrelated.clone()];
+        let fixed =
+            statements("CVE-1", "fixed", &["pkg:generic/espeak-ng@1", "pkg:generic/espeak-ng@0.9"]);
+        let cleared = report(&fixed, found.clone(), Vec::new());
+        // By its alias, and only in the product the statement names.
+        assert_eq!(cleared.findings, [elsewhere, unrelated]);
+        assert_eq!(
+            cleared.not_affected,
+            [NotAffected {
+                id: "GHSA-1".to_string(),
+                product: "pkg:generic/espeak-ng@1".to_string(),
+                component: "espeak-ng c1".to_string(),
+                status: "fixed",
+                justification: None,
+                statement: "Fixed before this release.".to_string(),
+            }]
+        );
+        assert_eq!(
+            cleared.unused_statements,
+            [Unused { id: "CVE-1".to_string(), product: "pkg:generic/espeak-ng@0.9".to_string() }]
+        );
+        // A statement that the part is affected clears nothing, and is not
+        // listed as unused either.
+        let affected = statements("CVE-1", "affected", &["pkg:generic/espeak-ng@1"]);
+        let kept = report(&affected, found, Vec::new());
+        assert_eq!(kept.findings.len(), 3);
+        assert!(kept.not_affected.is_empty() && kept.unused_statements.is_empty());
+    }
+
+    #[test]
+    fn a_port_that_takes_only_data_is_not_asked_about_and_says_why() {
+        let locales: Recipe = toml::from_str(&format!(
+            "name = \"locales\"\nversion = \"2.42\"\nsummary = \"s\"\nlicense = \"MIT\"\n\
+             homepage = \"https://example.org\"\ndata_only = \"only the locale sources\"\n\
+             [source]\ngit = \"https://example.org/glibc.git\"\ncommit = \"{COMMIT}\"\n"
+        ))
+        .unwrap();
+        let plan = plan(&[locales, lua()]);
+        assert_eq!(plan.commits.len(), 1);
+        assert_eq!(plan.commits[0].product, "pkg:generic/lua@1.2.3");
+        assert_eq!(
+            plan.not_covered,
+            [NotCovered {
+                port: "locales".to_string(),
+                version: "2.42".to_string(),
+                url: "https://example.org/glibc.git".to_string(),
+                reason: "only data is taken: only the locale sources".to_string(),
+            }]
+        );
     }
 
     #[test]
     fn the_text_lists_findings_and_what_was_not_covered() {
-        let mut report = Report { findings: Vec::new(), not_covered: Vec::new() };
+        let mut report = Report {
+            findings: Vec::new(),
+            not_affected: Vec::new(),
+            not_covered: Vec::new(),
+            unused_statements: Vec::new(),
+        };
         let clean = render_text(&report);
         assert!(clean.starts_with("No advisory matches"), "{clean}");
-        assert!(!clean.contains("Not covered"));
+        assert!(!clean.contains("Not asked about") && !clean.contains("statements"), "{clean}");
 
         let mut found = finding("A", Some(Severity::High), "x 1");
         found.aliases = vec!["CVE-1".to_string()];
@@ -1837,7 +2068,28 @@ source = "registry+https://registry.example.org/index"
         assert!(text.contains("B  no severity  y 2"), "{text}");
         assert!(text.contains("also CVE-1"), "{text}");
         assert!(text.contains("found in Cargo.lock by cargo-audit"), "{text}");
-        assert!(text.contains("Not covered, since 1 ports"), "{text}");
+        assert!(text.contains("Not asked about, 1 ports:"), "{text}");
         assert!(text.contains("  zip 3.0: no public repository"), "{text}");
+
+        report.not_affected = vec![NotAffected {
+            id: "CVE-3".to_string(),
+            product: "pkg:generic/z@1".to_string(),
+            component: "z c3".to_string(),
+            status: "fixed",
+            justification: None,
+            statement: "s".to_string(),
+        }];
+        report.unused_statements =
+            vec![Unused { id: "CVE-4".to_string(), product: "pkg:generic/w@2".to_string() }];
+        let text = render_text(&report);
+        assert!(
+            text.contains("1 findings are cleared by statements of security/vex.json:"),
+            "{text}"
+        );
+        assert!(text.contains("  CVE-3 in pkg:generic/z@1: fixed"), "{text}");
+        assert!(
+            text.contains("clear no finding, which can go:\n  CVE-4 in pkg:generic/w@2"),
+            "{text}"
+        );
     }
 }
