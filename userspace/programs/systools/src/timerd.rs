@@ -946,6 +946,7 @@ mod tests {
             spread: 3600,
             catch_up: true,
             time_zone: None,
+            schedule: "every 10m".into(),
         };
         assert_eq!(Timing::from_timer(&timer, first).delay, first);
     }

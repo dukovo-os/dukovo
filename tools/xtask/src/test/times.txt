@@ -18,8 +18,12 @@
 accounts 26
 acpi-power 31
 acpi-thermal 32
+admin-actions 370
+admin-commands 320
 admin-journal 270
+admin-logs 330
 admin-terminal 360
+admin-trials 900
 ansible 300
 aml-off 16
 audio-cd 60

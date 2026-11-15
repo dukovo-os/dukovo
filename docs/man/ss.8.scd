@@ -9,7 +9,7 @@ ss - list the TCP and UDP sockets
 
 # SYNOPSIS
 
-*ss* [*-t*] [*-u*] [*-4*] [*-6*] [*-l* | *-a*] [*-n*] [*-H*]
+*ss* [*-t*] [*-u*] [*-4*] [*-6*] [*-l* | *-a*] [*-n*] [*-H*] [*--json*]
 
 # DESCRIPTION
 
@@ -62,6 +62,19 @@ written and not yet acknowledged.
 
 *-n*, *--numeric*
 	Changes nothing: ss gives addresses and ports as numbers.
+
+*--json*
+	Write the sockets the other options pick as one line of JSON, an
+	array with an object for each, as the web console reads them (ADR
+	0518), *[]* for none; *-H* changes nothing. The object has these
+	fields, in this order: *tcp* (true for a TCP socket, false for a UDP
+	one), *state* (*established*, *syn-sent*, *syn-recv*, *fin-wait-1*,
+	*fin-wait-2*, *time-wait*, *unconn*, *close-wait*, *last-ack*,
+	*listen*, *closing*, or *unknown*), *local* and *remote* (each an
+	object of *address*, a number, an IPv6 one without brackets, and
+	*port*, which is 0 for a socket that is not connected), *send_queue*
+	and *receive_queue* (bytes). *ss -t --json* is the connections of
+	TCP now.
 
 Not yet: *-p*, the process that holds each socket, which the kernel's
 lists do not name; *-x*, the Unix sockets; *-s*; *-e*; *-i*; and the

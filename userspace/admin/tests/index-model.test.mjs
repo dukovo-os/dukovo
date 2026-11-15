@@ -55,10 +55,11 @@ const titles = (results) => results.map((one) => one.row.title);
 test('the pages a person may see are rows, with their children and sections, and the pages that are not shown are not', () => {
   const rows = pageRows(PAGES, admin);
   assert.deepEqual(rows.map((one) => one.title), [
-    'Overview',
+    'Overview', 'Logs', 'Reliability', 'Networking', 'Firewall',
     'Set up this server',
     'Your account', 'Your account › Display', 'Your account › Time zone', 'Your account › Second step', 'Your account › API tokens',
     'Terminal', 'Terminal › Sessions', 'Terminal › Terminal settings', 'Terminal › Terminal keys',
+    'Services', 'Services › Scheduled tasks',
   ]);
   const terminal = rows.find((one) => one.title === 'Terminal › Terminal keys');
   assert.deepEqual(terminal, {
@@ -68,8 +69,8 @@ test('the pages a person may see are rows, with their children and sections, and
   });
   const shown = new Set(rows.map((one) => one.target.path.split('#')[0]));
   assert.equal(shown.has('/welcome'), false, 'the welcome page is shown once and not found');
-  assert.equal(shown.has('/services'), false, 'a folder of parts only has no page to go to');
-  assert.equal(shown.has('/certificates'), false);
+  assert.equal(shown.has('/services'), true);
+  assert.equal(shown.has('/certificates'), false, 'a folder of parts only has no page to go to');
 });
 
 test('a reader does not find the administrators\' pages, and a person with no terminal does not find the terminal', () => {
@@ -90,7 +91,8 @@ test('whether an address is a page that is registered and that this person may s
   assert.equal(reaches(PAGES, admin, '/terminal/sessions'), true);
   assert.equal(reaches(PAGES, admin, '/account#display'), true);
   assert.equal(reaches(PAGES, admin, '/?x=1'), true);
-  assert.equal(reaches(PAGES, admin, '/services/nginx'), false);
+  assert.equal(reaches(PAGES, admin, '/services/nginx'), true);
+  assert.equal(reaches(PAGES, admin, '/certificates'), false, 'a folder of parts only is no page');
   assert.equal(reaches(PAGES, admin, '/setup'), true);
   assert.equal(reaches(PAGES, reader, '/setup'), false);
   assert.equal(reaches(PAGES, reader, '/terminal'), false);
@@ -101,7 +103,7 @@ test('whether an address is a page that is registered and that this person may s
 
 test('each action admind lists is a row, with who runs it and an icon of its area', () => {
   const rows = actionRows(ACTIONS);
-  assert.equal(rows.length, 16);
+  assert.equal(rows.length, 42);
   const restart = rows.find((one) => one.key === 'action:service.restart');
   assert.deepEqual(restart, {
     key: 'action:service.restart', kind: 'action', group: ACTIONS_GROUP, title: 'Restart a service', detail: '',
@@ -114,6 +116,12 @@ test('each action admind lists is a row, with who runs it and an icon of its are
   assert.equal(rows.find((one) => one.key === 'action:checks.last').icon, 'security');
   assert.equal(rows.find((one) => one.key === 'action:console.about').icon, 'info');
   assert.equal(rows.find((one) => one.key === 'action:metrics.now').icon, 'reliability');
+  const all = rows.find((one) => one.key === 'action:logs.read-all');
+  assert.deepEqual([all.icon, all.change, all.elevated], ['logs', false, true]);
+  const set = rows.find((one) => one.key === 'action:network.set');
+  assert.deepEqual([set.icon, set.change, set.elevated], ['network', true, true]);
+  const dropped = rows.find((one) => one.key === 'action:firewall.dropped');
+  assert.deepEqual([dropped.icon, dropped.change, dropped.elevated], ['firewall', false, true]);
   assert.equal(actionRows([{ id: 'lab.fail', title: 'Fail', area: 'lab', changes: true, runs: 'as-the-person' }])[0].icon, 'code');
   assert.deepEqual(actionRows([{ id: 5, title: 'x' }, { id: 'a' }, null]), [], 'a list that is not right gives no rows');
 });
@@ -127,7 +135,7 @@ test('a thing is a row, and each phrase makes one more for each thing that has a
   assert.deepEqual(nginx, {
     key: 'thing:service:nginx', kind: 'thing', group: 'Services', title: 'nginx', detail: 'Web server', keywords: ['Web server'],
     facts: { kind: ['service'], state: ['running'] }, rank: 2, icon: 'services', state: { word: 'running', label: 'Running', tone: 'ok' },
-    target: { action: 'service.explain', args: { name: 'nginx' } }, change: false, elevated: false, recent: false,
+    target: { path: '/services/nginx' }, change: false, elevated: false, recent: false,
   });
   const restart = rows.find((one) => one.key === 'phrase:service.restart:service:nginx');
   assert.deepEqual(restart, {
@@ -151,8 +159,8 @@ test('a thing goes to its page when that page is registered, and to its action w
       groups: [{
         group: 'Pages', kind: 'page-thing', items: [
           { key: 'a', title: 'Account', href: '/account', action: 'service.explain', args: { name: 'a' } },
-          { key: 'b', title: 'Services', href: '/services', action: 'service.explain', args: { name: 'b' } },
-          { key: 'c', title: 'Nothing yet', href: '/services/c' },
+          { key: 'b', title: 'Certificates', href: '/certificates', action: 'service.explain', args: { name: 'b' } },
+          { key: 'c', title: 'Nothing yet', href: '/certificates/c' },
           { key: 'd', title: 'Only an action', action: 'service.restart' },
         ],
       }],
@@ -317,7 +325,8 @@ test('the recent list puts a row first on a tie, and is made safe, short and uni
 test('with nothing typed the recent rows are a group of their own, first; with something typed they are not', () => {
   const made = index();
   applyRecent(made.rows, ['thing:service:nginx', 'page:/account']);
-  const empty = groupResults(made, find(made, ''), '');
+  // The list is cut at fifty rows, and the actions are more than that.
+  const empty = groupResults(made, find(made, '', 200), '');
   assert.deepEqual(empty.map((group) => group.label), [RECENT_GROUP, 'Actions', 'Services', 'Certificates', 'Settings and pages']);
   assert.deepEqual(titles(empty[0].results), ['nginx', 'Your account'], 'in the order they were used');
   assert.equal(empty.find((group) => group.label === 'Services').results.some((one) => one.row.title === 'nginx'), false, 'and not twice');
@@ -328,7 +337,8 @@ test('with nothing typed the recent rows are a group of their own, first; with s
 
 test('groups come in the order of the index with no empty group, and the arrow keys walk them in that order', () => {
   const made = index();
-  const groups = groupResults(made, find(made, 'ngi'), 'ngi');
+  // "nginx" in full: a shorter word is found in the words of other actions too ("ngi" in "connection against the firewall").
+  const groups = groupResults(made, find(made, 'nginx'), 'nginx');
   assert.deepEqual(groups.map((group) => group.label), ['Actions', 'Services']);
   assert.deepEqual(flatten(groups).map((one) => one.row.title), ['Start nginx', 'Restart nginx', 'Explain nginx', 'nginx']);
   assert.deepEqual(groupResults(made, [], 'zzzz'), []);

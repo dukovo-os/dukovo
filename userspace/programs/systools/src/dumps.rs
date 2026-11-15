@@ -25,6 +25,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
+use serde::Serialize;
+
 use crate::alerts::client::Screen;
 use crate::alerts::protocol::{Alert, Severity};
 use crate::args::{Arg, Args};
@@ -50,7 +52,7 @@ const KEEP_BYTES: u64 = 64 << 20;
 /// panic report come first.
 const HEAD: u64 = 4096;
 
-const HELP: &str = "Usage: dumps [list]
+const HELP: &str = "Usage: dumps [list] [--json]
        dumps show [NAME]
        dumps path [NAME]
        dumps delete NAME... | --all
@@ -60,7 +62,7 @@ const HELP: &str = "Usage: dumps [list]
 Saves, lists, shows and deletes the kernel's crash dumps, as dumps(8)
 describes.
 
-  list     the saved dumps, newest first
+  list     the saved dumps, newest first; --json for the web console
   show     one dump, the newest without a NAME, through $PAGER on a terminal
   path     where a dump's file is
   delete   the named dumps, or every one with --all
@@ -78,18 +80,23 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
                 println!("{HELP}");
                 Ok(0)
             }
+            Some(Arg::Long(name)) if name == "json" => {
+                root_only()?;
+                nothing_more(args)?;
+                list(folder, true)
+            }
             Some(other) => Err(args.unknown(&other)),
             None => {
                 root_only()?;
-                list(folder)
+                list(folder, false)
             }
         };
     };
     match subcommand.to_str() {
         Some("list") => {
             root_only()?;
-            nothing_more(args)?;
-            list(folder)
+            let json = list_options(args)?;
+            list(folder, json)
         }
         Some("show") => {
             root_only()?;
@@ -131,6 +138,18 @@ fn nothing_more(args: &mut Args) -> Result<(), Fail> {
         None => Ok(()),
         Some(other) => Err(args.unknown(&other)),
     }
+}
+
+/// Whether `list` was given `--json`, and nothing else.
+fn list_options(args: &mut Args) -> Result<bool, Fail> {
+    let mut json = false;
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(name) if name == "json" => json = true,
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    Ok(json)
 }
 
 /// The dump's name that `args` ends with, if it has one.
@@ -293,20 +312,30 @@ fn find<'a>(saved: &'a [Saved], name: Option<&str>) -> Result<&'a Saved, Fail> {
     }
 }
 
-/// `dumps list`: a table of the saved dumps.
-fn list(folder: &Path) -> Result<i32, Fail> {
+/// The start of the saved dump `dump` of `folder`: what `list` reads.
+fn head_of(folder: &Path, dump: &Saved) -> Result<Vec<u8>, Fail> {
+    let mut head = Vec::new();
+    File::open(folder.join(&dump.name))
+        .and_then(|file| file.take(HEAD).read_to_end(&mut head))
+        .map_err(|err| util::failed(&dump.name, err))?;
+    Ok(head)
+}
+
+/// `dumps list`: a table of the saved dumps, or with `json`, the array the
+/// web console reads.
+fn list(folder: &Path, json: bool) -> Result<i32, Fail> {
     let saved = saved_in(folder)?;
+    if json {
+        println!("{}", entries_json(folder, &saved)?);
+        return Ok(0);
+    }
     if saved.is_empty() {
         println!("no crash dumps saved");
         return Ok(0);
     }
     let mut table = vec![["NAME", "TIME", "BOOT", "SIZE", "PANIC"].map(String::from).to_vec()];
     for dump in &saved {
-        let mut head = Vec::new();
-        File::open(folder.join(&dump.name))
-            .and_then(|file| file.take(HEAD).read_to_end(&mut head))
-            .map_err(|err| util::failed(&dump.name, err))?;
-        table.push(row(dump, &head));
+        table.push(row(dump, &head_of(folder, dump)?));
     }
     let width = if util::is_terminal(1) {
         util::terminal_size(1).map(|(columns, _)| columns)
@@ -315,6 +344,53 @@ fn list(folder: &Path) -> Result<i32, Fail> {
     };
     print_table(&table, &[false, false, true, true, false], width)?;
     Ok(0)
+}
+
+/// A saved dump in `list --json`, in this order.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Entry {
+    /// The file's name, which `dumps show` takes.
+    name: String,
+    /// When the kernel panicked, in milliseconds since 1970; null when it
+    /// did not know the time of day, or the file is no dump.
+    at_ms: Option<u64>,
+    /// The file's size in bytes.
+    size: u64,
+    /// The panic's message, as the table's last column shows it; for a
+    /// file that is no dump, `not a dump:` and why.
+    first_line: String,
+}
+
+/// The JSON array of `list --json` for the `saved` dumps of `folder`,
+/// newest first: `[]` for none.
+fn entries_json(folder: &Path, saved: &[Saved]) -> Result<String, Fail> {
+    let mut entries = Vec::new();
+    for dump in saved {
+        entries.push(entry(dump, &head_of(folder, dump)?));
+    }
+    serde_json::to_string(&entries).map_err(|err| fail(err.to_string()))
+}
+
+/// The entry of `list --json` for `dump`, whose file starts with `head`.
+fn entry(dump: &Saved, head: &[u8]) -> Entry {
+    match Summary::of(head) {
+        Ok(summary) => Entry {
+            name: dump.name.clone(),
+            at_ms: summary
+                .panicked_at
+                .as_deref()
+                .and_then(logd::parse_rfc3339)
+                .map(|ns| ns / 1_000_000),
+            size: dump.bytes,
+            first_line: summary.panic,
+        },
+        Err(why) => Entry {
+            name: dump.name.clone(),
+            at_ms: None,
+            size: dump.bytes,
+            first_line: format!("not a dump: {why}"),
+        },
+    }
 }
 
 /// The line of `list`'s table for `dump`, whose file starts with `head`.
@@ -877,6 +953,60 @@ mod tests {
     fn a_folder_that_is_not_there_holds_no_dumps() {
         let dir = folder("absent");
         assert!(saved_in(&dir).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_json_of_the_list_has_the_name_time_size_and_panic_of_each_dump_newest_first() {
+        let dir = folder("json");
+        fs::create_dir_all(&dir).unwrap();
+        let files = [
+            ("2026-11-13T10-02-11Z-boot42.txt", dump(42, KNOWN), 300),
+            ("unknown-time-boot43-00c0ffee.txt", dump(43, UNKNOWN), 200),
+            ("2026-11-01T08-00-00Z-boot7.txt", b"not a dump at all".to_vec(), 100),
+        ];
+        for (name, text, age) in &files {
+            let file = File::create(dir.join(name)).unwrap();
+            (&file).write_all(text).unwrap();
+            file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 - age))
+                .unwrap();
+        }
+        // A file that is no dump's name is not listed, and the folder's
+        // other files are not read.
+        fs::write(dir.join("notes.txt"), "mine").unwrap();
+        let text = entries_json(&dir, &saved_in(&dir).unwrap()).unwrap();
+        let size = |at: usize| files[at].1.len();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"name": "2026-11-01T08-00-00Z-boot7.txt", "at_ms": null, "size": size(2),
+                 "first_line": "not a dump: it is shorter than a dump's header"},
+                {"name": "unknown-time-boot43-00c0ffee.txt", "at_ms": null, "size": size(1),
+                 "first_line": "selftest crash-reboot: deliberate panic"},
+                {"name": "2026-11-13T10-02-11Z-boot42.txt", "at_ms": 1_794_564_131_000_u64,
+                 "size": size(0), "first_line": "selftest crash-reboot: deliberate panic"},
+            ])
+        );
+        // The fields are in the order the page's tests expect.
+        let first = text.find('{').unwrap();
+        let fields = ["\"name\":", "\"at_ms\":", "\"size\":", "\"first_line\":"];
+        let at: Vec<usize> =
+            fields.iter().map(|field| text[first..].find(field).unwrap()).collect();
+        assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(entries_json(&dir, &[]).unwrap(), "[]");
+    }
+
+    #[test]
+    fn list_takes_json_and_nothing_else() {
+        let read = |items: &[&str]| {
+            list_options(&mut Args::new("dumps", items.iter().map(Into::into).collect()))
+        };
+        assert!(!read(&[]).unwrap());
+        assert!(read(&["--json"]).unwrap());
+        for items in [&["--text"][..], &["net0"], &["--json=yes"], &["-j"]] {
+            assert!(read(items).unwrap_err().usage, "{items:?}");
+        }
     }
 
     #[test]

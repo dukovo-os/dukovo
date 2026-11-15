@@ -50,9 +50,11 @@ memory = "128M"
 # port, authd's socket, logd's socket, where it asks who changed a file by
 # hand (the audit log is only root's), its state folder, which holds the
 # store of the journal and the tasks, the folder where it writes the
-# address and fingerprint that the screen's sign-in text shows, and the
-# terminals it makes for the console's Terminal page.
+# address and fingerprint that the screen's sign-in text shows, the
+# terminals it makes for the console's Terminal page, and Spark's read
+# socket, which answers anyone, for the settings being tried and the ones
+# Spark undid (ADR 0518).
 [permissions]
 network.listen = [9090]
-files.read = ["/system/live/authd", "/system/live/log"]
+files.read = ["/system/live/authd", "/system/live/log", "/system/live/spark/read"]
 files.read-write = ["/system/state/admind", "/system/live/admind", "/devices/ptmx", "/devices/pts"]

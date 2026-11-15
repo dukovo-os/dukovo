@@ -7,7 +7,7 @@
 // pass; model.js says what goes in it.
 
 import { fill, h, icon } from '../../dom.js';
-import { assess } from '../../lib/health.js';
+import { readChecks } from '../../lib/checks.js';
 import { commandBox, linkable, makeCard, reader } from './card.js';
 import { seeAllDialog, scoreDialog } from './dialogs.js';
 import { healthCard, lookWords, SEVERITY_WORDS } from './model.js';
@@ -30,26 +30,6 @@ function rowOf(row, time) {
   mark.classList.add(row.severity === 'info' ? 'info' : row.severity);
   if (linkable(row.href)) return h('li', {}, h('a', { class: 'need-row', href: row.href }, mark, words, h('span', { class: 'go', 'aria-hidden': 'true' }, '›')));
   return h('li', {}, h('div', { class: 'need-row' }, mark, words));
-}
-
-/**
- * What the kept result is: `{state, assessed}` as model.js's `healthCard`
- * takes it. `GET /api/1/checks/last` answers 501 ADM-129 on a server
- * without `dukovo-check`, ADM-123 when no result is kept, and the result.
- * A reader does not ask: the result is for administrators.
- */
-async function readChecks(view) {
-  if (!view.session.admin) return { state: 'reader' };
-  try {
-    const result = await view.api.get('/api/1/checks/last');
-    if (!Array.isArray(result?.results)) return { state: 'none' };
-    return { state: 'ok', assessed: assess(result) };
-  } catch (error) {
-    if (error?.name === 'AbortError') throw error;
-    if (error?.id === 'ADM-129') return { state: 'missing' };
-    if (error?.id === 'ADM-123') return { state: 'none' };
-    return { state: 'error' };
-  }
 }
 
 /** The card, which reads again with `load()`. */

@@ -21,6 +21,8 @@
 //! console\0elevate\0session\03f9a...\0LANG=C.UTF-8\0--\0service\0restart\0nginx\0
 //! console\0token\0dkv_ansible_...\0192.0.2.7\0
 //! console\0terminal\03f9a...\0own\0xterm-256color\0LANG=en_US.UTF-8\0
+//! console\0follow\03f9a...\0all\0nginx\0\0warning\0timed out\0
+//! console\0follow-end\03f9a...\04321\0
 //! console\0steps\0
 //! console\0token-add\0\0ansible\0*\0365\0
 //! ```
@@ -92,6 +94,21 @@ pub enum Elevator {
         /// `*`.
         area: String,
     },
+}
+
+/// What a follow of the log shows (ADR 0518): `log`'s options, each
+/// left out when it is not given. authd checks them and writes the
+/// command itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Filter {
+    /// One service's records (`--service`).
+    pub service: Option<String>,
+    /// The kernel's records (`--kernel`).
+    pub kernel: bool,
+    /// The least urgent level shown (`--priority`).
+    pub priority: Option<String>,
+    /// What a record's text matches (`--grep`).
+    pub grep: Option<String>,
 }
 
 /// A request of the web console's.
@@ -221,6 +238,29 @@ pub enum Console {
         term: String,
         /// The browser's language settings, as `NAME=value`.
         language: Vec<String>,
+    },
+    /// Follow the log for session `session` (ADR 0518): `log --output
+    /// json --follow --lines 0` with `filter`'s options, which authd checks
+    /// and writes itself, on the two descriptors sent, the write ends of
+    /// the pipes admind reads its output and its errors from. As the
+    /// person, or with `all` as root for an administrator whose session is
+    /// unlocked, which ends when the session locks. The answer is `ok
+    /// PROCESS`; authd does not hold the request.
+    Follow {
+        /// The console session.
+        session: String,
+        /// Whether the whole log is read, as root.
+        all: bool,
+        /// What is shown of it.
+        filter: Filter,
+    },
+    /// End the follow `process` of session `session`, which admind no
+    /// longer reads (ADR 0518).
+    FollowEnd {
+        /// The console session.
+        session: String,
+        /// The follow's process, as `follow` answered it.
+        process: i32,
     },
     /// The asker's own second steps and tokens, as lines of the answer.
     Steps,
@@ -437,6 +477,19 @@ impl Console {
                 fields.extend(language.iter().map(|s| s.as_bytes().to_vec()));
                 fields
             }
+            Console::Follow { session, all, filter } => {
+                let whose: &[u8] = if *all { b"all" } else { b"own" };
+                let kernel: &[u8] = if filter.kernel { b"kernel" } else { b"" };
+                let given =
+                    |text: &Option<String>| text.as_deref().unwrap_or("").as_bytes().to_vec();
+                let mut fields = words(&[b"follow", session.as_bytes(), whose]);
+                fields.extend([given(&filter.service), kernel.to_vec()]);
+                fields.extend([given(&filter.priority), given(&filter.grep)]);
+                fields
+            }
+            Console::FollowEnd { session, process } => {
+                words(&[b"follow-end", session.as_bytes(), process.to_string().as_bytes()])
+            }
             Console::Steps => words(&[b"steps"]),
             Console::AppBegin { proof, host } => words(&[b"app-begin", proof, host.as_bytes()]),
             Console::AppConfirm { code } => words(&[b"app-confirm", code]),
@@ -548,6 +601,33 @@ impl Console {
                     language: language.iter().map(|f| text(f)).collect::<Option<Vec<_>>>()?,
                 }
             }
+            [
+                b"follow",
+                session,
+                whose @ (b"own" | b"all"),
+                service,
+                kernel @ (b"" | b"kernel"),
+                priority,
+                grep,
+            ] => {
+                let given = |field: &[u8]| -> Option<Option<String>> {
+                    if field.is_empty() { Some(None) } else { text(field).map(Some) }
+                };
+                Console::Follow {
+                    session: text(session)?,
+                    all: whose == b"all",
+                    filter: Filter {
+                        service: given(service)?,
+                        kernel: kernel == b"kernel",
+                        priority: given(priority)?,
+                        grep: given(grep)?,
+                    },
+                }
+            }
+            [b"follow-end", session, process] => Console::FollowEnd {
+                session: text(session)?,
+                process: text(process)?.parse().ok().filter(|process: &i32| *process > 0)?,
+            },
             [b"steps"] => Console::Steps,
             [b"app-begin", proof, host] => {
                 Console::AppBegin { proof: proof.to_vec(), host: text(host)? }
@@ -609,6 +689,8 @@ impl Console {
                 | Console::Token { .. }
                 | Console::TokenStart { .. }
                 | Console::Terminal { .. }
+                | Console::Follow { .. }
+                | Console::FollowEnd { .. }
         )
     }
 
@@ -646,6 +728,8 @@ impl Console {
             | Console::End { .. }
             | Console::Elevate { by: Elevator::Session(_), .. }
             | Console::Terminal { .. }
+            | Console::Follow { .. }
+            | Console::FollowEnd { .. }
             | Console::Steps
             | Console::PasskeyAdd { .. }
             | Console::PasskeyRename { .. }
@@ -671,6 +755,8 @@ impl Console {
             Console::Token { .. } => "token",
             Console::TokenStart { .. } => "token-start",
             Console::Terminal { .. } => "terminal",
+            Console::Follow { .. } => "follow",
+            Console::FollowEnd { .. } => "follow-end",
             Console::Steps => "steps",
             Console::AppBegin { .. } => "app-begin",
             Console::AppConfirm { .. } => "app-confirm",
@@ -800,6 +886,23 @@ mod tests {
                 term: "xterm-256color".into(),
                 language: vec![],
             },
+            Console::Follow { session: "3f9a".into(), all: false, filter: Filter::default() },
+            Console::Follow {
+                session: "3f9a".into(),
+                all: true,
+                filter: Filter {
+                    service: Some("nginx".into()),
+                    kernel: false,
+                    priority: Some("warning".into()),
+                    grep: Some("timed out".into()),
+                },
+            },
+            Console::Follow {
+                session: "3f9a".into(),
+                all: false,
+                filter: Filter { kernel: true, ..Filter::default() },
+            },
+            Console::FollowEnd { session: "3f9a".into(), process: 4321 },
             Console::Steps,
             Console::AppBegin { proof: Vec::new(), host: "duke-nas".into() },
             Console::AppConfirm { code: b"123456".to_vec() },
@@ -855,6 +958,17 @@ mod tests {
             &[b"terminal", b"s", b"root", b"xterm"],
             &[b"terminal", b"s", b"own"],
             &[b"terminal", b"s", b"own", b"xterm", b"\xff"],
+            // A follow has its seven fields, and says whose and kernel or
+            // nothing in its own words; a NUL in one of them is one more.
+            &[b"follow", b"s", b"root", b"", b"", b"", b""],
+            &[b"follow", b"s", b"own", b"", b"yes", b"", b""],
+            &[b"follow", b"s", b"own", b"", b"", b""],
+            &[b"follow", b"s", b"own", b"a", b"b", b"", b"", b""],
+            &[b"follow", b"s", b"own", b"\xff", b"", b"", b""],
+            &[b"follow-end", b"s", b"0"],
+            &[b"follow-end", b"s", b"-1"],
+            &[b"follow-end", b"s", b"x"],
+            &[b"follow-end", b"s"],
             &[b"nothing"],
         ] {
             assert_eq!(Console::decode(fields), None, "{fields:?}");

@@ -41,11 +41,16 @@
 mod certificate;
 pub mod checks;
 mod console;
+mod firewall;
 #[cfg(any(test, feature = "lab"))]
 pub mod lab;
+pub mod logs;
 mod metrics;
+mod network;
+mod reliability;
 mod service;
 pub mod show;
+mod trial;
 
 use std::fmt;
 
@@ -390,6 +395,9 @@ pub trait Action: 'static {
     /// as `service NAME explain` exits 3 for a service that does not run,
     /// those statuses too. Any other status is ADM-123.
     const ANSWERS: &'static [i32] = &[0];
+    /// Whether its command prints one JSON value a line, as `log -o json`
+    /// does: the answer is then the array of the lines' values.
+    const LINES: bool = false;
     /// Its five tests.
     const TESTS: Tests;
     /// What a person reads as its name in the palette and in the journal:
@@ -444,6 +452,12 @@ pub trait Action: 'static {
         Some(output.trim().to_string())
     }
 
+    /// What the change with `args` does to a trial of settings, which
+    /// Spark undoes unless it is kept (ADR 0518): none by default.
+    fn trial(_args: &Self::Args) -> Option<Trial> {
+        None
+    }
+
     /// Whether `now`, the part of the probe's output that
     /// [`Action::probed`] picks, is already what the change leaves, so that
     /// the change would move nothing of it: for check mode (ADR 0545).
@@ -465,6 +479,17 @@ pub trait Action: 'static {
     fn examples() -> Examples<Self::Args>;
 }
 
+/// What a change does to a trial of settings, by the trial's ID: admind
+/// keeps when one began, so that a page can tell whether its browser
+/// reaches the console over a connection opened after the change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trial {
+    /// It begins the trial.
+    Begins(&'static str),
+    /// It keeps or undoes it.
+    Ends(&'static str),
+}
+
 /// An action ready to run: its checked arguments and what they make.
 #[derive(Debug)]
 pub struct Prepared {
@@ -477,6 +502,8 @@ pub struct Prepared {
     /// The command that reads what a change moves, for `changed`: None for
     /// a read, and for a change that always does something.
     pub probe: Option<Vec<String>>,
+    /// What it does to a trial, when it answers well.
+    pub trial: Option<Trial>,
 }
 
 /// An action in the list, whatever its arguments' type.
@@ -490,6 +517,8 @@ pub trait Registered: Sync + fmt::Debug {
     fn errors(&self) -> &'static [&'static str];
     /// [`Action::ANSWERS`].
     fn answers(&self) -> &'static [i32];
+    /// [`Action::LINES`].
+    fn lines(&self) -> bool;
     fn tests(&self) -> Tests;
     fn title(&self) -> &'static str;
     /// Whether a change's `changed` comes from comparing, its probe's
@@ -560,6 +589,9 @@ impl<A: Action> Registered for Entry<A> {
     fn answers(&self) -> &'static [i32] {
         A::ANSWERS
     }
+    fn lines(&self) -> bool {
+        A::LINES
+    }
     fn tests(&self) -> Tests {
         A::TESTS
     }
@@ -593,9 +625,10 @@ impl<A: Action> Registered for Entry<A> {
         let ansible = A::ansible(&typed);
         let files = A::files(&typed);
         let probe = if A::CHANGES { A::probe(&typed) } else { None };
+        let trial = A::trial(&typed);
         let args = serde_json::to_value(&typed)
             .map_err(|err| Failure::new(Kind::Internal, format!("{} arguments: {err}", A::ID)))?;
-        Ok(Prepared { action: self, args, argv, ansible, files, probe })
+        Ok(Prepared { action: self, args, argv, ansible, files, probe, trial })
     }
 
     fn probed(&self, args: &Value, output: &str) -> Option<String> {
@@ -632,20 +665,46 @@ macro_rules! registry {
 registry![
     service::List,
     service::Explain,
+    service::Status,
     service::Start,
     service::Stop,
     service::Restart,
     service::Enable,
     service::Disable,
+    service::Usage,
+    service::Timers,
     certificate::List,
     certificate::Show,
     certificate::Renew,
     console::SetReach,
     console::About,
     console::Notices,
+    reliability::Export,
     checks::Last,
     metrics::Now,
     metrics::Usage,
+    metrics::Around,
+    logs::Own,
+    logs::All,
+    network::Show,
+    network::Connections,
+    network::Change,
+    network::Keep,
+    network::Revert,
+    firewall::List,
+    firewall::Test,
+    firewall::Status,
+    firewall::Dropped,
+    firewall::Add,
+    firewall::Replace,
+    firewall::Remove,
+    firewall::Keep,
+    firewall::Revert,
+    reliability::Starts,
+    reliability::Failed,
+    reliability::Start,
+    reliability::Dumps,
+    reliability::Alerts,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
@@ -806,6 +865,97 @@ pub fn arguments(mut params: Params, body: &[u8]) -> Result<Value, Failure> {
     Ok(Value::Object(params))
 }
 
+/// The arguments of a read: `params`, the address's `{name}` parts, read
+/// as their type reads them, and each of `fields` that `query`, the
+/// address's query, gives, as its type reads it: text and a word as given,
+/// a number, `true` or `false`. A query is decoded as a form's is, `+` as a
+/// space and `%XX` as a byte.
+///
+/// # Errors
+///
+/// ADM-108 for a name the read does not take, a name given twice or also
+/// in the address, a value that is not text, or one that its type does
+/// not read.
+pub fn query_arguments(
+    mut params: Params,
+    query: &str,
+    fields: &[Field],
+) -> Result<Value, Failure> {
+    let bad = |why: String| Failure::new(Kind::BadRequest, why);
+    // A part of the address is text; a number or a flag in it is read as the
+    // type of its field says, as the query's are.
+    for (name, value) in &mut params {
+        if let (Some(field), Value::String(text)) =
+            (fields.iter().find(|field| field.name == *name), &*value)
+        {
+            *value = read_value(field, name, text.clone())?;
+        }
+    }
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let name =
+            form_decoded(name).ok_or_else(|| bad("the address's query is not text".into()))?;
+        let value = form_decoded(value).ok_or_else(|| bad(format!("\"{name}\" is not text")))?;
+        let Some(field) = fields.iter().find(|field| field.name == name) else {
+            return Err(bad(format!("this read takes no \"{name}\"")));
+        };
+        if params.contains_key(&name) {
+            return Err(bad(format!("\"{name}\" is given twice")));
+        }
+        let value = read_value(field, &name, value)?;
+        params.insert(name, value);
+    }
+    Ok(Value::Object(params))
+}
+
+/// `text`, the value of `field` as it was written in an address, read as
+/// the field's type reads it: text and a word as given, a whole number, or
+/// `true` or `false`.
+///
+/// # Errors
+///
+/// ADM-108 for a number or a flag that is not written as one.
+fn read_value(field: &Field, name: &str, text: String) -> Result<Value, Failure> {
+    let bad = |why: String| Failure::new(Kind::BadRequest, why);
+    Ok(match field.kind {
+        Type::Text { .. } | Type::OneOf(_) => Value::String(text),
+        Type::Number { .. } => text
+            .parse::<i64>()
+            .map(Value::from)
+            .map_err(|_| bad(format!("\"{name}\" is a whole number")))?,
+        Type::Flag => match text.as_str() {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => return Err(bad(format!("\"{name}\" is true or false"))),
+        },
+    })
+}
+
+/// `text` decoded as a form's field is: `+` a space, `%XX` the byte XX.
+/// None when a `%` is not followed by two hex digits, or the bytes are
+/// not UTF-8.
+fn form_decoded(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        rest = after;
+        match byte {
+            b'+' => bytes.push(b' '),
+            b'%' => {
+                let hex = rest.get(..2)?;
+                let hex = std::str::from_utf8(hex).ok()?;
+                if !hex.bytes().all(|digit| digit.is_ascii_hexdigit()) {
+                    return None;
+                }
+                bytes.push(u8::from_str_radix(hex, 16).ok()?);
+                rest = &rest[2..];
+            }
+            _ => bytes.push(byte),
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
 /// Who asks for an action, as far as may and may not goes.
 #[derive(Clone, Debug)]
 pub enum Caller<'a> {
@@ -842,19 +992,50 @@ pub fn token_may(name: &str, scopes: &Scopes, area: &str, changes: bool) -> Resu
 /// # Errors
 ///
 /// ADM-124 for a token whose scopes do not name the action's area,
-/// ADM-122 for a person who is not an administrator asking for an
-/// administrator's change, ADM-106 for an administrator's locked session.
+/// ADM-122 for a person who is not an administrator asking for what runs
+/// as one, ADM-106 for an administrator's locked session.
 pub fn authorize(caller: &Caller<'_>, action: &dyn Registered) -> Result<(), Failure> {
     let elevated = action.runs() == Runs::AsAdministrator;
     match *caller {
-        Caller::Token { name, scopes } => token_may(name, scopes, action.area(), action.changes()),
-        Caller::Session { name, admin, unlocked } => {
-            if elevated {
-                session_may_elevate(name, admin, unlocked, action.area())
-            } else {
-                Ok(())
-            }
+        // authd lets a token run a command as an administrator only with
+        // its area's full scope, a read's as well (ADR 0518).
+        Caller::Token { name, scopes } => {
+            token_may(name, scopes, action.area(), action.changes() || elevated)
         }
+        Caller::Session { name, admin, unlocked } if elevated && !action.changes() => {
+            session_may_read_elevated(name, admin, unlocked, action.area())
+        }
+        Caller::Session { name, admin, unlocked } if elevated => {
+            session_may_elevate(name, admin, unlocked, action.area())
+        }
+        Caller::Session { .. } => Ok(()),
+    }
+}
+
+/// Whether the session of `name` may run a read that needs an
+/// administrator (ADR 0518): only an administrator's unlocked session.
+///
+/// # Errors
+///
+/// ADM-122 for a person who is not an administrator, ADM-106 for an
+/// administrator's locked session.
+pub fn session_may_read_elevated(
+    name: &str,
+    admin: bool,
+    unlocked: bool,
+    area: &str,
+) -> Result<(), Failure> {
+    if !admin {
+        Err(Failure::new(
+            Kind::NotAdmin,
+            format!(
+                "{name}'s account can look at its own part of {area}, and only an administrator at the rest"
+            ),
+        ))
+    } else if !unlocked {
+        Err(Failure::new(Kind::Locked, "unlock the console to read this"))
+    } else {
+        Ok(())
     }
 }
 

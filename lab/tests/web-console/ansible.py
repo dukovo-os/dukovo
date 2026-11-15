@@ -43,7 +43,10 @@ change that is a command must not be said to change anything again, since
 check mode reads the state, and it may say it cannot tell, unless it
 compares nothing, as lab.long, which check mode says changes each time. A change whose
 undo is itself with the same arguments, as console.reach's, finds nothing
-to do from the start, so check mode must say false before it too.
+to do from the start, so check mode must say false before it too; and one
+that has no undo and compares something, as console.export, starts from
+what the machine has, so check mode may say before it that it cannot
+tell.
 
 The console's own reads run here as the commands they show: console.about
 as `admin about --json`, console.notices as `admin notices --json` and
@@ -52,8 +55,15 @@ metrics.now as `metrics now --json`.
 certificate.renew is not run: it makes the certificate the console serves
 anew, and the API calls that follow would have to be made again with
 another certificate. The boot test admin-actions renews it. checks.last,
-lab.missing and metrics.usage are not run either, for the reasons at
-LEFT_ALONE.
+lab.missing, metrics.usage, metrics.around and service.usage are not run
+either, for the reasons at LEFT_ALONE.
+
+Nor are the changes of the network's settings and the firewall's rules
+(ADR 0518): each is tried, and Spark undoes it unless it is kept, so it
+has no state to begin from and come back to as this round's changes do,
+and its keep and undo need a trial running. Their tasks are the commands
+the console shows, which the boot test admin-trials runs, and the browser
+tests web-console/networking and web-console/firewall try, keep and undo.
 """
 
 import os
@@ -78,10 +88,15 @@ from console import (
 # The tasks this test leaves alone, each with its reason: certificate.renew
 # makes the machine's certificate anew; checks.last runs dukovo-check, which
 # a machine has only once an update brings the checks, and lab.missing runs
-# a command that no image has, so both end with a status other than 0; and
-# metrics.usage ends with 1 on a machine that has run for less than the 10
-# minutes in which metricsd writes the history it reads.
-LEFT_ALONE = {"certificate.renew", "checks.last", "lab.missing", "metrics.usage"}
+# a command that no image has, so both end with a status other than 0;
+# metrics.usage, metrics.around and service.usage end with 1 on a machine
+# that has run for less than the 10 minutes in which metricsd writes the
+# history they read; and the changes that are tried (TRIED) need a trial.
+TRIED = {
+    "network.set", "network.keep", "network.undo",
+    "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
+}
+LEFT_ALONE = {"certificate.renew", "checks.last", "lab.missing", "metrics.usage", "metrics.around", "service.usage"} | TRIED
 # The changes that compare nothing, so that the console counts each run as a change and
 # check mode says each would change something, whatever the machine is like: a restart,
 # and a lab build's lab.long, which runs its steps each time.
@@ -264,7 +279,15 @@ def main():
             # console.reach is put back by itself: its example asks for the reach the machine
             # has, so the change has nothing to do even before it runs.
             undoes_itself = undo is not None and (undo["action"], undo["args"]) == (action["id"], action["examples"]["good"][0])
-            if before_run is not (False if undoes_itself else True):
+            # A change with no undo starts from what the machine has: console.export's folder may
+            # be a repository from a run before, and check mode cannot tell whether the settings
+            # moved since, so it may say so.
+            unknown_start = undo is None and action["id"] not in ALWAYS_CHANGES
+            if unknown_start:
+                wrong = before_run is False
+            else:
+                wrong = before_run is not (False if undoes_itself else True)
+            if wrong:
                 raise Failure(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
             if action["id"] in ALWAYS_CHANGES:
                 wrong = after_run is not True

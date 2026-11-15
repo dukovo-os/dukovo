@@ -89,8 +89,9 @@ pub(super) fn rules(context: &Context) -> Vec<Outcome> {
 /// each start, is off or gave up.
 ///
 /// The service loads the rules and ends, so a start that went well leaves
-/// it stopped, with the status 0 that it ended with: that is a firewall
-/// that is on. One that was stopped by a signal, or never started, is not.
+/// it done, or stopped with the status 0 that it ended with when its file
+/// does not say it is ready once it has ended: either is a firewall that is
+/// on. One that was stopped by a signal, or never started, is not.
 pub(super) fn service_on(context: &Context) -> Vec<Outcome> {
     let service = match context.service("firewall") {
         Ok(service) => service,

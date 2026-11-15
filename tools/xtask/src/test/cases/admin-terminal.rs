@@ -8,6 +8,12 @@
 //! client of the standard library holds each socket, since the host has
 //! neither curl for a WebSocket nor a library of its own.
 //!
+//! The page's reads go by HTTP/2 when the client offers it (ADR 0519): curl
+//! with `--http2` reads the session and the list of terminals, says it used
+//! version 2 for each, and is given what the reads give by HTTP/1.1. The
+//! socket the shell is driven over stays HTTP/1.1, as a WebSocket's opening
+//! is, and its answer is the 101.
+//!
 //! The terminal is alice's shell: `tty` names a pseudo-terminal of the
 //! machine's, `id -un` says alice and `echo $TERM` says xterm-256color.
 //! Resized over the socket to 100 by 30, it says so to `stty size`. A page
@@ -58,7 +64,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::super::console_client::{
-    ALICE_PASSWORD, Browser, Console, Headers, Pane, Reply, Socket, elevated, tail,
+    ALICE_PASSWORD, Browser, Console, Headers, ORIGIN, Pane, Reply, Socket, elevated, tail,
 };
 use super::super::*;
 
@@ -118,6 +124,7 @@ fn admin_terminal(vm: &mut Vm, case: &Case) -> Result<(), String> {
         bob: Browser::default(),
     };
     signs_in(vm, &mut test)?;
+    reads_by_http2(&mut test)?;
     let (shell, mut socket) = types_in_a_terminal(vm, &mut test)?;
     is_resized(&shell, &mut socket)?;
     comes_back(vm, &mut test, &shell, socket)?;
@@ -301,6 +308,69 @@ fn signs_in(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     Ok(())
 }
 
+/// Step 1, by HTTP/2: curl is asked for it and reads the session and the
+/// list of terminals with alice's cookie. It says it used version 2 for
+/// each, and the answers are what HTTP/1.1 gives: the session names alice
+/// and has her token, and the list is the one the page reads. The socket
+/// that step 2 opens is HTTP/1.1 and says 101, which HTTP/2 has no word for.
+fn reads_by_http2(test: &mut Test) -> Result<(), String> {
+    let (session, version) = read_by_http2(test, "/api/1/session")?;
+    let token = test.alice.token.clone();
+    if version != "2"
+        || session["name"] != json!("alice")
+        || session["csrf"].as_str() != token.as_deref()
+    {
+        return Err(format!("the session by curl --http2 is {session}, by HTTP/{version}"));
+    }
+    let (list, version) = read_by_http2(test, "/api/1/terminals")?;
+    let page = test.terminals(Who::Alice)?;
+    if version != "2" || list != page {
+        return Err(format!("the terminals by curl --http2 are {list}, by HTTP/{version}: {page}"));
+    }
+    Ok(())
+}
+
+/// A read of `path` for alice by `curl --http2`, which comes after the
+/// options every request has and so wins over their HTTP/1.1: the answer's
+/// JSON, and the version of HTTP curl says it used.
+fn read_by_http2(test: &Test, path: &str) -> Result<(Value, String), String> {
+    let cookie = test
+        .alice
+        .page_headers()
+        .into_iter()
+        .find(|(name, _)| name == "Cookie")
+        .map(|(_, value)| format!("Cookie: {value}"))
+        .ok_or("alice has no cookie")?;
+    let pem = test.console.pem.display().to_string();
+    let url = format!("{ORIGIN}{path}");
+    let out = test.console.curl(&[
+        "--http2",
+        "--cacert",
+        &pem,
+        "--header",
+        &cookie,
+        "--write-out",
+        "\\n%{http_version}",
+        &url,
+    ])?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("curl --http2 {path} ended with {}: {}", out.status, why.trim()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let (body, version) =
+        body_and_version(&text).ok_or_else(|| format!("curl --http2 {path} printed {text:?}"))?;
+    let json = serde_json::from_str(body).map_err(|err| format!("{path} said {body:?}: {err}"))?;
+    Ok((json, version.to_string()))
+}
+
+/// What curl printed for a read that ends with `--write-out
+/// '\n%{http_version}'`: the body, and the version after its last line.
+fn body_and_version(text: &str) -> Option<(&str, &str)> {
+    let (body, version) = text.rsplit_once('\n')?;
+    (!version.is_empty() && !version.contains(char::is_whitespace)).then_some((body, version))
+}
+
 /// Step 2: a terminal made through the route, and a socket attached to its
 /// pane: `tty`, `id -un` and `echo $TERM` give a pseudo-terminal of the
 /// machine's, alice and xterm-256color. The page's size is the pane's.
@@ -326,6 +396,11 @@ fn types_in_a_terminal(vm: &Vm, test: &mut Test) -> Result<(Shell, Socket), Stri
     // The console answers a ping with a pong of the same words.
     socket.ping("is anyone there")?;
     socket.wait_pong("is anyone there", 10)?;
+    // The attach gives the pane its size, and a shell that drew its prompt
+    // before then draws it again and asks where the cursor is; keys typed
+    // while it waits for the answer are lost (see `is_resized`), so the
+    // client reads until that drawing is over before it types.
+    socket.wait_quiet(SETTLE)?;
     socket.type_in(shell.pane, "tty; id -un; echo $TERM\r")?;
     socket.wait_output(shell.pane, "\r\nalice\r\nxterm-256color\r\n", 60)?;
     let held = socket.output(shell.pane)?;
@@ -527,6 +602,9 @@ fn administrator_pane(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
         return Err(format!("the administrator's pane is attached as {attached}"));
     }
     socket.wait_output(admin.pane, "#", 90)?;
+    // As for alice's first pane: what the attach makes the shell draw is
+    // over first.
+    socket.wait_quiet(SETTLE)?;
     socket.type_in(admin.pane, "tty; id -u\r")?;
     socket.wait_output(admin.pane, "\r\n0\r\n", 60)?;
     let held = socket.output(admin.pane)?;
@@ -1055,6 +1133,15 @@ fn first_difference(got: &str, wanted: &str) -> Option<usize> {
 mod tests {
     use super::super::super::console_client::hex;
     use super::*;
+
+    #[test]
+    fn the_version_is_the_last_line_curl_wrote_after_the_body() {
+        assert_eq!(body_and_version("{\"a\":1}\n2"), Some(("{\"a\":1}", "2")));
+        assert_eq!(body_and_version("{}\n1.1"), Some(("{}", "1.1")));
+        assert_eq!(body_and_version("{}"), None);
+        assert_eq!(body_and_version("{}\n"), None);
+        assert_eq!(body_and_version("{}\nHTTP 2"), None);
+    }
 
     #[test]
     fn the_terminal_is_read_from_the_routes_answer() {

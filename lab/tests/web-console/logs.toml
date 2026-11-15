@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Logs page of the web console in each engine (design 5): an
+# administrator reads the machine's log, filters it by time, importance,
+# source and words, reads it in three zones, folds repeated lines, reads
+# older lines, saves what is shown, and follows new lines until the console
+# locks. A reader sees the lines of their own programs, which the Terminal
+# page's `logger` writes. Each shown list is held to what the API gives for
+# the same query, and a few to the command the page shows.
+#
+# Root steps write the lines the browser looks at, each marked with the tag
+# lab-logs (one line for each importance, four that repeat, words that a
+# pattern would read as its own, the same words in two cases, a line of 174
+# characters and 250 more so that one page cannot hold them), and start a
+# service of the test's own, lab-ticker, that writes a line every two
+# seconds for an hour at most, for Follow to receive. The kernel keeps 200
+# bytes of a record, the program's name and ": " first, so the long line is
+# as long as it keeps whole; the whole line is held to the API's. One browser step then runs every engine, so that an engine
+# the lab PC lacks is skipped within it and the steps after it still run.
+# The script's custom ranges end where the first read began, so that a line
+# the machine writes later never changes what a list should hold.
+#
+# Each look is dark, light, high contrast, forced colours and less motion,
+# checked by axe. The accounts are an administrator and a reader for each
+# engine, which this test makes and removes, so no script needs the lab's
+# password. The reader writes their line through their own Terminal.
+about = "The web console's Logs page in each engine: each filter's lines against the API and the shown command, the three zones and a custom range across summer time, folded and older lines, Save as file against the log's own records, Follow with Pause, a second window and Lock, a tab hidden for a minute, a reader's own lines, and the phone"
+time = "50m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-logs-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-logs-chromium", "Made wc-logs-firefox", "Made wc-logs-webkit"]
+# Accounts that sign in to the console without being administrators: each
+# has a shell, which the Terminal page needs.
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add wc-logs-reader-$engine && user set --console --yes wc-logs-reader-$engine || exit 1; done'"
+root = true
+expect = ["Made wc-logs-reader-chromium", "wc-logs-reader-chromium is changed", "Made wc-logs-reader-firefox", "wc-logs-reader-firefox is changed", "Made wc-logs-reader-webkit", "wc-logs-reader-webkit is changed"]
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# One line for each importance, four that repeat, words a pattern would read
+# as its own, one text in two cases and a line of 214 characters. The last
+# sleep lets the log keep them before the next step. authd's record of this
+# command has its words, so "alpha" is made of two parts here, and only the
+# four lines hold "lab-logs alpha", which the browser looks for.
+[[step]]
+run = '''sh -c 'al=alph; logger -t lab-logs -p user.err "lab-logs ${al}a error"; logger -t lab-logs -p user.warning "lab-logs ${al}a warning"; logger -t lab-logs -p user.info "lab-logs ${al}a info"; logger -t lab-logs -p user.debug "lab-logs ${al}a debug"; for n in 1 2 3 4; do logger -t lab-logs -p user.warning "lab-logs repeated line"; done; logger -t lab-logs "lab-logs a.b(c) [d] *e* f|g"; logger -t lab-logs "lab-logs aXb(c)"; logger -t lab-logs "lab-logs Capital word"; logger -t lab-logs "lab-logs capital word"; pad=0123456789; pad=$pad$pad$pad$pad$pad$pad$pad$pad$pad$pad$pad$pad$pad$pad$pad$pad; logger -t lab-logs -p user.err "lab-logs long $pad"; sleep 1; echo lines-written' '''
+root = true
+expect = "lines-written"
+# More lines than a page holds, a second or more apart in groups of 25, so
+# that no second holds a page.
+[[step]]
+run = '''sh -c 'i=1; while [ $i -le 250 ]; do logger -t lab-logs -p user.info "lab-logs bulk $i"; if [ $((i % 25)) -eq 0 ]; then sleep 1; fi; i=$((i + 1)); done; sleep 1; echo bulk-written' '''
+root = true
+expect = "bulk-written"
+# The service that writes a line every two seconds, for Follow: to its
+# output, which Spark copies to the log as the service's, an error by the
+# <3> in front. A service's view has no /devices/kmsg, so logger(1) cannot
+# write from it.
+[[step]]
+run = "sh -c 'cat > /system/settings/spark/services/lab-ticker.toml'"
+root = true
+input = '''
+service_version = 2
+description = "Writes a marked line every two seconds"
+program = "/system/commands/nukesh"
+arguments = ["-c", "i=0; while [ $i -lt 1800 ]; do echo \"<3>lab-follow tick $i\"; i=$((i + 1)); sleep 2; done"]
+enabled = false
+'''
+[[step]]
+run = "sh -c 'service lab-ticker start; sleep 3; echo ticker-started'"
+root = true
+expect = "ticker-started"
+[[step]]
+browser = "logs.mjs"
+port = 9090
+[[step]]
+run = "sh -c 'service lab-ticker stop; rm -f /system/settings/spark/services/lab-ticker.toml; echo ticker-removed'"
+root = true
+expect = "ticker-removed"
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do for name in wc-logs-$engine wc-logs-reader-$engine; do user remove --delete-home --yes $name || exit 1; done; done'"
+root = true
+expect = ["wc-logs-chromium is removed", "wc-logs-reader-chromium is removed", "wc-logs-firefox is removed", "wc-logs-reader-firefox is removed", "wc-logs-webkit is removed", "wc-logs-reader-webkit is removed"]

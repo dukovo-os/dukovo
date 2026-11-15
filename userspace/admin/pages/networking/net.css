@@ -1,0 +1,100 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Networking page (design 9): the cards, the traffic and connections,
+ * and the editor of one card. The phone's layout is the same markup under the
+ * container query the shell uses (9.6). Same rules as console.css: rem, and
+ * px for borders and focus rings.
+ *
+ * The banner of a tried change has its own sheet, lib/trial-banner.css,
+ * which pages.js loads with this one: an @import would load it only after
+ * this sheet, and the accessibility check reads such a sheet by putting it
+ * in a style element, which the content security policy forbids.
+ */
+
+.net, .net-editor { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+.net-none { padding: .571rem 0; }
+
+/* Grey bars stand where words are read; they are still, and nothing reads them. */
+.net-bar { display: block; height: .857rem; width: 100%; border-radius: .214rem; background: var(--sunken); }
+
+/* The cards */
+.net-cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); }
+.net-card h2 { flex-wrap: wrap; }
+.net-card h2 a { overflow-wrap: anywhere; }
+.net-card h2 .st { margin-left: auto; }
+.net-rows dd { overflow-wrap: anywhere; }
+.net-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .143rem; }
+.net-now h2 { flex-wrap: wrap; }
+.net-now h2 .st { margin-left: auto; }
+
+/* Traffic: the chart's own rules, which the Overview's sheet holds for its page. */
+.dk { --chart-2: #9A4A00; }
+.dk.dark { --chart-2: #F0A35B; }
+.dk.hc { --chart-2: #66E0FF; }
+.net-charts { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); }
+.net-charts[hidden] { display: none; }
+.net-chart { display: flex; flex-direction: column; gap: .286rem; min-width: 0; }
+.net-chart h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.net-traffic h2 .more { display: inline-flex; }
+.net-traffic .stat { display: flex; flex-direction: column; gap: .143rem; }
+.net-traffic .stat b { font: 600 1.571rem/1.2 var(--font-ui); }
+.net-traffic .stat span { color: var(--muted); font-size: .857rem; }
+.net-traffic .chart { width: 100%; height: 5.143rem; display: block; }
+.net-traffic .chart .line { fill: none; stroke: var(--accent); stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+.net-traffic .chart .line.second { stroke: var(--chart-2); stroke-dasharray: 5 3; }
+.net-traffic .chart .area { fill: var(--chart-fill); }
+.net-traffic .chart .grid-line { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.net-traffic .legend { display: flex; flex-wrap: wrap; gap: .286rem .857rem; list-style: none; margin: 0; padding: 0; font-size: .857rem; color: var(--muted); }
+.net-traffic .legend[hidden] { display: none; }
+.net-traffic .legend li { display: flex; align-items: center; gap: .357rem; }
+.net-traffic .key { display: inline-block; width: 1.5rem; border-top: 2px solid var(--accent); }
+.net-traffic .key.second { border-top: 2px dashed var(--chart-2); }
+.net-traffic .usage-chart .btn.link { align-self: flex-start; }
+.net-traffic .numbers { max-height: 16rem; overflow: auto; }
+.net-traffic .numbers .tbl { min-width: 0; }
+.net-traffic .numbers[hidden] { display: none; }
+
+/* Connections */
+.net-conn th[scope="row"] { text-align: left; font-weight: 400; font-size: 1rem; color: var(--text); background: none; border-bottom: 1px solid var(--border); vertical-align: top; }
+.net-conn tr:last-child th[scope="row"] { border-bottom: 0; }
+.net-conn td, .net-conn th[scope="row"] { overflow-wrap: anywhere; }
+
+/* The editor */
+.net-form { gap: 1rem; }
+.net-sheet { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 1rem; }
+.net-sheet:disabled { opacity: .7; }
+.net-fixed { display: flex; flex-direction: column; gap: 1rem; }
+.net-fixed[hidden] { display: none; }
+.net-label { font-weight: 600; font-size: .929rem; }
+.net-addresses { display: flex; flex-direction: column; gap: .714rem; }
+.net-address-row { display: flex; gap: .571rem; align-items: center; }
+.net-address-row .input { flex: 1; min-width: 0; }
+.net-two { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
+.net-window { max-width: 14rem; }
+.net-cut:empty, .net-runs[hidden], .net-confirm[hidden], .net-problems:empty { display: none; }
+.net-runs { display: flex; flex-direction: column; gap: .429rem; }
+.net-runs h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.net-form .field .msg { margin-top: .143rem; }
+
+/* The phone (9.6): the cards stack, the editor is one column, and the buttons fill the width. */
+@container (max-width: 51.4rem) {
+  .net-cards, .net-charts, .net-two { grid-template-columns: minmax(0, 1fr); }
+  .net-conn th[scope="row"] { display: block; padding: .286rem .571rem; border: 0; }
+  .net-form .btns, .net-confirm .btns { flex-direction: column; align-items: stretch; }
+  .net-form .btns .btn, .net-confirm .btns .btn { width: 100%; }
+  .net-address-row .btn { min-width: 0; }
+  .net-window { max-width: none; width: 100%; }
+}
+
+/* Forced colours: the chart is drawn in system colours, and the form's boxes keep their borders. */
+@media (forced-colors: active) {
+  .dk .net-traffic .chart .line { stroke: CanvasText; forced-color-adjust: none; }
+  .dk .net-traffic .chart .line.second { stroke: CanvasText; stroke-dasharray: 5 3; }
+  .dk .net-traffic .chart .area { fill: CanvasText; fill-opacity: .12; forced-color-adjust: none; }
+  .dk .net-traffic .chart .grid-line { stroke: GrayText; forced-color-adjust: none; }
+  .dk .net-traffic .key, .dk .net-traffic .key.second { border-top-color: CanvasText; }
+  .dk .net-traffic .tbl-box { border: 1px solid CanvasText; }
+  .dk .net-bar { background: GrayText; forced-color-adjust: none; }
+}

@@ -292,10 +292,22 @@ export async function signInDone(t, page, name, password) {
   await leaveWelcome(t, page);
 }
 
-/** Chooses "Sign out" in the account menu and waits for the sign-in page. */
+/**
+ * Chooses "Sign out" in the account menu and waits for the sign-in page.
+ * With terminals running, the console asks first, and they end with the
+ * sign-out.
+ */
 export async function signOut(t, page) {
   const menu = await openAccountMenu(t, page);
-  await press(page, accountItem(menu, "Sign out"), "/api/1/sign-out");
+  const answer = answerTo(page, "/api/1/sign-out");
+  await accountItem(menu, "Sign out").click();
+  const question = page.getByRole("dialog", { name: "Sign out?" });
+  const asked = await Promise.race([
+    answer.then(() => false),
+    question.waitFor({ state: "visible" }).then(() => true, () => false),
+  ]);
+  if (asked) await question.getByRole("button", { name: "End them and sign out", exact: true }).click();
+  await answer;
   await t.see(signInHeading(page));
 }
 

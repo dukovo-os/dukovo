@@ -65,11 +65,13 @@ export function titleFor(page, host) {
 
 /**
  * Whether a click on `link` (`{href, target, download}`) with the event's
- * `{button, ctrlKey, metaKey, shiftKey, altKey}` is for the shell to follow
- * without a page load. A file, another origin, a new tab and a download
- * are the browser's.
+ * `{button, ctrlKey, metaKey, shiftKey, altKey, defaultPrevented}` is for
+ * the shell to follow without a page load. A file, another origin, a new
+ * tab and a download are the browser's; a click that the page's own handler
+ * took, as Networking's Change… does to ask to unlock first, is the page's.
  */
 export function followsInPage(link, click, origin) {
+  if (click.defaultPrevented) return false;
   if (click.button !== 0 || click.ctrlKey || click.metaKey || click.shiftKey || click.altKey) return false;
   if (link.target && link.target !== '_self') return false;
   if (link.download) return false;

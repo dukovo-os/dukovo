@@ -1,0 +1,35 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The banner of a tried change (design 8.9), which the sheets of Networking
+ * and Firewall import. Same rules as console.css: rem, and px for borders
+ * and focus rings.
+ */
+.try-wrap { display: contents; }
+.try-box { position: sticky; top: 0; z-index: 2; display: flex; flex-direction: column; gap: .571rem; }
+.try-head { display: flex; flex-wrap: wrap; align-items: center; gap: .571rem 1rem; }
+.count-down { font: 600 1.571rem/1 var(--font-mono); color: var(--warn); font-variant-numeric: tabular-nums; }
+.try-text { flex: 1 1 22rem; min-width: 0; display: flex; flex-direction: column; gap: .143rem; }
+.try-h { font: inherit; font-weight: 700; margin: 0; }
+.try-h:focus { outline: none; }
+.try-h:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.try-words, .try-step, .try-link, .try-over-words { margin: 0; overflow-wrap: anywhere; }
+.try-link a { overflow-wrap: anywhere; }
+.try-reason:empty { display: none; }
+
+/* The meter is the time left: it moves a second at a time, and in whole steps with less motion. */
+.try .meter i { background-image: none; animation: none; transition: width 1s linear; }
+.dk.calm .try .meter i { transition: none; }
+
+/* The keys that are off keep their look: the reason beside them says why. */
+.try .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+
+@container (max-width: 51.4rem) {
+  .try .btns { flex-direction: column; align-items: stretch; }
+  .try .btns .btn { width: 100%; }
+}
+
+@media (forced-colors: active) {
+  .dk .try .btn[aria-disabled="true"] { opacity: 1; color: GrayText; border-color: GrayText; }
+}

@@ -1449,6 +1449,7 @@ fn a_timer_is_read_with_its_defaults() {
     assert_eq!((timer.every, timer.after_boot, timer.spread), (None, None, 0));
     assert!(timer.catch_up);
     assert_eq!(timer.time_zone, None);
+    assert_eq!(timer.schedule, "daily, 30 2 * * 1-5", "the schedule is as the file writes it");
     assert!(service::from_toml(&file("")).unwrap().timer.is_none());
 }
 
@@ -1464,6 +1465,7 @@ fn every_timer_setting() {
     assert_eq!(timer.spread, 5400);
     assert!(!timer.catch_up);
     assert_eq!(timer.time_zone.as_deref(), Some("Europe/Berlin"));
+    assert_eq!(timer.schedule, "hourly, every 6h, first 10m after boot");
 }
 
 #[test]

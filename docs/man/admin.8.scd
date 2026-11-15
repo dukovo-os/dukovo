@@ -165,8 +165,9 @@ remove another's.
 	console.reach      change  administrator  POST /api/1/console/reach              e.g. elevate admin reach private
 	```
 
-	A read runs as the person, with the person's own rights, and always
-	asks its command for JSON. A change runs as an administrator, through
+	A read runs as the person, with the person's own rights, or as an
+	administrator when its command needs root, such as the whole log
+	(ADR 0518), and always asks its command for JSON. A change runs as an administrator, through
 	*authd*(8), as *elevate*(8) does, for an unlocked session of an
 	administrator or a token whose owner is one.
 
@@ -314,6 +315,16 @@ remove another's.
 	*reload* does. A service that does not run reads its file when it
 	starts. When Spark cannot be asked, the files stay written, it says so,
 	and it exits 1.
+
+	The network settings, _/system/settings/network_, are put to use by
+	asking Spark to make *netd*(8) read them again, as *service netd
+	reload* does, and it says so; *netd* that does not run reads them when
+	it starts. The firewall's rules, _/system/settings/firewall_, are put to
+	use by *firewall load* (*firewall*(8)), which gives the kernel the
+	rules in the file, and it prints what that prints. A change of both
+	puts both to use, each once. When *netd* cannot be asked or the rules
+	cannot be loaded, the files stay written, it says which, and it exits
+	1; the kernel then keeps the rules it had.
 
 	A change cannot be put back if a file in it was made by it, which has
 	no earlier text; is a secret or a file that not everyone may read,

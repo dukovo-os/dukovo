@@ -1314,6 +1314,7 @@ impl Authd {
                 continue;
             }
             self.console.shell_ended(process);
+            self.console.follow_ended(process);
             if let Some(session) = self.sessions.remove(&process) {
                 if session.terminal == console::TERMINAL && !session.elevated {
                     self.console.worker_ended(process);
@@ -3299,6 +3300,7 @@ impl Authd {
             self.unlocked.retain(|_, until| *until > now);
             self.console.tidy(now);
             self.end_admin_shells(now);
+            self.end_follows(now);
             for client in &mut self.clients {
                 if client.deadline <= now {
                     client.done = true;
@@ -3420,6 +3422,47 @@ fn needs_owner(files: &Files) -> bool {
     !person && !root_signs_in
 }
 
+/// Records the computer's start in the sign-in records once in each
+/// start, and notes the record's time in [`signins::THIS_BOOT`], which
+/// tells last(1) the start that runs and authd, started again, that it
+/// has recorded it: the time now less the time since the start moves as
+/// a time service sets the clock, and the note does not.
+fn record_boot() {
+    if signins::this_boot().is_some() {
+        return;
+    }
+    let boot = sessions::boot_seconds();
+    let system = signins::parse(&read_text(signins::SYSTEM).unwrap_or_default());
+    // A record within a second of the start with no note is one an authd
+    // that wrote no note made.
+    let time = match signins::last_boot(&system).filter(|last| (last - boot).abs() <= 1) {
+        Some(last) => last,
+        None => {
+            let release = util::uname().1;
+            let started = Record { time: boot, event: Event::Boot { release } };
+            if let Err(err) = append(signins::SYSTEM, 0, 0o644, &started.line()) {
+                eprintln!(
+                    "authd: cannot write {}: {}",
+                    signins::SYSTEM,
+                    util::strip_os_error(&err)
+                );
+                return;
+            }
+            boot
+        }
+    };
+    let noted = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o644)
+        .open(signins::THIS_BOOT)
+        .and_then(|mut file| file.write_all(format!("{time}\n").as_bytes()));
+    if let Err(err) = noted {
+        eprintln!("authd: cannot write {}: {}", signins::THIS_BOOT, util::strip_os_error(&err));
+    }
+}
+
 /// Makes `path`, a directory, with `mode` if it is not there, and gives
 /// it that mode if it is.
 fn own_dir(path: &str, mode: u32) -> Result<(), Fail> {
@@ -3452,18 +3495,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     own_dir(signins::DIR, 0o711)?;
     own_dir(keyring::FOLDER, 0o700)?;
     own_dir(console::FOLDER, 0o700)?;
-    let boot = sessions::boot_seconds();
-    let system = signins::parse(&read_text(signins::SYSTEM).unwrap_or_default());
-    // Started again since the computer started, it records no start.
-    if signins::last_boot(&system).is_none_or(|last| (last - boot).abs() > 1) {
-        let release = util::uname().1;
-        let started = Record { time: boot, event: Event::Boot { release } };
-        if let Err(err) = append(signins::SYSTEM, 0, 0o644, &started.line()) {
-            eprintln!("authd: cannot write {}: {}", signins::SYSTEM, util::strip_os_error(&err));
-        }
-    }
     let dir = Path::new(accounts::SOCKET).parent().unwrap_or(Path::new("/"));
     own_dir(&dir.to_string_lossy(), 0o755)?;
+    record_boot();
     let _ = fs::remove_file(accounts::SOCKET);
     let listener =
         UnixListener::bind(accounts::SOCKET).map_err(|e| util::failed(&accounts::SOCKET, e))?;

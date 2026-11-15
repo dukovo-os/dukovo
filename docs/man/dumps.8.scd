@@ -10,7 +10,7 @@ test that they are saved
 
 # SYNOPSIS
 
-*dumps* [*list*]
+*dumps* [*list*] [*--json*]
 
 *dumps show* [_name_]
 
@@ -56,7 +56,7 @@ dumps: only root reads the crash dumps; try elevate dumps
 
 With no command, *dumps* does *list*. *dumps --help* prints a summary.
 
-*list*
+*list* [*--json*]
 	The saved dumps, newest first, as a table: _NAME_, _TIME_ (the
 	time of the panic, in local time), _BOOT_ (the number of the boot
 	that crashed), _SIZE_ and _PANIC_, the panic's message, which is
@@ -65,6 +65,14 @@ With no command, *dumps* does *list*. *dumps --help* prints a summary.
 	width. A file of the folder with a dump's name whose content is no
 	dump shows *not a dump* and the reason in the last column. With none
 	saved, *dumps* says *no crash dumps saved*.
+
+	With *--json*, one line of JSON for the web console (ADR 0518): an
+	array with an object for each dump, *[]* for none, with these fields
+	in this order: *name* (the file's name, which *show* takes), *at_ms*
+	(the time of the panic in milliseconds since 1970, or *null* when the
+	kernel did not know the time of day or the file is no dump), *size*
+	(the file's bytes) and *first_line* (the panic's message, or *not a
+	dump:* and the reason). *dumps --json* is *dumps list --json*.
 
 *show* [_name_]
 	Write the dump _name_, or the newest, to the standard output. When

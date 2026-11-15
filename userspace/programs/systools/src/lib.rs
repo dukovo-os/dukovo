@@ -31,7 +31,8 @@
 //! they hold, and `nic` shows what a network card says of itself, as
 //! ethtool does (ADR 0341); `traceroute` finds the way to a machine, a
 //! router at a time (ADR 0345); `netcheck` finds the layer where the
-//! network stops working (ADR 0489);
+//! network stops working (ADR 0489), and `network` shows each card with
+//! what it has and what network(5) says of it (ADR 0518);
 //! `timed` keeps the clock right from the network over NTS, and
 //! `timedatectl` shows it and sets the time zone (ADR 0194); `netlog`
 //! sends the log to another computer as it is written (ADR 0196), and
@@ -181,9 +182,11 @@ mod metricsd;
 mod mkfs;
 mod modes;
 mod mount;
+mod net_errors;
 mod netcheck;
 mod netd;
 mod netlog;
+mod network;
 mod nic;
 mod notifyd;
 mod ntfs;
@@ -244,6 +247,7 @@ mod tls;
 mod top;
 mod traceroute;
 mod tree;
+mod trial;
 mod troubleshoot;
 mod tune;
 mod unlock;
@@ -384,6 +388,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("netcheck", netcheck::main),
     ("netd", netd::main),
     ("netlog", netlog::main),
+    ("network", network::main),
     ("nic", nic::main),
     ("notifications", notifyd::notifications),
     ("notify-send", notifyd::notify_send),

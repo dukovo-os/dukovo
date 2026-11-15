@@ -85,10 +85,14 @@ test('no page holds inline style or script', () => {
   }
 });
 
-test('no style sheet imports another origin or holds a javascript: address', () => {
+// A sheet that imports another loads it only once it has loaded itself, and
+// the accessibility check of the lab tests reads an imported sheet by putting
+// it in a style element, which the policy stops: a page's sheets are listed
+// in pages.js instead, and load together.
+test('no style sheet imports another or holds a javascript: address', () => {
   for (const file of served().filter((path) => path.endsWith('.css'))) {
     const text = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
-    assert.doesNotMatch(text, /@import\s+(?:url\()?\s*['"]?(?:https?:)?\/\//i, `${relative(ROOT, file)}: an import from another origin`);
+    assert.doesNotMatch(text, /@import\b/i, `${relative(ROOT, file)}: an import, where pages.js should list the sheet`);
     assert.doesNotMatch(text, /javascript:/i, `${relative(ROOT, file)}: a javascript: address`);
   }
 });

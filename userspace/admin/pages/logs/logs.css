@@ -1,0 +1,91 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Logs page (design 5) and the view from a chart (design 6): the
+ * filters, the list's frame, and a chart that a moment can be chosen on. The
+ * list's own rules are in pages.css. Same rules as console.css: rem, and px
+ * for borders and focus rings.
+ */
+.logs { display: flex; flex-direction: column; gap: .857rem; min-width: 0; }
+.logs-who:empty, .logs-status:empty, .logs-command:empty, .logs p:empty { display: none; }
+.logs-who .banner { max-width: 58.571rem; }
+.filters { display: flex; flex-wrap: wrap; align-items: flex-start; gap: .714rem 1rem; }
+.filters-main, .filters-more { display: contents; }
+.filters .field { min-width: 11rem; }
+.filters .field:has(input[type="search"]) { flex: 1 1 14rem; }
+.filters .field .input { min-width: 0; }
+.filters .field .msg { max-width: 22rem; }
+.filters .fold-check { align-self: center; }
+.filters-custom { display: flex; flex-wrap: wrap; gap: .714rem 1rem; align-items: flex-end; }
+.filters-custom[hidden] { display: none; }
+.when-pair { display: flex; gap: .429rem; }
+.when-pair .input { width: auto; min-width: 0; }
+.filters-toggle { display: none; }
+.logs-command { margin-top: -.571rem; }
+.logs-command .inline-cmd { margin: 0; }
+.logs-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .571rem .857rem; }
+.logs-bar .spacer { flex: 1; }
+.logs-bar:not(:has(button:not([hidden]), a, span:not(.spacer):not(:empty))) { display: none; }
+.logs-empty { display: flex; flex-direction: column; gap: .571rem; align-items: flex-start; padding: 1.143rem .857rem; border: 1px dashed var(--border); border-radius: .429rem; }
+.logs-empty p { margin: 0; }
+.logs .loglist { max-height: calc(100dvh - 24rem); min-height: 10rem; }
+
+/* The phone's filters (5.7): When and Importance stay in view, the rest is under Filters. */
+@container (max-width: 51.4rem) {
+  .filters { flex-direction: column; align-items: stretch; }
+  .filters-main { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .714rem; }
+  .filters-main .field { flex: 1 1 9rem; }
+  .filters-custom { flex-basis: 100%; }
+  .filters-toggle { display: inline-flex; }
+  .filters .field:has(input[type="search"]) { flex: none; }
+  .filters .fold-check { align-self: flex-start; }
+  .filters-more { display: none; flex-direction: column; gap: .857rem; padding: .857rem; border: 1px solid var(--border); border-radius: .429rem; background: var(--pane); }
+  .filters.open .filters-more { display: flex; }
+  .filters .field .input, .when-pair .input { min-height: 3.143rem; }
+  .when-pair { flex-wrap: wrap; }
+  .filters .field .msg { max-width: none; }
+  .logs .loglist { max-height: calc(100dvh - 21rem); }
+  .chartview .grid.two { grid-template-columns: minmax(0, 1fr); }
+  .chartview .chart { height: 8rem; }
+}
+
+/* The view from a chart (6.4): the chart, and the cards of the moment chosen. */
+.chartview { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.chartview .chart { height: 10.5rem; }
+.chartview-status:empty, .moment-who:empty { display: none; }
+.chartview .card-body { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.chartview .card h2 { flex-wrap: wrap; }
+.chartview .tl-rail i { display: grid; place-items: center; }
+.tl-line { font: .893rem/1.4 var(--font-mono); overflow-wrap: anywhere; }
+.chartview .loglist { max-height: 26rem; min-height: 6rem; }
+.chartview .tbl { min-width: 0; }
+.chartview .tbl tbody th { padding: .5rem .857rem; border-bottom: 1px solid var(--border); background: none; color: var(--text); font-size: 1rem; vertical-align: top; }
+.chartview .tbl tr:last-child th { border-bottom: 0; }
+.moment-cards { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.moment-who p { margin: 0; }
+.chartview .logs-command { margin-top: 0; }
+.chartview .btn.link { min-height: 0; }
+
+/* A chart that a moment can be chosen on (6.3): a slider over the picture, a line that follows the pointer or the keys, the chosen moment, the journal's marks. */
+.chart-frame { position: relative; }
+.pick-layer { position: absolute; inset: 0; cursor: crosshair; touch-action: pan-y; }
+.pick-layer:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pick-label { position: absolute; top: 0; transform: translate(-50%, -100%); white-space: nowrap; padding: .143rem .429rem; border: 1px solid var(--border); border-radius: .214rem; background: var(--pane);
+  color: var(--text); font-size: .857rem; pointer-events: none; }
+.chart .cursor { stroke: var(--text); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.marks-box { display: flex; flex-direction: column; gap: .286rem; }
+.marks-box p { margin: 0; }
+.marks { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .143rem .857rem; }
+/* Each mark is a target of at least 24 px, which a row of them, a line apart, would not be. */
+.marks .btn.link { padding-left: 0; text-align: left; min-height: 1.714rem; }
+@container (max-width: 51.4rem) {
+  .chartview .btn.link { min-height: 3.143rem; }
+}
+@media (forced-colors: active) {
+  .dk .chart .cursor { stroke: Highlight; forced-color-adjust: none; }
+  .dk .chart .mark { stroke: CanvasText; forced-color-adjust: none; }
+  .dk .chart .pick { fill: CanvasText; stroke: CanvasText; forced-color-adjust: none; }
+  .dk .pick-label { border-color: CanvasText; }
+  .dk .pick-layer:focus-visible { outline-color: Highlight; }
+}

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0515. The web console's actions are one registry that the API, the admin command and the pages share
 
-- Status: Accepted; the services' changes show Ansible tasks of the collection's module, not `ansible.builtin.command`, since [0545](0545-the-web-console-s-api-is-described-by-an-openapi-document-made-from-its-registry-fuzzed-on-the-host-with-signed-in-callers-and-in-the-lab-from-that-document-and-a-change-can-be-checked-without-being-made.md)
+- Status: Accepted; a read may run as an administrator when its command needs root since [0518](0518-the-web-console-reads-what-only-administrators-may-see-through-elevate-follows-the-log-through-authd-and-tries-network-and-firewall-changes-as-spark-trials.md); the services' changes show Ansible tasks of the collection's module, not `ansible.builtin.command`, since [0545](0545-the-web-console-s-api-is-described-by-an-openapi-document-made-from-its-registry-fuzzed-on-the-host-with-signed-in-callers-and-in-the-lab-from-that-document-and-a-change-can-be-checked-without-being-made.md)
 - Date: 2026-11-14
 
 ## Context

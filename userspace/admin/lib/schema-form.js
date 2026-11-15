@@ -14,7 +14,7 @@
 // region that is there from the start so that a screen reader says what is
 // put in it, and the first field that has one takes focus.
 
-import { h, icon, uniqueId } from '../dom.js';
+import { afterPress, h, icon, uniqueId } from '../dom.js';
 import {
   argsFrom, checkArgs, JSON_NOTE, labelWords, parseJsonArgs, ruleBroken, startingValues, wordsFor,
 } from './schema-model.js';
@@ -191,13 +191,15 @@ export function schemaForm(result, { args = {}, onChange = () => {} } = {}) {
         onChange();
       });
       input.addEventListener('change', onChange);
-      // As the person leaves a text or number field, it is checked alone.
+      // As the person leaves a text or number field, it is checked alone,
+      // after the press that left it, which the words would otherwise move
+      // the button under.
       if (field.control === 'input' || field.control === 'number') {
-        input.addEventListener('blur', () => {
+        input.addEventListener('blur', () => afterPress(() => {
           const held = read().args[name];
           const rule = held === undefined ? null : ruleBroken(field, held);
           one.say(rule ? wordsFor(field, rule) : '');
-        });
+        }));
       }
     }
   }

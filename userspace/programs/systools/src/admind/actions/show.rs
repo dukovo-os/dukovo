@@ -71,15 +71,17 @@ pub fn command(prepared: &Prepared) -> String {
 }
 
 /// The `curl` line that asks the console at `origin` for the action, as a
-/// script with a token does.
+/// script with a token does. A read's arguments that the address does not
+/// hold go in its query, a change's in its body.
 fn curl(prepared: &Prepared, origin: &str) -> String {
     let action = prepared.action;
     let (path, rest) = address(action.path(), &prepared.args);
-    let url = shell_word(&format!("{origin}{path}"));
     let bearer = r#"-H "Authorization: Bearer $DUKOVO_TOKEN""#;
     if !action.changes() {
+        let url = shell_word(&format!("{origin}{path}{}", query(&rest)));
         return format!("curl -sS {bearer} {url}");
     }
+    let url = shell_word(&format!("{origin}{path}"));
     let body = shell_word(&Value::Object(rest).to_string());
     let json = r#"-H "Content-Type: application/json""#;
     format!("curl -sS -X POST {bearer} {json} -d {body} {url}")
@@ -102,6 +104,24 @@ fn address(template: &str, args: &Value) -> (String, Map<String, Value>) {
         })
         .collect();
     (parts.join("/"), rest)
+}
+
+/// `args` as an address's query, `?name=value&…` with each part
+/// percent-encoded, or nothing when there are none. An argument that is
+/// not given (null) is left out.
+fn query(args: &Map<String, Value>) -> String {
+    let pairs: Vec<String> = args
+        .iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(name, value)| {
+            let value = match value {
+                Value::String(text) => percent_encode(text),
+                other => percent_encode(&other.to_string()),
+            };
+            format!("{}={value}", percent_encode(name))
+        })
+        .collect();
+    if pairs.is_empty() { String::new() } else { format!("?{}", pairs.join("&")) }
 }
 
 /// `text` with every byte outside `A-Za-z0-9-._~` written as `%XX`.
@@ -287,6 +307,22 @@ mod tests {
         assert_eq!(
             list["api"],
             r#"curl -sS -H "Authorization: Bearer $DUKOVO_TOKEN" https://nas.example:9090/api/1/services"#
+        );
+    }
+
+    #[test]
+    fn a_read_s_arguments_the_address_does_not_hold_go_in_its_query() {
+        let action = lookup(crate::admind::actions::tests::LAB, "lab.log").unwrap();
+        let args = json!({ "lines": 20, "service": "web one", "kernel": false });
+        let read = shown(&action.prepare(args).unwrap(), ORIGIN);
+        assert_eq!(
+            read["api"],
+            r#"curl -sS -H "Authorization: Bearer $DUKOVO_TOKEN" 'https://nas.example:9090/api/1/lab/log?lines=20&service=web%20one'"#
+        );
+        let bare = shown(&action.prepare(json!({})).unwrap(), ORIGIN);
+        assert_eq!(
+            bare["api"],
+            r#"curl -sS -H "Authorization: Bearer $DUKOVO_TOKEN" https://nas.example:9090/api/1/lab/log"#
         );
     }
 

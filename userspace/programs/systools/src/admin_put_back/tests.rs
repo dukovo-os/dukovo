@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::os::unix::fs::PermissionsExt;
 
 use super::*;
 use crate::admind::store::changes::{FileChange, NewChange};
 use crate::cert::fixtures::Scratch;
+use crate::util::fail_with;
 
 /// A machine's files in a folder of the test's own, a store, and what
 /// Spark was asked.
@@ -14,6 +15,10 @@ struct Machine {
     folder: Scratch,
     store: Store,
     asked: RefCell<Vec<String>>,
+    /// How many times the firewall's rules were given to the kernel, and
+    /// whether that fails.
+    loads: Cell<u32>,
+    loading_fails: Cell<bool>,
 }
 
 impl Machine {
@@ -22,7 +27,13 @@ impl Machine {
         fs::create_dir_all(folder.0.join("services/settings.d")).unwrap();
         fs::create_dir_all(folder.0.join("records")).unwrap();
         fs::create_dir_all(folder.0.join("data")).unwrap();
-        Machine { folder, store: Store::in_memory(), asked: RefCell::new(Vec::new()) }
+        Machine {
+            folder,
+            store: Store::in_memory(),
+            asked: RefCell::new(Vec::new()),
+            loads: Cell::new(0),
+            loading_fails: Cell::new(false),
+        }
     }
 
     fn places(&self) -> Places {
@@ -30,6 +41,8 @@ impl Machine {
             service_files: self.folder.0.join("services"),
             data: self.folder.0.join("data"),
             records: self.folder.0.join("records"),
+            network: self.folder.0.join("network"),
+            firewall: self.folder.0.join("firewall"),
         }
     }
 
@@ -91,8 +104,19 @@ impl Machine {
                 Ok(answer.to_string())
             }
         };
+        let load_rules = |out: &mut dyn Write| {
+            self.loads.set(self.loads.get() + 1);
+            if self.loading_fails.get() {
+                return Err(fail_with(
+                    2,
+                    "firewall: this needs the firewall capability: run it with elevate(8)".into(),
+                ));
+            }
+            writeln!(out, "firewall: 2 rules")?;
+            Ok(0)
+        };
         let mut said = Vec::new();
-        let done = put_back(&self.store, id, &self.places(), &ask, &mut said);
+        let done = put_back(&self.store, id, &self.places(), &ask, &load_rules, &mut said);
         (done, String::from_utf8(said).unwrap())
     }
 }
@@ -169,6 +193,122 @@ fn a_service_file_and_its_override_ask_spark_nothing_and_say_when_it_is_read() {
              use now\nchange {id} is put back: 3 files\n"
         )
     );
+}
+
+#[test]
+fn the_network_settings_are_put_to_use_by_asking_spark_to_reload_netd() {
+    let machine = Machine::new("put-back-network");
+    let path = machine.path("network");
+    let id = machine.changed(&path, "[net0]\ndhcp = yes\n", "[net0]\naddress = 10.0.2.99/24\n");
+    let (done, said) = machine.put_back(id, "ok: reloading netd\n");
+    assert_eq!(done.unwrap(), 0);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "[net0]\ndhcp = yes\n");
+    assert_eq!(*machine.asked.borrow(), ["reload netd"]);
+    assert_eq!(machine.loads.get(), 0);
+    assert_eq!(
+        said,
+        format!("put back {path}\nasked netd to reload\nchange {id} is put back: 1 file\n")
+    );
+    // netd that does not run reads the file when it starts.
+    let again = machine.changed(&path, "a\n", "b\n");
+    let (done, said) = machine.put_back(again, "error: netd is not running\n");
+    assert_eq!(done.unwrap(), 0);
+    assert!(said.contains("netd is not running, so it reads its file when it starts\n"), "{said}");
+}
+
+#[test]
+fn the_firewall_rules_are_put_to_use_by_giving_them_to_the_kernel() {
+    let machine = Machine::new("put-back-firewall");
+    let path = machine.path("firewall");
+    let id = machine.changed(&path, "allow tcp 443\n", "allow tcp 443\ndeny tcp 22\n");
+    let (done, said) = machine.put_back(id, "unreachable");
+    assert_eq!(done.unwrap(), 0);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "allow tcp 443\n");
+    // The kernel is given the rules, and Spark is asked nothing.
+    assert_eq!(machine.loads.get(), 1);
+    assert!(machine.asked.borrow().is_empty());
+    assert_eq!(
+        said,
+        format!("put back {path}\nfirewall: 2 rules\nchange {id} is put back: 1 file\n")
+    );
+}
+
+#[test]
+fn a_change_of_both_files_puts_both_to_use_once_each() {
+    let machine = Machine::new("put-back-both");
+    let (network, rules) = (machine.path("network"), machine.path("firewall"));
+    let files: Vec<FileChange> = [&network, &rules]
+        .iter()
+        .map(|path| {
+            fs::write(path, "new\n").unwrap();
+            machine.store.keep_version(path, b"old\n", 1).unwrap();
+            FileChange { path: (*path).clone(), before: text("old\n"), after: text("new\n") }
+        })
+        .collect();
+    let id = machine
+        .store
+        .add_change(&NewChange {
+            at: 1,
+            who: "alice",
+            how: "console",
+            action: Some("x.y"),
+            argv: None,
+            status: Some(0),
+            task: None,
+            note: None,
+            files: &files,
+        })
+        .unwrap();
+    let (done, said) = machine.put_back(id, "ok: x\n");
+    assert_eq!(done.unwrap(), 0);
+    assert_eq!(*machine.asked.borrow(), ["reload netd"]);
+    assert_eq!(machine.loads.get(), 1);
+    assert_eq!(
+        said,
+        format!(
+            "put back {network}\nput back {rules}\nasked netd to reload\nfirewall: 2 rules\n\
+             change {id} is put back: 2 files\n"
+        )
+    );
+}
+
+#[test]
+fn a_file_that_is_neither_asks_spark_nothing_and_loads_no_rules() {
+    let machine = Machine::new("put-back-neither");
+    let path = machine.path("firewall.toml");
+    let id = machine.changed(&path, "a\n", "b\n");
+    assert_eq!(machine.put_back(id, "ok: x\n").0.unwrap(), 0);
+    assert!(machine.asked.borrow().is_empty());
+    assert_eq!(machine.loads.get(), 0);
+}
+
+#[test]
+fn files_that_stay_written_when_netd_or_the_kernel_cannot_be_reached_say_so_and_exit_1() {
+    let machine = Machine::new("put-back-unreached");
+    let (network, rules) = (machine.path("network"), machine.path("firewall"));
+    let first = machine.changed(&network, "old\n", "new\n");
+    let (done, said) = machine.put_back(first, "unreachable");
+    assert_eq!(
+        done.unwrap_err().message,
+        format!(
+            "change {first} is put back in its files, but netd could not be asked to reload: \
+             /system/live/spark/control: Connection refused"
+        )
+    );
+    assert_eq!(fs::read_to_string(&network).unwrap(), "old\n");
+    assert_eq!(said, format!("put back {network}\n"));
+    let second = machine.changed(&rules, "old\n", "new\n");
+    machine.loading_fails.set(true);
+    let (done, said) = machine.put_back(second, "ok: x\n");
+    assert_eq!(
+        done.unwrap_err().message,
+        format!(
+            "change {second} is put back in its files, but the firewall's rules could not be \
+             loaded: firewall: this needs the firewall capability: run it with elevate(8)"
+        )
+    );
+    assert_eq!(fs::read_to_string(&rules).unwrap(), "old\n");
+    assert_eq!(said, format!("put back {rules}\n"));
 }
 
 #[test]

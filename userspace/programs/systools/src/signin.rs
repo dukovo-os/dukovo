@@ -739,6 +739,40 @@ pub fn start_nfs(
     launch(names, user, groups, &program)
 }
 
+/// Starts `command`, the program at `path` and its arguments, its name
+/// first, as `user` for the web console's follow of the log (ADR 0518),
+/// acting for them and the groups `groups`, with the names capability in
+/// `names`: in their own view, with no network, with `null`, `output` and
+/// `errors` as its 0, 1 and 2. Returns the number of its process, a child
+/// of authd's.
+pub fn start_console_follow(
+    names: u32,
+    user: &User,
+    groups: &[u32],
+    path: &str,
+    command: &[Vec<u8>],
+    [null, output, errors]: [&OwnedFd; 3],
+) -> Result<u64, String> {
+    let args: Vec<&[u8]> = command.iter().map(Vec::as_slice).collect();
+    let program = Program {
+        what: "the console's follow of the log",
+        path,
+        args: &args,
+        folder: b"/",
+        env: vec![
+            format!("USER={}", user.name),
+            format!("LOGNAME={}", user.name),
+            format!("HOME={}", user.home),
+            "LANG=C.UTF-8".into(),
+        ],
+        descriptors: &[(null.as_raw_fd(), 0), (output.as_raw_fd(), 1), (errors.as_raw_fd(), 2)],
+        network: false,
+        shares: None,
+        domain: None,
+    };
+    launch(names, user, groups, &program)
+}
+
 /// A program to start as a person.
 struct Program<'a> {
     /// What it is, for errors: "the session".

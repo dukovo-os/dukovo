@@ -115,13 +115,14 @@ export function summarize(points) {
  * each draws (the second line of a chart is drawn dashed), the `kind` of
  * its values, what its `scale` is (`percent`: 0 to 100; `total`: 0 to the
  * memory the machine has; `peak`: 0 to a little over the highest value),
- * and the words that name it in a label and a table.
+ * and the words that name it in a label and a table (`name`), as a link and
+ * a page's title (`short`), and in a card (`now`).
  */
 export const CHARTS = Object.freeze([
-  { id: 'cpu', name: 'CPU', now: 'CPU now', kind: 'percent', scale: 'percent', lines: [{ series: 'cpu', label: 'CPU' }] },
-  { id: 'memory', name: 'Memory used', now: 'Memory', kind: 'bytes', scale: 'total', lines: [{ series: 'memory.used', label: 'Used' }] },
-  { id: 'disk', name: 'Disk reads and writes', now: 'Disk now', kind: 'rate', scale: 'peak', lines: [{ series: 'disk.read', label: 'Read' }, { series: 'disk.write', label: 'Written' }] },
-  { id: 'network', name: 'Network in and out', now: 'Network now', kind: 'bits', scale: 'peak', lines: [{ series: 'net.rx', label: 'In' }, { series: 'net.tx', label: 'Out' }] },
+  { id: 'cpu', name: 'CPU', short: 'CPU', now: 'CPU now', kind: 'percent', scale: 'percent', lines: [{ series: 'cpu', label: 'CPU' }] },
+  { id: 'memory', name: 'Memory used', short: 'Memory', now: 'Memory', kind: 'bytes', scale: 'total', lines: [{ series: 'memory.used', label: 'Used' }] },
+  { id: 'disk', name: 'Disk reads and writes', short: 'Disk', now: 'Disk now', kind: 'rate', scale: 'peak', lines: [{ series: 'disk.read', label: 'Read' }, { series: 'disk.write', label: 'Written' }] },
+  { id: 'network', name: 'Network in and out', short: 'Network', now: 'Network now', kind: 'bits', scale: 'peak', lines: [{ series: 'net.rx', label: 'In' }, { series: 'net.tx', label: 'Out' }] },
 ]);
 
 /**
@@ -156,14 +157,18 @@ export function modelOf(chart, answer, { range, now, total = null }) {
   };
 }
 
+/** The x of the time `at` (Unix seconds) in the drawing's units, held inside the picture. */
+export function xOf(model, at) {
+  const across = (at - model.from) / (model.to - model.from);
+  return Math.min(VIEW.width, Math.max(0, across * VIEW.width));
+}
+
 /** The x and y of a point in the drawing's units, held inside the picture. */
 function place(model, point) {
-  const { width, height, pad } = VIEW;
-  const across = (point.at - model.from) / (model.to - model.from);
+  const { height, pad } = VIEW;
   const up = (point.value - model.floor) / (model.ceiling - model.floor);
-  const x = Math.min(width, Math.max(0, across * width));
   const y = height - pad - Math.min(1, Math.max(0, up)) * (height - 2 * pad);
-  return [x, y];
+  return [xOf(model, point.at), y];
 }
 
 const text = (number) => String(Math.round(number * 10) / 10);

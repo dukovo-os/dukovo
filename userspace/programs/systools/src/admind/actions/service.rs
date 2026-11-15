@@ -1,9 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The services' actions (ADR 0515): the list, a service's explanation,
-//! and starting, stopping, restarting, enabling and disabling one. Each
-//! runs `service`, service(8), which asks Spark.
+//! The services' actions (ADR 0515): the list, a service's status and
+//! explanation, and starting, stopping, restarting, enabling and
+//! disabling one. Each runs `service`, service(8), which asks Spark. A
+//! service's use of the processors and memory over a range, which the
+//! Services page draws, is `metrics` reading what metricsd keeps of it
+//! (`service.usage`).
 //!
 //! The reads run as the person with `--json`. The changes run as an
 //! administrator, as `elevate service NAME restart` does at a terminal.
@@ -38,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use spark_api::show;
 
+use super::metrics::{WORDS, bad_range, since_and_every};
 use super::{Action, Ansible, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
 
 /// The area of these actions: the scope a token needs, `services`.
@@ -49,6 +53,16 @@ const TESTS: Tests = Tests {
     route: "admin-actions",
     same_as_command: "admin-actions",
     browser: "web-console/actions",
+    ansible: "web-console/ansible",
+};
+
+/// The tests of the reads that the Services page's detail uses: its own
+/// lab test is the browser's.
+const PAGE_TESTS: Tests = Tests {
+    checks: "admind::actions::service::tests",
+    route: "admin-actions",
+    same_as_command: "admin-actions",
+    browser: "web-console/services",
     ansible: "web-console/ansible",
 };
 
@@ -313,6 +327,42 @@ impl Action for Explain {
     }
 }
 
+/// `service NAME status --json`: what Spark says of a service, its
+/// processes and the ports it listens on, and the trial it is in.
+pub struct Status;
+
+impl Action for Status {
+    const ID: &'static str = "service.status";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/services/{name}";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = PAGE_TESTS;
+    const TITLE: &'static str = "Show a service";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        ["service", args.name.as_str(), "status", "--json"].map(String::from).to_vec()
+    }
+
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.name.clone())
+    }
+
+    fn examples() -> Examples<Named> {
+        Examples {
+            good: vec![example()],
+            bad: vec![
+                json!({ "name": "" }),
+                json!({ "name": "../x" }),
+                json!({ "name": EXAMPLE, "lines": 5 }),
+                json!({}),
+            ],
+            undo: None,
+        }
+    }
+}
+
 /// The example service's arguments.
 fn example() -> Named {
     Named { name: EXAMPLE.into() }
@@ -448,6 +498,97 @@ change! {
     turns: Some(false), compares: STATE, settles: Some(DISABLED), state: "stopped"
 }
 
+/// A service, and how far back its usage goes.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Used {
+    /// The service's name.
+    pub name: String,
+    /// `1h`, `24h`, `7d` or `1y`.
+    pub range: String,
+}
+
+impl Args for Used {
+    const FIELDS: &'static [Field] = &[
+        name_field(NAME_PATTERN),
+        Field::one_of("range", "How far back the usage goes: 1h, 24h, 7d or 1y.", &WORDS),
+    ];
+
+    fn check(&self) -> Result<(), Bad> {
+        check_name(&self.name)?;
+        since_and_every(&self.range).map(|_| ()).ok_or_else(bad_range)
+    }
+}
+
+/// `metrics show service.cpu{NAME} service.memory{NAME} ...`: a service's
+/// use of the processors and of memory over a range, at the width of a point
+/// that `metrics.usage` has for it.
+pub struct Usage;
+
+impl Action for Usage {
+    const ID: &'static str = "service.usage";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/services/{name}/usage/{range}";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = PAGE_TESTS;
+    const TITLE: &'static str = "Show a service's usage";
+    type Args = Used;
+
+    fn argv(args: &Used) -> Vec<String> {
+        let (since, every) = since_and_every(&args.range).unwrap_or(("1h", "1m"));
+        let name = &args.name;
+        let mut argv = vec!["metrics".to_string(), "show".into()];
+        argv.extend([format!("service.cpu{{{name}}}"), format!("service.memory{{{name}}}")]);
+        argv.extend(["--since", since, "--every", every, "--json"].map(String::from));
+        argv
+    }
+
+    fn subject(args: &Used) -> Option<String> {
+        Some(format!("{}, {}", args.name, args.range))
+    }
+
+    fn examples() -> Examples<Used> {
+        Examples {
+            good: vec![Used { name: EXAMPLE.into(), range: "24h".into() }],
+            bad: vec![
+                json!({ "name": EXAMPLE, "range": "2h" }),
+                json!({ "name": EXAMPLE, "range": "" }),
+                json!({ "name": EXAMPLE }),
+                json!({ "name": "", "range": "24h" }),
+                json!({ "name": "../x", "range": "24h" }),
+                json!({ "name": EXAMPLE, "range": "24h", "series": "cpu" }),
+            ],
+            undo: None,
+        }
+    }
+}
+
+/// `service list --timers --json`: the services that have a timer, when
+/// each starts next and last, and how its last run went. timerd answers
+/// root alone, so it runs as an administrator, as `elevate service list
+/// --timers` does.
+pub struct Timers;
+
+impl Action for Timers {
+    const ID: &'static str = "service.timers";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/timers";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = PAGE_TESTS;
+    const TITLE: &'static str = "List the scheduled tasks";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["service", "list", "--timers", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use spark_api::show::State;
@@ -511,6 +652,58 @@ mod tests {
             argv("service.explain", json!({ "name": "nginx" })),
             ["service", "nginx", "explain", "--json"]
         );
+    }
+
+    #[test]
+    fn the_timers_are_service_list_timers_with_json_and_an_administrator_s() {
+        assert_eq!(argv("service.timers", json!({})), ["service", "list", "--timers", "--json"]);
+        let action = registered("service.timers");
+        assert_eq!(
+            (action.changes(), action.runs(), action.area(), action.path(), action.long()),
+            (false, Runs::AsAdministrator, "services", "/api/1/timers", false)
+        );
+        assert_eq!(action.title(), "List the scheduled tasks");
+        assert_eq!(action.tests().browser, "web-console/services");
+        assert!(action.errors().is_empty() && !action.compares());
+        assert_eq!(action.answers(), [0]);
+        assert!(!action.lines());
+        let prepared = action.prepare(json!({})).unwrap();
+        assert_eq!((prepared.probe, prepared.files), (None, Vec::new()));
+        assert!(prepared.ansible.become_root);
+        assert_eq!(prepared.ansible.changed_when.as_deref(), Some("false"));
+        for args in [json!({ "all": true }), json!({ "name": "backup" }), json!({ "failed": true })]
+        {
+            assert_eq!(action.prepare(args).unwrap_err().kind, Kind::BadRequest);
+        }
+        // The address is its own, beside the services'.
+        let super::super::Found::Action(found, _) =
+            super::super::find(REGISTRY, false, "/api/1/timers")
+        else {
+            panic!("no action at the timers' address")
+        };
+        assert_eq!(found.id(), "service.timers");
+    }
+
+    #[test]
+    fn a_session_needs_an_unlocked_administrator_and_a_token_the_whole_scope_for_the_timers() {
+        use super::super::{Caller, authorize};
+        use crate::admind::scopes::Scopes;
+        let action = registered("service.timers");
+        let session =
+            |admin, unlocked| authorize(&Caller::Session { name: "ann", admin, unlocked }, action);
+        assert_eq!(session(false, true).unwrap_err().kind, Kind::NotAdmin);
+        assert_eq!(session(true, false).unwrap_err().kind, Kind::Locked);
+        assert!(session(true, true).is_ok());
+        let token = |list: &str| {
+            let scopes = Scopes::parse(list).unwrap();
+            authorize(&Caller::Token { name: "ci", scopes: &scopes }, action)
+        };
+        for list in ["services", "*"] {
+            assert!(token(list).is_ok(), "{list}");
+        }
+        for list in ["services:read", "logs", "reliability"] {
+            assert_eq!(token(list).unwrap_err().kind, Kind::OutOfScope, "{list}");
+        }
     }
 
     #[test]
@@ -883,6 +1076,136 @@ mod tests {
             assert!(registered(undo.action).prepare(undo.args).is_ok(), "{back}");
         }
         assert!(registered("service.restart").example_values().2.is_none());
+    }
+
+    #[test]
+    fn a_service_s_status_is_service_status_with_json_and_its_usage_is_metrics() {
+        assert_eq!(
+            argv("service.status", json!({ "name": "nginx" })),
+            ["service", "nginx", "status", "--json"]
+        );
+        let series = |since: &str, every: &str| -> Vec<String> {
+            [
+                "metrics",
+                "show",
+                "service.cpu{nginx}",
+                "service.memory{nginx}",
+                "--since",
+                since,
+                "--every",
+                every,
+                "--json",
+            ]
+            .map(String::from)
+            .to_vec()
+        };
+        for (range, since, every) in
+            [("1h", "1h", "1m"), ("24h", "24h", "15m"), ("7d", "7d", "2h"), ("1y", "365d", "1d")]
+        {
+            assert_eq!(
+                argv("service.usage", json!({ "name": "nginx", "range": range })),
+                series(since, every),
+                "{range}"
+            );
+        }
+        for (id, path) in [
+            ("service.status", "/api/1/services/{name}"),
+            ("service.usage", "/api/1/services/{name}/usage/{range}"),
+        ] {
+            let action = registered(id);
+            assert_eq!(
+                (action.changes(), action.runs(), action.area(), action.path()),
+                (false, Runs::AsThePerson, "services", path),
+                "{id}"
+            );
+            assert!(action.errors().is_empty() && !action.compares(), "{id}");
+            assert_eq!(action.tests().browser, "web-console/services", "{id}");
+        }
+    }
+
+    #[test]
+    fn the_status_and_the_usage_are_found_by_their_addresses_beside_the_others() {
+        use super::super::{Found, find};
+        for (path, id, name, range) in [
+            ("/api/1/services/nginx", "service.status", "nginx", None),
+            ("/api/1/services/nginx/explain", "service.explain", "nginx", None),
+            ("/api/1/services/nginx/usage/7d", "service.usage", "nginx", Some("7d")),
+            ("/api/1/services/my-app_2/usage/1y", "service.usage", "my-app_2", Some("1y")),
+        ] {
+            let found = find(REGISTRY, false, path);
+            let Found::Action(action, params) = found else { panic!("{path}: {found:?}") };
+            assert_eq!(action.id(), id, "{path}");
+            assert_eq!(params["name"], name, "{path}");
+            assert_eq!(params.get("range").and_then(Value::as_str), range, "{path}");
+        }
+        assert!(matches!(find(REGISTRY, false, "/api/1/services/nginx/usage"), Found::None));
+        assert!(matches!(find(REGISTRY, false, "/api/1/services/nginx/usage/7d/x"), Found::None));
+        assert!(matches!(find(REGISTRY, true, "/api/1/services/nginx"), Found::WrongMethod));
+        // The list is still the address with no name.
+        let Found::Action(list, _) = find(REGISTRY, false, "/api/1/services") else { panic!() };
+        assert_eq!(list.id(), "service.list");
+    }
+
+    #[test]
+    fn the_status_takes_a_name_alone_and_the_usage_a_name_and_a_range_of_the_list() {
+        let words = "A service's name has 1 to 23 letters, digits, hyphens, underscores and dots, \
+                     and starts with a letter, a digit or an underscore. Nothing was done.";
+        for name in ["", "../x", ".hidden", "a b", &"a".repeat(24)] {
+            assert_eq!(
+                refused("service.status", json!({ "name": name })),
+                (Kind::BadValue, Some("name"), words.into()),
+                "{name:?}"
+            );
+            assert_eq!(
+                refused("service.usage", json!({ "name": name, "range": "1h" })),
+                (Kind::BadValue, Some("name"), words.into()),
+                "{name:?}"
+            );
+        }
+        // `check` is a name, as `service check restart` is a command.
+        assert_eq!(refused("service.status", json!({ "name": "check" })).1, Some("name"));
+        let range = "The usage range is 1h, 24h, 7d or 1y. Nothing was done.";
+        for text in ["2h", "", "24H", "365d", "1h ", "1m", "week"] {
+            assert_eq!(
+                refused("service.usage", json!({ "name": "nginx", "range": text })),
+                (Kind::BadValue, Some("range"), range.into()),
+                "{text:?}"
+            );
+        }
+        // A name that is the console's is read, only not stopped.
+        assert_eq!(argv("service.status", json!({ "name": "admind" }))[1], "admind");
+        for (id, args) in [
+            ("service.status", json!({ "name": "nginx", "lines": 5 })),
+            ("service.status", json!({})),
+            ("service.usage", json!({ "name": "nginx" })),
+            ("service.usage", json!({ "range": "1h" })),
+            ("service.usage", json!({ "name": "nginx", "range": 1 })),
+        ] {
+            assert_eq!(registered(id).prepare(args).unwrap_err().kind, Kind::BadRequest, "{id}");
+        }
+    }
+
+    #[test]
+    fn the_range_words_of_the_usage_are_the_usage_card_s_and_make_its_since_and_every() {
+        let schema = super::super::schema(registered("service.usage").fields());
+        assert_eq!(schema["properties"]["range"]["enum"], json!(WORDS));
+        assert_eq!(schema["required"], json!(["name", "range"]));
+        for (range, since, every) in super::super::metrics::RANGES {
+            assert_eq!(since_and_every(range), Some((since, every)));
+        }
+        assert_eq!(since_and_every("2h"), None);
+    }
+
+    #[test]
+    fn the_status_and_the_usage_are_named_for_the_service_in_their_ansible_tasks() {
+        let task =
+            registered("service.status").prepare(json!({ "name": "nginx" })).unwrap().ansible;
+        assert_eq!(task.name, "Show a service: nginx");
+        assert!(!task.become_root);
+        assert_eq!(task.changed_when.as_deref(), Some("false"));
+        let usage = json!({ "name": "nginx", "range": "24h" });
+        let task = registered("service.usage").prepare(usage).unwrap().ansible;
+        assert_eq!(task.name, "Show a service's usage: nginx, 24h");
     }
 
     /// What `id`'s check makes of the state `now` and of the service file

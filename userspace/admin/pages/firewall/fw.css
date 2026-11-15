@@ -1,0 +1,82 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Firewall page (design 10): the rules, the form that changes them, what
+ * was blocked, the test and what listens. The phone's layout is the same
+ * markup under the container query the shell uses (10.6). Same rules as
+ * console.css: rem, and px for borders and focus rings.
+ *
+ * The banner of a tried change has its own sheet, lib/trial-banner.css,
+ * which pages.js loads with this one: an @import would load it only after
+ * this sheet, and the accessibility check reads such a sheet by putting it
+ * in a style element, which the content security policy forbids.
+ */
+
+.fw { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+.fw-load:empty, .fw-errors:empty, .fw-problems:empty, .fw-warning:empty, .fw-wait:empty { display: none; }
+.fw-body { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.fw-none { padding: .286rem 0; }
+
+/* Grey bars stand where words are read; they are still, and nothing reads them. */
+.fw-bar { display: inline-block; height: .857rem; width: 3rem; max-width: 100%; border-radius: .214rem; background: var(--sunken); }
+.fw-bar.wide { width: 14rem; }
+
+/* The rules */
+.fw-tbl th[scope="row"] { text-align: left; font-weight: 600; font-size: 1rem; color: var(--text); background: none; border-bottom: 1px solid var(--border); vertical-align: top; }
+.fw-tbl tr:last-child th[scope="row"] { border-bottom: 0; }
+.fw-tbl td { overflow-wrap: anywhere; }
+.fw-words { display: block; }
+.fw-buttons { white-space: nowrap; }
+.fw-buttons .btn + .btn { margin-left: .429rem; }
+.fw .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+.fw-lines { margin: 0; padding-left: 1.143rem; display: flex; flex-direction: column; gap: .286rem; color: var(--bad); }
+.fw-lines[hidden] { display: none; }
+.fw-default { margin: 0; color: var(--muted); }
+.fw-rules-btns[hidden], .fw-rules-btns:empty { display: none; }
+
+/* The form */
+.fw-add[hidden], .fw-confirm[hidden], .fw-runs[hidden] { display: none; }
+.fw-add h2:focus { outline: none; }
+.fw-add h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.fw-fields { display: flex; flex-direction: column; gap: 1rem; }
+.fw-fields[hidden] { display: none; }
+.fw-chips { display: flex; flex-wrap: wrap; gap: .429rem; }
+.fw-two { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
+.fw-from .field { margin-top: .571rem; }
+.fw-from .input[hidden] { display: none; }
+.fw-runs { display: flex; flex-direction: column; gap: .429rem; }
+.fw-runs h3, .fw-guess h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.fw-add .field .msg, .fw-test .field .msg { margin-top: .143rem; }
+
+/* Blocked */
+.fw-drops { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.fw-drop { display: flex; gap: .714rem; align-items: flex-start; justify-content: space-between; padding: .571rem 0; border-bottom: 1px solid var(--border); }
+.fw-drop:last-child { border-bottom: 0; }
+.fw-drop-words { display: flex; flex-direction: column; gap: .143rem; min-width: 0; overflow-wrap: anywhere; }
+.fw-guess { display: flex; flex-direction: column; gap: .429rem; }
+
+/* The test */
+.fw-answer { display: flex; flex-direction: column; gap: .286rem; }
+.fw-answer p { margin: 0; }
+.fw-verdict { font-weight: 600; }
+
+/* The phone (10.6): the rules are cards, the form is one column and the buttons fill the width. */
+@container (max-width: 51.4rem) {
+  .fw-tbl th[scope="row"] { display: block; padding: .286rem .571rem; border: 0; }
+  .fw-tbl td:empty { display: none; }
+  .fw-buttons { white-space: normal; display: flex; gap: .571rem; }
+  .fw-buttons .btn { flex: 1; margin-left: 0; }
+  .fw-two { grid-template-columns: minmax(0, 1fr); }
+  .fw-drop { flex-direction: column; align-items: stretch; }
+  .fw-add .btns, .fw-test .btns, .fw-confirm .btns { flex-direction: column; align-items: stretch; }
+  .fw-add .btns .btn, .fw-test .btns .btn, .fw-confirm .btns .btn, .fw-drop .btn { width: 100%; }
+  .fw-chips .btn { flex: 1 1 auto; }
+}
+
+/* Forced colours: the bars and the rules that are off are drawn in system colours. */
+@media (forced-colors: active) {
+  .dk .fw-bar { background: GrayText; forced-color-adjust: none; }
+  .dk .fw .btn[aria-disabled="true"] { opacity: 1; color: GrayText; border-color: GrayText; }
+  .dk .fw-add { border: 1px solid CanvasText; }
+}

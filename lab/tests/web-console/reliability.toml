@@ -1,0 +1,116 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Reliability pages of the web console in each engine (design 7): the
+# starts the machine keeps held to what `GET /api/1/starts` answers (the
+# command is `changes --list`), a failed start's card where the machine has
+# one, Health from the kept checks, the errors of the log counted under
+# Services for each day and listed for the day that is chosen, Crashes and
+# Alerts as `dumps list` and `alerts history` give them (both behind the
+# unlock, which a locked administrator is asked for and a reader is told is an
+# administrator's), one start's page held to `startup --start N --compare`, the
+# range control, and the phone's list of days at 390 by 844. The journal at
+# /reliability/changes, whose rows are filtered by who, how and day, and
+# "Copy as a script", whose text the test builds itself from the rows. "Copy
+# settings to Git" makes a folder, and the last steps compare it with the
+# machine. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe.
+#
+# lab-reliability is the service of this test, which runs and does nothing: the
+# console restarts it and turns it off, and the journal has a row of each. Its
+# file is saved before the browser opens, and the script that "Copy as a
+# script" gives for the two rows is run on the machine as root after it, once
+# the file is put back as it was before the two changes: `cmp` finds the file
+# as the console left it. A lab test has one machine, so the script is not run
+# on a fresh one: the browser keeps it in the lab PC's /tmp, and a host step
+# copies it to the machine. A root step writes the line that is counted under
+# Services with `logger -p user.err`. The browser script runs each engine one
+# after the other, so that an engine the lab PC lacks is skipped within it and
+# the steps after it still run: each run turns the service on first, makes its
+# two changes, which leave it off, and copies the settings into a folder of its
+# own, since an export that changes nothing makes no commit. The steps after
+# it compare each folder with /system/settings, but for what SECRETS.md lists.
+# A failed start is covered where the machine has one, which a lab machine
+# does not.
+#
+# The accounts are two that this test makes and removes, an administrator
+# and a reader, so no script needs the lab's password.
+about = "The web console's Reliability pages in each engine: the starts, Health and the errors of the log by day, Crashes and Alerts behind the unlock, a start's times, the journal with Copy as a script run on the machine, Copy settings to Git held to the machine's settings, a reader, and the phone's list of days"
+time = "25m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-reliability && echo lab-console-password | user add wc-reliability-reader && user set --console --yes wc-reliability-reader'"
+root = true
+expect = ["Made wc-reliability", "Made wc-reliability-reader", "wc-reliability-reader is changed"]
+# The service the console changes: it runs and does nothing, and restarts at
+# once when it is restarted. From nothing: a run before may have left it.
+[[step]]
+run = "sh -c 'service lab-reliability disable > /dev/null 2>&1; rm -f /system/settings/spark/services/lab-reliability.toml; cat > /system/settings/spark/services/lab-reliability.toml'"
+root = true
+input = '''
+service_version = 2
+description = "Does nothing, for the Reliability test"
+program = "/system/commands/nukesh"
+arguments = ["-c", "while :; do sleep 1; done"]
+enabled = true
+restart = "never"
+'''
+[[step]]
+run = "sh -c 'service lab-reliability enable; i=0; while [ $i -lt 30 ] && ! service lab-reliability status | grep -q \"Active: active (running)\"; do sleep 1; i=$((i + 1)); done; service lab-reliability status'"
+root = true
+expect = "Active: active (running)"
+# The file as it is before the console changes it, for the script's run.
+[[step]]
+run = "sh -c 'cp /system/settings/spark/services/lab-reliability.toml /tmp/lab-reliability-first.toml && grep -x \"enabled = true\" /tmp/lab-reliability-first.toml'"
+root = true
+expect = "enabled = true"
+# The line that is counted under Services for today: an error of a service.
+[[step]]
+run = '''sh -c 'logger -t lab-reliability -p user.err "lab-reliability: the NAS did not answer"; sleep 1; echo marked' '''
+root = true
+expect = "marked"
+# What the commands under the pages say, which the page's reads run as well:
+# a start that has no times, or an alert history that is empty, is no failure
+# here.
+[[step]]
+run = "sh -c 'changes --list | head -3; startup | head -3; dumps list | head -3; alerts history -n 5 | head -3; echo listed'"
+root = true
+expect = "listed"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "reliability.mjs"
+port = 9090
+# The script that the last engine copied, on the machine.
+[[step]]
+host = "sh {here}/../services/copy-file.sh /tmp/lab-reliability-script.sh {machine} {machine-port:22}"
+expect = "copied: lab-reliability-script.sh"
+[[step]]
+host = "sh -c 'rm -f /tmp/lab-reliability-script.sh; echo script-removed'"
+expect = "script-removed"
+# Each engine's folder is a Git repository with one commit of the machine's
+# settings, and its files are the machine's but for what SECRETS.md lists.
+[[step]]
+run = '''sh -c 'n=0; for d in /users/wc-reliability/lab-settings-*; do [ -d "$d/system/settings" ] || exit 1; git -c safe.directory="*" -C "$d" log --format=%s -1 | grep "^Settings of " || exit 1; test -s "$d/SECRETS.md" || exit 1; echo "different: $(diff -rq "$d/system/settings" /system/settings | grep -vc "^Only in /system/settings")"; n=$((n + 1)); done; echo "folders: $n"' '''
+root = true
+expect = ["Settings of ", "different: 0", "folders: "]
+# The script runs as root with `elevate` left out, on the file as it was before
+# the console's two changes; the file is then what the console left.
+[[step]]
+run = '''sh -c 'cp /system/settings/spark/services/lab-reliability.toml /tmp/lab-reliability-after.toml && grep -x "enabled = false" /tmp/lab-reliability-after.toml && cp /tmp/lab-reliability-first.toml /system/settings/spark/services/lab-reliability.toml && sed "s/^elevate //" /users/lab/lab-reliability-script.sh > /tmp/lab-reliability-run.sh && grep -c "^service lab-reliability" /tmp/lab-reliability-run.sh && sh /tmp/lab-reliability-run.sh && cmp /tmp/lab-reliability-after.toml /system/settings/spark/services/lab-reliability.toml && echo replayed' '''
+root = true
+expect = ["enabled = false", "replayed"]
+# Nothing of the test left behind.
+[[step]]
+run = "sh -c 'service lab-reliability disable > /dev/null 2>&1; rm -f /system/settings/spark/services/lab-reliability.toml /users/lab/lab-reliability-script.sh /tmp/lab-reliability-first.toml /tmp/lab-reliability-after.toml /tmp/lab-reliability-run.sh; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-reliability wc-reliability-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-reliability is removed", "wc-reliability-reader is removed"]

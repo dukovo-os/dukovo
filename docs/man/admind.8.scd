@@ -71,6 +71,15 @@ is longer than a browser keeps a connection it opened ahead and has not
 used. A head is at most 16 KiB and 64 headers, and a connection that sends
 no head for 60 seconds is closed.
 
+A browser that offers HTTP/2 by ALPN gets it, and every tab's requests
+and event streams share its one connection (ADR 0519): at most 64
+streams at once, each head at most 16 KiB, and the connection is told to
+go away once no stream has been open for 60 seconds. The host of an
+HTTP/2 request is its *:authority*, and a *Host* header beside it must
+name the same. The Terminal's socket is a WebSocket on a connection of
+its own over HTTP/1.1, which a browser opens for it. A client that
+offers no protocol speaks HTTP/1.1.
+
 ## What it checks
 
 A request meets these checks in this order, and the first that fails
@@ -137,6 +146,63 @@ when admind stops. admind says why to each page that is open, which shows
 it, and tells authd, which forgets the session. A session that is unlocked
 (15 minutes, by the password, a code or a passkey again) locks itself a
 minute after its last page closed.
+
+## Following the log
+
+*GET /api/1/logs/follow*
+	The Logs page's follow of the log, as server-sent events. It takes
+	*service*, *kernel*, *priority* and *grep* in its query, as
+	*logs.read* does and checked by the same code, and *all=true* for the
+	whole log, which needs an administrator's unlocked session (ADM-122,
+	ADM-106) and, as an elevated read, a request from the console's own
+	page (ADM-109). authd starts one *log --output json --follow --lines
+	0* for it on two pipes admind reads (*authd*(8), *follow*), as the
+	person or, for the whole log, as root, so that following the log is
+	one command, and one audit line, for as long as the page follows.
+	The events are *command*, once, with *shown*, the command as *Show
+	command* gives it; *record*, a record each, as *log* prints it;
+	*skipped*, with *count*, when more than 100 records came in a second
+	(the first 100 are sent); and *ended*, with *why*, before the stream
+	closes: *locked* or *unlock-ended* (for the whole log), *session-ended*,
+	*replaced* (the session began another follow), *time* (an hour
+	passed), *slow* (the tab left 256 KiB unread), *stopped* (admind is
+	stopping) or *failed*, with *error*, log's last line of errors. A
+	session has one follow, admind runs 8 at once, and a ninth is ADM-134
+	with *Retry-After: 30*. A refusal is a JSON answer before the stream
+	begins. When admind ends a follow, it asks authd to end its process.
+
+## Trying a change
+
+The Networking and Firewall pages try a change (*network set* or a
+*firewall* change with *--try*): Spark undoes it unless it is kept in time
+(ADR 0472, ADR 0518). Before the page offers to keep it, it asks whether
+the browser still reaches the console over the new settings. A firewall
+rule is checked when a connection begins, and one that is open goes on, so
+only a request that came by a connection opened after the change took
+effect proves it.
+
+admind keeps, for each trial, a time at or after the moment its change
+took effect: when the console's action that began it answered, or, for a
+trial begun at a terminal or before admind started, when admind first saw
+Spark list it. A trial whose end moved between two looks was kept or undone
+and begun again, and begins again for admind too.
+
+*GET /api/1/console/fresh/{trial}*
+	For a signed-in session. *trial* is *network* or *firewall* (a trial's
+	name, as *spark*(8) takes it; another is ADM-108). It is answered
+	*{"fresh": true, "from": "192.168.1.20", "via": {"address":
+	"192.168.1.10", "port": 9090, "card": "net0"}}* when the request's
+	connection was accepted after the trial began: *from* is the browser's
+	address and *via* the address and port the connection came to and the
+	card that holds the address (null when no card does). A connection
+	accepted before is ADM-133, 409, and admind ends it once the answer is
+	sent (a close on HTTP/1.1; on HTTP/2 a GOAWAY, sent before the answer
+	so that the browser knows it when the answer comes), so that the
+	browser's next request opens a new one. A trial Spark does not list is ADM-135,
+	404, and a Spark that does not answer is ADM-121.
+
+*GET /api/1/session* gives *from* and *via* as well, so that a page knows
+the address it would take away.
 
 ## Actions
 
@@ -238,6 +304,61 @@ area:
 	15 minutes, 2 hours or day. Any other word is ADM-125. A machine that has
 	kept no history yet answers ADM-123 with *metrics*'s own words.
 
+The Services page's scheduled tasks and the Reliability page add seven
+more, for what the health check, timerd, alertd and the crash dumps keep.
+The reads of the starts run as the person, since the records of the
+starts are readable by everyone, and need the read scope of their area for
+a token. The other three reads run as an administrator, as above, and
+*console.export* is a change that runs as the person:
+
+*GET /api/1/timers* (*service.timers*, area *services*)
+	*service list --timers --json*: an array with an object for each
+	service that has a timer, with its *service*, *schedule*, *next\_ms*,
+	*last\_ms*, *last\_result* and *zone*, as service(8) says it. timerd
+	answers only root, so it runs as an administrator.
+
+*GET /api/1/starts* (*reliability.starts*, area *reliability*)
+	*changes --list --json*: an array with an object for each start kept,
+	newest first: its *start* number, *at\_ms*, *release*, *slot*,
+	*result* (*good*, *failed*, *fell-back* or *bisect-try*, null for a
+	start not yet finished), the *check* that failed it, *ready\_ms* and the
+	*changes* it brought, as changes(1) says it.
+
+*GET /api/1/starts/failed* (*reliability.failed*, area *reliability*)
+	*changes --failed --json*: *{"failed", "since\_good", "bisect"}*, the
+	newest start that failed or null, what changed since the last good
+	start, and the search for the change: whether it *running*, the *try*
+	it waits on and the most tries it takes, *of*.
+
+*GET /api/1/starts/{start}* (*reliability.start*, area *reliability*)
+	*startup --start N --compare --json*: the steps of start _start_, a
+	number from 1 to 4294967295, beside the last good start's. *startup*
+	ends with status 1 for a start with no times, one that is not kept and
+	one with no good start to compare with, and prints text then, not JSON:
+	the answer is its output after status 0 alone, and status 1 is
+	ADM-123.
+
+*GET /api/1/dumps* (*reliability.dumps*, area *reliability*)
+	*dumps list --json*, as an administrator: the crash dumps kept,
+	newest first, with each one's name, time, size and the first line of
+	its panic.
+
+*GET /api/1/alerts/history* (*reliability.alerts*, area *reliability*)
+	*alerts history -n 200 --json*, as an administrator: the newest 200
+	changes to the alerts, an array of the lines of JSON that *alerts*
+	prints.
+
+*POST /api/1/console/export* (*console.export*, area *console*)
+	*admin export DIR* with *{"dir": "/users/ann/nas-settings"}*, as the
+	person, not elevated: copies the settings that the person can read into
+	a Git repository in _dir_, an absolute path of at most 4096 bytes with
+	no NUL, and lists the rest in _SECRETS.md_. It writes nothing outside
+	_dir_ and names no file of the machine for the journal. *changed* is
+	whether the repository's newest commit is another one after the
+	export than before it, as *git -C dir rev-parse --verify -q HEAD*
+	says it: an export of settings that did not change makes no commit
+	and answers *false*. Nothing puts an export back.
+
 An action's arguments are the parts of its address, such as _name_ above,
 and the members of the JSON object in its body, which may be empty,
 together. A name in both, a member the action does not have, or a body
@@ -252,8 +373,22 @@ check what it is about to send against it.
 
 A read runs its command in the worker of the person or the token's owner,
 as that person, and answers the JSON the command printed with *--json*,
-as it printed it. A change that runs as the person runs in the worker
-too. A change that runs as an administrator goes through *authd*(8), for
+as it printed it. A read whose command only root may run, such as the
+whole log, what the firewall dropped or the timers, runs as an
+administrator through *authd*(8), as a change does (ADR 0518, which
+changed ADR 0515's rule that a read always runs as the person): for an
+administrator's unlocked session (ADM-106 when it is locked, ADM-122 for
+anyone else), or a token whose scopes name its area in full, never
+*area:read* (ADM-124). A request of a session for one must come from the
+console's own pages: a *Sec-Fetch-Site* header other than *same-origin*
+is ADM-109. Each run is a line of the audit log, so the pages never run
+one on a timer. A read's arguments come from its address's query as well
+as its path: */api/1/logs?service=nginx&lines=200*; a number is read as
+one, a flag as *true* or *false*, and a name the action does not take is
+ADM-108. A read whose command prints a JSON value a line, as *log -o
+json* does, answers an array of the lines' values.
+
+A change that runs as the person runs in the worker too. A change that runs as an administrator goes through *authd*(8), for
 an unlocked session of an administrator, or for a token whose owner is an
 administrator. A change answers *{"done": true, "changed": true,
 "output": [...]}* with the first 200 lines the command printed.
@@ -405,6 +540,16 @@ looked at. A file changed and changed back between two looks is not seen,
 and two changes between two looks are one row. The first look at a store
 that holds no file only notes the files, and makes no row.
 
+A change being tried that Spark undid by itself (*spark*(8), ADR 0472),
+because it was not kept in time, because a service failed with it, or
+because the machine started again while it ran, has a row whose *who* is
+*Spark* and *how* is *undone*, with Spark's words why as its note and each
+file Spark put back. admind reads Spark's read socket at the start of each
+look, before it looks for hand edits, so that the file's change back is the
+undo's and not a hand edit. An undo a person asked for has the row of the
+action that asked, or the hand edit of the person who ran *network undo*,
+*firewall undo* or *service try* at a terminal.
+
 A file under a service's secrets (_/system/state/spark/secrets_), a file
 that not everyone may read (no read bit for others), and a file in a folder
 that others may not pass through is listed by name, with no hash, text or
@@ -419,9 +564,10 @@ hash and size and no text.
 	given), newest first, at most *limit* of them (50 when it is not given,
 	at most 200). A value that is not a number in range is ADM-125 with
 	the *field*. The answer is *{"changes": [...]}*. Each change has *id*,
-	*at*, *who* (the person, or *outside the console*), *how* (*console*,
-	*token NAME* or *by hand*), *action* and *title* (null for a hand edit
-	and for an action the console no longer has), *argv* (the command),
+	*at*, *who* (the person, *outside the console*, or *Spark*), *how*
+	(*console*, *token NAME*, *by hand* or *undone*), *action* and *title*
+	(null for a hand edit, an undo and an action the console no longer
+	has), *argv* (the command),
 	*status*, *task*, *note*, *files* and *seen*. Each of *files* has its
 	*path* and what the file was *before* and *after*: an object whose
 	*state* is *absent*, *text* or *large*, which have *sha256* and *size*,
@@ -774,11 +920,13 @@ not do this, *ADM-125* a value cannot work, *ADM-126* the console keeps no
 journal or tasks now, *ADM-127* it has no such change or task, *ADM-128*
 that cannot be done to this change or task, *ADM-129* this machine does not
 have the program yet, *ADM-130* too many terminals, *ADM-131* no such
-terminal, *ADM-132* the terminal is not open to this account. *detail* says what happened
-this time, in authd's own words where authd refused. ADM-125 also has the
-*field* whose value cannot work, and ADM-123 the *command* with its words,
-status and error output. Each ID has a page in the support center that
-says what to do.
+terminal, *ADM-132* the terminal is not open to this account, *ADM-133* the
+question came by a connection opened before the change, *ADM-134* the
+console follows as many logs as it may, *ADM-135* nothing is being tried by
+that name. *detail* says what happened this time, in authd's own words where
+authd refused. ADM-125 also has the *field* whose value cannot work, and
+ADM-123 the *command* with its words, status and error output. Each ID has a
+page in the support center that says what to do.
 
 # FILES
 
@@ -809,6 +957,10 @@ _/system/live/authd/socket_
 _/system/live/log/query_
 	logd's query socket, which admind asks for the audit log when it looks
 	for who changed a file by hand (What changed).
+
+_/system/live/spark/read_
+	Spark's read socket, which answers anyone, for the trials being run
+	and the ones Spark undid (Trying a change, What changed).
 
 _/system/state/admind/store.db_
 	The store: the journal, the versions of the files it names, and the

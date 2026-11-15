@@ -714,6 +714,52 @@ fn a_pipe_is_not_opened() {
 }
 
 #[test]
+fn an_undo_spark_made_by_itself_has_a_row_of_its_own_once_and_is_no_hand_edit() {
+    use crate::admind::trials::Trials;
+    use spark_api::show::{Show, Undone};
+    use spark_api::trial::Why;
+
+    let machine = Machine::new("undone");
+    let path = machine.path("network");
+    let (dhcp, fixed) = ("[net0]\nmode = \"dhcp\"\n", "[net0]\nmode = \"fixed\"\n");
+    put(&path, dhcp, 100);
+    machine.round(1_000, &[]);
+    // Tried at a terminal: the round's hand edit.
+    put(&path, fixed, 1_010);
+    assert_eq!(machine.round(1_030, &[(&path, "chase")]).len(), 1);
+    // Not kept: Spark puts the copy back, 10 seconds before admind looks.
+    put(&path, dhcp, 1_070);
+    let document = Show {
+        now_ms: 80_000,
+        undone: vec![Undone {
+            id: "network".into(),
+            why: Why::TimeUp.words(),
+            at_ms: 70_000,
+            files: vec![path.clone()],
+        }],
+        ..Show::default()
+    };
+    let undos = Trials::default().undos(&document, 1_080);
+    let row = machine.journal.undone(&machine.store, &undos[0], 1_080).unwrap().unwrap();
+    let change = machine.store.change(row).unwrap().unwrap();
+    assert_eq!(
+        (change.who.as_str(), change.how.as_str(), change.at, change.note.as_deref()),
+        ("Spark", "undone", 1_070, Some("it was not kept in time"))
+    );
+    assert_eq!((change.action, change.argv, change.status), (None, None, None));
+    assert_eq!(change.files, [FileChange { path, before: text(fixed), after: text(dhcp) }]);
+    // The file's change back is the undo's, and no hand edit.
+    assert!(machine.round(1_090, &[]).is_empty());
+    // admind started again, and Spark lists the undo still: the journal
+    // has its row, whose time it reads a second apart from Spark's clock.
+    let later = Show { now_ms: 102_500, ..document };
+    let again = Trials::default().undos(&later, 1_101);
+    assert_eq!(again[0].at, 1_069);
+    assert_eq!(machine.journal.undone(&machine.store, &again[0], 1_101).unwrap(), None);
+    assert_eq!(machine.store.changes(0, 100).unwrap().len(), 2);
+}
+
+#[test]
 fn check_mode_reads_a_file_everyone_reads_and_tells_nothing_of_the_rest() {
     let machine = Machine::new("check-read");
     let open = machine.path("open.toml");

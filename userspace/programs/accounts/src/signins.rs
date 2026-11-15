@@ -44,6 +44,23 @@ pub const DIR: &str = "/system/state/sign-ins";
 pub const SYSTEM: &str = "/system/state/sign-ins/system";
 /// The wrong passwords typed for names no account has.
 pub const UNKNOWN: &str = "/system/state/sign-ins/unknown";
+/// The time of the start that authd recorded in [`SYSTEM`] for the start
+/// that runs, which it writes in /system/live, emptied at each start: a
+/// time service that sets the clock after the start moves the start's
+/// time as the clock now tells it, by as much as it set it, and the note
+/// does not move.
+pub const THIS_BOOT: &str = "/system/live/authd/boot";
+
+/// The time [`THIS_BOOT`] notes, if authd has recorded the start that
+/// runs.
+pub fn this_boot() -> Option<i64> {
+    noted_boot(&std::fs::read_to_string(THIS_BOOT).ok()?)
+}
+
+/// The time in the text of [`THIS_BOOT`].
+fn noted_boot(text: &str) -> Option<i64> {
+    text.trim().parse().ok()
+}
 
 /// The file of the account numbered `number`.
 pub fn of(number: u32) -> String {
@@ -272,11 +289,11 @@ impl Line {
 }
 
 /// The lines of last(1) for `records`, every file's merged, newest
-/// first. `boot` is when the computer last started, if known: the
-/// records' newest start, if it is that one (a second either way), is
-/// the start that runs, and a session of it with no sign-out runs if
-/// `alive` says its first process does. Without `boot`, the newest start
-/// runs.
+/// first. `boot` is when the computer last started, if known, as
+/// [`this_boot`] notes it: the records' newest start, if it is that one
+/// (a second either way), is the start that runs, and a session of it
+/// with no sign-out runs if `alive` says its first process does. Without
+/// `boot`, the newest start runs.
 pub fn history(records: &[Record], boot: Option<i64>, alive: impl Fn(u32) -> bool) -> Vec<Line> {
     let mut records: Vec<&Record> = records.iter().collect();
     // Each file is in time order; merged, a start comes before what
@@ -633,6 +650,22 @@ mod tests {
         assert_eq!(failures[0].from, "10.0.0.2");
         assert_eq!(last_boot(&records("1 boot a\n2 down\n3 boot b\n4 down\n")), Some(3));
         assert_eq!(last_boot(&[]), None);
+        assert_eq!(noted_boot("1793440000\n"), Some(1_793_440_000));
+        assert_eq!(noted_boot(""), None);
+        assert_eq!(noted_boot("soon"), None);
+    }
+
+    #[test]
+    fn the_noted_start_runs_whatever_the_clock_was_set_to_since() {
+        let text = "1000 boot 0.16.0\n1010 in alice pts/1 10.0.2.2 71\n";
+        let ends = |boot| -> Vec<End> {
+            history(&records(text), Some(boot), |_| true).iter().map(|l| l.end).collect()
+        };
+        // The note is the time of the record itself.
+        assert_eq!(ends(1000), [End::Running, End::Running]);
+        // The time now less the time since, once a time service has set
+        // the clock two seconds on, is a start no record has.
+        assert_eq!(ends(1002), [End::Gone, End::Gone]);
     }
 
     #[test]

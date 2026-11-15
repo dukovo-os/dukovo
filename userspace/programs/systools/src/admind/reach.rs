@@ -86,6 +86,13 @@ pub fn own_networks() -> Vec<Network> {
         .collect()
 }
 
+/// The name of the card that holds `ip`, if one does.
+pub fn card_of(ip: IpAddr) -> Option<String> {
+    let ip = plain(ip);
+    let cards = if_addrs::get_if_addrs().ok()?;
+    cards.into_iter().find(|card| plain(card.ip()) == ip).map(|card| card.name)
+}
+
 /// The address admind counts a connection's limits by: an IPv4 address,
 /// or an IPv6 address's /64, which one machine usually holds whole.
 pub fn counted(ip: IpAddr) -> IpAddr {

@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Which rule of the firewall's settings decides a connection, a datagram
+# or a ping that another machine starts (firewall(8)): the Firewall page's
+# model (rules-model.js), which asks whether a change cuts the browser
+# off, and firewall.rs's `decides` both read this file in their tests, so
+# that the page and `firewall test` say the same.
+#
+# A case is a block of lines, the blocks apart by a blank line: the rules,
+# a line each as the settings file has them, then one or more questions.
+# A question is a line that starts with `> `: the protocol (tcp, udp or
+# ping), the port (not for a ping), `from ADDRESS`, `on CARD`, and
+# `program PATH` when the program that listens is known; then ` => ` and
+# the rule that decides, its number from 1 and allow or deny, or `none`
+# when no rule does. The first rule that fits decides. A block with no
+# rules starts with its questions.
+
+> tcp 9090 from 192.168.1.20 on net0 => none
+> ping from 192.168.1.20 on net0 => none
+
+allow tcp 22 from 192.168.1.0/24
+deny tcp 22
+> tcp 22 from 192.168.1.9 on net0 => 1 allow
+> tcp 22 from 192.168.2.9 on net0 => 2 deny
+> tcp 23 from 192.168.1.9 on net0 => none
+> udp 22 from 192.168.1.9 on net0 => none
+
+deny tcp 9090 on net1
+allow tcp 9000-9100
+> tcp 9090 from 203.0.113.9 on net1 => 1 deny
+> tcp 9090 from 203.0.113.9 on net0 => 2 allow
+> tcp 8999 from 203.0.113.9 on net0 => none
+> tcp 9101 from 203.0.113.9 on net0 => none
+> tcp 9000 from 203.0.113.9 on net0 => 2 allow
+> tcp 9100 from 203.0.113.9 on net0 => 2 allow
+
+deny program /users/alice/bin/server
+allow program /system/commands/admind
+deny
+> tcp 9090 from 203.0.113.9 on net0 program /system/commands/admind => 2 allow
+> tcp 8080 from 203.0.113.9 on net0 program /users/alice/bin/server => 1 deny
+> tcp 8080 from 203.0.113.9 on net0 program /system/commands/sshd => 3 deny
+> ping from 203.0.113.9 on net0 => 3 deny
+
+deny any 9090
+allow tcp 9090
+> tcp 9090 from 10.0.0.1 on net0 => 1 deny
+> udp 9090 from 10.0.0.1 on net0 => 1 deny
+
+deny ping
+allow ping from 10.0.0.0/8
+allow
+> ping from 10.1.2.3 on net0 => 1 deny
+> tcp 1 from 10.1.2.3 on net0 => 3 allow
+> udp 65535 from 10.1.2.3 on net0 => 3 allow
+
+deny 22
+deny tcp
+allow ping from 10.0.0.0/8
+deny ping
+> ping from 10.1.2.3 on net0 => 3 allow
+> ping from 11.1.2.3 on net0 => 4 deny
+
+allow tcp 9090 from 2001:db8::/32
+deny tcp 9090 from 0.0.0.0/0
+> tcp 9090 from 2001:db8::7 on net0 => 1 allow
+> tcp 9090 from 2001:db9::7 on net0 => none
+> tcp 9090 from 192.168.1.20 on net0 => 2 deny
+> tcp 9090 from ::ffff:192.168.1.20 on net0 => none
+
+allow tcp 9090 from 192.168.1.20
+deny tcp 9090 from 192.168.1.0/24
+> tcp 9090 from 192.168.1.20 on net0 => 1 allow
+> tcp 9090 from 192.168.1.21 on net0 => 2 deny
+
+deny udp 53 on net0
+allow udp 53 from 10.0.0.0/8 on net0
+> udp 53 from 10.0.0.1 on net0 => 1 deny
+> udp 53 from 10.0.0.1 on net1 => none

@@ -50,6 +50,7 @@ mod account;
 mod act;
 mod changes;
 mod events;
+mod follow;
 #[cfg(feature = "lab")]
 mod lab;
 mod session;
@@ -59,7 +60,7 @@ mod terminals;
 
 use std::cell::RefCell;
 use std::convert::Infallible;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::ops::Deref;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -69,7 +70,8 @@ use accounts::request::Answer;
 use bytes::Bytes;
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use http::request::Parts;
-use http::{Method, Request, Response, StatusCode};
+use http::uri::Authority;
+use http::{Method, Request, Response, StatusCode, Version};
 use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Empty, Full, Limited};
 use hyper::upgrade::OnUpgrade;
@@ -139,6 +141,8 @@ enum Content {
     Json(Value),
     File(File),
     Events(events::Events),
+    /// A follow of the log's events (ADR 0518).
+    Follow(super::follow::Followed),
     /// The Terminal's socket, with its `Sec-WebSocket-Accept`: the
     /// connection is handed over once the answer, 101, is sent.
     Socket(String),
@@ -248,6 +252,8 @@ pub(super) enum Route {
     UnlockExtend,
     Lock,
     Events,
+    Follow,
+    Fresh,
     Steps,
     AppBegin,
     AppConfirm,
@@ -376,6 +382,8 @@ pub(super) const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/terminals/{id}/end", Route::TerminalEnd, Access::Full),
     entry(Verb::Post, "/api/1/terminals/panes/{pane}/end", Route::PaneEnd, Access::Full),
     entry(Verb::Get, "/api/1/terminal", Route::TerminalSocket, Access::Full),
+    entry(Verb::Get, "/api/1/logs/follow", Route::Follow, Access::Full),
+    entry(Verb::Get, "/api/1/console/fresh/{trial}", Route::Fresh, Access::Full),
     #[cfg(feature = "lab")]
     entry(Verb::Post, "/api/1/test/elevate", Route::TestElevate, Access::Full),
 ];
@@ -488,6 +496,37 @@ struct Live {
     link: Link,
 }
 
+/// What a request knows of the connection it came by.
+pub struct Connection {
+    /// When admind accepted it.
+    pub accepted: Instant,
+    /// The address and port it came to, when known.
+    pub to: Option<SocketAddr>,
+    /// Its place, which the Terminal's socket takes over: none on HTTP/2,
+    /// whose streams are not handed over, and in the tests.
+    pub held: Option<Held>,
+    /// Told when an answer asks that the connection end once it is sent.
+    pub ending: tokio::sync::Notify,
+}
+
+impl Connection {
+    /// A connection accepted now, that came to `to` and holds `held`.
+    pub fn new(to: Option<SocketAddr>, held: Option<Held>) -> Connection {
+        Connection { accepted: Instant::now(), to, held, ending: tokio::sync::Notify::new() }
+    }
+
+    /// Asks that the connection end once the answers under way are sent:
+    /// the browser's next request opens a new one. It lets the
+    /// connection's task take that up before the answer is made, so that
+    /// on HTTP/2 the GOAWAY comes before the answer: a client that reads
+    /// the answer knows the connection is ending, and does not send its
+    /// next request on it while the GOAWAY is still on its way.
+    async fn end_after(&self) {
+        self.ending.notify_one();
+        tokio::task::yield_now().await;
+    }
+}
+
 /// What a handler knows of its request.
 struct Context<'a> {
     shared: &'a Rc<Shared>,
@@ -512,8 +551,8 @@ struct Context<'a> {
     headers: &'a HeaderMap,
     /// What hands the connection over, for the Terminal's socket.
     upgrade: RefCell<Option<OnUpgrade>>,
-    /// The connection's place, which the socket takes; none in the tests.
-    held: Option<Held>,
+    /// The connection it came by.
+    connection: Rc<Connection>,
     /// What the browser's `If-None-Match` lines say, as one list, if it
     /// sent any: the tags of the file it holds.
     if_none_match: Option<String>,
@@ -656,15 +695,14 @@ where
     B: http_body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    handle_on(shared, peer, None, request).await
+    handle_on(shared, peer, Rc::new(Connection::new(None, None)), request).await
 }
 
-/// Answers `request` from `peer`, on the connection whose place is
-/// `held`.
+/// Answers `request` from `peer`, which came by `connection`.
 pub async fn handle_on<B>(
     shared: Rc<Shared>,
     peer: IpAddr,
-    held: Option<Held>,
+    connection: Rc<Connection>,
     request: Request<B>,
 ) -> Result<Response<Body>, Infallible>
 where
@@ -673,9 +711,11 @@ where
 {
     let (mut head, body) = request.into_parts();
     let upgrade = head.extensions.remove::<OnUpgrade>();
-    let reply = match answer(&shared, peer, &head, body, (upgrade, held)).await {
+    let mut ends = false;
+    let reply = match answer(&shared, peer, &head, body, (upgrade, connection)).await {
         Ok(reply) => reply,
         Err(failure) => {
+            ends = failure.kind == Kind::OldConnection;
             let said = [Kind::ForeignRequest, Kind::WrongHost, Kind::Wait, Kind::TokenRefused];
             if said.contains(&failure.kind) {
                 shared.refused_request(peer, failure.kind.id(), &failure.detail);
@@ -693,24 +733,31 @@ where
             }
         }
     };
-    Ok(render(&shared, reply))
+    let mut response = render(&shared, reply);
+    // An answer that ends its connection (`fresh`'s ADM-133) says so on
+    // HTTP/1.1, and hyper closes the connection once it is sent; HTTP/2 has
+    // no such header, and the GOAWAY that follows says it there.
+    if ends && head.version < Version::HTTP_2 {
+        response.headers_mut().insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
+    Ok(response)
 }
 
 /// What a request is answered with, or why it is not; `handover` is what
-/// the Terminal's socket takes the connection with.
+/// the Terminal's socket takes the connection with, and the connection.
 async fn answer<B>(
     shared: &Rc<Shared>,
     peer: IpAddr,
     head: &Parts,
     body: B,
-    handover: (Option<OnUpgrade>, Option<Held>),
+    handover: (Option<OnUpgrade>, Rc<Connection>),
 ) -> Outcome
 where
     B: http_body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let verb = verb_of(head)?;
-    let (host, origin) = host_of(shared, &head.headers)?;
+    let (host, origin) = host_of(shared, head)?;
     let cookie = cookie_of(&head.headers, SESSION_COOKIE);
     let token = caller::bearer(&head.headers)?;
     if token.is_some() && cookie.is_some() {
@@ -761,7 +808,7 @@ where
         if_none_match: tags_held(&head.headers),
         headers: &head.headers,
         upgrade: RefCell::new(handover.0),
-        held: handover.1,
+        connection: handover.1,
     };
     match target {
         Target::Route(entry, _) => dispatch(&cx, entry.route, live, token).await,
@@ -903,6 +950,8 @@ async fn dispatch(
         (Route::TerminalEnd, Some(live)) => terminals::end(cx, &live),
         (Route::PaneEnd, Some(live)) => terminals::end_pane(cx, &live),
         (Route::TerminalSocket, Some(live)) => terminals::open(cx, &live),
+        (Route::Follow, Some(live)) => follow::open(cx, &live).await,
+        (Route::Fresh, Some(_)) => session::fresh(cx).await,
         #[cfg(feature = "lab")]
         (Route::TestElevate, Some(live)) => lab::elevate(cx, &live).await,
         // A route of the signed in, for a session that has ended, which
@@ -911,11 +960,28 @@ async fn dispatch(
     }
 }
 
+/// The host a request names, with its port: the `Host` header on
+/// HTTP/1.1; on HTTP/2 its `:authority`, which hyper puts in the URI, or a
+/// `Host` header when it has none. A `Host` header beside an `:authority`
+/// must name the same (RFC 9113 8.3.1), and a request with two names is
+/// none of this machine's.
+fn host_named(head: &Parts) -> Option<&str> {
+    let header = single(&head.headers, &header::HOST);
+    if head.version != Version::HTTP_2 {
+        return header;
+    }
+    match (head.uri.authority().map(Authority::as_str), header) {
+        (Some(authority), Some(header)) if !authority.eq_ignore_ascii_case(header) => None,
+        (Some(authority), _) => Some(authority),
+        (None, header) => header,
+    }
+}
+
 /// The host a request asks for and the origin that makes, if the host is
 /// this machine's.
-fn host_of(shared: &Shared, headers: &HeaderMap) -> Result<(String, String), Failure> {
+fn host_of(shared: &Shared, head: &Parts) -> Result<(String, String), Failure> {
     let wrong = || Failure::new(Kind::WrongHost, "this is not the name of this machine");
-    let header = single(headers, &header::HOST).ok_or_else(wrong)?;
+    let header = host_named(head).ok_or_else(wrong)?;
     let identity = shared.identity.borrow();
     let (host, port) =
         guard::host(header, &identity.names, &identity.addresses).ok_or_else(wrong)?;
@@ -1022,6 +1088,7 @@ fn render(shared: &Shared, reply: Reply) -> Response<Body> {
             }
         }
         Content::Events(events) => (Some("text/event-stream"), "no-store", events.boxed_unsync()),
+        Content::Follow(body) => (Some("text/event-stream"), "no-store", body.boxed_unsync()),
         Content::Socket(_) => (None, "no-store", Empty::new().boxed_unsync()),
     };
     let mut response = Response::new(body);

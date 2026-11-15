@@ -38,13 +38,18 @@
 //! space is in a list of weak handles, which the swap thread goes
 //! through in turn.
 //!
+//! A page of a program's file that cannot change is in memory once, for
+//! every space that maps it where it may not be written (ADR 0563,
+//! [`program`]).
+//!
 //! Lock order: the capability store, then a frame's zeroing step, then its
 //! list of address spaces, then an address space's regions, then a shared
-//! mapping's pages (then the architecture's page-table lock, then the
-//! frame allocator's).
+//! mapping's pages or a file's kept pages (then the architecture's
+//! page-table lock, then the frame allocator's).
 
 mod anon;
 pub mod futex;
+mod program;
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -62,6 +67,7 @@ use radix_sync::Mutex;
 pub use anon::{
     Anon, Fault, FileSource, Lack, Placement, Room, RoomRef, SharedPages, SharedRef, unshare_page,
 };
+pub use program::{ProgramPages, ProgramRef};
 
 use super::device::DevicePages;
 use super::ring::RingRef;
@@ -136,6 +142,34 @@ struct Region {
 impl Region {
     fn end(&self) -> u64 {
         self.start + self.pages * PAGE_SIZE
+    }
+
+    /// The pages kept of the file its anonymous memory is filled from, if
+    /// the file's are kept (ADR 0563), and the first and end of the file's
+    /// pages it spans.
+    fn kept(&self) -> Option<(&ProgramRef, u64, u64)> {
+        let Backing::Anon(Anon { file: Some(file), .. }) = &self.backing else { return None };
+        let first = (file.base / PAGE_SIZE).saturating_add(self.offset);
+        Some((file.kept.as_ref()?, first, first.saturating_add(self.pages)))
+    }
+
+    /// Frees the pages kept of its file that it spans and no space maps
+    /// any more, once its own pages are let go of.
+    fn trim_kept(&self) {
+        if let Some((pages, first, end)) = self.kept() {
+            pages.trim(first, end);
+        }
+    }
+
+    /// Frees the page kept of its file at its page `page`, if no space
+    /// maps it any more: once this space let go of it for a copy of its
+    /// own, or because its memory went bad. So the kept page does not
+    /// stay, charged to no one, beside the copy.
+    fn trim_kept_page(&self, page: u64) {
+        if let Some((pages, first, _)) = self.kept() {
+            let index = first.saturating_add((page - self.start) / PAGE_SIZE);
+            pages.trim(index, index.saturating_add(1));
+        }
     }
 }
 
@@ -522,7 +556,10 @@ impl SpaceObject {
     /// anonymous memory's given back.
     fn clear_region(&self, region: &Region) {
         match region.backing {
-            Backing::Anon(_) => self.release_range(region.start, region.end()),
+            Backing::Anon(_) => {
+                self.release_range(region.start, region.end());
+                region.trim_kept();
+            }
             Backing::Frame(_) | Backing::Ring(_) | Backing::Device(_) => {
                 self.unmap_range(region.start, region.end());
             }
@@ -558,7 +595,11 @@ impl SpaceObject {
             Arch::free_page_tables(&self.arch);
             core::mem::replace(&mut *regions, Vec::new_in(kmalloc()))
         };
-        // What the regions held goes with the lock let go.
+        // What the regions held goes with the lock let go: the pages of
+        // programs' files that only this space mapped too.
+        for region in &regions {
+            region.trim_kept();
+        }
         drop(regions);
     }
 

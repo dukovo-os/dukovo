@@ -10,7 +10,7 @@ import test from 'node:test';
 import {
   LAYOUTS, layoutForSplit, movedSizes, neighbour, placeOf, sizeAt, sizesFor, splitsOf,
 } from '../pages/terminal/layout-model.js';
-import { flush } from '../pages/terminal/splits.js';
+import { flush, setLayout } from '../pages/terminal/splits.js';
 
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} is not ${expected}`);
 const box = (place) => [place.x, place.y, place.w, place.h].map((n) => Math.round(n * 1000) / 1000);
@@ -151,18 +151,63 @@ test('splitting keeps the line the panes lie in, and a split across makes a grid
   assert.equal(layoutForSplit('one', 3, 'down'), 'rows', 'a layout of one pane at a time becomes one with all shown');
 });
 
-test('a split first saves what a separator moved by the keys waits to save, and nothing when nothing waits', async () => {
-  const saved = [];
-  const ws = {
-    saving: 7,
-    terminal: { layout: 'columns', sizes: [0.55] },
-    async setLayout(layout, sizes) {
-      this.saving = null;
-      saved.push([layout, sizes]);
-    },
+/** Has `fetch` answer each call from `answers` in turn, noting each call in the list it gives. */
+function answering(t, ...answers) {
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (path, options) => {
+    calls.push([path, JSON.parse(options.body)]);
+    return Promise.resolve(answers.shift()());
   };
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+  return calls;
+}
+
+const JSON_TYPE = { 'content-type': 'application/json' };
+const done = () => new Response('{}', { status: 200, headers: JSON_TYPE });
+
+/** A workspace with what setLayout uses: it notes each drawing, each read of the list and each problem. */
+function workspace(saving = null) {
+  const ws = {
+    saving, edits: 0, changing: 0, drawn: 0, reads: 0, problems: [],
+    terminal: { id: 3, layout: 'columns', sizes: [0.55] },
+    draw() { ws.drawn += 1; },
+    later() { ws.reads += 1; },
+  };
+  ws.view = { problem: (error) => ws.problems.push(error) };
+  return ws;
+}
+
+test('a split first saves what a separator moved by the keys waits to save, and nothing when nothing waits', async (t) => {
+  const calls = answering(t, done);
+  const ws = workspace(7);
   await flush(ws);
-  assert.deepEqual(saved, [['columns', [0.55]]]);
+  assert.deepEqual(calls, [['/api/1/terminals/3/layout', { layout: 'columns', sizes: [0.55] }]]);
+  assert.equal(ws.saving, null);
   await flush(ws);
-  assert.equal(saved.length, 1);
+  assert.equal(calls.length, 1);
+});
+
+test('a layout is shown at once, and the list is read again only once admind has answered', async (t) => {
+  let answer;
+  const refused = () => new Response(JSON.stringify({ error: { id: 'ADM-131', title: 'No such terminal', detail: 'x' } }), { status: 404, headers: JSON_TYPE });
+  const calls = answering(t, () => new Promise((resolve) => { answer = resolve; }), refused);
+  const ws = workspace();
+  const saving = setLayout(ws, 'rows');
+  // Drawn before admind answers, and marked for a read of the list begun before.
+  assert.deepEqual([ws.terminal.layout, ws.terminal.sizes, ws.drawn, ws.edits, ws.changing, ws.reads], ['rows', [], 1, 1, 1, 0]);
+  while (answer === undefined) await new Promise(setImmediate);
+  answer(done());
+  await saving;
+  assert.deepEqual([ws.changing, ws.reads, ws.problems.length], [0, 1, 0]);
+  // A refusal is said, and the list is read again for what admind keeps.
+  await setLayout(ws, 'grid', [0.5, 0.5]);
+  assert.deepEqual([ws.edits, ws.changing, ws.reads, ws.problems.length], [2, 0, 2, 1]);
+  assert.deepEqual(calls.map(([path]) => path), ['/api/1/terminals/3/layout', '/api/1/terminals/3/layout']);
+  // With no terminal shown there is nothing to change.
+  ws.terminal = null;
+  await setLayout(ws, 'rows');
+  assert.equal(calls.length, 2);
 });

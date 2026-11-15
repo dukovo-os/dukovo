@@ -266,6 +266,8 @@ pub(super) async fn left(shared: &Rc<Shared>, cookie: &str, authd: &str, after: 
     if due != Some(true) {
         return;
     }
+    // A follow of the whole log ends as locked, before authd ends its command.
+    shared.follows.borrow_mut().lock(cookie);
     match authd::ask(&shared.authd, Console::Lock { session: authd.to_string() }, &[]).await {
         Ok(_) => {
             // authd may refuse a session it has forgotten; either way it

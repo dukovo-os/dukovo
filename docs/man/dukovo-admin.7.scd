@@ -566,8 +566,12 @@ earlier text of its files back, as root, and the console's *Put back* runs
 it for an administrator's unlocked session. *Keep it* marks a hand edit as
 seen by the person who kept it, and changes nothing on the machine. The
 Overview's *What changed* card shows the newest five changes, with *See the
-change*, *Keep it*, *Put back* and *Undo*; the whole journal is in its routes
-(*admind*(8)), and *admin put-back* puts a change back at a terminal.
+change*, *Keep it*, *Put back* and *Undo*; *See all* opens the whole journal on
+the Reliability page, which filters it by who made a change, how and on
+which day, and turns the console's changes that a person chooses into a shell
+script that makes them on another machine (*Copy as a script*). The journal is
+also in the routes of *admind*(8), and *admin put-back* puts a change back at a
+terminal.
 
 Everyone who is signed in reads the journal. It names people and files and
 never the contents of a secret: a file under a service's secrets, one that
@@ -651,7 +655,7 @@ a ticket or a token.
 
 # WHEN IT FAILS
 
-Each error the console gives has an ID, *ADM-101* to *ADM-132*, and a
+Each error the console gives has an ID, *ADM-101* to *ADM-135*, and a
 page of its own in the support center that says what to do. The page
 shows the ID with a short title and a sentence on what to do; *admind*(8)
 lists them.

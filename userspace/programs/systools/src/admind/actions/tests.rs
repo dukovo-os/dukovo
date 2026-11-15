@@ -151,6 +151,81 @@ impl Action for Set {
     }
 }
 
+/// A read that runs as an administrator, takes its arguments from the
+/// address's query, and answers in lines, as `logs.read-all` does.
+struct Log;
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LogArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lines: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    kernel: bool,
+}
+
+impl Args for LogArgs {
+    const FIELDS: &'static [Field] = &[
+        Field::number("lines", "How many lines, up to 1000.", 1, 1000).optional(),
+        Field::text("service", "A lab service's name.", 1, 64, None).optional(),
+        Field::flag("kernel", "The machine's own lines.").optional(),
+    ];
+
+    fn check(&self) -> Result<(), Bad> {
+        if self.lines.is_some_and(|lines| !(1..=1000).contains(&lines)) {
+            return Err(Bad { field: "lines", why: "From 1 to 1000 lines.".into() });
+        }
+        if self.service.as_ref().is_some_and(|service| !(1..=64).contains(&service.chars().count()))
+        {
+            return Err(Bad { field: "service", why: "A name of 1 to 64 characters.".into() });
+        }
+        if self.service.is_some() && self.kernel {
+            return Err(Bad { field: "kernel", why: "A service or the machine, not both.".into() });
+        }
+        Ok(())
+    }
+}
+
+impl Action for Log {
+    const ID: &'static str = "lab.log";
+    const AREA: &'static str = "logs";
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/lab/log";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const LINES: bool = true;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Read the lab log";
+    type Args = LogArgs;
+
+    fn argv(args: &LogArgs) -> Vec<String> {
+        let lines = args.lines.unwrap_or(200).to_string();
+        let mut argv = ["lab-log", "--output", "json", "--lines"].map(String::from).to_vec();
+        argv.push(lines);
+        if let Some(service) = &args.service {
+            argv.extend(["--service".into(), service.clone()]);
+        }
+        if args.kernel {
+            argv.push("--kernel".into());
+        }
+        argv
+    }
+
+    fn examples() -> Examples<LogArgs> {
+        Examples {
+            // The first takes each field's values alone: with a service,
+            // `kernel` would be refused for the pair.
+            good: vec![
+                LogArgs { lines: Some(5), service: None, kernel: false },
+                LogArgs { lines: Some(5), service: Some("nginx".into()), kernel: false },
+            ],
+            bad: vec![json!({ "lines": 0 }), json!({ "service": "nginx", "kernel": true })],
+            undo: None,
+        }
+    }
+}
+
 static RESTART: Entry<Restart> = Entry::new();
 static LIST: Entry<List> = Entry::new();
 static SET: Entry<Set> = Entry::new();
@@ -158,8 +233,9 @@ static SET: Entry<Set> = Entry::new();
 static LONG: Entry<lab::Long> = Entry::new();
 /// The lab's action whose command is not there, likewise.
 static MISSING: Entry<lab::Missing> = Entry::new();
+static LOG: Entry<Log> = Entry::new();
 /// These tests' actions, which the route tests use too.
-pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG, &SET, &MISSING];
+pub static LAB: &[&dyn Registered] = &[&RESTART, &LIST, &LONG, &SET, &MISSING, &LOG];
 
 #[test]
 fn an_address_finds_its_action_and_gives_its_arguments() {
@@ -318,7 +394,8 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             ("lab.list", &json!(false)),
             ("lab.long", &json!(false)),
             ("lab.set", &json!(true)),
-            ("lab.missing", &json!(false))
+            ("lab.missing", &json!(false)),
+            ("lab.log", &json!(false))
         ]
     );
     let console = listed(REGISTRY);
@@ -331,7 +408,20 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
         .collect();
     assert_eq!(
         comparing,
-        ["service.start", "service.stop", "service.enable", "service.disable", "console.reach"]
+        [
+            "service.start",
+            "service.stop",
+            "service.enable",
+            "service.disable",
+            "console.reach",
+            "console.export",
+            "network.set",
+            "network.undo",
+            "firewall.add",
+            "firewall.replace",
+            "firewall.remove",
+            "firewall.undo",
+        ]
     );
     for action in console.as_array().unwrap() {
         assert!(action["compares"].is_boolean(), "{}", action["id"]);
@@ -399,9 +489,11 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
         assert!(!area.is_empty() && !verb.is_empty(), "{id}");
         assert!(crate::admind::scopes::area_name_ok(action.area()), "{id}'s area");
         assert!(action.path().starts_with("/api/1/"), "{id}'s address");
+        // A read runs as the person, or as an administrator when its
+        // command needs root (ADR 0518).
         assert!(
-            action.runs() == Runs::AsThePerson || action.changes(),
-            "{id}: a read runs as the person, never elevated"
+            !action.lines() || !action.changes(),
+            "{id}: only a read answers in lines; a change answers its output"
         );
         for error in action.errors() {
             assert_eq!(error_id(&format!("({error})")), Some(*error), "{id}'s error {error}");
@@ -441,7 +533,13 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
                 assert!(prepared.args.get(name).is_some(), "{id}: its address names {name}");
             }
             if !action.changes() {
-                assert!(prepared.argv.iter().any(|w| w == "--json"), "{id}: a read asks for JSON");
+                let argv = &prepared.argv;
+                // A command that prints a JSON value a line says so with
+                // `--output json`, as log does, or `--json`, as alerts does.
+                let json = argv.iter().any(|w| w == "--json")
+                    || action.lines()
+                        && argv.windows(2).any(|pair| pair[0] == "--output" && pair[1] == "json");
+                assert!(json, "{id}: a read asks for JSON, or for JSON lines");
             }
             // An action has a probe for every example or for none, which
             // `compares` says, and a read has none.
@@ -810,8 +908,10 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
         }
         for args in &bad {
             // A bad example is one `check` or the types refuse, and the schema
-            // says it cannot be. If a rule is one a schema cannot say, list
-            // the example here with why.
+            // says it cannot be, unless it is one of BEYOND_THE_SCHEMA.
+            if BEYOND_THE_SCHEMA.contains(&(id, args.to_string().as_str())) {
+                continue;
+            }
             assert!(
                 validate::validate(&schema, args).is_err(),
                 "{id}: the schema accepts the bad example {args}"
@@ -845,6 +945,16 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
                 args[name] = candidate.clone();
                 let accepted = action.prepare(args.clone()).is_ok();
                 let described = validate::validate(&schema, &args);
+                if CODE_DECIDES.contains(&(id, name)) {
+                    // The schema says what it can, the shape of the value;
+                    // what the action takes is that, and no more.
+                    assert!(
+                        !accepted || described.is_ok(),
+                        "{id}: {name} {candidate}: the action takes it and the schema says \
+                         {described:?}"
+                    );
+                    continue;
+                }
                 assert_eq!(
                     accepted,
                     described.is_ok(),
@@ -889,4 +999,197 @@ fn the_service_patterns_are_made_of_the_words_the_checks_refuse() {
     ] {
         assert_eq!(input_of(REGISTRY, id)["properties"]["name"]["pattern"], pattern(words), "{id}");
     }
+}
+
+/// The fields whose rule is code that a schema cannot say: the clock for a
+/// time, a command's parser for addresses and ports, and the fields that
+/// cannot go together (a ping has no port, a card that asks DHCP has no
+/// addresses). For these a candidate the action takes is one the schema
+/// describes, which is all the schema promises a client; one the schema
+/// describes may still be refused.
+const CODE_DECIDES: &[(&str, &str)] = &[
+    ("metrics.around", "at"),
+    ("network.set", "card"),
+    ("network.set", "mode"),
+    ("network.set", "addresses"),
+    ("network.set", "router"),
+    ("network.set", "dns"),
+    ("firewall.test", "from"),
+    ("firewall.add", "protocol"),
+    ("firewall.add", "ports"),
+    ("firewall.add", "from"),
+    ("firewall.remove", "protocol"),
+    ("firewall.remove", "ports"),
+    ("firewall.remove", "from"),
+    ("firewall.replace", "old_protocol"),
+    ("firewall.replace", "old_ports"),
+    ("firewall.replace", "old_from"),
+    ("firewall.replace", "new_protocol"),
+    ("firewall.replace", "new_ports"),
+    ("firewall.replace", "new_from"),
+];
+
+/// The bad examples whose rule a schema cannot say, which `check` alone
+/// refuses: two fields that cannot go together, a pattern that does not
+/// compile, and a value that the clock, a parser or the other fields rule
+/// out.
+const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
+    ("metrics.around", r#"{"at":1,"range":"1h"}"#),
+    ("network.set", r#"{"card":"net0","mode":"fixed"}"#),
+    ("network.set", r#"{"addresses":"10.0.2.15/24","card":"net0","mode":"dhcp"}"#),
+    (
+        "network.set",
+        r#"{"addresses":"10.0.2.15/24","card":"net0","mode":"fixed","router":"192.168.9.1"}"#,
+    ),
+    (
+        "network.set",
+        r#"{"addresses":"10.0.2.11/24 10.0.2.12/24 10.0.2.13/24 10.0.2.14/24 10.0.2.15/24","card":"net0","mode":"fixed"}"#,
+    ),
+    (
+        "network.set",
+        r#"{"addresses":"10.0.2.15/24","card":"net0","dns":"10.0.2.3 10.0.2.4 10.0.2.5 10.0.2.6","mode":"fixed"}"#,
+    ),
+    ("firewall.add", r#"{"action":"allow","ports":"70000","protocol":"tcp"}"#),
+    ("firewall.add", r#"{"action":"allow","ports":"7","protocol":"ping"}"#),
+    ("firewall.add", r#"{"action":"allow","ports":"9-7","protocol":"tcp"}"#),
+    ("firewall.add", r#"{"action":"allow","from":"300.1.1.1","protocol":"tcp"}"#),
+    ("firewall.remove", r#"{"action":"allow","ports":"70000","protocol":"tcp"}"#),
+    ("firewall.remove", r#"{"action":"allow","ports":"7","protocol":"ping"}"#),
+    (
+        "firewall.replace",
+        r#"{"new_action":"deny","new_ports":"7","new_protocol":"tcp","old_action":"allow","old_ports":"70000","old_protocol":"tcp"}"#,
+    ),
+    (
+        "firewall.replace",
+        r#"{"new_action":"deny","new_ports":"7","new_protocol":"ping","old_action":"allow","old_ports":"7","old_protocol":"tcp"}"#,
+    ),
+    ("lab.log", r#"{"kernel":true,"service":"nginx"}"#),
+    ("logs.read", r#"{"since":1763103600,"until":1763100000}"#),
+    ("logs.read", r#"{"grep":"("}"#),
+    ("logs.read", r#"{"kernel":true,"service":"diskhealth"}"#),
+    ("logs.read-all", r#"{"since":1763103600,"until":1763100000}"#),
+    ("logs.read-all", r#"{"grep":"("}"#),
+    ("logs.read-all", r#"{"kernel":true,"service":"diskhealth"}"#),
+];
+
+fn lab_action(id: &str) -> &'static dyn Registered {
+    *LAB.iter().find(|action| action.id() == id).unwrap()
+}
+
+#[test]
+fn a_read_takes_each_field_of_its_schema_from_the_query_as_its_type_reads_it() {
+    let fields = lab_action("lab.log").fields();
+    let read = |query: &str| query_arguments(Params::new(), query, fields);
+    assert_eq!(read("").unwrap(), json!({}));
+    assert_eq!(
+        read("lines=20&service=web+one&kernel=false").unwrap(),
+        json!({ "lines": 20, "service": "web one", "kernel": false })
+    );
+    // A form's encoding: `+` is a space, `%2B` a plus, `%XX` any byte.
+    assert_eq!(read("service=a%2Bb%20c%C3%A9").unwrap(), json!({ "service": "a+b c\u{e9}" }));
+    assert_eq!(read("kernel=true").unwrap(), json!({ "kernel": true }));
+    // A value is checked by the action itself, after this.
+    assert_eq!(read("lines=0").unwrap(), json!({ "lines": 0 }));
+    for (query, why) in [
+        ("since=-1h", "this read takes no \"since\""),
+        ("lines=20&lines=30", "\"lines\" is given twice"),
+        ("lines=many", "\"lines\" is a whole number"),
+        ("kernel=1", "\"kernel\" is true or false"),
+        ("service=%zz", "\"service\" is not text"),
+        ("service=%C3", "\"service\" is not text"),
+        ("service=%4", "\"service\" is not text"),
+    ] {
+        let failure = read(query).unwrap_err();
+        assert_eq!((failure.kind, failure.detail.as_str()), (Kind::BadRequest, why), "{query}");
+    }
+    // A name the address already gives is not given again.
+    let mut params = Params::new();
+    params.insert("service".into(), json!("web"));
+    let twice = query_arguments(params, "service=db", fields).unwrap_err();
+    assert_eq!(twice.detail, "\"service\" is given twice");
+}
+
+#[test]
+fn a_part_of_the_address_is_read_as_its_field_s_type_reads_it() {
+    let fields = lab_action("lab.log").fields();
+    let given = |name: &str, text: &str| {
+        let mut params = Params::new();
+        params.insert(name.into(), json!(text));
+        query_arguments(params, "", fields)
+    };
+    assert_eq!(given("lines", "20").unwrap(), json!({ "lines": 20 }));
+    assert_eq!(given("kernel", "true").unwrap(), json!({ "kernel": true }));
+    // Text is kept as it came, and a part the read does not name is left for
+    // the action to refuse.
+    assert_eq!(given("service", "20").unwrap(), json!({ "service": "20" }));
+    assert_eq!(given("other", "20").unwrap(), json!({ "other": "20" }));
+    for (name, text, why) in [
+        ("lines", "many", "\"lines\" is a whole number"),
+        ("lines", "", "\"lines\" is a whole number"),
+        ("kernel", "yes", "\"kernel\" is true or false"),
+    ] {
+        let failure = given(name, text).unwrap_err();
+        assert_eq!((failure.kind, failure.detail.as_str()), (Kind::BadRequest, why), "{name}");
+    }
+}
+
+#[test]
+fn a_read_that_runs_as_an_administrator_needs_an_unlocked_one_or_a_token_s_full_scope() {
+    let action = lab_action("lab.log");
+    let session = |admin, unlocked| Caller::Session { name: "dave", admin, unlocked };
+    let refused = |caller: Caller<'_>| authorize(&caller, action).unwrap_err();
+    let not_admin = refused(session(false, true));
+    assert_eq!(not_admin.kind, Kind::NotAdmin);
+    assert_eq!(
+        not_admin.detail,
+        "dave's account can look at its own part of logs, and only an administrator at the rest"
+    );
+    let locked = refused(session(true, false));
+    assert_eq!(
+        (locked.kind, locked.detail.as_str()),
+        (Kind::Locked, "unlock the console to read this")
+    );
+    assert!(authorize(&session(true, true), action).is_ok());
+    // A token that may read logs may not have authd run a command as an
+    // administrator; one with the area's full scope may.
+    let read = Scopes::parse("logs:read").unwrap();
+    let full = Scopes::parse("logs").unwrap();
+    let token = |scopes| Caller::Token { name: "ci", scopes };
+    assert_eq!(refused(token(&read)).kind, Kind::OutOfScope);
+    assert!(authorize(&token(&full), action).is_ok());
+    // A read that runs as the person needs only the read scope.
+    let services = Scopes::parse("services:read").unwrap();
+    assert!(authorize(&token(&services), lab_action("lab.list")).is_ok());
+}
+
+#[test]
+fn a_change_tried_for_a_window_begins_its_trial_and_its_keep_and_undo_end_it() {
+    let ends = ["network.keep", "network.undo", "firewall.keep", "firewall.undo"];
+    let (mut begins, mut ended) = (0, 0);
+    for action in REGISTRY {
+        let (good, _, _) = action.example_values();
+        let trial = |args: &Value| action.prepare(args.clone()).unwrap().trial;
+        for args in &good {
+            if ends.contains(&action.id()) {
+                assert_eq!(trial(args), Some(Trial::Ends(action.area())), "{}", action.id());
+                ended += 1;
+            } else if action.fields().iter().any(|field| field.name == "try") {
+                // Tried, the trial is the area's (`network` or
+                // `firewall`); at once, there is none.
+                let (mut tried, mut at_once) = (args.clone(), args.clone());
+                tried["try"] = json!(30);
+                at_once.as_object_mut().unwrap().remove("try");
+                assert_eq!(trial(&tried), Some(Trial::Begins(action.area())), "{}", action.id());
+                assert_eq!(trial(&at_once), None, "{}", action.id());
+                begins += 1;
+            } else {
+                assert_eq!(trial(args), None, "{}", action.id());
+            }
+        }
+        let tries = action.fields().iter().any(|field| field.name == "try");
+        if tries || ends.contains(&action.id()) {
+            assert!(action.changes() && action.runs() == Runs::AsAdministrator, "{}", action.id());
+        }
+    }
+    assert!(begins >= 4 && ended == ends.len(), "{begins} begin and {ended} end");
 }

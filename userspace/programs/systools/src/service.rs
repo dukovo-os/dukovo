@@ -23,13 +23,14 @@
 //! 0471). The `service-graph` boot test and the lab's `services/command`
 //! and `services/explain` tests cover this file.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use manifest::service::Stop;
+use serde::Serialize;
 use spark_api::explain;
 use spark_api::show::{self, HealthState, Holds, State, Usage};
 use spark_api::words::{and_list, ready_once, span, tenths};
@@ -42,7 +43,7 @@ use crate::util::{self, Fail, fail, fail_with, usage};
 use crate::{servicefiles, servicetry, timerd};
 
 const USAGE: &str = "Usage: service list [--failed] [--json] [--timers]
-       service NAME status [-n LINES]
+       service NAME status [-n LINES | --json]
        service NAME explain [--json]
        service NAME start | stop | restart [--no-wait] [-q]
        service NAME reload | --full-restart
@@ -58,6 +59,14 @@ const STATUS_LINES: usize = 5;
 
 /// The most process numbers `status` lists.
 const PROCESSES_SHOWN: usize = 5;
+
+/// The most processes `status --json` gives.
+const PROCESSES_JSON: usize = 50;
+
+/// The most ports of one range `status --json` looks at for a socket that
+/// listens: a service that names every port above 1024 is not asked
+/// about each.
+const PORTS_LOOKED_AT: u32 = 1024;
 
 /// The most names `list` gives of the services not running as asked.
 const NAMES_SHOWN: usize = 3;
@@ -109,6 +118,19 @@ pub(crate) fn shown(name: Option<&str>) -> Result<show::Show, Fail> {
         }
         Err(failed) => Err(failed),
     }
+}
+
+/// How long until the trial `id` of `document` is undone unless it is
+/// kept: none when it is not being tried.
+pub(crate) fn left_of(document: &show::Show, id: &str) -> Option<u64> {
+    document.trials.iter().find(|trial| trial.id == id).map(|trial| trial.left_ms)
+}
+
+/// How long until the trial `id` is undone unless it is kept, as Spark
+/// says now. Spark that does not answer says nothing: the callers show
+/// what they can without it, as a trial does not change what a machine has.
+pub(crate) fn trial_left_ms(id: &str) -> Option<u64> {
+    left_of(&shown(None).ok()?, id)
 }
 
 /// service(8).
@@ -303,19 +325,27 @@ impl Lines {
 
 /// The clocks a document's times are read against: Spark's, in
 /// milliseconds since boot, as the document was written, and the wall's,
-/// in seconds since the epoch.
+/// in milliseconds since the epoch. Both are kept to the millisecond, so
+/// that a time reads as the same second each time it is shown: rounding
+/// either to whole seconds first moves it by up to a second between two
+/// readings a moment apart.
 struct Clock {
     now_ms: u64,
-    wall: i64,
+    wall_ms: i64,
 }
 
 impl Clock {
+    /// The clocks as `now_ms` was read.
+    fn at(now_ms: u64) -> Clock {
+        Clock { now_ms, wall_ms: (util::now_ns() / 1_000_000) as i64 }
+    }
+
     /// When `ms` (since boot) was, in local time: the time of day within
     /// the last day, and the date and time before.
     fn when(&self, ms: u64) -> String {
-        let ago = self.now_ms.saturating_sub(ms) / 1000;
-        let at = self.wall - i64::try_from(ago).unwrap_or(i64::MAX);
-        let format = if ago < 86_400 { "%H:%M:%S" } else { "%b %d %H:%M" };
+        let ago_ms = self.now_ms.saturating_sub(ms);
+        let at = (self.wall_ms - i64::try_from(ago_ms).unwrap_or(i64::MAX)).div_euclid(1000);
+        let format = if ago_ms / 1000 < 86_400 { "%H:%M:%S" } else { "%b %d %H:%M" };
         util::local_time(at, format)
     }
 
@@ -335,22 +365,146 @@ struct Seen<'a> {
     user_name: &'a dyn Fn(u32) -> String,
 }
 
-/// `service NAME status [-n LINES]`: what Spark says of the service, as
-/// systemctl status lays it out, its processes and its last log lines;
-/// 0 when it runs or is done, 3 otherwise (LSB).
-pub(crate) fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
-    let lines = match options {
-        [] => STATUS_LINES,
-        [flag, count] if flag == "-n" || flag == "--lines" => {
-            count.parse().map_err(|_| usage(format!("-n takes a number, not {count}")))?
+/// What `service NAME status` was asked for.
+#[derive(Debug, PartialEq, Eq)]
+struct StatusOptions {
+    /// The log lines to end with, 0 for none.
+    lines: usize,
+    /// The JSON of the web console, which has no log lines: they are read
+    /// with `logs.read-all`.
+    json: bool,
+}
+
+/// `[-n LINES | --json]`.
+fn status_options(name: &str, options: &[String]) -> Result<StatusOptions, Fail> {
+    let (mut lines, mut json) = (None, false);
+    let mut items = options.iter();
+    while let Some(option) = items.next() {
+        match option.as_str() {
+            "--json" => json = true,
+            "-n" | "--lines" => {
+                let count = items.next().ok_or_else(|| {
+                    usage(format!("Usage: service {name} status [-n LINES | --json]"))
+                })?;
+                lines = Some(
+                    count.parse().map_err(|_| usage(format!("-n takes a number, not {count}")))?,
+                );
+            }
+            _ => return Err(usage(format!("Usage: service {name} status [-n LINES | --json]"))),
         }
-        _ => return Err(usage(format!("Usage: service {name} status [-n LINES]"))),
-    };
-    let document = shown(Some(name))?;
+    }
+    if json && lines.is_some() {
+        return Err(usage("-n does not go with --json".into()));
+    }
+    Ok(StatusOptions { lines: lines.unwrap_or(if json { 0 } else { STATUS_LINES }), json })
+}
+
+/// A process of the service, in `status --json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Running {
+    pid: u64,
+    /// The name of the user it acts for.
+    user: String,
+    /// The program it was started as, the first word of its command line;
+    /// null when the kernel does not say.
+    program: Option<String>,
+}
+
+/// A port with a socket listening on it, in `status --json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Open {
+    port: u16,
+    /// Always true: the TCP tables are what is read, as `status` reads
+    /// them for `(open)`.
+    tcp: bool,
+}
+
+/// The trial of a change to the service's file, in `status --json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Tried {
+    /// Spark's name for it, `service.NAME`.
+    id: String,
+    /// How long until it is undone unless it is kept.
+    left_ms: u64,
+}
+
+/// What `service NAME status --json` writes, in this order.
+#[derive(Debug, Serialize)]
+struct StatusJson<'a> {
+    /// Spark's clock when it answered, in milliseconds since the machine
+    /// started, as the service's own times are.
+    now_ms: u64,
+    /// The service as Spark's `show NAME` gives it: Spark leaves out the
+    /// last line it wrote and the last failure of its health check for
+    /// anyone but root.
+    service: &'a show::Service,
+    /// Its processes, at most [`PROCESSES_JSON`].
+    processes: Vec<Running>,
+    /// The ports of its `network.listen` that a socket listens on now.
+    listening: Vec<Open>,
+    trial: Option<Tried>,
+}
+
+/// The ports of `listen`, each a port or a range as `show` writes it, that
+/// a socket listens on, by port.
+fn open_ports(listen: &[String], seen: &Seen) -> Vec<Open> {
+    let mut ports = BTreeSet::new();
+    for item in listen {
+        let Some((first, count)) = port_range(item) else { continue };
+        for port in first..first.saturating_add(count.min(PORTS_LOOKED_AT)) {
+            if let Ok(number) = u16::try_from(port)
+                && (seen.listening)(port, 1)
+            {
+                ports.insert(number);
+            }
+        }
+    }
+    ports.into_iter().map(|port| Open { port, tcp: true }).collect()
+}
+
+/// The JSON of `status` for `service`: what `seen` says of its processes
+/// and ports, `program_of` of a process's program, and `trial`, the
+/// trial of its file.
+fn status_json<'a>(
+    now_ms: u64,
+    service: &'a show::Service,
+    seen: &Seen,
+    program_of: &dyn Fn(u64) -> Option<String>,
+    trial: Option<&show::Trial>,
+) -> StatusJson<'a> {
+    let processes = seen
+        .processes
+        .iter()
+        .take(PROCESSES_JSON)
+        .map(|process| Running {
+            pid: process.number,
+            user: (seen.user_name)(process.user),
+            program: program_of(process.number),
+        })
+        .collect();
+    StatusJson {
+        now_ms,
+        service,
+        processes,
+        listening: open_ports(&service.holds.listen, seen),
+        trial: trial.map(|trial| Tried { id: trial.id.clone(), left_ms: trial.left_ms }),
+    }
+}
+
+/// `service NAME status [-n LINES | --json]`: what Spark says of the
+/// service, as systemctl status lays it out, its processes and its last
+/// log lines; 0 when it runs or is done, 3 otherwise (LSB). With
+/// `--json`, the document of the web console, and 0 for a service Spark
+/// knows in any state, since the JSON says it; 4 for one it does not.
+pub(crate) fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
+    let StatusOptions { lines, json } = status_options(name, options)?;
+    let mut document = shown(Some(name))?;
+    // Whether it starts at boot, and so `disabled`, as `list` says it.
+    as_filed(&mut document.services, &servicefiles::at_boot());
     let Some(service) = document.services.first() else {
         return Err(fail_with(4, format!("{name}: unrecognized service")));
     };
-    let clock = Clock { now_ms: document.now_ms, wall: (util::now_ns() / 1_000_000_000) as i64 };
+    let clock = Clock::at(document.now_ms);
     let processes: Vec<Process> = proc::processes()
         .unwrap_or_default()
         .into_iter()
@@ -362,10 +516,18 @@ pub(crate) fn status(name: &str, options: &[String]) -> Result<i32, Fail> {
         tables.iter().any(|table| spark_api::ready::listening(table, &[(first, count)]))
     };
     let seen = Seen { processes: &processes, listening: &listening, user_name: &util::user_name };
+    let id = servicetry::trial_id(name);
+    let trial = document.trials.iter().find(|t| t.id == id);
+    if json {
+        let program_of =
+            |number| proc::cmdline(number).first().map(|word| word.to_string_lossy().into_owned());
+        let document = status_json(document.now_ms, service, &seen, &program_of, trial);
+        println!("{}", serde_json::to_string(&document).map_err(|e| fail(e.to_string()))?);
+        return Ok(0);
+    }
     print!("{}", status_text(service, &clock, &seen));
     print!("{}", timer_field(name));
-    let id = servicetry::trial_id(name);
-    if let Some(trial) = document.trials.iter().find(|t| t.id == id) {
+    if let Some(trial) = trial {
         print!("{}", trying_line(trial, name));
     }
     if lines > 0 {
@@ -717,7 +879,7 @@ fn explain(name: &str, options: &[String]) -> Result<i32, Fail> {
         }
     }
     let document = shown(None)?;
-    let clock = Clock { now_ms: document.now_ms, wall: (util::now_ns() / 1_000_000_000) as i64 };
+    let clock = Clock::at(document.now_ms);
     let when = |ms| clock.since(ms);
     let context = spark_api::explain::Context { when: &when, user_name: &util::user_name };
     let Some(mut explanation) = spark_api::explain::explain(&document, name, &context) else {
@@ -761,7 +923,10 @@ fn list(options: &[String]) -> Result<i32, Fail> {
         }
     }
     if timers {
-        return list_timers();
+        if failed_only {
+            return Err(usage("service list: --failed does not go with --timers".into()));
+        }
+        return list_timers(json);
     }
     let mut document = shown(None)?;
     as_filed(&mut document.services, &servicefiles::at_boot());
@@ -770,7 +935,7 @@ fn list(options: &[String]) -> Result<i32, Fail> {
         return Ok(0);
     }
     document.services.sort_by(|a, b| a.name.cmp(&b.name));
-    let clock = Clock { now_ms: document.now_ms, wall: (util::now_ns() / 1_000_000_000) as i64 };
+    let clock = Clock::at(document.now_ms);
     let wrong: Vec<&show::Service> = document.services.iter().filter(|s| not_as_asked(s)).collect();
     let listed: Vec<&show::Service> =
         if failed_only { wrong.clone() } else { document.services.iter().collect() };
@@ -804,13 +969,107 @@ fn as_filed(services: &mut [show::Service], at_boot: &BTreeMap<String, bool>) {
     }
 }
 
-/// `service list --timers`: each service with a timer, its next run and
-/// its last start.
-fn list_timers() -> Result<i32, Fail> {
+/// `service list --timers [--json]`: each service with a timer, its next
+/// run and its last start.
+fn list_timers(json: bool) -> Result<i32, Fail> {
     let rows = timerd::show::timers().map_err(fail)?;
+    if json {
+        let files = servicefiles::read_all()
+            .into_iter()
+            .filter_map(|(name, _, service)| Some((name, service.timer?)))
+            .collect();
+        // Spark's word on how each timer's last run went; where it cannot
+        // be had, no result is known.
+        let results: BTreeMap<String, &'static str> =
+            shown(None).ok().map_or_else(BTreeMap::new, |document| {
+                document
+                    .services
+                    .iter()
+                    .filter_map(|service| Some((service.name.clone(), last_result(service)?)))
+                    .collect()
+            });
+        let timers = timers_json(&rows, &files, &results, machine_zone().as_deref());
+        println!("{}", serde_json::to_string(&timers).map_err(|e| fail(e.to_string()))?);
+        return Ok(0);
+    }
     let shown_at = |seconds: i64| util::local_time(seconds, "%Y-%m-%d %H:%M:%S");
     print!("{}", timerd::show::table(&rows, &shown_at, util::is_terminal(1)));
     Ok(0)
+}
+
+/// A timer, in `service list --timers --json`: times are Unix
+/// milliseconds, each `null` where nothing says it.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct TimerJson {
+    /// The service the timer starts.
+    service: String,
+    /// The schedule as the service's file writes it; `null` when the
+    /// file no longer reads or has no `[timer]`.
+    schedule: Option<String>,
+    /// When it starts next; `null` while it runs and when no time comes
+    /// within five years.
+    next_ms: Option<i64>,
+    /// When it last started the service.
+    last_ms: Option<i64>,
+    /// How that run went, `ok` or `failed`, as Spark has it since boot;
+    /// `null` while it runs, after a start by hand, and before a start
+    /// by the timer since boot.
+    last_result: Option<&'static str>,
+    /// The time zone its times of day are read in: the file's, or the
+    /// system's.
+    zone: Option<String>,
+}
+
+/// The timers of `rows`, as timerd keeps them, with each service's
+/// `timers` (from its file), the `results` of the last runs by service,
+/// and the machine's time zone, `machine`, for a timer whose file names
+/// none: timerd's own answer has no schedule and no zone.
+fn timers_json(
+    rows: &[timerd::protocol::TimerRow],
+    timers: &BTreeMap<String, manifest::service::Timer>,
+    results: &BTreeMap<String, &'static str>,
+    machine: Option<&str>,
+) -> Vec<TimerJson> {
+    rows.iter()
+        .map(|row| {
+            let timer = timers.get(&row.name);
+            TimerJson {
+                service: row.name.clone(),
+                schedule: timer.map(|timer| timer.schedule.clone()),
+                next_ms: row.next.map(|seconds| seconds.saturating_mul(1000)),
+                last_ms: row.last.map(|seconds| seconds.saturating_mul(1000)),
+                last_result: results.get(&row.name).copied(),
+                zone: timer
+                    .and_then(|timer| timer.time_zone.as_deref())
+                    .or(machine)
+                    .map(str::to_string),
+            }
+        })
+        .collect()
+}
+
+/// How the last run of a service that its timer started went, from
+/// Spark's document: `ok` when its process ended well, `failed` when it
+/// ended any other way or Spark gave up on it, and none while it runs,
+/// when it was last started by anything else, and where no end is known.
+fn last_result(service: &show::Service) -> Option<&'static str> {
+    if service.started_by.as_deref() != Some("its timer") {
+        return None;
+    }
+    match service.state {
+        State::Pending | State::Starting | State::Running | State::Stopping => None,
+        State::Done => Some("ok"),
+        State::Failed => Some("failed"),
+        State::Stopped | State::Disabled | State::Waiting | State::Listening => {
+            service.last_status.map(|status| if status == 0 { "ok" } else { "failed" })
+        }
+    }
+}
+
+/// The machine's time zone by name, as timedatectl(1) says it; none when
+/// `/etc/localtime` is a file of its own, which names no zone.
+fn machine_zone() -> Option<String> {
+    Some(crate::timedatectl::timezone()).filter(|zone| !zone.contains(' '))
 }
 
 /// Whether `service` is not running as asked: given up on, waiting to
@@ -879,7 +1138,23 @@ mod tests {
     use super::*;
     use spark_api::show::{Health, Request};
 
-    const CLOCK: Clock = Clock { now_ms: 600_000, wall: 1_800_000_000 };
+    const CLOCK: Clock = Clock { now_ms: 600_000, wall_ms: 1_800_000_000_000 };
+
+    #[test]
+    fn a_time_reads_as_the_same_second_from_clocks_read_a_moment_apart() {
+        // A stop 4.5 s before CLOCK's reading, read again 700 ms later.
+        let later = Clock { now_ms: CLOCK.now_ms + 700, wall_ms: CLOCK.wall_ms + 700 };
+        let stop = CLOCK.now_ms - 4_500;
+        assert_eq!(CLOCK.when(stop), later.when(stop));
+        assert_eq!(CLOCK.when(stop), util::local_time(CLOCK.wall_ms / 1000 - 5, "%H:%M:%S"));
+        // A day and more ago, the date and the minute.
+        let old = CLOCK.now_ms + 86_400_000;
+        let next_day = Clock { now_ms: old, wall_ms: CLOCK.wall_ms + 86_400_000 };
+        assert_eq!(
+            next_day.when(CLOCK.now_ms),
+            util::local_time(CLOCK.wall_ms / 1000, "%b %d %H:%M")
+        );
+    }
 
     fn nginx() -> show::Service {
         show::Service {
@@ -913,6 +1188,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_trial_has_the_time_left_of_the_one_with_its_name() {
+        let trial =
+            |id: &str, left_ms| show::Trial { id: id.into(), left_ms, ..show::Trial::default() };
+        let document = show::Show {
+            trials: vec![trial("service.nginx", 41_000), trial("network", 9_000)],
+            ..show::Show::default()
+        };
+        assert_eq!(left_of(&document, "network"), Some(9_000));
+        assert_eq!(left_of(&document, "service.nginx"), Some(41_000));
+        assert_eq!(left_of(&document, "firewall"), None);
+        assert_eq!(left_of(&show::Show::default(), "network"), None);
+    }
+
     fn process(number: u64, name: &str, resident_kib: u64) -> Process {
         Process {
             number,
@@ -929,6 +1218,113 @@ mod tests {
             listening: open,
             user_name: &|uid| if uid == 0 { "root".into() } else { "chase".into() },
         }
+    }
+
+    fn words(items: &[&str]) -> Vec<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn status_takes_a_count_of_log_lines_or_json_and_not_both() {
+        let read = |items: &[&str]| status_options("nginx", &words(items));
+        assert_eq!(read(&[]).unwrap(), StatusOptions { lines: STATUS_LINES, json: false });
+        assert_eq!(read(&["-n", "20"]).unwrap(), StatusOptions { lines: 20, json: false });
+        assert_eq!(read(&["--lines", "0"]).unwrap(), StatusOptions { lines: 0, json: false });
+        assert_eq!(read(&["--json"]).unwrap(), StatusOptions { lines: 0, json: true });
+        for items in [
+            &["-n"][..],
+            &["-n", "many"],
+            &["-n", "5", "--json"],
+            &["--json", "-n", "5"],
+            &["--json", "--json", "-n", "0"],
+            &["--text"],
+            &["5"],
+        ] {
+            let error = read(items).unwrap_err();
+            assert!(error.usage && error.code == 1, "{items:?}: {}", error.message);
+        }
+        assert_eq!(read(&["-n", "5", "--json"]).unwrap_err().message, "-n does not go with --json");
+    }
+
+    #[test]
+    fn status_json_has_the_clock_the_service_its_processes_its_ports_and_its_trial_in_that_order() {
+        let mut web = nginx();
+        web.holds.listen = vec!["80".into(), "443".into(), "8000-8003".into(), "bad".into()];
+        let processes = [
+            Process { user: 1000, ..process(57, "nginx", 4096) },
+            Process { user: 0, ..process(58, "nginx", 2048) },
+        ];
+        // Port 80, a port in the range, and port 22, which no file names.
+        let open =
+            |first: u32, count: u32| (first..first + count).any(|p| [80, 8001, 22].contains(&p));
+        let seen = seen_with(&processes, &open);
+        let program = |number: u64| (number == 57).then(|| "/system/commands/nginx".to_string());
+        let trial =
+            show::Trial { id: "service.nginx".into(), left_ms: 41_000, ..show::Trial::default() };
+        let document = status_json(51_234, &web, &seen, &program, Some(&trial));
+        let text = serde_json::to_string(&document).unwrap();
+        let order: Vec<usize> =
+            ["\"now_ms\":", "\"service\":", "\"processes\":", "\"listening\":", "\"trial\":"]
+                .iter()
+                .map(|key| text.find(key).unwrap())
+                .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 5);
+        assert_eq!(value["now_ms"], 51_234);
+        assert_eq!(value["service"], serde_json::to_value(&web).unwrap());
+        assert_eq!(
+            value["processes"],
+            serde_json::json!([
+                {"pid": 57, "user": "chase", "program": "/system/commands/nginx"},
+                {"pid": 58, "user": "root", "program": null},
+            ])
+        );
+        assert_eq!(
+            value["listening"],
+            serde_json::json!([
+                {"port": 80, "tcp": true},
+                {"port": 8001, "tcp": true},
+            ])
+        );
+        assert_eq!(value["trial"], serde_json::json!({"id": "service.nginx", "left_ms": 41_000}));
+    }
+
+    #[test]
+    fn status_json_has_no_trial_none_and_at_most_fifty_processes() {
+        let web = nginx();
+        let processes: Vec<Process> = (1..=60).map(|n| process(n, "nginx", 1)).collect();
+        let seen = seen_with(&processes, &|_, _| false);
+        let document = status_json(0, &web, &seen, &|_| None, None);
+        let value = serde_json::to_value(&document).unwrap();
+        assert_eq!(value["trial"], serde_json::Value::Null);
+        assert_eq!(value["listening"], serde_json::json!([]));
+        let shown = value["processes"].as_array().unwrap();
+        assert_eq!(shown.len(), PROCESSES_JSON);
+        assert_eq!(
+            (&shown[0]["pid"], &shown[49]["pid"]),
+            (&serde_json::json!(1), &serde_json::json!(50))
+        );
+        let none = status_json(0, &web, &seen_with(&[], &|_, _| false), &|_| None, None);
+        assert_eq!(serde_json::to_value(&none).unwrap()["processes"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_range_is_looked_at_for_its_first_ports_only() {
+        let mut web = nginx();
+        web.holds.listen = vec!["1-65535".into()];
+        let looked = std::cell::Cell::new(0);
+        let open = |first: u32, count: u32| {
+            looked.set(looked.get() + 1);
+            first <= 5000 && 5000 < first + count
+        };
+        let seen = seen_with(&[], &open);
+        assert!(open_ports(&web.holds.listen, &seen).is_empty());
+        assert_eq!(looked.get(), PORTS_LOOKED_AT);
+        // The ports are the ones asked, not the range's.
+        web.holds.listen = vec!["5000-5001".into()];
+        let ports: Vec<u16> = open_ports(&web.holds.listen, &seen).iter().map(|o| o.port).collect();
+        assert_eq!(ports, [5000]);
     }
 
     #[test]
@@ -1242,5 +1638,118 @@ mod tests {
                 ("unread", State::Stopped, true),
             ]
         );
+    }
+
+    fn timer(text: &str) -> manifest::service::Timer {
+        let file = format!("service_version = 1\nprogram = \"/system/commands/true\"\n{text}");
+        manifest::service::from_toml(&file).unwrap().timer.unwrap()
+    }
+
+    fn row(name: &str, last: Option<i64>, next: Option<i64>) -> timerd::protocol::TimerRow {
+        timerd::protocol::TimerRow { name: name.into(), last, next, running: false }
+    }
+
+    #[test]
+    fn timers_json_has_a_timer_in_timerds_order_with_milliseconds_and_the_zone() {
+        let rows = [
+            row("backup", Some(1_763_172_000), Some(1_763_258_400)),
+            row("logturn", None, Some(1_763_175_600)),
+            row("scrub", Some(1_763_000_000), None),
+        ];
+        let timers = BTreeMap::from([
+            (
+                "backup".to_string(),
+                timer("[timer]\nat = [\"0 3 * * *\"]\ntime_zone = \"Europe/Prague\"\n"),
+            ),
+            ("logturn".to_string(), timer("[timer]\nevery = \"1h\"\nafter_boot = \"5m\"\n")),
+            ("scrub".to_string(), timer("[timer]\nat = [\"weekly\", \"30 2 * * 1\"]\n")),
+        ]);
+        let results =
+            BTreeMap::from([("backup".to_string(), "ok"), ("scrub".to_string(), "failed")]);
+        let timers = timers_json(&rows, &timers, &results, Some("UTC"));
+        let text = serde_json::to_string(&timers).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {
+                    "service": "backup", "schedule": "0 3 * * *",
+                    "next_ms": 1_763_258_400_000_i64, "last_ms": 1_763_172_000_000_i64,
+                    "last_result": "ok", "zone": "Europe/Prague"
+                },
+                {
+                    "service": "logturn", "schedule": "every 1h, first 5m after boot",
+                    "next_ms": 1_763_175_600_000_i64, "last_ms": null,
+                    "last_result": null, "zone": "UTC"
+                },
+                {
+                    "service": "scrub", "schedule": "weekly, 30 2 * * 1",
+                    "next_ms": null, "last_ms": 1_763_000_000_000_i64,
+                    "last_result": "failed", "zone": "UTC"
+                }
+            ])
+        );
+        // The keys come in the order the design gives them.
+        assert!(text.starts_with(
+            r#"[{"service":"backup","schedule":"0 3 * * *","next_ms":1763258400000,"last_ms":1763172000000,"last_result":"ok","zone":"Europe/Prague"}"#
+        ));
+    }
+
+    #[test]
+    fn a_timer_with_no_file_or_no_zone_says_null_and_none_is_made_up() {
+        let rows = [row("gone", Some(5), Some(9))];
+        let timers = timers_json(&rows, &BTreeMap::new(), &BTreeMap::new(), None);
+        assert_eq!(
+            timers,
+            [TimerJson {
+                service: "gone".into(),
+                schedule: None,
+                next_ms: Some(9000),
+                last_ms: Some(5000),
+                last_result: None,
+                zone: None,
+            }]
+        );
+        assert!(timers_json(&[], &BTreeMap::new(), &BTreeMap::new(), None).is_empty());
+        assert_eq!(
+            serde_json::to_string(&timers_json(&[], &BTreeMap::new(), &BTreeMap::new(), None))
+                .unwrap(),
+            "[]"
+        );
+    }
+
+    #[test]
+    fn the_last_result_is_spark_s_word_on_a_run_the_timer_started() {
+        let by = |by: Option<&str>, state: State, status: Option<u32>| {
+            last_result(&show::Service {
+                started_by: by.map(str::to_string),
+                state,
+                last_status: status,
+                ..show::Service::default()
+            })
+        };
+        let timer = Some("its timer");
+        assert_eq!(by(timer, State::Done, Some(0)), Some("ok"));
+        assert_eq!(by(timer, State::Stopped, Some(0)), Some("ok"));
+        assert_eq!(by(timer, State::Stopped, Some(256)), Some("failed"));
+        assert_eq!(by(timer, State::Waiting, Some(1)), Some("failed"));
+        assert_eq!(by(timer, State::Failed, None), Some("failed"));
+        // It runs, or no end is known: no result.
+        assert_eq!(by(timer, State::Running, Some(0)), None);
+        assert_eq!(by(timer, State::Starting, None), None);
+        assert_eq!(by(timer, State::Stopped, None), None);
+        // Another started it last: it says nothing of the timer's run.
+        assert_eq!(by(Some("a request"), State::Done, Some(0)), None);
+        assert_eq!(by(Some("boot"), State::Failed, Some(1)), None);
+        assert_eq!(by(None, State::Stopped, Some(0)), None);
+    }
+
+    #[test]
+    fn timers_do_not_go_with_failed() {
+        let err = list(&["--timers".to_string(), "--failed".to_string()]).unwrap_err();
+        assert_eq!(err.message, "service list: --failed does not go with --timers");
+        assert!(err.usage);
+        let err = list(&["--timers".to_string(), "--all".to_string()]).unwrap_err();
+        assert_eq!(err.message, "service list: unknown option `--all'");
     }
 }

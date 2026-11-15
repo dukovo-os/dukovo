@@ -10,15 +10,18 @@
 # service.toml(5) explains each setting. `service check firewall` checks
 # this file, and `service edit firewall` checks it as you save.
 
-service_version = 1
+service_version = 2
 description = "Firewall rules"
 program = "/system/commands/firewall"
 arguments = ["load"]
 # After logd, which keeps what it says, and before the services that
 # listen.
 order = 6
-# It gives the rules and ends.
+# It gives the rules and ends: done once they are loaded, which a tried
+# change of the rules needs, as Spark's undo starts it again only when it
+# has run (firewall(8)).
 restart = "never"
+ready.when = "ended"
 
 [limits]
 memory = "8M"

@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Services pages of the web console in each engine (design 4): the list
+# held to what `GET /api/1/services` answers, with the failed service first,
+# its filter and state choice, and a name that is no service; the page of
+# lab-broken, the service that fails at once, with the sentence that explains
+# it, Run now behind the unlock and a recent log that asks to unlock and then
+# has the line the service wrote; the page of diskhealth, which every image
+# runs and nothing needs, held to `service diskhealth status --json` after
+# Restart, Stop, Run now and Starts at boot off and on, with the journal's row
+# of each and the line that `service disable` and `service enable` leave in its
+# file; admind's page, which has no Stop or Restart and says why, and the route
+# that refuses them; a reader's list and page without a button; and a phone at
+# 390 by 844. The page of one service has the cards that Spark's answer
+# decides, each held to it: Use with its charts or the words that say the
+# machine has kept no history, Limits with the command that changes them,
+# Sockets for a service that holds some and Timer for one a timer starts. The
+# Scheduled tasks page asks a locked administrator to unlock and, once
+# unlocked, lists the timers as `GET /api/1/timers` says, among them lab-timer,
+# which this test installs with a timer of half past three each morning; a
+# reader is told the timers are an administrator's. Each look is dark, light,
+# high contrast, forced colours and less motion, checked by axe.
+#
+# lab-broken is the service of the explain test, put in place before the
+# browser opens and taken away after, as the palette test does. diskhealth's
+# file is saved before the browser opens and put back after: the switch writes
+# a line to it. The browser script runs each engine one after the other, so
+# that an engine the lab PC lacks is skipped within it and the steps after it
+# still run, and leaves diskhealth running and starting at boot. admind is the
+# service that answers. lab-timer is installed before the browser opens and
+# removed after, as lab-broken is. The accounts are two that this test makes
+# and removes, an administrator and a reader, so no script needs the lab's
+# password.
+about = "The web console's Services pages in each engine: the list from what Spark answers, a failed service explained with its log behind the unlock, diskhealth stopped, run, restarted and turned off and on at boot as its status says, its cards of use, limits, sockets and timer, the scheduled tasks behind the unlock, admind refused, a reader, and the phone's page of a service"
+time = "30m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-services && echo lab-console-password | user add wc-services-reader && user set --console --yes wc-services-reader'"
+root = true
+expect = ["Made wc-services", "Made wc-services-reader", "wc-services-reader is changed"]
+# A service that Spark has given up on, which is first in the list.
+[[step]]
+host = "sh {here}/../services/copy-file.sh {here}/../services/lab-broken.service {machine} {machine-port:22}"
+expect = "copied: lab-broken.service"
+# From nothing: a run before may have left it.
+[[step]]
+run = "sh -c 'cd /system/settings/spark/services && rm -f lab-broken.toml && cp /users/lab/lab-broken.service lab-broken.toml && echo installed'"
+root = true
+expect = "installed"
+[[step]]
+run = "sh -c 'service lab-broken start 2>&1; true'"
+root = true
+expect = "lab-broken"
+# Spark gives up on lab-broken after its second start.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 30 ] && ! service lab-broken status | grep -q \"Active: failed\"; do sleep 1; i=$((i + 1)); done; service lab-broken status'"
+root = true
+exit = 3
+expect = "Active: failed (Spark gave up on it)"
+# A service that a timer starts, which is the row of the Scheduled tasks page. It
+# is enabled, which a timer does not start now: timerd starts it at half past
+# three, and service list --timers says when.
+[[step]]
+run = "sh -c 'service lab-timer disable > /dev/null 2>&1; rm -f /system/settings/spark/services/lab-timer.toml; cat > /system/settings/spark/services/lab-timer.toml'"
+root = true
+input = '''
+service_version = 2
+description = "Lab timer for the Services test"
+program = "/system/commands/nukesh"
+arguments = ["-c", "echo lab-timer ran"]
+restart = "never"
+
+[timer]
+at = ["30 3 * * *"]
+'''
+[[step]]
+run = """sh -c 'service lab-timer enable; service check lab-timer && echo "listed $(service list --timers | grep -c "^lab-timer  *20[0-9][0-9]-")"'"""
+root = true
+expect = ["lab-timer.toml: ok", "listed 1"]
+# diskhealth runs, as the page expects to find it, and its file is kept to be put back.
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-services && cp /system/settings/spark/services/diskhealth.toml /tmp/lab-services/ && service diskhealth status'"
+root = true
+expect = "Active: active (running)"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "services.mjs"
+port = 9090
+# What the last press of Starts at boot left in the file, and the service that
+# it started: the file says that diskhealth starts at boot, and it runs.
+[[step]]
+run = "sh -c 'grep -x \"enabled = true\" /system/settings/spark/services/diskhealth.toml && service diskhealth status'"
+root = true
+expect = ["enabled = true", "Active: active (running)"]
+# The file as the image has it, and nothing of the test left behind.
+[[step]]
+run = "sh -c 'cmp -s /tmp/lab-services/diskhealth.toml /system/settings/spark/services/diskhealth.toml || cp /tmp/lab-services/diskhealth.toml /system/settings/spark/services/diskhealth.toml || exit 1; rm -r /tmp/lab-services; echo restored'"
+root = true
+expect = "restored"
+[[step]]
+run = "sh -c 'service lab-broken stop; service lab-timer disable; cd /system/settings/spark/services && rm -f lab-broken.toml lab-timer.toml /users/lab/lab-broken.service; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-services wc-services-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-services is removed", "wc-services-reader is removed"]

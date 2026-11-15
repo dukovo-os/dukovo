@@ -966,6 +966,13 @@ impl Frames {
         self.retired_len.load(Ordering::Acquire) as u64
     }
 
+    /// Whether the frame at `phys` is retired: out of use, or leaving use
+    /// once it is freed. What keeps frames for others to map, as the
+    /// kernel keeps programs' pages, hands such a frame to no one more.
+    pub fn retiring(&self, phys: u64) -> bool {
+        self.is_retired(phys >> PAGE_SHIFT)
+    }
+
     /// Whether frame `pfn` is retired.
     #[inline]
     fn is_retired(&self, pfn: u64) -> bool {

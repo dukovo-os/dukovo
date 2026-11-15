@@ -30,6 +30,7 @@ use super::authd;
 use super::caller::TokenWorkers;
 use super::errors::{Failure, Kind};
 use super::files::Files;
+use super::follow::Follows;
 use super::journal::{Journal, SETTINGS};
 use super::limits::{Connections, Endings, Quiet, Tickets, Tries};
 use super::link::Link;
@@ -41,6 +42,7 @@ use super::tasks::Tasks;
 use super::terminal::Terminals;
 use super::terminal::protocol::Why;
 use super::tls::Certificate;
+use super::trials::{self, Trials};
 use super::websocket::Code;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -181,6 +183,12 @@ pub struct Shared {
     pub tasks: Tasks,
     /// The console's terminals, their panes and their sockets.
     pub terminals: RefCell<Terminals>,
+    /// The follows of the log that run (ADR 0518).
+    pub follows: RefCell<Follows>,
+    /// The trials of settings, as admind knows them (ADR 0518).
+    pub trials: RefCell<Trials>,
+    /// Spark's read socket: [`trials::READ`], or a test's own.
+    pub spark: Cell<&'static str>,
 }
 
 impl Shared {
@@ -217,6 +225,9 @@ impl Shared {
             journal: Journal::new(Path::new(SETTINGS)),
             tasks: Tasks::new(),
             terminals: RefCell::default(),
+            follows: RefCell::default(),
+            trials: RefCell::default(),
+            spark: Cell::new(trials::READ),
         })
     }
 
@@ -367,6 +378,7 @@ impl Shared {
     /// be told. The terminals end first.
     pub async fn end_all(&self) {
         self.terminals.borrow_mut().end_all();
+        self.follows.borrow_mut().stop_all();
         if self.sessions.borrow().is_empty() {
             return;
         }

@@ -56,6 +56,15 @@ export function makeUsage(view, { about }) {
   const titleWords = () => `Usage, ${rangeOf(range).words.replace(/^the /, '')}`;
   const card = makeCard('usage', titleWords());
   const charts = CHARTS.map((chart) => ({ chart, drawn: makeChart(chart.id) }));
+  // "Open CPU", under each chart: the chart's view of a moment, with the range in view (design 6.1).
+  const links = charts.map(({ chart, drawn }) => {
+    const link = h('a', { class: 'btn link small', href: `/logs/chart/${chart.id}?range=${range}` }, `Open ${chart.short}`);
+    drawn.element.append(link);
+    return { chart, link };
+  });
+  const relink = () => {
+    for (const { chart, link } of links) link.href = `/logs/chart/${chart.id}?range=${range}`;
+  };
   const grid = h('div', { class: 'usage-grid' }, ...charts.map((one) => one.drawn.element));
   const empty = h('p', { class: 'muted', role: 'status' });
   const foot = h('p', { class: 'muted small usage-foot' },
@@ -103,6 +112,7 @@ export function makeUsage(view, { about }) {
   const control = rangeControl(range, (id) => {
     range = id;
     rename();
+    relink();
     const url = new URL(location.href);
     url.searchParams.set('range', id);
     history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);

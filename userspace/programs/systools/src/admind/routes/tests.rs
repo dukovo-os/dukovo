@@ -25,9 +25,11 @@ use crate::admind::shared::unix_now;
 
 mod act;
 mod changes;
+mod follow;
 mod fuzz;
 mod tasks;
 mod terminals;
+mod trials;
 
 /// The browser's address, and what it asks for.
 const PEER: &str = "192.0.2.7";
@@ -151,6 +153,8 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
         let calls = Arc::clone(&calls);
         Arc::new(move |method: &str, params: &Value| worker_answers(method, params, &calls))
     };
+    // This authd's follows, which its lock, end and follow-end end.
+    let follows: Follows = Arc::default();
     Arc::new(move |asked: &Asked, mut fds: Vec<OwnedFd>| -> Vec<String> {
         let no = |why: &str| vec![format!("no {why}")];
         let ok = || vec![String::from("ok")];
@@ -181,7 +185,14 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 _ => no(WRONG_PASSWORD),
             },
             "extend" => in_15_minutes(),
-            "lock" | "end" => ok(),
+            "lock" | "end" => {
+                // As authd does, it answers once log has ended, so that
+                // admind reads the follow's end before it hears the lock.
+                if end_follows(&follows, |session, _| session == asked.text(0)) {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                ok()
+            }
             "token" => match token_answer(&asked.text(0)) {
                 Some(answer) => vec![format!("ok {answer}")],
                 None => no("that API token is not known"),
@@ -192,6 +203,14 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
             }
             "elevate" => elevated(asked, fds, &calls),
             "terminal" => shell(asked, fds, &calls),
+            "follow" => follow(asked, fds, &follows),
+            "follow-end" => {
+                let process: i32 = asked.text(1).parse().unwrap();
+                let ended = end_follows(&follows, |session, number| {
+                    number == process && session == asked.text(0)
+                });
+                if ended { ok() } else { no("that follow has ended") }
+            }
             _ => no("the test's authd does not answer that"),
         }
     })
@@ -223,8 +242,8 @@ fn token_answer(hex: &str) -> Option<&'static str> {
 /// refused as a locked session's; a token's command for `guarded` is
 /// refused as authd refuses one its scopes do not name; `broken` fails
 /// with a service's error ID; `/system/commands/echo` writes its words
-/// and ends with the status 3; anything else writes its words and ends
-/// well. The command is noted in `calls` as a call of `elevate`, so that a
+/// and ends with the status 3; anything else writes its words, or for a
+/// command asked for JSON `{"ran": WORDS}`, and ends well. The command is noted in `calls` as a call of `elevate`, so that a
 /// test sees it among the worker's.
 fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
     use std::io::Write;
@@ -243,11 +262,21 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
         errors.write_all(b"starting broken\nbroken.conf did not load (SVC-104)\n").unwrap();
         return vec!["ok 4321".into(), "ended 256".into()];
     }
+    if command[0] == "lab-log" {
+        output.write_all(b"{\"n\": 1}\n\n{\"n\": 2}\n").unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
     if command[0] == "admin" && command.get(1).is_some_and(|word| word == "lab-steps") {
         let mode = command.get(2).and_then(|word| word.parse().ok()).unwrap_or(0);
         return lab_steps(mode, output, errors, fds);
     }
-    output.write_all(format!("{}\n", command[1..].join(" ")).as_bytes()).unwrap();
+    // A command asked for JSON prints a value, which a read answers with;
+    // any other prints its words.
+    let json = command.iter().any(|word| word == "--json")
+        || command.windows(2).any(|pair| pair[0] == "--output" && pair[1] == "json");
+    let printed = command[1..].join(" ");
+    let printed = if json { json!({ "ran": printed }).to_string() } else { printed };
+    output.write_all(format!("{printed}\n").as_bytes()).unwrap();
     let status = if command[0] == "/system/commands/echo" { 768 } else { 0 };
     vec!["ok 4321".into(), format!("ended {status}")]
 }
@@ -281,6 +310,63 @@ fn shell(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
         }
     });
     vec!["ok 4242".into()]
+}
+
+/// A follow the test authd runs: its session, its process, and what
+/// ends it.
+type Following = (String, i32, std::sync::mpsc::Sender<()>);
+
+/// A test authd's follows that run.
+type Follows = Arc<Mutex<Vec<Following>>>;
+
+/// The next follow's process.
+static NEXT_FOLLOW: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(5000);
+
+/// Ends the test authd's follows `which` picks, by session and process,
+/// as authd hangs one up: whether there was one.
+fn end_follows(follows: &Follows, which: impl Fn(&str, i32) -> bool) -> bool {
+    let mut follows = follows.lock().unwrap();
+    let before = follows.len();
+    follows.retain(|(session, process, stop)| {
+        let ends = which(session, *process);
+        if ends {
+            let _ = stop.send(());
+        }
+        !ends
+    });
+    follows.len() < before
+}
+
+/// The test authd's follow of the log, on the two pipes that came with
+/// the request. The service `failing` writes two lines of errors and ends
+/// at once; `many` writes 150 records in a breath; anything else writes a
+/// record, a line that is not JSON and another record. Each but `failing`
+/// then keeps its pipes until it is ended.
+fn follow(asked: &Asked, fds: Vec<OwnedFd>, follows: &Follows) -> Vec<String> {
+    use std::io::Write;
+    let Ok([output, errors]) = <[OwnedFd; 2]>::try_from(fds) else {
+        return vec!["no a follow comes with two pipes".into()];
+    };
+    let (mut output, mut errors) = (std::fs::File::from(output), std::fs::File::from(errors));
+    let process = NEXT_FOLLOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let service = asked.text(2);
+    if service == "failing" {
+        errors.write_all(b"log: reading the log\nlog: logd is not running\n").unwrap();
+        return vec![format!("ok {process}")];
+    }
+    let (stop, stopped) = std::sync::mpsc::channel();
+    follows.lock().unwrap().push((asked.text(0), process, stop));
+    std::thread::spawn(move || {
+        if service == "many" {
+            let lines: Vec<String> = (0..150).map(|n| format!("{{\"n\": {n}}}\n")).collect();
+            let _ = output.write_all(lines.concat().as_bytes());
+        } else {
+            let _ = output.write_all(b"{\"n\": 1}\nnot json\n{ \"n\": 2 }\n");
+        }
+        let _ = stopped.recv();
+        drop((output, errors));
+    });
+    vec![format!("ok {process}")]
 }
 
 /// What `admin lab-steps N` does in the test authd, by `mode` N, which
@@ -535,10 +621,12 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::Task,
             Route::Terminals,
             Route::TerminalSocket,
+            Route::Follow,
+            Route::Fresh,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 46 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 48 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -1054,6 +1142,7 @@ fn the_session_says_who_it_is_from_the_account_files_and_how_it_can_unlock() {
                 "name": "chase", "full_name": "Chase Y", "admin": true, "host": "nas",
                 "csrf": session.csrf, "unlock_seconds": null, "needs_step": false,
                 "kinds": ["password", "app"], "terminal": true,
+                "from": PEER, "via": null,
             })
         );
         assert_eq!(URL_SAFE_NO_PAD.decode(&session.csrf).unwrap().len(), 32);
@@ -1801,4 +1890,32 @@ fn the_lab_route_runs_a_command_for_an_unlocked_session_and_gives_its_output_and
         let refused = send(&world, post("/api/1/test/elevate", &body).by(&eve)).await;
         assert_eq!(refused.error(), "ADM-118");
     });
+}
+
+#[test]
+fn http_2_names_the_host_by_its_authority_and_a_host_header_must_agree() {
+    let head = |version: Version, uri: &str, host: Option<&str>| {
+        let mut request = Request::builder().version(version).uri(uri);
+        if let Some(host) = host {
+            request = request.header(header::HOST, host);
+        }
+        request.body(()).unwrap().into_parts().0
+    };
+    let h2 = |uri, host| host_named(&head(Version::HTTP_2, uri, host)).map(str::to_string);
+    assert_eq!(
+        h2("https://nas.example:9090/api/1/health", None).as_deref(),
+        Some("nas.example:9090")
+    );
+    assert_eq!(
+        h2("https://nas.example:9090/", Some("NAS.Example:9090")).as_deref(),
+        Some("nas.example:9090")
+    );
+    assert_eq!(h2("https://nas.example:9090/", Some("evil.example")), None);
+    // With no authority, as a client may send it, the Host header names it.
+    assert_eq!(h2("/api/1/health", Some("nas.example")).as_deref(), Some("nas.example"));
+    assert_eq!(h2("/api/1/health", None), None);
+    // HTTP/1.1 reads the Host header alone, as before.
+    let h1 = head(Version::HTTP_11, "/api/1/health", Some("nas.example:9090"));
+    assert_eq!(host_named(&h1), Some("nas.example:9090"));
+    assert_eq!(host_named(&head(Version::HTTP_11, "https://nas.example/x", None)), None);
 }

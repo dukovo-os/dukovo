@@ -1663,6 +1663,7 @@ mod phase11;
 mod phase12;
 mod phase13;
 pub mod soak;
+mod stall;
 
 /// The boot tests in test/cases, one file each, which build.rs lists (see
 /// test/cases/README.md): two pull requests that add a test each then
@@ -4624,6 +4625,7 @@ fn boot_tests(
                 log.file_stem().unwrap_or_default().to_string_lossy()
             ));
             let _ = std::fs::rename(&log, &first);
+            let _ = std::fs::rename(stall::report_path(&log), stall::report_path(&first));
             eprintln!("          running it once more (--retry)");
             (outcome, secs) = run();
             if outcome.is_ok() {
@@ -5079,7 +5081,28 @@ fn run_case(
         }
         let result = script(&mut vm, case)
             .and_then(|()| kernel_complaints(&vm, case))
-            .and_then(|()| vm.peer.as_deref().map_or(Ok(()), |peer| kernel_complaints(peer, case)));
+            .and_then(|()| vm.peer.as_deref().map_or(Ok(()), |peer| kernel_complaints(peer, case)))
+            .map_err(|err| {
+                // A machine that still runs may have hung: where its CPUs
+                // are. One whose test ran out of time was still working.
+                if vm.late || vm.exited().is_some() {
+                    return err;
+                }
+                let report = stall::report_path(&dir.join(format!("boot-{name}.log")));
+                let kernel = crate::kernel::installed(ctx);
+                match stall::write(&mut vm, machine.cpus, &kernel, &report) {
+                    Ok(summary) => {
+                        let mut said =
+                            format!("{err}\n          each CPU: {}", ctx.display(&report));
+                        for line in summary.lines() {
+                            said.push_str("\n          : ");
+                            said.push_str(line);
+                        }
+                        said
+                    }
+                    Err(why) => format!("{err}\n          each CPU: not read ({why})"),
+                }
+            });
         vm.stop();
         result?;
         let log = vm.log();
@@ -6273,6 +6296,10 @@ pub struct Vm {
     cursor: usize,
     deadline: Instant,
     timeout: Duration,
+    /// Whether a wait gave up because the boot's time had run out before
+    /// it began: the test is slower than its time allows, and the
+    /// machine, which was still working, did not hang.
+    late: bool,
     /// Ends QEMU if the case runs far past its deadline while the main
     /// thread is blocked where the deadline cannot reach.
     watchdog: Option<Watchdog>,
@@ -6371,6 +6398,7 @@ impl Vm {
             cursor: 0,
             deadline,
             timeout,
+            late: false,
             watchdog,
             stderr_log,
             screenshot: dir.join(format!("{name}.ppm")),
@@ -6419,6 +6447,19 @@ impl Vm {
         status
     }
 
+    /// What a wait says when the boot's time had run out before it
+    /// began, and marks the boot late. Such a wait looks once and
+    /// gives up, catching the machine in the middle of its work: the
+    /// test needs more time (test/times.txt), and nothing hung.
+    fn ran_out(&mut self) -> String {
+        self.late = true;
+        format!(
+            "the boot's {} s had run out before this wait began; a test this slow needs its \
+             time in test/times.txt",
+            self.timeout.as_secs()
+        )
+    }
+
     fn qemu_stderr(&self) -> String {
         let text = std::fs::read_to_string(&self.stderr_log).unwrap_or_default();
         let text = text.trim();
@@ -6433,6 +6474,7 @@ impl Vm {
         // time, which the host took from the guest's CPUs when they were
         // all busy (ADR 0416).
         let mut looked = None;
+        let late = Instant::now() >= self.deadline;
         loop {
             let printed = self.output.lock().expect("not poisoned").len();
             if looked != Some(printed) {
@@ -6455,7 +6497,11 @@ impl Vm {
                 ));
             }
             if Instant::now() >= self.deadline {
-                return Err(format!("no \"{needle}\" within {} s", self.timeout.as_secs()));
+                return Err(if late {
+                    format!("no \"{needle}\": {}", self.ran_out())
+                } else {
+                    format!("no \"{needle}\" within {} s", self.timeout.as_secs())
+                });
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -6677,6 +6723,7 @@ impl Vm {
 
     /// Waits for QEMU to exit and checks its status.
     pub fn expect_exit(&mut self, code: i32) -> Result<(), String> {
+        let late = Instant::now() >= self.deadline;
         loop {
             if let Some(status) = self.exited() {
                 return match status.code() {
@@ -6686,7 +6733,11 @@ impl Vm {
                 };
             }
             if Instant::now() >= self.deadline {
-                return Err(format!("QEMU still running after {} s", self.timeout.as_secs()));
+                return Err(if late {
+                    format!("QEMU still running: {}", self.ran_out())
+                } else {
+                    format!("QEMU still running after {} s", self.timeout.as_secs())
+                });
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -11054,6 +11105,14 @@ fn signin(vm: &mut Vm, case: &Case) -> Result<(), String> {
 /// an administrator's, and signs her in.
 fn owner_signs_in(vm: &mut Vm, case: &Case) -> Result<(), String> {
     boot_report(vm, case)?;
+    owner_made(vm)
+}
+
+/// [`owner_signs_in`] after the kernel's report: tty1 asks for the owner's
+/// account, and the test makes alice's and signs her in. The installed
+/// image carries no user test programs, which the report names, so a test
+/// of that image begins here.
+fn owner_made(vm: &mut Vm) -> Result<(), String> {
     vm.expect("Boot complete.")?;
     vm.expect_anywhere("authd: 0 accounts; answering at /system/live/authd/socket")?;
     vm.expect_anywhere("consoled: started /system/commands/login on tty1 as process ")?;

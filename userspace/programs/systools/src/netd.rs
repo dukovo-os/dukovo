@@ -71,13 +71,18 @@ use crate::util::{self, Fail};
 
 /// The settings file, the leases' directory and the resolver's file.
 pub const SETTINGS: &str = "/system/settings/network";
-const LEASES: &str = "/system/state/netd";
-const RESOLV: &str = "/system/live/netd/resolv.conf";
+pub(crate) const LEASES: &str = "/system/state/netd";
+pub(crate) const RESOLV: &str = "/system/live/netd/resolv.conf";
 /// The machine's IPv6 secret, which only netd reads.
 const SECRET: &str = "/system/state/netd/ipv6-secret";
 
 /// How often netd looks at the cards.
 const SCAN: Duration = Duration::from_secs(5);
+
+/// How long a card that the settings set to DHCP keeps the addresses of
+/// its old settings while it asks for a lease: time for a server that
+/// answers to give one.
+const HOLD: Duration = Duration::from_secs(10);
 
 /// The most addresses and DNS servers settings give a card, and the most
 /// DNS servers resolv.conf takes.
@@ -194,7 +199,7 @@ impl Setup {
 
     /// Whether netd leaves the card alone: no DHCP, and nothing of its
     /// own, of either version.
-    fn alone(&self) -> bool {
+    pub(crate) fn alone(&self) -> bool {
         !self.dhcp()
             && self.addresses.is_empty()
             && self.addresses6.is_empty()
@@ -665,6 +670,9 @@ struct Card {
     failure: Option<String>,
     /// Its DHCP server, while the settings give it one.
     serving: Option<Serving>,
+    /// Until when it keeps the addresses of its old settings while it asks
+    /// DHCP for a lease ([`HOLD`]).
+    held: Option<Instant>,
 }
 
 /// A card's DHCPv6 client, on its socket, and what it got.
@@ -1093,20 +1101,39 @@ struct Netd {
     /// The cards' DHCP servers while the settings are read again, which
     /// the cards that serve still take over, by their numbers.
     serving_before: Vec<(u32, Serving)>,
+    /// The addresses and router that the cards the settings now set to
+    /// DHCP keep from their old settings while the settings are read
+    /// again, by their numbers.
+    held_before: Vec<(u32, Vec<Cidr>, Option<Ipv4Addr>)>,
     /// The leases each card's server lists for `netd leases`.
     listing: Listing,
     /// The text of the metered file as it was written last.
     metered: Option<String>,
 }
 
+/// The section of `settings` that sets up the card named `name`, with the
+/// address `mac`: the first that names it.
+pub(crate) fn section_of<'a>(
+    settings: &'a [(String, Setup)],
+    name: &str,
+    mac: &str,
+) -> Option<&'a (String, Setup)> {
+    let mac = mac.to_ascii_lowercase();
+    settings.iter().find(|(card, _)| *card == name || *card == mac)
+}
+
 /// How `settings` have the card named `name`, with the address `mac`, set
 /// up: the first section that names it, else the defaults.
 pub(crate) fn setup_of(settings: &[(String, Setup)], name: &str, mac: &str) -> Setup {
-    let mac = mac.to_ascii_lowercase();
-    settings
-        .iter()
-        .find(|(card, _)| *card == name || *card == mac)
-        .map_or_else(Setup::default, |(_, setup)| setup.clone())
+    section_of(settings, name, mac).map_or_else(Setup::default, |(_, setup)| setup.clone())
+}
+
+/// Whether netd sets the interface up: not the loopback, not a bridge's
+/// port (the bridge has its addresses), and not a tunnel, whose addresses
+/// are its program's to give, as wgd(8) gives a WireGuard interface's (ADR
+/// 0340). These are the cards network(8) shows.
+pub(crate) fn sets_up(interface: &Interface) -> bool {
+    !interface.loopback && interface.master.is_none() && interface.kind != ip::Kind::Tunnel
 }
 
 impl Netd {
@@ -1146,12 +1173,7 @@ impl Netd {
             false
         });
         let mut changed = self.cards.len() != known;
-        // A tunnel's addresses are its program's to give, as wgd(8) gives
-        // a WireGuard interface's (ADR 0340).
-        let set_up = |interface: &&Interface| {
-            !interface.loopback && interface.master.is_none() && interface.kind != ip::Kind::Tunnel
-        };
-        for interface in interfaces.iter().filter(set_up) {
+        for interface in interfaces.iter().filter(|interface| sets_up(interface)) {
             if let Some(card) = self.cards.iter_mut().find(|card| card.index == interface.index) {
                 // The DNS servers its routers advertise now.
                 let advertised: Vec<Ipv6Addr> =
@@ -1208,6 +1230,7 @@ impl Netd {
             dhcp6: None,
             failure: None,
             serving: None,
+            held: None,
         };
         if setup.alone() {
             eprintln!("netd: {} is left as it is, as {SETTINGS} says", card.name);
@@ -1236,7 +1259,55 @@ impl Netd {
             return Some(card);
         }
         Netd::ask(&mut card, interface, now, true);
+        self.hold(&mut card, now);
         Some(card)
+    }
+
+    /// Gives `card`, which asks DHCP with no lease of its own yet, the
+    /// addresses its old settings gave it, which the settings read again
+    /// left it ([`kept_through_reload`]), until a lease comes or [`HOLD`]
+    /// ends: a lease of one of them keeps the connections on it.
+    fn hold(&self, card: &mut Card, now: Instant) {
+        if let How::Dhcp { client, .. } = &card.how
+            && client.lease().is_some()
+        {
+            return;
+        }
+        let Some((_, held, router)) =
+            self.held_before.iter().find(|(index, ..)| *index == card.index)
+        else {
+            return;
+        };
+        let mut given = held.clone();
+        given.extend(card.given.iter().filter(|cidr| !held.iter().any(|h| h.ip == cidr.ip)));
+        card.given = given;
+        card.router = card.router.or(*router);
+        card.held = Some(now + HOLD);
+    }
+
+    /// Takes from each card whose [`HOLD`] has ended with no lease the
+    /// addresses of its old settings, leaving it those its settings give.
+    fn end_holds(&mut self, now: Instant) {
+        for at in 0..self.cards.len() {
+            if self.cards[at].held.is_none_or(|until| now < until) {
+                continue;
+            }
+            let mut card = std::mem::replace(&mut self.cards[at], placeholder());
+            card.held = None;
+            if let Some(interface) = Netd::interface(card.index) {
+                let setup = self.setup(&card.name, &interface.mac);
+                let lost: Vec<String> = card.given.iter().map(Cidr::to_string).collect();
+                if self.give(&mut card, &interface, &setup.addresses, setup.router) {
+                    eprintln!(
+                        "netd: {}: no lease in {} s; gave up {}",
+                        card.name,
+                        HOLD.as_secs(),
+                        lost.join(", ")
+                    );
+                }
+            }
+            self.cards[at] = card;
+        }
     }
 
     /// Gives `card` a DHCP client on a socket of its own on port 68, going
@@ -1683,7 +1754,11 @@ impl Netd {
         let Some(interface) = Netd::interface(self.cards[at].index) else { return };
         let mut card = std::mem::replace(&mut self.cards[at], placeholder());
         let setup = self.setup(&card.name, &interface.mac);
-        let changed = card.given.first() != Some(&lease.address)
+        // A card that held the addresses of its old settings has the
+        // lease's alone now, whichever they were.
+        let held = card.held.take().is_some();
+        let changed = held
+            || card.given.first() != Some(&lease.address)
             || card.router != lease.router
             || !interface.addresses.contains(&lease.address);
         let mut ours = vec![lease.address];
@@ -1719,6 +1794,7 @@ impl Netd {
 
     fn unbind(&mut self, at: usize) {
         let mut card = std::mem::replace(&mut self.cards[at], placeholder());
+        card.held = None;
         forget_lease(card.mac);
         if let Some(interface) = Netd::interface(card.index) {
             let setup = self.setup(&card.name, &interface.mac);
@@ -1791,6 +1867,7 @@ impl Netd {
             if self.scanned.is_none_or(|scanned| now >= scanned + SCAN) {
                 self.scan(now);
             }
+            self.end_holds(now);
             for at in 0..self.cards.len() {
                 if let Some(dhcp6) = &mut self.cards[at].dhcp6 {
                     let actions = dhcp6.client.tick(now);
@@ -1805,6 +1882,9 @@ impl Netd {
             let mut fds: Vec<libc::pollfd> = Vec::new();
             let mut deadline = self.scanned.map_or(now, |scanned| scanned + SCAN);
             for card in &self.cards {
+                if let Some(until) = card.held {
+                    deadline = deadline.min(until);
+                }
                 if let How::Dhcp { socket, client } = &card.how {
                     fds.push(libc::pollfd {
                         fd: socket.as_raw_fd(),
@@ -1870,10 +1950,8 @@ impl Netd {
         self.ipv6_before =
             cards.iter().filter_map(|card| Some((card.index, card.ipv6.clone()?))).collect();
         for mut card in cards {
-            // Its addresses from the old settings go; a lease's stay with
-            // the lease, which the new client goes on with, and those the
-            // new settings give it too stay, so that a reload that leaves
-            // them as they were leaves their connections alone.
+            // Its addresses from the old settings go, but those it keeps
+            // (`kept_through_reload`), until the new settings give it theirs.
             if let Some(interface) = Netd::interface(card.index) {
                 let leased: Vec<Cidr> = match &card.how {
                     How::Dhcp { client, .. } => {
@@ -1885,17 +1963,14 @@ impl Netd {
                 if !setup.dhcp() && !leased.is_empty() {
                     forget_lease(card.mac);
                 }
-                let unchanged = !setup.dhcp() && setup.addresses == card.given;
-                let (keep, router) = if unchanged {
-                    (card.given.clone(), setup.router)
-                } else {
-                    let keep = if setup.dhcp() { leased } else { Vec::new() };
-                    let router = card.router.filter(|_| !keep.is_empty());
-                    (keep, router)
-                };
+                let asks_anew = setup.dhcp() && leased.is_empty();
+                let (keep, router) = kept_through_reload(&card.given, card.router, leased, &setup);
                 if (card.given != keep || card.router != router) && !matches!(card.how, How::Alone)
                 {
                     self.give(&mut card, &interface, &keep, router);
+                }
+                if asks_anew && !keep.is_empty() && !matches!(card.how, How::Alone) {
+                    self.held_before.push((card.index, keep, router));
                 }
             }
             if let Some(dhcp6) = card.dhcp6.take() {
@@ -1911,11 +1986,49 @@ impl Netd {
         // and the address DHCPv6 gave it; one whose IPv6 was set afresh
         // lost that.
         self.ipv6_before.clear();
+        self.held_before.clear();
         self.dhcp6_before.clear();
         // A server whose card no longer serves ends here.
         self.serving_before.clear();
         self.write_resolv();
     }
+}
+
+/// What a card keeps of the addresses netd gave it while the settings are
+/// read again, before the new settings give it theirs, and the router it
+/// keeps with them (`given` and `router` are the card's now, `leased` its
+/// lease's address while it asks DHCP). New settings that give the same
+/// addresses keep them all, with their router. A card that still asks DHCP
+/// keeps its lease's address, which the new client goes on with; one that
+/// the new settings set to DHCP with no lease keeps all it has, while it
+/// asks for a lease that may give one of them again (`Netd::hold`).
+/// Otherwise it keeps each address it has that the new settings give it
+/// too, with the prefix they give: the kernel's stack ends a TCP
+/// connection as soon as its interface no longer has the connection's
+/// address, so an address that stays must not go for that moment. A card
+/// set from DHCP to the address its lease had, set back to DHCP that gives
+/// it that address, or given a second address, keeps its connections; one
+/// given new addresses loses those of the old ones.
+fn kept_through_reload(
+    given: &[Cidr],
+    router: Option<Ipv4Addr>,
+    leased: Vec<Cidr>,
+    setup: &Setup,
+) -> (Vec<Cidr>, Option<Ipv4Addr>) {
+    if !setup.dhcp() && setup.addresses == given {
+        return (given.to_vec(), setup.router);
+    }
+    if setup.dhcp() && leased.is_empty() {
+        return (given.to_vec(), router);
+    }
+    let keep: Vec<Cidr> = if setup.dhcp() {
+        leased
+    } else {
+        let stays = |new: &&Cidr| given.iter().any(|old| old.ip == new.ip);
+        setup.addresses.iter().filter(stays).copied().collect()
+    };
+    let router = router.filter(|_| !keep.is_empty());
+    (keep, router)
 }
 
 /// A card for the moment one is out of its place.
@@ -1935,6 +2048,7 @@ fn placeholder() -> Card {
         dhcp6: None,
         failure: None,
         serving: None,
+        held: None,
     }
 }
 
@@ -2061,10 +2175,16 @@ fn leases(args: &mut Args) -> Result<i32, Fail> {
     }
 }
 
+/// The name of the file, in [`LEASES`], of the lease of the card with the
+/// address `mac`: `52-54-00-12-34-56.lease`.
+pub(crate) fn lease_name(mac: [u8; 6]) -> String {
+    let name: Vec<String> = mac.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{}.lease", name.join("-"))
+}
+
 /// The file of the lease of the card with the address `mac`.
 fn lease_path(mac: [u8; 6]) -> String {
-    let name: Vec<String> = mac.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("{LEASES}/{}.lease", name.join("-"))
+    format!("{LEASES}/{}", lease_name(mac))
 }
 
 fn read_lease(mac: [u8; 6]) -> Option<(Lease, u64)> {
@@ -2115,6 +2235,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         ipv6_before: Vec::new(),
         dhcp6_before: Vec::new(),
         serving_before: Vec::new(),
+        held_before: Vec::new(),
         listing: Listing::default(),
         metered: None,
     };
@@ -2567,6 +2688,7 @@ mod tests {
             ipv6_before: Vec::new(),
             dhcp6_before: Vec::new(),
             serving_before: Vec::new(),
+            held_before: Vec::new(),
             listing: Listing::default(),
             metered: None,
         }
@@ -2769,6 +2891,76 @@ mod tests {
         assert!(!resolv_text(&servers[..1], &[]).contains("search"));
         let six = [IpAddr::V6("fec0::3".parse().unwrap())];
         assert!(resolv_text(&six, &[]).ends_with("\nnameserver fec0::3\n"));
+    }
+
+    #[test]
+    fn a_card_set_to_dhcp_holds_its_old_addresses_until_a_lease() {
+        let netd = Netd {
+            held_before: vec![(
+                2,
+                vec![cidr("10.0.2.15/24"), cidr("10.0.2.99/24")],
+                Some(Ipv4Addr::new(10, 0, 2, 2)),
+            )],
+            ..netd()
+        };
+        let now = Instant::now();
+        let mut card = Card { index: 2, ..placeholder() };
+        netd.hold(&mut card, now);
+        assert_eq!(card.given, [cidr("10.0.2.15/24"), cidr("10.0.2.99/24")]);
+        assert_eq!((card.router, card.held), (Some(Ipv4Addr::new(10, 0, 2, 2)), Some(now + HOLD)));
+        // An address its new settings give besides DHCP's stays as well.
+        let mut extra = Card { index: 2, given: vec![cidr("192.168.7.2/24")], ..placeholder() };
+        netd.hold(&mut extra, now);
+        assert_eq!(extra.given.len(), 3);
+        // A card the reload left nothing holds nothing.
+        let mut other = Card { index: 3, ..placeholder() };
+        netd.hold(&mut other, now);
+        assert_eq!((other.given.len(), other.held), (0, None));
+    }
+
+    #[test]
+    fn a_reload_keeps_the_addresses_the_new_settings_give_again() {
+        let router = Some(Ipv4Addr::new(10, 0, 2, 2));
+        let lease = vec![cidr("10.0.2.15/24")];
+        let fixed = |addresses: &[&str], router: Option<Ipv4Addr>| Setup {
+            dhcp: Some(false),
+            addresses: addresses.iter().map(|text| cidr(text)).collect(),
+            router,
+            ..Setup::default()
+        };
+        // From DHCP to the lease's address and a second: the first stays
+        // until the new settings give both.
+        let two = fixed(&["10.0.2.15/24", "10.0.2.99/24"], router);
+        assert_eq!(
+            kept_through_reload(&lease, router, lease.clone(), &two),
+            (vec![cidr("10.0.2.15/24")], router)
+        );
+        // Back from the two to the one: it stays, and the second goes.
+        let given = two.addresses.clone();
+        let one = fixed(&["10.0.2.15/24"], router);
+        assert_eq!(kept_through_reload(&given, router, Vec::new(), &one), (lease.clone(), router));
+        // The same address with another prefix stays, with the new one.
+        let wider = fixed(&["10.0.2.15/16"], router);
+        assert_eq!(
+            kept_through_reload(&lease, router, Vec::new(), &wider),
+            (vec![cidr("10.0.2.15/16")], router)
+        );
+        // Settings that give what the card has keep it all, with their router.
+        let other = Some(Ipv4Addr::new(10, 0, 2, 3));
+        let same = fixed(&["10.0.2.15/24", "10.0.2.99/24"], other);
+        assert_eq!(kept_through_reload(&given, router, Vec::new(), &same), (given.clone(), other));
+        // New addresses keep none of the old, nor its router.
+        let elsewhere = fixed(&["192.168.7.2/24"], Some(Ipv4Addr::new(192, 168, 7, 1)));
+        assert_eq!(kept_through_reload(&lease, router, Vec::new(), &elsewhere), (Vec::new(), None));
+        // A card that still asks DHCP keeps its lease's address; one set
+        // to DHCP from addresses of its own keeps them, with their router,
+        // while it asks for a lease.
+        let dhcp = Setup::default();
+        assert_eq!(
+            kept_through_reload(&lease, router, lease.clone(), &dhcp),
+            (lease.clone(), router)
+        );
+        assert_eq!(kept_through_reload(&given, router, Vec::new(), &dhcp), (given.clone(), router));
     }
 
     #[test]

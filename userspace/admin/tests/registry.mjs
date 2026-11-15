@@ -25,6 +25,11 @@ const ACTIONS = 'userspace/programs/systools/src/admind/actions/';
 const CRATES = {
   'radix_abi::resource_domain': 'abi/resource_domain.ridl',
   'manifest::service': 'userspace/programs/manifest/src/service.rs',
+  // systools' own log(1), as `use crate::log` names it.
+  log: 'userspace/programs/systools/src/log.rs',
+  // What an action takes from another action file: `use super::metrics::WORDS`.
+  'super::metrics': `${ACTIONS}metrics.rs`,
+  'super::trial': `${ACTIONS}trial.rs`,
 };
 
 const read = (path) => readFileSync(new URL(path, REPO), 'utf8');
@@ -67,6 +72,9 @@ function tokenize(text) {
             const end = text.indexOf('}', at);
             value += String.fromCodePoint(Number.parseInt(text.slice(at + 3, end), 16));
             at = end + 1;
+          } else if (next === 'x') {
+            value += String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 4), 16));
+            at += 4;
           } else if (next in escapes) {
             value += escapes[next];
             at += 2;

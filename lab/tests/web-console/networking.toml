@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Networking pages of the web console in each engine (design 9): the
+# cards at /networking held to what `network show` says, with their traffic
+# and the browser's own connection, and the editor of one card at
+# /networking/{card}. Changes are tried with `network set` for a window,
+# kept (`network keep`) or taken back (`network undo`): one that an
+# administrator keeps, with a second administrator's browser watching and
+# the second address still there after the window; one that Undo now takes
+# back; one that Spark undoes by itself, which a reader's browser sees too;
+# and one that takes away the address the browser reaches the console by,
+# 5 minutes of which the page says it cannot reach the console over, until
+# Spark undoes it and the page is back (design 8.5). A reader sees no
+# Change..., and a phone at 390 by 844 shows the cards and the editor. Each
+# look is dark, light, high contrast, forced colours and less motion, checked
+# by axe.
+#
+# The browser script changes the card the console is reached through and
+# leaves it asking DHCP; this test's first step undoes a trial that a run
+# before it may have left, and its last steps wait for Spark to have none,
+# put the settings file back as the image has it and have netd read it. The
+# file is saved before the browser opens. The accounts are three that this
+# test makes and removes, two administrators and a reader, so no script
+# needs the lab's password. The script runs each engine one after the other,
+# so that an engine the lab PC lacks is skipped within it and the steps after
+# it still run; it takes about 10 minutes in each, most of it the 5 minutes
+# that the change that cuts the console off is waited for.
+about = "The web console's Networking pages in each engine: the cards from what network show says, their traffic and connections, the editor's checks, a change tried and kept, one undone at once, one undone by Spark's timer, one that takes away the browser's own address and is undone within its window, a reader, and the phone"
+time = "40m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-networking && echo lab-console-password | user add --admin wc-networking-other && echo lab-console-password | user add wc-networking-reader && user set --console --yes wc-networking-reader'"
+root = true
+expect = ["Made wc-networking", "Made wc-networking-other", "Made wc-networking-reader", "wc-networking-reader is changed"]
+# A change that a run before this one left tried is taken back first.
+[[step]]
+run = "sh -c 'network undo > /dev/null 2>&1; echo clean'"
+root = true
+expect = "clean"
+# The file as the image has it, kept to be put back, and what the cards say.
+[[step]]
+run = "sh -c 'mkdir -p /tmp/lab-networking && cp /system/settings/network /tmp/lab-networking/network && network show --json'"
+root = true
+expect = ['"cards"', '"settings"']
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address, as a wrong port does, says
+# so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "networking.mjs"
+port = 9090
+# No change is tried any more, whatever an engine that failed halfway left.
+[[step]]
+run = "sh -c 'network undo > /dev/null 2>&1; i=0; while [ $i -lt 60 ] && network show --json | grep -q left_ms; do sleep 1; i=$((i + 1)); done; network show --json'"
+root = true
+expect = '"cards"'
+expect_not = "left_ms"
+# The file as the image has it, and netd reading it again if it was not.
+[[step]]
+run = "sh -c 'cmp -s /tmp/lab-networking/network /system/settings/network || { cp /tmp/lab-networking/network /system/settings/network && service netd reload; }; rm -r /tmp/lab-networking; echo restored'"
+root = true
+expect = "restored"
+# The card has its address again, as the console that waited for it shows.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! ip addr | grep -q \"inet \"; do sleep 1; i=$((i + 1)); done; network show --json'"
+root = true
+expect = '"address"'
+[[step]]
+run = "sh -c 'for name in wc-networking wc-networking-other wc-networking-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-networking is removed", "wc-networking-other is removed", "wc-networking-reader is removed"]

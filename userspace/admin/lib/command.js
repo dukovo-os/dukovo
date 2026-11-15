@@ -39,7 +39,8 @@ export function makeCommands(deps) {
     },
     show: (action, args = {}, opener = document.activeElement) => load().then((made) => made.show(action, args, opener)),
     inline(action, args = {}, { always = false } = {}) {
-      const element = h('button', { class: 'inline-cmd', type: 'button', hidden: !(on || always) });
+      // Hidden until it has the command's words: an empty button has no name.
+      const element = h('button', { class: 'inline-cmd', type: 'button', hidden: true });
       if (on || always) load().then((made) => made.adopt(element, action, args, always));
       else waiting.push({ element, action, args });
       return element;

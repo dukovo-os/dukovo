@@ -20,7 +20,9 @@ use radix_ipc::info::Info;
 use radix_klog::info;
 use radix_mm::{Flags, HEAP};
 
-use super::memory::{Anon, FileSource, Placement, SharedPages, cap_rights, frame_made, futex};
+use super::memory::{
+    Anon, FileSource, Placement, ProgramPages, SharedPages, cap_rights, frame_made, futex,
+};
 use super::objects::{self, Found, Object};
 use super::{Result, UserRef, cap_error, error};
 use crate::caps;
@@ -505,6 +507,10 @@ fn address_space_method(user: &UserRef, slot: u32, label: u32, args: &[u64; 8]) 
                 base: a.offset,
                 size: stat.size.saturating_sub(a.offset),
                 name,
+                // The pages of a file that cannot change are shared by
+                // every space that maps them where they may not be
+                // written, as a program's are (ADR 0563).
+                kept: ProgramPages::of(&file.at.node),
             };
             // A read-only shared mapping is a private one that stays
             // read-only, as the file it maps cannot be written through it.

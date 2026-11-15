@@ -35,6 +35,11 @@ prints
 Oct 31 09:12:44 dukovo backup[61]: All 3 disks are copied.
 ```
 
+A service sees _/devices/kmsg_ only if its file names it
+(*service.toml*(5)): a service writes to the log through its output,
+which *spark*(8) copies there as the service's, with *<3>* in front of
+a line for an error.
+
 The kernel keeps the first 256 bytes of a line, the *<*_n_*>* in front
 included; a control character in a message is written as a blank, so a
 message is always one record.

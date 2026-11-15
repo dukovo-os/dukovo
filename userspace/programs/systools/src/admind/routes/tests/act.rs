@@ -50,7 +50,8 @@ fn the_list_of_actions_is_for_a_session_or_a_token_and_no_one_else() {
                 json!("lab.list"),
                 json!("lab.long"),
                 json!("lab.set"),
-                json!("lab.missing")
+                json!("lab.missing"),
+                json!("lab.log")
             ]
         );
         let by_token = send(&world, with_token(get("/api/1/actions"), TOKEN_READ)).await;
@@ -672,6 +673,72 @@ fn a_showing_is_a_post_that_a_session_makes_as_every_change_is_made() {
     });
 }
 
+#[test]
+fn a_read_that_runs_as_an_administrator_needs_an_unlocked_one_and_answers_its_lines() {
+    run(async {
+        let world = lab_world("actions-elevated-read");
+        let read = |session: &Session| get("/api/1/lab/log?lines=5&service=nginx").by(session);
+        let dave = sign_in(&world, "dave").await;
+        let not_admin = send(&world, read(&dave)).await;
+        assert_eq!((not_admin.status, not_admin.error().as_str()), (403, "ADM-122"));
+        let chase = sign_in(&world, "chase").await;
+        let locked = send(&world, read(&chase)).await;
+        assert_eq!((locked.status, locked.error().as_str()), (403, "ADM-106"));
+        assert!(elevations(&world).is_empty());
+        unlock(&world, &chase).await;
+        let done = send(&world, read(&chase)).await;
+        assert_eq!(done.status, 200, "{}", done.body);
+        // Each line its command printed is a value of the answer; a blank
+        // line is none.
+        assert_eq!(done.json(), json!([{ "n": 1 }, { "n": 2 }]));
+        let ran = elevations(&world);
+        assert_eq!(ran.len(), 1);
+        assert!(ran[0].starts_with("elevate session "), "{}", ran[0]);
+        assert!(
+            ran[0].ends_with(" -- lab-log --output json --lines 5 --service nginx"),
+            "{}",
+            ran[0]
+        );
+        // A read is asked for by the console's own page: another site's
+        // request is refused before authd is asked.
+        for site in ["cross-site", "same-site", "none"] {
+            let foreign = read(&chase).with("sec-fetch-site", Some(site));
+            let refused = send(&world, foreign).await;
+            assert_eq!((refused.status, refused.error().as_str()), (403, "ADM-109"), "{site}");
+        }
+        let own = send(&world, read(&chase).with("sec-fetch-site", Some("same-origin"))).await;
+        assert_eq!(own.status, 200, "{}", own.body);
+        assert_eq!(elevations(&world).len(), 2);
+    });
+}
+
+#[test]
+fn a_read_s_query_is_its_arguments_and_a_name_it_does_not_take_is_refused() {
+    run(async {
+        let world = lab_world("actions-query");
+        let chase = sign_in(&world, "chase").await;
+        unlock(&world, &chase).await;
+        let ask = |query: &str| get(&format!("/api/1/lab/log{query}")).by(&chase);
+        let plain = send(&world, ask("")).await;
+        assert_eq!(plain.status, 200, "{}", plain.body);
+        let kernel = send(&world, ask("?kernel=true&lines=1")).await;
+        assert_eq!(kernel.status, 200, "{}", kernel.body);
+        let ran = elevations(&world);
+        assert!(ran[0].ends_with(" -- lab-log --output json --lines 200"), "{}", ran[0]);
+        assert!(ran[1].ends_with(" -- lab-log --output json --lines 1 --kernel"), "{}", ran[1]);
+        // A name the read does not take, and a value its type does not
+        // read, are ADM-108; one the action's check refuses is ADM-125;
+        // none of them is put to authd.
+        let unknown = send(&world, ask("?since=-1h")).await;
+        assert_eq!((unknown.status, unknown.error().as_str()), (400, "ADM-108"));
+        let word = send(&world, ask("?lines=many")).await;
+        assert_eq!((word.status, word.error().as_str()), (400, "ADM-108"));
+        let both = send(&world, ask("?service=nginx&kernel=true")).await;
+        assert_eq!((both.status, both.error().as_str()), (400, "ADM-125"));
+        assert_eq!(elevations(&world).len(), 2);
+    });
+}
+
 /// A request to check `id` of the lab's actions with `args`.
 fn check(id: &str, args: &Value) -> Req {
     post("/api/1/check", &json!({ "action": id, "args": args }))
@@ -700,6 +767,25 @@ fn a_check_reads_the_probe_as_the_person_and_runs_no_change() {
             ["person: probe steady", "person: probe steady", "person: probe moving"]
         );
         assert!(elevations(&world).is_empty());
+    });
+}
+
+#[test]
+fn a_token_runs_a_read_as_an_administrator_only_with_its_area_s_full_scope() {
+    run(async {
+        let world = lab_world("actions-elevated-token");
+        let read = |token: &str| with_token(get("/api/1/lab/log?lines=2"), token);
+        let other = send(&world, read(TOKEN_OTHER)).await;
+        assert_eq!((other.status, other.error().as_str()), (403, "ADM-124"));
+        assert!(elevations(&world).is_empty());
+        let done = send(&world, read(TOKEN_ALL)).await;
+        assert_eq!(done.status, 200, "{}", done.body);
+        assert_eq!(done.json(), json!([{ "n": 1 }, { "n": 2 }]));
+        let hex = accounts::request::hex(TOKEN_ALL.as_bytes());
+        assert_eq!(
+            elevations(&world),
+            [format!("elevate token {hex} logs -- lab-log --output json --lines 2")]
+        );
     });
 }
 

@@ -1188,6 +1188,9 @@ fn boot_archive_lookups_find_every_entry() {
     for name in &programs {
         let file = vfs.open(&K, &root, &format!("bin/{name}"), OpenFlags::default()).unwrap();
         assert_eq!(read_all(&file.node), name.as_bytes());
+        // Nothing in the archive changes, so its programs' pages are
+        // shared by every process that maps them (ADR 0563).
+        assert!(file.node.read_only());
     }
     for missing in ["bin/p300", "bin/a", "bin/zzz", "bin-extra/y", "etc/a/c", "nothing"] {
         assert_eq!(vfs.stat(&K, &root, missing).err(), Some(Error::NotFound), "{missing}");

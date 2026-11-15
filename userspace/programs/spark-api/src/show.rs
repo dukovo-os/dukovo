@@ -358,6 +358,8 @@ pub struct Undone {
     pub why: String,
     /// When.
     pub at_ms: u64,
+    /// The files it put back, as the trial named them.
+    pub files: Vec<String>,
 }
 
 /// The document for `show`, as Spark writes it.
@@ -487,6 +489,7 @@ mod tests {
                 id: "network".into(),
                 why: "it was not kept in time".into(),
                 at_ms: 40_000,
+                files: ["/system/settings/network".into()].into(),
             }]
             .into(),
         };

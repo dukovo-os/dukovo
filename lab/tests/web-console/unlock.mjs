@@ -64,8 +64,9 @@ const headerButton = (page, name) => header(page).getByRole("button", { name, ex
 /** The dialog that asks to unlock. */
 const unlockDialog = (page) => page.getByRole("dialog", { name: "Unlock to make changes" });
 
-/** The minutes that the header says are left, as the text of its counter. */
-const minutesLeft = (page, minutes) => page.getByText(`${minutes} min`, { exact: true });
+/** The minutes that the header says are left, as the text of its counter: in the header, as the
+ * Overview may show a time of the same words, such as how long the machine has been up. */
+const minutesLeft = (page, minutes) => header(page).getByText(`${minutes} min`, { exact: true });
 
 /** Waits for the header of `page` to say that the console is locked. */
 async function seeLocked(t, page) {

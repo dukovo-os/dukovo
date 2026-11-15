@@ -354,7 +354,7 @@ pub fn open(cx: &Context<'_>, live: &Live) -> Outcome {
         return Err(Failure::new(Kind::BadRequest, "this connection cannot be handed over"));
     };
     let id = cx.shared.terminals.borrow_mut().open_socket(&live.name, &live.authd)?;
-    let slot = cx.held.as_ref().and_then(|held| held.take());
+    let slot = cx.connection.held.as_ref().and_then(|held| held.take());
     tokio::task::spawn_local(serve(Rc::clone(cx.shared), id, upgrade, slot));
     log(6, &format!("a terminal socket opened for {} from {}", live.name, cx.peer));
     Ok(Reply::socket(opening.accept))

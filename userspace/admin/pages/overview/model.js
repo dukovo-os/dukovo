@@ -8,10 +8,10 @@
 // notices a browser has hidden. The cards in the other files of this folder
 // only draw what this file gives.
 
+import { CHECK_NOTES } from '../../lib/checks.js';
 import { fingerprint } from '../../lib/store.js';
 import { formatBytes, formatPercent } from '../../lib/chart-model.js';
 import { duration } from '../../lib/time.js';
-import { filesWords } from './part-model.js';
 
 // ---- Health ----------------------------------------------------------------
 
@@ -110,14 +110,8 @@ export function healthCard(checks, needs) {
     const { score, band } = checks.assessed;
     return { ...base, score, band, tone: band.id, line: band.words, note: null };
   }
-  const notes = {
-    missing: 'Checks are not on this server yet.',
-    reader: 'The health score is for administrators.',
-    none: 'Not checked yet.',
-    error: 'The checks could not be read.',
-  };
   const tone = rows.some((row) => row.severity === 'bad') ? 'bad' : rows.length > 0 ? 'warn' : 'off';
-  const note = notes[checks.state] ?? notes.error;
+  const note = CHECK_NOTES[checks.state] ?? CHECK_NOTES.error;
   return { ...base, score: null, band: null, tone, line: note, note, command: checks.state === 'none' ? CHECK_COMMAND : null };
 }
 
@@ -128,55 +122,6 @@ export function checkedWords(seconds, time) {
   if (/^\d/.test(when)) return `Checked today at ${when}`;
   if (when.startsWith('Yesterday ')) return `Checked yesterday at ${when.slice('Yesterday '.length)}`;
   return `Checked ${when}`;
-}
-
-// ---- What changed ----------------------------------------------------------
-
-/** How far back What changed looks when no good start is known, in seconds. */
-export const WEEK = 7 * 24 * 3600;
-
-/** The words after "What changed", and the time the list starts at (`since`, Unix seconds). */
-export function changedHeading(about, time, now) {
-  const start = about?.last_good_start;
-  if (Number.isFinite(start)) return { more: `since the last good start, ${time.when(start)}`, since: start };
-  return { more: 'in the last 7 days', since: now - WEEK };
-}
-
-/** Who made a change, as the row says: "alice in this console", "ci with the API token ci", or a hand edit's author. */
-export function byWords(change) {
-  const who = change.who === 'outside the console' ? 'Someone' : change.who;
-  const token = /^token (.+)$/.exec(change.how ?? '');
-  if (change.how === 'by hand') return `${who} edited it by hand`;
-  if (token) return `By ${change.who} with the API token ${token[1]}`;
-  return `By ${change.who} in this console`;
-}
-
-/**
- * One row of What changed: `{id, time, title, sub, dot, hand, unseen}`.
- * `dot` is the colour of the dot on the rail, `ok` for a hand edit that was
- * kept, and `bad` for a command that did not work.
- */
-export function changeRow(change, time) {
-  const hand = change.how === 'by hand';
-  const files = Array.isArray(change.files) ? change.files.length : 0;
-  const failed = Number.isInteger(change.status) && change.status !== 0;
-  const unseen = hand && !change.seen;
-  const sub = [
-    byWords(change),
-    hand && change.seen ? `kept by ${change.seen.by}` : null,
-    !hand && files > 0 ? `${files} ${files === 1 ? 'file' : 'files'}` : null,
-    failed ? 'it did not work' : null,
-    change.note || null,
-  ].filter(Boolean).join(' · ');
-  return {
-    id: change.id,
-    time: time.when(change.at),
-    title: hand ? `${filesWords(change)} changed outside this console` : change.title ?? change.action ?? 'A change',
-    sub,
-    dot: failed ? 'bad' : unseen ? 'warn' : hand ? 'ok' : 'info',
-    hand,
-    unseen,
-  };
 }
 
 // ---- This server -----------------------------------------------------------

@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What web-console/actions drives in each engine, with the lab's browser
-// runner (lab repository, docs/test-files.md, "Browser tests"): every
-// action of the console, called from the console's own page as its
-// buttons call it. An administrator signs in and unlocks the console, and
-// the page, with fetch() and nothing the page may not do (the content
-// security policy stays on), reads the list of actions from
-// GET /api/1/actions and calls the route of each with the arguments of
-// its first good example, with the session's cookie and token. A read is
+// runner (lab repository, docs/test-files.md, "Browser tests"): each
+// action of the console whose browser test it is, called from the
+// console's own page as its buttons call it. An administrator signs in and
+// unlocks the console, and the page, with fetch() and nothing the page may
+// not do (the content security policy stays on), reads the list of actions
+// from GET /api/1/actions and calls the route of each with the arguments
+// of its first good example, with the session's cookie and token. A read is
 // answered 200 with JSON. A change is answered 200 and done, and says
 // whether it changed anything; the action that its examples name puts back
 // what it did: the service the examples use is as it was at the end, by
@@ -17,7 +17,12 @@
 //
 // The list is the one admin actions --json prints in a terminal, which the
 // boot test admin-actions holds to the route's; this test takes what the
-// page reads, so an action is tried as soon as it is registered.
+// page reads, so an action is tried as soon as it is registered with this
+// test as its `tests.browser`. An action that names another, as the
+// Networking page's network.set names web-console/networking, is that
+// page's test's to call, where its effect is seen and put back: called
+// here with its example, it would change the machine under the other
+// tests, or cut the page off from it.
 //
 // certificate.renew is not called. It makes the machine's own certificate
 // anew, which admind then serves, and the browser has the old one
@@ -38,6 +43,9 @@ import {
 // The password that actions.toml gives the accounts it makes.
 const PASSWORD = "lab-console-password";
 
+// This test, as an action's `tests.browser` names it.
+const TEST = "web-console/actions";
+
 // The actions this test leaves alone, each with its reason above.
 // A long action, which a lab build has, answers 202 and runs as a task
 // (web-console/tasks), so it is left alone too.
@@ -46,13 +54,11 @@ const SKIPPED = new Set(["certificate.renew"]);
 // The reads that may be answered with the machine's own words, by error
 // ID, where the rest are 200: checks.last runs `dukovo-check --last`, which
 // has no kept result until the checks' first morning run or a run by hand
-// (ADM-123, the command's status 3); lab.missing, which a lab build has, is
-// a read of a command that no image has (ADM-129); metrics.usage reads the
-// history that metricsd writes every 10 minutes, which a machine that has
-// run for less has no points of (ADM-123).
+// (ADM-123, the command's status 3); metrics.usage reads the history that
+// metricsd writes every 10 minutes, which a machine that has run for less
+// has no points of (ADM-123).
 const MAY_REFUSE = new Map([
   ["checks.last", "ADM-123"],
-  ["lab.missing", "ADM-129"],
   ["metrics.usage", "ADM-123"],
 ]);
 
@@ -126,8 +132,12 @@ export default async function check(t) {
   const service = actions.find((each) => each.area === "services" && each.changes && !each.long)?.examples.good[0]?.name;
   const stateNow = async () => (lister && service ? serviceState(await call(lister, lister.examples.good[0]), service) : null);
 
+  // The actions whose browser test this is.
+  const mine = actions.filter((each) => each.tests?.browser === TEST);
+  ensure(mine.some((each) => each.changes), `no change in GET /api/1/actions names ${TEST} as its browser test`);
+
   // The reads first.
-  for (const action of actions.filter((each) => !each.changes)) {
+  for (const action of mine.filter((each) => !each.changes)) {
     const answer = await call(action, action.examples.good[0]);
     if (MAY_REFUSE.has(action.id) && answer.json?.error?.id === MAY_REFUSE.get(action.id)) continue;
     ensure(answer.status === 200, `${action.id} from the page was answered ${answer.status}: ${answer.text}`);
@@ -174,7 +184,7 @@ export default async function check(t) {
 
   // Then each change, and what puts it back.
   const before = await stateNow();
-  for (const action of actions.filter((each) => each.changes && !each.long && !SKIPPED.has(each.id))) {
+  for (const action of mine.filter((each) => each.changes && !each.long && !SKIPPED.has(each.id))) {
     const args = action.examples.good[0];
     const undo = action.examples.undo;
     if (undo === null) {

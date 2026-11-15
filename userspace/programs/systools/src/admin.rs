@@ -559,7 +559,8 @@ mod tests {
              lab.list     read    the person     GET /api/1/lab                  e.g. service list --json\n\
              lab.long     change  administrator  POST /api/1/lab/long            e.g. elevate admin lab-steps 20\n\
              lab.set      change  administrator  POST /api/1/lab/{name}/set      e.g. elevate service lab-web set\n\
-             lab.missing  read    the person     GET /api/1/lab/missing          e.g. lab-missing --json\n"
+             lab.missing  read    the person     GET /api/1/lab/missing          e.g. lab-missing --json\n\
+             lab.log      read    administrator  GET /api/1/lab/log              e.g. elevate lab-log --output json --lines 5\n"
         );
     }
 

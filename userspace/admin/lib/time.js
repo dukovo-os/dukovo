@@ -36,7 +36,7 @@ export function zones() {
 }
 
 /** The year, month, day and clock of the Unix time `ms` in `zone`. */
-function partsOf(zone, ms) {
+export function partsOf(zone, ms) {
   const formatter = new Intl.DateTimeFormat(LOCALE, {
     timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric',
     hour: 'numeric', minute: 'numeric', second: 'numeric',
@@ -47,7 +47,7 @@ function partsOf(zone, ms) {
 }
 
 /** How far `zone`'s clock is ahead of UTC at the Unix time `ms`, in milliseconds. */
-function offsetOf(zone, ms) {
+export function offsetOf(zone, ms) {
   const p = partsOf(zone, ms);
   return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ms / 1000) * 1000;
 }

@@ -55,7 +55,7 @@ use radix_vfs::{NodeRef, SliceMut, want};
 use super::{kmalloc, with_tree};
 use crate::fs::{self, FileRef};
 use crate::sched::{self, Name, wait};
-use crate::user::memory::{Anon, FileSource, Placement, SpaceObject, SpaceRef};
+use crate::user::memory::{Anon, FileSource, Placement, ProgramPages, SpaceObject, SpaceRef};
 use crate::user::methods::{Answer, answer};
 use crate::user::objects::{self, Object};
 use crate::user::process::{ARGS_KEPT, ProcessObject, ProcessRef, Start};
@@ -194,6 +194,9 @@ fn map_program(
         .random_bias(window.clone(), crate::user::random::place_bits())
         .map_err(not_executable)?;
     let placed = image.place(bias, window).map_err(not_executable)?;
+    // The file's pages every process that runs it shares, if it cannot
+    // change (ADR 0563).
+    let kept = ProgramPages::of(&file.node);
     for segment in image.segments() {
         let access = match segment.access {
             Access::Read => UserAccess::Read,
@@ -206,6 +209,7 @@ fn map_program(
             base: segment.offset - page_offset,
             size: page_offset + segment.filesz,
             name: name.filter(|_| access == UserAccess::ReadExecute).cloned(),
+            kept: kept.clone(),
         });
         let anon = Anon { access: Some(access), file: source, ..Anon::default() };
         let at = segment.first_page().wrapping_add(bias);

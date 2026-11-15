@@ -280,7 +280,11 @@ pub fn last(args: &mut Args) -> Result<i32, Fail> {
     let alive = |session: u32| {
         proc::process(u64::from(session)).is_ok_and(|p| p.session == p.number && !p.zombie())
     };
-    let lines = signins::history(&records, Some(sessions::boot_seconds()), alive);
+    // The start that runs is the one authd noted it recorded; with no
+    // note, the time now less the time since, which a clock set since
+    // the start moves.
+    let boot = signins::this_boot().unwrap_or_else(sessions::boot_seconds);
+    let lines = signins::history(&records, Some(boot), alive);
     if !everyone {
         hint("last");
     }

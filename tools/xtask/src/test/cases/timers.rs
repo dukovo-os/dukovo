@@ -10,7 +10,8 @@
 //! one with `every = "20s"` three times in a minute. The service that
 //! runs for 50 seconds every 20 does not start again while it runs: the
 //! log says its time was skipped. Moved forward by two hours, the clock
-//! makes each hourly timer run once, not twice. The power goes off, and
+//! makes each hourly timer run once, not twice, and last(1) still shows
+//! the start that runs as running. The power goes off, and
 //! in the second boot, whose clock is years later, the hourly service
 //! with `catch_up = true` runs once, 20 seconds after timerd starts, and
 //! the one with `catch_up = false` does not.
@@ -33,7 +34,7 @@ const SERVICES: [&str; 5] = ["tick20", "slow", "minute-mark", "hourly-mark", "ho
 /// The test.
 pub const CASE: Case = Case {
     name: "timers",
-    about: "service timers run services (ADR 0478): service list --timers shows each; a timer for each minute runs at the minute's start and one of every 20 seconds three times in a minute; a service that outlasts its period is not started again while it runs, and the log says the time was skipped; the clock moved two hours forward makes an hourly timer run once; after a power off, the second start, years later, runs an hourly timer with catch_up once and an hourly timer without it not at all",
+    about: "service timers run services (ADR 0478): service list --timers shows each; a timer for each minute runs at the minute's start and one of every 20 seconds three times in a minute; a service that outlasts its period is not started again while it runs, and the log says the time was skipped; the clock moved two hours forward makes an hourly timer run once, and last still shows the start that runs as running; after a power off, the second start, years later, runs an hourly timer with catch_up once and an hourly timer without it not at all",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "console-sign-in=off",
@@ -113,6 +114,9 @@ fn first_boot(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     run(vm, &format!("{}; {}; echo \"kept $?\"", save("hourly-mark", "mark-before"), save("hourly-catch", "catch-before")), &["kept 0"])?;
     run(vm, "timedatectl set-time '2020-01-01 13:30:00'; echo \"moved $?\"", &["moved 0"])?;
     vm.expect_anywhere("timerd: the clock moved forward by ")?;
+    // The start that runs is still the one last(1) shows running, years
+    // after the clock now says it was.
+    run(vm, "echo \"running: $(last -n 1 reboot | grep -c 'still running')\"", &["running: 1"])?;
     run(
         vm,
         &format!(

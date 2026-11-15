@@ -64,23 +64,26 @@ export function makeWork({ get, post, drawer }) {
    */
   function adopt(element, action, args, always) {
     let loaded = false;
-    const fill = () => {
+    const entry = { element, always, filled: false, fill: null };
+    entry.fill = () => {
       if (loaded) return;
       loaded = true;
       load(action, args).then(
         (answer) => {
           element.textContent = answer.command;
           element.setAttribute('aria-label', `Show the command: ${answer.command}`);
+          // Shown once it has its words, never empty: a button needs a name.
+          entry.filled = true;
+          element.hidden = !(on || always);
         },
         () => element.remove(),
       );
     };
     element.addEventListener('click', () => showDrawer(action, args, element));
-    const entry = { element, always, fill };
     // The ones in the drawer outlive a route; those that it has closed are dropped here.
     for (const old of inlines) if (old.always && !old.element.isConnected) inlines.delete(old);
     inlines.add(entry);
-    if (on || always) fill();
+    if (on || always) entry.fill();
   }
 
   return {
@@ -91,7 +94,7 @@ export function makeWork({ get, post, drawer }) {
     setOn(next) {
       on = next;
       for (const entry of inlines) {
-        entry.element.hidden = !(on || entry.always);
+        entry.element.hidden = !(entry.filled && (on || entry.always));
         if (on) entry.fill();
       }
     },

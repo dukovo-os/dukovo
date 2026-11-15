@@ -1,0 +1,93 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Reliability pages (design 7): what the page of days, one start and the
+ * journal draw that console.css, pages.css and boards.css do not. The events'
+ * dots have a shape as well as a colour. The phone's layout is the same
+ * markup under the container query the shell uses (7.5). Same rules as
+ * console.css: rem, and px for borders and focus rings.
+ */
+.rel { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+.rel .grid.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 27.143rem), 1fr)); }
+.rel-health { display: flex; flex-wrap: wrap; align-items: baseline; gap: .571rem; }
+.rel-health .st { font-size: 1.571rem; }
+
+/* The dots of the events: a circle for a change or a restart, a triangle for a warning, a diamond for what failed or was taken back. */
+.ev { display: inline-block; width: .857rem; height: .857rem; flex: none; vertical-align: middle; border-radius: 50%; background: #2C7FD4; }
+.ev.bad { border-radius: 0; background: #C4392F; clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.ev.warn { border-radius: 0; background: #D89A2A; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.dk.hc .ev { background: #FFD166; }
+.dk.hc .ev.bad { background: #FF8C8C; }
+.dk.hc .ev.warn { background: #FFB86B; }
+
+/* The bars of the problems a day. */
+.rel-bars .bar { fill: var(--accent); }
+.rel-numbers summary { cursor: pointer; padding: .286rem 0; color: var(--link); }
+.rel-numbers .tbl-box { margin-top: .571rem; }
+
+/* The table of events: a row for each kind, a column for each day or month. */
+.rel-table { border-collapse: collapse; width: 100%; min-width: 61.4rem; table-layout: fixed; }
+.rel-table th, .rel-table td { border: 1px solid var(--border); height: 1.857rem; text-align: center; padding: 0; font-size: .857rem; }
+.rel-table th[scope="row"] { width: 6.571rem; text-align: left; padding: 0 .571rem; font-weight: 600; background: var(--pane); }
+.rel-table thead th { font-weight: 400; color: var(--muted); background: var(--pane); }
+.rel-table td.today, .rel-table th.today { background: var(--sel-1); box-shadow: inset 0 0 0 2px var(--sel-b); }
+.rel-cell { display: inline-flex; align-items: center; justify-content: center; gap: .286rem; min-width: 1.714rem; min-height: 1.714rem; padding: 0 .214rem;
+  border: 0; border-radius: .214rem; background: none; color: var(--text); font: inherit; font-size: .857rem; cursor: pointer; }
+.rel-cell:hover { background: var(--hov-2); }
+.rel-cell[aria-pressed="true"] { background: var(--sel-1); outline: 2px solid var(--accent); outline-offset: -2px; }
+.rel-count { font-variant-numeric: tabular-nums; }
+.rel-legend { gap: 1rem; }
+.rel-narrow { display: none; margin: 0; padding: 0; list-style: none; }
+.rel-day:empty, .rel-export:empty, .rel-script:empty { display: none; }
+
+/* A failed start, crashes, alerts. */
+.rel-changes { margin: 0; padding-left: 1.286rem; }
+.rel-offer { display: flex; flex-direction: column; gap: .571rem; }
+.rel-dumps { display: flex; flex-direction: column; gap: 1rem; margin: 0; padding: 0; list-style: none; }
+.rel-dumps li { display: flex; flex-direction: column; gap: .429rem; min-width: 0; }
+.rel-dumps .mono { overflow-wrap: anywhere; }
+.rel-tbl th[scope="row"] { text-align: left; font-weight: 600; font-size: 1rem; color: var(--text); background: none; white-space: normal;
+  border-bottom: 1px solid var(--border); vertical-align: top; }
+.rel-tbl tr:last-child th[scope="row"] { border-bottom: 0; }
+.rel-tbl td { overflow-wrap: anywhere; }
+.rel-tbl tr.worse td:last-child { color: var(--bad); font-weight: 600; }
+
+/* One start, the journal, and the form that copies the settings. */
+.rel-against { max-width: 26rem; }
+.rel-slowest { margin: 0; padding-left: 1.286rem; }
+.rel-filters { display: flex; flex-wrap: wrap; gap: .857rem; align-items: flex-end; }
+.rel-filters .field { flex: 1 1 12rem; max-width: 18rem; }
+.rel-pick { width: 2.857rem; }
+.rel-pick-box { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; }
+.rel-pick-box input { width: 1.286rem; height: 1.286rem; margin: 0; }
+.rel-sub { display: block; }
+.rel-export-form { display: flex; flex-direction: column; gap: .857rem; max-width: 44rem; }
+.rel-export-output { display: flex; flex-direction: column; gap: .571rem; }
+.rel-export-output:empty, .rel-export-command:empty { display: none; }
+
+/* The phone (7.5): the table of events is a list for each day, newest first, the starts and the journal are cards, and the buttons are 44 px. */
+@container (max-width: 51.4rem) {
+  .rel-wide { display: none; }
+  .rel-narrow { display: flex; flex-direction: column; gap: .857rem; }
+  .rel-narrow li { display: flex; flex-direction: column; gap: .429rem; padding-bottom: .857rem; border-bottom: 1px solid var(--border); }
+  .rel-narrow-cells { display: flex; flex-wrap: wrap; gap: .571rem; }
+  .rel-narrow .rel-cell { min-height: 3.143rem; padding: 0 .857rem; border: 1px solid var(--btn-b); background: linear-gradient(var(--btn-1), var(--btn-2)); font-size: .929rem; }
+  .rel-narrow .rel-cell[aria-pressed="true"] { background: linear-gradient(var(--sel-1), var(--sel-2)); }
+  .rel-tbl th[scope="row"] { display: block; padding: .286rem .571rem; border: 0; }
+  .rel-tbl td:empty { display: none; }
+  .rel-pick-box { width: 3.143rem; height: 3.143rem; }
+  .rel-pick-box input { width: 1.714rem; height: 1.714rem; }
+  .rel-filters .field { flex-basis: 100%; max-width: none; }
+  .rel-against { max-width: none; }
+  .rel-toolbar .btn, .rel-offer .btn { min-height: 3.143rem; }
+}
+
+/* Forced colours: the dots keep their shapes in the text colour, the bars and the chosen cell in system colours. */
+@media (forced-colors: active) {
+  .dk .ev { forced-color-adjust: none; background: CanvasText; }
+  .dk .rel-bars .bar { fill: CanvasText; }
+  .dk .rel-table th, .dk .rel-table td { border-color: CanvasText; }
+  .dk .rel-cell { border: 1px solid ButtonText; }
+  .dk .rel-cell[aria-pressed="true"] { outline: 2px solid Highlight; }
+}

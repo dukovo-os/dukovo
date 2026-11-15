@@ -75,6 +75,9 @@ are kept.
 *--json*
 	Write one line of JSON, for the web console: the steps, the chain,
 	the slowest services and, with *--compare*, the other start's steps.
+	With *--compare* and no good start with times before it, as on a
+	computer's first start, *compared_with* is null where the report
+	would end with an error.
 
 # EXIT STATUS
 
