@@ -275,6 +275,24 @@ pub fn with_speech() -> bool {
     has_flag(&line, "speech")
 }
 
+/// Whether this computer runs under a hypervisor, which CPUID's leaf 1
+/// says in bit 31 of ECX, as tune(8) finds it: the server preset's
+/// performance profile is the virtual machine's then.
+#[must_use]
+pub fn under_hypervisor() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: every x86-64 processor has CPUID, which only reads.
+        #[allow(unused_unsafe)]
+        let leaf = unsafe { core::arch::x86_64::__cpuid(1) };
+        leaf.ecx & (1 << 31) != 0
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
 /// Whether the kernel has the flag `repair-startup`, as the install
 /// stick's "Repair startup" entry gives it (ADR 0503).
 #[must_use]

@@ -72,7 +72,7 @@ pub fn output(ctx: &Ctx, cmd: &mut Command) -> Result<Output> {
     Ok(output)
 }
 
-fn spawn_error(program: &str, err: &std::io::Error) -> Error {
+pub(crate) fn spawn_error(program: &str, err: &std::io::Error) -> Error {
     if err.kind() == std::io::ErrorKind::NotFound {
         Error::new(format!("`{program}` is not installed"))
             .hint("run `./ob doctor` to see what is missing")

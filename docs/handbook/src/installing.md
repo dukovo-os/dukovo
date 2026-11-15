@@ -244,6 +244,26 @@ Remove the stick and restart: the computer starts the installed system,
 and the administrator signs in at the console with the password whose
 hash the answers gave.
 
+## What the Server profile sets
+
+The Server profile, and Cloud and VM, which is Server set up from the
+cloud's data, write four settings besides the web console and the
+features you tick, for a machine nobody sits at. The answers file's
+`"profile": "server"` writes them too, and a Cloud image has them from
+its first boot ([Cloud and virtual machines](cloud.md)). Each is a file
+that says in its first lines what it sets, and each is changed afterwards
+as the table says:
+
+| What | Where | To change it |
+| --- | --- | --- |
+| Jobs of `crontab` and `at` run while their owner is signed out | `/system/settings/jobs.toml`: `keep_running = true` | Set it to `false`, or choose for one person with `crontab --keep-running off`, or bar an account with `elevate user set --jobs-signed-out never NAME` ([Scheduled jobs](scheduled-jobs.md)) |
+| The performance profile is `throughput`, or `vm-guest` when the computer runs under a hypervisor | `/system/settings/tune.toml` | `elevate tune set balanced` goes back to the default; `tune list` shows the others ([Performance profiles](performance.md)) |
+| Updates stage by themselves, and the machine restarts into one at 03:30, local time | `/system/settings/sysupdate/updates.toml`: `unattended = true` and `restart = "03:30"` | Edit the file: `unattended = false` makes an update wait for `elevate update apply`; another `restart` time moves the restart, and removing it leaves the restart to you ([Updates](updates.md)) |
+| `dukovo-check` looks at the computer's security and health each morning | `/system/settings/spark/services/settings.d/dukovo-check.toml`: `enabled = true` | `elevate service dukovo-check disable` stops it; `dukovo-check --last` shows what it found ([Hardening](hardening.md)) |
+
+The Minimal profile writes none of them. To get them on a machine that
+was installed without, write the same lines.
+
 ## Starting the installed system
 
 An installed system starts quietly. The boot menu stays hidden, and

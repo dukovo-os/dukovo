@@ -14,15 +14,67 @@
 #
 # On the server DUKOVO_SERVER_ROOT is empty. The boot tests set it to a
 # folder that stands in for the server's /, and run these scripts there.
+# The other places are an Ubuntu server's unless the environment names
+# others, as the service files of a Dukovo server do (dukovo/README.md).
 
 server_root=${DUKOVO_SERVER_ROOT:-}
-home=$server_root/var/lib/dukovo-system
-incoming=$server_root/var/lib/dukovo-system-incoming
-program=$server_root/usr/local/lib/dukovo-system/system-release
-site=$server_root/srv/dukovo-system
+home=$server_root${DUKOVO_SYSTEM_HOME:-/var/lib/dukovo-system}
+program=$server_root${DUKOVO_SYSTEM_PROGRAM:-/usr/local/lib/dukovo-system/system-release}
+site=$server_root${DUKOVO_SYSTEM_SITE:-/srv/dukovo-system}
 
-exec 9>"$home/lock"
-flock 9
+work=
+lock_held=
+# Ends a run: takes away the online key's copy and lets the next run start.
+finish() {
+	if [ -n "$work" ]; then rm -rf "$work"; fi
+	if [ -n "$lock_held" ]; then rm -rf "$lock_held"; fi
+}
+trap finish EXIT
+
+# One run at a time. flock(1) does it where there is one. Dukovo has
+# none: there the lock is a folder, which mkdir makes for one run only,
+# in a place that is empty again after a restart, and a lock held more
+# than 30 minutes belongs to a run that was killed and is taken over.
+if command -v flock >/dev/null 2>&1; then
+	exec 9>"$home/lock"
+	flock 9
+else
+	lock=${DUKOVO_LOCK:?DUKOVO_LOCK names the lock folder where there is no flock}
+	# The folder is Spark's, made for a job and gone after a restart; a
+	# rollout run by hand finds it missing before the first job.
+	mkdir -p "${lock%/*}"
+	waited=0
+	until mkdir "$lock" 2>/dev/null; do
+		if [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+			echo "system-site.sh: taking over $lock, held for more than 30 minutes" >&2
+			rm -rf "$lock.stale"
+			mv "$lock" "$lock.stale" 2>/dev/null && rm -rf "$lock.stale"
+			continue
+		fi
+		if [ "$waited" -ge 600 ]; then
+			echo "system-site.sh: another run has held $lock for 10 minutes" >&2
+			exit 75
+		fi
+		sleep 5
+		waited=$((waited + 5))
+	done
+	lock_held=$lock
+fi
+
+# The online key: a file in the home on an Ubuntu server. On a Dukovo
+# server it is a Spark secret, which holds the key as base64, since a
+# secret loses a trailing newline and a key is binary: the job's own, or
+# the refresh job's when `ob release rollout` runs this through elevate,
+# outside a job. It is decoded into a folder of /tmp that `finish` takes
+# away.
+if [ -e "$home/online.key" ]; then
+	key=$home/online.key
+else
+	secret=${SECRETS_DIRECTORY:-/system/state/spark/secrets/dukovo-system-refresh}/online-key
+	work=$(umask 077 && mktemp -d)
+	(umask 077 && base64 -d "$secret" >"$work/online.key")
+	key=$work/online.key
+fi
 
 # Runs system-release's command "$1" on a copy of the repository served,
 # with `--repo` the copy and the online key, and the rest of "$@"; then
@@ -44,7 +96,7 @@ sign_site() {
 		# place, so the files the two folders share are never changed.
 		cp -al "$site/$current/." "$next/" || return 1
 	fi
-	if ! "$program" "$command" --repo "$next" --online-key "$home/online.key" "$@"; then
+	if ! "$program" "$command" --repo "$next" --online-key "$key" "$@"; then
 		rm -rf "$next"
 		return 1
 	fi

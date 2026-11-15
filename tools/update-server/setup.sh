@@ -45,9 +45,9 @@ if ! command -v caddy >/dev/null 2>&1 &&
 	exit 1
 fi
 
-echo "==> Installing Caddy, rsync and curl"
+echo "==> Installing Caddy and curl"
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy rsync curl >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq caddy curl >/dev/null
 
 echo "==> The catalog's user, and who may deploy"
 getent group dukovo-deploy >/dev/null || groupadd --system dukovo-deploy

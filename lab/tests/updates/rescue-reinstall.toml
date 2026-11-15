@@ -61,7 +61,7 @@ screen = "Back in Rescue."
 [[step]]
 type = "3\n"
 [[step]]
-screen = "type the folder or file:"
+screen = "or the folder or file:"
 [[step]]
 type = "\n"
 [[step]]

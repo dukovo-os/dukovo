@@ -22,7 +22,11 @@ $ ./ob image --cloud
 ```
 
 This writes the disk of an installed system, with cloud-setup and sshd
-turned on, in five formats:
+turned on, in five formats. It also has the server preset of the Cloud
+profile: jobs that run while their owner is signed out, the `vm-guest`
+performance profile, updates that stage by themselves and restart at
+03:30, and the daily `dukovo-check`; [Installing](installing.md#what-the-server-profile-sets)
+says what each is and how to change it.
 
 | File | For |
 | --- | --- |

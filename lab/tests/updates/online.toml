@@ -9,9 +9,10 @@
 # machine trusts names. Its stable channel offers a release that updates
 # only from a bridge, so the machine checks, is told the bridge comes
 # first, fetches only the files its slot lacks, stages the bridge, and
-# proves it at the restart. The release is paused on its first day, so
-# the machine is a canary, which takes it (ADR 0469).
-about = "The machine checks a real update server's stable channel over the lab network, signed by the server's own key, is told a bridge release comes first, fetches only the files it lacks, stages the bridge and proves it at the restart (ADRs 0466, 0467)"
+# proves it at the restart; Rescue then follows it (ADR 0543). The
+# release is paused on its first day, so the machine is a canary, which
+# takes it (ADR 0469).
+about = "The machine checks a real update server's stable channel over the lab network, signed by the server's own key, is told a bridge release comes first, fetches only the files it lacks, stages the bridge and proves it at the restart (ADRs 0466, 0467), and Rescue is written again from the bridge (ADR 0543)"
 time = "15m"
 fresh = true
 host_needs = ["python3"]
@@ -54,3 +55,9 @@ expect = "bridge"
 run = "sysupdate status"
 root = true
 expect = ["Running:  slot B", "-test.bridge, the default"]
+# Rescue follows the bridge that proved itself (ADR 0543): the stage
+# writes it again while the machine goes on.
+[[step]]
+run = "sh -c 'while service sysupdate-stage status > /dev/null; do sleep 2; done; sysupdate status | grep Rescue:'"
+root = true
+expect = "-test.bridge"

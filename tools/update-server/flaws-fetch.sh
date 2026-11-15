@@ -9,7 +9,7 @@
 # the catalog's key; what it fetches is only ever read.
 set -eu
 
-dir=/var/lib/dukovo-flaws
+dir=${DUKOVO_FLAWS_DIR:-/var/lib/dukovo-flaws}
 ecosystems=${ECOSYSTEMS:-crates.io}
 
 for ecosystem in $ecosystems; do

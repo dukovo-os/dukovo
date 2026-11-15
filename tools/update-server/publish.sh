@@ -3,19 +3,27 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Publishes what a deploy copied into the incoming folder (ADR 0382), as
-# the user dukovo-catalog, when dukovo-catalog-publish.path sees `ready`:
-# the catalog's public keys and metadata, from the source tree, and the
-# bundles they sign, which are added to the store and never replaced.
-# catalog-repo then signs a snapshot and timestamp with the online key,
-# lays out the catalog and reads it back with the client before it is
-# served (site.sh). What happened is written to `result`, for the deploy
-# to show.
+# the user dukovo-catalog, when dukovo-catalog-publish.path sees `ready`
+# (on a Dukovo server, dukovo/dukovo-catalog-publish.toml starts it each
+# minute, as the service dukovo-catalog-publish): the catalog's public
+# keys and metadata, from the source tree, and the bundles they sign,
+# which are added to the store and never replaced. catalog-repo then
+# signs a snapshot and timestamp with the online key, lays out the
+# catalog and reads it back with the client before it is served
+# (site.sh). What happened is written to `result`, for the deploy to
+# show.
 set -eu
 
-# shellcheck source=tools/update-server/site.sh
-. /usr/local/lib/dukovo-catalog/site.sh
+incoming=${DUKOVO_CATALOG_INCOMING:-/var/lib/dukovo-catalog-incoming}
 
-incoming=/var/lib/dukovo-catalog-incoming
+# A Dukovo server's timer starts this each minute, and there is nothing
+# to do until a deploy says `ready`.
+if [ ! -e "$incoming/ready" ]; then
+	exit 0
+fi
+
+# shellcheck source=tools/update-server/site.sh
+. "$(dirname "$0")/site.sh"
 
 rm -f "$incoming/ready" "$incoming/result"
 
@@ -68,6 +76,8 @@ else
 	status=failed
 fi
 printf '%s\n%s\n' "$status" "$output" >"$incoming/result.partial"
+# The deploy that waits for it is another account.
+chmod 0664 "$incoming/result.partial"
 mv "$incoming/result.partial" "$incoming/result"
 echo "$output"
 [ "$status" = published ]

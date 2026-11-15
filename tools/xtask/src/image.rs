@@ -814,6 +814,10 @@ const BIOS_BOOT_SECTORS: u64 = 2048;
 /// The label of an image's EFI system partition.
 const ESP_LABEL: &str = "DUKOVO";
 
+/// The EFI system partition of an installed system's test image: the
+/// installer's (`EFI_BYTES`, installer/src/plan.rs).
+const INSTALLED_ESP_BYTES: u64 = 512 << 20;
+
 /// Makes the disk image `spec.output` from the staging directory (ADR
 /// 0306): a GPT with GRUB's `core.img` in its first partition, a BIOS
 /// boot partition, and an EFI system partition second, FAT32, holding
@@ -829,9 +833,13 @@ fn make_stick(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result
     let (boot, core) = (read(&images.boot)?, read(&images.core)?);
 
     // Room for what the staging tree holds, a little more, and a
-    // filesystem of at least 64 MiB, which FAT32's clusters need.
+    // filesystem of at least 64 MiB, which FAT32's clusters need. An
+    // installed system's is the installer's 512 MiB, which Rescue is
+    // written to as each update proves itself (ADR 0543).
     let content = tree_bytes(&spec.staging)?;
-    let esp_bytes = (content + content / 8 + (16 << 20)).max(64 << 20).next_multiple_of(1 << 20);
+    let least =
+        if matches!(spec.menu, Menu::Installed(_)) { INSTALLED_ESP_BYTES } else { 64 << 20 };
+    let esp_bytes = (content + content / 8 + (16 << 20)).max(least).next_multiple_of(1 << 20);
     let esp_sectors = esp_bytes / SECTOR as u64;
     // The table and a MiB's gap before the partitions, and a MiB after
     // them, which the backup table is at the end of.
@@ -1142,9 +1150,22 @@ pub fn make_root(
     made
 }
 
+/// The server preset's files, which the installer writes into a Server or
+/// Cloud install too, from the same files (userspace/programs/installer/
+/// preset/): a cloud image has the Cloud profile's settings without going
+/// through the installer.
+const PRESET_JOBS: &str = include_str!("../../../userspace/programs/installer/preset/jobs.toml");
+const PRESET_TUNE: &str = include_str!("../../../userspace/programs/installer/preset/tune.toml");
+const PRESET_UPDATES: &str =
+    include_str!("../../../userspace/programs/installer/preset/updates.toml");
+const PRESET_CHECK: &str =
+    include_str!("../../../userspace/programs/installer/preset/dukovo-check.toml");
+
 /// Turns cloud-setup(8) and sshd(8) on in `settings`, a root's
 /// `@settings`, with override files, as `service NAME enable` does,
-/// without changing the system's files (ADR 0328).
+/// without changing the system's files (ADR 0328), and gives it the
+/// server preset's settings (ADR 0317), with the performance profile of a
+/// virtual machine: a cloud image runs in one.
 fn stage_cloud(settings: &Path) -> Result<()> {
     let overrides = settings.join("spark/services/settings.d");
     process::create_dir(&overrides)?;
@@ -1157,6 +1178,19 @@ fn stage_cloud(settings: &Path) -> Result<()> {
                     # over SSH with the keys the cloud gives (ADR 0328).
 enabled = true
 ";
+        std::fs::write(&path, text).context(|| format!("writing {}", path.display()))?;
+        set_mode(&path, 0o644)?;
+    }
+    process::create_dir(&settings.join("sysupdate"))?;
+    set_mode(&settings.join("sysupdate"), 0o755)?;
+    let vm_guest = PRESET_TUNE.replace("@PROFILE@", "vm-guest");
+    for (name, text) in [
+        ("jobs.toml", PRESET_JOBS),
+        ("tune.toml", vm_guest.as_str()),
+        ("sysupdate/updates.toml", PRESET_UPDATES),
+        ("spark/services/settings.d/dukovo-check.toml", PRESET_CHECK),
+    ] {
+        let path = settings.join(name);
         std::fs::write(&path, text).context(|| format!("writing {}", path.display()))?;
         set_mode(&path, 0o644)?;
     }
@@ -1551,6 +1585,30 @@ mod tests {
         let err = check_size(&path).unwrap_err().to_string();
         assert!(err.contains("4096 MiB, not under the 4096 MiB"), "{err}");
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_cloud_image_has_the_server_preset_for_a_virtual_machine() {
+        let settings = std::env::temp_dir().join(format!("ob-cloud-preset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&settings);
+        std::fs::create_dir_all(&settings).unwrap();
+        stage_cloud(&settings).unwrap();
+        let read = |name: &str| -> toml::Table {
+            toml::from_str(&std::fs::read_to_string(settings.join(name)).unwrap()).unwrap()
+        };
+        assert_eq!(read("jobs.toml")["keep_running"].as_bool(), Some(true));
+        assert_eq!(read("tune.toml")["profile"].as_str(), Some("vm-guest"));
+        let updates = read("sysupdate/updates.toml");
+        assert_eq!(updates["unattended"].as_bool(), Some(true));
+        assert_eq!(updates["restart"].as_str(), Some("03:30"));
+        let check = read("spark/services/settings.d/dukovo-check.toml");
+        assert_eq!(check["enabled"].as_bool(), Some(true));
+        // The overrides it already made are still there.
+        for name in ["cloud-setup", "sshd"] {
+            let file = format!("spark/services/settings.d/{name}.toml");
+            assert_eq!(read(&file)["enabled"].as_bool(), Some(true));
+        }
+        std::fs::remove_dir_all(&settings).unwrap();
     }
 
     #[test]

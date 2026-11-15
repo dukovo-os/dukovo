@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Signs the list of the bundles' known flaws each day (ADR 0389), an hour
+# after dukovo-flaws-fetch has fetched OSV's advisories: catalog-repo
+# matches them with the components each bundle's SBOM lists, signs the
+# list with the online key, which the targets delegate it to, and
+# publishes it with a new snapshot and timestamp. Advisories more than two
+# days old are not used. It reads the advisories and has no network.
+#
+# service.toml(5) explains each setting, `service check dukovo-catalog-flaws` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Sign the catalog's list of known flaws"
+program = "/system/commands/sh"
+arguments = ["/system/state/lib/dukovo-update-server/flaws.sh"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+# This job's own copy of the online key, as base64: a secret loses a
+# trailing newline and a key is binary. `service secret set` puts it in.
+secrets = ["online-key"]
+
+[environment]
+DUKOVO_CATALOG_HOME = "/system/state/lib/dukovo-catalog"
+DUKOVO_CATALOG_INCOMING = "/system/state/lib/dukovo-catalog-incoming"
+DUKOVO_CATALOG_PROGRAM = "/system/state/lib/dukovo-update-server/catalog-repo"
+DUKOVO_CATALOG_SITE = "/system/state/lib/dukovo-catalog-site"
+DUKOVO_LOCK = "/system/live/dukovo-update-server/catalog.lock"
+DUKOVO_FLAWS_DIR = "/system/state/lib/dukovo-flaws"
+
+[limits]
+memory = "1G"
+
+[timer]
+at = ["0 4 * * *"]
+spread = "30m"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# script and the update server's own folders it works in, and nothing
+# else of the system's.
+[permissions]
+files.read = ["/system/state/lib/dukovo-update-server", "/system/state/lib/dukovo-flaws"]
+files.read-write = ["/system/state/lib/dukovo-catalog", "/system/state/lib/dukovo-catalog-site", "/system/live/dukovo-update-server"]

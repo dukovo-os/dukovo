@@ -405,7 +405,7 @@ fn make_alice(vm: &mut Vm) -> Result<(), String> {
 
 /// alice's key in her authorized_keys, and sshd turned on, which writes
 /// its host key and listens. The host's `port` reaches it.
-fn sshd_on(vm: &mut Vm, alice_key: &str, port: u16) -> Result<(), String> {
+pub fn sshd_on(vm: &mut Vm, alice_key: &str, port: u16) -> Result<(), String> {
     answer_prompt(
         vm,
         "$",

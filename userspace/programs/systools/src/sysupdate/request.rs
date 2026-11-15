@@ -12,7 +12,9 @@
 //! [`OUTCOME`]; the asker reads it back.
 //!
 //! The request is one line: `system`, to stage the release the channel
-//! offers, or `firmware SET`, to stage a firmware set. The outcome is a
+//! offers; `firmware SET`, to stage a firmware set; or `rescue`, to write
+//! Rescue again from the release that runs (ADR 0543), which the health
+//! check asks without waiting ([`start`]). The outcome is a
 //! `said` line for each line the stage printed, then `ok` or
 //! `failed REASON`. A stage that ends with its outcome written has
 //! handled its request, however it came out, so it exits 0 and Spark does
@@ -63,6 +65,8 @@ pub enum What {
     System,
     /// The firmware set of this name.
     Firmware(String),
+    /// Rescue, written again from the release that runs.
+    Rescue,
 }
 
 impl What {
@@ -71,6 +75,7 @@ impl What {
         match self {
             What::System => "system\n".into(),
             What::Firmware(set) => format!("firmware {set}\n"),
+            What::Rescue => "rescue\n".into(),
         }
     }
 
@@ -84,7 +89,8 @@ impl What {
         match (words.next(), words.next(), words.next()) {
             (Some("system"), None, None) => Ok(What::System),
             (Some("firmware"), Some(set), None) if plain(set) => Ok(What::Firmware(set.into())),
-            _ => Err(format!("{REQUEST} asks for neither `system` nor `firmware SET`")),
+            (Some("rescue"), None, None) => Ok(What::Rescue),
+            _ => Err(format!("{REQUEST} asks for none of `system`, `firmware SET` and `rescue`")),
         }
     }
 }
@@ -166,6 +172,7 @@ fn stage_what(what: &What) -> Result<(), Fail> {
             stage::stage(&root, &stage::Asked { repo: None, version: None, stop: None })
         }
         What::Firmware(set) => firmware::stage(&root, None, Some(set)),
+        What::Rescue => super::keep_rescue::write_current(&root),
     }
 }
 
@@ -186,14 +193,7 @@ fn write_outcome(text: &str) -> Result<(), Fail> {
 /// What stopped the stage, in its words; or that it could not be asked or
 /// ended without an outcome.
 pub fn ask(what: &What) -> Result<Vec<String>, Fail> {
-    let folder = Path::new(REQUEST).parent().unwrap_or(Path::new("/"));
-    std::fs::create_dir_all(folder).map_err(|err| util::failed(&folder.display(), err))?;
-    let asking = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(ASKING)
-        .map_err(|err| util::failed(&ASKING, err))?;
+    let asking = asking()?;
     // SAFETY: flock takes a descriptor `asking` owns; the lock goes when
     // it is closed, as this function returns or the program ends.
     if unsafe { libc::flock(asking.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
@@ -223,6 +223,41 @@ pub fn ask(what: &What) -> Result<Vec<String>, Fail> {
             "the stage ended without saying how: `log {SERVICE}` shows what it printed"
         ))),
     }
+}
+
+/// Has [`SERVICE`] do `what`, and does not wait for it: for the health
+/// check, which must not hold a start up for a write of minutes. Asks
+/// nothing, and returns `false`, while another asker is at work or a stage
+/// runs; the health check asks again at the next start.
+///
+/// # Errors
+///
+/// If the request cannot be written or Spark refuses the start.
+pub fn start(what: &What) -> Result<bool, Fail> {
+    let asking = asking()?;
+    // SAFETY: as in `ask`; the lock is held until the start is asked,
+    // after which another asker sees the stage run and waits for it.
+    if unsafe { libc::flock(asking.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+        || stage_runs()
+    {
+        return Ok(false);
+    }
+    let _ = std::fs::remove_file(OUTCOME);
+    std::fs::write(REQUEST, what.to_text()).map_err(|err| util::failed(&REQUEST, err))?;
+    service::change("start", SERVICE, &["--no-wait".to_string(), "--quiet".to_string()])?;
+    Ok(true)
+}
+
+/// The file whose lock an asker holds, made with its folder if need be.
+fn asking() -> Result<std::fs::File, Fail> {
+    let folder = Path::new(REQUEST).parent().unwrap_or(Path::new("/"));
+    std::fs::create_dir_all(folder).map_err(|err| util::failed(&folder.display(), err))?;
+    OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(ASKING)
+        .map_err(|err| util::failed(&ASKING, err))
 }
 
 /// The outcome of the stage, once it has written one or no longer runs.
@@ -263,10 +298,12 @@ mod tests {
 
     #[test]
     fn a_request_is_what_the_stage_reads_back() {
-        for what in [What::System, What::Firmware("2026.2.1".into())] {
+        for what in [What::System, What::Firmware("2026.2.1".into()), What::Rescue] {
             assert_eq!(What::parse(&what.to_text()), Ok(what));
         }
-        for text in ["", "system now\n", "firmware\n", "firmware a b\n", "firmware ../x\n"] {
+        for text in
+            ["", "system now\n", "firmware\n", "firmware a b\n", "firmware ../x\n", "rescue now\n"]
+        {
             assert!(What::parse(text).is_err(), "{text:?}");
         }
         assert!(What::parse("firmware .hidden\n").is_err());

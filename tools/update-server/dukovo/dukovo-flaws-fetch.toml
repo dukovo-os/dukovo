@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Fetches OSV's advisories each day (ADR 0389), for dukovo-catalog-flaws
+# to sign the list of the bundles' known flaws from: for each ecosystem
+# ECOSYSTEMS names, OSV's export of all its advisories. Of the update
+# server's jobs it alone reaches the network, and it has no secret, so it
+# cannot read the online key; what it fetches is only ever read. Another
+# ecosystem is named with an override file (service.toml(5)):
+# settings.d/dukovo-flaws-fetch.toml with an [environment] table.
+#
+# service.toml(5) explains each setting, `service check dukovo-flaws-fetch` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Fetch OSV's advisories for the catalog's known flaws"
+program = "/system/commands/sh"
+arguments = ["/system/state/lib/dukovo-update-server/flaws-fetch.sh"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+
+[environment]
+DUKOVO_FLAWS_DIR = "/system/state/lib/dukovo-flaws"
+ECOSYSTEMS = "crates.io"
+
+[limits]
+memory = "128M"
+
+[timer]
+at = ["0 3 * * *"]
+spread = "30m"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# script and the update server's own folders it works in, and nothing
+# else of the system's, and the network out to OSV.
+[permissions]
+network.outbound = true
+files.read = ["/system/state/lib/dukovo-update-server"]
+files.read-write = ["/system/state/lib/dukovo-flaws"]

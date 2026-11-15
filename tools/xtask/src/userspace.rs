@@ -521,6 +521,26 @@ pub fn host_cargo_of(ctx: &Ctx, subcommand: &str, packages: &[&str]) -> Command 
     cmd
 }
 
+/// Builds the program `package` of the workspace of programs on Rust's
+/// standard library for Radix, optimised, as it is not one of the
+/// image's, and gives its path: the update server's `catalog-repo`, which
+/// a Dukovo server runs and builds nothing itself.
+///
+/// # Errors
+///
+/// If the ports' toolchain or the program does not build.
+pub fn std_program(ctx: &Ctx, package: &str) -> Result<PathBuf> {
+    install_headers(ctx)?;
+    let ports = ports::build_all(ctx, &[])?;
+    forget_stale_std(ctx)?;
+    step(&format!("Building {package} for Radix"));
+    let mut cmd = std_cargo(ctx, "build", &ports.toolchain);
+    cmd.args(["-p", package, "--release"]);
+    process::run(ctx, &mut cmd)?;
+    check_patched(ctx, &ports.toolchain)?;
+    Ok(ctx.target.join("programs").join(STD_TARGET_NAME).join("release").join(package))
+}
+
 /// Checks that the programs on Rust's standard library take each crate
 /// the ports patch for Radix from the port, not from crates.io: Cargo
 /// keeps a version Cargo.lock names that the port has no patch for.

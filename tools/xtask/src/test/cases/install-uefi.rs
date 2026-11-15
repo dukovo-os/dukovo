@@ -14,7 +14,10 @@
 //! alice signs in on the console with her password, and finds the
 //! system, the settings and the saved answers the install left, without
 //! the password's hash, and File sharing, which the answers' Server
-//! profile added, running.
+//! profile added, running. The profile also wrote the server preset: jobs
+//! that run signed out, the performance profile of a virtual machine,
+//! updates that stage by themselves and restart at 03:30, and
+//! dukovo-check's daily run, which the installed system has.
 
 use std::process::Command;
 
@@ -24,7 +27,7 @@ use super::super::*;
 
 pub const CASE: Case = Case {
     name: "install-uefi",
-    about: "The live system installs Dukovo onto a blank disk under UEFI from an answers file: guided layout, signed release copied and checked, GRUB, settings and accounts; the host's fsck.fat and btrfs check find the disk sound, and it then boots alone, where alice signs in and finds the install's settings",
+    about: "The live system installs Dukovo onto a blank disk under UEFI from an answers file: guided layout, signed release copied and checked, GRUB, settings and accounts; the host's fsck.fat and btrfs check find the disk sound, and it then boots alone, where alice signs in and finds the install's settings and the Server profile's preset: jobs that run signed out, the vm-guest tune profile, unattended updates at 03:30 and the daily check",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // The live menu entry has its own flags, `live` and
@@ -172,7 +175,39 @@ pub fn installed(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         "echo \"console\"\": $(grep -c '\"web_console\": false' /system/settings/install/answers.json)\"",
     )?;
     vm.expect_screen(&["console: 1"])?;
+    preset(vm)?;
     power_off(vm)
+}
+
+/// The Server profile's preset, as the install wrote it (the handbook's
+/// install chapter): jobs that run with their owner signed out, the
+/// performance profile of a virtual machine, which QEMU is, updates that
+/// stage by themselves and restart at 03:30, and dukovo-check's daily run.
+fn preset(vm: &mut Vm) -> Result<(), String> {
+    // The settings the preset wrote, without their comments.
+    answer_prompt(
+        vm,
+        "$",
+        "clear; d=/system/settings; grep -hv '^#' $d/jobs.toml $d/tune.toml \
+         $d/sysupdate/updates.toml $d/spark/services/settings.d/dukovo-check.toml",
+    )?;
+    vm.expect_screen(&[
+        "keep_running = true",
+        "profile = \"vm-guest\"",
+        "unattended = true",
+        "restart = \"03:30\"",
+        "enabled = true",
+    ])?;
+    // tune reads its file, and Spark and timerd have the daily check,
+    // which only root sees among the services' timers.
+    answer_prompt(vm, "$", "clear; tune | head -1")?;
+    vm.expect_screen(&["Profile: vm-guest, chosen by an administrator"])?;
+    answer_prompt(
+        vm,
+        "$",
+        &format!("clear; echo '{PASSWORD}' | elevate -S service list --timers | grep 'dukovo-chec[k]'"),
+    )?;
+    vm.expect_screen(&["dukovo-check"])
 }
 
 /// The installed system started: alice signs in with her password, and
