@@ -36,10 +36,13 @@ expect_not = "Lab Notes"
 
 # The subvolumes, asked for: /system's cannot be changed, and a home is
 # a folder of /users'. Over SSH there is no terminal, so without
-# --subvolumes=always there are no marks.
+# --subvolumes=always there are no marks. ls marks /system a snapshot
+# when the system's slot was made as one, as the installer makes it and
+# as the lab's image has it, and a subvolume otherwise (ls(1)); only
+# /system's line can say read-only.
 [[step]]
 run = "sh -c 'ls -ld --subvolumes=always /users /system | tr -s \" \"'"
-expect = ["/system [subvolume, read-only]", "/users [subvolume]"]
+expect = ["/system [", ", read-only]", "/users [subvolume]"]
 [[step]]
 run = "sh -c 'ls -ld --subvolumes=always ~'"
 expect = "/users/lab"
