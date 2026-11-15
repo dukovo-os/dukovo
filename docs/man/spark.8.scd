@@ -193,7 +193,10 @@ Init: /system/commands/spark is process 1
   (the *bind* kind of *radix-files*(7)), tmpfs on _/system/live_, and
   _@snapshots_ read-only on _/snapshots_, the folder it makes for it,
   where *snap*(1) keeps the snapshots (ADR 0461); a root without
-  _@snapshots_ starts all the same.
+  _@snapshots_ starts all the same. _/snapshots_ is on every system,
+  empty where nothing is mounted on it, as on the live system: snap's
+  view reads it (ADR 0473), and a service is not started while a place
+  of its view is missing.
   Then it turns on each swap partition of the disk that holds the root,
   as the installer makes one, the way systemd's gpt-auto-generator
   does; there is no fstab (ADR 0311). One whose first page does not end
