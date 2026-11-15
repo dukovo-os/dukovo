@@ -8,17 +8,17 @@
 # here, so espeak-ng is first built for the build machine, which compiles
 # it: the compiled data is the same on any little-endian machine. Only
 # the espeak-ng program is built for Radix, with the library built into
-# it, and without what readerd(8) does not need: MBROLA voices, libsonic,
-# a sound output of its own (it writes WAV with --stdout, which readerd
-# plays), the asynchronous mode and speechPlayer (a C++ engine; the
-# Klatt voices stay). Russian's extended word list is left out: it makes
-# its dictionary 8 MiB of the data's 19, and the live system holds the
-# data in memory. Russian is still spoken, by its rules and its main
-# list, as with eSpeak NG's --with-extdict-ru=no.
+# it, and without what readerd(8) does not need: its tests, MBROLA
+# voices, libsonic, a sound output of its own (it writes WAV with
+# --stdout, which readerd plays), the asynchronous mode and speechPlayer
+# (a C++ engine; the Klatt voices stay). Russian's extended word list is
+# left out: it makes its dictionary 8 MiB of the data's 19, and the live
+# system holds the data in memory. Russian is still spoken, by its rules
+# and its main list, as with eSpeak NG's --with-extdict-ru=no.
 set -eu
 
 options="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF
--DUSE_MBROLA=OFF -DUSE_LIBSONIC=OFF -DUSE_LIBPCAUDIO=OFF -DUSE_ASYNC=OFF
+-DENABLE_TESTS=OFF -DUSE_MBROLA=OFF -DUSE_LIBSONIC=OFF -DUSE_LIBPCAUDIO=OFF -DUSE_ASYNC=OFF
 -DUSE_SPEECHPLAYER=OFF -DUSE_KLATT=ON -DESPEAK_BUILD_MANPAGES=OFF -DEXTRA_ru=OFF -Wno-dev"
 
 # The build machine's espeak-ng, and the data it compiles. CMake would
