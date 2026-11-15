@@ -44,14 +44,14 @@ const PASSWORD = "lab-console-password";
 const SKIPPED = new Set(["certificate.renew"]);
 
 // The reads that may be answered with the machine's own words, by error
-// ID, where the rest are 200: checks.last runs dukovo-check, which a
-// machine has only once an update brings the checks (ADM-129, "This server
-// does not have that command yet"); lab.missing, which a lab build has, is
+// ID, where the rest are 200: checks.last runs `dukovo-check --last`, which
+// has no kept result until the checks' first morning run or a run by hand
+// (ADM-123, the command's status 3); lab.missing, which a lab build has, is
 // a read of a command that no image has (ADM-129); metrics.usage reads the
 // history that metricsd writes every 10 minutes, which a machine that has
 // run for less has no points of (ADM-123).
 const MAY_REFUSE = new Map([
-  ["checks.last", "ADM-129"],
+  ["checks.last", "ADM-123"],
   ["lab.missing", "ADM-129"],
   ["metrics.usage", "ADM-123"],
 ]);
@@ -165,11 +165,12 @@ export default async function check(t) {
   called.push("GET /api/1/metrics/usage/2h");
   const odd = await fetchAsPage(page, "GET", "/api/1/metrics/usage/2h", null);
   ensure(odd.status === 400 && odd.json?.error?.id === "ADM-125" && odd.json?.error?.field === "range", `GET /api/1/metrics/usage/{range} for 2h was answered ${odd.status}: ${odd.text}`);
-  // GET /api/1/checks/last is dukovo-check's last result, or ADM-129 where
-  // the machine does not have dukovo-check yet.
+  // GET /api/1/checks/last is dukovo-check's last result, or ADM-123 with
+  // the command's status 3 while no result is kept.
   called.push("GET /api/1/checks/last");
   const checks = await fetchAsPage(page, "GET", "/api/1/checks/last", null);
-  ensure(checks.status === 200 || checks.json?.error?.id === "ADM-129", `GET /api/1/checks/last was answered ${checks.status}: ${checks.text}`);
+  const noneKept = checks.json?.error?.id === "ADM-123" && checks.json?.error?.command?.status === 3;
+  ensure(checks.status === 200 || noneKept, `GET /api/1/checks/last was answered ${checks.status}: ${checks.text}`);
 
   // Then each change, and what puts it back.
   const before = await stateNow();

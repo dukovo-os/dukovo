@@ -12,8 +12,8 @@
 //!
 //! Who may: a read answers 200 for bob, who is in group console and no
 //! administrator, and for alice; two reads may answer with their machine's
-//! own words instead (see [`may_refuse`]): checks.last is ADM-129 while
-//! dukovo-check is not on the machine, and metrics.usage is ADM-123 on a
+//! own words instead (see [`may_refuse`]): checks.last is ADM-123 while
+//! dukovo-check has kept no result, and metrics.usage is ADM-123 on a
 //! machine whose history metricsd has not written yet, which it does every
 //! 10 minutes. A change is ADM-122 for bob and ADM-106
 //! for alice while her session is locked. A name that is no name is ADM-125
@@ -459,15 +459,16 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
 /// A read that may answer with the machine's own words instead of 200 and
 /// JSON, as this test boots it: its status and error ID.
 ///
-/// - `checks.last` runs dukovo-check, which a machine has only when an
-///   update brings the checks: ADM-129, 501, "This server does not have
-///   that command yet". Once the command is there it answers 200.
+/// - `checks.last` runs `dukovo-check --last`, which has no kept result
+///   until the dukovo-check service's first morning run or a run by hand,
+///   and the guest has had neither: the command ends with status 3, and
+///   the answer is ADM-123, 422.
 /// - `metrics.usage` reads the history metricsd writes every 10 minutes
 ///   and when it stops. The guest has run for less, so `metrics show` may
 ///   have no points to give and end with status 1: ADM-123, 422.
 fn may_refuse(id: &str) -> Option<(u16, &'static str)> {
     match id {
-        "checks.last" => Some((501, "ADM-129")),
+        "checks.last" => Some((422, "ADM-123")),
         "metrics.usage" => Some((422, "ADM-123")),
         _ => None,
     }
@@ -1338,12 +1339,12 @@ mod tests {
     fn two_reads_may_say_the_machine_has_nothing_to_show_and_the_others_may_not() {
         let reply = |status: u16, body: &str| Reply { status, headers: Vec::new(), body: body.into() };
         let refusal = |id: &str| json!({"error": {"id": id}}).to_string();
-        // checks.last: ADM-129 for the command that is not there, or its JSON.
-        let said = read_answer(reply(501, &refusal("ADM-129")), "checks.last", "bob").unwrap();
+        // checks.last: ADM-123 for no result kept yet, or its JSON.
+        let said = read_answer(reply(422, &refusal("ADM-123")), "checks.last", "bob").unwrap();
         assert_eq!(said, None);
         let said = read_answer(reply(200, "{\"score\": 100}"), "checks.last", "bob").unwrap();
         assert_eq!(said, Some(json!({"score": 100})));
-        assert!(read_answer(reply(501, &refusal("ADM-123")), "checks.last", "bob").is_err());
+        assert!(read_answer(reply(501, &refusal("ADM-129")), "checks.last", "bob").is_err());
         assert!(read_answer(reply(422, &refusal("ADM-129")), "checks.last", "bob").is_err());
         // metrics.usage: ADM-123 for no history yet.
         let said = read_answer(reply(422, &refusal("ADM-123")), "metrics.usage", "alice").unwrap();

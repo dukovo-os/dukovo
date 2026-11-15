@@ -395,12 +395,12 @@ mod tests {
 
     #[test]
     fn a_read_answers_with_its_output_after_each_status_it_names_and_fails_after_others() {
-        let prepared = |id: &str| {
+        let prepared = |id: &str, args: serde_json::Value| {
             let action = crate::admind::actions::REGISTRY
                 .iter()
                 .find(|action| action.id() == id)
                 .unwrap_or_else(|| panic!("no {id}"));
-            action.prepare(serde_json::json!({ "name": "nginx" })).unwrap()
+            action.prepare(args).unwrap()
         };
         let ran = |status: i32| Ran {
             status,
@@ -409,7 +409,7 @@ mod tests {
         };
         // service explain exits 3 for a service that does not run, and its
         // explanation is the answer then too.
-        let explain = prepared("service.explain");
+        let explain = prepared("service.explain", serde_json::json!({ "name": "nginx" }));
         assert_eq!(explain.action.answers(), [0, 3]);
         for status in [0, 3] {
             let answered = answer(&explain, &ran(status), false).unwrap();
@@ -419,9 +419,18 @@ mod tests {
             let failed = answer(&explain, &ran(status), false).unwrap_err();
             assert_eq!(failed.kind, Kind::CommandFailed, "status {status}");
         }
+        // So does checks.last's, 1 and 2 being a kept result with a failure
+        // or a warning.
+        let checks = prepared("checks.last", serde_json::json!({}));
+        assert_eq!(checks.action.answers(), [0, 1, 2]);
+        for status in [1, 2] {
+            assert!(answer(&checks, &ran(status), false).is_ok(), "status {status}");
+        }
+        assert_eq!(answer(&checks, &ran(3), false).unwrap_err().kind, Kind::CommandFailed);
         // Every other action answers only after 0.
-        for action in
-            crate::admind::actions::REGISTRY.iter().filter(|a| a.id() != "service.explain")
+        for action in crate::admind::actions::REGISTRY
+            .iter()
+            .filter(|a| !["service.explain", "checks.last"].contains(&a.id()))
         {
             assert_eq!(action.answers(), [0], "{}", action.id());
         }

@@ -6,13 +6,15 @@
 //! checks kept, as the command printed it. The area is `security`, the
 //! scope a token needs.
 //!
-//! The command is not in this tree yet: it comes with the checks
-//! themselves. Until it does the worker finds no program of that name in
-//! `/system/commands` or `/applications/commands`, and the answer is
-//! ADM-129, "This server does not have that command yet" (501), which the
-//! Overview shows as its own place for the checks, not as a failure. The
-//! action's route, schema and Ansible task are all there already, and the
-//! answer is what the command prints as soon as it is.
+//! `dukovo-check --last` exits with the status of the result it prints:
+//! 0 when every check passed, 1 when one failed and 2 when one warned.
+//! Each is an answer, the result as JSON. It exits 3 when no result is
+//! kept, before the `dukovo-check` service's first morning run or a run by
+//! hand: the answer is then ADM-123 with the command's words, which the
+//! Overview shows as checks that have not run yet. On an older image
+//! without the command the answer is ADM-129, "This server does not have
+//! that command yet" (501), which the Overview shows as its own place for
+//! the checks.
 
 use serde_json::json;
 
@@ -39,6 +41,9 @@ impl Action for Last {
     const AREA: &'static str = "security";
     const CHANGES: bool = false;
     const PATH: &'static str = "/api/1/checks/last";
+    /// 1 and 2 are a kept result with a failure or a warning: the result
+    /// is what is asked for then most.
+    const ANSWERS: &'static [i32] = &[0, 1, 2];
     const RUNS: Runs = Runs::AsThePerson;
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Show the last checks";
@@ -79,6 +84,7 @@ mod tests {
             (false, Runs::AsThePerson, "security", false)
         );
         assert_eq!(action.path(), "/api/1/checks/last");
+        assert_eq!(action.answers(), [0, 1, 2], "a result with failures or warnings is one too");
         assert_eq!(action.title(), "Show the last checks");
         let prepared = action.prepare(json!({})).unwrap();
         assert_eq!(prepared.argv, ["dukovo-check", "--last", "--json"]);

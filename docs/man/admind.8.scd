@@ -183,7 +183,9 @@ area:
 
 *GET /api/1/checks/last* (*checks.last*, area *security*)
 	*dukovo-check --last --json*: the last result of the health checks, as
-	printed. A machine that does not have *dukovo-check* yet answers 501
+	printed, also when a check failed or warned (status 1 or 2). Before
+	any result is kept the answer is 422 (ADM-123) with the command's
+	status 3. A machine that does not have *dukovo-check* answers 501
 	(ADM-129).
 
 *GET /api/1/metrics/now* (*metrics.now*, area *metrics*)
