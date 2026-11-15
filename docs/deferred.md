@@ -38,7 +38,7 @@ list is kept current instead.
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
 | The catalog's first signed batch and deploy (`./ob catalog sign`, then `./ob catalog deploy`; ADR 0381) | The first root is signed and every image trusts it, but the server serves no bundles until a batch is signed; signing packs every port, a long build | A maintainer, before the first public release |
-| Canary machines for updates | Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
+| Canary machines for updates (ADR 0533) | `sysupdate canary enrol` makes a machine a canary that reports each hour, and Phase 15 uses QEMU canaries in CI; real canaries are wanted before the first public release | Before 1.0.0-alpha.1 |
 | Post-Phase-13 code audit (audit 10) | Planned and scoped; starts only on approval | Decision |
 | System releases signed on the two hardware keys: the system's TUF root (`releases/metadata/1.root.json`, naming the update server's online key that `./ob release server setup` writes to `releases/keys/online.json`), `ob release sign` with its gates and a third build that must match CI's two, the Rekor record, `ob keys ceremony` and the key runbooks (ADRs 0450, 0457, 0467) | Phase 15 signs with each build machine's own keys and tests against a local update server; `ob release deploy` deploys nothing until that root exists | Before 1.0.0-alpha.1 |
 | The security-fix process: the release branch and its bots, the advisories feed, and the daily SBOM scan against OSV and NVD (ADR 0458) | Needed once there are releases to fix | Before 1.0.0-alpha.1 |
@@ -132,7 +132,6 @@ machine with AMT, an AMD machine and a laptop; see
 | USB repair, which also rewrites GRUB and the EFI system partition, and the installer's reinstall that keeps data (ADRs 0459, 0460) | Rescue covers a machine whose EFI system partition still starts | The installer's next changes |
 | Rescue resetting the settings to their defaults (ADR 0460) | Putting back the settings from before the last update covers a bad update | A need |
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
-| Canaries that report to the update server by themselves (ADR 0456) | The maintainer marks a canary red or green with `ob release rollout canary` | The canary machines, before 1.0.0-alpha.1 |
 | `system-release pull` signing with the hardware keys (ADRs 0457, 0469) | It signs with the release keys' files, as `add` and `channel` do | The key ceremony |
 | Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, Phase 17) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |

@@ -24,6 +24,7 @@
 //! are kept in `@snapshots/update/settings-failed`.
 
 pub(crate) mod bisect;
+pub(crate) mod canary;
 pub(crate) mod checked;
 mod devices;
 mod documents;
@@ -49,8 +50,8 @@ use crate::util::{self, Fail, fail};
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let usage = || {
         util::usage(
-            "say status, check, download, stage, unstage, rollback, verify, channel, firmware or \
-             health"
+            "say status, check, download, stage, unstage, rollback, verify, channel, firmware, \
+             canary or health"
                 .into(),
         )
     };
@@ -58,6 +59,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let action = action.to_str().unwrap_or_default().to_string();
     if action == "firmware" {
         return firmware::main(args);
+    }
+    if action == "canary" {
+        return canary::main(args);
     }
     let (mut version, mut stop, mut repo, mut asked_in) = (None, None, None, None);
     let mut keep = Keep::Unsaid;
@@ -126,8 +130,22 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 /// next; with `json`, as the document sysupdate(8) describes.
 fn status(json: bool) -> Result<i32, Fail> {
     let root = place::root()?;
-    let (copies, state) = place::state(&root)?;
-    let facts = documents::Facts {
+    let facts = read_facts(&root)?;
+    if json {
+        let settings = online::Settings::load()?;
+        return crate::json::print(&documents::Status::of(&facts, &settings, online::wave_kept()))
+            .map(|()| 0);
+    }
+    say_status(&facts);
+    Ok(0)
+}
+
+/// What `sysupdate status` says, read from the slots, the slot state and
+/// the files the health check and a stage keep, which a canary's report
+/// reads as well (ADR 0533).
+fn read_facts(root: &place::Root) -> Result<documents::Facts, Fail> {
+    let (copies, state) = place::state(root)?;
+    Ok(documents::Facts {
         running: root.running,
         state,
         slots: [Slot::A, Slot::B].map(|slot| documents::SlotFacts {
@@ -139,13 +157,14 @@ fn status(json: bool) -> Result<i32, Fail> {
         health: std::fs::read_to_string(health::LAST)
             .ok()
             .and_then(|text| documents::Health::parse(&text)),
-        update: stage::about_update(&root).map(|about| {
+        update: stage::about_update(root).map(|about| {
             let get = |key: &str| about.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
             documents::Update {
                 from: get("from"),
                 to: get("to"),
                 slot: get("slot"),
-                restored: stage::restored(&root),
+                staged: get("staged").and_then(|at| at.parse().ok()),
+                restored: stage::restored(root),
             }
         }),
         rescue: keep_rescue::held(),
@@ -156,14 +175,7 @@ fn status(json: bool) -> Result<i32, Fail> {
                 generation: copy.newest().map(|(newest, _)| newest.generation),
             })
             .collect(),
-    };
-    if json {
-        let settings = online::Settings::load()?;
-        return crate::json::print(&documents::Status::of(&facts, &settings, online::wave_kept()))
-            .map(|()| 0);
-    }
-    say_status(&facts);
-    Ok(0)
+    })
 }
 
 /// What `sysupdate status` prints for `facts`.

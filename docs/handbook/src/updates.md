@@ -124,7 +124,8 @@ wave opens, `sysupdate check` says on which day it does; `elevate
 sysupdate stage --version 0.15.2` takes the release at once. A release
 the project withdraws is never staged, and `sysupdate check` says why;
 one staged before the withdrawal is unstaged at the next daily check,
-and the console tells you so.
+and the console tells you so. A machine can be a canary too, for an update
+server of its own ([Run a canary](#run-a-canary)).
 
 An app from a catalog goes out in waves of its own, on the same
 schedule and by the same number, and `update` lists one waiting for its
@@ -173,6 +174,99 @@ takes it as any other in `/system/settings/sysupdate/updates.toml`
 ```
 metered = "download"
 ```
+
+## Run a canary
+
+A canary is a machine that takes each release on the day its channel
+offers it, before the waves reach the rest, and tells the update server
+how it does each hour. While a canary is not green, the server holds the
+waves of the release, and the machines not reached yet wait (ADR 0533).
+The project runs canaries of its own; anyone who runs an update server
+can enrol some, as the first machines to try each release.
+
+A canary reports to the host that `server` names in updates.toml(5), so
+it follows the update server itself, not a mirror of it. Three steps
+make one:
+
+1. **Enrol the machine.** On the canary, with a name of 1 to 32 of `a`
+   to `z`, `0` to `9` and `-`, the first not `-`; without one, the
+   host name, if that is a name:
+
+   ```
+   $ elevate sysupdate canary enrol ref-box
+   sysupdate: this machine is the canary ref-box: it takes every release first and reports to the update server each hour; to list it there, run this on the maintainer's machine:
+   ./ob release canary add ref-box 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
+   ```
+
+   This makes the machine's key, `/system/settings/sysupdate/canary.key`,
+   readable by root alone, and writes `canary = true` and
+   `canary_name = "ref-box"` in updates.toml(5). Run again, it prints the
+   same two lines and changes nothing.
+
+2. **List it on the update server.** The last line, run on the
+   maintainer's machine in the checkout of the project, puts the name and
+   the public half of the key on the server's list of canaries. The server
+   takes a report only from a key on that list, for the name it lists.
+
+3. **Look at what it sends.** `--dry-run` shows the report and the exact
+   bytes that a report sends, and sends nothing; without it, the command
+   sends a report now:
+
+   ```
+   $ elevate sysupdate canary report --dry-run
+   sysupdate: the report, as the canary signs it, laid out to read:
+   {
+     "type": "dukovo-canary-report",
+     "version": 1,
+     "canary": "ref-box",
+     "time": 1794700000,
+     "running": "0.16.0",
+     "channel": "stable",
+     "health": {
+       "passed": true,
+       "time": 1794690000
+     },
+     "check": {
+       "failures": 0,
+       "warnings": 2
+     }
+   }
+   sysupdate: --dry-run sends nothing. The next line is the exact bytes that a report sends to https://updates.dukovo.org/canary/v1/report, as the body of a POST:
+   {"report":"{\"type\":\"dukovo-canary-report\",...}","key":"...","signature":"..."}
+   ```
+
+The Spark job `dukovo-canary-report` sends the report each hour, a little
+after the hour begins so that canaries do not all report at once, and
+updated(8) starts it once after its first check since the start, so that
+a restart into a new release is reported soon. A canary's updated checks
+for updates each hour in place of once a day. On a machine that is not a
+canary the job prints one line, that it is not a canary, and ends. A report
+that the update server does not take is a failed run of the job, with the
+server's words in `elevate log dukovo-canary-report`; the next hour's
+report makes it good.
+
+The report says:
+
+| Field | What it says | The canary is not green when |
+| --- | --- | --- |
+| `running`, `staged`, `channel` | The release the machine runs, the release staged for its next start, if there is one, and the channel it follows | The channel has offered a newer release for more than 6 hours and the canary still runs the old one |
+| `health` | The health check's last result: whether it passed, when it ran and what it said | It failed |
+| `fell_back` | When the last update was tried and never proved itself: the release it `tried` and the one it went `back_to` | It is there |
+| `check` | What `dukovo-check` finds when run now: how many `failures` and `warnings`, and up to 32 `failed` checks, each as `area: check: detail` | A check failed, or the checks could not run, so that `check` is missing |
+| `services_failed` | Up to 32 services that Spark gave up on or finds not running as asked, as `service list --failed` says them | There is one |
+| `time` | When the report was made | The last report is more than 2 hours old |
+
+Each text in a report is on one line of at most 512 characters, and a
+report is at most 16 KiB. A canary with no report at all is not green.
+
+`./ob release canaries` on the maintainer's machine lists each canary
+with its colour, the reasons it is not green, the time of its last
+report, the release it runs and its override. `./ob release canary NAME
+red REASON` and `green REASON` hold or free the waves by hand, and `auto`
+goes back to the rule above. To retire a canary, take `canary` out of
+updates.toml(5) on the machine, and run `./ob release canary remove
+NAME` on the server; a canary that is only switched off falls silent,
+and a silent canary holds the waves.
 
 ## Staging an update
 

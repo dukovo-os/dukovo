@@ -31,6 +31,10 @@ sysupdate - fetch, stage, try, prove and roll back updates of Dukovo's system
 
 *sysupdate health*
 
+*sysupdate canary enrol* [_name_]
+
+*sysupdate canary report* [*--dry-run*]
+
 # DESCRIPTION
 
 An installed Dukovo runs its system, all of _/system_, read-only from one
@@ -126,7 +130,8 @@ A release reaches machines in waves (ADR 0469): the canaries take it on
 the day its channel offers it, and the rest from day 1 to day 7, by the
 number from 0 to 999 each machine draws the first time it checks and
 keeps to itself. The update server holds the waves when a release is
-paused or a canary is not green. Until this machine's wave opens, *check*
+paused or a canary is not green, which the canaries tell it each hour
+(*canary report* below, ADR 0533). Until this machine's wave opens, *check*
 says when it does, and *stage* stages nothing; *stage --version* takes
 the release at once, as its owner asked for it:
 
@@ -277,6 +282,10 @@ update is being tried, and *changes bisect* does not begin one then.
 	With *status*, print the document of *JSON* below in place of the
 	text.
 
+*--dry-run*
+	With *canary report*, print the report and the exact bytes that a
+	report sends, and send nothing.
+
 # FIRMWARE
 
 Closed firmware, such as CPU microcode, stays out of _/system_: it comes
@@ -309,6 +318,79 @@ set's microcode reached the kernel and was neither damaged nor refused
 (_/kernel/firmware/microcode_, *radix-sysfs*(5)), and that every network
 card and root partition the last good start had is still there. At
 other starts, what is missing is only logged.
+
+# CANARIES
+
+A canary is a machine that takes each release on the day its channel
+offers it, before the waves reach the rest, and tells the update server
+each hour how it does. The server holds the waves of a release while a
+canary is not green: its last health check failed, an update fell back,
+the checks of *dukovo-check*(8) found failures or could not run, a
+service failed, it has not taken the newest release in six hours, or it
+has not reported in two hours (ADR 0533). The project's canaries are its own; anyone who
+serves updates may run one against their own update server. Both
+commands need an administrator, and the Spark job that reports does
+nothing on any machine that is not an enrolled canary.
+
+*sysupdate canary enrol* [_name_]
+	Makes this machine a canary. It makes an Ed25519 key, unless the
+	machine has one, in _/system/settings/sysupdate/canary.key_, for
+	root alone, and writes *canary = true* and *canary_name* in
+	*updates.toml*(5), _name_ or the host name; _name_ is 1 to 32 of
+	*a* to *z*, *0* to *9* and *-*, the first not *-*, and the command
+	says so when the host name is not one. Then it prints the line to
+	run on the maintainer's machine, which lists the canary on the
+	update server with the public half of its key:
+
+```
+# sysupdate canary enrol ref-box
+sysupdate: this machine is the canary ref-box: it takes every release first and reports to the update server each hour; to list it there, run this on the maintainer's machine:
+./ob release canary add ref-box 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29
+```
+
+	Run again on an enrolled machine, it prints the same two lines and
+	changes nothing. To rename a canary, set *canary_name* in
+	*updates.toml*(5) and run it again; the update server lists the
+	new name with *./ob release canary add*.
+
+*sysupdate canary report* [*--dry-run*]
+	Builds a report of this machine, signs it with the key, and posts
+	it over HTTPS to the update server's host, at _/canary/v1/report_,
+	as *check* reaches the server. It ends with 0 when the server took
+	the report, and with 1 and a message when it did not. The report
+	holds:
+
+	- *running*, the release the machine runs, *staged*, the release
+	  waiting for the next start, if there is one, and *channel*;
+	- *health*, the health check's last result: whether it passed, when
+	  it ran, and what it said;
+	- *fell_back*, when the last update was tried, never proved itself
+	  and the machine went back: the release *tried* and the one it
+	  went *back_to*;
+	- *check*, what the checks of *dukovo-check*(8) find when run now:
+	  how many *failures* and *warnings*, and up to 32 *failed* checks
+	  as "area: check: detail", or no *check* at all when they could
+	  not run;
+	- *services_failed*, up to 32 services that Spark gave up on or
+	  finds not running as asked, as *service list --failed* says them.
+
+	Each text is on one line of at most 512 characters, and the whole
+	report is at most 16 KiB. The report is signed as it is sent, and the
+	update server takes it only from a listed key, for the canary's own
+	name, newer than the one it keeps. It never holds a key; it only
+	checks the signature. With *--dry-run* it prints the report laid
+	out to read and the exact bytes of the request body, and sends
+	nothing. On a machine that is not a canary, where *canary* is not
+	*true* or *canary_name* or the key is missing, it prints one line
+	saying so and ends with 0.
+
+The Spark job *dukovo-canary-report* runs *canary report* each hour, a
+little after the hour begins so that canaries do not report at the same
+moment, and *updated*(8) starts it once after its first check, so that a
+restart into a new release is reported soon. A canary's *updated* checks
+for updates each hour in place of once a day. *service
+dukovo-canary-report status* and *log dukovo-canary-report* (*service*(8),
+*log*(1)) show the job and what it said.
 
 # BOOT MENU
 
@@ -405,7 +487,9 @@ without *--json*, with the same exit status. The members:
 	back, or no previous version; a release that is not signed by the
 	trusted root, not newer, or made for an update from another version;
 	or a write that failed. A stage that fails leaves the running slot and the slot
-	state as they were.
+	state as they were. A canary's report that the update server did not
+	take also ends with 1; on a machine that is not a canary, *canary
+	report* ends with 0.
 
 2
 	The command line was wrong.
@@ -417,6 +501,11 @@ _/system/settings/sysupdate/health.toml_
 
 _/system/settings/sysupdate/updates.toml_
 	The channel this system follows, and the server: *updates.toml*(5).
+
+_/system/settings/sysupdate/canary.key_
+	A canary's signing key, an Ed25519 key in PKCS #8, which *canary
+	enrol* makes, with mode 0600 for root alone. Without it, or without
+	*canary_name* in *updates.toml*(5), a machine reports nothing.
 
 _/system/state/starts/_
 	The record of each start, which the health check begins and
@@ -542,4 +631,4 @@ _@snapshots/update/settings-failed_.
 # SEE ALSO
 
 *changes*(1), *update*(8), *updated*(8), *health.toml*(5), *updates.toml*(5), *spark*(8), *dukovo-boot*(7),
-*dukovo-rescue*(8), *system-release*(8), *service*(8), *alerts*(8)
+*dukovo-rescue*(8), *dukovo-check*(8), *system-release*(8), *service*(8), *alerts*(8)

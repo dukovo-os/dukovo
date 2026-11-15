@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# A canary's report (ADR 0533): `sysupdate canary report` builds a report
+# of the machine's own state, signs it with the machine's key and posts it
+# to the update server, which holds a release's waves while any canary is
+# not green. A timer starts it each hour, and updated(8) starts it once
+# after its first check, so that a restart into a new release is reported
+# soon. On a machine that is not an enrolled canary (`sysupdate canary
+# enrol`, updates.toml(5)) it prints one line and ends with status 0, and
+# does nothing else.
+#
+# service.toml(5) explains each setting. `service check
+# dukovo-canary-report` checks this file, and `service edit
+# dukovo-canary-report` checks it as you save.
+
+service_version = 1
+description = "Canary report"
+program = "/system/commands/sysupdate"
+arguments = ["canary", "report"]
+# It runs once for each time of its timer, and ends. A report the update
+# server did not take is a failed run, which the next hour's report makes
+# good.
+restart = "never"
+
+[limits]
+memory = "64M"
+
+# Each hour, a little after it begins, so that the canaries do not report
+# at the same moment.
+[timer]
+at = ["hourly"]
+spread = "5m"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, past the owners and modes of files, to read the canary's key,
+# which only root may, the slots and the slot state, and the settings and
+# state that the checks of dukovo-check(8) look at, which it runs and keeps
+# no result of; the firewall, to ask which ports other machines reach; and
+# the network, to reach the update server. It asks Spark and alertd what
+# they say of the services and the alerts, and changes nothing.
+[permissions]
+admin.firewall = true
+network.outbound = true
+runs-with-your-access = true

@@ -23,6 +23,13 @@ ready = "serving updates"
 run = '''sh -c 'printf "stable = 10\n" > /system/settings/sysupdate/health.toml && printf "server = \"http://{peer}:{port:updates}/system/\"\ncanary = true\n" > /system/settings/sysupdate/updates.toml && echo "set: $((6 * 7))"' '''
 root = true
 expect = "set: 42"
+# The job that reports a canary's state each hour, dukovo-canary-report
+# (ADR 0533), does nothing on a machine that is not enrolled: this one
+# takes releases first (`canary = true`), and has no name or key.
+[[step]]
+run = "sysupdate canary report"
+root = true
+expect = "this machine is not a canary, so it reports nothing"
 [[step]]
 run = "update"
 expect = ["System:", "the stable channel offers Dukovo ", "-test.year", "Firmware:", "Apps:", " up to date"]
