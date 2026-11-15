@@ -169,9 +169,14 @@ impl Test {
     fn read(&mut self, path: &str) -> Result<Value, String> {
         let reply = self.console.get(&mut self.alice, path)?;
         if reply.status != 200 {
-            let id =
-                reply.json().ok().and_then(|body| body["error"]["id"].as_str().map(str::to_string));
-            return Err(format!("{path} was answered {} {}", reply.status, id.unwrap_or_default()));
+            let error = reply.json().map_or(Value::Null, |body| body["error"].clone());
+            let said = |key: &str| error[key].as_str().unwrap_or_default().to_string();
+            return Err(format!(
+                "{path} was answered {} {}: {}",
+                reply.status,
+                said("id"),
+                said("detail")
+            ));
         }
         reply.json()
     }
