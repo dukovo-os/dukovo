@@ -160,6 +160,10 @@ when it is built in two places:
   - memtest86+ came out the same with no flag, and the identifiers, and
     the disks that carry them, are the same in the tests that make a disk
     twice.
+  - GRUB's modules and images for a PC's BIOS, built in two folders with
+    the flag, were the same in all 281 files; four of them hold
+    `/build/grub` in the place of the folder. Its UEFI platform was not
+    built twice.
   - The ports built (the C library, libc++, 7zip) hold no path of the
     checkout, where the ports of an earlier build held it in 58 files.
   - The kernel and the user programs on `core` and `alloc` (`spark`,
