@@ -177,10 +177,14 @@ impl Release {
         bytes
     }
 
-    /// The files' total size in bytes.
+    /// The files' total size in bytes, or `u64::MAX` for a list whose
+    /// sizes add up to more.
     #[must_use]
     pub fn bytes(&self) -> u64 {
-        self.files.iter().filter_map(Entry::file).map(|(_, size)| size).sum()
+        self.files
+            .iter()
+            .filter_map(Entry::file)
+            .fold(0, |total, (_, size)| total.saturating_add(size))
     }
 
     /// Checks the whole list: its version, and each entry's path, place
@@ -500,6 +504,15 @@ pub(crate) mod tests {
         assert!(big.unwrap_err().contains("not a mode in octal"));
         let unknown = parsed_with(|v| v["files"][1]["owner"] = "root".into());
         assert!(unknown.unwrap_err().contains("malformed"));
+    }
+
+    #[test]
+    fn sizes_too_large_to_add_up_total_the_most() {
+        let mut release = parsed_with(|_| {}).unwrap();
+        let spark = release.files[2].clone();
+        release.files[2].size = Some(u64::MAX);
+        release.files.push(Entry { path: "spark-2".into(), ..spark });
+        assert_eq!(release.bytes(), u64::MAX);
     }
 
     #[test]
