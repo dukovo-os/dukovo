@@ -677,8 +677,9 @@ static void mtr(void) {
 	CHECK(holds(text, "  4.|-- 10.77.9.9 "));
 	CHECK(!strstr(text, "  5.|-- "));
 	// With names and AS numbers, which it asks DNS for. The AS number
-	// fills a column of 12 characters after "AS".
-	CHECK(output("mtr --report -z -c 1 " FAR, text, sizeof(text)) == 0);
+	// fills a column of 12 characters after "AS"; the wide report keeps
+	// the whole name, which the narrow one cuts at its 33rd column.
+	CHECK(output("mtr --report-wide -z -c 1 " FAR, text, sizeof(text)) == 0);
 	CHECK(holds(text, "AS64500       hop-1.trace.test"));
 	CHECK(holds(text, "AS64500       far.trace.test"));
 	// IPv6, and its wide report.
