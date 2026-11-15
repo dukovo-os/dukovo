@@ -17,12 +17,17 @@
 //!
 //! `ntfs-3g` fills an NTFS volume through ntfs-3g ([`ntfs`]), which the
 //! NTFS host tests read (ADR 0236).
+//!
+//! `release VERSION` builds the installed disk of an old release from its
+//! own tree ([`release`]), which the boot tests that update from it boot
+//! (ADR 0536).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub mod btrfs_send;
 pub mod ntfs;
+pub mod release;
 
 use crate::config::{Firmware, Media};
 use crate::process::{self, step};
@@ -45,6 +50,12 @@ const TIMEOUT: Duration = Duration::from_mins(15);
 /// `ob fixture <name>`.
 pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let name = args.positional();
+    if name.as_deref() == Some("release") {
+        let check = args.flag("--check");
+        let version = args.positional();
+        args.finish()?;
+        return release::command(ctx, version, check);
+    }
     let kernel = args.value("--linux-kernel")?;
     let check = args.value("--check")?;
     args.finish()?;
@@ -59,11 +70,11 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         Some(other) => {
             crate::bail!(
                 "there is no fixture {other}: those there are are btrfs-log, btrfs-radix-log, \
-                 btrfs-send, ntfs-3g"
+                 btrfs-send, ntfs-3g, release"
             )
         }
         None => crate::bail!(
-            "name the fixture to make: btrfs-log, btrfs-radix-log, btrfs-send or ntfs-3g"
+            "name the fixture to make: btrfs-log, btrfs-radix-log, btrfs-send, ntfs-3g or release"
         ),
     }
 }

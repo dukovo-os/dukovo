@@ -2130,8 +2130,11 @@ _target/userspace/_).
 *fixture* *btrfs-log*|*btrfs-radix-log*|*btrfs-send*|*ntfs-3g* [*--linux-kernel* _file_]
 
 *fixture* *btrfs-send* *--check* _dir_
+
+*fixture* *release* _version_ [*--check*]
 	Make test data that only Linux makes, for the host tests of Radix's
-	filesystems. *btrfs-log* makes a 128 MiB Btrfs disk with
+	filesystems, and the disk of an old release for the boot tests that
+	update from it. *btrfs-log* makes a 128 MiB Btrfs disk with
 	*mkfs.btrfs*, boots Linux in a virtual machine on it with
 	_tools/linux-bench_ as its only process (*--btrfs-log make*), which
 	commits a set of files, changes them with an *fsync*(2) after each
@@ -2180,6 +2183,36 @@ _target/userspace/_).
 	offline. The volume, kept as its sectors that are not all zeros,
 	goes to _kernel/fs/ntfs/src/fixtures/_, which the NTFS host tests and
 	the *ntfs* boot test read (ADR 0236).
+
+	*release* _version_ makes the installed disk of the release _version_
+	(such as 0.15.0) for the boot tests *update-from-*_version_ and
+	*update-from-*_version_*-bios* (ADR 0536), as
+	_target/fixtures/VERSION/installed.img_. It fetches the tag *v*_version_
+	if the repository lacks it, checks it out in a git worktree in
+	_target/fixtures/VERSION/src_, and runs that tree's own *./ob image
+	\--installed \--user alice \--password-file* _file_ *\--test-cost*, so
+	that the disk is the release's own build, with the administrator
+	alice. The worktree starts from this checkout's built ports, GRUB and
+	memtest86+ (copied, sharing the data where the filesystem can), so
+	that only what differs is built again, and is removed afterwards. A
+	second full build needs about 15 GB of free disk and the time of an
+	image build, and the boot tests do not make it for you: they stop and
+	name this command when the fixture is missing.
+
+	A release trusts the root of the update keys that sign what it is
+	offered, which its boot archive carries. The old tree therefore builds
+	with a copy of this checkout's _.cache/release-keys_ (made first when
+	there are none), and a copy of them is kept in
+	_target/fixtures/VERSION/release-keys_, which the disk trusts. A
+	boot test run that includes an *update-from-* case copies the
+	fixture's keys to _.cache/release-keys_ before anything is signed or
+	built if there are none, and stops, saying which to remove, if there
+	are others. A fixture made already for these keys is left as it is.
+
+	With *--check*, it says whether the fixture is made and trusts
+	_.cache/release-keys_ (or whether that is absent, so that the fixture's
+	keys will be used), and exits with 1 when it is missing or trusts
+	other keys.
 
 	*--linux-kernel* _file_
 		As for *bench*; the kernel needs Btrfs, built in or as a module

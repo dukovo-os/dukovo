@@ -611,6 +611,7 @@ Examples:
         "fixture" => {
             "Usage: ./ob fixture btrfs-log|btrfs-radix-log|btrfs-send|ntfs-3g [--linux-kernel <file>]
        ./ob fixture btrfs-send --check <dir>
+       ./ob fixture release <version> [--check]
 
 Makes test data that only Linux makes. btrfs-log boots Linux in QEMU on a
 new Btrfs disk with tools/linux-bench as its only process, which commits
@@ -629,6 +630,13 @@ ntfs-3g fills an NTFS volume through ntfs-3g's FUSE driver (as root), with
 links, junctions, hard links and compressed and sparse files, and writes it
 to kernel/fs/ntfs/src/fixtures, which the NTFS host tests and the ntfs boot
 test read.
+release <version> builds the installed disk of an old release with that
+release's own tree, from its tag v<version> in a git worktree, as
+target/fixtures/<version>/installed.img, and keeps a copy of the release
+keys it trusts (this checkout's .cache/release-keys, made first if absent)
+in target/fixtures/<version>/release-keys. The boot tests update-from-<version>
+boot a copy-on-write overlay of it. With --check, it says whether the
+fixture is made and trusts .cache/release-keys (ADR 0536).
 
   --linux-kernel <file>
                       The Linux kernel to boot (else OB_LINUX_KERNEL or this
