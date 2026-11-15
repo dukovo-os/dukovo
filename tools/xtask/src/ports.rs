@@ -1236,9 +1236,27 @@ fn build_ports(ctx: &Ctx, rebuild: &[String], pack: bool) -> Result<Ports> {
     Ok(ports)
 }
 
+/// The environment variables that name the toolchain's programs for a
+/// port's build.sh, and the wrapper each names. A wrapper is named as it
+/// is on `PATH`, where the toolchain's folder comes first, and not by
+/// where it is: configure records the compiler as it is given, and some
+/// programs keep that record (`jq --build-configuration`, `curl-config`),
+/// which would then hold where the checkout is (ADR 0535).
+const BUILD_TOOLS: [(&str, &str); 7] = [
+    ("CC", "cc"),
+    ("CXX", "c++"),
+    ("AR", "ar"),
+    ("RANLIB", "ranlib"),
+    ("NM", "nm"),
+    ("STRIP", "strip"),
+    ("OBJCOPY", "objcopy"),
+];
+
 /// What went into a port's build: its directory's files, the toolchain
 /// (its version, and the wrappers, cross files and site file ob writes),
-/// the kernel's system call headers, and the builds of the ports it needs.
+/// what the environment ob gives build.sh names the toolchain's programs
+/// and how its Rust crates are named, the kernel's system call headers,
+/// and the builds of the ports it needs.
 fn inputs_hash(
     ctx: &Ctx,
     dir: &Path,
@@ -1269,6 +1287,8 @@ fn inputs_hash(
     }
     toolchain.version.hash(&mut hasher);
     toolchain.builtins.hash(&mut hasher);
+    BUILD_TOOLS.hash(&mut hasher);
+    crate::rustc_wrapper::FORMAT.hash(&mut hasher);
     if recipe.source.rust_src {
         rust_src(ctx)?.1.hash(&mut hasher);
     }
@@ -1660,7 +1680,6 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![toolchain.bin()];
     paths.extend(std::env::split_paths(&path));
-    let tool = |name: &str| toolchain.bin().join(format!("{TRIPLE}-{name}"));
     let mut cmd = Command::new("sh");
     cmd.arg(dir.join("build.sh"))
         .current_dir(&work)
@@ -1681,13 +1700,7 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env("PREFIX", "/system")
         .env("JOBS", jobs.to_string())
         .env("HOST", TRIPLE)
-        .env("CC", toolchain.cc())
-        .env("CXX", toolchain.cxx())
-        .env("AR", tool("ar"))
-        .env("RANLIB", tool("ranlib"))
-        .env("NM", tool("nm"))
-        .env("STRIP", tool("strip"))
-        .env("OBJCOPY", tool("objcopy"))
+        .envs(BUILD_TOOLS.map(|(variable, name)| (variable, format!("{TRIPLE}-{name}"))))
         .env("CFLAGS", "-O2")
         .env("CXXFLAGS", "-O2")
         .env("CROSS_FILE", toolchain.cross_file())

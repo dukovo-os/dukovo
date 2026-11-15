@@ -86,6 +86,25 @@ when it is built in two places:
     `build.rs` and in GRUB's `TARGET_CFLAGS`, where the unpacked source and
     its build directories are `/build/grub`. The recipe's version
     changes, so that the cached GRUB is built again.
+  - Each crate's identity is what it is, not where the checkout is.
+    Cargo gives rustc a hash for each crate, `-C metadata`, that every
+    symbol of the crate carries. For a path dependency outside the
+    workspace that uses it (`kernel/abi`, `kernel/lib/elf` and
+    `tools/ridlc`, which the kernel and every user program need, and the
+    crates the ports patch for Radix) Cargo hashes the dependency's
+    absolute path. So `ob` runs rustc for Cargo (`RUSTC_WRAPPER`, in
+    `tools/xtask/src/rustc_wrapper.rs`) and gives it a hash of what the
+    compilation is instead:
+    - rustc's arguments with the four directories written as their names;
+    - the package's name, version and folder;
+    - each dependency's own hash, which the wrapper keeps beside the
+      dependency's output.
+
+    Where the outputs go and where libraries are looked for are left out,
+    as Cargo names those folders by its own hashes. The file names Cargo
+    chose stay, so Cargo finds what it built. A build script's output
+    folder, `OUT_DIR`, is written as `/dukovo-out/<package>`. A wrapper
+    already set, such as sccache, runs after it.
   - `terminfo(5)` is edited after ncurses installs it, to give its
     source files as `../include/...`.
   - Each of these changes a stamp: the wrappers' text is part of what
@@ -133,9 +152,7 @@ when it is built in two places:
     lists' hashes, names every path that differs and why, runs diffoscope
     on the first twenty that differ in content with a time limit each,
     uploads its reports and fails.
-  - Each job holds `contents: read`, the third also `actions: read` to
-    read the artifacts of its own run, and every action is pinned by its
-    commit.
+  - Each job holds `contents: read` only.
 - **`ob release sign`'s third build is `./ob release build`.** The
   maintainer's machine runs it and compares the last line with the
   workflow's.
@@ -164,30 +181,23 @@ when it is built in two places:
     the flag, were the same in all 281 files; four of them hold
     `/build/grub` in the place of the folder. Its UEFI platform was not
     built twice.
-  - The ports built (the C library, libc++, 7zip) hold no path of the
-    checkout, where the ports of an earlier build held it in 58 files.
-  - The kernel and the user programs on `core` and `alloc` (`spark`,
-    `usertests`, `hello`, `sockets`, `storage`) differ, from the cause
-    that is the first of the next list.
+  - The kernel, 101 MB with its debug information, came out the same byte
+    for byte.
+  - The two builds installed 5,082 files of the ports in common (the second
+    stopped at PHP for want of disk). 5,073 were the same. `jq` and
+    `curl-config` held the compiler as configure was given it, by where the
+    checkout was: a port's build is now given the toolchain's programs by
+    name, found on its `PATH`, and the name is part of each port's stamp,
+    as is the format of the crates' identity, so that ports built before
+    are built again. The other seven are files a build reads and no image
+    holds: ncurses' `curses.h` (a path in a comment) and its archives (the
+    members' times and modes), libarchive's pkg-config file (the folder of
+    the sysroot's libraries) and `librustls.a` (its members are named by
+    Cargo's file names, which take a patched crate's path).
+  - The user programs were not built twice there, as the first build ran
+    past its time limit; CI's runs compare them.
 
 - **Not yet:**
-  - **Rust's crate hashes.** The hash Cargo gives a crate, `-C metadata`,
-    is in every symbol's name and decides how the code is laid out.
-    Cargo makes it from the package, its features, its profile, its
-    dependencies' hashes and the rustflags, and for a path dependency
-    outside the workspace's folder (`kernel/abi`, `kernel/lib/elf` and
-    `tools/ridlc`, which every user program and the kernel need) from its
-    absolute path. A remap flag does not change it, and is itself part of
-    it, since it holds the checkout's path. So two checkouts at two paths
-    make a different kernel and different programs even when every path
-    in their text is the same. A `rustc` wrapper would fix it: it adds the
-    remap flags itself, which Cargo then does not hash, and sets `-C
-    metadata` from the crate's name, features, flags, source path
-    relative to the checkout and its dependencies' values; it also names
-    each build script's `OUT_DIR`, whose folder carries the hash, as one
-    name. Until it exists, the first runs of `reproducible.yml` fail on
-    the kernel and every Rust binary, and only on the ones that depend on a
-    path outside their workspace.
   - The images themselves are not compared, until the system's first root
     is signed on the hardware keys and every machine's image holds the same
     release.
@@ -197,3 +207,5 @@ when it is built in two places:
     build Rust, which only a run builds, are the ones to look at first.
   - A second build cut down to the image's ports, if the run nears six
     hours, waits for a run to show it is needed.
+  - The sysroot's own files, which a build reads and no image holds, are
+    not compared.

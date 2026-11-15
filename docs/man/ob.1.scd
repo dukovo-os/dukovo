@@ -2384,7 +2384,10 @@ _build.sh_
 	bundle (*PORT_BUNDLE*), *SYSROOT*, *TOOLCHAIN*, Cargo for Radix
 	(*CARGO_RADIX*), *PREFIX* (_/system_), *JOBS*, *HOST*
 	(*x86_64-radix*), the toolchain's programs as *CC*, *CXX*, *AR*,
-	*RANLIB*, *NM*, *STRIP* and *OBJCOPY*, *CFLAGS* and *CXXFLAGS*, the
+	*RANLIB*, *NM*, *STRIP* and *OBJCOPY*, by their names (such as
+	*x86_64-radix-cc*), which *PATH* finds in the toolchain's _bin/_
+	first, so that what a package records of its build holds no path of
+	the checkout, *CFLAGS* and *CXXFLAGS*, the
 	Meson cross files (*CROSS_FILE*, *LIBC_CROSS_FILE*), the CMake
 	toolchain file (*CMAKE_TOOLCHAIN_FILE*), *RUST_TARGET* (the target
 	specification of programs on Rust's standard library), pkg-config's
@@ -2514,6 +2517,12 @@ fails the build.
 
 *OB_TARGET_DIR*
 	Directory for Cargo output instead of _target/_.
+
+*RUSTC_WRAPPER*
+	A program Cargo runs rustc through, such as *sccache*. *ob* runs
+	Cargo with *RUSTC_WRAPPER* set to itself, which gives each crate an
+	identity that does not depend on where the checkout is (ADR 0535),
+	and runs the program set here in turn.
 
 *OB_UPDATE_SSH*
 	The update server as *ssh*(1) names it, such as

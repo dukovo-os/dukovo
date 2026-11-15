@@ -56,7 +56,7 @@ const NEXT: &str = "OB_REPRO_NEXT_WRAPPER";
 
 /// What the identity's format is called. A change to what goes into an
 /// identity changes this, and with it every hash.
-const FORMAT: &str = "dukovo rustc identity 1";
+pub const FORMAT: &str = "dukovo rustc identity 1";
 
 /// The name a build script's output folder is written under, followed
 /// by the package's name.
