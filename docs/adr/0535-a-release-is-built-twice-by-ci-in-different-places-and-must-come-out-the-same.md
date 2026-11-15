@@ -110,6 +110,16 @@ when it is built in two places:
     chose stay, so Cargo finds what it built. A build script's output
     folder, `OUT_DIR`, is written as `/dukovo-out/<package>`. A wrapper
     already set, such as sccache, runs after it.
+  - The Rust ports that strip their programs (bat, ripgrep and uutils'
+    coreutils and findutils) link them without their symbols
+    (`CARGO_PROFILE_RELEASE_STRIP=symbols`), so that the build ID the
+    linker writes is a hash of the program as it ships. Under ThinLTO,
+    rustc takes a program's crates in the order of their object files'
+    names, which begin with the file names Cargo chose; for two crates of
+    one name, such as the two versions of `nix` that findutils uses, those
+    depend on where the checkout is, and so does the order of the
+    crates' symbols. The code is the same either way, but a build ID
+    taken before the symbols are stripped covers them.
   - `terminfo(5)` is edited after ncurses installs it, to give its
     source files as `../include/...`.
   - Each of these changes a stamp: the wrappers' text is part of what

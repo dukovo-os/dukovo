@@ -24,7 +24,10 @@ utilities="
 features=$(printf '%s\n' $utilities | grep -vx '\[' | paste -sd, -)
 
 cd "$PORT_SRC"
-"$CARGO_RADIX" build --release --no-default-features --features "$features" \
+# Linked without its symbols, which the bundle does not keep, so that the
+# build ID the linker writes covers the program as it ships (ADR 0535).
+CARGO_PROFILE_RELEASE_STRIP=symbols \
+	"$CARGO_RADIX" build --release --no-default-features --features "$features" \
 	--bin coreutils --target-dir "$PORT_BUILD/radix" --jobs "$JOBS"
 mkdir -p "$SYSROOT/system/commands"
 $STRIP -o "$SYSROOT/system/commands/coreutils" "$PORT_BUILD/radix/x86_64-unknown-radix/release/coreutils"
