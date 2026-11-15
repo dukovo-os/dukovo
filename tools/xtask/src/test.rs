@@ -1683,6 +1683,7 @@ const MICROCODE_REVISION: u32 = 0x7f;
 // same place in CASES. They run after CASES, in the order of the phases.
 mod affected;
 mod console_client;
+mod matrix;
 mod phase11;
 mod phase12;
 mod phase13;
@@ -3413,6 +3414,9 @@ fn rtc_base(time: u64) -> String {
 
 /// `ob test`.
 pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
+    if args.flag("matrix") {
+        return matrix::command(args);
+    }
     // The options first, so that the suite is not taken from a value of one.
     let timeout = match args.value("--timeout")? {
         Some(value) => value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
@@ -3542,8 +3546,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
-            "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `kani`, `tla`, `tuf`, \
-             `corpus`, `riscv` or `lab-writer`"
+            "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `kani`, `tla`, \
+             `tuf`, `corpus`, `riscv` or `lab-writer`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {

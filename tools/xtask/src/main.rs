@@ -289,6 +289,7 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
        ./ob test boot --case <name>... --image-only
        ./ob test replay [--case <name>] [--points all|<n>] [--part <k>/<m>] [--seed <n>]
                  [--log <path> [--point <n>]] [--timeout <seconds>]
+       ./ob test matrix --list [--full]
        ./ob test --list
 
 Runs host unit tests, then the boot tests: QEMU boots a test image under
@@ -324,7 +325,10 @@ left it, and boots each: slot A or slot B must start whole (ADR 0536). It
 takes --points all, or a number of cuts (16 without it), --part 3/8 for the
 third of eight shares of them, and --seed for the draw; out/test/replay
 keeps what a failed cut needs, and --log with --point boots that cut again
-from the kept log. The boot tests are:
+from the kept log. `matrix --list` prints the jobs of the nightly update test
+matrix as one line of JSON, which update-matrix.yml runs; --full lists a
+release candidate's.
+The boot tests are:
   uefi-usb, bios-usb, uefi-cdrom, bios-cdrom   normal boots (bios-usb with the
                    lock checker on, uefi-cdrom in xAPIC mode, bios-cdrom
                    without KASLR and PCIDs)
