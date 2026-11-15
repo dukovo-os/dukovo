@@ -468,16 +468,22 @@ mod tests {
 
     #[test]
     fn what_a_crate_is_built_with_changes_its_identity() {
-        let maps = maps("/work/dukovo", "/home/x/.cargo");
+        let base = temp("identity");
+        let root = base.join("dukovo").display().to_string();
+        let maps = maps(&root, "/home/x/.cargo");
         let identity_of = |feature: &str, dep: &str| {
-            let mut args = compile("/work/dukovo", "1111222233334444", dep, feature);
-            rewrite(&mut args, &maps, &env("/work/dukovo")).unwrap();
+            let mut args = compile(&root, "1111222233334444", dep, feature);
+            rewrite(&mut args, &maps, &env(&root)).unwrap();
             metadata(&args)
         };
         let plain = identity_of("std", "/nowhere/libdep-aaaa.rlib");
-        assert_ne!(plain, identity_of("alloc", "/nowhere/libdep-aaaa.rlib"));
-        assert_ne!(plain, identity_of("std", "/nowhere/libother-aaaa.rlib"));
-        assert_eq!(plain, identity_of("std", "/nowhere/libdep-aaaa.rlib"));
+        let other_feature = identity_of("alloc", "/nowhere/libdep-aaaa.rlib");
+        let other_dep = identity_of("std", "/nowhere/libother-aaaa.rlib");
+        let again = identity_of("std", "/nowhere/libdep-aaaa.rlib");
+        let _ = std::fs::remove_dir_all(&base);
+        assert_ne!(plain, other_feature);
+        assert_ne!(plain, other_dep);
+        assert_eq!(plain, again);
     }
 
     #[test]
