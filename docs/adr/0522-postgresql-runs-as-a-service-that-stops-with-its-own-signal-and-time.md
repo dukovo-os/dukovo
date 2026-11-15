@@ -108,7 +108,10 @@ say so.
   service is running with its last health check passed, within the same 60
   seconds for all of a bundle's services. A service that is starting,
   waiting to start again or failing its check has the time; one that has
-  stopped for good, or that Spark gave up on, fails at once, with why. A
+  stopped for good, or that Spark gave up on, fails at once, with why. One
+  that listens for the connection that starts it (`start:
+  "on-connection"`, ADR 0477) passes, as nothing of it runs to be checked
+  until a connection comes. A
   service with a health socket keeps the socket check, and a service with
   neither is not checked. Going back is as ADR 0386 says.
 - **Patch 0002** makes `/system/live/services/postgres` the default folder

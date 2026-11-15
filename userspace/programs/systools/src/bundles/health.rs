@@ -24,7 +24,10 @@ pub enum Verdict {
 /// none when Spark does not report the service. A service that is
 /// starting, waiting to start again or failing its checks may still come
 /// right, as Spark restarts it after `health.failures` failed checks; one
-/// that ended for good will not. A service Spark reports with no health
+/// that ended for good will not. One that listens for the connection that
+/// starts it (`start: "on-connection"`, ADR 0477) works: nothing of it
+/// runs to be checked until a connection comes, which an update cannot
+/// wait for. A service Spark reports with no health
 /// check, which an administrator's own service file took away, is judged
 /// by whether it runs: there is no check to wait for.
 pub fn verdict(report: Option<&show::Service>) -> Verdict {
@@ -47,6 +50,7 @@ pub fn verdict(report: Option<&show::Service>) -> Verdict {
                 }),
             },
         },
+        show::State::Listening => Verdict::Works,
         show::State::Starting => Verdict::Waits("is still starting".into()),
         show::State::Pending if report.waiting_for.is_empty() => {
             Verdict::Waits("has not started".into())
@@ -104,6 +108,13 @@ mod tests {
     #[test]
     fn a_running_service_with_no_check_in_the_report_works() {
         assert_eq!(verdict(Some(&report(show::State::Running))), Verdict::Works);
+    }
+
+    // Started only by a connection, it has nothing running to check.
+    #[test]
+    fn a_service_listening_for_its_first_connection_works() {
+        let service = checked(show::State::Listening, show::HealthState::Unknown);
+        assert_eq!(verdict(Some(&service)), Verdict::Works);
     }
 
     #[test]
