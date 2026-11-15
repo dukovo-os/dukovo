@@ -423,6 +423,7 @@ fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
         Seed::new("session", "GET", "/api/1/session", None),
         Seed::new("health", "GET", "/api/1/health", None),
         Seed::new("fingerprint", "GET", "/api/1/fingerprint", None),
+        Seed::new("description", "GET", "/api/1/openapi.json", None),
         Seed::new("actions", "GET", "/api/1/actions", None),
         Seed::new("changes", "GET", "/api/1/changes", None),
         Seed::new("change", "GET", "/api/1/changes/{id}", None),

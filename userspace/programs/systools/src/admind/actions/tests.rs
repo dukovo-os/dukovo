@@ -10,7 +10,7 @@ use serde_json::json;
 use super::*;
 use crate::admind::run::error_id;
 
-mod validate;
+pub mod validate;
 
 /// An action for the tests alone: restarting a lab service.
 struct Restart;

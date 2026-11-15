@@ -206,7 +206,10 @@ remove another's.
 	same action, with the token in *DUKOVO\_TOKEN*, against the console's
 	address from _/system/live/admind/issue_, or *https://HOST:PORT* when
 	there is none, for you to fill in. *Ansible* is the YAML of one task,
-	for a playbook. *Files* lists the files a change writes, or *none*.
+	for a playbook: a task of the module *dukovo.system.service* for the
+	services' start, stop, restart, enable and disable, which says whether
+	it changed anything, and of *ansible.builtin.command* for every other
+	action. *Files* lists the files a change writes, or *none*.
 
 	```
 	$ admin show service.restart name=diskhealth
@@ -218,11 +221,9 @@ remove another's.
 
 	Ansible
 	- name: "Restart a service: diskhealth"
-	  ansible.builtin.command:
-	    argv:
-	      - "service"
-	      - "diskhealth"
-	      - "restart"
+	  dukovo.system.service:
+	    name: "diskhealth"
+	    state: "restarted"
 	  become: true
 
 	Files

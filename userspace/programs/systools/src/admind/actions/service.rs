@@ -21,16 +21,24 @@
 //! of its document does not follow `disable` of a service that is
 //! stopped.
 //!
+//! A change's Ansible task is the collection's module
+//! `dukovo.system.service` with the state the change leaves (`started`,
+//! `stopped`, `restarted`) and, for enabling and disabling, whether the
+//! service starts at boot. The module reads `service list --json` as the
+//! probe does, and reports a change only when the service was not as asked,
+//! so a second run reports none; `restarted` always runs, so a restart's
+//! task reports a change each time, as the action's own `changed` does.
+//!
 //! A service's name is checked by the rule Spark checks the name of a
 //! service file by. A name that `service` reads as one of its own commands
 //! (`service check restart` checks a file) is refused too, since it would
 //! run another command than the one shown.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use spark_api::show;
 
-use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
+use super::{Action, Ansible, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
 
 /// The area of these actions: the scope a token needs, `services`.
 const AREA: &str = "services";
@@ -136,6 +144,19 @@ fn picked(pick: Pick, name: &str, output: &str) -> Option<String> {
     let document: show::Show = serde_json::from_str(output).ok()?;
     let service = document.services.iter().find(|service| service.name == name)?;
     Some(pick?(service))
+}
+
+/// The task of the collection's module `dukovo.system.service` that leaves
+/// the service `service` in `state`, and starting at boot or not when
+/// `enabled` says. It runs as root, as the changes do.
+fn service_task(name: String, service: &str, state: &str, enabled: Option<bool>) -> Ansible {
+    let mut params = Map::new();
+    params.insert("name".into(), service.into());
+    params.insert("state".into(), state.into());
+    if let Some(enabled) = enabled {
+        params.insert("enabled".into(), enabled.into());
+    }
+    Ansible::module(name, "dukovo.system.service", params, true)
 }
 
 /// The most characters of a service's name: a resource domain's.
@@ -319,12 +340,14 @@ fn bad_names_and_the_console() -> Vec<Value> {
 /// it takes the same arguments. `$pick` is what it moves, which its
 /// `changed` compares, and `$settles` whether the state is already as the
 /// change leaves it. `$turns` is whether the service's file is turned on
-/// (`Some(true)`), off (`Some(false)`), or left alone (`None`).
+/// (`Some(true)`), off (`Some(false)`), or left alone (`None`). `$state`
+/// and `$turns` are what its Ansible task asks the module for.
 macro_rules! change {
     (
         $(#[$doc:meta])*
         $action:ident, $verb:literal, $title:literal, $args:ident, $bad:expr, undo: $undo:expr,
-        turns: $turns:expr, compares: $pick:expr, settles: $settles:expr
+        turns: $turns:expr, compares: $pick:expr, settles: $settles:expr,
+        state: $state:literal
     ) => {
         $(#[$doc])*
         pub struct $action;
@@ -345,6 +368,11 @@ macro_rules! change {
 
             fn subject(args: &$args) -> Option<String> {
                 Some(args.name.clone())
+            }
+
+            fn ansible(args: &$args) -> Ansible {
+                let name = format!("{}: {}", Self::TITLE, args.name);
+                service_task(name, &args.name, $state, $turns)
             }
 
             fn files(args: &$args) -> Vec<String> {
@@ -385,21 +413,21 @@ change! {
     /// `service NAME start`: starts a service. `service.stop` puts back
     /// what its example did.
     Start, "start", "Start a service", Named, bad_names(), undo: Some("service.stop"),
-    turns: None, compares: STATE, settles: Some(STARTED)
+    turns: None, compares: STATE, settles: Some(STARTED), state: "started"
 }
 
 change! {
     /// `service NAME stop`: stops a service, unless it is the console's.
     /// `service.start` puts back what its example did.
     Stop, "stop", "Stop a service", Guarded, bad_names_and_the_console(), undo: Some("service.start"),
-    turns: None, compares: STATE, settles: Some(STOPPED)
+    turns: None, compares: STATE, settles: Some(STOPPED), state: "stopped"
 }
 
 change! {
     /// `service NAME restart`: stops a service and starts it again, unless
     /// it is the console's. Nothing puts back what it did.
     Restart, "restart", "Restart a service", Guarded, bad_names_and_the_console(), undo: None,
-    turns: None, compares: ALWAYS, settles: None
+    turns: None, compares: ALWAYS, settles: None, state: "restarted"
 }
 
 change! {
@@ -407,7 +435,7 @@ change! {
     /// it keeps in the service's file. `service.disable` puts back what its
     /// example did.
     Enable, "enable", "Enable a service", Named, bad_names(), undo: Some("service.disable"),
-    turns: Some(true), compares: STATE, settles: Some(ENABLED)
+    turns: Some(true), compares: STATE, settles: Some(ENABLED), state: "started"
 }
 
 change! {
@@ -415,7 +443,7 @@ change! {
     /// at boot, which it keeps in the service's file, unless it is the
     /// console's. `service.enable` puts back what its example did.
     Disable, "disable", "Disable a service", Guarded, bad_names_and_the_console(), undo: Some("service.enable"),
-    turns: Some(false), compares: STATE, settles: Some(DISABLED)
+    turns: Some(false), compares: STATE, settles: Some(DISABLED), state: "stopped"
 }
 
 #[cfg(test)]
@@ -730,6 +758,76 @@ mod tests {
         assert_eq!(task.name, "List the services");
         assert!(!task.become_root);
         assert_eq!(task.changed_when.as_deref(), Some("false"));
+    }
+
+    /// The task `id` makes for the service nginx.
+    fn task(id: &str) -> Ansible {
+        registered(id).prepare(json!({ "name": "nginx" })).unwrap().ansible
+    }
+
+    /// The task of the collection's module for nginx with the title `title`
+    /// that leaves it in `state`, and starting at boot or not when
+    /// `enabled` says. The module says whether it changed anything.
+    fn module_task(title: &str, state: &str, enabled: Option<bool>) -> Ansible {
+        let mut params = json!({ "name": "nginx", "state": state });
+        if let Some(enabled) = enabled {
+            params["enabled"] = json!(enabled);
+        }
+        Ansible {
+            name: title.into(),
+            module: "dukovo.system.service",
+            params: params.as_object().unwrap().clone(),
+            become_root: true,
+            changed_when: None,
+            register: None,
+            failed_when: None,
+        }
+    }
+
+    #[test]
+    fn start_asks_the_service_module_for_the_state_started() {
+        assert_eq!(task("service.start"), module_task("Start a service: nginx", "started", None));
+    }
+
+    #[test]
+    fn stop_asks_the_service_module_for_the_state_stopped() {
+        assert_eq!(task("service.stop"), module_task("Stop a service: nginx", "stopped", None));
+    }
+
+    #[test]
+    fn restart_asks_the_service_module_for_the_state_restarted() {
+        assert_eq!(
+            task("service.restart"),
+            module_task("Restart a service: nginx", "restarted", None)
+        );
+    }
+
+    #[test]
+    fn enable_asks_the_service_module_for_started_and_enabled() {
+        assert_eq!(
+            task("service.enable"),
+            module_task("Enable a service: nginx", "started", Some(true))
+        );
+    }
+
+    #[test]
+    fn disable_asks_the_service_module_for_stopped_and_not_enabled() {
+        assert_eq!(
+            task("service.disable"),
+            module_task("Disable a service: nginx", "stopped", Some(false))
+        );
+    }
+
+    #[test]
+    fn the_reads_have_no_module_of_the_collection_and_change_nothing() {
+        let list = registered("service.list").prepare(json!({})).unwrap().ansible;
+        assert_eq!(list.module, "ansible.builtin.command");
+        assert_eq!(list.params["argv"], json!(["service", "list", "--json"]));
+        let explain = task("service.explain");
+        assert_eq!(explain.module, "ansible.builtin.command");
+        assert_eq!(explain.params["argv"], json!(["service", "nginx", "explain", "--json"]));
+        assert_eq!(list.changed_when.as_deref(), Some("false"));
+        assert_eq!(explain.changed_when.as_deref(), Some("false"));
     }
 
     #[test]

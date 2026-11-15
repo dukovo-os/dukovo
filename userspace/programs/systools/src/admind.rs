@@ -23,7 +23,8 @@
 //!   and the session routes, the account's second step and preferences;
 //! - [`actions`] is the list of what the API does, each read and change with
 //!   its arguments, the command it runs and the forms it shows as, which
-//!   admin(8) prints too;
+//!   admin(8) prints too; [`openapi`] describes the routes and the actions
+//!   as one OpenAPI document (ADR 0545);
 //! - [`guard`], [`reach`] and [`sessions`] are the security core: whom to
 //!   answer, which requests may change anything, and what a session is;
 //! - [`limits`] counts what keeps admind usable while anyone on the network
@@ -76,6 +77,7 @@ mod guard;
 pub(crate) mod journal;
 mod limits;
 mod link;
+mod openapi;
 pub(crate) mod preferences;
 mod reach;
 pub(crate) mod routes;

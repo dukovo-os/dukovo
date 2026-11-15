@@ -536,10 +536,11 @@ by category and name in `lab/tests`.
 
 ### The console's scans
 
-Two lab tests in `lab/tests/web-console` scan the console's HTTPS port
-instead of using it as a person does. Both fail on a finding that their
-accepted list does not name, and each name in the list has its reason on
-the same line.
+Three lab tests in `lab/tests/web-console` scan the console's HTTPS port
+instead of using it as a person does. `zap` and `testssl` fail on a finding
+that their accepted list does not name, and each name in the list has its
+reason on the same line; `fuzz` fails on any answer that the console's own
+description of its API does not give.
 
 - `zap` runs ZAP's baseline scan, which only watches, against the console
   signed out and against its API with an API token for every scope.
@@ -552,9 +553,29 @@ the same line.
   also fails on any finding of severity MEDIUM or worse that
   `testssl-accepted.txt` does not list; the certificate being self-signed
   is listed.
+- `fuzz` sends the requests that Schemathesis makes from the console's
+  OpenAPI document, `GET /api/1/openapi.json`, and from nothing else,
+  signed out, with a token that only reads, and with a token of every scope
+  on the examples of the changes alone, each followed by its undo. No
+  answer may be a 5xx, one the document does not list, or slower than 2
+  seconds (10 for a change), and afterwards admind must answer and not have
+  started again, the journal must hold the test's own changes and nothing
+  else, and the service must be as it was found. Schemathesis is pinned by
+  its release and the hash of every package it needs, in
+  `fuzz-requirements.txt`, and installed with `pip install
+  --require-hashes` into a virtual environment of the lab PC's cache; the
+  test is skipped on a lab PC that has no Python 3.11 or later or cannot
+  reach the package index. A failure names a seed, which `LAB_FUZZ_SEED=N`
+  sends again.
 
 The console's actions have a third kind of test beside these: `ansible`
 runs the Ansible task that the console shows for each action, against the
-machine over SSH, with a token the test makes. Its change tasks report
-"changed" on every run, because `ansible.builtin.command` cannot tell a
-change from none.
+machine over SSH, twice in a row, with a token the test makes. It uses the
+ansible-core and the collection `dukovo.system` that `system/ansible`
+pins, which the lab sets up in its cache. The services' changes are tasks
+of the collection's module, so a second run reports no change (a restart
+always does something); a change that is a command, as the console's
+reach is, reports "changed" on every run, because `ansible.builtin.command`
+cannot tell a change from none. Before each change and after it, the test
+asks the console's check mode, `POST /api/1/check`, whether the change
+would do anything, and it must agree with what the module reported.

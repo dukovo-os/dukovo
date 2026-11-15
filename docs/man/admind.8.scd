@@ -90,9 +90,10 @@ answers it:
 . Its address is a route's, an action's, or a file's. An address of the
   API that is neither is 404 (ADM-116), and one that takes another method
   is 405 (ADM-117).
-. A token is for the actions, the list of them, the showing of one and
-  the tasks, and for no other route (403, ADM-124), and authd must take
-  it: one it does not is 401 (ADM-115). An address that gave 10 wrong
+. A token is for the actions, the list of them, the showing and the
+  checking of one and the tasks, and for no other route, the open ones
+  among them (403, ADM-124), and authd must take it: one it does not is
+  401 (ADM-115). An address that gave 10 wrong
   tokens in a minute is stopped before authd is asked (429, ADM-105).
 . The route's access. A route for the signed in needs a session, and an
   action's route a session or a token (401, ADM-107, with the cookie
@@ -110,9 +111,9 @@ answers it:
 . For an action, its arguments are checked (400, ADM-108 for what the
   action does not take, ADM-125 for a value that cannot work), then
   whether the caller may ask for it (ADM-124, ADM-122, ADM-106), and only
-  then is its command run. For the showing of an action, which runs
-  nothing, the arguments are checked the same way, and a token needs the
-  scope that reads the action's area.
+  then is its command run. For the showing and the checking of an
+  action, which run no change, the arguments are checked the same way, and
+  a token needs the scope that reads the action's area.
 
 The sign-in routes take at most ten requests a minute from one address;
 the next is answered 429 (ADM-105) with *Retry-After*, on top of the wait
@@ -143,7 +144,7 @@ An action's route is *GET* for a read and *POST* for a change, at an
 address under _/api/1_ that the list gives, such as
 *POST /api/1/services/{name}/restart*. The services' and the certificates'
 actions are listed by *admin actions*, and the console's pages add their
-areas'. Besides the routes of the actions there are two:
+areas'. Besides the routes of the actions there are these:
 
 *GET /api/1/actions*
 	The list: a JSON array with an object for each action, with its *id*,
@@ -163,6 +164,46 @@ areas'. Besides the routes of the actions there are two:
 	and *files*, the paths a change writes. Any signed-in session may ask,
 	locked or not, and so may a token whose scopes read the action's
 	area. *admin show* prints the same.
+
+	For the services' changes, *service.start*, *service.stop*,
+	*service.restart*, *service.enable* and *service.disable*, the task is
+	one of the module *dukovo.system.service* of the Ansible collection
+	*dukovo.system*, with *state* set to *started*, *stopped* or
+	*restarted*, and *become: true*, and with no *changed_when*, since
+	the module says whether it changed something. *service.enable* sets
+	*state* to *started* and *enabled* to *true*, and *service.disable*
+	sets *state* to *stopped* and *enabled* to *false*. Install the
+	collection from its release at github.com/dukovo-os/ansible with
+	*ansible-galaxy collection install*, which needs ansible-core 2.22 or
+	later. The task of every other action is *ansible.builtin.command*
+	with the command's words as *argv*, with *become: true* for what runs
+	as an administrator and *changed_when: false* for a read.
+
+*POST /api/1/check*
+	Takes what *show* takes and makes no change. It runs the action's
+	probe, as the person or the token's owner, and reads the files the
+	change names, and answers *{"changed": true, "now": "stopped"}*:
+	*changed* is *false* when what the change moves is already as the
+	change leaves it, *true* when it would move something, and *null* when
+	admind cannot tell; *now* is the part of the probe's output that the
+	action compares, or *null*. A read answers *false*; a change that has no
+	probe and names no file, as a restart, answers *true*. Nothing is
+	written to the journal or the log. A probe that does not answer makes
+	*changed* *null*, not an error. It is refused as *show* is.
+
+*GET /api/1/openapi.json*
+	The description of the API as an OpenAPI 3.1 document, made at each
+	request from the table of routes and the actions the list gives. Anyone
+	may ask, with no session; a token is refused (ADM-124), as for every
+	route that is not for it. Each route and each action is an operation
+	named by its route or its ID, with the address's parameters, the body
+	of an action's arguments (and *show*'s and *check*'s *action* and
+	*args*), the security it needs, and for each status it can answer the
+	error IDs that come with it. A client generator, a mock server or a
+	tester such as Schemathesis reads it. The lab test *web-console/fuzz*
+	sends the requests it makes from the document to a machine, signed out
+	and with tokens, and fails on any answer that is a 5xx, that the
+	document does not give, or that takes more than 2 seconds.
 
 The Overview and the pages that show the machine read it with five actions
 of their own. Each runs a command as the person, so any signed-in session

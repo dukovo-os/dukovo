@@ -27,6 +27,14 @@
 //! probe can read only what the person can. An action without a probe
 //! always did something. The list says which are which, as `compares`.
 //!
+//! An action's Ansible task is the module of the collection `dukovo.system`
+//! for it where the collection has one: the services' changes are
+//! `dukovo.system.service`, which compares the service's state itself and
+//! reports no change the second time. An action the collection has no
+//! module for, the certificates' renewal and the console's reach, is
+//! `ansible.builtin.command` with the command's words, which cannot tell a
+//! change from none.
+//!
 //! [`REGISTRY`] is the one list. The route table, `GET /api/1/actions`,
 //! `admin actions` and `lab/actions.toml` are all made from it.
 
@@ -251,15 +259,18 @@ impl Args for Nothing {
     }
 }
 
-/// An action's Ansible task: a module with its parameters, or
-/// `ansible.builtin.command` with the command's words.
+/// An action's Ansible task: a module of the collection `dukovo.system`
+/// with its parameters, for an action the collection has a module for, or
+/// `ansible.builtin.command` with the command's words. A module says
+/// itself whether it changed anything, so its task has no `changed_when`;
+/// a command cannot, so a change's task reports "changed" on every run.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Ansible {
     /// The task's name, as a person reads it in a play's output.
     pub name: String,
     /// The module: `dukovo.system.service`, or `ansible.builtin.command`.
     pub module: &'static str,
-    /// The module's parameters, in order.
+    /// The module's parameters, in the order of their names.
     pub params: Map<String, Value>,
     /// Whether the task runs as root (`become: true`).
     pub become_root: bool,
@@ -289,6 +300,25 @@ impl Ansible {
             params,
             become_root: elevated,
             changed_when: (!changes).then(|| "false".into()),
+            register: None,
+            failed_when: None,
+        }
+    }
+
+    /// The task that runs `module` of the collection with `params`, as
+    /// root when `elevated`. The module says whether it changed anything.
+    pub fn module(
+        name: impl Into<String>,
+        module: &'static str,
+        params: Map<String, Value>,
+        elevated: bool,
+    ) -> Ansible {
+        Ansible {
+            name: name.into(),
+            module,
+            params,
+            become_root: elevated,
+            changed_when: None,
             register: None,
             failed_when: None,
         }
@@ -379,7 +409,8 @@ pub trait Action: 'static {
         None
     }
 
-    /// The Ansible task that does the same.
+    /// The Ansible task that does the same: a task of the command, unless
+    /// the action overrides this with the collection's module for it.
     fn ansible(args: &Self::Args) -> Ansible {
         let name = match Self::subject(args) {
             Some(subject) => format!("{}: {subject}", Self::TITLE),
