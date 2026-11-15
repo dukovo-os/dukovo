@@ -60,6 +60,8 @@ mod upstream;
 mod userspace;
 mod vex;
 mod vt;
+#[allow(dead_code)] // Read by `ob test replay`.
+mod writelog;
 
 use std::fmt;
 use std::io;
