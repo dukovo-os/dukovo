@@ -54,13 +54,28 @@ system = "2026.3.1"
 	sees that version (ADR 0544); *false*, the default. The project's
 	own canaries say *true*. Every other machine takes a release when
 	its wave opens, from day 1 to day 7, by the number it keeps in
-	_/system/state/sysupdate/wave_.
+	_/system/state/sysupdate/wave_. A canary also checks for updates
+	every hour, and with *canary_name* and its key it reports how it
+	does to the update server each hour, which holds the waves of a
+	release while a canary is not green (ADR 0533). *sysupdate canary
+	enrol* sets it, and *canary_name*, together.
+
+*canary_name*
+	The name under which a canary reports, and under which the update
+	server lists it: 1 to 32 characters of *a* to *z*, *0* to *9* and
+	*-*, the first not *-*. It is the name that *./ob release canary
+	add* takes. *sysupdate canary enrol* writes it, by default the
+	host name. With *canary = true*, a name and the key in
+	_/system/settings/sysupdate/canary.key_ a machine reports; without
+	either it takes each release first and reports nothing. A name that
+	does not fit is refused when the file is read.
 
 *check*
-	What *updated*(8) does once a day: *notify*, the default, tells
-	whoever is signed in that an update is ready, and changes nothing;
-	*download* fetches the system update as well, so that staging it
-	needs no network; *off* checks nothing.
+	What *updated*(8) does once a day, or each hour on a canary:
+	*notify*, the default, tells whoever is signed in that an update
+	is ready, and changes nothing; *download* fetches the system
+	update as well, so that staging it needs no network; *off* checks
+	nothing.
 
 *apps*
 	*notify*, the default, tells of the apps' updates; *auto* updates
@@ -118,6 +133,13 @@ A server that restarts itself into each update at 04:00:
 ```
 unattended = true
 restart = "04:00"
+```
+
+A canary named ref-box, as *sysupdate canary enrol ref-box* writes it:
+
+```
+canary = true
+canary_name = "ref-box"
 ```
 
 # SEE ALSO

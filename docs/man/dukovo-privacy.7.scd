@@ -157,6 +157,21 @@ that is not listed is a bug.
 	about the machine. *check = "off"* in *updates.toml*(5) turns it
 	off, as does *enabled = false* in its service file (*updated*(8)).
 
+*dukovo-canary-report*
+	Nothing on a machine that is not a canary. A canary is a machine
+	whose owner ran *sysupdate canary enrol* (*sysupdate*(8)): it sends
+	each hour a report, signed with the machine's own key, to the
+	update server named in *updates.toml*(5). The report holds the
+	machine's name on the server's list, the system version it runs
+	and the one staged, its channel, the result of its last health
+	check, how many checks of *dukovo-check*(8) failed or warned and
+	up to 32 failures in words, whether the last update fell back,
+	and up to 32 services that failed. The words of a failure are the
+	check's own and can name a service, a file or a setting. No log
+	line, address or file content is in it. Taking *canary* out of
+	*updates.toml*(5), or *enabled = false* in the service file of
+	*dukovo-canary-report*, stops it.
+
 Planned, each to be described here in full before it ships:
 
 *Discovery* (Phase 12)

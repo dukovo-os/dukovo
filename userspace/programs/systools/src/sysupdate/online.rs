@@ -107,6 +107,7 @@ struct SettingsFile {
     channel: Option<String>,
     server: Option<String>,
     canary: Option<bool>,
+    canary_name: Option<String>,
     check: Option<Check>,
     apps: Option<Apps>,
     metered: Option<Metered>,
@@ -173,6 +174,9 @@ pub struct Settings {
     /// Whether this machine is one of the project's canaries, which take
     /// each release on its first day (ADR 0456).
     pub canary: bool,
+    /// The name this canary has on the update server's list, which its
+    /// reports carry (`sysupdate canary enrol`, ADR 0533).
+    pub canary_name: Option<String>,
     /// What updated(8) does when it finds an update.
     pub check: Check,
     /// What updated(8) does with app updates.
@@ -195,6 +199,7 @@ impl Default for Settings {
             channel: DEFAULT_CHANNEL.into(),
             server: SERVER.into(),
             canary: false,
+            canary_name: None,
             check: Check::Notify,
             apps: Apps::Notify,
             metered: Metered::Wait,
@@ -227,6 +232,14 @@ impl Settings {
             server.push('/');
         }
         tuf::Url::parse(&server).map_err(|err| format!("server = \"{server}\": {err}"))?;
+        if let Some(name) = &file.canary_name
+            && !system_release::canary::valid_name(name)
+        {
+            return Err(format!(
+                "canary_name = \"{name}\" is not a canary's name: use 1 to 32 of a-z, 0-9 and -, \
+                 not first -"
+            ));
+        }
         if let Some(restart) = &file.restart
             && minutes_of_day(restart).is_none()
         {
@@ -239,6 +252,7 @@ impl Settings {
             channel,
             server,
             canary: file.canary.unwrap_or(false),
+            canary_name: file.canary_name,
             check: file.check.unwrap_or_default(),
             apps: file.apps.unwrap_or_default(),
             metered: file.metered.unwrap_or_default(),
@@ -254,10 +268,22 @@ impl Settings {
     ///
     /// If the file cannot be read or is not right, naming it.
     pub fn load() -> Result<Settings, Fail> {
-        match std::fs::read_to_string(SETTINGS) {
-            Ok(text) => Settings::parse(&text).map_err(|why| fail(format!("{SETTINGS}: {why}"))),
+        Settings::load_from(Path::new(SETTINGS))
+    }
+
+    /// The settings in the file `path`, or the defaults where there is
+    /// none.
+    ///
+    /// # Errors
+    ///
+    /// As [`Settings::load`].
+    pub(crate) fn load_from(path: &Path) -> Result<Settings, Fail> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                Settings::parse(&text).map_err(|why| fail(format!("{}: {why}", path.display())))
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
-            Err(err) => Err(util::failed(&SETTINGS, err)),
+            Err(err) => Err(util::failed(&path.display(), err)),
         }
     }
 
@@ -274,6 +300,9 @@ impl Settings {
         }
         if self.canary {
             text.push_str("canary = true\n");
+        }
+        if let Some(name) = &self.canary_name {
+            text.push_str(&format!("canary_name = \"{name}\"\n"));
         }
         match self.check {
             Check::Notify => {}
@@ -311,14 +340,22 @@ impl Settings {
     ///
     /// If the file cannot be written.
     pub fn save(&self) -> Result<(), Fail> {
-        let path = Path::new(SETTINGS);
+        self.save_to(Path::new(SETTINGS))
+    }
+
+    /// Writes the settings to the file `path`, whole or not at all.
+    ///
+    /// # Errors
+    ///
+    /// As [`Settings::save`].
+    pub(crate) fn save_to(&self, path: &Path) -> Result<(), Fail> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|err| util::failed(&dir.display(), err))?;
         }
         let partial = path.with_extension("toml.partial");
         std::fs::write(&partial, self.text())
             .and_then(|()| std::fs::rename(&partial, path))
-            .map_err(|err| util::failed(&SETTINGS, err))
+            .map_err(|err| util::failed(&path.display(), err))
     }
 }
 
@@ -1089,6 +1126,47 @@ mod tests {
         assert!(Settings::parse("metered = \"never\"").is_err());
         assert_eq!(minutes_of_day("03:30"), Some(210));
         assert!(Settings::parse("chanel = \"beta\"").is_err());
+    }
+
+    #[test]
+    fn a_canary_s_name_is_read_written_and_kept_with_the_rest() {
+        // The settings of a canary that reports, as `sysupdate canary enrol` writes them.
+        let canary = Settings::parse(
+            "channel = \"beta\"\ncanary = true\ncanary_name = \"ref-box\"\nunattended = true\n\
+             [hold]\nsystem = \"0.15.2\"\n",
+        )
+        .unwrap();
+        assert!(canary.canary);
+        assert_eq!(canary.canary_name.as_deref(), Some("ref-box"));
+        let text = canary.text();
+        assert!(text.contains("canary = true\ncanary_name = \"ref-box\"\n"), "{text}");
+        assert_eq!(Settings::parse(&text).unwrap(), canary);
+        // What `update hold` and `sysupdate channel` write back keeps the name.
+        let moved = Settings { channel: "stable".into(), ..canary.clone() };
+        assert_eq!(Settings::parse(&moved.text()).unwrap().canary_name, canary.canary_name);
+        // No name, none written: a machine that only takes releases first is as it was.
+        let first = Settings::parse("canary = true\n").unwrap();
+        assert_eq!((first.canary, first.canary_name.clone()), (true, None));
+        assert!(!first.text().contains("canary_name"));
+        assert!(!Settings::default().text().contains("canary"));
+        // The name is one the update server's list can hold.
+        for bad in ["", "-x", "Ref", "a b", "a/b", &"a".repeat(33)] {
+            let err = Settings::parse(&format!("canary_name = {bad:?}\n")).unwrap_err();
+            assert!(err.contains("is not a canary's name"), "{bad:?}: {err}");
+        }
+        assert!(Settings::parse("canary_name = 7\n").is_err());
+
+        // Through a file, as the machine keeps it.
+        let dir = std::env::temp_dir().join(format!("sysupdate-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("sysupdate").join("updates.toml");
+        assert_eq!(Settings::load_from(&file).unwrap(), Settings::default());
+        canary.save_to(&file).unwrap();
+        assert_eq!(Settings::load_from(&file).unwrap(), canary);
+        std::fs::write(&file, "canary_name = \"Ref\"\n").unwrap();
+        let err = Settings::load_from(&file).unwrap_err().message;
+        assert!(err.starts_with(&file.display().to_string()), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn release(version: &str, updates_from: &str, files: &[(&str, &[u8])]) -> Release {

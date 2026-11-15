@@ -59,6 +59,8 @@ pub(crate) struct Update {
     pub(crate) to: Option<String>,
     /// The slot it went to, `a` or `b`.
     pub(crate) slot: Option<String>,
+    /// When it was staged, in seconds since 1970, when the file says.
+    pub(crate) staged: Option<i64>,
     /// Whether a fallback put the settings from before it back.
     pub(crate) restored: bool,
 }
@@ -82,6 +84,29 @@ pub(crate) struct Facts {
     /// The release Rescue holds.
     pub(crate) rescue: Option<String>,
     pub(crate) partitions: Vec<Partition>,
+}
+
+impl Facts {
+    /// What `slot` holds.
+    fn held(&self, slot: Slot) -> &SlotFacts {
+        &self.slots[usize::from(slot == Slot::B)]
+    }
+
+    /// The release the running slot says it is.
+    pub(crate) fn running_version(&self) -> Option<String> {
+        self.held(self.running).version.clone()
+    }
+
+    /// The release staged for the next start: the update being tried,
+    /// while it has tries left, when it is another release than the one
+    /// that runs. A firmware set staged beside the running release is
+    /// no release.
+    pub(crate) fn staged_version(&self) -> Option<String> {
+        let slot =
+            self.state.trying.filter(|&slot| slot != self.running && self.state.tries > 0)?;
+        let version = self.held(slot).version.clone()?;
+        (Some(&version) != self.running_version().as_ref()).then_some(version)
+    }
 }
 
 /// The members of `sysupdate status --json` after `format`.
@@ -262,6 +287,7 @@ mod tests {
                 from: Some("0.14.0".into()),
                 to: Some("0.15.0".into()),
                 slot: Some("a".into()),
+                staged: Some(1_794_000_000),
                 restored: false,
             }),
             rescue: Some("0.14.0".into()),
