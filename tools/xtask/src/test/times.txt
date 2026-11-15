@@ -215,6 +215,8 @@ update-disk-full 240
 update-fallback 90
 update-first-start-kills 400
 update-first-start-kills-bios 400
+update-from-0.15.0 1500
+update-from-0.15.0-bios 1500
 update-hang 150
 update-network-down 200
 update-offline 160

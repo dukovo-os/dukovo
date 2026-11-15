@@ -879,6 +879,18 @@ update-first-start-kills-bios tools/xtask/src/writelog.rs userspace/programs/slo
 update-first-start-kills-bios userspace/programs/system-release/
 update-first-start-kills-bios userspace/programs/systools/src/sysupdate.rs
 update-first-start-kills-bios userspace/programs/systools/src/sysupdate/ userspace/spark/src/main.rs
+update-from-0.15.0 image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
+update-from-0.15.0 tools/xtask/src/fixture/release.rs tools/xtask/src/release.rs
+update-from-0.15.0 tools/xtask/src/test/upgrade.rs userspace/programs/slots/
+update-from-0.15.0 userspace/programs/system-release/ userspace/programs/systools/src/subvolume.rs
+update-from-0.15.0 userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+update-from-0.15.0 userspace/spark/src/main.rs userspace/programs/tuf/
+update-from-0.15.0-bios image/grub/installed.cfg.in image/grub/menu.cfg kernel/fs/btrfs/
+update-from-0.15.0-bios tools/xtask/src/fixture/release.rs tools/xtask/src/release.rs
+update-from-0.15.0-bios tools/xtask/src/test/upgrade.rs userspace/programs/slots/
+update-from-0.15.0-bios userspace/programs/system-release/ userspace/programs/systools/src/subvolume.rs
+update-from-0.15.0-bios userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+update-from-0.15.0-bios userspace/spark/src/main.rs userspace/programs/tuf/
 update-hang image/grub/installed.cfg.in image/grub/menu.cfg kernel/drivers/watchdog/
 update-hang image/grub/rescue.cfg
 update-hang userspace/programs/slots/ userspace/programs/systools/src/sysupdate.rs

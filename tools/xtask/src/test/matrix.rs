@@ -7,14 +7,18 @@
 //!
 //! The nightly run takes a sample: sixteen power cuts of each firmware
 //! type, the first-start kills, the update boot tests that ran before the
-//! matrix did, the TUF conformance suite, and each fuzz target for ten
+//! matrix did, the updates from each old release's fixture under each
+//! firmware type, the TUF conformance suite, and each fuzz target for ten
 //! minutes. `--full`, for a release candidate, takes every power cut, in
 //! eight parts of each firmware type that run at once, twenty kills of the
-//! first start, and each fuzz target for an hour.
+//! first start, and each fuzz target for an hour. The jobs of the updates
+//! from an old release run after the workflow's `fixtures` job, which
+//! makes the fixtures they boot and keeps them in the Actions cache.
 
 use serde_json::{Value, json};
 
 use super::fuzz;
+use super::upgrade::{self, FIXTURE_RELEASES};
 use crate::{Args, Result};
 
 /// The power cut replays, by firmware type: the case, and a name for the
@@ -113,6 +117,16 @@ fn jobs(full: bool) -> Vec<Job> {
     }
     let cases: Vec<String> = UPDATE_CASES.iter().map(|case| format!("--case {case}")).collect();
     jobs.push(Job::new("update-cases", format!("./ob test boot {} --retry", cases.join(" "))));
+    // Each fixture release under each firmware type, a job of its own: a
+    // case boots the old release and this build four times in all.
+    for release in FIXTURE_RELEASES {
+        for (bios, firmware) in [(false, "uefi"), (true, "bios")] {
+            jobs.push(Job::new(
+                format!("upgrade-{}-{firmware}", release.replace('.', "-")),
+                format!("./ob test boot --case {} --retry", upgrade::case_name(release, bios)),
+            ));
+        }
+    }
     jobs.push(Job::new("tuf-conformance", "./ob test tuf"));
     let seconds = if full { FUZZ_SECONDS.1 } else { FUZZ_SECONDS.0 };
     for target in fuzz::TARGETS {
@@ -207,7 +221,7 @@ mod tests {
     #[test]
     fn the_nightly_sample_is_sixteen_cuts_of_each_firmware_and_the_rest() {
         let runs: Vec<String> = jobs(false).into_iter().map(|job| job.run).collect();
-        assert_eq!(runs.len(), 5 + 1 + fuzz::TARGETS.len());
+        assert_eq!(runs.len(), 5 + 2 * FIXTURE_RELEASES.len() + 1 + fuzz::TARGETS.len());
         assert_eq!(runs[0], "./ob test replay --case update-power-replay --points 16");
         assert_eq!(runs[1], "./ob test replay --case update-power-replay-bios --points 16");
         assert_eq!(runs[2], "./ob test boot --case update-first-start-kills");
@@ -220,8 +234,10 @@ mod tests {
              --case update-disk-full --case update-bad-network --case update-clock-ahead \
              --case update-clock-behind --retry"
         );
-        assert_eq!(runs[5], "./ob test tuf");
-        assert_eq!(runs[6], "./ob test fuzz --target release-list --seconds 600");
+        assert_eq!(runs[5], "./ob test boot --case update-from-0.15.0 --retry");
+        assert_eq!(runs[6], "./ob test boot --case update-from-0.15.0-bios --retry");
+        assert_eq!(runs[7], "./ob test tuf");
+        assert_eq!(runs[8], "./ob test fuzz --target release-list --seconds 600");
         assert!(jobs(false).iter().all(|job| job.env.is_empty()));
     }
 
@@ -243,7 +259,10 @@ mod tests {
     #[test]
     fn the_full_run_boots_every_cut_in_eight_parts_of_each_firmware() {
         let jobs = jobs(true);
-        assert_eq!(jobs.len(), 2 * PARTS + 2 + 1 + 1 + fuzz::TARGETS.len());
+        assert_eq!(
+            jobs.len(),
+            2 * PARTS + 2 + 1 + 2 * FIXTURE_RELEASES.len() + 1 + fuzz::TARGETS.len()
+        );
         for (case, _) in REPLAYS {
             for part in 1..=PARTS {
                 let run =
@@ -255,8 +274,38 @@ mod tests {
             let job = jobs.iter().find(|job| job.run.ends_with(case)).unwrap();
             assert_eq!(job.env, [("OB_TEST_KILLS", "20")]);
         }
-        let nightly = jobs.iter().filter(|job| job.run.contains("--retry")).count();
-        assert_eq!(nightly, 1);
+        // The update boot tests together, and each update from an old
+        // release's fixture.
+        let retried = jobs.iter().filter(|job| job.run.contains("--retry")).count();
+        assert_eq!(retried, 1 + 2 * FIXTURE_RELEASES.len());
+    }
+
+    #[test]
+    fn each_fixture_release_has_a_job_for_each_firmware_type_in_both_runs() {
+        for full in [false, true] {
+            let jobs = jobs(full);
+            for release in FIXTURE_RELEASES {
+                for (bios, firmware) in [(false, "uefi"), (true, "bios")] {
+                    let run = format!(
+                        "./ob test boot --case {} --retry",
+                        upgrade::case_name(release, bios)
+                    );
+                    let job = jobs.iter().find(|job| job.run == run).unwrap();
+                    assert_eq!(job.name, format!("upgrade-0-15-0-{firmware}"));
+                    assert!(job.env.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_update_cases_that_need_no_fixture_do_not_name_one() {
+        let jobs = jobs(false);
+        let plain = jobs.iter().find(|job| job.name == "update-cases").unwrap();
+        assert!(!plain.run.contains("update-from-"));
+        // The workflow tells the jobs that need the fixtures by this word.
+        let workflow = include_str!("../../../../.github/workflows/update-matrix.yml");
+        assert!(workflow.contains("*\"--case update-from-\"*"));
     }
 
     #[test]

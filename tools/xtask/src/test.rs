@@ -259,6 +259,11 @@ pub enum TestImage {
     /// root turns cloud-setup and sshd on, with [`CLOUD_ROOM`] of free
     /// space after the root, as a cloud's disk is larger than its image.
     Cloud,
+    /// The disk an old release's own tree made (`ob fixture release`,
+    /// [`upgrade`]): attached as it is, as a copy-on-write overlay that
+    /// the guest writes to and the file never is, so nothing is built or
+    /// put after its partitions.
+    Fixture,
 }
 
 /// The free space after a cloud image's root on its test disk, which
@@ -497,6 +502,12 @@ const PHP_FILES: u8 = 33;
 /// ([`waves_site_disk`], ADR 0544): the waves have just begun, and
 /// diary 1.1.0's are held ([`WAVES_PAUSE`]).
 const WAVES_SITE: u8 = 34;
+
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a full
+/// repository of this build, in a folder `full`
+/// ([`upgrade::update_full_disk`], ADR 0536): what a stage from an old
+/// release's slot needs, since no file of it is known to be there.
+const UPDATE_FULL: u8 = 35;
 
 /// What the [`WAVES_SITE`] catalog's plan holds: diary 1.1.0's waves, with
 /// this reason.
@@ -1706,6 +1717,7 @@ mod phase13;
 mod replay;
 pub mod soak;
 mod stall;
+mod upgrade;
 
 /// The boot tests in test/cases, one file each, which build.rs lists (see
 /// test/cases/README.md): two pull requests that add a test each then
@@ -1725,12 +1737,13 @@ pub fn all_cases() -> impl Iterator<Item = &'static Case> {
         .chain(phase12::CASES)
         .chain(phase13::CASES)
         .chain(cases::FILES.iter().map(|&(_, case, _)| case))
+        .chain(upgrade::cases())
 }
 
 /// The boot tests in test/cases, with the description their files'
 /// `//!` lines give, for dukovo-boot-tests(7).
 pub fn described_cases() -> impl Iterator<Item = (&'static Case, String)> {
-    cases::FILES.iter().map(|&(_, case, text)| (case, file_doc(text)))
+    cases::FILES.iter().map(|&(_, case, text)| (case, file_doc(text))).chain(upgrade::described())
 }
 
 /// The `//!` lines at the top of `text`, without their marker.
@@ -3497,9 +3510,10 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             );
         }
         let changed = affected::changed_files(ctx, commit)?;
-        let choice = affected::choose(&changed, &|path| {
+        let mut choice = affected::choose(&changed, &|path| {
             crate::site::check::has_examples(&ctx.root.join(path))
         });
+        choice.cases = upgrade::without_fixture_cases(choice.cases);
         eprintln!(
             "{} files changed since {commit}; what each adds to the boot tests (ADR 0421):",
             changed.len()
@@ -3600,7 +3614,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         crate::bail!("--retry runs a failed boot test again; give `boot` with it");
     }
     let mut cases: Vec<&Case> = if selected.is_empty() {
-        all_cases().collect()
+        upgrade::without_fixture_cases(all_cases().collect())
     } else {
         let mut cases = Vec::new();
         for name in &selected {
@@ -3639,6 +3653,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
 /// Builds the kernel and the programs for `cases`, and packs the catalog's
 /// bundles if one of them installs them.
 fn build_for(ctx: &Ctx, profile: crate::config::Profile, cases: &[&Case]) -> Result<Built> {
+    // Before anything is signed or built: the fixtures of the cases that
+    // update from an old release trust keys that these builds must use.
+    upgrade::adopt_keys(ctx, cases)?;
     let built =
         Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
     // The catalog's bundles are packed only for a case that installs
@@ -3798,6 +3815,9 @@ pub fn build_test_image(
         TestImage::Live => "dukovo-test-live",
         TestImage::Installed | TestImage::Cloud => {
             return Err(Error::new("an installed system's test image needs its root's UUID"));
+        }
+        TestImage::Fixture => {
+            return Err(Error::new("a fixture's disk is made by `ob fixture release`"));
         }
     };
     let output = dir.join(format!("{name}.{}", if iso { "iso" } else { "img" }));
@@ -4013,6 +4033,8 @@ fn test_images(
             continue;
         }
         let bytes = match (key.0, roots.of(case)) {
+            // The disk is the fixture's own, attached as it is.
+            (TestImage::Fixture, _) => Vec::new(),
             (TestImage::Installed | TestImage::Cloud, Some(root)) => {
                 build_installed_test_image(ctx, built, dir, root.uuid)?
             }
@@ -4676,6 +4698,11 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
     let live = test_live(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, &roots)?;
     for case in cases {
+        if upgrade::needs_fixture(case) {
+            let image = upgrade::fixture_image(ctx, case).map_err(Error::new)?;
+            step(&format!("{} boots {}, which it leaves as it is", case.name, ctx.display(&image)));
+            continue;
+        }
         let iso = case.media.is_cd();
         let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
         let path = dir.join(format!("{}.{}", case.name, if iso { "iso" } else { "img" }));
@@ -4715,6 +4742,7 @@ fn boot_tests(
     let roots = test_roots(ctx, built, &dir, cases)?;
     let live = test_live(ctx, built, &dir, cases)?;
     test_updates(ctx, built, &dir, cases)?;
+    upgrade::make_full_repository(ctx, built, &dir, cases)?;
     test_update_server(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, &roots)?;
 
@@ -4941,6 +4969,12 @@ fn run_case(
         || dir.join(format!("{}.img", case.name)),
         |replaying| replaying.image.clone(),
     );
+    // A fixture's disk is booted where it is: QEMU keeps what the guest
+    // writes in a file of its own (`snapshot=on`), and the disk is never
+    // written.
+    let fixture =
+        if upgrade::needs_fixture(case) { Some(upgrade::fixture_image(ctx, case)?) } else { None };
+    let image = fixture.clone().unwrap_or(image);
     let qmp = dir.join(format!("{}.qmp", case.name));
     let disks = make_disks(ctx, dir, case, base, root)?;
     let mut extra: Vec<String> = case.qemu.iter().map(ToString::to_string).collect();
@@ -5241,7 +5275,7 @@ fn run_case(
     };
     // A second boot by the stick's Boot from first disk.
     let first_disk = case.disks.first().is_some_and(|disk| disk.fat == INSTALL_FIRST_DISK);
-    let prepared = replaying.is_some();
+    let prepared = replaying.is_some() || fixture.is_some();
     let boot = |name: &str, cmdline: &str, script: Script, again: bool| -> Result<(), String> {
         if prepared {
             return run(&machine, name, script);
@@ -5529,6 +5563,11 @@ fn make_disks(
         }
         if disk.fat == UPDATE_RELEASES {
             make_update_releases(disk, &image.path, &updates_dir(dir))?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == UPDATE_FULL {
+            upgrade::make_full_disk(disk, &image.path, &upgrade::full_dir(dir))?;
             made.push(image);
             continue;
         }
