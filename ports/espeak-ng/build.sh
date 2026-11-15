@@ -36,10 +36,14 @@ host=$PORT_BUILD/host
 
 # Radix's espeak-ng, which looks for the data where Dukovo keeps it
 # (patches/0001).
+# mlibc's sys/endian.h is an empty file, which eSpeak NG's check takes
+# for the BSDs' header and reads le16toh() from: it is told the header is
+# not there, and reads <endian.h>, where mlibc defines them.
 radix=$PORT_BUILD/radix
 # shellcheck disable=SC2086
 {
 	cmake -S "$PORT_SRC" -B "$radix" $options -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
+		-DHAVE_SYS_ENDIAN_H=0 \
 		-DCMAKE_INSTALL_PREFIX="$PREFIX" -DESPEAK_DATA_DIR="$PREFIX/resources/espeak-ng-data" &&
 		cmake --build "$radix" -j "$JOBS" --target espeak-ng-bin
 } >"$PORT_BUILD/radix.log" 2>&1 || {
