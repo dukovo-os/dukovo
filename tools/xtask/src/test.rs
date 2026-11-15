@@ -503,6 +503,13 @@ const POSTGRESQL_FILES: u8 = 35;
 /// ([`cases::postgresql_service::make_disk`]).
 const POSTGRESQL_SERVICE_FILES: u8 = 36;
 
+/// [`Disk::fat`] for a disk as [`ROOT`] makes one, with [`Disk::kib`] of
+/// free space after the Dukovo root partition: a disk larger than the
+/// image, as a server's is, whose root the case grows over it with `rdisk
+/// --grow` and `device resize max`, as a cloud machine's first boot does
+/// (ADR 0327), for bundles that need more room than an image's root has.
+const ROOT_ROOM: u8 = 37;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -970,7 +977,7 @@ enum Bus {
 impl Disk {
     /// Whether it holds Btrfs.
     fn btrfs(&self) -> bool {
-        matches!(self.fat, BTRFS | BTRFS_NEW | ROOT | BTRFS_LOG | BTRFS_RAID)
+        matches!(self.fat, BTRFS | BTRFS_NEW | ROOT | ROOT_ROOM | BTRFS_LOG | BTRFS_RAID)
     }
 
     /// Whether it holds exFAT.
@@ -3975,7 +3982,8 @@ fn test_roots(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<T
         Ok(TestRoot { path, uuid })
     };
     let installed = cases.iter().any(|case| {
-        case.image == TestImage::Installed || case.disks.iter().any(|disk| disk.fat == ROOT)
+        case.image == TestImage::Installed
+            || case.disks.iter().any(|disk| matches!(disk.fat, ROOT | ROOT_ROOM))
     });
     let cloud = cases.iter().any(|case| case.image == TestImage::Cloud);
     Ok(TestRoots {
@@ -5252,7 +5260,7 @@ fn make_disks(
             made.push(image);
             continue;
         }
-        if disk.fat == ROOT {
+        if matches!(disk.fat, ROOT | ROOT_ROOM) {
             let root = root.ok_or("the Dukovo root's filesystem was not made")?;
             let first = if case.media.is_cd() {
                 // A CD's test image is an ISO, with no GPT to add the
@@ -5272,13 +5280,25 @@ fn make_disks(
                     .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
                 image::append_root(&image.path, root).map_err(|err| err.to_string())?
             };
+            let mut bytes = image::ROOT_BYTES;
+            if disk.fat == ROOT_ROOM {
+                // The room goes at the disk's end, after the GPT's backup,
+                // which `rdisk --grow` moves there as on a cloud machine's
+                // disk; the root's check then reads to the end, which a root
+                // grown over the room reaches.
+                let room = disk.kib * 1024;
+                bytes = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&image.path)
+                    .and_then(|file| {
+                        let end = file.metadata()?.len() + room;
+                        file.set_len(end)?;
+                        Ok(end - first * 512)
+                    })
+                    .map_err(|err| format!("adding room to {}: {err}", image.path.display()))?;
+            }
             let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
-            made.push(DiskImage {
-                offset: first * 512,
-                bytes: image::ROOT_BYTES,
-                btrfs: Some(tool),
-                ..image
-            });
+            made.push(DiskImage { offset: first * 512, bytes, btrfs: Some(tool), ..image });
             continue;
         }
         if disk.btrfs() {

@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! PostgreSQL's service, the database server of the PostgreSQL bundle, runs
-//! for the system (ADR 0522). Dukovo's root is on a disk, so that the
-//! bundles have room, and a second disk holds the `.dkv` files `ob ports`
+//! for the system (ADR 0522). Dukovo's root is on a disk with 512 MiB of
+//! room after it, and a second disk holds the `.dkv` files `ob ports`
 //! packed, PostgreSQL's and PHP's among them, with the scripts that make
-//! the checks. Through elevate, Alice installs PostgreSQL for everyone:
+//! the checks. The bundles and the cluster need more than the image's root
+//! has, so, through elevate, Alice first grows the root's partition to the
+//! disk's end and its Btrfs over it, in use, as a cloud machine's first
+//! boot does (ADR 0327). Then she installs PostgreSQL for everyone:
 //! authd makes the account postgres, and the service waits until she
 //! enables it. Enabled, its first start makes the cluster with initdb, in
 //! the account's data folder with the bundle's pg_hba.conf, and the service
@@ -46,17 +49,21 @@ const PHP_FILE: &str = "net.php.php-8.5.12.dkv";
 /// The steps' script, by its path on the disk.
 const SCRIPT: &str = "/volumes/vdb/service.sh";
 
-/// Dukovo's root on a copy of the test image, and the bundles, with the
-/// checks' scripts beside them.
+/// Dukovo's root on a copy of the test image with 512 MiB of room after it,
+/// and the bundles, with the checks' scripts beside them.
 const DISKS: &[Disk] = &[
-    Disk { label: image::ROOT_LABEL, ..btrfs_disk(Bus::Virtio, 512, ROOT, root_checked) },
+    Disk {
+        label: image::ROOT_LABEL,
+        kib: 512 * 1024,
+        ..btrfs_disk(Bus::Virtio, 512, ROOT_ROOM, root_checked)
+    },
     Disk { fat: POSTGRESQL_SERVICE_FILES, ..bundle_files_disk(192 * 1024, LABEL) },
 ];
 
 /// The test.
 pub const CASE: Case = Case {
     name: "postgresql-service",
-    about: "PostgreSQL's service runs for the system (ADR 0522): installed for everyone from its .dkv file and enabled, it makes its cluster at its first start and is ready once pg_isready passes; elevate psql -U postgres is the superuser by root's peer authentication and a person with a role is herself; a role with a password owns a database of English's locale of the C library, which sorts as glibc does and has the locales' version, and connects over 127.0.0.1 with its password and not another; a parallel query runs two workers; PHP's pgsql and PDO connect, insert, read and roll back; stopped with a session open it returns within ten seconds by the fast shutdown and starts again without recovery; a reload reads its settings; with the machine's certificate from certd it serves TLS to a client that checks the name, and a renewal is served without a restart (ADR 0512)",
+    about: "PostgreSQL's service runs for the system (ADR 0522): on a root grown to its disk's end with rdisk --grow and device resize max (ADR 0327), installed for everyone from its .dkv file and enabled, it makes its cluster at its first start and is ready once pg_isready passes; elevate psql -U postgres is the superuser by root's peer authentication and a person with a role is herself; a role with a password owns a database of English's locale of the C library, which sorts as glibc does and has the locales' version, and connects over 127.0.0.1 with its password and not another; a parallel query runs two workers; PHP's pgsql and PDO connect, insert, read and roll back; stopped with a session open it returns within ten seconds by the fast shutdown and starts again without recovery; a reload reads its settings; with the machine's certificate from certd it serves TLS to a client that checks the name, and a renewal is served without a restart (ADR 0512)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, bundled among them.
@@ -362,14 +369,24 @@ fn install(vm: &mut Vm, file: &str, folder: &str, seconds: u64) -> Result<(), St
              'as the account' -e installed; cd"
         ),
     )?;
-    answer_prompt_within(vm, "$", &format!("clear; ls -d /applications/{folder}*"), seconds)?;
-    vm.expect_screen(&[&format!("/applications/{folder}")])
+    // Counted, so that the command's own line on the screen is not taken
+    // for its answer.
+    let count = format!("clear; echo \"installed $(ls -d /applications/{folder}* | wc -l)\"");
+    answer_prompt_within(vm, "$", &count, seconds)?;
+    vm.expect_screen(&["installed 1"])
 }
 
 fn postgresql_service(vm: &mut Vm, case: &Case) -> Result<(), String> {
     owner_signs_in(vm, case)?;
     vm.expect_anywhere("bundled: 0 bundles installed; answering at /system/live/bundled/socket")?;
     vm.expect_anywhere(&format!("spark: mounted the FAT filesystem of vdb at {VOLUME}"))?;
+    // The root grows over the disk's room, in use: its partition, then its
+    // Btrfs, named by a folder on it.
+    unlock(vm)?;
+    answer_prompt(vm, "$", "clear; elevate rdisk --grow /devices/vda")?;
+    vm.expect_screen(&["/devices/vda3 grows from 512 MiB to 1 GiB."])?;
+    answer_prompt(vm, "$", "clear; elevate device resize max /system/settings")?;
+    vm.expect_screen(&["Resized device id 1 of '/system/settings' to "])?;
     // For everyone, through elevate: the service waits to be enabled.
     unlock(vm)?;
     install(vm, POSTGRESQL_FILE, "org.postgresql.postgresql", 1800)?;

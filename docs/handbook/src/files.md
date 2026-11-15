@@ -494,15 +494,16 @@ an image copied to a larger disk, as a cloud machine's is. `rdisk --grow`
 grows the last partition, or the one named by its number, into the free
 space after it, even while it is mounted, and moves a GPT's backup to the
 disk's new end; `device resize max` then grows the Btrfs on it, while it
-is in use (ADR 0327):
+is in use, named by a folder it holds, such as `/system/settings` for
+the root's (ADR 0327):
 
 ```
 # rdisk --grow /devices/vda
 /devices/vda3 grows from 3.9 GiB to 49.9 GiB.
 The partition table is written.
 The kernel has read it; its partitions are in /devices.
-# device resize max /
-Resized device id 1 of '/' to 49.9 GiB
+# device resize max /system/settings
+Resized device id 1 of '/system/settings' to 49.9 GiB
 ```
 
 A partition that already reaches the free space's end is left as it is,

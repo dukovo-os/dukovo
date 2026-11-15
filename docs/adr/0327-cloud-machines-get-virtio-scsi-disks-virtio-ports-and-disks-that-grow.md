@@ -88,7 +88,7 @@ Dukovo is to run as a cloud machine, from an image its build makes (Phase
   more than the partition held before, and has `fsck-btrfs` and the
   host's `sgdisk` check the result.
 - The first-boot setup of cloud images runs `rdisk --grow` on the root
-  disk and `device resize max /` after it.
+  disk and `device resize max /system/settings` after it.
 - The adapter's event queue, for disks added and taken away while the
   machine runs, and task management, for aborting a command the disk does
   not answer, are left for later; a disk that stops answering has the
