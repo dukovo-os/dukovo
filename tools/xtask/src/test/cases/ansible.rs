@@ -8,14 +8,11 @@
 //! the console an administrator adds the test catalog, which lists
 //! ripgrep, from the second disk, and turns discoverd off.
 //!
-//! The collection is the tarball that src/test/ansible.lock pins. While the
-//! collection's repository does not exist, the lock names the tarball by
-//! the environment variable DUKOVO_ANSIBLE_COLLECTION, and when that is
-//! not set the test is skipped, with a line that says why, and passes: a
-//! run without the tarball, as CI's, does not fail. The host also needs
-//! Python 3.13 or later with venv, which makes ansible-core's environment
-//! once, in .cache/ansible/, and the bundle files `ob` packs, as the
-//! *python* test does. ansible-core is 2.22, the first release whose
+//! The collection is the release of dukovo-os/ansible that
+//! src/test/ansible.lock pins, fetched once into .cache/ansible/. The host
+//! also needs Python 3.13 or later with venv, which makes ansible-core's
+//! environment once, in the same folder, and the bundle files `ob` packs,
+//! as the *python* test does. ansible-core is 2.22, the first release whose
 //! modules run under the machine's Python 3.15, and it needs that Python.
 //!
 //! The first playbook, python.yml, installs Python on the machine, which
@@ -61,7 +58,7 @@ const DISKS: &[Disk] =
 
 pub const CASE: Case = Case {
     name: "ansible",
-    about: "Ansible's collection dukovo.system manages an installed system over SSH from the host (skipped, passing, while DUKOVO_ANSIBLE_COLLECTION, which src/test/ansible.lock names, is not set): Python is installed with ansible.builtin.raw and found by its path; site.yml has setup name the system Dukovo and runs facts, feature, service, bundle from the test catalog, snapshot and update's channel through elevate, and run again reports changed=0; with the feature removed at the console, --check --diff reports it would be added, as JSON before and after, and changes nothing",
+    about: "Ansible's collection dukovo.system manages an installed system over SSH from the host, the release src/test/ansible.lock pins: Python is installed with ansible.builtin.raw and found by its path; site.yml has setup name the system Dukovo and runs facts, feature, service, bundle from the test catalog, snapshot and update's channel through elevate, and run again reports changed=0; with the feature removed at the console, --check --diff reports it would be added, as JSON before and after, and changes nothing",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "",

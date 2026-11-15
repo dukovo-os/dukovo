@@ -35,8 +35,9 @@ Ansible's modules are GPL-3.0 by custom and by the license of the
    JSON, and a golden file in `systools/tests/json/` holds them. An error
    prints as without `--json`, to standard error with the exit status.
 2. **The collection `dukovo.system` lives in its own repository,
-   `dukovo-os/ansible`, GPL-3.0-or-later,** and is published to Ansible
-   Galaxy from a tag. It is never in the image. Its modules `bundle`,
+   `dukovo-os/ansible`, GPL-3.0-or-later,** and each release is a GitHub
+   release with the tarball `ansible-galaxy collection build` makes; Ansible
+   Galaxy is to come. It is never in the image. Its modules `bundle`,
    `feature`, `service`, `update`, `snapshot` and `facts` run Dukovo's
    own commands, read their JSON and never their text, are idempotent,
    take check and diff modes, and report Dukovo's error ID.
@@ -78,10 +79,9 @@ Ansible's modules are GPL-3.0 by custom and by the license of the
 
 ## Consequences
 
-- While `dukovo-os/ansible` does not exist, the lock names the
-  collection's tarball by the environment variable
-  `DUKOVO_ANSIBLE_COLLECTION`, and the boot test says it is skipped where
-  that is not set, as on CI. Once the repository has a release, the lock
-  names its URL, commit and SHA-256, and CI runs the test.
+- The lock names a release of `dukovo-os/ansible` by its URL, commit and
+  SHA-256, first v0.1.0, and CI runs the boot test with it. A lock may
+  instead name a tarball by an environment variable, to try one built from
+  a checkout; the test says it is skipped where that is not set.
 - A change to a document's members is a change to its golden file, which
   the review sees.

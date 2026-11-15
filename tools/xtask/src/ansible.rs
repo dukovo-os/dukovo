@@ -9,11 +9,11 @@
 //! installs once into a Python virtual environment in `.cache/ansible/` as
 //! `ob test tuf` does its suite's, and the collection `dukovo.system` comes
 //! from the tarball `src/test/ansible.lock` pins: a path or a URL, the git
-//! commit of the collection's repository it was built from, and its SHA-256.
-//! Until that repository exists the lock names the tarball by an
-//! environment variable instead, [`LockSource::File`], and a test run
-//! without it is skipped with a line that says why, so that CI, which has
-//! no such file, does not fail. The environment, the controller's Python
+//! commit of the collection's repository it was built from, and its SHA-256:
+//! the tree's lock names a release of dukovo-os/ansible. To try a tarball
+//! built from a checkout, a lock may name it by an environment variable
+//! instead, [`LockSource::File`], and a test run without that variable is
+//! skipped with a line that says why. The environment, the controller's Python
 //! (3.13 or later, with venv) and OpenSSH's client are all the host needs;
 //! it only runs on the build host.
 
@@ -178,8 +178,8 @@ pub enum Prepared {
 pub fn skipped(variable: &str) -> String {
     format!(
         "ansible: skipped: {variable} is not set; it names the tarball of the collection \
-         dukovo.system that {LOCK_FILE} pins (`ansible-galaxy collection build` makes one) until \
-         the collection's repository exists"
+         dukovo.system that {LOCK_FILE} names (`ansible-galaxy collection build` in a checkout \
+         of dukovo-os/ansible makes one)"
     )
 }
 
@@ -498,11 +498,17 @@ mod tests {
         assert_eq!(
             lock,
             Lock {
-                source: LockSource::File("DUKOVO_ANSIBLE_COLLECTION".into()),
-                commit: None,
-                sha256: None
+                source: LockSource::Url(
+                    "https://github.com/dukovo-os/ansible/releases/download/v0.1.0/\
+                     dukovo-system-0.1.0.tar.gz"
+                        .into()
+                ),
+                commit: Some("b72b53caf9b6cbc8b8850595a9f9781c5cffc10f".into()),
+                sha256: Some(
+                    "49073640af81e9088ce66a7a6246c382ba06082c37fa9de10f21224a83fb0fe4".into()
+                )
             },
-            "while the collection has no repository, the lock names its tarball by this variable"
+            "the lock pins a release of dukovo-os/ansible by its URL, commit and tarball's hash"
         );
     }
 

@@ -6,21 +6,20 @@
 # suite is (src/tuf.rs). A line is `key = value`.
 #
 # source: where the tarball that `ansible-galaxy collection build` makes of
-#   the collection is. `env:NAME` is a file on this computer, which the
-#   environment variable NAME names: while the collection's repository does
-#   not exist, the test runs the tarball its author built, and skips, saying
-#   so, when NAME is not set, so that a run without it does not fail. An
-#   `https://` URL is fetched once into .cache/ansible/ and must have the
-#   sha256 below.
+#   the collection is. An `https://` URL, a release of
+#   https://github.com/dukovo-os/ansible, is fetched once into
+#   .cache/ansible/ and must have the sha256 below. `env:NAME` is a file on
+#   this computer, which the environment variable NAME names, to try a
+#   tarball built from a checkout of the collection; the test skips, saying
+#   so, when NAME is not set.
 # commit: the commit of the collection's repository that the tarball is
-#   built from, 40 hexadecimal digits; `-` while source is `env:`.
-# sha256: of the tarball, 64 hexadecimal digits; `-` while source is `env:`,
-#   whose file runs as it is.
+#   built from, 40 hexadecimal digits; `-` when source is `env:`.
+# sha256: of the tarball, 64 hexadecimal digits, as the release's notes
+#   give it; `-` when source is `env:`, whose file runs as it is.
 #
-# When the repository exists, the three lines become its release's URL, the
-# release's commit and the tarball's hash, and a change to them is the way
-# the collection a test runs is changed.
+# A change to these three lines is the way the collection a test runs is
+# changed: to a new release's URL, its commit and its tarball's hash.
 
-source = env:DUKOVO_ANSIBLE_COLLECTION
-commit = -
-sha256 = -
+source = https://github.com/dukovo-os/ansible/releases/download/v0.1.0/dukovo-system-0.1.0.tar.gz
+commit = b72b53caf9b6cbc8b8850595a9f9781c5cffc10f
+sha256 = 49073640af81e9088ce66a7a6246c382ba06082c37fa9de10f21224a83fb0fe4

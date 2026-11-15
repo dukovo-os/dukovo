@@ -19,8 +19,8 @@
 # then `changed: N`, `unreachable: N` and `failed: N` from its recap, and
 # exits with its status. It runs in the test's own folder.
 #
-# While the lock names the collection's tarball by an environment variable,
-# as it does until the collection's repository exists, and that variable is
+# A lock may name the collection's tarball by an environment variable, to
+# try one built from a checkout of dukovo-os/ansible; when that variable is
 # not set, the script exits with 77, which skips the test.
 set -eu
 
