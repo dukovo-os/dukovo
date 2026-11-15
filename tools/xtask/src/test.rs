@@ -3579,6 +3579,11 @@ fn unit_tests(ctx: &Ctx) -> Result<()> {
     step("Running the script tests of the web console's pages");
     userspace::test_admin_scripts(ctx)?;
 
+    step("Running the tests of the YubiKey helper's PIN window");
+    let mut cmd = std::process::Command::new("python3");
+    cmd.arg("-I").arg(ctx.root.join("tools/yubikey-piv-test.py"));
+    process::run(ctx, &mut cmd)?;
+
     step("Running unit tests for the build tool");
     let mut cmd = process::cargo(ctx);
     cmd.args(["test", "--workspace"]);

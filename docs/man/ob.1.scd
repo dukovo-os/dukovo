@@ -1825,7 +1825,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_ | *canary* _name_ *red*|*green*)
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_ | *canary* _name_ *red*|*green*)
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1889,6 +1889,11 @@ _target/userspace/_).
 	reads a catalog served at _url_, by default
 	_https://updates.dukovo.org/catalog/_, as a new computer would, from
 	the first root in _catalog/metadata/_, and fetches every bundle.
+	*status* lists the roles' versions and expiry, the keys and the
+	bundles that *sign* would add; with *--json* it prints the same as
+	JSON, and the bundles in _out/bundles/_ not yet signed, for Dukovo
+	Ops. *served* of catalog-repo, which *updates status* runs, reads
+	what the server serves without fetching the bundles.
 
 	The newest version of each bundle goes out to computers in waves
 	(ADR 0544), as a system release does (*release*): the targets
@@ -1959,6 +1964,29 @@ _target/userspace/_).
 	*red*, which holds every release's waves, or *green*. The rollouts
 	are signed again at once. A withdrawal is *system-release pull*,
 	then *deploy*.
+
+*updates* *status* [*--json*]
+	Show what the update server serves, read as a new computer reads it
+	from the first roots in _catalog/_ and _releases/metadata/_: the
+	catalog with *catalog-repo served*, and the system's releases with
+	*system-release served*, which ob builds for this machine, run with
+	*--json*. Neither fetches a bundle or a release file, only the
+	metadata, the catalog's list of known flaws and the rollouts. Each
+	side says when its roles' signatures run out, and the status says
+	what needs you: a root or targets signature that has run out or
+	does within 30 days, which only the YubiKeys can sign again (*catalog
+	root*, *catalog sign*); a signature the server makes itself, the
+	timestamp, snapshot, flaws or rollout, that has run out, which means
+	the server's refresh job has stopped; a rollout that is held
+	(*catalog rollout*, *release rollout*); a bundle in the catalog with
+	a known high or critical flaw, which a new version of it fixes; and
+	a side that cannot be read. The system's releases are not read until
+	_releases/metadata/1.root.json_ is signed (ADR 0457). Without
+	*--json* it prints a short summary ending in one line, such as
+	*Updates: 2 things need you*; with it, the whole status as JSON, for
+	Dukovo Ops. It exits 0 whenever it printed a status, even when
+	something needs you, and fails only when it is misused or cannot
+	build the programs.
 
 *fixture* *btrfs-log*|*btrfs-radix-log*|*btrfs-send*|*ntfs-3g* [*--linux-kernel* _file_]
 

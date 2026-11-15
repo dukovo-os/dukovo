@@ -51,6 +51,7 @@ mod site;
 mod test;
 mod tla;
 mod tuf;
+mod updates;
 mod upstream;
 mod userspace;
 mod vt;
@@ -78,6 +79,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("test", "Run unit tests, then boot the image in QEMU under UEFI and BIOS"),
     ("catalog", "Make and sign the catalog's TUF repository, with YubiKeys"),
     ("release", "Deploy the system's releases to the update server, and check what it serves"),
+    (
+        "updates",
+        "Show what the update server serves: the catalog, the system's releases, rollouts and when signatures run out",
+    ),
     ("lab", "Run the Dukovo Lab's tests (lab/tests) on its machines with dukovo-lab"),
     ("bench", "Measure system calls and IPC round trips on Radix and on this machine's Linux"),
     ("soak", "Run an installed system under load for hours or days, and check for creep"),
@@ -665,7 +670,7 @@ Formats every Rust source file in the repository with rustfmt."
        ./ob catalog sign [--days <n>] [--remove <path>]... [--yes] [--key <file>]...
                          [<bundle>]...
        ./ob catalog publish --key <file>
-       ./ob catalog status
+       ./ob catalog status [--json]
        ./ob catalog server setup [--dukovo]
        ./ob catalog deploy
        ./ob catalog check [<url>]
@@ -696,6 +701,24 @@ bundles' known flaws to it (ADR 0389). `deploy` sends the catalog's keys and
 metadata whole, and the signed bundles the server does not hold, then has the
 server publish them, and checks what it serves. `check` reads a served
 catalog, by default https://updates.dukovo.org/catalog/, as a client would."
+        }
+        "updates" => {
+            "Usage: ./ob updates status [--json]
+
+Shows what the update server serves, read as a new computer reads it, from the
+first roots in catalog/ and releases/: the catalog (`catalog-repo served`), and
+the system's releases (`system-release served`), which ob builds for this
+machine. It fetches no bundle and no release file, only the metadata, the
+catalog's list of known flaws and the rollouts. Each side says when its
+signatures run out, and what needs you: a root or targets signature that has
+run out or does within 30 days, which only the YubiKeys can sign again; a
+signature the server makes itself that has run out, which means its refresh job
+has stopped; a rollout that is held; or a side that cannot be read. Without
+--json it prints a short summary ending in one line, `Updates: all well` or
+`Updates: 2 things need you`. With --json it prints the whole status as JSON,
+for Dukovo Ops. The system's releases are not read until releases/metadata/
+1.root.json is signed (ADR 0457). Exits 0 whenever a status was printed, even
+when something needs you."
         }
         "release" => {
             "Usage: ./ob release server setup [--dukovo]
@@ -1122,6 +1145,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
         }
         "catalog" => catalog::command(&ctx, args.rest()),
         "release" => release::command(&ctx, &args.rest()),
+        "updates" => updates::command(&ctx, &args.rest()),
         "signoff" => {
             let base = args.positional();
             args.finish()?;

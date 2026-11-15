@@ -9,6 +9,8 @@ use std::io::{BufRead as _, IsTerminal as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use serde_json::{Value, json};
+
 use catalog_repo::keys::{self, Signers};
 use catalog_repo::{FLAWS_DAYS, Refreshed, Repo, WARN_DAYS, expires_days};
 use system_release::rollout::{Plan, Plans};
@@ -34,7 +36,9 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
                                          sign the list of the bundles' known flaws
                                          from advisories in the OSV format, and publish
        check URL                         read what URL serves from the first root
-       status                            the roles' versions, expiry and keys";
+       served [--json] URL               what URL serves, read from the first root as
+                                         a computer does, without fetching the bundles
+       status [--json]                    the roles' versions, expiry and keys";
 
 struct Options {
     repo: Option<PathBuf>,
@@ -44,6 +48,7 @@ struct Options {
     serial: Option<u64>,
     remove: Vec<String>,
     yes: bool,
+    json: bool,
     store: Option<PathBuf>,
     out: Option<PathBuf>,
     bundles: Option<PathBuf>,
@@ -60,6 +65,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         serial: None,
         remove: Vec::new(),
         yes: false,
+        json: false,
         store: None,
         out: None,
         bundles: None,
@@ -83,6 +89,7 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             "--bundles" => options.bundles = Some(value()?.into()),
             "--plan" => options.plan = Some(value()?.into()),
             "--yes" => options.yes = true,
+            "--json" => options.json = true,
             "-h" | "--help" => return Err(USAGE.into()),
             _ if arg.starts_with("--") => return Err(format!("unknown option {arg}\n{USAGE}")),
             _ => options.rest.push(arg),
@@ -143,15 +150,8 @@ fn run(options: &Options) -> Result<(), String> {
         }
         ["sign", bundles @ ..] => {
             let mut bundles: Vec<PathBuf> = bundles.iter().map(PathBuf::from).collect();
-            if bundles.is_empty()
-                && let Some(dir) = &options.bundles
-                && let Ok(entries) = std::fs::read_dir(dir)
-            {
-                bundles = entries
-                    .filter_map(|entry| Some(entry.ok()?.path()))
-                    .filter(|path| path.extension().is_some_and(|e| e == dkv::EXTENSION))
-                    .collect();
-                bundles.sort();
+            if bundles.is_empty() {
+                bundles = bundles_in(options.bundles.as_deref());
             }
             let changes = repo.changes(&bundles, &options.remove)?;
             let store = options.store.as_ref().ok_or("--store is needed")?;
@@ -224,6 +224,8 @@ fn run(options: &Options) -> Result<(), String> {
                 "{url}: the client reads it from the first root and fetches all {count} bundles."
             );
         }
+        ["served", url] => served(&repo, options, url)?,
+        ["status"] if options.json => status_json(&repo, options)?,
         ["status"] => status(&repo)?,
         _ => return Err(USAGE.into()),
     }
@@ -332,6 +334,109 @@ fn rollout(
         let held = plan.paused.as_ref().map_or_else(String::new, |why| format!(", paused: {why}"));
         println!("{}: wave {} open{held}", release.replace('/', " "), plan.open);
     }
+    Ok(())
+}
+
+/// The bundles in `dir`, the `.dkv` files, by name: those `sign` takes
+/// when none is named. None without a directory or when it cannot be read.
+fn bundles_in(dir: Option<&Path>) -> Vec<PathBuf> {
+    let Some(entries) = dir.and_then(|dir| std::fs::read_dir(dir).ok()) else {
+        return Vec::new();
+    };
+    let mut bundles: Vec<PathBuf> = entries
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|e| e == dkv::EXTENSION))
+        .collect();
+    bundles.sort();
+    bundles
+}
+
+/// `served URL`: what the catalog served at `url` says, as JSON or in
+/// words.
+fn served(repo: &Repo, options: &Options, url: &str) -> Result<(), String> {
+    let served = repo.served(url)?;
+    if options.json {
+        println!("{served}");
+        return Ok(());
+    }
+    let now = served["checked"].as_i64().unwrap_or_default();
+    let bundles = served["bundles"].as_array().map_or_default(Vec::as_slice);
+    let flawed = bundles.iter().filter(|b| b["flaws"].as_array().is_some_and(|f| !f.is_empty()));
+    println!(
+        "{}: {} bundles, {} with known flaws, signed from the first root",
+        served["url"].as_str().unwrap_or(url),
+        bundles.len(),
+        flawed.count()
+    );
+    for role in served["roles"].as_array().map_or_default(Vec::as_slice) {
+        let expires = role["expires"].as_i64().unwrap_or_default();
+        println!(
+            "{}: version {}, expires {} ({} days)",
+            role["role"].as_str().unwrap_or("?"),
+            role["version"],
+            tuf::time::format(expires),
+            (expires - now).div_euclid(86_400)
+        );
+    }
+    for held in served["rollouts"].as_array().map_or_default(Vec::as_slice) {
+        if let Some(why) = held["held"].as_str() {
+            println!(
+                "rollout of {} {} is held at wave {}: {why}",
+                held["bundle"].as_str().unwrap_or("?"),
+                held["version"].as_str().unwrap_or("?"),
+                held["wave"]
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `status --json`: what `status` prints, as JSON, and the bundles in
+/// `--bundles` that `sign` would add or take out of the targets.
+fn status_json(repo: &Repo, options: &Options) -> Result<(), String> {
+    let mut roles = Vec::new();
+    if let Some(root) = repo.root()? {
+        roles.push(json!({
+            "role": "root", "version": root.signed.version, "expires": root.signed.expires
+        }));
+    }
+    let mut listed = 0;
+    if let Some(targets) = repo.targets()? {
+        listed = targets.signed.signed.targets.len();
+        roles.push(json!({
+            "role": "targets", "version": targets.signed.version, "expires": targets.signed.expires
+        }));
+    }
+    let keys: Vec<Value> = keys::read_all(&repo.keys_dir())?
+        .iter()
+        .map(|key| {
+            json!({
+                "name": key.name,
+                "id": key.key.id(),
+                "holder": if key.yubikey.is_some() { "yubikey" } else { "file" },
+                "serial": key.yubikey,
+                "roles": key.roles,
+            })
+        })
+        .collect();
+    let changes = repo.changes(&bundles_in(options.bundles.as_deref()), &[])?;
+    let added: Vec<Value> = changes
+        .added
+        .iter()
+        .map(|(path, info)| {
+            json!({ "path": path, "id": info["custom"]["id"], "version": info["custom"]["version"] })
+        })
+        .collect();
+    println!(
+        "{}",
+        json!({
+            "roles": roles,
+            "bundles_listed": listed,
+            "keys": keys,
+            "unsigned": { "added": added, "removed": changes.removed },
+            "warn_days": WARN_DAYS,
+        })
+    );
     Ok(())
 }
 

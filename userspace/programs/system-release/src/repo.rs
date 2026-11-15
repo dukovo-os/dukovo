@@ -511,6 +511,32 @@ pub fn read_targets(dir: &Path, root: &[u8]) -> Result<Vec<(String, Vec<u8>)>, S
     read_served(&base, root)
 }
 
+/// One role's metadata as the client trusts it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RoleStatus {
+    /// The role's name: `root`, `timestamp`, `snapshot`, `targets` or
+    /// `rollout`.
+    pub role: String,
+    /// Its version.
+    pub version: u64,
+    /// When it expires, in seconds since 1970.
+    pub expires: i64,
+}
+
+/// What the client read from a repository: its targets, some more targets
+/// the delegated roles list, and the roles' versions and expiry.
+#[derive(Debug)]
+pub struct ServedRead {
+    /// Each target the top-level targets list, by path, with its bytes.
+    pub targets: Vec<(String, Vec<u8>)>,
+    /// Each of the further paths asked for that a role lists, with its
+    /// bytes; one no role lists is left out.
+    pub more: Vec<(String, Vec<u8>)>,
+    /// The roles the client trusts, the rollout role among them once a
+    /// target of it was read.
+    pub roles: Vec<RoleStatus>,
+}
+
 /// Reads every target the repository at `base`, a `file`, `http` or
 /// `https` address, offers with the TUF client, from `root`, as
 /// [`read_targets`] does.
@@ -519,6 +545,21 @@ pub fn read_targets(dir: &Path, root: &[u8]) -> Result<Vec<(String, Vec<u8>)>, S
 ///
 /// What fails, as the client says it.
 pub fn read_served(base: &tuf::Url, root: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    read_served_more(base, root, |_| Vec::new()).map(|read| read.targets)
+}
+
+/// [`read_served`], which also reads the targets of the paths `more`
+/// gives for what was read, as a delegated role lists them, and says each
+/// role's version and expiry.
+///
+/// # Errors
+///
+/// What fails, as the client says it.
+pub fn read_served_more(
+    base: &tuf::Url,
+    root: &[u8],
+    more: impl FnOnce(&[(String, Vec<u8>)]) -> Vec<String>,
+) -> Result<ServedRead, String> {
     let work = scratch_dir();
     let result = (|| {
         let url = |sub: &str| base.resolve(sub).map_err(|err| format!("{base}{sub}: {err}"));
@@ -535,20 +576,46 @@ pub fn read_served(base: &tuf::Url, root: &[u8]) -> Result<Vec<(String, Vec<u8>)
             .keys()
             .cloned()
             .collect();
-        let mut read = Vec::new();
-        for path in paths {
-            let target = updater
-                .target(&path)
-                .map_err(|err| format!("{base}: {err}"))?
-                .ok_or_else(|| format!("{base}: {path} is not a target"))?;
+        let mut fetch = |path: &str| -> Result<Option<Vec<u8>>, String> {
+            let Some(target) = updater.target(path).map_err(|err| format!("{base}: {err}"))? else {
+                return Ok(None);
+            };
             let file = work.join("target");
             updater
-                .download_target(&path, &target, &file)
+                .download_target(path, &target, &file)
                 .map_err(|err| format!("{base}: {err}"))?;
-            let bytes = std::fs::read(&file).map_err(|err| format!("{}: {err}", file.display()))?;
-            read.push((path, bytes));
+            std::fs::read(&file).map(Some).map_err(|err| format!("{}: {err}", file.display()))
+        };
+        let mut targets = Vec::new();
+        for path in paths {
+            let bytes = fetch(&path)?.ok_or_else(|| format!("{base}: {path} is not a target"))?;
+            targets.push((path, bytes));
         }
-        Ok(read)
+        let mut read_more = Vec::new();
+        for path in more(&targets) {
+            if let Some(bytes) = fetch(&path)? {
+                read_more.push((path, bytes));
+            }
+        }
+        let trusted = updater.trusted();
+        let status = |role: &str, version: u64, expires: i64| RoleStatus {
+            role: role.into(),
+            version,
+            expires,
+        };
+        let mut roles = vec![status("root", trusted.root().version, trusted.root().expires)];
+        if let Some(signed) = trusted.timestamp() {
+            roles.push(status("timestamp", signed.version, signed.expires));
+        }
+        if let Some(signed) = trusted.snapshot() {
+            roles.push(status("snapshot", signed.version, signed.expires));
+        }
+        for role in ["targets", crate::rollout::ROLE] {
+            if let Some(signed) = trusted.targets(role) {
+                roles.push(status(role, signed.version, signed.expires));
+            }
+        }
+        Ok(ServedRead { targets, more: read_more, roles })
     })();
     let _ = std::fs::remove_dir_all(&work);
     result

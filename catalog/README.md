@@ -84,6 +84,12 @@ targets: one PIN and one touch for the whole batch. Commit
 least that often, even when nothing has changed; `./ob catalog status`
 warns a month before.
 
+The PIN is asked for on the terminal. With `DUKOVO_PINENTRY` set, or with
+no terminal attached, `tools/yubikey-piv.py` asks through pinentry, the
+desktop's own PIN window, instead (`sudo apt install pinentry-gnome3` on
+Linux Mint); `DUKOVO_PINENTRY` may name the pinentry program. Dukovo Ops
+sets it, so that no PIN passes through the app.
+
 ## Publishing
 
 `./ob catalog deploy` copies `keys/`, `metadata/` and the bundles just

@@ -673,6 +673,24 @@ impl Repo {
         check_at(&base, &first, &targets.signed.signed, None)?;
         Ok(targets.signed.signed.targets.len())
     }
+
+    /// Reads the catalog served at `url` with the client, from this
+    /// repository's first root, as a new computer would, and says what it
+    /// serves: each role's version and expiry, every bundle with its
+    /// known flaws, and the rollouts. Unlike [`Repo::check_url`] it
+    /// fetches no bundle, only the metadata, the list of flaws and the
+    /// rollouts, and every signature is checked as usual. The result is
+    /// JSON in the shape `catalog-repo served --json` prints.
+    ///
+    /// # Errors
+    ///
+    /// If there is no first root, or the client refuses what is served or
+    /// cannot fetch a target.
+    pub fn served(&self, url: &str) -> Result<Value, String> {
+        let first =
+            std::fs::read(self.metadata("1.root.json")).map_err(|e| format!("1.root.json: {e}"))?;
+        read_served(url, &first)
+    }
 }
 
 /// How many days before the served snapshot expires `refresh` signs a new
@@ -885,6 +903,138 @@ fn check_at(
     })();
     let _ = std::fs::remove_dir_all(client);
     result
+}
+
+/// One role's version and expiry as the client trusts it, for `served`.
+fn role_json(role: &str, version: u64, expires: i64) -> Value {
+    json!({ "role": role, "version": version, "expires": expires })
+}
+
+/// Fetches the target `path` that `updater` finds, if it does, into
+/// `file`, and reads it.
+fn read_target(
+    updater: &mut tuf::Updater,
+    path: &str,
+    file: &Path,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(target) = updater.target(path).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    updater.download_target(path, &target, file).map_err(|e| format!("{path}: {e}"))?;
+    std::fs::read(file).map(Some).map_err(|e| format!("{path}: {e}"))
+}
+
+/// Reads the catalog served at `url` with the client, from the root
+/// `first`, as a new computer would, and says what it serves: each
+/// role's version and expiry, every bundle with its known flaws, and the
+/// rollouts. The result is JSON in the shape `catalog-repo served --json`
+/// prints.
+fn read_served(url: &str, first: &[u8]) -> Result<Value, String> {
+    let url = if url.ends_with('/') { url.to_string() } else { format!("{url}/") };
+    let base = tuf::Url::parse(&url).map_err(|e| format!("{url}: {e}"))?;
+    let client = client_dir();
+    let _ = std::fs::remove_dir_all(&client);
+    tuf::init(&client, first).map_err(|e| e.to_string())?;
+    let result = served_at(&base, &client);
+    let _ = std::fs::remove_dir_all(&client);
+    result
+}
+
+/// [`served`], with the client's folder `client` already made.
+fn served_at(base: &tuf::Url, client: &Path) -> Result<Value, String> {
+    let metadata = base.resolve("metadata/").map_err(|e| e.to_string())?;
+    let targets_url = base.resolve("targets/").map_err(|e| e.to_string())?;
+    let mut updater =
+        tuf::Updater::new(client, &metadata, Some(&targets_url)).map_err(|e| e.to_string())?;
+    updater.refresh().map_err(|e| format!("the client refuses {base}: {e}"))?;
+    let file = client.join("target");
+    let targets =
+        updater.trusted().targets("targets").ok_or("the client holds no targets")?.signed.clone();
+    // The list of flaws, once the server has signed one (ADR 0389).
+    let listed = updater
+        .trusted()
+        .snapshot()
+        .is_some_and(|s| s.signed.meta.contains_key(&format!("{FLAWS_ROLE}.json")));
+    let list = match (targets.delegations.is_some() && listed)
+        .then(|| read_target(&mut updater, FLAWS_TARGET, &file))
+        .transpose()?
+        .flatten()
+    {
+        Some(bytes) => Some(dkv::flaws::List::read(&bytes)?),
+        None => None,
+    };
+    let mut bundles = Vec::new();
+    for (path, target) in &targets.targets {
+        let custom = target.custom.as_ref();
+        let text = |key: &str| custom.and_then(|c| c.get(key)?.as_str());
+        let (Some(id), Some(version)) = (text("id"), text("version")) else { continue };
+        let flaws: Vec<Value> = list
+            .iter()
+            .flat_map(|list| list.of(id, version))
+            .map(|f| {
+                json!({
+                    "id": f.id,
+                    "aliases": f.aliases,
+                    "severity": f.severity.word(),
+                    "summary": f.summary,
+                    "component": f.component,
+                    "fixed": f.fixed,
+                })
+            })
+            .collect();
+        bundles.push(json!({
+            "id": id,
+            "name": text("name"),
+            "version": version,
+            "path": path,
+            "length": target.length,
+            "flaws": flaws,
+        }));
+    }
+    let key = |bundle: &Value| {
+        let text = |name: &str| bundle[name].as_str().unwrap_or_default().to_string();
+        (text("id"), text("version"))
+    };
+    bundles.sort_by(|a, b| {
+        let ((a_id, a_version), (b_id, b_version)) = (key(a), key(b));
+        a_id.cmp(&b_id).then_with(|| dkv::flaws::compare(&a_version, &b_version))
+    });
+    // The rollout of each bundle's newest version (ADR 0544).
+    let mut rollouts = Vec::new();
+    for (id, version) in newest_versions(&targets) {
+        let path = rollout::target_path(&format!("{id}/{version}"));
+        let Some(bytes) = read_target(&mut updater, &path, &file)? else { continue };
+        let signed: rollout::Rollout =
+            serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        rollouts.push(json!({
+            "bundle": id,
+            "version": version,
+            "wave": signed.wave,
+            "held": signed.held,
+        }));
+    }
+    let trusted = updater.trusted();
+    let mut roles = vec![role_json("root", trusted.root().version, trusted.root().expires)];
+    if let Some(s) = trusted.timestamp() {
+        roles.push(role_json("timestamp", s.version, s.expires));
+    }
+    if let Some(s) = trusted.snapshot() {
+        roles.push(role_json("snapshot", s.version, s.expires));
+    }
+    for (name, role) in [("targets", "targets"), ("flaws", FLAWS_ROLE), ("rollout", rollout::ROLE)]
+    {
+        if let Some(s) = trusted.targets(role) {
+            roles.push(role_json(name, s.version, s.expires));
+        }
+    }
+    Ok(json!({
+        "url": base.to_string(),
+        "checked": tuf::time::now(),
+        "roles": roles,
+        "bundles": bundles,
+        "flaws_listed": list.is_some(),
+        "rollouts": rollouts,
+    }))
 }
 
 #[cfg(test)]
@@ -1228,6 +1378,83 @@ mod tests {
         assert_eq!(read(ripgrep), None);
         assert_eq!(plans.releases.keys().collect::<Vec<_>>(), [bat, newest]);
         assert_eq!(plans.releases[newest].released, released);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn served_says_what_a_catalog_serves_without_fetching_its_bundles() {
+        let dir = scratch("served");
+        let older = bundle(&dir, "org.dukovo.ripgrep", "14.1.0", b"rg, older");
+        let newer = bundle(&dir, "org.dukovo.ripgrep", "14.1.1", b"rg");
+        let (repo, store, both, online) = catalog_of(&dir, std::slice::from_ref(&older));
+        let out = dir.join("site");
+        let mut plans = Plans::default();
+        let now = tuf::time::now();
+        repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap();
+        let added = [newer];
+        let changes = repo.changes(&added, &[]).unwrap();
+        repo.sign_targets(&changes, &added, &store, &both, 182).unwrap();
+        plans.releases.insert(
+            "org.dukovo.ripgrep/14.1.1".into(),
+            Plan { released: now, open: 0, paused: Some("disk errors".into()) },
+        );
+        repo.sign_rollouts(&store, &online, Some(&mut plans), now).unwrap();
+        let advisories = dkv::flaws::read_osv(
+            br#"{"id": "RUSTSEC-2026-0001", "summary": "A flaw", "affected": [{"package":
+                {"ecosystem": "crates.io", "name": "regex"}, "versions": ["1.10.2"]}]}"#,
+        )
+        .unwrap();
+        repo.sign_flaws(&store, &online, &advisories, 7).unwrap();
+        repo.refresh(&store, &out, &online, (7, 1)).unwrap();
+        // Remove every bundle from what is served: reading it must not
+        // fetch them.
+        for entry in std::fs::read_dir(out.join("targets/bundles")).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+
+        let url = format!("file://{}", std::fs::canonicalize(&out).unwrap().display());
+        let served = repo.served(&url).unwrap();
+        assert!(served["checked"].as_i64().unwrap() >= now);
+        let roles: Vec<(&str, u64)> = served["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| (r["role"].as_str().unwrap(), r["version"].as_u64().unwrap()))
+            .collect();
+        let names: Vec<&str> = roles.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["root", "timestamp", "snapshot", "targets", "flaws", "rollout"]);
+        assert_eq!(roles[0], ("root", 1));
+        assert_eq!(roles[3], ("targets", 2));
+        let expires = |role: &str| {
+            let found = served["roles"].as_array().unwrap().iter().find(|r| r["role"] == role);
+            found.unwrap()["expires"].as_i64().unwrap()
+        };
+        assert!((expires("targets") - now - 182 * 86_400).abs() < 100);
+        assert!((expires("timestamp") - now - 86_400).abs() < 100);
+        let bundles = served["bundles"].as_array().unwrap();
+        let listed: Vec<(&str, &str)> = bundles
+            .iter()
+            .map(|b| (b["id"].as_str().unwrap(), b["version"].as_str().unwrap()))
+            .collect();
+        assert_eq!(listed, [("org.dukovo.ripgrep", "14.1.0"), ("org.dukovo.ripgrep", "14.1.1")]);
+        assert_eq!(bundles[1]["name"], "Test");
+        assert_eq!(bundles[1]["path"], "bundles/org.dukovo.ripgrep-14.1.1.dkv");
+        assert_eq!(served["flaws_listed"], true);
+        let flaws = bundles[1]["flaws"].as_array().unwrap();
+        assert_eq!(flaws.len(), 1);
+        assert_eq!(
+            (flaws[0]["id"].as_str(), flaws[0]["component"].as_str(), flaws[0]["fixed"].is_null()),
+            (Some("RUSTSEC-2026-0001"), Some("regex 1.10.2"), true)
+        );
+        assert_eq!(flaws[0]["severity"], dkv::flaws::Severity::Unknown.word());
+        let rollouts = served["rollouts"].as_array().unwrap();
+        assert_eq!(rollouts.len(), 1);
+        assert_eq!(
+            (rollouts[0]["bundle"].as_str(), rollouts[0]["version"].as_str()),
+            (Some("org.dukovo.ripgrep"), Some("14.1.1"))
+        );
+        assert_eq!(rollouts[0]["wave"], 0);
+        assert_eq!(rollouts[0]["held"], "paused: disk errors");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

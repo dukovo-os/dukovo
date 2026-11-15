@@ -88,7 +88,13 @@ and no cookie go with it. The server is given a hash of a key made for the
 report, so that only you can ask where it stands and have it deleted. A
 report for the security team is encrypted to its keys before it leaves
 the machine. `report --save` writes the text to a file or hands it to a
-phone, and sends nothing to a server. The reference is dukovo-privacy(7).
+phone, and sends nothing to a server.
+
+`reports.dukovo.org` keeps no address of yours: it logs none, and it
+limits how often one sender may send by a keyed hash of the address that
+it forgets after 10 minutes. It keeps a report a year, unless you delete
+it sooner with `report delete`; a deleted report is gone from every
+backup within 30 days. The reference is dukovo-privacy(7).
 
 ## Reporting a security problem
 

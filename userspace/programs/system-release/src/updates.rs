@@ -841,6 +841,145 @@ pub fn served(base: &tuf::Url, root: &[u8]) -> Result<Offered, String> {
     offered(repo::read_served(base, root)?, None)
 }
 
+/// What a repository serves, for a program that shows it: the roles'
+/// versions and expiry, and each release, firmware set and channel with
+/// its rollout and withdrawal.
+#[derive(Debug, Serialize)]
+pub struct ServedStatus {
+    /// The address it was read at.
+    pub url: String,
+    /// When it was read, in seconds since 1970.
+    pub checked: i64,
+    /// The roles the client trusts.
+    pub roles: Vec<repo::RoleStatus>,
+    /// Every release, oldest first.
+    pub releases: Vec<ReleaseStatus>,
+    /// Every firmware set, oldest first.
+    pub firmware: Vec<FirmwareStatus>,
+    /// Every channel.
+    pub channels: Vec<ChannelStatus>,
+}
+
+/// A rollout as the update server signed it.
+#[derive(Debug, Serialize)]
+pub struct RolloutStatus {
+    /// The highest wave open.
+    pub wave: u8,
+    /// Why no further wave opens, if one is held.
+    pub held: Option<String>,
+}
+
+/// A withdrawal as the release keys signed it.
+#[derive(Debug, Serialize)]
+pub struct WithdrawnStatus {
+    /// Why the release was withdrawn.
+    pub reason: String,
+    /// What a machine running it is told to do.
+    pub advice: rollout::Advice,
+}
+
+/// A release, with its rollout, if a channel offers it, and its
+/// withdrawal, if it was withdrawn.
+#[derive(Debug, Serialize)]
+pub struct ReleaseStatus {
+    /// Its version.
+    pub version: String,
+    /// Its withdrawal.
+    pub withdrawn: Option<WithdrawnStatus>,
+    /// Its rollout.
+    pub rollout: Option<RolloutStatus>,
+}
+
+/// A firmware set, with its rollout, if a channel offers it.
+#[derive(Debug, Serialize)]
+pub struct FirmwareStatus {
+    /// Its version.
+    pub version: String,
+    /// Its rollout.
+    pub rollout: Option<RolloutStatus>,
+}
+
+/// A channel and what it offers.
+#[derive(Debug, Serialize)]
+pub struct ChannelStatus {
+    /// Its name.
+    pub channel: String,
+    /// The version of the release it offers.
+    pub version: String,
+    /// The version of the firmware set it offers, if any.
+    pub firmware: Option<String>,
+}
+
+/// Reads the repository an update server serves at `base` as [`served`]
+/// does, and also each role's version and expiry, the rollout of each
+/// release and firmware set, and the withdrawals.
+///
+/// # Errors
+///
+/// As [`served`], or if a rollout or withdrawal is malformed.
+pub fn status(base: &tuf::Url, root: &[u8]) -> Result<ServedStatus, String> {
+    let read = repo::read_served_more(base, root, |targets| {
+        let Ok(offered) = offered(targets.to_vec(), None) else { return Vec::new() };
+        let sets = offered.firmware.iter().map(|set| rollout::firmware_name(set));
+        offered
+            .releases
+            .iter()
+            .cloned()
+            .chain(sets)
+            .map(|name| rollout::target_path(&name))
+            .collect()
+    })?;
+    let rollout_of = |name: &str| -> Result<Option<RolloutStatus>, String> {
+        let path = rollout::target_path(name);
+        let Some((_, bytes)) = read.more.iter().find(|(p, _)| *p == path) else { return Ok(None) };
+        let signed: rollout::Rollout =
+            serde_json::from_slice(bytes).map_err(|err| format!("{path}: {err}"))?;
+        Ok(Some(RolloutStatus { wave: signed.wave, held: signed.held }))
+    };
+    let mut withdrawn = BTreeMap::new();
+    for (path, bytes) in read.targets.iter().filter(|(p, _)| p.starts_with("withdrawn/")) {
+        let withdrawal =
+            rollout::Withdrawal::parse(bytes).map_err(|err| format!("{path}: {err}"))?;
+        withdrawn.insert(withdrawal.release, (withdrawal.reason, withdrawal.advice));
+    }
+    let offered = offered(read.targets.clone(), None)?;
+    let mut releases = Vec::new();
+    for version in &offered.releases {
+        releases.push(ReleaseStatus {
+            version: version.clone(),
+            withdrawn: withdrawn.get(version).map(|(reason, advice)| WithdrawnStatus {
+                reason: reason.clone(),
+                advice: *advice,
+            }),
+            rollout: rollout_of(version)?,
+        });
+    }
+    let mut firmware = Vec::new();
+    for version in &offered.firmware {
+        firmware.push(FirmwareStatus {
+            version: version.clone(),
+            rollout: rollout_of(&rollout::firmware_name(version))?,
+        });
+    }
+    let channels = offered
+        .channels
+        .iter()
+        .map(|c| ChannelStatus {
+            channel: c.channel.clone(),
+            version: c.version.clone(),
+            firmware: c.firmware.clone(),
+        })
+        .collect();
+    Ok(ServedStatus {
+        url: base.to_string(),
+        checked: tuf::time::now(),
+        roles: read.roles,
+        releases,
+        firmware,
+        channels,
+    })
+}
+
 /// The releases, firmware sets and channels among `targets`, as the
 /// client read them: each list where its version says, each channel
 /// offering a release and a set listed, and, with `store`, every file of

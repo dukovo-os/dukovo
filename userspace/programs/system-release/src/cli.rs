@@ -34,7 +34,7 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
                               (pause VERSION REASON | resume VERSION | canary NAME red|green)
        system-release pack --repo DIR [--root FILE] --version VERSION --out FILE
        system-release check [--root FILE] [--version VERSION] REPOSITORY|FILE
-       system-release served [--root FILE] URL
+       system-release served [--json] [--root FILE] URL
        system-release rescue --out ESP [--root FILE] [--version VERSION] REPOSITORY";
 
 /// How many damaged files `check` names before it counts the rest.
@@ -111,6 +111,7 @@ struct Options {
     reason: Option<String>,
     advice: Option<String>,
     plan: Option<PathBuf>,
+    json: bool,
     operands: Vec<String>,
 }
 
@@ -139,6 +140,7 @@ impl Options {
                 "--reason" => options.reason = Some(value()?),
                 "--advice" => options.advice = Some(value()?),
                 "--plan" => options.plan = Some(value()?.into()),
+                "--json" => options.json = true,
                 "--built" => {
                     let text = value()?;
                     let seconds = text
@@ -595,6 +597,11 @@ fn served(options: &Options) -> Result<(), String> {
         .map_err(|err| format!("the trusted root {}: {err}", root_path.display()))?;
     let url = if url.ends_with('/') { url.clone() } else { format!("{url}/") };
     let base = tuf::Url::parse(&url).map_err(|err| format!("{url}: {err}"))?;
+    if options.json {
+        let status = updates::status(&base, &root)?;
+        println!("{}", serde_json::to_string(&status).map_err(|err| err.to_string())?);
+        return Ok(());
+    }
     let offered = updates::served(&base, &root)?;
     println!(
         "system-release: {url} offers {}, newest Dukovo {}, signed from the trusted root",
@@ -715,6 +722,46 @@ mod tests {
             format!("file://{}", std::path::absolute(dir.join("updates")).unwrap().display());
         assert_eq!(run(&strings(&["served", "--root", &root, &served])), 0);
         assert_eq!(run(&strings(&["served", "--root", &root, "file:///nowhere"])), 1);
+        assert_eq!(run(&strings(&["served", "--json", "--root", &root, &served])), 0);
+        assert_eq!(run(&strings(&["served", "--json", "--root", &root, "file:///nowhere"])), 1);
+
+        // What the status read says: the roles, the release and firmware
+        // set the channel offers, and their rollouts, once the server has
+        // signed them, and a pause and a withdrawal.
+        let base = tuf::Url::parse(&format!("{served}/")).unwrap();
+        let root_bytes = std::fs::read(&root).unwrap();
+        let status = updates::status(&base, &root_bytes).unwrap();
+        let roles: Vec<&str> = status.roles.iter().map(|r| r.role.as_str()).collect();
+        assert_eq!(roles, ["root", "timestamp", "snapshot", "targets", "rollout"]);
+        let now = tuf::time::now();
+        assert!(status.roles.iter().all(|r| r.version >= 1 && r.expires > now));
+        assert!(status.checked >= now - 5);
+        assert_eq!(status.releases.len(), 1);
+        assert_eq!(status.releases[0].version, "0.14.0");
+        assert!(status.releases[0].rollout.is_none() && status.releases[0].withdrawn.is_none());
+        assert_eq!(status.firmware[0].version, "2026.11.12");
+        assert_eq!(
+            status.channels.iter().map(|c| c.firmware.as_deref()).collect::<Vec<_>>(),
+            [Some("2026.11.12")]
+        );
+        let plan = path("plan.json");
+        assert_eq!(run(&with(&["refresh", "--plan", &plan])), 0);
+        assert_eq!(run(&with(&["rollout", "--plan", &plan, "pause", "0.14.0", "disk errors"])), 0);
+        let status = updates::status(&base, &root_bytes).unwrap();
+        let release = &status.releases[0];
+        let rollout = release.rollout.as_ref().unwrap();
+        assert_eq!(rollout.held.as_deref(), Some("paused: disk errors"));
+        assert!(status.firmware[0].rollout.as_ref().unwrap().held.is_none());
+        let json: serde_json::Value = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["channels"][0]["channel"], "stable");
+        assert!(json["releases"][0]["withdrawn"].is_null());
+        let pull = ["pull", "--version", "0.14.0", "--reason", "boots badly", "--advice", "stay"];
+        assert_eq!(run(&with(&pull)), 0);
+        let status = updates::status(&base, &root_bytes).unwrap();
+        let withdrawn = status.releases[0].withdrawn.as_ref().unwrap();
+        assert_eq!(withdrawn.reason, "boots badly");
+        let json: serde_json::Value = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["releases"][0]["withdrawn"]["advice"], "stay");
         let file = path("dukovo-0.14.0.update");
         let pack = ["pack", "--repo", &path("updates"), "--version", "0.14.0", "--out", &file];
         assert_eq!(run(&strings(&pack)), 0);
