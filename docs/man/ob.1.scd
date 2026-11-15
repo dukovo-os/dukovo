@@ -1919,7 +1919,7 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *server* *setup* [*--dukovo*] | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+*release* *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
 	Deploy the system's releases to the update server and check what it
 	serves (ADR 0467), over the same SSH login as *catalog*.
 	*server setup* is *catalog server setup*, which sets up both; it
@@ -1927,6 +1927,20 @@ _target/userspace/_).
 	_releases/keys/online.json_, for the release keys' next root to name
 	for snapshot and timestamp beside their own keys (*system-release*(8)
 	*keys --online*), and fails if a different one is there.
+
+	*channel* has the channel of an update _repository_, which
+	*system-release add* added a release to, offer that release, or with
+	*--firmware* a firmware set or *none*, as *system-release channel* does
+	with this machine's release keys. It also signs the security
+	advisories of _security/advisories_ in the same targets version, as
+	the index _advisories/index.json_ and a target for each (ADR 0534), so
+	that a machine that takes the release reads what is known of it.
+	*advisories* signs the advisories alone, in one targets version, for
+	a corrected advisory or one for an app that goes out without a
+	release; it signs nothing when they are as the repository has them,
+	and an advisory removed from the folder leaves the repository's
+	targets. Neither signs anything when an advisory does not check
+	(*security check*).
 
 	*deploy* sends the update _repository_ that *system-release add* and
 	*channel* signed to the server's incoming folder with *tar*: its
@@ -2122,7 +2136,13 @@ _target/userspace/_).
 	note in _docs/design/_ and every decision record, the roadmap, and the
 	tutorials, guides, runbooks and error pages of _docs/tutorials/_,
 	_docs/guides/_, _docs/runbooks/_ and _docs/errors/_ when those folders
-	exist. Man pages are rendered by *mandoc -T html* and link the pages
+	exist, and the security advisories of _security/advisories_ (ADR
+	0534): an index and a page for each, newest first, with its severity,
+	the versions it affects and those that fix it, its aliases linked to
+	their sources and what to do, and an RSS 2.0 feed, _security/feed.xml_,
+	whose links are absolute under https://dukovo.org/support/. With no
+	advisory, the index says that none has been published and the feed has
+	no item. Man pages are rendered by *mandoc -T html* and link the pages
 	they name; links between Markdown files lead to their pages, and links
 	to other files of the tree lead to GitHub. Every page has links to
 	report a problem with it and to edit its source. The search covers
@@ -2132,7 +2152,8 @@ _target/userspace/_).
 	*--check*
 		Also fail when a link between the site's pages, or to a part of
 		a page, leads nowhere, or when searching for a man page's name,
-		one of its other names or an error ID does not show its page.
+		one of its other names, an error ID or an advisory's ID does not
+		show its page.
 
 	*--version* _name_
 		The release the pages describe, which their header shows (the
@@ -2148,6 +2169,23 @@ _target/userspace/_).
 
 *fmt*
 	Format all Rust code with rustfmt.
+
+*security* *check* | *advisory* *new*
+	The project's security advisories, DKSA (ADR 0534): one OSV 1.6 file
+	each in _security/advisories_, as _DKSA-YYYY-NNNN.json_.
+	*check* reads every one of them as *system-release*(8), built for
+	this machine, reads them when it signs them for the update server: the
+	file is valid OSV with Dukovo's fields, has the id its file is named
+	for and a number of its own, gives versions in Dukovo's order, and says
+	no TODO. It prints how many there are and the worst severity, and
+	exits 1 when one does not check. CI runs it. *advisory new* writes the
+	next free number of this year from a template, with today's date and
+	the severity *medium*, in which text that needs writing says TODO, so
+	that *check* refuses it until it is written. _security/advisories/README.md_
+	describes the format, and _docs/runbooks/security-advisory.md_ goes from a
+	report to a published advisory. *release channel* and *release
+	advisories* sign the advisories for machines, and *docs site* builds
+	their pages and feed.
 
 *signoff* [_base_]
 	Check that every commit after _base_ carries a *Signed-off-by:* line,

@@ -239,6 +239,11 @@ jobs:
       - name: ./ob docs site --check
         run: ./ob docs site --check
 
+      # Every security advisory in security/advisories reads as the release
+      # keys' signing reads it (ADR 0534).
+      - name: ./ob security check
+        run: ./ob security check
+
       - name: ./ob image
         run: ./ob image
 

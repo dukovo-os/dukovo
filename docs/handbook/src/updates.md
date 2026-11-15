@@ -79,6 +79,47 @@ checks find updates and wait to download them (see [Metered
 connections](#metered-connections)). updates.toml(5) and update(8) have
 the details.
 
+## Security advisories
+
+When a flaw in Dukovo or in an app of its catalog is fixed, the project
+publishes a security advisory for it: a Dukovo Security Advisory, DKSA,
+with its severity (critical, high, medium or low), which releases have the
+flaw, which release has the fix and what to do. The update server signs
+each advisory as it signs a release, and `update advisories` says which of
+them apply to your computer:
+
+```
+$ update advisories
+update: Dukovo: DKSA-2026-0007, high: A local user can read another user's files (CVE-2026-12345)
+update:   Dukovo 0.15.2 has the fix and is offered: `update apply` stages it
+update:   Update to Dukovo 0.15.2 with `update apply`, then restart.
+```
+
+It matches the advisories here, against the release the system runs and
+the apps installed, so nothing about your computer is sent. For each one
+it says how the fix stands: staged in the spare slot, so that a restart
+finishes it; offered, which `elevate update apply` stages; waiting for your
+computer's wave or held back by a hold; or not offered yet. It also lists
+the flaws that the apps' catalogs know in the versions you run. The
+command ends with status 1 when something applies and 0 when nothing does,
+so a script can ask it; `update advisories --json` says the same as JSON.
+`update check` has a Security part with a line for each advisory that
+applies to the system, and the *updated* service tells you at the console
+when a critical or high one does and its fix is not staged yet.
+
+A critical fix reaches the stable channel within 72 hours of the day it
+exists, and a high one within 7 days; medium and low fixes come with the
+next monthly release. The newest stable release gets every fix, and the
+one before it gets the critical and high ones until the next stable
+release ships. Keep that in mind before holding the system back: a held
+version gets no security fixes.
+
+To read the advisories yourself, the support center has a page for each,
+newest first, at <https://dukovo.org/support/security/index.html>, and
+an RSS feed to follow in a feed reader,
+<https://dukovo.org/support/security/feed.xml>. To report a flaw, see
+[Privacy and security reporting](privacy.md).
+
 ## Checking for updates
 
 Updates come from Dukovo's update server, through a channel: **stable**,

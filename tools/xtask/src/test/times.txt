@@ -152,6 +152,7 @@ rescue-ssh 300
 restic-backup 200
 rgrub-setup 39
 root 49
+runbook-security-advisory 200
 runbook-update-server-move 720
 sched-balance 16
 sched-fair 17

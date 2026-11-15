@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use slots::version::Version;
+use system_release::advisory;
 use system_release::firmware::{self, Set};
 use system_release::list::{Release, hex, sha256_file};
 use system_release::repo::{SIGNATURES_MAX, target_path};
@@ -484,6 +485,40 @@ impl Client {
     /// bytes.
     pub fn signatures(&mut self) -> Result<Option<Vec<u8>>, Fail> {
         self.target_up_to(system_release::repo::SIGNATURES_TARGET, SIGNATURES_MAX)
+    }
+
+    /// The index of the security advisories the server signs (ADR 0534),
+    /// or `None` if it signs none.
+    ///
+    /// # Errors
+    ///
+    /// If the file does not check, is more than [`advisory::INDEX_MAX`]
+    /// bytes, or is not an index.
+    pub fn advisories_index(&mut self) -> Result<Option<advisory::Index>, Fail> {
+        let Some(bytes) = self.target_up_to(advisory::INDEX_TARGET, advisory::INDEX_MAX)? else {
+            return Ok(None);
+        };
+        advisory::Index::parse(&bytes).map(Some).map_err(fail)
+    }
+
+    /// The security advisory `id`, as the server signs it, or `None` if
+    /// the server does not list it (ADR 0534).
+    ///
+    /// # Errors
+    ///
+    /// If the file does not check, is more than [`advisory::ADVISORY_MAX`]
+    /// bytes, or is another advisory's.
+    pub fn advisory(&mut self, id: &str) -> Result<Option<advisory::Advisory>, Fail> {
+        let path = advisory::target_path(id);
+        let Some(bytes) = self.target_up_to(&path, advisory::ADVISORY_MAX)? else {
+            return Ok(None);
+        };
+        let found =
+            advisory::Advisory::parse(&bytes).map_err(|why| fail(format!("{path}: {why}")))?;
+        if found.id != id {
+            return Err(fail(format!("{path} is the advisory {}", found.id)));
+        }
+        Ok(Some(found))
     }
 
     /// The channel this system follows: the release it offers.

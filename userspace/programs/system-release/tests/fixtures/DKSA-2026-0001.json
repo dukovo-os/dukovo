@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.6.0",
+  "id": "DKSA-2026-0001",
+  "modified": "2026-11-15T09:30:00Z",
+  "published": "2026-11-10T09:00:00Z",
+  "aliases": ["CVE-2026-12345", "GHSA-xxxx-xxxx-xxxx"],
+  "summary": "Example: a local user can read another user's files through a flaw in the file service",
+  "details": "The example flaw in the system's file service lets a local user read files of another user when it opens a path with a crafted name. The system releases from 1.4.0 up to 1.4.2 have it, and so have those of the 1.3 line from 1.3.5 up to 1.3.9.1. The ripgrep app has a related flaw in every version before 14.1.1.\n\nA machine that cannot take the fixed release has no other fix; this advisory is a fixture of system-release's tests and describes no real flaw.",
+  "severity": [
+    { "type": "CVSS_V3", "score": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N" }
+  ],
+  "affected": [
+    {
+      "package": { "ecosystem": "Dukovo", "name": "dukovo" },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [{ "introduced": "1.4.0" }, { "fixed": "1.4.2" }]
+        },
+        {
+          "type": "ECOSYSTEM",
+          "events": [{ "introduced": "1.3.5" }, { "fixed": "1.3.9.1" }]
+        }
+      ]
+    },
+    {
+      "package": { "ecosystem": "Dukovo", "name": "org.dukovo.ripgrep" },
+      "ranges": [
+        {
+          "type": "ECOSYSTEM",
+          "events": [{ "introduced": "0" }, { "fixed": "14.1.1" }]
+        }
+      ]
+    }
+  ],
+  "references": [
+    { "type": "ADVISORY", "url": "https://example.org/advisories/CVE-2026-12345" },
+    { "type": "FIX", "url": "https://github.com/dukovo-os/dukovo/pull/1" }
+  ],
+  "credits": [{ "name": "Example Reporter", "type": "REPORTER" }],
+  "database_specific": {
+    "severity": "high",
+    "action": "Update to Dukovo 1.4.2 with `update apply`, then restart."
+  }
+}

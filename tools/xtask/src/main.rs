@@ -45,6 +45,7 @@ mod riscv;
 mod rootfs;
 mod scaling;
 mod screen;
+mod security;
 mod shellbench;
 mod signoff;
 mod site;
@@ -79,6 +80,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("test", "Run unit tests, then boot the image in QEMU under UEFI and BIOS"),
     ("catalog", "Make and sign the catalog's TUF repository, with YubiKeys"),
     ("release", "Deploy the system's releases to the update server, and check what it serves"),
+    ("security", "Check the security advisories, and start a new one"),
     (
         "updates",
         "Show what the update server serves: the catalog, the system's releases, rollouts and when signatures run out",
@@ -720,8 +722,27 @@ for Dukovo Ops. The system's releases are not read until releases/metadata/
 1.root.json is signed (ADR 0457). Exits 0 whenever a status was printed, even
 when something needs you."
         }
+        "security" => {
+            "Usage: ./ob security check
+       ./ob security advisory new
+
+The project's security advisories, DKSA (ADR 0534): one OSV 1.6 file each, as
+security/advisories/DKSA-YYYY-NNNN.json. `check` reads every one of them as
+system-release, which ob builds for this machine, reads them when it signs them
+for the update server: the file must be valid OSV with Dukovo's fields, have the
+id its file is named for and a number of its own, give versions in Dukovo's
+order, and say no TODO. It prints how many there are and the worst severity, and
+exits 1 when one does not check. CI runs it. `advisory new` writes the next free
+number of this year, from a template with today's date and the severity medium,
+whose text says TODO where an advisory needs writing: the check refuses it until
+it is written. The runbook docs/runbooks/security-advisory.md goes from a report
+to a published advisory."
+        }
         "release" => {
             "Usage: ./ob release server setup [--dukovo]
+       ./ob release channel <repository> (<channel> <version>
+                                          | --firmware <version>|none <channel>)
+       ./ob release advisories <repository>
        ./ob release deploy <repository>
        ./ob release send [--copy-only] <repository>
        ./ob release check [--root <file>] [<url>]
@@ -736,6 +757,15 @@ the catalog. `server setup` is `ob catalog server setup`: it sets up both, and
 writes the server's online key for the system's releases to
 releases/keys/online.json, for the release keys' next root to name beside
 their own snapshot and timestamp keys (`system-release keys --online`).
+`channel` has the channel of an update repository, which system-release's add
+made, offer a release, or with --firmware a firmware set or none, as
+`system-release channel` does with this machine's release keys; it signs the
+security advisories of security/advisories in the same targets version, as the
+index advisories/index.json and a target for each (ADR 0534), so that a machine
+that takes the release reads what is known of it. `advisories` signs the
+advisories alone, in one targets version, for a corrected advisory that goes out
+without a release; it signs nothing when they are as the repository has them,
+and a file taken out of security/advisories leaves the repository's targets.
 `deploy` sends an update repository that system-release's add and channel
 signed to the server: the metadata and targets whole, and the files its store
 does not hold; the server takes the roots, targets, lists, channels and
@@ -1162,6 +1192,7 @@ fn dispatch(argv: Vec<String>) -> Result<()> {
         }
         "catalog" => catalog::command(&ctx, args.rest()),
         "release" => release::command(&ctx, &args.rest()),
+        "security" => security::command(&ctx, &args.rest()),
         "updates" => updates::command(&ctx, &args.rest()),
         "signoff" => {
             let base = args.positional();
