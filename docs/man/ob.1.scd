@@ -1925,9 +1925,36 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
-	Deploy the system's releases to the update server and check what it
-	serves (ADR 0467), over the same SSH login as *catalog*.
+*release* *build* [*--out* _dir_] | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+	Build the system's release, and deploy the system's releases to the
+	update server and check what it serves (ADR 0467), over the same SSH
+	login as *catalog*.
+
+	*build* builds the system as this commit makes it, as the slot of
+	an image holds it, and writes what two builds of the commit are
+	compared by (ADR 0535) into _dir_, by default
+	_out/release-build_:
+
+	- _files.txt_, a list with one line for each folder, file and link
+	  of the tree, sorted by path: its kind (*d*, *f* or *l*), its mode
+	  in octal, a file's SHA-256 and size, a file's time in seconds
+	  since 1970, its path, and a link's target, separated by tabs;
+	- _system.json_, the release list, unsigned, as *system-release
+	  list* writes it, which is what *system-release make* signs;
+	- _system.json.sha256_, the list's SHA-256.
+
+	The last line it prints is that SHA-256: two builds of one commit
+	print the same one, on any machine, and ADR 0457's three builds
+	must agree on it. *build* signs nothing. The tree trusts a root of
+	the repository's, not this machine's release keys, which would make
+	every machine's tree its own: _releases/metadata/1.root.json_ once
+	the key ceremony has signed it, and _releases/stand-in-root.json_,
+	whose keys were thrown away, until then. The tree is left in
+	_out/release-build-tree_, for reading a file that differs. It takes
+	as long as *ob build*, and *SOURCE_DATE_EPOCH* is the commit's time
+	unless it is set. CI runs *build* twice in different
+	places and compares the results (_.github/workflows/reproducible.yml_).
+
 	*server setup* is *catalog server setup*, which sets up both; it
 	writes the server's online key for the system's releases to
 	_releases/keys/online.json_, for the release keys' next root to name
@@ -2500,8 +2527,10 @@ fails the build.
 	its own, as the lab's is. Empty by default.
 
 *SOURCE_DATE_EPOCH*
-	Timestamp for files in the image. By default *ob* uses the time of the
-	current Git commit.
+	Timestamp for files in the image, and, with the version and the kind
+	of image, what the identifiers of its disks and filesystems are made
+	from (ADR 0535). By default *ob* uses the time of the current Git
+	commit.
 
 # FILES
 

@@ -35,6 +35,7 @@ path = [
   "catalog/metadata/*.json",
   "releases/keys/*.json",
   "releases/metadata/*.json",
+  "releases/stand-in-root.json",
 ]
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"

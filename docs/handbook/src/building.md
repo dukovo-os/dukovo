@@ -233,6 +233,18 @@ writes the live system as an `.iso` for virtual machines, and
 `./ob image --installed` an installed system's disk.
 [Creating USB install media](usb-media.md) shows how to write it to a stick.
 
+Two builds of one commit make the same files and give a disk the same
+identifiers: its GPT's GUIDs, its filesystems' UUIDs and the serial of its
+EFI system partition are made from the version, the time of the commit
+(`SOURCE_DATE_EPOCH`), the kind of image and what the identifier is for,
+not from chance (ADR 0535). Two sticks written from one image therefore
+carry the same ones; `rdisk`'s `u` command gives a partition another
+GUID. A system the installer installs gets identifiers of its own, drawn
+from the system's random numbers. `./ob release build` builds the release
+as an image holds it and prints a hash that two builds of one commit
+share; the maintainers' handbook chapter on the release train says how
+CI uses it.
+
 ## Configuration
 
 `dukovo.toml` at the top of the repository holds the choices a builder
