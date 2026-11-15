@@ -262,6 +262,8 @@ error that starts with the tool's name.
 :  read and check every block of a Btrfs filesystem
 |  *sendmail*(8)
 :  send a message through the mail account alerts.toml names
+|  *storage*(8)
+:  the disks, Btrfs volumes and other filesystems with their health, and give a grown disk's room to its last partition and filesystem
 |  *subvolume*(8)
 :  make, snapshot and remove Btrfs subvolumes
 |  *sudo*(8)

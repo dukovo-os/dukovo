@@ -40,7 +40,9 @@ table and say what the area is, in two to five capitals.
 | Letters | Area | Since |
 | --- | --- | --- |
 | `ADM` | The web console, Dukovo Admin: its sign-in, second steps, unlock and requests | 0.16.0 |
+| `BAK` | Snapshots and backups: snap(1), backup(8) and moving a machine | 0.16.0 |
 | `BOOT` | Starting the computer: the health check of each start | 0.15.0 |
+| `DSK` | Disks and storage: storage(8), the disks' health and their checks | 0.16.0 |
 | `FW` | Firmware sets and the firmware the kernel loads | 0.15.0 |
 | `HW` | Hardware: the checks of `hardware check` | 0.16.0 |
 | `MET` | The machine's history and its early warnings: a full disk, a missing one, memory, heat and certificates | 0.16.0 |

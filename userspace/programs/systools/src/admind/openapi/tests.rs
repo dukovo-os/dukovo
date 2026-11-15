@@ -31,6 +31,12 @@ fn is_error(status: &str) -> bool {
     status.starts_with('4') || status.starts_with('5')
 }
 
+/// Whether `status` is an error that admind answers with an ID: any but
+/// 431, which the HTTP server gives with no body.
+fn has_ids(status: &str) -> bool {
+    is_error(status) && status != "431"
+}
+
 /// The statuses `operation` answers with.
 fn statuses(operation: &Value) -> HashSet<&str> {
     names(&operation["responses"])
@@ -136,7 +142,7 @@ fn every_action_is_an_operation_named_by_its_id_with_its_method_and_address() {
     for actions in sets() {
         let document = document(actions);
         for action in actions {
-            let method = if action.changes() { "post" } else { "get" };
+            let method = if action.posts() { "post" } else { "get" };
             let operation = operation(&document, method, action.path());
             assert_eq!(operation["operationId"], action.id());
             assert_eq!(operation["summary"], action.title());
@@ -146,12 +152,12 @@ fn every_action_is_an_operation_named_by_its_id_with_its_method_and_address() {
 }
 
 #[test]
-fn an_action_s_arguments_are_in_its_address_its_query_or_its_body_and_a_read_has_no_body() {
+fn an_action_s_arguments_are_in_its_address_its_query_or_its_body_and_a_get_has_no_body() {
     for actions in sets() {
         let document = document(actions);
         for action in actions {
             let id = action.id();
-            let method = if action.changes() { "post" } else { "get" };
+            let method = if action.posts() { "post" } else { "get" };
             let operation = operation(&document, method, action.path());
             let (mut in_address, mut in_query) = (HashSet::new(), HashSet::new());
             for parameter in operation["parameters"].as_array().into_iter().flatten() {
@@ -164,8 +170,9 @@ fn an_action_s_arguments_are_in_its_address_its_query_or_its_body_and_a_read_has
                         in_address.insert(name);
                     }
                     // A read's other arguments are its query's, there
-                    // when the action needs them.
-                    Some("query") if !action.changes() => {
+                    // when the action needs them; a read that is a POST,
+                    // for a secret (ADR 0561), has them in its body.
+                    Some("query") if !action.posts() => {
                         assert_eq!(parameter["required"], field.required, "{id}: {name}");
                         in_query.insert(name);
                     }
@@ -179,7 +186,7 @@ fn an_action_s_arguments_are_in_its_address_its_query_or_its_body_and_a_read_has
             assert!(in_address.is_disjoint(&in_body), "{id}");
             let fields: HashSet<&str> = action.fields().iter().map(|field| field.name).collect();
             assert_eq!(&(&in_address | &in_query) | &in_body, fields, "{id}");
-            if !action.changes() {
+            if !action.posts() {
                 assert!(operation.get("requestBody").is_none(), "{id}: a read is a GET");
             }
         }
@@ -213,7 +220,7 @@ fn every_action_s_good_examples_fit_what_the_document_says_and_its_bad_ones_do_n
         let document = document(actions);
         for action in actions {
             let id = action.id();
-            let method = if action.changes() { "post" } else { "get" };
+            let method = if action.posts() { "post" } else { "get" };
             let operation = operation(&document, method, action.path());
             let schema = arguments_of(operation);
             let (good, bad, _) = action.example_values();
@@ -297,7 +304,15 @@ fn every_error_status_lists_ids_that_have_that_status() {
                     "{method} {path} has no success"
                 );
                 assert!(responses.keys().all(|status| status.len() == 3), "{method} {path}");
-                for (status, response) in responses.iter().filter(|(s, _)| is_error(s)) {
+                // A head over the limits is refused before any route is
+                // found, by the HTTP server, with no body.
+                let refused = &responses["431"];
+                assert!(
+                    refused["description"].as_str().unwrap().contains("16 KiB"),
+                    "{method} {path}"
+                );
+                assert!(refused.get("content").is_none(), "{method} {path}");
+                for (status, response) in responses.iter().filter(|(s, _)| has_ids(s)) {
                     let schema = &response["content"]["application/json"]["schema"];
                     assert_eq!(schema["allOf"][0]["$ref"], "#/components/schemas/Error");
                     for id in ids(operation, status) {
@@ -329,7 +344,7 @@ fn the_errors_of_an_operation_follow_from_its_access_its_handler_and_its_command
     let post = |path: &str| operation(&document, "post", path);
     // Open to anyone: nothing but a request that was not right, and a
     // token, which no route that is not the API's takes.
-    assert_eq!(statuses(get("/api/1/health")), HashSet::from(["200", "400", "403", "421"]));
+    assert_eq!(statuses(get("/api/1/health")), HashSet::from(["200", "400", "403", "421", "431"]));
     assert_eq!(ids(get("/api/1/health"), "403"), ["ADM-124"]);
     // The sign-in is counted, which says when to try again.
     assert!(ids(post("/api/1/sign-in"), "429").contains(&"ADM-105"));
@@ -382,7 +397,7 @@ fn every_error_the_console_has_is_the_answer_of_some_operation_but_the_wrong_met
     let mut listed = HashSet::new();
     for item in document["paths"].as_object().unwrap().values() {
         for operation in item.as_object().unwrap().values() {
-            for status in statuses(operation).iter().filter(|status| is_error(status)) {
+            for status in statuses(operation).iter().filter(|status| has_ids(status)) {
                 listed.extend(ids(operation, status));
             }
         }

@@ -214,6 +214,12 @@ impl Tasks {
         self.queue.borrow().len()
     }
 
+    /// How many tasks wait or run, for the tests that wait for them to end.
+    #[cfg(test)]
+    pub fn unfinished(&self) -> usize {
+        self.live.borrow().values().filter(|entry| entry.over.is_none()).count()
+    }
+
     /// The task `id`, as it is now: the live one if there is one, or the
     /// store's.
     ///
@@ -634,7 +640,7 @@ pub fn start(
 
 /// Runs the task `id`: waits for its place, runs its command, and ends it
 /// and the journal's row of it.
-async fn run(shared: Rc<Shared>, id: i64, job: Job) {
+async fn run(shared: Rc<Shared>, id: i64, mut job: Job) {
     let Some(store) = shared.store.as_ref() else { return };
     let tasks = &shared.tasks;
     let Some(place) = wait_for_place(&shared, id).await else {
@@ -649,10 +655,13 @@ async fn run(shared: Rc<Shared>, id: i64, job: Job) {
         log(6, &format!("task {id} was stopped by {by} before it began"));
         return;
     };
+    // The secrets the command reads go as soon as it has them (ADR 0561).
+    let input = job.prepared.input.take();
     let argv = &job.prepared.argv;
     let begun = shared.journal.begin(Some(store), &job.prepared.files, unix_now());
     tasks.running(store, id);
-    let started = run::start(&shared, job.by, argv).await;
+    let started = run::start(&shared, job.by, argv, input.as_ref()).await;
+    drop(input);
     let (mut end, row) = match started {
         Ok(started) => {
             let done = follow(&shared, id, started).await;

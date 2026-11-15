@@ -411,22 +411,6 @@ fn a_change_that_runs_has_a_row_with_who_how_and_the_command_and_one_not_run_has
     });
 }
 
-/// A stream of events as `session` opens it: each call of the closure
-/// gives the next event's bytes as text, and the first, the unlock, is
-/// taken.
-async fn tab(world: &World, session: &Session) -> impl AsyncFnMut() -> String {
-    let request = build(get("/api/1/events").by(session));
-    let Ok(response) =
-        handle(Rc::clone(&world.console.shared), PEER.parse().unwrap(), request).await;
-    let mut body = response.into_body();
-    let mut next = async move || {
-        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame()).await.unwrap();
-        String::from_utf8(frame.unwrap().unwrap().into_data().unwrap().to_vec()).unwrap()
-    };
-    assert!(next().await.starts_with("event: unlock"));
-    next
-}
-
 /// The fields of the `change` event `told`, in the order they are sent.
 fn change(told: &str) -> Value {
     let data = told

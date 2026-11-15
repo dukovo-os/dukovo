@@ -6,11 +6,12 @@
 //!
 //! An administrator's change runs through authd's `console-elevate`, for
 //! an unlocked session or a token, with four descriptors from admind: its
-//! input, which ends at once (nothing is typed to a command the console
-//! runs); its output and its error output, two pipes admind reads apart;
-//! and the relay, whose closing hangs the command up, which admind keeps
-//! open until the command has ended or ran out of time. Anything else
-//! runs in the person's worker (`run`), as the person.
+//! input, which holds the secrets the action takes, if any, and then ends
+//! (ADR 0561); its output and its error output, two pipes admind reads
+//! apart; and the relay, whose closing hangs the command up, which admind
+//! keeps open until the command has ended or ran out of time. Anything
+//! else runs in the person's worker (`run`), as the person, whose input is
+//! the same.
 //!
 //! A command's output is kept up to 1 MiB, and its error output up to 64
 //! KiB; what comes after is read and dropped, so the command never blocks
@@ -23,7 +24,7 @@
 //! without the time limit of a short command.
 
 use std::fs::File;
-use std::io::{PipeWriter, pipe};
+use std::io::{PipeWriter, Write, pipe};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::task::Poll;
 use std::time::Duration;
@@ -35,7 +36,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::net::unix::pipe::Receiver;
 
-use super::actions::Prepared;
+use super::actions::{Prepared, Secret};
 use super::authd::{self, Asked};
 use super::errors::{Attempt, Failure, Kind, refusal};
 use super::link::{CallError, Link};
@@ -88,8 +89,8 @@ impl Drop for Place<'_> {
     }
 }
 
-/// Runs `argv` as an administrator by `by`'s right, waiting `limit` for it
-/// to end; `what` is how a refusal's log line names it.
+/// Runs `argv` as an administrator by `by`'s right, with `input` on its
+/// standard input, waiting `limit` for it to end.
 ///
 /// # Errors
 ///
@@ -100,11 +101,12 @@ pub async fn elevated(
     shared: &Shared,
     by: Elevator,
     argv: &[String],
+    input: Option<&Secret>,
     limit: Duration,
 ) -> Result<Ran, Failure> {
     let _place = Place::take(shared)
         .ok_or_else(|| Failure::wait("too many elevated commands at once", 1))?;
-    start(shared, by, argv).await?.finish(limit).await
+    start(shared, by, argv, input).await?.finish(limit).await
 }
 
 /// A command authd has started as an administrator: what admind holds of
@@ -123,37 +125,60 @@ pub struct Started {
 }
 
 /// Has authd run `argv` as an administrator by `by`'s right, with its four
-/// descriptors from admind, and gives what admind holds of it. The caller
-/// has a [`Place`] for it.
+/// descriptors from admind, and gives what admind holds of it. Its input
+/// holds `input`, and then ends. The caller has a [`Place`] for it.
 ///
 /// # Errors
 ///
 /// authd's refusal (a locked session, a token that may not, a command that
 /// is not one), ADM-111 when authd is silent.
-pub async fn start(shared: &Shared, by: Elevator, argv: &[String]) -> Result<Started, Failure> {
+pub async fn start(
+    shared: &Shared,
+    by: Elevator,
+    argv: &[String],
+    input: Option<&Secret>,
+) -> Result<Started, Failure> {
     let internal = |err: std::io::Error| Failure::new(Kind::Internal, format!("no pipe: {err}"));
-    let (input, typed) = pipe().map_err(internal)?;
-    drop(typed);
+    let (input_end, typed) = pipe().map_err(internal)?;
+    typed_and_ended(typed, input).map_err(internal)?;
     let (output, output_end) = pipe().map_err(internal)?;
     let (errors, errors_end) = pipe().map_err(internal)?;
     // authd takes the last of the four as the relay, whose closing hangs
     // the command up: ours stays open until the command has ended.
     let (relay, relay_end) = pipe().map_err(internal)?;
     let fds =
-        [input.as_raw_fd(), output_end.as_raw_fd(), errors_end.as_raw_fd(), relay.as_raw_fd()];
+        [input_end.as_raw_fd(), output_end.as_raw_fd(), errors_end.as_raw_fd(), relay.as_raw_fd()];
     let command = argv.iter().map(|word| word.as_bytes().to_vec()).collect();
     let console = Console::Elevate { by, language: Vec::new(), command };
     let (answer, asked) = authd::ask(&shared.authd, console, &fds)
         .await
         .map_err(|why| Failure::new(Kind::AuthdSilent, why))?;
     // authd has its own copies now; ours would keep the pipes open.
-    drop((input, output_end, errors_end, relay));
+    drop((input_end, output_end, errors_end, relay));
     if let Answer::Refused(why) = answer {
         return Err(refusal(Attempt::Other, &why));
     }
     let output = Receiver::from_file(File::from(OwnedFd::from(output))).map_err(internal)?;
     let errors = Receiver::from_file(File::from(OwnedFd::from(errors))).map_err(internal)?;
     Ok(Started { output, errors, asked, relay: relay_end })
+}
+
+/// Writes `input` to `typed`, the write end of a command's input, and
+/// closes it, so that the command reads the input and then its end. The
+/// pipe is new and the input at most [`INPUT_MAX`] bytes, which a pipe holds
+/// before any is read: the write does not wait for the command.
+///
+/// [`INPUT_MAX`]: crate::admind::actions::secret::INPUT_MAX
+///
+/// # Errors
+///
+/// When the pipe does not take it.
+pub fn typed_and_ended(mut typed: PipeWriter, input: Option<&Secret>) -> std::io::Result<()> {
+    if let Some(input) = input {
+        typed.write_all(input.bytes())?;
+    }
+    drop(typed);
+    Ok(())
 }
 
 impl Started {
@@ -201,14 +226,26 @@ pub async fn ended_status(asked: &mut Asked) -> std::io::Result<i32> {
     }
 }
 
-/// Runs `argv` in the worker of `link`, as the person.
+/// Runs `argv` in the worker of `link`, as the person, with `input` on its
+/// standard input.
 ///
 /// # Errors
 ///
 /// ADM-112 when the worker is silent or gone, the worker's own fault
 /// when it cannot start the command.
-pub async fn as_the_person(link: &Link, argv: &[String]) -> Result<Ran, Failure> {
-    match link.call("run", json!({ "argv": argv })).await {
+pub async fn as_the_person(
+    link: &Link,
+    argv: &[String],
+    input: Option<&Secret>,
+) -> Result<Ran, Failure> {
+    let mut params = json!({ "argv": argv });
+    if let Some(input) = input {
+        // The worker writes the text to the command's input. The link
+        // carries it as JSON, which must be text: a secret is.
+        let text = String::from_utf8_lossy(input.bytes()).into_owned();
+        params["input"] = Value::String(text);
+    }
+    match link.call("run", params).await {
         Ok(value) => serde_json::from_value(value)
             .map_err(|_| Failure::new(Kind::WorkerSilent, "the worker's answer did not read")),
         Err(CallError::Worker(fault)) => {
@@ -438,11 +475,30 @@ mod tests {
             assert!(answer(&checks, &ran(status), false).is_ok(), "status {status}");
         }
         assert_eq!(answer(&checks, &ran(3), false).unwrap_err().kind, Kind::CommandFailed);
-        // Every other action answers only after 0.
-        for action in crate::admind::actions::REGISTRY
+        // diskhealth exits with 2, 4 or 8 added for a disk it cannot read, one
+        // that warns and one that is failing, and its answer is the output then too.
+        let health = crate::admind::actions::REGISTRY
             .iter()
-            .filter(|a| !["service.explain", "checks.last"].contains(&a.id()))
-        {
+            .find(|action| action.id() == "storage.health")
+            .unwrap();
+        assert_eq!(health.answers(), [0, 2, 4, 6, 8, 10, 12, 14]);
+        // scrub exits with 3 when it found errors it could not mend: the scrub ran.
+        let scrub = crate::admind::actions::REGISTRY
+            .iter()
+            .find(|action| action.id() == "storage.scrub")
+            .unwrap();
+        assert_eq!(scrub.answers(), [0, 3]);
+        // So does snapshots.list's, 1 being a place that failed and was left
+        // out of the list, as it says on standard error.
+        let list = crate::admind::actions::REGISTRY
+            .iter()
+            .find(|action| action.id() == "snapshots.list")
+            .unwrap();
+        assert_eq!(list.answers(), [0, 1]);
+        // Every other action answers only after 0.
+        let named =
+            ["service.explain", "checks.last", "storage.health", "storage.scrub", "snapshots.list"];
+        for action in crate::admind::actions::REGISTRY.iter().filter(|a| !named.contains(&a.id())) {
             assert_eq!(action.answers(), [0], "{}", action.id());
         }
     }

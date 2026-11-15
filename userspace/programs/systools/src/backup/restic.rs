@@ -253,10 +253,11 @@ impl ReadSource for Top {
 }
 
 /// What rustic said, as a message: its words, without its advice on
-/// filing reports.
+/// filing reports. A password that opens none of the repository's keys is
+/// the wrong key (BAK-103).
 fn failed(place: &str, error: &RusticError) -> Fail {
     if error.is_incorrect_password() {
-        return util::fail(format!("{place}: the key given does not open its repository"));
+        return crate::backup_errors::wrong_key();
     }
     let text = error.display_log();
     let text = text.strip_prefix("Error: ").unwrap_or(&text);
@@ -728,11 +729,7 @@ mod tests {
         assert!(repo.append_only());
         let other = KEY.replace("S3QDY0", "S3QDY1");
         let fail = Repo::open(store(&disk.0), &other).err().unwrap();
-        assert!(
-            fail.message.ends_with("the key given does not open its repository"),
-            "{}",
-            fail.message
-        );
+        assert!(fail.message.ends_with("(BAK-103)"), "{}", fail.message);
         assert!(Repo::open(store(&disk.0), KEY).unwrap().append_only());
     }
 }

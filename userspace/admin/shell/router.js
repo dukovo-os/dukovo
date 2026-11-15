@@ -76,6 +76,7 @@ export function createRouter({ pages, shell, main, asof }) {
     shell.commands.reset();
     shell.closeTransient();
     shell.nav.update(place.pathname);
+    shell.bus.emit('route');
     const focusAtStart = document.activeElement;
 
     const state = { first: true };

@@ -14,11 +14,13 @@ navigation, the keys and the command palette; the first sign-in of a new
 account and your own preferences; the Overview; the Logs; what changed on
 the machine, and how to put a change back; showing the command of an action,
 and using the API from a script; following a long task; the network cards
-and the firewall; the terminal; and what to do when something goes wrong or
-does not work. The references are dukovo-admin(7), admind(8), admin(8),
-admin.toml(5), authd(8), user(8), who(1), last(1), log(1), network(8),
-network(5) and firewall(8); the decisions are ADR 0514, ADR 0515, ADR 0516 and
-ADR 0517.
+and the firewall; the disks and the log's own space; the snapshots and the
+backups; moving to new hardware; the terminal; and what to do when something
+goes wrong or does not work. The references are dukovo-admin(7), admind(8),
+admin(8), admin.toml(5), authd(8), user(8), who(1), last(1), log(1),
+network(8), network(5), firewall(8), storage(8), diskhealth(8), scrub(8),
+logtrim(8), snap(1), backup(8), snap.toml(5) and backup.toml(5); the decisions
+are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463 and ADR 0561.
 
 | Task | How |
 | --- | --- |
@@ -47,6 +49,20 @@ ADR 0517.
 | See why a service is not running, and start, stop or restart it | **Services**, then the service; see "Services" |
 | See the network cards, or change a card's address | **Networking**, then **Change…**; see "Networking" |
 | Allow or deny a port, or see what the firewall blocked | **Firewall**; see "Firewall" |
+| See the disks, how full they are and when they will be full | **Storage**; see "Storage" |
+| Check a disk's health | **Check now** on the disk's page under **Storage**, or `elevate diskhealth` |
+| Check every block of a mirror | **Scrub the mirror** on a disk's page, or `elevate scrub start /volumes/data` |
+| Use the room after a disk's last partition | **Grow into it** on the disk's page, or `elevate storage grow sdb`; see "Growing a disk" |
+| Change how long the log is kept, or trim it now | **The log's own space**, at the bottom of **Storage**, or `elevate logtrim` |
+| See which files have a snapshot, and a copy off the machine | **Snapshots and backups**; see "Snapshots and backups" |
+| Bring back a file from a snapshot | **Browse** on a snapshot, tick the file, **Restore N chosen**; see "Bringing back a file" |
+| Take a snapshot now | **Take a snapshot now** on the Snapshots and backups page, or `elevate snap create PLACE` |
+| Copy the machine's data somewhere else | **Add a backup place…**, or `elevate backup add NAME DESTINATION`; see "Backup places and the recovery key" |
+| Back up now, or check a backup by restoring it | **Back up now** and **Check now** on the backup place, or `elevate backup run NAME` and `elevate backup verify NAME` |
+| See the recovery key of a backup place again | **Show it again** on the backup place, or `elevate backup key NAME` |
+| Find out why a backup is overdue or failed | The banner at the top of **Snapshots and backups**; see "When a backup is overdue or failed" |
+| Bring a machine's name, accounts, apps and files to new hardware | **Move to new hardware**, or `elevate backup restore --machine`; see "Move to new hardware" |
+| Give up a restore that is staged before the restart | **Cancel** on **Move to new hardware**, or `elevate backup restore --machine --cancel` |
 | Undo a network or firewall change that cut the console off | Wait for the time the banner shows, or `elevate network undo` or `elevate firewall undo` at the machine |
 | Keep the settings in your own Git | `admin export DIR` |
 | Find out what an error means | **Help**, then **What error messages mean**; see "When something goes wrong" |
@@ -366,7 +382,7 @@ the text's size. At the 100% text size:
 | --- | --- |
 | 1100 pixels and more | The list of pages stays at the left, and Tasks opens beside the page |
 | 720 to 1099 pixels | **Pages** in the header opens the list over the page, and Tasks opens over it too |
-| Under 720 pixels, a phone | A bar of tabs along the bottom, **Overview** and **More**. The header keeps the mark, the machine's name, a magnifying glass for the search, the lock as an icon, and Tasks while a task runs or needs a look. A drawer fills the screen |
+| Under 720 pixels, a phone | A bar of tabs along the bottom, **Overview** and **More**. The header keeps the mark, the machine's name, a magnifying glass for the search, the lock as an icon, Tasks while a task runs or needs a look, and, while a change is tried, a warning mark with the time left. A drawer fills the screen |
 
 A larger text size makes the narrower layouts come at a wider window.
 
@@ -403,7 +419,9 @@ something that came: **Stopping task 42.** or **The console locks in 2
 minutes**. At most 3 show at once, the newest last. One that has no button
 goes away after 8 seconds, and stays while the pointer is on it or the
 keyboard is in it. One that has a button, such as **Open Tasks**, stays
-until you press the button or **Close**, which every note has. A screen
+until you press the button or **Close**, which every note has; the one that
+says a task runs goes when the task ends, and the note that it ended takes
+its place. A screen
 reader hears a note politely, without taking the keyboard.
 
 ## The command palette
@@ -724,10 +742,12 @@ console is locked, and runs the action. A long action is a task: the page says
 task ends. Where
 the checks have a score, a step says what it takes it to, such as **This step
 takes the score from 62 to 70.** **Skip for now** goes to the next step, and
-**Set up again** runs one that is done again. A machine whose pages have no
-steps says **This server has nothing to set up yet.** In this release no
-shipped page has one yet, so the card and the page show none; the lab's
-images have one that runs a task that changes nothing.
+**Set up again** runs one that is done again. A step that is a page of its own
+has **Continue on its page** in place of **Set up**: **Bring everything from your
+old machine** is offered on a machine that has no backup place and one person's
+account, and goes to Move to new hardware. The Snapshots and backups page
+gives the step **Copy your data off this server** too. A machine whose pages
+have no steps says **This server has nothing to set up yet.**
 
 ## What changed
 
@@ -1180,6 +1200,27 @@ which ends with 3 for a service that does not run well, registers its
 result and has a `failed_when` that names the statuses it answers with. The
 collection's modules for certificates and for the console's reach are a
 later addition.
+
+### Passwords and keys
+
+An action that takes a password or a key, such as a new password for an
+account or the recovery key that opens a backup, never puts it in the
+command's words. The command reads it when it asks, as it would read it
+from a script, so the journal, the audit log, a task and the command that
+**Show command** gives all say what was done without saying the secret.
+The console sends it in the body of a `POST`, never in an address, even
+for an action that only reads; `admin actions --json` marks such a field
+`writeOnly`.
+
+**Show command** needs no secret, and shows each as `(secret)`. It says
+what the command reads, such as "then the password, typed when asked".
+The API tab takes the secret from a shell variable named after the field,
+such as `$PASSWORD`; set it without leaving it in the shell's history, as
+bash's `read -rs PASSWORD` does. A secret with a `"` or a `\` in it needs
+the JSON escape in the variable, `\"` or `\\`. The Ansible tab takes it from
+the playbook's variable, such as `{{ password }}`, which belongs in an
+Ansible vault, and its task has `no_log: true`, so that Ansible's output
+does not show it either.
 
 ### Your tokens
 
@@ -2003,6 +2044,18 @@ A screen reader hears the time left when the change begins, and at 60, 30 and
 read each second. With less motion chosen in your preferences the bar moves in
 steps, not smoothly.
 
+While a change is tried, the header of every other page of the console, in
+every session, shows a chip with a warning mark: **Trying: the firewall's
+rules · 0:41**. It is a link to the page that has the banner, and it goes
+when the change is kept or undone. When more than one change is tried it says
+**Trying 2 changes** and opens a menu with a link for each, the soonest to be
+undone first. The page that has the banner does not show it, as the banner
+says the same. The chip counts down by the browser's clock and takes the time
+left from the console again every 30 seconds. It says nothing aloud: its name,
+which a screen reader reads when you reach it, is the words and the time of
+the undo, **Trying: the firewall's rules, undone at 14:32 unless kept**. On a
+phone it is the mark and the time.
+
 ### When the address changes
 
 A change that takes away the address this browser reaches the console at
@@ -2139,6 +2192,491 @@ The cards of Networking and Firewall are a stack, one under the other, and each
 table is a list of cards, the number or the name over its words. The banner
 stays at the top of the screen; its buttons are as wide as the page, 44 pixels
 tall at least. The form's choices are one to a row.
+
+## Storage
+
+**Storage**, in the list of pages, shows the machine's disks and what is on
+them: how full each volume is and when it will be full, the last hour of reads
+and writes, each disk's health, and the room the system's log takes. Anyone who
+signs in sees all of it but the log's size. Looking after a disk is for
+administrators, who unlock the console first: checking a disk now, scrubbing a
+mirror, growing a disk into free space, and changing the log's limits. The page
+is at `/storage`, and `/storage/sdb` opens the disk `sdb` beside the list. It
+reads `storage show` and runs `diskhealth`, `scrub`, `storage grow` and
+`logtrim` (storage(8), diskhealth(8), scrub(8) and logtrim(8)). The console
+formats and replaces no disk: those stay commands at a terminal, with the steps
+written out on the page.
+
+### Disks and the mirror
+
+At the top of the page is a banner when something needs a look, the worst first:
+a volume that has **lost a disk**, a disk that **says it is failing**, a disk
+whose count of moved sectors rose, or a mirror that is **catching up** after a
+disk that was away came back. A machine in good order has none.
+
+Under it is a card for each volume: **System** for the volume the machine runs
+from, **Data** for the one that holds `/users` and `/shared`, **System and
+data** when one volume holds both, and any other volume by its label. A card
+says how much is used, **1.24 TB used of 2 TB on sda and sdb**, with a bar that
+turns warm at 90 percent and red at 97, and when the volume is on two disks or
+more, the state of the mirror:
+
+| The card says | It means |
+| --- | --- |
+| **Mirror healthy** | Every file is on each disk: either could fail and nothing would be lost |
+| **Mirror missing a disk** | A disk is gone. The files are on the disk that is left, with no second copy |
+| **Mirror catching up** | A disk was away and is being brought up to date. It does this by itself |
+| **Changing layout** | A balance is changing how the volume's blocks are kept. Until it ends, some may have no second copy |
+| **Spread over sda and sdb, with no second copy** | The volume uses two disks to be bigger, not safer. A disk that fails takes files with it |
+| **Two copies on one disk** | The metadata is kept twice on a single disk, which guards against a bad sector, not a bad disk |
+
+The card also says when the volume will be full, **Full in about 7 months at the
+rate of the last 30 days**: a straight line through the last 30 days of use,
+drawn once there are 7 days to draw it from. A machine with less says **Not
+enough history yet**, and one whose use is falling says nothing. A card whose
+volume will be full within 30 days is warm whatever its bar says, and the
+Overview lists it. **Reads and writes, last hour** is the chart of the disks'
+work, with **Show the numbers** under it as on the Overview.
+
+**Disks, drawn to scale** has a row for each disk, USB sticks too, with its
+model and size and a bar of its partitions, each as wide as its share of the
+disk and named for what it holds, **System**, **Data mirror · 1.24 TB used**,
+**Swap**, **Not used yet**. Room after the last partition is drawn hatched. A
+partition too narrow for words is a number, and the key under the bar says what
+the numbers are. The pill at the right is the disk's health: **Healthy**,
+**Wearing**, **Failing**, or **Not checked** for a disk that does not report
+one, as a USB stick or a virtual disk does. A row is a link to the disk's own
+page.
+
+A disk's page has the facts of one disk: its model and serial number, in full,
+since you need it to find the disk in a case; what it is used for, **Half of the
+data mirror (Btrfs RAID1)**; how old it is, **2 years 6 months powered on
+(21,804 hours)**; its temperature; its counts of moved and waiting sectors (and
+media errors and the share of its rated writes for an NVMe drive); how many read
+errors the last scrub fixed; and when its last full check was, which only an
+administrator reads. **Check now** reads the disk and shows every number it
+reports in a table under the facts, with **Show the numbers as diskhealth
+prints them** under that; it runs `diskhealth`.
+
+**Scrub the mirror** reads every block of the volume and mends one that does not
+read from the other copy; for a volume of one disk the button is **Check every
+block**, which finds a bad block and cannot mend it. The page says what it asks
+for before it is pressed: **This reads every block of 1.24 TB: about 3 hours.
+The machine stays usable, a little slower.** The estimate is from how long the
+last scrub took. A scrub is a task: its button says **Scrubbing… 41%** and
+opens the task in the Tasks drawer, and when it is done the facts say how many
+read errors it fixed.
+
+On a phone the disks are a stack of cards with their bars as wide as the page,
+and an opened disk is a view of its own with **Back to the disks** over it. The
+buttons are as wide as the page, 44 pixels tall at least.
+
+### When a disk wears
+
+A disk that begins to fail says so before it does: the count of sectors it has
+moved to spares rises, or sectors wait to be moved. The machine watches the
+counts, and when one rises the page says so at the top and the Overview lists
+it: **sdb moved 8 worn-out sectors to spares. It still works and the mirror is
+healthy, but a count that grows is often the first sign a disk is wearing out.
+Keep backups current and have a replacement ready.** On a disk that is in no
+mirror, the next sentence is that its files have no second copy on this machine.
+**Check sdb now** reads the disk and shows the numbers. A few moved sectors on
+an old disk can stay as they are for years; a count that keeps rising, or a
+disk that says it is **failing**, is the time to replace it.
+
+**Replace this disk…**, and **How to replace a mirror disk** in the banner, show
+the steps and their commands in a window, each with **Copy**. The page runs
+none of them: each can erase a disk if a wrong name is typed, so you type them
+at a terminal, as an administrator, and check the names against the list of
+disks on the page first.
+
+1. Look after the disk that is left. While a disk is missing or failing, the
+   other holds the only full copy. Copy what matters off it if you can.
+2. Put the new disk in. It shows on the page as **Not used yet**, and it must be
+   as big as the disk it replaces, or bigger.
+3. Give it partitions like the old disk's: `elevate rdisk -l sda` shows the
+   table of the disk that is left, and `elevate rdisk sdd` makes the new
+   disk's.
+4. Rebuild onto the new partition: `elevate replace start DEVID
+   /devices/sdd1 /volumes/data`, where `DEVID` is the missing disk's device
+   number, 1 or 2, or its device, such as `/devices/sdb1`, when it is still
+   there. It prints when the new disk holds everything, and the machine stays
+   usable meanwhile.
+5. If the volume is the system's own mirror, put the start-up code on the new
+   disk too: `elevate rgrub-setup sdd`.
+6. Press **Scrub the mirror**, to check every block of the new copy.
+
+**Use a new disk…**, in the head of the page, gives the steps for a disk that is
+new to the machine: to make a volume of its own, `elevate rdisk sdd` and
+`elevate mkfs-btrfs -L NAME /devices/sdd1`; to make a mirror of an existing
+volume, `elevate device add /devices/sdd1 /volumes/data` and then `elevate
+balance start -dconvert=raid1 -mconvert=raid1 /volumes/data`, which turns the
+data and the metadata into two copies. A volume that is being made a mirror this
+way says **Changing layout** until the balance ends, since some blocks have no
+second copy yet. When the page for backup places is
+there, a disk with nothing on it has **Use it for backups**.
+
+### Growing a disk
+
+A disk can be bigger than the partition on it: a cloud machine's disk made
+larger in the provider's panel, or a virtual disk made larger by the host. When
+the room after a disk's last partition is more than 1 percent of the disk and
+that partition is Btrfs, its page says so: **This disk has 20 GB after its last
+partition, which the data volume can grow into.** **Grow into it** makes the
+partition reach the end of the disk and the filesystem reach the end of the
+partition, while the volume stays in use. It runs `elevate
+storage grow sda`, which is `rdisk --grow` and `device resize max` together;
+with **Show commands** on, the command is under the button. The page reads the
+disks again and the room is gone. Nothing shrinks a partition from the page.
+
+### The log's own space
+
+The last card is the system's log, which is kept on the machine and is bounded
+by limits so that it never fills a disk. It says how much room it takes and what
+it keeps: **The system's log takes 1.2 GB in 92 files, 80 MB of it the audit
+log. It keeps 90 days of records, and at most 4 GB or 10 percent of its disk,
+whichever is less; the audit log keeps a year.** Only an administrator sees the
+size, which the log's own service reports to root alone: a locked administrator
+sees **Unlock to see the log's size.** and **Unlock**, and anyone else
+**Administrators see the log's size.** The card is read when the page opens, when
+the console is unlocked or locked and after a change, and not on a timer.
+
+**Change…** opens a form with the four limits:
+
+- **Keep records for**, in days, 1 to 3650, or empty for no limit.
+- **Take at most**, a size such as `4G` or `500M`, or empty for no limit. `G`
+  counts in 1024s, as the log does; `GB` counts in thousands.
+- **Take at most**, in percent of the disk the log is on, 1 to 100, or empty for
+  no limit.
+- **Keep the audit log for**, in days, 30 to 3650, or empty for no limit.
+
+A number that is out of range is said under its field and nothing is sent. The
+form sends only the fields you changed, and the command it runs is under it with
+**Show commands** on; `elevate logtrim set` makes the same change at a terminal.
+The limits are kept in `/system/settings/log`, which log(5) describes. The log
+trims itself when a day begins and after each 64 MiB it writes; **Trim now**
+trims it to its limits at once, as `elevate logtrim` does at a terminal, when
+you want the room back before then.
+
+## Snapshots and backups
+
+**Snapshots and backups**, in the list of pages, shows what keeps the machine's
+files safe: the snapshots on the machine itself, and the backups that copy them
+somewhere else. It says which of the places the machine keeps data in have a
+snapshot and a copy off the machine, lists the snapshots by day, and lists the
+places the backups go to. Anyone who signs in to the console sees it, except
+what a backup place holds, which is for administrators, and anyone can bring
+back a file of their own from a snapshot. Looking after the backups is for
+administrators, who unlock the console first: taking a snapshot now, adding a
+backup place, backing up and checking now, restoring from a backup, and
+removing a place. The page is at `/snapshots`; `/snapshots/backups` is the page
+scrolled to the backup places, `/snapshots/backups/nas` opens the place `nas`
+beside the list, and `/snapshots/browse` is a snapshot's folder. It reads `snap
+list` and `backup list` and runs `snap` and `backup` (snap(1) and backup(8)).
+"Updates, snapshots, backups and recovery" says what the commands do.
+
+### What is protected
+
+At the top of the page is a banner when a backup needs a look, the worst first;
+a machine whose backups are in order has none. "When a backup is overdue or
+failed" says what each banner means.
+
+**What is protected** has a row for each place the machine keeps data in:
+**People's files** (`/users`), **Shared folders and websites** (`/shared`),
+**Settings** (`/system/settings`), and **Apps and their data** when a backup
+place holds them. Each row says three things in one look:
+
+| The column | What it says |
+| --- | --- |
+| **Snapshots on this server** | **Daily · 3:02 AM**, the rule that made the newest snapshot and its time; **None yet: the first is made within the hour** for a place that waits for its first; **Not made** for a place that the snapshot service does not see |
+| **Copy off this server** | Each backup place that holds the data, with the day of its last good backup, **nas · Nov 10**, in red when it failed and warm when it is overdue; **Not copied off this server** when none does |
+| **Last restore check** | The newest check that restored the backups and compared them, **Nov 11, passed**; **Never**, with **Check now**; or **failed** |
+
+A snapshot lives on the same disk as the files it keeps. It brings back a file
+that was deleted or changed, but a disk that is lost takes the snapshots with
+it, so the page does not call a place protected for having one: the copy off
+this server is what does that. A place that the snapshot service does not see
+is told under the table, **snap skips /shared**, with the command that adds it,
+`elevate service edit snap`. The Overview lists the same things: a backup that
+failed or is overdue, a check that failed, and **No snapshots of /shared** when
+the schedule leaves out `/users` or `/shared`.
+
+### Bringing back a file
+
+**Snapshots** lists them newest first by day, under **Today**, **Yesterday**
+and **Earlier**. A row is a time, why it is kept, and a **Browse** for each
+place the snapshot covers. **Earlier** is a line that says how many, **14 daily
+and 4 weekly**, until you press **Show all**. The heading says the rule, **kept
+daily for 7 days and weekly for 4 weeks**. A snapshot with a name is kept until
+someone deletes it. One that came from a backup says so, **Restored from nas:
+its backup of Nov 10**, and the one made before an update says **Before the
+last update: the settings as they were.**
+
+**Browse** opens a folder of a snapshot as it was, with the folders above it as
+links and each entry's size. Beside each is how it compares with the same path
+now: **changed since** or **deleted since**, and nothing for what is the same.
+A folder opens by its name. Tick the files and folders you want and press
+**Restore N chosen**, up to 100 at a time. Each comes back beside the current
+one with the snapshot's time in its name: `report.odt` becomes `report (Nov 13
+3:02 AM).odt`, a folder `photos (Nov 13 3:02 AM)`. Nothing is overwritten, so a
+file that still exists is kept as it is and you choose between the two. The
+time is on your clock, in the time zone of your account, and the page lists the
+paths that it made. A folder that holds more than the page shows says
+**Showing the first 2,000 entries. Open a folder below to see fewer.**
+
+What you see in a snapshot is what you could see then: the page browses and
+restores as you. An administrator whose console is unlocked sees every file of
+a folder outside their own home, and restores as the administrator, which is
+how one account's file is brought back for another. While the console is
+locked, an administrator is told **Some files here may be hidden while the
+console is locked**, with **Unlock to see every file**. A reader restores files
+of their own and sees no button that changes anything else. At a terminal,
+`snap restore` brings files back from a snapshot (snap(1)).
+
+**Take a snapshot now**, in the head of the page, is for an administrator. It
+opens a window with a box for each place, all ticked, and an optional name; the
+button **Take a snapshot** makes one of each place that is ticked and says
+which were made. A snapshot with a name is kept until someone deletes it, so
+give one only for a reason, such as `before-the-move`. A name that looks like a
+time is refused, since the snapshot service gives those itself, and so is one
+that starts with a dot or holds a `/`. The snapshot service makes its own each
+day, so the button is for the moment before a change. With **Show commands**
+on, the window shows the command it runs, `snap create --name NAME PLACE`.
+
+### Backup places and the recovery key
+
+**Backup places** is a table of where the backups go: the place's name and where
+it is, **SSH to 192.168.1.20** or **USB disk BACKUP**, how often, the day of
+the last good backup, and how it is now. Now is **OK**, **failed**, **3 days
+overdue**, **check failed**, **Waiting for the first backup**, **Not yet** for
+a place that is backed up by hand and has no backup, or **Backing up… 41%**
+while one runs. A place's name opens it beside the list. It shows:
+
+- **Holds** and **Keeps**: the places it copies, and how much it keeps, **3
+  chains of up to 7 backups** or **7 daily, 4 weekly, 12 monthly**.
+- **Restore check**: when the newest backups were last restored and compared,
+  with **Check now** for an administrator.
+- **Backups there**: the times of the backups the place holds, for each place
+  it copies, newest first, each with **Restore this…**. An administrator whose
+  console is unlocked sees them, and a reader is told that administrators do.
+- **Recovery key**: when it was shown, **Shown once on Oct 2**, with **Show it
+  again** for an administrator.
+
+An administrator also has **Back up now**, **Restore files…**, **Restore the
+whole machine…** (which goes to Move to new hardware) and **Remove…**. **Back up
+now** and **Check now** are tasks: the button says how far it is, and the Tasks
+drawer follows it.
+
+**Add a backup place…** asks where the backups go:
+
+- **A plugged-in disk**: a USB disk or another removable disk that is mounted
+  under `/volumes`. It is offered only when one is plugged in, and the backups
+  go in the folder `dukovo-backup` on it. A disk that another place already
+  uses is left out.
+- **An SSH server**: another machine, such as a NAS, written as
+  `backup@192.168.1.20:/srv/dukovo`, or as `ssh://user@host:2222/folder` for
+  another port. The server has to accept this machine's key first, which the
+  page shows with **Copy**: put it in the account's `authorized_keys` on the
+  server. The place is added only when the machine can write there, so a
+  server that does not answer is refused with the reason.
+- **S3 storage**: added at a terminal for now, since the command reads its keys
+  from the environment. The page gives the command, `elevate backup add NAME
+  s3://HOST/BUCKET`.
+
+Then a name, of 1 to 32 letters, digits, `-` and `_`, which is how the place is
+named on the page and in commands (the page suggests one from the disk's label
+or the server's name); **Back up** every day, every week or by hand, which a
+disk starts as; and **Check by restoring** every week, every month or never.
+**More** has how the backups are kept: as Btrfs streams, which suit a Dukovo
+machine or a disk, or as a restic repository, which suits a share that a NAS
+keeps. With **Show commands** on, the command is under the form.
+
+Adding a place makes its recovery key, which reads its backups on any machine,
+and the page shows it once, in a window named **Recovery key for nas**, with
+**Copy** and **Save as file**. Keep it somewhere other than this machine:
+without it and this machine, the backups cannot be read, and with it, anyone
+who has the backups can read them. The console does not keep the key. It is in
+the window until you press **I have kept it**, and then it is gone from the
+page, the console's log and everything the browser stored. The window then
+asks **Back up to nas now?**, since the first backup sends everything and takes
+a while; it runs as a task, and you can leave the page meanwhile.
+
+**Show it again** asks the machine for the key once more, with the console
+unlocked, and shows it in the same window. The page asks for it only when you
+press the button, and never again by itself, since the answer is a secret.
+**Restore files…** asks which place and which time, and has the backup received
+into the snapshots of that place as `restored-TIME`. Nothing is overwritten.
+When it is done the page shows that snapshot, and you pick the files you want
+back as above. **Remove…** forgets the place and its key and leaves the backups
+where they are. Only the recovery key reads them then, so show it again first
+if you have not kept a copy.
+
+### When a backup is overdue or failed
+
+The banner says what is wrong in the words of the command, and what still keeps
+the files:
+
+| The banner says | It means, and what to do |
+| --- | --- |
+| **The last backup to nas failed: …** | The command's own reason follows: a server that did not answer, a disk that is not plugged in, a disk that is full. The banner says when the last good backup was, and whether the snapshots on this server are current: if they are, files changed since can still be brought back, but nothing is outside the machine. Put the cause right and press **Back up now**. **Back up to a plugged-in disk instead…** is there when one is plugged in |
+| **Backups to nas are 3 days overdue.** | The days since the last good backup that backup(8) counts as overdue. The banner is warm from the first overdue day and red from twice the days allowed, 3 days for a place backed up every day and 14 for one backed up every week. Press **Back up now** |
+| **Restoring nas's newest backups to check them failed: …** | The check can fail for a reason of its own, such as a full disk. The backups may still be good. Press **Check now** to try again |
+| **A whole-machine restore from nas is staged for the next start.** | **Open Move to new hardware** is where it is cancelled before the machine starts again |
+
+A reader sees the same banners, with **An administrator can back up now.** in
+place of the buttons that back up.
+
+On a phone, **What is protected** is a card for each place, the snapshots are
+one column with **Browse** as a button, and a folder is a list with a box for
+each row and **Restore N chosen** fixed at the foot of the page. The buttons
+are 44 pixels tall at least.
+
+## Move to new hardware
+
+**Move to new hardware**, in the list of pages, takes the backups of one
+machine to this one. When a computer is lost or replaced, install Dukovo on the
+new one, plug in the disk that holds the backups (or have the backup place of
+this machine reach them), and this page brings the old machine's name,
+accounts and passwords, settings, apps and files across. Nothing on this machine
+changes until it restarts, and you can cancel until then. The page is for
+administrators, who unlock the console first; a reader who opens it is told so.
+It is at `/move`; `/move?from=nas` opens at the key with the backup place `nas`
+chosen, and `/move?source=FOLDER` with a folder of a machine's backups. A
+machine that was just installed offers it in **Finish setting up**, as **Bring
+everything from your old machine**, with **Continue on its page**, and a backup
+place has **Restore the whole machine…**. The page reads `backup find` and
+`backup restore --machine --plan` and runs `backup restore --machine`
+(backup(8)); "Restoring a whole machine", in "Updates, snapshots, backups and
+recovery", says what the command does.
+
+The page has four steps, a list with numbers and a mark on each that is done,
+and the open one beside it. A step opens when the ones before it are done, and
+you can go back to one that is done and change what you chose.
+
+### Find the backup
+
+The first step lists the backups it can use: each machine's backups on a
+plugged-in disk, **USB disk BACKUP** with **duke-nas, today 1:30 AM** under it
+(the machine and the time of its newest backup), the backup places this machine
+has (a machine that was just installed has none), and **A folder…** for a path
+that you type, such as `/volumes/BACKUP/dukovo-backup/duke-nas`. The disks are
+found under `/volumes` by `backup find`, which an administrator's unlocked
+console runs; a locked console says **Unlock the console to look for backups on
+the plugged-in disks**, with **Unlock**, and the places are listed meanwhile.
+With nothing plugged in the page says **No backups found on the plugged-in
+disks**: plug the disk in and press **Look again**. **Continue** with nothing
+chosen says **Choose the backup to move from.**
+
+### Unlock it
+
+The backups are encrypted, and only their recovery key opens them: the key that
+was shown when the backup place was added (see "Backup places and the recovery
+key"). Give it in one of two ways:
+
+- **A key file on a plugged-in disk**, which `backup find` lists as **Recovery
+  key from the KEYS stick**. The page chooses one by itself when it is named
+  after the machine, `duke-nas-recovery.key`, or was made for the backup place
+  you chose.
+- **Typed or pasted** into **Recovery key**. A key that is typed wins, and
+  clears the choice of a file: the page sends one of the two and never both.
+
+**Unlock it** reads the record of the backups. A key that is not theirs is
+**This key does not open these backups** (BAK-103), under the field, and the
+field is empty again. Backups that a newer Dukovo made are refused too
+(BAK-107): update this machine, or restore on one that is current.
+
+A typed key is kept in its field and nowhere else. It goes in the body of the
+request that reads the backups and the one that stages the restore, and never
+to the Show command panel, whose command has an empty key in its place. The page
+says so under the field: after **Unlock it** has taken the key the field is
+empty, so **Stage it** asks for it again, unless you chose a key file, which is
+only a path.
+
+### Check what changes
+
+Once the backups are open, the page shows what the restore does, in three cards.
+
+**What comes across** has a row for each of:
+
+| The row | What it says |
+| --- | --- |
+| **Name, accounts and passwords** | **duke-nas · owner and helper, with their passkeys and SSH keys**; backups made by an earlier release do not name the accounts, and say **its accounts** |
+| **Settings** | `/system/settings`, and **with 1 change for the new network port** when a choice below changes it |
+| **Apps** | **6 apps at the same versions, each with the permissions it was given** |
+| **Files** | `/users` and `/shared` with their size as the backups record it, **Comes across**, or **Does not fit** |
+| **Files on other disks** | Only when the old machine backed up a disk of its own, such as `/volumes/PHOTOS`: **Restored beside**, as a snapshot on this machine's disk of the same name when it has one; otherwise it stays in the backups |
+| **Older snapshots** | **Not copied**: they stay in the backups, and this machine starts its own |
+
+**Differences in the hardware** compares the old machine with this one. Each
+row has a word that says whether anything is asked of you:
+
+| The row | What it says |
+| --- | --- |
+| **Network ports** (**1 choice**) | The cards the old machine had and the cards this one has. For each old card that had fixed addresses there is a choice: **Give it duke-nas's address, 192.168.1.12, fixed** on the card the page pairs it with (by order, and you may pick another), or **Let it get an address automatically**. A card that is left to ask gets its address from the network, which is safe. Two old cards cannot take one port, and the page says so. A firewall rule that names a card this machine will not have is listed: **The firewall rule "deny ping on net1" names a port this machine does not have, so it does nothing here.** |
+| **Disks** (**Fits**, **No mirror** or **Does not fit**) | What the old machine kept its data on, a mirror of two 2 TB disks, what this machine has, and whether the files fit, with how much is to spare. **No mirror** says a disk that fails loses the changes since the last backup, and where this console has Storage, how to add a disk |
+| **Serial console** (**Plug it in**) | The old machine sent its console to a USB serial adapter and this one has none: plug the same adapter in |
+| **Processor and graphics** (**Nothing to change**) | The two models, or the one |
+
+Backups made before Dukovo kept the machine's hardware with them (a record of
+format 1) have no such rows. The page says **These backups were made before
+Dukovo kept the machine's hardware with them, so the differences cannot be
+shown**, and still offers each old card's address, from the backup's network
+settings alone. A choice is read as soon as you make it: with a key file the
+backups are read again with it, so that what is said of the firewall follows;
+with a typed key, which is gone from the page, the choices are kept and go to
+**Stage it** as they are.
+
+**After the restart** says what happens: **Turn the old duke-nas off before this
+machine restarts**, in red when its fixed address is kept, since otherwise two
+machines answer as duke-nas and both run the nightly backups; that the services
+start with duke-nas's settings and the console checks each one and each website,
+and lists what fails a check on the Overview with a way to fix or undo it; and
+that this fresh install is kept, read-only, in `/snapshots/machine-restore`
+until you remove it. It says where to open the console then, `https://duke-nas.local:9090/`
+and, when a fixed address is kept, that address too, and to sign in as one of
+duke-nas's administrators. **The same as these commands** is the Show command
+panel for **Stage it** with your choices, and the command that restarts.
+
+### Restart to finish
+
+**Stage it** reads the old machine's files into a place that this machine
+starts from. It is a task, **Step 2 of 5: receiving /users**, and takes as long as
+reading the files takes; the Tasks drawer follows it, and you can leave the page
+meanwhile. It is off, with the reason under it, when the files do not fit (**The
+files need 1.24 TB and this machine has 900 GB free**), when two old cards were
+given one port, and when a restore is staged already. A task that fails says why
+and **Nothing is staged**: what it received is removed.
+
+When it is done the step says **Staged from nas. Nothing changes until this
+machine restarts, and you can cancel until then.** with **Cancel**, which takes
+what was staged away and leaves the machine as it is. A restore that was staged
+at a terminal, or in another tab, is shown the same way when the page opens,
+with **Stage it** off. A second `backup restore --machine` is refused with
+BAK-104, and leaves the first as it was: when another tab staged one while this
+page still offered **Stage it**, its task fails that way, and the page shows the
+one staged first, with **Cancel**. To finish, restart the machine. The console has no button for that yet:
+the page gives `elevate reboot` in a box with **Copy**, to type at a terminal
+(**Terminal** in the list of pages opens one). At the restart, before any
+service starts, the staged places take the place of the new install's, and what
+they replaced is kept in `/snapshots/machine-restore`. The console is then at
+the old machine's name.
+
+At a terminal the same four steps are:
+
+```sh
+elevate backup find
+elevate backup restore --machine --plan --key FILE SOURCE
+elevate backup restore --machine --key FILE SOURCE
+elevate backup restore --machine --cancel
+```
+
+`--plan` reads the backups and says what would change, and changes nothing;
+`--json` gives what the page reads. `--card OLD=NEW` or `--card
+OLD=automatic`, with the MACs of the cards, is a network choice.
+
+On a phone the page is one column: the steps are a list above the open step,
+the choices are cards the width of the screen, buttons are 44 pixels tall at
+least and fill the width, and the command box scrolls sideways inside itself.
 
 ## The terminal
 

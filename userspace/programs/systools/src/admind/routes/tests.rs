@@ -27,6 +27,7 @@ mod act;
 mod changes;
 mod follow;
 mod fuzz;
+mod secrets;
 mod tasks;
 mod terminals;
 mod trials;
@@ -104,6 +105,9 @@ fn worker_answers(method: &str, params: &Value, calls: &Calls) -> Result<Value, 
         "preferences-change" => Ok(preferences(params)),
         "run" if params["argv"] == json!(["service", "list", "--json"]) => {
             Ok(json!({ "status": 0, "output": "[{\"name\":\"nginx\"}]\n", "errors": "" }))
+        }
+        "run" if params["argv"] == json!(["passwd"]) => {
+            Ok(json!({ "status": 0, "output": "The password is changed.\n", "errors": "" }))
         }
         "run" if params["argv"][0] == "probe" => {
             Ok(probe_answer(params["argv"][1].as_str().unwrap_or_default(), calls))
@@ -243,13 +247,21 @@ fn token_answer(hex: &str) -> Option<&'static str> {
 /// refused as authd refuses one its scopes do not name; `broken` fails
 /// with a service's error ID; `/system/commands/echo` writes its words
 /// and ends with the status 3; anything else writes its words, or for a
-/// command asked for JSON `{"ran": WORDS}`, and ends well. The command is noted in `calls` as a call of `elevate`, so that a
-/// test sees it among the worker's.
+/// command asked for JSON `{"ran": WORDS}`, and ends well; `lab-unlock`
+/// and `lab-key` print JSON. The command is noted in `calls` as a call of
+/// `elevate`, so that a test sees it among the worker's, and what it read
+/// on its input, if anything, as a call of `elevate-input`: admind has
+/// written it, and closed the pipe, before it asks authd.
 fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
-    use std::io::Write;
+    use std::io::{Read, Write};
     let fields: Vec<String> = (0..asked.fields.len()).map(|at| asked.text(at)).collect();
     let command = &fields[fields.iter().position(|field| field == "--").unwrap() + 1..];
     calls.lock().unwrap().push(("elevate".into(), json!(command)));
+    let mut input = String::new();
+    std::fs::File::from(fds[0].try_clone().unwrap()).read_to_string(&mut input).unwrap();
+    if !input.is_empty() {
+        calls.lock().unwrap().push(("elevate-input".into(), json!(input)));
+    }
     if command[0] == "/system/commands/locked" {
         return vec!["no the session is locked: unlock it to make changes".into()];
     }
@@ -264,6 +276,10 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
     }
     if command[0] == "lab-log" {
         output.write_all(b"{\"n\": 1}\n\n{\"n\": 2}\n").unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
+    if command[0] == "lab-unlock" || command[0] == "lab-key" {
+        output.write_all(b"{\"read\": true}\n").unwrap();
         return vec!["ok 4321".into(), "ended 0".into()];
     }
     if command[0] == "admin" && command.get(1).is_some_and(|word| word == "lab-steps") {
@@ -542,6 +558,22 @@ async fn send_from(world: &World, peer: &str, req: Req) -> Answered {
 
 async fn send(world: &World, req: Req) -> Answered {
     send_from(world, PEER, req).await
+}
+
+/// A stream of events as `session` opens it: each call of the closure
+/// gives the next event's bytes as text, and the first, the unlock, is
+/// taken.
+async fn tab(world: &World, session: &Session) -> impl AsyncFnMut() -> String {
+    let request = build(get("/api/1/events").by(session));
+    let Ok(response) =
+        handle(Rc::clone(&world.console.shared), PEER.parse().unwrap(), request).await;
+    let mut body = response.into_body();
+    let mut next = async move || {
+        let frame = tokio::time::timeout(Duration::from_secs(5), body.frame()).await.unwrap();
+        String::from_utf8(frame.unwrap().unwrap().into_data().unwrap().to_vec()).unwrap()
+    };
+    assert!(next().await.starts_with("event: unlock"));
+    next
 }
 
 /// A signed-in session, as its browser holds it.

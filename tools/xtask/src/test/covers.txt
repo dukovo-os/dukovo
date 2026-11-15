@@ -41,6 +41,14 @@ admin-actions userspace/programs/systools/src/cert/ userspace/programs/systools/
 admin-actions userspace/programs/systools/src/servicefiles.rs tools/xtask/src/test/console_client.rs ports/netcat/
 admin-actions userspace/spark/src/supervisor/read.rs userspace/programs/systools/src/power.rs
 admin-actions userspace/programs/systools/src/admin_settings.rs userspace/programs/systools/src/settings_edit.rs
+admin-backups userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-backups userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-backups userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/ userspace/programs/systools/src/backup_errors.rs
+admin-backups userspace/programs/systools/src/snap.rs userspace/programs/systools/src/snap/ userspace/programs/systools/src/subvolume.rs
+admin-backups userspace/programs/systools/src/subvolume/ userspace/programs/systools/src/log.rs userspace/programs/systools/src/logd.rs
+admin-backups userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/backup.toml
+admin-backups kernel/fs/btrfs/ kernel/fs/exfat/ ports/uutils-coreutils/ ports/netcat/
+admin-backups tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
 admin-journal userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_lab.rs userspace/programs/systools/src/admin_put_back.rs
 admin-journal userspace/programs/systools/src/admin_put_back/ userspace/programs/systools/src/admin_export.rs ports/git/
 admin-journal userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
@@ -53,6 +61,25 @@ admin-logs userspace/programs/systools/src/authd/ userspace/programs/accounts/ u
 admin-logs userspace/programs/systools/src/log.rs userspace/programs/systools/src/logd.rs userspace/programs/systools/src/logger.rs
 admin-logs userspace/defaults/admin.toml userspace/defaults/log userspace/defaults/spark/services/admind.toml
 admin-logs userspace/programs/nukesh/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
+admin-move userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-move userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-move userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/ userspace/programs/systools/src/backup_errors.rs
+admin-move userspace/programs/systools/src/network.rs userspace/programs/systools/src/network/ userspace/programs/systools/src/netd.rs
+admin-move userspace/programs/systools/src/snap.rs userspace/programs/systools/src/subvolume.rs userspace/programs/systools/src/subvolume/
+admin-move userspace/programs/systools/src/log.rs userspace/programs/systools/src/logd.rs userspace/programs/systools/src/bundled.rs
+admin-move userspace/spark/src/main.rs userspace/programs/slots/src/machine.rs kernel/fs/btrfs/ kernel/fs/exfat/
+admin-move userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/backup.toml
+admin-move tools/xtask/src/test/console_client.rs ports/uutils-coreutils/ ports/netcat/
+admin-storage userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-storage userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-storage userspace/programs/systools/src/storage.rs userspace/programs/systools/src/storage/ userspace/programs/systools/src/disk_errors.rs
+admin-storage userspace/programs/systools/src/diskhealth.rs userspace/programs/systools/src/scrub.rs userspace/programs/systools/src/logtrim.rs
+admin-storage userspace/programs/systools/src/logd.rs userspace/programs/systools/src/device.rs userspace/programs/systools/src/rdisk.rs
+admin-storage userspace/programs/systools/src/probe.rs userspace/programs/systools/src/df.rs userspace/programs/systools/src/blkid.rs
+admin-storage userspace/programs/systools/src/lsblk.rs userspace/programs/disk/src/table.rs userspace/defaults/log
+admin-storage kernel/fs/block/ kernel/fs/btrfs/ kernel/radix/src/fs/sysfs.rs
+admin-storage userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/diskhealth.toml
+admin-storage tools/xtask/src/test/console_client.rs ports/netcat/
 admin-terminal userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/admin_settings.rs
 admin-terminal userspace/programs/systools/src/authd.rs userspace/programs/systools/src/authd/ userspace/programs/accounts/
 admin-terminal userspace/programs/systools/src/sessions.rs userspace/programs/systools/src/last.rs userspace/programs/systools/src/log.rs

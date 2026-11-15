@@ -20,10 +20,14 @@
 // connections to the console, which HTTP/2 lets each tab's event stream and
 // reads use together).
 //
+// Every icon of the navigation is drawn: its mask image is a file under
+// /icons/ that the browser asked for and the console serves as an image.
+//
 // Each look is the console's own: dark, light, high contrast, forced colours
 // and less motion, each checked by axe (console.mjs's lookAll). Each engine
 // has an administrator of its own, and there is one reader, which shell.toml
-// made, so no script needs the lab's password.
+// made, so no script needs the lab's password. The header's chip for a change
+// being tried is shell-trial.mjs's, run by later steps of shell.toml.
 //
 // The lab's admind has no short unlock time, so the warning two minutes
 // before the end is shown by answering one call for the session with fewer
@@ -149,11 +153,60 @@ async function landmarks(t, page, host) {
 async function navigation(t, page, session) {
   const names = (await navLinks(page)).map((text) => text.replace(/\s+/g, " ").trim());
   // The terminal's entry is there when the account has a terminal.
-  const pages = ["Overview", "Logs", "Reliability", "Networking", "Firewall", "Services"];
+  const pages = ["Overview", "Logs", "Reliability", "Storage", "Snapshots and backups", "Networking", "Firewall", "Accounts", "Services", "Security"];
   const wanted = session.terminal ? [...pages, "Terminal"] : pages;
   ensure(JSON.stringify(names) === JSON.stringify(wanted), `the navigation lists ${names.join(", ")}, not ${wanted.join(", ")}`);
   const current = page.getByRole("navigation", { name: "Pages" }).getByRole("link", { name: "Overview" });
   ensure((await current.getAttribute("aria-current")) === "page", "the navigation does not mark the Overview as the current page");
+}
+
+/**
+ * Every icon of the navigation is drawn: each is a mask whose image is a
+ * file under /icons/, which the browser has asked for and the console serves
+ * as an image. An icon whose file did not arrive has an empty mask and is not
+ * drawn at all, which no other check here would see.
+ */
+async function navigationIcons(t, page) {
+  const icons = await page.getByRole("navigation", { name: "Pages" }).locator("i.ic").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const style = getComputedStyle(node);
+      const mask = [style.maskImage, style.webkitMaskImage].find((value) => value && value !== "none") ?? "none";
+      const box = node.getBoundingClientRect();
+      return {
+        name: [...node.classList].find((word) => word.startsWith("ic-")) ?? node.className,
+        url: /url\(["']?([^"')]+)["']?\)/.exec(mask)?.[1] ?? "",
+        size: Math.min(box.width, box.height),
+      };
+    }),
+  );
+  const links = (await navLinks(page)).length;
+  ensure(icons.length >= links, `the navigation has ${links} links and draws ${icons.length} icons`);
+  for (const icon of icons) {
+    ensure(icon.url !== "", `the icon ${icon.name} has no mask image`);
+    ensure(new URL(icon.url, page.url()).pathname === `/icons/${icon.name.slice(3)}.svg`, `the icon ${icon.name} has the mask image ${icon.url}`);
+    ensure(icon.size > 0, `the icon ${icon.name} has no size`);
+  }
+  const urls = [...new Set(icons.map((icon) => new URL(icon.url, page.url()).href))];
+  // The browser asked for each file for the mask, before this check asks for it again.
+  const asked = await page.evaluate(() => performance.getEntriesByType("resource").map((entry) => entry.name));
+  const missing = urls.filter((url) => !asked.includes(url));
+  ensure(missing.length === 0, `the browser did not ask for the image of ${missing.join(", ")}`);
+  const served = await page.evaluate(
+    (wanted) =>
+      Promise.all(
+        wanted.map(async (url) => {
+          const answer = await fetch(url, { credentials: "same-origin" });
+          const text = await answer.text();
+          return { url, status: answer.status, type: answer.headers.get("content-type") ?? "", svg: text.includes("<svg") };
+        }),
+      ),
+    urls,
+  );
+  for (const file of served) {
+    ensure(file.status === 200, `${file.url} was answered ${file.status}`);
+    ensure(file.type.startsWith("image/svg+xml"), `${file.url} is served as ${file.type}`);
+    ensure(file.svg, `${file.url} is not a drawing`);
+  }
 }
 
 /** The skip link is the first thing the keys reach, shows when it has focus, and puts focus in the page. */
@@ -676,6 +729,7 @@ export default async function check(t) {
 
   await landmarks(t, page, session.host);
   await navigation(t, page, session);
+  await navigationIcons(t, page);
   await skipLink(t, page);
   await headerByKeys(t, page, session.host);
   await menus(t, page);

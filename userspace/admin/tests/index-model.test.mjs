@@ -55,11 +55,13 @@ const titles = (results) => results.map((one) => one.row.title);
 test('the pages a person may see are rows, with their children and sections, and the pages that are not shown are not', () => {
   const rows = pageRows(PAGES, admin);
   assert.deepEqual(rows.map((one) => one.title), [
-    'Overview', 'Logs', 'Reliability', 'Networking', 'Firewall',
+    'Overview', 'Logs', 'Reliability', 'Storage', 'Snapshots and backups', 'Snapshots and backups › Backups', 'Move to new hardware',
+    'Networking', 'Firewall', 'Accounts',
     'Set up this server',
     'Your account', 'Your account › Display', 'Your account › Time zone', 'Your account › Second step', 'Your account › API tokens',
     'Terminal', 'Terminal › Sessions', 'Terminal › Terminal settings', 'Terminal › Terminal keys',
     'Services', 'Services › Scheduled tasks',
+    'Security',
   ]);
   const terminal = rows.find((one) => one.title === 'Terminal › Terminal keys');
   assert.deepEqual(terminal, {
@@ -103,7 +105,7 @@ test('whether an address is a page that is registered and that this person may s
 
 test('each action admind lists is a row, with who runs it and an icon of its area', () => {
   const rows = actionRows(ACTIONS);
-  assert.equal(rows.length, 42);
+  assert.equal(rows.length, 69);
   const restart = rows.find((one) => one.key === 'action:service.restart');
   assert.deepEqual(restart, {
     key: 'action:service.restart', kind: 'action', group: ACTIONS_GROUP, title: 'Restart a service', detail: '',
@@ -122,6 +124,12 @@ test('each action admind lists is a row, with who runs it and an icon of its are
   assert.deepEqual([set.icon, set.change, set.elevated], ['network', true, true]);
   const dropped = rows.find((one) => one.key === 'action:firewall.dropped');
   assert.deepEqual([dropped.icon, dropped.change, dropped.elevated], ['firewall', false, true]);
+  const health = rows.find((one) => one.key === 'action:storage.health');
+  assert.deepEqual([health.icon, health.change, health.elevated], ['storage', false, true]);
+  const take = rows.find((one) => one.key === 'action:snapshots.take');
+  assert.deepEqual([take.icon, take.change], ['snapshots', true]);
+  const run = rows.find((one) => one.key === 'action:backups.run');
+  assert.deepEqual([run.icon, run.change, run.elevated], ['snapshots', true, true]);
   assert.equal(actionRows([{ id: 'lab.fail', title: 'Fail', area: 'lab', changes: true, runs: 'as-the-person' }])[0].icon, 'code');
   assert.deepEqual(actionRows([{ id: 5, title: 'x' }, { id: 'a' }, null]), [], 'a list that is not right gives no rows');
 });

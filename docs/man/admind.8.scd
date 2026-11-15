@@ -68,8 +68,9 @@ It serves at most 512 connections at once and 32 from one address (an
 IPv6 address counts by its /64). A client has 20 seconds from its
 connection for the TLS handshake and the head of its first request, which
 is longer than a browser keeps a connection it opened ahead and has not
-used. A head is at most 16 KiB and 64 headers, and a connection that sends
-no head for 60 seconds is closed.
+used. A head is at most 16 KiB and 64 headers, and a longer one is answered
+431 with no body, which the OpenAPI description gives for every operation;
+a connection that sends no head for 60 seconds is closed.
 
 A browser that offers HTTP/2 by ALPN gets it, and every tab's requests
 and event streams share its one connection (ADR 0519): at most 64
@@ -208,17 +209,21 @@ the address it would take away.
 
 An action's route is *GET* for a read and *POST* for a change, at an
 address under _/api/1_ that the list gives, such as
-*POST /api/1/services/{name}/restart*. The services' and the certificates'
+*POST /api/1/services/{name}/restart*. A read that takes a secret, or
+answers with one, is a *POST* too, with its arguments in the body, so that
+no secret is ever in an address (see *Secrets*, below). The services' and the certificates'
 actions are listed by *admin actions*, and the console's pages add their
 areas'. Besides the routes of the actions there are these:
 
 *GET /api/1/actions*
 	The list: a JSON array with an object for each action, with its *id*,
 	*title*, *area*, *changes*, *method*, *path*, *runs*, *long*,
-	*compares*, *errors*, *tests*, *input* and *examples*. *compares* is
-	true for a change whose *changed* is found by comparing what it moves
-	before and after it, and false for any other action. *input* is the JSON
-	Schema of the action's arguments. *admin actions --json* prints the
+	*compares*, *secret\_answer*, *errors*, *tests*, *input* and
+	*examples*. *compares* is true for a change whose *changed* is found by
+	comparing what it moves before and after it, and false for any other
+	action. *secret\_answer* is true for an action whose command prints a
+	secret. *input* is the JSON Schema of the action's arguments, in which
+	a secret is text marked *writeOnly*. *admin actions --json* prints the
 	same. A session or a token of any scope may ask.
 
 *POST /api/1/show*
@@ -227,7 +232,10 @@ areas'. Besides the routes of the actions there are these:
 	one line for Dukovo's shell and for sh, with *elevate* in front when it
 	runs as an administrator; *api*, a *curl* line for the same action
 	against the address the browser used; *ansible*, the YAML of one task;
-	and *files*, the paths a change writes. Any signed-in session may ask,
+	*typed*, what the command reads when it asks, such as "then the
+	password, typed when asked", or null; and *files*, the paths a change
+	writes. It needs no secret, and drops one it is sent: each is shown as
+	*(secret)*. Any signed-in session may ask,
 	locked or not, and so may a token whose scopes read the action's
 	area. *admin show* prints the same.
 
@@ -359,6 +367,134 @@ a token. The other three reads run as an administrator, as above, and
 	says it: an export of settings that did not change makes no commit
 	and answers *false*. Nothing puts an export back.
 
+The Snapshots page adds six (ADR 0461, ADR 0515), in the area *snapshots*.
+A path in them is absolute, of at most 4096 bytes, with no NUL and no *.*
+or *..* part, and a snapshot is named as *snap*(1) lists it. The reads and
+the person's restore run as the person, whose own rights decide what they
+see and may copy; the other three run as an administrator:
+
+*GET /api/1/snapshots* (*snapshots.list*, area *snapshots*)
+	*snap list [PLACE] --json*, as the person: the snapshots of the place
+	_place_, such as _/users_, or the count of each place's without it. A
+	place that fails is named on the command's error output and left out,
+	so the answer is its output after status 1 as well as after 0.
+
+*GET /api/1/snapshots/browse* (*snapshots.browse*, area *snapshots*)
+	*snap browse PLACE SNAPSHOT [FOLDER] --json*, as the person, who sees
+	what they could read when the snapshot was made. *folder* is the place
+	or within it, and the place's top without it. A snapshot that is not
+	there is BAK-105.
+
+*GET /api/1/snapshots/browse/all* (*snapshots.browse-all*, area *snapshots*)
+	The same command as an administrator, who sees any person's files.
+
+*POST /api/1/snapshots/take* (*snapshots.take*, area *snapshots*)
+	*snap create [--name NAME] PLACE*, as an administrator: a read-only
+	snapshot of _place_. *name* is a file name that does not start with a
+	dot and is not a time; its time is the name without one.
+
+*POST /api/1/snapshots/restore* (*snapshots.restore*, area *snapshots*)
+	*snap restore --from SNAPSHOT --beside LABEL PATH...*, as the person:
+	copies each of *paths*, 1 to 100 paths from */* a line, back from
+	*snapshot* beside the original, as *notes (label).txt*, and writes over
+	nothing. *label* is 1 to 40 printable characters with no */*. A
+	snapshot that is not there is BAK-105, and a file already there by the
+	name of the copy is BAK-106.
+
+*POST /api/1/snapshots/restore/all* (*snapshots.restore-all*, area *snapshots*)
+	The same command as an administrator, who copies back anyone's files,
+	into folders that other accounts own: *snap restore --beside* takes
+	the owner's rights for the copy before it creates anything.
+
+The Backups on that page add nine (ADR 0463, ADR 0515), in the area
+*backups*. A backup place's name is 1 to 32 letters, digits, *-* and *\_*,
+not starting with *-*, as *backup*(8) says, and a new one is not called
+*ssh-key*, the name of an address below. The list is the person's own; the
+other eight run as an administrator, since what a place holds and its
+recovery key are not a person's to read, and every change is the
+machine's. A name that no place has is BAK-101:
+
+*GET /api/1/backups* (*backups.list*, area *backups*)
+	*backup list --json*, as the person: the places the machine backs up
+	to, each with what it last did and when one is overdue, as backup(8)
+	says it.
+
+*GET /api/1/backups/ssh-key* (*backups.ssh-key*, area *backups*)
+	*backup ssh-key --json*: the machine's public key, which a server is
+	told to accept.
+
+*GET /api/1/backups/{name}* (*backups.show*, area *backups*)
+	*backup show NAME --json*: what the place holds, by place.
+
+*POST /api/1/backups/{name}/run* (*backups.run*, area *backups*)
+	*backup run --progress NAME*, a task: a round to the place now. A
+	round that is running is BAK-102.
+
+*POST /api/1/backups/{name}/verify* (*backups.verify*, area *backups*)
+	*backup verify --progress --restore NAME*, a task: reads every backup
+	of the place through and restores a sample. BAK-102 as above.
+
+*POST /api/1/backups/add* (*backups.add*, area *backups*)
+	*backup add [--format F] --every E --verify V NAME TO*: adds a place
+	at _to_, a folder from */* or an *ssh://* address. *every* is *day*,
+	*week* or *hand*, *verify* is *never*, *week* or *month*, and *format*
+	is *btrfs* or *restic*. It makes the place's recovery key and
+	prints it once, so it has *secret\_answer* set. *compares* is true: it
+	reads *backup list --json* before and after, for the place's *to*,
+	*format*, *every* and *verify*.
+
+*POST /api/1/backups/{name}/remove* (*backups.remove*, area *backups*)
+	*backup remove NAME*: takes the place away. The backups stay where
+	they are, and the recovery key is the only way to read them.
+	*compares* is true, as for *backups.add*.
+
+*POST /api/1/backups/{name}/key* (*backups.key*, area *backups*)
+	*backup key NAME --json*: the place's recovery key, shown to the one
+	who asked and kept nowhere. It is a *POST* with *secret\_answer* set,
+	though it changes nothing.
+
+*POST /api/1/backups/{name}/restore* (*backups.restore*, area *backups*)
+	*backup restore --progress --place PLACE [--at TIME] NAME*, a task:
+	receives the newest backup of _place_, or that of *at*, written
+	*YYYY-MM-DD-HHMMSS* as *backup show* lists it, as a read-only snapshot
+	beside the place's others. It writes over nothing. BAK-102 as above.
+
+The Move to new hardware page adds four (ADR 0464, ADR 0561), in the area
+*move*. They run as an administrator, since they read every machine's
+backups and write the places that the next start puts in place. *source*
+is the name of a backup place, or the path of a folder, such as
+_/volumes/OLD/dukovo-backup/lab-machine_, with no *.* or *..* part; the
+recovery key is given as *key\_file*, the path of a file, or as *key*,
+typed, and exactly one of them (ADM-125 for none or both). *key* is a
+secret (see *Secrets*): the command reads it from its standard input,
+and a task keeps it as *(secret)*. *at*, when given, is *YYYY-MM-DD-HHMMSS*,
+and *cards* is up to 8 lines of *OLD=NEW* or *OLD=automatic*, each the
+choice for a card of the old machine that *backup restore --card* takes:
+
+*GET /api/1/move/sources* (*move.find*, area *move*)
+	*backup find --json*: the machines' backups on the disks plugged in,
+	each with its *source*, *machine*, *newest* time and whether its
+	volume is *removable*, and the recovery keys found on them.
+
+*POST /api/1/move/plan* (*move.plan*, area *move*)
+	*backup restore --machine --plan --json*: what a restore of the
+	whole machine would bring across, the accounts, apps and places, the
+	space it takes (*needed*) and the space *free*, and how this
+	machine's hardware differs, with a *choice* for each network card. It
+	receives nothing and changes nothing, but takes a key, so it is a
+	*POST*. A key that does not open the backups is BAK-103, and backups
+	made by a newer Dukovo are BAK-107.
+
+*POST /api/1/move/stage* (*move.stage*, area *move*)
+	*backup restore --machine --progress*, a task: receives each place of
+	the machine for the next start to put in place, as *move.plan* says
+	it. A restore staged already is BAK-104, and BAK-103 and BAK-107 are
+	as above. *move.cancel* undoes it.
+
+*POST /api/1/move/cancel* (*move.cancel*, area *move*)
+	*backup restore --machine --cancel*: takes what was staged away,
+	before the next start has put it in place.
+
 An action's arguments are the parts of its address, such as _name_ above,
 and the members of the JSON object in its body, which may be empty,
 together. A name in both, a member the action does not have, or a body
@@ -439,6 +575,38 @@ by a token:
 
 *admin token add* and *admin token remove* (*admin*(8)) do the same from a
 terminal.
+
+## Secrets
+
+An action that takes a password or a key takes it as a secret argument
+(ADR 0561): one line of text, at most as long as its *maxLength*, with no
+NUL, marked *writeOnly* in the action's *input*. It is checked before
+anything else reads it (ADM-108 for one that is not text, ADM-125 for one
+that is empty, too long or not one line), and a refusal names the field,
+never what it holds. The secret is never one of the command's words: the
+command reads the action's secrets on its standard input, a line each in
+the order of the fields, and then the input's end, as from a script.
+An administrator's command gets that input from *authd*(8) as its first
+descriptor; a person's command gets it from their worker. The input is at
+most 4 KiB.
+
+Nothing admind keeps holds a secret. The journal and the audit log have
+the command's words, a task keeps its arguments with *(secret)* for each
+secret and drops the secret once the command has it, and *POST
+/api/1/show* shows each as *(secret)*. admind overwrites its own copy with
+zeros when it is done with it.
+
+An action whose command prints a secret, such as a new recovery key, has
+*secret\_answer* set in the list. It is a *POST*, never a task, and its
+Ansible task has *no\_log: true* and registers the answer as *answer*.
+Every answer of the API is *Cache-Control: no-store*.
+
+The *curl* line of *POST /api/1/show* takes each secret from a shell
+variable named after its field in capitals, such as *$PASSWORD*, inside a
+body in double quotes: a secret with a *"* or a *\\* in it needs the JSON
+escape in the variable (*\\"* or *\\\\*). Its Ansible task takes each from
+the playbook's variable of the field's name on *stdin*, with *no\_log:
+true*.
 
 ## API tokens
 
@@ -767,6 +935,23 @@ a signed-in session. It tells:
 	opens is told of the rows after it opened; the page reads the rest from
 	*GET /api/1/changes*.
 
+*event: trial*
+	*{"trials": [{"id": "firewall", "left\_ms": 41000, "page": "/firewall",
+	"what": "The firewall's rules"}]}*, the trials of settings that run:
+	each one's ID (*network*, *firewall*, *ssh*, *console* or
+	*service.NAME*), the milliseconds Spark has left before it undoes it
+	unless it is kept, the page that has its banner and, in words that
+	start a sentence, what is being tried. The list is every trial that
+	runs, and empty when none does. It is told to every stream of every
+	signed-in session, as a trial is the machine's and names no person.
+	A stream that opens while a trial runs is told at once. After that it
+	is told when a change begins a trial (once Spark has said how long the
+	trial has) or ends it (a keep or an undo), and at each of admind's
+	30-second rounds, which read Spark, so that a trial begun, kept or
+	undone elsewhere is told, and the time left is corrected while a trial
+	runs. The round that finds the last trial gone tells the empty list
+	once. The page counts down by its own clock between two tellings.
+
 A comment line, *: keep*, comes every 25 seconds, so that nothing between
 the browser and admind closes a stream that says nothing. A session with a
 stream open is not idle; once its last stream has closed and a minute has
@@ -1037,4 +1222,5 @@ not read, or it cannot listen.
 # SEE ALSO
 
 *admin*(8), *admin.toml*(5), *dukovo-admin*(7), *authd*(8), *blocking.toml*(5),
-*certd*(8), *cert*(8), *firewall*(8), *service*(8), *log*(1)
+*certd*(8), *cert*(8), *firewall*(8), *service*(8), *log*(1), *backup*(8),
+*snap*(1)

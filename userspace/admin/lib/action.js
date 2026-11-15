@@ -7,7 +7,8 @@
 //    is asked to unlock first ("Unlock to restart nginx");
 // 2. the call, and when the lock fell between, the dialog and the same call
 //    once more;
-// 3. 202: a notice that the task runs, and the Tasks drawer learns it;
+// 3. 202: a notice that the task runs, which goes when it ends, and the
+//    Tasks drawer learns it;
 // 4. 200: a notice from the action's words and `changed`;
 // 5. an error is put where it belongs by `problem`;
 // 6. no answer: never sent again by itself. A change that takes away the
@@ -43,8 +44,9 @@ function busyButton(button, words) {
  * signal and `more` of its options;
  * `actions()` gives the list of `GET /api/1/actions`; `session()` the
  * session; `askToUnlock(session, words)` is unlock.js's; `notice`,
- * `problem` and `openTasks` are the shell's; `learnTask(id)` tells the
- * Tasks drawer of a task; `isOffline()` says whether the server answers.
+ * `problem` and `openTasks` are the shell's; `learnTask(id, close)` tells
+ * the Tasks drawer of a task, with `close`, which closes the notice that it
+ * runs; `isOffline()` says whether the server answers.
  */
 export function makeRunner({
   request, actions, session, askToUnlock, notice, problem, openTasks, learnTask, isOffline,
@@ -115,8 +117,8 @@ export function makeRunner({
         return { ok: false, error, lost, sentAt };
       }
       if (answer && typeof answer.task === 'number') {
-        learnTask(answer.task);
-        notice(taskStarted(words, answer.task), { action: { label: 'Open Tasks', run: () => openTasks() } });
+        const close = notice(taskStarted(words, answer.task), { action: { label: 'Open Tasks', run: () => openTasks() } });
+        learnTask(answer.task, close);
         return { ok: true, task: answer.task, result: answer };
       }
       if (answer?.done) notice(changeDone(words, answer), { kind: 'ok' });

@@ -85,6 +85,9 @@ export function makeView(shell, route) {
 
     go: (path) => shell.go(path),
 
+    /** Opens the Tasks drawer with the log of the task `id` shown. */
+    openTask: (id) => shell.tasks.open(document.activeElement, id),
+
     /** The parts named `name` of every page that has one, called with `call(module, cx)`. */
     parts: (name, call) => shell.parts.collect(name, call),
 

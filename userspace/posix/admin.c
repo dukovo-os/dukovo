@@ -769,10 +769,11 @@ static void network(void) {
 
 // The storage tools on a disk and a mount that are not there, and on
 // tmpfs; the disk-health, storage-tools and smb boot tests run them on
-// disks.
+// disks. A name that is no disk is a mistake in diskhealth's command line
+// (DSK-101).
 static void storage(void) {
-	STATUS(2, "/bin/diskhealth", "nosuch");
-	STATUS(2, "/bin/diskhealth", "/devices/nosuch");
+	STATUS(1, "/bin/diskhealth", "nosuch");
+	STATUS(1, "/bin/diskhealth", "/devices/nosuch");
 	CONTAINS("Namespace", "/bin/nvme", "list");
 	STATUS(1, "/bin/nvme", "smart-log", "/devices/nosuch");
 	STATUS(1, "/bin/nvme", "smart-log", "/devices/null");

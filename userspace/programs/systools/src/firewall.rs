@@ -298,6 +298,14 @@ fn parse_settings(text: &str) -> (Vec<Line>, Vec<String>) {
     (lines, wrong)
 }
 
+/// The rules of the settings file's `text` that name the card they come
+/// by, each as the file writes it, with the card's name: what a restore
+/// onto other hardware says may do nothing there (backup(8)).
+pub(crate) fn rules_on_cards(text: &str) -> Vec<(String, String)> {
+    let (lines, _) = parse_settings(text);
+    rules(&lines).filter_map(|rule| Some((rule.to_string(), rule.on.clone()?))).collect()
+}
+
 /// The rules among `lines`.
 fn rules(lines: &[Line]) -> impl Iterator<Item = &Rule> {
     lines.iter().filter_map(|line| match line {

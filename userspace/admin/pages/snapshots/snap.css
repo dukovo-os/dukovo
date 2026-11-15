@@ -1,0 +1,128 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Snapshots and backups page (design 5): the banners, What is protected,
+ * the snapshots by day, the backup places, a snapshot's folder and the
+ * dialogs that add a place, take a snapshot and restore from a backup. The
+ * phone's layout is the same markup under the container query the shell
+ * uses (5.10). Same rules as console.css: rem, and px for borders and
+ * focus rings.
+ */
+.snap { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+.snap-banners { display: flex; flex-direction: column; gap: .571rem; }
+.snap-banners:empty { display: none; }
+.snap-errors:empty, .snap-note:empty, .snap-command:empty, .snap-result:empty { display: none; }
+
+/* Grey bars stand where words are read; they are still, and nothing reads them. */
+.snap-bar { display: block; height: .857rem; width: 100%; border-radius: .214rem; background: var(--sunken); }
+
+/* The cards that hold a table or a list run to their edges, under a head with a rule, as the board draws them. */
+.snap-prot, .snap-list { padding: 0; gap: 0; }
+.snap-prot > h2, .snap-list > h2 { padding: .857rem 1rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.snap-body { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.snap-prot > .snap-body, .snap-list > .snap-body { padding: 0; gap: 0; }
+.snap-prot .tbl-box { border: 0; border-radius: 0; }
+.snap-prot .snap-note, .snap-prot > .snap-body > p, .snap-list > .snap-body > p { padding: .714rem 1rem; margin: 0; }
+.snap-prot > .snap-body > .snap-bar, .snap-list > .snap-body > .snap-bar { margin: .857rem 1rem 0; width: auto; }
+.snap-prot > .snap-body > .snap-bar:last-child, .snap-list > .snap-body > .snap-bar:last-child { margin-bottom: .857rem; }
+.snap-note { display: flex; flex-direction: column; gap: .429rem; border-top: 1px solid var(--border); }
+.snap-note p { margin: 0; padding: 0; }
+.snap-stack { display: flex; flex-direction: column; gap: .286rem; align-items: flex-start; min-width: 0; }
+/* A link in a stack is 24px high at least, as two stacked places' links are touch targets. */
+.snap-stack a { display: inline-flex; align-items: center; min-height: 1.714rem; }
+.snap-action { display: flex; flex-direction: column; gap: .286rem; align-items: flex-start; min-width: 0; }
+.snap-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 27.143rem), 1fr)); align-items: start; }
+.snap-grid > * { min-width: 0; }
+
+/* The snapshots by day */
+.snap-group + .snap-group { border-top: 1px solid var(--border); }
+.snap-day { margin: 0; padding: .429rem 1rem; font: 700 .857rem var(--font-ui); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); background: var(--pane); border-bottom: 1px solid var(--border); }
+.snap-rows { list-style: none; margin: 0; padding: 0; }
+.snap-rows[hidden] { display: none; }
+.snap-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .286rem .857rem; padding: .643rem 1rem; border-bottom: 1px solid var(--border); }
+.snap-row:last-child { border-bottom: 0; }
+.snap-row .btns { grid-row: span 2; grid-column: 2; align-self: center; justify-content: flex-end; }
+.snap-row .small { grid-column: 1; overflow-wrap: anywhere; }
+.snap-when { overflow-wrap: anywhere; }
+.snap-earlier { display: flex; align-items: center; justify-content: space-between; gap: .857rem; margin: 0; padding: .643rem 1rem; }
+
+/* The backup places */
+.snap-places .snap-table .tbl { min-width: 0; }
+.snap-places .tbl td small { overflow-wrap: anywhere; }
+.snap-detail { display: flex; flex-direction: column; gap: .857rem; min-width: 0; }
+.snap-detail:empty { display: none; }
+.snap-detail-head { display: flex; align-items: center; justify-content: space-between; gap: .571rem; padding-top: .714rem; border-top: 1px solid var(--border); }
+.snap-detail-head h3 { font: 600 1rem var(--font-ui); margin: 0; }
+.snap-detail .rows dd { overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: baseline; gap: .286rem .571rem; }
+.snap-detail .rows dd .warn { color: var(--warn); font-weight: 600; }
+.snap-held-box { display: flex; flex-direction: column; gap: .571rem; flex: 1 1 100%; min-width: 0; }
+.snap-held { display: flex; flex-direction: column; gap: .286rem; }
+.snap-held-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .286rem; }
+.snap-held-list[hidden] { display: none; }
+.snap-held-list li { display: flex; align-items: center; justify-content: space-between; gap: .571rem; }
+
+/* The forms of the dialogs, and the step that shares Add a backup place */
+.snap-add { display: flex; flex-direction: column; gap: .857rem; min-width: 0; }
+.snap-add fieldset.choices .radio-card > span { display: flex; flex-direction: column; gap: .143rem; }
+.snap-add .input, .snap-detail .input { width: 100%; box-sizing: border-box; }
+.snap-add select.input { height: 2.143rem; }
+.snap-pane { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.snap-pane[hidden], .snap-add .field[hidden] { display: none; }
+.snap-key { display: flex; flex-direction: column; gap: .429rem; min-width: 0; }
+.snap-fields { display: grid; gap: .857rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
+.snap-more summary { cursor: pointer; padding: .286rem 0; font-weight: 600; }
+.snap-more[open] summary { margin-bottom: .571rem; }
+.snap-command { display: flex; flex-direction: column; gap: .429rem; }
+.snap-command h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.snap-result { display: flex; flex-direction: column; gap: .286rem; }
+.snap-result p { margin: 0; }
+.snap-result:focus { outline: none; }
+.snap-result:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* A snapshot's folder */
+.snap-browse .snap-trail { display: flex; flex-wrap: wrap; align-items: center; gap: .286rem; font-size: .929rem; }
+.snap-browse .tbl { min-width: 0; }
+.snap-pick { display: inline-flex; align-items: center; justify-content: center; min-width: 2.714rem; min-height: 2.714rem; margin: -.5rem; cursor: pointer; }
+.snap-pick input { width: 1.286rem; height: 1.286rem; margin: 0; accent-color: var(--accent); }
+.snap-folder::after { content: "/"; }
+.snap-restored { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .143rem; }
+.snap-restored li { overflow-wrap: anywhere; }
+/* Restore stays in reach while a long folder is read: the bar sticks to the foot of what is seen. */
+.snap-actions { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: .571rem .857rem; padding: .714rem 0; background: var(--pane); border-top: 1px solid var(--border); }
+
+/* The phone (5.10): What is protected becomes a card a row, the snapshot list one column with Browse as a button, and the
+   folder a list with a box a row and Restore fixed at the foot; the buttons are 44 px tall and fill the width. */
+@container (max-width: 51.4rem) {
+  .snap-grid { grid-template-columns: minmax(0, 1fr); }
+  .snap-prot .tbl-box, .snap-places .tbl-box, .snap-browse .tbl-box { border: 0; }
+  .snap-prot .tbl.stack tr, .snap-places .tbl.stack tr, .snap-browse .tbl.stack tr { margin: .571rem 0; }
+  .snap-prot .tbl.stack td::before, .snap-places .tbl.stack td::before, .snap-browse .tbl.stack td::before { margin-bottom: .143rem; }
+  .snap-row { grid-template-columns: minmax(0, 1fr); }
+  .snap-row .btns { grid-row: auto; grid-column: 1; justify-content: stretch; }
+  .snap-row .btns .btn { flex: 1 1 100%; min-height: 3.143rem; }
+  .snap-earlier .btn { min-width: 6rem; }
+  .snap-action { align-items: stretch; width: 100%; }
+  .snap-action .btn, .snap-detail .btns .btn, .snap-banners .btns .btn, .snap-add .btns .btn { width: 100%; min-height: 3.143rem; box-sizing: border-box; }
+  .snap-detail .btns, .snap-banners .btns { flex-direction: column; align-items: stretch; }
+  .snap-banners .snap-action { width: 100%; }
+  .snap-stack { align-items: stretch; }
+  .snap-pick { min-width: 3.143rem; min-height: 3.143rem; margin: -.714rem; }
+  .snap-browse .tbl.stack td[data-label="Pick"]::before { display: none; }
+  .snap-browse .tbl.stack td:empty { display: none; }
+  .snap-actions { margin: 0 -1.143rem -1.143rem; padding: .714rem 1.143rem; }
+  .snap-actions .btn { flex: 1 1 100%; min-height: 3.143rem; }
+  .snap-held-list li { flex-wrap: wrap; }
+  .snap-held-list li .btn { min-width: 0; }
+}
+
+/* Forced colours: the bars are drawn in system colours, a state keeps its dot and its words, and what colour alone would
+   mark is outlined. */
+@media (forced-colors: active) {
+  .dk .snap-bar { background: GrayText; forced-color-adjust: none; }
+  .dk .snap-browse .pill { border: 1px solid ButtonText; }
+  .dk .snap-actions, .dk .snap-day, .dk .snap-detail-head, .dk .snap-note { border-color: CanvasText; }
+  .dk .snap-day { forced-color-adjust: none; background: Canvas; color: CanvasText; }
+  .dk .snap-detail .rows dd .warn { forced-color-adjust: none; color: CanvasText; }
+  .dk .snap-prot .tbl-box, .dk .snap-places .tbl-box { border: 1px solid CanvasText; }
+}

@@ -87,8 +87,61 @@ const seeOnScreen = (page, words) =>
     { timeout: 30_000 },
   );
 
-/** Types a line into the focused pane, as a person does. */
+// How long the focused pane's screen stays the same before a line is typed.
+const QUIET_MS = 2_000;
+
+/**
+ * Waits until the focused pane's screen shows something and has not changed
+ * for QUIET_MS, as a person waits for the prompt. A shell draws its prompt
+ * again once the page gives its pane a size, and keys typed while it does may
+ * be lost (docs/deferred.md).
+ */
+async function quiet(page) {
+  const screen = focusedPane(page).locator(".tr-screen");
+  const end = Date.now() + 30_000;
+  let last = null;
+  let since = Date.now();
+  while (Date.now() < end) {
+    const text = await screen.innerText();
+    if (text !== last) {
+      last = text;
+      since = Date.now();
+    } else if (text.trim() !== "" && Date.now() - since >= QUIET_MS) {
+      return;
+    }
+    await sleep(100);
+  }
+  ensure(false, `the focused pane's screen did not stay the same for ${QUIET_MS} ms in 30 s: ${String(last).slice(-200)}`);
+}
+
+/**
+ * Waits until no pane's screen has changed for QUIET_MS, as a person looks at
+ * a layout before choosing the next. Each pane's shell draws its prompt again
+ * for the pane's new size, and one that is resized again while it waits for
+ * the cursor's answer may draw its prompt over the lines above
+ * (docs/deferred.md).
+ */
+async function settled(page) {
+  const screens = page.locator(".tr-pane .tr-screen");
+  const end = Date.now() + 30_000;
+  let last = null;
+  let since = Date.now();
+  while (Date.now() < end) {
+    const text = (await screens.allInnerTexts()).join("\f");
+    if (text !== last) {
+      last = text;
+      since = Date.now();
+    } else if (Date.now() - since >= QUIET_MS) {
+      return;
+    }
+    await sleep(100);
+  }
+  ensure(false, `the panes' screens did not stay the same for ${QUIET_MS} ms in 30 s`);
+}
+
+/** Types a line into the focused pane once its screen is quiet, as a person does. */
 async function typeLine(page, text) {
+  await quiet(page);
   await page.keyboard.type(text);
   await page.keyboard.press("Enter");
 }
@@ -186,6 +239,7 @@ async function readTheScreen(t, page) {
 async function splitting(t, page) {
   await fromNewMenu(t, page, "Split right");
   await page.waitForFunction(() => document.querySelectorAll(".tr-pane").length === 2);
+  await settled(page);
   let boxes = await paneBoxes(page);
   ensure(boxes[0].y === boxes[1].y && boxes[0].x < boxes[1].x, `a split to the right does not put the panes side by side: ${JSON.stringify(boxes)}`);
   await t.see(page.getByRole("group", { name: /^Pane 2 of 2: / }));
@@ -208,11 +262,13 @@ async function splitting(t, page) {
   await separator.focus();
   await page.keyboard.press("ArrowRight");
   await page.waitForFunction((was) => Number(document.querySelector(".tr-sep").getAttribute("aria-valuenow")) > was, before);
+  await settled(page);
 
   // A third pane, and each layout.
   await enter(page, 0);
   await fromNewMenu(t, page, "Split down");
   await page.waitForFunction(() => document.querySelectorAll(".tr-pane").length === 3);
+  await settled(page);
   await fromNewMenu(t, page, "Rows", true);
   await page.waitForFunction(() => {
     const boxes = [...document.querySelectorAll(".tr-pane")].map((pane) => Math.round(pane.getBoundingClientRect().x));
@@ -220,13 +276,16 @@ async function splitting(t, page) {
   });
   boxes = await paneBoxes(page);
   ensure(boxes[0].y < boxes[1].y && boxes[1].y < boxes[2].y, `Rows does not stack the panes: ${JSON.stringify(boxes)}`);
+  await settled(page);
   await fromNewMenu(t, page, "Columns", true);
   await page.waitForFunction(() => {
     const tops = [...document.querySelectorAll(".tr-pane")].map((pane) => Math.round(pane.getBoundingClientRect().y));
     return tops.length === 3 && tops.every((y) => y === tops[0]);
   });
+  await settled(page);
   await fromNewMenu(t, page, "Grid", true);
   await page.waitForFunction(() => new Set([...document.querySelectorAll(".tr-pane")].map((pane) => Math.round(pane.getBoundingClientRect().y))).size === 2);
+  await settled(page);
   await look(t, page, "terminal-grid");
 
   // The way out of a pane: Alt+Shift+Up in a top pane puts focus on the tabs.
@@ -239,9 +298,11 @@ async function splitting(t, page) {
   await enter(page, 2);
   await endFocusedPane(t, page);
   await page.waitForFunction(() => document.querySelectorAll(".tr-pane").length === 2);
+  await settled(page);
   await enter(page, 1);
   await endFocusedPane(t, page);
   await page.waitForFunction(() => document.querySelectorAll(".tr-pane").length === 1);
+  await settled(page);
   await enter(page);
   await seeOnScreen(page, "lab-output");
 }

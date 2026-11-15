@@ -59,7 +59,7 @@ pub struct Port {
     log: bool,
     /// What the kernel calls it: `com2`, `amt-sol`, `ax99100`, `qemu`,
     /// `pci`.
-    kind: String,
+    pub(crate) kind: String,
     /// The PCI function it is on, `0000:00:16.3`, if it is on one.
     pci: Option<String>,
     /// The options of its line, `57600n8`, when the firmware sends its

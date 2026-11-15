@@ -196,7 +196,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
       notice,
       problem,
       openTasks: () => tasks.open(null),
-      learnTask: (id) => tasks.learn(id),
+      learnTask: (id, close) => tasks.started(id, close),
       isOffline: () => online.isOffline(),
     })(...call);
   };
@@ -310,6 +310,7 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
     onEvent(name, data) {
       if (name === 'unlock') setUnlockSeconds(data.unlock_seconds);
       if (name === 'session') onEnded(data.ended);
+      if (name === 'trial') header.trials(data.trials);
       if (name === 'task') tasks.event(name, data);
       // What the parts kept is old now, before the page reads again.
       if (name === 'task' || name === 'change') parts.forget();

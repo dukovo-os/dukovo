@@ -163,8 +163,9 @@ pub struct Shared {
     pub connections: Rc<RefCell<Connections>>,
     /// Why sessions ended.
     pub endings: RefCell<Endings>,
-    /// Sent to when a session ends or its unlock changes, which the event
-    /// streams of the session's tabs wait for.
+    /// Sent to when a session ends, its unlock changes or the running
+    /// trials are told ([`Shared::tell_trials`]), which the event streams
+    /// of the session's tabs wait for.
     pub changes: watch::Sender<()>,
     /// The wrong API tokens each address gave in the last minute.
     pub wrong_tokens: RefCell<Tries>,
@@ -260,6 +261,13 @@ impl Shared {
         if until.is_none_or(|until| until <= unix_now()) {
             self.terminals.borrow_mut().end_admin_panes(&authd, Why::Locked);
         }
+    }
+
+    /// Tells every open tab, of every session, which trials run at `now`,
+    /// or that none does: `event: trial` (`routes::events`).
+    pub fn tell_trials(&self, now: Instant) {
+        self.trials.borrow_mut().tell(now);
+        self.changes.send_replace(());
     }
 
     /// Ends `session` for `reason`, one of the words the page is told:

@@ -17,18 +17,27 @@
 //! drive has used 90% of its rated endurance. What each disk counted at
 //! the last look is kept in `/system/state/diskhealth`, a file a disk,
 //! so that a rise across a restart is seen too.
+//!
+//! For the web console, `--json` prints what the disks say as one list,
+//! and the service writes each disk's summary to `/system/live/diskhealth`,
+//! which anyone may read, so that `storage show` can give a disk's health
+//! without opening the disk.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::time::Duration;
 
 use radix_abi::errors::Kernel;
 use radix_abi::{block, file};
+use serde::{Deserialize, Serialize};
 
 use crate::alerts::protocol::{Alert, Severity, key_part};
 use crate::args::{Arg, Args};
+use crate::disk_errors;
+use crate::selftest::{self, Outcome};
 use crate::sys::{self, SYS};
 use crate::util::{self, Fail};
 
@@ -38,6 +47,9 @@ const BLOCKS: &str = "/kernel/block";
 const WATCH_EVERY: Duration = Duration::from_mins(30);
 /// Where `--watch` keeps what each disk counted at its last look.
 const KEPT: &str = "/system/state/diskhealth";
+/// Where `--watch` writes each disk's summary, a file `DISK.json` each,
+/// for anyone to read.
+pub(crate) const LIVE: &str = "/system/live/diskhealth";
 /// How long a rise is told of after the count stopped rising.
 const RISE_TOLD: u64 = 7 * 86_400;
 /// The share of its rated endurance, in percent, from which an NVMe
@@ -50,8 +62,9 @@ const UNREAD: i32 = 2;
 const WARNS: i32 = 4;
 const FAILS: i32 = 8;
 
-/// A disk's verdict, the worst last.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A disk's verdict, the worst last; in JSON, in lower case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Verdict {
     Passed,
     Warning,
@@ -318,6 +331,16 @@ pub(crate) fn disks() -> io::Result<Vec<String>> {
     Ok(names)
 }
 
+/// Every name `/kernel/block` has, the partitions too, as a name asked
+/// for must be one of these: a partition answers for its disk.
+fn block_names() -> io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(BLOCKS)? {
+        names.push(entry?.file_name().to_string_lossy().into_owned());
+    }
+    Ok(names)
+}
+
 /// A line of what the kernel shows of disk `name`'s device.
 pub(crate) fn device_text(name: &str, what: &str) -> String {
     let path = format!("{BLOCKS}/{name}/device/{what}");
@@ -373,6 +396,204 @@ pub(crate) fn grouped(n: u128) -> String {
         out.push(c);
     }
     out
+}
+
+/// A disk's summary, which `--json` and the live file both give: its
+/// verdict and what the verdict rests on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Summary {
+    /// The disk's name, as in `/devices/NAME`.
+    pub(crate) disk: String,
+    /// What the driver says of the disk; null where it says nothing.
+    pub(crate) model: Option<String>,
+    pub(crate) serial: Option<String>,
+    pub(crate) verdict: Verdict,
+    pub(crate) reasons: Vec<String>,
+    /// Hours powered on and the temperature, null where the disk does
+    /// not say.
+    pub(crate) hours: Option<u64>,
+    pub(crate) temperature_c: Option<i64>,
+    /// A SATA disk's sectors moved to spares, waiting to be moved, and
+    /// not readable offline; null for an NVMe drive, for a disk whose
+    /// SMART is off, and for one that does not list the attribute.
+    pub(crate) moved: Option<u64>,
+    pub(crate) waiting: Option<u64>,
+    pub(crate) offline: Option<u64>,
+    /// An NVMe drive's media errors and its share of its rated
+    /// endurance used, in percent; null for a SATA disk.
+    pub(crate) media_errors: Option<u64>,
+    pub(crate) used_percent: Option<u8>,
+}
+
+/// The summary of disk `disk`, whose driver gave `model` and `serial`
+/// (empty where it gave none), from what it said of its health.
+fn summary(disk: &str, model: &str, serial: &str, record: &Record) -> Summary {
+    let judged = report(record).1;
+    let said = |text: &str| (!text.is_empty()).then(|| text.to_string());
+    let count = |id: u8| match record {
+        Record::Ata(attributes) => {
+            attributes.iter().find(|a| a.id == id).map(|a| a.raw & 0xffff_ffff)
+        }
+        _ => None,
+    };
+    let media_errors = match record {
+        Record::Nvme(log) => Some(u64::try_from(log.media_errors).unwrap_or(u64::MAX)),
+        _ => None,
+    };
+    Summary {
+        disk: disk.to_string(),
+        model: said(model),
+        serial: said(serial),
+        verdict: judged.verdict,
+        reasons: judged.reasons,
+        hours: judged.hours,
+        temperature_c: judged.celsius,
+        moved: count(5),
+        waiting: count(197),
+        offline: count(198),
+        media_errors,
+        used_percent: judged.used,
+    }
+}
+
+/// A SATA attribute in `--json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct AttributeJson {
+    id: u8,
+    name: &'static str,
+    prefail: bool,
+    value: u8,
+    worst: u8,
+    threshold: u8,
+    raw: u64,
+}
+
+/// A test of the disk's own log in `--json`.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct SelfTest {
+    /// `short`, `extended`, `conveyance` or `other`.
+    kind: &'static str,
+    /// `passed`, `failed`, `aborted` or `running`.
+    result: &'static str,
+    /// The disk's power-on hours when it ran; null while it runs.
+    at_hours: Option<u64>,
+}
+
+/// One disk in `--json`: its summary, the attributes of a SATA disk and
+/// its own log of tests.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Detail {
+    #[serde(flatten)]
+    summary: Summary,
+    /// Null for an NVMe drive, and for a SATA disk whose SMART is off.
+    attributes: Option<Vec<AttributeJson>>,
+    /// The disk's last tests, at most five, the newest first; null where
+    /// the disk keeps no log or it could not be read.
+    self_tests: Option<Vec<SelfTest>>,
+}
+
+/// The test `logged` as the JSON gives it. A test that ended with a
+/// status the JSON has no word for is left out rather than named wrongly.
+fn self_test(logged: &selftest::Logged) -> Option<SelfTest> {
+    let result = match logged.outcome {
+        None => "running",
+        Some(Outcome::Passed) => "passed",
+        Some(Outcome::Failed { .. }) => "failed",
+        Some(Outcome::Aborted | Outcome::Interrupted) => "aborted",
+        Some(Outcome::Other(_)) => return None,
+    };
+    Some(SelfTest { kind: logged.kind.name(), result, at_hours: logged.power_on_hours })
+}
+
+/// The disk in `--json`, from what it said of its health and its log of
+/// tests.
+fn detail(
+    disk: &str,
+    model: &str,
+    serial: &str,
+    record: &Record,
+    tests: Option<&[selftest::Logged]>,
+) -> Detail {
+    let attributes = match record {
+        Record::Ata(attributes) => Some(
+            attributes
+                .iter()
+                .map(|a| AttributeJson {
+                    id: a.id,
+                    name: attribute_name(a.id),
+                    prefail: a.prefail,
+                    value: a.value,
+                    worst: a.worst,
+                    threshold: a.threshold,
+                    raw: a.raw,
+                })
+                .collect(),
+        ),
+        Record::AtaOff | Record::Nvme(_) => None,
+    };
+    Detail {
+        summary: summary(disk, model, serial, record),
+        attributes,
+        self_tests: tests.map(|tests| tests.iter().filter_map(self_test).collect()),
+    }
+}
+
+/// The early warning that stands, in the live file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Rose {
+    pub(crate) at_ms: u64,
+    pub(crate) title: String,
+}
+
+/// What `--watch` writes of a disk, in `LIVE`: its summary, when it was
+/// looked at, and the early warning that stands, null when none does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Live {
+    #[serde(flatten)]
+    pub(crate) summary: Summary,
+    pub(crate) checked_ms: u64,
+    pub(crate) rose: Option<Rose>,
+}
+
+/// The live file's content for disk `disk` at a look at `now`, in
+/// seconds, whose count of rises left `rose`.
+fn live(disk: &str, record: &Record, now: u64, rose: Option<&(u64, String)>) -> Live {
+    Live {
+        summary: summary(disk, &device_text(disk, "model"), &device_text(disk, "serial"), record),
+        checked_ms: now.saturating_mul(1000),
+        rose: rose.map(|(at, title)| Rose { at_ms: at.saturating_mul(1000), title: title.clone() }),
+    }
+}
+
+/// Writes the live file of a disk into `dir`, whole or not at all: to a
+/// file beside it, renamed over it. Anyone may read it.
+fn write_live(dir: &Path, live: &Live) -> io::Result<()> {
+    fs::DirBuilder::new().recursive(true).mode(0o755).create(dir)?;
+    let text = serde_json::to_string(live).map_err(io::Error::other)?;
+    let path = dir.join(format!("{}.json", live.summary.disk));
+    let new = dir.join(format!("{}.json.new", live.summary.disk));
+    let mut file =
+        fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&new)?;
+    writeln!(file, "{text}")?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(new, path)
+}
+
+/// Removes the live files of the disks that are not in `disks` (gone, or
+/// giving no record), and the files a crash left half written.
+fn clear_live(dir: &Path, disks: &[String]) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let stale = match name.strip_suffix(".json") {
+            Some(disk) => !disks.iter().any(|known| known == disk),
+            None => name.ends_with(".json.new"),
+        };
+        if stale && let Err(err) = fs::remove_file(entry.path()) {
+            eprintln!("diskhealth: {}", util::failed(&entry.path().display(), err).message);
+        }
+    }
 }
 
 /// The details of one disk: its verdict and reasons, then its attributes
@@ -580,6 +801,11 @@ impl Kept {
     }
 }
 
+/// The kept rise at `now`, while it is still told of.
+fn standing(rose: &Option<(u64, String)>, now: u64) -> Option<&(u64, String)> {
+    rose.as_ref().filter(|(at, _)| now.saturating_sub(*at) < RISE_TOLD)
+}
+
 /// The early warning of a disk at a look at `now` that found `counts`,
 /// after the look that left `before`: what to keep, and the alert to
 /// raise, if any. `disk` names the disk for people, `id` for the key.
@@ -598,7 +824,7 @@ fn early_warning(
         let since = util::time_text(i64::try_from(since).unwrap_or(0), "%F %R", false);
         Some((now, format!("Disk {disk} has {} since {since}", rises.join(", "))))
     };
-    let rising = rose.as_ref().filter(|(at, _)| now.saturating_sub(*at) < RISE_TOLD);
+    let rising = standing(&rose, now);
     let worn = counts.used.filter(|&used| used >= USED_TOLD);
     let worn_line = worn.map(|used| format!("Disk {disk} has used {used}% of its rated endurance"));
     let title = rising.map(|(_, title)| title.clone()).or_else(|| worn_line.clone());
@@ -667,20 +893,28 @@ fn keep(path: &str, kept: &Kept) -> io::Result<()> {
     fs::rename(&new, path)
 }
 
-/// The alerts of a disk at a look at `now`, keeping its counts.
-fn disk_alerts(name: &str, record: &Record, report: &Report, now: u64) -> Vec<Alert> {
+/// The alerts of a disk at a look at `now`, keeping its counts, and the
+/// early warning that stands for the live file.
+fn disk_alerts(
+    name: &str,
+    record: &Record,
+    report: &Report,
+    now: u64,
+) -> (Vec<Alert>, Option<(u64, String)>) {
     let (disk, id) = identity(name);
     let mut alerts: Vec<Alert> = verdict_alert(report, &disk, name, &id).into_iter().collect();
+    let mut standing_rise = None;
     if let Some(counts) = Counts::of(record) {
         let path = kept_path(&id);
         let before = fs::read_to_string(&path).ok().and_then(|text| Kept::parse(&text));
         let (kept, rising) = early_warning(before.as_ref(), counts, now, &disk, &id);
+        standing_rise = standing(&kept.rose, now).cloned();
         if let Err(err) = keep(&path, &kept) {
             eprintln!("diskhealth: {}", util::failed(&Path::new(&path).display(), err).message);
         }
         alerts.extend(rising);
     }
-    alerts
+    (alerts, standing_rise)
 }
 
 /// The line `--watch` writes of a disk: its verdict and reasons, or what
@@ -715,12 +949,21 @@ fn watch() -> Result<i32, Fail> {
         let names = disks().map_err(|e| util::failed(&BLOCKS, e))?;
         let now = util::now_ns() / 1_000_000_000;
         alerts.retain(|(disk, _)| names.contains(disk));
+        // The disks whose live files stay: those that gave a record, and
+        // those that could not be read this time, whose file keeps the
+        // time of the look that did.
+        let mut present: Vec<String> = Vec::new();
         let mut out = io::stdout().lock();
         for name in names {
             let report = match read(&name) {
                 Ok(Some(record)) => {
                     let report = report(&record).1;
-                    let found = disk_alerts(&name, &record, &report, now);
+                    let (found, rose) = disk_alerts(&name, &record, &report, now);
+                    let file = live(&name, &record, now, rose.as_ref());
+                    if let Err(err) = write_live(Path::new(LIVE), &file) {
+                        eprintln!("diskhealth: {LIVE}: {}", util::strip_os_error(&err));
+                    }
+                    present.push(name.clone());
                     match alerts.iter_mut().find(|(disk, _)| *disk == name) {
                         Some((_, held)) => *held = found,
                         None => alerts.push((name.clone(), found)),
@@ -730,6 +973,7 @@ fn watch() -> Result<i32, Fail> {
                 Ok(None) => continue,
                 Err(fail) => {
                     eprintln!("diskhealth: {}", fail.message);
+                    present.push(name);
                     continue;
                 }
             };
@@ -748,6 +992,7 @@ fn watch() -> Result<i32, Fail> {
         }
         out.flush()?;
         drop(out);
+        clear_live(Path::new(LIVE), &present);
         let all: Vec<Alert> = alerts.iter().flat_map(|(_, held)| held.iter().cloned()).collect();
         match crate::alerts::client::set(&all) {
             Ok(()) => unreached = false,
@@ -767,13 +1012,45 @@ fn same_but_numbers(a: &Report, b: &Report) -> bool {
     a.verdict == b.verdict && a.reasons == b.reasons
 }
 
+/// The first of `names` that is not one of the kernel's `known` names.
+fn unknown<'a>(names: &'a [String], known: &[String]) -> Option<&'a String> {
+    names.iter().find(|name| !known.contains(name))
+}
+
+/// `--json`: the disks that keep a record, as a list of objects on one
+/// line. A disk that keeps none is left out.
+fn json(out: &mut impl Write, rows: &[(String, Option<Record>)]) -> Result<(), Fail> {
+    let mut found = Vec::new();
+    for (name, record) in rows {
+        let Some(record) = record else { continue };
+        let tests = match selftest::history(name) {
+            Ok(tests) => tests,
+            Err(fail) => {
+                eprintln!("diskhealth: {}", fail.message);
+                None
+            }
+        };
+        found.push(detail(
+            name,
+            &device_text(name, "model"),
+            &device_text(name, "serial"),
+            record,
+            tests.as_deref(),
+        ));
+    }
+    let line = serde_json::to_string(&found).map_err(|error| util::fail(error.to_string()))?;
+    writeln!(out, "{line}")?;
+    Ok(())
+}
+
 /// diskhealth(8).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let (mut all, mut names) = (false, Vec::new());
+    let (mut all, mut as_json, mut names) = (false, false, Vec::new());
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Short('a') => all = true,
             Arg::Long(long) if long == "all" => all = true,
+            Arg::Long(long) if long == "json" => as_json = true,
             Arg::Long(long) if long == "watch" => return watch(),
             Arg::Operand(name) => {
                 let name = name.to_string_lossy();
@@ -782,9 +1059,19 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
+    if all && as_json {
+        return Err(util::usage(
+            "-a does not go with --json: the JSON always has the attributes".into(),
+        ));
+    }
     let details_wanted = all || !names.is_empty();
     if names.is_empty() {
         names = disks().map_err(|e| util::failed(&BLOCKS, e))?;
+    } else {
+        let known = block_names().map_err(|e| util::failed(&BLOCKS, e))?;
+        if let Some(name) = unknown(&names, &known) {
+            return Err(disk_errors::no_such_disk(name));
+        }
     }
     let mut rows = Vec::new();
     let mut status = 0;
@@ -807,7 +1094,9 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let mut out = io::stdout().lock();
-    if details_wanted {
+    if as_json {
+        json(&mut out, &rows)?;
+    } else if details_wanted {
         for (i, (name, record)) in rows.iter().enumerate() {
             if i > 0 {
                 writeln!(out)?;
@@ -822,6 +1111,8 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     use super::*;
 
     /// A SMART data page and thresholds page with `entries` (id, flags,
@@ -1023,5 +1314,257 @@ mod tests {
         assert_eq!(Kept::parse(&plain.text()), Some(plain));
         assert_eq!(Kept::parse("reallocated 1\npending 2\n"), None);
         assert_eq!(kept_path("../x/y"), format!("{KEPT}/---x-y"));
+    }
+
+    /// A SATA disk as QEMU's IDE disk answers, with five reallocated
+    /// sectors, two waiting and none offline.
+    fn worn_sata() -> Record {
+        let (data, thresholds) = pages(&[
+            (1, 3, 100, 100, 0, 6),
+            (5, 3, 100, 100, 5, 36),
+            (9, 3, 100, 100, 21804, 0),
+            (194, 2, 62, 50, 38, 0),
+            (197, 2, 100, 100, 2, 0),
+        ]);
+        Record::Ata(attributes(&data, &thresholds))
+    }
+
+    fn healthy_nvme() -> Record {
+        Record::Nvme(NvmeLog {
+            kelvin: 313,
+            used: 3,
+            hours: 500,
+            media_errors: 0,
+            ..NvmeLog::default()
+        })
+    }
+
+    #[test]
+    fn a_sata_disk_has_its_counts_and_no_nvme_fields() {
+        let found = summary("sdb", "WD20EFZX", "WD-WX12A3B4C588", &worn_sata());
+        assert_eq!(
+            serde_json::to_value(&found).unwrap(),
+            json!({
+                "disk": "sdb", "model": "WD20EFZX", "serial": "WD-WX12A3B4C588",
+                "verdict": "warning",
+                "reasons": ["5 sectors were reallocated", "2 sectors wait to be reallocated"],
+                "hours": 21804, "temperature_c": 38,
+                "moved": 5, "waiting": 2, "offline": null,
+                "media_errors": null, "used_percent": null,
+            })
+        );
+    }
+
+    #[test]
+    fn an_nvme_drive_has_its_log_and_no_sata_fields() {
+        let found = summary("nvme0n1", "", "", &healthy_nvme());
+        assert_eq!(
+            serde_json::to_value(&found).unwrap(),
+            json!({
+                "disk": "nvme0n1", "model": null, "serial": null, "verdict": "passed",
+                "reasons": [], "hours": 500, "temperature_c": 40,
+                "moved": null, "waiting": null, "offline": null,
+                "media_errors": 0, "used_percent": 3,
+            })
+        );
+    }
+
+    #[test]
+    fn a_disk_whose_smart_is_off_has_no_counts_and_no_attributes() {
+        let off = detail("sda", "M", "S", &Record::AtaOff, Some(&[]));
+        let off = serde_json::to_value(&off).unwrap();
+        assert_eq!(off["verdict"], json!("warning"));
+        assert_eq!(off["reasons"], json!(["its SMART is off"]));
+        for field in ["hours", "temperature_c", "moved", "waiting", "offline", "attributes"] {
+            assert_eq!(off[field], Value::Null, "{field}");
+        }
+        assert_eq!(off["self_tests"], json!([]));
+    }
+
+    #[test]
+    fn the_json_of_a_sata_disk_lists_its_attributes_and_tests() {
+        let tests = [
+            selftest::Logged {
+                kind: selftest::Kind::Extended,
+                outcome: Some(Outcome::Passed),
+                power_on_hours: Some(21700),
+            },
+            selftest::Logged {
+                kind: selftest::Kind::Short,
+                outcome: Some(Outcome::Failed { first_bad_sector: Some(7) }),
+                power_on_hours: Some(21000),
+            },
+            selftest::Logged {
+                kind: selftest::Kind::Conveyance,
+                outcome: Some(Outcome::Interrupted),
+                power_on_hours: Some(20000),
+            },
+            selftest::Logged {
+                kind: selftest::Kind::Other,
+                outcome: Some(Outcome::Aborted),
+                power_on_hours: Some(100),
+            },
+            selftest::Logged { kind: selftest::Kind::Short, outcome: None, power_on_hours: None },
+            // A status the JSON has no word for is left out.
+            selftest::Logged {
+                kind: selftest::Kind::Short,
+                outcome: Some(Outcome::Other(0x25)),
+                power_on_hours: Some(1),
+            },
+        ];
+        let found = detail("sdb", "WD20EFZX", "WD-1", &worn_sata(), Some(&tests));
+        let found = serde_json::to_value(&found).unwrap();
+        assert_eq!(
+            found["attributes"][1],
+            json!({"id": 5, "name": "Reallocated sectors", "prefail": true, "value": 100,
+                "worst": 100, "threshold": 36, "raw": 5})
+        );
+        assert_eq!(found["attributes"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            found["self_tests"],
+            json!([
+                {"kind": "extended", "result": "passed", "at_hours": 21700},
+                {"kind": "short", "result": "failed", "at_hours": 21000},
+                {"kind": "conveyance", "result": "aborted", "at_hours": 20000},
+                {"kind": "other", "result": "aborted", "at_hours": 100},
+                {"kind": "short", "result": "running", "at_hours": null},
+            ])
+        );
+    }
+
+    #[test]
+    fn an_nvme_drive_has_no_attributes_and_a_disk_with_no_log_has_no_tests() {
+        let found = detail("nvme0n1", "M", "S", &healthy_nvme(), None);
+        let found = serde_json::to_value(&found).unwrap();
+        assert_eq!((&found["attributes"], &found["self_tests"]), (&Value::Null, &Value::Null));
+        // The summary's fields come first, in the order the design names.
+        let line = serde_json::to_string(&detail("sda", "M", "S", &healthy_nvme(), None)).unwrap();
+        let keys = [
+            "disk",
+            "model",
+            "serial",
+            "verdict",
+            "reasons",
+            "hours",
+            "temperature_c",
+            "moved",
+            "waiting",
+            "offline",
+            "media_errors",
+            "used_percent",
+            "attributes",
+            "self_tests",
+        ];
+        let places: Vec<_> =
+            keys.iter().map(|key| line.find(&format!("\"{key}\":")).unwrap()).collect();
+        assert!(places.is_sorted(), "{line}");
+    }
+
+    #[test]
+    fn the_live_file_has_the_summary_and_the_early_warning() {
+        let rose = (1_763_080_000, "sdb moved 8 worn-out sectors to spares".to_string());
+        let file = Live {
+            summary: summary("sdb", "WD20EFZX", "WD-1", &worn_sata()),
+            checked_ms: 1_763_120_000_000,
+            rose: Some(Rose { at_ms: rose.0 * 1000, title: rose.1 }),
+        };
+        let value = serde_json::to_value(&file).unwrap();
+        assert_eq!(value["checked_ms"], json!(1_763_120_000_000u64));
+        assert_eq!(
+            value["rose"],
+            json!({"at_ms": 1_763_080_000_000u64, "title": "sdb moved 8 worn-out sectors to spares"})
+        );
+        assert_eq!(value["verdict"], json!("warning"));
+        assert!(value.get("attributes").is_none() && value.get("self_tests").is_none());
+        // What is written reads back as it was.
+        let back: Live = serde_json::from_value(value).unwrap();
+        assert_eq!(back, file);
+        let calm = Live { rose: None, ..file };
+        let value = serde_json::to_value(&calm).unwrap();
+        assert_eq!(value["rose"], Value::Null);
+        assert_eq!(serde_json::from_value::<Live>(value).unwrap(), calm);
+    }
+
+    #[test]
+    fn a_rise_is_in_the_live_file_for_a_week_only() {
+        let rose = Some((1_000, "title".to_string()));
+        assert!(standing(&rose, 1_000 + RISE_TOLD - 1).is_some());
+        assert_eq!(standing(&rose, 1_000 + RISE_TOLD), None);
+        assert_eq!(standing(&None, 5), None);
+        let file = live("sdb", &worn_sata(), 2_000, rose.as_ref());
+        assert_eq!(file.checked_ms, 2_000_000);
+        assert_eq!(file.rose, Some(Rose { at_ms: 1_000_000, title: "title".into() }));
+    }
+
+    /// A folder of its own for each test, as the tests run at once.
+    fn folder(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("diskhealth-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn a_live_file_is_written_whole_and_readable_by_anyone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = folder("write").join("live");
+        let file = live("sdb", &worn_sata(), 2_000, None);
+        write_live(&dir, &file).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&dir), mode(&dir.join("sdb.json"))), (0o755, 0o644));
+        let text = fs::read_to_string(dir.join("sdb.json")).unwrap();
+        assert!(text.ends_with("}\n"), "{text}");
+        assert_eq!(serde_json::from_str::<Live>(&text).unwrap(), file);
+        assert!(!dir.join("sdb.json.new").exists());
+        // The next look replaces it.
+        let later = live("sdb", &worn_sata(), 4_000, None);
+        write_live(&dir, &later).unwrap();
+        let text = fs::read_to_string(dir.join("sdb.json")).unwrap();
+        assert_eq!(serde_json::from_str::<Live>(&text).unwrap().checked_ms, 4_000_000);
+        fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_live_file_of_a_disk_that_goes_is_removed() {
+        let dir = folder("clear").join("live");
+        for disk in ["sda", "sdb", "nvme0n1"] {
+            write_live(&dir, &live(disk, &worn_sata(), 2_000, None)).unwrap();
+        }
+        // A half-written file of a crash, and a file that is not a disk's.
+        fs::write(dir.join("sda.json.new"), "{").unwrap();
+        fs::write(dir.join("README"), "kept").unwrap();
+        clear_live(&dir, &["sda".to_string(), "nvme0n1".to_string()]);
+        let mut left: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["README", "nvme0n1.json", "sda.json"]);
+        // Nothing to clear in a folder that is not there.
+        clear_live(&dir.join("none"), &[]);
+        fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_name_the_kernel_does_not_list_is_found_out() {
+        let disks = ["nvme0n1".to_string(), "sda".to_string(), "sda1".to_string()];
+        let asked =
+            |names: &[&str]| -> Vec<String> { names.iter().map(ToString::to_string).collect() };
+        assert_eq!(unknown(&asked(&["sda"]), &disks), None);
+        assert_eq!(unknown(&asked(&[]), &disks), None);
+        // A partition answers for its disk, and a path is not a name.
+        assert_eq!(unknown(&asked(&["sda1"]), &disks), None);
+        assert_eq!(unknown(&asked(&["sda", "sdb"]), &disks).map(String::as_str), Some("sdb"));
+        assert_eq!(unknown(&asked(&["../x"]), &disks).map(String::as_str), Some("../x"));
+    }
+
+    #[test]
+    fn the_json_of_no_disks_is_an_empty_list() {
+        let mut out = Vec::new();
+        json(&mut out, &[]).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "[]\n");
+        // A disk that keeps no record is left out.
+        let mut out = Vec::new();
+        json(&mut out, &[("vda".to_string(), None)]).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "[]\n");
     }
 }

@@ -9,12 +9,12 @@
 // The reader knows the few shapes the registry is written in: the action
 // types listed by `registry!`, each with `type Args`, either in its own
 // `impl Action` or as the arguments in a `change!` macro call; the
-// arguments' `FIELDS`, built with `Field::text`, `one_of`, `number` and
-// `flag` (and `.optional()`), possibly through a `const fn` of the file; and
-// constants of the same file, or of the other crates it takes them from,
-// in the places `CRATES` names. Anything else stops the reader with a
-// message that says where, so that a new shape is taught here rather than
-// skipped.
+// arguments' `FIELDS`, built with `Field::text`, `one_of`, `number`, `flag`
+// and `secret` (and `.optional()`), possibly through a `const fn` of the file;
+// sums and products of whole numbers; and constants of the same file, or of
+// the other crates it takes them from, in the places `CRATES` names.
+// Anything else stops the reader with a message that says where, so that a
+// new shape is taught here rather than skipped.
 
 import { readFileSync } from 'node:fs';
 
@@ -28,7 +28,9 @@ const CRATES = {
   // systools' own log(1), as `use crate::log` names it.
   log: 'userspace/programs/systools/src/log.rs',
   // What an action takes from another action file: `use super::metrics::WORDS`.
+  'super::backups': `${ACTIONS}backups.rs`,
   'super::metrics': `${ACTIONS}metrics.rs`,
+  'super::snapshots': `${ACTIONS}snapshots.rs`,
   'super::trial': `${ACTIONS}trial.rs`,
 };
 
@@ -187,7 +189,9 @@ function parseAt(file, start, env = new Map()) {
     }
     if (token.value === '(') {
       take('(');
-      return list(')');
+      // `(PATH_MAX + 1)` is a number in brackets; a tuple has a comma.
+      const items = list(')');
+      return items.length === 1 ? items[0] : items;
     }
     if (token.kind !== 'id') throw new Error(`${file.name}: no expression at "${file.text.slice(token.at, token.at + 40)}"`);
     const names = path();
@@ -199,7 +203,27 @@ function parseAt(file, start, env = new Map()) {
     return constant(names, file);
   }
 
+  /** A product, `PATHS_MOST * (PATH_MAX + 1)`, of whole numbers. */
+  function product() {
+    let value = postfix();
+    while (peek()?.value === '*') {
+      take('*');
+      value *= postfix();
+    }
+    return value;
+  }
+
+  /** A sum or difference of products, as a limit of the registry is written. */
   function expression() {
+    let value = product();
+    while (peek()?.value === '+' || peek()?.value === '-') {
+      const sign = take().value === '+' ? 1 : -1;
+      value += sign * product();
+    }
+    return value;
+  }
+
+  function postfix() {
     let value = primary();
     for (;;) {
       const token = peek();
@@ -270,6 +294,8 @@ function call(names, args, file) {
     case 'Field::one_of': return { name: args[0], about: args[1], required: true, type: 'string', words: args[2] };
     case 'Field::number': return { name: args[0], about: args[1], required: true, type: 'integer', minimum: args[2], maximum: args[3] };
     case 'Field::flag': return { name: args[0], about: args[1], required: true, type: 'boolean' };
+    // One line of text, sent and never given back (ADR 0561), as mod.rs's schema says.
+    case 'Field::secret': return { name: args[0], about: args[1], required: true, type: 'string', minLength: 1, maxLength: args[2], pattern: '^[^\n\r\0]*$', writeOnly: true };
     default: break;
   }
   if (names.length === 1) return callFn(names[0], args, file);
@@ -389,7 +415,7 @@ export function listedActions() {
       id,
       title: value('title'),
       area: value('area'),
-      changes: value('method') === 'POST',
+      changes: /^changes = true/m.test(block),
       method: value('method'),
       path: value('path'),
       runs: value('runs'),

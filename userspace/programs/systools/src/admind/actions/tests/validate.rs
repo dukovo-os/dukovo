@@ -263,7 +263,9 @@ pub fn matches(pattern: &str, text: &str) -> Result<bool, String> {
 fn keywords(kind: &str) -> Option<&'static [&'static str]> {
     Some(match kind {
         "object" => &["type", "properties", "required", "additionalProperties"],
-        "string" => &["type", "description", "minLength", "maxLength", "pattern", "enum"],
+        "string" => {
+            &["type", "description", "minLength", "maxLength", "pattern", "enum", "writeOnly"]
+        }
         "integer" => &["type", "description", "minimum", "maximum"],
         "boolean" => &["type", "description"],
         _ => return None,

@@ -13,7 +13,11 @@ snap - make, list, restore and remove snapshots of Btrfs subvolumes
 
 *snap list* [*--json*] [_place_]
 
+*snap browse* [*--json*] _place_ _snapshot_ [_folder_]
+
 *snap restore* [*--from* _snapshot_] [*--to* _path_] _path_
+
+*snap restore* *--from* _snapshot_ *--beside* _label_ _path_ ...
 
 *snap delete* _place_ _snapshot_ ...
 
@@ -116,6 +120,43 @@ version, which *sysupdate rollback* and the boot menu start.
 	2026-11-11-0300  2026-11-11 03:00  newest, daily, weekly
 	```
 
+*browse* [*--json*] _place_ _snapshot_ [_folder_]
+	Shows what _folder_ held in _snapshot_ of _place_, each entry
+	compared with the same path now, to see what a restore would bring
+	back. _folder_ is a path of the place, which it must be or be
+	within, and is the place's top without one. The folders come first,
+	then the rest, each by name: at most 2000 entries, and a last line
+	says when there are more. Each entry has its kind (*file*,
+	*folder*, *link* or *other*), its size, when it was last changed,
+	and how it is now: *deleted* if it is not there, *changed* if its
+	kind, size or time differs (a folder's size is not compared), *same*
+	if it is as it was. It runs as whoever asks, with their rights, so
+	a folder is shown to a person who could read it when the snapshot
+	was made; one that cannot be read fails with the system's words,
+	and a _snapshot_ that the place does not have with *BAK-105*.
+
+	```
+	$ snap browse /users 2026-11-13-0302 /users/alice/photos
+	NAME           SIZE  MODIFIED          NOW
+	2025/          -     2026-09-01 10:14  same
+	IMG_4410.heic  3.0M  2026-11-12 18:40  deleted
+	notes.txt      812   2026-11-10 09:02  changed
+	```
+
+	With *--json* it writes one object, whose times are milliseconds
+	since 1970 and whose _size_ is null for a folder:
+
+	```
+	{"place": "/users", "snapshot": "2026-11-13-0302",
+	 "folder": "/users/alice/photos",
+	 "entries": [{"name": "IMG_4410.heic", "kind": "file",
+	  "size": 3100000, "modified_ms": 1763000000000,
+	  "then": "deleted"}], "more": false}
+	```
+
+	The snapshot is named after *--*, as a name that starts with *-*
+	can be.
+
 *restore* [*--from* _snapshot_] [*--to* _path_] _path_
 	Copies _path_, a file or a folder of a place, back from the newest
 	snapshot that holds it, or from _snapshot_, to where it was or to
@@ -130,6 +171,33 @@ version, which *sysupdate rollback* and the boot menu start.
 	$ rm notes.txt
 	$ snap restore notes.txt
 	Restored /users/alice/notes.txt from /snapshots/users/2026-11-11-0300/alice/notes.txt
+	```
+
+*restore* *--from* _snapshot_ *--beside* _label_ _path_ ...
+	Copies each _path_ back from _snapshot_ beside the one there now, as
+	_stem_ (_label_)._ext_ for a file with an extension and _name_
+	(_label_) for a folder or a name with none, so that both can be
+	compared; this is how the web console restores. _label_ is 1 to 40
+	characters with no */* and no control character, and is not *.* or
+	*..*. A name that is taken stops the restore with BAK-106, after the
+	paths before it, which it has said; nothing is ever written over.
+
+	Each folder on the way, in the snapshot and in the place, is opened
+	beneath the one before it, never through a symbolic link: a path with
+	a link on the way is refused, and a link in the snapshot is copied as
+	a link. The copy is made in a folder of its own that only snap may
+	enter, then moved to its name, which snap has taken first, in one
+	rename. So an administrator who restores into a folder another
+	account may write in never writes where that account points. The
+	copy keeps the modes and times, and the owners when an administrator
+	restores. An access list is not copied: a copy of a file or folder
+	that had one gets the group permissions the list gave its group,
+	never more, and snap says so; give the list again with *setfacl*(1).
+
+	```
+	$ snap restore --from 2026-11-11-0300 --beside "Nov 11" notes.txt photos
+	Restored /users/alice/notes (Nov 11).txt from snapshot 2026-11-11-0300
+	Restored /users/alice/photos (Nov 11) from snapshot 2026-11-11-0300
 	```
 
 *delete* _place_ _snapshot_ ...
@@ -168,8 +236,23 @@ With no _place_, it has *places*, a list with an object for each place
 *newest*
 	The name of the newest, or *null* for none.
 
+*newest_made*
+	When the newest was made, or *null* for none or when the
+	filesystem does not say.
+
 *folder*
 	Where its snapshots are read.
+
+*in_service*
+	Whether the snap service's view holds the place. Its daily round
+	skips one that it does not, which *service edit snap* adds.
+
+It also has *settings*, what *snap.toml* says with the defaults for what
+it leaves out (*places*, *daily* and *weekly*); and *update*, a list with
+an object for each snapshot in _/snapshots/update_, oldest first: the
+settings and the state from before the last update, and the settings of
+an attempt that fell back (*sysupdate*(8)), each with its *name* and
+when it was *made*. The list is empty when no update has made any.
 
 With a _place_, it has *place*, the top folder of its subvolume;
 *folder*, where its snapshots are read; and *snapshots*, a list with an
@@ -193,6 +276,10 @@ object for each, oldest first:
 *prunable*
 	Whether the next prune removes it.
 
+*restored*
+	Whether *backup restore* put it in the place, named *restored-* and
+	the backup's time (*backup*(8)). No prune removes it.
+
 # SPACE
 
 A file deleted from a place keeps its room until the last snapshot that
@@ -205,7 +292,9 @@ counts the room snapshots take with the rest.
 
 0 when it did what was asked; 1 when it did not, after what came before
 (a place of *auto* or *list* that failed is told of and the rest done),
-and for a mistake in the command line.
+and for a mistake in the command line. A _snapshot_ of *browse* that the
+place does not have ends the message with its ID, *BAK-105*, which the
+support center explains.
 
 # FILES
 

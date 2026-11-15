@@ -27,6 +27,14 @@
 //! probe can read only what the person can. An action without a probe
 //! always did something. The list says which are which, as `compares`.
 //!
+//! A secret, a password or a key, is never one of a command's words
+//! (ADR 0561). A field made with [`Field::secret`] is read into a
+//! [`Secret`], which the action gives its command on its standard input
+//! ([`Action::input`]) and which shows as `(secret)` wherever it would be
+//! printed or kept. An action whose command prints a secret says so
+//! ([`Action::SECRET_ANSWER`]). Either is a `POST`, a read as well as a
+//! change, so that a secret is never in an address.
+//!
 //! An action's Ansible task is the module of the collection `dukovo.system`
 //! for it where the collection has one: the services' changes are
 //! `dukovo.system.service`, which compares the service's state itself and
@@ -38,6 +46,7 @@
 //! [`REGISTRY`] is the one list. The route table, `GET /api/1/actions`,
 //! `admin actions` and `lab/actions.toml` are all made from it.
 
+mod backups;
 mod certificate;
 pub mod checks;
 mod console;
@@ -46,10 +55,14 @@ mod firewall;
 pub mod lab;
 pub mod logs;
 mod metrics;
+mod moving;
 mod network;
 mod reliability;
+pub mod secret;
 mod service;
 pub mod show;
+mod snapshots;
+mod storage;
 mod trial;
 
 use std::fmt;
@@ -58,6 +71,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
+pub use self::secret::Secret;
 use super::errors::{Failure, Kind};
 use super::scopes::{Needed, Scopes};
 
@@ -132,7 +146,19 @@ pub enum Type {
     // As `Number`: none in the list takes one.
     #[cfg_attr(not(test), allow(dead_code))]
     Flag,
+    /// A password or a key: one line of 1 to `max` characters, with no
+    /// NUL, read into a [`Secret`] (ADR 0561). The schema marks it
+    /// `writeOnly`: it is sent, and never given back.
+    Secret {
+        /// The most characters.
+        max: usize,
+    },
 }
+
+/// What a secret field's text matches: no line end and no NUL. The
+/// characters are in the class as they are, which a JSON Schema pattern
+/// (ECMAScript's) reads as written.
+pub const SECRET_PATTERN: &str = "^[^\n\r\0]*$";
 
 /// One argument of an action, as its input's schema describes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +207,17 @@ impl Field {
         Field { name, kind: Type::Flag, required: true, about }
     }
 
+    /// A required argument that is a secret of 1 to `max` characters,
+    /// which the action's command reads on its input ([`Action::input`]).
+    pub const fn secret(name: &'static str, about: &'static str, max: usize) -> Field {
+        Field { name, kind: Type::Secret { max }, required: true, about }
+    }
+
+    /// Whether it is a secret.
+    pub const fn is_secret(&self) -> bool {
+        matches!(self.kind, Type::Secret { .. })
+    }
+
     /// The same argument, which the action can be asked for without. A
     /// client leaves it out; a `null` in its place is read as left out too,
     /// which the schema does not say, since it only holds what a client
@@ -193,9 +230,9 @@ impl Field {
 
 /// The JSON Schema (draft 2020-12, the part with `type`, `description`,
 /// `minLength`, `maxLength`, `pattern`, `enum`, `minimum`, `maximum`,
-/// `required` and `additionalProperties`) of the arguments `fields`
-/// describe: an object that has these and no others, so that a client can
-/// check what it is about to send.
+/// `writeOnly`, `required` and `additionalProperties`) of the arguments
+/// `fields` describe: an object that has these and no others, so that a
+/// client can check what it is about to send.
 pub fn schema(fields: &[Field]) -> Value {
     let mut properties = Map::new();
     let mut required = Vec::new();
@@ -220,6 +257,13 @@ pub fn schema(fields: &[Field]) -> Value {
                 "integer"
             }
             Type::Flag => "boolean",
+            Type::Secret { max } => {
+                property.insert("minLength".into(), 1.into());
+                property.insert("maxLength".into(), max.into());
+                property.insert("pattern".into(), SECRET_PATTERN.into());
+                property.insert("writeOnly".into(), true.into());
+                "string"
+            }
         };
         property.insert("type".into(), kind.into());
         property.insert("description".into(), field.about.into());
@@ -286,6 +330,9 @@ pub struct Ansible {
     /// `failed_when`, for a command whose answer comes with a status other
     /// than 0 as well ([`Action::ANSWERS`]).
     pub failed_when: Option<String>,
+    /// `no_log: true`, for a task that gives its command a secret or whose
+    /// command prints one (ADR 0561): Ansible then shows neither.
+    pub no_log: bool,
 }
 
 impl Ansible {
@@ -307,6 +354,7 @@ impl Ansible {
             changed_when: (!changes).then(|| "false".into()),
             register: None,
             failed_when: None,
+            no_log: false,
         }
     }
 
@@ -326,6 +374,7 @@ impl Ansible {
             changed_when: None,
             register: None,
             failed_when: None,
+            no_log: false,
         }
     }
 
@@ -341,10 +390,35 @@ impl Ansible {
         }
         self
     }
+
+    /// The task, for an action whose fields are `fields`, with `args` as
+    /// they serialize, and whose command prints a secret when `answer`
+    /// (ADR 0561). Each secret `args` gives is read from the playbook's
+    /// variable of the field's name, one a line on the command's input in
+    /// the fields' order, as [`Action::input`] gives them. Ansible shows
+    /// nothing of a task that has a secret, and keeps the answer of one
+    /// whose command prints one for the playbook.
+    #[must_use]
+    pub fn keeping_secrets(mut self, fields: &[Field], args: &Value, answer: bool) -> Ansible {
+        let given: Vec<String> = fields
+            .iter()
+            .filter(|field| field.is_secret() && args.get(field.name).is_some_and(|v| !v.is_null()))
+            .map(|field| format!("{{{{ {} }}}}", field.name))
+            .collect();
+        if !given.is_empty() {
+            self.params.insert("stdin".into(), given.join("\n").into());
+            self.no_log = true;
+        }
+        if answer {
+            self.register = Some(RESULT);
+            self.no_log = true;
+        }
+        self
+    }
 }
 
 /// The name an Ansible task keeps its result under when its failure is
-/// told by [`Ansible::failed_when`].
+/// told by [`Ansible::failed_when`], or when its answer is a secret.
 const RESULT: &str = "answer";
 
 /// Arguments to try an action with, for the boot and lab tests that take
@@ -398,6 +472,10 @@ pub trait Action: 'static {
     /// Whether its command prints one JSON value a line, as `log -o json`
     /// does: the answer is then the array of the lines' values.
     const LINES: bool = false;
+    /// Whether its command prints a secret, as `backup key NAME` prints a
+    /// recovery key (ADR 0561). Its route is a `POST`, a read's too, and it
+    /// is never a task, which keeps what its command prints.
+    const SECRET_ANSWER: bool = false;
     /// Its five tests.
     const TESTS: Tests;
     /// What a person reads as its name in the palette and in the journal:
@@ -408,7 +486,17 @@ pub trait Action: 'static {
     type Args: Args;
 
     /// The command, as words: the program first. A read's has `--json`.
+    /// It never holds a secret: [`Secret`] has nothing that gives its text
+    /// but [`Secret::bytes`], which only [`Action::input`] uses.
     fn argv(args: &Self::Args) -> Vec<String>;
+
+    /// What the command reads on its standard input: the secrets of
+    /// `args`, each a line, in the order of the fields ([`Secret::lines`]).
+    /// None, the default, for an action that takes no secret, whose
+    /// command's input ends at once.
+    fn input(_args: &Self::Args) -> Option<Secret> {
+        None
+    }
 
     /// What the action is done to, which the name of its Ansible task adds
     /// to the title: the service's name. None for an action that takes
@@ -504,6 +592,9 @@ pub struct Prepared {
     pub probe: Option<Vec<String>>,
     /// What it does to a trial, when it answers well.
     pub trial: Option<Trial>,
+    /// What its command reads on its input: the secrets it takes, as lines
+    /// ([`Action::input`]), never kept and overwritten when it goes.
+    pub input: Option<Secret>,
 }
 
 /// An action in the list, whatever its arguments' type.
@@ -519,6 +610,8 @@ pub trait Registered: Sync + fmt::Debug {
     fn answers(&self) -> &'static [i32];
     /// [`Action::LINES`].
     fn lines(&self) -> bool;
+    /// [`Action::SECRET_ANSWER`].
+    fn secret_answer(&self) -> bool;
     fn tests(&self) -> Tests;
     fn title(&self) -> &'static str;
     /// Whether a change's `changed` comes from comparing, its probe's
@@ -547,6 +640,14 @@ pub trait Registered: Sync + fmt::Debug {
     fn keeps_file(&self, args: &Value, path: &str, text: Option<&str>) -> Option<bool>;
     /// The examples, as JSON.
     fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>);
+
+    /// Whether its route is a `POST`: a change's, and a read's that takes a
+    /// secret or answers one, so that the secret is in a body and never in
+    /// an address, a browser's history or a log of addresses (ADR 0561).
+    /// Any other read is a `GET`.
+    fn posts(&self) -> bool {
+        self.changes() || self.secret_answer() || self.fields().iter().any(Field::is_secret)
+    }
 }
 
 /// [`Registered`] for the action `A`.
@@ -592,6 +693,9 @@ impl<A: Action> Registered for Entry<A> {
     fn lines(&self) -> bool {
         A::LINES
     }
+    fn secret_answer(&self) -> bool {
+        A::SECRET_ANSWER
+    }
     fn tests(&self) -> Tests {
         A::TESTS
     }
@@ -612,9 +716,10 @@ impl<A: Action> Registered for Entry<A> {
     }
 
     fn prepare(&'static self, args: Value) -> Result<Prepared, Failure> {
+        // A secret is checked before serde reads it, since serde's words
+        // about a value that is not what a field takes can quote it.
+        secrets_checked(A::Args::FIELDS, &args)?;
         let typed: A::Args = serde_json::from_value(args).map_err(|err| {
-            // serde's words name the field and the type, never the value
-            // given, which could be a secret in the wrong field.
             Failure::new(
                 Kind::BadRequest,
                 format!("the arguments are not what {} takes: {err}", A::ID),
@@ -622,13 +727,19 @@ impl<A: Action> Registered for Entry<A> {
         })?;
         typed.check().map_err(|bad| Failure::bad_value(bad.field, bad.why))?;
         let argv = A::argv(&typed);
-        let ansible = A::ansible(&typed);
         let files = A::files(&typed);
         let probe = if A::CHANGES { A::probe(&typed) } else { None };
         let trial = A::trial(&typed);
+        let input = A::input(&typed);
+        if input.as_ref().is_some_and(|input| input.bytes().len() > secret::INPUT_MAX) {
+            // The fields' limits keep it within, which a unit test holds.
+            return Err(Failure::new(Kind::Internal, format!("{}'s input is too long", A::ID)));
+        }
+        // The secrets serialize as `(secret)`.
         let args = serde_json::to_value(&typed)
             .map_err(|err| Failure::new(Kind::Internal, format!("{} arguments: {err}", A::ID)))?;
-        Ok(Prepared { action: self, args, argv, ansible, files, probe, trial })
+        let ansible = A::ansible(&typed).keeping_secrets(A::Args::FIELDS, &args, A::SECRET_ANSWER);
+        Ok(Prepared { action: self, args, argv, ansible, files, probe, trial, input })
     }
 
     fn probed(&self, args: &Value, output: &str) -> Option<String> {
@@ -651,6 +762,38 @@ impl<A: Action> Registered for Entry<A> {
         let json = |args: &A::Args| serde_json::to_value(args).unwrap_or(Value::Null);
         (examples.good.iter().map(json).collect(), examples.bad, examples.undo)
     }
+}
+
+/// Checks each secret that `args` gives for a field of `fields`: one line
+/// of 1 to the field's most characters, with no NUL (ADR 0561). What is
+/// wrong is said without the value.
+///
+/// # Errors
+///
+/// ADM-125 for a secret that is not such a line, ADM-108 for one that is
+/// not text.
+fn secrets_checked(fields: &[Field], args: &Value) -> Result<(), Failure> {
+    for field in fields {
+        let Type::Secret { max } = field.kind else { continue };
+        match args.get(field.name) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(text)) => {
+                let length = text.chars().count();
+                if length == 0 || length > max || text.contains(['\n', '\r', '\0']) {
+                    let why = format!(
+                        "It is one line of 1 to {max} characters, with no line break. Nothing \
+                         was done."
+                    );
+                    return Err(Failure::bad_value(field.name, why));
+                }
+            }
+            Some(_) => {
+                let why = format!("\"{}\" is text", field.name);
+                return Err(Failure::new(Kind::BadRequest, why));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Makes [`REGISTRY`] from the action types, in the order the console
@@ -705,6 +848,34 @@ registry![
     reliability::Start,
     reliability::Dumps,
     reliability::Alerts,
+    storage::Show,
+    storage::Usage,
+    storage::Health,
+    storage::Scrub,
+    storage::Grow,
+    storage::Log,
+    storage::LogSet,
+    storage::LogTrim,
+    snapshots::List,
+    snapshots::Browse,
+    snapshots::BrowseAll,
+    snapshots::Take,
+    snapshots::Restore,
+    snapshots::RestoreAll,
+    backups::List,
+    // Before Show: its address is one of a place called ssh-key.
+    backups::SshKey,
+    backups::Show,
+    backups::Run,
+    backups::Verify,
+    backups::Add,
+    backups::Remove,
+    backups::Key,
+    backups::Restore,
+    moving::Find,
+    moving::Plan,
+    moving::Stage,
+    moving::Cancel,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
@@ -746,10 +917,11 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "title": action.title(),
                     "area": action.area(),
                     "changes": action.changes(),
-                    "method": if action.changes() { "POST" } else { "GET" },
+                    "method": if action.posts() { "POST" } else { "GET" },
                     "path": action.path(),
                     "runs": action.runs(),
                     "long": action.long(),
+                    "secret_answer": action.secret_answer(),
                     "compares": action.compares(),
                     "errors": action.errors(),
                     "tests": action.tests(),
@@ -780,7 +952,7 @@ pub fn find(actions: &'static [&'static dyn Registered], post: bool, path: &str)
     let mut wrong_method = false;
     for &action in actions {
         let Some(params) = matches(action.path(), path) else { continue };
-        if action.changes() == post {
+        if action.posts() == post {
             return Found::Action(action, params);
         }
         wrong_method = true;
@@ -928,6 +1100,11 @@ fn read_value(field: &Field, name: &str, text: String) -> Result<Value, Failure>
             "false" => Value::Bool(false),
             _ => return Err(bad(format!("\"{name}\" is true or false"))),
         },
+        // A read that takes a secret is a `POST`, whose arguments are in its
+        // body: a secret is never read from an address.
+        Type::Secret { .. } => {
+            return Err(bad(format!("\"{name}\" is a secret, never given in an address")));
+        }
     })
 }
 

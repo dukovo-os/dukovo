@@ -46,6 +46,7 @@ use super::errors::Kind;
 use super::guard::{CSRF_HEADER, SESSION_COOKIE};
 use super::routes::{Access, Entry, Route, TABLE, Verb};
 use super::scopes::Needed;
+use super::serve::{HEAD_MAX, HEADERS_MAX};
 
 /// The description of [`TABLE`]'s routes and of `actions`.
 pub fn document(actions: &[&dyn Registered]) -> Value {
@@ -54,7 +55,7 @@ pub fn document(actions: &[&dyn Registered]) -> Value {
         add(&mut paths, entry.path, method(entry.verb), route_operation(entry, actions));
     }
     for action in actions {
-        let method = if action.changes() { "post" } else { "get" };
+        let method = if action.posts() { "post" } else { "get" };
         add(&mut paths, action.path(), method, action_operation(*action));
     }
     json!({
@@ -67,7 +68,9 @@ pub fn document(actions: &[&dyn Registered]) -> Value {
                 anything from a session must also come from the console's own origin, in its \
                 Origin header, and carry the session's token in x-dukovo-csrf; one that brings \
                 an API token needs neither, since a browser never sends a token by itself. A \
-                body is JSON, at most 64 KiB before sign-in and 1 MiB after.",
+                request's line and headers come to at most 16 KiB and 64 headers, or it is \
+                answered 431 with no body. A body is JSON, at most 64 KiB before sign-in and \
+                1 MiB after.",
         },
         "tags": [
             { "name": "open", "description": "Answered to anyone." },
@@ -266,19 +269,19 @@ fn action_operation(action: &dyn Registered) -> Value {
         "summary": action.title(),
         "description": describe(action),
         "tags": [tag(Access::Api)],
-        "security": security(Access::Api, action.changes()),
+        "security": security(Access::Api, action.posts()),
         "responses": responses(action_success(action), &action_kinds(action), action.errors()),
     });
     let given = |field: &Field| example.and_then(|given| given.get(field.name));
     let mut parameters: Vec<Value> =
         address.iter().map(|field| parameter(field, given(field), "path")).collect();
-    if !action.changes() {
+    if !action.posts() {
         parameters.extend(body.iter().map(|field| parameter(field, given(field), "query")));
     }
     if !parameters.is_empty() {
         operation["parameters"] = parameters.into();
     }
-    if action.changes() {
+    if action.posts() {
         operation["requestBody"] = request_body(&body, example, &in_address);
     }
     operation
@@ -566,7 +569,7 @@ fn route_kinds(entry: &Entry) -> Vec<Kind> {
 
 /// The errors the route of `action` can answer with.
 fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
-    let mut kinds = access_kinds(Access::Api, action.changes());
+    let mut kinds = access_kinds(Access::Api, action.posts());
     kinds.extend([
         Kind::BadValue,
         Kind::OutOfScope,
@@ -589,12 +592,14 @@ fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
     kinds
 }
 
-/// The responses of an operation: its success, and one for each status
-/// that `kinds` give, listing the error IDs that come with it. `own` are
-/// the IDs the action's command can give instead of ADM-123.
+/// The responses of an operation: its success, one for each status that
+/// `kinds` give, listing the error IDs that come with it, and 431, which
+/// any request may meet before a route is found. `own` are the IDs the
+/// action's command can give instead of ADM-123.
 fn responses(success: (&str, Value), kinds: &[Kind], own: &[&str]) -> Value {
     let mut all = Map::new();
     all.insert(success.0.into(), success.1);
+    all.insert("431".into(), head_too_large());
     let mut by_status: BTreeMap<u16, BTreeMap<&str, &str>> = BTreeMap::new();
     for kind in kinds {
         by_status.entry(kind.status()).or_default().insert(kind.id(), kind.title());
@@ -608,6 +613,20 @@ fn responses(success: (&str, Value), kinds: &[Kind], own: &[&str]) -> Value {
         all.insert(status.to_string(), error_response(*status, ids));
     }
     Value::Object(all)
+}
+
+/// The answer to a request whose head is over admind's limits: the HTTP
+/// server gives it before admind reads the request, so it has no body and
+/// no error ID.
+fn head_too_large() -> Value {
+    json!({
+        "description": format!(
+            "The request's line and headers come to more than {} KiB, or it has more than {} \
+             headers. The answer has no body.",
+            HEAD_MAX >> 10,
+            HEADERS_MAX,
+        ),
+    })
 }
 
 /// The response for `status`, which comes with one of the errors `ids`

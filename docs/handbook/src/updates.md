@@ -902,7 +902,9 @@ starts, they take the places of the new install's, which are kept in
 `/snapshots/machine-restore`. The computer then has the old one's name,
 accounts and passwords, settings, files and apps, and every app has the
 permissions it was given, without asking again: each backup carries a
-record of the apps installed and of what each person allowed them.
+record of the apps installed and of what each person allowed them, and
+of what signs each person in, their password, their sharing password,
+their second steps for the web console and their keyring.
 `--at` restores an older backup. The same command, run on the computer
 that was backed up, takes it back to that backup; what it replaced stays
 in `/snapshots/machine-restore` until `subvolume delete` removes it.

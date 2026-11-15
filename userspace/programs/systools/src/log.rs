@@ -24,7 +24,7 @@ use std::io::{self, Write};
 use accounts::console::Filter;
 
 use crate::args::{Arg, Args};
-use crate::logd::{self, Boot, Record, Request, Usage};
+use crate::logd::{self, Boot, Record, Request};
 use crate::logtrim;
 use crate::util::{self, Fail, fail, usage};
 
@@ -473,13 +473,7 @@ fn list_boots(utc: bool) -> Result<i32, Fail> {
 
 /// `log --disk-usage`: the space the log takes.
 fn disk_usage(journalctl: bool) -> Result<i32, Fail> {
-    let mut usage: Option<Usage> = None;
-    let request = Request { ask: "usage".into(), ..Request::default() };
-    logd::ask(&request, |line| {
-        usage = serde_json::from_str(line).ok();
-        Ok(false)
-    })?;
-    let usage = usage.ok_or_else(|| fail("logd did not say".into()))?;
+    let usage = logd::disk_usage()?;
     let size = util::human(usage.bytes, false);
     if journalctl {
         println!("Archived and active journals take up {size} in the file system.");

@@ -14,6 +14,7 @@
 id = "service.list"
 title = "List the services"
 area = "services"
+changes = false
 method = "GET"
 path = "/api/1/services"
 runs = "as-the-person"
@@ -25,6 +26,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.explain"
 title = "Explain a service"
 area = "services"
+changes = false
 method = "GET"
 path = "/api/1/services/{name}/explain"
 runs = "as-the-person"
@@ -36,6 +38,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.status"
 title = "Show a service"
 area = "services"
+changes = false
 method = "GET"
 path = "/api/1/services/{name}"
 runs = "as-the-person"
@@ -47,6 +50,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.start"
 title = "Start a service"
 area = "services"
+changes = true
 method = "POST"
 path = "/api/1/services/{name}/start"
 runs = "as-administrator"
@@ -58,6 +62,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.stop"
 title = "Stop a service"
 area = "services"
+changes = true
 method = "POST"
 path = "/api/1/services/{name}/stop"
 runs = "as-administrator"
@@ -69,6 +74,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.restart"
 title = "Restart a service"
 area = "services"
+changes = true
 method = "POST"
 path = "/api/1/services/{name}/restart"
 runs = "as-administrator"
@@ -80,6 +86,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.enable"
 title = "Enable a service"
 area = "services"
+changes = true
 method = "POST"
 path = "/api/1/services/{name}/enable"
 runs = "as-administrator"
@@ -91,6 +98,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.disable"
 title = "Disable a service"
 area = "services"
+changes = true
 method = "POST"
 path = "/api/1/services/{name}/disable"
 runs = "as-administrator"
@@ -102,6 +110,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.usage"
 title = "Show a service's usage"
 area = "services"
+changes = false
 method = "GET"
 path = "/api/1/services/{name}/usage/{range}"
 runs = "as-the-person"
@@ -113,6 +122,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "service.timers"
 title = "List the scheduled tasks"
 area = "services"
+changes = false
 method = "GET"
 path = "/api/1/timers"
 runs = "as-administrator"
@@ -124,6 +134,7 @@ tests = { checks = "admind::actions::service::tests", route = "admin-actions", s
 id = "certificate.list"
 title = "List the certificates"
 area = "certificates"
+changes = false
 method = "GET"
 path = "/api/1/certificates"
 runs = "as-the-person"
@@ -135,6 +146,7 @@ tests = { checks = "admind::actions::certificate::tests", route = "admin-actions
 id = "certificate.show"
 title = "Show a certificate"
 area = "certificates"
+changes = false
 method = "GET"
 path = "/api/1/certificates/{name}"
 runs = "as-the-person"
@@ -146,6 +158,7 @@ tests = { checks = "admind::actions::certificate::tests", route = "admin-actions
 id = "certificate.renew"
 title = "Renew a certificate"
 area = "certificates"
+changes = true
 method = "POST"
 path = "/api/1/certificates/{name}/renew"
 runs = "as-administrator"
@@ -157,6 +170,7 @@ tests = { checks = "admind::actions::certificate::tests", route = "admin-actions
 id = "console.reach"
 title = "Set whom the console answers"
 area = "console"
+changes = true
 method = "POST"
 path = "/api/1/console/reach"
 runs = "as-administrator"
@@ -168,6 +182,7 @@ tests = { checks = "admind::actions::console::tests", route = "admin-actions", s
 id = "console.about"
 title = "Show this server"
 area = "console"
+changes = false
 method = "GET"
 path = "/api/1/console/about"
 runs = "as-the-person"
@@ -179,6 +194,7 @@ tests = { checks = "admind::actions::console::tests", route = "admin-actions", s
 id = "console.notices"
 title = "Show the sign-in notices"
 area = "console"
+changes = false
 method = "GET"
 path = "/api/1/console/notices"
 runs = "as-the-person"
@@ -190,6 +206,7 @@ tests = { checks = "admind::actions::console::tests", route = "admin-actions", s
 id = "console.export"
 title = "Copy the settings to Git"
 area = "console"
+changes = true
 method = "POST"
 path = "/api/1/console/export"
 runs = "as-the-person"
@@ -201,6 +218,7 @@ tests = { checks = "admind::actions::reliability::tests", route = "admin-actions
 id = "checks.last"
 title = "Show the last checks"
 area = "security"
+changes = false
 method = "GET"
 path = "/api/1/checks/last"
 runs = "as-the-person"
@@ -212,6 +230,7 @@ tests = { checks = "admind::actions::checks::tests", route = "admin-actions", sa
 id = "metrics.now"
 title = "Show the latest metrics"
 area = "metrics"
+changes = false
 method = "GET"
 path = "/api/1/metrics/now"
 runs = "as-the-person"
@@ -223,6 +242,7 @@ tests = { checks = "admind::actions::metrics::tests", route = "admin-actions", s
 id = "metrics.usage"
 title = "Show the usage"
 area = "metrics"
+changes = false
 method = "GET"
 path = "/api/1/metrics/usage/{range}"
 runs = "as-the-person"
@@ -234,6 +254,7 @@ tests = { checks = "admind::actions::metrics::tests", route = "admin-actions", s
 id = "metrics.around"
 title = "Show the usage around a time"
 area = "metrics"
+changes = false
 method = "GET"
 path = "/api/1/metrics/around/{at}"
 runs = "as-the-person"
@@ -245,6 +266,7 @@ tests = { checks = "admind::actions::metrics::tests", route = "admin-actions", s
 id = "logs.read"
 title = "Read your programs' log"
 area = "logs"
+changes = false
 method = "GET"
 path = "/api/1/logs"
 runs = "as-the-person"
@@ -256,6 +278,7 @@ tests = { checks = "admind::actions::logs::tests", route = "admin-logs", same_as
 id = "logs.read-all"
 title = "Read the whole log"
 area = "logs"
+changes = false
 method = "GET"
 path = "/api/1/logs/all"
 runs = "as-administrator"
@@ -267,6 +290,7 @@ tests = { checks = "admind::actions::logs::tests", route = "admin-logs", same_as
 id = "network.show"
 title = "Show the network cards"
 area = "network"
+changes = false
 method = "GET"
 path = "/api/1/network"
 runs = "as-the-person"
@@ -278,6 +302,7 @@ tests = { checks = "admind::actions::network::tests", route = "admin-actions", s
 id = "network.connections"
 title = "List the connections"
 area = "network"
+changes = false
 method = "GET"
 path = "/api/1/network/connections"
 runs = "as-the-person"
@@ -289,6 +314,7 @@ tests = { checks = "admind::actions::network::tests", route = "admin-actions", s
 id = "network.set"
 title = "Set a network card"
 area = "network"
+changes = true
 method = "POST"
 path = "/api/1/network/cards/{card}"
 runs = "as-administrator"
@@ -300,6 +326,7 @@ tests = { checks = "admind::actions::network::tests", route = "admin-trials", sa
 id = "network.keep"
 title = "Keep the network settings"
 area = "network"
+changes = true
 method = "POST"
 path = "/api/1/network/trial/keep"
 runs = "as-administrator"
@@ -311,6 +338,7 @@ tests = { checks = "admind::actions::network::tests", route = "admin-trials", sa
 id = "network.undo"
 title = "Undo the network settings"
 area = "network"
+changes = true
 method = "POST"
 path = "/api/1/network/trial/undo"
 runs = "as-administrator"
@@ -322,6 +350,7 @@ tests = { checks = "admind::actions::network::tests", route = "admin-trials", sa
 id = "firewall.list"
 title = "List the firewall's rules"
 area = "firewall"
+changes = false
 method = "GET"
 path = "/api/1/firewall"
 runs = "as-the-person"
@@ -333,6 +362,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", 
 id = "firewall.test"
 title = "Test a connection against the firewall"
 area = "firewall"
+changes = false
 method = "GET"
 path = "/api/1/firewall/test"
 runs = "as-the-person"
@@ -344,6 +374,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", 
 id = "firewall.status"
 title = "Show what the firewall lets in"
 area = "firewall"
+changes = false
 method = "GET"
 path = "/api/1/firewall/status"
 runs = "as-administrator"
@@ -355,6 +386,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", 
 id = "firewall.dropped"
 title = "Show what the firewall dropped"
 area = "firewall"
+changes = false
 method = "GET"
 path = "/api/1/firewall/dropped"
 runs = "as-administrator"
@@ -366,6 +398,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-actions", 
 id = "firewall.add"
 title = "Add a firewall rule"
 area = "firewall"
+changes = true
 method = "POST"
 path = "/api/1/firewall/add"
 runs = "as-administrator"
@@ -377,6 +410,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", s
 id = "firewall.replace"
 title = "Replace a firewall rule"
 area = "firewall"
+changes = true
 method = "POST"
 path = "/api/1/firewall/replace"
 runs = "as-administrator"
@@ -388,6 +422,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", s
 id = "firewall.remove"
 title = "Remove a firewall rule"
 area = "firewall"
+changes = true
 method = "POST"
 path = "/api/1/firewall/remove"
 runs = "as-administrator"
@@ -399,6 +434,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", s
 id = "firewall.keep"
 title = "Keep the firewall's rules"
 area = "firewall"
+changes = true
 method = "POST"
 path = "/api/1/firewall/trial/keep"
 runs = "as-administrator"
@@ -410,6 +446,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", s
 id = "firewall.undo"
 title = "Undo the firewall's rules"
 area = "firewall"
+changes = true
 method = "POST"
 path = "/api/1/firewall/trial/undo"
 runs = "as-administrator"
@@ -421,6 +458,7 @@ tests = { checks = "admind::actions::firewall::tests", route = "admin-trials", s
 id = "reliability.starts"
 title = "List the starts"
 area = "reliability"
+changes = false
 method = "GET"
 path = "/api/1/starts"
 runs = "as-the-person"
@@ -432,6 +470,7 @@ tests = { checks = "admind::actions::reliability::tests", route = "admin-actions
 id = "reliability.failed"
 title = "Show the failed start"
 area = "reliability"
+changes = false
 method = "GET"
 path = "/api/1/starts/failed"
 runs = "as-the-person"
@@ -443,6 +482,7 @@ tests = { checks = "admind::actions::reliability::tests", route = "admin-actions
 id = "reliability.start"
 title = "Show a start's times"
 area = "reliability"
+changes = false
 method = "GET"
 path = "/api/1/starts/{start}"
 runs = "as-the-person"
@@ -454,6 +494,7 @@ tests = { checks = "admind::actions::reliability::tests", route = "admin-actions
 id = "reliability.dumps"
 title = "List the crash dumps"
 area = "reliability"
+changes = false
 method = "GET"
 path = "/api/1/dumps"
 runs = "as-administrator"
@@ -465,9 +506,334 @@ tests = { checks = "admind::actions::reliability::tests", route = "admin-actions
 id = "reliability.alerts"
 title = "Show the alert history"
 area = "reliability"
+changes = false
 method = "GET"
 path = "/api/1/alerts/history"
 runs = "as-administrator"
 long = false
 compares = false
 tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.show"
+title = "Show the disks and volumes"
+area = "storage"
+changes = false
+method = "GET"
+path = "/api/1/storage"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.usage"
+title = "Show the disks' use over time"
+area = "storage"
+changes = false
+method = "GET"
+path = "/api/1/storage/usage/{range}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.health"
+title = "Show a disk's health"
+area = "storage"
+changes = false
+method = "GET"
+path = "/api/1/storage/disks/{disk}/health"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.scrub"
+title = "Check every block of a filesystem"
+area = "storage"
+changes = true
+method = "POST"
+path = "/api/1/storage/scrub"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.grow"
+title = "Grow a disk"
+area = "storage"
+changes = true
+method = "POST"
+path = "/api/1/storage/disks/{disk}/grow"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.log"
+title = "Show the log's space"
+area = "storage"
+changes = false
+method = "GET"
+path = "/api/1/storage/log"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.log-set"
+title = "Set the log's limits"
+area = "storage"
+changes = true
+method = "POST"
+path = "/api/1/storage/log/limits"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "storage.log-trim"
+title = "Trim the log"
+area = "storage"
+changes = true
+method = "POST"
+path = "/api/1/storage/log/trim"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::storage::tests", route = "admin-storage", same_as_command = "admin-storage", browser = "web-console/storage", ansible = "web-console/ansible" }
+
+[[action]]
+id = "snapshots.list"
+title = "List the snapshots"
+area = "snapshots"
+changes = false
+method = "GET"
+path = "/api/1/snapshots"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::snapshots::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "snapshots.browse"
+title = "Browse a snapshot"
+area = "snapshots"
+changes = false
+method = "GET"
+path = "/api/1/snapshots/browse"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::snapshots::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "snapshots.browse-all"
+title = "Browse a snapshot as an administrator"
+area = "snapshots"
+changes = false
+method = "GET"
+path = "/api/1/snapshots/browse/all"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::snapshots::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "snapshots.take"
+title = "Take a snapshot"
+area = "snapshots"
+changes = true
+method = "POST"
+path = "/api/1/snapshots/take"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::snapshots::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "snapshots.restore"
+title = "Restore files from a snapshot"
+area = "snapshots"
+changes = true
+method = "POST"
+path = "/api/1/snapshots/restore"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::snapshots::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "snapshots.restore-all"
+title = "Restore files from a snapshot as an administrator"
+area = "snapshots"
+changes = true
+method = "POST"
+path = "/api/1/snapshots/restore/all"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::snapshots::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.list"
+title = "List the backup places"
+area = "backups"
+changes = false
+method = "GET"
+path = "/api/1/backups"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.ssh-key"
+title = "Show the machine's key for servers"
+area = "backups"
+changes = false
+method = "GET"
+path = "/api/1/backups/ssh-key"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.show"
+title = "Show what a backup place holds"
+area = "backups"
+changes = false
+method = "GET"
+path = "/api/1/backups/{name}"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.run"
+title = "Back up now"
+area = "backups"
+changes = true
+method = "POST"
+path = "/api/1/backups/{name}/run"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.verify"
+title = "Check a backup place"
+area = "backups"
+changes = true
+method = "POST"
+path = "/api/1/backups/{name}/verify"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.add"
+title = "Add a backup place"
+area = "backups"
+changes = true
+method = "POST"
+path = "/api/1/backups/add"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.remove"
+title = "Remove a backup place"
+area = "backups"
+changes = true
+method = "POST"
+path = "/api/1/backups/{name}/remove"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.key"
+title = "Show a backup place's recovery key"
+area = "backups"
+changes = false
+method = "POST"
+path = "/api/1/backups/{name}/key"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "backups.restore"
+title = "Restore a place from a backup place"
+area = "backups"
+changes = true
+method = "POST"
+path = "/api/1/backups/{name}/restore"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::backups::tests", route = "admin-backups", same_as_command = "admin-backups", browser = "web-console/snapshots", ansible = "web-console/ansible" }
+
+[[action]]
+id = "move.find"
+title = "Find the backups of other machines"
+area = "move"
+changes = false
+method = "GET"
+path = "/api/1/move/sources"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::moving::tests", route = "admin-move", same_as_command = "admin-move", browser = "web-console/move", ansible = "web-console/ansible" }
+
+[[action]]
+id = "move.plan"
+title = "Check what a move brings across"
+area = "move"
+changes = false
+method = "POST"
+path = "/api/1/move/plan"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::moving::tests", route = "admin-move", same_as_command = "admin-move", browser = "web-console/move", ansible = "web-console/ansible" }
+
+[[action]]
+id = "move.stage"
+title = "Stage a move for the next start"
+area = "move"
+changes = true
+method = "POST"
+path = "/api/1/move/stage"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::moving::tests", route = "admin-move", same_as_command = "admin-move", browser = "web-console/move", ansible = "web-console/ansible" }
+
+[[action]]
+id = "move.cancel"
+title = "Cancel a staged move"
+area = "move"
+changes = true
+method = "POST"
+path = "/api/1/move/cancel"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::moving::tests", route = "admin-move", same_as_command = "admin-move", browser = "web-console/move", ansible = "web-console/ansible" }

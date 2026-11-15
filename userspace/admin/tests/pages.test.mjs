@@ -51,7 +51,10 @@ test('the paths are one to a page, the root is the Overview\'s and the navigatio
   assert.equal(new Set(orders).size, orders.length);
   assert.deepEqual(
     Object.fromEntries(PAGES.filter((entry) => entry.nav).map((entry) => [entry.id, entry.nav.order])),
-    { overview: 10, logs: 20, reliability: 30, networking: 60, firewall: 70, services: 90, terminal: 150 },
+    {
+      overview: 10, logs: 20, reliability: 30, storage: 40, snapshots: 50, networking: 60, firewall: 70, accounts: 80,
+      services: 90, security: 120, terminal: 150,
+    },
     'the orders of the table at the top of pages.js',
   );
 });

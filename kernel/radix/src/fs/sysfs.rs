@@ -56,7 +56,9 @@
 //!   how many `disks` it has, how many of them are `missing` (missing at
 //!   the mount or failed since, ADR 0153) and how many are `behind` (they
 //!   missed changes, until a scrub catches them up), which metricsd(8)
-//!   watches;
+//!   watches, and its `profiles`, a line for each kind of block group in
+//!   use (`data raid1`; two words after the kind while a balance converts
+//!   it), which `storage show` reads;
 //! - `/kernel/fs/space`: how full each mounted filesystem is (ADR 0484),
 //!   which metricsd(8) reads, as its view holds `/kernel` but not every
 //!   mount that statvfs(3) would need;
@@ -658,6 +660,26 @@ impl Listing for BtrfsVolumes {
         dir.add("disks", count(|fs| fs.disks().0)?)?;
         dir.add("missing", count(|fs| fs.disks().1)?)?;
         dir.add("behind", count(radix_btrfs::BtrfsFs::behind)?)?;
+        // A line for each kind of block group, with its profiles.
+        let profiled = fs.clone();
+        let profiles =
+            value(move |text| profiled.upgrade().ok_or(fmt::Error)?.profiles().write(text))?;
+        dir.add("profiles", profiles)?;
+        // The disks and partitions it is on, a name a line, as Linux's
+        // `devices` folder has them: which disks a volume uses is told to
+        // anyone, who may not open a disk to read it there.
+        let held = fs.clone();
+        let devices = value(move |text| {
+            let fs = held.upgrade().ok_or(fmt::Error)?;
+            let mut written = Ok(());
+            disk::for_each(|entry| {
+                if written.is_ok() && fs.has_disk(&entry.device) {
+                    written = writeln!(text, "{}", entry.name.as_str());
+                }
+            });
+            written
+        })?;
+        dir.add("devices", devices)?;
         let fs = fs.clone();
         let label = value(move |text| {
             radix_vfs::FileSystem::label(&*fs.upgrade().ok_or(fmt::Error)?, text)?;
