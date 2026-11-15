@@ -798,8 +798,9 @@ impl Toolchain {
         process::create_dir(&self.autotools())?;
         process::create_dir(&self.cmake().join("Platform"))?;
         let sysroot = ctx.out.join("sysroot");
-        write_script(&self.cc(), &self.compiler_script(&sysroot, false))?;
-        write_script(&self.cxx(), &self.compiler_script(&sysroot, true))?;
+        let maps = crate::repro::cc_flags(ctx);
+        write_script(&self.cc(), &self.compiler_script(&sysroot, &maps, false))?;
+        write_script(&self.cxx(), &self.compiler_script(&sysroot, &maps, true))?;
         let script = |name: &str, path: &Path| {
             format!(
                 "#!/bin/sh\n# Written by ob (ob(1), PORTS): the Radix toolchain's {name}.\n\
@@ -826,7 +827,7 @@ impl Toolchain {
             &self.autotools().join("config.site"),
             include_str!("../autotools/config.site"),
         )?;
-        write_file(&self.libc_cross_file(), &self.libc_cross(&sysroot))?;
+        write_file(&self.libc_cross_file(), &self.libc_cross(&sysroot, &maps))?;
         write_file(&self.cross_file(), &self.programs_cross())?;
         self.write_cmake(&sysroot)?;
         Ok(())
@@ -844,7 +845,10 @@ impl Toolchain {
     /// shared library, both on the shared C library, for bundles that ship
     /// libraries of their own (ADR 0071). Linux's target, rather than
     /// none, makes Clang link with LLD itself (for no OS it hands linking
-    /// to the host's GCC).
+    /// to the host's GCC). It names the checkout and the build directory by
+    /// the names of [`crate::repro`] in `__FILE__`, assertions and debug
+    /// information, so that a program does not depend on where it was
+    /// built (ADR 0535).
     ///
     /// The C++ compiler is the same with Clang's C++ driver, libc++'s
     /// headers before the C library's (as libc++ needs: its own
@@ -852,7 +856,7 @@ impl Toolchain {
     /// links, libc++, libc++abi and libunwind before the C library (ADR
     /// 0090). `-nostdinc++` leaves out the headers and `-nostdlib++` or
     /// `-nodefaultlibs` the libraries, as libc++'s own build asks.
-    fn compiler_script(&self, sysroot: &Path, cxx: bool) -> String {
+    fn compiler_script(&self, sysroot: &Path, maps: &[String], cxx: bool) -> String {
         let lib = sysroot.join("system/libraries");
         let (what, clang) =
             if cxx { ("C++ compiler", self.clangxx()) } else { ("C compiler", self.clang.clone()) };
@@ -900,7 +904,7 @@ for arg do
 	set -- "$@" "$arg"
 done
 set -- -isystem '{sysroot}/system/include' -isystem '{resource}/include' \
-	-fPIE -ffunction-sections -fdata-sections "$@"
+	-fPIE -ffunction-sections -fdata-sections {maps}"$@"
 {headers}set -- --target=x86_64-unknown-linux-musl \
 	-U__linux__ -U__linux -Ulinux -U__gnu_linux__ \
 	-D__radix__ -D__dukovo__ \
@@ -922,6 +926,7 @@ fi
 exec '{clang}' "$@"
 "#,
             version = self.version,
+            maps = maps.iter().fold(String::new(), |all, flag| format!("{all}'{flag}' ")),
             sysroot = sysroot.display(),
             resource = self.resource.display(),
             lib = lib.display(),
@@ -1044,8 +1049,9 @@ build | b | check | c | clippy | doc | d | fetch | run | r | rustc | test | t | 
 	set -- --target '{spec}' -Zjson-target-spec "$@" ;;
 esac
 unset RUSTFLAGS CARGO_BUILD_RUSTFLAGS CARGO_BUILD_TARGET
+us=$(printf '\037')
 export RUSTUP_TOOLCHAIN='{channel}'
-export CARGO_ENCODED_RUSTFLAGS='--sysroot={rust}'
+export CARGO_ENCODED_RUSTFLAGS='--sysroot={rust}'{remaps}
 export CARGO_TARGET_X86_64_UNKNOWN_RADIX_LINKER='{cc}'
 export CC_x86_64_unknown_radix='{cc}'
 export AR_x86_64_unknown_radix='{ar}'
@@ -1054,6 +1060,11 @@ export CARGO_FUTURE_INCOMPAT_REPORT_FREQUENCY=never
 exec cargo "$command" "$@"
 "#,
             patches = self.crate_patches().display(),
+            // The flags are separated by the unit separator, as Cargo reads
+            // them from CARGO_ENCODED_RUSTFLAGS.
+            remaps = crate::repro::rustc_flags(ctx)
+                .iter()
+                .fold(String::new(), |all, flag| format!("{all}\"$us\"'{flag}'")),
             spec = ctx.root.join(crate::userspace::STD_TARGET_SPEC).display(),
             rust = self.rust().display(),
             cc = self.cc().display(),
@@ -1066,7 +1077,7 @@ exec cargo "$command" "$@"
     /// as an error makes mlibc's ifunc check fail, as it must there. The
     /// sysroot's headers come after all others, for the kernel's
     /// (`radix/`) only: the C library has its own.
-    fn libc_cross(&self, sysroot: &Path) -> String {
+    fn libc_cross(&self, sysroot: &Path, maps: &[String]) -> String {
         let clangxx = self.clangxx();
         format!(
             "# Written by ob (ob(1), PORTS): Meson's cross file for the C library.\n\
@@ -1081,10 +1092,10 @@ exec cargo "$command" "$@"
              \n\
              [built-in options]\n\
              c_args = ['-fPIC', '-ffunction-sections', '-fdata-sections', '-D__radix__', \
-             '-D__dukovo__', '-D__unix__', '-idirafter', '{radix}']\n\
+             '-D__dukovo__', '-D__unix__', '-idirafter', '{radix}'{maps}]\n\
              cpp_args = ['-fPIC', '-ffunction-sections', '-fdata-sections', \
              '-Werror=unknown-attributes', '-D__radix__', '-D__dukovo__', '-D__unix__', \
-             '-idirafter', '{radix}']\n\
+             '-idirafter', '{radix}'{maps}]\n\
              c_link_args = ['-nostdlib', '{builtins}']\n\
              cpp_link_args = ['-nostdlib', '{builtins}']\n\
              \n{host}",
@@ -1095,6 +1106,7 @@ exec cargo "$command" "$@"
             ar = self.tools["ar"].display(),
             strip = self.tools["strip"].display(),
             radix = sysroot.join("system/include").display(),
+            maps = maps.iter().fold(String::new(), |all, flag| format!("{all}, '{flag}'")),
             builtins = self.builtins.display(),
             host = HOST_MACHINE,
         )
@@ -1687,7 +1699,13 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env_remove("PKG_CONFIG_PATH")
         .env("PKG_CONFIG_LIBDIR", sysroot.join("system/libraries/pkgconfig"))
         .env("PKG_CONFIG_SYSROOT_DIR", &sysroot)
-        .env("SOURCE_DATE_EPOCH", crate::image::source_date_epoch(ctx).unwrap_or("0".into()));
+        .env("SOURCE_DATE_EPOCH", crate::image::source_date_epoch(ctx).unwrap_or("0".into()))
+        // What a recipe that sets compiler flags itself, and does not use
+        // the toolchain's wrappers, adds to them so that what it builds
+        // does not record where it was built (ADR 0535): the flags for
+        // Rust's compiler, as Cargo's CARGO_ENCODED_RUSTFLAGS has them,
+        // separated by the unit separator.
+        .env("REMAP_RUSTFLAGS", crate::repro::rustc_flags(ctx).join("\x1f"));
     process::run(ctx, &mut cmd)
         .map_err(|err| Error::new(format!("port {}: {err}", recipe.name)))?;
     if let Some(spec) = &recipe.bundle {

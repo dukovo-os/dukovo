@@ -3706,6 +3706,7 @@ pub fn build_test_image(
     let built_image = image::build(
         ctx,
         &ImageSpec {
+            kind: name,
             kernel: &built.kernel,
             timeout: 0,
             cmdline: &cmdline_slot(),
@@ -3742,6 +3743,7 @@ fn build_installed_test_image(
     image::build(
         ctx,
         &ImageSpec {
+            kind: "dukovo-test-installed",
             kernel: &built.kernel,
             timeout: 0,
             cmdline: &cmdline_slot(),

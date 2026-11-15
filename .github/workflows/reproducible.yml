@@ -1,0 +1,337 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# A release is built twice, in different places, and must come out the same
+# (ADR 0535). Both builds are `./ob release build`, which stages the tree of
+# the system as an image holds it and writes its file list, SHA-256 for each
+# file, and the unsigned release list; the SHA-256 of that list is what the
+# builds, and the one on the signing machine (ADR 0457), compare.
+#
+# The first build is the one CI makes anyway: the checkout where the runner
+# puts it, with the ports ci.yml's ports job cached. The second is made to
+# differ in everything a build might take from where it runs: another
+# runner, another folder for the checkout, another user and home, another
+# umask, time zone and locale, one job fewer, and every port built from
+# its source. A third job compares what each left, names every file that
+# differs, and runs diffoscope on the first twenty that differ in content.
+#
+# The second build takes about 1.5 hours, the ports being most of it. Should
+# it ever near the 6 hours a job may take, the ports that no image holds
+# are the ones to leave out of it.
+name: Reproducible release
+
+on:
+  schedule:
+    # Mondays, early, when no merge is waiting for the runners.
+    - cron: "23 4 * * 1"
+  push:
+    # A release branch (ADR 0534) is built twice for each fix that lands.
+    branches: ["release/**"]
+  workflow_dispatch:
+  pull_request:
+    # Only a change that can make a build differ runs this: the workflow
+    # itself, what makes the identifiers and the images, the release build,
+    # and the recipes and flags that took paths and times out of a build.
+    paths:
+      - .github/workflows/reproducible.yml
+      - tools/xtask/src/image.rs
+      - tools/xtask/src/rootfs.rs
+      - tools/xtask/src/release.rs
+      - tools/xtask/src/identity.rs
+      - tools/xtask/src/repro.rs
+      - tools/xtask/src/grub.rs
+      - tools/xtask/src/memtest.rs
+      - kernel/lib/uacpi/build.rs
+      - ports/rust-std/build.sh
+      - ports/ncurses/build.sh
+      - releases/stand-in-root.json
+
+permissions:
+  contents: read
+
+# A pull request's new push cancels its run before; the others are built
+# to the end, as each says something about its commit.
+concurrency:
+  group: reproducible-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The checkout where the runner puts it, the ports as ci.yml's ports job
+  # cached them, the runner's own user and home.
+  first:
+    name: First build, with cached ports
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install host packages
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            gcc flex gawk scdoc mandoc zstd
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      # The keys of ci.yml's ports job, which this job only reads: the
+      # cache is kept by the runs of ci.yml, and a build that finds none
+      # builds the ports itself. Keep in step with that job.
+      - name: Name the ports' cache
+        id: name
+        env:
+          PORTS: ${{ hashFiles('ports/**', 'abi/**', 'rust-toolchain.toml') }}
+          TOOLS: ${{ hashFiles('tools/**') }}
+        run: |
+          prefix="ports-host-$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)-"
+          {
+            echo "prefix=$prefix"
+            echo "ports=$prefix$PORTS-"
+            echo "key=$prefix$PORTS-$TOOLS"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Restore the ports built last
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ${{ steps.name.outputs.key }}
+          restore-keys: |
+            ${{ steps.name.outputs.ports }}
+            ${{ steps.name.outputs.prefix }}
+
+      - name: Restore GRUB
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      - name: Restore memtest86+
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .cache/memtest
+          key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
+
+      # The conditions the second build differs from: what the runner
+      # starts with, named here so that a change to the runner's own does
+      # not make the two the same.
+      - name: ./ob release build
+        id: build
+        env:
+          TZ: UTC
+          LC_ALL: C
+        run: |
+          umask 0022
+          out="$RUNNER_TEMP/first"
+          ./ob release build --out "$out" | tee "$RUNNER_TEMP/first.stdout"
+          echo "digest=$(tail -n 1 "$RUNNER_TEMP/first.stdout")" >> "$GITHUB_OUTPUT"
+          tar -C out -I 'zstd -T0 -3' -cf "$out/tree.tar.zst" release-build-tree
+          ls -l "$out"
+
+      - name: Upload what the build made
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducible-first
+          path: ${{ runner.temp }}/first
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  # Another runner, another folder, another user with its own home, another
+  # umask, time zone and locale, one processor fewer, no cache: every port
+  # is built from its source, so that what a port's build reads from where
+  # it is built shows.
+  second:
+    name: Second build, elsewhere, from source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      # The action puts the checkout under the workspace, so it is moved
+      # to a folder of its own, which another user owns.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: second-checkout
+          persist-credentials: false
+
+      - name: Install host packages
+        uses: ./second-checkout/.github/actions/apt-install
+        with:
+          packages: >-
+            gcc flex gawk scdoc mandoc zstd
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      - name: Make the other user and move the checkout to its place
+        run: |
+          sudo useradd --create-home --shell /bin/bash builder
+          sudo mv second-checkout /srv/dukovo-second
+          sudo install -d -o builder -g builder /srv/repro
+          sudo chown -R builder:builder /srv/dukovo-second
+          # The user's home, which Cargo and rustup keep their files in, is
+          # its own: the first build's is the runner's.
+          sudo -u builder -H env "PATH=$HOME/.cargo/bin:$PATH" \
+            bash -c 'cd /srv/dukovo-second && rustup toolchain install'
+
+      - name: ./ob release build
+        id: build
+        run: |
+          # One processor fewer than the first build uses, so that the
+          # order the jobs of a build finish in is not the same.
+          jobs=$(( $(nproc) > 1 ? $(nproc) - 1 : 1 ))
+          sudo -u builder -H env \
+              "PATH=$HOME/.cargo/bin:$PATH" TZ=Pacific/Auckland LC_ALL=C.UTF-8 \
+              "CARGO_BUILD_JOBS=$jobs" \
+              bash -c 'umask 0002 && cd /srv/dukovo-second &&
+                exec taskset -c "0-$(($1 - 1))" ./ob release build --out /srv/repro/out' \
+              bash "$jobs" | tee "$RUNNER_TEMP/second.stdout"
+          echo "digest=$(tail -n 1 "$RUNNER_TEMP/second.stdout")" >> "$GITHUB_OUTPUT"
+          sudo tar -C /srv/dukovo-second/out -I 'zstd -T0 -3' \
+            -cf /srv/repro/out/tree.tar.zst release-build-tree
+          sudo chmod -R a+rX /srv/repro
+          ls -l /srv/repro/out
+
+      - name: Upload what the build made
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducible-second
+          path: /srv/repro/out
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  # The two builds' lists, compared; when they differ, every file that does
+  # is named, and diffoscope says how the first twenty that differ in
+  # content do.
+  compare:
+    name: Compare the builds
+    needs: [first, second]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      # Reads the artifacts of this run.
+      actions: read
+    steps:
+      # Only the action that installs packages is needed.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Download what the builds made
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for build in first second; do
+            gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              --name "reproducible-$build" --dir "$RUNNER_TEMP/$build"
+          done
+          ls -l "$RUNNER_TEMP/first" "$RUNNER_TEMP/second"
+
+      - name: Compare the lists
+        id: compare
+        env:
+          FIRST: ${{ needs.first.outputs.digest }}
+          SECOND: ${{ needs.second.outputs.digest }}
+        run: |
+          cd "$RUNNER_TEMP"
+          echo "first:  $FIRST"
+          echo "second: $SECOND"
+          if [ -n "$FIRST" ] && [ "$FIRST" = "$SECOND" ] && cmp -s first/files.txt second/files.txt; then
+            echo "same=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### The two builds are the same"
+              echo
+              echo "The SHA-256 of the release list: \`$FIRST\`"
+              echo "$(wc -l < first/files.txt) files, folders and links."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "same=false" >> "$GITHUB_OUTPUT"
+          # Every path that is in one build and not the other, or differs in
+          # kind, mode, content, size, time or target.
+          awk -F'\t' '
+            NR == FNR { first[$6] = $0; next }
+            !($6 in first) { print $6 "\tonly in the second build"; next }
+            first[$6] != $0 { print $6 "\tdiffers" }
+            { delete first[$6] }
+            END { for (path in first) print path "\tonly in the first build" }
+          ' first/files.txt second/files.txt | sort > differing.txt
+          # Those that are files in both, with a content that is not the same.
+          awk -F'\t' '
+            NR == FNR { if ($1 == "f") sum[$6] = $3; next }
+            $1 == "f" && ($6 in sum) && sum[$6] != $3 { print $6 }
+          ' first/files.txt second/files.txt | sort > content.txt
+          {
+            echo "### The two builds differ"
+            echo
+            echo "The release lists' SHA-256: first \`$FIRST\`, second \`$SECOND\`."
+            echo "$(wc -l < differing.txt) paths differ, $(wc -l < content.txt) of them in content."
+            echo
+            echo '```'
+            head -n 100 differing.txt
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "--- the lines of the first 50 that differ, first build then second"
+          cut -f1 differing.txt | head -n 50 | while IFS= read -r path; do
+            printf -- '< %s\n' "$(awk -F'\t' -v p="$path" '$6 == p' first/files.txt)"
+            printf -- '> %s\n' "$(awk -F'\t' -v p="$path" '$6 == p' second/files.txt)"
+          done
+
+      - name: Install diffoscope
+        if: steps.compare.outputs.same == 'false'
+        uses: ./.github/actions/apt-install
+        with:
+          packages: diffoscope zstd
+
+      - name: diffoscope on the first twenty files that differ in content
+        if: steps.compare.outputs.same == 'false'
+        timeout-minutes: 120
+        run: |
+          cd "$RUNNER_TEMP"
+          for build in first second; do
+            mkdir "$build/tree"
+            tar -I zstd -xf "$build/tree.tar.zst" -C "$build/tree" --strip-components=1
+          done
+          mkdir report
+          cp differing.txt content.txt report/
+          n=0
+          while IFS= read -r path && [ "$n" -lt 20 ]; do
+            n=$((n + 1))
+            name=$(printf '%02d-%s' "$n" "$(printf '%s' "$path" | tr '/' '_')")
+            echo "=== $path"
+            # Ten minutes each: a file that takes longer is named in
+            # content.txt and left to a run by hand.
+            status=0
+            timeout --kill-after=30 600 diffoscope --html "report/$name.html" \
+              "first/tree/$path" "second/tree/$path" > /dev/null < /dev/null || status=$?
+            echo "diffoscope exit status $status"
+          done < content.txt
+          ls -l report
+
+      - name: Upload the report
+        if: always() && steps.compare.outputs.same == 'false'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reproducible-report
+          path: ${{ runner.temp }}/report
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail, as the builds differ
+        if: always() && steps.compare.outputs.same == 'false'
+        run: |
+          echo "::error::Two builds of one commit differ: see the report and the lists above (ADR 0535)"
+          exit 1

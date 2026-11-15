@@ -36,12 +36,19 @@ use crate::process::{self, step};
 use disk::blockfile::BlockFile;
 
 use crate::grub::{self, Grub};
+use crate::identity::Ids;
 use crate::{
     Context, Ctx, Error, Result, VERSION, kernel, lab, licenses, release, rootfs, userspace,
 };
 
 /// What goes into an image and where it is written.
 pub struct ImageSpec<'a> {
+    /// What kind of image it is: `stick`, `iso`, `installed`, `lab` or
+    /// `cloud` for a release's ([`Kind::name`]), a test image's own name
+    /// for a boot test's. Every identifier the image carries is made of
+    /// it, with the version and the time ([`Ids`], ADR 0535), so that two
+    /// builds of one kind agree and two kinds do not.
+    pub kind: &'a str,
     /// Kernel to boot.
     pub kernel: &'a Path,
     /// GRUB menu timeout in seconds.
@@ -150,6 +157,17 @@ impl Kind {
     /// root rather than the live system.
     pub fn installed(self) -> bool {
         matches!(self, Self::Installed | Self::Lab | Self::Cloud)
+    }
+
+    /// The kind's name, which its identifiers are made of ([`Ids`]).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Stick => "stick",
+            Self::Iso => "iso",
+            Self::Installed => "installed",
+            Self::Lab => "lab",
+            Self::Cloud => "cloud",
+        }
     }
 }
 
@@ -307,6 +325,7 @@ pub fn build_release(
     let built = build(
         ctx,
         &ImageSpec {
+            kind: kind.name(),
             kernel: &kernel,
             timeout: ctx.config.boot.timeout,
             cmdline: &cmdline,
@@ -730,11 +749,12 @@ pub fn build(ctx: &Ctx, spec: &ImageSpec<'_>) -> Result<()> {
     }
 
     let time = image_time(ctx);
+    let ids = Ids::new(VERSION, time, spec.kind);
     process::create_dir(&grub_work(spec))?;
     if spec.iso {
-        make_iso(ctx, spec, &grub, time)?;
+        make_iso(ctx, spec, &grub, &ids)?;
     } else {
-        make_stick(ctx, spec, &grub, time)?;
+        make_stick(ctx, spec, &grub, &ids)?;
     }
     let _ = std::fs::remove_dir_all(grub_work(spec));
     if let Some(root) = spec.root {
@@ -827,7 +847,7 @@ const INSTALLED_ESP_BYTES: u64 = 512 << 20;
 /// rgrub-setup(8) puts there on Dukovo. A protective MBR covers the
 /// disk, as the UEFI specification asks, so the image boots from a USB
 /// stick or a disk under either firmware.
-fn make_stick(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result<()> {
+fn make_stick(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, ids: &Ids) -> Result<()> {
     let images = grub.disk_images(ctx, &grub_work(spec))?;
     process::copy(&images.efi, &spec.staging.join("EFI/BOOT/BOOTX64.EFI"))?;
     let read = |path: &Path| std::fs::read(path).context(|| format!("reading {}", path.display()));
@@ -847,35 +867,94 @@ fn make_stick(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result
     let sectors = 2048 + BIOS_BOOT_SECTORS + esp_sectors + 2048;
     let shown = spec.output.display().to_string();
     let disk = new_disk(&spec.output, sectors)?;
-    let mut rng = disk::Rng::system();
-    let failed = |err: disk::table::Error| Error::new(format!("{shown}: {}", err.0));
-    let mut table =
-        disk::Table::new(disk::Scheme::Gpt, SECTOR as u32, sectors, &mut rng).map_err(failed)?;
-    let kind = |name| disk::types::parse(name, disk::Scheme::Gpt).expect("a known type");
-    for (name, kind, end) in [
-        ("BIOS boot", kind("bios-boot"), disk::End::Sectors(BIOS_BOOT_SECTORS)),
-        ("EFI system", kind("efi"), disk::End::Sectors(esp_sectors)),
-    ] {
-        let new = disk::New { name: name.into(), ..disk::New::of(kind, end) };
-        table.add(new, &mut rng).map_err(failed)?;
-    }
+    let table = stick_table(ids, sectors, esp_sectors)
+        .map_err(|err| Error::new(format!("{shown}: {}", err.0)))?;
     let writes = disk::plan(&disk, &table).context(|| format!("partitioning {shown}"))?;
     disk::apply(&disk, &writes).context(|| format!("partitioning {shown}"))?;
     let part = table.get(2).expect("the EFI system partition was added");
     let esp = disk.part(part.first, part.sectors()).context(|| format!("opening {shown}"))?;
-    let options = disk::fat::Options {
-        bits: Some(32),
-        label: Some(ESP_LABEL.into()),
-        hidden: Some(part.first),
-        now: Some(time),
-        ..disk::fat::Options::default()
-    };
-    disk::fat::format(&esp, &options, &mut rng)
-        .map_err(|why| Error::new(format!("{shown}: making its EFI system partition: {why}")))?;
-    fill_fat(esp, &spec.staging, time, &shown)?;
+    make_esp(esp, part.first, &spec.staging, ids, &shown)?;
     disk::grub::setup_bios(&disk, &boot, &core)
         .map_err(|why| Error::new(format!("{shown}: putting GRUB on it for a BIOS: {why}")))?;
     Ok(())
+}
+
+/// Gives every file and folder under `dir`, and `dir`, that is dated after
+/// `time` (seconds since 1970) that time, as `SOURCE_DATE_EPOCH` asks of
+/// what a build writes: the files `ob` wrote a moment ago are dated as
+/// those it copied, so the same build makes the same image whenever it
+/// runs. Links keep their dates, which no tool of the images reads.
+fn clamp_times(dir: &Path, time: u64) -> Result<()> {
+    let limit = std::time::UNIX_EPOCH + std::time::Duration::from_secs(time);
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let mut paths = vec![dir.clone()];
+        for entry in std::fs::read_dir(&dir).context(|| format!("reading {}", dir.display()))? {
+            let entry = entry.context(|| format!("reading {}", dir.display()))?;
+            let kind = entry.file_type().context(|| format!("reading {}", dir.display()))?;
+            if kind.is_dir() {
+                dirs.push(entry.path());
+            } else if kind.is_file() {
+                paths.push(entry.path());
+            }
+        }
+        for path in paths {
+            let file =
+                std::fs::File::open(&path).context(|| format!("reading {}", path.display()))?;
+            let modified = file.metadata().and_then(|meta| meta.modified());
+            if modified.is_ok_and(|modified| modified > limit) {
+                file.set_modified(limit).context(|| format!("dating {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The partition table of a disk image of `sectors`: a BIOS boot
+/// partition and an EFI system partition of `esp_sectors`, with the
+/// disk's and the partitions' GUIDs made of `ids` and nothing random
+/// (ADR 0535).
+fn stick_table(
+    ids: &Ids,
+    sectors: u64,
+    esp_sectors: u64,
+) -> std::result::Result<disk::Table, disk::table::Error> {
+    // The generator is there for the calls that take one, and is seeded
+    // from the image too: each GUID is set below.
+    let mut rng = ids.rng("gpt-unused");
+    let mut table = disk::Table::new(disk::Scheme::Gpt, SECTOR as u32, sectors, &mut rng)?;
+    table.disk_guid = ids.guid("gpt-disk");
+    let kind = |name| disk::types::parse(name, disk::Scheme::Gpt).expect("a known type");
+    for (number, (name, kind, end)) in [
+        ("BIOS boot", kind("bios-boot"), disk::End::Sectors(BIOS_BOOT_SECTORS)),
+        ("EFI system", kind("efi"), disk::End::Sectors(esp_sectors)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let guid = Some(ids.guid(&format!("gpt-part-{}", number + 1)));
+        let new = disk::New { name: name.into(), guid, ..disk::New::of(kind, end) };
+        table.add(new, &mut rng)?;
+    }
+    Ok(table)
+}
+
+/// Formats `esp`, the EFI system partition of a disk image whose first
+/// sector it starts at `hidden`, as FAT32, and writes the staging tree
+/// into it, dated as the image is, with a volume serial number of `ids`.
+fn make_esp(esp: disk::Device, hidden: u64, staging: &Path, ids: &Ids, shown: &str) -> Result<()> {
+    let time = ids.epoch();
+    let options = disk::fat::Options {
+        bits: Some(32),
+        label: Some(ESP_LABEL.into()),
+        hidden: Some(hidden),
+        now: Some(time),
+        volume_id: Some(ids.serial("fat-serial:esp")),
+        ..disk::fat::Options::default()
+    };
+    disk::fat::format(&esp, &options, &mut ids.rng("fat-unused"))
+        .map_err(|why| Error::new(format!("{shown}: making its EFI system partition: {why}")))?;
+    fill_fat(esp, staging, time, shown)
 }
 
 /// A new file of `sectors` at `path`, as a disk.
@@ -924,7 +1003,8 @@ fn tree_bytes(dir: &Path) -> Result<u64> {
 /// `cdboot.img` and a `core.img` for a CD under a PC's BIOS, and under
 /// UEFI a FAT image holding UEFI's GRUB, which finds the disc by the
 /// UUID GRUB reads from its time of making.
-fn make_iso(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result<()> {
+fn make_iso(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, ids: &Ids) -> Result<()> {
+    let time = ids.epoch();
     let work = grub_work(spec);
     let (date, uuid) = iso_date(time);
     // grub-mkimage puts `cdboot.img` before `core.img` for a CD.
@@ -948,12 +1028,19 @@ fn make_iso(ctx: &Ctx, spec: &ImageSpec<'_>, grub: &Grub, time: u64) -> Result<(
     let options = disk::fat::Options {
         label: Some(ESP_LABEL.into()),
         now: Some(time),
+        volume_id: Some(ids.serial("fat-serial:efi-img")),
         ..disk::fat::Options::default()
     };
-    disk::fat::format(&device, &options, &mut disk::Rng::system())
+    disk::fat::format(&device, &options, &mut ids.rng("fat-unused"))
         .map_err(|why| Error::new(format!("{shown}: {why}")))?;
     fill_fat(device, &tree, time, &shown)?;
 
+    // xorriso keeps each file's own times, so no file is dated after the
+    // image: the staging's files were written a moment ago.
+    clamp_times(&spec.staging, time)?;
+    if let Some(release) = spec.release {
+        clamp_times(release, time)?;
+    }
     // A disc that carries the release is the install DVD, which the live
     // system finds by its label (ADR 0433).
     let label = if spec.release.is_some() { LIVE_LABEL.to_string() } else { volume_id() };
@@ -1145,8 +1232,13 @@ pub fn make_root(
         step("Turning on cloud-setup and sshd (a cloud image)");
         stage_cloud(&subvolume(SUBVOLUMES[1]))?;
     }
-    let time = image_time(ctx);
-    let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, time, &owned);
+    let kind = match (extras.lab, extras.cloud) {
+        (Some(_), _) => Kind::Lab,
+        (None, true) => Kind::Cloud,
+        (None, false) => Kind::Installed,
+    };
+    let ids = Ids::new(VERSION, image_time(ctx), kind.name());
+    let made = rootfs::make(staging, output, ROOT_BYTES, ROOT_LABEL, &SUBVOLUMES, &ids, &owned);
     let _ = std::fs::remove_dir_all(staging);
     made
 }
@@ -1222,7 +1314,7 @@ pub fn make_live(
         bytes,
         LIVE_LABEL,
         &[release::SUBVOLUME],
-        image_time(ctx),
+        &Ids::new(VERSION, image_time(ctx), "live"),
         &[],
     );
     let _ = std::fs::remove_dir_all(staging);
@@ -1419,13 +1511,12 @@ fn append_partition(image: &Path, filesystem: &Path, kind: [u8; 16], name: &str)
     let last = first + size / SECTOR as u64 - 1;
     let (backup_entries, backup) = (last + 1, last + 1 + entry_sectors);
 
-    let mut unique = [0u8; 16];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut random| random.read_exact(&mut unique))
-        .map_err(failed("making a GUID for"))?;
-    // A random GUID: version 4, variant 1.
-    unique[7] = unique[7] & 0x0f | 0x40;
-    unique[8] = unique[8] & 0x3f | 0x80;
+    // The partition's GUID is made of the disk's, its place and its name,
+    // as every identifier of an image is made (ADR 0535): a random one
+    // would make two builds of one image differ.
+    let unique = Ids::of_disk(&head[SECTOR + 56..SECTOR + 72])
+        .guid(&format!("gpt-part-{}:{name}", free + 1))
+        .0;
     let new = &mut entries[free * 128..(free + 1) * 128];
     new.fill(0);
     new[..16].copy_from_slice(&kind);
@@ -1528,9 +1619,10 @@ pub fn volume_id() -> String {
 }
 
 /// Commit time of HEAD, which an image's files and filesystems have
-/// instead of the clock. An existing `SOURCE_DATE_EPOCH` wins. Images
-/// are not yet bit-for-bit reproducible: their GPT and filesystems have
-/// random UUIDs.
+/// instead of the clock. An existing `SOURCE_DATE_EPOCH` wins. It is also
+/// one of the inputs the image's identifiers are made of ([`Ids`], ADR
+/// 0535), so that it is the only thing besides the commit that a build's
+/// bytes depend on.
 pub fn source_date_epoch(ctx: &Ctx) -> Option<String> {
     if let Ok(epoch) = std::env::var("SOURCE_DATE_EPOCH") {
         return Some(epoch);
@@ -2004,5 +2096,112 @@ mod tests {
         let label = volume_id();
         assert!(label.len() <= 32);
         assert!(label.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));
+    }
+
+    /// A staging tree whose files are dated `seconds` and which has a
+    /// subfolder.
+    fn staging(dir: &Path, seconds: u64) {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir.join("boot/grub")).unwrap();
+        for (name, text) in [("boot/radix", "kernel\n"), ("boot/grub/grub.cfg", "menu\n")] {
+            let path = dir.join(name);
+            std::fs::write(&path, text.repeat(3000)).unwrap();
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+        }
+    }
+
+    /// A disk image of a stick's table and EFI system partition, made as
+    /// [`make_stick`] makes them but for GRUB's files, which come from a
+    /// build of GRUB.
+    fn small_stick(dir: &Path, name: &str, ids: &Ids) -> Vec<u8> {
+        let path = dir.join(name);
+        let esp_sectors = (64 << 20) / SECTOR as u64;
+        let sectors = 2048 + BIOS_BOOT_SECTORS + esp_sectors + 2048;
+        let disk = new_disk(&path, sectors).unwrap();
+        let table = stick_table(ids, sectors, esp_sectors).unwrap();
+        let writes = disk::plan(&disk, &table).unwrap();
+        disk::apply(&disk, &writes).unwrap();
+        let part = table.get(2).unwrap();
+        let esp = disk.part(part.first, part.sectors()).unwrap();
+        make_esp(esp, part.first, &dir.join("staging"), ids, name).unwrap();
+        std::fs::read(&path).unwrap()
+    }
+
+    #[test]
+    fn a_disk_image_made_twice_is_the_same_image_and_a_kind_of_its_own_is_not() {
+        let dir = std::env::temp_dir().join(format!("ob-image-same-{}", std::process::id()));
+        let epoch = 1_793_592_777;
+        // The staging was written after the commit's time, as it is in a
+        // build, and a day later in the second.
+        staging(&dir.join("staging"), epoch + 30);
+        let ids = Ids::new(VERSION, epoch, "stick");
+        let first = small_stick(&dir, "first.img", &ids);
+        staging(&dir.join("staging"), epoch + 86_400);
+        let second = small_stick(&dir, "second.img", &ids);
+        assert!(first == second, "the image differs between two builds");
+        let installed = small_stick(&dir, "installed.img", &Ids::new(VERSION, epoch, "installed"));
+        assert!(first != installed, "two kinds of image have the same identifiers");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_disk_images_guids_are_version_4_and_variant_1_in_the_order_a_gpt_writes_them() {
+        let ids = Ids::new(VERSION, 1_793_592_777, "stick");
+        let table = stick_table(&ids, 300_000, 100_000).unwrap();
+        let guids = [table.disk_guid, table.get(1).unwrap().guid, table.get(2).unwrap().guid];
+        assert_eq!(guids[0], ids.guid("gpt-disk"));
+        for (n, guid) in guids.iter().enumerate() {
+            assert_eq!(guid.0[7] >> 4, 4, "version of GUID {n}");
+            assert_eq!(guid.0[8] >> 6, 0b10, "variant of GUID {n}");
+            assert!(guids.iter().enumerate().all(|(m, other)| m == n || other != guid));
+        }
+    }
+
+    #[test]
+    fn a_root_added_to_a_disk_image_gets_the_same_guid_each_time() {
+        let dir = std::env::temp_dir().join(format!("ob-image-append-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ids = Ids::new(VERSION, 1_793_592_777, "installed");
+        let root = dir.join("root.btrfs");
+        std::fs::write(&root, vec![7u8; 4 << 20]).unwrap();
+        let made = |name: &str, ids: &Ids| {
+            let image = dir.join(name);
+            std::fs::write(&image, small_stick(&dir, "base.img", ids)).unwrap();
+            append_root(&image, &root).unwrap();
+            std::fs::read(&image).unwrap()
+        };
+        staging(&dir.join("staging"), 1_793_592_800);
+        let (one, two) = (made("one.img", &ids), made("two.img", &ids));
+        assert!(one == two, "the disk differs between two builds");
+        let other = made("other.img", &Ids::new(VERSION, 1_793_592_777, "lab"));
+        // The third entry of the table, which starts at sector 2, is the
+        // root's.
+        let guid = |image: &[u8]| image[1024 + 2 * 128 + 16..1024 + 2 * 128 + 32].to_vec();
+        assert_ne!(guid(&one[..]), guid(&other[..]));
+        assert_eq!(guid(&one[..])[7] >> 4, 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_written_after_the_image_is_dated_as_the_image_is() {
+        let dir = std::env::temp_dir().join(format!("ob-image-clamp-{}", std::process::id()));
+        staging(&dir, 2_000_000_000);
+        let old = dir.join("boot/old");
+        std::fs::write(&old, "old").unwrap();
+        let file = std::fs::File::options().write(true).open(&old).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000))
+            .unwrap();
+        clamp_times(&dir, 1_500_000_000).unwrap();
+        let seconds = |path: &str| {
+            let modified = std::fs::metadata(dir.join(path)).unwrap().modified().unwrap();
+            modified.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+        };
+        assert_eq!(seconds("boot/radix"), 1_500_000_000);
+        assert_eq!(seconds("boot/grub/grub.cfg"), 1_500_000_000);
+        assert_eq!(seconds("boot/grub"), 1_500_000_000);
+        assert_eq!(seconds("boot/old"), 1_000_000_000);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

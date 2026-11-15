@@ -434,7 +434,9 @@ pub struct Programs {
     pub ports: Ports,
 }
 
-/// Cargo arguments that build `core` for the user target.
+/// Cargo arguments that build `core` for the user target, with the
+/// paths of the checkout, Cargo's crates and Rust's sources written down
+/// under names that are the same on every machine (ADR 0535).
 pub fn target_args(ctx: &Ctx) -> Vec<String> {
     vec![
         "--target".into(),
@@ -442,6 +444,11 @@ pub fn target_args(ctx: &Ctx) -> Vec<String> {
         "-Zjson-target-spec".into(),
         "-Zbuild-std=core,compiler_builtins,alloc".into(),
         "-Zbuild-std-features=compiler-builtins-mem".into(),
+        "--config".into(),
+        format!(
+            "target.{TARGET_NAME}.rustflags={}",
+            crate::repro::toml_array(&crate::repro::rustc_flags(ctx))
+        ),
     ]
 }
 

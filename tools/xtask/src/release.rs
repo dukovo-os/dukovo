@@ -16,13 +16,18 @@
 //! `system-release check` on the stick's `release` folder with
 //! `--root .cache/release-keys/root.json`.
 
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
+use sha2::{Digest, Sha256};
+
+use crate::config::Profile;
 use crate::deploy::{self, Server};
+use crate::identity::hex;
 use crate::process::{self, step};
-use crate::{Context, Ctx, Result, VERSION, bail};
+use crate::{Context, Ctx, Result, VERSION, bail, image, kernel, userspace};
 
 /// Where this machine's release keys are kept.
 pub const KEYS_DIR: &str = ".cache/release-keys";
@@ -109,6 +114,7 @@ pub fn tool_for(ctx: &Ctx, release: bool) -> Result<PathBuf> {
 /// deploy is ready, which the lab's test of the move shows is never published.
 pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["build", rest @ ..] => build(ctx, rest),
         ["server", "setup"] => crate::catalog::server_setup(ctx, false),
         ["server", "setup", "--dukovo"] => crate::catalog::server_setup(ctx, true),
         ["channel", repo, "--firmware", set, channel] => {
@@ -130,7 +136,7 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["canaries", "--json"] => canaries(ctx, true),
         ["canary", rest @ ..] if !rest.is_empty() => canary(ctx, rest),
         _ => bail!(
-            "usage: ./ob release server setup [--dukovo] | channel <repository> (<channel> \
+            "usage: ./ob release build [--out <dir>] | server setup [--dukovo] | channel <repository> (<channel> \
              <version> | --firmware <version>|none <channel>) | advisories <repository> \
              | deploy <repository> | send [--copy-only] <repository> \
              | check [--root <file>] [<url>] \
@@ -348,16 +354,192 @@ pub fn keys(ctx: &Ctx) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// The root a build of the system puts in the boot archive in place of
+/// this machine's, when `./ob release build` has pinned it ([`pin_root`]).
+static PINNED_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Has every build of the system in this run trust the root in the file
+/// `root`, as `./ob release build` does: a tree that carried this
+/// machine's own root would differ from the same tree built on another
+/// machine, whose keys differ (ADR 0535). The first root given is kept.
+pub fn pin_root(root: &Path) {
+    let _ = PINNED_ROOT.set(root.to_path_buf());
+}
+
 /// The root a system trusts releases by, for the boot archive: its path
 /// there, [`TRUSTED_ROOT`], and a copy of this machine's, readable by
-/// all.
+/// all, or the one [`pin_root`] pinned.
 pub fn trusted_root(ctx: &Ctx) -> Result<(String, PathBuf)> {
-    let from = keys(ctx)?.join("root.json");
+    let from = match PINNED_ROOT.get() {
+        Some(root) => root.clone(),
+        None => keys(ctx)?.join("root.json"),
+    };
     let copy = ctx.out.join("release/root.json");
     process::copy(&from, &copy)?;
     std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o644))
         .context(|| format!("setting the mode of {}", copy.display()))?;
     Ok((TRUSTED_ROOT.to_string(), copy))
+}
+
+/// The root a release build trusts until the key ceremony signs the real
+/// one: made once with `system-release keys`, its keys thrown away, so
+/// that no one can sign for it. Nothing that trusts it is ever shipped.
+pub const STAND_IN_ROOT: &str = "releases/stand-in-root.json";
+
+/// The root `./ob release build` puts in the tree: the system's first
+/// root, signed on the hardware keys, once it is in the repository
+/// ([`REPO`]), and [`STAND_IN_ROOT`] until then.
+fn build_root(ctx: &Ctx) -> PathBuf {
+    let signed = ctx.root.join(REPO).join("metadata/1.root.json");
+    if signed.is_file() { signed } else { ctx.root.join(STAND_IN_ROOT) }
+}
+
+/// The names of the files `./ob release build` writes into its output
+/// folder: the tree's file list, the release list and its SHA-256.
+pub const BUILD_FILES: [&str; 3] = ["files.txt", "system.json", "system.json.sha256"];
+
+/// Where `./ob release build` stages the tree, below `out/`, and leaves
+/// it: a file that differs between two builds is read from there.
+const BUILD_TREE: &str = "release-build-tree";
+
+/// `./ob release build [--out DIR]`: builds the system as this commit
+/// makes it, stages its slot as an image and a release hold it, and
+/// writes what two builds are compared by into `DIR`, by default
+/// `out/release-build` (ADR 0535): [`file_list`] as `files.txt`, the
+/// release list, unsigned, as `system.json`, and its SHA-256 as
+/// `system.json.sha256`. The last line on the standard output is that
+/// SHA-256, the value that ADR 0457's three builds must agree on. The tree
+/// is left in `out/release-build-tree`, for reading a file that differs.
+///
+/// Nothing is signed, since a build machine's keys differ, and the tree
+/// trusts [`build_root`], not this machine's keys, so that it is the tree
+/// every machine makes.
+fn build(ctx: &Ctx, args: &[&str]) -> Result<()> {
+    let out = match args {
+        [] => ctx.out.join("release-build"),
+        ["--out", dir] => std::path::absolute(dir)
+            .map_err(|err| crate::Error::new(format!("--out {dir}: {err}")))?,
+        _ => bail!("usage: ./ob release build [--out <dir>]"),
+    };
+    if image::source_date_epoch(ctx).is_none() {
+        bail!(
+            "a release is built at the time of its commit: run this in a git checkout, or set \
+             SOURCE_DATE_EPOCH"
+        );
+    }
+    let root = build_root(ctx);
+    if !root.is_file() {
+        bail!("{} is not there: a release trusts a root", ctx.display(&root));
+    }
+    pin_root(&root);
+    step(&format!("Building the release of this commit, trusting {}", ctx.display(&root)));
+    let kernel = kernel::build(ctx, Profile::Release)?;
+    let programs = userspace::build(ctx, Profile::Release)?;
+    let tree = ctx.out.join(BUILD_TREE);
+    let digest = build_in(ctx, &kernel, &programs, &tree, &out)?;
+    println!("{digest}");
+    Ok(())
+}
+
+/// The second half of [`build`]: stages the slot in `tree`, and writes the
+/// files into `out`. Returns the release list's SHA-256.
+fn build_in(
+    ctx: &Ctx,
+    kernel: &Path,
+    programs: &userspace::Programs,
+    tree: &Path,
+    out: &Path,
+) -> Result<String> {
+    image::stage_system(ctx, kernel, programs, tree)?;
+    step(&format!("Listing the release into {}", ctx.display(out)));
+    if out.exists() {
+        std::fs::remove_dir_all(out).context(|| format!("removing {}", out.display()))?;
+    }
+    process::create_dir(out)?;
+    let [files, list, sum] = BUILD_FILES.map(|name| out.join(name));
+    std::fs::write(&files, file_list(tree)?).context(|| format!("writing {}", files.display()))?;
+    let mut cmd = Command::new(tool(ctx)?);
+    cmd.arg("list")
+        .arg("--tree")
+        .arg(tree)
+        .arg("--out")
+        .arg(&list)
+        .args(["--version", VERSION, "--updates-from", UPDATES_FROM])
+        .args(["--commit", &commit(ctx)])
+        .args(["--toolchain", &toolchain(ctx)?])
+        .args(["--built", &image::image_time(ctx).to_string()]);
+    process::run(ctx, &mut cmd)?;
+    let bytes = std::fs::read(&list).context(|| format!("reading {}", list.display()))?;
+    let digest = hex(&Sha256::digest(&bytes));
+    std::fs::write(&sum, format!("{digest}  system.json\n"))
+        .context(|| format!("writing {}", sum.display()))?;
+    Ok(digest)
+}
+
+/// What a tree holds, as lines of text that two builds of one commit
+/// compare with `diff`: one line for each folder, file and link under
+/// `tree`, sorted by path as bytes, with its fields separated by tabs:
+///
+/// - its kind, `d`, `f` or `l`;
+/// - its mode in octal, four digits;
+/// - a file's SHA-256, and `-` for the others;
+/// - a file's size in bytes, and `-`;
+/// - a file's modification time in seconds since 1970, which an image
+///   keeps and a release list does not, and `-`;
+/// - its path below `tree`;
+/// - and, for a link, its target.
+///
+/// # Errors
+///
+/// If something in the tree cannot be read, is neither a folder, a file
+/// nor a link, or has a name that is not UTF-8.
+pub fn file_list(tree: &Path) -> Result<String> {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    let mut folders = vec![(tree.to_path_buf(), String::new())];
+    while let Some((folder, at)) = folders.pop() {
+        let entries =
+            std::fs::read_dir(&folder).context(|| format!("reading {}", folder.display()))?;
+        for entry in entries {
+            let path = entry.context(|| format!("reading {}", folder.display()))?.path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| crate::Error::new(format!("{} is not UTF-8", path.display())))?;
+            let shown = if at.is_empty() { name.to_string() } else { format!("{at}/{name}") };
+            let meta = std::fs::symlink_metadata(&path)
+                .context(|| format!("reading {}", path.display()))?;
+            let mode = meta.permissions().mode() & 0o7777;
+            let line = if meta.is_dir() {
+                folders.push((path, shown.clone()));
+                format!("d\t{mode:04o}\t-\t-\t-\t{shown}")
+            } else if meta.is_file() {
+                let mut file =
+                    std::fs::File::open(&path).context(|| format!("reading {}", path.display()))?;
+                let mut hasher = Sha256::new();
+                std::io::copy(&mut file, &mut hasher)
+                    .context(|| format!("reading {}", path.display()))?;
+                let sum = hex(&hasher.finalize());
+                format!("f\t{mode:04o}\t{sum}\t{}\t{}\t{shown}", meta.len(), meta.mtime())
+            } else if meta.file_type().is_symlink() {
+                let target =
+                    std::fs::read_link(&path).context(|| format!("reading {}", path.display()))?;
+                let target = target.to_str().ok_or_else(|| {
+                    crate::Error::new(format!("the link {} is not UTF-8", path.display()))
+                })?;
+                format!("l\t{mode:04o}\t-\t-\t-\t{shown}\t{target}")
+            } else {
+                bail!("{} is neither a file, a folder nor a link", path.display());
+            };
+            lines.push((shown, line));
+        }
+    }
+    lines.sort();
+    let mut text = String::new();
+    for (_, line) in lines {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    Ok(text)
 }
 
 /// The oldest version a release updates from directly (the updates
@@ -460,6 +642,61 @@ fn toolchain(ctx: &Ctx) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::canary_words_are_valid as valid;
+    use super::*;
+
+    /// A tree made in the order `names` gives, whatever order the folder
+    /// then lists in.
+    fn tree(dir: &Path, names: &[&str]) {
+        let _ = std::fs::remove_dir_all(dir);
+        for name in names {
+            let path = dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            if let Some(target) = name.strip_suffix("-link") {
+                std::os::unix::fs::symlink(Path::new(target).file_name().unwrap(), &path).unwrap();
+            } else {
+                std::fs::write(&path, format!("the file {name}\n")).unwrap();
+                let file = std::fs::File::options().write(true).open(&path).unwrap();
+                let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_793_592_777);
+                file.set_modified(when).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn the_file_list_is_sorted_and_one_line_for_each_folder_file_and_link() {
+        let dir = std::env::temp_dir().join(format!("ob-file-list-{}", std::process::id()));
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        // A folder's mode is the umask's unless it is set.
+        let folder = |tree: &Path| {
+            let mode = std::fs::Permissions::from_mode(0o755);
+            std::fs::set_permissions(tree.join("commands"), mode).unwrap();
+        };
+        tree(&a, &["commands/zstd", "commands/ls", "commands/ls-link", "a.txt"]);
+        folder(&a);
+        let file = |name: &str| {
+            let text = format!("the file {name}\n");
+            let sum = hex(&Sha256::digest(text.as_bytes()));
+            format!("f\t0640\t{sum}\t{}\t1793592777\t{name}", text.len())
+        };
+        let wanted = [
+            file("a.txt"),
+            "d\t0755\t-\t-\t-\tcommands".to_string(),
+            file("commands/ls"),
+            "l\t0777\t-\t-\t-\tcommands/ls-link\tls".to_string(),
+            file("commands/zstd"),
+        ];
+        let listed = file_list(&a).unwrap();
+        assert_eq!(listed, wanted.join("\n") + "\n");
+        // The same tree made in another order lists the same.
+        tree(&b, &["a.txt", "commands/ls-link", "commands/ls", "commands/zstd"]);
+        folder(&b);
+        assert_eq!(file_list(&b).unwrap(), listed);
+        // A change of one byte shows.
+        std::fs::write(b.join("a.txt"), "the file a.txt!\n").unwrap();
+        assert_ne!(file_list(&b).unwrap(), listed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_canary_words_are_the_scripts_and_a_colour_needs_its_reason() {

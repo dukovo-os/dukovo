@@ -24,6 +24,9 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
        system-release make --tree DIR --keys DIR --out DIR --version VERSION
                            --commit COMMIT --toolchain TOOLCHAIN --built SECONDS
                            [--updates-from VERSION]
+       system-release list --tree DIR --version VERSION --commit COMMIT
+                           --toolchain TOOLCHAIN --built SECONDS
+                           [--updates-from VERSION] [--out FILE]
        system-release add --repo DIR --keys DIR RELEASE
        system-release firmware --repo DIR --keys DIR --version VERSION
                                --microcode FILE --license LICENSE
@@ -74,6 +77,7 @@ pub fn run(args: &[String]) -> i32 {
         "keys" => keys(&options),
         "online-key" => online_key(&options),
         "make" => make(&options),
+        "list" => list(&options),
         "add" => add(&options),
         "firmware" => firmware(&options),
         "pull" => pull(&options),
@@ -322,6 +326,30 @@ fn make(options: &Options) -> Result<(), String> {
         out.display()
     );
     Ok(())
+}
+
+/// `list`: the release list of a staged tree, unsigned: the bytes `make`
+/// signs as a TUF target, written to `--out`, or to the standard output.
+/// It needs no keys, so that builds on different machines, whose keys
+/// differ, can compare what they would sign (ADR 0535).
+fn list(options: &Options) -> Result<(), String> {
+    let tree = needed(&options.tree, "--tree")?;
+    let version = needed(&options.version, "--version")?.clone();
+    let about = About {
+        updates_from: options.updates_from.clone().unwrap_or_else(|| version.clone()),
+        version,
+        commit: needed(&options.commit, "--commit")?.clone(),
+        toolchain: needed(&options.toolchain, "--toolchain")?.clone(),
+        built: *needed(&options.built, "--built")?,
+    };
+    let bytes = Release::of_tree(tree, about)?.to_bytes();
+    match &options.out {
+        Some(out) => std::fs::write(out, &bytes).map_err(|err| format!("{}: {err}", out.display())),
+        None => {
+            use std::io::Write as _;
+            std::io::stdout().write_all(&bytes).map_err(|err| format!("the standard output: {err}"))
+        }
+    }
 }
 
 /// `add --repo DIR RELEASE`: the release that `make` signed, in the update
@@ -1187,6 +1215,58 @@ mod tests {
         assert!(read().canaries.is_empty());
         assert_eq!(canary(&[]), 1);
         assert_eq!(run(&strings(&["canary", "add", "ref-box", &key.public_hex()])), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn list_writes_the_unsigned_list_that_make_signs_and_needs_no_keys() {
+        let dir = scratch("list");
+        let path = |name: &str| dir.join(name).display().to_string();
+        tree(&dir.join("slot"));
+        let words = |extra: &[&str]| {
+            let mut all = strings(&[
+                "--tree",
+                &path("slot"),
+                "--version",
+                "0.14.0",
+                "--commit",
+                "01d66b7",
+                "--toolchain",
+                "nightly-2026-10-15",
+                "--built",
+                "1793923200",
+            ]);
+            all.extend(strings(extra));
+            all
+        };
+        // No keys anywhere: a list is made, twice the same.
+        let list = |out: &str| {
+            let mut args = strings(&["list"]);
+            args.extend(words(&["--out", &path(out)]));
+            assert_eq!(run(&args), 0);
+            std::fs::read(dir.join(out)).unwrap()
+        };
+        let (first, second) = (list("first.json"), list("second.json"));
+        assert_eq!(first, second);
+
+        // It is the list `make` signs: the same bytes as the target in the
+        // repository `make` lays out.
+        assert_eq!(run(&strings(&["keys", &path("keys")])), 0);
+        let mut make = strings(&["make", "--keys", &path("keys"), "--out", &path("release")]);
+        make.extend(words(&[]));
+        assert_eq!(run(&make), 0);
+        let targets = dir.join("release/targets/system");
+        let signed = std::fs::read_dir(&targets).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(first, std::fs::read(signed).unwrap());
+        let release = Release::parse(&first).unwrap();
+        assert_eq!((release.version.as_str(), release.commit.as_str()), ("0.14.0", "01d66b7"));
+
+        // A tree, a version, a commit, a toolchain and a time are needed.
+        assert_eq!(run(&strings(&["list", "--tree", &path("slot")])), 1);
+        assert_eq!(run(&strings(&["list", "--tree", &path("nowhere")])), 1);
+        let mut missing = strings(&["list"]);
+        missing.extend(words(&[]).into_iter().take(6));
+        assert_eq!(run(&missing), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
