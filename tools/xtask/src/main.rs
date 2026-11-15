@@ -1379,6 +1379,10 @@ mod tests {
                 "userspace/programs/Cargo.toml",
                 include_str!("../../../userspace/programs/Cargo.toml"),
             ),
+            (
+                "userspace/programs/fuzz/Cargo.toml",
+                include_str!("../../../userspace/programs/fuzz/Cargo.toml"),
+            ),
         ] {
             let table: toml::Table = manifest.parse().unwrap();
             let version = table["workspace"]["package"]["version"].as_str().unwrap();
