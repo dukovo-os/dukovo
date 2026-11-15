@@ -4,11 +4,12 @@
 about = "Spark has every default service running; the off-by-default ones stay off"
 time = "2m"
 
-# Only an administrator reads Spark's control file.
+# Anyone may read the list: `show` goes to Spark's read socket, which
+# answers everyone (ADR 0515); only root sees what the services' output
+# said, and only root changes a service.
 [[step]]
 run = "service --status-all"
-exit = 1
-expect = "Permission denied"
+expect = ["[ + ]  logd", "[ + ]  sshd"]
 [[step]]
 run = "service --status-all"
 root = true
