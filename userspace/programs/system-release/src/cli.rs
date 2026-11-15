@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::advisory;
 use crate::canary::{self, Canaries, Colour, Standing};
 use crate::list::{About, Release};
 use crate::repo::{self, Keys};
@@ -28,8 +29,11 @@ usage: system-release keys [--rotate ROLE | --online KEY] DIR
                                --microcode FILE --license LICENSE
        system-release pull --repo DIR --keys DIR --version VERSION --reason TEXT
                            --advice rollback|stay
-       system-release channel --repo DIR --keys DIR CHANNEL VERSION
-       system-release channel --repo DIR --keys DIR --firmware VERSION|none CHANNEL
+       system-release channel --repo DIR --keys DIR [--advisories SOURCE] CHANNEL VERSION
+       system-release channel --repo DIR --keys DIR [--advisories SOURCE]
+                              --firmware VERSION|none CHANNEL
+       system-release advisories --repo DIR --keys DIR SOURCE
+       system-release advisories --check SOURCE
        system-release refresh --repo DIR (--keys DIR | --online-key SECRET [--plan FILE])
        system-release publish --repo DIR --online-key SECRET [--plan FILE] INCOMING
        system-release rollout --repo DIR --online-key SECRET --plan FILE
@@ -74,6 +78,7 @@ pub fn run(args: &[String]) -> i32 {
         "firmware" => firmware(&options),
         "pull" => pull(&options),
         "channel" => channel(&options),
+        "advisories" => advisories(&options),
         "refresh" => refresh(&options),
         "publish" => publish(&options),
         "rollout" => rollout(&options),
@@ -124,6 +129,7 @@ struct Options {
     microcode: Option<PathBuf>,
     license: Option<String>,
     firmware: Option<String>,
+    advisories: Option<PathBuf>,
     reason: Option<String>,
     advice: Option<String>,
     plan: Option<PathBuf>,
@@ -133,6 +139,8 @@ struct Options {
     /// For tests: the time the canaries are judged at, in place of now.
     now: Option<i64>,
     json: bool,
+    /// For `advisories`: only check them.
+    check: bool,
     operands: Vec<String>,
 }
 
@@ -158,6 +166,7 @@ impl Options {
                 "--microcode" => options.microcode = Some(value()?.into()),
                 "--license" => options.license = Some(value()?),
                 "--firmware" => options.firmware = Some(value()?),
+                "--advisories" => options.advisories = Some(value()?.into()),
                 "--reason" => options.reason = Some(value()?),
                 "--advice" => options.advice = Some(value()?),
                 "--plan" => options.plan = Some(value()?.into()),
@@ -172,6 +181,7 @@ impl Options {
                     options.now = Some(seconds);
                 }
                 "--json" => options.json = true,
+                "--check" => options.check = true,
                 "--built" => {
                     let text = value()?;
                     let seconds = text
@@ -388,34 +398,119 @@ fn pull(options: &Options) -> Result<(), String> {
 }
 
 /// `channel --repo DIR CHANNEL VERSION`: the channel offers the release;
-/// with `--firmware VERSION|none CHANNEL`, the firmware set, or none.
+/// with `--firmware VERSION|none CHANNEL`, the firmware set, or none. With
+/// `--advisories SOURCE`, the security advisories there are signed in the
+/// same targets version (ADR 0534).
 fn channel(options: &Options) -> Result<(), String> {
     let dir = needed(&options.repo, "--repo")?;
     let keys = Keys::load(needed(&options.keys, "--keys")?)?;
-    if let Some(firmware) = &options.firmware {
+    let sources = options.advisories.as_deref().map(load_advisories).transpose()?;
+    let sources = sources.as_deref();
+    let (said, advised) = if let Some(firmware) = &options.firmware {
         let [channel] = options.operands.as_slice() else {
             return Err("channel --firmware takes the channel".into());
         };
         let set = (firmware != "none").then_some(firmware.as_str());
-        updates::set_channel_firmware(dir, &keys, channel, set, tuf::time::now())?;
+        let advised = updates::set_channel_firmware_with(
+            dir,
+            &keys,
+            channel,
+            set,
+            sources,
+            tuf::time::now(),
+        )?;
         let offers = set.map_or_else(|| "no firmware set".into(), |set| format!("firmware {set}"));
+        (format!("the {channel} channel of {} offers {offers}", dir.display()), advised)
+    } else {
+        let [channel, version] = options.operands.as_slice() else {
+            return Err("channel takes the channel and the version it is to offer".into());
+        };
+        let advised =
+            updates::set_channel_with(dir, &keys, channel, version, sources, tuf::time::now())?;
+        (format!("the {channel} channel of {} offers Dukovo {version}", dir.display()), advised)
+    };
+    println!("system-release: {said}{}", signed_here(&keys));
+    if let Some(advised) = advised {
+        println!("system-release: {}", advised_line(&advised, dir));
+    }
+    Ok(())
+}
+
+/// `n` advisories, as `1 security advisory` or `2 security advisories`.
+fn advisories_count(n: usize) -> String {
+    if n == 1 { "1 security advisory".into() } else { format!("{n} security advisories") }
+}
+
+/// What signing the advisories did, in a line.
+fn advised_line(advised: &updates::Advised, dir: &Path) -> String {
+    let mut changes = Vec::new();
+    for (word, ids) in
+        [("new", &advised.added), ("changed", &advised.changed), ("removed", &advised.removed)]
+    {
+        if !ids.is_empty() {
+            changes.push(format!("{} {word}: {}", ids.len(), ids.join(", ")));
+        }
+    }
+    let offers = format!("{} offers {}", dir.display(), advisories_count(advised.count));
+    if !advised.signed {
+        format!("{offers} already, those of the folder, so nothing is signed again")
+    } else if changes.is_empty() {
+        offers
+    } else {
+        format!("{offers} ({})", changes.join("; "))
+    }
+}
+
+/// The advisories of the folder `source`, each checked: what is wrong with
+/// any is said, and nothing is signed.
+fn load_advisories(source: &Path) -> Result<Vec<advisory::Source>, String> {
+    advisory::load_dir(source).map_err(|problems| {
+        let shown = source.display().to_string();
+        for problem in &problems {
+            eprintln!("system-release: {}/{problem}", shown.trim_end_matches('/'));
+        }
+        let found = match problems.len() {
+            1 => "1 problem".to_string(),
+            n => format!("{n} problems"),
+        };
+        format!("the advisories in {shown} do not check ({found}); nothing was signed")
+    })
+}
+
+/// `advisories --repo DIR --keys DIR SOURCE`: every `DKSA-*.json` of
+/// `SOURCE` checked, and signed as targets of the update repository, in
+/// one targets version, with an index (ADR 0534). With `--check SOURCE`,
+/// only checked.
+fn advisories(options: &Options) -> Result<(), String> {
+    let [source] = options.operands.as_slice() else {
+        return Err("advisories takes the folder of advisories, such as security/advisories".into());
+    };
+    let sources = load_advisories(Path::new(source))?;
+    if options.check {
+        let worst = sources.iter().map(|s| s.advisory.severity).max();
         println!(
-            "system-release: the {channel} channel of {} offers {offers}{}",
-            dir.display(),
-            signed_here(&keys)
+            "system-release: checked {} in {source}{}",
+            advisories_count(sources.len()),
+            worst.map_or_else(String::new, |worst| format!(", the worst {}", worst.word()))
         );
         return Ok(());
     }
-    let [channel, version] = options.operands.as_slice() else {
-        return Err("channel takes the channel and the version it is to offer".into());
-    };
-    updates::set_channel(dir, &keys, channel, version, tuf::time::now())?;
+    let dir = needed(&options.repo, "--repo")?;
+    let keys = Keys::load(needed(&options.keys, "--keys")?)?;
+    let advised = updates::set_advisories(dir, &keys, &sources, tuf::time::now())?;
     println!(
-        "system-release: the {channel} channel of {} offers Dukovo {version}{}",
-        dir.display(),
-        signed_here(&keys)
+        "system-release: {}{}",
+        advised_line(&advised, dir),
+        if advised.signed { signed_here(&keys) } else { "" }
     );
     Ok(())
+}
+
+/// The line that says how many advisories a repository offers, if it
+/// offers any.
+fn advisories_line(advisories: &[advisory::Entry]) -> Option<String> {
+    let newest = advisories.iter().max_by(|a, b| advisory::compare_ids(&a.id, &b.id))?;
+    Some(format!("system-release: {}, newest {}", advisories_count(advisories.len()), newest.id))
 }
 
 /// The line that says what `channel` offers.
@@ -541,6 +636,9 @@ fn publish(options: &Options) -> Result<(), String> {
     }
     for channel in &deployed.channels {
         println!("{}", channel_line(channel));
+    }
+    if let Some(line) = advisories_line(&deployed.advisories) {
+        println!("{line}");
     }
     Ok(())
 }
@@ -784,6 +882,9 @@ fn served(options: &Options) -> Result<(), String> {
     for channel in &offered.channels {
         println!("{}", channel_line(channel));
     }
+    if let Some(line) = advisories_line(&offered.advisories) {
+        println!("{line}");
+    }
     Ok(())
 }
 
@@ -951,6 +1052,106 @@ mod tests {
         let add = ["canary", "--canaries", &list, "add", "ref-box", &key.public_hex()];
         assert_eq!(run(&strings(&add)), 0);
         (key, list)
+    }
+
+    #[test]
+    fn advisories_are_checked_and_signed_alone_or_with_a_channel() {
+        let dir = scratch("cli-advisories");
+        let (_, repo) = offering(&dir);
+        let with = |words: &[&str]| -> Vec<String> {
+            let mut all = strings(&words[..1]);
+            all.extend(repo.clone());
+            all.extend(strings(&words[1..]));
+            all
+        };
+        let folder = |name: &str, advisories: &[(&str, &str, &str)]| {
+            crate::advisory::tests::folder(&dir.join(name), advisories);
+            dir.join(name).display().to_string()
+        };
+        let targets = || {
+            std::fs::read_dir(dir.join("updates/metadata"))
+                .unwrap()
+                .filter(|entry| {
+                    entry.as_ref().unwrap().file_name().to_string_lossy().ends_with(".targets.json")
+                })
+                .count()
+        };
+        let read = || {
+            let url =
+                format!("file://{}/", std::path::absolute(dir.join("updates")).unwrap().display());
+            let root = std::fs::read(dir.join("keys/root.json")).unwrap();
+            updates::status(&tuf::Url::parse(&url).unwrap(), &root).unwrap()
+        };
+        let two = folder(
+            "two",
+            &[
+                ("DKSA-2026-0001", "2026-11-15T09:30:00Z", "high"),
+                ("DKSA-2026-0002", "2026-11-16T09:30:00Z", "low"),
+            ],
+        );
+
+        // Checked alone: no repository or keys are needed.
+        assert_eq!(run(&strings(&["advisories", "--check", &two])), 0);
+        assert_eq!(read().advisories.len(), 0);
+        assert_eq!(run(&strings(&["advisories", "--check"])), 1);
+        assert_eq!(
+            run(&strings(&["advisories", "--check", &dir.join("nowhere").display().to_string()])),
+            1
+        );
+
+        // Signed: the status lists them, newest id last, with their
+        // severity, and the same again signs no new targets.
+        let before = targets();
+        assert_eq!(run(&with(&["advisories", &two])), 0);
+        assert_eq!(targets(), before + 1);
+        let status = read();
+        assert_eq!(status.advisories.len(), 2);
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["advisories"][0]["id"], "DKSA-2026-0001");
+        assert_eq!(json["advisories"][0]["severity"], "high");
+        assert_eq!(json["advisories"][1]["severity"], "low");
+        assert_eq!(run(&with(&["advisories", &two])), 0);
+        assert_eq!(targets(), before + 1);
+
+        // An advisory that does not check stops it all, and the others are
+        // not signed.
+        let bad = folder("bad", &[("DKSA-2026-0003", "2026-12-01T00:00:00Z", "low")]);
+        let mut value: serde_json::Value =
+            serde_json::from_str(crate::advisory::tests::FIXTURE).unwrap();
+        value["id"] = "DKSA-2026-0004".into();
+        value["summary"] = "TODO: what is wrong".into();
+        std::fs::write(dir.join("bad/DKSA-2026-0004.json"), serde_json::to_vec(&value).unwrap())
+            .unwrap();
+        assert_eq!(run(&strings(&["advisories", "--check", &bad])), 1);
+        assert_eq!(run(&with(&["advisories", &bad])), 1);
+        assert_eq!(targets(), before + 1);
+        assert_eq!(read().advisories.len(), 2);
+        assert_eq!(run(&with(&["advisories"])), 1);
+        assert_eq!(run(&strings(&["advisories", &two])), 1);
+
+        // A channel moved with --advisories signs them in its one version.
+        let one = folder("one", &[("DKSA-2026-0001", "2026-11-15T09:30:00Z", "high")]);
+        assert_eq!(run(&with(&["channel", "--advisories", &bad, "beta", "0.14.0"])), 1);
+        assert_eq!(targets(), before + 1);
+        assert_eq!(run(&with(&["channel", "--advisories", &one, "beta", "0.14.0"])), 0);
+        assert_eq!(targets(), before + 2);
+        let status = read();
+        assert_eq!(status.advisories.len(), 1);
+        assert_eq!(status.channels.len(), 2);
+        let nowhere = dir.join("nowhere").display().to_string();
+        assert_eq!(run(&with(&["channel", "--advisories", &nowhere, "beta", "0.14.0"])), 1);
+        assert_eq!(targets(), before + 2);
+        // Without the option, the channel leaves the advisories as they are.
+        assert_eq!(run(&with(&["channel", "stable", "0.14.0"])), 0);
+        assert_eq!(read().advisories.len(), 1);
+        // The server's reading, and the line `served` prints, name them.
+        let url = format!("file://{}", std::path::absolute(dir.join("updates")).unwrap().display());
+        let root = dir.join("keys/root.json").display().to_string();
+        assert_eq!(run(&strings(&["served", "--root", &root, &url])), 0);
+        let line = advisories_line(&read().advisories).unwrap();
+        assert_eq!(line, "system-release: 1 security advisory, newest DKSA-2026-0001");
+        assert_eq!(advisories_line(&[]), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

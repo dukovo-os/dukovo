@@ -1,0 +1,62 @@
+{
+  "format": 1,
+  "system": [
+    {
+      "action": "Update to Dukovo 1.4.2 with `update apply`, then restart.",
+      "aliases": [
+        "CVE-2026-12345",
+        "GHSA-xxxx-xxxx-xxxx"
+      ],
+      "fix": "offered",
+      "fixed_in": [
+        "1.3.9.1",
+        "1.4.2"
+      ],
+      "id": "DKSA-2026-0001",
+      "release": "1.4.2",
+      "severity": "high",
+      "summary": "Example: a local user can read another user's files through a flaw in the file service"
+    }
+  ],
+  "apps": [
+    {
+      "action": "Update to Dukovo 1.4.2 with `update apply`, then restart.",
+      "aliases": [
+        "CVE-2026-12345",
+        "GHSA-xxxx-xxxx-xxxx"
+      ],
+      "component": null,
+      "fixed_by_update": "14.1.1",
+      "fixed_in": [
+        "14.1.1"
+      ],
+      "id": "DKSA-2026-0001",
+      "item": "org.dukovo.ripgrep",
+      "severity": "high",
+      "source": "dksa",
+      "summary": "Example: a local user can read another user's files through a flaw in the file service",
+      "version": "14.0.0"
+    },
+    {
+      "action": null,
+      "aliases": [],
+      "component": "libxyz 1.2.0",
+      "fixed_by_update": "1.1.0",
+      "fixed_in": [
+        "1.2.1"
+      ],
+      "id": "RUSTSEC-2026-0001",
+      "item": "org.example.notes",
+      "severity": "medium",
+      "source": "catalog",
+      "summary": "a flaw of the library",
+      "version": "1.0.0"
+    }
+  ],
+  "unchecked": [
+    {
+      "item": "apps",
+      "why": "bundled does not answer"
+    }
+  ]
+}

@@ -19,8 +19,11 @@
 //! its startup folder, and a boot archive of the rest, checked against
 //! the signed list as it is written. The optional firmware package is
 //! signed the same way, as firmware sets beside the releases
-//! ([`firmware`]).
+//! ([`firmware`]). Dukovo's security advisories ([`advisory`]) are
+//! signed beside them too, so that a machine matches them against
+//! itself.
 
+pub mod advisory;
 pub mod archive;
 pub mod canary;
 pub mod cli;

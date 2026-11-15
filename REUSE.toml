@@ -82,6 +82,17 @@ path = "userspace/programs/systools/tests/json/*.json"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# The security advisories (ADR 0534), which the release keys sign as
+# written, and the example the tests of system-release and systools read:
+# OSV JSON, which has no comments.
+[[annotations]]
+path = [
+    "security/advisories/*.json",
+    "userspace/programs/system-release/tests/fixtures/*.json",
+]
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # What the shell's test scripts must write: bash's and dash's output,
 # compared byte for byte, which a header would change.
 [[annotations]]

@@ -18,5 +18,20 @@
   ],
   "running_withdrawn": {"version": "0.14.0", "reason": "it loses files", "advice": "rollback"},
   "unchecked": [{"item": "apps", "why": "bundled does not answer"}],
-  "notes": ["Your bundles update by themselves, daily, since 2026-10-02"]
+  "notes": ["Your bundles update by themselves, daily, since 2026-10-02"],
+  "security": {
+    "system": [
+      {
+        "id": "DKSA-2026-0001",
+        "severity": "high",
+        "summary": "A local user can read another user's files",
+        "aliases": ["CVE-2026-12345"],
+        "fixed_in": ["0.16.0"],
+        "action": "Update with `update apply`, then restart.",
+        "fix": "offered",
+        "release": "0.16.0"
+      }
+    ],
+    "app_flaws": 2
+  }
 }

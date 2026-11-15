@@ -111,6 +111,13 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["server", "setup"] => crate::catalog::server_setup(ctx, false),
         ["server", "setup", "--dukovo"] => crate::catalog::server_setup(ctx, true),
+        ["channel", repo, "--firmware", set, channel] => {
+            channel_command(ctx, Path::new(repo), &["--firmware", set, channel])
+        }
+        ["channel", repo, channel, version] => {
+            channel_command(ctx, Path::new(repo), &[channel, version])
+        }
+        ["advisories", repo] => advisories(ctx, Path::new(repo)),
         ["deploy", dir] => deploy(ctx, Path::new(dir)),
         ["send", dir] => publish_to(ctx, &Server::from_environment(), Path::new(dir)),
         ["send", "--copy-only", dir] => copy_to(ctx, &Server::from_environment(), Path::new(dir)),
@@ -123,12 +130,49 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["canaries", "--json"] => canaries(ctx, true),
         ["canary", rest @ ..] if !rest.is_empty() => canary(ctx, rest),
         _ => bail!(
-            "usage: ./ob release server setup [--dukovo] | deploy <repository> \
-             | send [--copy-only] <repository> | check [--root <file>] [<url>] \
+            "usage: ./ob release server setup [--dukovo] | channel <repository> (<channel> \
+             <version> | --firmware <version>|none <channel>) | advisories <repository> \
+             | deploy <repository> | send [--copy-only] <repository> \
+             | check [--root <file>] [<url>] \
              | rollout (pause <version> <reason> | resume <version>) | canaries [--json] \
              | canary (add <name> <key> | remove <name> | <name> red|green <reason> | <name> auto)"
         ),
     }
+}
+
+/// `ob release channel REPOSITORY ...`: has the channel of the update
+/// repository offer a release, or a firmware set, with the security
+/// advisories of the source tree signed in the same targets version (ADR
+/// 0534). `words` are what system-release's `channel` takes after the
+/// repository and keys.
+fn channel_command(ctx: &Ctx, repo: &Path, words: &[&str]) -> Result<()> {
+    let mut args = repository_args("channel", ctx, repo)?;
+    args.extend(["--advisories".into(), ctx.root.join(crate::security::DIR).into_os_string()]);
+    args.extend(words.iter().map(std::ffi::OsString::from));
+    system_release(ctx, &args)
+}
+
+/// `ob release advisories REPOSITORY`: signs the security advisories of
+/// the source tree into the update repository, with the index, in one
+/// targets version, as a channel does; it signs nothing when they are as
+/// the repository has them. This is how a corrected advisory goes out
+/// without a release (ADR 0534).
+fn advisories(ctx: &Ctx, repo: &Path) -> Result<()> {
+    let mut args = repository_args("advisories", ctx, repo)?;
+    args.push(ctx.root.join(crate::security::DIR).into_os_string());
+    system_release(ctx, &args)
+}
+
+/// `command --repo REPOSITORY --keys KEYS`, for system-release, with this
+/// machine's release keys.
+fn repository_args(command: &str, ctx: &Ctx, repo: &Path) -> Result<Vec<std::ffi::OsString>> {
+    Ok(vec![
+        command.into(),
+        "--repo".into(),
+        repo.as_os_str().to_os_string(),
+        "--keys".into(),
+        keys(ctx)?.into_os_string(),
+    ])
 }
 
 /// `ob release rollout ...`: on the update server, as its user (through

@@ -20,8 +20,12 @@
 //!   `bundle hold` does.
 //! - `update history` lists each change of the system and firmware by
 //!   the start that first ran it, then the apps' history.
-//! - `update` and `update history` take `--json`, which says the same as
-//!   one document each (ADR 0541, [`documents`]).
+//! - `update advisories` says which security advisories of the update
+//!   server (DKSA, ADR 0534) apply to the release this system runs and to
+//!   its apps, and how the fix stands; `update check` has a Security part
+//!   that says the same in brief ([`advisories`]).
+//! - `update`, `update advisories` and `update history` take `--json`,
+//!   which says the same as one document each (ADR 0541, [`documents`]).
 //!
 //! updated(8), a service, checks once a day, ten minutes after the
 //! machine starts, and does what updates.toml(5) says: by default it
@@ -34,13 +38,16 @@
 //! that reports its state to the update server, so that a restart into a
 //! new release is reported soon (ADR 0533).
 //! Once a week it reads the running slot back against its signed list,
-//! as `sysupdate verify` does.
+//! as `sysupdate verify` does. When a check finds that an advisory of
+//! critical or high severity applies to the system, it tells whoever is
+//! signed in, in one sentence.
 //!
 //! On a metered connection, which netd(8) says, a check still fetches
 //! the channel's small signed files and tells of what it finds, but
 //! downloads and stages nothing until a check finds the connection not
 //! metered, unless updates.toml(5) says `metered = "download"`.
 
+mod advisories;
 mod documents;
 
 use std::ffi::OsString;
@@ -61,7 +68,8 @@ use crate::{bundles, power};
 
 const USAGE: &str = "usage: update [check [--json] | apply [--yes] | undo ITEM \
                      [--settings-from-before | --keep-settings] | hold ITEM | unhold ITEM | \
-                     history [--json]], where ITEM is system, firmware or an app's ID";
+                     history [--json] | advisories [--json]], where ITEM is system, firmware or \
+                     an app's ID";
 
 /// How long updated waits after the machine starts before its first
 /// check: the network is up by then.
@@ -95,7 +103,10 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
         match arg {
             Arg::Long(name)
                 if name == "json"
-                    && matches!(action.as_deref(), None | Some("check" | "history")) =>
+                    && matches!(
+                        action.as_deref(),
+                        None | Some("check" | "history" | "advisories")
+                    ) =>
             {
                 json = true;
             }
@@ -125,6 +136,7 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
         Some("hold") => hold(&needs_item()?, true),
         Some("unhold") => hold(&needs_item()?, false),
         Some("history") => history(json),
+        Some("advisories") => advise(json),
         Some(_) => Err(util::usage(USAGE.into())),
     }
 }
@@ -157,7 +169,25 @@ fn check(json: bool) -> Result<i32, Fail> {
     if let Err(why) = bundle(&["update", "--check"]) {
         println!("update: the apps cannot be checked: {}", why.message);
     }
+    println!("\nSecurity:");
+    for line in advisories::check_lines(&advisories::gather(true)) {
+        println!("update: {line}");
+    }
     Ok(0)
+}
+
+/// `update advisories`: the advisories that apply to this system and the
+/// flaws of its apps; with `json`, as the document update(8) describes.
+/// The exit status is 0 when nothing applies, 1 when something does, and 3
+/// when nothing was found but a part could not be checked.
+fn advise(json: bool) -> Result<i32, Fail> {
+    let found = advisories::gather(true);
+    if json {
+        crate::json::print(&found)?;
+    } else {
+        advisories::print(&found);
+    }
+    Ok(advisories::status(&found))
 }
 
 /// What the channel offers of firmware, against the running slot's set.
@@ -239,6 +269,7 @@ fn found() -> documents::Updates {
         running_withdrawn: None,
         unchecked: Vec::new(),
         notes: Vec::new(),
+        security: documents::Security { system: Vec::new(), app_flaws: 0 },
     };
     match system_offer(&mut updates.notes) {
         Ok(offer) => updates.offers.push(offer),
@@ -258,6 +289,12 @@ fn found() -> documents::Updates {
         }
         Err(why) => updates.unchecked.push(documents::Unchecked::new("apps", &why.message)),
     }
+    let security = advisories::gather(true);
+    updates.security =
+        documents::Security { system: security.system, app_flaws: security.apps.len() };
+    updates.unchecked.extend(
+        security.unchecked.iter().map(|part| documents::Unchecked::new("security", &part.why)),
+    );
     updates
 }
 
@@ -701,6 +738,7 @@ fn round(settings: &Settings) -> bool {
     if !staged {
         staged = system_round(settings, metered);
     }
+    security_round();
     apps_round(settings, metered);
     staged
 }
@@ -831,6 +869,15 @@ fn system_round(settings: &Settings, metered: bool) -> bool {
         tell(&firmware_notice(&set, choice));
     }
     false
+}
+
+/// The security part of a check: tells when an advisory of critical or
+/// high severity applies to the system and its fix is not staged yet
+/// (ADR 0534).
+fn security_round() {
+    if let Some(text) = advisories::notice(&advisories::gather(false).system) {
+        tell(&text);
+    }
 }
 
 /// The apps part of a check: updated for everyone, or told of.

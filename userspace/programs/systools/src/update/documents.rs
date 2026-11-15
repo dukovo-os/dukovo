@@ -10,6 +10,7 @@ use serde::Serialize;
 use system_release::rollout::Advice;
 
 use super::FirmwareOffer;
+use super::advisories::SystemFlaw;
 use crate::bundles::history::Event;
 use crate::bundles::protocol::Available;
 use crate::bundles::registry::Place;
@@ -30,6 +31,18 @@ pub(crate) struct Updates {
     pub(crate) unchecked: Vec<Unchecked>,
     /// What the check says besides, for a person.
     pub(crate) notes: Vec<String>,
+    /// What the security advisories say of this machine (ADR 0534).
+    pub(crate) security: Security,
+}
+
+/// The security advisories that apply: those of the system in full, and
+/// how many flaws the apps have, which `update advisories` lists.
+#[derive(Serialize)]
+pub(crate) struct Security {
+    /// The advisories that apply to the system, the worst first.
+    pub(crate) system: Vec<SystemFlaw>,
+    /// How many flaws the apps installed have.
+    pub(crate) app_flaws: usize,
 }
 
 /// What one part offers. Each kind has the members that mean something
@@ -112,11 +125,11 @@ pub(crate) struct RunningWithdrawn {
 }
 
 /// A part that could not be checked.
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub(crate) struct Unchecked {
-    /// `system`, `firmware` or `apps`.
-    item: &'static str,
-    why: String,
+    /// `system`, `firmware`, `apps` or `security`.
+    pub(crate) item: &'static str,
+    pub(crate) why: String,
 }
 
 impl Offer {
@@ -296,6 +309,7 @@ mod tests {
     use super::*;
     use crate::bundles::history::What;
     use crate::sysupdate::starts::Item;
+    use crate::update::advisories::Fix;
 
     fn release(version: &str) -> Release {
         Release {
@@ -350,6 +364,19 @@ mod tests {
             )),
             unchecked: vec![Unchecked::new("apps", "bundled does not answer")],
             notes: vec!["Your bundles update by themselves, daily, since 2026-10-02".into()],
+            security: Security {
+                system: vec![SystemFlaw {
+                    id: "DKSA-2026-0001".into(),
+                    severity: dkv::flaws::Severity::High,
+                    summary: "A local user can read another user's files".into(),
+                    aliases: vec!["CVE-2026-12345".into()],
+                    fixed_in: vec!["0.16.0".into()],
+                    action: Some("Update with `update apply`, then restart.".into()),
+                    fix: Fix::Offered,
+                    release: Some("0.16.0".into()),
+                }],
+                app_flaws: 2,
+            },
         };
         let line = json::line(&updates).unwrap();
         json::assert_golden(&line, include_str!("../../tests/json/update.json"));
