@@ -7,7 +7,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # A release branch (ADR 0534) gets CI on each fix that lands in it, so
+    # that the release-train bot finds `CI passed` on its head.
+    branches: [main, "release/**"]
   pull_request:
   workflow_dispatch:
   # Every boot test, and every other job, on main each night (ADR 0421):
@@ -535,7 +537,8 @@ jobs:
             && ! curl -fsSL --retry 5 -o "$key" \
               https://download.virtualbox.org/virtualbox/debian/oracle_vbox_2016.asc; then
             export GNUPGHOME="$RUNNER_TEMP/gnupg"
-            mkdir -m 0700 -p "$GNUPGHOME"
+            mkdir -p "$GNUPGHOME"
+            chmod 0700 "$GNUPGHOME"
             gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$FINGERPRINT"
             gpg --batch --armor --export "$FINGERPRINT" > "$key"
           fi
@@ -733,6 +736,8 @@ jobs:
       - name: Show the host's processes and kernel log
         if: failure()
         run: |
+          # pgrep cannot print these columns.
+          # shellcheck disable=SC2009
           ps -eo pid,stat,etime,wchan:32,args | grep -v ' \[' || true
           sudo dmesg | tail -n 60 || true
 
@@ -1217,6 +1222,40 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./ob test tuf
 
+  # The scripts of the bots (ADR 0534), which have unit tests of their own,
+  # and every workflow, read by actionlint. Neither builds anything, so this
+  # job needs no toolchain.
+  workflows:
+    name: Bot scripts and workflows
+    runs-on: ubuntu-24.04
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      # From actionlint_1.7.12_checksums.txt in the release of that version,
+      # for actionlint_1.7.12_linux_amd64.tar.gz.
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # The files are named, not the folder: from Node 22 a folder given to
+      # --test is read as a file.
+      - name: node --test the bots' scripts
+        run: node --test .github/scripts/*.test.js
+
+      - name: Install actionlint
+        if: ${{ !cancelled() }}
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check
+          mkdir "$RUNNER_TEMP/actionlint"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/actionlint" actionlint
+
+      - name: actionlint
+        if: ${{ !cancelled() }}
+        run: |
+          "$RUNNER_TEMP/actionlint/actionlint" -color
+
   # The one check main's ruleset requires: it passes when every job above
   # passed, or was skipped on purpose, so that a job can be added, renamed
   # or split without changing the ruleset. The benchmarks are left out, as
@@ -1225,7 +1264,7 @@ jobs:
   passed:
     name: CI passed
     if: always()
-    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, scope, ports, kani, tla, corpus, container, checks]
+    needs: [build, docs, unit, chkdsk, smb-windows, virtualbox, boot, instructions, scope, ports, kani, tla, corpus, container, checks, workflows]
     runs-on: ubuntu-24.04
     steps:
       - name: Check that every job passed or was skipped
