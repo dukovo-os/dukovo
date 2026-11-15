@@ -671,7 +671,7 @@ static void whois(void) {
 // openssl's keys, certificates and digests, and b's s_client reaching
 // a's s_server over TLS 1.3.
 static void openssl(void) {
-	CHECK(says("openssl version", "OpenSSL 3.5.4"));
+	CHECK(says("openssl version", "OpenSSL 3.5.9"));
 	CHECK(says("openssl version -d", "OPENSSLDIR: \"/system/settings/ssl\""));
 	CHECK(says("printf abc | openssl dgst -sha256",
 			"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
