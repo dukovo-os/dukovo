@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The Dukovo security team's key (ADR 0531). `report --security` seals a
+# report to it before the report leaves the computer, so only the team can
+# read it: not the queue, the reports server or anyone between. Its private
+# half is kept wrapped to the team's hardware keys.
+age1y902rw3vx0hwgxjm8ep5glzghr0k244upp483ngfnxy4a7ssggkqdxnx6v

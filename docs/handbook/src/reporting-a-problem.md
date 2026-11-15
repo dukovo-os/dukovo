@@ -199,11 +199,11 @@ $ report crash --security
 encrypts the report to the keys of the security team before anything is
 queued, so that only they can read it. Use it for a flaw that could be
 used against other people's machines, and not for an ordinary crash. The
-preview shows the plain text, which only you and the team see. Until
-`security-recipients` in report.toml(5) names a file of the team's keys,
-`report --security` says so and tells you where to write instead:
-security@dukovo.org. "Privacy and security reporting" says how to report a
-vulnerability.
+preview shows the plain text, which only you and the team see. The system
+brings the team's key, in
+`/system/resources/report/security-recipients.txt`; the reports server
+stores the sealed report and cannot read it. "Privacy and security
+reporting" says how to report a vulnerability.
 
 ## After a failed start
 
