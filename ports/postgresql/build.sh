@@ -349,7 +349,7 @@ write_schedule() {
 		echo "test: $test"
 	done >"$3"
 }
-for item in sql expected; do
+for item in sql expected data; do
 	cp -R "$PORT_SRC/src/pl/plpgsql/src/$item" "$tests/plpgsql/$item"
 done
 write_schedule "$build/src/pl/plpgsql/src" REGRESS "$tests/plpgsql/schedule"

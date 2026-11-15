@@ -101,8 +101,10 @@ run_suite() {
 # prints. A module has the kinds its makefile has, and it is counted, in
 # $suites and in $failed if it fails, once it has a test left to run. The
 # tests run in the server on /tmp, or in one that pg_regress starts when
-# the module needs settings of its own (own-server). The isolation tests
-# first have the extensions of isolation-options loaded.
+# the module needs settings of its own (own-server), and from the module's
+# folder, as make runs them: a test reads its data from a path such as
+# data/int2.data. The isolation tests first have the extensions of
+# isolation-options loaded.
 contrib_suite() {
 	module=$1
 	kind=$2
@@ -139,8 +141,8 @@ contrib_suite() {
 	else
 		set -- "$@" --host=/tmp
 	fi
-	run_suite "$program" "$suite" "$@" --inputdir="$folder" --schedule="$out/$flat.schedule" ||
-		failed=$((failed + 1))
+	(cd "$folder" && run_suite "$program" "$suite" "$@" --inputdir="$folder" \
+		--schedule="$out/$flat.schedule") || failed=$((failed + 1))
 }
 
 # The programs of the bundle, each run for its version: one that starts is
@@ -155,14 +157,16 @@ every_command_runs() {
 	done
 }
 
-# A server a run before left up would hold the socket and the port.
+# A server a run before left up would hold the socket and the port. The
+# server's own connections to itself, dblink's and postgres_fdw's, look for
+# its socket in /tmp too, where libpq's default is the service's folder.
 make_cluster() {
 	if [ -f "$cluster/postmaster.pid" ]; then
 		"$bin/pg_ctl" -D "$cluster" -m immediate -t 60 stop || :
 	fi
 	rm -rf "$cluster"
 	"$bin/initdb" -D "$cluster" --locale-provider=builtin --builtin-locale=C.UTF-8 --locale=C -E UTF8 &&
-		"$bin/pg_ctl" -D "$cluster" -o '-k /tmp' -l "$out/server.log" -t 300 start &&
+		PGHOST=/tmp "$bin/pg_ctl" -D "$cluster" -o '-k /tmp' -l "$out/server.log" -t 300 start &&
 		test "$(sql -c 'SELECT 6 * 7')" = 42
 }
 
