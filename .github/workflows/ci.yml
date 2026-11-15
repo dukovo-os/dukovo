@@ -668,9 +668,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-          shared-key: boot
+          # rust-cache leaves `key` out when given `shared-key`, so the
+          # rust-std port's stamp goes in the shared key (ADR 0560).
+          shared-key: boot-std-${{ needs.ports.outputs.std }}
           save-if: ${{ matrix.shard == 1 }}
-          key: std-${{ needs.ports.outputs.std }}
 
       # The ports as the ports job left them for this run.
       - name: Restore the built ports
