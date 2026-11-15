@@ -694,8 +694,15 @@ pub fn keep_signatures(client: &mut Client) -> Option<String> {
 }
 
 /// A TUF client's failure, in words for the owner: the server and why.
+/// Metadata that has expired is as likely a clock that is wrong as a
+/// server that is neglected, so the owner is told how to set the clock.
 fn refused(server: &str, err: &tuf::Error) -> Fail {
-    fail(format!("{server}: {err}; nothing was changed"))
+    let clock = if err.is_expiry() {
+        "; set the clock with `timedatectl set-time` if it is wrong"
+    } else {
+        ""
+    };
+    fail(format!("{server}: {err}{clock}; nothing was changed"))
 }
 
 /// What a check finds.
@@ -1170,6 +1177,62 @@ pub fn mib(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expired_metadata_says_to_set_the_clock_and_other_failures_do_not() {
+        let expired = tuf::Error::Metadata(tuf::metadata::Error::Expired(
+            "timestamp.json expired at 2026-11-16T10:00:00Z, and this computer's clock says \
+             2027-11-15T10:00:00Z"
+                .into(),
+        ));
+        let words = refused("http://s/system", &expired).message;
+        assert!(words.contains("expired at 2026-11-16T10:00:00Z"), "{words}");
+        assert!(words.contains("this computer's clock says 2027-11-15T10:00:00Z"), "{words}");
+        assert!(words.contains("set the clock with `timedatectl set-time`"), "{words}");
+        assert!(words.ends_with("; nothing was changed"), "{words}");
+
+        let other = tuf::Error::Metadata(tuf::metadata::Error::Version("older".into()));
+        assert!(!refused("http://s/system", &other).message.contains("set the clock"));
+    }
+
+    /// Serves each of `answers` to one connection, and says the port.
+    fn serve_each(answers: Vec<&'static str>) -> u16 {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for answer in answers {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() > 2 {
+                    line.clear();
+                }
+                stream.write_all(answer.as_bytes()).unwrap();
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn a_busy_server_and_a_dropped_connection_are_tried_again_a_missing_file_is_not() {
+        let dir = std::env::temp_dir().join(format!("sysupdate-tries-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let partial = dir.join("partial");
+        let port = serve_each(vec![
+            "HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            "",
+            "HTTP/1.1 404 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        ]);
+        let url = tuf::Url::parse(&format!("http://127.0.0.1:{port}/file")).unwrap();
+        let busy = fetch_once(&url, "00", 4, &partial);
+        assert!(matches!(busy, Err(Problem::Again(why)) if why.contains("503")));
+        let dropped = fetch_once(&url, "00", 4, &partial);
+        assert!(matches!(dropped, Err(Problem::Again(_))));
+        let missing = fetch_once(&url, "00", 4, &partial);
+        assert!(matches!(missing, Err(Problem::Refused(_))));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_private_check_starts_from_a_copy_of_the_trusted_metadata_alone() {

@@ -413,7 +413,9 @@ mod tests {
         let client = dir.join("online");
         crate::init(&client, &root_file).unwrap();
         let err = Updater::new(&client, &metadata, None).unwrap().refresh().unwrap_err();
-        assert!(err.to_string().contains("expired"), "{err}");
+        let words = err.to_string();
+        assert!(words.contains("expired at 20"), "{words}");
+        assert!(words.contains("this computer's clock says 20"), "{words}");
 
         let client = dir.join("offline");
         crate::init(&client, &root_file).unwrap();

@@ -628,6 +628,14 @@ signed by keys this system trusts, had expired, was older than what it
 read before, or was not the file the signed list names: the system did
 not use it.
 
+A server's metadata is good for a limited time (a day, for its newest
+timestamp), judged by the computer's clock. When it has expired, the line
+says when it expired and what the computer's clock says, and to set the
+clock (*timedatectl*(1) *set-time*) if it is wrong: a clock far ahead
+refuses the server's current metadata, which is not at fault. A clock
+behind the real time is not refused, since the metadata cannot be too new
+for it, but a timestamp older than the one read before still is.
+
 When an update fell back, the health check's line in the log says what
 failed (*log sysupdate*), and the settings the update had are in
 _@snapshots/update/settings-failed_.
