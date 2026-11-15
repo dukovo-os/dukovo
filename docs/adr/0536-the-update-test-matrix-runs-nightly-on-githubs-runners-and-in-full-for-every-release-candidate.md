@@ -59,13 +59,14 @@ update. The first start of an update, which GRUB takes as a counted try
   `update-fallback`, `update-offline`, `update-online`,
   `update-network-down`, `update-root-missing`, `update-disk-full`,
   `update-bad-network`, `update-clock-ahead` and `update-clock-behind`),
-  the TUF
-  conformance suite (`tuf-conformance`, `./ob test tuf`), and each fuzz
-  target for ten minutes.
+  the updates from an old release, under UEFI and under BIOS
+  (`update-from-0.15.0` and `update-from-0.15.0-bios`, a job each), the
+  TUF conformance suite (`tuf-conformance`, `./ob test tuf`), and each
+  fuzz target for ten minutes.
 - **A candidate's full run.** Every power cut under each firmware type, in
   eight parts that run at once (`--part k/8`), both kill loops with twenty
-  kills each, the same update boot tests and conformance suite, and each
-  fuzz target for an hour.
+  kills each, the same update boot tests, updates from old releases and
+  conformance suite, and each fuzz target for an hour.
 - **Power cuts are replayed from QEMU's write log.**
   - The boot disk of the `update-power-replay` boot test, and of its BIOS
     twin `update-power-replay-bios`, sits behind QEMU's `blklogwrites`
@@ -204,6 +205,70 @@ update. The first start of an update, which GRUB takes as a counted try
     is still refused by its version, and the update stages, starts and
     proves itself.
 
+- **Updates from an old release.** A machine installed from a release
+  that was tagged is filled, updated to the build under test, rolled back
+  and updated again, and keeps what it was filled with.
+  - **The fixture.** `./ob fixture release VERSION` makes
+    `target/fixtures/VERSION/installed.img`. It fetches the tag `vVERSION`
+    if the repository lacks it, checks it out in a git worktree under
+    `target/fixtures/VERSION/src`, and runs that tree's own `./ob image
+    --installed --user alice --password-file FILE --test-cost`, as it was
+    run for that release, so the disk is the release's, not this build's
+    imitation of it. The worktree starts with this checkout's built ports,
+    GRUB and memtest86+, shared where the filesystem allows it, so that
+    only what the old release changed is built again, and it is removed
+    afterwards. `--check` says whether the fixture is there and trusts
+    `.cache/release-keys`. A fixture needs a second full build, about 15 GB
+    of disk, so a small machine leaves it to CI.
+  - **The keys.** A release trusts the root that signs what it is
+    offered, built into its boot archive, so the fixture is made with this
+    checkout's `.cache/release-keys` copied into the old tree (made first
+    if absent), and a copy of the keys is kept in
+    `target/fixtures/VERSION/release-keys`. A boot test run that includes
+    an `update-from-*` case adopts them before anything is signed or
+    built: it copies the fixture's keys to `.cache/release-keys` if there
+    are none, and stops, saying which to remove, if there are others. A
+    fixture that is not made stops it too, naming `./ob fixture release
+    VERSION`; `ob test boot` never builds one. A run that does not name
+    the cases (no `--case`, `--shard`, `--affected`) leaves them out, as it
+    would fail where no fixture is.
+  - **The cases.** `FIXTURE_RELEASES` in
+    `tools/xtask/src/test/upgrade.rs`, `["0.15.0"]` and growing as
+    releases are tagged, names the releases; a case under UEFI,
+    `update-from-VERSION`, and one under BIOS, `update-from-VERSION-bios`,
+    is made for each, so that the old release's GRUB `core.img` is the one
+    that starts. The boot disk is the fixture, attached with QEMU's
+    `snapshot=on`, so that what the guest writes is in a temporary file
+    and the fixture is never written. A second disk holds a full
+    repository of the build under test, with no file left out, since the
+    slot it is staged from is the old release's, signed by the same keys,
+    as version `good` of the test updates and updating from the oldest
+    fixture release.
+  - **The script.** At the old release's console alice, its
+    administrator, adds an account, bob (`user add`), sets a hostname and
+    a time zone (`hostname`, `timedatectl set-timezone`), makes the health
+    check's wait 10 seconds (`health.toml`), turns on a service that is
+    off by default (`service sshd enable`), writes files, one with a
+    checksum, and a setting of her shell, and makes, packs and installs an
+    app that counts its runs in the data the system keeps for it
+    (`bundle new`, `pack`, `install`), none of which needs the network.
+    She checks all of it. The build under test is staged from the second
+    disk, tried and proved; she checks all of it again, and `sysupdate
+    verify` reads the slot back against its signed list. `sysupdate
+    rollback --keep-settings` and a restart start the old release, where
+    all of it is checked once more. The update is staged and proved again
+    over the slot the first left, all of it is checked a last time, and
+    the machine powers off.
+  - **CI.** `update-matrix.yml` has a `fixtures` job that looks the cache
+    `fixture-VERSION-v1` up and, on a miss, fetches the tag, restores the
+    ports cache by its prefix, runs `./ob fixture release VERSION` and
+    saves the fixture and its keys. The jobs of the `update-from-*` cases
+    restore the same cache before `./ob` runs, so that the keys the
+    fixture trusts are the run's, and each is a job of its own in
+    `matrix.rs`, in the nightly sample and in a candidate's run. A pull
+    request cannot run the workflow until it is on main; it is run by hand
+    on the branch.
+
 ## Consequences
 
 - Every change to what an update writes, or the order it writes it in, is
@@ -221,12 +286,16 @@ update. The first start of an update, which GRUB takes as a counted try
 - The first start's kills take their time from a draw, so a kill loop has
   no fixed length: its budget is the longest it can take with twenty
   kills.
-- A run of the full matrix is twenty-nine jobs of the runners' time, and
-  the nightly sample fifteen.
+- A run of the full matrix is thirty-one jobs of the runners' time, and
+  the nightly sample seventeen.
+- A release's fixture is made once and kept by the tag's version and the
+  workflow's cache name, `fixture-VERSION-v1`: a change to what the fixture
+  is made with (its account, its keys' handling) raises the `v1`.
+- The fixture's keys are this checkout's at the time it was made. A
+  checkout whose `.cache/release-keys` was made again no longer matches
+  its fixture, and `ob test boot` says so rather than build with keys the
+  old release rejects.
 
 - **Not yet** (the next part of this decision):
-  - The upgrade paths from old releases, on a machine full of users,
-    settings, apps and services, built once for each release as a fixture
-    image.
   - The gate: `ob release sign` checking that a candidate's full run is
     green for the exact commit.
