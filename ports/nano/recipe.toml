@@ -18,3 +18,7 @@ depends = ["mlibc", "ncurses"]
 url = "https://www.nano-editor.org/dist/v9/nano-9.2.tar.xz"
 sha256 = "05ecb99247b782e8a5b3a25ed4101dd034b0236902f7449bc9795b717642f7e9"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/n/nano/nano_9.2.orig.tar.xz"]
+
+[upstream]
+git = "https://git.savannah.gnu.org/git/nano.git"
+tag = "v9.2"

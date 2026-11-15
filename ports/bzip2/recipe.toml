@@ -14,3 +14,7 @@ depends = ["mlibc"]
 url = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
 sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/b/bzip2/bzip2_1.0.8.orig.tar.gz"]
+
+[upstream]
+git = "https://sourceware.org/git/bzip2.git"
+tag = "bzip2-1.0.8"

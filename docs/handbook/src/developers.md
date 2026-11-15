@@ -163,10 +163,14 @@ out/toolchain/bin/x86_64-radix-cc -O2 -o hello hello.c
 Software from elsewhere is a port: a directory `ports/<name>/` with a
 `recipe.toml`, patches applied in name order, and a `build.sh`
 (ADR 0069; `ob(1)`, PORTS, lists every field and variable). The recipe
-pins the source to a full git commit and names its license, home page,
-the ports it needs and the files it puts in the image; `ports/lua` is a
-short example. `./ob ports` builds them all, each again only when it
-changed. Check the license before starting a port: system programs must
+pins the source to a full git commit, or to a release archive, and names
+its license, home page, the ports it needs and the files it puts in the
+image; `ports/lua` is a short example. A port pinned to a release
+archive also has an `[upstream]` table: its project's git repository
+and the tag of the release, or `none` and the reason there is no
+repository. The daily security scan and `./ob ports outdated` read it.
+`./ob ports` builds them all, each again only when it changed. Check the
+license before starting a port: system programs must
 have permissive licenses, and every port's license and notices go into
 the image's manifest and CREDITS.md. A change to the upstream code is a
 patch with a description of what it changes and why, and goes upstream

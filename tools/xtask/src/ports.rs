@@ -8,9 +8,10 @@
 //! - `recipe.toml`: the port's version, license and home page, the git
 //!   commit or the release archive's SHA-256 its source is pinned to (or,
 //!   for Rust's standard library, the pinned Rust toolchain's rust-src),
-//!   any other sources unpacked into its tree and crates from crates.io,
-//!   each pinned by its SHA-256, the ports it needs built first, and the
-//!   files it adds to the boot archive;
+//!   for a release archive the project's git repository and the tag of
+//!   the release (`[upstream]`), any other sources unpacked into its tree
+//!   and crates from crates.io, each pinned by its SHA-256, the ports it
+//!   needs built first, and the files it adds to the boot archive;
 //! - `patches/*.patch`, applied in name order with `patch -p1`;
 //! - `build.sh`, which builds the port in a fresh copy of its patched
 //!   source and installs it into the sysroot (`out/sysroot`), or, for a
@@ -75,6 +76,10 @@ pub struct Recipe {
     /// Its source; a port of crates or of extra sources alone has none.
     #[serde(default)]
     pub source: Source,
+    /// For a source that is a release archive: where the project keeps
+    /// its git repository, which the archive does not say.
+    #[serde(default)]
+    pub upstream: Option<Upstream>,
     /// More sources, unpacked inside the port's source tree.
     #[serde(default)]
     pub extra: Vec<Extra>,
@@ -201,6 +206,36 @@ impl Source {
             None if !self.url.is_empty() => self.url.rsplit('/').next().unwrap_or(&self.url),
             None => &self.commit,
         }
+    }
+}
+
+/// The project behind a release archive: its git repository and the tag of
+/// the release the archive is, or the reason it has no repository. An
+/// archive names no commit, so the daily scan resolves the tag to one to
+/// ask OSV by (ADR 0534), and `ob ports outdated` reads the repository's
+/// tags for a newer release (ADR 0370). The archive stays what is built.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Upstream {
+    /// The project's own repository, over https. A mirror is named only
+    /// where the project has no repository of its own to name, and the
+    /// recipe says so.
+    #[serde(default)]
+    pub git: String,
+    /// The tag of the release the archive is, which names the recipe's
+    /// version.
+    #[serde(default)]
+    pub tag: String,
+    /// Why the project has no public git repository, in one line.
+    #[serde(default)]
+    pub none: Option<String>,
+}
+
+impl Upstream {
+    /// The repository and the tag, unless the project has no repository.
+    pub fn tagged(&self) -> Option<(&str, &str)> {
+        (self.none.is_none() && !self.git.is_empty() && !self.tag.is_empty())
+            .then_some((self.git.as_str(), self.tag.as_str()))
     }
 }
 
@@ -387,6 +422,9 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
             )));
         }
     }
+    if let Some(problem) = upstream_problem(recipe) {
+        return Err(Error::new(format!("{what}: {problem}")));
+    }
     if let Some(path) = outside_path(recipe) {
         return Err(Error::new(format!(
             "{what}: `{path}` is not a path inside the tree it is taken from"
@@ -418,6 +456,90 @@ fn check(ctx: &Ctx, recipe: &Recipe, dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// What is wrong with the recipe's `[upstream]`, if anything. A port
+/// pinned by a release archive has one: the project's repository and the
+/// release's tag, or `none` with the reason there is no repository, so that
+/// a missing repository is a decision in the recipe and not an oversight.
+/// A port pinned by git has none, as its source is its upstream; a port
+/// with no source of its own has none either.
+fn upstream_problem(recipe: &Recipe) -> Option<String> {
+    let archive = !recipe.source.url.is_empty();
+    let Some(upstream) = &recipe.upstream else {
+        return archive.then(|| {
+            "a port pinned by a release archive needs [upstream]: git and tag, or `none` with \
+             the reason the project has no git repository"
+                .to_string()
+        });
+    };
+    if !archive {
+        return Some(
+            "[upstream] goes with a release archive (url): a git source is its own upstream"
+                .to_string(),
+        );
+    }
+    let (git, tag) = (upstream.git.as_str(), upstream.tag.as_str());
+    if let Some(reason) = &upstream.none {
+        if !git.is_empty() || !tag.is_empty() {
+            return Some("[upstream] is `none` or names git and tag, not both".to_string());
+        }
+        if reason.trim().is_empty() || reason.contains(['\n', '\r']) {
+            return Some("[upstream] `none` needs a reason of one line".to_string());
+        }
+        return None;
+    }
+    if git.is_empty() || tag.is_empty() {
+        return Some("[upstream] needs git and tag, or `none` with a reason".to_string());
+    }
+    let url = git.strip_prefix("https://").unwrap_or_default();
+    if url.is_empty() || url.contains(|c: char| c.is_whitespace() || c.is_control()) {
+        return Some(format!("[upstream] git `{git}` is not an https:// URL of a repository"));
+    }
+    // The scan passes the tag to `git ls-remote`, which reads it as a pattern.
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_.+".contains(c);
+    if !tag.chars().all(plain) || tag.starts_with(['-', '.']) {
+        return Some(format!(
+            "[upstream] tag `{tag}` is not a tag name of letters, digits, `-`, `_`, `.` and `+`"
+        ));
+    }
+    if !tag_names_version(tag, &recipe.version) {
+        return Some(format!(
+            "[upstream] tag `{tag}` is not the release of version {}: move it with the archive",
+            recipe.version
+        ));
+    }
+    None
+}
+
+/// Whether `tag` names `version`: the runs of digits and of letters of the
+/// version, as `3.7c` is 3, 7 and c, stand together in the tag's, as in
+/// `curl-8_23_0` for 8.23.0. Another tag of the project, such as the next
+/// release's, does not name it.
+fn tag_names_version(tag: &str, version: &str) -> bool {
+    let wanted = word_runs(version);
+    !wanted.is_empty() && word_runs(tag).windows(wanted.len()).any(|run| run == wanted)
+}
+
+/// The runs of digits and the runs of letters in `text`, letters in lower
+/// case; anything else ends a run.
+fn word_runs(text: &str) -> Vec<String> {
+    let mut runs: Vec<String> = Vec::new();
+    let mut digits = None;
+    for c in text.chars() {
+        let kind = c.is_ascii_alphanumeric().then(|| c.is_ascii_digit());
+        match kind {
+            Some(_) if kind == digits => {
+                if let Some(run) = runs.last_mut() {
+                    run.push(c.to_ascii_lowercase());
+                }
+            }
+            Some(_) => runs.push(c.to_ascii_lowercase().to_string()),
+            None => {}
+        }
+        digits = kind;
+    }
+    runs
 }
 
 /// The first path `recipe` names that leaves the tree it is taken from:
@@ -1754,6 +1876,167 @@ mod tests {
             Source { git: "https://x/y.git".into(), commit: "ab".into(), ..Source::default() };
         assert_eq!(git.download(), "git+https://x/y.git@ab");
         assert_eq!(git.release(), "ab");
+    }
+
+    /// A recipe for curl 8.23.0, pinned by a release archive, with `rest`
+    /// after its `[source]` table.
+    fn curl_recipe(rest: &str) -> Recipe {
+        let text = format!(
+            "name = \"curl\"\nversion = \"8.23.0\"\nsummary = \"curl\"\nlicense = \"curl\"\n\
+             homepage = \"https://curl.se\"\n[source]\nurl = \"https://example.org/curl.tar.xz\"\n\
+             sha256 = \"{}\"\n{rest}\n",
+            "ab".repeat(32)
+        );
+        toml::from_str(&text).unwrap()
+    }
+
+    const CURL_UPSTREAM: &str = "[upstream]\ngit = \"https://github.com/curl/curl.git\"\n\
+                                 tag = \"curl-8_23_0\"";
+
+    #[test]
+    fn an_archive_port_names_its_upstream_by_git_and_tag_or_says_there_is_none() {
+        let recipe = curl_recipe(CURL_UPSTREAM);
+        assert_eq!(upstream_problem(&recipe), None);
+        let upstream = recipe.upstream.unwrap();
+        assert_eq!(upstream.tagged(), Some(("https://github.com/curl/curl.git", "curl-8_23_0")));
+        assert_eq!(upstream.none, None);
+
+        let none = curl_recipe("[upstream]\nnone = \"curl keeps no repository\"");
+        assert_eq!(upstream_problem(&none), None);
+        let upstream = none.upstream.unwrap();
+        assert_eq!(upstream.tagged(), None);
+        assert_eq!(upstream.none.as_deref(), Some("curl keeps no repository"));
+        // A key the table does not have is a mistake, not ignored.
+        let unknown = "name = \"x\"\nversion = \"1\"\nsummary = \"x\"\nlicense = \"MIT\"\n\
+                       homepage = \"https://x\"\n[upstream]\nrepo = \"https://x\"\n";
+        assert!(toml::from_str::<Recipe>(unknown).is_err());
+    }
+
+    #[test]
+    fn the_check_refuses_each_wrong_shape_of_upstream() {
+        let wrong = [
+            // An archive with no [upstream] at all, and with an empty one.
+            ("", "needs [upstream]"),
+            ("[upstream]", "needs git and tag"),
+            // Half of git and tag.
+            ("[upstream]\ngit = \"https://github.com/curl/curl.git\"", "needs git and tag"),
+            ("[upstream]\ntag = \"curl-8_23_0\"", "needs git and tag"),
+            // A repository that is not an https:// URL.
+            (
+                "[upstream]\ngit = \"git://github.com/curl/curl.git\"\ntag = \"curl-8_23_0\"",
+                "not an https:// URL",
+            ),
+            (
+                "[upstream]\ngit = \"git@github.com:curl/curl.git\"\ntag = \"curl-8_23_0\"",
+                "not an https:// URL",
+            ),
+            ("[upstream]\ngit = \"https://\"\ntag = \"curl-8_23_0\"", "not an https:// URL"),
+            (
+                "[upstream]\ngit = \"https://x.org/a b.git\"\ntag = \"curl-8_23_0\"",
+                "not an https:// URL",
+            ),
+            // A tag that `git ls-remote` would read as a pattern or an option.
+            ("[upstream]\ngit = \"https://x.org/c.git\"\ntag = \"curl-8_23_*\"", "not a tag name"),
+            ("[upstream]\ngit = \"https://x.org/c.git\"\ntag = \"curl 8.23.0\"", "not a tag name"),
+            ("[upstream]\ngit = \"https://x.org/c.git\"\ntag = \"-8.23.0\"", "not a tag name"),
+            // The tag of another release than the archive's.
+            (
+                "[upstream]\ngit = \"https://x.org/c.git\"\ntag = \"curl-8_22_0\"",
+                "not the release of version 8.23.0",
+            ),
+            // None with a repository, and none with no reason.
+            ("[upstream]\nnone = \"no repository\"\ngit = \"https://x.org/c.git\"", "not both"),
+            ("[upstream]\nnone = \"no repository\"\ntag = \"curl-8_23_0\"", "not both"),
+            ("[upstream]\nnone = \"\"", "needs a reason of one line"),
+            ("[upstream]\nnone = \"  \"", "needs a reason of one line"),
+            ("[upstream]\nnone = \"one line\\nand another\"", "needs a reason of one line"),
+        ];
+        for (rest, expected) in wrong {
+            let problem = upstream_problem(&curl_recipe(rest))
+                .unwrap_or_else(|| panic!("`{rest}` was not refused"));
+            assert!(problem.contains(expected), "`{rest}` gave `{problem}`, not `{expected}`");
+        }
+    }
+
+    #[test]
+    fn only_a_port_pinned_by_an_archive_has_an_upstream() {
+        let git = r#"
+            name = "lua"
+            version = "5.4.7"
+            summary = "Lua"
+            license = "MIT"
+            homepage = "https://www.lua.org"
+            [source]
+            git = "https://github.com/lua/lua.git"
+            commit = "0123456789012345678901234567890123456789"
+            tag = "v5.4.7"
+        "#;
+        assert_eq!(upstream_problem(&toml::from_str(git).unwrap()), None);
+        for table in [CURL_UPSTREAM, "[upstream]\nnone = \"no repository\""] {
+            let with = format!("{git}\n{table}\n");
+            let problem = upstream_problem(&toml::from_str(&with).unwrap()).unwrap();
+            assert!(problem.contains("goes with a release archive"), "{problem}");
+        }
+        // A port of rust-src, of crates or of extra sources has none either.
+        let crates = "name = \"c\"\nversion = \"1\"\nsummary = \"c\"\nlicense = \"MIT\"\n\
+                      homepage = \"https://c\"\n";
+        assert_eq!(upstream_problem(&toml::from_str(crates).unwrap()), None);
+        let with = format!("{crates}\n{CURL_UPSTREAM}\n");
+        assert!(upstream_problem(&toml::from_str(&with).unwrap()).is_some());
+    }
+
+    #[test]
+    fn a_tag_names_the_version_it_is_the_release_of() {
+        for (tag, version) in [
+            ("curl-8_23_0", "8.23.0"),
+            ("FILE5_47", "5.47"),
+            ("v2.55.0", "2.55.0"),
+            ("26.02", "26.02"),
+            ("3.7c", "3.7c"),
+            ("release-2.1.13-stable", "2.1.13"),
+            ("v668", "668"),
+            ("openssl-3.5.4", "3.5.4"),
+        ] {
+            assert!(tag_names_version(tag, version), "{tag} is {version}");
+        }
+        for (tag, version) in [
+            // The next release, a longer number and a release candidate.
+            ("curl-8_22_0", "8.23.0"),
+            ("v2.80", "2.8"),
+            ("v2.55.01", "2.55.0"),
+            ("3.7b", "3.7c"),
+            ("3.7", "3.7c"),
+            ("v5.8", "5.8.4"),
+            // No digits or letters in the version gives nothing to name.
+            ("v1", ""),
+            ("v1", "..."),
+        ] {
+            assert!(!tag_names_version(tag, version), "{tag} is not {version}");
+        }
+    }
+
+    /// The recipes of the repository itself pass the check, and every port
+    /// pinned by an archive says where its project's repository is, or why
+    /// it has none.
+    #[test]
+    fn every_port_of_the_repository_has_the_upstream_it_needs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let ctx = Ctx {
+            out: root.join("out"),
+            target: root.join("target"),
+            root,
+            config: crate::config::Config::default(),
+            verbose: false,
+        };
+        let recipes = recipes(&ctx).unwrap();
+        let archives: Vec<&Recipe> =
+            recipes.iter().map(|(recipe, _)| recipe).filter(|r| !r.source.url.is_empty()).collect();
+        assert!(archives.len() >= 26, "{} ports are pinned by an archive", archives.len());
+        for recipe in &archives {
+            assert!(recipe.upstream.is_some(), "{} has no [upstream]", recipe.name);
+        }
+        let named = archives.iter().filter_map(|r| r.upstream.as_ref()?.tagged()).count();
+        assert!(named > archives.len() / 2, "only {named} of {} name a repository", archives.len());
     }
 
     #[test]

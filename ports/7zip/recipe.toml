@@ -22,3 +22,9 @@ notices = ["DOC/License.txt", "DOC/copying.txt"]
 url = "https://deb.debian.org/debian/pool/main/7/7zip/7zip_26.02+dfsg.orig.tar.xz"
 sha256 = "cbd9aef3b1a6596aafece29601df759f05c4d1b5619619b42ece125b8fe4d9a8"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/universe/7/7zip/7zip_26.02+dfsg.orig.tar.xz"]
+
+# 7-Zip's own repository, which 7-zip.org names. Debian's +dfsg archive is
+# this tag without the unRAR code.
+[upstream]
+git = "https://github.com/ip7z/7zip.git"
+tag = "26.02"

@@ -126,9 +126,14 @@ _target/userspace/_).
 		more.
 
 *ports outdated* [*--tsv*]
-	Ask each port's git repository for its tags and list, for each port
-	pinned to a tag, whether its upstream has released a newer version
-	of the same series; release archives and snapshots are not checked.
+	Ask each port's git repository for its tags and list, for each port,
+	whether its upstream has released a newer version of the same series
+	than the release the recipe pins; snapshots and development versions
+	do not count. A port pinned to a tag of git is asked in its own
+	repository. A port pinned by a release archive is asked in the
+	repository, and by the tag, that its *[upstream]* table names (see
+	*PORTS*). A port whose *[upstream]* says *none*, a port pinned to a
+	commit with no tag and the toolchain's ports are not checked.
 	With *--tsv*, only the ports with a newer release, one line each:
 	name, pinned tag and newer tag, separated by tabs. CI runs it each
 	Monday and opens an issue for each (ADR 0370).
@@ -2246,7 +2251,15 @@ _recipe.toml_
 	release archive (*url*, *sha256* and *mirrors* that serve the same
 	file, ADR 0086), or *rust-src = true* for the _library_ directory of
 	the pinned Rust
-	toolchain's *rust-src* component, with the crates it vendors; any
+	toolchain's *rust-src* component, with the crates it vendors; for a
+	release archive, an *[upstream]* table, which names the project's own
+	git repository (*git*, an https:// URL) and the *tag* of the release
+	the archive is, a tag that names the recipe's version, or says
+	*none* with a reason of one line when the project has no public git
+	repository (the archive stays what is built; *security scan* asks
+	OSV by the tag's commit, and *ports outdated* reads the repository's
+	tags for a newer release); a port pinned by git has no *[upstream]*,
+	since its source is its upstream; any
 	*extra* sources unpacked inside its tree, each with its own commit
 	and license (a port with no source of its own but *extra* ones builds
 	only those); crates from crates.io unpacked inside it (*[[crate]]*:

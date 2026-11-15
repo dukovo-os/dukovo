@@ -17,3 +17,7 @@ depends = ["mlibc", "zlib", "bzip2", "xz", "lz4", "zstd"]
 [source]
 url = "https://github.com/libarchive/libarchive/releases/download/v3.8.10/libarchive-3.8.10.tar.xz"
 sha256 = "56cad765459d5ee25a3b761f90c47d99379d28297fbfb72d908880d6b875fb96"
+
+[upstream]
+git = "https://github.com/libarchive/libarchive.git"
+tag = "v3.8.10"

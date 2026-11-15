@@ -17,3 +17,7 @@ depends = ["mlibc", "ncurses", "libevent"]
 [source]
 url = "https://github.com/tmux/tmux/releases/download/3.7c/tmux-3.7c.tar.gz"
 sha256 = "7c60cae9a0e25288e2e24750aafc9e8800fc7fd4555e447e1b29ee4201cfb3bf"
+
+[upstream]
+git = "https://github.com/tmux/tmux.git"
+tag = "3.7c"

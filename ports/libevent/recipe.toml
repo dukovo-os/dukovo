@@ -17,3 +17,7 @@ depends = ["mlibc"]
 url = "https://github.com/libevent/libevent/releases/download/release-2.1.13-stable/libevent-2.1.13-stable.tar.gz"
 sha256 = "f7e9383b8c0baa81b687e5b5eecc01beefaf1b19b64151d95ed61647fe7a315c"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/libe/libevent/libevent_2.1.13-stable.orig.tar.gz"]
+
+[upstream]
+git = "https://github.com/libevent/libevent.git"
+tag = "release-2.1.13-stable"

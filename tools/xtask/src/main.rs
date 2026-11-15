@@ -184,9 +184,11 @@ image's: its build.sh installs into $PORT_BUNDLE, and ob packs that into a
 signed out/bundles/<id>-<version>.dkv with its manifest, SBOM and licenses
 (ADR 0370).
 
-`outdated` lists the ports pinned to a git tag whose upstream has released
-a newer version (--tsv: name, pin and newer release, for CI). `audit` checks
-the Cargo.lock of each bundle's port in Rust with cargo-audit.
+`outdated` lists the ports whose upstream has released a newer version than
+the tag the recipe pins: a port pinned to a git tag is asked in its own
+repository, and a port pinned by a release archive in the repository its
+[upstream] table names (--tsv: name, pin and newer release, for CI). `audit`
+checks the Cargo.lock of each bundle's port in Rust with cargo-audit.
 
   --rebuild <name>   Build this port even if nothing changed; repeat for more"
         }
