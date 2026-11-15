@@ -119,7 +119,8 @@ A new release reaches machines in waves: the project's own canary
 machines take it on its first day, and the rest over the following
 week, a few at first and then everyone, each machine by a number it
 draws and keeps to itself. If something goes wrong, the project pauses
-the waves, and the machines not reached yet wait. Until your machine's
+the waves, as does a canary that reports a failure or goes quiet (ADR
+0533), and the machines not reached yet wait. Until your machine's
 wave opens, `sysupdate check` says on which day it does; `elevate
 sysupdate stage --version 0.15.2` takes the release at once. A release
 the project withdraws is never staged, and `sysupdate check` says why;

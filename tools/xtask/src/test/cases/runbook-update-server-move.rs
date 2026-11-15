@@ -13,7 +13,7 @@
 //! as *ob catalog server setup --dukovo* does, and runs it through
 //! elevate for a name that has no certificate: setup takes the keys,
 //! certd cannot get a certificate for the name, setup says so, and nginx
-//! serves over HTTP. Each of the six jobs is enabled with its timer, each
+//! serves over HTTP. Each of the eight jobs is enabled with its timer, each
 //! online key is a secret of the jobs that sign with it, and the folder
 //! of keys is gone.
 //!
@@ -69,7 +69,7 @@ const CERTD_HOST: &str = "this-machine";
 /// The test.
 pub const CASE: Case = Case {
     name: "runbook-update-server-move",
-    about: "the move of the update server to Dukovo (ADR 0542): the online keys brought in a folder of /tmp and setup run through elevate make the six jobs with timers, each online key a secret of the jobs that sign with it, and nginx, over HTTP for a name that has no certificate; deploys with ssh and tar, whose folders are the jobs' group's, are published by the timers and read back by a client from the first root, system releases and catalog with its bundle, with Caddy's cache headers and refusals; a deploy not told ready is not published, and is when told; each refresh timer signs a new timestamp after the clock moves six hours; run again for this-machine, setup keeps the keys and nginx serves HTTPS with certd's certificate and sends HTTP to it",
+    about: "the move of the update server to Dukovo (ADR 0542): the online keys brought in a folder of /tmp and setup run through elevate make the eight jobs with timers, each online key a secret of the jobs that sign with it, and nginx, over HTTP for a name that has no certificate; deploys with ssh and tar, whose folders are the jobs' group's, are published by the timers and read back by a client from the first root, system releases and catalog with its bundle, with Caddy's cache headers and refusals; a deploy not told ready is not published, and is when told; each refresh timer signs a new timestamp after the clock moves six hours; run again for this-machine, setup keeps the keys and nginx serves HTTPS with certd's certificate and sends HTTP to it",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, certd and timerd among
@@ -525,7 +525,7 @@ fn headers_and_refusals(server: &Server, web: u16) -> Result<(), String> {
     Ok(())
 }
 
-/// The setup's reach on the machine: the six jobs with timers, the secrets
+/// The setup's reach on the machine: the eight jobs with timers, the secrets
 /// and who can read what.
 fn jobs_and_keys(server: &Server) -> Result<(), String> {
     let timers = guest_ok(server, &as_root("service list --timers"))?;
@@ -536,6 +536,8 @@ fn jobs_and_keys(server: &Server) -> Result<(), String> {
         "dukovo-catalog-refresh",
         "dukovo-catalog-flaws",
         "dukovo-flaws-fetch",
+        "dukovo-system-canaries",
+        "dukovo-catalog-canaries",
     ] {
         require(&timers, job, "service list --timers")?;
     }
@@ -547,6 +549,8 @@ fn jobs_and_keys(server: &Server) -> Result<(), String> {
         "dukovo-catalog-publish",
         "dukovo-catalog-refresh",
         "dukovo-catalog-flaws",
+        "dukovo-system-canaries",
+        "dukovo-catalog-canaries",
     ];
     for job in signing {
         let secrets = guest_ok(server, &as_root(&format!("service secret list {job}")))?;

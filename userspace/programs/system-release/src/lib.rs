@@ -32,3 +32,4 @@ pub mod rescue;
 pub mod rollout;
 pub mod store;
 pub mod updates;
+pub mod verdict;

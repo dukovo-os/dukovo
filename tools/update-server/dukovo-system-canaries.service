@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[Unit]
+Description=Hold or free the Dukovo system releases' waves by what the canaries report (ADR 0533)
+
+[Service]
+Type=oneshot
+User=dukovo-system
+Group=dukovo-system
+UMask=0022
+ExecStart=/usr/local/lib/dukovo-system/system-canaries.sh
+# It reads and writes its own folders and nothing else, and reads the list
+# of canaries and their reports, which are the web's and root's; it has no
+# use for the network: the check reads what it published from the disk.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dukovo-system /srv/dukovo-system
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

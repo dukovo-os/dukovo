@@ -177,7 +177,7 @@ starts with `==>` is a stage. You should see, in this order, `The
 folders`, `The program and the scripts`, `The service files`, `The online
 keys` with the lines `Taking the catalog online key from` and `Taking the
 system online key from`, each naming the folder of step 4 where your `/tmp`
-really is, under `/system/live/authd/tmp/`, `nginx`, `The jobs` with six lines naming the
+really is, under `/system/live/authd/tmp/`, `nginx`, `The canaries`, `The jobs` with eight lines naming the
 `dukovo-` jobs and their next times, then `nginx answers port 80 with
 301`, and last `Done.` with the two places the keys' public halves are in.
 There is no line saying `has no certificate yet`: step 3 gave it one.
@@ -232,6 +232,28 @@ The shell on NEW fills in `$PWD`, your home folder, before `elevate` runs
 the command. The first deploy of step 7 takes the seed as the folder
 served, signs the next numbers on top of it, keeps the plans and takes the
 seed away.
+
+Whether or not you skipped the metadata, carry the canaries over. The
+canaries that report to OLD (ADR 0533) are on a list of their names and
+keys, which is root's on both servers. Copy it to NEW, so that they are
+not enrolled again. Their reports stay on OLD: each canary reports to
+whatever `updates.dukovo.org` leads to, once an hour, so NEW has them
+within an hour of the switch in step 10, and until then it holds the
+waves, as for a canary that has never reported. Skip this if the list
+on OLD is empty (`"canaries": {}`).
+
+```console
+$ ssh -A OLD-LOGIN@OLD-IP
+OLD$ sudo cat /etc/dukovo-update-server/canaries.json | ssh dukovo@NEW-IP 'cat > canaries.json'
+OLD$ exit
+$ ssh dukovo@NEW-IP
+$ elevate sh -c "cp $PWD/canaries.json /system/settings/dukovo-update-server/canaries.json"
+$ exit
+$ ./ob release canaries
+```
+
+The last command, which reads the server that `OB_UPDATE_SSH` names, lists
+the same canaries as OLD does, each as `not green` with `no report`.
 
 The lab test `updates/server-on-dukovo` (`lab/tests/updates/`) checks this
 step for the system's releases: a machine that read the old test server
@@ -306,7 +328,7 @@ $ ssh dukovo@NEW-IP elevate service list --timers
 
 The first shows `HTTP/2 200`, `cache-control: no-cache` and
 `strict-transport-security`. The second number, NEW's, is not lower than
-the third, OLD's. The timers list has six lines named `dukovo-`, each with a
+the third, OLD's. The timers list has eight lines named `dukovo-`, each with a
 time next. Do the same for `/catalog/metadata/timestamp.json`.
 
 If the numbers are lower and you skipped step 6, go back to it: do not
@@ -344,7 +366,14 @@ $ ./ob catalog check
 ```
 
 `dig` shows NEW-IP within five minutes, and both checks print the lines of
-step 8. From a machine that has never seen NEW, such as a phone off Wi-Fi,
+step 8. If OLD had canaries, `./ob release canaries` shows each of them
+as `no report`, or `last report` with the time of one it had before, and
+within an hour each shows a new report on NEW: until all are green the
+waves of every release and bundle that is not yet fully open stay held,
+which is the server doing what it is for. If a canary still shows `no
+report` after two hours, it reaches OLD still, or not at all: check on
+the canary that `sysupdate canary report --dry-run` names
+`updates.dukovo.org`, and that its clock is right. From a machine that has never seen NEW, such as a phone off Wi-Fi,
 `https://updates.dukovo.org/system/metadata/timestamp.json` opens without
 a warning. If `dig` still shows OLD-IP after ten minutes, the record was
 not saved or its time to live was not lowered a day before.
@@ -370,8 +399,9 @@ keeps serving until a new one is installed.
 
 ## Watching the first day
 
-You are watching for three things: that the timestamps keep being signed,
-that the daily jobs run, and that nginx is not failing. Look at these
+You are watching for four things: that the timestamps keep being signed,
+that the daily jobs run, that the canaries report, and that nginx is not
+failing. Look at these
 four times, right after the switch, two hours later, in the evening and
 the next morning:
 
@@ -379,16 +409,19 @@ the next morning:
 $ ssh dukovo@NEW-IP elevate service list --failed
 $ ssh dukovo@NEW-IP elevate service list --timers
 $ curl -s https://updates.dukovo.org/system/metadata/timestamp.json | jq .signed.version,.signed.expires
+$ ./ob release canaries
 $ ssh dukovo@NEW-IP elevate log nginx
 ```
 
 `--failed` lists none. The timers list has a time for each job; the
-publish jobs show a last start within the last minute, the refresh jobs
-within the last six hours, and the two daily jobs, which start between 03:00
+publish jobs show a last start within the last minute, the canary jobs
+within the last five minutes, the refresh jobs within the last six
+hours, and the two daily jobs, which start between 03:00
 and 04:30 by the machine's clock, a last start of that morning. The
 timestamp's number goes up every six hours, and its `expires` is at least a
-day ahead. The nginx log has a line for each request and no `[emerg]` or
-`[crit]`. A refresh job that has not run for seven hours, or a timestamp
+day ahead. `./ob release canaries` shows each canary green with a last
+report less than two hours old, or says why it is not. The nginx log has
+a line for each request and no `[emerg]` or `[crit]`. A refresh job that has not run for seven hours, or a timestamp
 that expires in less than twelve, is a failure: go to [Going back](#going-back)
 if it is not fixed in an hour.
 
@@ -406,6 +439,12 @@ $ export OB_UPDATE_SSH=OLD-LOGIN@OLD-IP
 $ ./ob release deploy REPOSITORY
 $ ./ob catalog deploy
 ```
+
+The canaries report to whatever the name leads to, and OLD's reports are
+as old as the switch: until each has reported to OLD, within an hour,
+OLD holds the waves too. Change the list on OLD with `./ob release
+canary` while `OB_UPDATE_SSH` names OLD, for a canary enrolled or removed
+on NEW in the meantime.
 
 Machines that read NEW in the meantime remember its numbers, and refuse a
 lower one from OLD. Compare the timestamp numbers of the two, as in step

@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Holds or frees the waves of the system releases by what the canaries
+# report (ADR 0533): the canaries not green are worked out from the list
+# of canaries (/system/settings/dukovo-update-server/canaries.json) and
+# their reports (/var/lib/dukovo-canaries/reports), and when they are not
+# those the plan holds the waves for, the rollouts are signed again. On an
+# Ubuntu server a path unit starts this when a report arrives; Spark has
+# none, so a timer starts it every 5 minutes, and a canary's report or a
+# change of the list counts within that time. Nothing until the first
+# deploy brings a root. It has no network.
+#
+# service.toml(5) explains each setting, `service check dukovo-system-canaries` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Hold or free the system releases' waves by what the canaries report"
+program = "/system/commands/sh"
+arguments = ["/system/state/lib/dukovo-update-server/system-canaries.sh"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+# This job's own copy of the online key, as base64: a secret loses a
+# trailing newline and a key is binary. `service secret set` puts it in.
+secrets = ["online-key"]
+
+[environment]
+DUKOVO_SYSTEM_HOME = "/system/state/lib/dukovo-system"
+DUKOVO_SYSTEM_INCOMING = "/system/state/lib/dukovo-system-incoming"
+DUKOVO_SYSTEM_PROGRAM = "/system/commands/system-release"
+DUKOVO_SYSTEM_SITE = "/system/state/lib/dukovo-system-site"
+DUKOVO_CANARIES = "/system/settings/dukovo-update-server/canaries.json"
+DUKOVO_CANARY_REPORTS = "/system/state/lib/dukovo-canaries/reports"
+DUKOVO_LOCK = "/system/live/dukovo-update-server/system.lock"
+
+[limits]
+memory = "512M"
+
+[timer]
+every = "5m"
+after_boot = "4m"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# script, the update server's own folders it works in, and the canaries'
+# reports, which it reads; and nothing else of the system's. The list of
+# canaries is in /system/settings, which every service reads.
+[permissions]
+files.read = ["/system/state/lib/dukovo-update-server", "/system/state/lib/dukovo-canaries"]
+files.read-write = ["/system/state/lib/dukovo-system", "/system/state/lib/dukovo-system-site", "/system/live/dukovo-update-server"]

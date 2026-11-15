@@ -1825,7 +1825,7 @@ _target/userspace/_).
 	*--debug*, *--release*
 		As for *build*.
 
-*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_ | *canary* _name_ *red*|*green*)
+*catalog* *key* *yubikey* [*--serial* _n_] | *key* *new* _file_ _name_ [_role_]... | *root* [*--days* _n_] | *sign* [*--days* _n_] [*--remove* _path_]... [*--yes*] [_bundle_]... | *publish* | *status* [*--json*] | *server* *setup* [*--dukovo*] | *deploy* | *check* [_url_] | *rollout* (*pause* _id_ _version_ _reason_ | *resume* _id_ _version_)
 	Make and sign the catalog's TUF repository in _catalog/_ (ADR 0381),
 	with catalog-repo, which ob builds for this machine. Every command
 	takes *--key* _file_, an Ed25519 secret key that signs in place of a
@@ -1913,12 +1913,13 @@ _target/userspace/_).
 	the signer's: it runs the server's _catalog-rollout.sh_ as its user,
 	through *sudo*, which asks for the password. *pause* keeps the waves
 	of a bundle's newest version where they are, with a reason computers
-	show; *resume* lets them open on schedule again; *canary* marks a
-	canary *red*, which holds every bundle's waves, or *green*. The
-	rollouts are signed again at once. Only a bundle's newest version
-	has a rollout. *bundle*(1) says what a computer does with one.
+	show; *resume* lets them open on schedule again. The rollouts are
+	signed again at once. Only a bundle's newest version has a rollout.
+	The canaries that hold every bundle's waves while one is not green
+	are changed with *release canary* (ADR 0533), and *rollout canary*
+	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *server* *setup* [*--dukovo*] | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_ | *canary* _name_ *red*|*green*)
+*release* *server* *setup* [*--dukovo*] | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
 	Deploy the system's releases to the update server and check what it
 	serves (ADR 0467), over the same SSH login as *catalog*.
 	*server setup* is *catalog server setup*, which sets up both; it
@@ -1960,10 +1961,34 @@ _target/userspace/_).
 	through *sudo*, or through *elevate* on a Dukovo server, which asks
 	for the password. *pause* keeps a
 	release's waves where they are, with a reason machines show;
-	*resume* lets them open on schedule again; *canary* marks a canary
-	*red*, which holds every release's waves, or *green*. The rollouts
-	are signed again at once. A withdrawal is *system-release pull*,
-	then *deploy*.
+	*resume* lets them open on schedule again. The rollouts are signed
+	again at once. A withdrawal is *system-release pull*, then
+	*deploy*.
+
+	*canary* and *canaries* are the canaries' (ADR 0533): machines of
+	the project that send the server a signed report each hour. While
+	one is not green, no further wave opens of any release or bundle:
+	a canary is not green while it has no report, its newest report
+	is more than two hours old, its last health check failed, it fell
+	back after an update, *dukovo-check* found failures, a service has
+	failed, or it still runs the system release its channel has offered
+	for more than six hours. *canary add* _name_ _key_ enrols a canary
+	with the key *sysupdate canary enrol* printed on it, and *canary
+	remove* _name_ takes it off the list, which frees the waves it
+	held. *canary* _name_ *red* _reason_ or *green* _reason_ sets its
+	colour by hand, which wins over its reports until *canary* _name_
+	*auto*. They change the list on the server as root, through *sudo*,
+	or through *elevate* on a Dukovo server, which asks for the
+	password; the server then signs the rollouts again, at once on an
+	Ubuntu server and within 5 minutes on a Dukovo one. The list is one
+	for the system's releases and the catalog. *canaries* shows each
+	canary's colour and why, when it last reported, the release it runs
+	and any colour set by hand, read with no terminal and no password:
+	on an Ubuntu server through a *sudo* rule for this one command that
+	the setup writes. With *--json* it prints them as JSON, for Dukovo
+	Ops. *rollout canary* _name_ *red*|*green*, here and in *catalog
+	rollout*, is refused: it said which canary held the waves by hand,
+	and the reports now do.
 
 *updates* *status* [*--json*]
 	Show what the update server serves, read as a new computer reads it

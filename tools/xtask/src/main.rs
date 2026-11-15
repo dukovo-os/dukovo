@@ -725,8 +725,10 @@ when something needs you."
        ./ob release deploy <repository>
        ./ob release send [--copy-only] <repository>
        ./ob release check [--root <file>] [<url>]
-       ./ob release rollout (pause <version> <reason> | resume <version>
-                             | canary <name> red|green)
+       ./ob release rollout (pause <version> <reason> | resume <version>)
+       ./ob release canaries [--json]
+       ./ob release canary (add <name> <key> | remove <name>
+                            | <name> red|green <reason> | <name> auto)
 
 Deploys the system's releases to the update server (ADR 0467), reached over
 SSH as `$OB_UPDATE_SSH` (default updates.dukovo.org), as `ob catalog` deploys
@@ -750,8 +752,23 @@ it says the deploy is ready, so that the server publishes nothing of it. `check`
 reads the releases served at <url>, by default
 https://updates.dukovo.org/system/, as a computer online would, from that
 first root; with --root, from the first root in <file>, for a server of a test
-or a lab. `rollout` holds or frees a release's waves, or marks a canary,
-on the server, and signs the rollouts again (ADR 0469)."
+or a lab. `rollout` holds or frees a release's waves on the server, and signs
+the rollouts again (ADR 0469).
+
+The canaries are machines that send the server a signed report each hour
+(ADR 0533). While one has no report, has been silent for two hours, failed a
+check, fell back, has a failed service, or did not take a release its channel
+offered six hours ago, the waves of the system's releases and of the catalog's
+bundles stay where they are. `canary add <name> <key>` enrols one, with the key
+`sysupdate canary enrol` printed on it, and `canary remove <name>` takes it
+off; `canary <name> red <reason>` or `green <reason>` sets its colour by hand,
+which wins over its reports until `canary <name> auto`. They run on the server
+through sudo, or through elevate on a Dukovo one, which ask for your password.
+`canaries` shows each canary's colour and why, when it last reported, the
+release it runs and any colour set by hand, read with no password where the
+server's setup allows it; with --json it prints them as JSON, for Dukovo Ops.
+The old `rollout canary <name> red|green`, here and for the catalog, is
+refused."
         }
         "signoff" => {
             "Usage: ./ob signoff [<base>]

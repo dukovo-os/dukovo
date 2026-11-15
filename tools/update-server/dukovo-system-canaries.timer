@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[Unit]
+Description=Check the Dukovo system releases' canaries every 15 minutes, for the silent ones (ADR 0533)
+
+[Timer]
+# A canary that falls silent sends nothing to wake the path unit.
+OnCalendar=*:00/15
+RandomizedDelaySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

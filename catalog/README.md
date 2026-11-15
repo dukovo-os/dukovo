@@ -124,7 +124,6 @@ show, and free them when it is fixed or known to be fine:
 ```
 $ ./ob catalog rollout pause io.github.burntsushi.ripgrep 15.3.0 "crashes on start"
 $ ./ob catalog rollout resume io.github.burntsushi.ripgrep 15.3.0
-$ ./ob catalog rollout canary my-canary red
 ```
 
 It asks for your password on the server, and needs no YubiKey. A
@@ -133,6 +132,38 @@ version that ends it at once, whatever its wave, and `bundle update
 ID` takes any version at once. Paused waves do not take back what the
 computers reached already: `bundle rollback` does that, one computer at
 a time.
+
+### Canaries
+
+The canaries (ADR 0533) are the project's own computers that take a new
+version first. Each reports to the update server every hour, and the
+server holds every wave not yet open, for the newest version of every
+bundle and for every system release, while one is not green: it is red
+by hand, has never reported, has been silent for two hours, failed its
+health check or fell back from an update, `dukovo-check` found failures
+or a service failed. A canary that has not taken a newer system release
+holds the system's waves only, not the catalog's. The rollout then says
+`canaries not green: NAME`, and `bundle update --check` shows it. The list
+is the same for both, and `ob release` changes it:
+
+```
+$ ./ob release canaries
+$ ./ob release canary add my-canary KEY
+$ ./ob release canary my-canary red "swapping to disk"
+$ ./ob release canary my-canary auto
+$ ./ob release canary remove my-canary
+```
+
+`canaries` shows each canary's colour and why, when it last reported
+and what it runs; `add` enrols one with the key `sysupdate canary
+enrol` prints on the canary; `red` and `green` set a colour by hand,
+which wins over its reports until `auto`; `remove` takes it off the
+list. The server signs the rollouts again only when the set of canaries
+that are not green changes: `dukovo-catalog-canaries` looks when a
+report or the list changes and every 15 minutes (every 5 on a Dukovo
+server, which has no way to watch a file), for a canary that went
+quiet. `./ob catalog rollout canary` is refused, naming these commands.
+With no canary enrolled nothing is held for canaries.
 
 ## When the server or its key is lost
 

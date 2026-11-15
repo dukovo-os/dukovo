@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The receiver of the canaries' reports (ADR 0533): nginx passes
+# POST /canary/v1/report to this service's socket (update-server.conf),
+# and it keeps a report only when the signature verifies against the list
+# of canaries (/system/settings/dukovo-update-server/canaries.json),
+# which it only reads, in the folder of reports. It holds no key and has
+# no network. It runs as the account nginx, since a socket is reached
+# only by the account that made it and a bundle's service cannot yet
+# reach another service's socket by any other way (README.md); what it
+# sees is its own folders and nothing else.
+#
+# service.toml(5) explains each setting, `service check dukovo-canary-receive` checks
+# this file, and README.md says what runs and how to see it.
+
+service_version = 1
+description = "Receive the canaries' reports"
+program = "/system/commands/system-release"
+arguments = [
+    "canary-receive",
+    "--socket", "/system/live/dukovo-canary-receive/receive.sock",
+    "--canaries", "/system/settings/dukovo-update-server/canaries.json",
+    "--reports", "/system/state/lib/dukovo-canaries/reports",
+]
+account = "nginx"
+# Started again whenever it ends.
+restart = "always"
+
+[limits]
+memory = "64M"
+
+# What it holds beyond what every service reads (service.toml(5)): its
+# folder of reports, which it writes, and its own folder of /system/live,
+# where it makes its socket. The list of canaries is in /system/settings,
+# which every service reads, and it has no network.
+[permissions]
+files.read-write = ["/system/state/lib/dukovo-canaries/reports", "/system/live/dukovo-canary-receive"]

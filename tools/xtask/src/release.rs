@@ -66,6 +66,18 @@ const ROLLOUT_SCRIPTS: [&str; 2] = [
     "/var/lib/dukovo-update-server/system-rollout",
 ];
 
+/// The script that changes the canaries and shows them, on an Ubuntu
+/// server and on a Dukovo one (ADR 0533).
+const CANARY_SCRIPTS: [&str; 2] =
+    ["/usr/local/lib/dukovo-system/canaries.sh", "/var/lib/dukovo-update-server/canaries"];
+
+/// What `rollout canary NAME red|green` is answered with, here and for the
+/// catalog's `rollout`: the canaries are one list for both.
+pub const CANARY_MOVED: &str = "`rollout canary NAME red|green` is gone: the canaries are one list \
+     that the system's releases and the catalog both follow, changed with `./ob release canary \
+     NAME red REASON`, `NAME green REASON` or `NAME auto`, and `./ob release canary add NAME KEY` \
+     and `remove NAME` enrol and drop one; `./ob release canaries` shows them";
+
 /// How long a deploy waits for the server to publish: it hashes every
 /// new file as it takes it, and a Dukovo server starts its publish job
 /// once a minute.
@@ -105,19 +117,24 @@ pub fn command(ctx: &Ctx, args: &[String]) -> Result<()> {
         ["check"] => check(ctx, None, URL),
         ["check", url] => check(ctx, None, url),
         ["check", "--root", root, url] => check(ctx, Some(Path::new(root)), url),
+        ["rollout", "canary", ..] => bail!("{CANARY_MOVED}"),
         ["rollout", rest @ ..] if !rest.is_empty() => rollout(ctx, rest),
+        ["canaries"] => canaries(ctx, false),
+        ["canaries", "--json"] => canaries(ctx, true),
+        ["canary", rest @ ..] if !rest.is_empty() => canary(ctx, rest),
         _ => bail!(
             "usage: ./ob release server setup [--dukovo] | deploy <repository> \
              | send [--copy-only] <repository> | check [--root <file>] [<url>] \
-             | rollout (pause <version> <reason> | resume <version> | canary <name> red|green)"
+             | rollout (pause <version> <reason> | resume <version>) | canaries [--json] \
+             | canary (add <name> <key> | remove <name> | <name> red|green <reason> | <name> auto)"
         ),
     }
 }
 
 /// `ob release rollout ...`: on the update server, as its user (through
 /// sudo, or through elevate on a Dukovo server), pauses or resumes a
-/// release's waves, or marks a canary red or green, and signs the
-/// rollouts again (ADR 0469); needs no release key.
+/// release's waves and signs the rollouts again (ADR 0469); needs no
+/// release key.
 fn rollout(ctx: &Ctx, args: &[&str]) -> Result<()> {
     let words: Vec<String> = args.iter().map(|word| deploy::quote(word)).collect();
     let [ubuntu, dukovo] = ROLLOUT_SCRIPTS;
@@ -128,6 +145,59 @@ fn rollout(ctx: &Ctx, args: &[&str]) -> Result<()> {
     );
     // A terminal, for sudo or elevate to ask for the password.
     process::run(ctx, &mut Server::from_environment().ssh_terminal(&script))
+}
+
+/// What `ob release canary ...` is told, as the words of the server's
+/// canaries script: `add NAME KEY`, `remove NAME`, `NAME red REASON`,
+/// `NAME green REASON` or `NAME auto`.
+fn canary_words_are_valid(words: &[&str]) -> bool {
+    match words {
+        ["add", _, _] | ["remove", _] | [_, "auto"] => true,
+        [_, "red" | "green", reason @ ..] => !reason.is_empty(),
+        _ => false,
+    }
+}
+
+/// `ob release canary ...`: on the update server, as root (through sudo,
+/// or through elevate on a Dukovo server), a canary enrolled with the key
+/// `sysupdate canary enrol` printed, taken off the list, or its colour set
+/// by hand, which wins over its reports until `auto` (ADR 0533). The jobs
+/// that hold the waves see the change at once, or within five minutes on a
+/// Dukovo server.
+fn canary(ctx: &Ctx, words: &[&str]) -> Result<()> {
+    if !canary_words_are_valid(words) {
+        bail!(
+            "usage: ./ob release canary add <name> <key> | remove <name> | <name> red <reason> \
+             | <name> green <reason> | <name> auto"
+        );
+    }
+    let words: Vec<String> = words.iter().map(|word| deploy::quote(word)).collect();
+    let [ubuntu, dukovo] = CANARY_SCRIPTS;
+    let words = words.join(" ");
+    let script = format!(
+        "if [ -x {ubuntu} ]; then sudo {ubuntu} {words}; else elevate sh {dukovo} {words}; fi"
+    );
+    // A terminal, for sudo or elevate to ask for the password.
+    process::run(ctx, &mut Server::from_environment().ssh_terminal(&script))
+}
+
+/// `ob release canaries [--json]`: what the canaries make of the waves,
+/// read on the update server with no terminal and no password: each
+/// canary's colour and why, when it last reported and what it runs. On an
+/// Ubuntu server it runs through a sudo rule that setup.sh writes for
+/// this one command (ADR 0533).
+fn canaries(ctx: &Ctx, json: bool) -> Result<()> {
+    let [ubuntu, dukovo] = CANARY_SCRIPTS;
+    let flag = if json { " --json" } else { "" };
+    let script = format!(
+        "if [ -x {ubuntu} ]; then sudo -n {ubuntu} show{flag}; else sh {dukovo} show{flag}; fi"
+    );
+    let output =
+        process::output(ctx, &mut Server::from_environment().ssh(&script)).map_err(|err| {
+            err.hint("a server set up before the canaries needs ./ob release server setup again")
+        })?;
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
 }
 
 /// The production first root, which every repository deployed must start
@@ -341,4 +411,25 @@ fn toolchain(ctx: &Ctx) -> Result<String> {
         .and_then(toml::Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| crate::Error::new(format!("{} names no channel", path.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canary_words_are_valid as valid;
+
+    #[test]
+    fn the_canary_words_are_the_scripts_and_a_colour_needs_its_reason() {
+        assert!(valid(&["add", "ref-box", "ab12"]));
+        assert!(valid(&["remove", "ref-box"]));
+        assert!(valid(&["ref-box", "auto"]));
+        assert!(valid(&["ref-box", "red", "disk", "swap"]));
+        assert!(valid(&["ref-box", "green", "known fault"]));
+        assert!(!valid(&[]));
+        assert!(!valid(&["ref-box"]));
+        assert!(!valid(&["ref-box", "red"]));
+        assert!(!valid(&["ref-box", "green"]));
+        assert!(!valid(&["add", "ref-box"]));
+        assert!(!valid(&["remove"]));
+        assert!(!valid(&["ref-box", "blue", "why"]));
+    }
 }

@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+[Unit]
+Description=Receive the canaries' reports for the Dukovo update server (ADR 0533)
+
+[Service]
+User=dukovo-canaries
+# Caddy's group, so that the socket, which only its owner and group may
+# use, is Caddy's to connect to.
+Group=caddy
+UMask=0027
+ExecStart=/usr/local/lib/dukovo-system/system-release canary-receive --socket /run/dukovo-canaries/receive.sock --canaries /etc/dukovo-update-server/canaries.json --reports /var/lib/dukovo-canaries/reports
+Restart=always
+RestartSec=5s
+# The socket's folder, for Caddy to reach it by name and no one else.
+RuntimeDirectory=dukovo-canaries
+RuntimeDirectoryMode=0750
+# It holds no key and has no network: it checks each report against the
+# list of canaries, which it only reads, and writes its folder of reports
+# and nothing else. The unix socket in the file system still works.
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dukovo-canaries/reports
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

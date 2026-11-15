@@ -63,3 +63,30 @@ Remove `/var/lib/dukovo-system/online.key` on the server and run
 `keys/online.json` is not the new one. Replace `keys/online.json` with
 `/usr/local/share/dukovo-system/online.json` from the server, sign a
 root that names it, and deploy.
+
+## Canaries
+
+A release's waves open on schedule only while every canary is green
+(ADR 0533). The canaries are the project's own machines: each reports to
+the update server every hour, and the server holds the waves of every
+release and of the catalog's bundles while one is red by hand, has never
+reported, has been silent for two hours, failed its health check, fell
+back from an update, has a failed service or failed `dukovo-check`, or
+has not taken a release its channel has offered for more than six hours.
+The list of canaries is root's on the server, and `ob` changes it:
+
+```
+./ob release canaries                         # colour, why, last report of each
+./ob release canaries --json
+./ob release canary add NAME KEY              # KEY is what `sysupdate canary enrol` prints
+./ob release canary NAME red REASON           # by hand; wins over its reports
+./ob release canary NAME green REASON
+./ob release canary NAME auto                 # back to its reports
+./ob release canary remove NAME
+```
+
+The server signs the rollouts again only when the set of canaries that
+are not green changes. With no canary enrolled, nothing is held for
+canaries. `./ob release rollout canary` no longer exists, and says so.
+ob(1) says more, and `tools/update-server/dukovo/README.md` says how a
+Dukovo server runs the jobs.

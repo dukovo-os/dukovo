@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# `ob release canary` runs this through elevate on a Dukovo update server,
+# and `ob release canaries` runs it as the login, which may read what it
+# shows: canaries.sh (ADR 0533) with the places the service files give
+# the jobs (dukovo-system-canaries.toml has the same), since elevate
+# passes none of the caller's environment.
+set -eu
+
+DUKOVO_CANARIES=/system/settings/dukovo-update-server/canaries.json
+DUKOVO_CANARY_REPORTS=/system/state/lib/dukovo-canaries/reports
+DUKOVO_SYSTEM_HOME=/system/state/lib/dukovo-system
+DUKOVO_SYSTEM_PROGRAM=/system/commands/system-release
+DUKOVO_SYSTEM_SITE=/system/state/lib/dukovo-system-site
+export DUKOVO_CANARIES DUKOVO_CANARY_REPORTS DUKOVO_SYSTEM_HOME DUKOVO_SYSTEM_PROGRAM
+export DUKOVO_SYSTEM_SITE
+
+exec sh "$(dirname "$0")/canaries.sh" "$@"

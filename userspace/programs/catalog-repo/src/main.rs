@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use catalog_repo::keys::{self, Signers};
 use catalog_repo::{FLAWS_DAYS, Refreshed, Repo, WARN_DAYS, expires_days};
 use system_release::rollout::{Plan, Plans};
+use system_release::verdict;
 
 const USAGE: &str = "\
 usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAND
@@ -29,9 +30,14 @@ usage: catalog-repo --repo DIR [--yubikey-helper PROGRAM] [--key FILE]... COMMAN
        refresh --store DIR --out DIR [--plan FILE]
                                          a new timestamp, or all again when needed
        rollout --store DIR --out DIR --plan FILE
-               (pause ID VERSION REASON | resume ID VERSION | canary NAME red|green)
+               (pause ID VERSION REASON | resume ID VERSION
+                | canaries --canaries FILE --reports DIR)
                                          hold or free the waves of a bundle's newest
-                                         version, or of every one, and sign again
+                                         version, or of every one, and sign again; with
+                                         canaries, hold them while one is not green
+       canaries changed --canaries FILE --reports DIR --plan FILE
+                                         exit 0 when the canaries not green are not those
+                                         the plan holds the waves for, 3 when they are
        flaws --store DIR --out DIR OSV...
                                          sign the list of the bundles' known flaws
                                          from advisories in the OSV format, and publish
@@ -53,6 +59,10 @@ struct Options {
     out: Option<PathBuf>,
     bundles: Option<PathBuf>,
     plan: Option<PathBuf>,
+    canaries: Option<PathBuf>,
+    reports: Option<PathBuf>,
+    /// For tests: the time the canaries are judged at, in place of now.
+    now: Option<i64>,
     rest: Vec<String>,
 }
 
@@ -70,6 +80,9 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
         out: None,
         bundles: None,
         plan: None,
+        canaries: None,
+        reports: None,
+        now: None,
         rest: Vec::new(),
     };
     let mut args = args.into_iter();
@@ -88,6 +101,11 @@ fn parse(args: Vec<String>) -> Result<Options, String> {
             "--out" => options.out = Some(value()?.into()),
             "--bundles" => options.bundles = Some(value()?.into()),
             "--plan" => options.plan = Some(value()?.into()),
+            "--canaries" => options.canaries = Some(value()?.into()),
+            "--reports" => options.reports = Some(value()?.into()),
+            "--now" => {
+                options.now = Some(value()?.parse().map_err(|_| "--now takes seconds since 1970")?);
+            }
             "--yes" => options.yes = true,
             "--json" => options.json = true,
             "-h" | "--help" => return Err(USAGE.into()),
@@ -109,7 +127,9 @@ fn confirm(question: &str) -> Result<bool, String> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
-fn run(options: &Options) -> Result<(), String> {
+/// What the command did, as the exit status: 0, or, for `canaries changed`,
+/// 3 when the rollouts need no signing again.
+fn run(options: &Options) -> Result<ExitCode, String> {
     let repo = Repo::new(options.repo.as_ref().ok_or(format!("--repo is needed\n{USAGE}"))?);
     // The YubiKeys are looked for only when a key here is a YubiKey's, so
     // that key files alone, as the update server's, need no yubikey-manager.
@@ -192,6 +212,10 @@ fn run(options: &Options) -> Result<(), String> {
             say_refreshed(&refreshed, out);
         }
         ["rollout", words @ ..] => rollout(&repo, options, &signers()?, words)?,
+        ["canaries", "changed"] => {
+            let changed = canaries_changed(options)?;
+            return Ok(ExitCode::from(if changed { 0 } else { verdict::UNCHANGED_STATUS }));
+        }
         ["flaws", sources @ ..] => {
             let store = options.store.as_ref().ok_or("--store is needed")?;
             let out = options.out.as_ref().ok_or("--out is needed")?;
@@ -229,7 +253,34 @@ fn run(options: &Options) -> Result<(), String> {
         ["status"] => status(&repo)?,
         _ => return Err(USAGE.into()),
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The canaries that are not green, by their reports in `--reports` at
+/// `--now`, and so the names the plan should hold the waves for: the
+/// catalog has no rule on a release a canary did not take, which is the
+/// system's alone (ADR 0533).
+fn canaries_red(options: &Options) -> Result<Vec<String>, String> {
+    let canaries = options.canaries.as_ref().ok_or("--canaries is needed")?;
+    let reports = options.reports.as_ref().ok_or("--reports is needed")?;
+    let now = options.now.unwrap_or_else(tuf::time::now);
+    let standings = verdict::standings(canaries, reports, &[], now)?;
+    Ok(system_release::canary::red(&standings))
+}
+
+/// `canaries changed --canaries FILE --reports DIR --plan FILE`: whether
+/// the canaries that are not green are not those the plan holds the
+/// waves for, so that the rollouts are to be signed again. It says so in
+/// one line, and says nothing when they are the same.
+fn canaries_changed(options: &Options) -> Result<bool, String> {
+    let path = options.plan.as_ref().ok_or("--plan is needed")?;
+    let held = Plans::load(path)?.red;
+    let red = canaries_red(options)?;
+    if !verdict::differs(&held, &red) {
+        return Ok(false);
+    }
+    println!("{}.", verdict::change_line(&held, &red));
+    Ok(true)
 }
 
 /// Signs the rollouts of the plans in `--plan`, and gives the plans as
@@ -288,8 +339,9 @@ fn plan_of<'a>(plans: &'a mut Plans, id: &str, version: &str) -> Result<&'a mut 
 }
 
 /// `rollout --plan FILE ...`: on the update server, the waves of a
-/// bundle's newest version held or freed, or a canary marked red or
-/// green, and the rollouts signed and published again (ADR 0544).
+/// bundle's newest version held or freed, or held for the canaries that
+/// are not green, and the rollouts signed and published again (ADRs 0533
+/// and 0544).
 fn rollout(
     repo: &Repo,
     options: &Options,
@@ -309,16 +361,14 @@ fn rollout(
             plan_of(&mut plans, id, version)?.paused = None;
             format!("{id} {version} goes on")
         }
-        ["canary", name, colour @ ("red" | "green")] => {
-            plans.red.retain(|red| red != name);
-            if *colour == "red" {
-                plans.red.push((*name).to_string());
-            }
-            format!("the canary {name} is {colour}")
+        ["canaries"] => {
+            plans.red = canaries_red(options)?;
+            verdict::said(&plans.red)
         }
+        ["canary", ..] => return Err(verdict::BY_HAND.into()),
         _ => {
-            return Err("rollout takes pause ID VERSION REASON, resume ID VERSION or canary NAME \
-                        red|green"
+            return Err("rollout takes pause ID VERSION REASON, resume ID VERSION or canaries \
+                        --canaries FILE --reports DIR"
                 .into());
         }
     };
@@ -482,10 +532,96 @@ fn status(repo: &Repo) -> Result<(), String> {
 fn main() -> ExitCode {
     let result = parse(std::env::args().skip(1).collect()).and_then(|options| run(&options));
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(status) => status,
         Err(err) => {
             eprintln!("catalog-repo: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(what: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("catalog-repo-main-{}-{what}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn options(words: &[&str]) -> Options {
+        parse(words.iter().map(|w| (*w).to_string()).collect()).unwrap()
+    }
+
+    #[test]
+    fn the_catalog_follows_the_canaries_the_plan_does_not_yet() {
+        let dir = scratch("canaries");
+        let (list, reports, plan) =
+            (dir.join("canaries.json"), dir.join("reports"), dir.join("rollout.json"));
+        std::fs::create_dir(&reports).unwrap();
+        let ref_box = system_release::canary::Key::from_pkcs8(
+            &system_release::canary::Key::generate().unwrap(),
+        )
+        .unwrap();
+        let mut canaries = system_release::canary::Canaries::default();
+        canaries.add("ref-box", &ref_box.public_hex(), 0).unwrap();
+        canaries.save(&list).unwrap();
+        let (list_s, reports_s, plan_s) =
+            (list.display().to_string(), reports.display().to_string(), plan.display().to_string());
+        let changed = |now: &str| {
+            canaries_changed(&options(&[
+                "--canaries",
+                &list_s,
+                "--reports",
+                &reports_s,
+                "--plan",
+                &plan_s,
+                "--now",
+                now,
+                "canaries",
+                "changed",
+            ]))
+        };
+        // No report yet: the canary is not green, and the plan, which
+        // holds nothing, is out of step.
+        assert_eq!(changed("1800000000"), Ok(true));
+        Plans { red: vec!["ref-box".into()], ..Plans::default() }.save(&plan).unwrap();
+        assert_eq!(changed("1800000000"), Ok(false));
+        // A fresh healthy report frees it, so the plan changes again.
+        let mut report =
+            system_release::canary::Report::new("ref-box", 1_800_000_000 - 60, "0.16.0", "beta");
+        report.health = Some(system_release::canary::Health {
+            passed: true,
+            time: 1_800_000_000,
+            detail: String::new(),
+        });
+        report.check =
+            Some(system_release::canary::Check { failures: 0, warnings: 0, failed: Vec::new() });
+        std::fs::write(reports.join("ref-box.json"), ref_box.seal(&report)).unwrap();
+        assert_eq!(changed("1800000000"), Ok(true));
+        // Silent two hours on, it is not green again, as the plan says.
+        assert_eq!(changed(&(1_800_000_000 + 3 * 3600).to_string()), Ok(false));
+        // The plan or the list missing is an error, not a change.
+        let missing = options(&["--canaries", &list_s, "--reports", &reports_s, "canaries"]);
+        assert!(canaries_changed(&missing).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn marking_a_canary_by_rollout_is_refused_with_the_new_command() {
+        let dir = scratch("by-hand");
+        let words = [
+            "--repo", "r", "--store", "s", "--out", "o", "--plan", "p", "rollout", "canary", "x",
+            "red",
+        ];
+        let options = options(&words);
+        let repo = Repo::new(&dir);
+        let err = rollout(&repo, &options, &Signers::default(), &["canary", "x", "red"]);
+        let err = err.unwrap_err();
+        assert!(err.contains("./ob release canary NAME red REASON"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
