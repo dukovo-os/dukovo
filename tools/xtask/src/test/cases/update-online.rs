@@ -46,19 +46,19 @@
 //! and gives to the update server's own system-release, as `canary add`,
 //! for a canary list in a fresh folder; that program's `canary-receive`
 //! listens on a unix socket there, as a child of the test that ends with
-//! it, however it ends. The host's HTTP server passes a POST to
-//! `/canary/v1/report` on to that socket, as the web server in front of the
+//! it, however it ends. The host's HTTP server passes a POST to the path
+//! /canary/v1/report on to that socket, as the web server in front of the
 //! receiver does, and refuses a body of more than 16 KiB; it answers
 //! everything else as it did. `sysupdate canary report --dry-run` says it
 //! sends nothing and prints the signed envelope, and the receiver keeps
 //! nothing; the report itself is taken, `boot-canary.json` is kept, and
-//! `canaries show --json` lists the canary with a report of the release the
-//! machine runs and the channel it follows. The test does not ask it to be
-//! green, as a machine under QEMU may have a warning or a failed service,
-//! but its reasons are neither that it has not reported nor that it is
-//! silent. A body that is no report is refused with 400, and one that is
-//! too large with 413, both sent from the host through the same path, and
-//! the folder of reports keeps no other file.
+//! the command `canaries show --json` lists the canary with a report of the
+//! release the machine runs and the channel it follows. The test does not
+//! ask it to be green, as a machine under QEMU may have a warning or a
+//! failed service, but its reasons are neither that it has not reported
+//! nor that it is silent. A body that is no report is refused with 400,
+//! and one that is too large with 413, both sent from the host through the
+//! same path, and the folder of reports keeps no other file.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{Shutdown, TcpListener, TcpStream};
