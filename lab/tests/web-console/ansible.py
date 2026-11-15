@@ -98,8 +98,13 @@ def playbook(task):
 
 
 def count(name, output):
-    """The number that ansible.sh printed for `name` (changed, unreachable or failed), or None."""
-    for line in output.splitlines():
+    """The number that ansible.sh printed for `name` (changed, unreachable or failed), or None.
+
+    ansible.sh prints its counts after Ansible's own output, whose task lines
+    also start `changed: [dukovo]` or `failed: [dukovo]`, so the last such
+    line is the count.
+    """
+    for line in reversed(output.splitlines()):
         if line.startswith(name + ": "):
             value = line[len(name) + 2 :].strip()
             return int(value) if value.isdigit() else None
