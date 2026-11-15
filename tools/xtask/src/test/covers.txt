@@ -799,6 +799,7 @@ update-online userspace/programs/system-release/ userspace/programs/systools/src
 update-online userspace/programs/systools/src/sysupdate/ userspace/programs/tuf/
 update-online tools/update-server/
 update-online userspace/programs/systools/src/update.rs
+update-online userspace/programs/systools/src/update/advisories.rs
 update-online userspace/programs/systools/src/troubleshoot/ userspace/troubleshoot/
 update-online userspace/defaults/spark/services/sysupdate-stage.toml
 update-panic image/grub/installed.cfg.in image/grub/menu.cfg kernel/radix/src/panic.rs

@@ -4098,7 +4098,9 @@ fn make_test_firmware(ctx: &Ctx, staging: &Path, out: &Path) -> Result<()> {
 /// how many files each update fetches; `repository-before-pull/` and
 /// `repository-after-pull/`, the release keys' repository as it was before
 /// the withdrawal and after it; `catalog-key/`, a catalog online key the
-/// server never used; and the bridge release's update file.
+/// server never used; `DKSA-2026-9001/`, the security advisory the
+/// release keys signed after the withdrawal; and the bridge release's
+/// update file.
 pub const TEST_SERVER: &str = "update-server";
 
 /// Why [`TEST_SERVER`]'s stable release is paused.
@@ -4119,6 +4121,33 @@ pub const TEST_SERVER_REPOSITORY: &str = "repository-before-pull";
 /// The same repository after the withdrawal of the stable release, which
 /// that test sends to see what a deploy not told ready leaves unpublished.
 pub const TEST_SERVER_REPOSITORY_PULLED: &str = "repository-after-pull";
+
+/// The security advisory the release keys sign after the withdrawal, in
+/// the folder of that name (ADR 0534): every release before
+/// [`TEST_SERVER`]'s stable one has its flaw.
+pub const TEST_ADVISORY: &str = "DKSA-2026-9001";
+
+/// [`TEST_ADVISORY`]'s summary.
+pub const TEST_ADVISORY_SUMMARY: &str = "A test flaw that the stable release fixes";
+
+/// [`TEST_ADVISORY`], as an OSV file that says `fixed` fixes it.
+#[must_use]
+pub fn test_advisory(fixed: &str) -> String {
+    serde_json::json!({
+        "schema_version": "1.6.0",
+        "id": TEST_ADVISORY,
+        "modified": "2026-11-15T09:00:00Z",
+        "published": "2026-11-15T09:00:00Z",
+        "summary": TEST_ADVISORY_SUMMARY,
+        "details": "This advisory is part of the update tests and describes no real flaw.",
+        "affected": [{
+            "package": {"ecosystem": "Dukovo", "name": "dukovo"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": fixed}]}]
+        }],
+        "database_specific": {"severity": "high"}
+    })
+    .to_string()
+}
 
 /// A catalog online key `catalog-repo` made for [`TEST_SERVER`], beside the
 /// system's: the files of a server's setup take both, though the test never
@@ -4350,6 +4379,17 @@ fn make_update_server(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     )?;
     let pulled = out.join(TEST_SERVER_REPOSITORY_PULLED);
     process::run(ctx, std::process::Command::new("cp").arg("-al").arg(&repo).arg(&pulled))?;
+    // Then the release keys sign an advisory that the stable release
+    // fixes, deployed with the withdrawal (ADR 0534).
+    let advisories = out.join(TEST_ADVISORY);
+    write(
+        advisories.join(format!("{TEST_ADVISORY}.json")),
+        test_advisory(&year).as_bytes(),
+    )?;
+    crate::release::system_release(
+        ctx,
+        &repo_args(&["advisories", &advisories.display().to_string()]),
+    )?;
     for folder in ["metadata", "targets", "files"] {
         let old = incoming.join(folder);
         if old.exists() {
