@@ -29,7 +29,8 @@
 # say each change would change something before its first run (false for
 # console.reach, whose undo and example are the same), and after its second
 # what the module reported then; a command must not be said to change
-# anything again. certificate.renew is left to the boot test
+# anything again, unless it compares nothing, as lab.long, which check
+# mode says changes each time. certificate.renew is left to the boot test
 # admin-actions, and checks.last, lab.missing and metrics.usage, which end
 # with a status other than 0 on a lab machine, are not run. Ansible runs Python by its path, as the Python
 # chapter of the handbook says, so the Python bundle of the catalog is

@@ -40,7 +40,8 @@ second, POST /api/1/check is asked whether the change would change
 anything: it must say true before the first run, and after the second
 what the module reported, true for a restart and false for the others; a
 change that is a command must not be said to change anything again, since
-check mode reads the state, and it may say it cannot tell. A change whose
+check mode reads the state, and it may say it cannot tell, unless it
+compares nothing, as lab.long, which check mode says changes each time. A change whose
 undo is itself with the same arguments, as console.reach's, finds nothing
 to do from the start, so check mode must say false before it too.
 
@@ -81,8 +82,10 @@ from console import (
 # metrics.usage ends with 1 on a machine that has run for less than the 10
 # minutes in which metricsd writes the history it reads.
 LEFT_ALONE = {"certificate.renew", "checks.last", "lab.missing", "metrics.usage"}
-# The change that does something each time it is run, whatever the machine is like.
-ALWAYS_CHANGES = {"service.restart"}
+# The changes that compare nothing, so that the console counts each run as a change and
+# check mode says each would change something, whatever the machine is like: a restart,
+# and a lab build's lab.long, which runs its steps each time.
+ALWAYS_CHANGES = {"service.restart", "lab.long"}
 TOKEN_NAME = "lab-ansible"
 ANSIBLE_SH = os.path.join(HERE, "..", "system", "ansible.sh")
 MODULE = "dukovo.system."
@@ -252,7 +255,8 @@ def main():
 
         # A module says itself whether it changed anything, so check mode must say the same; a
         # command always reports a change, and check mode, which reads the state, must not say a
-        # change that is already made would make one again (it may say it cannot tell).
+        # change that is already made would make one again (it may say it cannot tell); a change
+        # that compares nothing is said to change something each time.
         reported = {action["id"]: (first, second) for action, first, second in changes}
         for action, before_run, after_run in checks:
             first, second = reported[action["id"]]
@@ -262,7 +266,9 @@ def main():
             undoes_itself = undo is not None and (undo["action"], undo["args"]) == (action["id"], action["examples"]["good"][0])
             if before_run is not (False if undoes_itself else True):
                 raise Failure(f"check mode said {action['id']} would change {before_run} before it ran, and Ansible changed {first}")
-            if round_.is_module(action):
+            if action["id"] in ALWAYS_CHANGES:
+                wrong = after_run is not True
+            elif round_.is_module(action):
                 wrong = after_run is not bool(second)
             else:
                 wrong = after_run is True
