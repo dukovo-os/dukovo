@@ -82,6 +82,15 @@ Before 1.0 only the `main` branch is supported, and fixes land there. From
 stable release gets Critical and High fixes until the next stable release
 ships. There is no long-term-support line (ADR 0458).
 
+A fix lands on `main` first. A maintainer then labels its pull request
+`backport` to copy it to the newest release branch, `release/X.Y`, and
+`backport-previous` as well for a Critical or High fix, which copies it to
+the branch before. The clock of ADR 0458 runs from the day a fix exists:
+72 hours to the stable release for Critical, 7 days for High, and the next
+monthly release for Medium and Low. A bot keeps the clock in one pinned
+issue and marks a late fix `overdue`; the release train, the backport
+labels and the clock are described in `docs/handbook/src/release-train.md`.
+
 ## Scope
 
 In scope: everything in this repository, including the Radix kernel, the

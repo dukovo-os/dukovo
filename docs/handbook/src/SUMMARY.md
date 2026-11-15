@@ -58,3 +58,4 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 - [Lab tests](lab.md)
 - [Manual pages](man-pages.md)
 - [For developers](developers.md)
+- [The release train and the security bots](release-train.md)
