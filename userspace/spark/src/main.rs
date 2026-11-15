@@ -605,6 +605,15 @@ fn build(root: &Dir, volumes: bool, compress: &[&str]) -> bool {
             return false;
         }
     }
+    // /snapshots is on every system, empty where no @snapshots is mounted
+    // on it. snap(1)'s view reads it (ADR 0473), and a service whose view
+    // names a place that is not there is not started, so without it snap
+    // would not start on the live system, where it passes over the places
+    // that are not on Btrfs, nor on a root with no @snapshots yet, which
+    // snap makes.
+    if let Err(err) = again(root.make_dir(SNAPSHOTS.1)) {
+        println!("spark: cannot make /{}: {err}", SNAPSHOTS.1);
+    }
     for (path, target) in LINKS {
         if let Err(err) = again(root.make_link(path, target)) {
             println!("spark: cannot link /{path} to /{target}: {err}");

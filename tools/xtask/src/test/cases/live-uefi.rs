@@ -46,7 +46,13 @@ pub fn live(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         return Err("Spark mounted the machine's own disk in the live system".into());
     }
     vm.expect("spark: started consoled (/system/commands/consoled) as process ")?;
+    // snap runs here too, and passes over the places not on Btrfs: its
+    // view reads /snapshots, which Spark makes empty with no root's
+    // @snapshots to mount on it.
+    vm.expect("spark: started snap (/system/commands/snap) as process ")?;
     vm.expect_screen(&[&format!("{RELEASE} {VERSION} (tty1)"), "# "])?;
+    vm.type_text("echo \"snapshots: $(ls -A /snapshots | wc -l)\"\n")?;
+    vm.expect_screen(&["snapshots: 0"])?;
 
     // The live medium alone is in /volumes.
     vm.type_text("echo \"volumes: $(ls /volumes | wc -l)\"\n")?;
