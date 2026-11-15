@@ -49,6 +49,13 @@ second run passed.
 - The build container's job keeps its own cache of the ports built in
   the container, and saves it the same way: whenever a port was built,
   on a pull request too.
+- The ports job names the rust-std port's stamp, and the Rust caches
+  of the jobs that build programs on Rust's standard library (build,
+  boot, instructions, bench) add it to their keys. ob throws away a
+  build in `target/programs` made against another std, and a Rust
+  cache keyed only by `Cargo.lock` kept the build of whichever std it
+  was first saved with, so every job built those programs afresh,
+  about six minutes each.
 - Main's runs restore the ports as a pull request's do. The nightly run
   builds them from scratch, so a port that builds only on top of an
   older build of itself is still found within a day, as the nightly
@@ -77,3 +84,6 @@ second run passed.
 - A pull request's own ports cache takes room in the repository's
   cache, which GitHub trims by age when full; one is saved only when
   the pull request's ports differ from every cache it could restore.
+- The first run after the rust-std port changes starts those jobs' Rust
+  caches empty, and builds the host's crates as well as the programs;
+  later runs on the same std reuse both.

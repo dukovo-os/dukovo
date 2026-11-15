@@ -26,6 +26,10 @@ on:
       ports-prefix:
         type: string
         default: ""
+      # The rust-std port's stamp, which keys the Rust cache (ADR 0560).
+      std-stamp:
+        type: string
+        default: ""
   workflow_dispatch:
   schedule:
     - cron: "23 4 * * *"
@@ -75,6 +79,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          key: ${{ inputs.std-stamp && format('std-{0}', inputs.std-stamp) || '' }}
 
       - name: Note the port toolchain's version
         id: ports-key

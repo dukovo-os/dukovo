@@ -62,6 +62,7 @@ jobs:
     outputs:
       key: ${{ steps.chosen.outputs.key }}
       prefix: ${{ steps.name.outputs.prefix }}
+      std: ${{ steps.chosen.outputs.std }}
     steps:
       - uses: actions/checkout@v4
 
@@ -134,6 +135,12 @@ jobs:
           else
             printf 'key=%s\nsave=true\n' "$KEY" | tee -a "$GITHUB_OUTPUT"
           fi
+          # The rust-std port's stamp keys the Rust caches of the jobs
+          # below, whose programs on Rust's standard library are built
+          # against it: under a key that ignored it, a restored build
+          # against an older std was thrown away and built afresh in each
+          # job, about six minutes (ADR 0560).
+          echo "std=$(cat out/ports/rust-std.stamp)" | tee -a "$GITHUB_OUTPUT"
 
       - name: Save the built ports
         if: steps.chosen.outputs.save == 'true'
@@ -203,6 +210,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          key: std-${{ needs.ports.outputs.std }}
 
       # The ports as the ports job left them for this run.
       - name: Restore the built ports
@@ -644,6 +652,7 @@ jobs:
           workspaces: ". -> target"
           shared-key: boot
           save-if: ${{ matrix.shard == 1 }}
+          key: std-${{ needs.ports.outputs.std }}
 
       # The ports as the ports job left them for this run.
       - name: Restore the built ports
@@ -726,6 +735,7 @@ jobs:
     with:
       ports-key: ${{ needs.ports.outputs.key }}
       ports-prefix: ${{ needs.ports.outputs.prefix }}
+      std-stamp: ${{ needs.ports.outputs.std }}
 
   # Instructions per operation, counted by QEMU (`ob bench --instructions`,
   # ADR 0045): the same on every runner, so a hot path that grows fails
@@ -770,6 +780,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          key: std-${{ needs.ports.outputs.std }}
 
       # The ports as the ports job left them for this run.
       - name: Restore the built ports
