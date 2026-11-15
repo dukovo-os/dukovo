@@ -16,3 +16,7 @@ depends = ["mlibc"]
 url = "https://ftp.gnu.org/gnu/grep/grep-3.12.tar.xz"
 sha256 = "2649b27c0e90e632eadcd757be06c6e9a4f48d941de51e7c0f83ff76408a07b9"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/g/grep/grep_3.12.orig.tar.xz"]
+
+[upstream]
+git = "https://git.savannah.gnu.org/git/grep.git"
+tag = "v3.12"

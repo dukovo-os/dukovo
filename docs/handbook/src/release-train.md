@@ -169,8 +169,17 @@ puts it back.
 `./ob security scan` looks for known flaws in what the system is built
 from. It runs `cargo audit --json` on every tracked `Cargo.lock`, without
 changing one, and on the lock of every Rust port that `./ob ports audit`
-audits. For each port whose recipe pins a git commit, it asks OSV by that
-commit. The `sbom-scan` job runs it every day and reads its JSON.
+audits. It then asks OSV, in one batch, about:
+
+- each port whose recipe pins a git commit, by that commit, and each of
+  the port's `[[extra]]` sources, by theirs;
+- each port whose recipe pins a release archive, by the commit of the
+  tag its `[upstream]` names;
+- each crate a recipe lists (`[[crate]]`), by its name and version on
+  crates.io, unless a `Cargo.lock` that cargo-audit read lists it, since
+  the RustSec database has answered for those.
+
+The `sbom-scan` job runs it every day and reads its JSON.
 
 For each advisory ID, the job keeps one issue, labelled `security` and
 `sbom-scan` with the advisory's severity, or `needs-triage` when the
@@ -194,16 +203,41 @@ Add `fix-available` when a fix exists, upstream or in a Dukovo patch, and
 the clock starts. Warnings of `cargo-audit` about a crate that is
 unmaintained or yanked are not findings.
 
-A scan that could not run, because cargo-audit is missing or OSV cannot
-be reached, fails its job and changes no issue.
+A scan that could not run, because cargo-audit is missing, OSV cannot
+be reached or the tag of a release cannot be resolved, fails its job and
+changes no issue.
 
-#### What the scan does not cover
+#### Release archives and what the scan does not cover
 
-OSV is asked by git commit. A port whose recipe pins a release archive,
-with `url` and `sha256`, and no commit, cannot be asked, and the scan
-lists it as not covered, in its output and in the job summary. A new
-advisory against such a port is found by reading the project's release
-announcements. `docs/deferred.md` keeps the list of what this leaves.
+A recipe that pins a release archive, with `url` and `sha256`, names no
+commit. Its `[upstream]` table gives the project's own git repository and
+the tag of the release the archive is:
+
+```toml
+[upstream]
+git = "https://github.com/curl/curl.git"
+tag = "curl-8_23_0"
+```
+
+The scan resolves the tag with `git ls-remote`, once for each port, and
+takes the commit an annotated tag points to, which is the commit OSV's
+records name. The archive stays what is built. The recipe check refuses
+an archive port with no `[upstream]`, and a tag that is not the release of
+the recipe's `version`, so a pin moved without its tag fails `./ob ports`
+before it can make the scan look at the wrong release. The same table
+tells `./ob ports outdated` where to look for a newer release.
+
+A project with no public git repository says why instead, in one line:
+
+```toml
+[upstream]
+none = "Info-ZIP publishes release archives and keeps no public repository"
+```
+
+The scan cannot ask OSV about such a port. It lists the port as not
+covered, with the reason, in its output and in the job summary, and a new
+advisory against it is found by reading the project's release
+announcements. `docs/deferred.md` keeps the list of these ports.
 
 Run it on a machine with `cargo-audit` installed:
 
@@ -242,6 +276,14 @@ by the label `security-clock` and makes a second only when no issue has
 the label. To start over, remove the label from the old issue; the next
 run makes a new one and pins it. A pin is made once, so a person who
 unpins the issue keeps it unpinned.
+
+**The scan fails with "could not find the commit of the release of".**
+The message names each port whose tag it could not resolve, and why: the
+repository could not be reached, or it does not have the tag. Run `git
+ls-remote --tags <repository> <tag>` with the `git` and `tag` of the
+port's `[upstream]`. A repository that was down is asked again by the
+next run. A project that moved its repository or named a release
+differently needs its `[upstream]` corrected in the recipe.
 
 **A scan issue is opened again every day.** The issue was closed as
 completed while the finding still matches. Close it as not planned, to

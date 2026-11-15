@@ -276,7 +276,10 @@ async function run({ github, context, core, env = process.env, now = new Date(),
     }
   }
 
-  const notCovered = scan.not_covered.map((port) => `${port.port} ${port.version ?? ''}`.trim());
+  const notCovered = scan.not_covered.map((port) => {
+    const name = `${port.port} ${port.version ?? ''}`.trim();
+    return port.reason ? `${name} (${inline(port.reason)})` : name;
+  });
   await summarize(
     core,
     [
@@ -286,7 +289,7 @@ async function run({ github, context, core, env = process.env, now = new Date(),
       ...(lines.length > 0 ? lines : ['No issue changed.']),
       '',
       notCovered.length > 0
-        ? `Not covered, pinned by a release archive that OSV cannot be asked about by commit: ${notCovered.join(', ')}.`
+        ? `Not covered, since the project has no public git repository to find the commit of its release in: ${notCovered.join('; ')}.`
         : 'Every port with a source is covered.',
     ].join('\n'),
   );

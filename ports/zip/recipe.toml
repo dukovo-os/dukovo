@@ -16,3 +16,6 @@ depends = ["mlibc", "bzip2"]
 url = "https://downloads.sourceforge.net/infozip/zip30.tar.gz"
 sha256 = "f0e8bb1f9b7eb0b01285495a2699df3a4b766784c1765a8f1aeedf63c0806369"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/z/zip/zip_3.0.orig.tar.gz"]
+
+[upstream]
+none = "Info-ZIP publishes release archives and keeps no public repository, and 3.0 is its last release"

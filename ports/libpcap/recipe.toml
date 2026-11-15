@@ -26,3 +26,7 @@ notices = ["LICENSE"]
 [source]
 url = "https://archive.ubuntu.com/ubuntu/pool/main/libp/libpcap/libpcap_1.10.7.orig.tar.xz"
 sha256 = "68fa62cffb974f4275641ce14c2e2d75739251f30e00e6a0900903b247d76a03"
+
+[upstream]
+git = "https://github.com/the-tcpdump-group/libpcap.git"
+tag = "libpcap-1.10.7"

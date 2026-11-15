@@ -18,3 +18,6 @@ depends = ["mlibc"]
 url = "https://deb.debian.org/debian/pool/main/d/db1-compat/db1-compat_2.1.3.orig.tar.gz"
 sha256 = "b01f560f00a67f921e678586d903969015b0c9cec6c18b1679b7e9fd6d27394e"
 mirrors = ["https://archive.ubuntu.com/ubuntu/pool/main/d/db1-compat/db1-compat_2.1.3.orig.tar.gz"]
+
+[upstream]
+none = "no repository: its code is Berkeley DB 1.85 as glibc 2.1.3 carried it, which only Debian keeps, as db1-compat"

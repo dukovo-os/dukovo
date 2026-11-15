@@ -28,3 +28,7 @@ image = [
 [source]
 url = "https://archive.ubuntu.com/ubuntu/pool/main/t/tcpdump/tcpdump_4.99.6.orig.tar.xz"
 sha256 = "40a8cefd45f0d2a06827e6658efb830d484868c449ad80f7efb33516af44f3da"
+
+[upstream]
+git = "https://github.com/the-tcpdump-group/tcpdump.git"
+tag = "tcpdump-4.99.6"

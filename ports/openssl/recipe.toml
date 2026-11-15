@@ -12,6 +12,8 @@
 # folder (ADR 0491).
 name = "openssl"
 version = "3.5.4"
+# The long-term release's series: ports outdated offers its fixes, not 3.6 or 4.
+series = "3.5"
 summary = "openssl, OpenSSL's command for keys, certificates and TLS"
 license = "Apache-2.0"
 homepage = "https://openssl-library.org"
@@ -20,3 +22,7 @@ depends = ["mlibc"]
 [source]
 url = "https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz"
 sha256 = "967311f84955316969bdb1d8d4b983718ef42338639c621ec4c34fddef355e99"
+
+[upstream]
+git = "https://github.com/openssl/openssl.git"
+tag = "openssl-3.5.4"

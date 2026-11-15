@@ -21,3 +21,6 @@ image = ["system/commands/nc", "system/resources/man/man1/nc.1"]
 [source]
 url = "https://archive.ubuntu.com/ubuntu/pool/main/n/netcat-openbsd/netcat-openbsd_1.238.orig.tar.gz"
 sha256 = "9f72a37d85dec1366309fdb0172be4e67e09ec26e89f13156315149e17c02479"
+
+[upstream]
+none = "OpenBSD does not release nc by itself: it is a directory of OpenBSD's source tree, and the archive is Debian's snapshot of it"
