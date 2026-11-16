@@ -211,7 +211,7 @@ USB when the machine is set up.
 | Platform | AMD FCH, SMU sensors, Framework embedded controller (open source) | Fans, LEDs, sensors and the watchdog |
 | USB | Two USB4 Type-C, two USB-A 3.2 Gen 2 | xHCI; USB4 tunneling after 1.0 |
 | Graphics | Radeon 8060S (RDNA 3.5) | Firmware framebuffer console; GPU driver after 1.0 |
-| Audio | Realtek ALC623 | HDA driver in 1.0; full audio in release 1.5 |
+| Audio | Realtek ALC623 | HDA driver in 1.0; full audio in release 1.7 |
 | Wi-Fi and Bluetooth | MediaTek MT7925 | After 1.0; needs closed firmware |
 | Firmware | Insyde UEFI, UEFI boot only | Turn Secure Boot off; boot the USB stick from the F12 menu |
 | Serial port | None | Screen, crash log, and later netlog and the xHCI debug console |
