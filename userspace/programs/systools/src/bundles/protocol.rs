@@ -75,6 +75,10 @@ pub enum Request {
     /// the catalogs read now and of the catalogs that could not be, and
     /// then `words` may be none, for every bundle.
     Search { words: Vec<String>, json: bool },
+    /// Fetches the newest version of `id` from `from`, or the first
+    /// catalog that lists it, checks it as an install does, and says its
+    /// sheet, and then its facts as one JSON document; installs nothing.
+    Sheet { id: String, from: Option<String> },
     /// Lists the catalogs.
     Catalogs,
     /// Adds catalog `name` at `url`, with the root sent with the request:
@@ -228,6 +232,9 @@ impl Request {
                 }
                 line + "\n"
             }
+            Request::Sheet { id, from } => {
+                format!("sheet\t{id}\t{}\n", from.as_deref().unwrap_or("-"))
+            }
             Request::Catalogs => "catalogs\n".into(),
             Request::CatalogAdd { name, url } => format!("catalog-add\t{name}\t{url}\n"),
             Request::CatalogRemove { name } => format!("catalog-remove\t{name}\n"),
@@ -310,6 +317,10 @@ impl Request {
             ["search-json", words @ ..] => Ok(Request::Search {
                 words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
                 json: true,
+            }),
+            ["sheet", id, from] => Ok(Request::Sheet {
+                id: checked_id(id)?,
+                from: if *from == "-" { None } else { Some(checked_catalog(from)?) },
             }),
             ["catalogs"] => Ok(Request::Catalogs),
             ["add-ons"] => Ok(Request::AddOns),
@@ -1020,6 +1031,8 @@ mod tests {
             Request::Search { words: vec!["rip".into(), "grep tool".into()], json: false },
             Request::Search { words: vec!["rip".into(), "grep tool".into()], json: true },
             Request::Search { words: Vec::new(), json: true },
+            Request::Sheet { id: "org.nginx.nginx".into(), from: None },
+            Request::Sheet { id: "org.nodejs.node@22".into(), from: Some("dukovo".into()) },
             Request::Catalogs,
             Request::CatalogAdd { name: "feed".into(), url: "https://example.org/catalog/".into() },
             Request::CatalogRemove { name: "dukovo".into() },
@@ -1100,6 +1113,11 @@ mod tests {
             "search\t",
             "search-json\t",
             "search-json\trip\t",
+            "sheet",
+            "sheet\torg.nginx.nginx",
+            "sheet\tNginx\t-",
+            "sheet\torg.nginx.nginx\tDukovo",
+            "sheet\torg.nginx.nginx\t-\textra",
             "catalog-add\tfeed\tftp://example.org/",
             "catalog-remove\t../x",
             "update\tme\tcheck",

@@ -48,7 +48,7 @@ use std::net::Shutdown;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -176,6 +176,36 @@ struct Shared {
     /// Held while the requests for tonight are read to be changed and
     /// written.
     tonight: Mutex<()>,
+    /// The download of the sheet read last.
+    sheet: Kept,
+}
+
+/// The one download bundled keeps beyond the install it was fetched for:
+/// that of the sheet read last, which stays in its catalog's downloads,
+/// for the install that follows to find, until another sheet's replaces it.
+#[derive(Default)]
+struct Kept(Mutex<Option<PathBuf>>);
+
+impl Kept {
+    /// Keeps `file`, the download of the sheet just read, in place of the
+    /// one kept before, which goes.
+    fn keep(&self, file: &Path) {
+        let mut kept = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(before) = kept.replace(file.to_path_buf())
+            && before != file
+        {
+            let _ = fs::remove_file(before);
+        }
+    }
+
+    /// Forgets the download kept when `file` is it: an install took it and
+    /// removed it.
+    fn forget(&self, file: &Path) {
+        let mut kept = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.as_deref() == Some(file) {
+            *kept = None;
+        }
+    }
 }
 
 /// What wakes the thread that updates.
@@ -458,6 +488,10 @@ struct How<'a> {
     /// Only to see whether it asks for more: unpacked and checked, and then
     /// not installed, which says so as [`tonight::CHECKED`].
     dry: bool,
+    /// Only to read its sheet: unpacked and checked as for an install, and
+    /// then its sheet and its facts are sent, with the first thing that
+    /// would stop the install said beside them, and nothing is installed.
+    sheet_only: bool,
 }
 
 /// What an update that asks for more says, when nobody is there to ask.
@@ -541,6 +575,17 @@ fn listing(id: &str, sha256: &str, length: u64, from: Option<&str>) -> Vec<Strin
     listed
 }
 
+/// What stops an install, `why`: it ends the install with an error, but
+/// for one that only reads the sheet, which keeps the first and goes on to
+/// say it with the sheet.
+fn stop(how: &How<'_>, refused: &mut Option<String>, why: String) -> Result<(), String> {
+    if !how.sheet_only {
+        return Err(why);
+    }
+    refused.get_or_insert(why);
+    Ok(())
+}
+
 fn install_in(
     shared: &Shared,
     mut talk: Option<&mut Connection>,
@@ -582,33 +627,45 @@ fn install_in(
     // the unpacked folder came from and has been checked against.
     let (sha256, length) = archive_hash(archive)?;
     let listed = listing(&id, &sha256, length, how.from);
+    let mut refused = None;
     if let Some(from) = how.from
         && listed.first().map(String::as_str) != Some(from)
     {
-        return Err(format!("catalog {from} does not list what was fetched from it"));
+        let why = format!("catalog {from} does not list what was fetched from it");
+        stop(&how, &mut refused, why)?;
     }
     let (trust, others, before) = {
         let registry = shared.lock();
-        let trust = registry.trust(place, asker, &id, &checked.key, &listed)?;
+        let trust = match registry.trust(place, asker, &id, &checked.key, &listed) {
+            // The sheet still says where the file is from.
+            Err(why) if how.sheet_only => {
+                refused.get_or_insert(why);
+                Trust::Catalog { name: how.from.unwrap_or_default().into(), since: None }
+            }
+            trusted => trusted?,
+        };
         let before = registry.installed(place, &id).map(|i| i.version.clone());
         (trust, commands_in_reach(&registry, place, &id), before)
     };
     for command in &checked.manifest.commands {
         let name = command.name.to_string();
         if Path::new("/system/commands").join(&name).exists() {
-            return Err(format!("its command {name} is one of the system's"));
+            stop(&how, &mut refused, format!("its command {name} is one of the system's"))?;
         }
         if let Some(other) = others.iter().find(|(c, _)| *c == name) {
-            return Err(format!("its command {name} is one {} already adds", other.1));
+            let why = format!("its command {name} is one {} already adds", other.1);
+            stop(&how, &mut refused, why)?;
         }
     }
     // Services run for everyone, each by a name of its own (ADR 0385).
-    check_services(&checked.manifest, place)?;
+    if let Err(why) = check_services(&checked.manifest, place) {
+        stop(&how, &mut refused, why)?;
+    }
     // The sockets of other bundles it uses (ADR 0477): one it requires
     // and cannot have stops the install, saying why.
     let wanted = socket_uses(shared, &checked.manifest, &checked.key);
     if let Some(why) = services::refusal(&wanted) {
-        return Err(format!("not installed: {why}"));
+        stop(&how, &mut refused, format!("not installed: {why}"))?;
     }
     // What it asks for that the version it replaces did not (ADR 0384).
     // One whose manifest cannot be read is taken to have asked for
@@ -649,6 +706,16 @@ fn install_in(
         flaws: flaws.as_ref(),
         all_flaws: false,
     };
+    if how.sheet_only {
+        let Some(talk) = talk else { return Err("a sheet is for somebody to read".into()) };
+        let file = OfferedFile {
+            catalog: how.from.unwrap_or_default(),
+            sha256: &sha256,
+            length,
+            refusal: refused.as_deref(),
+        };
+        return send_sheet(shared, talk, asker, &facts, &wanted, &file);
+    }
     if how.dry {
         if more.is_empty() {
             return Err(tonight::CHECKED.into());
@@ -763,6 +830,54 @@ fn install_in(
         });
     }
     Ok(installed)
+}
+
+/// The file whose sheet is read: the catalog that offered it, its SHA-256
+/// in hex and length, and what stops its install, if anything does.
+struct OfferedFile<'a> {
+    catalog: &'a str,
+    sha256: &'a str,
+    length: u64,
+    refusal: Option<&'a str>,
+}
+
+/// Sends the sheet of a file whose facts are `facts`, as an install shows
+/// it, with what stops the install said after it, and then the same facts
+/// as one JSON document.
+fn send_sheet(
+    shared: &Shared,
+    talk: &mut Connection,
+    asker: u32,
+    facts: &Facts<'_>,
+    wanted: &[services::Wanted],
+    file: &OfferedFile<'_>,
+) -> Result<String, String> {
+    let mut text = sheet::write(facts);
+    text.push_str(&services::socket_sheet(wanted));
+    if let Some(why) = file.refusal {
+        let _ = writeln!(text, "  It would not install: {why}");
+    }
+    talk.send(&Answer::Sheet(text)).map_err(|e| format!("{e}"))?;
+    // The version the asker has, or else everyone has.
+    let installed = {
+        let registry = shared.lock();
+        let id = facts.manifest.full_id();
+        registry
+            .installed(Place::User(asker), &id)
+            .or_else(|| registry.installed(Place::Everyone, &id))
+            .map(|i| i.version.clone())
+    };
+    let download = sheet::Download {
+        catalog: file.catalog,
+        sha256: file.sha256,
+        bytes: file.length,
+        installed: installed.as_deref(),
+        refusal: file.refusal,
+    };
+    let document =
+        crate::json::line(&sheet::offer(facts, &download)).map_err(|fail| fail.message)?;
+    talk.send(&Answer::Document(document)).map_err(|e| format!("{e}"))?;
+    Ok("its sheet".into())
 }
 
 /// What each socket of another bundle that `manifest` uses comes to
@@ -2439,20 +2554,27 @@ fn search_json(
     Ok(format!("{found} found"))
 }
 
-/// `bundle install ID`: the newest version of `id` that `catalog`, or the
-/// first catalog that lists it, lists; or, when `id` came from a catalog
-/// already here, that catalog's. Fetched by the client, checked against
-/// its targets, then installed as a file is.
-#[allow(clippy::too_many_arguments)]
-fn get(
+/// A file fetched from a catalog.
+struct Fetched {
+    /// The catalog that lists it.
+    catalog: String,
+    /// Where it is, in that catalog's downloads.
+    file: PathBuf,
+}
+
+/// Fetches the newest version of `id` that `catalog`, or the first catalog
+/// that lists it, lists; or, when `id` came from a catalog already here,
+/// that catalog's. The catalogs are read anew first, and the file is
+/// checked against its length and SHA-256 as it comes. What cannot be done
+/// ends in the ID of its error: APP-101 when no catalog lists it and
+/// APP-103 when none could be read.
+fn fetch_newest(
     shared: &Shared,
-    connection: &mut Connection,
     asker: u32,
     id: &str,
     catalog: Option<&str>,
     everyone: bool,
-    yes: bool,
-) -> Result<String, String> {
+) -> Result<Fetched, String> {
     let place = if everyone { Place::Everyone } else { Place::User(asker) };
     let bound = {
         let registry = shared.lock();
@@ -2465,34 +2587,80 @@ fn get(
         return Err(format!("{id} comes from catalog {bound}, since its first install from it"));
     }
     let only = catalog.or(bound.as_deref());
-    let (name, file) = {
-        let _reading = shared.catalogs();
-        let (mut open, failed) = open_catalogs(only)?;
-        let mut chosen = None;
-        for (catalog, read) in &mut open {
-            if let Some(entry) = read.index.newest(id).cloned() {
-                chosen = Some((catalog.name.clone(), read, entry));
-                break;
-            }
+    let _reading = shared.catalogs();
+    let (mut open, failed) = open_for_asker(only)?;
+    if open.is_empty() {
+        return Err(none_read(&failed));
+    }
+    let mut chosen = None;
+    for (catalog, read) in &mut open {
+        if let Some(entry) = read.index.newest(id).cloned() {
+            chosen = Some((catalog.name.clone(), read, entry));
+            break;
         }
-        let Some((name, read, entry)) = chosen else {
-            let mut why = match only {
-                Some(only) => format!("catalog {only} does not list {id}"),
-                None => format!("no catalog lists {id}"),
-            };
-            for note in failed.iter().map(Unread::note) {
-                why += &format!("; {note}");
-            }
-            return Err(why);
+    }
+    let Some((name, read, entry)) = chosen else {
+        let mut why = match only {
+            Some(only) => format!("catalog {only} does not list {id}"),
+            None => format!("no catalog lists {id}"),
         };
-        (name, read.fetch(&entry)?)
+        for note in failed.iter().map(Unread::note) {
+            why += &format!("; {note}");
+        }
+        return Err(why + " (APP-101)");
     };
-    let archive = File::open(&file).map_err(|e| format!("{}: {e}", file.display()));
+    Ok(Fetched { catalog: name, file: read.fetch(&entry)? })
+}
+
+/// `bundle install ID`: the newest version of `id` that `catalog`, or the
+/// first catalog that lists it, lists; or, when `id` came from a catalog
+/// already here, that catalog's. Fetched by the client, checked against
+/// its targets, then installed as a file is.
+fn get(
+    shared: &Shared,
+    connection: &mut Connection,
+    asker: u32,
+    id: &str,
+    catalog: Option<&str>,
+    everyone: bool,
+    yes: bool,
+) -> Result<String, String> {
+    let fetched = fetch_newest(shared, asker, id, catalog, everyone)?;
+    let archive = File::open(&fetched.file).map_err(|e| format!("{}: {e}", fetched.file.display()));
     let result = archive.and_then(|archive| {
-        let how = How { yes, from: Some(&name), ..How::default() };
+        let how = How { yes, from: Some(&fetched.catalog), ..How::default() };
         install(shared, Some(connection), asker, &archive, everyone, how)
     });
-    let _ = fs::remove_file(&file);
+    let _ = fs::remove_file(&fetched.file);
+    shared.sheet.forget(&fetched.file);
+    result
+}
+
+/// `bundle sheet ID`: fetches the newest version of `id` as an install
+/// does, checks it as an install does, and sends its sheet and facts; it
+/// installs nothing and leaves nothing unpacked. The file stays in its
+/// catalog's downloads, named by its SHA-256, for the install that
+/// follows, which finds it there; the file of the sheet read before goes.
+/// The sheet is that of an install for everyone, the one that can run
+/// services; it is unpacked in the asker's own folder.
+fn sheet_of(
+    shared: &Shared,
+    connection: &mut Connection,
+    asker: u32,
+    id: &str,
+    from: Option<&str>,
+) -> Result<String, String> {
+    let fetched = fetch_newest(shared, asker, id, from, false)?;
+    shared.sheet.keep(&fetched.file);
+    let archive =
+        File::open(&fetched.file).map_err(|e| format!("{}: {e}", fetched.file.display()))?;
+    let (places, path) = open_place(Place::User(asker))?;
+    let working = working_name("installing")?;
+    places.make(&working, 0o700).map_err(|e| format!("{path}/{working}: {e}"))?;
+    let to = Unpacking { place: Place::Everyone, places: &places, path: &path, working: &working };
+    let how = How { from: Some(&fetched.catalog), sheet_only: true, ..How::default() };
+    let result = install_in(shared, Some(connection), asker, &archive, &to, how);
+    let _ = places.remove_tree(&working, 0);
     result
 }
 
@@ -3269,6 +3437,7 @@ fn install_tonight(shared: &Shared, want: &tonight::Want) {
         feed: p.catalog.is_none(),
         tonight: Some(want.by),
         dry: false,
+        sheet_only: false,
     };
     let result = File::open(&file)
         .map_err(|e| format!("{}: {e}", file.display()))
@@ -3374,6 +3543,7 @@ fn tonight_ask(
                 feed: p.catalog.is_none(),
                 tonight: Some(by),
                 dry: true,
+                sheet_only: false,
             };
             let result = File::open(file).map_err(|e| format!("{}: {e}", file.display())).and_then(
                 |archive| install(shared, Some(&mut *connection), 0, &archive, true, how),
@@ -3801,6 +3971,9 @@ fn serve(shared: &Shared, stream: UnixStream) {
         Ok(Request::Get { id, catalog, everyone, yes }) => {
             get(shared, &mut connection, asker, &id, catalog.as_deref(), everyone, yes)
         }
+        Ok(Request::Sheet { id, from }) => {
+            sheet_of(shared, &mut connection, asker, &id, from.as_deref())
+        }
         Ok(Request::Search { words, json: false }) => search(shared, &mut connection, &words),
         Ok(Request::Search { words, json: true }) => {
             search_json(shared, &mut connection, asker, &words)
@@ -3977,6 +4150,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         catalogs: Mutex::new(()),
         wake: (Mutex::new(Wake::default()), Condvar::new()),
         tonight: Mutex::new(()),
+        sheet: Kept::default(),
     });
     let updating = Arc::clone(&shared);
     if std::thread::Builder::new().name("updater".into()).spawn(move || updater(&updating)).is_err()
@@ -4007,6 +4181,29 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_download_of_the_sheet_read_last_is_kept() {
+        let folder = std::env::temp_dir().join(format!("bundled-kept-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        let (first, second) = (folder.join("a.dkv"), folder.join("b.dkv"));
+        fs::write(&first, "a").unwrap();
+        fs::write(&second, "b").unwrap();
+        let kept = Kept::default();
+        kept.keep(&first);
+        kept.keep(&first);
+        assert!(first.exists(), "a sheet read again keeps its file");
+        kept.keep(&second);
+        assert!(!first.exists() && second.exists(), "another sheet's file replaces it");
+        // An install that took the file forgets it, so that a later sheet
+        // does not remove what another install fetched by the same name.
+        kept.forget(&second);
+        fs::write(&first, "a").unwrap();
+        kept.keep(&first);
+        assert!(second.exists() && first.exists());
+        fs::remove_dir_all(&folder).unwrap();
+    }
 
     #[test]
     fn an_update_stops_a_service_keeping_its_sockets() {

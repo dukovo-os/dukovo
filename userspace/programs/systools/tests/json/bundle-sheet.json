@@ -1,0 +1,64 @@
+{
+  "format": 1,
+  "id": "org.example.notes",
+  "name": "Notes",
+  "version": "0.1.0",
+  "publisher": "Example, Inc.",
+  "summary": "What Notes does, in a few words",
+  "key": "RWQFBQUFBQUFBW56HN0psLeP0Tr0xVmP7/TvKpcWbjym8uT7/M2AUFvx",
+  "trust": {
+    "catalog": "dukovo",
+    "kind": "catalog",
+    "since": null
+  },
+  "files": 3,
+  "bytes": 12345,
+  "support": "bugs@example.org",
+  "update_feed": null,
+  "flaws": {
+    "known": [],
+    "list_made": "2026-11-03T03:00:00Z",
+    "state": "none"
+  },
+  "permissions": [
+    {
+      "apps": [],
+      "folders": [],
+      "lets": "Connect to the internet and to services on this computer",
+      "name": "network.outbound",
+      "need": "required",
+      "ports": [],
+      "tier": "at install",
+      "why": "To sync."
+    }
+  ],
+  "commands": [
+    "notes"
+  ],
+  "commands_with_your_access": [],
+  "services": [
+    "notes-sync, as the account notes, starting now and at each boot",
+    "notes-mail, as the account notes-mail, starting once an administrator enables it"
+  ],
+  "license": "MIT",
+  "service_list": [
+    {"name": "notes-sync", "account": "notes", "start": "on"},
+    {"name": "notes-mail", "account": "notes-mail", "start": "off"}
+  ],
+  "provides": [
+    {"interface": "org.example.notes/1", "socket": null}
+  ],
+  "uses": [
+    {"interface": null, "socket": "org.example.mail/smtp"}
+  ],
+  "catalog": "dukovo",
+  "sha256": "abababababababababababababababababababababababababababababababab",
+  "download_bytes": 4567,
+  "services_need_everyone": true,
+  "data": [
+    "/shared/services/org.example.notes/notes",
+    "/shared/services/org.example.notes/notes-mail"
+  ],
+  "installed": null,
+  "refusal": null
+}
