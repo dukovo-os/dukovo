@@ -2500,39 +2500,49 @@ fn open_for_asker(only: Option<&str>) -> Result<Opened, String> {
         .map_err(|why| format!("{why} ({})", if only.is_some() { "APP-101" } else { "APP-103" }))
 }
 
+/// The catalogs of `failed`, as the document of a search says them.
+fn unread_pairs(failed: Vec<Unread>) -> Vec<(String, String)> {
+    failed.into_iter().map(|u| (u.catalog, u.why)).collect()
+}
+
 /// `bundle search --json`: what the catalogs that could be read list,
 /// read anew, of every bundle whose ID or name holds every word, or of
 /// every bundle with none; the catalogs that could not be, with why, are
 /// not searched as they last were: their bundles could not be fetched.
+/// The document is sent whatever came of it, and when no catalog could be
+/// read it is empty but for them, and an error ending in APP-103 follows.
 fn search_json(
     shared: &Shared,
     connection: &mut Connection,
     asker: u32,
     words: &[String],
 ) -> Result<String, String> {
-    let (hits, unread) = {
+    let (hits, unread, refusal) = {
         let _reading = shared.catalogs();
-        let (open, failed) = open_for_asker(None)?;
-        if open.is_empty() {
-            return Err(none_read(&failed));
-        }
-        let state = Path::new(catalogs::STATE);
-        let mut hits = Vec::new();
-        for (catalog, read) in &open {
-            let flaws = catalogs::read_flaws(state, &catalog.name);
-            for entry in read.index.search(words) {
-                hits.push(Hit {
-                    catalog: catalog.name.clone(),
-                    id: entry.id.clone(),
-                    version: entry.version.clone(),
-                    name: entry.name.clone(),
-                    flags: catalogs::flags(flaws.as_ref(), &entry.id, &entry.version),
-                });
+        match open_for_asker(None) {
+            Err(why) => (Vec::new(), Vec::new(), Some(why)),
+            Ok((open, failed)) if open.is_empty() => {
+                let why = none_read(&failed);
+                (Vec::new(), unread_pairs(failed), Some(why))
+            }
+            Ok((open, failed)) => {
+                let state = Path::new(catalogs::STATE);
+                let mut hits = Vec::new();
+                for (catalog, read) in &open {
+                    let flaws = catalogs::read_flaws(state, &catalog.name);
+                    for entry in read.index.search(words) {
+                        hits.push(Hit {
+                            catalog: catalog.name.clone(),
+                            id: entry.id.clone(),
+                            version: entry.version.clone(),
+                            name: entry.name.clone(),
+                            flags: catalogs::flags(flaws.as_ref(), &entry.id, &entry.version),
+                        });
+                    }
+                }
+                (hits, unread_pairs(failed), None)
             }
         }
-        let unread: Vec<(String, String)> =
-            failed.into_iter().map(|u| (u.catalog, u.why)).collect();
-        (hits, unread)
     };
     // What the asker has installed of each, or else what everyone has.
     let hits: Vec<(Hit, Option<String>)> = {
@@ -2551,7 +2561,7 @@ fn search_json(
     let document =
         crate::json::line(&documents::Search::of(hits, unread)).map_err(|fail| fail.message)?;
     connection.send(&Answer::Document(document)).map_err(|e| format!("{e}"))?;
-    Ok(format!("{found} found"))
+    refusal.map_or_else(|| Ok(format!("{found} found")), Err)
 }
 
 /// A file fetched from a catalog.

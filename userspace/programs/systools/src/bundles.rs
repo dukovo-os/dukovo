@@ -1285,7 +1285,7 @@ fn sheet(id: &str, from: Option<String>, json: bool) -> Result<i32, Fail> {
 /// `bundle search --json [WORD...]`: bundled's document of the bundles
 /// of the catalogs it could read, which holds each other one and why. It
 /// is no failure that nothing matches; it is one that no catalog could be
-/// read, which bundled says, with its ID.
+/// read, which bundled says after the document, with its ID.
 fn search_json(words: &[String]) -> Result<i32, Fail> {
     let request = Request::Search { words: words.to_vec(), json: true };
     let (_stream, mut input) = ask(&request, None).map_err(fail)?;
