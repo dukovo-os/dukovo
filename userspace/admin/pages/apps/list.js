@@ -12,13 +12,11 @@
 import { fill, h } from '../../dom.js';
 import { copyBox } from '../snapshots/copy-box.js';
 import { captionWords, ownCommands, updatable } from './list-model.js';
+import { square } from './mark.js';
 import { jobWords } from './run-model.js';
 
 /** How an update's state is drawn in a row: the pill's class, or none for the plain words. */
 const PILLS = Object.freeze({ update: 'pill info', waiting: 'pill', held: 'pill warn' });
-
-/** The square with an app's initial, which stands for the app and is not read: its name is beside it. */
-export const square = (row, big = false) => h('span', { class: `apps-ic tint-${row.tint}${big ? ' big' : ''}`, 'aria-hidden': 'true' }, row.initial);
 
 /** Calls `run(button)` when `button` is pressed, unless a task that runs has put it off. */
 export function onPress(button, run) {
@@ -54,7 +52,7 @@ export function makeList(view, { updateAll }) {
   const rowOf = (row, selected) => h('tr', { class: row.id === selected ? 'sel' : null },
     h('td', { 'data-label': 'App' },
       h('a', { class: 'apps-who', href: row.href, 'aria-current': row.id === selected ? 'page' : null },
-        square(row), h('span', {}, h('b', {}, row.name), h('small', { class: 'mono' }, row.id)))),
+        square(row, 'apps-ic'), h('span', {}, h('b', {}, row.name), h('small', { class: 'mono' }, row.id)))),
     h('td', { 'data-label': 'Version' }, row.version),
     updateCell(row));
 
@@ -67,7 +65,7 @@ export function makeList(view, { updateAll }) {
         h('caption', { class: 'sr-only' }, captionWords(rows.length, 'for you')),
         h('thead', {}, h('tr', {}, ['App', 'Version', 'Commands'].map((name) => h('th', { scope: 'col' }, name)))),
         h('tbody', {}, rows.map((row) => h('tr', {},
-          h('td', { 'data-label': 'App' }, h('span', { class: 'apps-who' }, square(row), h('span', {}, h('b', {}, row.name), h('small', { class: 'mono' }, row.id)))),
+          h('td', { 'data-label': 'App' }, h('span', { class: 'apps-who' }, square(row, 'apps-ic'), h('span', {}, h('b', {}, row.name), h('small', { class: 'mono' }, row.id)))),
           h('td', { 'data-label': 'Version' }, row.version),
           h('td', { 'data-label': 'Commands' },
             copyBox(ownCommands(row.id).update, `Command to update ${row.name}`),

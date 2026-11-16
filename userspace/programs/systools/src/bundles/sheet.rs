@@ -22,6 +22,7 @@ use serde::Serialize;
 use super::grants::Grant;
 use super::minisign::PublicKey;
 use super::registry::{Place, Trust};
+use super::sizes::DataSize;
 use crate::{json, util};
 
 /// What [`Facts::replaces`] names when a version runs a service the one
@@ -256,6 +257,8 @@ pub struct Installation<'a> {
     pub folder: &'a str,
     /// Where its data is, in words.
     pub data: &'a str,
+    /// What its data takes, as the last walk found, if one did.
+    pub data_size: Option<DataSize>,
     /// The version it replaced, if it is kept.
     pub previous: Option<&'a str>,
     /// Whether it is held at its version.
@@ -346,6 +349,7 @@ pub struct Details {
     installed: String,
     folder: String,
     data: String,
+    data_size: Option<DataSize>,
     previous: Option<String>,
     held: bool,
     license: String,
@@ -539,6 +543,7 @@ pub fn details(facts: &Facts<'_>, grants: &[Grant], installation: &Installation<
         installed: at(installation.installed),
         folder: installation.folder.to_string(),
         data: installation.data.to_string(),
+        data_size: installation.data_size,
         previous: installation.previous.map(String::from),
         held: installation.held,
         license: m.license.0.clone(),
@@ -806,6 +811,12 @@ mod tests {
             installed: 1_793_000_000,
             folder: "/applications/org.example.notes",
             data: "each person's data",
+            data_size: Some(DataSize {
+                bytes: 1_234_567_890,
+                files: 3412,
+                complete: true,
+                measured_ms: 1_793_000_100_000,
+            }),
             previous: Some("0.0.9"),
             held: true,
             started: &["notes-sync".to_string()],
@@ -890,6 +901,7 @@ mod tests {
                 installed: 1,
                 folder: "/applications/org.example.notes",
                 data: "data",
+                data_size: None,
                 previous: None,
                 held: false,
                 started,

@@ -100,7 +100,8 @@ test('every icon rule is one line that names the icon\'s own file', () => {
 });
 
 test('every icon rule has its file in icons/ and every file has its rule', () => {
-  const files = readdirSync(`${ROOT}icons`).sort();
+  // The manifest's two icons for the home screen are PNG files, drawn by no rule.
+  const files = readdirSync(`${ROOT}icons`).filter((name) => !/^app-\d+\.png$/.test(name)).sort();
   assert.deepEqual(files, iconNamesWithRules.map((name) => `${name}.svg`).sort());
   assert.equal(new Set(iconNamesWithRules).size, iconNamesWithRules.length, 'a rule is made twice');
 });
@@ -128,6 +129,16 @@ test('the icons of the power, devices and phone notices are there, as a file and
     assert.ok(iconNamesWithRules.includes(name), `console.css has no .ic-${name}`);
     assert.ok(exists(`${ROOT}icons/${name}.svg`), `icons/${name}.svg is not a file`);
   }
+});
+
+test('the controls of a dialog are 44 px tall on a phone, by the screen and not by the page\'s container, which a dialog is outside', () => {
+  const dialogs = OTHER_SHEETS.get('dialogs.css');
+  const phone = /@media \(max-width: 45rem\) \{([^@]*)\}\s*(?:@|$)/.exec(dialogs)?.[1] ?? '';
+  for (const control of ['.btn', '.input', '.select', '.check']) {
+    assert.match(phone, new RegExp(`dialog ${control.replace('.', '\\.')}\\b[^{]*\\{[^}]*min-height: 3\\.143rem`), `dialogs.css gives dialog ${control} 44 px under 45rem`);
+  }
+  const phoneContainer = /@container \(max-width: 51\.4rem\) \{/.test(consoleCss);
+  assert.ok(phoneContainer, 'console.css has the phone\'s container rules, which dialogs are outside of');
 });
 
 test('no sheet but console.css has an icon rule', () => {

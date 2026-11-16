@@ -25,6 +25,9 @@ channel is named in it.
 *service alertd reload* (*service*(8)) has alertd read the file again; it
 reads it when it starts too. *alerts test* (*alerts*(8)) sends a test
 through every channel and says how each went, so run it after each change.
+The commands *alerts email*, *alerts webhook* and *alerts channel* write
+the file for you, and the web console's Alerts page runs them (*Changing
+it by command* below).
 
 ```
 [email]
@@ -91,7 +94,7 @@ table, and it sends one message to all the addresses.
 	server whose certificate it signed. It must be in
 	_/system/settings/ssl_ or a folder in it.
 
-*severity =* _text_, *cleared =* _true_ | _false_
+*severity =* _text_, *cleared =* _true_ | _false_, *about =* _list_
 	What the channel is told (below).
 
 alertd never sends email without TLS, and never a password without it:
@@ -129,7 +132,7 @@ A *[[webhook]]* table is one address, and there may be any number.
 	For *matrix* only: the room's ID, such as *!abc123:example.org*. It
 	is needed there.
 
-*severity =* _text_, *cleared =* _true_ | _false_
+*severity =* _text_, *cleared =* _true_ | _false_, *about =* _list_
 	What the channel is told (below).
 
 The channel is named for its kind and the host of its address, such as
@@ -182,6 +185,20 @@ A message is delivered when the server answers with a 2xx status. Any
 other answer is said as it came, so that *alerts test* names what to fix:
 *ntfy answered 403 Forbidden: forbidden*.
 
+# BROWSERS
+
+A browser that asks for alerts from the web console is a channel too,
+and alertd keeps it in a file of its own, not here (*alertd*(8),
+*Browsers*). The *[push]* table says one thing about them:
+
+*private =* _list_
+	The networks a browser's push service may be on besides the
+	internet, each an address or an address and its prefix length:
+	*["10.0.2.2", "fd00::/8"]*. Without it, alertd posts only to a
+	push service whose every address is on the internet, so that a
+	page cannot make it post into the local network. List a network
+	only for a push service of one's own on it.
+
 # WHAT A CHANNEL IS TOLD
 
 *severity =* _text_
@@ -193,8 +210,22 @@ other answer is said as it came, so that *alerts test* names what to fix:
 	Whether the channel is told when an alert clears. *true* is the
 	default; a phone that should buzz only for trouble may say *false*.
 
+*about =* _list_
+	The kinds of alert the channel is told of, a list of *"data"*
+	(data at risk), *"stopped"* (something stopped) and *"hardware"*
+	(hardware running hot), such as *["data", "hardware"]*. An alert
+	says what it is about (*alertd*(8), *Kinds of alert*), and goes only
+	to the channels that are told of that kind. Without *about*, the
+	channel is told of every kind, as before. An alert that is about
+	none goes to every channel.
+
 A test always goes to every channel. The screen is told of every change
 whatever these say.
+
+A channel that is told of some kinds hears nothing of the others: a
+phone that is told of *["data"]* does not buzz for a certificate that is
+running out. The alert is still on the screen and in *alerts list*, and
+in every channel that is told of its kind.
 
 # MISTAKES
 
@@ -207,6 +238,56 @@ that is not https, a *ca* outside _/system/settings/ssl_, a user without
 a password, a Matrix webhook with no room or token, a *room* or a *token*
 where the kind has none, and a line that is not TOML (in which case there
 are no channels at all) are mistakes.
+
+A mistake in *about* is the one that leaves no channel out. A word that is
+no kind of alert is left out of the list, and the log says so with a
+warning (ALR-106); a list that is empty, has no word that is a kind or is
+not a list is read as no *about*, and the channel is told of every kind. A
+mistake can only tell a channel more than it asked for, never less, so no
+alert is lost to it.
+
+A release before the one that has *about* does not know the setting, and
+leaves out every channel that has it, as it does for any setting it does
+not know. After going back to such a release, *alerts channel* _channel_
+*--about all* takes the setting out of the channel, or the file can be
+edited by hand; the channels without *about* go on as before.
+
+# CHANGING IT BY COMMAND
+
+The file can be written by hand, and the commands of *alerts*(8) write it
+too, which is what the web console's Alerts page runs:
+
+*alerts email set* *--to* _address_ *--server* _host_ [...]
+	Writes the *[email]* table, from the options *--to*, *--server*,
+	*--port*, *--from*, *--user*, *--severity*, *--cleared* and
+	*--about*. The password is the first line of the standard input
+	with *--password -*, never an argument. A setting the options do
+	not give is left out of the table, except *ca*, which is kept.
+
+*alerts email remove*
+	Takes the table out.
+
+*alerts webhook add* _kind_ [...]
+	Adds a *[[webhook]]* table after the others, from *--room*,
+	*--severity*, *--cleared* and *--about*. The address, and the
+	token if the kind has one, are the first two lines of the standard
+	input.
+
+*alerts webhook remove* _number_
+	Takes out the *[[webhook]]* table at that place in the file,
+	counted from 1 as *alerts status --json* says. The ones after it
+	move up.
+
+*alerts channel* _channel_ *--about* _words_
+	Writes or takes out the *about* of *email*, *webhook:*_number_ or
+	a browser, *push:*_id_.
+
+Each of them reads the file as alertd would before it writes it, and
+refuses a change that alertd would leave out, with alertd's own words,
+and the file stays as it was. They keep the comments of the file and the
+order of its keys, and write it whole or not at all. They make it root's
+and mode 600 first, since it holds secrets. Then alertd is asked to read
+it again.
 
 # EXAMPLES
 
@@ -234,12 +315,14 @@ port = 465
 ca = "/system/settings/ssl/example-ca.pem"
 ```
 
-A phone with the ntfy app, and a Matrix room:
+A phone with the ntfy app that buzzes for data at risk and for hardware,
+and for nothing else, and a Matrix room that hears everything:
 
 ```
 [[webhook]]
 kind = "ntfy"
 url = "https://ntfy.sh/server-alerts-7f3a9c"
+about = ["data", "hardware"]
 
 [[webhook]]
 kind = "matrix"
@@ -270,6 +353,9 @@ token = "a-long-secret"
 
 _/system/settings/alerts.toml_
 	This file.
+
+_/system/state/alerts/push.json_
+	The browsers, which are not in this file (*alertd*(8)).
 
 _/system/settings/ssl_
 	Where the certificate authorities it names are.

@@ -29,7 +29,7 @@ name with a domain, such as _duke-nas.example.org_, it names the full
 name, the first word, the first word with _.local_ and *localhost*; one
 made before it named these is made again. It
 is valid from an hour before it is made, for clocks that differ, and
-for 800 days: Apple's systems refuse a TLS server certificate valid for
+for 800 days: some systems refuse a TLS server certificate valid for
 more than 825 days, even one a person chose to trust. It is for a TLS
 server, and not a certificate authority's.
 
@@ -59,6 +59,16 @@ machines do not all wake together, certd looks at the certificates:
   and critical when 7 days or fewer are left or once the certificate
   has run out. The line says to add its new version with *cert add*
   _name_ *--replace*. With nothing to tell, the notice is removed.
+- Each line of the notice is also an alert in *alertd*(8), keyed
+  *certificate:*_name_, set at every look with the others of
+  certd's, so that one that is no longer true is cleared: the
+  certificate was renewed or replaced, or removed. It is a warning, and
+  critical on the days the notification is, with the notice's words
+  and, at the end in parentheses, the error ID of the page that says
+  what to do: *CRT-121* for a renewal that keeps failing and *CRT-122*
+  for a certificate that has run out. An alert for a revoked
+  certificate has no ID. An alertd that does not run is logged once,
+  and certd goes on.
 - For each certificate that *cert get* got by HTTP (*cert*(8)), it
   renews it when its day has come (*Renewal*, below). A certificate
   that *cert get* got with *--dns* is told as one added by hand is, at
@@ -76,10 +86,29 @@ reason, so the service is not ready until then.
 A look at which a certificate could not be made is repeated 5 minutes
 later.
 
+# HISTORY
+
+certd writes what it does to the certificates in
+_/system/state/certd/history_, one JSON line each, and *cert*(8) writes
+the lines of what a person does with it, while each holds the store's
+lock: this-machine made, a certificate renewed, and a renewal that
+failed with the reason in words and the error ID of its page at the
+end. A line is written whole with one write, so a reader sees whole
+lines or none. The file is cut to its newest 1000 lines when it
+passes 2000, through a new file and a rename, so a reader never sees it
+half cut. It is readable by all (0644), as the words hold no secret.
+*cert history* shows it.
+
+certd also keeps _/system/state/certd/accounts.json_, a summary of the
+accounts at authorities that *cert list* shows to everyone: when each was
+made and whether it has a contact address, never the address or the key,
+which only root reads. It writes it when an account is made and at each
+look.
+
 # RENEWAL
 
 certd renews a certificate from an authority at a day it chooses and
-keeps in the certificate's _certificate.toml_ as *renew_at*, which
+keeps in the certificate's _certificate.toml_ as *renew\_at*, which
 *cert list* and *cert show* tell. It asks the authority for the window
 in which it suggests renewing (ACME renewal information, ARI, RFC 9773),
 naming the certificate by its authority key identifier and serial
@@ -154,6 +183,14 @@ _/system/state/certd/certificates/.lock_
 _/system/state/certd/accounts_
 	The account at each authority (*cert*(8)).
 
+_/system/state/certd/accounts.json_
+	When each account was made and whether it has a contact, for
+	*cert list*.
+
+_/system/state/certd/history_
+	What was done to the certificates, a JSON line for each event
+	(*history*, above).
+
 _/system/live/certd/acme-challenge_
 	The answers to an authority's check, one file a token, which certd
 	puts here while an order runs when nginx holds port 80, and takes
@@ -185,5 +222,5 @@ takes nginx to hold it.
 
 # SEE ALSO
 
-*cert*(8), *dukovo-certificates*(7), *timed*(8), *service.toml*(5),
+*alertd*(8), *cert*(8), *dukovo-certificates*(7), *timed*(8), *service.toml*(5),
 *service*(8), *spark*(8), *systools*(1)

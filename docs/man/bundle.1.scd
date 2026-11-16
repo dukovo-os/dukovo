@@ -43,11 +43,15 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle update* [_id_...] [*--check*] [*--for-everyone*] [*--yes*]
 
+*bundle update* [_id_...] *--for-everyone* *--tonight* [*--yes*]
+
+*bundle update* _id_... *--for-everyone* *--not-tonight*
+
 *bundle update --automatic* *on*|*off* [*--for-everyone*]
 
 *bundle rollback* _id_ [*--for-everyone*]
 
-*bundle hold* _id_ [*--for-everyone*]
+*bundle hold* _id_ [*--for-everyone*] [*--why* _text_]
 
 *bundle unhold* _id_ [*--for-everyone*]
 
@@ -235,6 +239,23 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	and the catalog, or *its own feed*, and, for each that waits for its
 	wave, why and how to take it now, and changes nothing.
 
+*update* [_id_...] *--for-everyone* *--tonight* [*--yes*]
+	Asks, through *elevate*(8), that the update of each _id_ given, or of
+	every app everyone has that has one, is installed in tonight's
+	window and not now: an app's services restart in the middle of the
+	day when it updates, and this puts that off. The window is the hour
+	before the restart time of *updates.toml*(5) (*update set --restart*),
+	and 2:00 to 3:00 without one; see TONIGHT. An update that asks for
+	more than the version it replaces shows its sheet, as above, and is
+	not queued unless *--yes* says it is taken as it asks. A held app, and
+	one with no update, are not queued: when apps are named and one of
+	them cannot be, none is. Asking again for an app changes the version
+	it will install to the newest one, and keeps when it was first asked.
+
+*update* _id_... *--for-everyone* *--not-tonight*
+	Takes each _id_ off tonight's window: its update waits for *bundle
+	update* or for updating by themselves, as before.
+
 *update --automatic* *on*|*off* [*--for-everyone*]
 	Says whether your bundles, or everyone's, through *elevate*(8),
 	update by themselves, daily; it is off unless you turn it on. Turned
@@ -248,9 +269,15 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	next run, and its services' data at once. Running it again goes
 	forward again.
 
-*hold* _id_ [*--for-everyone*], *unhold* _id_ [*--for-everyone*]
+*hold* _id_ [*--for-everyone*] [*--why* _text_], *unhold* _id_ [*--for-everyone*]
 	Holds a bundle at its version, so that no update changes it, or
-	lets it update again.
+	lets it update again. *--why* keeps a reason with the hold: one line
+	of 1 to 200 characters, with no control character, which *list* and
+	*update --check* say beside the bundle and which everyone who can
+	run it sees, so it is not for what should stay private. It is the
+	note of the hold's event in the history, so it goes with that event
+	after the history's newest thousand or so; a hold of a bundle that
+	is held already changes nothing, the reason it has included.
 
 *history* [_id_]
 	Shows what was done to your bundles and everyone's, or to _id_, the
@@ -279,6 +306,8 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	Shows an installed bundle's sheet, with every known flaw of its
 	version, what you said of its permissions
 	and since when, when it was installed, where, and where its data is,
+	and what the data takes when *bundled* has measured it (for a bundle
+	installed for everyone that keeps data of its services),
 	which version it can go back to, and whether it is held. *--json*
 	prints the same facts as one line of JSON (JSON).
 
@@ -563,6 +592,23 @@ Updating by themselves, once turned on, runs some minutes after
 the version it replaces never installs by itself: it waits for *bundle
 update*.
 
+# TONIGHT
+
+*bundle update --tonight* keeps the request in *bundled*(8)'s state, and
+*bundle list* says ", installs tonight" at the app's line. In the window,
+*bundled* installs each app asked for, one at a time, as an update that
+nobody is there for: it asks for more than the version it replaces only
+when *--yes* was said, else it waits as an update by itself does, and
+*bundle history* says so; a held app is left alone, and one that fails
+says why. The history's row names who asked, and says "as asked, in the
+window". A request made inside the window runs at once, and none starts in
+the last 5 minutes of it.
+
+A computer that was off through the window, or whose *bundled* was not
+running, installs nothing when it is on in the day: the request waits
+for the next window, and *bundle list --json* says when a window passed
+without it.
+
 # WAVES
 
 A catalog's update server may send the newest version of a bundle out in
@@ -664,10 +710,24 @@ bundle you can run, by ID and then yours before everyone's:
 *held*
 	Whether it is held at its version.
 
+*held_reason*, *held_by*, *held_since_ms*
+	While it is held: why, the text *bundle hold --why* kept, or *null*
+	where none was given; who, the user ID that held it, or *null*;
+	and since when, in milliseconds since 1970. All *null* when it is
+	not held.
+
 *update*
 	The newest version its catalog listed when bundled last read it, if
 	that is newer than *version*, else *null*. The list reads no
 	network; *bundle update --check* reads the catalogs anew.
+
+*tonight*
+	*null*, or, for an app of everyone's whose update is asked for
+	tonight's window (TONIGHT), an object: *to*, the version it
+	installs, *asked_ms*, when it was asked, and *by*, the user ID of who
+	asked, *missed_ms*, when a window first passed without it, or *null*,
+	and *starts_ms*, when the window it installs in starts, in
+	milliseconds since 1970: now, in the window with time left.
 
 *flaws*
 	What the catalog's list of known flaws says of this version
@@ -752,6 +812,17 @@ bundle you can run, by ID and then yours before everyone's:
 
 *folder*, *data*
 	Where it is, and where its data is, in words.
+
+*data_size*
+	What the data of its services takes, as *bundled* measured it, or
+	*null* where nothing was measured: for a bundle installed for you
+	alone, and until the first measure after it was installed. An object:
+	*bytes*, the space the files take on the disk, counted by the blocks
+	they use, a file with two names once, a link as itself; *files*, how
+	many files; *complete*, *false* when the walk was ended by its limits
+	and the count is no more than that (the sheet says "at least"); and
+	*measured_ms*, when, in milliseconds since 1970. It is as old as the
+	last measure, a day at most; *info* measures nothing.
 
 *previous*
 	The version it can go back to, or *null*.

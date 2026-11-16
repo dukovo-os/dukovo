@@ -1,0 +1,131 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Add an app page of the web console in each engine: the search at
+# /apps/add held to what `bundle search --json` says, which
+# `GET /api/1/apps/catalog/search` runs, and one app's sheet at /apps/add/{id}
+# held to what `bundle sheet --json` says of it, which
+# `GET /api/1/apps/catalog/{id}/sheet` runs, with who made it, its licence, what
+# it may use, its services and its data. Install for everyone
+# (`POST /api/1/apps/catalog/{id}/install`, a task, pinned by the sheet's
+# SHA-256) installs nginx, and what stands after it, "Turn it on" and the next
+# step's link, is held to the machine; a second install, of Python, has its
+# pin changed on the way, as if the catalog had moved on since the sheet was
+# read, and says so (APP-102) until Read it again. A reader sees the search and
+# the sheets and no Install; a phone at 390 by 844 shows the list and a sheet
+# alone. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe.
+#
+# The apps are nginx, which has a service and a data folder, and Python, which
+# has neither, from a catalog of the test's own, `labtest`, which a host step
+# copies onto the machine and a step as root adds; the catalog the image comes
+# with is left as it is, so that a machine without a network shows its banner.
+# The test skips where the lab has no test catalog (add-app-catalog.sh says
+# what it is). The browser script runs once for each engine, so the steps
+# before it take both apps away for each. The accounts are two that this test
+# makes and removes, an administrator and a reader, so no script needs the lab's
+# password.
+about = "The web console's Add an app page in each engine: the search from what bundle search says, a sheet from bundle sheet, Install for everyone as a task that installs nginx, Turn it on and the next step's link, a catalog that moved on (APP-102) and Read it again, an app no catalog lists, a reader, and the phone"
+time = "30m"
+host_needs = ["curl", "scp"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-add && echo lab-console-password | user add wc-add-reader && user set --console --yes wc-add-reader'"
+root = true
+expect = ["Made wc-add", "Made wc-add-reader", "wc-add-reader is changed"]
+# The test catalog, from the lab PC: the copy a run before may have left is
+# taken away first, and the catalog is added by name, for bundled to read from
+# a folder that every account may read.
+[[step]]
+run = "sh -c 'bundle catalog remove labtest > /dev/null 2>&1; rm -rf /users/lab/lab-catalog /shared/lab-catalog; echo cleared'"
+root = true
+expect = "cleared"
+[[step]]
+host = "sh {here}/add-app-catalog.sh {machine} {machine-port:22}"
+expect = "copied: the test catalog"
+[[step]]
+run = "sh -c 'cp -r /users/lab/lab-catalog /shared/lab-catalog && chmod -R a+rX /shared/lab-catalog && bundle catalog add labtest file:///shared/lab-catalog/catalog /shared/lab-catalog/root.json'"
+root = true
+expect = "added catalog labtest, which lists"
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# Chromium, from nothing: a run before may have left either app, and nginx's
+# data folder.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; echo from-nothing'"
+root = true
+expect = "from-nothing"
+[[step]]
+browser = "add-app.mjs"
+engines = ["chromium"]
+port = 9090
+# The page turned nginx's service on: Spark says it runs once it listens, which
+# takes seconds on a slow machine, and its first start makes its data folder,
+# where the sheet said it would be.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'f=/shared/services/org.nginx.nginx/nginx/conf/nginx.conf; i=0; while [ $i -lt 30 ] && [ ! -e $f ]; do sleep 1; i=$((i + 1)); done; ls $f'"
+root = true
+expect = "/shared/services/org.nginx.nginx/nginx/conf/nginx.conf"
+
+# Firefox, from nothing: a run before may have left either app, and nginx's
+# data folder.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; echo from-nothing'"
+root = true
+expect = "from-nothing"
+[[step]]
+browser = "add-app.mjs"
+engines = ["firefox"]
+port = 9090
+# The page turned nginx's service on: Spark says it runs once it listens, which
+# takes seconds on a slow machine, and its first start makes its data folder,
+# where the sheet said it would be.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'f=/shared/services/org.nginx.nginx/nginx/conf/nginx.conf; i=0; while [ $i -lt 30 ] && [ ! -e $f ]; do sleep 1; i=$((i + 1)); done; ls $f'"
+root = true
+expect = "/shared/services/org.nginx.nginx/nginx/conf/nginx.conf"
+
+# WebKit, from nothing: a run before may have left either app, and nginx's
+# data folder.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; echo from-nothing'"
+root = true
+expect = "from-nothing"
+[[step]]
+browser = "add-app.mjs"
+engines = ["webkit"]
+port = 9090
+# The page turned nginx's service on: Spark says it runs once it listens, which
+# takes seconds on a slow machine, and its first start makes its data folder,
+# where the sheet said it would be.
+[[step]]
+run = "sh -c 'i=0; while [ $i -lt 60 ] && ! service nginx status > /dev/null; do sleep 1; i=$((i + 1)); done; service nginx status'"
+root = true
+expect = "Active: active (running)"
+[[step]]
+run = "sh -c 'f=/shared/services/org.nginx.nginx/nginx/conf/nginx.conf; i=0; while [ $i -lt 30 ] && [ ! -e $f ]; do sleep 1; i=$((i + 1)); done; ls $f'"
+root = true
+expect = "/shared/services/org.nginx.nginx/nginx/conf/nginx.conf"
+
+# The machine as it was: both apps and nginx's data gone, the test catalog
+# taken away, and the accounts.
+[[step]]
+run = "sh -c 'bundle remove --for-everyone --purge org.nginx.nginx > /dev/null 2>&1; bundle remove --for-everyone --purge org.python.python > /dev/null 2>&1; rm -rf /shared/services/org.nginx.nginx; bundle catalog remove labtest > /dev/null 2>&1; rm -rf /users/lab/lab-catalog /shared/lab-catalog; echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-add wc-add-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-add is removed", "wc-add-reader is removed"]

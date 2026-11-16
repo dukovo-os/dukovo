@@ -13,7 +13,8 @@
 // Certificates 110, Security 120, Hardware 130, Updates 140, Terminal 150, and
 // Report a problem 1000 at the bottom (`nav: {order: 1000, bottom: true}`).
 // `nav: null` is a page reached by a link, `load: null` a folder of parts
-// only, and the Terminal is listed only when the session may open one.
+// only, and the Terminal is listed only when the session may open one. A page
+// with `under` marks that entry of the navigation as its own.
 
 const ENTRIES = [
   {
@@ -136,7 +137,7 @@ const ENTRIES = [
   {
     id: 'certificates', title: 'Certificates', path: '/certificates', icon: 'certs', nav: { order: 110 },
     keywords: ['certificate', 'https', 'tls', 'renew', 'let\'s encrypt', 'expire', 'host name', 'domain'],
-    css: ['pages.css', 'pages/certificates/certs.css'],
+    css: ['dialogs.css', 'pages.css', 'lib/trial-banner.css', 'pages/certificates/certs.css'],
     load: () => import('./pages/certificates/page.js'),
     parts: {
       overview: () => import('./pages/certificates/overview.js'),
@@ -181,13 +182,33 @@ const ENTRIES = [
     load: () => import('./pages/alerts/page.js'),
     parts: { overview: () => import('./pages/alerts/overview.js'), palette: () => import('./pages/alerts/palette.js') },
   },
+  {
+    id: 'add-app', title: 'Add an app', path: '/apps/add', icon: 'apps', under: 'apps',
+    keywords: ['install', 'catalog', 'bundle'],
+    css: ['boards.css', 'pages.css', 'pages/add-app/add.css'],
+    load: () => import('./pages/add-app/page.js'),
+  },
+  {
+    id: 'websites', title: 'Websites', path: '/websites', icon: 'globe', under: 'apps',
+    keywords: ['site', 'nginx', 'php', 'domain'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'lib/trial-banner.css', 'pages/websites/web.css'],
+    load: () => import('./pages/websites/page.js'),
+    parts: { palette: () => import('./pages/websites/palette.js') },
+  },
+  {
+    id: 'databases', title: 'Databases', path: '/databases', icon: 'db', under: 'apps',
+    keywords: ['postgresql', 'sql', 'role'],
+    css: ['boards.css', 'pages.css', 'pages/databases/db.css'],
+    load: () => import('./pages/databases/page.js'),
+    parts: { palette: () => import('./pages/databases/palette.js') },
+  },
 ];
 
 // What an entry leaves out: no place in the navigation or the phone's tabs, a
 // page for any signed-in person, nothing to find, no children, sections,
 // style sheets or parts, and no page of its own.
 const DEFAULTS = {
-  nav: null, phone: null, needs: 'person', keywords: [], children: [], sections: [], css: [], load: null, parts: {},
+  nav: null, under: null, phone: null, needs: 'person', keywords: [], children: [], sections: [], css: [], load: null, parts: {},
 };
 
 export const PAGES = ENTRIES.map((entry) => ({ ...DEFAULTS, ...entry }));

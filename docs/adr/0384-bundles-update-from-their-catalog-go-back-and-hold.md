@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0384. Bundles update from their catalog, go back and hold
 
-- Status: Accepted
+- Status: Accepted; an app's update can wait for the night's window since [0565](0565-updates-are-run-from-the-console-and-a-release-that-fell-back-is-held.md)
 - Date: 2026-11-03
 
 ## Context

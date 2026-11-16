@@ -41,7 +41,7 @@ use radix_abi::errors::Kernel;
 use radix_abi::{block, file};
 use serde::{Deserialize, Serialize};
 
-use crate::alerts::protocol::{Alert, Severity, key_part};
+use crate::alerts::protocol::{About, Alert, Severity, key_part};
 use crate::args::{Arg, Args};
 use crate::disk_errors;
 use crate::selftest::{self, Outcome};
@@ -1017,6 +1017,7 @@ fn early_warning(
              on it is backed up (backup list), and plan to replace it.",
         );
         Alert::new(format!("smart-rising:{id}"), Severity::Warning, &title, &detail)
+            .about(About::Data)
     });
     (Kept { counts, checked: now, rose }, alert)
 }
@@ -1029,7 +1030,7 @@ fn verdict_alert(report: &Report, disk: &str, name: &str, id: &str) -> Option<Al
         Verdict::Failing => (Severity::Critical, format!("Disk {disk} is failing")),
     };
     let detail = format!("{}\n`diskhealth {name}` shows its record.", report.reasons.join("\n"));
-    Some(Alert::new(format!("smart:{id}"), severity, &title, &detail))
+    Some(Alert::new(format!("smart:{id}"), severity, &title, &detail).about(About::Data))
 }
 
 /// How a disk is named in alerts, and the part of their keys and of the
@@ -1496,6 +1497,7 @@ mod tests {
         report.add(Verdict::Warning, "8 sectors were reallocated".into());
         let alert = verdict_alert(&report, "WDC (sda)", "sda", "wd-1").unwrap();
         assert_eq!((alert.key.as_str(), alert.severity), ("smart:wd-1", Severity::Warning));
+        assert_eq!(alert.kind(), Some(About::Data));
         assert_eq!(alert.title, "Disk WDC (sda) needs a look");
         assert_eq!(alert.detail, "8 sectors were reallocated\n`diskhealth sda` shows its record.");
         report.add(Verdict::Failing, "it has gone read-only".into());
@@ -1541,6 +1543,7 @@ mod tests {
         let alert = alert.unwrap();
         let since = util::time_text(i64::try_from(start + 1800).unwrap(), "%F %R", false);
         assert_eq!((alert.key.as_str(), alert.severity), ("smart-rising:wd-1", Severity::Warning));
+        assert_eq!(alert.kind(), Some(About::Data));
         assert_eq!(
             alert.title,
             format!(

@@ -21,7 +21,7 @@ const bundle = (id, name, version, more = {}) => ({
 /** `bundle list --json`: six apps for everyone and one that is a person's own. */
 export const list = () => ({
   bundles: [
-    bundle('io.nginx.nginx', 'nginx', '1.27.3'),
+    bundle('org.nginx.nginx', 'nginx', '1.27.3'),
     bundle('io.valkey.valkey', 'Valkey', '8.0.3', { update: '8.0.4', flaws: flaws('known', 2, 'high') }),
     bundle('org.postgresql.postgresql', 'PostgreSQL', '17.2', { update: '17.3' }),
     bundle('net.php.php-fpm', 'PHP-FPM', '8.4.2', { update: '8.4.3' }),

@@ -120,8 +120,9 @@ const WORSE = Object.freeze({ bad: 0, warn: 1, info: 2 });
  * and a whole-machine restore that waits for the next start. A button is
  * `{id, label, ...}`: `run` backs up to its `name` now, `disk` opens Add a
  * backup place with a plugged-in disk chosen, `move` opens the page of a
- * whole-machine restore. `disks` says whether a mounted removable volume
- * could take a backup instead; `current` is `snapshotsCurrent`'s answer.
+ * whole-machine restore and `alerts` the page of where alerts go. `disks` says
+ * whether a mounted removable volume could take a backup instead; `current`
+ * is `snapshotsCurrent`'s answer.
  */
 export function bannersOf(backups, { time, now, current = null, disks = false }) {
   const found = [];
@@ -131,7 +132,7 @@ export function bannersOf(backups, { time, now, current = null, disks = false })
     const late = lateOf(place);
     const lastGood = state.done === null ? 'Nothing has been backed up there yet.' : `The last good one was ${atWords(state.done, { time, now })}.`;
     const protects = current === null ? '' : PROTECTS[current ? 'current' : 'stale'];
-    const buttons = [{ id: 'run', label: 'Back up now', name }, ...(disks ? [{ id: 'disk', label: 'Back up to a plugged-in disk instead…' }] : [])];
+    const buttons = [{ id: 'run', label: 'Back up now', name }, ...(disks ? [{ id: 'disk', label: 'Back up to a plugged-in disk instead…' }] : []), { id: 'alerts', label: 'Alert settings', href: '/alerts' }];
     if (state.failed) {
       found.push({ id: `failed:${name}`, tone: 'bad', lead: sentence(`The last backup to ${name} failed: ${state.failed}`), detail: [lastGood, protects].filter(Boolean).join(' '), buttons });
     } else if (late) {

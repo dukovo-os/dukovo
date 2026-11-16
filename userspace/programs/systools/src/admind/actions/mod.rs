@@ -48,6 +48,7 @@
 
 mod account;
 mod accounts;
+mod alerts;
 mod apps;
 mod backups;
 mod bisect;
@@ -59,6 +60,7 @@ mod hardware;
 #[cfg(any(test, feature = "lab"))]
 pub mod lab;
 pub mod logs;
+mod machine;
 mod metrics;
 mod moving;
 mod network;
@@ -244,8 +246,6 @@ impl Field {
     /// A required argument that is a document of 1 to `max` bytes, which
     /// is a secret, as a certificate's key is: read into a [`Secret`], and
     /// never shown, kept or put in a log.
-    // For a certificate's key and chain.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn secret_document(name: &'static str, about: &'static str, max: usize) -> Field {
         Field { name, kind: Type::Document { max, secret: true }, required: true, about }
     }
@@ -402,6 +402,9 @@ pub struct Ansible {
     /// `when`, a condition the playbook must meet for the task to run, for
     /// a change that is only done on the playbook's own word.
     pub when: Option<String>,
+    /// Whether the machine restarts after the task: the play then waits for
+    /// it to answer again before its next task (ADR 0565).
+    pub comes_back: bool,
 }
 
 impl Ansible {
@@ -425,6 +428,7 @@ impl Ansible {
             failed_when: None,
             no_log: false,
             when: None,
+            comes_back: false,
         }
     }
 
@@ -446,6 +450,7 @@ impl Ansible {
             failed_when: None,
             no_log: false,
             when: None,
+            comes_back: false,
         }
     }
 
@@ -459,6 +464,14 @@ impl Ansible {
             self.register = Some(RESULT);
             self.failed_when = Some(format!("{RESULT}.rc not in [{}]", statuses.join(", ")));
         }
+        self
+    }
+
+    /// The task, for a change that restarts the machine a minute after it
+    /// answers: the play waits for the machine to answer again.
+    #[must_use]
+    pub fn coming_back(mut self) -> Ansible {
+        self.comes_back = true;
         self
     }
 
@@ -552,6 +565,19 @@ pub enum Restarts {
     Search,
 }
 
+/// The task of `A` run with `args` that runs its command: named by its
+/// title and subject, as root when an administrator runs it, failed only
+/// by a status that gives no answer. An action's task unless it says
+/// otherwise.
+pub fn command_task<A: Action + ?Sized>(args: &A::Args) -> Ansible {
+    let name = match A::subject(args) {
+        Some(subject) => format!("{}: {subject}", A::TITLE),
+        None => A::TITLE.to_string(),
+    };
+    let elevated = A::RUNS == Runs::AsAdministrator;
+    Ansible::command(name, &A::argv(args), elevated, A::CHANGES).answering(A::ANSWERS)
+}
+
 /// One action of the console.
 pub trait Action: 'static {
     /// `area.verb`, such as `service.restart`.
@@ -639,12 +665,7 @@ pub trait Action: 'static {
     /// The Ansible task that does the same: a task of the command, unless
     /// the action overrides this with the collection's module for it.
     fn ansible(args: &Self::Args) -> Ansible {
-        let name = match Self::subject(args) {
-            Some(subject) => format!("{}: {subject}", Self::TITLE),
-            None => Self::TITLE.to_string(),
-        };
-        let elevated = Self::RUNS == Runs::AsAdministrator;
-        Ansible::command(name, &Self::argv(args), elevated, Self::CHANGES).answering(Self::ANSWERS)
+        command_task::<Self>(args)
     }
 
     /// The files a change writes, for the Files tab and the journal.
@@ -1091,6 +1112,14 @@ registry![
     certificate::List,
     certificate::Show,
     certificate::Renew,
+    certificate::Check,
+    certificate::Get,
+    certificate::Add,
+    certificate::Revoke,
+    certificate::Remove,
+    certificate::History,
+    machine::Name,
+    machine::Rename,
     console::SetReach,
     console::SetCertificate,
     console::About,
@@ -1124,6 +1153,17 @@ registry![
     reliability::Start,
     reliability::Dumps,
     reliability::Alerts,
+    alerts::List,
+    alerts::Channels,
+    alerts::Test,
+    alerts::Email,
+    alerts::EmailRemove,
+    alerts::WebhookAdded,
+    alerts::WebhookRemove,
+    alerts::PushKey,
+    alerts::PushAdded,
+    alerts::PushRemove,
+    alerts::ChannelAboutSet,
     storage::Show,
     storage::Usage,
     storage::Health,
@@ -1224,11 +1264,15 @@ registry![
     updates::Undoing,
     updates::Hold,
     updates::Unhold,
+    updates::Later,
     updates::Failed,
     apps::List,
     apps::Show,
     apps::Update,
     apps::UpdateAll,
+    apps::Tonight,
+    apps::TonightAll,
+    apps::NotTonight,
     apps::Rollback,
     apps::Hold,
     apps::Unhold,

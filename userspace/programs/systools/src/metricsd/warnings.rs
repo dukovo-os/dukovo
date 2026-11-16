@@ -36,7 +36,7 @@ use super::sample::{DISK_CHIP, Filesystem, Snapshot, Temperature, Volume};
 use super::settings::Thresholds;
 use super::size_text;
 use super::store::{self, Selector};
-use crate::alerts::protocol::{Alert, DETAIL_MAX, KEY_MAX, Severity, TITLE_MAX};
+use crate::alerts::protocol::{About, Alert, DETAIL_MAX, KEY_MAX, Severity, TITLE_MAX};
 use crate::logd;
 
 /// The folder of the system's certificates, where `*.pem` and `*.crt`
@@ -151,11 +151,19 @@ fn one_line(text: &str) -> String {
     cut
 }
 
-/// An alert, its detail ended with the error ID of its page.
-fn alert(key: String, level: Level, title: &str, advice: &str, id: &str) -> Option<Alert> {
+/// An alert about `about`, its detail ended with the error ID of its page.
+fn alert(
+    key: String,
+    level: Level,
+    title: &str,
+    advice: &str,
+    id: &str,
+    about: About,
+) -> Option<Alert> {
     let mut detail = format!("{advice} ({id})");
     detail.truncate(DETAIL_MAX);
-    Some(Alert { key, severity: level.severity()?, title: one_line(title), detail })
+    let about = Some(about.word().to_string());
+    Some(Alert { key, severity: level.severity()?, title: one_line(title), detail, about })
 }
 
 /// The percent of `whole` that `part` is.
@@ -419,6 +427,7 @@ impl Warnings {
                  what is in use."
             ),
             FULL,
+            About::Data,
         ));
         if let (true, Some(days)) = (state.filling, days) {
             alerts.extend(alert(
@@ -431,6 +440,7 @@ impl Warnings {
                      shows what is in use."
                 ),
                 FILLING,
+                About::Data,
             ));
         }
         alerts
@@ -454,6 +464,7 @@ impl Warnings {
             "`top` shows which programs hold the memory and `free` how it is used; stop what is \
              not needed, or add memory.",
             MEMORY,
+            About::Stopped,
         )
     }
 
@@ -497,7 +508,14 @@ impl Warnings {
                     HOT,
                 )
             };
-            alerts.extend(alert(key("temp", &instance), state.level, &title, &advice, id));
+            alerts.extend(alert(
+                key("temp", &instance),
+                state.level,
+                &title,
+                &advice,
+                id,
+                About::Hardware,
+            ));
             states.insert(instance, state);
         }
         self.sensors = states;
@@ -590,6 +608,7 @@ fn volume_alerts(volumes: &[Volume]) -> Vec<Alert> {
             "Put a new disk in its place with `replace start` (replace(8)); a second failure \
              before then loses data.",
             MISSING,
+            About::Data,
         ));
         alerts.extend(alert(
             key("btrfs-behind", name),
@@ -601,6 +620,7 @@ fn volume_alerts(volumes: &[Volume]) -> Vec<Alert> {
             "A scrub brings them up to date from the other copies: run `scrub start` on a \
              folder of the volume (scrub(8)).",
             BEHIND,
+            About::Data,
         ));
     }
     alerts
@@ -651,6 +671,7 @@ fn certificate_alert(file: &Path, now: i64, days: i64) -> Option<Alert> {
              services that use it read it again."
         },
         CERTIFICATE,
+        About::Stopped,
     )
 }
 
@@ -691,6 +712,14 @@ mod tests {
 
     fn at_used(warnings: &mut Warnings, mount: &str, percent: u64) -> Vec<String> {
         said(warnings, &snapshot(vec![filesystem(mount, percent)]))
+    }
+
+    #[test]
+    fn a_full_filesystem_is_about_data_at_risk() {
+        let mut w = warnings();
+        let alerts = w.check(&snapshot(vec![filesystem("/data", 95)]), Instant::now());
+        let full = alerts.iter().find(|a| a.key == "fs-full:/data").expect("full");
+        assert_eq!(full.kind(), Some(About::Data));
     }
 
     #[test]
@@ -822,6 +851,7 @@ mod tests {
         let alerts = fill(&mut w, 31, 60.0, 0.1);
         let found = alerts.iter().find(|a| a.key == "fs-filling:/data").expect("filling");
         assert_eq!(found.severity, Severity::Warning);
+        assert_eq!(found.kind(), Some(About::Data));
         assert!(found.title.starts_with("/data will be full in about "), "{}", found.title);
         assert!(found.title.ends_with(" at the last 6 hours' rate"), "{}", found.title);
         assert!(found.detail.ends_with("(MET-102)"));
@@ -866,6 +896,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "btrfs-missing:data");
         assert_eq!(alerts[0].severity, Severity::Critical);
+        assert_eq!(alerts[0].kind(), Some(About::Data));
         assert_eq!(
             alerts[0].title,
             "Btrfs volume data is missing 1 of its 2 disks; its data has no second copy until it is replaced"
@@ -876,6 +907,7 @@ mod tests {
         let alerts = volume_alerts(&[volume(0, 1)]);
         assert_eq!(alerts[0].key, "btrfs-behind:data");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Data));
         assert!(alerts[0].detail.ends_with("(MET-104)"));
         assert_eq!(volume_alerts(&[volume(1, 1)]).len(), 2);
         assert!(volume_alerts(&[volume(0, 0)]).is_empty());
@@ -909,6 +941,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "memory:low");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Stopped));
         assert_eq!(alerts[0].title, "Memory is nearly used up: 41 KB of 1.1 MB is available");
         assert!(alerts[0].detail.ends_with("(MET-105)"));
         // Held between 5 and 10 percent, cleared from 10.
@@ -946,6 +979,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "temp:coretemp-isa-0000/package-id-0");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Hardware));
         assert_eq!(
             alerts[0].title,
             "coretemp-isa-0000/Package id 0 is at 95 °C; its limit is 100 °C"
@@ -993,6 +1027,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "temp:disk/sda");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Hardware));
         assert_eq!(
             alerts[0].title,
             "Disk sda (WDC WD40EFRX-68N) is at 52 °C; its warning limit is 50 °C"
@@ -1111,6 +1146,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "certificate:www.pem");
         assert_eq!(alerts[0].severity, Severity::Critical);
+        assert_eq!(alerts[0].kind(), Some(About::Stopped));
         assert_eq!(
             alerts[0].title,
             format!("The certificate in {}/www.pem ended on 2021-01-01", dir.display())
@@ -1181,7 +1217,7 @@ mod tests {
     }
 
     fn some_alert(title: &str) -> Alert {
-        alert(key("fs-full", "/data"), Level::Warning, title, "do it", FULL).unwrap()
+        alert(key("fs-full", "/data"), Level::Warning, title, "do it", FULL, About::Data).unwrap()
     }
 
     #[test]

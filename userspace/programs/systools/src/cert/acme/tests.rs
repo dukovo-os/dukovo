@@ -56,6 +56,58 @@ fn names_are_lowercase_domains_and_a_wildcard_needs_dns() {
 }
 
 #[test]
+fn a_check_takes_a_name_of_one_label_for_the_check_to_tell_of() {
+    // An order refuses `localhost`; the check lets it through to say that it
+    // leads to this machine itself.
+    assert!(check_dns_name("localhost", false).is_err());
+    assert_eq!(check_dns_name_to_check("localhost", false), Ok(()));
+    assert_eq!(check_dns_name_to_check("shop.example.org", false), Ok(()));
+    assert_eq!(check_dns_name_to_check("*.example.org", true), Ok(()));
+    for wrong in ["", "Localhost", "-a", "a_b", "a..b", "*.localhost-", "203.0.113.7"] {
+        assert!(check_dns_name_to_check(wrong, true).is_err(), "{wrong}");
+    }
+    assert!(check_dns_name_to_check("*.example.org", false).unwrap_err().contains("add --dns"));
+    assert_eq!(
+        check_names_with(&names(&["localhost", "a.example"]), false, check_dns_name_to_check),
+        Ok(())
+    );
+    assert!(check_names(&names(&["localhost"]), false).is_err());
+}
+
+#[test]
+fn a_check_that_is_refused_ends_with_2_and_one_that_found_a_failure_with_1() {
+    let get = |name: &str| Get {
+        name: name.into(),
+        names: names(&["shop.example.org"]),
+        dns: false,
+        staging: false,
+        dry_run: false,
+        directory: None,
+        email: None,
+        agree_terms: false,
+        key: None,
+        profile: None,
+        yes: false,
+        check: true,
+        progress: false,
+        json: true,
+    };
+    let refused = super::get(&get("this-machine")).unwrap_err();
+    assert_eq!(refused.code, 2);
+    assert!(refused.message.contains("is the machine's own certificate"));
+    let refused = super::get(&get("Shop")).unwrap_err();
+    assert_eq!(refused.code, 2);
+}
+
+#[test]
+fn only_lets_encrypt_is_known_as_on_the_internet_without_a_look_up() {
+    assert!(is_public_authority(LETS_ENCRYPT));
+    assert!(is_public_authority(LETS_ENCRYPT_STAGING));
+    assert!(!is_public_authority("https://acme.lab.example/directory"));
+    assert!(!is_public_authority("http://10.0.2.2:14000/dir"));
+}
+
+#[test]
 fn an_order_has_one_to_a_hundred_names_each_once() {
     assert_eq!(check_names(&names(&["a.example", "b.example"]), false), Ok(()));
     assert!(check_names(&[], false).unwrap_err().starts_with("a certificate has 1 to 100 names"));

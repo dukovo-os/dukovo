@@ -978,6 +978,7 @@ mod tests {
             failed_when: None,
             no_log: false,
             when: None,
+            comes_back: false,
         }
     }
 

@@ -438,22 +438,33 @@ fn walk(lines: &[Line], packet: &Packet) -> (Option<(usize, Action)>, Vec<usize>
     (None, passed)
 }
 
+/// What the settings say of a TCP connection to a port: whether it is let
+/// in, and which rule says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Opening {
+    /// Other machines may start a connection.
+    pub open: bool,
+    /// The number, from 1 as `firewall list` shows it, of the rule that
+    /// decided; none when no rule did and the socket's own right did.
+    pub rule: Option<usize>,
+}
+
 /// Whether other machines may start a TCP connection to `port`, by the
-/// settings `text` says, for a socket that listens there: `with_inbound`,
-/// when its network capability has the inbound right, as a service's has
-/// for the ports its file names (ADR 0334); not when it is a command's of
-/// an administrator.
+/// settings `text` says, for a socket that listens there, and the rule that
+/// decides: `with_inbound`, when its network capability has the inbound
+/// right, as a service's has for the ports its file names (ADR 0334); not
+/// when it is a command's of an administrator.
 ///
 /// The first rule that matches decides, as the kernel reads them. A rule
 /// that names a network, an interface or a program is passed over, since
 /// none of those is known before a connection comes: only a rule for every
 /// source decides.
-pub fn lets_tcp_in(text: &str, port: u16, with_inbound: bool) -> bool {
+pub fn lets_tcp_in(text: &str, port: u16, with_inbound: bool) -> Opening {
     let (lines, _) = parse_settings(text);
     let packet = Packet { protocol: Protocol::Tcp, port, from: None, on: None, program: None };
     match decides(&lines, &packet) {
-        Some((_, action)) => action == Action::Allow,
-        None => with_inbound,
+        Some((at, action)) => Opening { open: action == Action::Allow, rule: Some(at + 1) },
+        None => Opening { open: with_inbound, rule: None },
     }
 }
 
@@ -1377,19 +1388,37 @@ mod tests {
     fn a_connection_to_a_port_is_let_in_by_the_first_rule_for_every_source() {
         let rules = "# kept\nallow tcp 8000-8100\ndeny tcp 80 from 10.0.0.0/8\n\
                      deny tcp 80 program /x\nallow tcp 80\ndeny tcp 80\n";
-        assert!(lets_tcp_in(rules, 80, false));
-        assert!(lets_tcp_in(rules, 8080, false));
-        assert!(!lets_tcp_in(rules, 443, false));
-        assert!(lets_tcp_in(rules, 443, true));
+        let open = |text: &str, port: u16, inbound: bool| lets_tcp_in(text, port, inbound).open;
+        assert!(open(rules, 80, false));
+        assert!(open(rules, 8080, false));
+        assert!(!open(rules, 443, false));
+        assert!(open(rules, 443, true));
         // A rule for a network, an interface or a program does not decide.
-        assert!(lets_tcp_in("deny 80 on net0\n", 80, true));
-        assert!(!lets_tcp_in("deny tcp 80\nallow tcp 80\n", 80, true));
-        assert!(!lets_tcp_in("allow udp 80\n", 80, false));
-        assert!(!lets_tcp_in("allow ping\n", 80, false));
-        assert!(lets_tcp_in("allow\n", 80, false));
-        assert!(!lets_tcp_in("", 80, false));
-        assert!(lets_tcp_in("", 80, true));
-        assert!(!lets_tcp_in("not a rule\n", 80, false));
+        assert!(open("deny 80 on net0\n", 80, true));
+        assert!(!open("deny tcp 80\nallow tcp 80\n", 80, true));
+        assert!(!open("allow udp 80\n", 80, false));
+        assert!(!open("allow ping\n", 80, false));
+        assert!(open("allow\n", 80, false));
+        assert!(!open("", 80, false));
+        assert!(open("", 80, true));
+        assert!(!open("not a rule\n", 80, false));
+    }
+
+    #[test]
+    fn the_rule_that_decides_is_told_by_its_number_in_the_list() {
+        // The numbers are those `firewall list` shows: comments and blank
+        // lines are not counted.
+        let rules = "# kept\nallow tcp 8000-8100\n\ndeny tcp 80 from 10.0.0.0/8\n\
+                     deny tcp 80 program /x\nallow tcp 80\ndeny tcp 80\n";
+        assert_eq!(lets_tcp_in(rules, 80, false), Opening { open: true, rule: Some(4) });
+        assert_eq!(lets_tcp_in(rules, 8080, false), Opening { open: true, rule: Some(1) });
+        assert_eq!(
+            lets_tcp_in("allow tcp 22\ndeny tcp 80\n", 80, true),
+            Opening { open: false, rule: Some(2) }
+        );
+        // No rule decides: the socket's own right does.
+        assert_eq!(lets_tcp_in("allow tcp 22\n", 80, true), Opening { open: true, rule: None });
+        assert_eq!(lets_tcp_in("", 80, false), Opening { open: false, rule: None });
     }
 
     fn packet<'a>(

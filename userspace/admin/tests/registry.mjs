@@ -33,8 +33,12 @@ const CRATES = {
   checks: 'userspace/programs/systools/src/update/checks.rs',
   // The certificate actions' field, as `use super::certificate` names it: `certificate::NAME`.
   certificate: `${ACTIONS}certificate.rs`,
+  // hostnamectl(1)'s limit of a name, which the machine's actions hold a new name to.
+  'crate::hostnamectl': 'userspace/programs/systools/src/hostnamectl.rs',
   // wireguard(8)'s readers, which the private access actions check with.
   'crate::private_access': 'userspace/programs/systools/src/private_access.rs',
+  // The registry's own limits, as an action file takes them: `use super::DOCUMENT_MAX`.
+  super: `${ACTIONS}mod.rs`,
   // What an action takes from another action file: `use super::metrics::WORDS`.
   'super::accounts': `${ACTIONS}accounts.rs`,
   'super::apps': `${ACTIONS}apps.rs`,
@@ -307,7 +311,7 @@ function call(names, args, file) {
     case 'Field::flag': return { name: args[0], about: args[1], required: true, type: 'boolean' };
     // One line of text, sent and never given back (ADR 0561), as mod.rs's schema says.
     case 'Field::secret': return { name: args[0], about: args[1], required: true, type: 'string', minLength: 1, maxLength: args[2], pattern: '^[^\n\r\0]*$', writeOnly: true };
-    // A document of 1 to `max` bytes that the command reads on its input, as mod.rs's schema says; a secret one is never given back.
+    // A document of lines, read on the command's input, as mod.rs's schema says; a secret one is never given back.
     case 'Field::document': return { name: args[0], about: args[1], required: true, type: 'string', minLength: 1, maxLength: args[2], pattern: '^[^\0]*$' };
     case 'Field::secret_document': return { name: args[0], about: args[1], required: true, type: 'string', minLength: 1, maxLength: args[2], pattern: '^[^\0]*$', writeOnly: true };
     default: break;

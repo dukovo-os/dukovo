@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0475. changes bisect halves the changes between two starts with one-start trials
 
-- Status: Accepted
+- Status: Accepted; its try also carries the memory test at the start since [0565](0565-updates-are-run-from-the-console-and-a-release-that-fell-back-is-held.md)
 - Date: 2026-11-13
 
 ## Context

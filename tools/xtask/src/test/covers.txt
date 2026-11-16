@@ -49,6 +49,13 @@ admin-accounts userspace/programs/systools/src/elevate.rs userspace/programs/sys
 admin-accounts userspace/programs/sshd/ ports/openssh/ ports/uutils-coreutils/ ports/netcat/
 admin-accounts userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sshd.toml
 admin-accounts tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+admin-alerts userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-alerts userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-alerts userspace/programs/systools/src/alerts.rs userspace/programs/systools/src/alerts/ userspace/programs/systools/src/alertd.rs
+admin-alerts userspace/programs/systools/src/alertd/ userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
+admin-alerts userspace/programs/systools/src/settings_edit.rs userspace/programs/monitoring-test/ ports/curl/
+admin-alerts userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/alertd.toml
+admin-alerts userspace/spark/tests/services/admin-alerts/ tools/xtask/src/test/console_client.rs ports/netcat/ ports/openssl/
 admin-backups userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin-backups userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
 admin-backups userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/ userspace/programs/systools/src/backup_errors.rs
@@ -57,6 +64,13 @@ admin-backups userspace/programs/systools/src/subvolume/ userspace/programs/syst
 admin-backups userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/backup.toml
 admin-backups kernel/fs/btrfs/ kernel/fs/exfat/ ports/uutils-coreutils/ ports/netcat/
 admin-backups tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+admin-certificates userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-certificates userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-certificates userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs
+admin-certificates userspace/programs/systools/src/hostnamectl.rs userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/resolvectl.rs
+admin-certificates userspace/programs/systools/src/servicefiles.rs userspace/programs/systools/src/admin_certificate.rs ports/openssl/ ports/netcat/
+admin-certificates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/certd.toml
+admin-certificates userspace/spark/tests/services/admin-certificates/ tools/xtask/src/test/console_client.rs
 admin-journal userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_lab.rs userspace/programs/systools/src/admin_put_back.rs
 admin-journal userspace/programs/systools/src/admin_put_back/ userspace/programs/systools/src/admin_export.rs ports/git/
 admin-journal userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
@@ -138,6 +152,7 @@ admin-updates userspace/programs/systools/src/update.rs userspace/programs/systo
 admin-updates userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/settings_edit.rs
 admin-updates userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/ userspace/programs/systools/src/bundled.rs
 admin-updates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sysupdate-stage.toml
+admin-updates userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
 admin-updates tools/update-server/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
 ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
 ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs

@@ -37,7 +37,7 @@ use super::place::{self, BUILDING, Root};
 use super::starts::{self, Item, Outcome};
 use super::{bisect, devices, firmware, online};
 use crate::alerts::client::{self as alerts, Screen};
-use crate::alerts::protocol::{Alert, Severity};
+use crate::alerts::protocol::{About, Alert, Severity};
 use crate::power;
 use crate::settings_edit;
 use crate::subvolume;
@@ -498,14 +498,7 @@ fn verdict(
             );
             if let Err(why) = power::request("reboot") {
                 println!("sysupdate: cannot ask Spark to restart: {}", why.message);
-                let title =
-                    format!("An update failed its health check, and {before} could not be started");
-                let detail = format!(
-                    "Spark did not restart the machine: {}\n`elevate reboot` starts {before}.",
-                    why.message
-                );
-                let alert = Alert::new("update-failed".into(), Severity::Critical, &title, &detail);
-                tell_alertd(&alert, Screen::Tell);
+                tell_alertd(&restart_failed_alert(&before, &why.message), Screen::Tell);
             }
         }
         Checked::FellBack(slot) => {
@@ -924,7 +917,7 @@ fn failure_alert(checked: Checked, named: &str, text: &str) -> Alert {
             format!("This start of {named} failed its health check, and goes on"),
         ),
     };
-    Alert::new(key.into(), severity, &title, text)
+    Alert::new(key.into(), severity, &title, text).about(About::Stopped)
 }
 
 /// The version of the release in `slot`, which this start fell back
@@ -1004,6 +997,16 @@ fn hold_in(document: &mut DocumentMut, version: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The event that tells the owner that Spark did not restart the machine
+/// into `before`, the version before, after an update gave up its tries,
+/// for `why`.
+fn restart_failed_alert(before: &str, why: &str) -> Alert {
+    let title = format!("An update failed its health check, and {before} could not be started");
+    let detail =
+        format!("Spark did not restart the machine: {why}\n`elevate reboot` starts {before}.");
+    Alert::new("update-failed".into(), Severity::Critical, &title, &detail).about(About::Stopped)
+}
+
 /// The event that tells the owner that the wanted check `name` failed,
 /// for `why`, while the update to `version` was tried; the update stays.
 fn wanted_alert(version: &str, name: &str, why: &str) -> Alert {
@@ -1013,6 +1016,7 @@ fn wanted_alert(version: &str, name: &str, why: &str) -> Alert {
          checks` lists its command."
     );
     Alert::new("update-check-wanted".into(), Severity::Warning, &title, &detail)
+        .about(About::Stopped)
 }
 
 /// Tells alertd of `alert` as an event, waiting for it to start;
@@ -1324,6 +1328,7 @@ mod tests {
         let text = "Start 7 failed its health check: netd did not start\n";
         let fell = failure_alert(Checked::FellBack(slots::Slot::B), "Dukovo 0.16.0 (slot A)", text);
         assert_eq!((fell.key.as_str(), fell.severity), ("update-fell-back", Severity::Critical));
+        assert_eq!(fell.kind(), Some(About::Stopped));
         assert_eq!(
             fell.title,
             "An update failed its health check, and Dukovo went back to Dukovo 0.16.0 (slot A)"
@@ -1332,6 +1337,19 @@ mod tests {
         assert_eq!(fell.invalid(), None);
         let goes_on = failure_alert(Checked::Start, "Dukovo 0.16.0 (slot A)", text);
         assert_eq!((goes_on.key.as_str(), goes_on.severity), ("start-failed", Severity::Warning));
+        assert_eq!(goes_on.kind(), Some(About::Stopped));
+    }
+
+    #[test]
+    fn an_update_that_could_not_go_back_is_critical_and_about_something_stopped() {
+        let alert = restart_failed_alert("Dukovo 0.16.0 (slot A)", "no Spark");
+        assert_eq!((alert.key.as_str(), alert.severity), ("update-failed", Severity::Critical));
+        assert_eq!(alert.kind(), Some(About::Stopped));
+        assert_eq!(
+            alert.detail,
+            "Spark did not restart the machine: no Spark\n`elevate reboot` starts Dukovo 0.16.0 (slot A)."
+        );
+        assert_eq!(alert.invalid(), None);
     }
 
     #[test]
@@ -1432,6 +1450,7 @@ mod tests {
             (alert.key.as_str(), alert.severity),
             ("update-check-wanted", Severity::Warning)
         );
+        assert_eq!(alert.kind(), Some(About::Stopped));
         assert_eq!(
             alert.title,
             "After the update to 1.0.0-alpha.2, the wanted check web answers failed"

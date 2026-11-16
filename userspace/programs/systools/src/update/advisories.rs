@@ -29,6 +29,7 @@ use system_release::advisory::{self, Advisory};
 use super::documents::Unchecked;
 use crate::bundles::catalogs;
 use crate::bundles::protocol::Listed;
+use crate::sysupdate::later::{self, Fixes};
 use crate::sysupdate::online::{self, Plan, Settings};
 use crate::sysupdate::{place, stage};
 use crate::util::Fail;
@@ -155,6 +156,10 @@ pub(crate) struct Advisories {
     /// The release this system runs, when it is known.
     #[serde(skip)]
     pub(crate) running: Option<String>,
+    /// Whether the apps' part was asked for: without it, `apps` says
+    /// nothing of any app.
+    #[serde(skip)]
+    pub(crate) with_apps: bool,
 }
 
 impl Advisories {
@@ -162,6 +167,53 @@ impl Advisories {
     pub(crate) fn applies(&self) -> bool {
         !self.system.is_empty() || !self.apps.is_empty()
     }
+
+    /// What these say of the update `offered` of `item`, `system`,
+    /// `firmware` or an app's ID: the advisories it fixes, the worst
+    /// first, or that they could not all be read. A part that could not
+    /// be read leaves every item unsure: the system's advisories come
+    /// from the server, which the apps' also go by.
+    pub(crate) fn fixing(&self, item: &str, offered: &str) -> Fixing {
+        if !self.unchecked.is_empty() || (later::is_app(item) && !self.with_apps) {
+            return Fixing::Unread;
+        }
+        let fixed: Vec<(String, Severity)> = if later::is_app(item) {
+            self.apps
+                .iter()
+                .filter(|flaw| {
+                    flaw.item == item && flaw.fixed_by_update.as_deref() == Some(offered)
+                })
+                .map(|flaw| (flaw.id.clone(), flaw.severity))
+                .collect()
+        } else {
+            self.system
+                .iter()
+                .filter(|flaw| flaw.release.as_deref() == Some(offered))
+                .map(|flaw| (flaw.id.clone(), flaw.severity))
+                .collect()
+        };
+        if fixed.is_empty() { Fixing::Nothing } else { Fixing::Fixes(fixed) }
+    }
+
+    /// As [`Advisories::fixing`], for [`later::stands`].
+    pub(crate) fn fixes(&self, item: &str, offered: &str) -> Fixes {
+        match self.fixing(item, offered) {
+            Fixing::Nothing => Fixes::No,
+            Fixing::Fixes(_) => Fixes::Yes,
+            Fixing::Unread => Fixes::Unknown,
+        }
+    }
+}
+
+/// Whether an update fixes an advisory, and which.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Fixing {
+    /// It fixes none.
+    Nothing,
+    /// It fixes these, each with its severity, the worst first.
+    Fixes(Vec<(String, Severity)>),
+    /// The advisories could not all be read.
+    Unread,
 }
 
 /// An app that is installed, as far as the advisories go.
@@ -408,7 +460,7 @@ fn apps_part(advisories: &[Advisory]) -> Result<Vec<AppFlaw>, Fail> {
 /// others still are: with the server out of reach, the apps' flaws from
 /// their catalogs' lists, as bundled last kept them, are still found.
 pub(crate) fn gather(with_apps: bool) -> Advisories {
-    let mut found = Advisories::default();
+    let mut found = Advisories { with_apps, ..Advisories::default() };
     let server = Settings::load().and_then(online::Client::connect).and_then(|mut client| {
         let advisories = fetch(&mut client)?;
         Ok((client, advisories))
@@ -863,7 +915,13 @@ mod tests {
     }
 
     fn found(system: Vec<SystemFlaw>, apps: Vec<AppFlaw>) -> Advisories {
-        Advisories { system, apps, unchecked: Vec::new(), running: Some("1.4.1".into()) }
+        Advisories {
+            system,
+            apps,
+            unchecked: Vec::new(),
+            running: Some("1.4.1".into()),
+            with_apps: true,
+        }
     }
 
     #[test]

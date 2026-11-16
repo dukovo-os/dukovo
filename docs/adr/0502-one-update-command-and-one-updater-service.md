@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0502. One update command and one updater service
 
-- Status: Accepted
+- Status: Accepted; a reminder can be put off a day or a week since [0565](0565-updates-are-run-from-the-console-and-a-release-that-fell-back-is-held.md)
 - Date: 2026-11-12
 
 ## Context

@@ -1,0 +1,86 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ */
+
+/*
+ * The page that adds an app: the search, the ready-made setups and the table
+ * of the apps the catalogs list, with the sheet of an app beside them on a
+ * wide screen. On a phone the sheet is a page of its own, and the table
+ * becomes a card for each app, under the container query the shell uses. Same
+ * rules as console.css: rem, and px for borders and focus rings.
+ */
+.add { display: flex; flex-wrap: wrap; gap: 1.143rem; align-items: flex-start; }
+.add-list { display: flex; flex-direction: column; gap: 1rem; flex: 1 1 100%; min-width: 0; }
+.add.has-sheet .add-list { flex: 999 1 30rem; }
+.add-panel { flex: 1 1 28rem; min-width: 0; gap: 1rem; }
+.add-panel p, .add-list .card p { margin: 0; }
+
+/* The two views of the apps, which are links */
+.seg a { display: inline-flex; align-items: center; font: inherit; font-size: .929rem; padding: .286rem .786rem; border-right: 1px solid var(--btn-b); background: linear-gradient(var(--btn-1), var(--btn-3)); color: var(--text); text-decoration: none; }
+.seg a:last-child { border-right: 0; }
+.seg a.on { background: linear-gradient(var(--sel-1), var(--sel-2)); font-weight: 600; }
+.seg a:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+/* The setups: each card is a link, with what it uses */
+.setups { display: grid; gap: .714rem; grid-template-columns: repeat(auto-fit, minmax(17.857rem, 1fr)); margin: 0; padding: 0; list-style: none; }
+.setups li { display: flex; }
+.setups a.radio-card { flex: 1; color: inherit; text-decoration: none; }
+.setups a.radio-card:hover { border-color: var(--sel-b); }
+.setups .radio-card > span { display: flex; flex-direction: column; gap: .143rem; }
+.uses { display: flex; flex-wrap: wrap; gap: .286rem; margin-top: .429rem; }
+
+/* An app's mark (pages/apps/mark.js): the same square and the same six colours as the Apps pages' (apps.css), white letters of at least 4.5 to 1; a colour changed there is changed here (mark.test.mjs holds them together) */
+.add-ic { display: inline-grid; place-items: center; flex: none; width: 2.429rem; height: 2.429rem; border-radius: .5rem; color: #fff; font: 700 1rem var(--font-brand); background: #B0281F; }
+.add-ic.big { width: 3.143rem; height: 3.143rem; font-size: 1.286rem; }
+.add-ic.tint-1 { background: #1D6A31; }
+.add-ic.tint-2 { background: #2C5C93; }
+.add-ic.tint-3 { background: #5E4FA0; }
+.add-ic.tint-4 { background: #8A4A12; }
+.add-ic.tint-5 { background: #5A6878; }
+
+/* The table: an app's mark, its name and ID, and what the catalogs say of it */
+.add-who { display: flex; align-items: center; gap: .714rem; min-width: 0; color: inherit; text-decoration: none; }
+a.add-who:hover b, a.add-who:focus-visible b { text-decoration: underline; }
+.add-who small { overflow-wrap: anywhere; }
+.add-empty { display: flex; flex-direction: column; align-items: flex-start; gap: .571rem; padding: 1.143rem; border: 1px dashed var(--border); border-radius: .429rem; }
+
+/* The sheet */
+.add-title { display: flex; align-items: center; gap: .857rem; min-width: 0; }
+.add-title > div { display: flex; flex-direction: column; gap: .143rem; min-width: 0; }
+.add-panel h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); }
+.add-panel h2:focus { outline: none; }
+.add-panel h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.add-panel h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.add-sec { display: flex; flex-direction: column; gap: .286rem; }
+.add-lines { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .143rem; overflow-wrap: anywhere; }
+.add-lines small { display: block; color: var(--muted); }
+.add-lines code { font: .893rem var(--font-mono); }
+.add-run { display: flex; flex-direction: column; gap: .571rem; }
+.add-run:empty { display: none; }
+.add-done { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .571rem; }
+.add-done li { display: flex; align-items: flex-start; gap: .571rem; }
+.add-done .ic { flex: none; margin-top: .143rem; color: var(--ok); }
+.add-panel .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+
+/* The phone: the sheet is the page and the list is not drawn beside it; each app is a card, and every button is 44 px tall and fills the width. */
+@container (max-width: 51.4rem) {
+  .add.has-sheet .add-list { display: none; }
+  .add-list .tbl-box { border: 0; }
+  .add-list .tbl.stack tr { margin: .571rem 0; }
+  .add-list .tbl.stack td::before { margin-bottom: .143rem; }
+  .add-who { min-height: 3.143rem; }
+  .setups a.radio-card { min-height: 3.143rem; }
+  .seg a { min-height: 3.143rem; min-width: 3.143rem; }
+  .add-panel .btns { flex-direction: column; align-items: stretch; }
+  .add-panel .btns .btn { box-sizing: border-box; width: 100%; min-height: 3.143rem; justify-content: center; }
+}
+
+/* Forced colours: what only a tint or a border showed is drawn in system colours. */
+@media (forced-colors: active) {
+  .dk .add-ic { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border: 1px solid ButtonText; }
+  .dk .add-empty, .dk .setups a.radio-card { border-color: CanvasText; }
+  .dk .seg a { border: 1px solid ButtonText; }
+  .dk .seg a.on { outline: 2px solid Highlight; outline-offset: -2px; }
+  .dk .add-panel .btn[aria-disabled="true"] { color: GrayText; border-color: GrayText; }
+}

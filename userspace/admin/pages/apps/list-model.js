@@ -10,31 +10,7 @@ import { counted } from '../../lib/size-words.js';
 import {
   appHref, checkOf, flawWords, isText, listOf, offersOf, SEVERITIES, updateWords, urgent,
 } from './apps-model.js';
-
-/**
- * The app the address names, from what follows `/apps/`: an empty text for
- * the list, the app's ID, or null when the address cannot be one.
- */
-export function idOf(rest) {
-  const name = rest.replace(/\/$/, '');
-  if (name === '') return '';
-  try {
-    const id = decodeURIComponent(name);
-    return /^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$/.test(id) ? id : null;
-  } catch {
-    return null;
-  }
-}
-
-/** The letter in the square that stands for an app: the first of its name. */
-export const initialOf = (name) => (Array.from(String(name).trim())[0] ?? '?').toUpperCase();
-
-/** The colour of that square, one of six that an app's ID picks, the same every time. */
-export function tintOf(id) {
-  let hash = 0;
-  for (const letter of id) hash = (Math.imul(hash, 31) + letter.codePointAt(0)) >>> 0;
-  return hash % 6;
-}
+import { initialOf, tintOf } from './mark.js';
 
 /** "Checked 4 minutes ago.", and why the apps could not be checked when they could not; `time` is the console's (lib/time.js). An undefined `last` is a read that failed. */
 export function checkedWords(last, time) {

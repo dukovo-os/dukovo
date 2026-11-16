@@ -581,6 +581,9 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "service.stop",
             "service.enable",
             "service.disable",
+            "certificate.get",
+            "certificate.add",
+            "machine.rename",
             "console.reach",
             "console.certificate",
             "console.undo",
@@ -625,7 +628,11 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "updates.undo",
             "updates.hold",
             "updates.unhold",
+            "updates.later",
             "apps.update",
+            "apps.tonight",
+            "apps.tonight-all",
+            "apps.not-tonight",
             "apps.rollback",
             "apps.hold",
             "apps.unhold",
@@ -1350,11 +1357,28 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     // alone, which a pattern cannot say.
     ("hardware.check", "areas"),
     ("hardware.check", "disk"),
+    // Each name an order or a check is for is read as `cert get` reads it,
+    // once, a wildcard only with dns, which a pattern of the letters a name
+    // has cannot say; and the terms are agreed to only with true, which a
+    // flag says as true or false.
+    ("certificate.check", "names"),
+    ("certificate.get", "names"),
+    ("certificate.get", "agree_terms"),
     // A page or a service, one of the two, and a page's address is one the
     // check reads: no space or control character in it, which a pattern
     // cannot say as the check does.
     ("updates.check-add", "url"),
     ("updates.check-add", "service"),
+    // Addresses, a server and a sender as the command's parser reads them,
+    // an account with no control character, and a Matrix room that is for
+    // a Matrix webhook alone; a browser's name that is not spaces alone.
+    ("alerts.email", "to"),
+    ("alerts.email", "server"),
+    ("alerts.email", "user"),
+    ("alerts.email", "from"),
+    ("alerts.webhook-add", "kind"),
+    ("alerts.webhook-add", "room"),
+    ("alerts.push-add", "name"),
     // What a report is about decides which of the crash and the name goes
     // with it, and an answer of only blanks is no answer, which a pattern
     // cannot say.
@@ -1454,6 +1478,15 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("hardware.check", r#"{"areas":"disks cpu","disk":"vda"}"#),
     ("hardware.check", r#"{"disk":"vda"}"#),
     ("backups.add", r#"{"every":"hand","name":"lab","to":"relative/folder","verify":"never"}"#),
+    // A name with an empty word, a wildcard without dns, a name twice, a
+    // name of one word for an order, and terms not agreed to: the code's.
+    ("certificate.check", r#"{"names":"shop..example.org"}"#),
+    ("certificate.check", r#"{"names":"*.example.org"}"#),
+    ("certificate.check", r#"{"names":"a.example.org,a.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":false,"name":"shop","names":"shop.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"shop..example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"*.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"shop"}"#),
     // A report about a crash names it, one about a service or a program names
     // that, and no other has either: the code's.
     ("reports.draft", r#"{"about":"crash","happened":"lab"}"#),
@@ -1511,6 +1544,18 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("updates.check-add", r#"{"name":"x"}"#),
     ("updates.check-add", r#"{"name":"x","service":"nginx","url":"https://a/"}"#),
     ("updates.check-add", r#"{"insecure":true,"name":"x","service":"nginx"}"#),
+    // An address that is no address, an account's password without the
+    // account, and a sender that is no address: what the command's parser
+    // reads. A Matrix webhook without its room, a room for another kind,
+    // a token for a kind that has none, and a browser's name of spaces
+    // alone: fields that go together in ways a schema does not say.
+    ("alerts.email", r#"{"server":"mail.example.org","to":"nobody"}"#),
+    ("alerts.email", r#"{"from":"nobody","server":"mail.example.org","to":"ops@example.org"}"#),
+    ("alerts.email", r#"{"password":"x","server":"mail.example.org","to":"ops@example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"matrix","url":"https://matrix.example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"json","room":"!a:b.test","url":"https://x.example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"slack","token":"t","url":"https://hooks.slack.com/x"}"#),
+    ("alerts.push-add", r#"{"name":"   ","subscription":"{}"}"#),
 ];
 
 fn lab_action(id: &str) -> &'static dyn Registered {

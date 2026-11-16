@@ -167,9 +167,12 @@ pub fn sign_in_refusal(
 }
 
 /// The content security policy: the console's own files alone, no
-/// inline script, no frames around it.
-pub const POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' \
-                          data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; \
+/// inline script, no frames around it. The service worker that shows an
+/// alert's notice and the manifest of the home-screen entry are files of
+/// the console's own too.
+pub const POLICY: &str = "default-src 'self'; script-src 'self'; worker-src 'self'; \
+                          manifest-src 'self'; style-src 'self'; img-src 'self' data:; \
+                          connect-src 'self'; font-src 'self'; frame-ancestors 'none'; \
                           base-uri 'none'; form-action 'self'; object-src 'none'";
 
 /// The headers every answer carries. `authority` says whether admind
@@ -302,5 +305,22 @@ mod tests {
         assert!(!names(false).contains(&"strict-transport-security"));
         assert!(names(true).contains(&"strict-transport-security"));
         assert!(!POLICY.contains("unsafe"));
+    }
+
+    #[test]
+    fn the_policy_lets_the_console_start_its_own_worker_and_read_its_own_manifest_and_nothing_else()
+    {
+        let directives: Vec<&str> = POLICY.split("; ").collect();
+        for wanted in ["worker-src 'self'", "manifest-src 'self'", "script-src 'self'"] {
+            assert_eq!(directives.iter().filter(|each| **each == wanted).count(), 1, "{wanted}");
+        }
+        // Each directive is named once, and a worker has no wider source than a script.
+        let mut names: Vec<&str> =
+            directives.iter().map(|each| each.split(' ').next().unwrap_or_default()).collect();
+        let all = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), all, "{POLICY}");
+        assert!(!POLICY.contains('*') && !POLICY.contains("http"), "{POLICY}");
     }
 }

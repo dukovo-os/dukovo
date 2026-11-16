@@ -233,6 +233,13 @@ pub const GROUP: &str = "root:x:0:\nchase:x:1000:\nbob:x:1001:\nalice:x:1002:\ne
 /// The page the test console serves.
 pub const PAGE: &str = "<!doctype html><title>Dukovo Admin</title>";
 
+/// The service worker the test console serves.
+pub const WORKER: &str = "self.addEventListener('push', () => {});";
+
+/// The manifest of the console's home-screen entry that the test console
+/// serves.
+pub const WEB_MANIFEST: &str = "{\"name\":\"Dukovo Admin\"}";
+
 impl Console {
     /// A console named for `what`, whose authd answers by `script`.
     ///
@@ -258,10 +265,17 @@ impl Console {
         std::fs::create_dir_all(&pages).unwrap();
         std::fs::write(pages.join("index.html"), PAGE).unwrap();
         std::fs::write(pages.join("app.js"), "export {};").unwrap();
+        std::fs::write(pages.join("sw.js"), WORKER).unwrap();
+        std::fs::write(pages.join("manifest.webmanifest"), WEB_MANIFEST).unwrap();
         let hash =
             |bytes: &[u8]| accounts::request::hex(digest::digest(&digest::SHA256, bytes).as_ref());
-        let manifest =
-            format!("{}  index.html\n{}  app.js\n", hash(PAGE.as_bytes()), hash(b"export {};"));
+        let manifest = format!(
+            "{}  index.html\n{}  app.js\n{}  sw.js\n{}  manifest.webmanifest\n",
+            hash(PAGE.as_bytes()),
+            hash(b"export {};"),
+            hash(WORKER.as_bytes()),
+            hash(WEB_MANIFEST.as_bytes())
+        );
         std::fs::write(pages.join("manifest.txt"), manifest).unwrap();
         let files = Files::read(&pages, &mut Vec::new()).unwrap();
         let loopback = Network { ip: [127, 0, 0, 1].into(), prefix: 8 };

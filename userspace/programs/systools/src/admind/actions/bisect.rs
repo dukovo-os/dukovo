@@ -19,7 +19,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Action, Examples, Nothing, Restarts, Runs, Tests, Undo};
+use super::{Action, Ansible, Examples, Nothing, Restarts, Runs, Tests, Undo, command_task};
 
 /// The area of these actions: the Updates page's, and the scope a token
 /// needs.
@@ -97,6 +97,10 @@ impl Action for Begin {
         ["changes", "bisect", "--yes", "--later"].map(String::from).to_vec()
     }
 
+    fn ansible(args: &Nothing) -> Ansible {
+        command_task::<Self>(args).coming_back()
+    }
+
     fn probe(_: &Nothing) -> Option<Vec<String>> {
         Some(status())
     }
@@ -166,6 +170,10 @@ impl Action for Confirm {
 
     fn argv(_: &Nothing) -> Vec<String> {
         ["changes", "bisect", "--confirm", "--yes", "--later"].map(String::from).to_vec()
+    }
+
+    fn ansible(args: &Nothing) -> Ansible {
+        command_task::<Self>(args).coming_back()
     }
 
     fn probe(_: &Nothing) -> Option<Vec<String>> {

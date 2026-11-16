@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 
 use crate::alerts::client::Screen;
-use crate::alerts::protocol::{Alert, Severity};
+use crate::alerts::protocol::{About, Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::logd;
 use crate::prompt::{self, Answer};
@@ -523,18 +523,25 @@ fn save(folder: &Path) -> Result<i32, Fail> {
          {FOLDER}/{name} (dumps show)"
     );
     prune(folder, &name)?;
-    let detail = format!("{panic}\nThe dump is {FOLDER}/{name}; `elevate dumps show` shows it.");
-    let alert = Alert::new(
-        "kernel-panic".into(),
-        Severity::Critical,
-        "The machine restarted after a kernel panic",
-        &detail,
-    );
+    let alert = panic_alert(&panic, &name);
     // This runs early in the start, before alertd: it waits for it.
     if let Err(why) = crate::alerts::client::event_at_start(&alert, Screen::Tell, ALERTD_WAIT) {
         eprintln!("dumps: cannot tell alertd: {why}");
     }
     Ok(0)
+}
+
+/// The event that tells the owner that the previous boot ended with the
+/// kernel panic `panic`, whose dump is saved as `name`.
+fn panic_alert(panic: &str, name: &str) -> Alert {
+    let detail = format!("{panic}\nThe dump is {FOLDER}/{name}; `elevate dumps show` shows it.");
+    Alert::new(
+        "kernel-panic".into(),
+        Severity::Critical,
+        "The machine restarted after a kernel panic",
+        &detail,
+    )
+    .about(About::Stopped)
 }
 
 /// Saves `dump`, as the kernel gave it, in `folder` unless it is there.
@@ -652,6 +659,15 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn the_panic_is_told_as_a_critical_event_about_something_stopped() {
+        let alert = panic_alert("Kernel panic: out of memory", "dump-0001");
+        assert_eq!((alert.key.as_str(), alert.severity), ("kernel-panic", Severity::Critical));
+        assert_eq!(alert.kind(), Some(About::Stopped));
+        assert!(alert.detail.contains("The dump is "), "{}", alert.detail);
+        assert_eq!(alert.invalid(), None);
+    }
 
     /// A dump as the kernel writes one, whose third line is `when`.
     fn dump(boot: u32, when: &str) -> Vec<u8> {

@@ -1,0 +1,140 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Alerts page of the web console in each engine: the page at /alerts. What
+# is active and what happened lately are held to `alerts list` and `alerts
+# history` (`GET /api/1/alerts`, `GET /api/1/alerts/history`), where alerts go
+# to `alerts status` (`GET /api/1/alerts/channels`). Email is set from the page
+# (`POST /api/1/alerts/email`, with a mail server on the lab PC that nobody
+# listens at, so that its test fails and says why), a webhook is added (`POST
+# /api/1/alerts/webhooks`) to a receiver on the lab PC (alerts-hooks.sh and
+# alerts-receiver.py of the monitoring tests, over HTTPS with a certificate that
+# an authority of the test's own signed), and Send a test alert (`POST
+# /api/1/alerts/test`, which runs `alerts test`) reaches the receiver and shows
+# a line for each channel. What each channel is told of is changed (`POST
+# /api/1/alerts/channels/about`), and email and the webhook are removed (`POST
+# /api/1/alerts/email/remove`, `POST /api/1/alerts/webhooks/{number}/remove`). A
+# secret that was typed, the mail password and the webhook's address and token,
+# is in no text, no storage and no address of the page. Get alerts in this
+# browser is pressed up to the browser's own answer: this lab's browsers cannot
+# subscribe to a push service, so the page says why (the certificate, the
+# permission or the subscription), and the step after it hands the machine a
+# subscription of the test's own (`POST /api/1/alerts/push`), which the page
+# then lists as this browser, and Turn off ends (`POST
+# /api/1/alerts/push/{id}/remove`). The console serves the worker, the manifest
+# and its icons, and Chromium's worker is driven through its handle when the
+# browser started it. A reader is told that alerts are for administrators, and
+# a phone at 390 by 844 has Alerts in its tab bar, its panel of steps and no
+# sideways scroll; on a computer the card of Set up a phone has the QR code and
+# its address. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe.
+#
+# The webhooks are sent over TLS to the system's root certificates, so the
+# test's authority goes into the file of them, as alerts-webhook does, and is
+# taken out at the end. The script runs once for each engine, on a machine that
+# has no channel and two alerts of its own (the steps before it raise them, the
+# steps after it clear them). The script reads where the receiver is, and its
+# log, from /tmp/lab-alerts-hooks, which a step below writes. The accounts are
+# two that this test makes and removes, an administrator and a reader, so no
+# script needs the lab's password.
+about = "The web console's Alerts page in each engine: what is active and recent, email and a webhook set up and tested against a receiver on the lab PC, what each is told of, the secrets kept out of the page, Get alerts in this browser up to the browser's answer, a subscription listed and turned off, the worker and the manifest, a reader, the phone's panel and the QR code for a phone"
+time = "45m"
+host_needs = ["python3", "openssl", "scp", "curl"]
+
+[[step]]
+run = "sh -c 'echo lab-console-password | user add --admin wc-alerts && echo lab-console-password | user add wc-alerts-reader && user set --console --yes wc-alerts-reader'"
+root = true
+expect = ["Made wc-alerts", "Made wc-alerts-reader", "wc-alerts-reader is changed"]
+
+# The receiver runs on the lab PC for the whole test, with a certificate that
+# an authority of the test's own signed.
+[[step]]
+host = "sh {here}/../monitoring/alerts-hooks.sh serve {port:hooks} {peer}"
+background = true
+ready = "receiver ready"
+[[step]]
+host = "sh {here}/../monitoring/copy-file.sh ca.pem {machine} {machine-port:22}"
+expect = "copied: ca.pem"
+[[step]]
+run = "sh -c 'cd /system/settings/ssl/certs && cat /system/resources/certificates/ca-certificates.crt /users/lab/ca.pem > ca-certificates.crt.new && mv ca-certificates.crt.new ca-certificates.crt && echo trusted'"
+root = true
+expect = "trusted"
+
+# Where the receiver is and where its log is, for the browser script.
+[[step]]
+host = '''sh -c 'printf "%s\n%s\n%s\n" {peer} {port:hooks} "$(pwd)/received.log" > /tmp/lab-alerts-hooks && echo hooks-noted' '''
+expect = "hooks-noted"
+
+# The console answers within seconds of the boot; its last answer is shown
+# so that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+
+# Chromium. From no channel, with a warning and a critical alert active. The
+# keys are the test's own: temp:lab-page is about Hardware's page.
+[[step]]
+run = "sh -c 'rm -f /system/settings/alerts.toml && service alertd reload && sleep 2 && alerts raise lab-alerts-page --title \"Lab alert for the Alerts page\" --detail \"From the alerts page test.\" && alerts raise temp:lab-page --critical --title \"Lab temperature alert\" --detail \"From the alerts page test: see the hardware.\" && echo raised'"
+root = true
+expect = "raised"
+[[step]]
+browser = "alerts.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+run = "sh -c 'alerts clear lab-alerts-page; alerts clear temp:lab-page; rm -f /system/settings/alerts.toml && service alertd reload && echo reset'"
+root = true
+expect = "reset"
+[[step]]
+run = "alerts status"
+root = true
+expect = "No channels are set up"
+
+# Firefox, from no channel again.
+[[step]]
+run = "sh -c 'rm -f /system/settings/alerts.toml && service alertd reload && sleep 2 && alerts raise lab-alerts-page --title \"Lab alert for the Alerts page\" --detail \"From the alerts page test.\" && alerts raise temp:lab-page --critical --title \"Lab temperature alert\" --detail \"From the alerts page test: see the hardware.\" && echo raised'"
+root = true
+expect = "raised"
+[[step]]
+browser = "alerts.mjs"
+engines = ["firefox"]
+port = 9090
+[[step]]
+run = "sh -c 'alerts clear lab-alerts-page; alerts clear temp:lab-page; rm -f /system/settings/alerts.toml && service alertd reload && echo reset'"
+root = true
+expect = "reset"
+[[step]]
+run = "alerts status"
+root = true
+expect = "No channels are set up"
+
+# WebKit, from no channel again.
+[[step]]
+run = "sh -c 'rm -f /system/settings/alerts.toml && service alertd reload && sleep 2 && alerts raise lab-alerts-page --title \"Lab alert for the Alerts page\" --detail \"From the alerts page test.\" && alerts raise temp:lab-page --critical --title \"Lab temperature alert\" --detail \"From the alerts page test: see the hardware.\" && echo raised'"
+root = true
+expect = "raised"
+[[step]]
+browser = "alerts.mjs"
+engines = ["webkit"]
+port = 9090
+[[step]]
+run = "sh -c 'alerts clear lab-alerts-page; alerts clear temp:lab-page; rm -f /system/settings/alerts.toml && service alertd reload && echo reset'"
+root = true
+expect = "reset"
+[[step]]
+run = "alerts status"
+root = true
+expect = "No channels are set up"
+
+# The machine as it was: the system's own root certificates, and the accounts.
+[[step]]
+run = "sh -c 'rm -f /system/settings/alerts.toml /users/lab/ca.pem && ln -sf /system/resources/certificates/ca-certificates.crt /system/settings/ssl/certs/ca-certificates.crt && service alertd reload && echo cleaned'"
+root = true
+expect = "cleaned"
+[[step]]
+run = "sh -c 'for name in wc-alerts wc-alerts-reader; do user remove --delete-home --yes $name || exit 1; done'"
+root = true
+expect = ["wc-alerts is removed", "wc-alerts-reader is removed"]
+[[step]]
+host = "sh -c 'rm -f /tmp/lab-alerts-hooks && echo hooks-gone'"
+expect = "hooks-gone"

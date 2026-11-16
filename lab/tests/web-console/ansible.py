@@ -94,12 +94,57 @@ runs them all, and the browser test web-console/security uses them.
 Nor are the Updates' and Apps' actions whose examples need the update
 server or the catalog that only a boot test makes: an update to apply,
 unstage or undo, a hold of the system (which asks the server for the release
-to hold at), and an app to show, update, roll back, hold, let go or remove
-(SET_UP). Their tasks are the commands the console shows, which the boot test
-admin-updates runs, and the browser tests web-console/updates and
-web-console/apps use. The reads and the settings' changes of the Updates page
+to hold at), and an app to show, update, roll back, hold, let go or remove,
+the sheet of an app to read and an app to install (SET_UP). Their tasks are the
+commands the console shows, which the boot test admin-updates runs, and the
+browser tests web-console/updates, web-console/apps and web-console/add-app
+use. apps.search is run: it answers with what the catalogs it can read list.
+The reads and the settings' changes of the Updates page
 are run: they need no server, and updates.check answers with what it could not
 reach.
+
+Nor are the Databases' changes (SET_UP): they need PostgreSQL installed and on,
+and a database to work on, which a lab machine has not, and databases.allow
+and databases.deny make it listen on the network and restart. Their tasks are
+the commands the console shows, which the boot test admin-websites runs, and
+the browser test web-console/databases uses. databases.list is run: it
+answers with what a machine without PostgreSQL says.
+
+Nor are the Websites' changes (SET_UP): websites.add, websites.https and
+websites.remove need nginx installed and on, and a site to work on, which a
+lab machine has not, and each restarts or reloads nginx. Their tasks are the
+commands the console shows, which the boot test admin-websites runs, and the
+browser test web-console/websites uses. websites.list, websites.check and
+websites.plan are run: they answer with what a machine without nginx says.
+
+Nor are the Certificates page's changes but its reads: certificate.get asks
+Let's Encrypt for a certificate of names that are not this machine's,
+certificate.add reads its certificate and key from variables of the
+playbook that this test does not give, certificate.revoke and
+certificate.remove name the certificate shop, which only the boot test
+admin-certificates makes, and machine.rename would rename the lab machine,
+whose name its inventory and its console's certificate go by (SET_UP).
+console.certificate is tried, as the console's reach is (TRIED). Their tasks
+are the commands the console shows, which the boot test admin-certificates
+runs, and the browser test web-console/certificates uses.
+
+Nor are the Alerts' changes but alerts.test: the email account
+and a webhook are set up with a password, an address and a token that a
+task reads from variables of the playbook that this test does not give,
+a browser's subscription is one that only a browser makes, and the other
+four take away or change a channel that a lab machine has not set up.
+Their tasks are the commands the console shows, which the boot test
+admin-alerts runs, and the browser test web-console/alerts uses (SET_UP).
+alerts.list, alerts.channels and alerts.push-key read what any machine
+has and are run, and so is alerts.test, which a machine with no channel
+answers with an empty list of deliveries.
+
+Nor are the changes that restart the machine, which GET /api/1/actions marks
+`restarts`: a restart, a shut down and the search for a bad change would end
+the round with the machine, and a shut down would leave it off. Their tasks
+are the commands the console shows, followed for a restart and the search by
+a wait for the machine to answer again; the boot tests admin-hardware and
+admin-updates run their routes.
 
 Nor are the memory test's two changes, hardware.memtest and
 hardware.memtest-cancel, which ask for the test at the next start and take
@@ -150,13 +195,14 @@ from console import (
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
 # Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps,
-# Hardware and Report pages whose examples need what only their tests set up,
-# or that no machine can take back (SET_UP); and the grow of a
-# second disk (ON_A_SECOND_DISK).
+# Hardware, Report, Databases, Websites and Alerts pages whose examples need
+# what only their tests set up, or that no machine can take back (SET_UP);
+# and the grow of a second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
     "ssh.set", "ssh.keep", "ssh.undo", "console.keep", "console.undo",
+    "console.certificate",
 }
 UNDER = {"ssh.on", "ssh.off"}
 # The examples of these name the snapshot lab-before of /users, which
@@ -180,10 +226,34 @@ UNDER = {"ssh.on", "ssh.off"}
 # private.remove a device lab-phone, which private.add's undo removes first.
 # updates.apply, updates.unstage and updates.undo need a release on an update
 # server, to stage, to unstage and to come back from; updates.hold and
-# updates.unhold of the system ask the server which release to hold at;
+# updates.unhold of the system ask the server which release to hold at, and
+# updates.later puts off a release that is on offer;
 # apps.show, apps.update, apps.update-all, apps.rollback, apps.hold,
-# apps.unhold and apps.remove name an app of the test catalog, which a lab
-# machine has not installed.
+# apps.unhold, apps.remove, apps.tonight and apps.not-tonight name an app of
+# the test catalog, which a lab machine has not installed, and apps.tonight-all
+# asks for the update of each such app; apps.sheet and apps.install name an app
+# of the test catalog too, which no catalog a lab machine reads lists (the sheet
+# is refused with APP-101, and the install has nothing to fetch).
+# databases.add, databases.password, databases.allow, databases.deny and
+# databases.remove need PostgreSQL installed and on, and a database to work
+# on, which a lab machine has not; databases.allow and databases.deny also
+# make PostgreSQL listen on the network and restart.
+# websites.add, websites.https and websites.remove need nginx installed and on
+# and a site to work on, which a lab machine has not, and each reloads or
+# restarts nginx.
+# certificate.get asks Let's Encrypt for names that are not this machine's;
+# certificate.add reads a certificate and its key from variables this test
+# does not give; certificate.revoke and certificate.remove name the
+# certificate shop, which only admin-certificates makes; machine.rename
+# would rename the lab machine.
+# alerts.email, alerts.webhook-add and alerts.push-add take a password, an
+# address and a token or a subscription, which a task reads from variables of
+# the playbook that this test does not give, and each makes a channel that
+# would try to deliver to a machine that is not there; alerts.email-remove,
+# alerts.webhook-remove, alerts.push-remove and alerts.channel-about need the
+# channel to be there, which a lab machine has not set up. alerts.list,
+# alerts.channels, alerts.push-key and alerts.test read, or send to no
+# channel, and are run.
 # hardware.memtest and hardware.memtest-cancel ask for the memory test of the
 # next start and take that back, and a lab machine that restarts after the
 # round would run it, or has none to run; reports.redact needs a draft that
@@ -198,8 +268,15 @@ SET_UP = {
     "accounts.remove", "accounts.key-add", "accounts.key-remove", "accounts.token-revoke", "accounts.steps-reset",
     "accounts.end", "account.name", "account.password", "account.key-add", "account.key-remove",
     "security.unblock", "private.add", "private.remove",
-    "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold",
+    "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
     "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
+    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "machine.rename",
+    "apps.tonight", "apps.tonight-all", "apps.not-tonight",
+    "databases.add", "databases.password", "databases.allow", "databases.deny", "databases.remove",
+    "apps.sheet", "apps.install",
+    "websites.add", "websites.https", "websites.remove",
+    "alerts.email", "alerts.email-remove", "alerts.webhook-add", "alerts.webhook-remove",
+    "alerts.push-add", "alerts.push-remove", "alerts.channel-about",
     "hardware.memtest", "hardware.memtest-cancel",
     "reports.redact", "reports.send", "reports.retry", "reports.delete",
 }
@@ -331,7 +408,11 @@ def main():
     token = make_token(TOKEN_NAME, machine, ssh_port)
     try:
         console = Console(machine, console_port, token)
-        actions = [action for action in console.ask("GET", "/api/1/actions") if action["id"] not in LEFT_ALONE]
+        actions = [
+            action
+            for action in console.ask("GET", "/api/1/actions")
+            if action["id"] not in LEFT_ALONE and not action.get("restarts")
+        ]
         if not actions:
             raise Failure("GET /api/1/actions gave no actions")
         on_this_machine(console, actions)

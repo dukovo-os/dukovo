@@ -167,6 +167,102 @@ compares = false
 tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
+id = "certificate.check"
+title = "Check the names for a certificate"
+area = "certificates"
+changes = false
+method = "GET"
+path = "/api/1/certificates/check/{names}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.get"
+title = "Get a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/get"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.add"
+title = "Add a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/add"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.revoke"
+title = "Revoke a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/revoke"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.remove"
+title = "Remove a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.history"
+title = "Show what happened to the certificates"
+area = "certificates"
+changes = false
+method = "GET"
+path = "/api/1/certificates/history/all"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "machine.name"
+title = "Show the machine's name"
+area = "machine"
+changes = false
+method = "GET"
+path = "/api/1/machine/name"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::machine::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "machine.rename"
+title = "Rename the machine"
+area = "machine"
+changes = true
+method = "POST"
+path = "/api/1/machine/name"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::machine::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
 id = "console.reach"
 title = "Set whom the console answers"
 area = "console"
@@ -561,6 +657,138 @@ runs = "as-administrator"
 long = false
 compares = false
 tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.list"
+title = "List the alerts"
+area = "alerts"
+changes = false
+method = "GET"
+path = "/api/1/alerts"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.channels"
+title = "Show where alerts go"
+area = "alerts"
+changes = false
+method = "GET"
+path = "/api/1/alerts/channels"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.test"
+title = "Send a test alert"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/test"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.email"
+title = "Set up email for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/email"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.email-remove"
+title = "Remove email for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/email/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.webhook-add"
+title = "Add a webhook for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/webhooks"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.webhook-remove"
+title = "Remove a webhook for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/webhooks/{number}/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.push-key"
+title = "Read the key for browser alerts"
+area = "alerts"
+changes = false
+method = "GET"
+path = "/api/1/alerts/push/key"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.push-add"
+title = "Get alerts in a browser"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/push"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.push-remove"
+title = "Stop alerts in a browser"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/push/{id}/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.channel-about"
+title = "Choose the kinds of alert a channel is told of"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/channels/about"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
 
 [[action]]
 id = "storage.show"
@@ -1751,6 +1979,18 @@ compares = true
 tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
 
 [[action]]
+id = "updates.later"
+title = "Put an update off for a while"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/{item}/later"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
 id = "updates.failed"
 title = "Show what changed before a start failed"
 area = "updates"
@@ -1808,6 +2048,42 @@ path = "/api/1/apps/update"
 runs = "as-administrator"
 long = true
 compares = false
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.tonight"
+title = "Install an app's update tonight"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/tonight"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.tonight-all"
+title = "Install every app's update tonight"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/tonight"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.not-tonight"
+title = "Do not install an app's update tonight"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/not-tonight"
+runs = "as-administrator"
+long = false
+compares = true
 tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
 
 [[action]]

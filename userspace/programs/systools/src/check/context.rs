@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use spark_api::show::Service;
 
 use crate::alerts::command;
-use crate::alerts::protocol::Active;
+use crate::alerts::protocol::{Active, Channel};
 use crate::firewall::{self, Reached};
 use crate::proc;
 use crate::service;
@@ -46,6 +46,9 @@ pub(crate) struct Context {
     pub(crate) reached: Result<Vec<Reached>, String>,
     /// The alerts that are active, or why alertd could not say.
     pub(crate) alerts: Result<Vec<Active>, String>,
+    /// Where the channels alerts are sent to stand, or why alertd could
+    /// not say.
+    pub(crate) channels: Result<Vec<Channel>, String>,
 }
 
 impl Context {
@@ -59,6 +62,7 @@ impl Context {
             services: service::shown(None).map(|show| show.services).map_err(|fail| fail.message),
             reached: firewall::reached().map_err(|fail| fail.message),
             alerts: command::active().map_err(|fail| fail.message),
+            channels: command::channels().map_err(|fail| fail.message),
         }
     }
 
@@ -137,7 +141,8 @@ pub(crate) mod planted {
 
     impl System {
         /// A system that has been up for two days, whose services are
-        /// `services`, with no file, nothing reached and no alert.
+        /// `services`, with no file, nothing reached, no alert and no
+        /// channel.
         pub(crate) fn new(services: Vec<Service>) -> System {
             static NEXT: AtomicUsize = AtomicUsize::new(0);
             let root = std::env::temp_dir().join(format!(
@@ -155,6 +160,7 @@ pub(crate) mod planted {
                     services: Ok(services),
                     reached: Ok(Vec::new()),
                     alerts: Ok(Vec::new()),
+                    channels: Ok(Vec::new()),
                 },
             }
         }

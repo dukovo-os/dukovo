@@ -42,28 +42,47 @@
 //! change shows in health.toml, which keeps its comment, and in `update
 //! checks --json`.
 //!
+//! A reminder put off. updates.later of the system for a day puts the
+//! release the check offers off: `update settings --json` says it stands,
+//! and dukovo-check's line for an update that waits passes with "put off"
+//! instead of warning, which it does again once updates.later says off.
+//!
 //! A hold. updates.hold of the system holds it at the release the stable
 //! channel offers, which the check then says is held because it was asked
 //! for and not because the health check fell back from it, and updates.unhold
-//! lets it go; each twice, the second changing nothing.
+//! lets it go; each twice, the second changing nothing. A hold keeps the
+//! reason it was given: `update settings --json` says it until the system
+//! is let go, and a reason of two lines or too long is refused.
 //!
 //! The apps. The test catalog is added and the image's own turned off, so
 //! that nothing reaches the network. diary 1.0.0 and the two test bundles
-//! are installed for everyone from their files. apps.list is `bundle list
-//! --json`; apps.show of the one that offers a socket has its license, its
-//! service, the socket it offers and the app that uses it, as `bundle info
-//! --json` prints them, and the app that uses it says what it uses. A name
-//! that is no app's ID is ADM-125, and an ID that is none installed ADM-123.
-//! apps.hold and apps.unhold, each twice, change the list's `held`;
+//! are installed for everyone from their files. apps.list is the answer
+//! of `bundle list --json`; apps.show of the one that offers a socket has
+//! its license, its service, the socket it offers and the app that uses
+//! it, as the answer of `bundle info --json` has them, and the app that
+//! uses it says what it uses. A name that is no app's ID is ADM-125, and an
+//! ID that is none installed ADM-123.
+//! apps.hold and apps.unhold, each twice, change the list's `held`, and the
+//! reason of a hold is the list's `held_reason` until it is let go; while diary
+//! is held, turning updating by themselves on has bundled measure what the
+//! data of the app with a service takes, which its sheet says as `data_size`
+//! (null before), and puts it off again;
+//! apps.tonight asks for diary's update in tonight's window: with a window
+//! that is hours away it is only kept, in the list's `tonight` and in
+//! bundled's file, apps.not-tonight takes it away, apps.tonight-all asks for
+//! every app's, and with a restart time that puts the window around now diary
+//! is updated at once, the history's row saying "as asked, in the window"
+//! and by whom;
 //! apps.update of diary is a task that brings it to 1.1.0, apps.rollback
 //! a task that takes it back to 1.0.0 and holds it there, and apps.update-all
-//! a task that brings it up again once it is let go. apps.remove with
-//! `keep` is a task that takes diary away and leaves its data in alice's
-//! folder, and a word that is neither `keep` nor `purge` is ADM-125.
+//! a task that brings it up again once it is let go. apps.remove with the
+//! word `keep` is a task that takes diary away and leaves its data in
+//! alice's folder, and a word that is neither `keep` nor `purge` is ADM-125.
 //!
 //! An update. updates.apply of the system is a task that stages the bridge
-//! release in the other slot, which updates.slots, `sysupdate status
-//! --json` as root, shows; updates.unstage leaves the slots as they were.
+//! release in the other slot, which updates.slots, what `sysupdate
+//! status --json` prints as root, shows; updates.unstage leaves the slots
+//! as they were.
 //!
 //! The journal and who may. The rows of the changes made above name
 //! updates.toml, health.toml or no file, as each does, and the task of the
@@ -75,7 +94,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use super::super::console_client::{Browser, Console, Pane, elevated};
+use super::super::console_client::{Browser, Console, Pane, elevated, wait_for};
 use super::super::*;
 use super::admin_backups::{READER, READER_PASSWORD, Test, Who};
 use super::update_online::Server;
@@ -104,10 +123,20 @@ const AUTOMATIC: &str = "/system/state/bundled/automatic";
 /// The app of the catalog the update steps use.
 const DIARY: &str = "org.example.diary";
 
+/// The app whose service has a folder for its data, which bundled walks.
+const PROVIDER: &str = "org.example.echoprov";
+
+/// bundled's list of the apps asked for in tonight's window.
+const TONIGHT: &str = "/system/state/bundled/tonight.json";
+
+/// The reason kept with the hold of the system, and with the hold of diary.
+const SYSTEM_WHY: &str = "Waiting for the nginx fix";
+const APP_WHY: &str = "diary 1.1.0 is not ready";
+
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-updates",
-    about: "The web console's Updates and Apps pages on an installed system whose update server is the host's test server: updates.settings, updates.checks and updates.last are what their commands print, for alice and lab-reader, with no check kept yet; updates.set is refused for nothing to change, a bad time, a word that is none and a restart time without updating by itself, and with check and apps writes updates.toml with its comment and tells bundled, then changes nothing the second time and is put back by its undo; updates.check offers the release of the stable channel by its bridge, root's check is kept for updates.last and a person's is not, and with the server away unchecked names the system and the status is 0; updates.check-add, updates.essential and updates.check-remove show in health.toml and update checks, each change run twice with the second changing nothing; updates.hold holds the system as asked and updates.unhold lets it go; apps.list, apps.show with its license, service, socket and user, apps.hold, apps.unhold, apps.update, apps.rollback, apps.update-all and apps.remove of an app installed from the test catalog, the tasks finishing and the data staying; updates.apply stages the bridge release as a task and updates.unstage takes it back; the journal's rows name the files; a reader is ADM-122 and a locked administrator ADM-106 for what needs an administrator (ADR 0515)",
+    about: "The web console's Updates and Apps pages on an installed system whose update server is the host's test server: updates.settings, updates.checks and updates.last are what their commands print, for alice and lab-reader, with no check kept yet; updates.set is refused for nothing to change, a bad time, a word that is none and a restart time without updating by itself, and with check and apps writes updates.toml with its comment and tells bundled, then changes nothing the second time and is put back by its undo; updates.check offers the release of the stable channel by its bridge, root's check is kept for updates.last and a person's is not, and with the server away unchecked names the system and the status is 0; updates.check-add, updates.essential and updates.check-remove show in health.toml and update checks, each change run twice with the second changing nothing; updates.later puts the release off for a day, which update settings says stands and dukovo-check passes as put off until updates.later says off and it warns again (ADR 0565); updates.hold holds the system as asked, with a reason that update settings keeps for the release until updates.unhold lets it go; apps.list, apps.show with its license, service, socket and user, apps.hold with a reason that the list shows until apps.unhold, apps.update, apps.rollback, apps.update-all and apps.remove of an app installed from the test catalog, the tasks finishing and the data staying; the sheet of an app with a service has no data size until bundled walks its data, and then the bytes, whole; apps.tonight keeps an update for the night's window, which apps.not-tonight and apps.tonight-all ask for and take away, and with a restart time around now installs it at once, in a row of the history that says who asked; updates.apply stages the bridge release as a task and updates.unstage takes it back; the journal's rows name the files; a reader is ADM-122 and a locked administrator ADM-106 for what needs an administrator (ADR 0515)",
     firmware: Firmware::Uefi,
     // The installed image keeps the slots the update is staged in.
     media: Media::Disk,
@@ -162,6 +191,7 @@ fn admin_updates(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     what_a_person_reads(vm, &mut test)?;
     how_the_machine_updates(vm, &mut test)?;
     a_check(vm, &mut test, &server, &dir, (bridge.as_str(), year.as_str()))?;
+    a_reminder(vm, &mut test, &year)?;
     what_is_checked_after_an_update(vm, &mut test)?;
     a_hold(vm, &mut test, &year)?;
     the_channel(vm, &mut test)?;
@@ -492,6 +522,207 @@ fn a_check(
     Ok(())
 }
 
+/// What `dukovo-check` says of an update that waits: its line, which a run
+/// of it makes as root.
+fn waiting_line(vm: &mut Vm, test: &Test) -> Result<String, String> {
+    let said = test.pane.output(vm, "elevate dukovo-check | grep -E '^updates +waiting'")?;
+    let line = said.lines().find(|line| line.contains("waiting")).map(str::to_string);
+    line.ok_or_else(|| format!("dukovo-check has no line for an update that waits: {said:?}"))
+}
+
+/// The release on offer put off for a day, as the person asked, and
+/// brought back: what the settings say of it and what `dukovo-check` says
+/// of an update that waits. The test server's release fixes no advisory,
+/// which is what a reminder may be put off for.
+fn a_reminder(vm: &mut Vm, test: &mut Test, year: &str) -> Result<(), String> {
+    elevated(vm)?;
+    let path = "/api/1/updates/system/later";
+    let settings = "/api/1/updates/settings";
+    is_refused(test, path, &json!({"for": "month"}), (400, "ADM-125"), "for is day")?;
+    test.post(Who::Reader, path, &json!({"for": "day"}))?.refused(
+        "the reader's reminder",
+        403,
+        "ADM-122",
+    )?;
+    let of_system = |settings: &Value| {
+        settings["later"].as_array()?.iter().find(|entry| entry["item"] == "system").cloned()
+    };
+    if of_system(&test.read(Who::Alice, settings)?).is_some() {
+        return Err("the system's update is put off before the test puts it off".into());
+    }
+
+    // A check root makes keeps the advisories it read, which is what the
+    // reminder goes by.
+    test.ends_with(vm, "elevate update check --json > /dev/null", 0)?;
+    changes(test, path, &json!({"for": "day"}), true)?;
+    let shown = same_as_command(vm, test, settings, "update settings --json")?;
+    let entry =
+        of_system(&shown).ok_or_else(|| format!("no reminder after updates.later: {shown}"))?;
+    if entry["version"] != json!(year)
+        || entry["stands"] != json!(true)
+        || !entry["until_ms"].is_u64()
+        || !entry["by"].is_u64()
+    {
+        return Err(format!("the reminder after updates.later for a day is {entry}"));
+    }
+    let line = waiting_line(vm, test)?;
+    has("dukovo-check's line for an update that waits, put off", &line, &["passed", "put off"])?;
+
+    // Brought back, it is warned of again.
+    changes(test, path, &json!({"for": "off"}), true)?;
+    if of_system(&test.read(Who::Alice, settings)?).is_some() {
+        return Err("the reminder is still there after updates.later off".into());
+    }
+    let line = waiting_line(vm, test)?;
+    has("dukovo-check's line for an update that waits, brought back", &line, &["warning"])?;
+    has_none("dukovo-check's line for an update that waits, brought back", &line, &["put off"])
+}
+
+/// What the data of the app that has a service takes, which bundled walks
+/// in a process of its own after its daily round and the sheet says: null
+/// before, and once the round has been, the bytes counted, whole.
+fn the_data_of_an_app(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    let sheet = format!("/api/1/apps/{PROVIDER}");
+    let before = test.read(Who::Alice, &sheet)?;
+    if !before["data_size"].is_null() {
+        return Err(format!("{PROVIDER} has a size for its data before any walk: {before}"));
+    }
+    // Something in the home of its service's account, to count.
+    test.ends_with(
+        vm,
+        &format!(
+            "elevate sh -c 'head -c 20000 /dev/zero > /shared/services/{PROVIDER}/echoprov/planted'"
+        ),
+        0,
+    )?;
+    let settings = "/api/1/updates/settings";
+    changes(test, settings, &json!({"apps": "auto"}), true)?;
+    let size = wait_for("the walk of the data of the app with a service", 180, || {
+        let sheet = test.read(Who::Alice, &sheet)?;
+        Ok(if sheet["data_size"].is_object() {
+            Ok(sheet["data_size"].clone())
+        } else {
+            Err(format!("its sheet says {}", sheet["data_size"]))
+        })
+    });
+    // Put back before anything else is said of it.
+    changes(test, settings, &json!({"apps": "notify"}), true)?;
+    let size = size?;
+    if size["complete"] != json!(true)
+        || size["bytes"].as_u64().is_none_or(|bytes| bytes < 20_000)
+        || size["files"].as_u64().is_none_or(|files| files < 1)
+        || !size["measured_ms"].is_u64()
+    {
+        return Err(format!("what the walk found of the data of {PROVIDER} is {size}"));
+    }
+    // Whoever reads the sheet reads the same.
+    let reader = test.read(Who::Reader, &sheet)?;
+    if reader["data_size"] != size {
+        return Err(format!("the reader's sheet says {}, alice's {size}", reader["data_size"]));
+    }
+    Ok(())
+}
+
+/// The time of day on the machine's clock, in the zone of the pane, `minutes`
+/// from now, as `update set --restart` takes it.
+fn restart_in(vm: &mut Vm, test: &Test, minutes: u32) -> Result<String, String> {
+    let said = test.pane.output(vm, "date +%H:%M")?;
+    let (hours, mins) = said
+        .trim()
+        .split_once(':')
+        .and_then(|(hours, mins)| Some((hours.parse::<u32>().ok()?, mins.parse::<u32>().ok()?)))
+        .ok_or_else(|| format!("`date +%H:%M` printed {said:?}"))?;
+    let at = (hours * 60 + mins + minutes) % (24 * 60);
+    Ok(format!("{:02}:{:02}", at / 60, at % 60))
+}
+
+/// The row of diary in the list of the apps.
+fn diary_row(test: &mut Test) -> Result<Value, String> {
+    let list = test.read(Who::Alice, "/api/1/apps")?;
+    app_row(&list, DIARY).ok_or_else(|| format!("{DIARY} is not in the list: {list}"))
+}
+
+/// diary's update asked for the night. With the restart time hours away,
+/// the window is not now: the request is kept, shown by the list and in
+/// bundled's file, taken away, asked for every app and taken away again,
+/// and nothing is installed. With the restart time half an hour away the
+/// window is now, and the request is run at once, as an update that nobody
+/// is there for, and the history says so, and for whom.
+fn an_update_tonight(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    elevated(vm)?;
+    let settings = "/api/1/updates/settings";
+    let tonight = format!("/api/1/apps/{DIARY}/tonight");
+    let not_tonight = format!("/api/1/apps/{DIARY}/not-tonight");
+    let all = "/api/1/apps/tonight";
+    for path in [&tonight, &not_tonight, &all.to_string()] {
+        test.post(Who::Reader, path, &json!({}))?.refused(path, 403, "ADM-122")?;
+    }
+    // The window is the hour before the restart time, and an unattended
+    // machine has one: three hours from now it is two to three hours away.
+    let far = restart_in(vm, test, 180)?;
+    changes(test, settings, &json!({"unattended": true, "restart": far}), true)?;
+    test.task(&tonight, &json!({}), 300)?;
+    let row = diary_row(test)?;
+    let asked = &row["tonight"];
+    if row["version"] != json!("1.0.0")
+        || asked["to"] != json!("1.1.0")
+        || !asked["missed_ms"].is_null()
+        || !asked["by"].is_u64()
+        || !asked["asked_ms"].is_u64()
+        || !asked["starts_ms"].is_u64()
+    {
+        return Err(format!("{DIARY} after apps.tonight, hours before its window, is {row}"));
+    }
+    let kept = text_of(test, vm, TONIGHT)?;
+    has("the file of the requests for tonight", &kept, &[DIARY, "1.1.0"])?;
+    let mode = test.pane.output(vm, &format!("elevate stat -c %a {TONIGHT}"))?;
+    if mode.trim() != "600" {
+        return Err(format!("{TONIGHT} has mode {:?}, not 600", mode.trim()));
+    }
+    // Taken away, twice, the second changing nothing.
+    changes(test, &not_tonight, &json!({}), true)?;
+    if !diary_row(test)?["tonight"].is_null() {
+        return Err(format!("{DIARY} still installs tonight after apps.not-tonight"));
+    }
+    changes(test, &not_tonight, &json!({}), false)?;
+    // Asked for every app, and taken away by name.
+    changes(test, all, &json!({}), true)?;
+    if diary_row(test)?["tonight"]["to"] != json!("1.1.0") {
+        return Err(format!("{DIARY} does not install tonight after apps.tonight-all"));
+    }
+    changes(test, &not_tonight, &json!({}), true)?;
+
+    // The window around now: the request is run, and is gone once it is.
+    let near = restart_in(vm, test, 30)?;
+    changes(test, settings, &json!({"restart": near}), true)?;
+    test.task(&tonight, &json!({}), 300)?;
+    let row = wait_for("diary's update tonight", 300, || {
+        let row = diary_row(test)?;
+        Ok(if row["version"] == json!("1.1.0") && row["tonight"].is_null() {
+            Ok(row)
+        } else {
+            Err(format!("{DIARY} is {row}"))
+        })
+    });
+    // The settings back as they were, whatever came of the update.
+    changes(test, settings, &json!({"unattended": false}), true)?;
+    row?;
+    let shown = test.read(Who::Alice, settings)?;
+    if shown["unattended"] != json!(false) || !shown["restart"].is_null() {
+        return Err(format!("the settings after the window are {shown}"));
+    }
+    let history = test.pane.output(vm, &format!("elevate bundle history {DIARY}"))?;
+    let line = history
+        .lines()
+        .find(|line| line.contains("as asked, in the window"))
+        .ok_or_else(|| format!("the history of {DIARY} has no row of the window: {history:?}"))?;
+    has("the history's row of the update tonight", line, &[
+        "updated 1.0.0 to 1.1.0",
+        "for everyone",
+        ", by alice",
+    ])
+}
+
 /// What the machine checks after an update, changed through the console.
 fn what_is_checked_after_an_update(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     elevated(vm)?;
@@ -603,12 +834,28 @@ fn a_hold(vm: &mut Vm, test: &mut Test, year: &str) -> Result<(), String> {
     let hold = "/api/1/updates/system/hold";
     let unhold = "/api/1/updates/system/unhold";
     test.post(Who::Reader, hold, &json!({}))?.refused("the reader's hold", 403, "ADM-122")?;
-    changes(test, hold, &json!({}), true)?;
+    // A reason is one line of at most 200 characters.
+    for why in ["x".repeat(201), "two\nlines".to_string()] {
+        let body = json!({"why": why});
+        is_refused(test, hold, &body, (400, "ADM-125"), "one line of at most 200")?;
+    }
+    changes(test, hold, &json!({"why": SYSTEM_WHY}), true)?;
     let text = text_of(test, vm, SETTINGS)?;
     has("updates.toml", &text, &["[hold]", &format!("system = \"{year}\"")])?;
-    let settings = test.read(Who::Alice, "/api/1/updates/settings")?;
+    // The reason is not in updates.toml, which has no key for it: it is
+    // kept beside the hold, for the version it was given for.
+    has_none("updates.toml", &text, &[SYSTEM_WHY])?;
+    let settings = same_as_command(vm, test, "/api/1/updates/settings", "update settings --json")?;
     if settings["hold"]["system"] != json!(year) || !settings["held"].is_null() {
         return Err(format!("the settings after the hold are {settings}"));
+    }
+    let reason = &settings["hold_reasons"]["system"];
+    if reason["text"] != json!(SYSTEM_WHY)
+        || reason["version"] != json!(year)
+        || !reason["by"].is_u64()
+        || !settings["hold_reasons"]["firmware"].is_null()
+    {
+        return Err(format!("the reason kept with the hold is {}", settings["hold_reasons"]));
     }
     // The check says it is held because it was asked, not because the
     // health check fell back from it.
@@ -618,15 +865,23 @@ fn a_hold(vm: &mut Vm, test: &mut Test, year: &str) -> Result<(), String> {
         || system["held_because"] != json!("asked")
         || system["to"] != json!(year)
         || !system["held_at"].is_null()
+        || system["held_reason"] != json!(SYSTEM_WHY)
     {
         return Err(format!("the system's offer once held is {system}"));
     }
-    // The same release again changes nothing; letting it go does, once.
+    // The same release again, with no reason said, changes nothing and
+    // keeps the one it had; letting it go does change, once, and takes the
+    // reason with it.
     changes(test, hold, &json!({}), false)?;
+    let settings = test.read(Who::Alice, "/api/1/updates/settings")?;
+    if settings["hold_reasons"]["system"]["text"] != json!(SYSTEM_WHY) {
+        let reasons = &settings["hold_reasons"];
+        return Err(format!("the reason after a hold with none said is {reasons}"));
+    }
     changes(test, unhold, &json!({}), true)?;
     let settings = test.read(Who::Alice, "/api/1/updates/settings")?;
-    if !settings["hold"]["system"].is_null() {
-        return Err(format!("the system is held after the unhold: {settings}"));
+    if !settings["hold"]["system"].is_null() || !settings["hold_reasons"]["system"].is_null() {
+        return Err(format!("the system is held, or has a reason, after the unhold: {settings}"));
     }
     let check = test.read(Who::Alice, "/api/1/updates/check")?;
     let state = offer(&check, "system").map(|offer| offer["state"].clone());
@@ -741,14 +996,29 @@ fn the_apps(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     let hold = format!("/api/1/apps/{DIARY}/hold");
     let unhold = format!("/api/1/apps/{DIARY}/unhold");
     test.post(Who::Reader, &hold, &json!({}))?.refused("the reader's hold", 403, "ADM-122")?;
-    changes(test, &hold, &json!({}), true)?;
-    if held(&test.read(Who::Alice, "/api/1/apps")?) != Some(json!(true)) {
+    let too_long = json!({"why": "x".repeat(201)});
+    is_refused(test, &hold, &too_long, (400, "ADM-125"), "one line of at most 200")?;
+    changes(test, &hold, &json!({"why": APP_WHY}), true)?;
+    let list = test.read(Who::Alice, "/api/1/apps")?;
+    if held(&list) != Some(json!(true)) {
         return Err(format!("{DIARY} is not held after apps.hold"));
     }
+    let row = app_row(&list, DIARY).ok_or("diary is gone after its hold")?;
+    if row["held_reason"] != json!(APP_WHY) || !row["held_by"].is_u64() {
+        return Err(format!("{DIARY} held with a reason is {row}"));
+    }
+    // Held, diary is left by an update by itself: turning those on wakes
+    // bundled's updater at once, and its first round ends in the walk of
+    // the data of the apps with services.
+    the_data_of_an_app(vm, test)?;
     changes(test, &hold, &json!({}), false)?;
     changes(test, &unhold, &json!({}), true)?;
-    if held(&test.read(Who::Alice, "/api/1/apps")?) != Some(json!(false)) {
+    let list = test.read(Who::Alice, "/api/1/apps")?;
+    if held(&list) != Some(json!(false)) {
         return Err(format!("{DIARY} is held after apps.unhold"));
+    }
+    if !app_row(&list, DIARY).is_some_and(|row| row["held_reason"].is_null()) {
+        return Err(format!("{DIARY} keeps its reason after apps.unhold: {list}"));
     }
     changes(test, &unhold, &json!({}), false)?;
 
@@ -763,6 +1033,11 @@ fn the_apps(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     if diary["version"] != json!("1.0.0") || diary["held"] != json!(true) {
         return Err(format!("{DIARY} after its way back is {diary}, not 1.0.0 and held"));
     }
+    changes(test, &unhold, &json!({}), true)?;
+    // Its update asked for the night, and then back again for the update of
+    // every app that follows.
+    an_update_tonight(vm, test)?;
+    app_task(test, &format!("/api/1/apps/{DIARY}/rollback"), &json!({}))?;
     changes(test, &unhold, &json!({}), true)?;
     let list = app_task(test, "/api/1/apps/update", &json!({}))?;
     let diary = app_row(&list, DIARY).ok_or("diary is gone after the update of every app")?;
@@ -924,7 +1199,11 @@ fn what_needs_an_administrator(test: &mut Test) -> Result<(), String> {
         (true, "/api/1/updates/system/undo", json!({"settings": "keep"})),
         (true, "/api/1/updates/system/hold", json!({})),
         (true, "/api/1/updates/system/unhold", json!({})),
+        (true, "/api/1/updates/system/later", json!({"for": "day"})),
         (true, "/api/1/apps/update", json!({})),
+        (true, "/api/1/apps/tonight", json!({})),
+        (true, "/api/1/apps/org.example.diary/tonight", json!({})),
+        (true, "/api/1/apps/org.example.diary/not-tonight", json!({})),
         (true, "/api/1/apps/org.example.diary/update", json!({})),
         (true, "/api/1/apps/org.example.diary/rollback", json!({})),
         (true, "/api/1/apps/org.example.diary/hold", json!({})),

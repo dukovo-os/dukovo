@@ -35,7 +35,6 @@ export class Element {
     this.children = [];
     this.parent = null;
     this.listeners = new Map();
-    this.value = '';
     this.open = false;
     this.returnValue = '';
     this.classes = new Set();
@@ -72,6 +71,24 @@ export class Element {
     return this.getAttribute('id') ?? '';
   }
 
+  /** What is typed in a field, or what it was made with until something is. */
+  get value() {
+    return this.typed ?? this.getAttribute('value') ?? '';
+  }
+
+  set value(text) {
+    this.typed = String(text);
+  }
+
+  /** A checkbox or radio is checked as it was made until it is set. */
+  get checked() {
+    return this.pressed ?? this.hasAttribute('checked');
+  }
+
+  set checked(on) {
+    this.pressed = Boolean(on);
+  }
+
   get hidden() {
     return this.hasAttribute('hidden');
   }
@@ -79,6 +96,11 @@ export class Element {
   set hidden(on) {
     if (on) this.setAttribute('hidden', '');
     else this.removeAttribute('hidden');
+  }
+
+  /** Whether `node` is this element or lies under it. */
+  contains(node) {
+    return node === this || this.descendants.includes(node);
   }
 
   get isConnected() {

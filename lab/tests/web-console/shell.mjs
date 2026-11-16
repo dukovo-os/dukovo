@@ -14,7 +14,8 @@
 // is said so in a banner and is back at one press; a session signed out in
 // another tab shows the sign-in page; a reader is told which pages are for
 // administrators; at phone width the tab bar and the More sheet do what the
-// header and the navigation do wider; and eight tabs of one browser context,
+// header and the navigation do wider, with Alerts as the fourth tab of an
+// administrator's bar; and eight tabs of one browser context,
 // each on a page that reads, all show their content with no error view, and one
 // more read in the first tab is answered (the tabs share the browser's
 // connections to the console, which HTTP/2 lets each tab's event stream and
@@ -519,6 +520,11 @@ async function phone(t, name) {
   await t.see(page.getByRole("heading", { name: "Overview", level: 1 }));
   await seeFocusOnHeading(page, "Overview");
   ensure((await sidewaysScroll(page)) === 0, `the phone's page scrolls ${await sidewaysScroll(page)} px sideways`);
+
+  // The bar holds four pages, and an administrator's fourth is Alerts, which the navigation of a computer does not list; More follows them.
+  const tabs = await page.locator("nav.tabbar a").evaluateAll((links) => links.map((link) => link.textContent.trim()));
+  ensure(tabs.join("|") === "Overview|Services|Logs|Alerts", `the phone's tab bar holds ${tabs.join(", ")}, not Overview, Services, Logs and Alerts`);
+  await t.see(page.locator("nav.tabbar").getByRole("button", { name: "More", exact: true }));
 
   // Every control a thumb presses is at least 44 px each way.
   const small = await page.evaluate(() =>

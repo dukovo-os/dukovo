@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use super::settings::{Channel as Configured, Target};
 use super::webhook::{self, Post};
-use super::{email, text};
+use super::{email, text, trouble};
 use crate::alerts::protocol::{Change, Channel as Standing, Delivery};
 use crate::tls;
 
@@ -266,11 +266,35 @@ impl Outbox {
     pub fn status(&self, channels: &[Configured]) -> Vec<Standing> {
         channels
             .iter()
-            .map(|channel| Standing {
-                channel: channel.name.clone(),
-                last_ok: self.last_ok.get(&channel.name).copied(),
-                last_error: self.last_error.get(&channel.name).cloned(),
-                waiting: self.messages.iter().filter(|m| m.channel == channel.name).count(),
+            .map(|channel| {
+                let last_error = self.last_error.get(&channel.name).cloned();
+                let (id, name) = match &channel.target {
+                    Target::Push(push) => {
+                        (Some(push.subscription.id.clone()), Some(push.subscription.name.clone()))
+                    }
+                    _ => (None, None),
+                };
+                Standing {
+                    channel: channel.name.clone(),
+                    last_ok: self.last_ok.get(&channel.name).copied(),
+                    error_id: last_error
+                        .as_ref()
+                        .and_then(|(_, why)| trouble::error_id(why))
+                        .map(str::to_string),
+                    last_error,
+                    waiting: self.messages.iter().filter(|m| m.channel == channel.name).count(),
+                    kind: channel.kind().to_string(),
+                    host: channel.host(),
+                    severity: channel.filter.severity,
+                    cleared: channel.filter.cleared,
+                    number: match &channel.target {
+                        Target::Webhook(hook) => Some(hook.place),
+                        _ => None,
+                    },
+                    id,
+                    name,
+                    about: channel.filter.about.words(),
+                }
             })
             .collect()
     }
@@ -354,6 +378,12 @@ pub fn send(channel: &Configured, id: &str, changes: &[Change], host: &str) -> R
             };
             webhook::send(hook, &post)
         }
+        // A push carries the change, not these words: the console's
+        // service worker writes what the browser shows.
+        Target::Push(push) => {
+            let now = crate::util::now_ns() / 1_000_000_000;
+            super::push::send(&push.subscription, changes, host, now, &push.private)
+        }
     }
 }
 
@@ -393,7 +423,8 @@ pub fn test_all(channels: &[Configured], change: &Change, host: &str) -> Vec<Del
                 Some(Err(why)) => (false, Some(why)),
                 None => (false, Some(silent.clone())),
             };
-            Delivery { channel: channel.name.clone(), ok, error }
+            let error_id = error.as_deref().and_then(trouble::error_id).map(str::to_string);
+            Delivery { channel: channel.name.clone(), ok, error, error_id }
         })
         .collect()
 }
@@ -409,18 +440,39 @@ mod tests {
     fn hook(name: &str, severity: Severity, cleared: bool) -> Configured {
         Configured {
             name: name.into(),
-            filter: Filter { severity, cleared },
+            filter: Filter::new(severity, cleared),
             target: Target::Webhook(Webhook {
                 kind: Kind::Json,
                 url: "http://127.0.0.1:1/".into(),
                 token: None,
                 room: None,
+                place: 1,
             }),
         }
     }
 
     fn open(name: &str) -> Configured {
         hook(name, Severity::Warning, true)
+    }
+
+    /// What `status` says of the channel `name` of [`hook`] that has taken
+    /// and failed nothing.
+    fn standing(name: &str) -> Standing {
+        Standing {
+            channel: name.into(),
+            last_ok: None,
+            last_error: None,
+            waiting: 0,
+            kind: "json".into(),
+            host: Some("127.0.0.1".into()),
+            severity: Severity::Warning,
+            cleared: true,
+            number: Some(1),
+            id: None,
+            name: None,
+            error_id: None,
+            about: None,
+        }
     }
 
     fn change(state: State, severity: Severity, key: &str, at: u64) -> Change {
@@ -433,6 +485,7 @@ mod tests {
                 severity,
                 title: format!("{key} title"),
                 detail: String::new(),
+                about: None,
             },
         }
     }
@@ -662,13 +715,8 @@ mod tests {
         assert_eq!(
             status,
             [
-                Standing { channel: "a".into(), last_ok: Some(33), last_error: None, waiting: 0 },
-                Standing {
-                    channel: "b".into(),
-                    last_ok: None,
-                    last_error: Some((34, "refused".into())),
-                    waiting: 1
-                },
+                Standing { last_ok: Some(33), ..standing("a") },
+                Standing { last_error: Some((34, "refused".into())), waiting: 1, ..standing("b") },
             ]
         );
     }
@@ -683,12 +731,11 @@ mod tests {
         assert_eq!(
             outbox.status(&channels),
             [
-                Standing { channel: "a".into(), last_ok: Some(40), last_error: None, waiting: 0 },
+                Standing { last_ok: Some(40), ..standing("a") },
                 Standing {
-                    channel: "b".into(),
-                    last_ok: None,
                     last_error: Some((41, "discord answered 403 Forbidden".into())),
-                    waiting: 0
+                    error_id: Some("ALR-103".into()),
+                    ..standing("b")
                 },
             ]
         );
@@ -762,6 +809,7 @@ mod tests {
             url: format!("http://127.0.0.1:{port}/alerts"),
             token: None,
             room: None,
+            place: 1,
         });
         channel
     }
@@ -794,16 +842,18 @@ mod tests {
         assert_eq!(
             answers,
             [
-                Delivery { channel: "good".into(), ok: true, error: None },
+                Delivery { channel: "good".into(), ok: true, error: None, error_id: None },
                 Delivery {
                     channel: "bad".into(),
                     ok: false,
-                    error: Some("json answered 403 Forbidden: no".into())
+                    error: Some("json answered 403 Forbidden: no".into()),
+                    error_id: Some("ALR-103".into()),
                 },
                 Delivery {
                     channel: "dead".into(),
                     ok: false,
-                    error: Some("cannot reach 127.0.0.1: Connection refused".into())
+                    error: Some("cannot reach 127.0.0.1: Connection refused".into()),
+                    error_id: None,
                 },
             ]
         );

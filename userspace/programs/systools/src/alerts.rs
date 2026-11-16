@@ -11,8 +11,13 @@
 //!   way;
 //! - [`client`] is how a service raises, clears and sets its alerts;
 //! - [`command`] is `alerts(8)`, which shows them and raises one from a
-//!   script.
+//!   script;
+//! - [`channels`] sets up the email and webhook channels in alerts.toml(5)
+//!   and says which kinds of alert each is told of, and [`browsers`] keeps
+//!   the browsers that get alerts by Web Push, for `alerts(8)`.
 
+mod browsers;
+mod channels;
 pub mod client;
 pub mod command;
 pub mod protocol;

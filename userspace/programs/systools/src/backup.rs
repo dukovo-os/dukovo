@@ -70,7 +70,7 @@ use self::layout::{Listing, Next};
 use self::restic::{Keep, Repo};
 use self::store::{Address, Folder, Joined, Parts, Ssh, Store};
 use self::tag::TagKey;
-use crate::alerts::protocol::{Alert, Severity, key_part};
+use crate::alerts::protocol::{About, Alert, Severity, key_part};
 use crate::args::{Arg, Args};
 use crate::backup_errors;
 use crate::proc::Mount;
@@ -926,20 +926,26 @@ fn alerts_of(dest: &Destination, state: &State, added: u64, now: u64) -> Vec<Ale
     let mut alerts = Vec::new();
     if !state.failed.is_empty() {
         let title = format!("The last backup to {name} failed");
-        alerts.push(Alert::new(
-            format!("backup-failed:{part}"),
-            Severity::Warning,
-            &title,
-            &failed_detail(&state.failed),
-        ));
+        alerts.push(
+            Alert::new(
+                format!("backup-failed:{part}"),
+                Severity::Warning,
+                &title,
+                &failed_detail(&state.failed),
+            )
+            .about(About::Data),
+        );
     } else if !state.verify_failed.is_empty() {
         let title = format!("Restoring {name}'s newest backups to check them failed");
-        alerts.push(Alert::new(
-            format!("backup-failed:{part}"),
-            Severity::Warning,
-            &title,
-            &failed_detail(&state.verify_failed),
-        ));
+        alerts.push(
+            Alert::new(
+                format!("backup-failed:{part}"),
+                Severity::Warning,
+                &title,
+                &failed_detail(&state.verify_failed),
+            )
+            .about(About::Data),
+        );
     }
     let (allowed, how) = match dest.every {
         Every::Hand => return alerts,
@@ -959,7 +965,10 @@ fn alerts_of(dest: &Destination, state: &State, added: u64, now: u64) -> Vec<Ale
             "{name} is backed up {how}. `backup show {name}` says what it last did, and \
              `elevate backup run {name}` backs it up now."
         );
-        alerts.push(Alert::new(format!("backup-overdue:{part}"), severity, &title, &detail));
+        alerts.push(
+            Alert::new(format!("backup-overdue:{part}"), severity, &title, &detail)
+                .about(About::Data),
+        );
     }
     alerts
 }
@@ -3097,6 +3106,7 @@ mod tests {
         assert_eq!(alerts(Every::Day, &done(now - 2 * day), 0), []);
         let late = alerts(Every::Day, &done(now - 3 * day), 0);
         assert_eq!(late[0].title, "The last backup to Off_Site was 3 days ago");
+        assert_eq!(late[0].kind(), Some(About::Data));
         assert!(late[0].detail.contains("every day") && late[0].invalid().is_none());
         assert_eq!(keys(late), [("backup-overdue:off_site".to_string(), Severity::Warning)]);
         // Overdue twice over is critical.
@@ -3114,6 +3124,7 @@ mod tests {
             State { done: now - 4 * day, failed: "the disk is full".into(), ..State::default() };
         let found = alerts(Every::Day, &failed, 0);
         assert_eq!(found[0].title, "The last backup to Off_Site failed");
+        assert!(found.iter().all(|alert| alert.kind() == Some(About::Data)), "{found:?}");
         assert!(found[0].detail.starts_with("the disk is full\n"));
         assert_eq!(
             keys(found),

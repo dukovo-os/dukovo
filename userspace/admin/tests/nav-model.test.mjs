@@ -8,9 +8,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { PAGES } from '../pages.js';
+import { createNav } from '../shell/nav.js';
 import {
   badgeName, badgesDue, currentEntry, navEntries, phoneTabs,
 } from '../shell/nav-model.js';
+import { usePage } from './fake-dom.mjs';
 
 const entry = (id, nav, more = {}) => ({ id, title: id, path: `/${id}`, nav, needs: 'person', phone: null, ...more });
 const pages = [
@@ -44,6 +46,56 @@ test('the current entry is the page that owns the path', () => {
   assert.equal(currentEntry(pages, '/services/nginx').id, 'services');
   assert.equal(currentEntry(pages, '/').id, 'overview');
   assert.equal(currentEntry(pages, '/nothing'), null);
+});
+
+const ADMIN = { admin: true, terminal: true };
+
+/** The navigation of the console's pages for an administrator, drawn on `path`, on a page of the test's own. */
+function navAt(context, path) {
+  usePage(context);
+  const nav = createNav({ pages: PAGES, session: () => ADMIN, host: 'duke-nas', parts: async () => [], openMore: () => {} });
+  nav.update(path);
+  return nav;
+}
+
+/** The links of the side navigation that are marked as the current ones, each as `[title, href, aria-current]`. */
+const marked = (nav) => nav.side.querySelectorAll('a')
+  .filter((link) => link.classList.contains('cur'))
+  .map((link) => [link.textContent, link.getAttribute('href'), link.getAttribute('aria-current')]);
+
+test('the current entry of a page that names an entry in under says so, and only the pages of adding an app, websites and databases do', () => {
+  assert.equal(currentEntry(PAGES, '/websites/shop.example.org').under, 'apps');
+  assert.equal(currentEntry(PAGES, '/apps').under, null);
+  assert.deepEqual(PAGES.filter((one) => one.under).map((one) => [one.id, one.under]), [
+    ['add-app', 'apps'], ['websites', 'apps'], ['databases', 'apps'],
+  ]);
+});
+
+test('Apps is the current entry on the pages of adding an app, the websites and the databases, with aria-current, and nothing else is', (context) => {
+  for (const path of ['/apps/add', '/apps/add/org.example.notes', '/websites', '/websites/add', '/websites/shop.example.org', '/databases', '/databases/add']) {
+    assert.deepEqual(marked(navAt(context, path)), [['Apps', '/apps', 'page']], path);
+  }
+});
+
+test('Apps is current on the list and on an app\'s page, which is no page of adding an app', (context) => {
+  for (const path of ['/apps', '/apps/org.example.notes']) {
+    assert.deepEqual(marked(navAt(context, path)), [['Apps', '/apps', 'page']], path);
+  }
+  assert.equal(currentEntry(PAGES, '/apps/org.example.notes').id, 'apps');
+});
+
+test('a page that names no entry in under marks its own entry, and a child\'s page has the aria-current mark and its entry has none', (context) => {
+  assert.deepEqual(marked(navAt(context, '/services/nginx')), [['Services', '/services', 'page']]);
+  assert.deepEqual(marked(navAt(context, '/certificates')), [['Certificates', '/certificates', 'page']]);
+  assert.deepEqual(marked(navAt(context, '/services/scheduled')), [['Services', '/services', null], ['Scheduled tasks', '/services/scheduled', 'page']]);
+});
+
+test('the phone\'s bar marks no tab on the pages that Apps holds, since Apps is not a tab', (context) => {
+  for (const path of ['/apps/add', '/websites/x', '/databases/add']) {
+    const nav = navAt(context, path);
+    assert.deepEqual(nav.tabbar.querySelectorAll('a').filter((link) => link.classList.contains('cur')), [], path);
+    assert.deepEqual(nav.tabbar.querySelectorAll('a').map((link) => link.getAttribute('href')), ['/', '/services', '/logs', '/alerts'], path);
+  }
 });
 
 test('a badge says its words for a screen reader, and a zero or no badge says nothing more', () => {

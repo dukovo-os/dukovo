@@ -8,8 +8,9 @@
 //!
 //! A check through elevate on the system as it was installed finds no
 //! warning and ends with status 0, in under 5 seconds where the machine
-//! has KVM: 15 lines, the firewall service said to have loaded its rules,
-//! SSH off, alice the one administrator, and the snapshots made. Where the
+//! has KVM: 16 lines, the firewall service said to have loaded its rules,
+//! SSH off, alice the one administrator, no channel for alerts beyond the
+//! screens (which is no warning), and the snapshots made. Where the
 //! computer has been up too short a while for updated and timed to have
 //! done their parts, those checks are skipped, not warned. *--last*, as
 //! alice, who is in the group admins, shows what the run showed. Then
@@ -26,7 +27,7 @@ use super::super::*;
 
 pub const CASE: Case = Case {
     name: "dukovo-check",
-    about: "dukovo-check on an installed system: a user who is no root is refused with status 3; through elevate the system as installed ends with status 0, 15 lines and no warning, in under 5 seconds with KVM; --last as alice, who is in admins, shows the same; with sshd on, PasswordAuthentication yes gives SEC-110 and SEC-111 and status 2, with the run's line and both IDs in the log, and --json and --last --json print the same file, kept with mode 0640 for admins; with passwords off again the check passes",
+    about: "dukovo-check on an installed system: a user who is no root is refused with status 3; through elevate the system as installed ends with status 0, 16 lines and no warning, in under 5 seconds with KVM, the alerts line passing with no channel set up; --last as alice, who is in admins, shows the same; with sshd on, PasswordAuthentication yes gives SEC-110 and SEC-111 and status 2, with the run's line and both IDs in the log, and --json and --last --json print the same file, kept with mode 0640 for admins; with passwords off again the check passes",
     firmware: Firmware::Uefi,
     media: Media::Disk,
     cmdline: "",
@@ -101,7 +102,7 @@ fn type_and_wait(vm: &mut Vm, command: &str) -> Result<(), String> {
 }
 
 /// The patterns of a run's lines, in the order they are counted.
-const LINE: &str = "^(network|ssh|accounts|updates|time|services|health|backups) ";
+const LINE: &str = "^(network|ssh|accounts|updates|time|services|health|alerts|backups) ";
 const WARNED: &str = "^[a-z]+ +[a-z ]+ (warning|FAILED) ";
 
 fn dukovo_check(vm: &mut Vm, _case: &Case) -> Result<(), String> {
@@ -146,17 +147,19 @@ fn dukovo_check(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             "^accounts +administrators +passed +1 administrator: alice",
             "/tmp/clean.txt",
         ),
+        count("clean-alerts", "^alerts +reach +passed +no channel is set up", "/tmp/clean.txt"),
         count("clean-snapshots", "^backups +snapshots +passed ", "/tmp/clean.txt"),
     ];
     answer_prompt_within(vm, "$", &format!("clear; {}", reading.join("; ")), 60)?;
     vm.expect_screen(&[
         "clean 0",
-        "clean-lines 15",
+        "clean-lines 16",
         "clean-warned 0",
         "clean-summary 1",
         "clean-ssh 1",
         "clean-firewall 1",
         "clean-admin 1",
+        "clean-alerts 1",
         "clean-snapshots 1",
     ])?;
     let took = took_seconds(&vm.screen()?, "clean")?;
@@ -184,7 +187,7 @@ fn dukovo_check(vm: &mut Vm, _case: &Case) -> Result<(), String> {
             count("last-lines", LINE, "/tmp/last.txt"),
         ),
     )?;
-    vm.expect_screen(&["last 0", "last-heading 1", "last-lines 15", "same 42", "mode 1"])?;
+    vm.expect_screen(&["last 0", "last-heading 1", "last-lines 16", "same 42", "mode 1"])?;
 
     // SSH on, as it was meant to be left: keys alone sign in. The port is
     // one that other machines reach now.

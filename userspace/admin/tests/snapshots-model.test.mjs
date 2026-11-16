@@ -114,7 +114,7 @@ test('a failed backup is a bad banner with the last good one, what still protect
   assert.equal(banner.tone, 'bad');
   assert.equal(banner.lead, 'The last backup to nas failed: ssh: connect to host nas.local port 22: No route to host.');
   assert.match(banner.detail, /^The last good one was Nov 12 at 3:40 AM\. Snapshots on this server are current, so files changed since then can still be brought back/);
-  assert.deepEqual(banner.buttons.map((button) => [button.id, button.name ?? null]), [['run', 'nas'], ['disk', null]]);
+  assert.deepEqual(banner.buttons.map((button) => [button.id, button.name ?? null]), [['run', 'nas'], ['disk', null], ['alerts', null]]);
 });
 
 test('what still protects the files is said only when the snapshots are known', () => {
@@ -129,7 +129,7 @@ test('an overdue backup is a warning, and bad at twice the days it is allowed', 
   assert.equal(late.id, 'overdue:nas');
   assert.equal(late.tone, 'warn');
   assert.equal(late.lead, 'Backups to nas are 5 days overdue.');
-  assert.deepEqual(late.buttons, [{ id: 'run', label: 'Back up now', name: 'nas' }], 'a disk is offered only when one is plugged in');
+  assert.deepEqual(late.buttons, [{ id: 'run', label: 'Back up now', name: 'nas' }, { id: 'alerts', label: 'Alert settings', href: '/alerts' }], 'a disk is offered only when one is plugged in');
   assert.equal(bannersOf(overdue(6), context)[0].tone, 'bad');
   assert.equal(bannersOf(backupsOf(place('nas', { overdue_days: null })), context).length, 0);
 });

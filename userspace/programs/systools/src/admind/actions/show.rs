@@ -275,7 +275,8 @@ fn percent_encode(text: &str) -> String {
 
 /// `task` as the YAML of a play's task list with the one task: its name,
 /// its module with the parameters, `become: true` when it runs as root,
-/// and `register`, `changed_when`, `failed_when` and `when` when the task says.
+/// and `register`, `changed_when`, `failed_when` and `when` when the task says;
+/// then, when the machine restarts after it, [`COMES_BACK`].
 /// Each string is written as a JSON
 /// string, which YAML reads as the same string; a list is a block list,
 /// and a list or mapping inside one is written as JSON, which is YAML's
@@ -307,8 +308,20 @@ pub fn yaml(task: &Ansible) -> String {
     if let Some(when) = &task.when {
         out.push_str(&format!("  when: {}\n", Value::from(when.as_str())));
     }
+    if task.comes_back {
+        out.push_str(COMES_BACK);
+    }
     out
 }
+
+/// The task after one that restarts the machine (ADR 0565). The restart
+/// comes a minute after the command answers, so the play waits two
+/// minutes before it tries to connect, which the machine is then going
+/// down or starting for, then up to half an hour for its firmware, its
+/// disks and an update's tries.
+const COMES_BACK: &str = "- name: \"Wait for the machine to answer again\"\n  \
+                          ansible.builtin.wait_for_connection:\n    delay: 120\n    \
+                          timeout: 1800\n";
 
 /// Writes the parameter `key` of `value` at `indent` spaces: a list or a
 /// mapping with something in it on the lines below, anything else on the
@@ -524,6 +537,37 @@ mod tests {
     }
 
     #[test]
+    fn a_restart_and_the_search_are_followed_by_a_wait_for_the_machine_and_a_shut_down_is_not() {
+        let wait = "- name: \"Wait for the machine to answer again\"\n  \
+                    ansible.builtin.wait_for_connection:\n    delay: 120\n    timeout: 1800\n";
+        let restart = show("power.restart", json!({}));
+        assert_eq!(
+            restart["ansible"],
+            format!(
+                "- name: \"Restart this machine\"\n  ansible.builtin.command:\n    argv:\n      - \
+                 \"shutdown\"\n      - \"-r\"\n      - \"+1\"\n      - \"--no-wall\"\n  become: \
+                 true\n{wait}"
+            )
+        );
+        for id in ["updates.bisect", "updates.bisect-confirm"] {
+            let search = show(id, json!({}));
+            assert!(search["ansible"].as_str().unwrap().ends_with(wait), "{id}: {search}");
+        }
+        let off = show("power.shutdown", json!({}));
+        assert!(!off["ansible"].as_str().unwrap().contains("wait_for_connection"), "{off}");
+        // Every action that restarts the machine, but the shut down, waits.
+        for action in REGISTRY.iter().filter(|action| action.restarts().is_some()) {
+            let good = action.example_values().0.into_iter().next().unwrap();
+            let task = show(action.id(), good)["ansible"].as_str().unwrap().to_string();
+            assert_eq!(
+                task.contains("wait_for_connection"),
+                action.id() != "power.shutdown",
+                "{task}"
+            );
+        }
+    }
+
+    #[test]
     fn a_service_change_is_a_task_of_the_collection_s_module_with_no_changed_when() {
         let restart = show("service.restart", json!({ "name": "nginx" }));
         assert_eq!(
@@ -575,6 +619,7 @@ mod tests {
             failed_when: Some("result.rc not in [0, 3]".into()),
             no_log: true,
             when: None,
+            comes_back: false,
         };
         assert_eq!(
             yaml(&task),

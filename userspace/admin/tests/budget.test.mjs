@@ -18,8 +18,11 @@ import { graphOf, ROOT, shown, sizeOf } from './graph.mjs';
 const LIMIT = 150_000;
 
 // The start is held under the limit with room for what the console takes in
-// next: a change that adds to it raises this number and says what grew.
-const START_PLAN = 148_821;
+// next: a change that adds to it raises this number and says what grew. The
+// manifest's link in index.html is 51 bytes of it, and the two more sheets
+// the entry of Websites names (dialogs.css and the tried change's banner) 38
+// bytes in pages.js.
+const START_PLAN = 149_947;
 
 /** The files `index.html` names: its scripts and style sheets, as paths on disk. */
 function pageFiles() {
@@ -105,17 +108,29 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // one that needs more says so, with what grew, and raises the row. Security,
 // Move and Reliability keep a little room for what they gain; the Terminal's
 // graph is as it was.
+// Report a problem's row is 7,000 more than it was, for the cuts the page makes.
+// Apps' row is 1,100 more than it was, for the mark that the page that adds an
+// app draws too, which has a module of its own, and for the count of what
+// nginx and PostgreSQL manage.
+// Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart.
+// Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
+// Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
+// Add an app, Websites and Databases each keep about 1,000 of room over what
+// they bring; Websites' list reads the whole model of a site, its words and checks.
 const PAGE_LIMITS = {
   updates: 70_000,
-  apps: 55_000,
-  hardware: 55_000,
+  apps: 56_100,
+  hardware: 61_000,
   certificates: 60_000,
-  report: 60_000,
-  alerts: 60_000,
-  security: 147_000,
+  report: 67_000,
+  alerts: 65_000,
+  security: 149_500,
   move: 107_000,
   reliability: 22_000,
   terminal: 149_908,
+  'add-app': 55_500,
+  websites: 81_300,
+  databases: 56_800,
 };
 
 // The parts the Overview reads from a page, each a graph the shell starts
@@ -124,6 +139,7 @@ const PART_LIMITS = {
   'pages/updates/overview.js': 8_000,
   'pages/hardware/overview.js': 8_000,
   'pages/alerts/overview.js': 8_000,
+  'pages/alerts/phone-setup.js': 8_000,
   'sw.js': 6_000,
 };
 

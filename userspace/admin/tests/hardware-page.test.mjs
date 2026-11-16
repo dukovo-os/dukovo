@@ -10,10 +10,10 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, broken, clean, inventory, last, NOW, show, skipped, task,
+  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, sensors, show, skipped, startTest, storage, task,
 } from './hardware-fixtures.mjs';
 import {
-  buttonOf, openHardware, refusal, settle,
+  buttonOf, openHardware, refusal, settle, useStore,
 } from './hardware-view.mjs';
 
 const realObserver = globalThis.MutationObserver;
@@ -96,7 +96,7 @@ test('the sentence under the head gives the last check and what diskhealth says 
   const world = await openHardware(context);
   const lead = text(world.view.main.querySelector('#hw-lead'));
   assert.match(lead, /^Last check Nov 9 2:10 AM \(a full check\): 6 passed, 1 warning \(HW-115\), 2 skipped\./);
-  assert.match(lead, /diskhealth also reads every disk's health once a day; sdb has a warning\.$/);
+  assert.match(lead, /diskhealth reads each disk's health every 10 minutes, but a sleeping one; sdb has a warning\.$/);
   assert.equal(world.view.main.querySelector('#hw-lead').querySelector('a').getAttribute('href'), '/storage/sdb');
 });
 
@@ -254,10 +254,12 @@ test('the memory test card says why, what runs and what does not, and when it la
   const card = text(world.card('memory'));
   assert.match(card, /Memory can fail without a clear sign/);
   assert.match(card, /While the system runs\. The memory area of a quick check tests up to 1 GiB of the free memory, in about a minute\./);
-  assert.match(card, /All of it, from the start menu\. Restart, choose Troubleshooting, then Test the memory \(memtest86\+\)\./);
+  assert.match(card, /All of it, at the next restart\. The next start tests the free memory before the system starts, about a minute for each 4 GiB \(about 4 minutes here\), takes any bad part out of use, then starts as usual\. The server is offline meanwhile, and nobody needs to be at it\./);
+  assert.match(card, /For the fullest test, from the start menu\. Restart, choose Troubleshooting, then Test the memory \(memtest86\+\)\./);
   assert.match(card, /Last run: Nov 9 2:10 AM · passed, 1\.0G tested by 4 CPUs/);
   assert.match(card, /The test from the start menu leaves no record\./);
-  assert.ok(!card.includes('Test at the next restart'), 'memtest86+ does not end by itself');
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'));
+  assert.ok(card.indexOf('All of it, at the next restart') < card.indexOf('For the fullest test'), 'the start menu comes second');
 });
 
 test('Test part of the memory runs the memory area as a task', async (context) => {
@@ -289,6 +291,153 @@ test('the memory rows of a result with a failure come first in the last run', as
   assert.match(text(world.card('memory')), /Last run: Nov 9 2:10 AM · failed, 2 errors in 1\.0G \(HW-103\)/);
   const none = await openHardware(context, { world: { reads: { '/api/1/hardware/check': null } } });
   assert.match(text(none.card('memory')), /Last run: never/);
+});
+
+/** The dialog's choices, as the words on their buttons. */
+const choicesOf = (world) => world.dialog().querySelectorAll('button').map((one) => one.textContent);
+
+test('Test at the next restart asks in a dialog with three ways out, and Cancel runs nothing', async (context) => {
+  const world = await openHardware(context);
+  await world.press(world.card('memory'), 'Test at the next restart…');
+  assert.equal(world.dialog().querySelector('h2').textContent, 'Test the memory at the next restart?');
+  assert.match(world.dialog().textContent, /The next start tests the free memory first \(about 4 minutes here\), then starts the system as usual\. The server is offline meanwhile, and nobody needs to be at it\./);
+  assert.match(world.dialog().textContent, /Restart now and test restarts duke-nas in a minute/);
+  assert.deepEqual(choicesOf(world), ['Restart now and test', 'At the next restart', 'Cancel']);
+  assert.equal(world.document.activeElement, buttonOf(world.dialog(), 'At the next restart'), 'the choice that changes nothing now has the focus');
+  await world.press(world.dialog(), 'Cancel');
+  assert.deepEqual(world.ran('hardware.memtest'), []);
+  assert.deepEqual(world.ran('power.restart'), []);
+  assert.equal(world.dialog(), null);
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'), 'nothing was asked');
+});
+
+test('At the next restart asks for the test only, then shows it asked with Don\'t test and Restart now', async (context) => {
+  const world = await openHardware(context);
+  const card = world.card('memory');
+  world.answers['/api/1/hardware/memtest'] = memtest({ asked: asked() });
+  await world.press(card, 'Test at the next restart…');
+  await world.press(world.dialog(), 'At the next restart');
+  assert.deepEqual(world.ran('hardware.memtest'), [{}]);
+  assert.deepEqual(world.ran('power.restart'), [], 'it restarts nothing');
+  assert.equal(world.dialog(), null);
+  assert.match(text(card), /The memory is tested at the next restart \(asked Nov 14, 3:10 PM by chase\)/);
+  assert.equal(buttonOf(card, 'Test at the next restart…'), undefined, 'it is asked already');
+  assert.ok(buttonOf(card, 'Don\'t test'));
+  assert.ok(buttonOf(card, 'Restart now…'));
+  assert.equal(buttonOf(card, 'Restart now…').parent, buttonOf(card, 'Don\'t test').parent, 'Restart now stands beside Don\'t test');
+  assert.equal(card.querySelector('.hw-menu').hidden, true, 'the start menu\'s own restart is out of the way');
+  assert.equal(world.document.activeElement, buttonOf(card, 'Don\'t test'), 'the focus is on the button that undoes it');
+  assert.equal(world.ranWith('hardware.memtest')[0][2].where.slot, card.querySelector('.hw-errors'));
+});
+
+test('Restart now and test asks, then goes on to the restart\'s own question with the longer wait', async (context) => {
+  const world = await openHardware(context);
+  world.answers['/api/1/hardware/memtest'] = memtest({ asked: asked() });
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 0, at_ms: NOW } };
+  await world.press(world.card('memory'), 'Test at the next restart…');
+  await world.press(world.dialog(), 'Restart now and test');
+  assert.deepEqual(world.ran('hardware.memtest'), [{}]);
+  assert.equal(world.dialog().querySelector('h2').textContent, 'Restart duke-nas?');
+  assert.match(world.dialog().textContent, /To test the memory before the system starts\./);
+  await world.submit();
+  assert.deepEqual(world.ran('power.restart'), [{ at: null }]);
+  assert.equal(world.expected.length, 1);
+  assert.match(world.expected[0][0], /^duke-nas is restarting and tests its memory first, which can take up to an hour\./);
+  assert.equal(world.expected[0][1].quietMs, 14 * 60_000, '10 minutes and 1 for each 4 GiB of 15.6 GiB');
+});
+
+test('a test that was asked is shown asked, and Don\'t test cancels it and gives the focus back to the ask', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  const card = world.card('memory');
+  assert.match(text(card), /The memory is tested at the next restart \(asked Nov 14, 3:10 PM by chase\)/);
+  assert.equal(buttonOf(card, 'Test at the next restart…'), undefined);
+  world.answers['/api/1/hardware/memtest'] = memtest();
+  await world.press(card, 'Don\'t test');
+  assert.deepEqual(world.ran('hardware.memtest-cancel'), [{}]);
+  assert.equal(world.ranWith('hardware.memtest-cancel')[0][2].where.slot, card.querySelector('.hw-errors'));
+  assert.ok(!text(card).includes('The memory is tested at the next restart ('), 'nothing is asked now');
+  assert.equal(buttonOf(card, 'Don\'t test'), undefined);
+  assert.equal(world.document.activeElement, buttonOf(card, 'Test at the next restart…'));
+});
+
+test('Restart now beside Don\'t test restarts for the test, and the start menu\'s own restart is out of the way', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 0, at_ms: NOW } };
+  assert.equal(world.card('memory').querySelector('.hw-menu').hidden, true);
+  await world.press(world.card('memory'), 'Restart now…');
+  assert.match(world.dialog().textContent, /To test the memory before the system starts\./);
+  await world.submit();
+  assert.deepEqual(world.ran('power.restart'), [{ at: null }]);
+  assert.equal(world.expected[0][1].quietMs, 14 * 60_000);
+  assert.deepEqual(world.ran('hardware.memtest'), [], 'it is asked already');
+});
+
+test('a refusal of the test is said in the memory card, and Restart now and test restarts nothing then', async (context) => {
+  const error = refusal('HW-105', 'The next start is taken already');
+  const world = await openHardware(context, { world: { answers: { 'hardware.memtest': error } } });
+  await world.press(world.card('memory'), 'Test at the next restart…');
+  await world.press(world.dialog(), 'Restart now and test');
+  assert.equal(world.problems.length, 1);
+  assert.equal(world.problems[0][0], error);
+  assert.equal(world.problems[0][1].slot, world.card('memory').querySelector('.hw-errors'));
+  assert.equal(world.dialog(), null, 'no restart is offered');
+  assert.deepEqual(world.ran('power.restart'), []);
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'));
+});
+
+test('a reader sees that the test is asked, and has no button on it', async (context) => {
+  const world = await openHardware(context, { session: { admin: false }, world: { reads: { '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  assert.match(text(world.card('memory')), /The memory is tested at the next restart \(asked Nov 14, 3:10 PM by chase\)/);
+  assert.equal(world.card('memory').querySelectorAll('button').length, 0);
+  assert.match(text(world.card('memory')), /All of it, at the next restart\./);
+});
+
+test('the last run at a start comes beside the check\'s, in the colour of what it found', async (context) => {
+  const startOf = (world) => world.card('memory').querySelectorAll('p').find((one) => /^Nov 14.*(at the start|the test at the start|the start menu did not)/.test(one.textContent) && !one.hidden);
+  const reportOf = (world) => world.card('memory').querySelectorAll('a').find((one) => one.textContent === 'Report a problem');
+  const opened = (last) => openHardware(context, { world: { reads: { '/api/1/hardware/memtest': memtest({ last }) } } });
+
+  const none = await openHardware(context);
+  assert.equal(startOf(none), undefined, 'a machine that never tested at a start says nothing of it');
+  assert.equal(reportOf(none).parent.hidden, true);
+
+  const passed = await opened(startTest('passed'));
+  assert.equal(startOf(passed).textContent, 'Nov 14, at the start: passed · 15.2 of 16 GiB tested in 4 minutes');
+  assert.equal(startOf(passed).getAttribute('class'), 'hw-start');
+  assert.equal(reportOf(passed).parent.hidden, true);
+  assert.match(text(passed.card('memory')), /Last run: Nov 9 2:10 AM · passed, 1\.0G tested by 4 CPUs/, 'the check\'s own line stays');
+
+  const errors = await opened(startTest('errors'));
+  assert.equal(startOf(errors).textContent, 'Nov 14, at the start: 3 errors in 2 places. Those parts are out of use until the next restart. The memory should be replaced (HW-103).');
+  assert.equal(startOf(errors).getAttribute('class'), 'hw-start bad');
+  assert.equal(reportOf(errors).parent.hidden, false);
+  assert.equal(reportOf(errors).getAttribute('href'), '/report?about=hardware');
+
+  const unfinished = await opened(startTest('unfinished'));
+  assert.equal(startOf(unfinished).textContent, 'Nov 14: the test at the start did not finish (HW-104). The power went or the machine stopped during it, which failing memory can cause.');
+  assert.equal(startOf(unfinished).getAttribute('class'), 'hw-start warn');
+  assert.equal(reportOf(unfinished).parent.hidden, true);
+
+  const taken = await opened(startTest('not-taken'));
+  assert.equal(startOf(taken).textContent, 'Nov 14: the start menu did not run the test: an update was tried first. Ask again.');
+  assert.equal(startOf(taken).getAttribute('class'), 'muted');
+});
+
+test('a test at a start that cannot be read is said, and the ask is still there', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/memtest': refusal('ADM-500', 'It broke', 500) } } });
+  assert.match(text(world.card('memory')), /The memory test at the start could not be read\./);
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'));
+  assert.match(text(world.card('memory')), /Last run: Nov 9 2:10 AM/);
+});
+
+test('a machine whose memory is not known says no time for the test, and waits the longest for it', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware': show({ memory: { bytes: null, ecc: null, slots: null, modules: null } }), '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  assert.doesNotMatch(text(world.card('memory')), /about \d+ minutes? here/);
+  assert.match(text(world.card('memory')), /about a minute for each 4 GiB, takes any bad part out of use/);
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 0, at_ms: NOW } };
+  await world.press(world.card('memory'), 'Restart now…');
+  await world.submit();
+  assert.equal(world.expected[0][1].quietMs, 70 * 60_000);
 });
 
 test('Restart now from the memory card gives the start menu as the reason', async (context) => {
@@ -426,4 +575,313 @@ test('leaving the page stops what it waits for', async (context) => {
   world.view.signal.dispatchEvent?.(new Event('abort'));
   await settle();
   assert.equal(world.calls.length, reads);
+});
+
+// ---- Temperatures and fans ----------------------------------------------------
+
+const rowsOf = (world) => world.card('temps').querySelectorAll('tbody tr').map(text);
+
+test('Temperatures and fans is a table of the processor, the disks and the zones, a line for each fan, and the line about alerts', async (context) => {
+  const world = await openHardware(context);
+  for (const read of ['/api/1/hardware/sensors', '/api/1/hardware/highest', '/api/1/updates/history']) assert.ok(world.calls.includes(read), read);
+  assert.deepEqual(world.card('temps').querySelectorAll('thead th').map(text), ['Sensor', 'Now', 'Highest, 30 days', 'Limit']);
+  assert.deepEqual(rowsOf(world), [
+    'Processor (Package id 0)41 °C63 °CYesterday 3:02 AM, during the update100 °Ccritical',
+    'Disk sda · WDC WD40EFRX-68N36 °Cread at 3:10 PM41 °CYesterday 3:10 AM, during the update50 °C, critical 60 °Cfor a hard disk',
+    'Disk nvme0 · Samsung SSD 98044 °Cread at 3:10 PM58 °CNov 12 2:14 PM70 °C, critical 85 °Cthe disk\'s own',
+    'Disk sdb · WDC WD40EFRX-68NAsleep since 2:10 AM: not read, so as not to wake it—50 °C, critical 60 °Cfor a hard disk',
+    'Zone acpitz32 °C—97 °Ccritical',
+  ]);
+  const card = text(world.card('temps'));
+  assert.match(card, /Disks are read every 10 minutes, but a sleeping one\. An alert goes out when a sensor stays within 5 °C of its critical limit, or a disk at its warning limit, for 5 minutes \(metricsd\)\./);
+  assert.match(card, /fan11,190 RPMfan2not judged: no fan on this header$/);
+  assert.equal(world.card('temps').querySelectorAll('td').find((cell) => cell.textContent.startsWith('41 °C')).getAttribute('data-label'), 'Now');
+  assert.equal(world.card('temps').getAttribute('aria-labelledby'), 'temps-h');
+});
+
+test('the cards come in the order of the phone, with the temperatures, the devices and the restart across both columns', async (context) => {
+  const world = await openHardware(context);
+  const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'devices', 'power']);
+  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'power']);
+});
+
+test('the choice of Fahrenheit changes every temperature at once, is kept, and is the unit the page opens with next time', async (context) => {
+  const store = useStore(context);
+  const world = await openHardware(context);
+  const [celsius, fahrenheit] = world.card('temps').querySelectorAll('.seg button');
+  assert.deepEqual([celsius.textContent, celsius.getAttribute('aria-pressed'), fahrenheit.getAttribute('aria-pressed')], ['°C', 'true', 'false']);
+  const calls = world.calls.length;
+  fahrenheit.click();
+  assert.equal(world.calls.length, calls, 'no read is made for a change of unit');
+  assert.deepEqual([celsius.getAttribute('aria-pressed'), fahrenheit.getAttribute('aria-pressed')], ['false', 'true']);
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)106 °F145 °F.*212 °Fcritical$/);
+  assert.equal(JSON.parse(store.get('dukovo-admin.hardware.temps.unit')), 'F');
+  const again = await openHardware(context);
+  assert.match(rowsOf(again)[0], /106 °F/);
+  assert.equal(again.card('temps').querySelectorAll('.seg button')[1].getAttribute('aria-pressed'), 'true');
+});
+
+test('a machine whose kernel reads no sensor says so, keeps its disks\' rows and says that no fan can be read', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': sensors({ sensors: [], zones: [] }) } } });
+  const card = text(world.card('temps'));
+  assert.match(card, /The kernel reads no temperature on this machine\./);
+  assert.deepEqual(rowsOf(world).map((row) => row.slice(0, 9)), ['Disk sda ', 'Disk nvme', 'Disk sdb ']);
+  assert.match(card, /No fan speed can be read on this machine\.$/);
+  const bare = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': sensors({ sensors: [], zones: [], disks: [] }) } } });
+  assert.equal(bare.card('temps').querySelector('table'), null);
+  assert.match(text(bare.card('temps')), /The kernel reads no temperature on this machine\.No fan speed can be read on this machine\.$/);
+  assert.ok(!/Disks are read every 10 minutes/.test(text(bare.card('temps'))));
+});
+
+test('the disks that keep no health record are one muted line under the table', async (context) => {
+  const answer = storage();
+  answer.disks.push({ name: 'sdc', model: 'Expansion', health: null }, { name: 'vda', model: null, health: null });
+  const world = await openHardware(context, { world: { reads: { '/api/1/storage': answer } } });
+  assert.match(text(world.card('temps')), /2 disks keep no health record \(USB or virtual\) and are not read\./);
+  assert.equal(world.card('temps').querySelectorAll('p').find((one) => one.textContent.startsWith('2 disks')).classes.has('muted'), true);
+});
+
+test('a fan that stopped is in the error colour, and a temperature near its limit has its words', async (context) => {
+  const hot = sensors();
+  hot.sensors[0].value = 96;
+  hot.sensors[1].alarm = true;
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': hot } } });
+  const near = world.card('temps').querySelectorAll('td .st').find((one) => one.textContent === 'near its limit');
+  assert.ok(near.classes.has('warn'));
+  const stopped = world.card('temps').querySelectorAll('dd .st').find((one) => one.textContent === 'stopped');
+  assert.ok(stopped.classes.has('bad'));
+});
+
+test('the temperatures are read again each minute, without the highest, and a read that fails leaves what was read', async (context) => {
+  const world = await openHardware(context);
+  const reads = () => world.calls.filter((call) => call === '/api/1/hardware/sensors').length;
+  assert.equal(reads(), 1);
+  const warmer = sensors();
+  warmer.sensors[0].value = 55;
+  world.answers['/api/1/hardware/sensors'] = warmer;
+  await world.tick(60_000);
+  assert.equal(reads(), 2);
+  assert.equal(world.calls.filter((call) => call === '/api/1/hardware/highest').length, 1);
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)55 °C/);
+  world.answers['/api/1/hardware/sensors'] = refusal('ADM-500', 'down', 500);
+  await world.tick(60_000);
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)55 °C/);
+  assert.equal(world.problems.length, 0, 'a later failure says nothing, as the page says when it is offline');
+});
+
+test('temperatures that cannot be read are said, with the refusal where the card shows it, and the rest of the page stands', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': refusal('ADM-500', 'down', 500) } } });
+  assert.match(text(world.card('temps')), /The temperatures and fans could not be read\./);
+  assert.equal(world.problems.length, 1);
+  assert.equal(world.problems[0][1].slot, world.card('temps').querySelector('.hw-errors'));
+  assert.match(text(world.card('machine')), /Dell Inc\. OptiPlex 7040/);
+});
+
+test('without the highest or the update history the rows are still there, with a dash for the highest', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/highest': refusal('ADM-500', 'down', 500), '/api/1/updates/history': refusal('ADM-500', 'down', 500) } } });
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)41 °C—100 °Ccritical$/);
+  assert.equal(world.problems.length, 0);
+});
+
+test('a reader sees the temperatures too', async (context) => {
+  const world = await openHardware(context, { session: { admin: false } });
+  assert.equal(rowsOf(world).length, 5);
+});
+
+test('the card is reached by its address, and says it is reading while the first answer is awaited', async (context) => {
+  const world = await openHardware(context, { hash: '#temps', world: { reads: { '/api/1/hardware/sensors': () => new Promise(() => {}) } } });
+  assert.match(text(world.card('temps')), /Reading the temperatures…/);
+});
+
+// ---- Disks -------------------------------------------------------------------
+
+const DISKS_NOTE = 'Unlock to see the disks\' own tests';
+/** A disk's row as three parts, `head | tests | buttons`, since the blocks of a page have a break between them. */
+const lineOf = (world, disk) => world.card('disks').querySelectorAll('li').find((one) => one.textContent.startsWith(disk))
+  .children.map((part) => (part.classes.has('btns') ? part.children.map(text).join(' + ') : text(part))).join(' | ');
+
+test('Disks lists each whole disk with its model and health, its last short and extended tests, and the two buttons that run one', async (context) => {
+  const world = await openHardware(context);
+  assert.ok(world.calls.includes('/api/1/storage/disks/sda/health'));
+  assert.ok(world.calls.includes('/api/1/storage/disks/sdb/health'));
+  assert.equal(lineOf(world, 'sda'), 'sda · WD Red Healthy | Short test Nov 14, passed (at hour 21,800) · Extended test Nov 6, passed (at hour 21,604) | Short test + Extended test');
+  assert.match(lineOf(world, 'sdb'), /^sdb · WD Red Wearing \| /);
+  const link = world.card('disks').querySelector('a');
+  assert.deepEqual([link.textContent, link.getAttribute('href')], ['sda', '/storage/sda']);
+  assert.equal(world.card('disks').querySelector('.pill.ok').textContent, 'Healthy');
+  assert.equal(world.card('disks').querySelector('.pill.warn').textContent, 'Wearing');
+  assert.match(text(world.card('disks')), /A short test is the disk's health, its short self-test and a read of 256 places, about 3 minutes\. An extended test is its long self-test and a read of all of it: hours\./);
+  assert.ok(buttonOf(world.card('disks'), DISKS_NOTE).hidden, 'an unlocked console has nothing to unlock');
+  assert.equal(world.card('disks').getAttribute('aria-labelledby'), 'disks-h');
+});
+
+test('the Short test button runs the disks area on that disk, and the Extended test one a full check of it', async (context) => {
+  const open = () => openHardware(context, { world: { answers: { 'hardware.check': { ok: true, task: 77 } } } });
+  const world = await open();
+  await world.press(world.card('disks').querySelectorAll('li')[1], 'Short test');
+  const more = await open();
+  await more.press(more.card('disks').querySelectorAll('li')[1], 'Extended test');
+  assert.deepEqual(world.ran('hardware.check'), [{ areas: 'disks', disk: 'sdb' }]);
+  assert.deepEqual(more.ran('hardware.check'), [{ areas: 'disks', disk: 'sdb', full: true }]);
+  const [first] = world.ranWith('hardware.check');
+  assert.equal(first[2].where.slot, world.card('disks').querySelector('.hw-errors'));
+  assert.equal(first[2].words.running, 'Checking the hardware');
+  assert.equal(world.dialog(), null, 'no dialog asks first: a test is a button');
+});
+
+test('a disk with a test running says how far it is, and every button that starts a check is off', async (context) => {
+  const running = task({ args: { areas: 'disks', disk: 'sdb' }, percent: 40, step: 2, steps: 3 });
+  const world = await openHardware(context, { world: { reads: { '/api/1/tasks': { tasks: [running] } } } });
+  assert.equal(lineOf(world, 'sdb'), 'sdb · WD Red Wearing | Testing: 40% | Short test + Extended test');
+  assert.match(lineOf(world, 'sda'), /\| Short test Nov 14, passed/);
+  for (const one of world.card('disks').querySelectorAll('.btns button')) assert.equal(one.getAttribute('aria-disabled'), 'true');
+  assert.equal(world.card('disks').querySelector('#disks-why').hidden, false);
+  await world.press(world.card('disks'), 'Short test');
+  assert.deepEqual(world.ran('hardware.check'), []);
+  await world.emit('task', { id: 41, action: 'hardware.check', state: 'running', percent: 70 });
+  assert.match(lineOf(world, 'sdb'), /Testing: 70%/);
+  const unknown = task({ args: { areas: 'disks', disk: 'sdb' } });
+  const bare = await openHardware(context, { world: { reads: { '/api/1/tasks': { tasks: [unknown] } } } });
+  assert.match(lineOf(bare, 'sdb'), /Testing…/);
+});
+
+test('when a test ends the page reads the logs again, and a button keeps its focus while its test runs', async (context) => {
+  const world = await openHardware(context, { world: { answers: { 'hardware.check': { ok: true, task: 77 } } } });
+  const button = buttonOf(world.card('disks').querySelectorAll('li')[0], 'Short test');
+  button.focus();
+  await world.press(world.card('disks').querySelectorAll('li')[0], 'Short test');
+  assert.equal(world.document.activeElement, button, 'the row is not made again');
+  assert.equal(button.getAttribute('aria-disabled'), 'true');
+  const reads = world.calls.filter((call) => call === '/api/1/storage/disks/sda/health').length;
+  world.answers['/api/1/tasks'] = { tasks: [] };
+  world.answers['/api/1/storage/disks/sda/health'] = diskHealth('sda', { self_tests: [{ kind: 'short', result: 'failed', at_hours: 21804 }] });
+  await world.emit('task', { id: 77, action: 'hardware.check', state: 'done' });
+  assert.equal(world.calls.filter((call) => call === '/api/1/storage/disks/sda/health').length, reads + 1);
+  assert.equal(lineOf(world, 'sda'), 'sda · WD Red Healthy | Short test Nov 14, failed (at hour 21,804) | Short test + Extended test');
+  assert.ok(world.card('disks').querySelector('.bad'));
+  assert.equal(button.getAttribute('aria-disabled'), null);
+});
+
+test('a locked administrator is offered the tests and sees them once the console unlocks, and a reader is told who sees them', async (context) => {
+  const locked = await openHardware(context, { unlocked: false });
+  assert.ok(!locked.calls.some((call) => call.includes('/health')));
+  assert.equal(lineOf(locked, 'sda'), 'sda · WD Red Healthy |  | Short test + Extended test');
+  assert.equal(buttonOf(locked.card('disks'), DISKS_NOTE).hidden, false);
+  const { setUnlockSeconds } = await import('../unlock.js');
+  setUnlockSeconds(900);
+  await locked.emit('unlock');
+  assert.match(lineOf(locked, 'sda'), /Short test Nov 14, passed/);
+  assert.equal(buttonOf(locked.card('disks'), DISKS_NOTE).hidden, true);
+  const reader = await openHardware(context, { session: { admin: false } });
+  assert.ok(!reader.calls.some((call) => call.includes('/health')));
+  assert.equal(lineOf(reader, 'sda'), 'sda · WD Red Healthy | ');
+  assert.equal(reader.card('disks').querySelectorAll('button').length, 0);
+  assert.match(text(reader.card('disks')), /Administrators see the disks' own tests$/);
+});
+
+test('a disk that does not report its health says so and may still be tested, and a log that cannot be read is said', async (context) => {
+  const answer = storage();
+  answer.disks.push({ name: 'sdc', model: 'Expansion', health: null });
+  const world = await openHardware(context, { world: { reads: { '/api/1/storage': answer, '/api/1/storage/disks/sdb/health': refusal('ADM-500', 'down', 500) } } });
+  assert.equal(lineOf(world, 'sdc'), 'sdc · Expansion Not checked | This disk does not report its health or its tests. | Short test + Extended test');
+  assert.ok(!world.calls.includes('/api/1/storage/disks/sdc/health'));
+  assert.match(lineOf(world, 'sdb'), /Its own tests could not be read/);
+  assert.equal(world.problems.length, 0);
+});
+
+test('a disk with no log of its own tests says so, and so does one whose log has no short or extended test', async (context) => {
+  const world = await openHardware(context, { world: { reads: {
+    '/api/1/storage/disks/sda/health': diskHealth('sda', { self_tests: null }),
+    '/api/1/storage/disks/sdb/health': diskHealth('sdb', { self_tests: [{ kind: 'conveyance', result: 'passed', at_hours: 21000 }] }),
+  } } });
+  assert.match(lineOf(world, 'sda'), /Healthy \| This disk keeps no log of its own tests \|/);
+  assert.match(lineOf(world, 'sdb'), /Wearing \| No short or extended test is in its log \|/);
+});
+
+test('the disks that cannot be read, and a machine with none, are said', async (context) => {
+  const down = await openHardware(context, { world: { reads: { '/api/1/storage': refusal('ADM-500', 'down', 500) } } });
+  assert.match(text(down.card('disks')), /The disks could not be read\./);
+  const none = await openHardware(context, { world: { reads: { '/api/1/storage': { disks: [] } } } });
+  assert.match(text(none.card('disks')), /No disk was found\./);
+});
+
+// ---- Devices -------------------------------------------------------------------
+
+const tablesOf = (world) => world.card('devices').querySelectorAll('table').map((table) => [text(table.querySelector('caption')), table.querySelectorAll('tbody tr').map(text)]);
+
+test('the devices are not read until the card is asked, and then come in a table for each group with the hidden ones folded away', async (context) => {
+  const world = await openHardware(context);
+  assert.ok(!world.calls.includes('/api/1/hardware/devices'));
+  assert.match(text(world.card('devices')), /Every card and port the system can tell of/);
+  await world.press(world.card('devices'), 'Show the devices');
+  assert.ok(world.calls.includes('/api/1/hardware/devices'));
+  assert.deepEqual(tablesOf(world), [
+    ['Network · 2', [
+      'Intel I219-LMnet0 · 8086:15b8e1000ePCI 0000:00:1f.6Working'.replace('e1000ePCI 0000:00:1f.6Working', 'e1000eWorkingPCI 0000:00:1f.6'),
+      'Intel I210net1 · 8086:1533igbNo cablePCI 0000:03:00.0',
+    ]],
+    ['Storage · 2', [
+      'Intel Q170 SATA controllersda, sdb · 8086:a102ahciWorkingPCI 0000:00:17.0',
+      'Seagate Expansionsdc · 0bc2:2312usb-storageWorkingUSB 2-1',
+    ]],
+    ['USB · 1', ['FTDI FT232R serial adapter0403:6001ftdi_sioWorkingUSB 1-2']],
+    ['Display · 1', ['Intel HD Graphics 5308086:1912efifbWorkingPCI 0000:00:02.0']],
+    ['Other · 2', [
+      'Intel Management Engine interface8086:a13anoneNo driverPCI 0000:00:16.0',
+      'Unknown device1234:5678Not told—PCI 0000:04:00.0',
+    ]],
+    ['Hidden devices', [
+      'Intel PCI bridge8086:a110pcieportWorkingPCI 0000:00:1c.0',
+      'Intel host bridge8086:1910noneWorkingPCI 0000:00:00.0',
+    ]],
+  ]);
+  const hidden = world.card('devices').querySelector('details');
+  assert.equal(text(hidden.querySelector('summary')), 'Hidden: 2 devices that work and need nothing, such as USB hubs and bridges');
+  assert.equal(hidden.querySelectorAll('table').length, 1);
+  assert.equal(world.card('devices').querySelectorAll('table').length - 1, 5, 'the hidden ones are in a table of their own, inside the fold');
+});
+
+test('a device with no cable has a warning state, and one no driver took is not "Not told"', async (context) => {
+  const world = await openHardware(context);
+  await world.press(world.card('devices'), 'Show the devices');
+  const states = world.card('devices').querySelectorAll('.st');
+  assert.ok(states.find((one) => one.textContent === 'No cable').classes.has('warn'));
+  assert.ok(states.find((one) => one.textContent === 'No driver').classes.has('off'));
+  assert.ok(states.find((one) => one.textContent === 'Working').classes.has('ok'));
+  assert.equal(states.filter((one) => one.textContent === 'Not told').length, 0, '"Not told" is the driver\'s, which the system could not tell');
+  assert.equal(world.card('devices').querySelectorAll('td').filter((cell) => cell.textContent === 'Not told').length, 1);
+  assert.equal(world.card('devices').querySelectorAll('td').find((cell) => cell.textContent === 'Not told').getAttribute('data-label'), 'Driver');
+});
+
+test('the card says how to report a device that needs a driver, and moves focus to its heading when it has drawn', async (context) => {
+  const world = await openHardware(context);
+  await world.press(world.card('devices'), 'Show the devices');
+  const link = world.card('devices').querySelectorAll('a').find((one) => one.textContent === 'Report it');
+  assert.equal(link.getAttribute('href'), '/report?about=hardware');
+  assert.match(text(world.card('devices')), /A device with no driver that you need\? Report it; the report carries its IDs \(vendor and device numbers, never a serial\)\./);
+  assert.equal(world.document.activeElement, world.card('devices').querySelector('h2'));
+  assert.equal(buttonOf(world.card('devices'), 'Show the devices'), undefined);
+});
+
+test('a reader may open the devices, and a list that cannot be read leaves the button to try again', async (context) => {
+  const reader = await openHardware(context, { session: { admin: false } });
+  await reader.press(reader.card('devices'), 'Show the devices');
+  assert.equal(tablesOf(reader).length, 6);
+  const down = await openHardware(context, { world: { reads: { '/api/1/hardware/devices': refusal('ADM-500', 'down', 500) } } });
+  await down.press(down.card('devices'), 'Show the devices');
+  assert.equal(down.problems.length, 1);
+  assert.equal(down.problems[0][1].slot, down.card('devices').querySelector('.hw-errors'));
+  const again = buttonOf(down.card('devices'), 'Show the devices');
+  assert.equal(again.getAttribute('aria-disabled'), null);
+  down.answers['/api/1/hardware/devices'] = devices();
+  await down.press(down.card('devices'), 'Show the devices');
+  assert.equal(tablesOf(down).length, 6);
+});
+
+test('a machine whose list is empty says so', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/devices': { format: 1, devices: [] } } } });
+  await world.press(world.card('devices'), 'Show the devices');
+  assert.match(text(world.card('devices')), /The system lists no device\./);
+  assert.equal(world.card('devices').querySelectorAll('table').length, 0);
 });

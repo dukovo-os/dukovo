@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the palette finds of the hardware: the check, with the state of its
-// last result to filter by (`state:warning`), and, for an administrator, the
-// restart and the shut down, each of which opens its card to ask first.
+// last result to filter by (`state:warning`), the temperatures, and, for an
+// administrator, the restart and the shut down, each of which opens its card
+// to ask first.
 
 // The states the last result is in, the ones to look at first.
 export const STATES = ['failed', 'warning', 'passed'];
@@ -15,6 +16,9 @@ export function itemsOf(last, admin) {
   return [
     {
       key: 'check', title: 'Check the hardware', detail: state ? `The last check ${state === 'passed' ? 'passed' : `has ${state === 'failed' ? 'a failure' : 'a warning'}`}` : 'Not checked yet', state, href: '/hardware#check',
+    },
+    {
+      key: 'temps', title: 'Temperatures', detail: 'What the sensors and the disks read now, and the highest of 30 days', href: '/hardware#temps',
     },
     ...(admin ? [
       { key: 'restart', title: 'Restart this machine…', detail: 'It restarts a minute after you ask', href: '/hardware#power' },
