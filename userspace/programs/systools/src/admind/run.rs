@@ -7,7 +7,9 @@
 //! An administrator's change runs through authd's `console-elevate`, for
 //! an unlocked session or a token, with four descriptors from admind: its
 //! input, which holds the secrets the action takes, if any, and then ends
-//! (ADR 0561); its output and its error output, two pipes admind reads
+//! (ADR 0561), or a document more than a pipe holds, which a writer of its
+//! own gives while the command runs (ADR 0567, [`Typing`]); its output and
+//! its error output, two pipes admind reads
 //! apart; and the relay, whose closing hangs the command up, which admind
 //! keeps open until the command has ended or ran out of time. Anything
 //! else runs in the person's worker (`run`), as the person, whose input is
@@ -24,7 +26,7 @@
 //! without the time limit of a short command.
 
 use std::fs::File;
-use std::io::{PipeWriter, Write, pipe};
+use std::io::{ErrorKind, PipeWriter, Write, pipe};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::task::Poll;
 use std::time::Duration;
@@ -33,9 +35,11 @@ use accounts::console::{Console, Elevator};
 use accounts::request::{self, Answer};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::AsyncReadExt;
-use tokio::net::unix::pipe::Receiver;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::unix::pipe::{Receiver, Sender};
+use tokio::task::JoinHandle;
 
+use super::actions::secret::INPUT_MAX;
 use super::actions::{Prepared, Secret};
 use super::authd::{self, Asked};
 use super::errors::{Attempt, Failure, Kind, refusal};
@@ -122,6 +126,8 @@ pub struct Started {
     /// the command ([`request::signal`]), and closing it hangs the command
     /// up.
     pub relay: PipeWriter,
+    /// The writer of its input, when the input is more than a pipe holds.
+    pub typing: Typing,
 }
 
 /// Has authd run `argv` as an administrator by `by`'s right, with its four
@@ -140,7 +146,7 @@ pub async fn start(
 ) -> Result<Started, Failure> {
     let internal = |err: std::io::Error| Failure::new(Kind::Internal, format!("no pipe: {err}"));
     let (input_end, typed) = pipe().map_err(internal)?;
-    typed_and_ended(typed, input).map_err(internal)?;
+    let typing = typed_and_ended(typed, input).map_err(internal)?;
     let (output, output_end) = pipe().map_err(internal)?;
     let (errors, errors_end) = pipe().map_err(internal)?;
     // authd takes the last of the four as the relay, whose closing hangs
@@ -160,25 +166,75 @@ pub async fn start(
     }
     let output = Receiver::from_file(File::from(OwnedFd::from(output))).map_err(internal)?;
     let errors = Receiver::from_file(File::from(OwnedFd::from(errors))).map_err(internal)?;
-    Ok(Started { output, errors, asked, relay: relay_end })
+    Ok(Started { output, errors, asked, relay: relay_end, typing })
 }
 
-/// Writes `input` to `typed`, the write end of a command's input, and
-/// closes it, so that the command reads the input and then its end. The
-/// pipe is new and the input at most [`INPUT_MAX`] bytes, which a pipe holds
-/// before any is read: the write does not wait for the command.
-///
-/// [`INPUT_MAX`]: crate::admind::actions::secret::INPUT_MAX
+/// Writes `input` to `typed`, the write end of a command's new input, and
+/// closes it, so that the command reads the input and then its end. Input
+/// of at most [`INPUT_MAX`] bytes, which a new pipe holds before any is
+/// read, is written now, and the write does not wait for the command. More
+/// is written by a writer of its own while the command runs (ADR 0567),
+/// from a copy that is zeroed when the writer ends: the [`Typing`] this
+/// gives, which the caller ends once the command has ended.
 ///
 /// # Errors
 ///
-/// When the pipe does not take it.
-pub fn typed_and_ended(mut typed: PipeWriter, input: Option<&Secret>) -> std::io::Result<()> {
-    if let Some(input) = input {
-        typed.write_all(input.bytes())?;
+/// When the pipe does not take it, or cannot be watched.
+pub fn typed_and_ended(mut typed: PipeWriter, input: Option<&Secret>) -> std::io::Result<Typing> {
+    match input {
+        Some(input) if input.bytes().len() > INPUT_MAX => {
+            let typed = Sender::from_file(File::from(OwnedFd::from(typed)))?;
+            Ok(Typing(Some(tokio::spawn(written(typed, input.copied())))))
+        }
+        input => {
+            if let Some(input) = input {
+                typed.write_all(input.bytes())?;
+            }
+            drop(typed);
+            Ok(Typing(None))
+        }
     }
-    drop(typed);
-    Ok(())
+}
+
+/// Writes `input` to `typed` and closes it. A command that ends before it
+/// has read it all leaves the pipe with no reader, which is no fault of
+/// the action: its status says what it did. `input` is zeroed when this
+/// ends, or when it is stopped.
+async fn written(mut typed: Sender, input: Secret) {
+    if let Err(err) = typed.write_all(input.bytes()).await
+        && err.kind() != ErrorKind::BrokenPipe
+    {
+        super::log(4, &format!("a command's input was not all written: {err}"));
+    }
+}
+
+/// The writer of a command's input that a pipe does not hold at once (ADR
+/// 0567), or nothing when the input was written at once. Its copy of the
+/// input is zeroed when the writer ends, is stopped or panics.
+#[must_use]
+pub struct Typing(Option<JoinHandle<()>>);
+
+impl Typing {
+    /// Ends the writer of a command that has ended: what it has not read,
+    /// it never will. When this returns, the writer's copy of the input is
+    /// gone, so a caller ends it before the action answers.
+    pub async fn ended(mut self) {
+        if let Some(writer) = self.0.take() {
+            writer.abort();
+            // Cancelled, or ended before: either way, it has been dropped.
+            let _ = writer.await;
+        }
+    }
+}
+
+impl Drop for Typing {
+    /// A writer left running, as on a panic of the caller's, is stopped:
+    /// its copy goes the next time the runtime runs it.
+    fn drop(&mut self) {
+        if let Some(writer) = self.0.take() {
+            writer.abort();
+        }
+    }
 }
 
 impl Started {
@@ -189,7 +245,7 @@ impl Started {
     ///
     /// ADM-121 when the command does not end in `limit`, and is hung up.
     pub async fn finish(self, limit: Duration) -> Result<Ran, Failure> {
-        let Started { output, errors, mut asked, relay: _hang_up } = self;
+        let Started { output, errors, mut asked, relay: _hang_up, typing } = self;
         let run = async {
             let (output, errors) = read_both(output, errors).await?;
             let status = ended_status(&mut asked).await?;
@@ -199,7 +255,9 @@ impl Started {
                 errors: String::from_utf8_lossy(&errors).into_owned(),
             })
         };
-        match tokio::time::timeout(limit, run).await {
+        let ran = tokio::time::timeout(limit, run).await;
+        typing.ended().await;
+        match ran {
             Ok(Ok(ran)) => Ok(ran),
             Ok(Err(err)) => Err(Failure::new(Kind::Internal, format!("the command's end: {err}"))),
             Err(_) => Err(Failure::new(
@@ -404,6 +462,7 @@ pub fn error_id(line: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::admind::actions::secret::INPUT_LIMIT;
     use crate::admind::fixture::Console;
 
     #[test]
@@ -517,6 +576,65 @@ mod tests {
         assert_eq!(exit_code(0), 0);
         assert_eq!(exit_code(3 << 8), 3);
         assert_eq!(exit_code(libc::SIGTERM), 128 + libc::SIGTERM);
+    }
+
+    #[test]
+    fn input_a_pipe_holds_is_written_at_once_and_more_while_its_reader_reads() {
+        use std::io::Read as _;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            // A pipe holds it: written and closed before anything reads it.
+            let (mut reading, typed) = pipe().unwrap();
+            let small = Secret::from("s".repeat(INPUT_MAX));
+            let typing = typed_and_ended(typed, Some(&small)).unwrap();
+            assert!(typing.0.is_none());
+            let mut read = Vec::new();
+            reading.read_to_end(&mut read).unwrap();
+            assert_eq!(read, small.bytes());
+            // More than a pipe holds: written as it is read, and then ended.
+            let (mut reading, typed) = pipe().unwrap();
+            let large: String = (0..INPUT_LIMIT)
+                .map(|n| char::from(b'a' + u8::try_from(n % 26).unwrap()))
+                .collect();
+            let large = Secret::from(large);
+            let typing = typed_and_ended(typed, Some(&large)).unwrap();
+            assert!(typing.0.is_some());
+            let reader = std::thread::spawn(move || {
+                let mut read = Vec::new();
+                reading.read_to_end(&mut read).unwrap();
+                read
+            });
+            let read = tokio::task::spawn_blocking(move || reader.join().unwrap()).await.unwrap();
+            assert_eq!(read, large.bytes());
+            typing.ended().await;
+            // No input: the pipe ends at once.
+            let (mut reading, typed) = pipe().unwrap();
+            typed_and_ended(typed, None).unwrap().ended().await;
+            assert_eq!(reading.read(&mut [0u8; 8]).unwrap(), 0);
+        });
+    }
+
+    #[test]
+    fn a_writer_whose_reader_goes_or_never_reads_ends_and_is_no_fault() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let large = Secret::from("x".repeat(INPUT_LIMIT));
+            // The reader goes after a little: the writer meets no reader.
+            let (mut reading, typed) = pipe().unwrap();
+            let typing = typed_and_ended(typed, Some(&large)).unwrap();
+            let gone = std::thread::spawn(move || {
+                use std::io::Read as _;
+                let _ = reading.read(&mut [0u8; 100]).unwrap();
+            });
+            tokio::task::spawn_blocking(move || gone.join().unwrap()).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), typing.ended()).await.unwrap();
+            // The reader is there and never reads: the writer is stopped.
+            let (reading, typed) = pipe().unwrap();
+            let typing = typed_and_ended(typed, Some(&large)).unwrap();
+            tokio::task::yield_now().await;
+            tokio::time::timeout(Duration::from_secs(5), typing.ended()).await.unwrap();
+            drop(reading);
+        });
     }
 
     #[test]

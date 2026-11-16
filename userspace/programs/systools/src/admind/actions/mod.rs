@@ -159,12 +159,30 @@ pub enum Type {
         /// The most characters.
         max: usize,
     },
+    /// Text of many lines, 1 to `max` bytes with no NUL, that the action's
+    /// command reads on its input as it is (ADR 0567): a certificate's
+    /// chain, or its key. A `secret` one is read into a [`Secret`], as a
+    /// secret line is, and marked `writeOnly`.
+    Document {
+        /// The most bytes.
+        max: usize,
+        /// Whether it is a secret.
+        secret: bool,
+    },
 }
 
 /// What a secret field's text matches: no line end and no NUL. The
 /// characters are in the class as they are, which a JSON Schema pattern
 /// (ECMAScript's) reads as written.
 pub const SECRET_PATTERN: &str = "^[^\n\r\0]*$";
+
+/// What a document's text matches: no NUL.
+pub const DOCUMENT_PATTERN: &str = "^[^\0]*$";
+
+/// The most bytes a document field takes.
+// The certificate's upload takes it; the registry's rules hold every field.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const DOCUMENT_MAX: usize = 64 << 10;
 
 /// One argument of an action, as its input's schema describes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,9 +236,45 @@ impl Field {
         Field { name, kind: Type::Secret { max }, required: true, about }
     }
 
-    /// Whether it is a secret.
+    /// A required argument that is a document of 1 to `max` bytes, which
+    /// the action's command reads on its input ([`Action::input`]). `max`
+    /// is at most [`DOCUMENT_MAX`], which the registry's rules hold.
+    // For a site's files; no action in the list that ships takes one yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn document(name: &'static str, about: &'static str, max: usize) -> Field {
+        Field { name, kind: Type::Document { max, secret: false }, required: true, about }
+    }
+
+    /// A required argument that is a document of 1 to `max` bytes, which
+    /// is a secret, as a certificate's key is: read into a [`Secret`], and
+    /// never shown, kept or put in a log.
+    // For a certificate's key and chain.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn secret_document(name: &'static str, about: &'static str, max: usize) -> Field {
+        Field { name, kind: Type::Document { max, secret: true }, required: true, about }
+    }
+
+    /// Whether it is a secret: a line or a document.
     pub const fn is_secret(&self) -> bool {
-        matches!(self.kind, Type::Secret { .. })
+        matches!(self.kind, Type::Secret { .. } | Type::Document { secret: true, .. })
+    }
+
+    /// Whether the command reads it on its input: a secret or a document.
+    pub const fn is_input(&self) -> bool {
+        matches!(self.kind, Type::Secret { .. } | Type::Document { .. })
+    }
+
+    /// The most bytes it takes of the command's input: a secret line's
+    /// four for each character and its end, a document's own most, and
+    /// nothing for an argument the command does not read there.
+    // The registry's rules hold each action's input to its most by it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub const fn input_bytes(&self) -> usize {
+        match self.kind {
+            Type::Secret { max } => secret::line_bytes(max),
+            Type::Document { max, .. } => max,
+            _ => 0,
+        }
     }
 
     /// The same argument, which the action can be asked for without. A
@@ -266,6 +320,18 @@ pub fn schema(fields: &[Field]) -> Value {
                 property.insert("maxLength".into(), max.into());
                 property.insert("pattern".into(), SECRET_PATTERN.into());
                 property.insert("writeOnly".into(), true.into());
+                "string"
+            }
+            // JSON Schema counts characters, and the action bytes: a text of
+            // `max` characters that takes more bytes fits the schema and is
+            // refused, which the action's words say.
+            Type::Document { max, secret } => {
+                property.insert("minLength".into(), 1.into());
+                property.insert("maxLength".into(), max.into());
+                property.insert("pattern".into(), DOCUMENT_PATTERN.into());
+                if secret {
+                    property.insert("writeOnly".into(), true.into());
+                }
                 "string"
             }
         };
@@ -397,21 +463,23 @@ impl Ansible {
 
     /// The task, for an action whose fields are `fields`, with `args` as
     /// they serialize, and whose command prints a secret when `answer`
-    /// (ADR 0561). Each secret `args` gives is read from the playbook's
-    /// variable of the field's name, one a line on the command's input in
-    /// the fields' order, as [`Action::input`] gives them. Ansible shows
-    /// nothing of a task that has a secret, and keeps the answer of one
-    /// whose command prints one for the playbook.
+    /// (ADR 0561). Each secret and each document `args` gives is read from
+    /// the playbook's variable of the field's name, on the command's input
+    /// in the fields' order, as [`Action::input`] gives them: a secret line
+    /// with its end, a document as it is (ADR 0567). Ansible shows nothing
+    /// of a task that has a secret, and keeps the answer of one whose
+    /// command prints one for the playbook.
     #[must_use]
     pub fn keeping_secrets(mut self, fields: &[Field], args: &Value, answer: bool) -> Ansible {
-        let given: Vec<String> = fields
+        let given: Vec<&Field> = fields
             .iter()
-            .filter(|field| field.is_secret() && args.get(field.name).is_some_and(|v| !v.is_null()))
-            .map(|field| format!("{{{{ {} }}}}", field.name))
+            .filter(|field| field.is_input() && args.get(field.name).is_some_and(|v| !v.is_null()))
             .collect();
         if !given.is_empty() {
-            self.params.insert("stdin".into(), given.join("\n").into());
-            self.no_log = true;
+            let stdin: Vec<String> =
+                given.iter().map(|field| format!("{{{{ {} }}}}", field.name)).collect();
+            self.params.insert("stdin".into(), stdin.join("\n").into());
+            self.no_log |= given.iter().any(|field| field.is_secret());
         }
         if answer {
             self.register = Some(RESULT);
@@ -506,6 +574,11 @@ pub trait Action: 'static {
     /// recovery key (ADR 0561). Its route is a `POST`, a read's too, and it
     /// is never a task, which keeps what its command prints.
     const SECRET_ANSWER: bool = false;
+    /// The most bytes its command is given on its input: what a pipe
+    /// holds, unless it takes a document that does not fit (ADR 0567),
+    /// which is written while the command runs. The registry's rules hold
+    /// its input fields to it, and name the actions that take more.
+    const INPUT_MAX: usize = secret::INPUT_MAX;
     /// The field that names an account the caller may not do this to from
     /// the console or with their token (ADR 0562, ADM-136): disabling or
     /// removing it, taking its administrator right away, or ending one of
@@ -540,9 +613,9 @@ pub trait Action: 'static {
     fn argv(args: &Self::Args) -> Vec<String>;
 
     /// What the command reads on its standard input: the secrets of
-    /// `args`, each a line, in the order of the fields ([`Secret::lines`]).
-    /// None, the default, for an action that takes no secret, whose
-    /// command's input ends at once.
+    /// `args`, each a line, in the order of the fields ([`Secret::lines`]),
+    /// and a document as it is (ADR 0567). None, the default, for an
+    /// action that takes neither, whose command's input ends at once.
     fn input(_args: &Self::Args) -> Option<Secret> {
         None
     }
@@ -701,6 +774,9 @@ pub trait Registered: Sync + fmt::Debug {
     fn lines(&self) -> bool;
     /// [`Action::SECRET_ANSWER`].
     fn secret_answer(&self) -> bool;
+    /// [`Action::INPUT_MAX`], which the registry's rules check.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn input_max(&self) -> usize;
     /// [`Action::NOT_SELF`].
     fn not_self(&self) -> Option<&'static str>;
     /// The card of [`Action::CUTS_OFF`], None for an action without one.
@@ -747,11 +823,11 @@ pub trait Registered: Sync + fmt::Debug {
     fn example_values(&self) -> (Vec<Value>, Vec<Value>, Option<Undo>);
 
     /// Whether its route is a `POST`: a change's, and a read's that takes a
-    /// secret or answers one, so that the secret is in a body and never in
-    /// an address, a browser's history or a log of addresses (ADR 0561).
-    /// Any other read is a `GET`.
+    /// secret or a document or answers a secret, so that the secret is in
+    /// a body and never in an address, a browser's history or a log of
+    /// addresses (ADR 0561). Any other read is a `GET`.
     fn posts(&self) -> bool {
-        self.changes() || self.secret_answer() || self.fields().iter().any(Field::is_secret)
+        self.changes() || self.secret_answer() || self.fields().iter().any(Field::is_input)
     }
 }
 
@@ -801,6 +877,9 @@ impl<A: Action> Registered for Entry<A> {
     fn secret_answer(&self) -> bool {
         A::SECRET_ANSWER
     }
+    fn input_max(&self) -> usize {
+        A::INPUT_MAX
+    }
     fn not_self(&self) -> Option<&'static str> {
         A::NOT_SELF
     }
@@ -838,7 +917,7 @@ impl<A: Action> Registered for Entry<A> {
     fn prepare(&'static self, args: Value) -> Result<Prepared, Failure> {
         // A secret is checked before serde reads it, since serde's words
         // about a value that is not what a field takes can quote it.
-        secrets_checked(A::Args::FIELDS, &args)?;
+        inputs_checked(A::Args::FIELDS, &args)?;
         let typed: A::Args = serde_json::from_value(args).map_err(|err| {
             Failure::new(
                 Kind::BadRequest,
@@ -851,7 +930,7 @@ impl<A: Action> Registered for Entry<A> {
         let probe = if A::CHANGES { A::probe(&typed) } else { None };
         let trial = A::trial(&typed);
         let input = A::input(&typed);
-        if input.as_ref().is_some_and(|input| input.bytes().len() > secret::INPUT_MAX) {
+        if input.as_ref().is_some_and(|input| input.bytes().len() > A::INPUT_MAX) {
             // The fields' limits keep it within, which a unit test holds.
             return Err(Failure::new(Kind::Internal, format!("{}'s input is too long", A::ID)));
         }
@@ -900,26 +979,41 @@ impl<A: Action> Registered for Entry<A> {
     }
 }
 
-/// Checks each secret that `args` gives for a field of `fields`: one line
-/// of 1 to the field's most characters, with no NUL (ADR 0561). What is
-/// wrong is said without the value.
+/// Checks each secret and each document that `args` gives for a field of
+/// `fields`: a secret is one line of 1 to the field's most characters, with
+/// no NUL (ADR 0561); a document 1 to the field's most bytes, with no NUL
+/// (ADR 0567). What is wrong is said without the value.
 ///
 /// # Errors
 ///
-/// ADM-125 for a secret that is not such a line, ADM-108 for one that is
-/// not text.
-fn secrets_checked(fields: &[Field], args: &Value) -> Result<(), Failure> {
-    for field in fields {
-        let Type::Secret { max } = field.kind else { continue };
+/// ADM-125 for one that is not such text, ADM-108 for one that is not
+/// text.
+fn inputs_checked(fields: &[Field], args: &Value) -> Result<(), Failure> {
+    for field in fields.iter().filter(|field| field.is_input()) {
         match args.get(field.name) {
             None | Some(Value::Null) => {}
             Some(Value::String(text)) => {
-                let length = text.chars().count();
-                if length == 0 || length > max || text.contains(['\n', '\r', '\0']) {
-                    let why = format!(
-                        "It is one line of 1 to {max} characters, with no line break. Nothing \
-                         was done."
-                    );
+                let why = match field.kind {
+                    Type::Secret { max } => {
+                        let length = text.chars().count();
+                        (length == 0 || length > max || text.contains(['\n', '\r', '\0'])).then(
+                            || {
+                                format!(
+                                    "It is one line of 1 to {max} characters, with no line \
+                                     break. Nothing was done."
+                                )
+                            },
+                        )
+                    }
+                    Type::Document { max, .. } => (text.is_empty()
+                        || text.len() > max
+                        || text.contains('\0'))
+                    .then(|| {
+                        format!("It is text of 1 to {max} bytes, with no NUL. Nothing was done.")
+                    }),
+                    _ => None,
+                };
+                if let Some(why) = why {
                     return Err(Failure::bad_value(field.name, why));
                 }
             }
@@ -1290,10 +1384,13 @@ fn read_value(field: &Field, name: &str, text: String) -> Result<Value, Failure>
             "false" => Value::Bool(false),
             _ => return Err(bad(format!("\"{name}\" is true or false"))),
         },
-        // A read that takes a secret is a `POST`, whose arguments are in its
-        // body: a secret is never read from an address.
-        Type::Secret { .. } => {
+        // A read that takes a secret or a document is a `POST`, whose
+        // arguments are in its body: neither is read from an address.
+        Type::Secret { .. } | Type::Document { secret: true, .. } => {
             return Err(bad(format!("\"{name}\" is a secret, never given in an address")));
+        }
+        Type::Document { secret: false, .. } => {
+            return Err(bad(format!("\"{name}\" is a document, never given in an address")));
         }
     })
 }

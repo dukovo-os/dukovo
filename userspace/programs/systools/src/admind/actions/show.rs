@@ -21,12 +21,15 @@
 //! 0561): [`prepare`] puts `(secret)` in its place. The command says that
 //! it is typed when asked, the `curl` line takes it from a variable of the
 //! field's name in capitals (`$PASSWORD`), and the Ansible task from the
-//! playbook's (`{{ password }}`), with `no_log`.
+//! playbook's (`{{ password }}`), with `no_log`. A document that is a
+//! secret, as a certificate's key is (ADR 0567), is given on the command's
+//! input, and the `curl` line takes it from a variable that holds it as
+//! JSON text (`$PEM_JSON`), since it has line ends.
 
 use serde_json::{Map, Value, json};
 
 use super::secret::SHOWN;
-use super::{Ansible, Prepared, Registered, Runs};
+use super::{Ansible, Field, Prepared, Registered, Runs, Type};
 use crate::admind::errors::Failure;
 
 /// The action `id` in `actions`.
@@ -81,32 +84,53 @@ pub fn shown(prepared: &Prepared, origin: &str) -> Value {
     })
 }
 
-/// The names of the secret fields that `prepared`'s arguments give, in the
-/// order of the fields: what its command reads on its input.
-fn secrets_given(prepared: &Prepared) -> Vec<&'static str> {
+/// The fields that `prepared`'s arguments give and its command reads on
+/// its input, in the order of the fields: its secrets and its documents.
+fn inputs_given(prepared: &Prepared) -> Vec<&'static Field> {
     prepared
         .action
         .fields()
         .iter()
-        .filter(|field| field.is_secret())
+        .filter(|field| field.is_input())
         .filter(|field| prepared.args.get(field.name).is_some_and(|value| !value.is_null()))
-        .map(|field| field.name)
         .collect()
 }
 
-/// What a person types when the command asks, after running it: "then the
-/// password, typed when asked". None for a command that reads no secret.
-pub fn typed(prepared: &Prepared) -> Option<String> {
-    let names: Vec<String> = secrets_given(prepared)
+/// The secrets that `prepared`'s arguments give, as the `curl` line takes
+/// them from variables: each name, and whether it is a document.
+fn secrets_given(prepared: &Prepared) -> Vec<(&'static str, bool)> {
+    inputs_given(prepared)
         .into_iter()
-        .map(|name| format!("the {}", name.replace('_', " ")))
-        .collect();
-    let list = match names.as_slice() {
-        [] => return None,
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        .filter(|field| field.is_secret())
+        .map(|field| (field.name, matches!(field.kind, Type::Document { .. })))
+        .collect()
+}
+
+/// What a person gives the command as it runs: "then the password, typed
+/// when asked", and "with the pem on its input" for a document. None for
+/// a command that reads neither.
+pub fn typed(prepared: &Prepared) -> Option<String> {
+    let given = inputs_given(prepared);
+    let names = |documents: bool| -> Option<String> {
+        let names: Vec<String> = given
+            .iter()
+            .filter(|field| matches!(field.kind, Type::Document { .. }) == documents)
+            .map(|field| format!("the {}", field.name.replace('_', " ")))
+            .collect();
+        match names.as_slice() {
+            [] => None,
+            [one] => Some(one.clone()),
+            [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+        }
     };
-    Some(format!("then {list}, typed when asked"))
+    match (names(false), names(true)) {
+        (None, None) => None,
+        (Some(lines), None) => Some(format!("then {lines}, typed when asked")),
+        (None, Some(documents)) => Some(format!("with {documents} on its input")),
+        (Some(lines), Some(documents)) => {
+            Some(format!("then {lines}, typed when asked, and {documents} on its input"))
+        }
+    }
 }
 
 /// `word` as one word of a line for sh. A word of `A-Za-z0-9@%+=:,./_-`
@@ -148,7 +172,7 @@ fn curl(prepared: &Prepared, origin: &str) -> String {
     let body = if secrets.is_empty() {
         shell_word(&Value::Object(rest).to_string())
     } else {
-        for name in &secrets {
+        for (name, _) in &secrets {
             rest.remove(*name);
         }
         body_with_variables(&rest, &secrets)
@@ -161,17 +185,26 @@ fn curl(prepared: &Prepared, origin: &str) -> String {
 /// variable of its name in capitals, as one word in double quotes for sh:
 /// `"{\"name\":\"bob\",\"password\":\"$PASSWORD\"}"`. The variable's
 /// value goes in as it is, so it is text that a JSON string holds as it is.
-pub(super) fn body_with_variables(plain: &Map<String, Value>, secrets: &[&str]) -> String {
+/// A document's variable (`true` beside its name) is its name in capitals
+/// and `_JSON`, outside quotes: it holds the document as a JSON string,
+/// quotes and escapes and all, as `jq -Rs .` makes one of a file.
+pub(super) fn body_with_variables(plain: &Map<String, Value>, secrets: &[(&str, bool)]) -> String {
     let text = Value::Object(plain.clone()).to_string();
     // `{...}` without its closing brace, to which the secrets are added.
     let open = &text[..text.len() - 1];
     let mut word = format!("\"{}", double_quoted(open));
-    for (at, name) in secrets.iter().enumerate() {
+    for (at, (name, document)) in secrets.iter().enumerate() {
         if at > 0 || !plain.is_empty() {
             word.push(',');
         }
-        let key = double_quoted(&format!("{}:\"", Value::from(*name)));
-        word.push_str(&format!("{key}${}\\\"", name.to_ascii_uppercase()));
+        let variable = name.to_ascii_uppercase();
+        if *document {
+            let key = double_quoted(&format!("{}:", Value::from(*name)));
+            word.push_str(&format!("{key}${variable}_JSON"));
+        } else {
+            let key = double_quoted(&format!("{}:\"", Value::from(*name)));
+            word.push_str(&format!("{key}${variable}\\\""));
+        }
     }
     word.push_str("}\"");
     word

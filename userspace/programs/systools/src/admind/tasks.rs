@@ -890,7 +890,7 @@ async fn follow(shared: &Rc<Shared>, id: i64, started: Started) -> Done {
     let Some(store) = shared.store.as_ref() else { return Done::default() };
     let tasks = &shared.tasks;
     let limits = tasks.limits.get();
-    let Started { output, errors, asked, relay } = started;
+    let Started { output, errors, asked, relay, typing } = started;
     let (tell, mut pieces) = mpsc::channel(256);
     // A command that leaves a child holding its pipes open must not keep
     // the readers, so they are ended with the watching.
@@ -969,6 +969,9 @@ async fn follow(shared: &Rc<Shared>, id: i64, started: Started) -> Done {
     for reader in readers {
         reader.abort();
     }
+    // The command has ended, or was hung up: its input's writer, if it has
+    // one, ends before the task does (ADR 0567).
+    typing.ended().await;
     done
 }
 

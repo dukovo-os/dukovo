@@ -781,6 +781,7 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
 fn every_action_keeps_the_rules() {
     keeps_the_rules(LAB);
     keeps_the_rules(secrets::SECRETS);
+    keeps_the_rules(secrets::DOCUMENTS);
     keeps_the_rules(REGISTRY);
 }
 
@@ -1171,6 +1172,7 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
                 Type::Number { min, max } => numbers(min, max),
                 Type::Flag => vec![json!(true), json!(false), json!(0), json!("true"), json!(null)],
                 Type::Secret { max } => secrets::candidates(max),
+                Type::Document { max, .. } => secrets::document_candidates(max),
             };
             for candidate in candidates {
                 // A `null` is an optional argument left out, which the
@@ -1219,6 +1221,7 @@ fn fields_are_true_to_the_types(actions: &'static [&'static dyn Registered]) {
 fn every_action_s_fields_are_true_to_its_types() {
     fields_are_true_to_the_types(LAB);
     fields_are_true_to_the_types(secrets::SECRETS);
+    fields_are_true_to_the_types(secrets::DOCUMENTS);
     fields_are_true_to_the_types(REGISTRY);
 }
 

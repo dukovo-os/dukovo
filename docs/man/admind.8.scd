@@ -894,6 +894,18 @@ An administrator's command gets that input from *authd*(8) as its first
 descriptor; a person's command gets it from their worker. The input is at
 most 4 KiB.
 
+An action that takes a document, such as a certificate's key and chain,
+takes it as text of many lines, at most as many bytes as its
+*maxLength*, with no NUL (ADR 0567); a document that is a secret is
+marked *writeOnly* and kept as a secret is. The command reads it on its
+standard input as it is, after the action's secret lines, in the order of
+the fields. Such an action's input may be more than a pipe holds, up to
+128 KiB: admind, or the worker, writes it while the command runs, so a
+command that prints before it has read all of it never waits, and ends
+the writer, whose copy is overwritten with zeros, before the action
+answers. A command that ends before it has read all of its input is no
+failure of the action: its status says what it did.
+
 Nothing admind keeps holds a secret. The journal and the audit log have
 the command's words, a task keeps its arguments with *(secret)* for each
 secret and drops the secret once the command has it, and *POST
@@ -910,7 +922,10 @@ variable named after its field in capitals, such as *$PASSWORD*, inside a
 body in double quotes: a secret with a *"* or a *\\* in it needs the JSON
 escape in the variable (*\\"* or *\\\\*). Its Ansible task takes each from
 the playbook's variable of the field's name on *stdin*, with *no\_log:
-true*.
+true*. A document that is a secret comes from a variable named after its
+field in capitals with *\_JSON* added, such as *$KEY\_JSON*, which holds
+it as a JSON string, quotes and escapes included (*jq -Rs . key.pem*
+makes one).
 
 ## API tokens
 
