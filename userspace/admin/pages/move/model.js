@@ -434,7 +434,7 @@ export function hardwareOf(plan, picks, links = {}) {
 
 // ---- after the restart ----------------------------------------------------------------------
 
-/** The command that restarts the machine, until the Hardware page has a button. */
+/** The command that restarts the machine, which Restart now runs as an action; the page shows it for a terminal. */
 export const RESTART_COMMAND = 'elevate reboot';
 
 /** An address as a URL has it: an IPv6 address is in brackets. */

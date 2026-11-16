@@ -49,7 +49,7 @@ pub fn plain(ip: IpAddr) -> IpAddr {
 }
 
 /// Whether `ip` is in a range no one reaches from the internet.
-fn private_range(ip: IpAddr) -> bool {
+pub(super) fn private_range(ip: IpAddr) -> bool {
     match plain(ip) {
         IpAddr::V4(v4) => {
             let shared = Network { ip: IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0)), prefix: 10 };

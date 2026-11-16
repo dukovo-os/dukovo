@@ -48,6 +48,7 @@
 
 mod account;
 mod accounts;
+mod apps;
 mod backups;
 mod bisect;
 mod certificate;
@@ -73,6 +74,7 @@ mod snapshots;
 mod ssh;
 mod storage;
 mod trial;
+mod updates;
 
 use std::fmt;
 use std::net::IpAddr;
@@ -143,9 +145,6 @@ pub enum Type {
     /// One of these words.
     OneOf(&'static [&'static str]),
     /// A whole number from `min` to `max`, both included.
-    // Kept for the actions that take a number. None in the list that ships
-    // does: only the lab's long action and the tests make one.
-    #[cfg_attr(not(test), allow(dead_code))]
     Number {
         /// The least.
         min: i64,
@@ -220,7 +219,6 @@ impl Field {
     }
 
     /// A required argument that is a whole number from `min` to `max`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn number(name: &'static str, about: &'static str, min: i64, max: i64) -> Field {
         Field { name, kind: Type::Number { min, max }, required: true, about }
     }
@@ -401,6 +399,9 @@ pub struct Ansible {
     /// `no_log: true`, for a task that gives its command a secret or whose
     /// command prints one (ADR 0561): Ansible then shows neither.
     pub no_log: bool,
+    /// `when`, a condition the playbook must meet for the task to run, for
+    /// a change that is only done on the playbook's own word.
+    pub when: Option<String>,
 }
 
 impl Ansible {
@@ -423,6 +424,7 @@ impl Ansible {
             register: None,
             failed_when: None,
             no_log: false,
+            when: None,
         }
     }
 
@@ -443,6 +445,7 @@ impl Ansible {
             register: None,
             failed_when: None,
             no_log: false,
+            when: None,
         }
     }
 
@@ -456,6 +459,14 @@ impl Ansible {
             self.register = Some(RESULT);
             self.failed_when = Some(format!("{RESULT}.rc not in [{}]", statuses.join(", ")));
         }
+        self
+    }
+
+    /// The task, run only when `condition`, an expression of the
+    /// playbook's variables, holds.
+    #[must_use]
+    pub fn when(mut self, condition: &str) -> Ansible {
+        self.when = Some(condition.to_string());
         self
     }
 
@@ -1198,6 +1209,32 @@ registry![
     hardware::Last,
     hardware::History,
     hardware::Check,
+    updates::Last,
+    updates::Check,
+    updates::Slots,
+    updates::History,
+    updates::Advisories,
+    updates::Settings,
+    updates::Set,
+    updates::SetChannel,
+    updates::Checks,
+    updates::CheckAdd,
+    updates::CheckRemove,
+    updates::SetEssential,
+    updates::Apply,
+    updates::Unstage,
+    updates::Undoing,
+    updates::Hold,
+    updates::Unhold,
+    updates::Failed,
+    apps::List,
+    apps::Show,
+    apps::Update,
+    apps::UpdateAll,
+    apps::Rollback,
+    apps::Hold,
+    apps::Unhold,
+    apps::Remove,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the

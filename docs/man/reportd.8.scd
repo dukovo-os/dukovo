@@ -236,11 +236,46 @@ closes the connection. Every request has an *ask*:
 	text), and whether the text has a log that *without_logs* would
 	leave out. A crash is drafted for its own user and for an
 	administrator; a service's log, and the failed start, for an
-	administrator alone.
+	administrator alone. *cut_by* counts the marks in the text by kind:
+	*user*, *host*, *ipv4*, *ipv6*, *mac*, *email*, *wifi*, *serial*,
+	*machine*, and *you* for what the person cut.
+
+	With *"keep":true* reportd keeps the draft for the caller, in
+	memory, and the answer has besides: *draft*, its ID (32 hex digits),
+	*sha256*, the SHA-256 of its text, *parts* (each section's *title*
+	and *bytes*), *sections* (each section's *id*, *title*, *first_line*
+	in the text, from 0, and its number of *lines*), *typed* (the same
+	for the answers) and *cut_by_you* (*lines* and *parts*). It keeps 8
+	drafts for a person and 64 in all, each 60 minutes from its last
+	change; a newer draft past either pushes out the oldest, and a
+	restart forgets them all. The section IDs are *head*, *happened*,
+	*expected*, *again*, *crash*, *failed-start*, *log* and
+	*start-log*.
 
 *{"ask":"redact","text":"..."}*
 	The same redaction for a text that the person edited, answered as a
 	draft is.
+
+*{"ask":"redact","draft":"ID","sha256":"HEX","edits":{...}}*
+	Changes a kept draft, and answers as *draft* with *keep* does: the
+	draft's ID stays, its hash changes and its 60 minutes start again.
+	*edits* is the whole list each time, against the draft as reportd
+	drafted it, so the same list gives the same text:
+	*{"cuts":[...],"answers":{...}}*. A cut names a *section* of what
+	the system gathered (*crash*, *failed-start*, *log*, *start-log*) and
+	a *line* in it, from 0: the line is cut whole, or the lines to
+	*through*, or the characters *from* to *to* of it (Unicode
+	characters, from 0) become *[cut]*. At most 1,000 cuts, and 64 KiB
+	in all. *answers* types the person's three answers again, each at
+	most 2,000 characters. reportd puts the text together again from
+	the draft's sections, adds the head line *Cut by the sender: N
+	lines, M parts of lines* when anything was cut, and redacts the
+	whole again, the answers with the rest. The head and the headings
+	cannot be changed (RPT-104), and a line the system gathered can be
+	cut but not typed into (RPT-105), which a cut that names a line, a
+	section or characters that are not there gives too, with its place.
+	A line of an answer that starts with *==* gets a space before it, so
+	that nothing typed passes for a heading.
 
 *{"ask":"send","text":"...","title":"...","security":false,"crash":"..."}*
 	Queues the text, as it is, and tries to send it at once. *title* is
@@ -249,6 +284,17 @@ closes the connection. Every request has an *ask*:
 	reported once the report is sent. The answer is
 	*{"id":"...","number":N}* when it was sent, and *{"id":"...",
 	"waiting":"..."}* with the reason when it waits in the queue.
+
+	*"draft":"ID","sha256":"HEX"* in place of *text* sends a kept draft
+	as reportd holds it: only the caller's, and only while its text's
+	hash is the one given, so the bytes sent are the bytes the person
+	read. Another person's draft, or one that has ended, is RPT-101; a
+	hash that is not the text's now is RPT-102. The draft is dropped once
+	it is queued, and kept when it cannot be.
+
+*{"ask":"text","draft":"ID","sha256":"HEX"}*
+	The text of a kept draft, as *{"text":"..."}*, with the refusals of
+	*send*: the web console's download to a phone.
 
 *{"ask":"queue"}*
 	The reports that wait, a line each: *id*, *title*, *since*, *tries*,

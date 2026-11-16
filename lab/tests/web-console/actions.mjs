@@ -56,8 +56,11 @@ const SKIPPED = new Set(["certificate.renew"]);
 // has no kept result until the checks' first morning run or a run by hand
 // (ADM-123, the command's status 3); metrics.usage reads the history that
 // metricsd writes every 10 minutes, which a machine that has run for less
-// has no points of (ADM-123).
+// has no points of (ADM-123); apps.show asks after the app that its example
+// names, which a machine without that app in its catalog answers with
+// `bundle info`'s own words (ADM-123).
 const MAY_REFUSE = new Map([
+  ["apps.show", "ADM-123"],
   ["checks.last", "ADM-123"],
   ["metrics.usage", "ADM-123"],
 ]);

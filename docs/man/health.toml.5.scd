@@ -18,7 +18,9 @@ health check, *sysupdate health*, decides whether it proves itself and
 becomes the default, or falls back to the version before (*sysupdate*(8),
 ADR 0453). This file says what it asks. The health check reads it at
 every start; without it, or with one it cannot read, the defaults hold,
-and the log says why. It is TOML:
+and the log says why. *update checks* says what it holds, and *update
+checks add*, *remove* and *essential* change it, keeping the comments and
+the order of what is there. It is TOML:
 
 ```
 essential = ["logd", "authd", "consoled", "netd", "sshd"]
@@ -50,7 +52,13 @@ timeout = 30
 
 *[[check]]*
 	A check of your own: a command that passes by exiting with 0, run
-	once the essential services are stable. Its keys:
+	once the essential services are stable. *update checks add*
+	writes two kinds, which *update checks* reads back as such: *--url*
+	makes *["curl", "-fsS", "-g", "--max-time", "30", "https://localhost/"]*
+	(*-g* takes the address as it is written, brackets and braces too),
+	with *"-k"* after *"-g"* for *--insecure*, and *--service* makes
+	*["systemctl", "is-active", "nginx"]*. Any other command is yours. Its
+	keys:
 
 	*name*
 		What the log calls it.
@@ -92,4 +100,4 @@ command = ["findmnt", "/volumes/BACKUP"]
 
 # SEE ALSO
 
-*sysupdate*(8), *service.toml*(5), *spark*(8)
+*update*(8), *sysupdate*(8), *service.toml*(5), *spark*(8)

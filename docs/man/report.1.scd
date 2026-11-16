@@ -23,6 +23,8 @@ report - write a problem report, read all of it, and send it, save it or hand it
 
 *report forget* _id_
 
+*report text* _draft_ *--sha256* _hash_
+
 *report retry*
 
 # DESCRIPTION
@@ -144,6 +146,12 @@ administrator may send: anyone else is told to try *elevate report*.
 
 *forget* _id_
 	Puts a crash away: it is not offered again by *report crash*.
+
+*text* _draft_ *--sha256* _hash_
+	Prints the text of a draft that reportd keeps for you, as it is,
+	while its SHA-256 is _hash_ (ADR 0568). The web console's Report a
+	problem page keeps its drafts so, and this is how it hands one to a
+	phone; a draft lasts 60 minutes from its last change.
 
 *retry*
 	Sends the reports that wait in the queue now. A report that cannot

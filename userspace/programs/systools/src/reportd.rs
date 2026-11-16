@@ -24,6 +24,7 @@
 //! - The socket ([`socket`]) takes `report`'s requests
 //!   ([`crate::reports::protocol`]).
 
+mod drafts;
 mod intake;
 mod panics;
 mod parts;
@@ -48,7 +49,7 @@ use std::time::Duration;
 
 use crate::args::Args;
 use crate::reports::protocol::{
-    self, About, Answers, Crash, Drafted, SOCKET, Sent, Status, TEXT_MAX, Waiting,
+    self, About, Answers, Crash, Drafted, Edits, KeptText, SOCKET, Sent, Status, TEXT_MAX, Waiting,
 };
 use crate::reports::{draft, facts, redact};
 use crate::util::{self, Fail};
@@ -89,6 +90,8 @@ pub struct Reportd {
     serving: AtomicUsize,
     /// The system's version, for its programs' crashes.
     version: String,
+    /// The drafts kept for the people who asked (ADR 0568).
+    drafts: drafts::Drafts,
 }
 
 impl Reportd {
@@ -101,6 +104,7 @@ impl Reportd {
             sending: Mutex::new(()),
             serving: AtomicUsize::new(0),
             version: facts::gather().version,
+            drafts: drafts::Drafts::default(),
         }
     }
 
@@ -275,24 +279,65 @@ impl Reportd {
             .collect()
     }
 
-    /// A draft about `about`, with `answers`, redacted.
+    /// A draft about `about`, with `answers`, redacted; kept for `asker`
+    /// when `keep` is set, with its ID and hash.
     fn draft(
         &self,
         asker: Asker,
         about: &About,
         answers: &Answers,
         without_logs: bool,
+        keep: bool,
     ) -> Result<Drafted, String> {
         let parts = parts::gather(about, asker, facts::gather(), &self.store)?;
+        let redactor = redact::Redactor::from_system();
+        if keep {
+            let sections = draft::sections(&parts, answers, without_logs);
+            let base = drafts::Base::redacted(&sections, draft::has_logs(&parts), &redactor);
+            return self.drafts.keep(asker.user, base, &redactor, now());
+        }
         let text = draft::compose(&parts, answers, without_logs);
-        let (text, cuts) = redact::Redactor::from_system().redact(&text);
-        Ok(Drafted { text, cuts, has_logs: draft::has_logs(&parts) })
+        let (text, cuts) = redactor.redact(&text);
+        let cut_by = redact::marks_in(&text);
+        Ok(Drafted { text, cuts, has_logs: draft::has_logs(&parts), cut_by, ..Drafted::default() })
     }
 
     /// `text` redacted again, after the person edited it.
     fn redact(text: &str) -> Drafted {
         let (text, cuts) = redact::Redactor::from_system().redact(text);
-        Drafted { text, cuts, has_logs: false }
+        let cut_by = redact::marks_in(&text);
+        Drafted { text, cuts, has_logs: false, cut_by, ..Drafted::default() }
+    }
+
+    /// `asker`'s draft `id`, whose hash is `sha256`, changed by `edits`.
+    fn edit(&self, asker: Asker, id: &str, sha256: &str, edits: &Edits) -> Result<Drafted, String> {
+        let redactor = redact::Redactor::from_system();
+        self.drafts.edit(asker.user, id, sha256, edits, &redactor, now())
+    }
+
+    /// The text of `asker`'s draft `id`, whose hash is `sha256`.
+    fn kept_text(&self, asker: Asker, id: &str, sha256: &str) -> Result<KeptText, String> {
+        self.drafts.text(asker.user, id, sha256, now()).map(|text| KeptText { text })
+    }
+
+    /// Queues `asker`'s draft `id`, whose hash is `sha256`, and tries it at
+    /// once: the draft is dropped once queued, and kept if it is not.
+    fn send_kept(
+        &self,
+        asker: Asker,
+        (id, sha256): (&str, &str),
+        title: &str,
+        security: bool,
+        crash: Option<&str>,
+    ) -> Result<Sent, String> {
+        let taken = self.drafts.take(asker.user, id, sha256, now())?;
+        match self.send(asker, taken.text(), title, security, crash) {
+            Ok(sent) => Ok(sent),
+            Err(why) => {
+                self.drafts.put_back(taken);
+                Err(why)
+            }
+        }
     }
 
     /// Queues `text` from `asker` and tries it at once.

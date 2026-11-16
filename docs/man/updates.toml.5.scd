@@ -19,7 +19,8 @@ repository of releases through one of its channels (*sysupdate*(8), ADR
 *updated*(8) does with what it finds (ADR 0502). Without it, the
 defaults hold: the stable channel of Dukovo's update server, checked
 once a day, with whoever is signed in told of each update. *sysupdate
-channel* _name_ and *update hold* write it. It is TOML:
+channel* _name_, *update hold* and *update set* write it, and keep the
+comments and the order of what is there. It is TOML:
 
 ```
 channel = "beta"
@@ -31,6 +32,25 @@ system = "2026.3.1"
 ```
 
 # SETTINGS
+
+*check*
+	What *updated*(8) does when it finds an update: *"notify"*, the
+	default, tells whoever is signed in; *"download"* fetches the
+	system update's files too, then tells; *"off"* checks nothing.
+	*update set --check* writes it.
+
+*apps*
+	*"notify"*, the default, tells of app updates; *"auto"* has
+	*updated*(8) update the apps installed for everyone itself. It is
+	one of two settings that say so: *bundled*(8) keeps whether it
+	updates them by itself (*bundle update --automatic*), and
+	*update set --apps* writes both, so that they agree. *update settings* says when
+	they do not.
+
+*metered*
+	*"wait"*, the default, downloads nothing while the connection is
+	metered; *"download"* takes it as any other.
+	*update set --metered* writes it.
 
 *channel*
 	*stable*, the default, the releases most people run; *beta*, each
@@ -102,7 +122,9 @@ system = "2026.3.1"
 	With *unattended*, the time of day, _HH:MM_ in local time, at
 	which *updated*(8) restarts the machine into an update it staged.
 	Without it, the update waits for a restart. Only an unattended
-	machine takes one.
+	machine takes one: a file with *restart* and without *unattended*
+	is refused. *update set --unattended on --restart* _HH:MM_ writes
+	both, and *--unattended off* takes the time away with the setting.
 
 *[hold]*
 	The versions held back, as *update hold* writes them: *system*,
@@ -110,6 +132,12 @@ system = "2026.3.1"
 	no newer than the one held is not taken, nor told of as ready; a
 	newer one is taken as usual. A held version gets no security
 	fixes. *update unhold* removes the line.
+
+	When the health check falls back from a release, it holds that
+	release here too, so that an unattended machine does not stage it
+	again at its next check, and keeps why in
+	_/system/state/sysupdate/held.json_, which *update settings* and
+	*update check --json* read. *update unhold system* takes both away.
 
 # EXAMPLES
 

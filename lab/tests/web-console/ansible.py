@@ -91,6 +91,16 @@ private.add and private.remove name the device lab-phone, which the undo
 of private.add, run first, finds missing. The boot test admin-security
 runs them all, and the browser test web-console/security uses them.
 
+Nor are the Updates' and Apps' actions whose examples need the update
+server or the catalog that only a boot test makes: an update to apply,
+unstage or undo, a hold of the system (which asks the server for the release
+to hold at), and an app to show, update, roll back, hold, let go or remove
+(SET_UP). Their tasks are the commands the console shows, which the boot test
+admin-updates runs, and the browser tests web-console/updates and
+web-console/apps use. The reads and the settings' changes of the Updates page
+are run: they need no server, and updates.check answers with what it could not
+reach.
+
 Nor is storage.grow (ON_A_SECOND_DISK): its example grows vdb, a boot
 test's second disk with room after its last partition, which a lab machine
 has not, and a grow of the machine's own disk cannot be undone. The boot
@@ -128,8 +138,8 @@ from console import (
 # history they read; checks.run runs dukovo-check, as checks.last does; the
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
-# Snapshots, Backups, Move, Accounts, Your account and Security pages whose
-# examples need what only their tests set up (SET_UP); and the grow of a
+# Snapshots, Backups, Move, Accounts, Your account, Security, Updates and Apps
+# pages whose examples need what only their tests set up (SET_UP); and the grow of a
 # second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
@@ -156,6 +166,12 @@ UNDER = {"ssh.on", "ssh.off"}
 # has, and are run.
 # security.unblock needs an address that is blocked; private.add and
 # private.remove a device lab-phone, which private.add's undo removes first.
+# updates.apply, updates.unstage and updates.undo need a release on an update
+# server, to stage, to unstage and to come back from; updates.hold and
+# updates.unhold of the system ask the server which release to hold at;
+# apps.show, apps.update, apps.update-all, apps.rollback, apps.hold,
+# apps.unhold and apps.remove name an app of the test catalog, which a lab
+# machine has not installed.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
@@ -164,6 +180,8 @@ SET_UP = {
     "accounts.remove", "accounts.key-add", "accounts.key-remove", "accounts.token-revoke", "accounts.steps-reset",
     "accounts.end", "account.name", "account.password", "account.key-add", "account.key-remove",
     "security.unblock", "private.add", "private.remove",
+    "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold",
+    "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.

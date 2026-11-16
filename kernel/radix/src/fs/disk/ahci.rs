@@ -99,6 +99,7 @@ fn port_op(op: Op) -> radix_ahci::Op {
         Op::Flush => radix_ahci::Op::Flush,
         Op::Discard(count) => radix_ahci::Op::Trim(count),
         Op::Smart(feature, low) => radix_ahci::Op::Smart(feature, low),
+        Op::PowerMode => radix_ahci::Op::PowerMode,
     }
 }
 
@@ -165,6 +166,17 @@ impl Controller for SataPort {
             None => return Err(Error::Unsupported),
             Some(false) => return Ok(Health::AtaOff),
             Some(true) => {}
+        }
+        // Whether it sleeps, asked by a command no disk spins up for: a
+        // SMART read would wake it, and a disk that does not say is left
+        // alone too.
+        let asked = Request { op: Op::PowerMode, target: 0, sector: 0, data: &[], unit: 1 };
+        let count = match disk.request(&asked) {
+            Ok(()) => disk.controller(|lane| lane.port.power_mode_count()).flatten(),
+            Err(_) => None,
+        };
+        if radix_ahci::ata::asleep(count) {
+            return Ok(Health::Asleep);
         }
         // The data, then the thresholds, each 512 bytes, alone.
         for (feature, at) in [(smart::READ_DATA, 0), (smart::READ_THRESHOLDS, 512)] {

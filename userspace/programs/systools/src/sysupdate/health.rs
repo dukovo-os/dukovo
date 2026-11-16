@@ -17,29 +17,35 @@
 //! The result goes into
 //! the slot state on every EFI system partition: a proved update becomes
 //! the default, and one that failed gives up its tries, and the machine
-//! restarts into the version before it.
+//! restarts into the version before it. The start after a fallback holds
+//! the release it fell back from (UPD-105), so that a machine that
+//! updates by itself does not stage it again; and a wanted check that
+//! fails while an update is tried is told to alertd as an event (UPD-104).
 
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use slots::state::Checked;
+use slots::version::Version;
 use spark_api::show::{self, HealthState::Failing, State};
+use toml_edit::DocumentMut;
 
 use super::place::{self, BUILDING, Root};
 use super::starts::{self, Item, Outcome};
-use super::{bisect, devices, firmware};
+use super::{bisect, devices, firmware, online};
 use crate::alerts::client::{self as alerts, Screen};
 use crate::alerts::protocol::{Alert, Severity};
 use crate::power;
+use crate::settings_edit;
 use crate::subvolume;
 use crate::troubleshoot::Hit;
 use crate::util::Fail;
 
 /// health.toml(5), in the settings.
-const CONFIG: &str = "/system/settings/sysupdate/health.toml";
+pub(crate) const CONFIG: &str = "/system/settings/sysupdate/health.toml";
 
 /// What became of the CPU microcode GRUB handed the kernel
 /// (radix-sysfs(5)).
@@ -51,6 +57,11 @@ pub const LAST: &str = "/system/state/sysupdate/health";
 /// What the sign-in screens show of a failed start until the next start
 /// (ADR 0501), which consoled(8) reads.
 pub const NOTICE: &str = "/system/live/sysupdate/failure";
+
+/// The record that the hold of a release came from its fallback, which
+/// `update check --json` and `update settings --json` read for
+/// `held_because` (update(8)), and `update unhold system` removes.
+pub const HELD: &str = "/system/state/sysupdate/held.json";
 
 /// How often Spark is asked.
 const EVERY: Duration = Duration::from_secs(2);
@@ -324,8 +335,9 @@ pub fn run() -> Result<i32, Fail> {
             config.stable
         );
     }
+    let mut wanted = Vec::new();
     let result = watch(&config, trying)
-        .and_then(|()| checks(&config))
+        .and_then(|()| checks(&config, &mut wanted))
         .and_then(|()| hardware(&root, trying));
     let passed = result.is_ok();
     if passed {
@@ -346,6 +358,15 @@ pub fn run() -> Result<i32, Fail> {
         finish(start, outcome, why, failing, starts::Times::now(starts::signed_in()))
     });
     verdict(&root, &named, passed, trial, this.as_ref())?;
+    // An update that stays is told of the wanted checks it failed, after
+    // the verdict, which waiting for alertd must not hold up. A start
+    // that is no try only logged them.
+    if trying && passed {
+        let version = root.about(root.running).map_or_else(|| named.clone(), |about| about.version);
+        for (name, why) in &wanted {
+            tell_alertd(&wanted_alert(&version, name, why), Screen::Tell);
+        }
+    }
     // A start seen through is timed again once its services settle, which
     // can take two minutes: after the verdict, with the slot state's lock
     // let go, so that neither the verdict nor a stage waits for it.
@@ -420,6 +441,17 @@ fn verdict(
             .filter(|(number, _)| *number == failed.number)
             .and_then(|(_, hit)| hit.clone())
     };
+    // The release this start fell back from is held, whatever else is
+    // told: the fallback has happened, and a hold that cannot be written
+    // is only said.
+    let held = match checked {
+        Checked::FellBack(slot) => fallen(root, slot).map(|version| {
+            let start = noticed(&records, this, checked).map_or(0, |failed| failed.number);
+            let at_ms = crate::util::now_ns() / 1_000_000;
+            hold_fallen(Path::new(online::SETTINGS), Path::new(HELD), &version, start, at_ms)
+        }),
+        _ => None,
+    };
     // A try of changes bisect is judged by the search, which says what
     // it found once it ends.
     if trial.is_none() {
@@ -429,7 +461,9 @@ fn verdict(
             .filter(|start| start.outcome == Outcome::Failed)
             .and_then(|_| bisect::plan_now().ok())
             .map(|search| search.restarts_left());
-        if let Some(text) = failure_notice(&records, this, checked, named, &likely, restarts) {
+        let held = held.as_deref();
+        if let Some(text) = failure_notice(&records, this, checked, named, &likely, restarts, held)
+        {
             tell(&text);
             tell_alertd(&failure_alert(checked, named, &text), Screen::Shown);
         }
@@ -630,8 +664,9 @@ fn watch(config: &Config, trying: bool) -> Result<(), Failure> {
 }
 
 /// Runs health.toml's checks: a required one that fails fails the
-/// health check, a wanted one is only logged.
-fn checks(config: &Config) -> Result<(), Failure> {
+/// health check, a wanted one is logged and put in `wanted`, by its name
+/// and why.
+fn checks(config: &Config, wanted: &mut Vec<(String, String)>) -> Result<(), Failure> {
     for check in &config.checks {
         let passed = run_check(check);
         let kind = if check.required { "required" } else { "wanted" };
@@ -645,6 +680,7 @@ fn checks(config: &Config) -> Result<(), Failure> {
             }
             (Err(why), false) => {
                 println!("sysupdate: the wanted check {} failed: {why}", check.name);
+                wanted.push((check.name.clone(), why.clone()));
             }
         }
     }
@@ -806,7 +842,8 @@ fn start_items(root: &Root) -> Vec<Item> {
 /// failed start, if the signatures name one (troubleshoot(8), ADR 0474),
 /// which `likely` gives; when a search for the change could begin now,
 /// how many restarts it takes at most (`restarts`); and where to read
-/// more. A failed try says nothing: the start after it does.
+/// more. A fallback says, after what Dukovo did, the line `held` of the
+/// release it holds. A failed try says nothing: the start after it does.
 fn failure_notice(
     records: &[starts::Start],
     this: Option<&starts::Start>,
@@ -814,6 +851,7 @@ fn failure_notice(
     named: &str,
     likely: &dyn Fn(&starts::Start) -> Option<Hit>,
     restarts: Option<u32>,
+    held: Option<&str>,
 ) -> Option<String> {
     let this_failed = this.filter(|start| start.outcome == Outcome::Failed);
     let failed = noticed(records, this, checked)?;
@@ -827,6 +865,9 @@ fn failure_notice(
         failed.number,
         failed.why.as_deref().unwrap_or("a check failed")
     );
+    if let Some(held) = held {
+        let _ = writeln!(text, "{held}");
+    }
     if let Some(this) = this_failed.filter(|this| this.number != failed.number) {
         let _ = writeln!(
             text,
@@ -871,6 +912,94 @@ fn failure_alert(checked: Checked, named: &str, text: &str) -> Alert {
         ),
     };
     Alert::new(key.into(), severity, &title, text)
+}
+
+/// The version of the release in `slot`, which this start fell back
+/// from, when it is newer than the one that runs: a fallback of the
+/// firmware set alone holds no release.
+fn fallen(root: &Root, slot: slots::Slot) -> Option<String> {
+    let fallen = root.about(slot)?.version;
+    let running = root.about(root.running)?.version;
+    let newer = Version::parse(&fallen)
+        .zip(Version::parse(&running))
+        .is_some_and(|(fallen, running)| fallen > running);
+    newer.then_some(fallen)
+}
+
+/// What [`HELD`] holds.
+#[derive(Debug, Serialize)]
+struct HeldRecord<'a> {
+    version: &'a str,
+    why: &'static str,
+    at_ms: u64,
+    start: u64,
+}
+
+/// Holds `version`, the release this start fell back from, so that a
+/// machine that updates by itself does not stage it at its next check
+/// and fall back again (UPD-105): `system` under `[hold]` in `settings`,
+/// updates.toml(5), with its comments kept, unless a hold there names
+/// that version or a newer one; and the record `held` that the hold came
+/// from the fallback of start `start`, at `at_ms`. Both are written whole
+/// and made durable. A failure is logged and said, and stops nothing: the
+/// fallback has happened. Gives the line the notice and the alert gain.
+fn hold_fallen(settings: &Path, held: &Path, version: &str, start: u64, at_ms: u64) -> String {
+    let record = HeldRecord { version, why: "fell-back", at_ms, start };
+    let kept = settings_edit::change(settings, 0o644, |document| hold_in(document, version))
+        .map_err(|why| why.to_string())
+        .and_then(|_| serde_json::to_string(&record).map_err(|err| err.to_string()))
+        .and_then(|text| {
+            settings_edit::write(held, format!("{text}\n").as_bytes(), 0o644)
+                .map_err(|err| format!("{}: {err}", held.display()))
+        });
+    match kept {
+        Ok(_) => {
+            println!(
+                "sysupdate: held Dukovo {version}, which fell back, in {} (UPD-105)",
+                settings.display()
+            );
+            format!(
+                "Dukovo {version} is held: it is not staged again until you release it with \
+                 `elevate update unhold system` (UPD-105)."
+            )
+        }
+        Err(why) => {
+            println!("sysupdate: cannot hold Dukovo {version}, which fell back: {why}");
+            format!(
+                "Dukovo {version} could not be held, so a later check may stage it again: {why}. \
+                 `elevate update hold system` holds it."
+            )
+        }
+    }
+}
+
+/// Puts `version` under `[hold]` as `system`, unless a hold there names
+/// it or a newer version.
+fn hold_in(document: &mut DocumentMut, version: &str) -> Result<(), String> {
+    let named =
+        document.get("hold").and_then(|hold| hold.get("system")).and_then(|item| item.as_str());
+    let covered = named
+        .and_then(Version::parse)
+        .zip(Version::parse(version))
+        .is_some_and(|(named, version)| named >= version);
+    if covered {
+        return Ok(());
+    }
+    let table = settings_edit::table(document, "hold")
+        .ok_or_else(|| "its `hold` is not a table".to_string())?;
+    settings_edit::set_string(table, "system", version);
+    Ok(())
+}
+
+/// The event that tells the owner that the wanted check `name` failed,
+/// for `why`, while the update to `version` was tried; the update stays.
+fn wanted_alert(version: &str, name: &str, why: &str) -> Alert {
+    let title = format!("After the update to {version}, the wanted check {name} failed");
+    let detail = format!(
+        "{why} (UPD-104)\nThe update stays: a wanted check that fails is only told. `update \
+         checks` lists its command."
+    );
+    Alert::new("update-check-wanted".into(), Severity::Warning, &title, &detail)
 }
 
 /// Tells alertd of `alert` as an event, waiting for it to start;
@@ -1134,9 +1263,10 @@ mod tests {
         // A failed try says nothing; the start after it does.
         let unknown = |_: &starts::Start| None;
         let failed = Checked::Failed(slots::Slot::A);
-        assert_eq!(failure_notice(&records, None, failed, named, &unknown, None), None);
+        assert_eq!(failure_notice(&records, None, failed, named, &unknown, None, None), None);
         let fell_back = Checked::FellBack(slots::Slot::A);
-        let text = failure_notice(&records, Some(&this), fell_back, named, &unknown, None).unwrap();
+        let text =
+            failure_notice(&records, Some(&this), fell_back, named, &unknown, None, None).unwrap();
         assert!(!text.contains("Likely cause"), "{text}");
         assert!(text.starts_with(&format!("Start 2 failed its health check: {why}\n")), "{text}");
         assert!(text.contains(&format!("Dukovo went back to {named}")), "{text}");
@@ -1144,7 +1274,7 @@ mod tests {
         assert!(text.contains("/errors/BOOT-101.html"), "{text}");
         // A good start that follows no failure says nothing.
         assert_eq!(
-            failure_notice(&records, Some(&this), Checked::Start, named, &unknown, None),
+            failure_notice(&records, Some(&this), Checked::Start, named, &unknown, None, None),
             None
         );
         // The likely cause is a line after what changed, for the failed start.
@@ -1156,7 +1286,8 @@ mod tests {
                 fix: "Plug it in.".into(),
             })
         };
-        let text = failure_notice(&records, Some(&this), fell_back, named, &hit, None).unwrap();
+        let text =
+            failure_notice(&records, Some(&this), fell_back, named, &hit, None, None).unwrap();
         let line = "Likely cause: A card is gone (BOOT-101). Fix: Plug it in.\n";
         assert!(text.contains(&format!("{line}More: changes --failed")), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1178,6 +1309,137 @@ mod tests {
     }
 
     #[test]
+    fn the_release_that_fell_back_is_held_with_the_record_of_why() {
+        let dir = std::env::temp_dir().join(format!("held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (settings, held) = (dir.join("updates.toml"), dir.join("held.json"));
+        let mine = "# Mine: the beta channel.\nchannel = \"beta\" # asked for\n";
+        std::fs::write(&settings, mine).unwrap();
+        let line = hold_fallen(&settings, &held, "1.0.0-alpha.2", 14, 1_794_000_000_000);
+        assert_eq!(
+            line,
+            "Dukovo 1.0.0-alpha.2 is held: it is not staged again until you release it with \
+             `elevate update unhold system` (UPD-105)."
+        );
+        let text = std::fs::read_to_string(&settings).unwrap();
+        assert!(text.starts_with(mine), "{text}");
+        assert!(text.ends_with("[hold]\nsystem = \"1.0.0-alpha.2\"\n"), "{text}");
+        let read = online::Settings::load_from(&settings).unwrap();
+        assert_eq!(read.hold.system.as_deref(), Some("1.0.0-alpha.2"));
+        let record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&held).unwrap()).unwrap();
+        assert_eq!(
+            record,
+            serde_json::json!({
+                "version": "1.0.0-alpha.2", "why": "fell-back", "at_ms": 1_794_000_000_000_u64,
+                "start": 14
+            })
+        );
+        // The same release again changes nothing in the settings.
+        let _ = hold_fallen(&settings, &held, "1.0.0-alpha.2", 15, 1_794_000_100_000);
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), text);
+        // A hold of a newer release already covers an older one; an older
+        // hold gives way to the newer release.
+        let newer = "[hold]\nsystem = \"1.0.0-alpha.3\"\nfirmware = \"2026.2.1\"\n";
+        std::fs::write(&settings, newer).unwrap();
+        let _ = hold_fallen(&settings, &held, "1.0.0-alpha.2", 16, 1_794_000_200_000);
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), newer);
+        std::fs::write(&settings, newer.replace("alpha.3", "alpha.1")).unwrap();
+        let _ = hold_fallen(&settings, &held, "1.0.0-alpha.2", 17, 1_794_000_300_000);
+        let read = online::Settings::load_from(&settings).unwrap();
+        assert_eq!(read.hold.system.as_deref(), Some("1.0.0-alpha.2"));
+        assert_eq!(read.hold.firmware.as_deref(), Some("2026.2.1"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_hold_that_cannot_be_written_is_said_and_keeps_no_record() {
+        let dir = std::env::temp_dir().join(format!("unheld-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (settings, held) = (dir.join("updates.toml"), dir.join("held.json"));
+        std::fs::write(&settings, "channel = \n").unwrap();
+        let line = hold_fallen(&settings, &held, "1.0.0-alpha.2", 14, 1_794_000_000_000);
+        assert!(
+            line.starts_with("Dukovo 1.0.0-alpha.2 could not be held, so a later check"),
+            "{line}"
+        );
+        assert!(line.ends_with(". `elevate update hold system` holds it."), "{line}");
+        assert!(!held.exists());
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), "channel = \n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_notice_of_a_fallback_says_the_release_is_held() {
+        let dir = std::env::temp_dir().join(format!("held-notice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let set = |value: &str| vec![Item::new("firmware", "set", value, Some(200))];
+        let tried =
+            starts::begin_in(&dir, &dir.join("live"), "a", None, set("2026.2.1"), 2000).unwrap();
+        let why = "Spark gave up on sshd: it failed to start (BOOT-102)";
+        starts::finish_in(&dir, tried, Outcome::Failed, Some(why), Some("sshd"), None).unwrap();
+        let this =
+            starts::begin_in(&dir, &dir.join("live"), "b", None, set("2026.1.1"), 3000).unwrap();
+        let this = starts::finish_in(&dir, this, Outcome::Good, None, None, None).unwrap();
+        let records = starts::all_in(&dir);
+        let named = "slot B (Dukovo 0.15.0)";
+        let held = "Dukovo 0.16.0 is held: it is not staged again until you release it.";
+        let unknown = |_: &starts::Start| None;
+        let fell_back = Checked::FellBack(slots::Slot::A);
+        let text =
+            failure_notice(&records, Some(&this), fell_back, named, &unknown, None, Some(held));
+        let text = text.unwrap();
+        let went =
+            format!("Dukovo went back to {named}, with the settings from before the update.\n");
+        assert!(text.contains(&format!("{went}{held}\n")), "{text}");
+        let alert = failure_alert(fell_back, named, &text);
+        assert!(alert.detail.contains(held), "{}", alert.detail);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_wanted_check_that_fails_is_told_as_a_warning_that_names_the_update() {
+        let alert = wanted_alert("1.0.0-alpha.2", "web answers", "it ended with exit status: 7");
+        assert_eq!(
+            (alert.key.as_str(), alert.severity),
+            ("update-check-wanted", Severity::Warning)
+        );
+        assert_eq!(
+            alert.title,
+            "After the update to 1.0.0-alpha.2, the wanted check web answers failed"
+        );
+        assert!(
+            alert.detail.starts_with("it ended with exit status: 7 (UPD-104)\n"),
+            "{}",
+            alert.detail
+        );
+        assert_eq!(alert.invalid(), None);
+    }
+
+    #[test]
+    fn a_wanted_check_that_fails_is_kept_and_a_required_one_fails_the_check() {
+        let check = |name: &str, command: &str, required: bool| Check {
+            name: name.into(),
+            command: vec![command.into()],
+            required,
+            timeout: 10,
+        };
+        let mut config = Config {
+            checks: vec![check("passes", "/bin/true", false), check("wanted", "/bin/false", false)],
+            ..Config::default()
+        };
+        let mut wanted = Vec::new();
+        assert_eq!(checks(&config, &mut wanted), Ok(()));
+        assert_eq!(wanted.len(), 1);
+        assert_eq!(wanted[0].0, "wanted");
+        config.checks.push(check("required", "/bin/false", true));
+        let failed = checks(&config, &mut Vec::new()).unwrap_err();
+        assert_eq!(failed.failing.as_deref(), Some("check required"));
+    }
+
+    #[test]
     fn a_failed_start_that_goes_on_offers_the_search_when_one_could_begin() {
         let dir = std::env::temp_dir().join(format!("offer-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1194,7 +1456,7 @@ mod tests {
         let named = "slot A (Dukovo 0.15.0, firmware 2026.2.1)";
         let unknown = |_: &starts::Start| None;
         let notice = |restarts| {
-            failure_notice(&records, Some(&this), Checked::Start, named, &unknown, restarts)
+            failure_notice(&records, Some(&this), Checked::Start, named, &unknown, restarts, None)
         };
         let offer = "To find which change did it: `elevate changes bisect`, up to";
         let text = notice(Some(2)).unwrap();

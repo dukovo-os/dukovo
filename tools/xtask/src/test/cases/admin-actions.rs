@@ -553,6 +553,13 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
 ///   ADM-123, 422. `admin-move` plans a move from a folder it has made.
 /// - `accounts.show` shows the account `lab-made`, which this guest has
 ///   not made: ACC-101, 422. `admin-accounts` makes it, and shows it.
+/// - `apps.show` shows the app `org.example.notes`, which no catalog of
+///   this guest lists and nobody installed: bundle info ends with its own
+///   words, ADM-123, 422. `admin-updates` installs apps and shows one.
+/// - `updates.slots` reads the slots of an installed system, which this
+///   guest, started from a USB stick, has none of: sysupdate ends with its
+///   own words, ADM-123, 422. `admin-updates` reads them on an installed
+///   system.
 fn may_refuse(id: &str) -> &'static [(u16, &'static str)] {
     match id {
         "checks.last" | "metrics.usage" | "metrics.around" | "service.usage" | "storage.usage" => {
@@ -564,6 +571,7 @@ fn may_refuse(id: &str) -> &'static [(u16, &'static str)] {
         "backups.show" | "backups.key" => &[(422, "BAK-101")],
         "move.plan" => &[(422, "ADM-123")],
         "accounts.show" => &[(422, "ACC-101")],
+        "apps.show" | "updates.slots" => &[(422, "ADM-123")],
         _ => &[],
     }
 }

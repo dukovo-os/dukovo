@@ -260,6 +260,65 @@ pub struct Installation<'a> {
     pub previous: Option<&'a str>,
     /// Whether it is held at its version.
     pub held: bool,
+    /// The names of its services that Spark starts at each boot.
+    pub started: &'a [String],
+    /// The bundles of the same place that use what it provides.
+    pub used_by: &'a [Dependent],
+}
+
+/// A bundle that uses an interface or a socket another provides: its full
+/// ID and name, and what it uses, as its manifest names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Dependent {
+    id: String,
+    name: String,
+    what: String,
+}
+
+/// The bundles among `others`, other than `provider`, whose manifests
+/// `uses` name an interface or a socket that `provider` `provides`: a row
+/// for each use, by ID and then by what it uses. A socket is named by its
+/// provider's ID and its own name, as the provider's ID is written with
+/// or without its line.
+pub fn dependents<'m>(
+    provider: &Manifest,
+    others: impl IntoIterator<Item = &'m Manifest>,
+) -> Vec<Dependent> {
+    let interfaces: Vec<&str> = provider
+        .provides
+        .iter()
+        .filter_map(|p| p.interface.as_ref().map(|i| i.0.as_str()))
+        .collect();
+    let mut sockets = Vec::new();
+    for socket in provider.provides.iter().filter_map(|p| p.socket.as_ref()) {
+        sockets.push(format!("{}/{}", provider.id.0, socket.0));
+        if provider.full_id() != provider.id.0 {
+            sockets.push(format!("{}/{}", provider.full_id(), socket.0));
+        }
+    }
+    let mut found = Vec::new();
+    for other in others {
+        if other.full_id() == provider.full_id() {
+            continue;
+        }
+        for used in &other.uses {
+            let named = match (&used.interface, &used.socket) {
+                (Some(interface), _) => interfaces.contains(&interface.0.as_str()),
+                (None, Some(socket)) => sockets.contains(&socket.0),
+                (None, None) => false,
+            };
+            if named {
+                found.push(Dependent {
+                    id: other.full_id(),
+                    name: other.name.0.clone(),
+                    what: used.what(),
+                });
+            }
+        }
+    }
+    found.sort_by(|a, b| (&a.id, &a.what).cmp(&(&b.id, &b.what)));
+    found.dedup();
+    found
 }
 
 /// What `bundle info --json` says of an installed bundle: what
@@ -289,6 +348,28 @@ pub struct Details {
     data: String,
     previous: Option<String>,
     held: bool,
+    license: String,
+    service_list: Vec<ServiceDetails>,
+    provides: Vec<Offered>,
+    uses: Vec<Offered>,
+    used_by: Vec<Dependent>,
+}
+
+/// A service of the bundle: its name, the account it runs as, and whether
+/// Spark starts it at each boot (`on`) or not (`off`).
+#[derive(Serialize)]
+struct ServiceDetails {
+    name: String,
+    account: String,
+    start: &'static str,
+}
+
+/// An interface or a socket, as the manifest names it: one of the two, the
+/// other `null`.
+#[derive(Serialize)]
+struct Offered {
+    interface: Option<String>,
+    socket: Option<String>,
 }
 
 /// Why the bundle's key is trusted: `catalog`, `developer`, `bound`,
@@ -460,6 +541,33 @@ pub fn details(facts: &Facts<'_>, grants: &[Grant], installation: &Installation<
         data: installation.data.to_string(),
         previous: installation.previous.map(String::from),
         held: installation.held,
+        license: m.license.0.clone(),
+        service_list: m
+            .services
+            .iter()
+            .map(|service| ServiceDetails {
+                name: service.name.0.clone(),
+                account: super::services::account(service),
+                start: if installation.started.contains(&service.name.0) { "on" } else { "off" },
+            })
+            .collect(),
+        provides: m
+            .provides
+            .iter()
+            .map(|provide| Offered {
+                interface: provide.interface.as_ref().map(|interface| interface.0.clone()),
+                socket: provide.socket.as_ref().map(|socket| socket.0.clone()),
+            })
+            .collect(),
+        uses: m
+            .uses
+            .iter()
+            .map(|used| Offered {
+                interface: used.interface.as_ref().map(|interface| interface.0.clone()),
+                socket: used.socket.as_ref().map(|socket| socket.0.clone()),
+            })
+            .collect(),
+        used_by: installation.used_by.to_vec(),
     }
 }
 
@@ -640,9 +748,15 @@ mod tests {
         let text = manifest::bundle::template("org.example.notes", "Notes", "Example, Inc.", "MIT")
             .replace(
                 "\"permissions\": {}",
-                "\"permissions\": {\"network.outbound\": {\"need\": \"required\", \"why\": \"To \
-             sync.\"}, \"network.listen\": {\"need\": \"optional\", \"ports\": [8080]}}, \
-             \"support\": \"bugs@example.org\"",
+                "\"services\": [{\"name\": \"notes-sync\", \"program\": \"notes\", \"account\": \
+             \"notes\", \"sockets\": [{\"path\": \"api\"}]}, {\"name\": \"notes-mail\", \
+             \"program\": \"notes\"}], \"provides\": [{\"socket\": \"api\", \"to\": \"anyone\"}, \
+             {\"interface\": \"org.example.notes/1\", \"to\": \"anyone\"}], \"uses\": \
+             [{\"interface\": \"dukovo.certificates/1\", \"need\": \"optional\"}, {\"socket\": \
+             \"org.example.mail/smtp\", \"need\": \"optional\"}], \"permissions\": \
+             {\"network.outbound\": {\"need\": \"required\", \"why\": \"To sync.\"}, \
+             \"network.listen\": {\"need\": \"optional\", \"ports\": [8080]}}, \"support\": \
+             \"bugs@example.org\"",
             );
         let manifest = manifest::bundle::from_json(&text).unwrap();
         let key = SecretKey::generate(&[5u8; 40]).unwrap().public();
@@ -686,15 +800,124 @@ mod tests {
                 asked: Vec::new(),
             },
         ];
+        let user = user_of("org.example.reader", "org.example.notes/api", None);
+        let used_by = dependents(&manifest, [&user]);
         let installation = Installation {
             installed: 1_793_000_000,
             folder: "/applications/org.example.notes",
             data: "each person's data",
             previous: Some("0.0.9"),
             held: true,
+            started: &["notes-sync".to_string()],
+            used_by: &used_by,
         };
         let line = json::line(&details(&facts, &grants, &installation)).unwrap();
         json::assert_golden(&line, include_str!("../../tests/json/bundle-info.json"));
+    }
+
+    /// A bundle called `id` that uses the socket `socket`, or the interface
+    /// `interface`.
+    fn user_of(id: &str, socket: &str, interface: Option<&str>) -> Manifest {
+        let uses = match interface {
+            Some(interface) => {
+                format!("{{\"interface\": \"{interface}\", \"need\": \"optional\"}}")
+            }
+            None => format!("{{\"socket\": \"{socket}\", \"need\": \"optional\"}}"),
+        };
+        // The template's one program is named for the last part of the id.
+        let program = id.rsplit('.').next().unwrap_or(id);
+        let text = manifest::bundle::template(id, "A user", "Example, Inc.", "MIT").replace(
+            "\"permissions\": {}",
+            &format!(
+                "\"services\": [{{\"name\": \"{program}\", \"program\": \"{program}\"}}], \
+                 \"uses\": [{uses}], \"permissions\": {{}}"
+            ),
+        );
+        manifest::bundle::from_json(&text).unwrap()
+    }
+
+    /// A provider of the socket `api` and the interface
+    /// `org.example.notes/1`.
+    fn provider() -> Manifest {
+        let text = manifest::bundle::template("org.example.notes", "Notes", "Example, Inc.", "MIT")
+            .replace(
+                "\"permissions\": {}",
+                "\"services\": [{\"name\": \"notes\", \"program\": \"notes\", \"sockets\": \
+                 [{\"path\": \"api\"}]}], \"provides\": [{\"socket\": \"api\", \"to\": \"anyone\"}, \
+                 {\"interface\": \"org.example.notes/1\", \"to\": \"anyone\"}], \"permissions\": {}",
+            );
+        manifest::bundle::from_json(&text).unwrap()
+    }
+
+    #[test]
+    fn a_provider_is_used_by_the_bundles_of_its_place_that_name_what_it_provides() {
+        let provider = provider();
+        let by_socket = user_of("org.example.reader", "org.example.notes/api", None);
+        let by_interface = user_of("org.example.writer", "", Some("org.example.notes/1"));
+        let other_socket = user_of("org.example.other", "org.example.notes/web", None);
+        let other_interface = user_of("org.example.newer", "", Some("org.example.notes/2"));
+        let unrelated = user_of("org.example.mail", "org.example.smtp/out", None);
+        let all = [&by_socket, &by_interface, &other_socket, &other_interface, &unrelated];
+        let rows: Vec<(String, String)> =
+            dependents(&provider, all).into_iter().map(|d| (d.id, d.what)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("org.example.reader".to_string(), "org.example.notes/api".to_string()),
+                ("org.example.writer".to_string(), "org.example.notes/1".to_string()),
+            ]
+        );
+        // None of the others use it, and it does not use itself.
+        assert!(dependents(&provider, [&other_socket, &unrelated, &provider]).is_empty());
+        assert!(dependents(&provider, std::iter::empty()).is_empty());
+        // A bundle that names two things it provides has a row for each.
+        let both = user_of("org.example.reader", "org.example.notes/api", None);
+        let again = user_of("org.example.reader", "", Some("org.example.notes/1"));
+        let mut twice = both.clone();
+        twice.uses.extend(again.uses.clone());
+        let rows = dependents(&provider, [&twice]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].what, "org.example.notes/1");
+        assert_eq!(rows[1].what, "org.example.notes/api");
+        assert_eq!(rows[1].name, "A user");
+    }
+
+    #[test]
+    fn a_service_starts_when_its_file_says_so_and_a_bundle_with_none_has_none() {
+        let provider = provider();
+        let say = |started: &[String]| {
+            let installation = Installation {
+                installed: 1,
+                folder: "/applications/org.example.notes",
+                data: "data",
+                previous: None,
+                held: false,
+                started,
+                used_by: &[],
+            };
+            let facts = Facts {
+                manifest: &provider,
+                key: &SecretKey::generate(&[5u8; 40]).unwrap().public(),
+                trust: &Trust::Unknown,
+                place: Place::Everyone,
+                files: 1,
+                bytes: 1,
+                replaces: None,
+                flaws: None,
+                all_flaws: true,
+            };
+            serde_json::to_value(details(&facts, &[], &installation)).unwrap()
+        };
+        let off = say(&[]);
+        assert_eq!(
+            off["service_list"][0],
+            serde_json::json!({"name": "notes", "account": "notes", "start": "off"})
+        );
+        let on = say(&["notes".to_string()]);
+        assert_eq!(on["service_list"][0]["start"], "on");
+        assert_eq!(on["license"], "MIT");
+        assert_eq!(on["provides"][0], serde_json::json!({"interface": null, "socket": "api"}));
+        assert_eq!(on["used_by"], serde_json::json!([]));
     }
 
     #[test]

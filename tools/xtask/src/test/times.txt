@@ -19,7 +19,7 @@ accounts 26
 acpi-power 31
 acpi-thermal 32
 admin-accounts 480
-admin-actions 370
+admin-actions 490
 admin-backups 600
 admin-commands 320
 admin-hardware 420
@@ -30,6 +30,7 @@ admin-security 600
 admin-storage 360
 admin-terminal 360
 admin-trials 900
+admin-updates 540
 ansible 300
 aml-off 16
 audio-cd 60

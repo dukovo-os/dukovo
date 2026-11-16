@@ -185,6 +185,10 @@ pub fn make() -> Result<FsRef> {
     root.add("cpus", Generated::from_fn(next_id(), cpus)?)?;
     let boot = root.add_dir("boot", next_id())?;
     boot.add("times", Generated::from_fn(next_id(), boot_times)?)?;
+    // The memory test's result, there only when `memtest=` ran it.
+    if crate::memtest::ran() {
+        boot.add("memtest", value(crate::memtest::write)?)?;
+    }
     // The kernel's settings, which everyone reads (ADR 0476).
     let settings = root.add_dir("settings", next_id())?;
     for index in 0..crate::settings::count() {

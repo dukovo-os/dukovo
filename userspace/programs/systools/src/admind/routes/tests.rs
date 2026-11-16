@@ -28,6 +28,7 @@ mod changes;
 mod cuts_off;
 mod follow;
 mod fuzz;
+mod once;
 mod restarts;
 mod secrets;
 mod signed_in;
@@ -111,6 +112,17 @@ fn worker_answers(method: &str, params: &Value, calls: &Calls) -> Result<Value, 
         }
         "run" if params["argv"] == json!(["passwd"]) => {
             Ok(json!({ "status": 0, "output": "The password is changed.\n", "errors": "" }))
+        }
+        // A draft reportd keeps for the person (ADR 0568), and any other
+        // that it does not.
+        "run" if params["argv"][0] == "report" && params["argv"][1] == "text" => {
+            let kept = json!(["report", "text", once::DRAFT, "--sha256", once::SHA256]);
+            if params["argv"] == kept {
+                Ok(json!({ "status": 0, "output": once::TEXT, "errors": "" }))
+            } else {
+                let errors = "report: That draft has ended: draft it again (RPT-101)\n";
+                Ok(json!({ "status": 1, "output": "", "errors": errors }))
+            }
         }
         "run" if params["argv"][0] == "probe" => {
             Ok(probe_answer(params["argv"][1].as_str().unwrap_or_default(), calls))
@@ -665,12 +677,17 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             entry.path,
             entry.verb
         );
-        assert!(entry.path.starts_with("/api/1/"), "{}", entry.path);
+        // The API's routes, and the one-time links, which a phone opens.
+        let once = entry.path == ONCE;
+        assert!(entry.path.starts_with("/api/1/") || once, "{}", entry.path);
         assert!(
             matches!(lookup(entry.verb, entry.path), Lookup::Found(found, _) if found.route == entry.route)
         );
-        // No verb that the table does not give the address finds it.
-        assert!(matches!(lookup(Verb::Head, entry.path), Lookup::WrongVerb), "{}", entry.path);
+        // No verb that the table does not give the address finds it: a
+        // one-time link alone answers a HEAD, which counts as its fetch.
+        if !once {
+            assert!(matches!(lookup(Verb::Head, entry.path), Lookup::WrongVerb), "{}", entry.path);
+        }
         // What only reads is a GET, and what changes anything is a POST.
         let reads = [
             Route::Health,
@@ -690,10 +707,13 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::Follow,
             Route::Fresh,
             Route::SignedIn,
+            Route::Once,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 50 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 53 + usize::from(cfg!(feature = "lab")));
+    assert!(matches!(lookup(Verb::Post, "/once/x/report.txt"), Lookup::WrongVerb));
+    assert!(matches!(lookup(Verb::Get, "/once/x/other.txt"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));

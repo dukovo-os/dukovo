@@ -198,6 +198,8 @@ pub struct Shared {
     /// The command that says whether the search for a bad change runs,
     /// which a restart is refused during: [`SEARCH`], or a test's own.
     pub search: Cell<&'static [&'static str]>,
+    /// The one-time links to reports' texts (ADR 0568).
+    pub once: super::once::Links,
 }
 
 /// `changes bisect --status --json`, which says whether the search for a
@@ -244,6 +246,7 @@ impl Shared {
             spark: Cell::new(trials::READ),
             power: RefCell::default(),
             search: Cell::new(SEARCH),
+            once: super::once::Links::default(),
         })
     }
 

@@ -192,6 +192,19 @@ fn lines(out: &mut impl Write, items: &[impl Serialize]) -> Result<(), String> {
         .map_err(|err| format!("cannot answer: {err}"))
 }
 
+/// The kept draft `request` names, by its ID and hash, if it names one: a
+/// draft with a text, or with no hash, is not one.
+fn kept(request: &Request) -> Result<Option<(&str, &str)>, String> {
+    match (request.draft.as_deref(), request.sha256.as_deref(), &request.text) {
+        (None, None, _) => Ok(None),
+        (Some(id), Some(sha256), None) => Ok(Some((id, sha256))),
+        (Some(_), Some(_), Some(_)) => {
+            Err("a request names a draft or gives a text, not both".into())
+        }
+        _ => Err("a draft is named by its ID and its sha256 together".into()),
+    }
+}
+
 /// Does what `request` asks, for `asker`, and writes the answer.
 fn answer(
     reportd: &Reportd,
@@ -204,17 +217,34 @@ fn answer(
         "draft" => {
             let about = request.about.as_ref().ok_or("draft needs what it is about")?;
             let answers = request.answers.clone().unwrap_or_default();
-            one(out, &reportd.draft(asker, about, &answers, request.without_logs)?)
+            one(out, &reportd.draft(asker, about, &answers, request.without_logs, request.keep)?)
         }
-        "redact" => {
-            let text = request.text.as_deref().ok_or("redact needs a text")?;
-            one(out, &Reportd::redact(text))
-        }
+        "redact" => match kept(request)? {
+            Some(named) => {
+                let edits = request.edits.as_ref().ok_or("redact with a draft needs its edits")?;
+                one(out, &reportd.edit(asker, named.0, named.1, edits)?)
+            }
+            None => {
+                let text = request.text.as_deref().ok_or("redact needs a text")?;
+                one(out, &Reportd::redact(text))
+            }
+        },
         "send" => {
-            let text = request.text.as_deref().ok_or("send needs the report's text")?;
             let title = request.title.as_deref().unwrap_or_default();
             let crash = request.crash.as_deref();
-            one(out, &reportd.send(asker, text, title, request.security, crash)?)
+            match kept(request)? {
+                Some(named) => {
+                    one(out, &reportd.send_kept(asker, named, title, request.security, crash)?)
+                }
+                None => {
+                    let text = request.text.as_deref().ok_or("send needs the report's text")?;
+                    one(out, &reportd.send(asker, text, title, request.security, crash)?)
+                }
+            }
+        }
+        "text" => {
+            let (id, sha256) = kept(request)?.ok_or("text needs a draft and its sha256")?;
+            one(out, &reportd.kept_text(asker, id, sha256)?)
         }
         "queue" => lines(out, &reportd.waiting(asker)),
         "retry" => lines(out, &reportd.retry(asker)),

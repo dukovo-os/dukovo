@@ -365,7 +365,7 @@ interface file = 0x000c version 13 {
     method control = 8 (request: u32, argument: u64, buffer: addr, size: u64) -> (result: u64)
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, bad_address,
                 not_terminal, not_permitted, interrupted, io, read_only, not_supported, no_memory,
-                cross_mount, is_directory, no_space, quota_exceeded];
+                cross_mount, is_directory, no_space, quota_exceeded, would_block];
     /// Takes, changes or lets go of (`kind` none) a lock of `owner`'s on
     /// the `length` bytes from `start` (0: all those past it, however the
     /// file grows); a description lock always covers the whole file. A

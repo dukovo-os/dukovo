@@ -195,7 +195,8 @@ The system's services and root's scripts raise alerts. These raise them:
 	A service that is not running as asked, as above.
 
 The events *update-fell-back*, *start-failed*, *update-failed*,
-*update-not-staged*, *update-not-verified* and *kernel-panic* come from
+*update-check-wanted*, *update-not-staged*, *update-not-verified* and
+*kernel-panic* come from
 *sysupdate*(8), *updated*(8) and *dumps*(8). The support center has a
 page for each title.
 

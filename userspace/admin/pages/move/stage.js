@@ -5,9 +5,9 @@
 // Stage it runs `move.stage`, a task that receives the files into a place
 // that the machine starts from, as long as reading them takes; nothing on
 // the machine changes until it restarts, and Cancel (`move.cancel`) takes
-// what was staged away until then. The restart is `elevate reboot`, in a box
-// to copy: its button is the Hardware page's. A restore that is staged
-// already, by a terminal or another tab, is shown as staged, with Cancel and
+// what was staged away until then. Restart now asks first, as the Hardware
+// page does, and counts the minute on the card; the restart is also
+// `elevate reboot`, in a box to copy. A restore that is staged already, by a terminal or another tab, is shown as staged, with Cancel and
 // Stage it off. A typed key is asked for again here, and is sent only in the
 // body of the call.
 
@@ -52,9 +52,11 @@ export function makeStage(view, state, hooks, { port = '' } = {}) {
   const heading = h('h2', { id: `${id}-h`, tabindex: '-1' }, 'Restart to finish');
   const body = h('div', { class: 'mv-stage' });
   const errors = h('div', { class: 'mv-errors' });
+  const pendingHost = h('div', { class: 'mv-pending' });
   let field = null;
   let shown = null;
   let progress = null;
+  let line = null;
 
   /** The words and the bar of the task that stages; they change in place, so that nothing in hand is replaced. */
   function paintProgress() {
@@ -99,17 +101,39 @@ export function makeStage(view, state, hooks, { port = '' } = {}) {
     if (!view.signal.aborted && done.ok) hooks.cancelled();
   }
 
-  /** What step 4 shows once a restore is staged: the words, the restart's command and Cancel. */
+  /** The line that counts the minute, in the card; it asks `power.status` the first time, for a restart that is set already. */
+  async function pending() {
+    if (line === null) {
+      const { pendingRestart } = await import('../../lib/pending-restart.js');
+      line = pendingRestart(view);
+      pendingHost.append(line.element);
+      line.read();
+    }
+    return line;
+  }
+
+  /** Asks, then restarts the machine in a minute. */
+  async function restart() {
+    const { restartNow } = await import('../../lib/restart.js');
+    const from = typeof state.staged?.from === 'string' ? ` from ${state.staged.from}` : '';
+    await restartNow(view, { why: `To finish the restore${from}.`, pending: await pending() });
+  }
+
+  /** What step 4 shows once a restore is staged: the words, the restart's command, Restart now and Cancel. */
   function stagedView() {
     const from = typeof state.staged?.from === 'string' ? ` from ${state.staged.from}` : '';
+    const restartButton = h('button', { class: 'btn default', type: 'button' }, 'Restart now…');
+    restartButton.addEventListener('click', restart);
     const cancelButton = h('button', { class: 'btn', type: 'button' }, 'Cancel');
     cancelButton.addEventListener('click', () => cancel(cancelButton));
+    pending();
     return [
       h('div', { class: 'banner ok', role: 'status' }, icon('check'), h('div', {}, h('p', {}, h('b', {}, `Staged${from}.`), ` ${STAGED_WORDS}`))),
-      h('p', {}, 'To restart this machine and finish, type this at a terminal:'),
+      pendingHost,
+      h('p', {}, 'To restart this machine and finish, press Restart now, or type this at a terminal:'),
       copyBox(RESTART_COMMAND, 'The command that restarts this machine'),
       state.plan !== null && h('p', {}, afterOf(state.plan, state.picks, { port }).open),
-      h('div', { class: 'btns' }, cancelButton),
+      h('div', { class: 'btns' }, restartButton, cancelButton),
     ];
   }
 

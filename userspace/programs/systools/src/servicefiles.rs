@@ -804,9 +804,8 @@ pub(crate) fn certificates_file(
         toml::from_str::<toml::Table>(text).ok().and_then(|keys| keys.get("certificates").cloned())
     };
     let set_in = |file: &Path, text: &str, list: &[String]| {
-        let names: Vec<&str> = list.iter().map(String::as_str).collect();
         crate::settings_edit::edited(text, |document| {
-            crate::settings_edit::set_strings(document.as_table_mut(), "certificates", &names);
+            crate::settings_edit::set_strings(document.as_table_mut(), "certificates", list);
             Ok::<(), String>(())
         })
         .map_err(|_| fail(format!("{}: it is not TOML", file.display())))

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0531. Problem reports are drafted on the machine and sent only as approved
 
-- Status: Accepted
+- Status: Accepted; the web console keeps drafts, cuts their lines and sends them by hash since [0568](0568-reportd-keeps-a-draft-for-the-web-console-which-cuts-its-lines-and-hands-it-to-a-phone-once.md)
 - Date: 2026-11-13
 
 ## Context

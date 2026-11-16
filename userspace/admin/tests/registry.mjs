@@ -29,10 +29,15 @@ const CRATES = {
   accounts: 'userspace/programs/accounts/src/lib.rs',
   // systools' own log(1), as `use crate::log` names it.
   log: 'userspace/programs/systools/src/log.rs',
+  // update(8)'s checks' limits, which the updates' actions hold a check to: `checks::NAME_MAX`.
+  checks: 'userspace/programs/systools/src/update/checks.rs',
+  // The certificate actions' field, as `use super::certificate` names it: `certificate::NAME`.
+  certificate: `${ACTIONS}certificate.rs`,
   // wireguard(8)'s readers, which the private access actions check with.
   'crate::private_access': 'userspace/programs/systools/src/private_access.rs',
   // What an action takes from another action file: `use super::metrics::WORDS`.
   'super::accounts': `${ACTIONS}accounts.rs`,
+  'super::apps': `${ACTIONS}apps.rs`,
   'super::backups': `${ACTIONS}backups.rs`,
   'super::metrics': `${ACTIONS}metrics.rs`,
   'super::snapshots': `${ACTIONS}snapshots.rs`,

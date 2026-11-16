@@ -165,6 +165,10 @@ pub enum Op {
     /// AHCI driver's [`Controller::health`] and [`Controller::self_test`]
     /// ask for it.
     Smart(u8, u8),
+    /// CHECK POWER MODE on a SATA disk, with no buffer: whether it is in
+    /// standby, asked without waking it. Only the AHCI driver's
+    /// [`Controller::health`] asks for it.
+    PowerMode,
 }
 
 /// A request: what it does, to which of the disk's volumes, and the
@@ -1206,6 +1210,7 @@ impl<C: Controller> Disk<C> {
             }
             Op::Flush => what.write_str("a flush"),
             Op::Smart(..) => what.write_str("a SMART command"),
+            Op::PowerMode => what.write_str("a check of the power mode"),
         };
         let mut after = TextBuf::<16>::new();
         if tries > 1 {
