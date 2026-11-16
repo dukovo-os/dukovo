@@ -2,3 +2,101 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
+
+/*
+ * The Apps pages: the table of installed apps, an app's panel beside it, and
+ * the dialogs that go back and remove. On a phone the panel is a page of its
+ * own, and the table becomes a card for each app, under the container query
+ * the shell uses. Same rules as console.css: rem, and px for borders and focus
+ * rings.
+ */
+.apps { display: flex; flex-wrap: wrap; gap: 1.143rem; align-items: flex-start; }
+.apps-list { display: flex; flex-direction: column; gap: 1.143rem; flex: 1 1 100%; min-width: 0; }
+.apps.has-app .apps-list { flex: 999 1 30rem; }
+.apps-panel, .apps-missing { flex: 1 1 28rem; min-width: 0; }
+.apps-missing p { margin: 0; }
+.apps-errors:empty, .apps-command:empty { display: none; }
+
+/* The line over the table, and a button with the command under it */
+.apps-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .571rem 1.143rem; }
+.apps-tools p { margin: 0; }
+.apps-action { display: flex; flex-direction: column; gap: .286rem; align-items: flex-start; min-width: 0; }
+.apps-empty { margin: 0; padding: 1.143rem; border: 1px dashed var(--border); border-radius: .429rem; }
+
+/* The table: an app's mark, its name and ID, and what is to be done about it */
+.apps-who { display: flex; align-items: center; gap: .714rem; min-width: 0; color: inherit; text-decoration: none; }
+a.apps-who:hover b, a.apps-who:focus-visible b { text-decoration: underline; }
+.apps-who small { overflow-wrap: anywhere; }
+.apps-next { display: flex; flex-direction: column; align-items: flex-start; gap: .143rem; }
+.apps-yours { display: flex; flex-direction: column; gap: .571rem; }
+.apps-yours h2 { font: 600 1rem var(--font-ui); }
+.apps-yours p { margin: 0; }
+.apps-yours .cmd + .cmd { margin-top: .429rem; }
+
+/* An app's mark: its first letter in a square of one of six colours, white letters of at least 4.5 to 1 */
+.apps-ic { display: inline-grid; place-items: center; flex: none; width: 2.429rem; height: 2.429rem; border-radius: .5rem; color: #fff; font: 700 1rem var(--font-brand); background: #B0281F; }
+.apps-ic.big { width: 3.143rem; height: 3.143rem; font-size: 1.286rem; }
+.apps-ic.tint-1 { background: #1D6A31; }
+.apps-ic.tint-2 { background: #2C5C93; }
+.apps-ic.tint-3 { background: #5E4FA0; }
+.apps-ic.tint-4 { background: #8A4A12; }
+.apps-ic.tint-5 { background: #5A6878; }
+
+/* The panel */
+.apps-panel { gap: 1rem; }
+.apps-title { display: flex; align-items: center; gap: .857rem; min-width: 0; }
+.apps-title > div { display: flex; flex-direction: column; gap: .143rem; min-width: 0; }
+.apps-title h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); }
+.apps-title h2:focus { outline: none; }
+.apps-title h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.apps-job { margin: 0; font-weight: 600; }
+.apps-panel h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.apps-panel .rows dd { overflow-wrap: anywhere; }
+.apps-lines { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .143rem; }
+.apps-lines code { font: .893rem var(--font-mono); }
+.apps-sheet { margin: 0; padding: .571rem .714rem; max-height: 14rem; overflow: auto; border: 1px solid var(--border); border-radius: .357rem; background: var(--sunken); }
+.apps-buttons { display: flex; flex-direction: column; gap: .571rem; }
+.apps-buttons p, .apps-own p { margin: 0; }
+.apps-own { display: flex; flex-direction: column; gap: .571rem; }
+.apps-versions { display: flex; flex-direction: column; gap: .429rem; }
+.apps-versions p { margin: 0; }
+.apps-versions .tbl td.end { white-space: normal; }
+.apps-versions .apps-action { align-items: flex-end; }
+.apps-panel .btn[aria-disabled="true"], .apps-list .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+
+/* The dialogs */
+.apps-lead { display: flex; flex-direction: column; gap: .571rem; }
+.apps-lead p, .apps-users { margin: 0; }
+.apps-users { padding-left: 1.143rem; }
+.apps-command { display: flex; flex-direction: column; gap: .429rem; }
+.apps-command h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.dialog fieldset.choices .radio-card > span { display: flex; flex-direction: column; gap: .143rem; }
+
+/* The phone: the panel is the page and the list is not drawn beside it; each app is a card, and every button is 44 px tall and fills the width. */
+@container (max-width: 51.4rem) {
+  .apps.has-app .apps-list { display: none; }
+  .apps-list .tbl-box, .apps-yours .tbl-box { border: 0; }
+  .apps-list .tbl.stack tr, .apps-yours .tbl.stack tr { margin: .571rem 0; }
+  .apps-list .tbl.stack td::before, .apps-yours .tbl.stack td::before { margin-bottom: .143rem; }
+  .apps-who { min-height: 3.143rem; }
+  .apps-panel .rows { grid-template-columns: minmax(0, 1fr); gap: .143rem; }
+  .apps-panel .rows dd { margin-bottom: .571rem; }
+  .apps-panel .btns, .apps-buttons .apps-action { width: 100%; }
+  .apps-panel .btns .btn, .apps-panel .apps-action .btn { width: 100%; box-sizing: border-box; min-height: 3.143rem; }
+  .apps-panel .apps-action { align-items: stretch; }
+  .apps-tools .apps-action { width: 100%; }
+  .apps-tools .btn { width: 100%; box-sizing: border-box; min-height: 3.143rem; }
+  .apps-versions .tbl td { display: block; padding: .286rem .571rem; }
+  .apps-versions .tbl td.end { text-align: left; }
+  .apps-versions .tbl tr { display: block; padding: .286rem 0; border-bottom: 1px solid var(--border); }
+  .apps-versions .tbl tr:last-child { border-bottom: 0; }
+  .apps-versions .tbl, .apps-versions .tbl tbody { display: block; }
+  .apps-versions .apps-action { align-items: stretch; }
+}
+
+/* Forced colours: the marks and the sheet are drawn in system colours, and what only a tint showed has an outline. */
+@media (forced-colors: active) {
+  .dk .apps-ic { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border: 1px solid ButtonText; }
+  .dk .apps-sheet, .dk .apps-empty { border-color: CanvasText; }
+  .dk .apps-panel .btn[aria-disabled="true"], .dk .apps-list .btn[aria-disabled="true"] { color: GrayText; border-color: GrayText; }
+}

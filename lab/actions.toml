@@ -1319,6 +1319,162 @@ compares = false
 tests = { checks = "admind::actions::private::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
 
 [[action]]
+id = "power.status"
+title = "Show a restart or shut down that is set"
+area = "power"
+changes = false
+method = "GET"
+path = "/api/1/power"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "power.restart"
+title = "Restart this machine"
+area = "power"
+changes = true
+method = "POST"
+path = "/api/1/power/restart"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "power.shutdown"
+title = "Shut down this machine"
+area = "power"
+changes = true
+method = "POST"
+path = "/api/1/power/shutdown"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "power.cancel"
+title = "Cancel a restart or shut down"
+area = "power"
+changes = true
+method = "POST"
+path = "/api/1/power/cancel"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.bisect-status"
+title = "Show the search for a bad change"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/bisect"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.bisect"
+title = "Search for the change that broke a start"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/bisect"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.bisect-stop"
+title = "Stop the search for a bad change"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/bisect/stop"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.bisect-confirm"
+title = "Make sure of the change the search named"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/bisect/confirm"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.show"
+title = "Show what this machine is"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.inventory"
+title = "Show the memory modules"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware/inventory"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.last"
+title = "Show the last hardware check"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware/check"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.history"
+title = "Show the hardware checks by day"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware/history"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.check"
+title = "Check the hardware"
+area = "hardware"
+changes = true
+method = "POST"
+path = "/api/1/hardware/check"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
 id = "updates.last"
 title = "Show the last check for updates"
 area = "updates"
