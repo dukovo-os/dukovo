@@ -20,7 +20,9 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use super::client;
-use super::protocol::{Active, Alert, Change, Channel, Delivery, Request, SOCKET, Severity, State};
+use super::protocol::{
+    About, Active, Alert, Change, Channel, Delivery, Request, SOCKET, Severity, State,
+};
 use crate::alertd::text;
 use crate::args::{Arg, Args};
 use crate::deadline::Deadline;
@@ -31,8 +33,8 @@ const HELP: &str = "Usage: alerts [list] [--json]
        alerts history [-n COUNT] [--json]
        alerts test
        alerts status [--json]
-       alerts raise KEY --title TEXT [--detail TEXT] [--critical]
-       alerts event KEY --title TEXT [--detail TEXT] [--critical]
+       alerts raise KEY --title TEXT [--detail TEXT] [--critical] [--about WORD]
+       alerts event KEY --title TEXT [--detail TEXT] [--critical] [--about WORD]
        alerts clear KEY
 
 Shows the alerts that alertd(8) keeps, as alerts(8) describes. Every
@@ -44,7 +46,8 @@ command needs root; try elevate alerts.
            exits 1 if any failed
   status   each channel's last success, last error and waiting messages
   raise    raises an alert, as a root script does; --critical for one
-           that costs data
+           that costs data, --about for what it is about: data, stopped
+           or hardware, which decides the channels it goes to
   event    tells of something once, with no alert left active
   clear    clears an alert that raise made
   --json   prints what alertd answered, a line of JSON each";
@@ -179,23 +182,41 @@ fn history_options(args: &mut Args) -> Result<Command, Fail> {
 /// `event`.
 fn alert_options(args: &mut Args) -> Result<Alert, Fail> {
     let (mut key, mut title, mut detail) = (None, None, String::new());
-    let mut severity = Severity::Warning;
+    let (mut severity, mut about) = (Severity::Warning, None);
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(name) if name == "title" => title = Some(args.text()?),
             Arg::Long(name) if name == "detail" => detail = args.text()?,
             Arg::Long(name) if name == "critical" => severity = Severity::Critical,
+            Arg::Long(name) if name == "about" => about = Some(about_word(&args.text()?)?),
             Arg::Operand(operand) if key.is_none() => key = Some(text_of(operand)?),
             other => return Err(args.unknown(&other)),
         }
     }
     let key = key.ok_or_else(|| usage("a KEY is needed, such as backup-late".into()))?;
     let title = title.ok_or_else(|| usage("--title TEXT is needed".into()))?;
-    let alert = Alert { key, severity, title, detail };
+    let alert = Alert {
+        key,
+        severity,
+        title,
+        detail,
+        about: about.map(|about: About| about.word().into()),
+    };
     match alert.invalid() {
         Some(why) => Err(usage(why)),
         None => Ok(alert),
     }
+}
+
+/// The one kind of alert `word` names; a word that is none is a mistake
+/// where it is made, so that a script's typo is caught there.
+fn about_word(word: &str) -> Result<About, Fail> {
+    About::parse(word).ok_or_else(|| {
+        usage(format!(
+            "'{word}' is no kind of alert; --about takes one of {}",
+            super::protocol::ABOUT.join(", ")
+        ))
+    })
 }
 
 fn key_operand(args: &mut Args) -> Result<String, Fail> {
@@ -390,7 +411,10 @@ fn status(json: bool) -> Result<i32, Fail> {
 fn status_lines(channels: &[Channel]) -> Vec<String> {
     let mut lines = Vec::new();
     for channel in channels {
-        lines.push(channel.channel.clone());
+        lines.push(match channel.told_of() {
+            Some(told) => format!("{}, told of: {told}", channel.channel),
+            None => channel.channel.clone(),
+        });
         let ok = channel.last_ok.map_or("never".to_string(), text::utc);
         lines.push(format!("  last sent   {ok}"));
         if let Some((at, why)) = &channel.last_error {
@@ -419,7 +443,26 @@ mod tests {
     }
 
     fn alert(key: &str, severity: Severity, title: &str, detail: &str) -> Alert {
-        Alert { key: key.into(), severity, title: title.into(), detail: detail.into() }
+        Alert { key: key.into(), severity, title: title.into(), detail: detail.into(), about: None }
+    }
+
+    /// A channel of `kind` that has taken and failed nothing.
+    fn standing(name: &str, kind: &str) -> Channel {
+        Channel {
+            channel: name.into(),
+            last_ok: None,
+            last_error: None,
+            waiting: 0,
+            kind: kind.into(),
+            host: None,
+            severity: Severity::Warning,
+            cleared: true,
+            number: None,
+            id: None,
+            name: None,
+            error_id: None,
+            about: None,
+        }
     }
 
     #[test]
@@ -541,13 +584,24 @@ mod tests {
     #[test]
     fn a_test_says_sent_or_failed_with_the_servers_words() {
         let deliveries = [
-            Delivery { channel: "email to ops@example.com".into(), ok: true, error: None },
+            Delivery {
+                channel: "email to ops@example.com".into(),
+                ok: true,
+                error: None,
+                error_id: None,
+            },
             Delivery {
                 channel: "ntfy (ntfy.sh)".into(),
                 ok: false,
                 error: Some("ntfy answered 403 Forbidden: no".into()),
+                error_id: Some("ALR-103".into()),
             },
-            Delivery { channel: "json (hooks.test)".into(), ok: false, error: None },
+            Delivery {
+                channel: "json (hooks.test)".into(),
+                ok: false,
+                error: None,
+                error_id: None,
+            },
         ];
         assert_eq!(
             test_lines(&deliveries),
@@ -563,16 +617,13 @@ mod tests {
     fn the_status_gives_the_last_success_the_last_error_and_the_waiting() {
         let channels = [
             Channel {
-                channel: "email to ops@example.com".into(),
                 last_ok: Some(1_763_030_531),
-                last_error: None,
-                waiting: 0,
+                ..standing("email to ops@example.com", "email")
             },
             Channel {
-                channel: "ntfy (ntfy.sh)".into(),
-                last_ok: None,
                 last_error: Some((1_763_030_600, "cannot reach ntfy.sh: refused".into())),
                 waiting: 1,
+                ..standing("ntfy (ntfy.sh)", "ntfy")
             },
         ];
         assert_eq!(

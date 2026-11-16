@@ -53,7 +53,7 @@ use tuf::http;
 use tuf::url::Url;
 
 use super::settings::{Channel, Filter, Target};
-use crate::alerts::protocol::{Browser, Change, Severity, State, Subscribe};
+use crate::alerts::protocol::{ABOUT, About, Browser, Change, Kinds, Severity, State, Subscribe};
 
 /// The source of the event alertd records when a browser ends its
 /// subscription.
@@ -309,7 +309,13 @@ impl Subscription {
     pub fn channel(&self, private: &[Network]) -> Channel {
         Channel {
             name: format!("push to {}", self.name),
-            filter: Filter { severity: self.severity, cleared: self.cleared },
+            filter: Filter {
+                severity: self.severity,
+                cleared: self.cleared,
+                // Read as alerts.toml's is: a word that is no kind never
+                // narrows, so no alert is lost to a mistake.
+                about: self.about.as_deref().map_or(Kinds::ALL, |words| Kinds::read(words).0),
+            },
             target: Target::Push(Box::new(Push {
                 subscription: self.clone(),
                 private: private.to_vec(),
@@ -371,7 +377,7 @@ pub fn save(dir: &Path, subscriptions: &[Subscription]) -> io::Result<()> {
 /// [`SUBSCRIPTIONS_MAX`] already kept.
 pub fn add(
     subscriptions: &mut Vec<Subscription>,
-    asked: Subscribe,
+    mut asked: Subscribe,
     now_ms: u64,
     private: &[Network],
 ) -> Result<String, String> {
@@ -393,7 +399,7 @@ pub fn add(
         return Err("p256dh is not an uncompressed P-256 key".into());
     }
     decode_key(&asked.auth, AUTH_BYTES, "auth")?;
-    let about = asked.about.filter(|words| !words.is_empty());
+    let about = kinds_told_of(asked.about.take().as_deref())?;
     let made = |id: String| Subscription {
         id,
         name: name.to_string(),
@@ -420,6 +426,45 @@ pub fn add(
     let id = crate::cert::inspect::hex(&bytes);
     subscriptions.push(made(id.clone()));
     Ok(id)
+}
+
+/// The words that keep the kinds `words` name: each of [`ABOUT`]'s once, in
+/// its order, and none for every kind, which none or all three are.
+///
+/// # Errors
+///
+/// The word that is no kind of alert.
+fn kinds_told_of(words: Option<&[String]>) -> Result<Option<Vec<String>>, String> {
+    let Some(words) = words else { return Ok(None) };
+    if let Some(bad) = words.iter().find(|word| About::parse(word).is_none()) {
+        return Err(format!(
+            "about names {}, which is no kind of alert; the kinds are {}",
+            super::trouble::cut(bad, 40),
+            ABOUT.join(", ")
+        ));
+    }
+    let (kinds, _) = Kinds::read(words);
+    Ok(if words.is_empty() { None } else { kinds.words() })
+}
+
+/// Makes the kinds that the subscription `id` is told of `about`, none for
+/// every kind; gives its name.
+///
+/// # Errors
+///
+/// A word that is no kind of alert, or no subscription with that ID.
+pub fn set_about(
+    subscriptions: &mut [Subscription],
+    id: &str,
+    about: Option<&[String]>,
+) -> Result<String, String> {
+    let about = kinds_told_of(about)?;
+    let kept = subscriptions
+        .iter_mut()
+        .find(|kept| kept.id == id)
+        .ok_or_else(|| format!("no browser gets alerts as {id}; alerts status lists them"))?;
+    kept.about = about;
+    Ok(kept.name.clone())
 }
 
 /// Takes the subscription `id` out of `subscriptions`; whether there was
@@ -904,6 +949,73 @@ mod tests {
         assert!(remove(&mut kept, &id));
         assert!(!remove(&mut kept, &id));
         assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn the_kinds_a_browser_is_told_of_are_kept_in_order_and_none_is_every_kind() {
+        let words = |words: &[&str]| Some(words.iter().map(ToString::to_string).collect());
+        let told = |about: Option<Vec<String>>| {
+            let mut kept = Vec::new();
+            let asked = Subscribe { about, ..asked("https://push.example.net/a") };
+            add(&mut kept, asked, 0, &[]).map(|_| kept.remove(0).about)
+        };
+        assert_eq!(told(None), Ok(None));
+        assert_eq!(told(words(&[])), Ok(None));
+        assert_eq!(told(words(&["hardware", "data", "data"])), Ok(words(&["data", "hardware"])));
+        assert_eq!(told(words(&["data", "stopped", "hardware"])), Ok(None));
+        let refused = told(words(&["data", "colour"])).unwrap_err();
+        assert_eq!(
+            refused,
+            "about names colour, which is no kind of alert; the kinds are data, stopped, hardware"
+        );
+        // The same browser added again with other kinds says them.
+        let mut kept = Vec::new();
+        let endpoint = "https://push.example.net/b";
+        let id = add(&mut kept, asked(endpoint), 0, &[]).unwrap();
+        let again = Subscribe { about: words(&["stopped"]), ..asked(endpoint) };
+        assert_eq!(add(&mut kept, again, 1, &[]).unwrap(), id);
+        assert_eq!(kept[0].about, words(&["stopped"]));
+    }
+
+    #[test]
+    fn the_kinds_of_a_subscription_change_by_its_id_and_are_its_channels_filter() {
+        let words = |words: &[&str]| words.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut kept = Vec::new();
+        let id = add(&mut kept, asked("https://push.example.net/c"), 0, &[]).unwrap();
+        assert_eq!(kept[0].channel(&[]).filter.about, Kinds::ALL);
+        let name = set_about(&mut kept, &id, Some(&words(&["hardware"]))).unwrap();
+        assert_eq!(name, "Firefox on a phone");
+        assert_eq!(kept[0].about, Some(words(&["hardware"])));
+        assert_eq!(kept[0].channel(&[]).filter.about, Kinds::of(&[About::Hardware]));
+        assert_eq!(set_about(&mut kept, &id, None).unwrap(), name);
+        assert_eq!(kept[0].about, None);
+        let refused = set_about(&mut kept, &id, Some(&words(&["colour"]))).unwrap_err();
+        assert!(refused.contains("which is no kind of alert"), "{refused}");
+        let missing = set_about(&mut kept, "ffffffffffffffff", None).unwrap_err();
+        assert_eq!(missing, "no browser gets alerts as ffffffffffffffff; alerts status lists them");
+        // A word in the store that is no kind (a file mended by hand) never
+        // narrows: with no known word it is every kind.
+        kept[0].about = Some(words(&["colour"]));
+        assert_eq!(kept[0].channel(&[]).filter.about, Kinds::ALL);
+        kept[0].about = Some(words(&["colour", "data"]));
+        assert_eq!(kept[0].channel(&[]).filter.about, Kinds::of(&[About::Data]));
+    }
+
+    #[test]
+    fn the_kinds_are_kept_in_the_store_and_read_back() {
+        let dir = std::env::temp_dir().join(format!("push-about-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut kept = Vec::new();
+        let told =
+            Subscribe { about: Some(vec!["data".into()]), ..asked("https://push.example.net/d") };
+        add(&mut kept, told, 0, &[]).unwrap();
+        add(&mut kept, asked("https://push.example.net/e"), 0, &[]).unwrap();
+        save(&dir, &kept).unwrap();
+        let (read, wrong) = load(&dir);
+        assert_eq!(wrong, None);
+        assert_eq!(read[0].about, Some(vec!["data".to_string()]));
+        assert_eq!(read[1].about, None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -223,6 +223,7 @@ mod tests {
                 severity,
                 title: title.into(),
                 detail: detail.into(),
+                about: None,
             },
         }
     }

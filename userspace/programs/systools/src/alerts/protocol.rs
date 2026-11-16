@@ -19,6 +19,7 @@
 //! | `push-add` | `subscribe` | [`Added`]: a browser's subscription, kept    |
 //! | `push-remove` | `id`  | [`Done`]                                        |
 //! | `push-list` |         | a [`Browser`] a line, then [`End`]              |
+//! | `push-about` | `id`, `about` | [`Done`]: the kinds a browser is told of |
 //!
 //! A request alertd does not take is answered with a [`Refusal`]. Only
 //! root's processes may ask, and each alert belongs to the resource
@@ -38,12 +39,18 @@ pub const DETAIL_MAX: usize = 2000;
 /// The longest a request line may be.
 pub const REQUEST_MAX: usize = 16 * 1024;
 
+/// The longest word an alert's `about` may be.
+pub const ABOUT_MAX: usize = 32;
+
 /// How bad it is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     /// Something to see to soon, before it costs data: a disk filling,
     /// a backup late.
+    #[default]
     Warning,
     /// Something costing data or about to: a disk failing, a RAID
     /// volume without its second copy.
@@ -60,6 +67,130 @@ impl Severity {
     }
 }
 
+/// The words of the kinds of alert, as the commands, alerts.toml and the
+/// console name them.
+pub const ABOUT: [&str; 3] = ["data", "stopped", "hardware"];
+
+/// What an alert is about, so that a channel can be told of some kinds
+/// and not others (ADR 0566).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum About {
+    /// Data at risk: a disk failing or wearing out, a filesystem nearly
+    /// full, a mirror missing a disk, a backup failed or late.
+    Data,
+    /// Something stopped: a service, an update or a start that failed,
+    /// a certificate running out, the kernel stopping, memory running low.
+    Stopped,
+    /// Hardware: a sensor or a disk running hot, the memory test at the
+    /// start.
+    Hardware,
+}
+
+impl About {
+    /// Every kind, in the order of [`ABOUT`].
+    pub const ALL: [About; 3] = [About::Data, About::Stopped, About::Hardware];
+
+    /// Its word.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            About::Data => ABOUT[0],
+            About::Stopped => ABOUT[1],
+            About::Hardware => ABOUT[2],
+        }
+    }
+
+    /// The kind that `word` names, or none.
+    #[must_use]
+    pub fn parse(word: &str) -> Option<About> {
+        About::ALL.into_iter().find(|about| about.word() == word)
+    }
+
+    /// What it is, as a sentence says it: "told of: data at risk".
+    #[must_use]
+    pub fn phrase(self) -> &'static str {
+        match self {
+            About::Data => "data at risk",
+            About::Stopped => "something stopped",
+            About::Hardware => "hardware",
+        }
+    }
+
+    fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
+}
+
+/// A set of kinds of alert, in one byte: the kinds a channel is told of.
+/// Every kind is the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Kinds(u8);
+
+impl Kinds {
+    /// Every kind: a channel that is told of all of them.
+    pub const ALL: Kinds = Kinds(0b111);
+
+    /// The set of `kinds`.
+    #[must_use]
+    pub fn of(kinds: &[About]) -> Kinds {
+        Kinds(kinds.iter().fold(0, |bits, about| bits | about.bit()))
+    }
+
+    /// Whether `about` is in it.
+    #[must_use]
+    pub fn holds(self, about: About) -> bool {
+        self.0 & about.bit() != 0
+    }
+
+    /// Whether it is every kind.
+    #[must_use]
+    pub fn is_all(self) -> bool {
+        self == Kinds::ALL
+    }
+
+    /// The kinds in it, in the order of [`ABOUT`].
+    #[must_use]
+    pub fn list(self) -> Vec<About> {
+        About::ALL.into_iter().filter(|about| self.holds(*about)).collect()
+    }
+
+    /// Its words, as a channel's `about` is written: none for every kind.
+    #[must_use]
+    pub fn words(self) -> Option<Vec<String>> {
+        (!self.is_all()).then(|| self.list().iter().map(|about| about.word().to_string()).collect())
+    }
+
+    /// What it is told of, in words: "data at risk, hardware", or "every
+    /// kind".
+    #[must_use]
+    pub fn phrases(self) -> String {
+        if self.is_all() {
+            return "every kind".into();
+        }
+        let phrases: Vec<&str> = self.list().iter().map(|about| about.phrase()).collect();
+        phrases.join(", ")
+    }
+
+    /// The kinds that `words` name, read so that a mistake can only tell
+    /// a channel more, never less: a word that is no kind is left out, and
+    /// is the second of the answer; when no word is a kind, or there is no
+    /// word, it is every kind.
+    #[must_use]
+    pub fn read(words: &[String]) -> (Kinds, Vec<String>) {
+        let (known, unknown): (Vec<_>, Vec<_>) =
+            words.iter().partition(|word| About::parse(word).is_some());
+        let kinds: Vec<About> = known.iter().filter_map(|word| About::parse(word)).collect();
+        let set = if kinds.is_empty() { Kinds::ALL } else { Kinds::of(&kinds) };
+        (set, unknown.into_iter().cloned().collect())
+    }
+}
+
+impl Default for Kinds {
+    fn default() -> Kinds {
+        Kinds::ALL
+    }
+}
+
 /// An alert as its source raises it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Alert {
@@ -73,6 +204,12 @@ pub struct Alert {
     /// What to do about it, up to [`DETAIL_MAX`] characters.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub detail: String,
+    /// What it is about: one of [`ABOUT`]'s words, which decides which
+    /// channels it is sent to. It is text, not [`About`], so that an
+    /// alert with a word this alertd does not know is still read, kept
+    /// and sent, as one that has none. None: every channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
 }
 
 impl Alert {
@@ -87,7 +224,21 @@ impl Alert {
             severity,
             title: clip(line, TITLE_MAX),
             detail: clip(detail.trim_end(), DETAIL_MAX),
+            about: None,
         }
+    }
+
+    /// The alert, about `about`.
+    #[must_use]
+    pub fn about(mut self, about: About) -> Alert {
+        self.about = Some(about.word().to_string());
+        self
+    }
+
+    /// What it is about, when it has a word that is a kind.
+    #[must_use]
+    pub fn kind(&self) -> Option<About> {
+        self.about.as_deref().and_then(About::parse)
     }
 
     /// What is wrong with it for alertd to refuse it, if anything.
@@ -112,6 +263,16 @@ impl Alert {
         if self.detail.chars().count() > DETAIL_MAX {
             return Some(format!(
                 "the alert {}'s detail is longer than {DETAIL_MAX} characters",
+                self.key
+            ));
+        }
+        // Any word is taken, so that none is lost; it is logged, so it is
+        // one short word and no line break.
+        if let Some(about) = &self.about
+            && (about.chars().count() > ABOUT_MAX || about.chars().any(char::is_control))
+        {
+            return Some(format!(
+                "the alert {}'s about is not a word of up to {ABOUT_MAX} characters",
                 self.key
             ));
         }
@@ -147,7 +308,8 @@ pub fn key_part(text: &str) -> String {
 #[serde(default)]
 pub struct Request {
     /// `raise`, `event`, `clear`, `set`, `list`, `history`, `test`,
-    /// `status`, `push-key`, `push-add`, `push-remove` or `push-list`.
+    /// `status`, `push-key`, `push-add`, `push-remove`, `push-list` or
+    /// `push-about`.
     pub ask: String,
     /// raise and event: the alert.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,9 +333,13 @@ pub struct Request {
     /// push-add: the browser's subscription.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscribe: Option<Subscribe>,
-    /// push-remove: the ID of the subscription to remove.
+    /// push-remove and push-about: the ID of the subscription.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// push-about: the kinds of alert it is to be told of, or none for
+    /// every kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub about: Option<Vec<String>>,
 }
 
 /// A browser's subscription to alerts by Web Push (ADR 0566), as the
@@ -308,6 +474,10 @@ pub struct Delivery {
     /// where there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The ID of the page that says what to do about it (`ALR-101`), when
+    /// alertd knows the kind of the failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_id: Option<String>,
 }
 
 /// Where a channel stands.
@@ -322,6 +492,46 @@ pub struct Channel {
     pub last_error: Option<(u64, String)>,
     /// The messages waiting to be tried again.
     pub waiting: usize,
+    /// What it is: `email`, `ntfy`, `matrix`, `slack`, `discord`, `json`
+    /// or `push`.
+    #[serde(default)]
+    pub kind: String,
+    /// The host of its server, or of a browser's push service; never
+    /// the address, which can be a secret.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// The least severe alert it is told, and whether it is told when
+    /// one clears.
+    #[serde(default)]
+    pub severity: Severity,
+    #[serde(default)]
+    pub cleared: bool,
+    /// A webhook's place among alerts.toml's `[[webhook]]` tables, from
+    /// 1, which `alerts webhook remove` takes.
+    #[serde(default)]
+    pub number: Option<u32>,
+    /// A browser's ID and name.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The ID of the page for the last failure, when alertd knows its kind.
+    #[serde(default)]
+    pub error_id: Option<String>,
+    /// The kinds of alert it is told of, or none for every kind.
+    #[serde(default)]
+    pub about: Option<Vec<String>>,
+}
+
+impl Channel {
+    /// The kinds of alert it is told of in words, "data at risk, hardware",
+    /// when that is fewer than every kind.
+    #[must_use]
+    pub fn told_of(&self) -> Option<String> {
+        let words = self.about.as_ref()?;
+        let (kinds, _) = Kinds::read(words);
+        (!kinds.is_all()).then(|| kinds.phrases())
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +544,7 @@ mod tests {
             severity: Severity::Warning,
             title: title.into(),
             detail: String::new(),
+            about: None,
         }
     }
 
@@ -364,6 +575,105 @@ mod tests {
         .unwrap();
         let alert = raise.alert.unwrap();
         assert_eq!((alert.severity, alert.detail.as_str()), (Severity::Critical, ""));
+    }
+
+    #[test]
+    fn an_alert_is_read_without_about_and_with_a_word_that_is_no_kind_and_written_only_when_set() {
+        let line = r#"{"key":"k","severity":"warning","title":"t"}"#;
+        let old: Alert = serde_json::from_str(line).unwrap();
+        assert_eq!((old.about.as_deref(), old.kind()), (None, None));
+        assert_eq!(serde_json::to_string(&old).unwrap(), line);
+        let odd: Alert = serde_json::from_str(
+            r#"{"key":"k","severity":"warning","title":"t","about":"colour"}"#,
+        )
+        .unwrap();
+        // Kept as text, so that it is still sent; it is none of the kinds.
+        assert_eq!((odd.about.as_deref(), odd.kind()), (Some("colour"), None));
+        assert_eq!(odd.invalid(), None);
+        assert!(serde_json::to_string(&odd).unwrap().ends_with(r#""about":"colour"}"#));
+        let tagged = alert("k", "t").about(About::Hardware);
+        assert_eq!(
+            (tagged.about.as_deref(), tagged.kind()),
+            (Some("hardware"), Some(About::Hardware))
+        );
+        // A new alert is about none until its source says.
+        assert_eq!(Alert::new("k".into(), Severity::Warning, "t", "").about, None);
+    }
+
+    #[test]
+    fn a_word_that_would_forge_a_log_line_or_is_not_a_word_is_refused() {
+        let about = |about: &str| Alert { about: Some(about.into()), ..alert("k", "t") };
+        assert_eq!(about("data").invalid(), None);
+        assert_eq!(about("Colour").invalid(), None, "any word is taken");
+        assert!(about("a\nalertd: forged").invalid().is_some());
+        assert!(about(&"w".repeat(ABOUT_MAX + 1)).invalid().is_some());
+        assert_eq!(about(&"w".repeat(ABOUT_MAX)).invalid(), None);
+    }
+
+    #[test]
+    fn the_kinds_have_their_words_their_phrases_and_a_set_that_defaults_to_every_kind() {
+        assert_eq!(ABOUT, ["data", "stopped", "hardware"]);
+        for (about, word, phrase) in [
+            (About::Data, "data", "data at risk"),
+            (About::Stopped, "stopped", "something stopped"),
+            (About::Hardware, "hardware", "hardware"),
+        ] {
+            assert_eq!(
+                (about.word(), about.phrase(), About::parse(word)),
+                (word, phrase, Some(about))
+            );
+        }
+        assert_eq!(About::parse("Data"), None);
+        assert_eq!(About::parse("sign-ins"), None);
+        assert_eq!(Kinds::default(), Kinds::ALL);
+        assert!(Kinds::ALL.is_all() && Kinds::ALL.words().is_none());
+        assert_eq!(Kinds::ALL.phrases(), "every kind");
+        let two = Kinds::of(&[About::Hardware, About::Data]);
+        assert!(two.holds(About::Data) && two.holds(About::Hardware) && !two.holds(About::Stopped));
+        assert_eq!(two.words(), Some(vec!["data".to_string(), "hardware".to_string()]));
+        assert_eq!(two.phrases(), "data at risk, hardware");
+        assert_eq!(Kinds::of(&About::ALL), Kinds::ALL);
+    }
+
+    #[test]
+    fn kinds_are_read_from_words_so_that_a_mistake_never_narrows() {
+        let read = |words: &[&str]| {
+            Kinds::read(&words.iter().map(ToString::to_string).collect::<Vec<_>>())
+        };
+        assert_eq!(read(&["data"]), (Kinds::of(&[About::Data]), Vec::new()));
+        assert_eq!(
+            read(&["stopped", "colour", "data", "colour"]),
+            (Kinds::of(&[About::Data, About::Stopped]), vec!["colour".to_string(); 2])
+        );
+        assert_eq!(read(&[]), (Kinds::ALL, Vec::new()));
+        assert_eq!(read(&["colour"]), (Kinds::ALL, vec!["colour".to_string()]));
+    }
+
+    #[test]
+    fn a_channel_says_what_it_is_told_of_only_when_that_is_fewer_than_every_kind() {
+        let channel = |about: Option<Vec<&str>>| Channel {
+            channel: "email to ops".into(),
+            last_ok: None,
+            last_error: None,
+            waiting: 0,
+            kind: "email".into(),
+            host: None,
+            severity: Severity::Warning,
+            cleared: true,
+            number: None,
+            id: None,
+            name: None,
+            error_id: None,
+            about: about.map(|words| words.into_iter().map(String::from).collect()),
+        };
+        assert_eq!(channel(None).told_of(), None);
+        assert_eq!(channel(Some(vec!["data", "stopped", "hardware"])).told_of(), None);
+        assert_eq!(
+            channel(Some(vec!["data", "hardware"])).told_of().as_deref(),
+            Some("data at risk, hardware")
+        );
+        // A word this alertd does not know narrows nothing.
+        assert_eq!(channel(Some(vec!["colour"])).told_of(), None);
     }
 
     #[test]

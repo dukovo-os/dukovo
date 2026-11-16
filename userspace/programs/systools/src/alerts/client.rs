@@ -182,12 +182,7 @@ mod tests {
     }
 
     fn full() -> Alert {
-        Alert {
-            key: "fs-full:/data".into(),
-            severity: Severity::Critical,
-            title: "/data is 97% full".into(),
-            detail: String::new(),
-        }
+        Alert::new("fs-full:/data".into(), Severity::Critical, "/data is 97% full", "")
     }
 
     #[test]

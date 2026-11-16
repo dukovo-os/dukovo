@@ -27,6 +27,38 @@ pub fn cut(text: &str, max: usize) -> String {
     cut
 }
 
+/// The ID of the page in the support center for a channel's failure, when
+/// its `words` say what kind of failure it was: a mail server that refused
+/// the sign-in (ALR-101) or offers no TLS (ALR-102), a webhook that
+/// answered with a refusal (ALR-103), a browser that ended its subscription
+/// (ALR-104) or a push service that refused the message (ALR-105). Another
+/// failure has none.
+pub fn error_id(words: &str) -> Option<&'static str> {
+    let ends = |id: &str| words.contains(&format!("({id})"));
+    if ends("ALR-104") {
+        return Some("ALR-104");
+    }
+    if ends("ALR-105") {
+        return Some("ALR-105");
+    }
+    if words.starts_with("the server refused the password")
+        || words.starts_with("the server could not sign in")
+    {
+        return Some("ALR-101");
+    }
+    if words.contains("does not offer STARTTLS") {
+        return Some("ALR-102");
+    }
+    let hooks = ["ntfy", "matrix", "slack", "discord", "json"];
+    let answered = hooks.iter().any(|kind| {
+        words.strip_prefix(kind).is_some_and(|rest| {
+            rest.strip_prefix(" answered ")
+                .is_some_and(|code| code.starts_with(|c: char| c.is_ascii_digit()))
+        })
+    });
+    answered.then_some("ALR-103")
+}
+
 /// Why connecting to `host`, or talking to it, failed with `err`.
 /// `trusted` says whose certificates count, as the end of "its
 /// certificate is not from an authority ...".
@@ -89,6 +121,34 @@ mod tests {
         );
         assert_eq!(said(invalid(Certificate::Expired)), "its certificate has expired");
         assert_eq!(said(invalid(Certificate::NotValidYet)), "its certificate is not valid yet");
+    }
+
+    #[test]
+    fn a_failure_has_the_id_of_its_page_when_its_words_say_what_it_was() {
+        let id = |words: &str| error_id(words);
+        assert_eq!(
+            id("the server refused the password (535 5.7.8 authentication failed)"),
+            Some("ALR-101")
+        );
+        assert_eq!(id("the server could not sign in (454 try later)"), Some("ALR-101"));
+        assert_eq!(
+            id("the server does not offer STARTTLS, so nothing was sent; mail is never sent \
+                without TLS (it offers: 8BITMIME)"),
+            Some("ALR-102")
+        );
+        assert_eq!(id("ntfy answered 403 Forbidden: forbidden"), Some("ALR-103"));
+        assert_eq!(id("json answered 502"), Some("ALR-103"));
+        assert_eq!(id("the push service answered 400: Unauthorized (ALR-105)"), Some("ALR-105"));
+        assert_eq!(
+            id("the browser ended the subscription: the push service answered 410, so it was \
+                removed (ALR-104)"),
+            Some("ALR-104")
+        );
+        // What no page is about.
+        assert_eq!(id("no answer within 30 seconds"), None);
+        assert_eq!(id("cannot reach ntfy.sh: refused"), None);
+        assert_eq!(id("ntfy answered nothing"), None);
+        assert_eq!(id(""), None);
     }
 
     #[test]

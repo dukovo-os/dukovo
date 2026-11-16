@@ -123,7 +123,7 @@ mod tests {
             at: 1,
             source: "metricsd".into(),
             state: State::Raised,
-            alert: Alert { key: "k".into(), severity, title: title.into(), detail: String::new() },
+            alert: Alert::new("k".into(), severity, title, ""),
         }
     }
 

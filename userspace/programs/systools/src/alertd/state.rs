@@ -402,7 +402,7 @@ mod tests {
     use crate::alerts::protocol::Severity;
 
     fn alert(key: &str, severity: Severity, title: &str) -> Alert {
-        Alert { key: key.into(), severity, title: title.into(), detail: String::new() }
+        Alert { key: key.into(), severity, title: title.into(), detail: String::new(), about: None }
     }
 
     fn warning(key: &str) -> Alert {

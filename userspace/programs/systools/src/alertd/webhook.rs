@@ -321,6 +321,7 @@ pub(crate) mod tests {
             url: format!("http://127.0.0.1:{port}{path}"),
             token: token.map(Secret::new),
             room: (kind == Kind::Matrix).then(|| "!abc:example.org".to_string()),
+            place: 1,
         }
     }
 
@@ -520,6 +521,7 @@ pub(crate) mod tests {
             url: "not a url with a token".into(),
             token: None,
             room: None,
+            place: 1,
         };
         assert_eq!(
             send(&hook, &post(Tone::Warning)).unwrap_err(),
