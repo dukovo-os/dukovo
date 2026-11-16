@@ -15,9 +15,9 @@ report - write a problem report, read all of it, and send it, save it or hand it
 
 *report failure* [*--security*] [*--save*[=_file_]] [*--port* _port_]
 
-*report list*
+*report list* [*--json*]
 
-*report status* [_number_]
+*report status* [_number_] [*--json*]
 
 *report delete* _number_
 
@@ -25,7 +25,15 @@ report - write a problem report, read all of it, and send it, save it or hand it
 
 *report text* _draft_ *--sha256* _hash_
 
-*report retry*
+*report retry* [*--json*]
+
+*report crashes* [*--json*]
+
+*report draft* *--about* _kind_ *--happened* _text_ [*--crash* _id_] [*--name* _name_] [*--expected* _text_] [*--again* _text_] [*--without-logs*] *--json*
+
+*report send* _draft_ *--sha256* _hash_ *--title* _text_ [*--crash* _id_] [*--security*] *--json*
+
+*report redact* _draft_ *--sha256* _hash_ *--json*
 
 # DESCRIPTION
 
@@ -128,18 +136,28 @@ administrator may send: anyone else is told to try *elevate report*.
 	skipped. Only an administrator may. On the sign-in screen, *R* signs an
 	administrator in to run this command (*login*(1)).
 
-*list*
+*list* [*--json*]
 	Shows the crashes that are kept, the reports that wait to be sent and
 	the reports that were sent, each as a table. A crash line has its
 	ID, when it happened in UTC, the program, how many times it was seen,
-	the report it went into, and what happened.
+	the report it went into, and what happened. With *--json* it prints
+	the reports that wait and the reports that were sent as the JSON
+	described under *THE FORMS THAT PRINT JSON*, and asks the reports
+	server where each sent report stands, as *status* does, so it needs
+	the network to be as quick as that.
 
-*status* [_number_]
+*crashes* [*--json*]
+	Shows the crashes that reportd keeps, newest first, as the first
+	table of *list* does, or with *--json* as JSON. A person sees their
+	own crashes; an administrator, with *elevate*(8), sees all of them.
+
+*status* [_number_] [*--json*]
 	Shows where a report stands, as the reports server says: *Received*,
 	*Confirmed*, *A duplicate of report* _n_, *Fixed in* _version_ or
 	*Will not be fixed* with the reason. Without a _number_ it shows every
 	report sent from this computer. When the server cannot be asked, the
-	line says why.
+	line says why. With *--json*, as described under *THE FORMS THAT PRINT
+	JSON*.
 
 *delete* _number_
 	Deletes a report sent, on the reports server and here.
@@ -153,11 +171,111 @@ administrator may send: anyone else is told to try *elevate report*.
 	problem page keeps its drafts so, and this is how it hands one to a
 	phone; a draft lasts 60 minutes from its last change.
 
-*retry*
+*retry* [*--json*]
 	Sends the reports that wait in the queue now. A report that cannot
 	be sent, as on a computer with no network, is kept and tried again by
 	reportd; *retry* does not wait for its next try. It says what became
-	of each report.
+	of each report. With *--json* it prints them as JSON, and ends with 0
+	whatever became of each.
+
+*draft* *--about* _kind_ *--happened* _text_ ... *--json*
+	Drafts a report from the options, as the questions of *report* would
+	draft it, and prints the draft as JSON. reportd keeps the draft for
+	the person who asked for it, for 60 minutes from its last change, at
+	most 8 for a person and 64 in all, and the JSON names it by its ID and
+	the SHA-256 of its text. Nothing is sent. *--about* says what the
+	report is about: *crash* (with *--crash* _id_), *service* or
+	*program* (with *--name* _name_), *failure* (the failed start,
+	which only an administrator may report; its answers may be left out),
+	*hardware*, *updates* (or *update*) or *other*. *--happened*,
+	*--expected* and *--again* are the three answers, each at most 2,000
+	characters, and the first is needed except for a failed start.
+	*--without-logs* leaves the logs out. It prints JSON alone, so
+	*--json* is needed.
+
+*send* _draft_ *--sha256* _hash_ *--title* _text_ ... *--json*
+	Sends the draft exactly as it was drafted or last redacted, and
+	prints what became of it as JSON. _hash_ is the SHA-256 of the text
+	the person read: a draft that has since changed is refused
+	(*RPT-102*), and one that has ended, or is another person's, is
+	refused too (*RPT-101*). _text_ of *--title* is what the report is
+	kept under here. *--crash* names the crash it reports, so that *list*
+	says so. With *--security* the report goes to the security team,
+	encrypted, as it does for *report --security*; with no key set that
+	is refused with *RPT-103*. A draft is dropped once it is sent or
+	queued, so a second *send* is *RPT-101*.
+
+*redact* _draft_ *--sha256* _hash_ *--json*
+	Reads the edits as JSON on standard input, at most 64 KiB, applies
+	them to the draft and prints the draft as JSON, with a new hash. The
+	edits are an object whose *cuts* are the whole list of cuts, which
+	replaces the earlier ones, and whose *answers* may give the three
+	answers again. A cut names a *section* of the report (*crash*,
+	*failed-start*, *log* or *start-log*) and a *line* of it counting from
+	0, with *through* for the last of several lines, or with *from* and
+	*to* for the characters of that line, counted from 0; the part cut
+	becomes *[cut]*. A line the system gathered can be cut and never
+	typed into (*RPT-105*), and the lines that make the report what it is
+	cannot be changed (*RPT-104*). It changes nothing that is kept but
+	the draft.
+
+# THE FORMS THAT PRINT JSON
+
+*draft*, *send* and *redact* print one line of JSON, and *crashes*,
+*list*, *status* and *retry* do with *--json*, for the web console and
+for a script. The text of the interactive *report*, and of *--save*, is
+not changed. Each answer has _format_, the version of its members, 1. A
+member that is not known is *null*.
+
+*draft* and *redact* print the draft:
+
+```
+{"format":1,"draft":"0123456789abcdef0123456789abcdef","sha256":"ab12...","bytes":612,"text":"...","cuts":1,"has_logs":false,"cut_by":{"user":1,"host":0,"ipv4":0,"ipv6":0,"mac":0,"email":0,"wifi":0,"serial":0,"machine":0,"you":0},"parts":[{"title":"What happened","bytes":71}],"sections":[],"typed":[{"id":"happened","title":"What happened","first_line":9,"lines":1}],"cut_by_you":{"lines":0,"parts":0}}
+```
+
+_draft_ is the kept draft's ID and _sha256_ the hash, in hex, of _text_,
+which is _bytes_ long: the bytes that are sent. _cuts_ is how many pieces
+were cut out, _cut_by_ how many by each kind of mark (*user*, *host*,
+*ipv4*, *ipv6*, *mac*, *email*, *wifi*, *serial*, *machine*) and by the
+person (*you*). _has_logs_ says whether the text has log sections that
+*--without-logs* leaves out. _parts_ are the sizes of the parts of the
+report, each with its _title_, and _sections_ and _typed_ say where the
+sections the system gathered and the person's own answers are in the
+text: each has an _id_, a _title_, the _first_line_ of the text it
+starts at (from 0, after its heading) and how many _lines_ it has.
+_cut_by_you_ is the lines and the parts of lines that *redact* cut.
+
+*send* prints:
+
+```
+{"format":1,"number":7,"state":"sent","why":null}
+```
+
+_state_ is *sent*, with the _number_ the reports server gave it, or
+*queued* while it waits to be sent, with _number_ *null* and _why_ the
+reason, as that no network is up. A queued report is tried again by
+reportd; *list* shows it and *retry* sends it now.
+
+*crashes* prints _crashes_, newest first, each an object of the crash's
+_id_, _kind_, _program_, _version_ and _service_, _at_ms_ (when it
+happened, in milliseconds since 1970), _what_ happened, how many times it
+was _seen_ and the number of the report it went into, _reported_.
+
+*list* prints _reports_, those that wait first, oldest first, and then
+those that were sent, newest first, each with _number_ (none while it
+waits), _title_, _state_ (*queued* or *sent*), _queued_ms_, _sent_ms_,
+_tries_ and _next_ms_ for one that waits, _receipt_ (the ID the queue
+gave it, for one that waits), _security_ (whether it goes to the security
+team, encrypted) and _why_ (why the last try failed). *status* prints
+_reports_, each with _number_, _title_, _sent_ms_, _status_ in the words
+of *status*, _unreachable_ (true when the server could not be asked, and
+then _status_ is *null*) and _why_. *retry* prints _reports_, each the
+_receipt_ of one that was waiting, its _number_ if it was sent, its
+_state_ and _why_.
+
+A mistake in the command line, or in the edits *redact* reads, ends with
+status 2, and a refusal by reportd with 1, so that a script tells them
+apart.
 
 # THE PREVIEW
 
@@ -246,7 +364,7 @@ first, give the port with *--port*, and take the rule away after with
 	team's key: the reports server keeps no readable copy and no one
 	else reads it. *report* says so under the preview. When no key is
 	known, reportd refuses, and the refusal says where to write
-	instead. It cannot be used with *--save*.
+	instead (*RPT-103*). It cannot be used with *--save*.
 
 *--save*[=_file_]
 	Saves the report instead of sending it. The preview is shown, then
@@ -259,6 +377,28 @@ first, give the port with *--port*, and take the rule away after with
 	The port the download to a phone listens on, from 1 to 65535, for
 	*P* and for *--save* without a file. Without it the system chooses a
 	free one. It is for making a firewall rule before the download starts.
+
+*--json*
+	Print JSON, as *THE FORMS THAT PRINT JSON* says: for *list*,
+	*status*, *retry* and *crashes*, and always for *draft*, *send* and
+	*redact*.
+
+*--sha256* _hash_
+	The SHA-256, in hex, of the text of the draft that *text*, *send* or
+	*redact* names. The draft is read only while its text still has it.
+
+*--about* _kind_, *--crash* _id_, *--name* _name_
+	What *draft* is about, as *draft* says. *--crash* also goes with
+	*send*.
+
+*--happened* _text_, *--expected* _text_, *--again* _text_
+	The answers of *draft*, in place of the three questions.
+
+*--without-logs*
+	*draft* leaves out the logs.
+
+*--title* _text_
+	What *send* keeps the report under.
 
 *--help*
 	Print the usage.
@@ -279,6 +419,16 @@ connected:
 $ report --save report.txt
 ```
 
+Draft a report about the hardware for a program, whose answer has the
+draft's ID and hash, and send it as it was drafted:
+
+```
+$ report draft --about hardware --happened 'The screen goes black.' --json
+{"format":1,"draft":"0123456789abcdef0123456789abcdef","sha256":"ab12..."}
+$ report send 0123456789abcdef0123456789abcdef --sha256 ab12... --title 'Black screen' --json
+{"format":1,"number":7,"state":"sent","why":null}
+```
+
 See where the reports sent stand:
 
 ```
@@ -292,7 +442,8 @@ Report 7: The screen goes black for a second when the lid is closed and opened.
 
 0 when what was asked was done: sent or put in the queue, saved,
 downloaded, shown, or cancelled with *C*. 1 when it could not be: a
-mistake in the command line, reportd not running (the message names
+mistake in the command line (2 for *draft*, *send* and *redact*, which a
+script tells from a refusal), reportd not running (the message names
 *elevate service reportd start*), a refusal by reportd, which is shown in
 its own words, no answer from reportd within its time (20 seconds, or 150
 for what asks the reports server), a file that is there already, input that

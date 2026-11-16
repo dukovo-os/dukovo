@@ -15,6 +15,10 @@
 //! says so. `list`, `status`, `delete`, `forget` and `retry` ask reportd
 //! about the crashes it keeps and the reports it sent or queued.
 //!
+//! The web console and scripts have forms that print JSON ([`super::forms`]):
+//! `draft`, `send` and `redact` work on a draft reportd keeps, and
+//! `crashes`, `list`, `status` and `retry` take `--json`.
+//!
 //! The command makes no report of its own: reportd drafts it, as root,
 //! and sends the bytes the person saw. When it says reportd is not
 //! running, an administrator starts it with `elevate service reportd start`.
@@ -24,6 +28,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use super::client::{self, Client};
+use super::forms::{self, DraftArgs, Given, SendArgs};
 use super::preview::{self, Choice};
 use super::protocol::{
     About, Answers, Crash, Drafted, KeptText, Request, Sent, Status, Waiting, title_of,
@@ -38,12 +43,18 @@ use crate::util::{self, Fail, fail, usage};
 const HELP: &str = "Usage: report [--security] [--save [FILE]] [--port PORT]
        report crash [ID] [--security] [--save [FILE]] [--port PORT]
        report failure [--security] [--save [FILE]] [--port PORT]
-       report list
-       report status [N]
+       report list [--json]
+       report status [N] [--json]
        report delete N
        report forget ID
-       report retry
+       report retry [--json]
        report text DRAFT --sha256 HEX
+       report crashes [--json]
+       report draft --about KIND --happened TEXT [--crash ID] [--name NAME]
+                    [--expected TEXT] [--again TEXT] [--without-logs] --json
+       report send DRAFT --sha256 HEX --title TEXT [--crash ID] [--security]
+                   --json
+       report redact DRAFT --sha256 HEX --json
 
 Writes a problem report, shows the exact text that would leave this
 computer, and sends it, saves it or hands it to a phone, as report(1)
@@ -60,11 +71,30 @@ describes. Nothing is sent before you press S.
   retry         sends the reports that wait now
   text DRAFT    prints the text of a draft reportd keeps for you, whose
                 SHA-256 is HEX: the web console's download to a phone
+  crashes       the crashes kept, newest first
+  draft         drafts a report from the options, keeps the draft in reportd
+                and prints it as JSON, with the DRAFT and HEX that send,
+                redact and text name it by
+  send DRAFT    sends that draft exactly as drafted, and prints what became
+                of it as JSON
+  redact DRAFT  reads the edits as JSON on standard input, at most 64 KiB,
+                applies them to that draft and prints the draft as JSON
   --security    sends it to the security team only, encrypted
   --save [FILE] saves it to FILE, or serves it once to a phone with no FILE,
                 instead of sending it
   --port PORT   the port that download listens on, so that a firewall rule
-                can be made for it first";
+                can be made for it first
+  --about KIND  draft: crash, service, program, failure, hardware, updates
+                or other
+  --crash ID    draft: the crash KIND crash names; send: the crash it reports
+  --name NAME   draft: the service or program KIND service or program names
+  --happened, --expected, --again TEXT
+                draft: the answers to the three questions
+  --without-logs
+                draft: leaves the logs out
+  --title TEXT  send: what the report is kept under on this computer
+  --json        prints one line of JSON, which draft, send and redact always
+                do";
 
 /// The words that start a subcommand, which `--save` does not take for a
 /// file's name.
@@ -87,6 +117,15 @@ enum Command {
     Retry,
     /// The text of a kept draft, by its ID and its SHA-256.
     Text(String, String),
+    /// The crashes kept, for a table or JSON.
+    Crashes,
+    /// A draft kept by reportd, as JSON.
+    Draft(DraftArgs),
+    /// A kept draft, sent.
+    Send(SendArgs),
+    /// A kept draft, by its ID and its SHA-256, changed by the edits on
+    /// standard input.
+    Redact(String, String),
 }
 
 impl Command {
@@ -113,6 +152,22 @@ struct Run {
     security: bool,
     save: Option<Save>,
     port: Option<u16>,
+    /// Whether the answer is a line of JSON.
+    json: bool,
+}
+
+/// The options of a command line, before the command they go with is
+/// known.
+#[derive(Default)]
+struct Options {
+    security: bool,
+    save: Option<Save>,
+    port: Option<u16>,
+    sha256: Option<String>,
+    title: Option<String>,
+    json: bool,
+    /// What `draft` was asked for; `crash` is also `send`'s.
+    given: Given,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -137,14 +192,35 @@ fn is_subcommand(word: &OsStr) -> bool {
     SUBCOMMANDS.iter().any(|name| name.as_bytes() == word.as_bytes())
 }
 
-/// What the command line says.
+/// What the command line says. A mistake in a form that prints JSON ends
+/// with status 2, as a script of the web console tells it from a refusal,
+/// which ends with 1.
 fn parse(args: &mut Args) -> Result<Parsed, Fail> {
-    let (mut security, mut save, mut port, mut sha256) = (false, None, None, None);
+    let mut form = false;
+    parse_line(args, &mut form)
+        .map_err(|error| if form && error.usage { Fail { code: 2, ..error } } else { error })
+}
+
+/// Reads the command line, and sets `form` once it is one of the forms
+/// that print JSON.
+fn parse_line(args: &mut Args, form: &mut bool) -> Result<Parsed, Fail> {
+    let mut options = Options::default();
     let mut operands: Vec<String> = Vec::new();
+    // Options come first in `next`, so the form is known from the word
+    // that starts the line, before any of them can be a mistake.
+    if let Some(first) = args.subcommand() {
+        let first = first
+            .into_string()
+            .map_err(|word| usage(format!("'{}' is not UTF-8", word.to_string_lossy())))?;
+        *form = ["draft", "send", "redact"].contains(&first.as_str());
+        operands.push(first);
+    }
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(name) if name == "help" => return Ok(Parsed::Help),
-            Arg::Long(name) if name == "security" => security = true,
+            Arg::Long(name) if name == "security" => options.security = true,
+            Arg::Long(name) if name == "json" => options.json = true,
+            Arg::Long(name) if name == "without-logs" => options.given.without_logs = true,
             Arg::Long(name) if name == "save" => {
                 // A word that starts a subcommand, or an option, is not a
                 // file's name: `report --save crash`, `report --save
@@ -152,34 +228,120 @@ fn parse(args: &mut Args) -> Result<Parsed, Fail> {
                 let file = args.optional_value_where(|word| {
                     !word.as_bytes().starts_with(b"-") && !is_subcommand(word)
                 });
-                save = Some(file.map_or(Save::Phone, |file| Save::File(PathBuf::from(file))));
+                options.save =
+                    Some(file.map_or(Save::Phone, |file| Save::File(PathBuf::from(file))));
             }
-            Arg::Long(name) if name == "sha256" && sha256.is_none() => sha256 = Some(args.text()?),
+            Arg::Long(name) if name == "sha256" && options.sha256.is_none() => {
+                options.sha256 = Some(args.text()?);
+            }
+            Arg::Long(name) if name == "title" && options.title.is_none() => {
+                options.title = Some(args.text()?);
+            }
+            Arg::Long(name) if name == "about" && options.given.about.is_none() => {
+                options.given.about = Some(args.text()?);
+            }
+            Arg::Long(name) if name == "crash" && options.given.crash.is_none() => {
+                options.given.crash = Some(args.text()?);
+            }
+            Arg::Long(name) if name == "name" && options.given.name.is_none() => {
+                options.given.name = Some(args.text()?);
+            }
+            Arg::Long(name) if name == "happened" && options.given.happened.is_none() => {
+                options.given.happened = Some(args.text()?);
+            }
+            Arg::Long(name) if name == "expected" && options.given.expected.is_none() => {
+                options.given.expected = Some(args.text()?);
+            }
+            Arg::Long(name) if name == "again" && options.given.again.is_none() => {
+                options.given.again = Some(args.text()?);
+            }
             Arg::Long(name) if name == "port" => {
                 let number: u16 = args.number()?;
                 if number == 0 {
                     return Err(usage("--port needs a port from 1 to 65535".into()));
                 }
-                port = Some(number);
+                options.port = Some(number);
             }
-            Arg::Operand(word) => operands.push(
-                word.into_string()
-                    .map_err(|word| usage(format!("'{}' is not UTF-8", word.to_string_lossy())))?,
-            ),
+            Arg::Operand(word) => {
+                let word = word
+                    .into_string()
+                    .map_err(|word| usage(format!("'{}' is not UTF-8", word.to_string_lossy())))?;
+                operands.push(word);
+            }
             other => return Err(args.unknown(&other)),
         }
     }
-    let command = match (command_of(&operands)?, sha256) {
-        (Command::Text(draft, _), Some(sha256)) => Command::Text(draft, sha256),
-        (Command::Text(..), None) => {
-            return Err(usage("report text names the draft's SHA-256 with --sha256".into()));
-        }
-        (_, Some(_)) => return Err(usage("--sha256 is for report text".into())),
-        (command, None) => command,
-    };
-    check_options(&command, security, save.as_ref(), port)?;
-    Ok(Parsed::Run(Run { command, security, save, port }))
+    let command = command_of(&operands)?;
+    check_json(&command, options.json)?;
+    let command = with_options(command, &mut options)?;
+    check_options(&command, &options)?;
+    let Options { security, save, port, json, .. } = options;
+    Ok(Parsed::Run(Run { command, security, save, port, json }))
 }
+
+/// `command` with the options that belong to it: the draft's, the send's
+/// and the hash of a kept draft, which a command that does not take them
+/// refuses.
+fn with_options(command: Command, options: &mut Options) -> Result<Command, Fail> {
+    let sha256 = options.sha256.take();
+    let title = options.title.take();
+    let given = std::mem::take(&mut options.given);
+    let draft_only = given.about.is_some()
+        || given.name.is_some()
+        || given.happened.is_some()
+        || given.expected.is_some()
+        || given.again.is_some()
+        || given.without_logs;
+    let needs_hash =
+        |what: &str| usage(format!("report {what} names the draft's SHA-256 with --sha256"));
+    match command {
+        Command::Draft(_) => {
+            if sha256.is_some() {
+                return Err(usage("--sha256 is for report text, send and redact".into()));
+            }
+            if title.is_some() {
+                return Err(usage("--title is for report send".into()));
+            }
+            Ok(Command::Draft(DraftArgs::of(given)?))
+        }
+        Command::Send(args) => {
+            if draft_only {
+                return Err(usage(DRAFT_OPTIONS.into()));
+            }
+            let sha256 = sha256.ok_or_else(|| needs_hash("send"))?;
+            let title = title
+                .filter(|title| !title.trim().is_empty())
+                .ok_or_else(|| usage("report send needs --title TEXT".into()))?;
+            Ok(Command::Send(SendArgs {
+                sha256,
+                title,
+                crash: given.crash,
+                security: options.security,
+                ..args
+            }))
+        }
+        other => {
+            if draft_only || given.crash.is_some() {
+                return Err(usage(DRAFT_OPTIONS.into()));
+            }
+            if title.is_some() {
+                return Err(usage("--title is for report send".into()));
+            }
+            match (other, sha256) {
+                (Command::Text(draft, _), Some(sha256)) => Ok(Command::Text(draft, sha256)),
+                (Command::Redact(draft, _), Some(sha256)) => Ok(Command::Redact(draft, sha256)),
+                (Command::Text(..), None) => Err(needs_hash("text")),
+                (Command::Redact(..), None) => Err(needs_hash("redact")),
+                (_, Some(_)) => Err(usage("--sha256 is for report text, send and redact".into())),
+                (command, None) => Ok(command),
+            }
+        }
+    }
+}
+
+/// What a mistake says of the options only `draft` takes.
+const DRAFT_OPTIONS: &str = "--about, --name, --happened, --expected, --again and --without-logs \
+                             are for report draft, and --crash for report draft and send";
 
 /// The command `operands` name: the first is the subcommand, and what
 /// follows is its own.
@@ -197,12 +359,14 @@ fn command_of(operands: &[String]) -> Result<Command, Fail> {
     Ok(match name.as_str() {
         "crash" if rest.len() <= 1 => Command::Crash(rest.first().cloned()),
         "crash" => return Err(usage("report crash takes the ID of one crash".into())),
-        "failure" | "list" | "retry" if !rest.is_empty() => {
+        "failure" | "list" | "retry" | "crashes" | "draft" if !rest.is_empty() => {
             return Err(usage(format!("report {name} takes nothing more")));
         }
         "failure" => Command::Failure,
         "list" => Command::List,
         "retry" => Command::Retry,
+        "crashes" => Command::Crashes,
+        "draft" => Command::Draft(DraftArgs::default()),
         "status" if rest.len() <= 1 => {
             Command::Status(rest.first().map(|text| number(text)).transpose()?)
         }
@@ -210,18 +374,49 @@ fn command_of(operands: &[String]) -> Result<Command, Fail> {
         "delete" => Command::Delete(number(&one("the number of a report")?)?),
         "forget" => Command::Forget(one("the ID of a crash")?),
         "text" => Command::Text(one("the ID of a draft")?, String::new()),
+        "redact" => Command::Redact(one("the ID of a draft")?, String::new()),
+        "send" => Command::Send(SendArgs {
+            draft: one("the ID of a draft")?,
+            sha256: String::new(),
+            title: String::new(),
+            crash: None,
+            security: false,
+        }),
         other => return Err(usage(format!("no such command: {other}\n{HELP}"))),
     })
 }
 
+/// Fails for `--json` where the command has none, and for the forms that
+/// print nothing else, without it.
+fn check_json(command: &Command, json: bool) -> Result<(), Fail> {
+    let form = match command {
+        Command::Draft(_) => Some("draft"),
+        Command::Send(_) => Some("send"),
+        Command::Redact(..) => Some("redact"),
+        _ => None,
+    };
+    let lists =
+        matches!(command, Command::Crashes | Command::List | Command::Status(_) | Command::Retry);
+    match form {
+        Some(name) if !json => {
+            return Err(usage(format!("report {name} prints JSON: add --json")));
+        }
+        None if json && !lists => {
+            return Err(usage(
+                "--json is for report draft, send, redact, crashes, list, status and retry".into(),
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Fails for an option that does not go with the command or with another.
-fn check_options(
-    command: &Command,
-    security: bool,
-    save: Option<&Save>,
-    port: Option<u16>,
-) -> Result<(), Fail> {
-    if !command.writes() && (security || save.is_some() || port.is_some()) {
+fn check_options(command: &Command, options: &Options) -> Result<(), Fail> {
+    let (security, save, port) = (options.security, options.save.as_ref(), options.port);
+    let sends = matches!(command, Command::Send(_));
+    let writes = command.writes();
+    if (security && !writes && !sends) || ((save.is_some() || port.is_some()) && !writes) {
         return Err(usage(
             "--security, --save and --port are for a report: report, report crash or report failure"
                 .into(),
@@ -270,12 +465,22 @@ fn execute(client: &Client, run: &Run) -> Result<i32, Fail> {
                 Subject { about: About::Failure { notice }, crash: None, optional: true },
             )
         }
+        Command::List if run.json => forms::list(client),
         Command::List => list(client),
+        Command::Status(number) if run.json => forms::status(client, *number, status_words),
         Command::Status(number) => status(client, *number),
         Command::Delete(number) => delete(client, *number),
         Command::Forget(id) => forget(client, id),
+        Command::Retry if run.json => forms::retry(client),
         Command::Retry => retry(client),
         Command::Text(draft, sha256) => text(client, draft, sha256),
+        Command::Crashes if run.json => forms::crashes(client),
+        Command::Crashes => crashes(client),
+        Command::Draft(args) => forms::draft(client, args, failure_notice),
+        Command::Send(args) => forms::send(client, args),
+        Command::Redact(draft, sha256) => {
+            forms::redact(client, draft, sha256, &mut std::io::stdin().lock())
+        }
     }
 }
 
@@ -638,6 +843,14 @@ fn list(client: &Client) -> Result<i32, Fail> {
     table(&waiting_rows(&waiting), &[false, false, true, false, false], width, "None.")?;
     println!("\nReports sent");
     table(&sent_rows(&sent), &[true, false, false, false], width, "None.")?;
+    Ok(0)
+}
+
+/// `report crashes`: the crashes kept, as the table of `list` has them.
+fn crashes(client: &Client) -> Result<i32, Fail> {
+    let crashes: Vec<Crash> = client.list(&request("crashes"), client::QUICK)?;
+    let width = util::terminal_size(1).map(|(columns, _)| columns);
+    table(&crash_rows(&crashes), &[false, false, false, true, false, false], width, "None.")?;
     Ok(0)
 }
 
@@ -1047,5 +1260,186 @@ mod tests {
         assert!(failure(&["text", "0123"]).contains("--sha256"));
         assert!(failure(&["list", "--sha256", &hash]).contains("for report text"));
         assert!(failure(&["text", "--sha256", &hash]).contains("the ID of a draft"));
+    }
+
+    /// The exit status `main` would end with for a command line.
+    fn status_of_failure(words: &[&str]) -> i32 {
+        parsed(words).unwrap_err().code
+    }
+
+    #[test]
+    fn the_forms_that_print_json_are_asked_with_their_options() {
+        let hash = "b".repeat(64);
+        let draft = run(&[
+            "draft",
+            "--about",
+            "service",
+            "--name",
+            "web",
+            "--happened",
+            "It stopped",
+            "--expected",
+            "-It runs",
+            "--without-logs",
+            "--json",
+        ]);
+        assert!(draft.json);
+        let Command::Draft(args) = draft.command else { panic!("not a draft") };
+        assert_eq!(
+            (args.about.as_str(), args.name.as_deref(), args.happened.as_str()),
+            ("service", Some("web"), "It stopped")
+        );
+        // A value that starts with a dash is a value.
+        assert_eq!((args.expected.as_str(), args.without_logs), ("-It runs", true));
+
+        let send = run(&[
+            "send",
+            "0123",
+            "--sha256",
+            &hash,
+            "--title",
+            "Disk light",
+            "--crash",
+            "20261113T1-2",
+            "--security",
+            "--json",
+        ]);
+        assert!(send.security);
+        assert_eq!(
+            send.command,
+            Command::Send(SendArgs {
+                draft: "0123".into(),
+                sha256: hash.clone(),
+                title: "Disk light".into(),
+                crash: Some("20261113T1-2".into()),
+                security: true,
+            })
+        );
+        assert_eq!(
+            run(&["redact", "0123", "--sha256", &hash, "--json"]).command,
+            Command::Redact("0123".into(), hash)
+        );
+        for words in [&["crashes"][..], &["list"], &["status", "3"], &["retry"]] {
+            let mut json = words.to_vec();
+            json.push("--json");
+            assert!(run(&json).json && !run(words).json, "{words:?}");
+        }
+        assert_eq!(run(&["crashes"]).command, Command::Crashes);
+    }
+
+    #[test]
+    fn the_forms_are_refused_what_does_not_go_with_them() {
+        let hash = "b".repeat(64);
+        assert_eq!(failure(&["draft", "--about", "other"]), "report draft prints JSON: add --json");
+        assert_eq!(
+            failure(&["send", "0123", "--sha256", &hash, "--title", "x"]),
+            "report send prints JSON: add --json"
+        );
+        assert_eq!(
+            failure(&["redact", "0123", "--sha256", &hash]),
+            "report redact prints JSON: add --json"
+        );
+        assert_eq!(
+            failure(&["send", "0123", "--title", "x", "--json"]),
+            "report send names the draft's SHA-256 with --sha256"
+        );
+        assert_eq!(
+            failure(&["send", "0123", "--sha256", &hash, "--json"]),
+            "report send needs --title TEXT"
+        );
+        assert_eq!(
+            failure(&["send", "0123", "--sha256", &hash, "--title", "  ", "--json"]),
+            "report send needs --title TEXT"
+        );
+        assert_eq!(
+            failure(&["redact", "0123", "--json"]),
+            "report redact names the draft's SHA-256 with --sha256"
+        );
+        assert!(
+            failure(&["send", "--sha256", &hash, "--title", "x", "--json"])
+                .contains("the ID of a draft")
+        );
+        assert!(failure(&["draft", "extra", "--json"]).contains("takes nothing more"));
+        assert!(failure(&["draft", "--json"]).contains("report draft needs --about"));
+        assert!(failure(&["draft", "--about", "crash", "--json"]).contains("--crash ID"));
+        assert!(failure(&["draft", "--about", "other", "--json"]).contains("--happened"));
+        assert!(
+            failure(&["draft", "--about", "other", "--happened", "x", "--sha256", &hash, "--json"])
+                .contains("--sha256 is for report text, send and redact")
+        );
+        assert!(
+            failure(&["draft", "--about", "other", "--happened", "x", "--title", "t", "--json"])
+                .contains("--title is for report send")
+        );
+        assert!(
+            failure(&[
+                "send",
+                "0123",
+                "--sha256",
+                &hash,
+                "--title",
+                "t",
+                "--happened",
+                "x",
+                "--json"
+            ])
+            .contains("are for report draft")
+        );
+        assert!(failure(&["list", "--happened", "x"]).contains("are for report draft"));
+        assert!(failure(&["crash", "--crash", "x"]).contains("are for report draft"));
+        assert!(failure(&["list", "--title", "x"]).contains("--title is for report send"));
+        assert!(failure(&["delete", "1", "--json"]).starts_with("--json is for report draft"));
+        assert!(failure(&["--json"]).starts_with("--json is for report draft"));
+        assert!(
+            failure(&["text", "0123", "--sha256", &hash, "--json"]).starts_with("--json is for")
+        );
+        // The options of a report that is written stay with it.
+        assert!(
+            failure(&["send", "0123", "--sha256", &hash, "--title", "t", "--save", "--json"])
+                .contains("are for a report")
+        );
+        assert!(
+            failure(&["draft", "--about", "other", "--happened", "x", "--security", "--json"])
+                .contains("are for a report")
+        );
+        assert!(failure(&["crashes", "--port", "9000"]).contains("are for a report"));
+    }
+
+    #[test]
+    fn a_mistake_in_a_form_ends_with_2_and_one_in_the_others_with_1() {
+        let hash = "b".repeat(64);
+        assert_eq!(status_of_failure(&["draft", "--about", "other", "--json"]), 2);
+        assert_eq!(status_of_failure(&["draft", "--json"]), 2);
+        assert_eq!(status_of_failure(&["draft", "--happened"]), 2);
+        assert_eq!(status_of_failure(&["send", "0123", "--json"]), 2);
+        assert_eq!(status_of_failure(&["redact", "0123", "--sha256", &hash]), 2);
+        assert_eq!(status_of_failure(&["redact", "--json"]), 2);
+        assert_eq!(status_of_failure(&["list", "x"]), 1);
+        assert_eq!(status_of_failure(&["text", "0123"]), 1);
+        assert_eq!(status_of_failure(&["--port", "0"]), 1);
+    }
+
+    #[test]
+    fn the_options_that_were_there_before_the_forms_mean_what_they_did() {
+        // A file called as a form is still a file for --save.
+        let run = run(&["--save", "draft"]);
+        assert_eq!(run.command, Command::Report);
+        assert_eq!(run.save, Some(Save::File(PathBuf::from("draft"))));
+        assert!(!run.json);
+    }
+
+    #[test]
+    fn the_help_names_the_forms_and_their_options() {
+        for word in [
+            "report crashes [--json]",
+            "report draft --about KIND",
+            "report send DRAFT --sha256 HEX --title TEXT",
+            "report redact DRAFT --sha256 HEX --json",
+            "--without-logs",
+            "--json",
+        ] {
+            assert!(HELP.contains(word), "{word}");
+        }
+        assert!(HELP.lines().all(|line| line.chars().count() <= 80));
     }
 }

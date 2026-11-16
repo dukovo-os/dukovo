@@ -12,7 +12,7 @@ use crate::admind::actions::{DOCUMENT_MAX, DOCUMENT_PATTERN};
 /// The actions whose command may be given more than a pipe holds (ADR
 /// 0567): each takes a document, which is written while it runs. The last
 /// is these tests' own.
-const LARGE_INPUT: &[&str] = &["certificate.add", "lab.certificate"];
+const LARGE_INPUT: &[&str] = &["certificate.add", "reports.redact", "lab.certificate"];
 
 /// What each secret is replaced with in the rules' run of an example: text
 /// that no command, address or task would make by itself.

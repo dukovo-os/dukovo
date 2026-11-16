@@ -24,10 +24,11 @@ admin-alerts 660
 admin-backups 600
 admin-certificates 480
 admin-commands 320
-admin-hardware 420
+admin-hardware 450
 admin-journal 270
 admin-logs 330
 admin-move 540
+admin-reports 360
 admin-security 600
 admin-storage 360
 admin-terminal 360
@@ -126,6 +127,7 @@ machine-check-program 20
 machine-restore 190
 memory-test 70
 memory-test-bios 70
+memory-test-start 600
 microcode 10
 mm-stress 17
 monitoring 230

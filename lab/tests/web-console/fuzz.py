@@ -117,11 +117,17 @@ TRIED = {
 # The actions of the Snapshots, Backups and Move pages whose examples need what only their own
 # tests set up: a snapshot, a backup place on a second disk, or the folder of another machine's
 # backups (web-console/ansible.py says which each needs). The boot tests admin-backups and
-# admin-move and the browser tests of Snapshots and Move run them.
+# admin-move and the browser tests of Snapshots and Move run them. And those that no machine can
+# take back or that a restart would carry out: the memory test's ask and its cancel, which a lab
+# machine that restarts afterwards would run; and the Report page's send, retry and delete, which
+# send a person's report to a reports server or take one off it. The boot tests memory-test-start
+# and admin-reports run them.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
     "move.plan", "move.stage", "move.cancel",
+    "hardware.memtest", "hardware.memtest-cancel",
+    "reports.send", "reports.retry", "reports.delete",
 }
 LEFT_ALONE = {"certificate.renew"} | TRIED | SET_UP
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command

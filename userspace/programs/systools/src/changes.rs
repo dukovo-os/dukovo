@@ -28,6 +28,7 @@ use std::io::Write as _;
 use serde::Serialize;
 
 use crate::args::{Arg, Args};
+use crate::hardware::memtest::MEMTEST_TRY;
 use crate::power;
 use crate::sysupdate::bisect::{self, Apart, End, Kind, Lever, Search, Verdict};
 use crate::sysupdate::starts::{self, Change, Outcome, Start};
@@ -166,7 +167,13 @@ pub fn start_line(start: &Start) -> String {
             format!("failed: {}", start.why.as_deref().unwrap_or("the health check failed"))
         }
     };
-    let tried = start.trial.map_or_else(String::new, |n| format!(", try {n} of changes bisect"));
+    let tried = start.trial.map_or_else(String::new, |n| {
+        if n == MEMTEST_TRY {
+            ", memory test at the start".to_string()
+        } else {
+            format!(", try {n} of changes bisect")
+        }
+    });
     format!("Start {}, slot {}{tried}: {outcome}", short(start), start.slot.to_uppercase())
 }
 
@@ -946,6 +953,18 @@ mod tests {
         );
         // The newest failed start has none after it.
         assert_eq!(result_of(&records[..5], &records[4]), Some("failed"));
+    }
+
+    #[test]
+    fn a_try_is_named_as_a_try_of_the_search_and_the_memory_test_as_itself() {
+        let mut one = start(5, "a", Outcome::Good, Vec::new());
+        assert!(start_line(&one).contains(", slot A: good"), "{}", start_line(&one));
+        one.trial = Some(2);
+        assert!(start_line(&one).contains(", slot A, try 2 of changes bisect: good"));
+        one.trial = Some(99);
+        let line = start_line(&one);
+        assert!(line.contains(", slot A, memory test at the start: good"), "{line}");
+        assert!(!line.contains("changes bisect"), "{line}");
     }
 
     #[test]

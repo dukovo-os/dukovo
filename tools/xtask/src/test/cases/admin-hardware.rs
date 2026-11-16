@@ -7,8 +7,8 @@
 //! owner, is an administrator; bob may use the console and is no
 //! administrator.
 //!
-//! What the machine is. `GET /api/1/hardware` is what
-//! `hardware show --json` prints in alice's pane, for bob and for alice: the same
+//! What the machine is. `GET /api/1/hardware` is what the command `hardware
+//! show --json` prints in alice's pane, for bob and for alice: the same
 //! document, whose memory has no `ecc` and no `modules` since a person is
 //! not told what only the firmware's tables say, and which has no serial
 //! number or ID of the machine anywhere. `GET /api/1/hardware/inventory`
@@ -19,8 +19,8 @@
 //!
 //! Before any check. `GET /api/1/hardware/check` is `null`, and so is what
 //! the command `hardware last --json` prints, which ends with status 3;
-//! the history, `GET /api/1/hardware/history` and `hardware history
-//! --json`, is the empty list.
+//! the history, `GET /api/1/hardware/history` and the command `hardware
+//! history --json`, is the empty list.
 //!
 //! A check. `POST /api/1/hardware/check` for the sensors and the CPUs is
 //! ADM-122 for bob and ADM-106 for alice while locked, and for what cannot
@@ -29,9 +29,22 @@
 //! check. Asked for, it is a task that ends, and its log has the `step N of
 //! M` lines of the checks, counted one by one up to M. Then bob reads the
 //! result the check kept, which is the file of a check made by root that
-//! everyone may read, the same as alice's pane prints with `hardware last
-//! --json`, and the history has the one line of the check, as `hardware
-//! history --json` prints it.
+//! everyone may read, the same as the command `hardware last --json` prints
+//! in alice's pane, and the history has the one line of the check, as the
+//! command `hardware history --json` prints it.
+//!
+//! The sensors, the highest temperatures and the devices. Each is a read
+//! that bob and alice both make, the same document for both, and what the
+//! command prints in alice's pane: `hardware sensors --json`, `metrics show
+//! temp --since 30d --highest --json` and `hardware devices --json`, each
+//! ending with status 0. QEMU gives the machine no hardware monitor and no
+//! thermal zone, so the sensors and the zones are empty lists, and the
+//! highest temperatures are a list of series with their greatest value.
+//! The devices are the PCI functions of QEMU's q35 board and its USB
+//! controller: the network card is virtio's, driven by radix-virtio and
+//! working as net0, the board's SATA controller is the AHCI driver's, the
+//! host bridge is hidden, and no member of the document is a serial number.
+//! A read given a name it does not take is ADM-108.
 //!
 //! What the pane's commands print reaches the host through nc, to a port on
 //! the host's loopback that QEMU's user network gives the guest at
@@ -59,7 +72,7 @@ const CHECK_SECONDS: u64 = 420;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-hardware",
-    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that ends with the step N of M lines of its checks in its log; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it",
+    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that ends with the step N of M lines of its checks in its log; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -278,9 +291,7 @@ fn admin_hardware(vm: &mut Vm, case: &Case) -> Result<(), String> {
     what_the_machine_is(vm, &mut test)?;
     nothing_kept_yet(vm, &mut test)?;
     a_check(vm, &mut test)?;
-    // Step 4 goes here: hardware.sensors, which is the empty list with
-    // status 0 on QEMU, hardware.highest, and hardware.devices, with the
-    // virtio and QEMU's PCI functions and the network card's driver.
+    sensors_and_devices(vm, &mut test)?;
     //
     // Step 5 goes after it, and ends the test in place of the power button
     // below: power.restart while the console trial runs, and the restart
@@ -511,6 +522,165 @@ fn a_check(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     if line["at_ms"] != json!(number(&last["time"], "the time")? * 1000) || !line["ids"].is_array()
     {
         return Err(format!("the history's line is {line}, and the check kept {last}"));
+    }
+    Ok(())
+}
+
+/// What `path` says to bob and to alice, which is one document, and what
+/// `command` prints in alice's pane with status 0, which is that document
+/// too once `settled` has taken out of each what the machine moves by itself.
+fn read_as_printed(
+    vm: &mut Vm,
+    test: &mut Test,
+    path: &str,
+    command: &str,
+    settled: fn(&Value) -> Value,
+) -> Result<Value, String> {
+    let bob = test.read(Who::Bob, path)?;
+    let alice = test.read(Who::Alice, path)?;
+    if bob != alice {
+        return Err(format!("{path} is {bob} for bob, and {alice} for alice"));
+    }
+    let typed = test.typed(vm, command)?;
+    if settled(&typed) != settled(&bob) {
+        return Err(format!("`{command}` printed {typed}, and {path} said {bob}"));
+    }
+    let status = test.pane.status(vm, command)?;
+    if status != 0 {
+        return Err(format!("`{command}` ended with status {status}, not 0"));
+    }
+    Ok(bob)
+}
+
+/// A document as it is.
+fn as_it_is(value: &Value) -> Value {
+    value.clone()
+}
+
+/// The sensors' document without the times its disks were last read at,
+/// which diskhealth moves on its own.
+fn without_the_times(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(disks) = value["disks"].as_array_mut() {
+        for disk in disks {
+            disk["checked_ms"] = Value::Null;
+        }
+    }
+    value
+}
+
+/// Whether the vendor and device numbers of the device `row` start with
+/// `vendor`, as `8086:` does.
+fn from_vendor(row: &Value, vendor: &str) -> bool {
+    row["ids"].as_str().is_some_and(|ids| ids.starts_with(vendor))
+}
+
+/// Step 4: the sensors, the highest temperatures and the devices, which a
+/// person reads, as the routes say them and as the commands print them.
+fn sensors_and_devices(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    // QEMU has no hardware monitor and no thermal zone: nothing is listed,
+    // and that is no failure.
+    let path = "/api/1/hardware/sensors";
+    let sensors = read_as_printed(vm, test, path, "hardware sensors --json", without_the_times)?;
+    if sensors["format"] != json!(1) || !sensors["disks"].is_array() {
+        return Err(format!("hardware sensors has the document {sensors}"));
+    }
+    for list in ["sensors", "zones"] {
+        if sensors[list] != json!([]) {
+            return Err(format!(
+                "QEMU has no {list}, and hardware sensors lists {}",
+                sensors[list]
+            ));
+        }
+    }
+
+    // The greatest value of each temperature series in 30 days: a list,
+    // each with the series' name and the time and value of its highest, or
+    // null for a series that has no point.
+    let path = "/api/1/hardware/highest";
+    let command = "metrics show temp --since 30d --highest --json";
+    let highest = read_as_printed(vm, test, path, command, as_it_is)?;
+    let Some(series) = highest.as_array() else {
+        return Err(format!("the highest temperatures are {highest}, not a list"));
+    };
+    for one in series {
+        let name = one["series"].as_str().unwrap_or_default();
+        let point = &one["highest"];
+        let shaped = point.is_null() || point.as_array().is_some_and(|point| point.len() == 2);
+        if !name.starts_with("temp{") || !shaped {
+            return Err(format!("a series of the highest temperatures is {one}"));
+        }
+    }
+
+    // What a read is not given is refused, not ignored.
+    for path in [
+        "/api/1/hardware/sensors?all=true",
+        "/api/1/hardware/highest?since=1d",
+        "/api/1/hardware/devices?all=true",
+    ] {
+        test.get(Who::Bob, path)?.refused(&format!("{path} read by bob"), 400, "ADM-108")?;
+    }
+
+    // The devices: QEMU's own functions, with what is told of each.
+    let path = "/api/1/hardware/devices";
+    let devices = read_as_printed(vm, test, path, "hardware devices --json", as_it_is)?;
+    if devices["format"] != json!(1) {
+        return Err(format!("hardware devices has the format {}, not 1", devices["format"]));
+    }
+    let Some(rows) = devices["devices"].as_array() else {
+        return Err(format!("hardware devices has no list of devices: {devices}"));
+    };
+    if has_member(&devices, "serial") {
+        return Err(format!("hardware devices has a member with serial in its name: {devices}"));
+    }
+    for row in rows {
+        let ids = row["ids"].as_str().unwrap_or_default();
+        let place = row["where"].as_str().unwrap_or_default();
+        let group = row["group"].as_str().unwrap_or_default();
+        let numbers = ids.split_once(':').is_some_and(|(vendor, device)| {
+            [vendor, device]
+                .iter()
+                .all(|part| part.len() == 4 && part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        });
+        let named = row["name"].as_str().is_some_and(|name| !name.is_empty());
+        let shaped = row["system"].is_array() && row["hidden"].is_boolean();
+        if !numbers
+            || !named
+            || !shaped
+            || !(place.starts_with("PCI ") || place.starts_with("USB "))
+            || !["network", "storage", "usb", "display", "other"].contains(&group)
+        {
+            return Err(format!("a device is shown as {row}"));
+        }
+    }
+    let find = |wanted: &dyn Fn(&Value) -> bool| rows.iter().find(|row| wanted(row));
+    // The network card is virtio's, and the kernel says which driver took
+    // it and that it works, as the interface netd started.
+    let Some(card) = find(&|row| row["group"] == "network" && from_vendor(row, "1af4:")) else {
+        return Err(format!("no virtio network card among the devices: {devices}"));
+    };
+    if card["driver"] != json!("radix-virtio")
+        || card["driver_told"] != json!(true)
+        || card["state"] != json!("working")
+        || card["system"] != json!(["net0"])
+        || card["hidden"] != json!(false)
+    {
+        return Err(format!("the virtio network card is shown as {card}"));
+    }
+    // QEMU's own USB controller, which the boot disk is on.
+    if find(&|row| row["group"] == "usb" && from_vendor(row, "1b36:")).is_none() {
+        return Err(format!("no USB controller of QEMU's among the devices: {devices}"));
+    }
+    // The board's SATA controller is the AHCI driver's, whole class, and its
+    // bridges work and need nothing, so they are hidden.
+    let ahci = |row: &Value| {
+        row["group"] == "storage" && row["driver"] == "ahci" && row["driver_told"] == true
+    };
+    if find(&ahci).is_none() {
+        return Err(format!("no SATA controller driven by ahci among the devices: {devices}"));
+    }
+    if find(&|row| row["hidden"] == true && from_vendor(row, "8086:")).is_none() {
+        return Err(format!("the board's host bridge is not among the hidden devices: {devices}"));
     }
     Ok(())
 }

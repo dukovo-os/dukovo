@@ -15,6 +15,8 @@ metrics - show what metricsd keeps of the machine: now, and its history
 
 *metrics show* _series_... [*--since* _time_] [*--until* _time_] [*--every* _time_] [*--json*] [*--utc*]
 
+*metrics show* _series_... *--highest* [*--since* _time_] [*--until* _time_] [*--json*] [*--utc*]
+
 # DESCRIPTION
 
 metrics shows what *metricsd*(8) has read of the machine (ADR 0484): the
@@ -63,6 +65,17 @@ what there is; *metricsd*(8) says what each series means and its unit.
 	nothing could be read then, has no line. It exits with 1 when
 	there are no points in the range.
 
+*metrics show* _series_... *--highest*
+	The greatest value of each series in the range, and when it was,
+	in place of its points: a line for each series, its name, its
+	value and the time. Of equal values the first time is given, and a
+	minute's over an hour's. The last 14 days of the range are read
+	from the minute files, a minute's own value, and what is before
+	them from the hour files, an hour's greatest, with the hour's start
+	as its time, so that a range of 30 days is covered whole. A series
+	with no point in the range has no line, and the command exits with
+	1 when none has one. It does not go with *--every*.
+
 # OPTIONS
 
 *--since* _time_
@@ -77,12 +90,22 @@ what there is; *metricsd*(8) says what each series means and its unit.
 	are too many to read at a minute each; *--every 1h* shows it as 168
 	lines.
 
+*--highest*
+	With *show*, give the greatest value of each series in the range and
+	when it was, not the points; see *COMMANDS*.
+
 *--json*
 	Print for a script: *now* as an object of series and numbers,
 	*list* as an array of names, and *show* as an array of objects
 	with the name of a *series* and its *points*, each a pair of seconds
 	since 1970 and a number. The numbers are plain, with no unit: bytes,
-	bytes a second, percent, degrees Celsius.
+	bytes a second, percent, degrees Celsius. With *--highest*, *show*
+	prints an array of objects of a *series* and its *highest*, a pair of
+	seconds since 1970 and a number, in the order of the series asked for;
+	a series that is named whole and has no point in the range has
+	*null* for *highest*, and a range with no point at all gives the empty
+	array and exits with 0, so that a program may ask for every sensor of
+	a machine that has none.
 
 *--utc*
 	Show the times of *show* in UTC, and read a time without a zone in
@@ -134,10 +157,13 @@ $ metrics show 'fs.used{/data}' --since 1d --every 1h
 $ metrics show 'fs.used{/data}' --since 1d --every 1h --json
 ```
 
-Which series there are for the temperatures:
+Which series there are for the temperatures, and the hottest each had
+in the last 30 days and when, which includes each disk's, *temp{disk/sda}*:
 
 ```
 $ metrics list temp
+$ metrics show temp --since 30d --highest
+$ metrics show temp --since 30d --highest --json
 ```
 
 # SEE ALSO

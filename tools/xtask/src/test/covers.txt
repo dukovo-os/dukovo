@@ -92,6 +92,15 @@ admin-move userspace/programs/systools/src/log.rs userspace/programs/systools/sr
 admin-move userspace/spark/src/main.rs userspace/programs/slots/src/machine.rs kernel/fs/btrfs/ kernel/fs/exfat/
 admin-move userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/backup.toml
 admin-move tools/xtask/src/test/console_client.rs ports/uutils-coreutils/ ports/netcat/
+admin-reports abi/crash.ridl kernel/radix/src/fs/crashes.rs kernel/radix/src/user/crash.rs
+admin-reports userspace/defaults/spark/services/reportd.toml userspace/programs/report-test/
+admin-reports userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-reports userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-reports userspace/programs/systools/src/reportd.rs userspace/programs/systools/src/reportd/
+admin-reports userspace/programs/systools/src/reports.rs userspace/programs/systools/src/reports/
+admin-reports userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
+admin-reports tools/xtask/src/test/console_client.rs tools/xtask/src/test/cases/problem-report.rs lab/tests/reports/report-server.py
+admin-reports kernel/fs/vfs/src/mount.rs kernel/fs/vfs/src/view.rs ports/netcat/
 admin-security userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin-security userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
 admin-security userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_settings.rs userspace/programs/systools/src/admin_settings/
@@ -101,6 +110,9 @@ admin-hardware userspace/programs/systools/src/authd/ userspace/programs/account
 admin-hardware userspace/programs/systools/src/hardware.rs userspace/programs/systools/src/hardware/ userspace/programs/systools/src/hwinfo.rs
 admin-hardware userspace/programs/systools/src/lscpu.rs userspace/programs/systools/src/admin_about.rs userspace/programs/systools/src/dukofetch.rs
 admin-hardware userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/nic.rs kernel/lib/smbios/ kernel/lib/sensors/
+admin-hardware userspace/programs/systools/src/metricsd.rs userspace/programs/systools/src/metricsd/ userspace/programs/systools/src/lspci.rs
+admin-hardware userspace/programs/systools/src/lsusb.rs userspace/programs/systools/src/diskhealth.rs ports/pciids/ ports/usbids/
+admin-hardware kernel/radix/src/fs/sysfs/net.rs userspace/defaults/spark/services/metricsd.toml userspace/defaults/spark/services/diskhealth.toml
 admin-hardware userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
 admin-hardware tools/xtask/src/test/console_client.rs ports/netcat/
 admin-security userspace/programs/systools/src/private_access.rs userspace/programs/systools/src/private_access/ userspace/programs/systools/src/wireguard.rs
@@ -539,6 +551,17 @@ memory-test image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cf
 memory-test tools/xtask/src/grub.rs tools/xtask/src/image.rs tools/xtask/src/memtest.rs
 memory-test-bios image/grub/installed.cfg.in image/grub/menu.cfg image/grub/rescue.cfg
 memory-test-bios tools/xtask/src/grub.rs tools/xtask/src/image.rs tools/xtask/src/memtest.rs
+memory-test-start image/grub/installed.cfg.in image/grub/menu.cfg kernel/radix/src/memtest.rs kernel/mm/src/memtest.rs
+memory-test-start kernel/radix/src/fs/sysfs.rs userspace/programs/slots/ userspace/programs/systools/src/hardware.rs
+memory-test-start userspace/programs/systools/src/hardware/ userspace/programs/systools/src/changes.rs
+memory-test-start userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/
+memory-test-start userspace/programs/systools/src/alertd.rs userspace/programs/systools/src/alertd/ userspace/programs/systools/src/alerts.rs
+memory-test-start userspace/programs/systools/src/alerts/ userspace/programs/systools/src/elevate.rs
+memory-test-start userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+memory-test-start userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+memory-test-start userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/alertd.toml
+memory-test-start userspace/defaults/spark/services/authd.toml userspace/defaults/spark/services/sysupdate.toml
+memory-test-start tools/xtask/src/test/console_client.rs ports/netcat/
 microcode kernel/lib/microcode/
 mm-stress kernel/mm/
 monitoring kernel/net/ userspace/defaults/alerts.toml userspace/defaults/spark/services/alertd.toml

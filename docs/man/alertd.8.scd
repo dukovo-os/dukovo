@@ -276,12 +276,17 @@ The system's services and root's scripts raise alerts. These raise them:
 	A file system that is nearly full, and one that the last hours
 	say will be before long, from *metricsd*(8), which also raises
 	*btrfs-missing:*_volume_, *btrfs-behind:*_volume_, *memory:low*,
-	*temp:*_sensor_ and *certificate:*_file_, the early warnings
-	of its own.
+	*temp:*_sensor_, which for a disk is *temp:disk/*_name_, and
+	*certificate:*_file_, the early warnings of its own.
 
 *smart:*_serial_, *smart-rising:*_serial_
 	A disk that *diskhealth*(8) finds failing, and the early warning
 	that the counts that come before a failure are rising.
+
+*memory-test*
+	The memory test at the start found errors, as an alert that a
+	passing test clears, and the event that one did not finish
+	(*hardware*(8)).
 
 *backup-failed:*_name_, *backup-overdue:*_name_
 	A backup destination whose last run failed, and one that is late

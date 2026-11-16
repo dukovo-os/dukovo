@@ -804,7 +804,7 @@ pub fn block_of(search: &Search, t: &Try) -> Result<[u8; slots::envblock::BLOCK]
 /// Which of `partitions` hold try `number` whole in their trial block,
 /// and whether the boot menu took it on any: as the step reads the
 /// block ([`Search::step`]).
-fn block_says(partitions: &[String], number: u8) -> Option<(u8, bool)> {
+pub(crate) fn block_says(partitions: &[String], number: u8) -> Option<(u8, bool)> {
     let mut holds = None;
     for name in partitions {
         let read = place::device(name, false).ok().and_then(|device| {
@@ -827,7 +827,7 @@ fn block_says(partitions: &[String], number: u8) -> Option<(u8, bool)> {
 /// What went wrong on those that could not be written, when any could
 /// not: a mirror's other disk would start the usual start, or an old
 /// try.
-fn write_blocks(partitions: &[String], block: &[u8]) -> Result<(), String> {
+pub(crate) fn write_blocks(partitions: &[String], block: &[u8]) -> Result<(), String> {
     let problems: Vec<String> = partitions
         .iter()
         .filter_map(|name| {
@@ -912,7 +912,7 @@ fn services_of(id: &str) -> Vec<String> {
 
 /// The slot named by `letter` if the boot menu starts a try of it: the
 /// default or the previous version.
-fn startable(state: slots::State, letter: &str) -> Option<Slot> {
+pub(crate) fn startable(state: slots::State, letter: &str) -> Option<Slot> {
     Slot::named(letter).filter(|&slot| slot == state.default || state.previous == Some(slot))
 }
 
@@ -929,6 +929,20 @@ fn no_update_tried(state: slots::State) -> Result<(), Fail> {
     }
 }
 
+/// Refuses while a memory test is asked for the next start (hardware(8)):
+/// the start is a search's try or the test, and neither waits for the
+/// other.
+fn no_memory_test(asked: bool) -> Result<(), Fail> {
+    if asked {
+        return Err(fail(
+            "a memory test is asked for the next start; `elevate hardware memtest --cancel` \
+             first (HW-105)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// The search `changes bisect` would begin now, before anything is
 /// written: from the newest failed start and the last good one, with
 /// what the machine holds.
@@ -941,6 +955,7 @@ pub fn plan_now() -> Result<Search, Fail> {
     let root = place::root()?;
     let (_, state) = place::state(&root)?;
     no_update_tried(state)?;
+    no_memory_test(crate::hardware::memtest::is_asked())?;
     if let Some(waiting) = load_in(Path::new(DIR)).as_ref().and_then(Search::waiting) {
         return Err(fail(Refused::Running(waiting.number).to_string()));
     }
@@ -977,6 +992,7 @@ pub fn write_first(mut search: Search) -> Result<u8, Fail> {
     let _lock = place::lock()?;
     let (_, state) = place::state(&root)?;
     no_update_tried(state)?;
+    no_memory_test(crate::hardware::memtest::is_asked())?;
     let dir = Path::new(DIR);
     let kept = load_in(dir);
     if let Some(waiting) = kept.as_ref().and_then(Search::waiting)
@@ -1009,6 +1025,7 @@ pub fn confirm_now() -> Result<Search, Fail> {
     let root = place::root()?;
     let (_, state) = place::state(&root)?;
     no_update_tried(state)?;
+    no_memory_test(crate::hardware::memtest::is_asked())?;
     let mut search = load_in(Path::new(DIR)).ok_or_else(|| fail(Refused::NoSearch.to_string()))?;
     let newest = starts::all().last().map_or(0, |last| last.number);
     search.confirm(newest).map_err(|why| fail(why.to_string()))?;
@@ -1338,6 +1355,18 @@ mod tests {
         assert!(search.waiting().unwrap().confirm);
         search.judge(Verdict::Unfinished, None, 4);
         assert_eq!(search.end, Some(End::NotFound));
+    }
+
+    #[test]
+    fn a_search_is_refused_while_a_memory_test_is_asked_for_the_next_start() {
+        assert!(no_memory_test(false).is_ok());
+        let refused = no_memory_test(true).unwrap_err();
+        assert_eq!(refused.code, 1);
+        assert_eq!(
+            refused.message,
+            "a memory test is asked for the next start; `elevate hardware memtest --cancel` \
+             first (HW-105)"
+        );
     }
 
     #[test]

@@ -300,7 +300,7 @@ impl Host {
 
     /// Runs the staging server, which keeps its reports and their numbers
     /// from one run to the next, and waits until it says it listens.
-    fn start_server(&mut self) -> Result<(), String> {
+    pub(super) fn start_server(&mut self) -> Result<(), String> {
         let log = self.dir.join("server.log");
         let before = ready_lines(&log);
         let output = fs::OpenOptions::new()
@@ -325,7 +325,7 @@ impl Host {
         within(10, "the staging server's readiness", || ready_lines(&log) > before)
     }
 
-    fn stop_server(&mut self) {
+    pub(super) fn stop_server(&mut self) {
         if let Some(mut server) = self.server.take() {
             let _ = server.kill();
             let _ = server.wait();
@@ -333,7 +333,7 @@ impl Host {
     }
 
     /// The text the server kept of report `number`, once it has come.
-    fn report(&self, number: u32) -> Result<Vec<u8>, String> {
+    pub(super) fn report(&self, number: u32) -> Result<Vec<u8>, String> {
         let record = self.reports().join(format!("{number}.json"));
         within(SEND_SECONDS, &format!("the server's keeping report {number}"), || record.exists())?;
         let kept = ["txt", "age"]
@@ -345,13 +345,13 @@ impl Host {
     }
 
     /// Waits until the server has no report `number`.
-    fn forgets(&self, number: u32) -> Result<(), String> {
+    pub(super) fn forgets(&self, number: u32) -> Result<(), String> {
         let record = self.reports().join(format!("{number}.json"));
         within(SEND_SECONDS, &format!("the server's deleting report {number}"), || !record.exists())
     }
 
     /// Has the staging server's `set-status` change report `number`.
-    fn fixed(&self, number: u32, version: &str) -> Result<(), String> {
+    pub(super) fn fixed(&self, number: u32, version: &str) -> Result<(), String> {
         let mut set = Command::new("python3");
         set.args(["-I", SERVER, "set-status"]).arg(self.reports());
         host_tool(set.args([&number.to_string(), "fixed", "--fixed-in", version])).map(|_| ())

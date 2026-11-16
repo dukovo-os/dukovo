@@ -41,12 +41,17 @@ impl Function {
         (self.class >> 16) as u8
     }
 
-    fn subclass(&self) -> u8 {
+    pub(crate) fn subclass(&self) -> u8 {
         (self.class >> 8) as u8
     }
 
-    fn interface(&self) -> u8 {
+    pub(crate) fn interface(&self) -> u8 {
         self.class as u8
+    }
+
+    /// Where it is, as the kernel names its folder: `0000:03:00.0`.
+    pub(crate) fn address(&self) -> String {
+        format!("{:04x}:{:02x}:{:02x}.{}", self.domain, self.bus, self.slot, self.func)
     }
 }
 
@@ -208,7 +213,7 @@ impl Names {
 
     /// The class of `f` without numbers: its subclass's name, else its
     /// class's.
-    fn class(&self, f: &Function) -> Option<&str> {
+    pub(crate) fn class(&self, f: &Function) -> Option<&str> {
         let (c, s) = (f.base_class(), f.subclass());
         self.subclasses.get(&(c, s)).or_else(|| self.classes.get(&c)).map(String::as_str)
     }
@@ -229,7 +234,7 @@ impl Names {
 
 /// How numbers and names mix (`-n`, `-nn`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Ids {
+pub(crate) enum Ids {
     Names,
     Numbers,
     Both,
@@ -324,7 +329,12 @@ fn mixed(name: Option<&str>, number: &str, fallback: &str, numbers: Ids) -> Stri
 /// The vendor and device of a function, or of its subsystem, as
 /// pciutils names them: `vendor device`, `vendor Device dddd` when the
 /// database knows only the vendor, else `Device vvvv:dddd`.
-fn vendor_device(vendor: Option<&str>, device: Option<&str>, ids: (u16, u16), n: Ids) -> String {
+pub(crate) fn vendor_device(
+    vendor: Option<&str>,
+    device: Option<&str>,
+    ids: (u16, u16),
+    n: Ids,
+) -> String {
     let number = format!("{:04x}:{:04x}", ids.0, ids.1);
     match (n, vendor, device) {
         (Ids::Numbers, ..) => number,

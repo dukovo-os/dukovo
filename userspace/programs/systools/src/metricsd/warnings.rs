@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
-use super::sample::{Filesystem, Snapshot, Temperature, Volume};
+use super::sample::{DISK_CHIP, Filesystem, Snapshot, Temperature, Volume};
 use super::settings::Thresholds;
 use super::size_text;
 use super::store::{self, Selector};
@@ -84,6 +84,7 @@ const BEHIND: &str = "MET-104";
 const MEMORY: &str = "MET-105";
 const HOT: &str = "MET-106";
 const CERTIFICATE: &str = "MET-107";
+const DISK_HOT: &str = "MET-108";
 
 /// How bad a check finds a thing, which it keeps from one step to the
 /// next for its hysteresis.
@@ -484,17 +485,35 @@ impl Warnings {
                 state.over = 0;
                 state.level = level;
             }
+            let (title, advice, id) = if temperature.chip == DISK_CHIP {
+                (
+                    disk_title(temperature, state.level, warn, critical),
+                    format!(
+                        "A disk kept this hot wears out sooner. Check the fans and the air around \
+                         the disks; `diskhealth {}` shows its record.",
+                        temperature.sensor
+                    ),
+                    DISK_HOT,
+                )
+            } else {
+                (
+                    format!(
+                        "{instance} is at {} °C; its limit is {} °C",
+                        temperature.celsius.round(),
+                        critical.unwrap_or(warn).round()
+                    ),
+                    "`sensors` shows every sensor. Check that the fans turn and the air can reach \
+                     them."
+                        .to_string(),
+                    HOT,
+                )
+            };
             alerts.extend(alert(
                 key("temp", &instance),
                 state.level,
-                &format!(
-                    "{instance} is at {} °C; its limit is {} °C",
-                    temperature.celsius.round(),
-                    critical.unwrap_or(warn).round()
-                ),
-                "`sensors` shows every sensor. Check that the fans turn and the air can reach \
-                 them.",
-                HOT,
+                &title,
+                &advice,
+                id,
                 About::Hardware,
             ));
             states.insert(instance, state);
@@ -515,14 +534,43 @@ impl Warnings {
     }
 }
 
+/// The title of a disk's alert at `level`: "Disk sda (WDC WD40EFRX-68N)
+/// is at 52 °C; its warning limit is 50 °C", or "its limit is 60 °C" at
+/// the critical level. A model too long for a title is cut, so that the
+/// numbers stay.
+fn disk_title(disk: &Temperature, level: Level, warn: f64, critical: Option<f64>) -> String {
+    let limit = match (level, critical) {
+        (Level::Critical, Some(critical)) => format!("its limit is {} °C", critical.round()),
+        _ => format!("its warning limit is {} °C", warn.round()),
+    };
+    let build = |model: &str| {
+        let model = if model.is_empty() { String::new() } else { format!(" ({model})") };
+        format!("Disk {}{model} is at {} °C; {limit}", disk.sensor, disk.celsius.round())
+    };
+    let title = build(&disk.model);
+    let over = title.chars().count().saturating_sub(TITLE_MAX);
+    if over == 0 {
+        return title;
+    }
+    // Cut the model by what is over, and one more for the mark.
+    let kept = disk.model.chars().count().saturating_sub(over + 1);
+    let mut model: String = disk.model.chars().take(kept).collect();
+    model.push('…');
+    build(&model)
+}
+
 /// The temperature at which `temperature` is a warning and, if it has
-/// one, a critical limit: `margin` degrees below its critical
-/// temperature, or its maximum where it has no critical one. A sensor with
-/// neither, or with one that is no temperature, is not watched.
+/// one, a critical limit: the warning limit it says itself (a disk's), or
+/// `margin` degrees below its critical temperature, or its maximum where
+/// it has no critical one. A sensor with neither, or with one that is no
+/// temperature, is not watched.
 fn lines(temperature: &Temperature, margin: f64) -> Option<(f64, Option<f64>)> {
     let positive = |limit: Option<f64>| limit.filter(|limit| *limit > 0.0);
     match (positive(temperature.crit), positive(temperature.max)) {
-        (Some(critical), _) => Some((critical - margin, Some(critical))),
+        (Some(critical), _) => {
+            let warn = positive(temperature.warn).unwrap_or(critical - margin);
+            Some((warn, Some(critical)))
+        }
         (None, Some(max)) => Some((max, None)),
         (None, None) => None,
     }
@@ -912,6 +960,7 @@ mod tests {
             celsius,
             max,
             crit,
+            ..Temperature::default()
         }
     }
 
@@ -952,6 +1001,72 @@ mod tests {
         // Held down to 3 degrees under the line, 92, and clear below.
         assert_eq!(temperature_step(&mut w, vec![sensor(92.0, None, Some(100.0))]).len(), 1);
         assert!(temperature_step(&mut w, vec![sensor(91.9, None, Some(100.0))]).is_empty());
+    }
+
+    fn disk(celsius: f64, warn: f64, crit: f64, model: &str) -> Temperature {
+        Temperature {
+            chip: DISK_CHIP.into(),
+            sensor: "sda".into(),
+            label: "sda".into(),
+            celsius,
+            crit: Some(crit),
+            warn: Some(warn),
+            model: model.into(),
+            ..Temperature::default()
+        }
+    }
+
+    #[test]
+    fn a_hot_disk_is_raised_at_its_own_warning_limit_with_its_model_and_its_own_words() {
+        let mut w = warnings();
+        let hot = disk(52.0, 50.0, 60.0, "WDC WD40EFRX-68N");
+        for _ in 0..4 {
+            assert!(temperature_step(&mut w, vec![hot.clone()]).is_empty());
+        }
+        let alerts = temperature_step(&mut w, vec![hot.clone()]);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "temp:disk/sda");
+        assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Hardware));
+        assert_eq!(
+            alerts[0].title,
+            "Disk sda (WDC WD40EFRX-68N) is at 52 °C; its warning limit is 50 °C"
+        );
+        assert!(
+            alerts[0].detail.contains("`diskhealth sda`")
+                && alerts[0].detail.ends_with("(MET-108)"),
+            "{}",
+            alerts[0].detail
+        );
+        // At its critical temperature it is critical, and says that limit.
+        let alerts = temperature_step(&mut w, vec![disk(60.0, 50.0, 60.0, "WDC WD40EFRX-68N")]);
+        assert_eq!(alerts[0].severity, Severity::Critical);
+        assert!(alerts[0].title.ends_with("its limit is 60 °C"), "{}", alerts[0].title);
+        // Held 3 degrees below the warning line, and clear under.
+        assert_eq!(temperature_step(&mut w, vec![disk(47.0, 50.0, 60.0, "")]).len(), 1);
+        assert!(temperature_step(&mut w, vec![disk(46.9, 50.0, 60.0, "")]).is_empty());
+    }
+
+    #[test]
+    fn a_disk_without_a_model_has_none_in_its_title_and_a_long_one_is_cut_for_the_numbers() {
+        let plain = disk(70.0, 50.0, 60.0, "");
+        assert_eq!(
+            disk_title(&plain, Level::Warning, 50.0, Some(60.0)),
+            "Disk sda is at 70 °C; its warning limit is 50 °C"
+        );
+        let long = disk(70.0, 50.0, 60.0, &"M".repeat(400));
+        let title = disk_title(&long, Level::Critical, 50.0, Some(60.0));
+        assert!(title.chars().count() <= TITLE_MAX, "{title}");
+        assert!(title.ends_with("…) is at 70 °C; its limit is 60 °C"), "{title}");
+    }
+
+    #[test]
+    fn a_disk_with_no_limits_of_its_own_is_not_watched() {
+        let mut w = warnings();
+        let unknown = Temperature { crit: None, warn: None, ..disk(90.0, 0.0, 0.0, "x") };
+        for _ in 0..6 {
+            assert!(temperature_step(&mut w, vec![unknown.clone()]).is_empty());
+        }
     }
 
     #[test]

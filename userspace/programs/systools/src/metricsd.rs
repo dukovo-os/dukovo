@@ -5,7 +5,8 @@
 //!
 //! Once a step, 60 seconds unless `--step` says otherwise, metricsd reads
 //! the machine: the processors, memory, disks, filesystems, network
-//! cards, temperatures, each service's use of both and each Btrfs
+//! cards, temperatures (a disk's from what diskhealth(8) last read of it,
+//! never from asking the disk), each service's use of both and each Btrfs
 //! volume's missing disks. It keeps one row of that in the history,
 //! two weeks at the step and a year at one record an hour, and writes the
 //! newest row as text for `metrics now`. Nothing leaves the machine
@@ -24,7 +25,7 @@
 
 mod command;
 mod prometheus;
-mod sample;
+pub(crate) mod sample;
 mod settings;
 mod store;
 mod warnings;
@@ -543,6 +544,7 @@ mod tests {
             processes: machine.join("processes"),
             kernel: machine.join("kernel"),
             services: machine.join("services"),
+            diskhealth: machine.join("diskhealth"),
         };
         let places = Places {
             state: dir.join("state"),

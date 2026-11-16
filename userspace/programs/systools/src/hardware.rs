@@ -3,8 +3,9 @@
 
 //! hardware(8): `hardware check` looks for hardware that is failing,
 //! `hardware last` shows what the last check found (ADR 0488), `hardware
-//! history` lists the checks that were kept, and `hardware show` says what
-//! the machine is.
+//! history` lists the checks that were kept, `hardware show` says what
+//! the machine is, and `hardware memtest` asks for the memory to be
+//! tested at the next start.
 //!
 //! A check looks at six areas: the memory (the errors the memory
 //! controller counted, and a test of a share of the free memory), the
@@ -21,22 +22,26 @@
 //! order it does it in; `saved` the result kept in
 //! `/system/state/hardware/last.json`; `history` the line of each kept
 //! result, in `/system/state/hardware/history`; `show` what the machine
-//! is; one module for each area; and `drivetest` and `scan` for a disk's
-//! self-test and read scan.
+//! is; `sensors` and `devices` the temperatures and the devices it has;
+//! `memtest` the memory test at the next start; one module for each area;
+//! and `drivetest` and `scan` for a disk's self-test and read scan.
 
 mod battery;
 pub(crate) mod check;
 mod cpu;
+mod devices;
 mod disks;
 mod drivetest;
 mod history;
 mod memory;
+pub(crate) mod memtest;
 mod monitors;
 mod network;
 mod plan;
 mod run;
 pub(crate) mod saved;
 mod scan;
+mod sensors;
 mod show;
 
 use std::io::{self, BufRead, Write};
@@ -54,7 +59,9 @@ use saved::Saved;
 
 const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--time SECONDS] \
                      [--yes] [--progress] [--json]\n       hardware last [--json]\n       \
-                     hardware history [--json]\n       hardware show [--json]";
+                     hardware history [--json]\n       hardware show [--json]\n       hardware \
+                     sensors [--json]\n       hardware devices [--json]\n       hardware memtest \
+                     --next-start | --cancel | --status [--json]";
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
 /// self-tests it started.
@@ -72,6 +79,13 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some(command) if command == "last" => last_command(args),
         Some(command) if command == "history" => history_command(args),
         Some(command) if command == "show" => show_command(args),
+        Some(command) if command == "sensors" => sensors_command(args),
+        Some(command) if command == "devices" => devices_command(args),
+        // A refusal of memtest is a status 1 of its own, as `changes bisect`'s.
+        Some(command) if command == "memtest" => {
+            return memtest::main(args)
+                .map_err(|fail| if fail.usage { Fail { code: 3, ..fail } } else { fail });
+        }
         _ => Err(usage(USAGE.into())),
     };
     ended.map_err(|fail| Fail { code: 3, ..fail })
@@ -291,6 +305,36 @@ fn show_command(args: &mut Args) -> Result<i32, Fail> {
     Ok(0)
 }
 
+/// `hardware sensors`: what the monitors, the thermal zones and the
+/// disks' last readings say, which is nothing on a machine with none.
+fn sensors_command(args: &mut Args) -> Result<i32, Fail> {
+    let json = json_only(args)?;
+    let found = sensors::gather(&sensors::Sources::system());
+    let mut out = io::stdout().lock();
+    if json {
+        let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
+        writeln!(out, "{text}")?;
+    } else {
+        write!(out, "{}", found.text(util::now_ns() / 1_000_000))?;
+    }
+    Ok(0)
+}
+
+/// `hardware devices`: the PCI functions and USB devices, and the drivers
+/// that took them where the system says.
+fn devices_command(args: &mut Args) -> Result<i32, Fail> {
+    let json = json_only(args)?;
+    let found = devices::gather(&devices::Sources::system());
+    let mut out = io::stdout().lock();
+    if json {
+        let text = found.json().map_err(|error| fail(format!("cannot write JSON: {error}")))?;
+        writeln!(out, "{text}")?;
+    } else {
+        write!(out, "{}", found.text())?;
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +387,8 @@ mod tests {
         assert_eq!(ended(&["history", "--now"]), Err(3));
         assert_eq!(ended(&["show", "--now"]), Err(3));
         assert_eq!(ended(&["show", "memory"]), Err(3));
+        assert_eq!(ended(&["sensors", "--now"]), Err(3));
+        assert_eq!(ended(&["devices", "pci"]), Err(3));
     }
 
     fn folder(call: &str) -> std::path::PathBuf {

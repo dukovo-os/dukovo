@@ -333,7 +333,7 @@ fn said(root: &Path, name: &str, what: &str) -> Option<String> {
 fn health_of(sources: &Sources, name: &str) -> Option<Health> {
     let text = fs::read_to_string(sources.health.join(format!("{name}.json"))).ok()?;
     let live: Live = serde_json::from_str(&text).ok()?;
-    let Live { summary, checked_ms, rose } = live;
+    let Live { summary, checked_ms, rose, .. } = live;
     Some(Health {
         verdict: summary.verdict,
         checked_ms,

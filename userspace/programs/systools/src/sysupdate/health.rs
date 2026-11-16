@@ -479,6 +479,9 @@ fn verdict(
     }
     // The next step of changes bisect, while it waits on a try.
     let bisected = this.map(|this| bisect::health_step(root, this, &starts::all()));
+    if let Some(this) = this {
+        crate::hardware::memtest::after_start(root, this);
+    }
     drop(lock);
     match checked {
         Checked::Proved(slot) => {
@@ -800,19 +803,29 @@ pub fn slot_items(root: &Root, slot: slots::Slot) -> Vec<Item> {
     items
 }
 
+/// The words of the kernel's command line `line` that a start's record
+/// keeps: all but those a menu entry writes for one start.
+fn recorded_options(line: &str) -> String {
+    let words: Vec<&str> = line
+        .split_whitespace()
+        .filter(|word| {
+            !["slot=", "fallback=", "trial=", "memtest="].iter().any(|menu| word.starts_with(menu))
+        })
+        .collect();
+    words.join(" ")
+}
+
 /// What this start runs, for its record: the system and its kernel, the
 /// firmware set and its microcode, the boot options, the devices and the
 /// apps installed for everyone.
 fn start_items(root: &Root) -> Vec<Item> {
     let mut items = slot_items(root, root.running);
-    // Less the slot GRUB named, which changes with every update, and the
-    // try of changes bisect this start may be, which its record keeps.
+    // Less the slot GRUB named, which changes with every update, the try of
+    // changes bisect this start may be, which its record keeps, and the
+    // memory test it may have run, so that the start after a test has no
+    // options changed and a later try never carries the test on.
     let line = std::fs::read_to_string("/kernel/cmdline").unwrap_or_default();
-    let options: Vec<&str> = line
-        .split_whitespace()
-        .filter(|word| !["slot=", "fallback=", "trial="].iter().any(|menu| word.starts_with(menu)))
-        .collect();
-    items.push(Item::new("options", "boot options", &options.join(" "), None));
+    items.push(Item::new("options", "boot options", &recorded_options(&line), None));
     for device in devices::present(root) {
         items.push(Item::new(&device.kind, &device.key, &device.about, None));
     }
@@ -1227,6 +1240,19 @@ mod tests {
             ..service("web", State::Running, 1)
         };
         assert_eq!(look(&essential, &[healthy]), Look::Running(vec![1]));
+    }
+
+    #[test]
+    fn a_starts_options_leave_out_the_slot_the_try_and_the_memory_test() {
+        let line = "trial=99 slot=a root=UUID=1 panic=10 fallback=b quiet memtest=once \
+                    console=ttyS0,115200n8";
+        assert_eq!(recorded_options(line), "root=UUID=1 panic=10 quiet console=ttyS0,115200n8");
+        // The start after the test has the options it had before.
+        assert_eq!(
+            recorded_options("slot=a root=UUID=1 panic=10 quiet"),
+            recorded_options("slot=a root=UUID=1 panic=10 quiet memtest=fault")
+        );
+        assert_eq!(recorded_options(""), "");
     }
 
     #[test]

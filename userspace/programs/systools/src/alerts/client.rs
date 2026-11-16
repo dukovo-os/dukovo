@@ -92,13 +92,40 @@ fn patiently(socket: &Path, request: &Request, within: Duration) -> Result<(), S
     }
 }
 
+/// Raises `alert` as [`raise`] does, from a program that runs as the
+/// machine starts, perhaps before alertd: while alertd is not running, it
+/// tries again each second for up to `within`.
+///
+/// # Errors
+///
+/// As [`raise`], once `within` has passed.
+pub fn raise_at_start(alert: &Alert, within: Duration) -> Result<(), String> {
+    let request = Request { ask: "raise".into(), alert: Some(alert.clone()), ..Request::default() };
+    patiently(Path::new(SOCKET), &request, within)
+}
+
 /// Clears the caller's alert `key`, if it is active.
 ///
 /// # Errors
 ///
 /// As [`raise`].
 pub fn clear(key: &str) -> Result<(), String> {
-    send(&Request { ask: "clear".into(), key: Some(key.into()), ..Request::default() })
+    send(&clear_request(key))
+}
+
+/// Clears the alert as [`clear`] does, from a program that runs as the
+/// machine starts, trying again each second for up to `within` while
+/// alertd is not running.
+///
+/// # Errors
+///
+/// As [`raise`], once `within` has passed.
+pub fn clear_at_start(key: &str, within: Duration) -> Result<(), String> {
+    patiently(Path::new(SOCKET), &clear_request(key), within)
+}
+
+fn clear_request(key: &str) -> Request {
+    Request { ask: "clear".into(), key: Some(key.into()), ..Request::default() }
 }
 
 /// Sets the caller's alerts to `alerts`: each is raised as [`raise`]

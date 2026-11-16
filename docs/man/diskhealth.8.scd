@@ -62,7 +62,7 @@ support center).
 	attributes.
 
 *--watch*
-	Look at every disk now and every half hour, as smartd(8) does on
+	Look at every disk now and every ten minutes, as smartd(8) does on
 	Linux, and write a line of each disk at the first look and again
 	whenever its verdict or reasons change. Spark runs it as the
 	*diskhealth* service, which holds the disks and nothing else of
@@ -83,6 +83,27 @@ diskhealth: sda: WARNING: 8 sectors were reallocated
 	NVMe drive has used 90% or more of its rated endurance. Disks
 	often fail within weeks of these counts starting to rise. A disk
 	with no serial number is named by its device name.
+
+	A SATA disk that the kernel says is in standby is not read, so that
+	it is not woken: its live file keeps what the last look read and its
+	alerts stay as they were, and the file says since when the disk
+	sleeps. While a disk is asleep *metricsd*(8) adds no point of its
+	temperature, since that was read earlier, and *hardware*(8) shows it
+	as asleep. A look at a disk that is awake keeps its temperature and
+	the temperatures at which it is too hot (*TEMPERATURES*).
+
+# TEMPERATURES
+
+A disk's warning and critical temperatures are its own where it says
+them: an NVMe drive's, from its health log, and a SATA disk's critical
+one, from the threshold of its airflow temperature attribute (190) where
+that counts down from 100 as the disk warms. A limit the disk does not
+give is the usual for its kind: a hard disk is warm at 50 °C and hot at
+60 °C, a solid-state disk at 65 °C and 70 °C, and an NVMe drive at 70 °C
+and 80 °C. The live file says which: _from_ is *disk* or *kind*.
+*metricsd*(8) warns of a disk at its warning temperature, with the
+disk's model in the title (*MET-108*), and *hardware sensors* shows
+each disk's reading and limits.
 
 # JSON
 
@@ -145,7 +166,7 @@ Each time the service looks at a disk, it writes the disk's summary to
 _/system/live/diskhealth/_*disk*_.json_, which anyone may read, so that
 *storage*(8) can tell where a disk stands without opening the disk. The
 file is one line with the object above without *attributes* and
-*self_tests*, and with two fields more at its end:
+*self_tests*, and with five fields more at its end:
 
 *checked_ms*
 	When the service looked, in milliseconds since 1970.
@@ -154,6 +175,20 @@ file is one line with the object above without *attributes* and
 	The early warning that stands, *{"at_ms": N, "title": T}*, with the
 	time the rise was seen and the title of its alert, or *null*: a rise
 	is kept for a week, as the alert is.
+
+*kind*
+	*hdd* for a SATA disk that spins, *ssd* for one of flash, or *nvme*.
+	Missing from a file an older service wrote.
+
+*asleep_ms*
+	Since when the disk sleeps, in milliseconds since 1970, or *null*
+	while it does not. Missing from a file an older service wrote.
+
+*limits*
+	*{"warning_c": N, "critical_c": N, "from": "disk"}*: the temperatures
+	at which the disk is too hot, and whether they are the disk's own
+	(*disk*) or the usual for its kind (*kind*); *null* when the disk
+	gives no temperature. Missing from a file an older service wrote.
 
 The file of a disk that goes, or that stops keeping a record, is
 removed. A disk that cannot be read at a look keeps the file of the look
@@ -178,4 +213,4 @@ _/system/live/diskhealth/_*disk*_.json_
 # SEE ALSO
 
 *spark*(8), *radix-sysfs*(5), *systools*(1), *scrub*(8), *alerts*(8),
-*storage*(8), *hardware*(8)
+*storage*(8), *hardware*(8), *metricsd*(8)
