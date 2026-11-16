@@ -1408,16 +1408,23 @@ fn the_journal(test: &mut Test) -> Result<(), String> {
             }
         }
     }
-    // The diff of the settings change says what it did.
-    let set = of("updates.set")
-        .into_iter()
-        .find(|row| row["status"] == json!(0))
-        .and_then(|row| row["id"].as_i64())
-        .ok_or("no row of updates.set that ended well")?;
-    let detail = test.read(Who::Alice, &format!("/api/1/changes/{set}"))?;
-    let diff = detail["files"][0]["diff"].as_str().unwrap_or_default();
-    if !diff.contains("+check = ") && !diff.contains("-check = ") {
-        return Err(format!("the diff of updates.set is {diff:?}, which should have the check"));
+    // The diff of a settings change says what it did: one of them changed
+    // the check. Tonight's steps change the restart time with it too.
+    let sets: Vec<i64> = of("updates.set")
+        .iter()
+        .filter(|row| row["status"] == json!(0))
+        .filter_map(|row| row["id"].as_i64())
+        .collect();
+    if sets.is_empty() {
+        return Err("no row of updates.set that ended well".into());
+    }
+    let mut diffs = Vec::new();
+    for set in sets {
+        let detail = test.read(Who::Alice, &format!("/api/1/changes/{set}"))?;
+        diffs.push(detail["files"][0]["diff"].as_str().unwrap_or_default().to_string());
+    }
+    if !diffs.iter().any(|diff| diff.contains("+check = ") || diff.contains("-check = ")) {
+        return Err(format!("no diff of updates.set has the check: {diffs:?}"));
     }
     // The update is a task, and its row says which.
     let apply = of("updates.apply");
