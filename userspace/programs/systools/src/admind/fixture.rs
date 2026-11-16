@@ -279,6 +279,10 @@ impl Console {
         let group = folder.0.join("group");
         std::fs::write(&passwd, PASSWD).unwrap();
         std::fs::write(&group, GROUP).unwrap();
+        shared.reads_identity.set(|names| {
+            let loopback = Network { ip: [127, 0, 0, 1].into(), prefix: 8 };
+            Identity::new("nas", vec![loopback], names)
+        });
         Rc::get_mut(&mut shared).expect("nothing else holds it yet").accounts = Sources {
             passwd: passwd.to_string_lossy().into_owned(),
             group: group.to_string_lossy().into_owned(),

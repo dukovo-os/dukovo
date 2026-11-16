@@ -991,9 +991,16 @@ fn host_named(head: &Parts) -> Option<&str> {
 fn host_of(shared: &Shared, head: &Parts) -> Result<(String, String), Failure> {
     let wrong = || Failure::new(Kind::WrongHost, "this is not the name of this machine");
     let header = host_named(head).ok_or_else(wrong)?;
-    let identity = shared.identity.borrow();
-    let (host, port) =
-        guard::host(header, &identity.names, &identity.addresses).ok_or_else(wrong)?;
+    let known = || {
+        let identity = shared.identity.borrow();
+        guard::host(header, &identity.names, &identity.addresses)
+    };
+    let found = match known() {
+        Some(found) => Some(found),
+        None if shared.read_identity_for_miss() => known(),
+        None => None,
+    };
+    let (host, port) = found.ok_or_else(wrong)?;
     let host = host.to_ascii_lowercase();
     let origin = guard::origin(&host, port);
     Ok((host, origin))

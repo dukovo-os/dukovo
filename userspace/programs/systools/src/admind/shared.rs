@@ -49,6 +49,10 @@ use crate::admin_settings::Settings;
 use crate::cert::machine;
 use crate::util;
 
+/// How long the machine's names and addresses are taken as current
+/// before a request for another host has them read again.
+pub const IDENTITY_FRESH: Duration = Duration::from_secs(1);
+
 /// The machine's names and addresses as admind knows them now.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Identity {
@@ -190,6 +194,11 @@ pub struct Shared {
     pub trials: RefCell<Trials>,
     /// Spark's read socket: [`trials::READ`], or a test's own.
     pub spark: Cell<&'static str>,
+    /// How the machine's names and addresses are read, given the
+    /// certificate's names: [`Identity::read`], or a test's own.
+    pub reads_identity: Cell<fn(&[String]) -> Identity>,
+    /// When [`Shared::identity`] was last read.
+    pub identity_read: Cell<Instant>,
 }
 
 impl Shared {
@@ -229,7 +238,32 @@ impl Shared {
             follows: RefCell::default(),
             trials: RefCell::default(),
             spark: Cell::new(trials::READ),
+            reads_identity: Cell::new(Identity::read),
+            identity_read: Cell::new(Instant::now()),
         })
+    }
+
+    /// Reads the machine's names and addresses again, for the
+    /// certificate's names.
+    pub fn read_identity(&self) {
+        let names = self.certificate.borrow().names.clone();
+        *self.identity.borrow_mut() = (self.reads_identity.get())(&names);
+        self.identity_read.set(Instant::now());
+    }
+
+    /// Reads the machine's names and addresses again for a request whose
+    /// host is none of them, unless they were read in the last
+    /// [`IDENTITY_FRESH`], and says whether it did. A card takes its
+    /// address after admind starts, as DHCP gives one a few seconds into a
+    /// start, and a console opened by that address is answered at once,
+    /// not at the next upkeep. The limit keeps requests for other hosts
+    /// from reading them on each request.
+    pub fn read_identity_for_miss(&self) -> bool {
+        if self.identity_read.get().elapsed() < IDENTITY_FRESH {
+            return false;
+        }
+        self.read_identity();
+        true
     }
 
     /// Whether admind serves an authority's certificate, and so asks
