@@ -429,7 +429,8 @@ async function administrator(t) {
 
   const python = await openApp(t, page, PYTHON);
   await factsAsAnswered(t, page, python);
-  ensure((await panel(page).getByRole("link", { name: "Settings…", exact: true }).count()) === 0, "an app with no service has Settings…");
+  const settingsOfPython = await panel(page).getByRole("link", { name: "Settings…", exact: true }).count();
+  ensure(settingsOfPython === (python.service_list.length > 0 ? 1 : 0), `${PYTHON} has ${python.service_list.length} services and ${settingsOfPython} Settings…`);
   await lookAll(t, page, "apps-plain");
   await purgeNeedsTheName(t, page, python);
 
