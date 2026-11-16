@@ -576,6 +576,7 @@ mod tests {
             ("apps.update", [0, 1].as_slice()),
             ("apps.tonight", [0, 1].as_slice()),
             ("alerts.test", [0, 1].as_slice()),
+            ("apps.search", [0, 1].as_slice()),
         ] {
             let action =
                 crate::admind::actions::REGISTRY.iter().find(|action| action.id() == id).unwrap();
@@ -597,6 +598,7 @@ mod tests {
             "apps.update",
             "apps.tonight",
             "alerts.test",
+            "apps.search",
         ];
         for action in crate::admind::actions::REGISTRY.iter().filter(|a| !named.contains(&a.id())) {
             assert_eq!(action.answers(), [0], "{}", action.id());

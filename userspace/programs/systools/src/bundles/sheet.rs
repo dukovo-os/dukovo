@@ -500,13 +500,37 @@ fn permission_details(manifest: &Manifest) -> Vec<PermissionDetails> {
         .collect()
 }
 
+/// The names of `m`'s commands that run `runs_with`.
+fn commands_of(m: &Manifest, runs_with: RunsWith) -> Vec<String> {
+    m.commands.iter().filter(|c| c.runs_with == runs_with).map(|c| c.name.to_string()).collect()
+}
+
+/// What `m` provides.
+fn provides_of(m: &Manifest) -> Vec<Offered> {
+    m.provides
+        .iter()
+        .map(|provide| Offered {
+            interface: provide.interface.as_ref().map(|interface| interface.0.clone()),
+            socket: provide.socket.as_ref().map(|socket| socket.0.clone()),
+        })
+        .collect()
+}
+
+/// What `m` uses.
+fn uses_of(m: &Manifest) -> Vec<Offered> {
+    m.uses
+        .iter()
+        .map(|used| Offered {
+            interface: used.interface.as_ref().map(|interface| interface.0.clone()),
+            socket: used.socket.as_ref().map(|socket| socket.0.clone()),
+        })
+        .collect()
+}
+
 /// The facts of an installed bundle as `bundle info --json` says them:
 /// [`write`]'s, the person's `grants` and where the bundle is.
 pub fn details(facts: &Facts<'_>, grants: &[Grant], installation: &Installation<'_>) -> Details {
     let m = facts.manifest;
-    let commands = |runs_with: RunsWith| -> Vec<String> {
-        m.commands.iter().filter(|c| c.runs_with == runs_with).map(|c| c.name.to_string()).collect()
-    };
     let mut grants: Vec<&Grant> = grants.iter().collect();
     grants.sort_by(|a, b| a.permission.cmp(&b.permission));
     Details {
@@ -528,8 +552,8 @@ pub fn details(facts: &Facts<'_>, grants: &[Grant], installation: &Installation<
             .map(|update| update.feed.0.clone()),
         flaws: flaws_details(facts),
         permissions: permission_details(m),
-        commands: commands(RunsWith::Sandbox),
-        commands_with_your_access: commands(RunsWith::YourAccess),
+        commands: commands_of(m, RunsWith::Sandbox),
+        commands_with_your_access: commands_of(m, RunsWith::YourAccess),
         services: super::services::sheet_lines(m),
         grants: grants
             .into_iter()
@@ -556,23 +580,115 @@ pub fn details(facts: &Facts<'_>, grants: &[Grant], installation: &Installation<
                 start: if installation.started.contains(&service.name.0) { "on" } else { "off" },
             })
             .collect(),
-        provides: m
-            .provides
-            .iter()
-            .map(|provide| Offered {
-                interface: provide.interface.as_ref().map(|interface| interface.0.clone()),
-                socket: provide.socket.as_ref().map(|socket| socket.0.clone()),
-            })
-            .collect(),
-        uses: m
-            .uses
-            .iter()
-            .map(|used| Offered {
-                interface: used.interface.as_ref().map(|interface| interface.0.clone()),
-                socket: used.socket.as_ref().map(|socket| socket.0.clone()),
-            })
-            .collect(),
+        provides: provides_of(m),
+        uses: uses_of(m),
         used_by: installation.used_by.to_vec(),
+    }
+}
+
+/// What `bundle sheet --json` says of the file a catalog offers, before
+/// it is installed: the facts of [`Details`] that need no install, and
+/// which file it is.
+#[derive(Serialize)]
+pub struct Offer {
+    id: String,
+    name: String,
+    version: String,
+    publisher: String,
+    summary: String,
+    key: String,
+    trust: TrustDetails,
+    files: usize,
+    bytes: u64,
+    support: Option<String>,
+    update_feed: Option<String>,
+    flaws: FlawsDetails,
+    permissions: Vec<PermissionDetails>,
+    commands: Vec<String>,
+    commands_with_your_access: Vec<String>,
+    services: Vec<String>,
+    license: String,
+    service_list: Vec<ServiceDetails>,
+    provides: Vec<Offered>,
+    uses: Vec<Offered>,
+    /// The catalog it comes from.
+    catalog: String,
+    /// The SHA-256 of the file, in lowercase hex, which an install may
+    /// name to take no other.
+    sha256: String,
+    /// The file's size, in bytes.
+    download_bytes: u64,
+    /// Whether it runs services, which run for everyone: only an
+    /// administrator installs it.
+    services_need_everyone: bool,
+    /// The folder of each of its services' accounts, where its data is.
+    data: Vec<String>,
+    /// The version installed now, if one is.
+    installed: Option<String>,
+    /// Why it would not install, in bundled's words, if it would not.
+    refusal: Option<String>,
+}
+
+/// The file a catalog offered, and what is known of installing it.
+pub struct Download<'a> {
+    /// The catalog's name.
+    pub catalog: &'a str,
+    /// The file's SHA-256, in hex, and its length.
+    pub sha256: &'a str,
+    pub bytes: u64,
+    /// The version installed for the asker or for everyone, if one is.
+    pub installed: Option<&'a str>,
+    /// What stops the install, if something does.
+    pub refusal: Option<&'a str>,
+}
+
+/// The facts of a bundle a catalog offers, as `bundle sheet --json` says
+/// them: [`write`]'s, and which file it is.
+pub fn offer(facts: &Facts<'_>, download: &Download<'_>) -> Offer {
+    let m = facts.manifest;
+    Offer {
+        id: m.full_id(),
+        name: m.name.0.clone(),
+        version: m.version.0.clone(),
+        publisher: m.publisher.name.0.clone(),
+        summary: m.summary.0.clone(),
+        key: facts.key.encoded(),
+        trust: trust_details(facts.trust),
+        files: facts.files,
+        bytes: facts.bytes,
+        support: m.support.as_ref().map(|support| support.0.clone()),
+        update_feed: m
+            .update
+            .as_ref()
+            .filter(|_| !matches!(facts.trust, Trust::Catalog { .. }))
+            .map(|update| update.feed.0.clone()),
+        flaws: flaws_details(facts),
+        permissions: permission_details(m),
+        commands: commands_of(m, RunsWith::Sandbox),
+        commands_with_your_access: commands_of(m, RunsWith::YourAccess),
+        services: super::services::sheet_lines(m),
+        license: m.license.0.clone(),
+        service_list: m
+            .services
+            .iter()
+            .map(|service| ServiceDetails {
+                name: service.name.0.clone(),
+                account: super::services::account(service),
+                start: if super::services::starts_enabled(service) { "on" } else { "off" },
+            })
+            .collect(),
+        provides: provides_of(m),
+        uses: uses_of(m),
+        catalog: download.catalog.to_string(),
+        sha256: download.sha256.to_string(),
+        download_bytes: download.bytes,
+        services_need_everyone: !m.services.is_empty(),
+        data: super::services::accounts(m)
+            .iter()
+            .map(|account| super::services::data_folder(&m.id.0, account))
+            .collect(),
+        installed: download.installed.map(String::from),
+        refusal: download.refusal.map(String::from),
     }
 }
 
@@ -824,6 +940,55 @@ mod tests {
         };
         let line = json::line(&details(&facts, &grants, &installation)).unwrap();
         json::assert_golden(&line, include_str!("../../tests/json/bundle-info.json"));
+    }
+
+    #[test]
+    fn an_offer_says_the_facts_of_a_file_before_it_is_installed() {
+        let text = manifest::bundle::template("org.example.notes", "Notes", "Example, Inc.", "MIT")
+            .replace(
+                "\"permissions\": {}",
+                "\"services\": [{\"name\": \"notes-sync\", \"program\": \"notes\", \"account\": \
+             \"notes\", \"start\": \"at-boot\"}, {\"name\": \"notes-mail\", \"program\": \
+             \"notes\"}], \"provides\": [{\"interface\": \"org.example.notes/1\", \"to\": \
+             \"anyone\"}], \"uses\": [{\"socket\": \"org.example.mail/smtp\", \"need\": \
+             \"optional\"}], \"permissions\": {\"network.outbound\": {\"need\": \"required\", \
+             \"why\": \"To sync.\"}}, \"support\": \"bugs@example.org\"",
+            );
+        let manifest = manifest::bundle::from_json(&text).unwrap();
+        let key = SecretKey::generate(&[5u8; 40]).unwrap().public();
+        let trust = Trust::Catalog { name: "dukovo".into(), since: None };
+        let checked = vec![("org.example.notes".to_string(), "0.1.0".to_string())];
+        let list = List { made: "2026-11-03T03:00:00Z".into(), checked, flaws: Vec::new() };
+        let facts = Facts {
+            manifest: &manifest,
+            key: &key,
+            trust: &trust,
+            place: Place::Everyone,
+            files: 3,
+            bytes: 12_345,
+            replaces: None,
+            flaws: Some(&list),
+            all_flaws: false,
+        };
+        let sha256 = "ab".repeat(32);
+        let said = |installed, refusal| {
+            let download =
+                Download { catalog: "dukovo", sha256: &sha256, bytes: 4_567, installed, refusal };
+            json::line(&offer(&facts, &download)).unwrap()
+        };
+        json::assert_golden(&said(None, None), include_str!("../../tests/json/bundle-sheet.json"));
+        // What differs when a version is installed and the install would be refused.
+        let refused = serde_json::from_str::<serde_json::Value>(&said(
+            Some("0.0.9"),
+            Some("its service notes-sync is another bundle's"),
+        ))
+        .unwrap();
+        assert_eq!(refused["installed"], "0.0.9");
+        assert_eq!(refused["refusal"], "its service notes-sync is another bundle's");
+        // The members the sheet leaves to an installed bundle are not there.
+        for member in ["for_everyone", "grants", "folder", "data_size", "previous", "used_by"] {
+            assert!(refused.get(member).is_none(), "{member}");
+        }
     }
 
     /// A bundle called `id` that uses the socket `socket`, or the interface

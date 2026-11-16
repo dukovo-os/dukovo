@@ -149,8 +149,9 @@ For each catalog, bundled keeps the metadata it trusts, the root it
 started from, and an index of the bundles the catalog's targets list:
 each one's path, SHA-256, length, ID, version and name, with when it was
 read and when the soonest of the metadata it came from expires. It reads
-a catalog anew, from what it trusts, for *bundle search* and for *bundle
-install* by ID, and writes the index only once every check has passed.
+a catalog anew, from what it trusts, for *bundle search*, *bundle sheet*
+and *bundle install* by ID, and writes the index only once every check has
+passed.
 It starts again from _root.json_ when that file changes.
 
 Asked to install an ID, it reads the catalogs in order, those the system
@@ -160,6 +161,38 @@ its length and SHA-256 as it comes. The file is its own until the
 install ends, and then removed. Asked to install a file, it sums the
 archive and looks it up in each index that has not expired: a catalog
 lists it if it has that ID with that SHA-256 and length.
+
+An install by ID may name the file it is to install by its SHA-256,
+which the client sends as the last word of its request, as 64
+hexadecimal digits: if the catalog lists another file of that ID by then, a
+newer version, bundled says so before it fetches anything, in words that
+end in *APP-102*, and installs nothing. When no catalog lists the ID it
+says so in words that end in *APP-101*, and when no catalog could be
+read, in words that end in *APP-103*. An older *bundle*, which sends no
+hash, installs the newest file, as it always did.
+
+Asked for the sheet of an ID, bundled fetches the newest version as an
+install does, checks the file as an install does, and answers with the
+sheet an install for everyone shows, and then the same facts as one
+document of JSON, with the catalog, the file's SHA-256 and size, the
+version installed now, if there is one, and why the install would be
+refused, if it would; each asker reads the one it asked for. It unpacks
+the file in a folder of the asker's own, which it removes, installs
+nothing and records nothing. Of the files it fetched for sheets it keeps
+only the one read last, in its catalog's _downloads_, named by its
+SHA-256, so that the install that follows finds it there and fetches
+nothing again: another sheet's file takes its place, an install takes it
+and removes it, and none outlasts bundled's start. Any person may ask
+for a sheet or a search, as no one's bundles change; the file is checked
+against its length and SHA-256 as it comes, whoever asks.
+
+Asked to search with its JSON, bundled answers with one document: the
+newest version of each bundle that the catalogs it could read list,
+whose ID or name holds every word, each with its catalog, what the
+catalog's list of known flaws says of it and the version the asker has
+installed, or else everyone has; and each catalog it could not read,
+with why. That no catalog could be read is an error after the document,
+in words that end in *APP-103*.
 
 Each time it reads a catalog, bundled also fetches the catalog's list
 of known flaws (ADR 0389), which its targets delegate to the role
@@ -433,7 +466,7 @@ _/system/state/bundled/catalogs/NAME_
 	Each catalog's client: _tuf_, the metadata it trusts,
 	_first-root.json_, the root it started from, _index_, _flaws.json_,
 	its list of known flaws, and _downloads_, the files being
-	installed.
+	installed, and the one whose sheet was read last.
 
 _/system/settings/catalogs/NAME_
 	Each catalog: _url_, _root.json_ and _off_.

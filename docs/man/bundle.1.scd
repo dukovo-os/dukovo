@@ -31,9 +31,13 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle install* _file_*.dkv* [*--unsigned*] [*--for-everyone*] [*--yes*]
 
-*bundle install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
+*bundle install* _id_ [*--from* _catalog_] [*--sha256* _hex_] [*--for-everyone*] [*--yes*]
 
 *bundle search* _word_...
+
+*bundle search --json* [_word_...]
+
+*bundle sheet* _id_ [*--from* _catalog_] [*--json*]
 
 *bundle catalog*
 
@@ -193,11 +197,16 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	(*bundled*(8), ADR 0385). A file with no signature is refused, unless
 	*--unsigned* says to install it anyway (UNSIGNED BUNDLES).
 
-*install* _id_ [*--from* _catalog_] [*--for-everyone*] [*--yes*]
+*install* _id_ [*--from* _catalog_] [*--sha256* _hex_] [*--for-everyone*] [*--yes*]
 	Fetches the newest version of _id_ from the first catalog that lists
 	it, or from _catalog_, and installs it as a file, with the catalog's
 	name on its sheet. bundle takes what it is given for a file when it
-	has a _/_, ends in _.dkv_ or names a file that is there.
+	has a _/_, ends in _.dkv_ or names a file that is there. With
+	*--sha256*, only the file whose SHA-256 is _hex_, 64 hexadecimal
+	digits, installs, which is the one whose sheet *bundle sheet*
+	showed: if the catalog lists another file by now, a newer
+	version, bundled says so before it fetches anything, in words that
+	end in *APP-102*, and nothing is installed (SHEETS).
 
 *search* _word_...
 	Reads the catalogs anew and lists the newest version of each bundle
@@ -205,6 +214,28 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	catalog, its known flaws (FLAWS) and name. It exits with 1 when none
 	does. A catalog that cannot be read is left out, and bundle says
 	why.
+
+*search --json* [_word_...]
+	Prints the same search as one line of JSON (JSON) in place of the
+	table, and with no _word_ lists every bundle the catalogs list. A
+	catalog that cannot be read is in the document, with why. That
+	nothing matches is no failure, and the status is 0. That no catalog
+	could be read is, and the status is 1: the document is printed
+	first, naming each catalog and why, and the error follows on
+	standard error, in words that end in *APP-103*. A _word_ that
+	starts with *-* follows a *--*.
+
+*sheet* _id_ [*--from* _catalog_] [*--json*]
+	Shows the sheet that *install* _id_ would show, of the newest
+	version of _id_ that the first catalog that lists it, or _catalog_,
+	lists, and installs nothing (SHEETS). It is the sheet of an install
+	for everyone, the one that can run services, and says on a last line,
+	*It would not install*, why bundled would refuse it, if it would.
+	*--json* prints the facts of the sheet as one line of JSON (JSON)
+	instead, with which file it is. It exits with 1 when no catalog lists
+	_id_, in words that end in *APP-101*, and when none could be read,
+	which end in *APP-103*; that the install would be refused is no
+	failure.
 
 *catalog*
 	Lists the catalogs: name, on or off, how many bundles each listed
@@ -541,6 +572,23 @@ A file no catalog lists installs as before: signed by your developer key
 with no warning, or by any other key after one, which also says that no
 catalog this computer trusts lists it.
 
+# SHEETS
+
+*bundle sheet* shows what an install shows, before one: bundled fetches
+the newest version of the bundle from the catalogs, checks the file as it
+comes, and unpacks it only in a folder of your own, which it removes,
+so nothing of the bundle is installed, run or left. The facts are those
+of the sheet of an install for everyone, whoever asks, so that someone who
+may not install it can read what it asks for.
+
+bundled keeps the one file whose sheet was read last, in the folder of its
+catalog's downloads (*bundled*(8)), until another sheet's takes its place
+or an install takes it. *bundle install* with *--sha256* then uses that
+file, with no second download. The hash names the file the sheet showed,
+and no other: a catalog that lists another file by then, which is a newer
+version, is *APP-102*, and nothing is fetched or installed. Read the sheet
+again, then, which shows what the new file asks for.
+
 # FLAWS
 
 A catalog lists the known flaws of its bundles (ADR 0389): its update
@@ -680,13 +728,15 @@ changed it after it was signed. A folder with no signature is signed by
 
 # JSON
 
-*list --json* and *info --json* print one line of JSON, an object whose
+*list --json*, *info --json*, *search --json* and *sheet --json* print one
+line of JSON, an object whose
 first member is *format*, 1 (ADR 0541), which scripts and Ansible's
 *dukovo.system* collection read in place of the text. A later field may
 be added without a new *format*; read the members you know. Names are in
 snake_case, times are RFC 3339 in UTC, sizes are bytes, and a value that
 is not known is *null*. An error is told to standard error as without
-*--json*, with the same exit status, and prints no JSON.
+*--json*, with the same exit status, and prints no JSON, except that
+*search --json*, when no catalog could be read, prints its document first.
 
 *bundle list --json* has *bundles*, a list with an object for each
 bundle you can run, by ID and then yours before everyone's:
@@ -830,6 +880,56 @@ bundle you can run, by ID and then yours before everyone's:
 *held*
 	Whether it is held at its version.
 
+*bundle search --json* has *bundles*, a list with an object for each
+bundle the catalogs list, the newest version of each, catalog by catalog
+in the order bundled reads them, and *unread*, a list with an object for
+each catalog that could not be read, with *catalog* and *why*, in words. A
+bundle is an object of:
+
+*id*, *name*, *version*, *flaws*
+	As in *list*: the ID, its name, the newest version and what the
+	catalog's list of known flaws says of it.
+
+*catalog*
+	The catalog that lists it.
+
+*installed*
+	The version installed for you, or else for everyone, or *null*.
+
+*bundle sheet* _id_ *--json* is the facts of *info*, as the sheet shows
+them before an install: *id*, *name*, *version*, *publisher*, *summary*,
+*key*, *trust*, *files*, *bytes*, *support*, *update_feed*, *flaws*,
+*permissions*, *commands*, *commands_with_your_access*, *services*,
+*service_list*, *license*, *provides* and *uses* as there, and, which *info* has not,
+*catalog*, *sha256*, *download_bytes*, *services_need_everyone*, *data*,
+*installed* and *refusal*. It has none of *used_by*, *grants*, *folder*,
+*data_size*, *previous* and *held*, which only an installed bundle has.
+
+*catalog*
+	The catalog whose file it is.
+
+*sha256*
+	The file's SHA-256, 64 lowercase hexadecimal digits, which *install*
+	takes with *--sha256*.
+
+*download_bytes*
+	The file's size, in bytes.
+
+*services_need_everyone*
+	Whether it has services, which run for no one in particular, so that
+	only an administrator installs it, for everyone.
+
+*data*
+	The folder of each of its services' accounts, where its data will be,
+	a list; for *info*, *data* is a sentence.
+
+*installed*
+	The version installed now, for you or else for everyone, or *null*;
+	for *info*, when it was installed.
+
+*refusal*
+	Why bundled would not install it now, in its words, or *null*.
+
 # FILES
 
 _$XDG_DATA_HOME/bundle/developer.key_, _developer.pub_
@@ -871,7 +971,9 @@ _/system/settings/catalogs/name_
 
 0 when the manifest reads, and 1 when it does not, a file it names is
 missing, a bundle does not check, or the command line is wrong. *install*
-and *remove* exit with 1 when bundled refused, and *grant* and *revoke*
+and *remove* exit with 1 when bundled refused, *search* when it finds no
+bundle (with *--json*, only when no catalog could be read), *sheet* when no
+catalog lists the bundle or none could be read, and *grant* and *revoke*
 when it refused or you said no. *run* and a bundle's
 command exit with the program's status, 128 and the signal's number for
 one a signal ended, or 1 when it did not run.
@@ -931,6 +1033,16 @@ ripgrep 15.2.0, for yourself
   ...
 Install it? [y/N] y
 installed io.github.burntsushi.ripgrep 15.2.0, for you
+```
+
+The sheet before the install, and the install of that very file:
+
+```
+$ bundle sheet io.github.burntsushi.ripgrep
+...
+$ bundle sheet io.github.burntsushi.ripgrep --json | jq -r .sha256
+3f1c...
+$ elevate bundle install io.github.burntsushi.ripgrep --for-everyone --sha256 3f1c...
 ```
 
 Updating, going back, and holding there:

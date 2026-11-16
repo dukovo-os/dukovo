@@ -68,11 +68,19 @@ pub enum Request {
     /// away from app `id` while it runs.
     Watch { id: String },
     /// Installs the newest version of `id` a catalog lists, from
-    /// `catalog` or the first that lists it (ADR 0383), as `Install`.
-    Get { id: String, catalog: Option<String>, everyone: bool, yes: bool },
+    /// `catalog` or the first that lists it (ADR 0383), as `Install`; with
+    /// `sha256`, only a file that has it, and otherwise nothing is
+    /// fetched or unpacked.
+    Get { id: String, catalog: Option<String>, everyone: bool, yes: bool, sha256: Option<String> },
     /// Lists the bundles the catalogs list whose ID or name holds every
-    /// one of `words`.
-    Search { words: Vec<String> },
+    /// one of `words`; with `json`, as one JSON document of the bundles of
+    /// the catalogs read now and of the catalogs that could not be, and
+    /// then `words` may be none, for every bundle.
+    Search { words: Vec<String>, json: bool },
+    /// Fetches the newest version of `id` from `from`, or the first
+    /// catalog that lists it, checks it as an install does, and says its
+    /// sheet, and then its facts as one JSON document; installs nothing.
+    Sheet { id: String, from: Option<String> },
     /// Lists the catalogs.
     Catalogs,
     /// Adds catalog `name` at `url`, with the root sent with the request:
@@ -163,10 +171,15 @@ fn checked_permission(name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{name:?} is no permission of the list"))
 }
 
+/// A file's SHA-256, as 64 hex digits, kept in lowercase.
+fn checked_sha256(hex: &str) -> Result<String, String> {
+    let ok = hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    ok.then(|| hex.to_ascii_lowercase()).ok_or_else(|| "not a SHA-256 of 64 hex digits".into())
+}
+
 /// A list's SHA-256, as 64 hex digits, in lowercase.
 fn checked_list(list: &str) -> Result<String, String> {
-    let hex = list.len() == 64 && list.bytes().all(|b| b.is_ascii_hexdigit());
-    hex.then(|| list.to_ascii_lowercase()).ok_or_else(|| "not a list's SHA-256".into())
+    checked_sha256(list).map_err(|_| "not a list's SHA-256".into())
 }
 
 /// Words, separated by commas, `-` for none.
@@ -212,13 +225,25 @@ impl Request {
             }
             Request::Revoke { id, permission } => format!("revoke\t{id}\t{permission}\n"),
             Request::Watch { id } => format!("watch\t{id}\n"),
-            Request::Get { id, catalog, everyone, yes } => format!(
-                "get\t{id}\t{}\t{}\t{}\n",
+            Request::Get { id, catalog, everyone, yes, sha256 } => format!(
+                "get\t{id}\t{}\t{}\t{}{}\n",
                 catalog.as_deref().unwrap_or("-"),
                 whose(*everyone),
-                if *yes { "yes" } else { "ask" }
+                if *yes { "yes" } else { "ask" },
+                // An older bundled reads no more than the four words.
+                sha256.as_ref().map_or_else(String::new, |hex| format!("\t{hex}"))
             ),
-            Request::Search { words } => format!("search\t{}\n", words.join("\t")),
+            Request::Search { words, json: false } => format!("search\t{}\n", words.join("\t")),
+            Request::Search { words, json: true } => {
+                let mut line = "search-json".to_string();
+                for word in words {
+                    line += &format!("\t{word}");
+                }
+                line + "\n"
+            }
+            Request::Sheet { id, from } => {
+                format!("sheet\t{id}\t{}\n", from.as_deref().unwrap_or("-"))
+            }
             Request::Catalogs => "catalogs\n".into(),
             Request::CatalogAdd { name, url } => format!("catalog-add\t{name}\t{url}\n"),
             Request::CatalogRemove { name } => format!("catalog-remove\t{name}\n"),
@@ -288,14 +313,24 @@ impl Request {
             ["install", place, answer] => {
                 Ok(Request::Install { everyone: everyone(place)?, yes: yes(answer)? })
             }
-            ["get", id, catalog, place, answer] => Ok(Request::Get {
+            ["get", id, catalog, place, answer, rest @ ..] if rest.len() <= 1 => Ok(Request::Get {
                 id: checked_id(id)?,
                 catalog: if *catalog == "-" { None } else { Some(checked_catalog(catalog)?) },
                 everyone: everyone(place)?,
                 yes: yes(answer)?,
+                sha256: rest.first().map(|hex| checked_sha256(hex)).transpose()?,
             }),
             ["search", words @ ..] if !words.is_empty() => Ok(Request::Search {
                 words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
+                json: false,
+            }),
+            ["search-json", words @ ..] => Ok(Request::Search {
+                words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
+                json: true,
+            }),
+            ["sheet", id, from] => Ok(Request::Sheet {
+                id: checked_id(id)?,
+                from: if *from == "-" { None } else { Some(checked_catalog(from)?) },
             }),
             ["catalogs"] => Ok(Request::Catalogs),
             ["add-ons"] => Ok(Request::AddOns),
@@ -996,14 +1031,27 @@ mod tests {
                 catalog: None,
                 everyone: false,
                 yes: false,
+                sha256: None,
             },
             Request::Get {
                 id: "io.github.burntsushi.ripgrep".into(),
                 catalog: Some("dukovo".into()),
                 everyone: true,
                 yes: true,
+                sha256: None,
             },
-            Request::Search { words: vec!["rip".into(), "grep tool".into()] },
+            Request::Get {
+                id: "org.nginx.nginx".into(),
+                catalog: None,
+                everyone: true,
+                yes: true,
+                sha256: Some("ab".repeat(32)),
+            },
+            Request::Search { words: vec!["rip".into(), "grep tool".into()], json: false },
+            Request::Search { words: vec!["rip".into(), "grep tool".into()], json: true },
+            Request::Search { words: Vec::new(), json: true },
+            Request::Sheet { id: "org.nginx.nginx".into(), from: None },
+            Request::Sheet { id: "org.nodejs.node@22".into(), from: Some("dukovo".into()) },
             Request::Catalogs,
             Request::CatalogAdd { name: "feed".into(), url: "https://example.org/catalog/".into() },
             Request::CatalogRemove { name: "dukovo".into() },
@@ -1080,8 +1128,17 @@ mod tests {
             "watch\tNotes",
             "get\tRipgrep\t-\tme\task",
             "get\tio.github.burntsushi.ripgrep\tDukovo\tme\task",
+            "get\torg.nginx.nginx\t-\teveryone\tyes\tabcd",
+            "get\torg.nginx.nginx\t-\teveryone\tyes\t",
             "search",
             "search\t",
+            "search-json\t",
+            "search-json\trip\t",
+            "sheet",
+            "sheet\torg.nginx.nginx",
+            "sheet\tNginx\t-",
+            "sheet\torg.nginx.nginx\tDukovo",
+            "sheet\torg.nginx.nginx\t-\textra",
             "catalog-add\tfeed\tftp://example.org/",
             "catalog-remove\t../x",
             "update\tme\tcheck",
@@ -1101,6 +1158,33 @@ mod tests {
         ] {
             assert!(Request::read(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_lines_an_older_bundle_sends_still_read() {
+        // An install by ID names no SHA-256, and a later one may; it is read
+        // in lowercase.
+        assert_eq!(
+            Request::read("get\torg.nginx.nginx\t-\tme\task"),
+            Ok(Request::Get {
+                id: "org.nginx.nginx".into(),
+                catalog: None,
+                everyone: false,
+                yes: false,
+                sha256: None,
+            })
+        );
+        let upper = format!("get\torg.nginx.nginx\t-\tme\task\t{}", "AB".repeat(32));
+        let Ok(Request::Get { sha256, .. }) = Request::read(&upper) else { panic!("{upper}") };
+        assert_eq!(sha256, Some("ab".repeat(32)));
+        // The words of a search with no `--json`, and a search of no words
+        // that only `--json` makes.
+        assert_eq!(
+            Request::read("search\trip"),
+            Ok(Request::Search { words: vec!["rip".into()], json: false })
+        );
+        assert_eq!(Request::read("search-json"), Ok(Request::Search { words: vec![], json: true }));
+        assert_eq!(Request::read("search"), Err("not a request bundled knows".into()));
     }
 
     #[test]

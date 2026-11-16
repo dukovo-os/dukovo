@@ -627,7 +627,8 @@ pub fn forget(state: &Path, name: &str) {
 }
 
 /// Removes what is on its way in for every catalog: a download is kept
-/// only while its install runs.
+/// only while its install runs, or, for the one sheet bundled keeps, until
+/// the next sheet is read; none outlasts bundled's start.
 pub fn tidy(state: &Path) {
     for entry in std::fs::read_dir(state).into_iter().flatten().flatten() {
         let _ = std::fs::remove_dir_all(entry.path().join(DOWNLOADS));
