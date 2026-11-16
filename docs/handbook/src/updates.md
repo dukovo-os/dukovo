@@ -95,9 +95,14 @@ the details.
 
 The web console's **Updates** page shows what each part of the machine can be
 updated to and stages the system's update, restarts to finish it, goes back to
-the version before, holds a version back and sets how the machine updates and
-what it checks after an update; see [Updates](web-console.md#updates) in the
-chapter on the console, which says what each button runs. A restart that
+the version before, holds a version back, asking why, and sets how the machine
+updates and what it checks after an update; see
+[Updates](web-console.md#updates) in the chapter on the console, which says what
+each button runs. **Later** puts the reminder of an update off for a day or a
+week, as `update later` does, and is not offered for an update that fixes a
+security advisory. **Tonight** asks that an app's update is installed in the
+night's window, and **Install tonight** asks it for every app that waits, as
+`bundle update --for-everyone --tonight` does. A restart that
 finishes an update shows a banner on every page while the machine is away, and
 an update that was taken back says so and says what happened (see [The update
 was taken back](web-console.md#the-update-was-taken-back)). The apps, each

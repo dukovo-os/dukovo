@@ -234,7 +234,16 @@ namespace; and `mail()` fails, as it does anywhere without `sendmail`.
 and the pages of PHP-FPM run as the account `php`, which is none of its
 roles: they connect over `127.0.0.1` with a role's password, as an
 application would to a server on another machine. An administrator makes
-the role and its database:
+the role and its database with `database add`, which makes the password too and
+shows it once, in JSON (see [Databases for programs and
+websites](postgresql.md#databases-for-programs-and-websites)):
+
+```
+$ elevate database add shop --site shop.example.org --json
+{"format":1,"database":"shop","role":"shop","password":"kT3x0Gv9uQ1mYwZb5nR2LcHd7SpJaEfA","host":"127.0.0.1","port":5432}
+```
+
+or, with PostgreSQL's own programs, which ask for the password as it is set:
 
 ```
 $ elevate createuser -U postgres --pwprompt shop

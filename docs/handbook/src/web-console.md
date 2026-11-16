@@ -16,8 +16,9 @@ the machine, and how to put a change back; showing the command of an action,
 and using the API from a script; following a long task; the network cards
 and the firewall; the disks and the log's own space; the snapshots and the
 backups; moving to new hardware; the accounts, with their keys, tokens and
-sessions, and your own; the apps, and their updates, holds and data; the
-certificates, with the machine's name and the certificate the console serves;
+sessions, and your own; the apps, and their updates, holds and data; adding an app, a website and a
+database; the certificates, with the machine's name and the certificate the
+console serves;
 the security page, with the checks and the score, the
 sign-in rules, the addresses blocked after wrong sign-ins, SSH, who may reach the
 console and private access with WireGuard; the hardware, with the checks of
@@ -32,9 +33,9 @@ storage(8), diskhealth(8),
 scrub(8), logtrim(8), snap(1), backup(8), snap.toml(5), backup.toml(5), update(8),
 updates.toml(5), sysupdate(8), updated(8), bundle(1), bundled(8), changes(1),
 hardware(8), shutdown(8), metrics(1), cert(8), certd(8), hostnamectl(1),
-report(1), reportd(8), alerts(8), alertd(8) and alerts.toml(5); the
+report(1), reportd(8), alerts(8), alertd(8), database(8) and alerts.toml(5); the
 decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
-0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567 and ADR 0568.
+0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567, ADR 0568 and ADR 0569.
 
 | Task | How |
 | --- | --- |
@@ -86,8 +87,14 @@ decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 | Stop an account from signing in | **Disable the account…** on its page, or `elevate user disable NAME` |
 | See the apps installed for everyone, and which have an update | **Apps**; see "Apps" |
 | Take every app update at once | **Update all (3)** on **Apps**, or `elevate bundle update --for-everyone --yes`; see "The list" under "Apps" |
-| Take no update of an app for a while | **Hold at 8.0.3** on the app's page, or `elevate bundle hold ID --for-everyone`; see "One app" |
+| Install an app's update in the night | **Tonight** on the app's page or its row on **Updates**, or `elevate bundle update ID --for-everyone --tonight`; see "One app" |
+| Take no update of an app for a while, and say why | **Hold at 8.0.3** on the app's page, then **Why (optional)**, or `elevate bundle hold ID --for-everyone --why TEXT`; see "One app" |
 | Put an app back to the version before, or remove it | **Go back to this** or **Remove…** on the app's page, or `elevate bundle rollback ID --for-everyone` or `elevate bundle remove ID --for-everyone` |
+| Install an app from the catalogs | **Add an app** on **Apps**, then **Install for everyone**, or `elevate bundle install ID --for-everyone`; see "Add an app" |
+| Read what an app asks for before it is installed | Press its row on **Add an app**, or `bundle sheet ID`; see "The sheet" under "Add an app" |
+| Make a database and its password | **Add a database**, or `elevate database add NAME --json`; see "Databases" |
+| Let other machines connect to a database | **Let other machines connect** on the database's page, or `elevate database allow NAME --from NETWORK`; see "A database's page" |
+| Make a new password for a database | **Make a new password** on the database's page, or `elevate database password NAME --json` |
 | See each certificate, who uses it and when it runs out | **Certificates**; see "Certificates" |
 | Get a certificate from Let's Encrypt | **Get one from Let's Encrypt** on **Certificates**, or `elevate cert get NAME`; see "Getting a certificate" |
 | Make the console serve another certificate | **Use for this console** on the certificate, or `elevate admin certificate NAME --try 300`; see "The certificate the console serves" |
@@ -105,6 +112,8 @@ decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 | Restart the machine, at a time or in a minute, or shut it down | **Restart…**, **Restart at** and **Shut down…** under **Restart or shut down** on **Hardware**, or `elevate shutdown -r +1`; see "Restart or shut down" |
 | See whether an update is ready, and stage it | **Updates**, then **Stage it**, or `elevate update apply --only system`; see "Updates" |
 | Take an update back, or keep one from being staged | **Take it back**, **Go back…** and **Hold this version** on **Updates**, or `elevate update undo system` and `elevate update hold system`; see "Going back" and "Holding a version back" |
+| Hold a version and keep the reason | **Hold a version**, then **Hold it…** and **Why (optional)**, or `elevate update hold system --why TEXT`; see "Holding a version back" |
+| Not be told of an update for a day or a week | **Later** on the update's card, or `elevate update later system --for 7d`; see "Putting a reminder off" |
 | Change how often the machine looks for updates, and what it does with them | **How this server updates**, then **Save**, or `elevate update set`; see "How this server updates" |
 | Report a problem to the Dukovo project, and see every byte first | **Report a problem**, at the foot of the list of pages, then **Send**; see "Report a problem" |
 | See where alerts go, and send a test alert | **Alerts**, then **Send a test alert**, or `elevate alerts test`; see "Where alerts go" |
@@ -413,7 +422,10 @@ each page the session may use: **Overview**, **Logs**, **Reliability**,
 **Accounts**, **Services**, **Apps**, **Certificates**, **Security**,
 **Hardware**, **Updates** and **Terminal**, which an account that may not open
 one does not see (see "The Terminal entry is missing"), and, at the foot,
-**Report a problem**. The page you are on is marked, and the entries under it show
+**Report a problem**. **Add an app**, **Websites** and **Databases** are not
+entries of the list: **Apps** is marked while you are on them, and they open from
+**Apps**, from the pages that link to them and from the command palette. The page
+you are on is marked, and the entries under it show
 while you are in it: **Snapshots and backups** has **Backups**,
 **Services** has **Scheduled tasks**, and **Terminal**
 has **Sessions** and **Terminal settings**. A number beside **Sessions**
@@ -2999,7 +3011,8 @@ It reads `bundle list`, `bundle info` and `update settings`, and runs `bundle
 update`, `bundle hold`, `bundle unhold`, `bundle rollback` and `bundle remove`,
 each for everyone (bundle(1), bundled(8), update(8)). "Updates, snapshots,
 backups and recovery" says how apps are kept up to date. **Add an app**, which
-administrators see at the top of the list, opens the page that installs one.
+administrators see at the top of the list, opens the page that installs one (see
+"Add an app").
 
 ### The list
 
@@ -3048,13 +3061,14 @@ The facts, each only when there is something to say:
 | --- | --- |
 | Service | Each service the app runs, as a link to its page, with its state and whether it starts at boot |
 | Runs as | The accounts its services run as |
-| Websites, Databases | For nginx and for PostgreSQL: how many there are, with **Manage**, which opens the page that lists them |
+| Websites, Databases | For nginx and for PostgreSQL: how many there are, with **Manage**, which opens the page that lists them (see "Websites" and "Databases"). An administrator reads the count of databases; anyone else has **Manage** alone |
 | May use | What the app is allowed to use, a line for each thing, and **nothing else** |
 | Provides, Uses | What it offers other apps, and what it asks of them |
 | Used by | The apps that use it, or **Nothing installed uses it.** |
 | Data | Where its settings and data are, under `/shared/services/ID/ACCOUNT` |
 | Flaws | What the catalog says of the version it runs |
-| Size | How much room the app takes |
+| Size | What the app's files take, **9 MB installed**, and what its data takes, **1.2 GB of data in 3,412 files, measured today at 3:06 AM** |
+| Hold | For an app that is held: **Held at 8.0.3 since Nov 2 at 3:06 AM by admin: "app tests use this version"**, with who held it, when, and the reason if one was kept |
 | Updates | **Update by themselves** or **Tell me**, as chosen on the Updates page, with **Change on the Updates page** |
 
 Under the facts is a table of versions: the one on offer, with **available** or
@@ -3067,7 +3081,9 @@ first. The buttons are:
 | --- | --- | --- |
 | **Update to 8.0.4** | Updates the app, as a task | `bundle update ID --for-everyone` |
 | **Update anyway** | In place of **Update**, when the update stopped to ask: takes it as it asks | `bundle update ID --for-everyone --yes` |
-| **Hold at 8.0.3** | Takes no update of this app, security fixes included, until it is released | `bundle hold ID --for-everyone` |
+| **Tonight** | When an update waits: asks that it is installed in tonight's window, not now | `bundle update ID --for-everyone --tonight` |
+| **Not tonight** | In place of **Tonight** once it is asked for: takes the app off the window | `bundle update ID --for-everyone --not-tonight` |
+| **Hold at 8.0.3** | Asks **Why (optional)**, then takes no update of this app, security fixes included, until it is released | `bundle hold ID --for-everyone`, with `--why TEXT` when you wrote a reason |
 | **Release the hold** | Takes updates again | `bundle unhold ID --for-everyone` |
 | **Settings…** | Opens the page of the app's service | |
 | **Remove…** | Asks, then removes the app | `bundle remove ID --for-everyone` |
@@ -3090,19 +3106,39 @@ data too**, which removes them with the copies kept for going back, cannot be
 undone and asks for the app's name to be typed before **Remove the app** goes
 on.
 
-**Size** is what the app's files take. What its data takes is not on the page: `bundle info ID
---json` gives it as `data_size`, which bundled measures once a day, at the
-lowest priority, for the apps installed for everyone (see bundled(8)). It is
-as old as the last measure, a day at most, and `info` measures nothing.
+**Size** has two parts, joined by a dot: what the app's files take, **9 MB
+installed**, and what its data takes. bundled measures the data once a day, at
+the lowest priority, for the apps installed for everyone (see bundled(8)), so the
+number is as old as the last measure, a day at most, and the row says when:
+**1.2 GB of data in 3,412 files, measured today at 3:06 AM**. Until the first
+measure the row says **its data is measured once a day; not yet**. A count
+that its limits stopped says **at least 1.2 GB of data: counting stopped at its
+limits (Nov 16)**. An app that runs no service has no data folder, and an app
+that is a person's own is not measured, so each says only what its files take.
+`bundle info ID --json` gives the same as `data_size`, and `info` measures nothing.
 
-At a terminal an app can wait for the night. `elevate bundle update ID
---for-everyone --tonight` asks that the update is installed in the hour before
-the restart time that the Updates page sets, or between 2:00 and 3:00 without
-one, and `--not-tonight` takes it off again; `bundle list` says **installs
-tonight** at the app's line. A computer that was off through the window
-installs nothing in the day: the request waits for the next window. The page
-has no button for it. `elevate bundle hold ID --for-everyone --why TEXT` keeps
-a reason of one line with a hold, which `bundle history` shows.
+**Hold at 8.0.3** asks **Why (optional)** before it holds: one line of at most 200
+characters. Everyone who can sign in sees the reason, here and with `bundle
+list`, so it is not for what should stay private. The **Hold** row then says
+who held the app, when and why, and `bundle history` shows the reason as the
+note of the hold. **Release the hold** needs no question, and takes the reason
+away with the hold. At a terminal, `elevate bundle hold ID --for-everyone --why
+TEXT` does the same.
+
+**Tonight** is for an update that would restart an app's services in the middle of
+the day. It asks that the update is installed in the hour before the restart time
+that the Updates page sets, or between 2:00 and 3:00 AM without one; under the
+buttons the page says which hour, **Installs tonight, between 2:00 and 3:00 AM:
+the hour before this server's restart time.**, and above the facts a note says
+**Installs tonight** once it is asked for. A computer that was off through the
+window installs nothing in the day: the note says **The window passed while the
+machine was off: it installs tonight.**, and the request waits for the next
+window. An update that asks for more than the version it replaces stops with its
+sheet, as **Update** does, and **Install tonight anyway** queues it as it asks.
+**Not tonight** takes the app off the window, and `bundle list` says **installs
+tonight** at the line of an app that is in it. The Updates page has **Tonight** for
+each app, and **Install tonight** for all that wait at once (see "App updates"
+under "Updates").
 
 ### Who may do what
 
@@ -3119,6 +3155,330 @@ app's page is a page of its own there, and the list is not drawn beside it as it
 is on a wide window. The banner comes first, then the facts one to a row, then
 the versions, and the buttons one to a row and as wide as the page, 44 pixels
 tall at least.
+
+## Add an app
+
+**Add an app** installs an app from the catalogs, for everyone. It opens from
+**Add an app** at the top of **Apps**, from the command palette (see "The command
+palette"), and from **Websites** and **Databases** when the app they need is not
+installed. It is at `/apps/add`,
+and the sheet of an app, which says what the app is and what it may use before it
+is installed, is at `/apps/add/ID`. The list of pages marks **Apps** while you
+are on it. Anyone who signs in can search the catalogs and read a sheet;
+installing is for administrators, who unlock the console first (see "Unlocking the
+console").
+
+It reads `bundle search --json`, `bundle sheet --json` and `bundle list`, and
+runs `bundle install` and, for a service the app brings, `service enable`
+(bundle(1), bundled(8), service(8)). "Installing from a catalog" in the chapter on
+bundles says what each does.
+
+### Setups and the catalogs
+
+The head has two links, **Installed (6)**, which is the list of **Apps**, and **Add
+an app**. Under them is the box **Search apps and setups**: type a name, or what
+you want to do, such as a website. A search has at most five words, each of
+letters, digits, dots, `@` and dashes; the page says why when it is not. It is
+sent a moment after you stop typing, and it is kept in the address, so that the
+way back from a sheet keeps it.
+
+**Ready-made setups** are cards that open the page that does the job. Each
+shows what it uses, and each is a page of this console that shows every command
+it runs before it runs it:
+
+| Setup | Uses | Opens |
+| --- | --- | --- |
+| **Static website** | nginx | **Add a website**, to serve the files of a folder |
+| **PHP website with a database** | nginx, PHP-FPM and PostgreSQL | **Add a website**, to serve PHP pages, with the box for a database ticked |
+| **A database** | PostgreSQL | **Add a database** |
+| **Private access for your devices** | WireGuard | **Security**, where private access is set up |
+
+A card whose apps are not installed says **Installs nginx first**, or names the
+ones that are missing, and the page it opens offers their install as its first
+step. The search narrows the cards by their titles and what they use.
+
+**Apps in the catalogs** is a table, sorted by name:
+
+| Column | What it says |
+| --- | --- |
+| App | Its name and ID, which open its sheet |
+| Version | The newest version a catalog lists |
+| Catalog | Which catalog lists it |
+| Flaws | **No known flaws**, or **2 known flaws, worst high**, which is marked when the worst is high or critical; **Flaws not listed** when the catalog gives none |
+| Installed | **Installed** with **Version 1.30.5** for an app that is installed, else **Not installed** |
+
+A catalog that could not be read has a banner, **The catalog dukovo could not be
+read: why. The list shows the others.**, with **Look at the connection on the
+Updates page** when the network is why. When there is no row the page says why:
+**No app in the catalogs matches “word”.** with **Clear the search**, **No app is
+listed: no catalog could be read.**, or **No catalog is turned on.** with the
+command `bundle catalog`, which lists them.
+
+### The sheet
+
+A row opens the sheet beside the list on a wide window, and on a page of its own on
+a phone. Reading a sheet downloads the app, since that is how its facts are
+checked: the page says **Reading the sheet. The app is downloaded to read it, so
+this can take a moment.** Nothing is installed or run by it, and it is never
+done by itself or on a timer: only when you open a sheet. bundled keeps the one
+download last read for the install that follows, so a sheet read just before an
+install is not fetched twice (see bundle(1)). When the app cannot be fetched
+the page says **The app could not be fetched: why.** and **Nothing was installed
+or kept.**, with **Try again** and the ID's page when it has one
+([APP-101](../../errors/APP-101.md), [APP-103](../../errors/APP-103.md)).
+
+The sheet has what the plain sheet of `bundle install` has, in the same order:
+
+| Part | What it says |
+| --- | --- |
+| Title | The app's name and version, and under it **Dukovo catalog · signed · BSD-2-Clause**: the catalog, whether it is signed, and the licence. A key this computer does not know yet says **signed by a key this computer does not know yet** in the warning colour. Then the summary |
+| **Who made it** | The publisher, and a link to where the app is supported |
+| **Its size** | **3.1 MB to download, 9 MB installed** |
+| **Flaws** | The known flaws of this version, each with its ID, severity and the version that fixes it, and that whether one matters depends on what the app may use |
+| **Runs as services** | Each service, **nginx · as its own account, nginx · off until you turn it on**, and **A bundle that runs services is installed for everyone.** |
+| **May use** | Each permission in the system's words, and **and nothing else**. One that the system asks for with a warning, such as connecting out to anything, starts with **Warning:** and says why in the publisher's words |
+| **Commands that run with your access** | The commands that run with the access of whoever runs them, with **These run with the access of whoever runs them; the first time each asks, with a warning, in that person's terminal.** When there are none: **Its commands run in its sandbox.** |
+| **Its data** | The folder of each service, such as `/shared/services/org.nginx.nginx/nginx`, which **Made at its first start; only its account may read it.** and whether **Snapshots and backups copy /shared.** or **No backup place copies /shared yet.**, with **Add a backup place** |
+| **Works with** | What the app **Provides** and **Uses**, with the installed apps that offer what it uses, and **Needs PHP-FPM, which is not installed.** when one is missing |
+
+An app that is installed already says **Version 1.30.5 is installed. Updating is on
+its page.** with **Open its page**, and has no **Install for everyone**. An app
+that bundled would refuse, because its key is not one the system takes, because
+it needs another kind of computer, or because its ID belongs to another catalog,
+says **This app would not be installed.** and why, in the error colour, and has
+no button that installs it.
+
+The buttons are **Install for everyone**, which administrators have, **Show
+command**, which shows `elevate bundle install ID --for-everyone` with **Copy** (see
+"Showing the command"), and **Cancel**, which goes back to the list with the
+search kept. Anyone else is told **An administrator installs apps for everyone.**
+in place of the first.
+
+### Installing
+
+**Install for everyone** asks nothing more, since the sheet was the question. A
+locked console asks for the unlock first. It runs
+
+```
+$ elevate bundle install org.nginx.nginx --for-everyone --yes --sha256 HASH
+```
+
+as a task, whose lines show under the button and in **Tasks**. The hash is the
+SHA-256 of the file whose sheet you read, and only that file installs. When the
+catalog offers another file by then, most often a newer version, bundled
+installs nothing, and the page says **The catalog has a newer version than the
+sheet you read. Read it again.** with **Read it again**
+([APP-102](../../errors/APP-102.md)): the new sheet may ask for more than the one
+you read. An install that fails says why in the task's last line, with **Try
+again**, and leaves nothing half installed.
+
+An app as large as PHP or PostgreSQL takes the time of its download; leaving the
+page keeps the task, which goes on and shows in **Tasks** (see "Tasks").
+
+### After the install
+
+When the task ends, the sheet becomes a list of what happened:
+
+- **Installed nginx 1.30.6 for everyone.**
+- For each service, **Its service nginx is off.** with **Turn it on**, which starts
+  it, and **Open its service**; or, once it is on, **Its service nginx is on:
+  running, on at boot.**
+- **Its data is in /shared/services/org.nginx.nginx/nginx once it has started.**
+
+Under it is the next step for the app: **Add a website** for nginx, **Add a
+database** for PostgreSQL, **Add a PHP website** for PHP-FPM, and **Open its page**
+for any other app, and **Back to the catalogs**. The page of nginx and of
+PostgreSQL under **Apps** then has a line that links to what they serve (see
+"One app").
+
+### Who may do what
+
+Anyone who signs in can search, read a sheet and see what is installed. An
+administrator whose console is unlocked installs. A reader sees no
+**Install for everyone**. The installed apps are read again when an install ends
+or a change comes.
+
+### On a phone
+
+The apps are cards, one to a row, with the version, the catalog, the flaws and
+whether it is installed under the name. A sheet is a page of its own, and
+**Install for everyone** is a button as wide as the page, 44 pixels tall at
+least, at the end of the sheet.
+
+## Databases
+
+**Databases** makes the databases of PostgreSQL and the roles that own them, shows
+how a program connects to each, lets other machines connect and removes a
+database. It is at `/databases`, and it opens from **Manage**, on the page of the
+PostgreSQL app under **Apps**, from **Make its database** on a website's page, and
+from the command palette (see "The command palette"). It is not an entry of the
+list of pages: **Apps** is marked while you are on it. A database's page is at
+`/databases/NAME`, and **Add a database** is at `/databases/add`.
+
+Listing the databases signs in to PostgreSQL as its superuser, so it is for
+administrators with the console unlocked (see "Unlocking the console"). Anyone
+else is told **Only an administrator can list the databases: listing them signs
+in to PostgreSQL as its superuser.** An administrator whose console is locked is
+told **Listing the databases signs in to PostgreSQL as its superuser, so the
+console has to be unlocked first.** with **Unlock**. The page reads when it opens,
+after a change, when the console is unlocked and when you press **Read again**,
+and never on a timer.
+
+It reads `database list --json`, and runs `database add --json`, `database
+password --json`, `database allow`, `database deny` and `database remove`, and
+`service enable` for PostgreSQL (database(8), service(8)). "Databases for
+programs and websites" in the chapter on PostgreSQL says what each does.
+
+### The list
+
+The line over the table says how PostgreSQL stands, **Running** and **PostgreSQL
+19.0 · running · listens on this machine only**, or **listens on the network, TLS
+with this-machine's certificate**, with a link to its service. When it does not
+run, a banner says so and what to do: **PostgreSQL is not installed.** with **Add
+PostgreSQL**, which opens its sheet (see "Add an app"); **PostgreSQL is off.**,
+with **Its first start makes the cluster.** and **Turn it on**; or **PostgreSQL is
+not running.** with **Open the service**.
+
+The table has a row for each database:
+
+| Column | What it says |
+| --- | --- |
+| Database | Its name, which opens its page, **for shop.example.org** when it was made for a website, and **Its indexes need to be rebuilt** when the system's sorting data changed since it was made |
+| Owner | The role that owns it |
+| Who connects | One line each: **Programs on this server, with the password**, **webdev, by its account**, **192.168.1.0/24, over TLS with the password**, and **and 1 line written by hand** for lines of `pg_hba.conf` that `database` did not write and that name it |
+| Size | How much room it takes |
+| Sessions | How many programs are signed in to it now |
+
+Under the table, **PostgreSQL's own databases are not listed.** An empty list says
+**No databases yet.** with **Add a database**. When PostgreSQL itself found a
+mistake in `pg_hba.conf`, a banner gives its words with the line, and **What
+DB-104 means** ([DB-104](../../errors/DB-104.md)).
+
+### Add a database
+
+**Add a database** makes the role and the database, and shows the password once.
+It opens with **A PostgreSQL 19 database and the role that owns it. Snapshots and
+backups copy it with /shared.** Reached from a website's page it adds **for
+shop.example.org**, starts the name as the site's first word, and has **Back**, which
+returns to the site. A reader sees the form with its button off and **Only an
+administrator can add a database.**, and so does an administrator while PostgreSQL
+is not running.
+
+**Database** has three fields:
+
+| Field | What it holds |
+| --- | --- |
+| **Name** | Lowercase letters, digits and `_`, starting with a letter, up to 63 characters; not a name that starts with `pg_`, and not `postgres`, `template0` or `template1`. From a site, its first word, with each other character made `_`, and a number after it when that name is taken: `shop`, `shop_2` |
+| **Owned by** | The role, which is the name unless you change it: **A new PostgreSQL role, with rights over this database only.** A role or a database of that name that is there already is refused |
+| **Text and sorting** | **UTF-8, sorted as English (US)**, the default, or **UTF-8, sorted by character code, the same on every machine**. The first says **If the system's language data changes in an update, PostgreSQL asks for its indexes to be rebuilt; the Databases page will say so.** |
+
+**Who connects** has three cards, and each says what it does:
+
+| Card | What it does |
+| --- | --- |
+| **Programs on this server, with a password** | The default, and the only way a website's PHP can connect. **They connect to 127.0.0.1, port 5432, as shop, with a long password made now and shown once.** Nothing else changes |
+| **An account of this server, by the socket** | **The role is named for the account and signs in as it, with no password, through PostgreSQL's socket.** Choose the account; **Owned by** then takes its name. **A service of another bundle cannot reach the socket yet: for a website's PHP, choose a password.** |
+| **Programs on other machines, with a password** | Lets the networks you name sign in as the role, with its password, over TLS. **Addresses** are one network a line, such as `192.168.1.0/24` or `2001:db8::/64`, at most 20. **Certificate** is this machine's own unless you choose another, and a note says when it does not name this machine. To let every address in, type **anywhere**. **PostgreSQL restarts once to listen on the network: its open sessions end.** |
+
+**Backups** says what copies the database: **Before each snapshot of /shared,
+PostgreSQL's backup hook asks it for a checkpoint, so the copy starts as after a
+power cut, which PostgreSQL recovers from.** and whether **/shared is in the
+nightly backup to nas** or **No backup place copies /shared yet.** with **Add a
+backup place**. A database is not copied on its own: its files are copied with
+`/shared`.
+
+**What happens** lists, before anything is done: the role, **Makes the PostgreSQL
+role shop, which signs in with a password, from this server only**; the database,
+**Makes the database shop, owned by shop, UTF-8, sorted as English (US). Other roles
+may not connect to it.**; the firewall; and the restart, **Restart: none; the
+database is ready at once.** or **Restart: PostgreSQL restarts once, and its
+open sessions end.** For other machines the firewall row says **PostgreSQL listens
+on the network, and only the addresses you named may sign in. Port 5432 is open to
+every address while PostgreSQL runs, as for any service that listens; a firewall
+rule can narrow it.** The page changes no firewall rule: **Firewall** is where one
+is made. Where commands are shown, **This runs** has `database add`, and `database
+allow` for other machines (see "Showing the command").
+
+**Add the database** runs `database add NAME --json`, with `--owner`, `--peer`,
+`--locale` and `--site` as the form says, and then, for other machines, `database
+allow NAME --from NETWORK --certificate NAME`. Each is a step that shows its
+state. The password is in the first step's answer alone, and it is shown once, in a
+box with **Copy** and **Save as file**, which saves `shop-postgresql.txt` with the
+connection settings and the password: **The password of shop. It is shown only
+now: copy it or save it. Lost, it is replaced by a new one on the database's
+page.** Leaving the page before then asks first, since the password would be lost.
+Nothing keeps it afterwards: not the console, not PostgreSQL, which holds only a
+verifier that cannot be turned back into it, and not a log.
+
+When the first step fails nothing was made. When the second fails the database
+is made, programs on this server can connect with the password, and the page says
+so, with **Open its page** to try again.
+
+### Connection settings
+
+After an add, and on a database's page, **Connection settings** says what a
+program needs, for each way that applies:
+
+| | Programs on this server | An account, by the socket | Other machines |
+| --- | --- | --- | --- |
+| Host | `127.0.0.1` | `/system/live/services/postgres` | The machine's name |
+| Port | 5432 | 5432 | 5432 |
+| Database | The database | The database | The database |
+| User | Its role | The account | Its role |
+| Password | The one shown once | None: PostgreSQL knows the account | The one shown once |
+| TLS | Not needed | Not needed | Required: `sslmode=verify-full`, with this server's certificate |
+
+For other machines, **Download the certificate** saves the server's certificate as
+`NAME.pem`, which a program names as its `sslrootcert`. Each way has examples with
+**Copy**, for PHP, for `psql` and as a URL, and by the socket two for `psql`; none
+holds the password, which a program reads from where you keep it:
+
+```
+new PDO('pgsql:host=127.0.0.1;port=5432;dbname=shop', 'shop', $password);
+psql "host=127.0.0.1 dbname=shop user=shop"
+postgresql://shop@127.0.0.1:5432/shop
+```
+
+### A database's page
+
+A database's page has **About this database**, with its owner, its text and
+sorting, its size and its sessions, **for shop.example.org** as a link to the site,
+and **No one is connected now.** or **2 programs are connected now.** Under it are
+the connection settings, and:
+
+- **Who connects** lists each line, **Programs on this server, with the password**,
+  **webdev, by its account**, **192.168.1.0/24, over TLS with the password**, each
+  network with **Remove**, and lines written by hand in `pg_hba.conf`, which stay
+  as they are. **Let other machines connect** asks for the networks and the
+  certificate, and runs `database allow`. **Stop them**, for every network, and
+  **Remove**, for one, run `database deny`. When no network is left, PostgreSQL
+  goes back to listening on this machine only and restarts once, and the dialog
+  says so first.
+- **Password and removal** has **Make a new password**, which asks first, **Programs
+  that use the old one stop signing in until they have the new one.**, and shows the
+  new password once as the first was shown. It is not there for a role that signs
+  in as an account, which has no password. **Remove…** asks **Remove shop?**, says
+  **Removes the database shop and everything in it. Its data stays in the snapshots
+  of /shared until they are pruned.**, says **Ends its 2 open sessions.** when
+  programs are signed in, and asks for the name to be typed. **Also remove the role
+  shop** is ticked when the role was made with the database and owns nothing else.
+
+When the system's sorting data changed since a database was made, its page says
+**Its sorting data changed in an update: rebuild its indexes, then tell PostgreSQL
+that it did.** with the two commands to run, each with **Copy**.
+
+### Who may do what
+
+Only administrators use this page, and only with the console unlocked (see the
+top of the section). A change that restarts PostgreSQL says so before it is made,
+since the open sessions of every database end. The commands are database(8)'s, so
+a person at a terminal does the same with `elevate database`.
+
+### On a phone
+
+The databases are cards, one to a row, and the password box is as wide as the
+page, with **Copy** and **Save as file** 44 pixels tall at least. The palette has
+each database, and **Add a database** and **Make a new password for NAME**.
 
 ## Certificates
 
@@ -3851,7 +4211,7 @@ the system stands. The states are:
 | Pill | What it says | Buttons |
 | --- | --- | --- |
 | **Up to date** | **The stable channel offers nothing newer.** | |
-| **Update ready** | **1.0.0-alpha.2 is ready · 412 MB to download**, what it fixes, **Fixes DKSA-2026-0007, high: summary**, and that it goes through another release first when it does | **Stage it**, **Hold this version** |
+| **Update ready** | **1.0.0-alpha.2 is ready · 412 MB to download**, what it fixes, **Fixes DKSA-2026-0007, high: summary**, and that it goes through another release first when it does | **Stage it**, **Hold this version**, **Later** |
 | **Staged** | **1.0.0-alpha.2 is staged in slot B**, **It starts at the next restart and has 3 tries to prove itself.** | **Restart now…**, **Restart at 3:00 AM** or a time box with **Restart at that time**, **Take it back** |
 | **Waiting** | **1.0.0-alpha.2 reaches this machine on day 3 of its waves**, and why the waves are paused when they are | **Hold this version** |
 | **Held** | **1.0.0-alpha.2 is held**, **It is held until you release it. A held version gets no security fixes.** | **Release the hold** |
@@ -3861,7 +4221,9 @@ the system stands. The states are:
 
 **Stage it** runs `update apply --only system`: it puts the update in the spare
 slot, to start at the next restart, which you choose, and the card then shows
-its progress. **Restart now…** asks first and restarts in a minute (see
+its progress. **Hold this version** holds it with no reason written; **Hold a
+version**, under "Holding a version back", asks for one. **Later** puts the
+reminder off (see "Putting a reminder off"). **Restart now…** asks first and restarts in a minute (see
 "Restart or shut down", under "Hardware"). **Restart at 3:00 AM** is there when
 updates.toml has a restart time, with that time; otherwise the card has a
 **Restart at** box. **Take it back** puts the update out of the spare slot
@@ -3895,9 +4257,9 @@ and restart** runs `update undo system` and asks for the restart.
 
 **Firmware** is the firmware set the drivers load, not the machine's own firmware,
 which is its maker's to update. It says **Firmware set 2026.11 · 2026.12 is
-offered**, with **Stage it**, and **After the system update has proved itself**
-when **Stage it** is off, since the two share the spare slot. A held set says so,
-with **Release the hold**.
+offered**, with **Stage it** and **Later**, and **After the system update has
+proved itself** when **Stage it** is off, since the two share the spare slot. A
+held set says so, with its reason when it has one, and **Release the hold**.
 
 ### App updates
 
@@ -3905,9 +4267,38 @@ with **Release the hold**.
 **fixes only** or **new version**, and what the update fixes, **Fixes 1 security
 advisory, high**. **Update** takes it, as a task; an update that asks for more
 than the version it replaces stops with its sheet in the row, and **Update
-anyway** takes it as it asks. **Install 3 now** takes them all. The card's pill
-says how many wait, **3 waiting**. A held app says **Held at 8.0.3**, and one
-that waits for its wave **Reaches this machine soon**. The **Apps** page lists every app, not only those that have an update.
+anyway** takes it as it asks. The card's pill says how many wait, **3 waiting**.
+A held app says **Held at 8.0.3**, with the reason when one was kept, **Held at
+8.0.3 · Waiting for the nginx fix**, and one that waits for its wave **Reaches
+this machine soon**. The **Apps** page lists every app, not only those that have
+an update.
+
+An administrator has these buttons on a row that waits:
+
+| Button | What it does | What it runs |
+| --- | --- | --- |
+| **Update** | Takes the update now, as a task | `bundle update ID --for-everyone` |
+| **Tonight** | Asks that the update is installed in tonight's window, not now | `bundle update ID --for-everyone --tonight` |
+| **Not tonight** | In place of **Tonight** once it is asked for: takes the app off the window | `bundle update ID --for-everyone --not-tonight` |
+| **Later** | Puts the reminder off (see "Putting a reminder off") | `update later ID --for 1d` or `--for 7d` |
+
+The window is the hour before the restart time that **How this server updates**
+sets, and 2:00 to 3:00 AM without one. Under the buttons the card says it,
+**Installs tonight, between 2:00 and 3:00 AM: the hour before this server's
+restart time.**, and a row that is asked for says **Installs tonight**. A
+computer that was off through the window installs nothing in the day: the row says
+**The window passed while the machine was off: it installs tonight.**, and the
+request waits for the next window. An update that asks for more than the version
+it replaces is not queued by **Tonight**: the row shows what it asks for, and
+**Install tonight anyway** queues it as it asks, as **Update anyway** takes it.
+A held app and one with no update are not queued.
+
+When more than one app waits, **Install 3 now** takes them all, and **Install
+tonight** asks for them all to wait for the window. **Install 3 now** runs `bundle update
+--for-everyone --yes`, and **Install tonight** runs `bundle update --for-everyone
+--tonight --yes`, both as tasks that take every update as it asks, also one that
+asks for more than the version it replaces (see "Tasks"). To read what an
+update asks for first, press **Update** on its row, or on the app's own page.
 
 ### Security fixes
 
@@ -3923,29 +4314,55 @@ the apps' flaws and the version of each app that fixes it.
 ### Holding a version back
 
 **Held** lists what is held: **System 1.0.0-alpha.2**, **Firmware set 2026.12** or an
-app at its version, each with **Release**. **Hold a version** chooses one
-of the system's offered release, the firmware set or an app, and **Hold it**
-holds it. A held version is not staged, and a newer one is taken as usual. A held
-version gets no security fixes: **hold for a while, not for good.** A release that
-fell back is held by itself, **It was taken back, so it is not staged again until
-you release it.** (see "The update was taken back").
+app at its version, each with **Release**. Under a row the page says when it was
+held, who held it and why, **held on Nov 2 at 3:06 AM by admin: "Waiting for the
+nginx fix"**, each part that is known. **Hold a version** chooses one of the
+system's offered release, the firmware set or an app, and **Hold it…** asks
+**Why (optional)**: one line of at most 200 characters, with no line break. The
+note under the box says that everyone who can sign in sees the reason, here and
+with `update settings`, or with `bundle list` for an app, so it is not for what
+should stay private. **Hold it** then holds the version, with the reason if you
+wrote one. A held version is not staged, and a newer one is taken as usual. A
+held version gets no security fixes: **hold for a while, not for good.** A
+release that fell back is held by itself, **It was taken back, so it is not
+staged again until you release it.** (see "The update was taken back"). **Release**
+lifts the hold, and the reason with it.
 
-A hold can keep a reason, one line of 1 to 200 characters, which everyone who
-can sign in sees: `elevate update hold system --why "Waiting for the nginx fix"`.
-`update settings` and `update check` say it, and **Release** lifts the hold and
-the reason with it. For an app the reason is the note of the hold in the app's
-history, `elevate bundle hold ID --for-everyone --why TEXT`. The page has no
-box for the reason.
+The reason is for the people who read the hold later. For the system and the
+firmware set it is kept beside the version it was given for, and counts only
+while the hold names that version. For an app it is the note of the hold in the
+app's history, which `bundle history` shows. At a terminal,
+`elevate update hold system --why "Waiting for the nginx fix"` and `elevate
+bundle hold ID --for-everyone --why TEXT` do the same, and holding again at the
+same version without a reason keeps the reason it has. **Hold this version** on
+the System card holds at once, with no reason; **Hold at 8.0.3** on an app's page
+asks why first (see "One app").
 
 ### Putting a reminder off
 
 An update that is not urgent can be put off for a day or a week, so that no
-reader tells of it meanwhile: `elevate update later system --for 7d`, with
-`--for 1d` for a day and `--off` to bring it back now. The update is not held,
-and **Stage it** takes it when asked. It is refused for an update that fixes a
-security advisory, or whose advisories could not all be read
-([UPD-107](../../errors/UPD-107.md)), and it ends by itself at its time, or when a
-newer release or an advisory comes. The page has no button for it.
+reader tells of it meanwhile. **Later**, beside the buttons of the System card, the
+Firmware card and each row of **Apps**, opens a menu, **Remind me tomorrow** and
+**Remind me in a week**. The card then says **Put off until Nov 23 at 3:06 AM by
+admin**, with **Remind me now**, which brings the reminder back at once. This runs
+`update later ITEM --for 1d` or `--for 7d`, and `--off` for **Remind me now**
+(update(8)).
+
+The update is not held, and **Stage it** or **Update** takes it whenever you ask.
+The reminder ends by itself at its time, or when a newer release or an advisory
+comes. No notice of the update is sent while it stands, and neither the number
+beside **Updates** nor the Overview counts it; a notice of an advisory is never put off.
+
+**Later** is not offered for an update that fixes a security advisory. The card
+says **It fixes DKSA-2026-0007 (high): it is not put off. Hold it if you must.**
+When the page cannot tell whether an update fixes one, since the check could not
+read the advisories, it says **Whether it fixes an advisory cannot be told, so it
+is not put off.** and the machine refuses it the same way
+([UPD-107](../../errors/UPD-107.md)). A held update has no **Later** either: a
+hold is the other way to wait. A row of **Apps** has it only while the apps are
+set to **Tell me**, since apps that update by themselves are not told of. An
+account that is not an administrator sees that an update is put off and until
+when, and has no menu.
 
 ### How this server updates
 

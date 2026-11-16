@@ -73,12 +73,138 @@ $ psql notes
 The server learns who is at the other end of its socket from the system,
 not from what the program says, so no one else can connect as `alice`.
 
+## Databases for programs and websites
+
+A program that keeps its data in PostgreSQL, such as a website, needs a database
+and a role that owns it. `database` makes both in one command, gives the role a
+password that it makes itself, and lets no one else connect to the database. It
+signs in as the superuser through the socket, so only root runs it, and an
+administrator types `elevate database`:
+
+```
+$ elevate database add shop --site shop.example.org --json
+{"format":1,"database":"shop","role":"shop","password":"kT3x0Gv9uQ1mYwZb5nR2LcHd7SpJaEfA","host":"127.0.0.1","port":5432}
+```
+
+The role is `shop` too, unless `--owner` names another. `--site` records which
+website the database is for, which `database list` shows beside it. The password
+is 32 characters from 24 random bytes, and it is in this line and nowhere else:
+PostgreSQL is told only a SCRAM-SHA-256 verifier made from it, which cannot be
+turned back into the password, and it is in no argument, no file and no log
+line. Keep it where the program that connects reads it. A new one comes from
+`elevate database password shop --json`; the old one then signs no one in, and a
+session that is open stays open.
+
+A database and a role are named by one rule, stricter than PostgreSQL's: a
+lowercase letter, then lowercase letters, digits and `_`, up to 63 characters,
+and never a name that starts with `pg_` or is `postgres`, `template0` or
+`template1`. A database or a role of that name that is there already ends the
+command before anything is made ([DB-102](../../errors/DB-102.md)), and a
+statement that fails after the role was made drops it again, so a second try
+starts clean.
+
+`--locale` says how the database sorts text: `en_US.UTF-8`, the default, which
+sorts as English does, or `C.UTF-8`, which sorts by character code and is the
+same on every machine. The first needs the system's language data, and
+PostgreSQL asks for the indexes to be made again when an update changes it, as
+"A role and a database for an application" says; `database list` shows it as
+`collation_mismatch`.
+
+### Three ways to connect
+
+A database is reached in one of three ways, and `database add` sets up the first
+two.
+
+- **With a password, from this server.** The program connects to `127.0.0.1`,
+  port 5432, as the role, with the password. The bundle's `pg_hba.conf` lets
+  such a connection in with SCRAM-SHA-256 already, so no setting changes. A
+  website's PHP connects this way, as "Connecting from PHP" shows.
+- **As an account, by the socket.** `database add notes --peer notes --json` makes
+  the role `notes` with no password, for the account of that name. A program that
+  runs as that account signs in as the role through the socket, and `psql -d
+  notes` does. The account has to be there ([DB-106](../../errors/DB-106.md)). A
+  service of another bundle cannot reach the socket yet, so PHP-FPM's pages use a
+  password. Without `--json`, `database add` refuses a role that has a password,
+  since the password is shown only in JSON.
+- **With a password, from other machines.** `database allow`, below.
+
+### Letting other machines connect
+
+`database allow` lets networks sign in to one database, over TLS, as its owner,
+with the password:
+
+```
+$ elevate database allow shop --from 192.168.1.0/24 --progress
+step 1 of 7: checking the database, the networks and the certificate
+step 2 of 7: naming the certificate in PostgreSQL's service file
+step 3 of 7: writing the lines of pg_hba.conf
+step 4 of 7: setting what PostgreSQL listens with
+step 5 of 7: having PostgreSQL check its files
+step 6 of 7: restarting PostgreSQL
+step 7 of 7: checking that PostgreSQL answers over TLS
+192.168.1.0/24 may connect to shop over TLS, as shop, with the password
+PostgreSQL restarted, and its open sessions ended
+```
+
+A network is an address and the length of its prefix, `192.168.1.0/24` or
+`2001:db8::/32`, and `--from` may be given up to 20 times. `--certificate` names
+one of `cert list`, and is `this-machine` unless you say; certd has to keep it
+([DB-105](../../errors/DB-105.md)). It changes three places, and every other line
+of each stays as it was:
+
+- `pg_hba.conf` gains a `hostssl` line with `scram-sha-256` for each network, in
+  one block at the end of the file, from `# database(8): who connects from other
+  machines (ADR 0569)` to `# database(8): end`. A line outside the block is yours:
+  `database` reads it, lists it as written by hand and never changes it.
+- `postgresql.auto.conf`, which `ALTER SYSTEM` writes, gets `listen_addresses = '*'`,
+  `ssl = on` and the paths of the certificate's copy, each only when it differs.
+- PostgreSQL's service file gets the certificate in `certificates`, in its
+  override, which keeps every item and comment that is in it.
+
+Before anything takes effect, PostgreSQL checks the files it will read, and a
+mistake it finds ends the command with everything put back ([DB-104](../../errors/DB-104.md)).
+A new `listen_addresses` or certificate needs a restart: the sessions that are
+open end, and the command waits for the new server and then connects over TLS to
+check that the certificate loads. A change that needs none, such as a second
+network for a database that lets others in already, is a reload that ends
+nothing, and `allow` with the same networks again changes nothing.
+
+PostgreSQL then listens on the network, and the firewall lets other computers
+reach what a service listens on (see [The firewall](networking.md#the-firewall)),
+so port 5432 is open to every address; the `hostssl` lines decide who may sign in.
+A firewall rule can narrow it. A client checks the server with `sslmode=verify-full`,
+and for the machine's own certificate needs the file `cert show this-machine
+--pem` prints, as its `sslrootcert` (see [Certificates](certificates.md#postgresql)).
+
+`database deny shop` takes the lines of that database out of the block, or only
+those of the networks named with `--from`. When no line is left, the block goes,
+PostgreSQL listens on this machine only again, which restarts it, and the settings
+for TLS stay.
+
+### Taking a database away
+
+`database remove shop` drops the database with its data and takes its lines out of
+the block. It stops with the programs that have a session open to it, by name, and
+does nothing ([DB-103](../../errors/DB-103.md)); `--force` ends the sessions and
+drops it. `--role` drops its owner too, only when `database` made the role and it
+owns and may use nothing else; otherwise the command says that the role stays and
+why. It is the data that goes: a snapshot of `/shared` taken before holds it until
+the snapshots are pruned.
+
+### From the web console
+
+The web console's **Databases** page runs these commands, with the checks first
+and the password shown once in a box that copies and saves it; see
+[Databases](web-console.md#databases) in the chapter on the console. The password
+that **Add a database** shows is this line's.
+
 ## A role and a database for an application
 
 A program, such as a web application, connects over the network of the
 computer itself, `127.0.0.1`, with a password, and has a role and a database
-of its own. The administrator makes both, and the password is asked for as
-it is set:
+of its own. `database add` makes both (see "Databases for programs and
+websites"). With PostgreSQL's own programs the administrator makes them, and the
+password is asked for as it is set:
 
 ```
 $ elevate createuser -U postgres --pwprompt shop
@@ -165,7 +291,9 @@ computers, an administrator gives the server a certificate that certd keeps,
 the machine's own or one from an authority, as
 [Certificates](certificates.md#postgresql) shows; sets `listen_addresses`,
 such as `'*'`; adds a `hostssl` line for them to `pg_hba.conf`, with
-`scram-sha-256`; and restarts the service. The firewall lets other
+`scram-sha-256`; and restarts the service. `database allow` does each of these
+steps for one database, with the checks before and after (see "Letting other
+machines connect"). The firewall lets other
 computers reach what a service listens on, so it needs no rule of its
 own.
 
