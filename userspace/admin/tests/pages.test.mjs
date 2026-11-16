@@ -73,7 +73,7 @@ test('the phone has Overview, Services, Logs and Alerts in its four places, and 
 });
 
 test('the pages that were added each list pages.css and a sheet of their own, load their page, and have both files', () => {
-  const added = ['apps', 'certificates', 'hardware', 'updates', 'report', 'alerts'];
+  const added = ['apps', 'hardware', 'updates', 'report', 'alerts'];
   for (const id of added) {
     const entry = PAGES.find((one) => one.id === id);
     assert.equal(entry.css.length, 2, `${id}: two sheets`);
@@ -116,6 +116,14 @@ test('/apps/add and what is under it reach Add an app, and an app\'s page reache
   assert.equal(reach('/websites/add').entry.id, 'websites');
   assert.equal(reach('/websites/shop.example.org').entry.id, 'websites');
   assert.equal(reach('/databases/add').entry.id, 'databases');
+});
+
+test('Certificates tries changes, so it lists dialogs.css first and the banner\'s sheet before its own', () => {
+  const entry = PAGES.find((one) => one.id === 'certificates');
+  assert.deepEqual(entry.css, ['dialogs.css', 'pages.css', 'lib/trial-banner.css', 'pages/certificates/certs.css']);
+  assert.equal(typeof entry.load, 'function');
+  for (const sheet of entry.css) assert.ok(existsSync(new URL(sheet, ROOT)), sheet);
+  assert.match(readFileSync(new URL(entry.css.at(-1), ROOT), 'utf8'), /^\/\*\n \* SPDX-FileCopyrightText: .+\n \* SPDX-License-Identifier: .+\n \*\//);
 });
 
 test('the pages that are shown have a page with a show function, and a folder of parts only has none', async () => {

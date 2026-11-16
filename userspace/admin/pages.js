@@ -137,7 +137,7 @@ const ENTRIES = [
   {
     id: 'certificates', title: 'Certificates', path: '/certificates', icon: 'certs', nav: { order: 110 },
     keywords: ['certificate', 'https', 'tls', 'renew', 'let\'s encrypt', 'expire', 'host name', 'domain'],
-    css: ['pages.css', 'pages/certificates/certs.css'],
+    css: ['dialogs.css', 'pages.css', 'lib/trial-banner.css', 'pages/certificates/certs.css'],
     load: () => import('./pages/certificates/page.js'),
     parts: {
       overview: () => import('./pages/certificates/overview.js'),
