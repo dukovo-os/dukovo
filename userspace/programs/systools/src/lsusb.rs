@@ -21,7 +21,7 @@ pub(crate) const DEVICES: &str = "/kernel/bus/usb/devices";
 
 /// The USB ID database, where hwdata puts it on Linux, under Dukovo's
 /// name for /usr/share.
-const IDS: &str = "/system/resources/hwdata/usb.ids";
+pub(crate) const IDS: &str = "/system/resources/hwdata/usb.ids";
 
 /// The driver of a root hub's controller, as Linux names it, from what the
 /// root hub's `product` says the controller is: xHCI unless it says EHCI,
@@ -40,41 +40,44 @@ fn root_driver(product: &str) -> &'static str {
 
 /// A controller's root hub.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RootHub {
-    bus: u8,
+pub(crate) struct RootHub {
+    pub(crate) bus: u8,
     ports: u8,
     /// In Mb/s, as the kernel gives it: `5000`.
     speed: String,
     /// Its controller's driver, as Linux names it.
-    driver: &'static str,
+    pub(crate) driver: &'static str,
+    /// Its controller's PCI address, which the kernel gives as the root
+    /// hub's serial number; none for a controller that is not on PCI.
+    pub(crate) controller: Option<String>,
 }
 
 /// An interface of a device's configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Interface {
+pub(crate) struct Interface {
     number: u8,
-    class: u8,
+    pub(crate) class: u8,
     /// The driver that took it: `usbhid`.
-    driver: Option<String>,
+    pub(crate) driver: Option<String>,
 }
 
 /// A device the kernel set up.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Device {
-    bus: u8,
-    number: u8,
+pub(crate) struct Device {
+    pub(crate) bus: u8,
+    pub(crate) number: u8,
     /// The ports from its root port down: `[3, 2]` for `1-3.2`.
-    ports: Vec<u8>,
-    vendor: u16,
-    product: u16,
-    speed: String,
+    pub(crate) ports: Vec<u8>,
+    pub(crate) vendor: u16,
+    pub(crate) product: u16,
+    pub(crate) speed: String,
     /// A hub's ports.
-    hub_ports: u8,
+    pub(crate) hub_ports: u8,
     /// Its own strings.
-    manufacturer: Option<String>,
-    name: Option<String>,
+    pub(crate) manufacturer: Option<String>,
+    pub(crate) name: Option<String>,
     /// In the order of their numbers.
-    interfaces: Vec<Interface>,
+    pub(crate) interfaces: Vec<Interface>,
 }
 
 /// What a file of a directory says, without its newline.
@@ -103,7 +106,7 @@ fn parse_name(name: &str) -> Option<(u8, Vec<u8>)> {
 
 /// The root hubs and devices under `dir`, each in the order of its bus
 /// and number.
-fn read_devices(dir: &Path) -> io::Result<(Vec<RootHub>, Vec<Device>)> {
+pub(crate) fn read_devices(dir: &Path) -> io::Result<(Vec<RootHub>, Vec<Device>)> {
     let mut hubs = Vec::new();
     let mut devices = Vec::new();
     let mut interfaces: HashMap<String, Vec<Interface>> = HashMap::new();
@@ -117,6 +120,7 @@ fn read_devices(dir: &Path) -> io::Result<(Vec<RootHub>, Vec<Device>)> {
                 ports: read_decimal(&path, "maxchild").unwrap_or(0),
                 speed: read(&path, "speed").unwrap_or_default(),
                 driver: root_driver(&read(&path, "product").unwrap_or_default()),
+                controller: read(&path, "serial").filter(|serial| !serial.is_empty()),
             });
         } else if let Some((device, _)) = name.split_once(':') {
             let (Some(number), Some(class)) =
@@ -180,10 +184,10 @@ pub(crate) fn ids(dir: &Path) -> io::Result<Vec<String>> {
 /// The names the database gives the devices asked about, and the
 /// classes.
 #[derive(Default)]
-struct Names {
-    vendors: HashMap<u16, String>,
-    products: HashMap<(u16, u16), String>,
-    classes: HashMap<u8, String>,
+pub(crate) struct Names {
+    pub(crate) vendors: HashMap<u16, String>,
+    pub(crate) products: HashMap<(u16, u16), String>,
+    pub(crate) classes: HashMap<u8, String>,
 }
 
 /// The four hexadecimal digits at the start of `text`, and what follows
@@ -202,7 +206,7 @@ fn class_id(text: &str) -> Option<(u8, &str)> {
 impl Names {
     /// The names in database `text` of `devices`' vendors and products,
     /// and of every class: the database names some 25,000 products.
-    fn read(text: &str, devices: &[Device]) -> Names {
+    pub(crate) fn read(text: &str, devices: &[Device]) -> Names {
         let vendors: HashSet<u16> = devices.iter().map(|d| d.vendor).collect();
         let products: HashSet<(u16, u16)> = devices.iter().map(|d| (d.vendor, d.product)).collect();
         let mut names = Names::default();
