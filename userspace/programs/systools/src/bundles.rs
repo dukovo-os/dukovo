@@ -23,7 +23,8 @@
 //!   bundles (ADR 0223).
 //! - `bundle search WORD...`, `bundle install ID` and `bundle catalog`
 //!   find, fetch and set the catalogs bundled installs from (ADR 0383);
-//!   `bundle search --json` says what they list as one JSON document.
+//!   `bundle search --json` says what they list as one JSON document, and
+//!   `bundle sheet ID` shows an app's sheet before it is installed.
 //! - `bundle update`, `bundle rollback ID`, `bundle hold ID`, `bundle
 //!   unhold ID` and `bundle history` update bundles from their catalogs,
 //!   go back, hold one at its version and say what was done (ADR 0384).
@@ -86,6 +87,7 @@ const USAGE: &str =
        bundle install ID [--from CATALOG] [--for-everyone] [--yes]
        bundle search WORD...
        bundle search --json [WORD...]
+       bundle sheet ID [--from CATALOG] [--json]
        bundle catalog
        bundle catalog add NAME URL ROOT-FILE
        bundle catalog remove NAME
@@ -209,7 +211,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let output_ok = sub == Some("pack") || output.is_none();
     let days_ok = sub == Some("feed") || days.is_none();
     let unsigned_ok = sub == Some("install") || !unsigned;
-    let json_ok = matches!(sub, Some("list" | "info" | "search")) || !json;
+    let json_ok = matches!(sub, Some("list" | "info" | "search" | "sheet")) || !json;
     if sub != Some("hold") && why.is_some() {
         return Err(usage(USAGE.into()));
     }
@@ -231,7 +233,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     ) || !everyone;
     let yes_ok = matches!(sub, Some("install" | "update")) || !yes;
     let data_ok = sub == Some("remove") || data.is_none();
-    let from_ok = sub == Some("install") || from.is_none();
+    let from_ok = matches!(sub, Some("install" | "sheet")) || from.is_none();
     let update_ok = sub == Some("update") || (!check_only && automatic.is_none());
     let automatic_ok = automatic.is_none() || (!check_only && !yes && operands.is_empty());
     let clear_ok = (sub == Some("default") && operands.len() == 1) || !clear;
@@ -280,6 +282,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             install(what, everyone, yes, unsigned)
         }
         (Some("install"), [id]) if !unsigned => get(id, from, everyone, yes),
+        (Some("sheet"), [id]) => sheet(id, from, json),
         (Some("search"), words) if json => search_json(words),
         (Some("search"), words) if !words.is_empty() => search(words),
         (Some("catalog"), []) => list_catalogs(),
@@ -1229,6 +1232,34 @@ fn search(words: &[String]) -> Result<i32, Fail> {
         );
     }
     Ok(0)
+}
+
+/// `bundle sheet ID [--from CATALOG]`: the sheet of the newest version of
+/// `id` that `from`, or the first catalog that lists it, lists, as `bundle
+/// install` shows it; with `json`, its facts as one document instead.
+/// Nothing is installed. It is no failure that the sheet says the install
+/// would be refused: it is one that no catalog lists the bundle or none
+/// could be read, which bundled says, with its ID.
+fn sheet(id: &str, from: Option<String>, json: bool) -> Result<i32, Fail> {
+    let id = checked(id)?;
+    if let Some(name) = &from {
+        catalogs::check_name(name).map_err(usage)?;
+    }
+    let (_stream, mut input) = ask(&Request::Sheet { id: id.clone(), from }, None).map_err(fail)?;
+    loop {
+        match answer(&mut input)? {
+            Answer::Sheet(text) if !json => print!("{text}"),
+            Answer::Document(text) if json => println!("{text}"),
+            // bundled says both, and each asker reads one.
+            Answer::Sheet(_) | Answer::Document(_) => {}
+            Answer::Ok(_) => return Ok(0),
+            Answer::Error(why) => {
+                eprintln!("bundle: {id}: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
 }
 
 /// `bundle search --json [WORD...]`: bundled's document of the bundles
