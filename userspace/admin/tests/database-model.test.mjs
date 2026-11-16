@@ -14,6 +14,7 @@ import {
   listensOnNetwork, LOCALES, machineOf, nameFromSite, nameProblem, needsAnywhere, networksProblem, NETWORKS_MAX, parseNetworks,
   planRows, removeArgs, restarts, routeOf, secretOf, settingsFile, wayWords, WAYS,
 } from '../lib/database-model.js';
+import * as routes from '../lib/database-route.js';
 
 const NAS = machineOf({ format: 1, name: 'nas.example.org', first: 'nas', domain: 'example.org', local: 'nas.local' });
 const PASSWORD = 'Zq7-sentinel-password-0123456789ab';
@@ -350,4 +351,9 @@ test('every address needs the word typed, and nothing else does', () => {
   assert.equal(needsAnywhere(everywhere, 'any'), true);
   assert.equal(needsAnywhere(everywhere, ` ${ANYWHERE} `), false);
   assert.equal(needsAnywhere(parseNetworks('10.0.0.0/8'), ''), false);
+});
+
+test('the addresses are in a file of their own, which the model gives again', () => {
+  assert.equal(routes.hrefOf, hrefOf);
+  assert.equal(routes.routeOf, routeOf);
 });

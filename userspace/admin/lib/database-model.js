@@ -13,6 +13,10 @@ import {
   formatNetwork, networkOf, parseNetwork,
 } from './address-model.js';
 
+// The addresses of the pages are in their own file, which the list reads
+// before anything else here is needed.
+export { hrefOf, routeOf } from './database-route.js';
+
 /** PostgreSQL's port. */
 export const PORT = 5432;
 
@@ -78,24 +82,6 @@ export function nameFromSite(site, taken = []) {
     const suffix = `_${number}`;
     const name = `${base.slice(0, NAME_MAX - suffix.length)}${suffix}`;
     if (free(name)) return name;
-  }
-}
-
-/** The address of the page of the database `name`: one called `add` is written so that the page of Add a database is not taken for it. */
-export const hrefOf = (name) => `/databases/${name === 'add' ? '%61dd' : encodeURIComponent(name)}`;
-
-/**
- * What the part of the address after `/databases/` asks for: `{kind:
- * 'list'}`, `{kind: 'add'}` or `{kind: 'database', name}`.
- */
-export function routeOf(rest) {
-  const text = String(rest ?? '').replace(/\/+$/, '');
-  if (text === '') return { kind: 'list' };
-  if (text === 'add') return { kind: 'add' };
-  try {
-    return { kind: 'database', name: decodeURIComponent(text) };
-  } catch {
-    return { kind: 'database', name: text };
   }
 }
 
