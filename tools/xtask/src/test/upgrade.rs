@@ -434,13 +434,32 @@ fn restart(vm: &mut Vm) -> Result<(), String> {
     vm.expect("spark: asked to restart the machine")
 }
 
-/// Stages this build from the disk of the full repository.
+/// Stages this build from the disk of the full repository; on a failure,
+/// says what alice and root find of that disk.
 fn stage(vm: &mut Vm, version: &str) -> Result<(), String> {
     run(
         vm,
         &as_root(&format!("sysupdate stage {UPDATES}/{FULL}")),
         &[&format!("sysupdate: staged Dukovo {version} in slot B: it starts at the next restart")],
     )
+    .map_err(|err| format!("{err}\n{}", what_is_there(vm)))
+}
+
+/// What alice, and then root, see of the volumes and the repository's
+/// metadata, one line each.
+fn what_is_there(vm: &mut Vm) -> String {
+    let look = format!("ls -d /volumes/* {UPDATES}/{FULL}/metadata/*");
+    let mut seen = Vec::new();
+    for (who, command) in [("alice", look.clone()), ("root", as_root(&format!("sh -c '{look}'")))] {
+        let screen = answer_within(vm, "$", &format!("clear; {command}"), COMMAND_SECONDS)
+            .and_then(|()| answer_within(vm, "$", "", COMMAND_SECONDS))
+            .and_then(|()| vm.screen());
+        seen.push(match screen {
+            Ok(lines) => format!("{who} sees: {}", lines.join(" | ")),
+            Err(err) => format!("{who}: {err}"),
+        });
+    }
+    seen.join("\n")
 }
 
 /// Restarts into the staged update, and waits for it to prove itself.
