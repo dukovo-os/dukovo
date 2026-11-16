@@ -4,8 +4,8 @@
 // What web-console/security drives in each engine, with the lab's browser
 // runner (lab repository, docs/test-files.md, "Browser tests"): the Security
 // page at /security (design 8). Its cards, each a link target of its own
-// (#checks, #sign-in, #blocked, #ssh, #reach, #private), are held to what the
-// commands print: the score and the findings to `dukovo-check --last --json`
+// (#checks, #sign-in, #blocked, #ssh, #reach, #private, #alerts), are held to
+// what the commands print: the score and the findings to `dukovo-check --last --json`
 // (`GET /api/1/checks/last`, and Check again, `POST /api/1/checks/run`), the
 // sign-in rules and who may reach the console to `admin settings --json` (`GET
 // /api/1/security/sign-in`, changed by `admin sign-in`, `POST
@@ -13,14 +13,17 @@
 // changed by `ssh-server set`, `on` and `off`, `POST /api/1/ssh`, `/ssh/on` and
 // `/ssh/off`), private access to `wireguard show --json` (`GET
 // /api/1/private`, changed by `wireguard serve`, `add` and `remove`, `POST
-// /api/1/private/serve`, `/devices/add` and `/devices/remove`), and the
+// /api/1/private/serve`, `/devices/add` and `/devices/remove`), where alerts go
+// to `alerts status --json` (`GET /api/1/alerts/channels`), and the
 // addresses blocked after wrong sign-ins to `firewall blocked --json` (`GET
 // /api/1/security/blocked`, `firewall unblock` and `firewall never-block`, which
 // security-blocked.mjs drives, since it needs an address that guesses).
 //
 // What every engine does is the page's own: the score and each finding's
 // button, the rules and their form, SSH's row and the refusals of its form, who
-// may reach the console and the words of its two dialogs, and private access
+// may reach the console and the words of its two dialogs, where alerts go (a
+// card that says alerts reach this server's screens only, with the way to set
+// them up, or a row for each kind of alert), and private access
 // as far as the page goes on its own. A reader sees the score, the findings and
 // the rows and none of the buttons, and the phone at 390 by 844 shows one
 // column. Each look is the console's own: dark, light, high contrast, forced
@@ -80,6 +83,7 @@ export const ROUTES = {
   rulesSet: "POST /api/1/security/sign-in",
   blocked: "GET /api/1/security/blocked",
   unblock: "POST /api/1/security/unblock",
+  channels: "GET /api/1/alerts/channels",
   never: "POST /api/1/security/never-block",
   neverRemove: "POST /api/1/security/never-block/remove",
   ssh: "GET /api/1/ssh",
@@ -236,6 +240,50 @@ async function theScore(t, page) {
   await t.see(card.getByText(/Checked today at /));
   const again = await readRoute(page, ROUTES.last);
   ensure(Date.parse(again.checked) >= Date.parse(kept.checked), "Check again did not keep a newer result");
+}
+
+// --- Where alerts go ---
+
+/** The kinds of alert the card has a row for, in its order. */
+const KIND_ROWS = ["Data at risk", "Something stopped", "Hardware"];
+
+/**
+ * The Alerts card is what `alerts status --json` says (`GET /api/1/alerts/channels`).
+ * With no channel it says alerts reach this server's screens only, and Set up
+ * alerts leads to /alerts. With channels it has a row for each kind of alert, a
+ * Send a test alert and Alert settings. A finding that alerts reach nobody has
+ * a button to the same page.
+ */
+async function theAlerts(t, page) {
+  await openSecurity(t, page);
+  const channels = await readRoute(page, ROUTES.channels);
+  ensure(Array.isArray(channels), `${ROUTES.channels} does not give a list: ${JSON.stringify(channels)}`);
+  const card = cardOf(page, "alerts");
+  await t.see(card.getByRole("heading", { name: "Alerts", level: 2, exact: true }));
+  if (channels.length === 0) {
+    await t.see(card.getByText("Alerts reach this server's screens only.", { exact: false }));
+    ensure((await buttonOf(card, "Send a test alert").count()) === 0, "the Alerts card offers a test alert where no channel is set");
+    const setUp = card.getByRole("link", { name: "Set up alerts", exact: true });
+    await t.see(setUp);
+    ensure((await setUp.getAttribute("href")) === "/alerts", `Set up alerts goes to ${await setUp.getAttribute("href")}, not to /alerts`);
+    await lookAll(t, page, "security-alerts-none");
+    await setUp.click();
+    await t.see(page.getByRole("heading", { name: "Alerts", level: 1, exact: true }));
+    ensure(new URL(page.url()).pathname === "/alerts", `Set up alerts went to ${page.url()}`);
+    await openSecurity(t, page);
+  } else {
+    const terms = await card.locator("dl.rows dt").allInnerTexts();
+    ensure(terms.map((term) => term.trim()).join("|") === KIND_ROWS.join("|"), `the Alerts card has the rows ${terms.join(", ")}, not ${KIND_ROWS.join(", ")}`);
+    await t.see(buttonOf(card, "Send a test alert"));
+    await t.see(card.getByRole("link", { name: "Alert settings", exact: true }));
+    await lookAll(t, page, "security-alerts");
+  }
+  // The finding of alerts that reach nobody, where the checks list one, goes to the page that sets them up.
+  const finding = cardOf(page, "checks").locator("li.sec-find").filter({ hasText: "SEC-170" });
+  if ((await finding.count()) > 0) {
+    const where = finding.getByRole("link", { name: "Where alerts go", exact: true });
+    ensure((await where.getAttribute("href")) === "/alerts", `the finding SEC-170 has no button to /alerts`);
+  }
 }
 
 // --- The sign-in rules ---
@@ -716,7 +764,9 @@ async function whileLocked(t, page) {
   await openSecurity(t, page);
   await t.see(cardOf(page, "blocked").getByText("Unlock to see blocked addresses."));
   await t.see(cardOf(page, "private").getByText("Unlock to see private access."));
+  await t.see(cardOf(page, "alerts").getByText("Unlock to see where alerts go."));
   mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.blocked)), 403, "ADM-106", "a locked administrator's read of the blocked addresses");
+  mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.channels)), 403, "ADM-106", "a locked administrator's read of where alerts go");
   await lookAll(t, page, "security-locked");
 }
 
@@ -730,11 +780,13 @@ async function reader(t, who) {
   await t.see(cardOf(page, "checks").getByText("The health score is for administrators."));
   await t.see(cardOf(page, "blocked").getByText("Administrators see blocked addresses."));
   await t.see(cardOf(page, "private").getByText("Administrators see private access."));
+  await t.see(cardOf(page, "alerts").getByText("Alerts are for administrators."));
   await t.see(cardOf(page, "sign-in").getByText(/Who gives a second step: /));
   await t.see(cardOf(page, "ssh").getByText(/root cannot sign in|Off/));
   await lookAll(t, page, "security-reader");
   mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.blocked)), 403, "ADM-122", "a reader's read of the blocked addresses");
   mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.private)), 403, "ADM-122", "a reader's read of private access");
+  mustBe(await fetchAsPage(page, "GET", pathOf(ROUTES.channels)), 403, "ADM-122", "a reader's read of where alerts go");
   remember(seen);
   await signOut(t, page);
   await page.context().close();
@@ -765,6 +817,7 @@ async function administrator(t, who) {
   await whileLocked(t, page);
   await unlockNow(page);
   await theScore(t, page);
+  await theAlerts(t, page);
   await theRules(t, page);
   await theSsh(t, page);
   await theReach(t, page);
@@ -790,7 +843,7 @@ export default async function check(t) {
   // Every route that this script drives was called by some browser; the blocked
   // addresses' routes are security-blocked.mjs's, and the first engine's
   // alone are the ones that change what the machine does.
-  const everyEngine = [ROUTES.last, ROUTES.check, ROUTES.rules, ROUTES.rulesSet, ROUTES.blocked, ROUTES.ssh, ROUTES.private, ROUTES.serve];
+  const everyEngine = [ROUTES.last, ROUTES.check, ROUTES.rules, ROUTES.rulesSet, ROUTES.blocked, ROUTES.channels, ROUTES.ssh, ROUTES.private, ROUTES.serve];
   const firstEngine = [ROUTES.sshSet, ROUTES.sshOn, ROUTES.sshOff, ROUTES.sshKeep, ROUTES.sshUndo, ROUTES.reach, ROUTES.consoleKeep, ROUTES.add, ROUTES.remove];
   mustHaveCalled(called, everyEngine);
   if (t.engine === "chromium") mustHaveCalled(called, firstEngine);
