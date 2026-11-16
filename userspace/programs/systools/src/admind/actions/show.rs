@@ -559,7 +559,11 @@ mod tests {
         for action in REGISTRY.iter().filter(|action| action.restarts().is_some()) {
             let good = action.example_values().0.into_iter().next().unwrap();
             let task = show(action.id(), good)["ansible"].as_str().unwrap().to_string();
-            assert_eq!(task.contains("wait_for_connection"), action.id() != "power.shutdown", "{task}");
+            assert_eq!(
+                task.contains("wait_for_connection"),
+                action.id() != "power.shutdown",
+                "{task}"
+            );
         }
     }
 
