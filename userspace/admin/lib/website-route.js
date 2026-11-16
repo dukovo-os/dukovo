@@ -34,3 +34,12 @@ export function sitesUsing(name, answer) {
   return sitesOf(answer).filter((site) => site.certificate === name)
     .map((site) => ({ name: site.name, first: site.names?.[0] ?? site.name, href: hrefOf(site.name) }));
 }
+
+/** The address of Add a website for `name`, with `certificate` chosen when it is one that is here; a wildcard is no name of a site. */
+export function addHref(name = '', certificate = null) {
+  const query = new URLSearchParams();
+  if (name !== '' && !name.startsWith('*.')) query.set('name', name);
+  if (certificate) query.set('certificate', certificate);
+  const text = query.toString();
+  return `/websites/add${text === '' ? '' : `?${text}`}`;
+}

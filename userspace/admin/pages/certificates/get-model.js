@@ -8,6 +8,7 @@
 // asks for, and how a task that ran ended.
 
 import { endWords as taskEnd } from '../../lib/tasks-words.js';
+import { addHref, sitesUsing } from '../../lib/website-route.js';
 
 /** The most names one certificate has. */
 export const NAMES_MOST = 20;
@@ -246,4 +247,20 @@ export function whereUsed(name, list, names) {
   const users = there?.used_by ?? [];
   if (users.length > 0) return `${name} is used by ${listWords(users)}.`;
   return `No nginx site answers for ${names[0] ?? name} yet. The certificate is kept until a site uses it.`;
+}
+
+/**
+ * The line "Where it is used" with what it links to: `{words, sites, add}`.
+ * `sites` are the websites that serve with the certificate (`websites.list`'s
+ * answer is `answer`; none when it could not be read), each `{name, first,
+ * href}`; `add` is the address of Add a website when no site and no service
+ * uses it, or null.
+ */
+export function whereUsedLine(name, list, names, answer) {
+  const sites = sitesUsing(name, answer);
+  const there = (Array.isArray(list) ? list : []).find((certificate) => certificate.name === name);
+  const unused = (there?.used_by ?? []).length === 0 && sites.length === 0;
+  // A site serves with a certificate by nginx's own file, so it is nginx that uses it.
+  const words = sites.length > 0 && (there?.used_by ?? []).length === 0 ? `${name} is used by nginx.` : whereUsed(name, list, names);
+  return { words, sites, add: unused ? addHref(names[0] ?? name, there ? name : null) : null };
 }

@@ -11,6 +11,7 @@ import {
   about, history, list, machine, NOW, report, show, signIn, time,
 } from './certificates-fixtures.mjs';
 import { sparkIdle } from './security-fixtures.mjs';
+import { list as websites } from './websites-fixtures.mjs';
 import {
   buttonOf, refusal, settle, usePageWithProperties,
 } from './security-view.mjs';
@@ -22,6 +23,7 @@ export const reads = () => ({
   '/api/1/certificates': list(),
   '/api/1/certificates/history/all': history(),
   '/api/1/security/sign-in': signIn(),
+  '/api/1/websites': websites(),
   '/api/1/console/about': about(),
   '/api/1/machine/name': machine(),
   '/api/1/tasks': { tasks: [] },

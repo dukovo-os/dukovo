@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { hrefOf, routeOf, sitesOf, sitesUsing } from '../lib/website-route.js';
+import { addHref, hrefOf, routeOf, sitesOf, sitesUsing } from '../lib/website-route.js';
 
 test('a site\'s page is at its name, and one called add is written so that Add a website is not taken for it', () => {
   assert.equal(hrefOf('shop.example.org'), '/websites/shop.example.org');
@@ -44,4 +44,12 @@ test('the sites that use a certificate are named with a link, from the list of s
   assert.deepEqual(sitesUsing('none', answer), []);
   assert.deepEqual(sitesUsing('x', null), []);
   assert.deepEqual(sitesOf({ websites: 'nope' }), []);
+});
+
+test('the address of Add a website carries the name and the certificate, and leaves out a wildcard', () => {
+  assert.equal(addHref(), '/websites/add');
+  assert.equal(addHref('shop.example.org'), '/websites/add?name=shop.example.org');
+  assert.equal(addHref('shop.example.org', 'shop.example.org'), '/websites/add?name=shop.example.org&certificate=shop.example.org');
+  assert.equal(addHref('*.example.org', 'wild'), '/websites/add?certificate=wild');
+  assert.equal(addHref('a b&c'), '/websites/add?name=a+b%26c');
 });
