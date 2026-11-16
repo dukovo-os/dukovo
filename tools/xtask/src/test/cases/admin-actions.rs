@@ -22,7 +22,10 @@
 //! is BAK-101 and move.plan, which finds no backups, ADM-123: admin-backups
 //! and admin-move call them with what they need, and accounts.show, which
 //! names an account this guest has not made, ACC-101: admin-accounts makes
-//! it. A change an administrator makes is ADM-122 for bob and ADM-106 for
+//! it. websites.check and websites.plan are answered 200 here, though the
+//! guest has no nginx and the example's owner is no account: their commands
+//! end with status 1 and print the JSON that says why, which is an answer
+//! (admin-websites has nginx and the sites). A change an administrator makes is ADM-122 for bob and ADM-106 for
 //! alice while her session is locked, and so is a read that runs as an
 //! administrator, whose route is a POST when it takes or answers with a
 //! secret (move.plan, backups.key). A change a person makes with their own

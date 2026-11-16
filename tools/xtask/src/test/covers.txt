@@ -154,6 +154,17 @@ admin-updates userspace/programs/systools/src/bundles.rs userspace/programs/syst
 admin-updates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sysupdate-stage.toml
 admin-updates userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
 admin-updates tools/update-server/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
+admin-websites userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-websites userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-websites userspace/programs/systools/src/website.rs userspace/programs/systools/src/website/ docs/man/website.8.scd
+admin-websites userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/ userspace/programs/systools/src/bundled.rs
+admin-websites userspace/programs/systools/src/settings_edit.rs userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/cert.rs
+admin-websites userspace/programs/systools/src/cert/ userspace/programs/dkv/ userspace/programs/manifest/
+admin-websites userspace/spark/src/supervisor/runs.rs userspace/programs/spark-api/src/run.rs userspace/spark/src/supervisor/
+admin-websites ports/nginx/ ports/php/ ports/postgresql/ ports/locales/ ports/curl/ ports/openssl/ ports/netcat/
+admin-websites tools/xtask/src/bundles.rs tools/xtask/src/ports.rs tools/xtask/src/licenses.rs
+admin-websites userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
+admin-websites tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
 ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
 ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
 ansible tools/xtask/src/test/ansible/ tools/xtask/src/test/ansible.lock

@@ -34,6 +34,7 @@ admin-storage 360
 admin-terminal 360
 admin-trials 900
 admin-updates 780
+admin-websites 1500
 ansible 300
 aml-off 16
 audio-cd 60

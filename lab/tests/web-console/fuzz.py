@@ -129,7 +129,18 @@ SET_UP = {
     "hardware.memtest", "hardware.memtest-cancel",
     "reports.send", "reports.retry", "reports.delete",
 }
-LEFT_ALONE = {"certificate.renew"} | TRIED | SET_UP
+# The Websites page's changes, which need nginx installed and on and a site to work on, which a lab machine
+# has not (web-console/ansible.py says the same), and which the boot test admin-websites and the browser test
+# web-console/websites run:
+WEBSITES = {
+    # makes a site and its folder and has nginx restart or reload to serve it, and nginx is not here;
+    "websites.add",
+    # serves a site over HTTPS or takes it back, and the site its example names is one only admin-websites adds;
+    "websites.https",
+    # takes that site away, with its folder when asked, which nothing brings back.
+    "websites.remove",
+}
+LEFT_ALONE = {"certificate.renew"} | TRIED | SET_UP | WEBSITES
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
 NOT_READ = ["lab.missing"]

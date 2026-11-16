@@ -510,6 +510,11 @@ const POSTGRESQL_SERVICE_FILES: u8 = 36;
 /// (ADR 0327), for bundles that need more room than an image's root has.
 const ROOT_ROOM: u8 = 37;
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the
+/// `admin-websites` test's script and page
+/// ([`cases::admin_websites::make_disk`]).
+const WEBSITES_FILES: u8 = 39;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -1770,7 +1775,12 @@ fn needs_packing(case: &Case) -> bool {
     case.disks.iter().any(|disk| {
         matches!(
             disk.fat,
-            BUNDLE_FILES | CATALOG_SITE | PHP_FILES | POSTGRESQL_FILES | POSTGRESQL_SERVICE_FILES
+            BUNDLE_FILES
+                | CATALOG_SITE
+                | PHP_FILES
+                | POSTGRESQL_FILES
+                | POSTGRESQL_SERVICE_FILES
+                | WEBSITES_FILES
         )
     })
 }
@@ -5380,6 +5390,11 @@ fn make_disks(
         }
         if disk.fat == POSTGRESQL_SERVICE_FILES {
             cases::postgresql_service::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == WEBSITES_FILES {
+            cases::admin_websites::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
