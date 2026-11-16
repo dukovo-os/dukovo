@@ -259,10 +259,7 @@ fn nginx_answers() -> Result<(), String> {
     let ask = Fetch { port: 80, host: "localhost".into(), path: "/".into(), certificate: None };
     let until = Instant::now() + START_WAIT;
     loop {
-        let why = match answer::fetch(&ask, &[]) {
-            Ok(_) => return Ok(()),
-            Err(why) => why,
-        };
+        let Err(why) = answer::fetch(&ask, &[]) else { return Ok(()) };
         if Instant::now() >= until {
             let wait = START_WAIT.as_secs();
             return Err(format!("nginx did not answer on port 80 within {wait} seconds: {why}"));

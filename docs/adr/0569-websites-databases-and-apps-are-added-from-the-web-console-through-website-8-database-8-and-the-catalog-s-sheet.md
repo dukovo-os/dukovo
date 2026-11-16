@@ -62,7 +62,12 @@ reloaded. After the reload, a file of random name is asked for over
 checked for an HTTPS site; a site that does not answer takes every step
 back (WEB-104). A change that adds a certificate or the HTTPS port to
 nginx's service file restarts nginx, whose sockets Spark holds, so no
-connection is refused (ADR 0477).
+connection is refused (ADR 0477). Such a change restarts nginx once
+more when the new sites are live, not a reload: as nginx starts it
+closes the sockets Spark hands it that its settings do not use yet, as
+port 443's before the first HTTPS site, and only a start takes them up
+again. Spark says nginx runs as soon as it has started it, so after a
+restart or a start `website` waits until nginx answers on port 80.
 
 ### A bundle's program runs as its service, through Spark
 

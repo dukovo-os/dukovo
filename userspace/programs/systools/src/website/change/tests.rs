@@ -78,7 +78,7 @@ fn sweep(make: impl Fn() -> Fake, run: impl Fn(&Fake) -> Result<Vec<String>, Ref
 }
 
 #[test]
-fn a_static_site_is_added_with_its_folder_its_file_and_a_reload() {
+fn a_static_site_is_added_with_its_folder_its_file_and_nginx_restarted() {
     let fake = Fake::new();
     let lines = add(&fake.ctx(), &shop(Kind::Static, None)).unwrap();
     assert_eq!(lines, ["Added shop.example.org: http://shop.example.org/"]);
@@ -100,7 +100,7 @@ fn a_static_site_is_added_with_its_folder_its_file_and_a_reload() {
             "service_check nginx",
             "restart nginx",
             "nginx_check staged",
-            "reload nginx",
+            "restart nginx",
             "fetch 80 shop.example.org file",
             "fetch 80 www.shop.example.org file"
         ]
@@ -145,7 +145,7 @@ fn a_php_site_over_https_gets_its_service_file_before_the_check_and_php_after_it
             "service_check nginx",
             "restart nginx",
             "nginx_check staged",
-            "reload nginx",
+            "restart nginx",
             "turn php-fpm on",
             "fetch 80 shop.example.org file",
             "fetch 443 shop.example.org file",
@@ -154,7 +154,11 @@ fn a_php_site_over_https_gets_its_service_file_before_the_check_and_php_after_it
             "fetch 443 shop.example.org php",
         ]
     );
-    assert_eq!(fake.restarted_with(), [Some(over)], "nginx restarted with the new service file");
+    assert_eq!(
+        fake.restarted_with(),
+        [Some(over.clone()), Some(over)],
+        "nginx restarted with the new service file, and again with the new sites"
+    );
     assert_eq!(fake.php.get(), Some(Svc { enabled: true, running: true }));
     assert_eq!(fake.names(SHOP_FOLDER), ["index.php", "uploads"]);
     let php = fake.accounts().into_iter().find(|user| user.name == "php").unwrap();
@@ -221,7 +225,7 @@ fn nginx_that_never_started_is_turned_on_first_to_write_its_settings() {
             "service_check nginx",
             "restart nginx",
             "nginx_check staged",
-            "reload nginx",
+            "restart nginx",
             "fetch 80 shop.example.org file",
             "fetch 80 www.shop.example.org file"
         ]
@@ -474,9 +478,10 @@ fn a_site_that_does_not_answer_is_told_and_taken_back() {
         Vec::<String>::new(),
         "nginx was told to read the old settings again"
     );
-    // It restarted with the new service file, so it restarts again with the old.
+    // It restarted with the new service file and the new sites, so it
+    // restarts again with the old.
     assert_eq!(fake.calls().last().map(String::as_str), Some("restart nginx"));
-    assert_eq!(fake.calls().iter().filter(|call| call.starts_with("restart")).count(), 2);
+    assert_eq!(fake.calls().iter().filter(|call| call.starts_with("restart")).count(), 3);
 }
 
 #[test]
@@ -542,7 +547,7 @@ fn https_takes_a_site_to_https_with_its_service_file_first_and_back_with_it_last
             "service_check nginx",
             "restart nginx",
             "nginx_check staged",
-            "reload nginx",
+            "restart nginx",
             "fetch 80 shop.example.org file",
             "fetch 443 shop.example.org file",
             "fetch 80 www.shop.example.org file",
