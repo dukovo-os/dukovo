@@ -5,7 +5,7 @@ cert(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-cert - list, add, get, check, renew, revoke, remove and recall the machine's certificates
+cert - list, add, get, check, renew, revoke, remove, forget and recall the machine's certificates
 
 # SYNOPSIS
 
@@ -16,6 +16,8 @@ cert - list, add, get, check, renew, revoke, remove and recall the machine's cer
 *cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--dry-run*] [*--directory* _url_] [*--email* _address_] [*--agree-terms*] [*--key* *ecdsa-p256*|*ecdsa-p384*] [*--profile* _profile_] [*--yes*] [*--progress*]++
 *cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--directory* _url_] *--check* [*--json*]++
 *cert history* [_name_] [*-n* _number_] [*--json*]++
+*cert wanted* [*--json*]++
+*cert forget* _name_++
 *cert revoke* _name_ [*--reason* _reason_]++
 *cert remove* _name_++
 *cert renew* _name_++
@@ -37,10 +39,11 @@ A name is 1 to 64 of the letters _a_ to _z_, the digits and _-_ and _._,
 beginning with a letter or a digit, with no two dots in a row. It is
 usually the site's name, as *example.com*.
 
-*list*, *show*, *check*, *history* and *get* with *--check* may be run by
-anyone, as certificates are public and keys are not shown. *add*, *get*,
-*remove*, *renew* and *revoke* change what services are given, so they
-need root: run them with *elevate*(8).
+*list*, *show*, *check*, *history*, *wanted* and *get* with *--check* may
+be run by anyone, as certificates are public and keys are not shown. *add*,
+*get*, *remove*, *renew* and *revoke* change what services are given, and
+*forget* what certd asks for, so they need root: run them with
+*elevate*(8).
 
 # COMMANDS
 
@@ -148,6 +151,18 @@ need root: run them with *elevate*(8).
 	had, unless the options say others; a certificate that was added by
 	hand, or *this-machine*, is refused.
 
+	An order by HTTP that fails after it began, as when the authority
+	cannot reach the name or refuses it, is kept for certd to ask again
+	(*a certificate that could not be got*, below), and the message
+	ends with *certd tries again every hour; cert forget* _name_ *stops
+	it*. That is not so for an order made with *--dry-run*, *--staging*
+	or *--dns*. certd asks through the account at the authority; where
+	there is none yet, because the order failed in the checks before the
+	authority was asked, it is kept only with *--agree-terms*, and certd
+	makes the account at its first try, with the *--email* the order had,
+	as the order would have. A later *cert get* of the same name makes the
+	record anew, and one that works takes it away.
+
 	*--dns*
 		Prove the names by DNS instead of by HTTP: the command shows
 		the TXT records to add, and waits (*proving a name by DNS*,
@@ -243,6 +258,24 @@ need root: run them with *elevate*(8).
 	*got*, *added*, *replaced*, *revoked*, *removed* or *failed*),
 	*detail*, *took\_ms* (or *null*) and *by*. Anyone may read it.
 
+*cert wanted* [*--json*]
+	Shows the certificates that could not be got, which certd asks the
+	authority for again: one row for each, by name, with its first two
+	names and the number of others, how many tries failed, the time of
+	the first try, the time of the next, or _given up_ when certd tries
+	no more, and why the last try failed. With none, it says that no
+	certificate is being tried again. With *--json*, an object with
+	*format* (1) and *wanted*, an array of objects with *name*, *names*,
+	*directory* (the authority's address), *first\_ms*, *last\_ms* and
+	*next\_ms* (milliseconds since 1970), *tries*, *why* and *given\_up*.
+	The account at the authority is left out. Anyone may read it.
+
+*cert forget* _name_
+	Has certd stop asking for a certificate that could not be got, and
+	takes away its alert. It also takes away a record that does not read,
+	which certd leaves alone. It is refused when certd has no record of
+	_name_. It changes no certificate: one that is in the store stays.
+
 *cert revoke* _name_ [*--reason* _reason_]
 	Revokes a certificate from an authority, through the account that
 	got it, and marks it revoked: *cert list* shows it, certd renews
@@ -254,9 +287,11 @@ need root: run them with *elevate*(8).
 	revoke it.
 
 *cert remove* _name_
-	Removes the certificate and its files. It is refused for
-	this-machine, and while a service's file names the certificate: the
-	message names the file, and the line goes from it first.
+	Removes the certificate and its files, and the record of it that
+	certd asks again from. It is refused for this-machine, and while a
+	service's file names the certificate: the message names the file, and
+	the line goes from it first. A name that has only such a record is
+	removed too.
 
 *cert renew* _name_
 	For this-machine, makes a new certificate now, as certd does when
@@ -338,6 +373,26 @@ window the authority names, or two thirds of the way through its life
 where the authority says nothing: *certd*(8) says how. *cert renew*
 does it at once.
 
+*A certificate that could not be got.* When *cert get* fails after the
+order began, cert keeps what it was asked for: the names, the authority,
+the type of key and the profile, and the account it asked through.
+certd asks for the certificate again by itself, as *cert get* does,
+every hour for the day after the first try, then every 6 hours, until 14
+days after the first try, when it gives up. An authority that asks to
+be left alone for a time, as a rate limit does, is left alone for it. Each
+try is a line of *cert history*, and when one works the certificate is
+installed, the services that name it are told, and the record is taken
+away. certd gives a record up early when the account at the authority
+was taken away, or when a certificate of that name was added by hand
+since; a record given up stays, so that *cert wanted* shows why, until
+*cert forget* or a *cert get* that works takes it away.
+
+When the first day is over and the certificate is still not got, certd raises
+the alert *certificate:*_name_, "The certificate _name_ could not be had
+for a day", with the reason of the last try (*CRT-123*); when it gives up,
+*certificate-given-up:*_name_ (*CRT-124*). Both clear by themselves when the
+record is taken away.
+
 # THE CHANGE IS TOLD TO SPARK
 
 After *add*, *get*, *remove*, *renew* and *revoke*, cert asks Spark, on its control
@@ -346,6 +401,12 @@ Spark sends each a SIGHUP (*spark*(8)). If Spark refuses or does not
 answer, cert says *certificates changed, but Spark did not copy them*,
 with the reason, and that the services that use it need a restart; the
 change itself was made and the exit status is 0.
+
+A change to what certd asks for again (a *get* that failed or worked, a
+*remove*, a *forget*) has Spark reload certd, which looks at once, so that
+its alerts follow. If Spark does not do it, cert says so and the change
+stands: certd looks at the records when its next try is due or at its
+next look.
 
 # FILES
 
@@ -366,6 +427,19 @@ _/system/state/certd/accounts.json_
 	When each account was made and whether it has a contact, never the
 	contact or the key, which *cert list* shows to everyone. certd
 	writes it (0644).
+
+_/system/state/certd/wanted_
+	The certificates that could not be got, a file _name_.toml for each,
+	which certd asks for again (0600, in a folder of 0700, root's): the
+	names, the authority and the account's file, the type of key, the
+	profile, the contact address and whether the terms were agreed to
+	(for an account that is made later), the time of the first, last and
+	next try, how many failed and why the last did. It is read and
+	written only while the store's lock is held.
+
+_/system/state/certd/wanted.json_
+	What *cert wanted* shows, the same without the account: *cert*
+	and certd write it with each record (0644).
 
 _/system/state/certd/history_
 	What *cert history* shows: a JSON line for each event, which certd
@@ -445,6 +519,14 @@ What was done to the certificates:
 
 ```
 cert history example.com -n 5
+```
+
+See which certificates certd asks for again, and stop it for one that is not
+wanted any more:
+
+```
+cert wanted
+elevate cert forget example.com
 ```
 
 The fingerprint of this machine's own certificate, to compare with the

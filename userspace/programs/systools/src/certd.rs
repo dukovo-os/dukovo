@@ -25,16 +25,31 @@
 //! (critical from 7). One proved by DNS by hand is told of at 21 and 7 days
 //! as an added one is, and a revoked one is told of until it is replaced.
 //!
+//! A certificate that `cert get` could not get is kept as a record in
+//! [`crate::cert::wanted`], and certd asks for it again as `cert get` did: at
+//! each look, for each record whose time has come, every hour for a day and
+//! every 6 hours after, for 14 days. It installs what it gets, tells Spark and
+//! takes the record away; a try that fails is told in the history and the
+//! record, and an authority's request to wait is waited for. A record whose
+//! account was taken away, or whose name was added by hand since, is given
+//! up with that reason, as is one that failed for 14 days; it is kept, so
+//! that `cert wanted` shows it, until `cert forget` takes it away. certd
+//! looks again when the soonest record is due, if that is before the look it
+//! would make anyway.
+//!
 //! Each look also tells alertd the certificates that need attention, as the
 //! alerts `certificate:NAME` with the words of the notice: a warning, and
-//! critical from 7 days or once the certificate has run out. It sends the
+//! critical from 7 days or once the certificate has run out; and the same
+//! key for a certificate that could not be got for a day, and
+//! `certificate-given-up:NAME` for one certd gave up. It sends the
 //! whole list with alertd's `set`, so that an alert whose certificate was
 //! renewed, replaced or removed clears by itself. What certd and `cert` did
 //! to the certificates is kept in `/system/state/certd/history`.
 //!
 //! While the clock is before the system's making it does neither (a
 //! certificate made then would be dated 1970), and looks again each
-//! minute. SIGHUP has it look now; SIGTERM ends it.
+//! minute. SIGHUP has it look now, as `cert` asks when it changes what is
+//! wanted; SIGTERM ends it.
 //!
 //! Its readiness is `cert check` (certd.toml's health check). When it
 //! misbehaves, `log certd` shows each thing it did, one line each, and
@@ -53,6 +68,7 @@ use crate::args::Args;
 use crate::cert::acme::{self, Who};
 use crate::cert::history::{self, By, Event};
 use crate::cert::store::{Acme, Challenge, Kind, Store};
+use crate::cert::wanted::{self, Record};
 use crate::cert::{self, accounts, inspect, machine};
 use crate::notifyd::{self, Urgency};
 use crate::sign_in_notices;
@@ -107,6 +123,9 @@ struct Certd {
     /// Why each certificate from an authority was not renewed at the last
     /// look, until it is.
     failed: BTreeMap<String, String>,
+    /// The certificates that could not be got, as the last look left them:
+    /// what the alerts and the wait to the next look follow.
+    wanted: Vec<Record>,
     /// Whether the log already says that alertd could not be told.
     alertd_unreached: bool,
 }
@@ -132,6 +151,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         waiting: false,
         asked: BTreeMap::new(),
         failed: BTreeMap::new(),
+        wanted: Vec::new(),
         alertd_unreached: false,
     };
     println!("certd: keeping certificates in {}", certd.store.dir().display());
@@ -177,13 +197,14 @@ impl Certd {
         }
         let kept = self.keep_this_machine(now);
         self.keep_authority_certificates(now);
+        let listed = self.keep_wanted_certificates(now);
         // The summary of the accounts at authorities that anyone may read:
         // made for the accounts of a machine that had them before it.
         if let Err(why) = accounts::refresh(&self.store) {
             eprintln!("<4>certd: the summary of the accounts cannot be written: {why}");
         }
         self.warn_of_expiry(now);
-        if kept {
+        let wait = if kept && listed {
             let mut spread = [0u8; 4];
             // Without random numbers every machine looks on the hour
             // after 12: late is better than no look.
@@ -191,7 +212,17 @@ impl Certd {
             next_look(u32::from_le_bytes(spread))
         } else {
             FAILED_WAIT
-        }
+        };
+        self.wait_for_wanted(wait, cert::now())
+    }
+
+    /// `wait`, cut short to the time the soonest wanted certificate is next
+    /// tried at, if that comes sooner, as seen at `now`.
+    fn wait_for_wanted(&self, wait: Duration, now: i64) -> Duration {
+        let soonest = self.wanted.iter().filter(|record| !record.given_up).map(|r| r.next_ms).min();
+        let Some(next_ms) = soonest else { return wait };
+        let seconds = (next_ms.div_euclid(1_000) - now).max(1);
+        wait.min(Duration::from_secs(u64::try_from(seconds).unwrap_or(1)))
     }
 
     /// Makes `this-machine` if it is due, and tells Spark; whether it is
@@ -285,6 +316,96 @@ impl Certd {
         }
     }
 
+    /// Asks again for each wanted certificate whose time has come, and keeps
+    /// how each try went; whether the records could be listed. A record that
+    /// does not read is left as it is.
+    fn keep_wanted_certificates(&mut self, now: i64) -> bool {
+        let listed = self.store.lock().and_then(|lock| wanted::list(&self.store, &lock));
+        let found = match listed {
+            Ok(found) => found,
+            Err(why) => {
+                eprintln!("<3>certd: cannot list the certificates that are wanted: {why}");
+                return false;
+            }
+        };
+        let mut kept = Vec::new();
+        for each in found {
+            match each {
+                Ok(record) if record.is_due(now) => kept.extend(self.try_again(&record, now)),
+                Ok(record) => kept.push(record),
+                Err(unreadable) => eprintln!(
+                    "<4>certd: the record of {} does not read, so it is left alone: {}; `elevate \
+                     cert forget {}` takes it away",
+                    unreadable.name, unreadable.why, unreadable.name
+                ),
+            }
+        }
+        self.wanted = kept;
+        true
+    }
+
+    /// Asks for the certificate `record` is for, and tells Spark when it came:
+    /// the record as it is kept after, or none when nothing is wanted any
+    /// more.
+    fn try_again(&mut self, record: &Record, now: i64) -> Option<Record> {
+        let name = record.order.name.clone();
+        if let Some(why) = wanted::cannot_go_on(&self.store, record) {
+            eprintln!("<4>certd: stops trying to get {name}: {why}");
+            let entry = history::Entry::new(now, &name, Event::Failed, &why, By::Certd);
+            history::note(&self.store, &entry);
+            return self.keep(record, record.gave_up(now, &why));
+        }
+        let mut say = |_: &str| {};
+        match acme::retry_wanted(&self.store, record, now, &mut say) {
+            Ok((details, notes)) => {
+                println!(
+                    "certd: got {name}: {}, runs out {}",
+                    details.names.join(", "),
+                    util::local_time(details.not_after, "%F")
+                );
+                for note in notes {
+                    println!("certd: {name}: {note}");
+                }
+                self.failed.remove(&name);
+                self.asked.remove(&name);
+                if let Err(why) = cert::tell_spark(SPARK_SOCKET, &name) {
+                    eprintln!("<4>certd: {}", cert::spark_warning(&why));
+                }
+                None
+            }
+            Err(refused) => {
+                eprintln!("<4>certd: cannot get {name}: {}", refused.why);
+                let next = record.failed_again(now, &refused.why, refused.not_before);
+                if next.given_up {
+                    eprintln!("<4>certd: stops trying to get {name}: it failed for 14 days");
+                }
+                self.keep(record, next)
+            }
+        }
+    }
+
+    /// Keeps `next` in place of `record`, which was read before a try:
+    /// `next`, or none when `record` was taken away or made again since, and
+    /// what is there is left.
+    fn keep(&self, record: &Record, next: Record) -> Option<Record> {
+        let name = &record.order.name;
+        let lock = match self.store.lock() {
+            Ok(lock) => lock,
+            Err(why) => {
+                eprintln!("<3>certd: cannot keep how the try for {name} went: {why}");
+                return Some(next);
+            }
+        };
+        if !wanted::is_current(&self.store, &lock, record) {
+            println!("certd: the record of {name} was changed while it was tried: left as it is");
+            return None;
+        }
+        if let Err(why) = wanted::write(&self.store, &lock, &next) {
+            eprintln!("<3>certd: cannot keep how the try for {name} went: {why}");
+        }
+        Some(next)
+    }
+
     /// When certificate `name`, which `acme` says how it was got, is to be
     /// renewed: what is kept, or what the authority says now when it is time
     /// to ask, which is kept for the next look.
@@ -359,7 +480,8 @@ impl Certd {
         let (added, authority) = self.watched_certificates();
         let mut notices = expiry_notices(&added, now);
         notices.append(&mut authority_notices(&authority, &self.failed, now));
-        self.tell_alertd(&alerts_of(&notices));
+        let alerts = with_wanted(alerts_of(&notices), wanted_alerts(&self.wanted, now));
+        self.tell_alertd(&alerts);
         let urgency = if notices.iter().any(|notice| notice.critical) {
             Urgency::Critical
         } else {
@@ -537,6 +659,12 @@ const KEEPS_FAILING: &str = "CRT-121";
 /// The error ID of a certificate that has run out.
 const RAN_OUT: &str = "CRT-122";
 
+/// The error ID of a certificate that could not be got for a day.
+const NOT_GOT_FOR_A_DAY: &str = "CRT-123";
+
+/// The error ID of a certificate certd gave up getting.
+const GAVE_UP: &str = "CRT-124";
+
 /// The notice lines for the certificates from an authority: see
 /// [`authority_notices`]; and how urgent they are together.
 #[cfg(test)]
@@ -595,6 +723,58 @@ fn alerts_of(notices: &[Notice]) -> Vec<Alert> {
             }
         })
         .collect()
+}
+
+/// `alerts`, and `wanted` after them but for those of a key `alerts` has: a
+/// certificate that runs out says so before it says it could not be got.
+fn with_wanted(mut alerts: Vec<Alert>, wanted: Vec<Alert>) -> Vec<Alert> {
+    for alert in wanted {
+        if !alerts.iter().any(|have| have.key == alert.key) {
+            alerts.push(alert);
+        }
+    }
+    alerts
+}
+
+/// The alerts for the wanted certificates `records`, at time `now`: one,
+/// `certificate:NAME`, for each that has failed for a day and is still tried,
+/// and `certificate-given-up:NAME` for each certd stopped trying; both
+/// warnings, since alertd has no lesser. An alert alertd would refuse is left
+/// out.
+fn wanted_alerts(records: &[Record], now: i64) -> Vec<Alert> {
+    let mut alerts = Vec::new();
+    for record in records {
+        let name = &record.order.name;
+        let (key, title, hint) = if record.given_up {
+            (
+                format!("certificate-given-up:{name}"),
+                format!("certd gave up getting the certificate {name}: {}", record.why),
+                format!(
+                    "Get it again with `elevate cert get {name}`; `elevate cert forget {name}` \
+                     clears this. ({GAVE_UP})"
+                ),
+            )
+        } else if record.has_failed_for_a_day(now) {
+            (
+                format!("certificate:{name}"),
+                format!("The certificate {name} could not be had for a day: {}", record.why),
+                format!(
+                    "certd tries again until {}; `cert wanted` shows how the tries went and \
+                     `elevate cert forget {name}` stops them. ({NOT_GOT_FOR_A_DAY})",
+                    util::local_time(record.gives_up_at(), "%F")
+                ),
+            )
+        } else {
+            continue;
+        };
+        let alert = Alert::new(key, Severity::Warning, &title, &format!("{title}. {hint}"))
+            .about(About::Stopped);
+        match alert.invalid() {
+            None => alerts.push(alert),
+            Some(why) => eprintln!("<4>certd: no alert for {name}: {why}"),
+        }
+    }
+    alerts
 }
 
 #[cfg(test)]
@@ -717,6 +897,7 @@ mod tests {
             waiting: false,
             asked: BTreeMap::new(),
             failed: BTreeMap::new(),
+            wanted: Vec::new(),
             alertd_unreached: false,
         }
     }
@@ -866,6 +1047,190 @@ mod tests {
         }
         // Nothing that needs attention is the empty list, which clears them all.
         assert!(alerts_of(&[]).is_empty());
+    }
+
+    fn order(name: &str) -> wanted::Order {
+        wanted::Order {
+            name: name.into(),
+            names: vec![format!("{name}.example.org")],
+            directory: String::from("https://pebble.example:14000/dir"),
+            key: cert::store::KeyKind::EcdsaP256,
+            profile: None,
+            account: String::from("pebble.example-14000.json"),
+            email: None,
+            agree_terms: false,
+        }
+    }
+
+    fn failed(name: &str) -> Record {
+        Record::first(order(name), NOW, "port 80 is closed (CRT-103)", None)
+    }
+
+    #[test]
+    fn a_certificate_that_could_not_be_got_alerts_from_a_day_and_not_before() {
+        let record = failed("shop");
+        assert!(wanted_alerts(std::slice::from_ref(&record), NOW + DAY - 1).is_empty());
+        let alerts = wanted_alerts(std::slice::from_ref(&record), NOW + DAY);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "certificate:shop");
+        assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Stopped));
+        assert_eq!(
+            alerts[0].title,
+            "The certificate shop could not be had for a day: port 80 is closed (CRT-103)"
+        );
+        assert_eq!(
+            alerts[0].detail,
+            "The certificate shop could not be had for a day: port 80 is closed (CRT-103). \
+             certd tries again until 2027-01-29; `cert wanted` shows how the tries went and \
+             `elevate cert forget shop` stops them. (CRT-123)"
+        );
+        // The same a week on, as long as it is tried.
+        assert_eq!(wanted_alerts(&[record], NOW + 7 * DAY).len(), 1);
+    }
+
+    #[test]
+    fn a_certificate_certd_gave_up_alerts_under_a_key_of_its_own() {
+        let gave =
+            failed("shop").gave_up(NOW + 14 * DAY, "the account at pebble.example was taken away");
+        // Given up at once, a day has not passed and it is told all the same.
+        let alerts = wanted_alerts(&[gave], NOW + 14 * DAY);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "certificate-given-up:shop");
+        assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Stopped));
+        assert_eq!(
+            alerts[0].title,
+            "certd gave up getting the certificate shop: the account at pebble.example was taken away"
+        );
+        assert!(
+            alerts[0].detail.ends_with(
+                "Get it again with `elevate cert get shop`; `elevate cert forget shop` clears \
+                 this. (CRT-124)"
+            ),
+            "{}",
+            alerts[0].detail
+        );
+        let early = failed("shop").gave_up(NOW + 60, "x");
+        assert_eq!(wanted_alerts(&[early], NOW + 60).len(), 1);
+    }
+
+    #[test]
+    fn a_certificate_nothing_is_wanted_of_is_no_alert() {
+        assert!(wanted_alerts(&[], NOW + 30 * DAY).is_empty());
+        let bad = failed("Bad Name");
+        assert!(wanted_alerts(&[bad], NOW + 2 * DAY).is_empty());
+    }
+
+    #[test]
+    fn an_alert_of_the_certificate_running_out_comes_before_the_one_that_it_was_not_got() {
+        let ends = alerts_of(&expiry_notices(&[(String::from("shop"), NOW + 3 * DAY)], NOW));
+        let not_got = wanted_alerts(&[failed("shop"), failed("blog")], NOW + 2 * DAY);
+        let both = with_wanted(ends, not_got);
+        let keys: Vec<&str> = both.iter().map(|alert| alert.key.as_str()).collect();
+        assert_eq!(keys, ["certificate:shop", "certificate:blog"]);
+        assert!(both[0].title.contains("runs out"), "{}", both[0].title);
+        assert!(with_wanted(Vec::new(), Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn certd_looks_when_the_soonest_try_is_due_if_that_is_before_its_next_look() {
+        let scratch = cert::fixtures::Scratch::new("certd-wait");
+        let mut certd = certd_at(&scratch);
+        let twelve = Duration::from_hours(12);
+        assert_eq!(certd.wait_for_wanted(twelve, NOW), twelve);
+        certd.wanted = vec![
+            failed("shop").failed_again(NOW + 600, "x", None),
+            failed("blog").gave_up(NOW, "gone"),
+        ];
+        // Given up is never tried: the soonest is the one that is not.
+        assert_eq!(certd.wait_for_wanted(twelve, NOW + 600), Duration::from_hours(1));
+        assert_eq!(certd.wait_for_wanted(twelve, NOW + 600 + 1800), Duration::from_mins(30));
+        // Late, certd looks at once, a second on.
+        assert_eq!(certd.wait_for_wanted(twelve, NOW + 3 * DAY), Duration::from_secs(1));
+        // A look that comes sooner stays.
+        assert_eq!(certd.wait_for_wanted(FAILED_WAIT, NOW + 600), FAILED_WAIT);
+    }
+
+    fn keep(certd: &Certd, record: &Record) {
+        let lock = certd.store.lock().unwrap();
+        wanted::write(&certd.store, &lock, record).unwrap();
+    }
+
+    fn kept(certd: &Certd, name: &str) -> Option<Record> {
+        let lock = certd.store.lock().unwrap();
+        wanted::get(&certd.store, &lock, name).unwrap()
+    }
+
+    #[test]
+    fn a_look_leaves_a_record_that_is_not_due_and_one_that_does_not_read_as_they_are() {
+        let scratch = cert::fixtures::Scratch::new("certd-not-due");
+        let mut certd = certd_at(&scratch);
+        let shop = failed("shop");
+        keep(&certd, &shop);
+        let junk = certd.store.wanted().join("blog.toml");
+        std::fs::write(&junk, "nonsense = = =").unwrap();
+        assert!(certd.keep_wanted_certificates(NOW + 600));
+        assert_eq!(certd.wanted, std::slice::from_ref(&shop));
+        assert_eq!(kept(&certd, "shop"), Some(shop));
+        assert_eq!(std::fs::read_to_string(&junk).unwrap(), "nonsense = = =");
+        // With none, there is nothing to keep.
+        let empty = cert::fixtures::Scratch::new("certd-no-records");
+        let mut none = certd_at(&empty);
+        assert!(none.keep_wanted_certificates(NOW));
+        assert!(none.wanted.is_empty());
+    }
+
+    #[test]
+    fn a_record_whose_account_was_taken_away_is_given_up_with_that_reason() {
+        let scratch = cert::fixtures::Scratch::new("certd-no-account");
+        let mut certd = certd_at(&scratch);
+        keep(&certd, &failed("shop"));
+        assert!(certd.keep_wanted_certificates(NOW + 3600));
+        let gave = kept(&certd, "shop").unwrap();
+        assert!(gave.given_up);
+        assert_eq!(gave.by, By::Certd);
+        assert_eq!(gave.last_ms, (NOW + 3600) * 1_000);
+        assert!(
+            gave.why.starts_with("the account at pebble.example was taken away"),
+            "{}",
+            gave.why
+        );
+        assert_eq!(certd.wanted, std::slice::from_ref(&gave));
+        let entries = history::read(&certd.store).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].event, entries[0].by), (Event::Failed, By::Certd));
+        assert!(
+            entries[0].detail.starts_with("the account at pebble.example"),
+            "{}",
+            entries[0].detail
+        );
+        // Given up, it is not tried at the next look, nor given up again.
+        assert!(certd.keep_wanted_certificates(NOW + 2 * 3600));
+        assert_eq!(history::read(&certd.store).unwrap().len(), 1);
+        assert_eq!(kept(&certd, "shop"), Some(gave));
+    }
+
+    #[test]
+    fn what_a_try_found_is_not_kept_over_a_record_that_was_forgotten_or_made_again() {
+        let scratch = cert::fixtures::Scratch::new("certd-keep");
+        let certd = certd_at(&scratch);
+        let read = failed("shop");
+        keep(&certd, &read);
+        let next = read.failed_again(NOW + 3600, "again", None);
+        assert_eq!(certd.keep(&read, next.clone()), Some(next.clone()));
+        assert_eq!(kept(&certd, "shop"), Some(next.clone()));
+        // `cert get` ordered again meanwhile.
+        let again = Record::first(order("shop"), NOW + 7200, "new", None);
+        keep(&certd, &again);
+        assert_eq!(certd.keep(&read, next), None);
+        assert_eq!(kept(&certd, "shop"), Some(again));
+        // `cert forget` took it away.
+        let lock = certd.store.lock().unwrap();
+        wanted::remove(&certd.store, &lock, "shop").unwrap();
+        drop(lock);
+        assert_eq!(certd.keep(&read, read.failed_again(NOW + 9000, "x", None)), None);
+        assert_eq!(kept(&certd, "shop"), None);
     }
 
     #[test]

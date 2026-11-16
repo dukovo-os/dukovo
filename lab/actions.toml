@@ -239,6 +239,30 @@ compares = false
 tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
 
 [[action]]
+id = "certificate.wanted"
+title = "Show the certificates certd tries to get again"
+area = "certificates"
+changes = false
+method = "GET"
+path = "/api/1/certificates/wanted/all"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.forget"
+title = "Stop trying to get a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/forget"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
 id = "machine.name"
 title = "Show the machine's name"
 area = "machine"

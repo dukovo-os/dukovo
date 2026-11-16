@@ -1120,6 +1120,8 @@ registry![
     certificate::Revoke,
     certificate::Remove,
     certificate::History,
+    certificate::Wanted,
+    certificate::Forget,
     machine::Name,
     machine::Rename,
     console::SetReach,

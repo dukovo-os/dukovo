@@ -583,6 +583,7 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "service.disable",
             "certificate.get",
             "certificate.add",
+            "certificate.forget",
             "machine.rename",
             "console.reach",
             "console.certificate",

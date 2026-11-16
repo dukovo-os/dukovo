@@ -53,6 +53,11 @@ const HISTORY: &str = "history";
 /// What anyone may read of the accounts at authorities, beside the store's.
 const ACCOUNTS_PUBLIC: &str = "accounts.json";
 
+/// The folder of the certificates that are wanted and not got yet, beside
+/// the store's (root's alone), and what anyone may read of them.
+const WANTED: &str = "wanted";
+const WANTED_PUBLIC: &str = "wanted.json";
+
 /// What certd knows of a certificate beyond its files.
 pub const META_FILE: &str = "certificate.toml";
 
@@ -226,6 +231,18 @@ impl Store {
     /// it has a contact, but never the contact or the account's key.
     pub fn accounts_public(&self) -> PathBuf {
         self.dir.parent().unwrap_or(&self.dir).join(ACCOUNTS_PUBLIC)
+    }
+
+    /// The folder of the records of the certificates that are wanted and
+    /// not got yet, beside the store's (certd(8)).
+    pub fn wanted(&self) -> PathBuf {
+        self.dir.parent().unwrap_or(&self.dir).join(WANTED)
+    }
+
+    /// The file that tells anyone what is wanted, but never the account
+    /// each record names.
+    pub fn wanted_public(&self) -> PathBuf {
+        self.dir.parent().unwrap_or(&self.dir).join(WANTED_PUBLIC)
     }
 
     /// The text of account file `file` of the accounts folder, if there
@@ -546,7 +563,7 @@ fn meta_text(kind: Kind, made: i64, acme: Option<&Acme>) -> String {
 }
 
 /// `text` as a TOML string, in quotes.
-fn quoted(text: &str) -> String {
+pub(super) fn quoted(text: &str) -> String {
     let mut quoted = String::from("\"");
     for character in text.chars() {
         match character {
@@ -642,7 +659,7 @@ fn make_dir(path: &Path) -> Result<(), String> {
 /// Writes `text` into the new file `path` with exactly `mode`, and makes
 /// it durable. The mode is set before the text goes in, so that a key is
 /// never readable by others.
-fn write_new(path: &Path, mode: u32, text: &str) -> Result<(), String> {
+pub(super) fn write_new(path: &Path, mode: u32, text: &str) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -655,12 +672,12 @@ fn write_new(path: &Path, mode: u32, text: &str) -> Result<(), String> {
 }
 
 /// Makes the changes to folder `path` durable.
-fn sync_dir(path: &Path) -> Result<(), String> {
+pub(super) fn sync_dir(path: &Path) -> Result<(), String> {
     File::open(path).and_then(|folder| folder.sync_all()).map_err(|err| failed(path, &err))
 }
 
 /// `path: reason`, without Rust's " (os error N)".
-fn failed(path: &Path, err: &io::Error) -> String {
+pub(super) fn failed(path: &Path, err: &io::Error) -> String {
     format!("{}: {}", path.display(), util::strip_os_error(err))
 }
 

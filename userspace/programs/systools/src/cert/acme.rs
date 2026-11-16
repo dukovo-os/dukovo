@@ -6,8 +6,9 @@
 //!
 //! `cert get` asks for a certificate for names, shows the authority that
 //! this machine holds them, and installs what it gets in the store; `cert
-//! renew` and certd ask again with what was asked the first time; `cert
-//! revoke` tells the authority the certificate is not to be trusted.
+//! renew` and certd ask again with what was asked the first time, and so does
+//! certd for an order that failed ([`super::wanted`]); `cert revoke` tells the
+//! authority the certificate is not to be trusted.
 //!
 //! - [`http`] is the client the library sends its requests through, tuf's;
 //! - [`problems`] says the authority's refusals in plain words;
@@ -67,7 +68,8 @@ use super::add::{self, Text};
 use super::history::{self, By, Event};
 use super::inspect::{self, Details};
 use super::store::{Acme, Challenge, Files, KeyKind, Kind, Lock, Store, Stored};
-use super::{now, spark_warning, tell_spark};
+use super::wanted::{self, Order, Record};
+use super::{now, spark_warning, tell_spark, wake_certd};
 use crate::power;
 use crate::util::{self, Fail, fail};
 
@@ -285,6 +287,20 @@ fn name_fits(name: &str, by_hand: bool, labels: usize) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Checks the contact address of an account: an `@` in it, and none of the
+/// characters that would end it in the authority's request.
+///
+/// # Errors
+///
+/// With what is wrong with it.
+pub fn check_email(email: &str) -> Result<(), String> {
+    if email.contains('@') && !email.contains([' ', ',', '?', '&']) {
+        Ok(())
+    } else {
+        Err(format!("`{}` is not an email address", email.escape_debug()))
+    }
 }
 
 /// Checks the names of an order: 1 to [`NAMES_MAX`], each fit, none twice.
@@ -1002,6 +1018,12 @@ struct Trace {
     /// The failure with the IDs of the checks that found it, if it was
     /// one of them.
     detail: Option<String>,
+    /// What `cert get` asked for, and of which authority's directory, for
+    /// certd to ask again when the order fails.
+    ordered: Option<(Wanted, String)>,
+    /// The Retry-After of the authority's last answer that had one, when the
+    /// order failed.
+    retry_after: Option<String>,
 }
 
 /// The authority as a person names it: Let's Encrypt, else its host.
@@ -1023,15 +1045,72 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
         return check_order(options).map_err(|refusal| Fail { code: 2, ..refusal });
     }
     let mut trace = Trace::default();
-    let result = order_certificate(options, &mut trace);
-    if let (Err(failure), Some(began)) = (&result, trace.began)
-        && !options.dry_run
-    {
-        let detail = trace.detail.clone().unwrap_or_else(|| failure.message.replace('\n', "; "));
-        let entry = history::Entry::new(now(), &options.name, Event::Failed, &detail, By::Cert);
-        history::note(&Store::system(), &entry.took(elapsed_ms(began)));
+    match (order_certificate(options, &mut trace), trace.began) {
+        (Err(failure), Some(began)) if !options.dry_run => {
+            Err(after_failure(options, &trace, began, failure))
+        }
+        (result, _) => result,
     }
-    result
+}
+
+/// What `cert get` does with an order that began and failed: the history
+/// says so, and an order by HTTP is kept for certd to try again, which the
+/// failure's words then say.
+fn after_failure(options: &Get, trace: &Trace, began: std::time::Instant, failure: Fail) -> Fail {
+    let detail = trace.detail.clone().unwrap_or_else(|| failure.message.replace('\n', "; "));
+    let now = now();
+    let entry = history::Entry::new(now, &options.name, Event::Failed, &detail, By::Cert);
+    history::note(&Store::system(), &entry.took(elapsed_ms(began)));
+    if options.dns || options.staging {
+        return failure;
+    }
+    match keep_for_certd(options, trace, &detail, now) {
+        Ok(true) => Fail {
+            message: format!(
+                "{}\ncertd tries again every hour; `cert forget {}` stops it",
+                failure.message, options.name
+            ),
+            ..failure
+        },
+        Ok(false) => failure,
+        Err(why) => {
+            eprintln!("cert: certd was not left the order to try again: {why}");
+            failure
+        }
+    }
+}
+
+/// Keeps the order of `options`, which failed for `why` at `now`, for certd
+/// to try again, and has certd look: whether it was kept. It is not when there
+/// is no account at the authority for certd to ask through and the person did
+/// not agree to its terms (`--agree-terms`), which an account needs: an order
+/// that failed in the checks before the authority was asked has made none, and
+/// certd makes it at its first try.
+fn keep_for_certd(options: &Get, trace: &Trace, why: &str, now: i64) -> Result<bool, String> {
+    let Some((asked, directory)) = &trace.ordered else { return Ok(false) };
+    let url = Url::parse(directory).map_err(|why| format!("{directory}: {why}"))?;
+    let account = account_file(&url)?;
+    let store = Store::system();
+    if store.account(&account)?.is_none() && !options.agree_terms {
+        return Ok(false);
+    }
+    let order = Order {
+        name: options.name.clone(),
+        names: asked.names.clone(),
+        directory: directory.clone(),
+        key: asked.key,
+        profile: asked.profile.clone(),
+        account,
+        email: options.email.clone(),
+        agree_terms: options.agree_terms,
+    };
+    let not_before = trace.retry_after.as_deref().and_then(|after| problems::retry_at(after, now));
+    let record = Record::first(order, now, why, not_before);
+    let lock = store.lock()?;
+    wanted::write(&store, &lock, &record)?;
+    drop(lock);
+    wake_certd();
+    Ok(true)
 }
 
 /// The milliseconds since `began`.
@@ -1078,6 +1157,7 @@ fn order_certificate(options: &Get, trace: &mut Trace) -> Result<i32, Fail> {
         Steps::off()
     };
     trace.began = Some(std::time::Instant::now());
+    trace.ordered = Some((wanted.clone(), directory.to_string()));
     steps.next("checking the names and this machine");
 
     // Before the authority is asked.
@@ -1125,7 +1205,10 @@ fn order_certificate(options: &Get, trace: &mut Trace) -> Result<i32, Fail> {
             };
             order(&setup, &account, &wanted, &serving, replaces, &mut say).await
         })
-        .map_err(fail)?;
+        .map_err(|why| {
+            trace.retry_after = client.retry_after();
+            fail(why)
+        })?;
     drop(serving);
     if options.dry_run {
         println!("the dry run worked: nothing was installed, as it asked");
@@ -1147,6 +1230,13 @@ fn order_certificate(options: &Get, trace: &mut Trace) -> Result<i32, Fail> {
     let entry =
         history::Entry::new(now, &name, Event::Got, &authority_words(&acme.directory), By::Cert);
     history::record(&store, &lock, &entry.took(took));
+    let was_wanted = match wanted::remove(&store, &lock, &name) {
+        Ok(was) => was,
+        Err(why) => {
+            eprintln!("cert: the record certd tried {name} again from cannot be taken away: {why}");
+            false
+        }
+    };
     drop(lock);
     println!(
         "{name} installed: {}, runs out {}",
@@ -1166,6 +1256,10 @@ fn order_certificate(options: &Get, trace: &mut Trace) -> Result<i32, Fail> {
     }
     if let Err(why) = tell_spark(power::CONTROL, &name) {
         eprintln!("cert: {}", spark_warning(&why));
+    }
+    if was_wanted {
+        println!("certd does not try to get {name} again");
+        wake_certd();
     }
     Ok(0)
 }
@@ -1460,6 +1554,135 @@ fn renew_certificate(
     let took = trace.began.map_or(0, elapsed_ms);
     let entry = history::Entry::new(now, name, Event::Renewed, &authority, by).took(took);
     history::record(store, &lock, &entry);
+    Ok(installed)
+}
+
+/// What certd's try of a wanted certificate failed for.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Refused {
+    /// In plain words, as the history says it.
+    pub why: String,
+    /// The time, in seconds since 1970, before which the authority asked not
+    /// to be asked again, if its last answer said.
+    pub not_before: Option<i64>,
+}
+
+impl From<String> for Refused {
+    fn from(why: String) -> Refused {
+        Refused { why, not_before: None }
+    }
+}
+
+/// Asks again for the certificate that `record` says could not be got, as
+/// certd: installs what the authority gives and takes the record away, or
+/// says why not. What happened is put in the history.
+///
+/// Nothing is installed when the record was taken away or replaced while the
+/// authority was asked.
+///
+/// # Errors
+///
+/// In plain words, with what is kept unchanged.
+pub fn retry_wanted(
+    store: &Store,
+    record: &Record,
+    now: i64,
+    say: &mut dyn FnMut(&str),
+) -> Result<(Details, Vec<String>), Refused> {
+    let began = std::time::Instant::now();
+    let mut trace = Trace::default();
+    let result = order_wanted(store, record, now, say, &mut trace, began);
+    if let Err(refused) = &result {
+        let detail = trace.detail.clone().unwrap_or_else(|| refused.why.clone());
+        let entry = history::Entry::new(now, &record.order.name, Event::Failed, &detail, By::Certd);
+        history::note(store, &entry.took(elapsed_ms(began)));
+    }
+    result
+}
+
+/// [`retry_wanted`], with `trace` filled in as it goes for what it says of a
+/// failure.
+fn order_wanted(
+    store: &Store,
+    record: &Record,
+    now: i64,
+    say: &mut dyn FnMut(&str),
+    trace: &mut Trace,
+    began: std::time::Instant,
+) -> Result<(Details, Vec<String>), Refused> {
+    let asked = &record.order;
+    let directory = check_directory(&asked.directory, &preflight::lookup)?;
+    let wanted =
+        Wanted { names: asked.names.clone(), key: asked.key, profile: asked.profile.clone() };
+    let firewall = preflight::firewall_settings();
+    let looked: Vec<(String, Vec<IpAddr>)> =
+        wanted.names.iter().map(|name| (name.clone(), preflight::lookup(name))).collect();
+    // certd is a service that listens on port 80 with the inbound right.
+    let serving = serving_for_http(None);
+    let facts = preflight::gather(now, &looked, true, &directory, &firewall, true);
+    let verdict = preflight::check(&facts);
+    if !verdict.failures.is_empty() {
+        trace.detail = Some(verdict.failures_with_ids.join("; "));
+        return Err(Refused::from(verdict.failures.join("; ")));
+    }
+    let serving = serving?;
+    let client = TufClient::default();
+    let setup = Setup { client: &client, now, steps: Steps::off() };
+    let runtime = runtime()?;
+    let stored = store.get(&asked.name).ok().filter(|stored| stored.kind == Kind::Acme);
+    // An account is made when there is none, if the person agreed to the terms
+    // when they ordered, with the address they gave.
+    let creation = asked.agree_terms.then(|| Creation {
+        email: asked.email.clone(),
+        agree_terms: true,
+        terminal: false,
+    });
+    let issued = runtime
+        .block_on(async {
+            let account =
+                open_account(store, &client, &directory, creation.as_ref(), now, say).await?;
+            let replaces = match &stored {
+                Some(stored) => replacing(&account, stored).await,
+                None => None,
+            };
+            order(&setup, &account, &wanted, &serving, replaces, say).await
+        })
+        .map_err(|why| Refused {
+            why,
+            not_before: client.retry_after().and_then(|after| problems::retry_at(&after, now)),
+        })?;
+    drop(serving);
+    let acme = Acme {
+        directory: asked.directory.clone(),
+        names: asked.names.clone(),
+        challenge: Challenge::Http01,
+        key: asked.key,
+        profile: asked.profile.clone(),
+        renew_at: None,
+        revoked: false,
+    };
+    let lock = store.lock()?;
+    if !wanted::is_current(store, &lock, record) {
+        return Err(Refused::from(String::from(
+            "the order was forgotten or made again while the authority was asked: nothing was \
+             installed",
+        )));
+    }
+    if let Some(why) = wanted::cannot_go_on(store, record) {
+        return Err(Refused::from(why));
+    }
+    let installed = install(store, &lock, &asked.name, &issued, &acme, now)?;
+    let entry = history::Entry::new(
+        now,
+        &asked.name,
+        Event::Got,
+        &authority_words(&asked.directory),
+        By::Certd,
+    );
+    history::record(store, &lock, &entry.took(elapsed_ms(began)));
+    if let Err(why) = wanted::remove(store, &lock, &asked.name) {
+        eprintln!("<4>certd: the record of {} cannot be taken away: {why}", asked.name);
+    }
     Ok(installed)
 }
 
