@@ -106,6 +106,9 @@ pub enum Request {
     /// Turns updating by themselves on or off, for the asker's bundles or
     /// everyone's.
     Automatic { everyone: bool, on: bool },
+    /// Whether everyone's bundles update by themselves: `on` or `off`,
+    /// which anyone may ask, since bundled's state is root's to read.
+    AutomaticForEveryone,
     /// What bundled did to the asker's bundles and everyone's, or to `id`.
     History { id: Option<String> },
     /// The lines of `name`, an ID or a command one of its lines adds,
@@ -280,6 +283,7 @@ impl Request {
             Request::Automatic { everyone, on } => {
                 format!("automatic\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
             }
+            Request::AutomaticForEveryone => "automatic\n".into(),
             Request::History { id } => format!("history\t{}\n", id.as_deref().unwrap_or("-")),
             Request::Lines { name } => format!("lines\t{name}\n"),
             Request::Default { name, line, everyone } => format!(
@@ -377,6 +381,7 @@ impl Request {
             ["automatic", place, state] => {
                 Ok(Request::Automatic { everyone: everyone(place)?, on: on(state)? })
             }
+            ["automatic"] => Ok(Request::AutomaticForEveryone),
             ["history", id] => {
                 Ok(Request::History { id: if *id == "-" { None } else { Some(checked_id(id)?) } })
             }
@@ -1100,6 +1105,7 @@ mod tests {
             Request::Default { name: "node".into(), line: Some("22".into()), everyone: false },
             Request::Default { name: "org.nodejs.node".into(), line: None, everyone: true },
             Request::AddOns,
+            Request::AutomaticForEveryone,
         ] {
             let line = request.line();
             assert!(line.ends_with('\n') && line.matches('\n').count() == 1);

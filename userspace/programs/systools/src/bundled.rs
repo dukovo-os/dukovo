@@ -4024,6 +4024,10 @@ fn serve(shared: &Shared, stream: UnixStream) {
             tonight_ask(shared, &mut connection, asker, &ids, (on, yes, by))
         }
         Ok(Request::Automatic { everyone, on }) => automatic(shared, asker, everyone, on),
+        Ok(Request::AutomaticForEveryone) => {
+            let on = shared.lock().automatic(Place::Everyone).is_some();
+            Ok(if on { "on" } else { "off" }.into())
+        }
         Ok(Request::History { id }) => history_of(&mut connection, asker, id.as_deref()),
         Ok(Request::Lines { name }) => match lines_of(&shared.lock(), asker, &name) {
             Some(lines) => connection
