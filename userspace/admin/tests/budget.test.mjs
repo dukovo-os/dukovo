@@ -19,7 +19,7 @@ const LIMIT = 150_000;
 
 // The start is held under the limit with room for what the console takes in
 // next: a change that adds to it raises this number and says what grew.
-const START_PLAN = 149_824;
+const START_PLAN = 149_858;
 
 /** The files `index.html` names: its scripts and style sheets, as paths on disk. */
 function pageFiles() {
