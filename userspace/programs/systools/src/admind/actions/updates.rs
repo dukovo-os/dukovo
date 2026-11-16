@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The updates' actions (ADR 0565): what the last check found, a check
+//! The updates' actions (ADR 0515): what the last check found, a check
 //! now, the slots, the history and the advisories; how the machine
 //! updates and the checks it makes after an update; and an update taken,
 //! unstaged, gone back on, held back or let go. The area is `updates`, the

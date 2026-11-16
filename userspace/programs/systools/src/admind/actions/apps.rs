@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The apps' actions (ADR 0565): the apps everyone has, one app's sheet,
+//! The apps' actions (ADR 0515): the apps everyone has, one app's sheet,
 //! and an update, a way back, a hold or a removal of one, as `bundle`
 //! does them. The area is `apps`, the scope a token needs.
 //!
