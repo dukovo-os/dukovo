@@ -21,6 +21,10 @@ database - make, change and remove the databases of PostgreSQL, and let other ma
 
 *database remove* _name_ [*--role*] [*--force*]
 
+*database copies* _name_ [*--json*]
+
+*database restore* _name_ *--from* _file_ [*--as* _new_ | *--over* [*--force*]] [*--progress*] [*--json*]
+
 # DESCRIPTION
 
 *database* makes the databases of PostgreSQL, the bundle
@@ -92,6 +96,18 @@ server told again.
 
 A change takes the lock _/system/state/databases/lock_ for as long as it
 runs, so that two do not mix; the second waits up to a minute.
+
+*Copies, and putting one back.* PostgreSQL's backup hook, the bundle's
+program *postgresql-backup*, writes a copy of each database before every
+backup round: *backup run* and the nightly backup, and never on its own.
+A copy is the file _NAME.dump_ in _dumps_ in the folder of the account
+*postgres*, made by *pg\_dump -Fc*, so it is in every snapshot of
+_/shared_ and in the backup, and it is written beside the last one and
+moved over it once whole. A machine that has no backup set up has no
+copies. *copies* lists them: the one in use, and those in the snapshots
+of _/shared_ that hold another, the newest first. *restore* puts one
+back, always into a database that is made for it, and writes over
+nothing; see *restore* below.
 
 *Names.* A database and a role are named by one rule, stricter than
 PostgreSQL's: a lowercase letter, then lowercase letters, digits and *\_*,
@@ -180,6 +196,72 @@ set to zero. *allow* takes up to 20 at a time.
 	use nothing else; otherwise the command says that the role stays and
 	why. It is the data that goes: nothing puts it back.
 
+*copies* _name_ [*--json*]
+	Lists the copies of the database _name_ that backups made, the
+	newest first, one line each: when it was written, its size, where it
+	is (*live* for the folder in use, or the name of the snapshot of
+	_/shared_ that holds it) and its path, which *restore --from* takes.
+	A copy that more than one snapshot holds is listed once, with the
+	newest. It reads files only, so it needs no running PostgreSQL, and a
+	database that is gone has copies in the snapshots that were made
+	before it went. With none, it says *there is no copy of* _name_ and
+	exits with 0.
+
+	```
+	# database copies shop
+	2026-11-16 02:00  12M  live  /shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump
+	2026-11-15 02:00  12M  2026-11-15-0200  /snapshots/shared/2026-11-15-0200/services/org.postgresql.postgresql/postgres/dumps/shop.dump
+	```
+
+*restore* _name_ *--from* _file_ [*--as* _new_ | *--over* [*--force*]] [*--progress*] [*--json*]
+	Puts the copy _file_, a path that *copies* gives or any file that
+	*pg\_dump -Fc* wrote, into a database, which is _name_'s: the same
+	owner, encoding and sorting, and nobody else may connect to it. The
+	database _name_ must be there.
+
+	With *--as* the copy goes into a new database called _new_, which
+	must not be there (DB-102), and _name_ is not touched. Without
+	*--as* and *--over*, _new_ is _name_, *\_restored\_* and the local
+	day, as in *shop\_restored\_20261116*, and with *\_2*, *\_3* and on
+	when that is taken. The new database has no site and no comment.
+
+	With *--over* the copy goes into _name_ itself. The database as it is
+	is kept, renamed to _name_, *\_before\_* and the local day and
+	minute, as in *shop\_before\_20261116\_0200*, and a new database
+	called _name_ is made, with the comment the old one had, which takes
+	no connection but the superuser's while the copy is put into it, so
+	that no program finds it empty. It stops with the programs that have
+	a session open to _name_, by name, and does nothing (DB-103);
+	*--force* ends those sessions, and lets no other come in until
+	_name_ is renamed. The old database stays until it is removed with
+	*database remove*. A name that would be longer than 63 characters, or
+	that starts with *pg\_*, is no name for the kept database or the new
+	one: the command says so before it makes anything, and *--as* names
+	one.
+
+	The copy is opened once, never through a link, and must be a regular
+	file of at most 64 GiB that starts as a copy made with *pg\_dump -Fc*
+	does (DB-109). What was checked is what is read: the open file is the
+	standard input of the bundle's *pg\_restore*, which *restore* runs as
+	root, as *--no-owner --role=* the owner *--exit-on-error -h
+	/system/live/services/postgres -U postgres -d* the new database. The
+	restore is made as the owner of the database, so the objects of the
+	copy are its own; a copy that needs a superuser, as an extension that
+	PostgreSQL does not trust its owner with does, fails. The first time,
+	Dukovo asks whether the bundle may run with root's access.
+
+	When anything fails after the new database is made, it is taken
+	back: the new database is dropped, and with *--over* the old one has
+	its name back, and is open again if *--force* had shut it. Then the
+	failure is DB-110, with what *pg\_restore* said, the first 16 KiB of
+	it, before it. A restore changes only what it made. *--progress*
+	tells its steps, three for *--as* and five for *--over*, as *step 2
+	of 5: keeping shop as shop\_before\_20261116\_0200*. *--json* prints
+	what was done, below.
+
+	While it runs it holds the lock of *database*, so that another change
+	waits.
+
 # JSON
 
 *--json* prints one line of JSON, with *"format":1* first; the documents
@@ -193,11 +275,12 @@ of a document are only added to, never changed or taken away, as long as
 {"format": 1,
  "server": {"installed": true, "enabled": true, "running": true,
             "version": "19.0", "listen": "*", "ssl": true,
-            "certificate": "this-machine"},
+            "certificate": "this-machine", "copies": true},
  "databases": [{"name": "shop", "owner": "shop", "encoding": "UTF8",
                 "provider": "libc", "locale": "en_US.UTF-8", "bytes": 8192,
                 "sessions": 1, "site": "shop.example.org",
-                "made_by_database": true, "collation_mismatch": false}],
+                "made_by_database": true, "collation_mismatch": false,
+                "copy": {"at_ms": 1794794400000, "bytes": 12345678}}],
  "roles": [{"name": "shop", "login": true, "password": true,
             "made_by_database": true}],
  "access": [{"line": 9, "type": "hostssl", "databases": ["shop"],
@@ -211,11 +294,17 @@ what PostgreSQL calls itself, *listen* is its *listen\_addresses*
 (*localhost*, or *\** for every address), *ssl* whether it takes TLS and
 *certificate* the name of the certificate it serves when *database* set
 it, else *null*. While PostgreSQL does not run, *version* and *listen*
-are *null*, and the lists are empty.
+are *null*, and the lists are empty. *copies* is true when the backup
+hook of the service, as its file and the override say it, is the one that
+copies each database, and false for a hook that only writes a checkpoint,
+as the bundle's before it did; it is the file that says, so it is told
+while the server is off too.
 
 A database's *provider* is *builtin*, *libc* or *icu*. *locale* may be
 *null*. *sessions* counts the programs signed in to it and *bytes* is its
-size. *site* is the website it was made for, or *null*, and
+size. *copy* is the copy the backup hook last made of it, when it was
+written in milliseconds since 1970 and how long it is in bytes, or *null*
+before the first. *site* is the website it was made for, or *null*, and
 *made\_by\_database* says that *database add* made it. *collation\_mismatch*
 is true when the sorting data of the system is not the version the
 database was made with, so that its indexes are to be rebuilt; it is
@@ -246,6 +335,33 @@ socket. *host* and *port* say where the password is for: this machine,
 until *allow* lets others connect. *password --json* has the same
 members.
 
+*copies --json*
+
+```
+{"format": 1, "database": "shop",
+ "copies": [{"at_ms": 1794794400000, "bytes": 12345678, "from": "live",
+             "path": "/shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump"},
+            {"at_ms": 1794708000000, "bytes": 12301122,
+             "from": "2026-11-15-0200",
+             "path": "/snapshots/shared/2026-11-15-0200/services/org.postgresql.postgresql/postgres/dumps/shop.dump"}]}
+```
+
+*copies* is the newest first, and empty when there is none. *from* is
+*live* or the name of the snapshot of _/shared_ that holds the copy.
+*path* is what *restore --from* takes.
+
+*restore --json*
+
+```
+{"format": 1, "database": "shop", "from": "/shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump",
+ "restored_as": "shop_restored_20261116", "kept_as": null, "took_ms": 52113}
+```
+
+*restored\_as* is the database the copy was put into: _new_, or _name_
+for *--over*, when *kept\_as* is the name the old database was kept
+under, else *null*. With *--progress* the lines of the steps come before
+the document.
+
 *allow*, *deny* and *remove* tell what they did in plain words, one line
 each, and with *--progress*, *allow* and *deny* tell each step first as
 *step N of M: words*. They have no JSON.
@@ -257,8 +373,10 @@ is not there to ask. 1 when it could not; the last line of its error
 output ends with the ID in parentheses when the error has one (*ERRORS*
 below). 2 for a mistake in the command line: an option that is not one, a
 name that does not follow the rule, a network that is not an address with
-a prefix, *add* without *--json* for a role that has a password, or
-*--peer* and *--owner* that name two roles.
+a prefix, *add* without *--json* for a role that has a password,
+*--peer* and *--owner* that name two roles, *restore* without *--from* or
+with a path that does not start with */*, with *--as* and *--over* both,
+or with *--force* and no *--over*.
 
 # ERRORS
 
@@ -272,11 +390,12 @@ The web console shows the page for it.
 
 *DB-102*
 	A database or a role of that name is there already. *add* made
-	nothing.
+	nothing, and *restore --as* a name that is taken made none.
 
 *DB-103*
 	The database has open sessions, from the programs the words name.
-	Stop them, or use *--force* to end them.
+	Stop them, or use *--force* to end them: *remove* and *restore
+	--over* both say so.
 
 *DB-104*
 	PostgreSQL's settings did not pass its check, so nothing was changed:
@@ -292,6 +411,16 @@ The web console shows the page for it.
 *DB-106*
 	There is no account of the name given to *--peer*. *user list* shows
 	them.
+
+*DB-109*
+	The file after *restore --from* is not a copy that can be put back:
+	it is not there, it is a link, it is not a file, it is over 64 GiB, or
+	it does not start as a copy made with *pg\_dump -Fc* does. Nothing
+	was made.
+
+*DB-110*
+	*pg\_restore* did not put the copy in. What it said comes first, and
+	the last line says how what was made was taken back.
 
 Other failures have no ID: a database that is not there, a role that
 has no password to sign in with from other machines, or a statement
@@ -331,6 +460,19 @@ PostgreSQL restarted, and its open sessions ended
 # database deny shop
 ```
 
+A copy put back as a new database, beside the one there, and then the
+old one, kept, in the place of the database:
+
+```
+# database copies shop
+2026-11-16 02:00  12M  live  /shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump
+# database restore shop --from /shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump
+put the copy into the new database shop_restored_20261116; shop was not changed
+# database restore shop --from /snapshots/shared/2026-11-15-0200/services/org.postgresql.postgresql/postgres/dumps/shop.dump --over --force
+put the copy into shop; the database as it was is kept as shop_before_20261116_0200
+`database remove shop_before_20261116_0200` removes it when it is not needed
+```
+
 Removing a database that a program still has open, and its role:
 
 ```
@@ -349,6 +491,11 @@ _/system/live/services/postgres/.s.PGSQL.5432_
 _/system/state/databases/lock_
 	The lock a change holds.
 
+_/shared/services/org.postgresql.postgresql/postgres/dumps_
+	The copies that PostgreSQL's backup hook writes, _NAME.dump_ for each
+	database, which *copies* lists with those of the snapshots in
+	_/snapshots/shared_.
+
 _/system/settings/spark/services/settings.d/postgresql.toml_
 	The service's override: the certificates it serves, which *allow*
 	adds to and keeps the rest of.
@@ -356,4 +503,4 @@ _/system/settings/spark/services/settings.d/postgresql.toml_
 # SEE ALSO
 
 *website*(8), *cert*(8), *service*(8), *service.toml*(5), *elevate*(8),
-*user*(8), *dukovo-certificates*(7)
+*user*(8), *backup*(8), *snap*(1), *dukovo-certificates*(7)
