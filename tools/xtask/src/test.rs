@@ -503,12 +503,6 @@ const PHP_FILES: u8 = 33;
 /// diary 1.1.0's are held ([`WAVES_PAUSE`]).
 const WAVES_SITE: u8 = 34;
 
-/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a full
-/// repository of this build, in a folder `full`
-/// ([`upgrade::update_full_disk`], ADR 0536): what a stage from an old
-/// release's slot needs, since no file of it is known to be there.
-const UPDATE_FULL: u8 = 35;
-
 /// What the [`WAVES_SITE`] catalog's plan holds: diary 1.1.0's waves, with
 /// this reason.
 const WAVES_PAUSE: (&str, &str, &str) = ("org.example.diary", "1.1.0", "bad logs");
@@ -529,6 +523,12 @@ const POSTGRESQL_SERVICE_FILES: u8 = 36;
 /// --grow` and `device resize max`, as a cloud machine's first boot does
 /// (ADR 0327), for bundles that need more room than an image's root has.
 const ROOT_ROOM: u8 = 37;
+
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a full
+/// repository of this build, in a folder `full`
+/// ([`upgrade::update_full_disk`], ADR 0536): what a stage from an old
+/// release's slot needs, since no file of it is known to be there.
+const UPDATE_FULL: u8 = 38;
 
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
@@ -11994,6 +11994,39 @@ fn microcode(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_kind_of_disk_has_a_number_of_its_own() {
+        // A number two kinds share makes `make_disks` make each disk of the
+        // one it checks later as the other: each constant of this file
+        // whose doc names `Disk::fat` has a number of its own, and none is
+        // a FAT width.
+        let mut kind_doc = false;
+        let mut kinds: Vec<(u8, &str)> = Vec::new();
+        for line in include_str!("test.rs").lines() {
+            if line.starts_with("///") {
+                kind_doc |= line.contains("[`Disk::fat`]");
+                continue;
+            }
+            if kind_doc
+                && let Some((name, value)) = line
+                    .strip_prefix("const ")
+                    .and_then(|rest| rest.strip_suffix(';'))
+                    .and_then(|rest| rest.split_once(": u8 = "))
+            {
+                kinds.push((value.parse().unwrap(), name));
+            }
+            kind_doc = false;
+        }
+        assert!(kinds.iter().any(|&(kind, _)| kind == UPDATE_FULL), "{kinds:?}");
+        kinds.sort_unstable();
+        for pair in kinds.windows(2) {
+            assert_ne!(pair[0].0, pair[1].0, "{} and {} share a number", pair[0].1, pair[1].1);
+        }
+        for (kind, name) in &kinds {
+            assert!(![12, 16, 32].contains(kind), "{name} is the number of FAT{kind}");
+        }
+    }
 
     #[test]
     fn each_case_that_starts_the_test_update_server_has_it_made() {
