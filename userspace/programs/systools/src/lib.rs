@@ -124,6 +124,7 @@ mod check;
 mod cloud;
 mod column;
 mod crontab;
+mod database;
 mod deadline;
 mod device;
 mod df;
