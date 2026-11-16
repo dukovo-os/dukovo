@@ -93,10 +93,11 @@ checkpoints() {
 
 # Spark runs the before hook of every running service that has one, as
 # backup(8) does around its snapshots, and the answer names the service:
-# the hook is the bundle's psql running a CHECKPOINT.
+# the hook is the bundle's postgresql-backup, which runs a CHECKPOINT first
+# and then copies each database.
 hook_checkpoints() {
 	before=$(checkpoints)
-	printf 'hooks before\n' | nc -w 20 -U /system/live/spark/control | grep -q '^ok: postgresql' ||
+	printf 'hooks before\n' | nc -w 120 -U /system/live/spark/control | grep -q '^ok: postgresql' ||
 		return 1
 	tries=0
 	until test "$(checkpoints)" -gt "$before"; do
