@@ -67,7 +67,7 @@ const KNOWN: [(&str, &str, &str); 4] = [
     ("network", "/networking", "The network settings"),
     ("firewall", "/firewall", "The firewall's rules"),
     ("ssh", "/security#ssh", "SSH's settings"),
-    ("console", "/security#reach", "Who may reach the console"),
+    ("console", "/security#reach", "The console's address or certificate"),
 ];
 
 /// The page that owns the trial `id` and the words for what it tries.
@@ -471,7 +471,10 @@ mod tests {
         assert_eq!(told("network"), ("/networking".into(), "The network settings".into()));
         assert_eq!(told("firewall"), ("/firewall".into(), "The firewall's rules".into()));
         assert_eq!(told("ssh"), ("/security#ssh".into(), "SSH's settings".into()));
-        assert_eq!(told("console"), ("/security#reach".into(), "Who may reach the console".into()));
+        assert_eq!(
+            told("console"),
+            ("/security#reach".into(), "The console's address or certificate".into())
+        );
         assert_eq!(
             told("service.nginx"),
             ("/services/nginx".into(), "nginx's service file".into())

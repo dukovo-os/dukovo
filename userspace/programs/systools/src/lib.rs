@@ -93,6 +93,7 @@ mod account;
 mod account_errors;
 mod admin;
 mod admin_about;
+mod admin_certificate;
 mod admin_errors;
 mod admin_export;
 #[cfg(feature = "lab")]

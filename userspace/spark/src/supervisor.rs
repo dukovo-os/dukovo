@@ -2152,20 +2152,63 @@ impl Supervisor {
     }
 
     /// The answer to `reload NAME` from process `peer`: SIGHUP for the
-    /// service, if it runs.
-    fn answer_reload(&self, name: Option<&str>, peer: u64) -> String {
+    /// service, if it runs. When its file names other certificates than
+    /// it runs with, they are copied first, so that a service that reads
+    /// which one to use from its own settings, as admind does, finds a new
+    /// one there on SIGHUP (ADR 0567); the rest of a changed file waits
+    /// for its restart, as before.
+    fn answer_reload(&mut self, name: Option<&str>, peer: u64) -> String {
         let Some(name) = name else {
             return "error: reload needs a service's name\n".into();
         };
-        let Some(service) = self.services.iter().find(|s| s.spec.name == name) else {
+        let Some(index) = self.services.iter().position(|s| s.spec.name == name) else {
             return format!("error: no service is called {name}\n");
         };
-        let Some(pid) = service.state.pid() else {
+        let Some(pid) = self.services[index].state.pid() else {
             return format!("error: {name} is not running\n");
         };
+        if let Err(err) = self.certificates_named(index) {
+            audit!("{name}'s certificates were not copied for its reload, by process {peer}: {err}");
+            return format!("error: {name}'s certificates were not copied ({err}): it was not asked to reload\n");
+        }
         let _ = process::kill(&SYS, SLOT_PROCESS, pid as i64, signal::SIGHUP);
         audit!("asked {name} to reload, by process {peer}");
         format!("ok: asked {name} to reload\n")
+    }
+
+    /// Copies the certificates service `index`'s file names now, if they
+    /// are not the ones it runs with, and runs it with them. A file that
+    /// does not read changes nothing here: its next start says what is
+    /// wrong with it. A copy that fails is put back as it was, as far as
+    /// it can be, and the service runs with the ones it had.
+    fn certificates_named(&mut self, index: usize) -> Result<(), String> {
+        let name = self.services[index].spec.name.clone();
+        let Ok((spec, _)) = services::read(&self.root, &self.dir, &name) else {
+            return Ok(());
+        };
+        if spec.certificates == self.services[index].spec.certificates {
+            return Ok(());
+        }
+        let had = core::mem::replace(&mut self.services[index].spec.certificates, spec.certificates);
+        let copied = self.copy_certificates(index);
+        if copied.is_err() {
+            self.services[index].spec.certificates = had;
+            let _ = self.copy_certificates(index);
+        }
+        copied
+    }
+
+    /// Makes service `index`'s folder of copies hold the certificates its
+    /// running file names, as its start does.
+    fn copy_certificates(&self, index: usize) -> Result<(), String> {
+        let spec = &self.services[index].spec;
+        let account = match &spec.account {
+            Some(name) if !spec.certificates.is_empty() => {
+                Some(account(&self.root, self.names, name, Vec::new())?)
+            }
+            _ => None,
+        };
+        certificates::copy_all(&self.root, spec, account.as_ref())
     }
 
     /// The answer to `reopen NAME` from process `peer`: has the service

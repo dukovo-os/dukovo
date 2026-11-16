@@ -260,6 +260,17 @@ pub fn set_bool(table: &mut dyn TableLike, key: &str, value: bool) {
     }
 }
 
+/// [`set_string`] for a list of strings, written on one line.
+pub fn set_strings(table: &mut dyn TableLike, key: &str, values: &[&str]) {
+    let now: Option<Vec<&str>> = table
+        .get(key)
+        .and_then(Item::as_array)
+        .and_then(|array| array.iter().map(Value::as_str).collect());
+    if now.as_deref() != Some(values) {
+        put(table, key, Value::Array(values.iter().copied().collect()));
+    }
+}
+
 /// Puts `value` at `key`, in the place and with the comment of the value
 /// there, if there is one.
 fn put(table: &mut dyn TableLike, key: &str, mut value: Value) {

@@ -868,6 +868,9 @@ view, and _/system/live_ is emptied at each boot. When certd makes a
 certificate anew, or *cert add --replace* replaces one, Spark copies it
 again for each running service that names it, and sends it SIGHUP,
 which every server Dukovo ships takes as "read your certificates again".
+*service* _name_ *reload* copies them too when the file names others
+than the service started with, which the rest of a changed file waits
+for a restart to do.
 A service gets at most one such SIGHUP in 10 seconds, and none in its
 first 10 seconds or before it is ready: changes in that time are
 copied at once, and one SIGHUP for them all follows. The two files

@@ -3838,8 +3838,8 @@ center has a page for each.
   through that device, and removing it would leave nothing to ask with. Open the
   console from this machine's network or from another device, and remove it there
   ([ADM-137](../../errors/ADM-137.md)).
-- **Who may reach the console is being tried (ADM-138).** `admin reach` and `admin
-  sign-in` wait for a change that is tried. Keep it with `elevate admin keep` or
+- **The console's address or certificate is being tried (ADM-138).** `admin
+  reach`, `admin certificate` and `admin sign-in` wait for a change that is tried. Keep it with `elevate admin keep` or
   undo it with `elevate admin undo`.
 - **Keep this change is off (ADM-133, ADM-135).** The page has not yet reached
   the console over a new connection since the change, which is what turns

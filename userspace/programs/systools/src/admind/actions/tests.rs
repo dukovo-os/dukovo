@@ -326,9 +326,10 @@ impl Action for Cut {
     const PATH: &'static str = "/api/1/lab/{name}/cut";
     const RUNS: Runs = Runs::AsAdministrator;
     const CUTS_OFF: Option<CutsOff<Named>> = Some(CutsOff {
-        card: "lo",
+        on: Through::Card("lo"),
         read: |args| vec!["lab-peers".into(), args.name.clone()],
-        cuts: |args, from, shown| {
+        cuts: |args, browser, shown| {
+            let from = browser.from;
             let shown: Value = serde_json::from_str(shown).map_err(|_| "no list".to_string())?;
             let devices = shown["devices"].as_array().ok_or("no devices")?;
             let device = devices.iter().find(|device| device["name"] == args.name.as_str());
@@ -364,6 +365,10 @@ static CUT: Entry<Cut> = Entry::new();
 /// The action that can cut off its browser, for the route tests of the
 /// guard.
 pub static CUTTING: &[&dyn Registered] = &[&CUT, &RESTART];
+static SERVE: Entry<super::console::SetCertificate> = Entry::new();
+/// The console's certificate, whose guard is by the browser's name, for
+/// the route tests of that guard.
+pub static NAMING: &[&dyn Registered] = &[&SERVE];
 
 #[test]
 fn what_can_cut_off_its_browser_names_its_card_and_its_read_and_fails_closed() {
@@ -372,12 +377,16 @@ fn what_can_cut_off_its_browser_names_its_card_and_its_read_and_fails_closed() {
     assert_eq!((&listed[0]["cuts_off"], &listed[1]["cuts_off"]), (&json!("lo"), &Value::Null));
     let prepared = CUT.prepare(json!({ "name": "phone" })).unwrap();
     let read = prepared.cuts_off.as_ref().unwrap();
-    assert_eq!((read.card, &read.argv), ("lo", &vec!["lab-peers".to_string(), "phone".into()]));
+    assert_eq!(
+        (read.on, &read.argv),
+        (Through::Card("lo"), &vec!["lab-peers".to_string(), "phone".into()])
+    );
     assert!(RESTART.prepare(json!({ "name": "nginx" })).unwrap().cuts_off.is_none());
 
     let phone: IpAddr = "192.0.2.7".parse().unwrap();
     let cut = |name: &str, from: IpAddr, shown: &str| {
-        CUT.cuts_off(&CUT.prepare(json!({ "name": name })).unwrap().args, from, shown)
+        let browser = Browser { from, host: "lab.example.org" };
+        CUT.cuts_off(&CUT.prepare(json!({ "name": name })).unwrap().args, &browser, shown)
     };
     // The browser's own device is refused; another, or one not there, is
     // not; nor is any for a browser that holds none of their addresses.
@@ -390,9 +399,10 @@ fn what_can_cut_off_its_browser_names_its_card_and_its_read_and_fails_closed() {
     // What does not read refuses, and so do arguments that do not.
     assert!(cut("laptop", phone, "").is_err());
     assert!(cut("laptop", phone, "{}").is_err());
-    assert!(CUT.cuts_off(&json!({ "name": 3 }), phone, LAB_PEERS).is_err());
+    let browser = Browser { from: phone, host: "lab.example.org" };
+    assert!(CUT.cuts_off(&json!({ "name": 3 }), &browser, LAB_PEERS).is_err());
     // An action with no guard never refuses.
-    assert_eq!(RESTART.cuts_off(&json!({ "name": "nginx" }), phone, ""), Ok(()));
+    assert_eq!(RESTART.cuts_off(&json!({ "name": "nginx" }), &browser, ""), Ok(()));
 }
 
 #[test]
@@ -572,6 +582,7 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "service.enable",
             "service.disable",
             "console.reach",
+            "console.certificate",
             "console.undo",
             "console.export",
             "network.set",
@@ -711,7 +722,7 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
         // A change that could cut off its browser is refused before it
         // runs, which a task, started first and answered later, is not.
         assert!(
-            action.cuts_off_card().is_none()
+            action.cuts_off_on().is_none()
                 || (action.changes() && action.runs() == Runs::AsAdministrator && !action.long()),
             "{id}: what can cut off its browser is a change an administrator runs at once"
         );

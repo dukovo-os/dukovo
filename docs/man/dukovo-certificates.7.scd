@@ -75,9 +75,10 @@ listed by *cert*(8), each under a name, in _/system/state/certd_ (ADR
 read-only, and has it read them again when one changes.
 
 *this-machine* is the machine's own: a certificate certd makes for the
-machine's name, its name with _.local_ and _localhost_, valid for 800
-days and made again 30 days before it runs out, or when the machine is
-renamed. Nothing but the machine vouches for it, so a browser warns of
+machine's name, its name with _.local_ and _localhost_ (for a name with
+a domain, such as _duke-nas.example.org_, the full name, its first word
+and that word with _.local_), valid for 800 days and made again 30 days
+before it runs out, or when the machine is renamed. Nothing but the machine vouches for it, so a browser warns of
 it, as it does of any certificate of one's own. To trust it, compare
 what the browser shows with what the machine says, so that nobody
 between can have put a certificate of their own in its place:

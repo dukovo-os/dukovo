@@ -45,27 +45,36 @@ pub struct Named {
     pub name: String,
 }
 
+/// The field of a certificate's name, which `console.certificate` takes
+/// too.
+pub(super) const NAME: Field = Field::text(
+    "name",
+    "The certificate's name, as cert list shows it: this-machine, or a domain's name.",
+    1,
+    CERTIFICATE_NAME_MAX,
+    Some(NAME_PATTERN),
+);
+
+/// Whether `name` is a certificate's name, as [`NAME`] checks it.
+pub(super) fn check_name(name: &str) -> Result<(), Bad> {
+    if check_certificate(name).is_ok() {
+        return Ok(());
+    }
+    Err(Bad {
+        field: "name",
+        why: format!(
+            "A certificate's name has 1 to {CERTIFICATE_NAME_MAX} lowercase letters, digits, \
+             hyphens and dots, starts with a letter or a digit, and has no two dots in a row. \
+             Nothing was done."
+        ),
+    })
+}
+
 impl Args for Named {
-    const FIELDS: &'static [Field] = &[Field::text(
-        "name",
-        "The certificate's name, as cert list shows it: this-machine, or a domain's name.",
-        1,
-        CERTIFICATE_NAME_MAX,
-        Some(NAME_PATTERN),
-    )];
+    const FIELDS: &'static [Field] = &[NAME];
 
     fn check(&self) -> Result<(), Bad> {
-        if check_certificate(&self.name).is_ok() {
-            return Ok(());
-        }
-        Err(Bad {
-            field: "name",
-            why: format!(
-                "A certificate's name has 1 to {CERTIFICATE_NAME_MAX} lowercase letters, digits, \
-                 hyphens and dots, starts with a letter or a digit, and has no two dots in a row. \
-                 Nothing was done."
-            ),
-        })
+        check_name(&self.name)
     }
 }
 

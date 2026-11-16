@@ -32,8 +32,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use super::certificate;
 use super::trial::{TRY, check_try, try_words};
-use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Trial, Undo};
+use super::{
+    Action, Args, Bad, Browser, CutsOff, Examples, Field, Nothing, Runs, Tests, Through, Trial,
+    Undo,
+};
 use crate::admin_settings::{self, Reach, Settings};
 
 /// The area of these actions: the scope a token needs, `console`.
@@ -233,6 +237,175 @@ impl Action for SetReach {
     }
 }
 
+/// The tests of `console.certificate`, which the Certificates page's boot
+/// and lab tests call.
+const CERTIFICATE_TESTS: Tests = Tests {
+    checks: "admind::actions::console::tests",
+    route: "admin-certificates",
+    same_as_command: "admin-certificates",
+    browser: "web-console/certificates",
+    ansible: "web-console/ansible",
+};
+
+/// The certificate the console is to serve.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Serving {
+    /// The certificate's name, as certd keeps it.
+    pub name: String,
+    /// How long the change is tried for, in seconds.
+    #[serde(default, rename = "try", skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<i64>,
+}
+
+impl Args for Serving {
+    const FIELDS: &'static [Field] = &[certificate::NAME, TRY];
+
+    fn check(&self) -> Result<(), Bad> {
+        certificate::check_name(&self.name)?;
+        check_try(self.seconds)?;
+        Ok(())
+    }
+}
+
+/// What `cert show NAME --json` prints that the guard reads: the names
+/// the certificate is for, DNS names and IP addresses as text.
+#[derive(Deserialize)]
+struct Shown {
+    names: Vec<String>,
+}
+
+/// Whether the certificate `shown` describes (what `cert show --json`
+/// printed) names the address `browser` uses for the console, so that the
+/// browser keeps reaching it without a warning once it is served: Err with
+/// the refusal's words when it does not, and when `shown` does not read
+/// (ADM-141).
+fn names_the_browser(args: &Serving, browser: &Browser<'_>, shown: &str) -> Result<(), String> {
+    let unread = || {
+        format!(
+            "{}'s names could not be read, so the console cannot tell whether this browser's \
+             address, {}, is one of them: nothing was done",
+            args.name, browser.host
+        )
+    };
+    let shown: Shown = serde_json::from_str(shown).map_err(|_| unread())?;
+    if shown.names.iter().any(|name| names(name, browser.host)) {
+        return Ok(());
+    }
+    Err(format!(
+        "this browser reaches the console as {}, which {}'s certificate does not name: open the \
+         console at an address it names first, then choose it there",
+        browser.host, args.name
+    ))
+}
+
+/// Whether a certificate's `name` covers `host`, as a browser checks it:
+/// an IP address is the same address; a DNS name is the same, small and
+/// capital letters alike; and a wildcard stands for the left-most word
+/// alone, so that `*.example.org` covers `nas.example.org` and neither
+/// `example.org` nor `a.nas.example.org`.
+fn names(name: &str, host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if let Ok(address) = host.parse::<std::net::IpAddr>() {
+        return name.parse::<std::net::IpAddr>().is_ok_and(|named| named == address);
+    }
+    if let Some(rest) = name.strip_prefix("*.") {
+        return host.split_once('.').is_some_and(|(first, after)| {
+            !first.is_empty() && !first.contains('*') && after.eq_ignore_ascii_case(rest)
+        });
+    }
+    !name.contains('*') && name.eq_ignore_ascii_case(host)
+}
+
+/// `admin certificate NAME [--try SECONDS]`: makes admind serve
+/// certificate NAME, of those certd keeps, to the connections that come
+/// after, or tries it for a window, as the trial `console`. Refused when
+/// the browser that asks reaches the console by a name the certificate
+/// does not have (ADM-141). What puts it back is itself, with the
+/// machine's own certificate.
+pub struct SetCertificate;
+
+impl Action for SetCertificate {
+    const ID: &'static str = "console.certificate";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/console/certificate";
+    const RUNS: Runs = Runs::AsAdministrator;
+    // ADM-141 is the guard's, which the API lists from it.
+    const ERRORS: &'static [&'static str] = &["ADM-138"];
+    const CUTS_OFF: Option<CutsOff<Serving>> = Some(CutsOff {
+        on: Through::Name,
+        read: |args| ["cert", "show", args.name.as_str(), "--json"].map(String::from).to_vec(),
+        cuts: names_the_browser,
+    });
+    const TESTS: Tests = CERTIFICATE_TESTS;
+    const TITLE: &'static str = "Serve a certificate for the console";
+    type Args = Serving;
+
+    fn argv(args: &Serving) -> Vec<String> {
+        let mut argv = ["admin", "certificate", args.name.as_str()].map(String::from).to_vec();
+        argv.extend(try_words(args.seconds));
+        argv
+    }
+
+    fn subject(args: &Serving) -> Option<String> {
+        Some(args.name.clone())
+    }
+
+    /// admin.toml, and admind's service file, whose `certificates` has
+    /// Spark copy the certificate for it.
+    fn files(_: &Serving) -> Vec<String> {
+        vec![admin_settings::PATH.into(), crate::servicefiles::path(ADMIND)]
+    }
+
+    /// `admin certificate` with no name, which prints the certificate the
+    /// console serves.
+    fn probe(_: &Serving) -> Option<Vec<String>> {
+        Some(["admin", "certificate"].map(String::from).to_vec())
+    }
+
+    /// The name it printed, if it is a certificate's.
+    fn probed(_: &Serving, output: &str) -> Option<String> {
+        let name = output.trim();
+        manifest::service::check_certificate(name).is_ok().then(|| name.to_string())
+    }
+
+    fn trial(args: &Serving) -> Option<Trial> {
+        args.seconds.map(|_| Trial::Begins(TRIAL))
+    }
+
+    /// The console serves the certificate already when `admin
+    /// certificate` prints its name.
+    fn settled(args: &Serving, now: &str) -> Option<bool> {
+        Some(now == args.name)
+    }
+
+    fn examples() -> Examples<Serving> {
+        let name = || crate::cert::machine::NAME.to_string();
+        // The machine's own certificate, which every image has and the
+        // console serves when admin.toml says nothing; the second is the
+        // change tried, which Spark undoes after the window.
+        Examples {
+            good: vec![
+                Serving { name: name(), seconds: None },
+                Serving { name: name(), seconds: Some(30) },
+            ],
+            bad: vec![
+                json!({ "name": "../x" }),
+                json!({ "name": "" }),
+                json!({ "name": "This-Machine" }),
+                json!({ "name": name(), "try": 5 }),
+                json!({ "name": name(), "port": 443 }),
+                json!({}),
+            ],
+            undo: Some(Undo { action: Self::ID, args: json!({ "name": name() }) }),
+        }
+    }
+}
+
+/// The service that serves the console.
+const ADMIND: &str = "admind";
+
 /// `admin keep`: keeps the change of `admin.toml` that is being tried.
 pub struct Keep;
 
@@ -314,6 +487,7 @@ impl Action for Revert {
 mod tests {
     use std::net::IpAddr;
 
+    use super::super::{Browser, Through};
     use super::super::{REGISTRY, Registered};
     use super::*;
     use crate::admind::errors::Kind;
@@ -630,5 +804,93 @@ mod tests {
         assert_eq!(reach.keeps_file(&private, path, said), Some(false));
         // A file admind refuses fails the command: nothing to tell.
         assert_eq!(reach.keeps_file(&any, path, Some("[console\n")), None);
+    }
+
+    #[test]
+    fn a_certificate_covers_its_own_names_an_address_as_itself_and_a_wildcard_one_word_deep() {
+        // A DNS name, small and capital letters alike, and a final dot.
+        assert!(names("nas.example.org", "nas.example.org"));
+        assert!(names("NAS.Example.org", "nas.example.org"));
+        assert!(names("nas.example.org", "nas.example.org."));
+        assert!(!names("nas.example.org", "nas.example"));
+        assert!(!names("nas.example.org", "a.nas.example.org"));
+        // A wildcard stands for the left-most word alone.
+        assert!(names("*.example.org", "nas.example.org"));
+        assert!(!names("*.example.org", "example.org"));
+        assert!(!names("*.example.org", "a.nas.example.org"));
+        assert!(!names("*.example.org", ".example.org"));
+        assert!(!names("nas.*.org", "nas.example.org"));
+        assert!(!names("*", "nas"));
+        // An address is the same address, however it is written; a name
+        // never covers an address, nor a wildcard one.
+        assert!(names("192.168.1.10", "192.168.1.10"));
+        assert!(names("2001:db8::1", "2001:db8:0:0::1"));
+        assert!(!names("192.168.1.10", "192.168.1.11"));
+        assert!(!names("*.168.1.10", "192.168.1.10"));
+        assert!(!names("nas.example.org", "192.168.1.10"));
+    }
+
+    #[test]
+    fn the_console_s_certificate_is_refused_for_a_browser_at_a_name_it_does_not_have() {
+        let serve = action("console.certificate");
+        let prepared = serve.prepare(json!({ "name": "nas.example.org", "try": 300 })).unwrap();
+        let read = prepared.cuts_off.as_ref().unwrap();
+        assert_eq!(read.on, Through::Name);
+        assert_eq!(read.argv, ["cert", "show", "nas.example.org", "--json"]);
+        let shown = r#"{"name":"nas.example.org","names":["nas.example.org","*.lan.example.org","192.168.1.10"],"trusted":true}"#;
+        let from: IpAddr = "192.168.1.20".parse().unwrap();
+        let guard = |host: &str, shown: &str| {
+            serve.cuts_off(&prepared.args, &Browser { from, host }, shown)
+        };
+        for host in ["nas.example.org", "files.lan.example.org", "192.168.1.10"] {
+            assert_eq!(guard(host, shown), Ok(()), "{host}");
+        }
+        assert_eq!(
+            guard("192.168.1.11", shown).unwrap_err(),
+            "this browser reaches the console as 192.168.1.11, which nas.example.org's \
+             certificate does not name: open the console at an address it names first, then \
+             choose it there"
+        );
+        assert!(guard("nas.local", shown).is_err());
+        assert!(guard("lan.example.org", shown).is_err());
+        // What does not read refuses: the guard fails closed.
+        for unread in ["", "{}", r#"{"names":"nas.example.org"}"#, "not json"] {
+            let refused = guard("nas.example.org", unread).unwrap_err();
+            assert!(refused.contains("could not be read"), "{unread:?}: {refused}");
+            assert!(refused.contains("nas.example.org"), "{refused}");
+        }
+        // The guard is listed as one of any request.
+        let listed = super::super::listed(&[serve]);
+        assert_eq!(listed[0]["cuts_off"], json!("*"));
+    }
+
+    #[test]
+    fn the_console_s_certificate_is_admin_certificate_with_both_files_tried_as_the_console() {
+        let serve = action("console.certificate");
+        let tried = serve.prepare(json!({ "name": "nas.example.org", "try": 300 })).unwrap();
+        assert_eq!(tried.argv, ["admin", "certificate", "nas.example.org", "--try", "300"]);
+        assert_eq!(
+            tried.files,
+            ["/system/settings/admin.toml", "/system/settings/spark/services/admind.toml"]
+        );
+        assert_eq!(tried.trial, Some(Trial::Begins("console")));
+        let at_once = serve.prepare(json!({ "name": "this-machine" })).unwrap();
+        assert_eq!(at_once.argv, ["admin", "certificate", "this-machine"]);
+        assert_eq!(at_once.trial, None);
+        assert_eq!(
+            at_once.probe.as_deref(),
+            Some(&["admin".to_string(), "certificate".into()][..])
+        );
+        assert_eq!(
+            serve.probed(&at_once.args, "nas.example.org\n").as_deref(),
+            Some("nas.example.org")
+        );
+        assert_eq!(serve.probed(&at_once.args, "../key\n"), None);
+        assert_eq!(serve.settled(&at_once.args, "this-machine"), Some(true));
+        assert_eq!(serve.settled(&at_once.args, "nas.example.org"), Some(false));
+        assert_eq!(serve.errors(), ["ADM-138"]);
+        assert!(serve.changes() && serve.runs() == Runs::AsAdministrator);
+        let refused = serve.prepare(json!({ "name": "../key" })).unwrap_err();
+        assert_eq!((refused.kind, refused.field), (Kind::BadValue, Some("name")));
     }
 }

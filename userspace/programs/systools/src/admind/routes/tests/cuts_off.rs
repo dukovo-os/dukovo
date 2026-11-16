@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 
 use super::trials::send_on;
 use super::*;
-use crate::admind::actions::tests::CUTTING;
+use crate::admind::actions::tests::{CUTTING, NAMING};
 
 /// A world whose console offers `lab.cut`.
 fn cutting_world(what: &str) -> World {
@@ -112,5 +112,55 @@ fn the_read_is_the_callers_and_runs_only_for_one_who_may_make_the_change() {
         let seen = world.console.authd.seen.lock().unwrap().clone();
         let read = seen.iter().find(|line| line.contains("lab-peers")).unwrap();
         assert!(read.starts_with("elevate token "), "{read}");
+    });
+}
+
+/// `console.certificate` for the certificate `name`, as a browser at
+/// `host` (with the console's port) asks for it.
+fn serve(name: &str, host: &str) -> Req {
+    let origin = format!("https://{host}");
+    post("/api/1/console/certificate", &json!({ "name": name }))
+        .with("host", Some(host))
+        .with("origin", Some(&origin))
+}
+
+#[test]
+fn a_certificate_that_does_not_name_the_browser_s_address_is_refused_before_it_is_served() {
+    run(async {
+        let world = world("not-named");
+        world.console.shared.actions.set(NAMING);
+        let chase = sign_in(&world, "chase").await;
+        let body = json!({ "kind": "password", "password": "right" });
+        assert_eq!(send(&world, post("/api/1/unlock", &body).by(&chase)).await.status, 200);
+        let read = |name: &str| json!(["cert", "show", name, "--json"]);
+
+        // Another domain's certificate, for a browser at the machine's
+        // name: read as the caller's administrator, then refused, and
+        // nothing runs after the read.
+        let refused = send(&world, serve("other.example", "nas.example:9090").by(&chase)).await;
+        assert_eq!((refused.status, refused.error().as_str()), (409, "ADM-141"));
+        assert!(refused.body.contains("as nas.example, which other.example"), "{}", refused.body);
+        assert_eq!(elevated_commands(&world), [read("other.example")]);
+
+        // A browser at an address the certificate does not hold is
+        // refused too, though the certificate names the machine.
+        let local = send(&world, serve("lab.example.org", "127.0.0.1:9090").by(&chase)).await;
+        assert_eq!(local.error(), "ADM-141", "{}", local.body);
+        assert!(local.body.contains("as 127.0.0.1,"), "{}", local.body);
+        assert_eq!(elevated_commands(&world).len(), 2);
+
+        // Names that do not read refuse: the guard fails closed.
+        let unread = send(&world, serve("unreadable", "nas.example:9090").by(&chase)).await;
+        assert_eq!(unread.error(), "ADM-141");
+        assert!(unread.body.contains("could not be read"), "{}", unread.body);
+        let after = elevated_commands(&world);
+        assert_eq!(after.len(), 3);
+
+        // The browser's own name: read, then served.
+        let served = send(&world, serve("lab.example.org", "nas.example:9090").by(&chase)).await;
+        assert_eq!(served.status, 200, "{}", served.body);
+        let ran = elevated_commands(&world);
+        assert_eq!(ran[3], read("lab.example.org"));
+        assert!(ran.contains(&json!(["admin", "certificate", "lab.example.org"])), "{ran:?}");
     });
 }

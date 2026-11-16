@@ -284,6 +284,10 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
         output.write_all(b"{\"n\": 1}\n\n{\"n\": 2}\n").unwrap();
         return vec!["ok 4321".into(), "ended 0".into()];
     }
+    if command[0] == "cert" && command.get(1).is_some_and(|word| word == "show") {
+        output.write_all(certificate_shown(&command[2]).as_bytes()).unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
     if command[0] == "lab-peers" {
         output.write_all(crate::admind::actions::tests::LAB_PEERS.as_bytes()).unwrap();
         return vec!["ok 4321".into(), "ended 0".into()];
@@ -311,6 +315,20 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
     output.write_all(format!("{printed}\n").as_bytes()).unwrap();
     let status = if command[0] == "/system/commands/echo" { 768 } else { 0 };
     vec!["ok 4321".into(), format!("ended {status}")]
+}
+
+/// What `cert show NAME --json` prints in these tests: `other.example`
+/// names itself alone, `unreadable` prints no JSON, and any other names
+/// the tests' host, a wildcard of another domain and an address.
+fn certificate_shown(name: &str) -> String {
+    match name {
+        "unreadable" => "the store is being written\n".into(),
+        "other.example" => format!("{}\n", json!({ "name": name, "names": ["other.example"] })),
+        _ => format!(
+            "{}\n",
+            json!({ "name": name, "names": ["nas.example", "*.example.org", "198.51.100.4"] })
+        ),
+    }
 }
 
 /// The test authd's shell, on the terminal that came with the request,

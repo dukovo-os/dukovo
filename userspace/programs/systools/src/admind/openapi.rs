@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value, json};
 use spark_api::trial;
 
-use super::actions::{self, Field, Registered, Runs, logs};
+use super::actions::{self, Field, Registered, Runs, Through, logs};
 use super::errors::Kind;
 use super::guard::{CSRF_HEADER, SESSION_COOKIE};
 use super::routes::{Access, Entry, Route, TABLE, Verb};
@@ -632,8 +632,10 @@ fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
         if action.not_self().is_some() {
             kinds.push(Kind::NotSelf);
         }
-        if action.cuts_off_card().is_some() {
-            kinds.push(Kind::CutsOff);
+        match action.cuts_off_on() {
+            Some(Through::Card(_)) => kinds.push(Kind::CutsOff),
+            Some(Through::Name) => kinds.push(Kind::NotNamed),
+            None => {}
         }
         if action.restarts().is_some() {
             kinds.push(Kind::TrialRuns);

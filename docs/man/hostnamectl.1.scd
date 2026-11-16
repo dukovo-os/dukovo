@@ -9,11 +9,11 @@ hostnamectl - the machine's name and what it runs on, and set the name
 
 # SYNOPSIS
 
-*hostnamectl* [*status*]
+*hostnamectl* [*status*] [*--json*]
 
 *hostnamectl hostname* [_name_]
 
-*hostnamectl set-hostname* _name_
+*hostnamectl set-hostname* _name_ [*--apply*]
 
 # DESCRIPTION
 
@@ -44,6 +44,19 @@ machine does not say it: a machine without the firmware's tables has no
 hardware lines, and without logd there is no boot. Dukovo keeps no
 machine ID, so no line shows one, and no icon or chassis.
 
+*status --json* prints one line of JSON for the web console:
+
+```
+{"format":1,"name":"duke-nas.example.org","first":"duke-nas",
+ "domain":"example.org","local":"duke-nas.local",
+ "release":"Dukovo Server 0.15.0"}
+```
+
+*domain* is the rest of the name after its first word, null for a name
+of one word; *local* is the name *discoverd*(8) answers on the local
+network, the first word with *.local*; *release* is null when the kernel
+does not say it.
+
 *hostname*, with no name, prints the machine's name; with one it is
 *set-hostname*.
 
@@ -54,6 +67,26 @@ Only an administrator may: *elevate hostnamectl set-hostname* _name_
 (*elevate*(8)). A name is words of letters, digits and *-*, none starting
 or ending with *-*, separated by dots, of 64 bytes at most and 63 in each
 word; another is refused.
+
+A name of several words names the machine in a domain: _duke-nas.example.org_
+is _duke-nas_ in _example.org_. On the local network the machine is its
+first word with *.local*, _duke-nas.local_, and its own certificate
+(*dukovo-certificates*(7)) names the full name, the first word, that
+word with *.local*, and _localhost_.
+
+*--apply* puts the new name to use at once, as the web console's rename
+does: *discoverd* starts again if it runs, so that it answers for the new
+name; *certd*(8) makes this machine's certificate anew for it, which
+hostnamectl waits for, up to 30 seconds; and *admind*(8) reads the names
+and the certificate again, so that the console answers to the new name
+and no longer to the old one. It prints
+
+```
+hostnamectl: the name is office-nas.example.org
+hostnamectl: this-machine's certificate now names office-nas.example.org: SHA256 AB:CD:...
+```
+
+The name is set even when a later step fails, which is said, with status 1.
 
 # WHAT DUKOVO HAS INSTEAD
 
@@ -72,8 +105,10 @@ Dukovo has one name for the machine, the static one.
 # EXIT STATUS
 
 0, or 1 if the command line is wrong, the name is refused or the
-machine's name cannot be set.
+machine's name cannot be set, or with *--apply*, a step after the name
+was set failed.
 
 # SEE ALSO
 
-*hostname*(5), *hwinfo*(8), *timedatectl*(1), *elevate*(8)
+*hostname*(5), *hwinfo*(8), *timedatectl*(1), *elevate*(8), *discoverd*(8),
+*certd*(8), *admind*(8), *dukovo-certificates*(7)

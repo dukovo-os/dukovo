@@ -13,13 +13,13 @@
 
 use crate::util::{Fail, fail};
 
-/// ADM-138: `admin reach` or `admin sign-in` while the `console` trial
-/// runs. Both write `admin.toml`, which Spark puts back as it was before
-/// the trial, so a change made now would be lost.
+/// ADM-138: `admin reach`, `admin certificate` or `admin sign-in` while
+/// the `console` trial runs. Each writes `admin.toml`, which Spark puts
+/// back as it was before the trial, so a change made now would be lost.
 pub fn console_is_tried() -> Fail {
     fail(
-        "who may reach the console is being tried, and its settings file is in that trial: keep \
-         or undo that change first, with `admin keep` or `admin undo` (ADM-138)"
+        "the console's address or certificate is being tried, and its settings file is in that \
+         trial: keep or undo that change first, with `admin keep` or `admin undo` (ADM-138)"
             .into(),
     )
 }
@@ -39,7 +39,7 @@ mod tests {
     #[test]
     fn the_words_say_what_to_run() {
         let words = console_is_tried().message;
-        assert!(words.starts_with("who may reach the console is being tried"));
+        assert!(words.starts_with("the console's address or certificate is being tried"));
         assert!(words.contains("`admin keep` or `admin undo`"));
     }
 }

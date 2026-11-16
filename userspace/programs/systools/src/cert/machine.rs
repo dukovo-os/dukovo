@@ -55,14 +55,23 @@ pub struct Pair {
 /// there, or why it does not read.
 pub type Loaded = Result<Option<Details>, String>;
 
-/// The names `this-machine` holds for a machine called `host`: the name,
-/// the name with `.local`, which discoverd answers, and `localhost`. A
-/// machine still called `localhost` has that alone.
+/// The names `this-machine` holds for a machine called `host`: the name;
+/// for a name of several words, whose domain is the rest (ADR 0567), its
+/// first word too; the first word with `.local`, which discoverd answers;
+/// and `localhost`. A machine still called `localhost` has that alone.
 pub fn names(host: &str) -> Vec<String> {
     if host == "localhost" {
         return vec![String::from("localhost")];
     }
-    vec![host.to_string(), format!("{host}.local"), String::from("localhost")]
+    let first = host.split('.').next().unwrap_or(host);
+    let mut names: Vec<String> = Vec::with_capacity(4);
+    for name in [host.to_string(), first.to_string(), format!("{first}.local"), "localhost".into()]
+    {
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Why the clock cannot be trusted at time `now`, or none if it can.
@@ -197,9 +206,23 @@ pub fn remake_reason(loaded: &Loaded, host: &str, now: i64) -> Option<String> {
                 )
             ))
         }
+        Ok(Some(details)) if !holds_all(&details.names, &names(host)) => Some(format!(
+            "it does not name {}, as a machine called {host} needs",
+            names(host)
+                .into_iter()
+                .filter(|name| !holds_all(&details.names, std::slice::from_ref(name)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
         Ok(Some(details)) if expiring(details, now) => Some(expiring_words(details, now)),
         Ok(Some(_)) => None,
     }
+}
+
+/// Whether `held`, a certificate's names, holds each of `wanted`, as names
+/// are compared: whatever the case of their letters.
+fn holds_all(held: &[String], wanted: &[String]) -> bool {
+    wanted.iter().all(|name| held.iter().any(|known| known.eq_ignore_ascii_case(name)))
 }
 
 /// Whether `details` has [`REMAKE_DAYS`] days or fewer left at time `now`.
@@ -236,6 +259,32 @@ mod tests {
     fn a_machine_has_its_name_then_the_name_with_dot_local_then_localhost() {
         assert_eq!(names("duke-nas"), ["duke-nas", "duke-nas.local", "localhost"]);
         assert_eq!(names("localhost"), ["localhost"]);
+        // A domain: the full name, the first word, and that word on the
+        // local network, which is all discoverd answers.
+        assert_eq!(
+            names("duke-nas.example.org"),
+            ["duke-nas.example.org", "duke-nas", "duke-nas.local", "localhost"]
+        );
+        assert_eq!(names("duke-nas.local"), ["duke-nas.local", "duke-nas", "localhost"]);
+    }
+
+    #[test]
+    fn a_certificate_made_before_a_domain_had_its_own_names_is_made_again() {
+        // Made by the rule before: the full name with `.local` after it.
+        let mut details = made("duke-nas.example.org").1;
+        details.names = vec![
+            "duke-nas.example.org".into(),
+            "duke-nas.example.org.local".into(),
+            "localhost".into(),
+        ];
+        let why = remake_reason(&Ok(Some(details)), "duke-nas.example.org", NOW).unwrap();
+        assert_eq!(
+            why,
+            "it does not name duke-nas, duke-nas.local, as a machine called \
+                         duke-nas.example.org needs"
+        );
+        let (_, made) = made("duke-nas.example.org");
+        assert_eq!(remake_reason(&Ok(Some(made)), "duke-nas.example.org", NOW), None);
     }
 
     #[test]

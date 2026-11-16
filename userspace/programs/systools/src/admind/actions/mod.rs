@@ -701,24 +701,56 @@ pub trait Action: 'static {
 /// thing the change is to: what it needs comes from `read`, a command run
 /// as the caller's administrator, as the change will be.
 pub struct CutsOff<A> {
-    /// The network card the change can cut off. A request that came by
-    /// another card is never cut off, and nothing is read for it.
-    pub card: &'static str,
+    /// The requests the change can cut off.
+    pub on: Through,
     /// The command that says what the change would take away, for these
     /// arguments. It prints no secret: admind reads what it prints.
     pub read: fn(&A) -> Vec<String>,
-    /// Whether the change with these arguments leaves a browser at `from`
-    /// reaching the console, from what `read` printed: Err with the words
-    /// of the refusal when it does not, and when what was printed does not
-    /// read, so that the guard fails closed.
-    pub cuts: fn(&A, IpAddr, &str) -> Result<(), String>,
+    /// Whether the change with these arguments leaves `browser` reaching
+    /// the console, from what `read` printed: Err with the words of the
+    /// refusal when it does not, and when what was printed does not read,
+    /// so that the guard fails closed.
+    pub cuts: fn(&A, &Browser<'_>, &str) -> Result<(), String>,
+}
+
+/// The requests a change can cut off ([`CutsOff::on`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Through {
+    /// Those that came by this network card, as a device's tunnel: a
+    /// request by another card is never cut off, and nothing is read for
+    /// it (ADM-137).
+    Card(&'static str),
+    /// Any request, by the name its browser uses for the console, as a
+    /// certificate that does not name it would (ADM-141, ADR 0567).
+    Name,
+}
+
+impl Through {
+    /// What `GET /api/1/actions` lists of it: the card's name, or `*` for
+    /// a guard of any request.
+    pub fn listed(self) -> &'static str {
+        match self {
+            Through::Card(card) => card,
+            Through::Name => "*",
+        }
+    }
+}
+
+/// The browser that asks for a change, as [`CutsOff::cuts`] sees it.
+#[derive(Clone, Copy, Debug)]
+pub struct Browser<'a> {
+    /// Its address, an IPv4 address as itself.
+    pub from: IpAddr,
+    /// The name or address it asked for, in small letters, without the
+    /// port: the request's `Host`.
+    pub host: &'a str,
 }
 
 /// The read of [`Action::CUTS_OFF`] for a change's arguments.
 #[derive(Debug)]
 pub struct CutsOffRead {
-    /// The card a request must have come by for the change to cut it off.
-    pub card: &'static str,
+    /// The requests the change can cut off.
+    pub on: Through,
     /// The command to run, as the caller's administrator, before the change.
     pub argv: Vec<String>,
 }
@@ -779,18 +811,19 @@ pub trait Registered: Sync + fmt::Debug {
     fn input_max(&self) -> usize;
     /// [`Action::NOT_SELF`].
     fn not_self(&self) -> Option<&'static str>;
-    /// The card of [`Action::CUTS_OFF`], None for an action without one.
-    fn cuts_off_card(&self) -> Option<&'static str>;
-    /// Whether the change with the prepared `args` leaves a browser at
-    /// `from` reaching the console, from what [`CutsOffRead::argv`]
-    /// printed (`shown`): Err with the refusal's words when it does not,
-    /// when `shown` does not read, or when `args` do not read as the
-    /// action's. Ok for an action with no [`Action::CUTS_OFF`].
+    /// The requests [`Action::CUTS_OFF`] guards, None for an action without
+    /// one.
+    fn cuts_off_on(&self) -> Option<Through>;
+    /// Whether the change with the prepared `args` leaves `browser`
+    /// reaching the console, from what [`CutsOffRead::argv`] printed
+    /// (`shown`): Err with the refusal's words when it does not, when
+    /// `shown` does not read, or when `args` do not read as the action's.
+    /// Ok for an action with no [`Action::CUTS_OFF`].
     ///
     /// # Errors
     ///
     /// The words of the refusal, as above.
-    fn cuts_off(&self, args: &Value, from: IpAddr, shown: &str) -> Result<(), String>;
+    fn cuts_off(&self, args: &Value, browser: &Browser<'_>, shown: &str) -> Result<(), String>;
     /// [`Action::RESTARTS`].
     fn restarts(&self) -> Option<Restarts>;
     fn tests(&self) -> Tests;
@@ -883,14 +916,14 @@ impl<A: Action> Registered for Entry<A> {
     fn not_self(&self) -> Option<&'static str> {
         A::NOT_SELF
     }
-    fn cuts_off_card(&self) -> Option<&'static str> {
-        A::CUTS_OFF.map(|cuts_off| cuts_off.card)
+    fn cuts_off_on(&self) -> Option<Through> {
+        A::CUTS_OFF.map(|cuts_off| cuts_off.on)
     }
-    fn cuts_off(&self, args: &Value, from: IpAddr, shown: &str) -> Result<(), String> {
+    fn cuts_off(&self, args: &Value, browser: &Browser<'_>, shown: &str) -> Result<(), String> {
         let Some(cuts_off) = A::CUTS_OFF else { return Ok(()) };
         let typed: A::Args = serde_json::from_value(args.clone())
             .map_err(|_| format!("the arguments of {} do not read", A::ID))?;
-        (cuts_off.cuts)(&typed, from, shown)
+        (cuts_off.cuts)(&typed, browser, shown)
     }
     fn restarts(&self) -> Option<Restarts> {
         A::RESTARTS
@@ -942,7 +975,7 @@ impl<A: Action> Registered for Entry<A> {
             .filter(|_| A::not_self_applies(&typed))
             .and_then(|field| args.get(field)?.as_str().map(String::from));
         let cuts_off = A::CUTS_OFF
-            .map(|cuts_off| CutsOffRead { card: cuts_off.card, argv: (cuts_off.read)(&typed) });
+            .map(|cuts_off| CutsOffRead { on: cuts_off.on, argv: (cuts_off.read)(&typed) });
         Ok(Prepared {
             action: self,
             args,
@@ -1050,6 +1083,7 @@ registry![
     certificate::Show,
     certificate::Renew,
     console::SetReach,
+    console::SetCertificate,
     console::About,
     console::Notices,
     console::Keep,
@@ -1205,7 +1239,7 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "secret_answer": action.secret_answer(),
                     "compares": action.compares(),
                     "not_self": action.not_self(),
-                    "cuts_off": action.cuts_off_card(),
+                    "cuts_off": action.cuts_off_on().map(Through::listed),
                     "restarts": action.restarts().is_some(),
                     "errors": action.errors(),
                     "tests": action.tests(),

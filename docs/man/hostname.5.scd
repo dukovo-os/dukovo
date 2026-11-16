@@ -16,7 +16,9 @@ _/system/settings/hostname_
 The first line of this file is the machine's name, as Linux's
 _/etc/hostname_ is (ADR 0338): *gethostname*(2), *uname*(2) and
 *uname -n* give it, and *discoverd*(8) answers for it on the local
-networks as _NAME.local_. Spaces, tabs and a carriage return at the
+networks as _NAME.local_. A name of several words is a name in a domain:
+_duke-nas.example.org_ is _duke-nas_ in _example.org_, and on the local
+networks _duke-nas.local_. Spaces, tabs and a carriage return at the
 end of the line are left out. Without the file, or with an empty first
 line or one longer than 64 bytes, the name is *dukovo*.
 

@@ -12,16 +12,33 @@
 //! firmware's version and date from the DMI fields in
 //! `/kernel/class/dmi/id` (the ones `hwinfo` and `dukofetch` read), and
 //! this boot's ID from logd(8), which names each boot. Dukovo keeps no
-//! machine ID, so the line is left out. The boot test `admin-commands`
-//! runs `status` and `set-hostname`.
+//! machine ID, so the line is left out. `status --json` gives the name,
+//! its first word, its domain (the rest, ADR 0567) and what discoverd
+//! answers on the local network, for the web console. The boot test
+//! `admin-commands` runs `status` and `set-hostname`.
+//!
+//! `set-hostname NAME --apply` puts a new name to use at once, as the web
+//! console's rename does: discoverd starts again to answer for it, certd
+//! makes this machine's certificate anew for it, and admind, which
+//! answers only to the machine's names, reads them again.
 
 use std::fs;
 use std::io;
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use spark_api::show::State;
 
 use crate::args::{Arg, Args};
+use crate::cert::machine;
+use crate::cert::store::Store;
 use crate::dukofetch::parse_version;
 use crate::logd::{self, Boot};
+use crate::service;
 use crate::util::{self, Fail, fail, usage};
+
+/// How long `--apply` waits for certd to make the certificate anew.
+const CERTIFICATE_WAIT: Duration = Duration::from_secs(30);
 
 /// The kernel's version line: `Radix 0.15.0 (Dukovo Server 0.15.0)`.
 const VERSION: &str = "/kernel/version";
@@ -51,9 +68,11 @@ struct Facts {
 
 /// hostnamectl(1).
 pub fn main(args: &mut Args) -> Result<i32, Fail> {
-    let mut operands = Vec::new();
+    let (mut operands, mut json, mut apply) = (Vec::new(), false, false);
     while let Some(arg) = args.next()? {
         match arg {
+            Arg::Long(l) if l == "json" => json = true,
+            Arg::Long(l) if l == "apply" => apply = true,
             Arg::Long(l) if l == "static" => {}
             Arg::Long(l) if l == "transient" => {
                 return Err(usage(
@@ -75,7 +94,19 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let words: Vec<&str> = operands.iter().map(String::as_str).collect();
+    if json && !matches!(words.as_slice(), [] | ["status"]) {
+        return Err(usage("--json goes with status: `hostnamectl status --json`".into()));
+    }
+    if apply && !matches!(words.as_slice(), ["hostname" | "set-hostname", _]) {
+        return Err(usage(
+            "--apply goes with set-hostname: `hostnamectl set-hostname NAME --apply`".into(),
+        ));
+    }
     match words.as_slice() {
+        [] | ["status"] if json => {
+            println!("{}", status_json(&facts()));
+            Ok(0)
+        }
         [] | ["status"] => {
             print!("{}", status_text(&facts()));
             Ok(0)
@@ -84,7 +115,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             println!("{}", util::hostname());
             Ok(0)
         }
-        ["hostname" | "set-hostname", name] => set_hostname(name),
+        ["hostname" | "set-hostname", name] => {
+            set_hostname(name)?;
+            if apply { applied(name) } else { Ok(0) }
+        }
         ["set-hostname", ..] => {
             Err(usage("set-hostname takes one name, `hostnamectl set-hostname NAME`".into()))
         }
@@ -142,6 +176,103 @@ fn check_name(name: &str) -> Result<(), String> {
         Err("use letters, digits and - in words (not at a word's start or end), \
              separated by dots"
             .into())
+    }
+}
+
+/// `status --json`: the name, and what the web console shows of it.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct Named<'a> {
+    format: u32,
+    /// The machine's name, as hostname(5) holds it.
+    name: &'a str,
+    /// Its first word: the name on the local network.
+    first: &'a str,
+    /// The rest, its domain; None for a name of one word.
+    domain: Option<&'a str>,
+    /// The name discoverd answers on the local network.
+    local: String,
+    /// The system's release, when the kernel says it.
+    release: Option<&'a str>,
+}
+
+/// `status --json`'s text for `facts`.
+fn status_json(facts: &Facts) -> String {
+    let (first, domain) = match facts.hostname.split_once('.') {
+        Some((first, domain)) => (first, Some(domain)),
+        None => (facts.hostname.as_str(), None),
+    };
+    let named = Named {
+        format: 1,
+        name: &facts.hostname,
+        first,
+        domain,
+        local: format!("{first}.local"),
+        release: facts.os.as_deref(),
+    };
+    serde_json::to_string(&named).unwrap_or_default()
+}
+
+/// `--apply`, once the machine is called `name`: discoverd starts again if
+/// it runs, so that it answers for the new name; certd is told to make
+/// this machine's certificate anew, and is waited for, up to 30 seconds;
+/// and admind reads the names and the certificate again. Says the
+/// certificate's new fingerprint, or fails with what did not happen: the
+/// name is set either way.
+fn applied(name: &str) -> Result<i32, Fail> {
+    println!("hostnamectl: the name is {name}");
+    let mut missed = Vec::new();
+    let runs = |service: &str| {
+        service::shown(Some(service))
+            .is_ok_and(|shown| shown.services.first().is_some_and(|it| it.state == State::Running))
+    };
+    if runs("discoverd")
+        && let Err(failed) = service::ask("restart discoverd")
+    {
+        missed.push(format!("discoverd did not start again ({})", failed.message));
+    }
+    match service::ask("reload certd") {
+        Ok(_) => match made_for(name, Instant::now() + CERTIFICATE_WAIT) {
+            Some(fingerprint) => {
+                println!(
+                    "hostnamectl: this-machine's certificate now names {name}: SHA256 {fingerprint}"
+                );
+            }
+            None => missed.push(format!(
+                "certd did not make this-machine's certificate for {name} in {} seconds \
+                 (`log certd` says why)",
+                CERTIFICATE_WAIT.as_secs()
+            )),
+        },
+        Err(failed) => missed.push(format!("certd was not told ({})", failed.message)),
+    }
+    // admind answers to the new names from here on, and serves the new
+    // certificate once it is made.
+    if runs("admind")
+        && let Err(failed) = service::ask("reload admind")
+    {
+        missed.push(format!("admind did not read the name again ({})", failed.message));
+    }
+    if missed.is_empty() {
+        return Ok(0);
+    }
+    Err(fail(format!("the name is {name}, but {}", missed.join("; "))))
+}
+
+/// The fingerprint, `AB:CD:…`, of this machine's certificate once it names
+/// `name` first, looked at twice a second until `until`; None if it does
+/// not by then.
+fn made_for(name: &str, until: Instant) -> Option<String> {
+    let store = Store::system();
+    loop {
+        if let Ok(Some(details)) = machine::load(&store)
+            && details.names.first().is_some_and(|first| first.eq_ignore_ascii_case(name))
+        {
+            return Some(details.fingerprint_colons());
+        }
+        if Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
@@ -255,6 +386,31 @@ mod tests {
     }
 
     #[test]
+    fn status_as_json_gives_the_name_its_first_word_and_its_domain() {
+        let mut named = dell();
+        named.hostname = "duke-nas.example.org".into();
+        let json: serde_json::Value = serde_json::from_str(&status_json(&named)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "format": 1, "name": "duke-nas.example.org", "first": "duke-nas",
+                "domain": "example.org", "local": "duke-nas.local",
+                "release": "Dukovo Server 0.15.0",
+            })
+        );
+        let bare =
+            Facts { hostname: "web01".into(), architecture: "x86-64".into(), ..Facts::default() };
+        let json: serde_json::Value = serde_json::from_str(&status_json(&bare)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "format": 1, "name": "web01", "first": "web01", "domain": null,
+                "local": "web01.local", "release": null,
+            })
+        );
+    }
+
+    #[test]
     fn architectures_have_systemds_names() {
         assert_eq!(architecture("x86_64"), "x86-64");
         assert_eq!(architecture("aarch64"), "arm64");
@@ -298,6 +454,9 @@ mod tests {
             (&["reboot"], "no command 'reboot'"),
             (&["set-hostname"], "takes one name"),
             (&["set-hostname", "bad-"], "letters, digits"),
+            (&["set-hostname", "bad-", "--apply"], "letters, digits"),
+            (&["hostname", "--json"], "--json goes with status"),
+            (&["status", "--apply"], "--apply goes with set-hostname"),
         ] {
             let failed = run(items).unwrap_err();
             assert!(failed.usage && failed.message.contains(said), "{items:?}: {}", failed.message);

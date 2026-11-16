@@ -66,9 +66,11 @@ pub struct Identity {
 
 impl Identity {
     /// What a machine called `host`, with cards on `networks` and a
-    /// certificate for `certificate`, answers to.
+    /// certificate for `certificate`, answers to: the names its own
+    /// certificate holds ([`machine::names`]), whichever certificate it
+    /// serves, and the served certificate's.
     pub fn new(host: &str, networks: Vec<Network>, certificate: &[String]) -> Identity {
-        let mut names = vec![host.to_string(), format!("{host}.local"), String::from("localhost")];
+        let mut names = machine::names(host);
         let mut addresses: Vec<IpAddr> =
             networks.iter().map(|network| reach::plain(network.ip)).collect();
         for name in certificate {
@@ -459,6 +461,13 @@ mod tests {
         );
         assert_eq!(identity.addresses, [ip("192.168.1.10"), ip("fd00::10"), ip("10.0.0.5")]);
         assert_eq!(identity.networks, cards);
+        // With a domain, the first word and its `.local` name too, whose
+        // own certificate is another's.
+        let identity = Identity::new("duke-nas.example.org", cards, &["shop.example.org".into()]);
+        assert_eq!(
+            identity.names,
+            ["duke-nas.example.org", "duke-nas", "duke-nas.local", "localhost", "shop.example.org"]
+        );
     }
 
     #[test]

@@ -24,7 +24,10 @@ The machine's own certificate is *this-machine*, which certd makes for
 the services that name it, such as the web console and *nginx*: an
 ECDSA P-256 key and a certificate that names the machine, as *name*,
 *name*.local, which *discoverd*(8) answers for, and *localhost*, the
-name first, and *localhost* alone for a machine still called that. It
+name first, and *localhost* alone for a machine still called that. For a
+name with a domain, such as _duke-nas.example.org_, it names the full
+name, the first word, the first word with _.local_ and *localhost*; one
+made before it named these is made again. It
 is valid from an hour before it is made, for clocks that differ, and
 for 800 days: Apple's systems refuse a TLS server certificate valid for
 more than 825 days, even one a person chose to trust. It is for a TLS

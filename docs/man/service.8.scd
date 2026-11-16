@@ -280,7 +280,10 @@ a fifth start is answered at once, with *not watched: 4 watches
 already*. *--full-restart* is *restart*, as Debian's.
 
 *reload* sends a running service SIGHUP, which has consoled read its
-keyboard layout's setting again (*consoled*(8)).
+keyboard layout's setting again (*consoled*(8)). When the service's file
+now names other *certificates* than it started with, Spark copies them
+first, so that *admind*(8) can serve one its settings now name; the
+rest of a changed file waits for a restart (*service.toml*(5)).
 
 *logs* shows the service's records in the log, Spark's lines about it
 among them, as *log -s* _name_ does, with *log*(1)'s options after it:
