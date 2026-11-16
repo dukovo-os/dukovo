@@ -9,10 +9,13 @@
 import { bytesWords, counted } from '../../lib/size-words.js';
 import { appHref, capital, isText, listOf, urgent, worstOf } from './apps-model.js';
 
+/** How an app's signature is said: "signed", or by whose key when a person trusted it by hand. */
+export const signedWords = (trust) => (trust?.kind === 'developer' ? 'signed by its developer\'s key, trusted by hand' : 'signed');
+
 /** The line under an app's name: where it came from, that it is signed, and its licence. */
 export function byline(info) {
   const trust = info.trust ?? {};
-  const signed = trust.kind === 'developer' ? 'signed by its developer\'s key, trusted by hand' : 'signed';
+  const signed = signedWords(trust);
   let source = null;
   if (trust.kind === 'catalog' && isText(trust.catalog)) source = `${capital(trust.catalog)} catalog`;
   else if (isText(info.update_feed)) source = 'its own feed';
