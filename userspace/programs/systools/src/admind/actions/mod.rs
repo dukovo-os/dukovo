@@ -335,6 +335,9 @@ pub struct Ansible {
     /// `no_log: true`, for a task that gives its command a secret or whose
     /// command prints one (ADR 0561): Ansible then shows neither.
     pub no_log: bool,
+    /// `when`, a condition the playbook must meet for the task to run, for
+    /// a change that is only done on the playbook's own word.
+    pub when: Option<String>,
 }
 
 impl Ansible {
@@ -357,6 +360,7 @@ impl Ansible {
             register: None,
             failed_when: None,
             no_log: false,
+            when: None,
         }
     }
 
@@ -377,6 +381,7 @@ impl Ansible {
             register: None,
             failed_when: None,
             no_log: false,
+            when: None,
         }
     }
 
@@ -390,6 +395,14 @@ impl Ansible {
             self.register = Some(RESULT);
             self.failed_when = Some(format!("{RESULT}.rc not in [{}]", statuses.join(", ")));
         }
+        self
+    }
+
+    /// The task, run only when `condition`, an expression of the
+    /// playbook's variables, holds.
+    #[must_use]
+    pub fn when(mut self, condition: &str) -> Ansible {
+        self.when = Some(condition.to_string());
         self
     }
 

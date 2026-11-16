@@ -242,7 +242,7 @@ fn percent_encode(text: &str) -> String {
 
 /// `task` as the YAML of a play's task list with the one task: its name,
 /// its module with the parameters, `become: true` when it runs as root,
-/// and `register`, `changed_when` and `failed_when` when the task says.
+/// and `register`, `changed_when`, `failed_when` and `when` when the task says.
 /// Each string is written as a JSON
 /// string, which YAML reads as the same string; a list is a block list,
 /// and a list or mapping inside one is written as JSON, which is YAML's
@@ -270,6 +270,9 @@ pub fn yaml(task: &Ansible) -> String {
     }
     if let Some(when) = &task.failed_when {
         out.push_str(&format!("  failed_when: {}\n", Value::from(when.as_str())));
+    }
+    if let Some(when) = &task.when {
+        out.push_str(&format!("  when: {}\n", Value::from(when.as_str())));
     }
     out
 }
@@ -538,6 +541,7 @@ mod tests {
             register: Some("result"),
             failed_when: Some("result.rc not in [0, 3]".into()),
             no_log: true,
+            when: None,
         };
         assert_eq!(
             yaml(&task),
