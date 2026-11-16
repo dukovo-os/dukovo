@@ -7,12 +7,14 @@
 //! `show` answer ([`show`]), which service(8), sysupdate's health check,
 //! bundled(8) and the web console read; settings tried with an undo
 //! ([`trial`], ADR 0472); and the record of the root Spark started
-//! ([`root`], ADR 0473); and the services a try of changes bisect leaves
-//! out ([`bisect`], ADR 0475). Three modules turn the document into words:
-//! [`explain`] says why a service is in its state, for `service NAME
-//! explain` and the console alike, [`dry_run`] says what putting a
-//! service file to use would do, for `service check` and the console, and
-//! [`words`] holds the phrases they and service(8) share.
+//! ([`root`], ADR 0473); the services a try of changes bisect leaves
+//! out ([`bisect`], ADR 0475); and the request that runs a program once as
+//! a process of a service's own ([`run`], ADR 0569). Three modules turn
+//! the document into words: [`explain`] says why a service is in its
+//! state, for `service NAME explain` and the console alike, [`dry_run`]
+//! says what putting a service file to use would do, for `service check`
+//! and the console, and [`words`] holds the phrases they and service(8)
+//! share.
 //!
 //! Nothing here reads a file, a clock or the control socket: the callers
 //! pass in what they found, so every rule is tested on the host with
@@ -29,6 +31,7 @@ pub mod explain;
 pub mod graph;
 pub mod ready;
 pub mod root;
+pub mod run;
 pub mod show;
 pub mod trial;
 pub mod words;

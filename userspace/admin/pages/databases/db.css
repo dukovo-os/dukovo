@@ -2,3 +2,75 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
+
+/*
+ * The Databases pages: the list, Add a database with what happens beside it,
+ * and a database's cards. On a phone the table becomes a card for each
+ * database, the two columns of Add a database are one, and every button is
+ * 44 px tall, under the container query the shell uses. Same rules as
+ * console.css: rem, and px for borders and focus rings.
+ */
+.db-page { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.db-page p { margin: 0; }
+.db-errors:empty, .db-flow:empty, .db-after:empty, .db-server-slot:empty, .db-place:empty { display: none; }
+.db-place { display: flex; flex-direction: column; gap: .571rem; align-items: flex-start; }
+.db-list, .db-database, .db-form, .db-after, .db-problems { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.db-server { display: flex; flex-wrap: wrap; align-items: center; gap: .429rem; }
+.db-empty { display: flex; flex-direction: column; gap: .714rem; align-items: flex-start; padding: 1.143rem; border: 1px dashed var(--border); border-radius: .429rem; }
+.db-foot { display: flex; flex-wrap: wrap; align-items: center; gap: .571rem 1rem; }
+.tbl small.warn { color: var(--warn); }
+
+/* Add a database: the form, and what happens beside it */
+.db-add { display: flex; flex-wrap: wrap; gap: 1.143rem; align-items: flex-start; }
+.db-form { flex: 999 1 32.5rem; }
+.db-side { flex: 1 1 24rem; min-width: 0; }
+.db-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr)); }
+.db-area { height: auto; padding: .357rem .571rem; resize: vertical; }
+.db-cards .db-card { display: flex; flex-direction: column; gap: .571rem; }
+.db-cards .radio-card > span { display: flex; flex-direction: column; gap: .143rem; }
+.db-sub { display: flex; flex-direction: column; gap: .714rem; padding: .143rem .857rem .571rem 2.286rem; }
+.db-sub .banner > div { gap: .571rem; }
+.db-plan-rows .chk-list { gap: .571rem; }
+.db-runs { display: flex; flex-direction: column; gap: .429rem; }
+.db-runs:empty { display: none; }
+.db-runs h3, .db-flow h2 { font: 600 .929rem var(--font-ui); }
+.db-run-slot { display: flex; flex-direction: column; gap: 1rem; }
+.db-run-slot:empty { display: none; }
+
+/* The connection settings: each way has its rows and its examples */
+.db-settings { gap: 1rem; }
+.db-way { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.db-way + .db-way { padding-top: 1rem; border-top: 1px solid var(--border); }
+.db-way h3 { font: 600 .929rem var(--font-ui); }
+.db-way .rows dd { overflow-wrap: anywhere; }
+.db-example { display: flex; flex-direction: column; gap: .286rem; }
+
+/* A database's cards */
+.db-who { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .571rem; }
+.db-who li { display: flex; flex-wrap: wrap; align-items: center; gap: .286rem .714rem; min-width: 0; overflow-wrap: anywhere; }
+.db-line { justify-content: space-between; }
+.db-action { display: flex; flex-direction: column; gap: .286rem; align-items: flex-start; min-width: 0; }
+.db-manage { display: flex; flex-direction: column; gap: .429rem; align-items: flex-start; }
+
+/* The phone: one column, a card for each database, and buttons of 44 px */
+@container (max-width: 51.4rem) {
+  .db-list .tbl-box { border: 0; }
+  .db-list .tbl.stack tr { margin: .571rem 0; }
+  .db-list .tbl.stack td::before { margin-bottom: .143rem; }
+  .db-list td[data-label="Database"] a { display: inline-flex; align-items: center; min-height: 3.143rem; }
+  .db-add { flex-direction: column; align-items: stretch; }
+  .db-form, .db-side { flex: 1 1 auto; width: 100%; }
+  .db-sub { padding-left: .857rem; }
+  .db-page .btns { flex-direction: column; align-items: stretch; }
+  .db-page .btn { min-height: 3.143rem; box-sizing: border-box; text-align: center; justify-content: center; }
+  .db-page .btns .db-action { align-items: stretch; }
+  .db-page .db-line .btn { width: 100%; }
+  .db-page .rows { grid-template-columns: minmax(0, 1fr); gap: .143rem; }
+  .db-page .rows dd { margin-bottom: .571rem; }
+}
+
+/* Forced colours: the empty state and the lines of a way keep an outline. */
+@media (forced-colors: active) {
+  .dk .db-empty { border-color: CanvasText; }
+  .dk .db-way + .db-way { border-top-color: CanvasText; }
+}

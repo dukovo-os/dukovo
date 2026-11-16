@@ -23,7 +23,9 @@ const COUNTED_SECONDS = 60;
 /**
  * Makes the line for the page `view`: `{element, expect, set, read}`.
  * `expect(options)` says what the restart is for, `{kind, version, try, of}`
- * as restartWords takes them, so that the banner's words fit it; `set(shutdown)`
+ * as restartWords takes them, so that the banner's words fit it, and the
+ * `quietMinutes` the shell stays quiet for when the kind's own wait is too
+ * short; `set(shutdown)`
  * shows the shutdown that `power.status` or `event: power` gave, or none;
  * `read()` asks `power.status`.
  */
@@ -55,7 +57,7 @@ export function pendingRestart(view, options = {}) {
     if (shutdown.end === 'reboot') {
       // Only an update says which version it brings, so that the banner can tell when it was taken back.
       const version = why.kind === 'update' ? why.version ?? null : null;
-      view.expectRestart(restartWords({ host: view.host, ...why }), { quietMs: quietMsOf(why.kind), version });
+      view.expectRestart(restartWords({ host: view.host, ...why }), { quietMs: quietMsOf(why.kind, why.quietMinutes), version });
       return;
     }
     view.main.replaceChildren(h('div', { class: 'banner warn', role: 'status' }, icon('power'), h('div', {}, h('p', {}, h('b', {}, shutDownNotice(view.host))))));

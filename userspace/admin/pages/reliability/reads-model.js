@@ -9,6 +9,9 @@
 /** The most rows of the journal that one read gives, which is the route's own limit. */
 export const CHANGES_READ = 200;
 
+/** The checks of the hardware, one line each, oldest first: what a person may read. */
+export const HARDWARE_READ = '/api/1/hardware/history';
+
 /** The first `count` of `rows`, and how many are left. */
 export const pageOf = (rows, count) => ({ shown: rows.slice(0, count), left: Math.max(0, rows.length - count) });
 

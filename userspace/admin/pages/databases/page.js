@@ -1,11 +1,20 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// A stand-in: the page's heading under its crumb, and a line that says it is being built.
+// Databases: /databases is the list, /databases/add makes one and
+// /databases/NAME is one database's page. A database called add has its page at
+// /databases/%61dd. Each is read when it is asked for.
 
-import { h } from '../../dom.js';
+import { routeOf } from '../../lib/database-route.js';
+import { showList } from './list.js';
 
 export async function show(view) {
-  view.head({ title: 'Databases', crumbs: [{ title: 'Apps', path: '/apps' }] });
-  view.main.append(h('p', {}, 'This page is being built.'));
+  const route = routeOf(view.rest);
+  if (route.kind === 'add') {
+    await (await import('./add.js')).showAdd(view);
+  } else if (route.kind === 'database') {
+    await (await import('./database.js')).showDatabase(view, route.name);
+  } else {
+    await showList(view);
+  }
 }

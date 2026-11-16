@@ -76,3 +76,13 @@
   .dk .lv.d { background: none; border-color: CanvasText; }
   .dk .apps-ic { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border: 1px solid ButtonText; }
 }
+
+/* The steps of a flow (lib/steps.js): a mark, and the state in words beside it. */
+.chk-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .714rem; }
+.chk-list li { display: flex; gap: .714rem; align-items: flex-start; }
+.tick.going { background: var(--accent); }
+.tick.bad { background: var(--bad); border-color: var(--bad); color: var(--bg); }
+.flow-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .286rem; overflow-wrap: anywhere; }
+.flow-body p { margin: 0; }
+.flow-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .143rem .571rem; }
+.flow-problem:empty { display: none; }

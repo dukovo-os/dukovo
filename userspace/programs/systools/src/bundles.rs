@@ -34,6 +34,7 @@
 // the dkv crate's, which ob packs the catalog's bundles with too.
 #[allow(unused_imports)]
 pub(crate) use dkv::{base64, minisign, sbom, signed, sums, zip};
+pub(crate) mod as_service;
 pub(crate) mod catalogs;
 pub(crate) mod confine;
 pub(crate) mod documents;

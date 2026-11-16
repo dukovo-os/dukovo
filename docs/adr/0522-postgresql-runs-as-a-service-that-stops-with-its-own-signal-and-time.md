@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0522. PostgreSQL runs as a service that stops with its own signal and time
 
-- Status: Accepted
+- Status: Accepted; database(8) adds databases and lets other machines
+  connect, in a block of `pg_hba.conf` of its own, since
+  [0569](0569-websites-databases-and-apps-are-added-from-the-web-console-through-website-8-database-8-and-the-catalog-s-sheet.md)
 - Date: 2026-11-14
 
 ## Context
