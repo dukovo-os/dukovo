@@ -10,9 +10,13 @@ battery and the network cards for faults
 
 # SYNOPSIS
 
-*hardware check* [_area_...] [*--full*] [*--disk* _disk_] [*--time* _seconds_] [*--yes*] [*--json*]
+*hardware check* [_area_...] [*--full*] [*--disk* _disk_] [*--time* _seconds_] [*--yes*] [*--progress*] [*--json*]
 
 *hardware last* [*--json*]
+
+*hardware history* [*--json*]
+
+*hardware show* [*--json*]
 
 # DESCRIPTION
 
@@ -57,7 +61,28 @@ Disks and the processors' load run side by side, so the lines come in the
 order the checks end, and the saved result has them by area.
 
 *hardware last* shows the result of the last check that ended, with when
-it ended and which release ran it, as the check showed it.
+it ended and which release ran it, as the check showed it. With no result
+saved it says so on standard error and ends with status 3; with *--json*
+it also prints *null* on standard output, so that a program reads "none"
+as JSON.
+
+*hardware history* lists the checks that were kept, the oldest first and
+at most the newest 200: when each ended, whether it was a quick or a full
+check, how many checks ended each way, and the IDs of what it found. With
+*--json* it prints them as a list of the objects described under
+*HISTORY*, which is the empty list when none was kept. It needs no
+rights.
+
+*hardware show* says what the machine is: its maker, model and the kind
+of case, its processor with the cores and threads and the clock it is
+rated at, the memory the kernel counts, and the firmware's vendor,
+version and date. It needs no rights, and no serial number or ID of the
+machine is read, so that what it prints can be shown or put in a report
+as it is. What only SMBIOS's tables say of the memory, whether it
+corrects errors, how many slots the board has and each module in them,
+is told when the program holds the platform capability that reads those
+tables whole (*hwinfo*(8)), as a command run with *elevate*(8) does; for
+anyone else those three are _null_. See *WHAT THE MACHINE IS*.
 
 # AREAS
 
@@ -148,9 +173,20 @@ those: *memory*, *disks*, *cpu*, *sensors*, *battery*, *network*.
 *-y*, *--yes*
 	Start a full check without asking.
 
+*--progress*
+	Print a line as each check ends that says how far the run is:
+	_step N of M: area check result_, as _step 4 of 11: disks sda
+	self-test passed_. _M_ is the number of checks the run counts on,
+	which a run that gives more says as the number it is at. The lines
+	come on standard output, with the lines of the checks; with
+	*--json* they come on standard error, which leaves standard output
+	to the JSON.
+
 *--json*
-	Print the result when the check ends, as the JSON that is saved,
-	instead of a line for each check as it ends. See *RESULT*.
+	With *check*, print the result when the check ends, as the JSON
+	that is saved, instead of a line for each check as it ends. See
+	*RESULT*. With *last*, *history* and *show*, print JSON instead of
+	text. See *HISTORY* and *WHAT THE MACHINE IS*.
 
 # RESULT
 
@@ -194,6 +230,70 @@ hardware: quick check ended with status 1: 8 passed, 0 warnings, 1 FAILED, 2 ski
 ```
 
 *log -s hardware* shows them (*log*(1)).
+
+# HISTORY
+
+When a check ends and its result is kept, a line is added to
+_/system/state/hardware/history_, which *hardware history* and the web
+console read. The file holds the newest 200 lines, and is replaced whole,
+as the result is. A line is a JSON object, and *hardware history --json*
+prints them as a list:
+
+```
+{"at_ms":1794000000000,"full":false,"status":2,"passed":8,"warnings":1,"failed":0,"skipped":2,"ids":["HW-115"]}
+```
+
+_at_ms_ is when the check ended, in milliseconds since 1970, _full_
+whether it was a full check and _status_ its exit status. _passed_,
+_warnings_, _failed_ and _skipped_ are how many checks ended each way,
+and _ids_ the IDs of what it found, each once.
+
+# WHAT THE MACHINE IS
+
+*hardware show --json* prints one JSON document. A member the machine
+does not say is _null_.
+
+```
+{
+  "format": 1,
+  "maker": "Example Computers",
+  "model": "Tower 200",
+  "chassis": "Mini Tower",
+  "processor": {
+    "model": "Intel Core i5-6500",
+    "cores": 4,
+    "threads": 4,
+    "base_mhz": 3200,
+    "max_mhz": 3600
+  },
+  "memory": {
+    "bytes": 16623468544,
+    "ecc": null,
+    "slots": null,
+    "modules": null
+  },
+  "firmware": {
+    "vendor": "Example BIOS Ltd.",
+    "version": "1.20",
+    "date": "07/12/2023"
+  }
+}
+```
+
+_format_ is the version of the document, 1. _memory.bytes_ is what the
+kernel counts. For a program that holds the platform capability, _ecc_ is
+whether the memory corrects errors, _slots_ how many slots the board has,
+empty ones too, and _modules_ the modules that are in them, each with its
+_slot_ as the board names it, its size in _bytes_, its _kind_, the _speed_
+it runs at in MT/s, and its _maker_ and _part_ number when the firmware
+says them:
+
+```
+"modules": [
+  {"slot": "DIMM A1", "bytes": 8589934592, "kind": "DDR4", "speed": 2133,
+   "maker": "Example Memory", "part": "EM8G2133"}
+]
+```
 
 # IDS
 
@@ -289,7 +389,8 @@ support center says what it means and what to do.
 	could be made (every one was skipped).
 
 *hardware last* gives the status the saved check ended with, or 3 when
-none is saved.
+none is saved. *hardware history* and *hardware show* give 0, or 3 when
+the command line is wrong or what they read cannot be read.
 
 # SIGNALS
 
@@ -300,6 +401,12 @@ disk self-tests it started, and leaves any that were running before.
 
 _/system/state/hardware/last.json_
 	The result of the last check, as described under *RESULT*.
+
+_/system/state/hardware/history_
+	A line for each check that was kept, as described under *HISTORY*.
+
+_/kernel/class/dmi/id_, _/kernel/cpus_
+	What *hardware show* reads of the firmware and the processors.
 
 _/kernel/devices/system/edac_, _/kernel/class/hwmon_,
 _/kernel/class/power_supply_, _/kernel/class/net_, _/kernel/block_
@@ -336,7 +443,22 @@ The result for another program:
 elevate hardware check --json > result.json
 ```
 
+A check that says how far it is on standard error, with its result alone
+on standard output:
+
+```
+elevate hardware check memory cpu --json --progress > result.json
+```
+
+The checks that were kept, and what the machine is:
+
+```
+hardware history
+hardware show
+```
+
 # SEE ALSO
 
 *diskhealth*(8), *sensors*(1), *nic*(8), *netcheck*(8), *dmesg*(1),
-*elevate*(8), *radix-block*(2), *radix-sysfs*(5), *log*(1), *systools*(1)
+*elevate*(8), *hwinfo*(8), *lscpu*(1), *radix-block*(2), *radix-sysfs*(5),
+*log*(1), *systools*(1)
