@@ -98,13 +98,85 @@ pub const CASE: Case = Case {
 
 /// What the server does wrong, for a while.
 #[derive(Default)]
-struct Faults {
+pub(crate) struct Faults {
     /// Paths under the repository served with their last byte changed.
-    damaged: Option<&'static str>,
+    pub(crate) damaged: Option<&'static str>,
     /// A timestamp served in place of the newest.
-    stale: Option<Vec<u8>>,
+    pub(crate) stale: Option<Vec<u8>>,
     /// A path whose next answer stops after so many bytes of the body.
-    cut: Option<(&'static str, usize)>,
+    pub(crate) cut: Option<(&'static str, usize)>,
+    /// Every answer slowed to a trickle.
+    pub(crate) slow: Option<Trickle>,
+    /// A file of the store whose first request is answered 503, as a
+    /// server too busy to answer says it, and whose later requests are
+    /// answered.
+    pub(crate) busy: bool,
+    /// Every `n`th answer with a file of the store whose body is longer
+    /// than `after` bytes, from the first, has its connection dropped
+    /// after `after` bytes of the body: `(n, after)`.
+    pub(crate) drop_every: Option<(usize, usize)>,
+}
+
+/// How a slow server answers: it waits `stall` before it answers, then
+/// gives the first `until` bytes of the body `chunk` bytes at a time with
+/// `pause` between them, and the rest at once.
+#[derive(Clone, Copy)]
+pub(crate) struct Trickle {
+    /// The wait before the status line.
+    pub(crate) stall: Duration,
+    /// The bytes sent at a time.
+    pub(crate) chunk: usize,
+    /// The wait between two chunks.
+    pub(crate) pause: Duration,
+    /// The bytes of the body sent that slowly.
+    pub(crate) until: usize,
+}
+
+/// What the faults have done so far, for a case to check that they
+/// happened.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(crate) struct Tally {
+    /// Requests answered 503.
+    pub(crate) busy: usize,
+    /// Answers whose connection was dropped part way through the body.
+    pub(crate) dropped: usize,
+    /// Answers sent slowly.
+    pub(crate) slowed: usize,
+    /// Answers with a body long enough to be dropped, which
+    /// [`Faults::drop_every`] counts.
+    served: usize,
+}
+
+impl Faults {
+    /// Where the body of an answer of `length` bytes for `path` is cut,
+    /// and how it is sent, as these faults and the `tally` of what they
+    /// have done say; the tally counts what comes of it.
+    fn shape(
+        &mut self,
+        path: &str,
+        length: usize,
+        tally: &mut Tally,
+    ) -> (Option<usize>, Option<Trickle>) {
+        let mut cut = match self.cut {
+            Some((prefix, after)) if path.starts_with(prefix) => {
+                self.cut = None;
+                Some(after)
+            }
+            _ => None,
+        };
+        if let Some((every, after)) = self.drop_every
+            && path.starts_with("files/")
+            && length > after
+        {
+            if tally.served.is_multiple_of(every) {
+                cut = Some(after);
+                tally.dropped += 1;
+            }
+            tally.served += 1;
+        }
+        tally.slowed += usize::from(self.slow.is_some());
+        (cut, self.slow)
+    }
 }
 
 /// What the server's connections share.
@@ -112,6 +184,8 @@ struct Shared {
     /// The folder served as `/system/`.
     repo: Mutex<PathBuf>,
     faults: Mutex<Faults>,
+    /// What the faults have done.
+    tally: Mutex<Tally>,
     /// Each request: its path, and its Range header.
     log: Mutex<Vec<(String, Option<String>)>>,
     /// The unix socket of the update server's receiver of canaries'
@@ -124,14 +198,14 @@ struct Shared {
 /// The test update server: the repository, over HTTP on a free port of
 /// the host's loopback, which the machine reaches as 10.0.2.2, and, when
 /// asked, the path canaries post their reports to. It stops when dropped.
-struct Server {
-    port: u16,
+pub(crate) struct Server {
+    pub(crate) port: u16,
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
 }
 
 impl Server {
-    fn start(repo: &Path) -> Result<Server, String> {
+    pub(crate) fn start(repo: &Path) -> Result<Server, String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|err| format!("no port for the update server: {err}"))?;
         let port = listener.local_addr().map_err(|err| err.to_string())?.port();
@@ -139,6 +213,7 @@ impl Server {
         let shared = Arc::new(Shared {
             repo: Mutex::new(repo.to_path_buf()),
             faults: Mutex::new(Faults::default()),
+            tally: Mutex::new(Tally::default()),
             log: Mutex::new(Vec::new()),
             relay: Mutex::new(None),
         });
@@ -160,7 +235,7 @@ impl Server {
     }
 
     /// Serves `repo` from now on.
-    fn serve(&self, repo: &Path) {
+    pub(crate) fn serve(&self, repo: &Path) {
         *self.shared.repo.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
             repo.to_path_buf();
     }
@@ -172,12 +247,17 @@ impl Server {
             socket.map(Path::to_path_buf);
     }
 
-    fn faults(&self) -> std::sync::MutexGuard<'_, Faults> {
+    pub(crate) fn faults(&self) -> std::sync::MutexGuard<'_, Faults> {
         self.shared.faults.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// What the faults have done so far.
+    pub(crate) fn tally(&self) -> Tally {
+        *self.shared.tally.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The requests for files of the store so far, and the ranges asked.
-    fn file_requests(&self) -> Vec<(String, Option<String>)> {
+    pub(crate) fn file_requests(&self) -> Vec<(String, Option<String>)> {
         let log = self.shared.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         log.iter().filter(|(path, _)| path.starts_with("files/")).cloned().collect()
     }
@@ -235,7 +315,12 @@ impl Shared {
         {
             return reply(&mut stream, 404, &[], b"not here\n", None);
         }
-        let mut faults = self.faults.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut faults = self.faults.lock().unwrap_or_else(PoisonError::into_inner);
+        if faults.busy && path.starts_with("files/") && self.first_request_for(&path) {
+            drop(faults);
+            self.tally.lock().unwrap_or_else(PoisonError::into_inner).busy += 1;
+            return reply(&mut stream, 503, &[], b"busy\n", None);
+        }
         let mut data = match (&faults.stale, path.as_str()) {
             (Some(stale), "metadata/timestamp.json") => stale.clone(),
             _ => match std::fs::read(
@@ -250,27 +335,31 @@ impl Shared {
         {
             *last ^= 0x20;
         }
-        let cut = match faults.cut {
-            Some((prefix, after)) if path.starts_with(prefix) => {
-                faults.cut = None;
-                Some(after)
-            }
-            _ => None,
-        };
-        drop(faults);
         let from = range
             .as_deref()
             .and_then(|r| r.strip_prefix("bytes="))
             .and_then(|r| r.strip_suffix('-'))
             .and_then(|n| n.parse::<usize>().ok());
+        if from.is_some_and(|from| from >= data.len()) {
+            return reply(&mut stream, 416, &[], b"", None);
+        }
+        let body = &data[from.unwrap_or(0)..];
+        let mut tally = self.tally.lock().unwrap_or_else(PoisonError::into_inner);
+        let (cut, trickle) = faults.shape(&path, body.len(), &mut tally);
+        drop((faults, tally));
         match from {
-            Some(from) if from >= data.len() => reply(&mut stream, 416, &[], b"", None),
             Some(from) => {
                 let content_range = format!("bytes {from}-{}/{}", data.len() - 1, data.len());
-                reply(&mut stream, 206, &[("Content-Range", content_range)], &data[from..], cut)
+                send(&mut stream, 206, &[("Content-Range", content_range)], body, cut, trickle)
             }
-            None => reply(&mut stream, 200, &[], &data, cut),
+            None => send(&mut stream, 200, &[], body, cut, trickle),
         }
+    }
+
+    /// Whether the request just logged for `path` is the first for it.
+    fn first_request_for(&self, path: &str) -> bool {
+        let log = self.log.lock().unwrap_or_else(PoisonError::into_inner);
+        log.iter().filter(|(logged, _)| logged == path).count() == 1
     }
 }
 
@@ -367,22 +456,41 @@ fn reply(
     body: &[u8],
     cut: Option<usize>,
 ) -> Result<(), String> {
+    send(stream, status, headers, body, cut, None)
+}
+
+/// [`reply`], slowly when `trickle` says so.
+fn send(
+    stream: &mut TcpStream,
+    status: u16,
+    headers: &[(&str, String)],
+    body: &[u8],
+    cut: Option<usize>,
+    trickle: Option<Trickle>,
+) -> Result<(), String> {
     let mut head = format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\n", body.len());
     for (name, value) in headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
     head.push_str("Connection: close\r\n\r\n");
     let body = &body[..cut.unwrap_or(body.len()).min(body.len())];
-    stream
-        .write_all(head.as_bytes())
-        .and_then(|()| stream.write_all(body))
-        .and_then(|()| stream.flush())
-        .map_err(|err| err.to_string())
+    let slow = trickle.map_or(0, |trickle| trickle.until.min(body.len()));
+    if let Some(trickle) = trickle {
+        std::thread::sleep(trickle.stall);
+    }
+    stream.write_all(head.as_bytes()).map_err(|err| err.to_string())?;
+    if let Some(trickle) = trickle {
+        for chunk in body[..slow].chunks(trickle.chunk.max(1)) {
+            stream.write_all(chunk).and_then(|()| stream.flush()).map_err(|err| err.to_string())?;
+            std::thread::sleep(trickle.pause);
+        }
+    }
+    stream.write_all(&body[slow..]).and_then(|()| stream.flush()).map_err(|err| err.to_string())
 }
 
 /// How many files `name`'s update fetches, as the server's layout counted
 /// them.
-fn expected(dir: &Path, name: &str) -> Result<usize, String> {
+pub(crate) fn expected(dir: &Path, name: &str) -> Result<usize, String> {
     let path = dir.join("expected.toml");
     let mut text = String::new();
     std::fs::File::open(&path)
@@ -968,6 +1076,53 @@ mod tests {
             }
         });
         seen
+    }
+
+    /// The status and the body of a GET of `path`, from byte `from` on
+    /// when given, as far as the connection lasts.
+    fn get(port: u16, path: &str, from: Option<usize>) -> (u16, Vec<u8>) {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let range = from.map_or(String::new(), |from| format!("Range: bytes={from}-\r\n"));
+        write!(stream, "GET /system/{path} HTTP/1.1\r\nHost: x\r\n{range}\r\n").unwrap();
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer);
+        let split = answer.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let status = String::from_utf8_lossy(&answer[..12])[9..12].parse().unwrap();
+        (status, answer[split..].to_vec())
+    }
+
+    #[test]
+    fn a_bad_network_answers_busy_once_drops_every_third_long_answer_and_is_slow() {
+        let dir = std::env::temp_dir().join(format!("update-online-faults-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("files")).unwrap();
+        std::fs::write(dir.join("files/long"), vec![7_u8; 1000]).unwrap();
+        std::fs::write(dir.join("files/short"), b"tiny").unwrap();
+        let server = Server::start(&dir).unwrap();
+        *server.faults() = Faults {
+            slow: Some(Trickle {
+                stall: Duration::ZERO,
+                chunk: 100,
+                pause: Duration::ZERO,
+                until: 250,
+            }),
+            busy: true,
+            drop_every: Some((3, 100)),
+            ..Faults::default()
+        };
+        // The first request of each file is busy; a short body is never
+        // dropped and does not count; a long one is dropped the first
+        // time, and the next two are whole, the one from where it ended.
+        assert_eq!(get(server.port, "files/long", None).0, 503);
+        assert_eq!(get(server.port, "files/short", None).0, 503);
+        assert_eq!(get(server.port, "files/short", None), (200, b"tiny".to_vec()));
+        assert_eq!(get(server.port, "files/long", None).1.len(), 100);
+        assert_eq!(get(server.port, "files/long", Some(100)), (206, vec![7; 900]));
+        assert_eq!(get(server.port, "files/long", None), (200, vec![7; 1000]));
+        assert_eq!(get(server.port, "files/long", None).1.len(), 100);
+        let tally = server.tally();
+        assert_eq!((tally.busy, tally.dropped), (2, 2));
+        assert_eq!(tally.slowed, 5);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -16,7 +16,16 @@ path = [
     "userspace/Cargo.lock",
     "userspace/programs/Cargo.lock",
     "userspace/programs/host/Cargo.lock",
+    "userspace/programs/fuzz/Cargo.lock",
 ]
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+# The fuzz targets' seed corpus (ADR 0536): inputs of the parsers, made from
+# the tests' fixtures by `cargo run --bin seeds`, byte for byte, so that a
+# header would change what they hold.
+[[annotations]]
+path = "userspace/programs/fuzz/corpus/**"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 

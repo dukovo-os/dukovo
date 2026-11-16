@@ -281,7 +281,7 @@ adds it, with:
   `not_affected` also has a `justification`, one of OpenVEX's, or an
   `impact_statement`.
 
-The statement for the espeak-ng issue of CVE-2023-49990 is:
+For example, a statement that espeak-ng 1.52.0 holds the fix of CVE-2023-49990:
 
 ```json
 {

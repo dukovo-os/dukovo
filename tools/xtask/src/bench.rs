@@ -1300,6 +1300,7 @@ fn linux_vm_numbers(
         gdb: false,
         qmp: None,
         extra: disk_args(dir, btrfs)?,
+        write_log: None,
         direct: Some(DirectBoot {
             kernel: kernel.to_path_buf(),
             initrd: initrd.to_path_buf(),
@@ -1456,6 +1457,7 @@ fn radix_numbers(
         gdb: false,
         qmp: None,
         extra: accel.extra(),
+        write_log: None,
         direct: None,
     };
     let mut vm = Vm::start(ctx, &machine, dir, "bench", TIMEOUT).map_err(crate::Error::new)?;
@@ -1510,6 +1512,7 @@ fn radix_posix_numbers(
         gdb: false,
         qmp: None,
         extra,
+        write_log: None,
         direct: None,
     };
     let mut vm =

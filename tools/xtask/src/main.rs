@@ -60,6 +60,7 @@ mod upstream;
 mod userspace;
 mod vex;
 mod vt;
+mod writelog;
 
 use std::fmt;
 use std::io;
@@ -286,13 +287,18 @@ press Ctrl-A then X to quit QEMU. KVM is used when /dev/kvm is accessible.
                  [--retry] [--debug | --release]
        ./ob test boot --affected <commit> [--shard <part>/<parts> | --list | --plan] [--retry]
        ./ob test boot --case <name>... --image-only
+       ./ob test replay [--case <name>] [--points all|<n>] [--part <k>/<m>] [--seed <n>]
+                 [--log <path> [--point <n>]] [--timeout <seconds>]
+       ./ob test fuzz [--target <name>] [--seconds <n>]
+       ./ob test matrix --list [--full]
        ./ob test --list
 
 Runs host unit tests, then the boot tests: QEMU boots a test image under
 UEFI and BIOS, from USB and CD-ROM, with 4 CPUs, and each test follows the
 serial console, types kdb commands and reads the framebuffer from
 screenshots. Logs go to out/test/. Give `unit` or `boot` to run only that
-part; `kani` checks the Kani proof harnesses instead, `tla` the TLA+
+part; `kani` checks the Kani proof harnesses instead (those of the kernel's
+libraries and of the slot state), `tla` the TLA+
 models with TLC, `tuf` the TUF conformance suite against the TUF client
 (it needs Python with venv, and faketime; ob fetches the pinned suite into
 .cache/tuf-conformance), and `corpus` compares Nukesh with dash and bash on
@@ -314,7 +320,21 @@ machines they need. `boot --case smbd
 --image-only` boots nothing: it writes the case's image, its command line in
 place, to out/test/smbd.img, for CI's Windows job to boot. --list names every
 boot test; those that Phases 11 to 13 add from now on are listed only there
-(ob(1) has them all). The boot tests are:
+(ob(1) has them all). `replay` records the update-power-replay boot test (or
+update-power-replay-bios, with --case) with its boot disk behind QEMU's write
+log, rebuilds the disk as a power cut at each point of the log would have
+left it, and boots each: slot A or slot B must start whole (ADR 0536). It
+takes --points all, or a number of cuts (16 without it), --part 3/8 for the
+third of eight shares of them, and --seed for the draw; out/test/replay
+keeps what a failed cut needs, and --log with --point boots that cut again
+from the kept log. `fuzz` runs the cargo-fuzz targets of the update path's
+parsers (userspace/programs/fuzz), each for --seconds (60 without it) on a
+corpus in .cache/fuzz/<target>, which starts from the seeds in git; --target
+runs one. A crash fails the run and leaves its input in out/fuzz/<target>
+(it needs the cargo-fuzz that `ob doctor` names). `matrix --list` prints the
+jobs of the nightly update test matrix as one line of JSON, which
+update-matrix.yml runs; --full lists a release candidate's.
+The boot tests are:
   uefi-usb, bios-usb, uefi-cdrom, bios-cdrom   normal boots (bios-usb with the
                    lock checker on, uefi-cdrom in xAPIC mode, bios-cdrom
                    without KASLR and PCIDs)
@@ -591,6 +611,7 @@ Examples:
         "fixture" => {
             "Usage: ./ob fixture btrfs-log|btrfs-radix-log|btrfs-send|ntfs-3g [--linux-kernel <file>]
        ./ob fixture btrfs-send --check <dir>
+       ./ob fixture release <version> [--check]
 
 Makes test data that only Linux makes. btrfs-log boots Linux in QEMU on a
 new Btrfs disk with tools/linux-bench as its only process, which commits
@@ -609,6 +630,13 @@ ntfs-3g fills an NTFS volume through ntfs-3g's FUSE driver (as root), with
 links, junctions, hard links and compressed and sparse files, and writes it
 to kernel/fs/ntfs/src/fixtures, which the NTFS host tests and the ntfs boot
 test read.
+release <version> builds the installed disk of an old release with that
+release's own tree, from its tag v<version> in a git worktree, as
+target/fixtures/<version>/installed.img, and keeps a copy of the release
+keys it trusts (this checkout's .cache/release-keys, made first if absent)
+in target/fixtures/<version>/release-keys. The boot tests update-from-<version>
+boot a copy-on-write overlay of it. With --check, it says whether the
+fixture is made and trusts .cache/release-keys (ADR 0536).
 
   --linux-kernel <file>
                       The Linux kernel to boot (else OB_LINUX_KERNEL or this
@@ -1358,6 +1386,10 @@ mod tests {
             (
                 "userspace/programs/Cargo.toml",
                 include_str!("../../../userspace/programs/Cargo.toml"),
+            ),
+            (
+                "userspace/programs/fuzz/Cargo.toml",
+                include_str!("../../../userspace/programs/fuzz/Cargo.toml"),
             ),
         ] {
             let table: toml::Table = manifest.parse().unwrap();

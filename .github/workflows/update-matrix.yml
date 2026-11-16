@@ -1,0 +1,399 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The update test matrix (ADR 0536): what keeps an update from leaving a
+# machine in a state that is neither the old system nor the new one.
+#
+# Each night on main it runs a sample: sixteen power cuts of an update
+# replayed from QEMU's write log under UEFI and under BIOS, the first start
+# of an update killed again and again under each, the update boot tests
+# that stood before the matrix, a machine installed from each old release
+# updated to the build under test, rolled back and updated again under
+# each firmware type, the TUF conformance suite, and each fuzz target for
+# ten minutes. Dispatched by hand, with `full`, on a
+# release branch, it runs every power cut, in eight parts for each
+# firmware type, twenty kills of the first start, and each fuzz target for
+# an hour, for a release candidate.
+#
+# The jobs come from `./ob test matrix --list`, so that what runs is
+# written once, in tools/xtask/src/test/matrix.rs. They run on GitHub's
+# standard runners, each under the six hours a job may take: a power cut
+# replay is a boot of QEMU a cut, with KVM. The conformance suite and the
+# fuzz targets run on the host alone, so they skip what the boot tests
+# need. A fuzz target's corpus is kept in the Actions cache, by target, and
+# grows with each run; the input of a crash is uploaded.
+#
+# The updates from an old release boot that release's fixture, the disk its
+# own tree builds (`./ob fixture release VERSION`), which takes about 15 GB
+# of build and is kept in the Actions cache as fixture-VERSION-v1 with the
+# release keys the disk trusts. The `fixtures` job makes what the cache
+# lacks; the jobs that boot a fixture restore it before ./ob runs, so that
+# the keys it trusts are the run's (./ob adopts them when
+# .cache/release-keys is absent). Each release in FIXTURE_RELEASES
+# (tools/xtask/src/test/upgrade.rs) has its steps in the `fixtures` job and
+# its restore in the `run` job.
+name: Update matrix
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the whole matrix, as for a release candidate
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-matrix-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in step with ci.yml's, tools/container/Containerfile and
+  # tools/xtask/src/doctor.rs.
+  MDBOOK_VERSION: 0.4.52
+  # Keep in step with tools/xtask/src/doctor.rs (ADR 0536).
+  CARGO_FUZZ_VERSION: 0.13.2
+
+jobs:
+  # The matrix's jobs, as `./ob test matrix --list` prints them.
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: ./ob test matrix --list
+        id: list
+        env:
+          FULL: ${{ inputs.full }}
+        run: |
+          if [ "$FULL" = true ]; then
+            list=$(./ob test matrix --list --full)
+          else
+            list=$(./ob test matrix --list)
+          fi
+          echo "$list"
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+
+  # The fixture of each old release the update tests start from (ADR 0536):
+  # a cache hit costs a lookup; a miss builds the release's installed disk
+  # with that release's own ./ob, from the tag, and saves it.
+  fixtures:
+    name: Fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Look for the fixture of 0.15.0
+        id: fixture-0-15-0
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/fixtures/0.15.0/installed.img
+            target/fixtures/0.15.0/release-keys
+          key: fixture-0.15.0-v1
+          lookup-only: true
+
+      - name: Fetch the tag v0.15.0
+        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
+        run: git fetch --no-tags origin refs/tags/v0.15.0:refs/tags/v0.15.0
+
+      - name: Install the pinned Rust toolchain
+        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
+        with:
+          workspaces: ". -> target"
+          shared-key: update-matrix
+          save-if: false
+
+      # The packages ./ob setup's check of the host asks for, as the `run`
+      # job installs them.
+      - name: Install host packages
+        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      - name: Install mdBook
+        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
+        run: |
+          if ! curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors --retry-delay 10 \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin mdbook; then
+            cargo install mdbook --version "${MDBOOK_VERSION}" --locked --root "$RUNNER_TEMP/mdbook"
+            sudo install "$RUNNER_TEMP/mdbook/bin/mdbook" /usr/local/bin/mdbook
+          fi
+
+      # The old tree builds the disk with its own ./ob, from its sources
+      # alone, trusting this checkout's release keys, which ./ob makes
+      # first.
+      - name: ./ob fixture release 0.15.0
+        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
+        run: ./ob fixture release 0.15.0
+
+      - name: Save the fixture of 0.15.0
+        if: ${{ steps.fixture-0-15-0.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/fixtures/0.15.0/installed.img
+            target/fixtures/0.15.0/release-keys
+          key: fixture-0.15.0-v1
+
+  run:
+    name: ${{ matrix.name }}
+    needs: [plan, fixtures]
+    # A fixture that cannot be made fails the jobs that boot it, no others.
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The boot tests and the replays need QEMU and the ports; the
+      # conformance suite and the fuzz targets do not.
+      - name: Note what the job needs
+        id: kind
+        env:
+          RUN: ${{ matrix.run }}
+        run: |
+          case "$RUN" in
+            "./ob test fuzz "*) echo kind=fuzz ;;
+            "./ob test tuf") echo kind=tuf ;;
+            *) echo kind=boot ;;
+          esac >> "$GITHUB_OUTPUT"
+          # The updates from an old release boot its fixture.
+          case "$RUN" in
+            *"--case update-from-"*) echo fixtures=true ;;
+            *) echo fixtures=false ;;
+          esac >> "$GITHUB_OUTPUT"
+
+      - name: Allow QEMU to use KVM
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+
+      # The packages ./ob setup's check of the host asks for, as ci.yml's
+      # boot job installs them, without the servers only other boot tests
+      # use.
+      - name: Install host packages
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        uses: ./.github/actions/apt-install
+        with:
+          packages: >-
+            qemu-system-x86 ovmf gcc flex gawk
+            xorriso mtools dosfstools exfatprogs gdisk fdisk sleuthkit btrfs-progs e2fsprogs ntfs-3g dislocker libbde-utils openssh-server samba smbclient scdoc mandoc
+            udftools udfclient genisoimage
+            clang-20 lld-20 llvm-20 libclang-rt-20-dev meson ninja-build cmake bison pkgconf autoconf
+
+      # GRUB, which ./ob builds from its pinned source for the images
+      # (ADR 0306): built once for each change to its recipe.
+      - name: Cache GRUB
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/grub
+          key: grub-${{ hashFiles('tools/xtask/src/grub.rs') }}
+
+      # memtest86+, the start menu's memory test, which ./ob builds
+      # from its pinned source (ADR 0488): once for each change to its
+      # recipe.
+      - name: Cache memtest86+
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/memtest
+          key: memtest-${{ hashFiles('tools/xtask/src/memtest.rs') }}
+
+      # ./ob setup runs ./ob doctor, which asks for mdBook too.
+      - name: Install mdBook
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        run: |
+          # GitHub's release downloads sometimes answer 504 for a while;
+          # build the same pinned version from crates.io when they do.
+          if ! curl --proto '=https' --tlsv1.2 -sSfL --retry 3 --retry-all-errors --retry-delay 10 \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin mdbook; then
+            cargo install mdbook --version "${MDBOOK_VERSION}" --locked --root "$RUNNER_TEMP/mdbook"
+            sudo install "$RUNNER_TEMP/mdbook/bin/mdbook" /usr/local/bin/mdbook
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          shared-key: update-matrix
+          save-if: ${{ github.ref_name == 'main' && strategy.job-index == 0 }}
+
+      # The fixtures of the releases the update tests start from, before
+      # ./ob runs: it adopts the keys a fixture trusts when
+      # .cache/release-keys is absent, and a key it made first would not
+      # be them. The `fixtures` job made what the cache lacks.
+      - name: Restore the fixture of 0.15.0
+        if: ${{ steps.kind.outputs.fixtures == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/fixtures/0.15.0/installed.img
+            target/fixtures/0.15.0/release-keys
+          key: fixture-0.15.0-v1
+          fail-on-cache-miss: true
+
+      - name: Note the port toolchain's version
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        id: ports-key
+        run: echo "clang=$(clang-20 --version | head -n1 | tr -c 'A-Za-z0-9.\n' -)" >> "$GITHUB_OUTPUT"
+
+      # The newest ports that main's runs saved (ci.yml's ports job):
+      # ./ob ports builds whatever they lack.
+      - name: Restore the built ports
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            out/sysroot
+            out/toolchain
+            out/ports
+            target/ports/sources
+          key: ${{ format('ports-host-{0}-', steps.ports-key.outputs.clang) }}
+          restore-keys: ${{ format('ports-host-{0}-', steps.ports-key.outputs.clang) }}
+
+      - name: ./ob setup
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        run: ./ob setup
+
+      # Should the cache not restore, the ports build here, in about 30
+      # minutes that must not count against the job's time for the tests.
+      - name: ./ob ports
+        if: ${{ steps.kind.outputs.kind == 'boot' }}
+        timeout-minutes: 60
+        run: ./ob ports
+
+      # Some of the TUF suite's tests run the client under faketime, and
+      # it runs in a Python virtual environment.
+      - name: Install Python's venv and faketime
+        if: ${{ steps.kind.outputs.kind == 'tuf' }}
+        uses: ./.github/actions/apt-install
+        with:
+          packages: python3-venv faketime
+
+      - name: Cache the conformance suite
+        if: ${{ steps.kind.outputs.kind == 'tuf' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/tuf-conformance
+          key: tuf-conformance-${{ hashFiles('tools/xtask/src/tuf.rs') }}
+
+      # cargo-fuzz's binary goes outside ~/.cargo/bin, which rust-cache
+      # prunes of anything it did not restore before this cache is saved.
+      - name: Cache cargo-fuzz
+        id: fuzz-tool
+        if: ${{ steps.kind.outputs.kind == 'fuzz' }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo-fuzz-bin
+          key: cargo-fuzz-${{ env.CARGO_FUZZ_VERSION }}-${{ runner.os }}
+
+      - name: Install cargo-fuzz
+        if: ${{ steps.kind.outputs.kind == 'fuzz' && steps.fuzz-tool.outputs.cache-hit != 'true' }}
+        run: cargo +stable install --locked --root ~/.cargo-fuzz-bin cargo-fuzz --version "$CARGO_FUZZ_VERSION"
+
+      - name: Put cargo-fuzz on the PATH
+        if: ${{ steps.kind.outputs.kind == 'fuzz' }}
+        run: echo "$HOME/.cargo-fuzz-bin/bin" >> "$GITHUB_PATH"
+
+      # The corpus the target grew in earlier runs: the newest of its
+      # target's, which this run's saves under its own ID.
+      - name: Restore the fuzz corpus
+        if: ${{ steps.kind.outputs.kind == 'fuzz' }}
+        uses: actions/cache@v4
+        with:
+          path: .cache/fuzz
+          key: ${{ matrix.name }}-corpus-${{ github.run_id }}
+          restore-keys: ${{ matrix.name }}-corpus-
+
+      # The environment the matrix's entry names, as OB_TEST_KILLS.
+      - name: Set the entry's environment
+        if: ${{ matrix.env != null }}
+        env:
+          ENTRY_ENV: ${{ toJSON(matrix.env) }}
+        run: echo "$ENTRY_ENV" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+
+      # The command is ./ob's own listing of the matrix, not text from
+      # anywhere else.
+      - name: ${{ matrix.run }}
+        run: ${{ matrix.run }}
+
+      - name: Show the host's processes and kernel log
+        if: ${{ failure() && steps.kind.outputs.kind == 'boot' }}
+        run: |
+          # pgrep cannot print these columns.
+          # shellcheck disable=SC2009
+          ps -eo pid,stat,etime,wchan:32,args | grep -v ' \[' || true
+          sudo dmesg | tail -n 60 || true
+
+      # What a failed run leaves: the boot tests' serial logs, the replay's
+      # marks and the serial logs of its cuts, and, if they are under 2 GB
+      # on disk, the disks of the cuts that failed, compressed.
+      - name: Gather the logs and the failed cuts' disks
+        if: ${{ failure() && steps.kind.outputs.kind == 'boot' }}
+        run: |
+          pack="$RUNNER_TEMP/update-matrix-logs"
+          mkdir -p "$pack"
+          cp out/test/*.log out/test/replay/*.marks out/test/replay/*-cut-*.log \
+            out/test/replay/*-recording.log "$pack"/ 2>/dev/null || true
+          size=$(du -cB1 out/test/replay/*-cut-*.img 2>/dev/null | tail -n 1 | cut -f 1)
+          if [ "${size:-0}" -gt 0 ] && [ "${size:-0}" -lt 2147483648 ]; then
+            for image in out/test/replay/*-cut-*.img; do
+              zstd -19 -T0 -q "$image" -o "$pack/$(basename "$image").zst"
+            done
+          fi
+
+      - name: Upload the logs and the failed cuts
+        if: ${{ failure() && steps.kind.outputs.kind == 'boot' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-matrix-${{ matrix.name }}
+          path: ${{ runner.temp }}/update-matrix-logs
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # The input a fuzz target failed on, in out/fuzz/<target>/.
+      - name: Upload the crash inputs
+        if: ${{ failure() && steps.kind.outputs.kind == 'fuzz' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-matrix-${{ matrix.name }}
+          path: out/fuzz
+          retention-days: 14
+          if-no-files-found: ignore

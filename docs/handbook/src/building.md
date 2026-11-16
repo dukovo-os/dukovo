@@ -220,6 +220,45 @@ into the kernel's common code; CI runs that too.
 Tests that pull cables, cut power or need real machines are the Dukovo
 Lab's: `./ob lab run --all` runs them on QEMU (see [Lab tests](lab.md)).
 
+### Power cuts of an update
+
+An update must leave the old system or the new one when the power goes at
+any instant, never a mix (ADR 0536). `./ob test replay` checks it from QEMU's
+write log: it boots a machine that stages an update, restarts into it and
+lets it prove itself, with the boot disk behind QEMU's `blklogwrites`
+driver, which logs every write and flush the disk gets. It then rebuilds the
+disk as a power cut at each flush of that log would have left it, and as a
+cut between two flushes would, when the disk kept only some of the writes
+since the last one, and boots each. Each must start slot A or slot B, say
+which it runs in `sysupdate status`, read back against its signed list in
+`sysupdate verify`, and, on slot A, stage the update again.
+
+```sh
+./ob test replay --points 16
+./ob test replay --case update-power-replay-bios --points all --part 3/8
+```
+
+`--points` takes a number of cuts, drawn by the seed that the run prints
+and `--seed` sets, among them the first and the last flush, or `all`;
+`--part 3/8` takes the third of eight shares of them. `--case` chooses
+the firmware type, `update-power-replay` for UEFI or
+`update-power-replay-bios`.
+
+A cut that fails keeps its disk, its serial log, the log and the marks in
+`out/test/replay/`, and the run prints the command that boots it again,
+from the log, without recording:
+
+```sh
+./ob test replay --case update-power-replay --log out/test/replay/update-power-replay.log --point 12 --seed 4711
+```
+
+`--point` is the cut's number, which is the same whatever `--points` and
+`--part` chose. The boot test `update-first-start-kills` resets an update's
+first start at random times instead (`OB_TEST_KILLS` says how many, and
+`OB_TEST_SEED` repeats the times). CI runs both each night, and in full
+for a release candidate, with `./ob test matrix --list`'s jobs
+(`.github/workflows/update-matrix.yml`).
+
 ## Building the boot image
 
 ```sh

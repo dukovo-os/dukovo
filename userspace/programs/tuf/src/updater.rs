@@ -72,6 +72,15 @@ impl fmt::Display for Error {
     }
 }
 
+impl Error {
+    /// Whether the metadata has expired by the computer's clock, which a
+    /// clock that is wrong can cause as well as a server left alone.
+    #[must_use]
+    pub fn is_expiry(&self) -> bool {
+        matches!(self, Error::Metadata(metadata::Error::Expired(_)))
+    }
+}
+
 impl std::error::Error for Error {}
 
 impl From<metadata::Error> for Error {

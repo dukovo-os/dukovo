@@ -241,6 +241,7 @@ fn boot(ctx: &Ctx, dir: &Path, side: Side, kvm: bool) -> Result<(Vec<Measurement
         gdb: false,
         qmp: None,
         extra: Vec::new(),
+        write_log: None,
         direct,
     };
     let mut vm = Vm::start(ctx, &machine, dir, log, bench::TIMEOUT).map_err(crate::Error::new)?;
