@@ -63,13 +63,18 @@
 //! DB-102.
 //!
 //! Other machines may connect. databases.allow from the guest's own network
-//! with the machine's certificate is a task of seven steps that has PostgreSQL
+//! with the machine's certificate is a task of eight steps that has PostgreSQL
 //! restart: it listens on every address, with TLS, and has the hostssl line
-//! for the database. A psql that checks the machine's name against its chain
-//! connects over TLS from 10.0.2.15, one with another password does not, and
-//! one without TLS does not. A second allow changes nothing. databases.deny
-//! takes the line out and has PostgreSQL listen on this machine only again,
-//! TLS staying on; a second deny says there is no line.
+//! for the database. The firewall's rules gain the block of port 5432, which
+//! firewall list shows: an allow of the network and a deny of the rest, and
+//! firewall test finds 10.0.2.2 allowed and 192.0.2.1 denied. A psql that
+//! checks the machine's name against its chain connects over TLS from
+//! 10.0.2.15, one with another password does not, and one without TLS does
+//! not. A second allow changes nothing, the firewall's rules included.
+//! databases.deny takes the line out and has PostgreSQL listen on this machine
+//! only again, TLS staying on, and takes the block out of the firewall's
+//! rules, so that no rule decides for port 5432; a second deny says there is
+//! no line.
 //!
 //! A database removed. With a session open, databases.remove is DB-103 by
 //! the route and by the command, naming the program that holds the session;
@@ -146,7 +151,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-websites",
-    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate has PostgreSQL listen on every address with TLS, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has it listen on localhost again, a second deny saying there is no line; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
+    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate is a task of eight steps that has PostgreSQL listen on every address with TLS and the firewall's rules open port 5432 to that network only, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has PostgreSQL listen on localhost again and the firewall's rules take the block of port 5432 away, a second deny saying there is no line; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -921,14 +926,45 @@ fn a_database_for_a_site(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     test.ends_with(vm, &format!("elevate database add {DATABASE} --site {PHP} --json 2>/dev/null"), 1)
 }
 
+/// The rules of the firewall that are for port 5432, in order, as `firewall
+/// list --json` has them: the block `database` keeps, listed as any rules.
+fn rules_of_the_port(vm: &mut Vm, test: &mut Test) -> Result<Vec<String>, String> {
+    let list = test.printed(vm, "firewall list --json")?;
+    let rules =
+        list["rules"].as_array().ok_or_else(|| format!("firewall list has no rules: {list}"))?;
+    Ok(rules
+        .iter()
+        .filter(|rule| rule["ports"] == json!([5432, 5432]))
+        .filter_map(|rule| rule["text"].as_str().map(String::from))
+        .collect())
+}
+
+/// An error unless `firewall test` finds that a connection to port 5432 from
+/// `address` is decided by the rule `text`, which allows it or denies it as
+/// `allowed` says.
+fn port_5432_decides(
+    vm: &mut Vm,
+    test: &mut Test,
+    address: &str,
+    text: &str,
+    allowed: bool,
+) -> Result<(), String> {
+    let said = test.printed(vm, &format!("firewall test tcp 5432 from {address} --json"))?;
+    has_members(
+        &format!("firewall test from {address}"),
+        &said,
+        &json!({"text": text, "allowed": allowed}),
+    )
+}
+
 /// Other machines may connect, from the guest's own network with the
 /// machine's certificate, and then may not.
 fn other_machines_may_connect(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     let path = format!("/api/1/databases/{DATABASE}/allow");
     let body = json!({"from": "10.0.2.0/24", "certificate": "this-machine"});
     let (task, _) = test.task(&path, &body, 1200)?;
-    if task["steps"] != json!(7) {
-        return Err(format!("the task of the allow has {} steps, not 7", task["steps"]));
+    if task["steps"] != json!(8) {
+        return Err(format!("the task of the allow has {} steps, not 8", task["steps"]));
     }
     let allowed = format!("10.0.2.0/24 may connect to {DATABASE} over TLS, as {DATABASE}, with the password");
     logs("the allow", &task, &allowed)?;
@@ -946,6 +982,17 @@ fn other_machines_may_connect(vm: &mut Vm, test: &mut Test) -> Result<(), String
     if !has_line {
         return Err(format!("the access has no line {line}: {}", list["access"]));
     }
+    has_members(
+        "the firewall of the list after the allow",
+        &list["server"]["firewall"],
+        &json!({"networks": ["10.0.2.0/24"], "earlier": null}),
+    )?;
+    let block = rules_of_the_port(vm, test)?;
+    if block != ["allow tcp 5432 from 10.0.2.0/24", "deny tcp 5432"] {
+        return Err(format!("the rules of port 5432 after the allow are {block:?}"));
+    }
+    port_5432_decides(vm, test, "10.0.2.2", "allow tcp 5432 from 10.0.2.0/24", true)?;
+    port_5432_decides(vm, test, "192.0.2.1", "deny tcp 5432", false)?;
     step(vm, "tls", 3, 300)?;
 
     // The same allow again changes nothing.
@@ -953,6 +1000,9 @@ fn other_machines_may_connect(vm: &mut Vm, test: &mut Test) -> Result<(), String
     let again = same_as_command(vm, test, "/api/1/databases", "elevate database list --json", &MOVING)?;
     if again != list {
         return Err(format!("a second allow changed the list from {list} to {again}"));
+    }
+    if rules_of_the_port(vm, test)? != block {
+        return Err("a second allow changed the rules of port 5432".into());
     }
 
     let path = format!("/api/1/databases/{DATABASE}/deny");
@@ -964,6 +1014,21 @@ fn other_machines_may_connect(vm: &mut Vm, test: &mut Test) -> Result<(), String
     if list["access"].as_array().into_iter().flatten().any(|has| has["by_hand"] == json!(false)) {
         return Err(format!("the access after the deny has a line of the command's: {}", list["access"]));
     }
+    has_members(
+        "the firewall of the list after the deny",
+        &list["server"]["firewall"],
+        &json!({"networks": [], "earlier": null}),
+    )?;
+    let rules = rules_of_the_port(vm, test)?;
+    if !rules.is_empty() {
+        return Err(format!("the rules of port 5432 are there after the deny: {rules:?}"));
+    }
+    let said = test.printed(vm, "firewall test tcp 5432 from 10.0.2.2 --json")?;
+    has_members(
+        "firewall test after the deny",
+        &said,
+        &json!({"rule": null, "text": null, "allowed": null}),
+    )?;
     step(vm, "denied", 1, 300)?;
     step(vm, "pdo", 2, 120)?;
     // With no line to take out, it says so and is done.
