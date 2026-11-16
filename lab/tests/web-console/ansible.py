@@ -168,10 +168,12 @@ UNDER = {"ssh.on", "ssh.off"}
 # private.remove a device lab-phone, which private.add's undo removes first.
 # updates.apply, updates.unstage and updates.undo need a release on an update
 # server, to stage, to unstage and to come back from; updates.hold and
-# updates.unhold of the system ask the server which release to hold at;
+# updates.unhold of the system ask the server which release to hold at, and
+# updates.later puts off a release that is on offer;
 # apps.show, apps.update, apps.update-all, apps.rollback, apps.hold,
-# apps.unhold and apps.remove name an app of the test catalog, which a lab
-# machine has not installed.
+# apps.unhold, apps.remove, apps.tonight and apps.not-tonight name an app of
+# the test catalog, which a lab machine has not installed, and apps.tonight-all
+# asks for the update of each such app.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
@@ -180,8 +182,9 @@ SET_UP = {
     "accounts.remove", "accounts.key-add", "accounts.key-remove", "accounts.token-revoke", "accounts.steps-reset",
     "accounts.end", "account.name", "account.password", "account.key-add", "account.key-remove",
     "security.unblock", "private.add", "private.remove",
-    "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold",
+    "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
     "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
+    "apps.tonight", "apps.tonight-all", "apps.not-tonight",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.
