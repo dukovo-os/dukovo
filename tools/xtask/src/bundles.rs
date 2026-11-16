@@ -594,9 +594,12 @@ mod tests {
         );
         let stop = service.stop.as_ref().unwrap();
         assert_eq!((stop.signal, stop.timeout), (Some(manifest::service::Signal::Quit), Some(30)));
-        // Its access_log in the data folder's logs is turned over (ADR 0478).
+        // Its access_log in the data folder's logs is turned over (ADR 0478),
+        // and so is each website's, of which two turned files are kept
+        // (ADR 0570).
         let logs = service.logs.as_ref().unwrap();
-        assert_eq!(logs.files, ["logs/*.log"]);
+        assert_eq!(logs.files, ["logs/*.log", "logs/sites/*.log"]);
+        assert_eq!(logs.keep, 2);
         assert_eq!(logs.reopen, manifest::service::Reopen::Signal(manifest::service::Signal::Usr1));
         assert_eq!(manifest.requires_os.to_string(), "1.0");
     }
