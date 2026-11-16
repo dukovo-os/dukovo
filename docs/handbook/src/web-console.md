@@ -33,7 +33,7 @@ storage(8), diskhealth(8),
 scrub(8), logtrim(8), snap(1), backup(8), snap.toml(5), backup.toml(5), update(8),
 updates.toml(5), sysupdate(8), updated(8), bundle(1), bundled(8), changes(1),
 hardware(8), shutdown(8), metrics(1), cert(8), certd(8), hostnamectl(1),
-report(1), reportd(8), alerts(8), alertd(8), database(8) and alerts.toml(5); the
+report(1), reportd(8), alerts(8), alertd(8), database(8), website(8) and alerts.toml(5); the
 decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567, ADR 0568 and ADR 0569.
 
@@ -92,6 +92,10 @@ decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 | Put an app back to the version before, or remove it | **Go back to this** or **Remove…** on the app's page, or `elevate bundle rollback ID --for-everyone` or `elevate bundle remove ID --for-everyone` |
 | Install an app from the catalogs | **Add an app** on **Apps**, then **Install for everyone**, or `elevate bundle install ID --for-everyone`; see "Add an app" |
 | Read what an app asks for before it is installed | Press its row on **Add an app**, or `bundle sheet ID`; see "The sheet" under "Add an app" |
+| Add a website | **Add a website** on **Websites**, or `elevate website add NAME --owner ACCOUNT`; see "Add a website" under "Websites" |
+| See whether nginx accepts the websites | **Check the sites** on **Websites**, or `elevate website check` |
+| Serve a website over HTTPS | **Get a certificate** or **Use one that is here…** on the website's page, or `elevate website https NAME --certificate NAME`; see "A website's page" |
+| Take a website off HTTPS, or remove it | **Turn HTTPS off…** or **Remove…** on the website's page, or `elevate website https NAME --off` or `elevate website remove NAME` |
 | Make a database and its password | **Add a database**, or `elevate database add NAME --json`; see "Databases" |
 | Let other machines connect to a database | **Let other machines connect** on the database's page, or `elevate database allow NAME --from NETWORK`; see "A database's page" |
 | Make a new password for a database | **Make a new password** on the database's page, or `elevate database password NAME --json` |
@@ -3305,6 +3309,267 @@ whether it is installed under the name. A sheet is a page of its own, and
 **Install for everyone** is a button as wide as the page, 44 pixels tall at
 least, at the end of the sheet.
 
+## Websites
+
+**Websites** lists the websites that nginx serves, adds one, serves one over
+HTTPS and removes one. It is at `/websites`, and it opens from **Manage** on
+nginx's page under **Apps** (see "One app"), from the setups of **Add an app**,
+from **Where it is used** on **Certificates** and from the command palette (see
+"The command palette"). It is not an entry of the list of pages: **Apps** is
+marked while you are on it. **Add a website** is at `/websites/add`, and a
+website's page is at `/websites/NAME`.
+
+Anyone who signs in can read the list and a website's page. Adding, changing
+and removing a website is for administrators with the console unlocked (see
+"Unlocking the console"); anyone else is told **Only an administrator can add,
+change or remove a website.** The check of the sites and the plan of an add run
+nginx's own check and read what only root can read, so they are for
+administrators too.
+
+It reads `website list --json`, and, for administrators, `website check --json`
+and `website add --dry-run --json`. It runs `website add`, `website https` and
+`website remove`, `cert get` for a certificate from Let's Encrypt, `bundle
+install` for nginx and PHP-FPM, `service enable`, and `firewall allow` for a
+port that a rule closes (website(8), cert(8), bundle(1), service(8),
+firewall(8)). "Websites, a file each" in the chapter on services says what each
+does.
+
+### The list
+
+Above the table, a line says when nginx does not run, and when a PHP website is
+there and PHP-FPM does not: **nginx is not installed: no site answers.** with
+**Add it from the apps**, which opens its sheet (see "Add an app"); **nginx is
+off: no site answers.** with **Turn it on**; **PHP-FPM is not installed: its PHP
+pages fail.**; and **PHP-FPM is off: its PHP pages fail.**
+
+The table has a row for each website:
+
+| Column | What it says |
+| --- | --- |
+| Site | Its first name, which opens its page, with the other names under it. **Changed by hand** when its file was changed or made by hand, with the title **Kept as you wrote it** |
+| Serves | **Files**, **PHP pages**, or **Set up by hand** for a file that is neither, and the folder |
+| HTTPS | **HTTP only**, in the warning colour; **Let's Encrypt · renews Dec 14**; **This machine's certificate**; **Certificate shop (added)**; or **Certificate shop, which certd does not have**, in the warning colour |
+| State | **Answers** when nginx runs and nothing is wrong. Else what is wrong, with its ID: **nginx is not installed**, **nginx is off**, **PHP-FPM is off: its PHP pages fail**, or what `website list` found in the site's files, such as a folder that is not there |
+
+**Add a website** and **Check the sites** are for administrators. Under the table
+are **Read again** and, where commands are shown, `website list` (see "Showing
+the command"). An empty list says **No websites yet.** with **Add a website**;
+a reader is told **An administrator adds one. At a terminal:** and given
+`elevate website add NAME` to copy.
+
+**Check the sites** runs `website check --json` as an administrator. It says
+**nginx's check of the sites passed.**, or **nginx's check of the sites failed,
+so nothing is changed until it passes.** with nginx's own line, which names the
+file of the site that nginx refuses; that site's row then shows the line as its
+state ([WEB-103](../../errors/WEB-103.md)). It also says when `nginx.conf` lacks
+one of the two lines the websites need: **nginx's settings do not include the
+websites' folder** with the line to add at the end of its `http` block, or **The
+default server does not hide /sites/, so a site's folder is served there too.**
+with the lines to add before `location /` in the default server. Each has the
+lines in a box with **Copy** ([WEB-102](../../errors/WEB-102.md)).
+
+### Add a website
+
+**Add a website** is one page for the address, the certificate, the web server
+and the files. It opens with **One step for the address, the certificate, the web
+server and the files. The firewall and backups are checked too; the page changes
+them only when you press their buttons.** A reader sees that and the command
+`elevate website add NAME`, with **Back to the websites**. A setup of **Add an
+app** opens the page with the kind chosen, and with the box for a database
+ticked for the PHP setup; **Add a website** under **Where it is used** on
+**Certificates** opens it with the name, and the certificate when one is there,
+filled in.
+
+**Address** has the **Domain**, the name people type to reach the site, such as
+`shop.example.org`. It is lowercased as you type and checked by the rule that
+certificates follow, in the page and again by the command: a name has dots
+between its labels, and a wildcard or an address by number is not a name a
+website answers to. **Also answer for www.shop.example.org** is ticked for a
+name with a dot that does not start with `www.` and is not one of this machine's
+own names. **More names** opens a box of one name a line; a website has 1 to 20
+names in all. Under them **The checks**, which run a moment after you stop typing,
+ask for each name what **Get a certificate** asks (see "Getting a certificate"):
+whether it leads to this server, and whether a rule closes port 80, with **Open
+port 80**. A name of this machine, or a name without a dot, is not looked up,
+and the page says so.
+
+**What it serves** has two cards:
+
+| Card | What it does |
+| --- | --- |
+| **Files from a folder** | **nginx serves the files as they are. A PHP file is never sent as text: it is not found.** |
+| **PHP pages** | **nginx passes .php files to PHP-FPM, which runs them as the account php, for every PHP site of this server.** Its box, **Also make a PostgreSQL database for it · next**, makes the database as a step after the site, on **Databases**. When PHP-FPM is not installed the card says **Installs PHP-FPM first (net.php.php) · Read its sheet** |
+
+**Files** has the **Folder**, which is `/shared/www/sites/shop.example.org` unless
+you name another under `/shared/www/sites`, and says **The folder is there with 14
+files: they are kept, and served as they are.** when it is there. **Who may
+change them** is an account: the signed-in person first, then the
+administrators, then the others. The page says that the account owns the folder and changes its
+files, over SSH (sftp) when SSH is on, that nginx reads them and, for PHP, that the
+site's PHP reads them and writes only in its `uploads` folder.
+
+**Certificate** has **How the website gets its certificate**:
+
+| Card | What it does |
+| --- | --- |
+| **From Let's Encrypt** | **Let's Encrypt checks that the names lead here, over port 80, then gives a certificate for 90 days; certd renews it.** It has the box **I agree to Let's Encrypt's terms of service**, **Contact email (optional)**, and, when the first name is longer than 64 characters, **A shorter name for the certificate**. The certificate is named for the first name. Not offered for a name without a dot |
+| **This machine's own** | **Browsers warn until they trust this machine's certificate; Certificates says how.** Offered when every name is one of this machine's own names, and then the default |
+| **One that is here** | **A certificate certd has already, which names every name of the site.** A list of those that are not revoked or past their end |
+| **None, HTTP only** | **Pages and passwords travel unencrypted.** In the warning colour |
+
+**What happens** is read with `website add --dry-run --json`, as an
+administrator, so a locked console says **The checks of the names, nginx and the
+folder, and the files, are read as an administrator. Unlock to see them.** with
+**Unlock**. It is read a moment after the form changes, and shows, as a list of
+what the page will do:
+
+- **Installs nginx first, from the catalog.**, and the same for PHP-FPM.
+- The certificate: **Gets a certificate for shop.example.org and
+  www.shop.example.org from Let's Encrypt; certd renews it by itself.**, **Serves
+  it with this machine's own certificate. Browsers warn until they trust it.**,
+  **Serves it with the certificate shop that is here.** or **Serves it over HTTP
+  only: pages and passwords travel unencrypted.**
+- The folder: **Makes /shared/www/sites/shop.example.org with a starter page,
+  owned by alice.** or **Keeps /shared/www/sites/shop.example.org as it is, owned
+  by alice.**
+- The site: **Adds nginx's site for both names, HTTPS only: http:// sends visitors
+  to https://.**, **Adds nginx's site for both names, over HTTP.**, or, for Let's
+  Encrypt, **Adds nginx's site for both names, then turns HTTPS on once the
+  certificate is got.**
+- **Restarts nginx once, to give it the certificate and port 443: Spark holds its
+  ports, so no visitor is turned away.** and **Turns PHP-FPM on.**
+- The firewall: **Nothing to change: ports 80 and 443 reach nginx (no rule closes
+  them)**, or **Rule 3 closes port 443** with **Open port 443**. That button opens
+  the port for 10 minutes as a trial, and a banner says **A port is open for a
+  while so that the website can be reached. Keep it once the website is live, or
+  undo it now.** with **Keep this change** and **Undo now** (see "Trying a change"). The page never
+  changes the firewall by itself.
+- The backups: **Nothing to change: /shared is in the nightly backup to nas**, or
+  **No backup place copies /shared yet** with **Add a backup place**; and
+  **Snapshots: /shared has a snapshot every day** or **Snapshots: snap.toml does
+  not name /shared, so the sites have none**.
+
+A check of the plan that fails stops the add: the button is off, and the page
+says **Put right what the plan says first.** and the check's words with its ID,
+such as a name that a site answers to already ([WEB-101](../../errors/WEB-101.md)),
+a certificate that does not name every name ([WEB-106](../../errors/WEB-106.md)),
+or nginx's own line ([WEB-103](../../errors/WEB-103.md)). A check that only warns
+is shown and does not stop it. Where commands are shown, **This runs** lists the
+commands, one for each step, as in the next part.
+
+**Add the website** adds it. **Preview the files first** opens **The files that
+adding the site writes**: each file the command would write, its path with **new**
+or **changes**, and its text with the line numbers. **Only a preview: nothing is
+written until Add the website is pressed.** **Cancel** goes back to the list.
+
+### Adding it
+
+**Add the website** runs the steps that apply, in order, and shows each as
+waiting, running, done or failed, under **Adding shop.example.org**:
+
+1. **Install nginx**, and **Install PHP-FPM** for a PHP site, when one is not
+   installed: `elevate bundle install org.nginx.nginx --for-everyone --yes
+   --sha256 HASH`, with the hash of the sheet the page read when the kind was
+   chosen. While it reads, the button says why it waits: **Reading the sheet of
+   nginx…**; when it cannot, **The sheet of nginx could not be read, so it cannot
+   be installed from here: read it in the apps first.**
+2. **Add shop.example.org**: `elevate website add shop.example.org --name
+   www.shop.example.org --kind php --owner alice`, with `--folder` for a folder
+   other than the usual and `--certificate` for this machine's own certificate or
+   one that is here.
+3. **Get the certificate for shop.example.org**, for Let's Encrypt only: `elevate
+   cert get shop.example.org --name shop.example.org --name www.shop.example.org
+   --agree-terms`. The site is added over HTTP first, since Let's Encrypt reaches
+   it by port 80.
+4. **Serve shop.example.org over HTTPS**: `elevate website https shop.example.org
+   --certificate shop.example.org`.
+
+When every step is done the page says **shop.example.org is live:
+https://shop.example.org/**, with **Open its page**, **Add another** and, when the
+box was ticked, **Make its database**, which opens **Add a database** for the site
+(see "Databases"). It is a button and not a step, since the password of a database
+is shown once and you must be there to keep it. For this machine's own
+certificate the page adds that browsers warn until they trust it.
+
+When a step fails, a banner says what stands, and a step is never undone by the
+page: each command takes back its own half-made change.
+
+| Failed at | What the page says | What it offers |
+| --- | --- | --- |
+| The install | **Nothing about the website was changed.** and the install's own words | **Try again**, **Change the form** |
+| The add | **Nothing was changed: the command took its changes back.** and the error's words, with nginx's line for [WEB-103](../../errors/WEB-103.md) | **Try again**, **Change the form** |
+| The certificate | **shop.example.org is live over HTTP. The certificate was not got: the site's page has Get the certificate to try again.** | **Open its page** |
+| HTTPS | **shop.example.org is live over HTTP, and certd keeps the certificate shop. Try again turns HTTPS on.** | **Try again**, **Open its page** |
+
+**Try again** starts at the step that failed, and says **Done already:** with the
+steps before it. A failed order for a certificate is not tried again by itself:
+certd keeps no order that failed, so the order is made again from the website's
+page.
+
+### A website's page
+
+A website's page has its first name as its title, its state in a pill, and for
+administrators **Check the sites**, which says what the list's does for this
+site. A banner tells when nginx does not run, and a banner for each problem found
+in the site's files, with its ID. It has these rows:
+
+| Row | What it says |
+| --- | --- |
+| Names | Each name, as a link to the site over `https` or `http` |
+| Serves | **PHP pages from /shared/www/sites/shop.example.org, owned by alice**, and, for an administrator whose session has the terminal, **Open the Terminal** |
+| HTTPS | As in the list, with the certificate as a link to **Certificates**, and **Ends Dec 14, certd renews it from Nov 14** |
+| Its database | The databases made for it that **Databases** has read since this page of the console was opened, as links, or **None that this page knows of**, and **Make its database** |
+| Its file | `/system/settings/websites/shop.example.org.conf` and **As website wrote it**, **Changed by hand · kept as you wrote it**, or **Added by hand · website does not write it, and keeps it as you wrote it**. **Show the file** shows its text, and a file changed by hand has a line that it is also a row of **What changed**, with **Keep it** and **Put back** (see "What changed") |
+
+The HTTPS row has the buttons for what can be done. For a website served over
+HTTP only: **Get a certificate**, which opens **Get a certificate for
+shop.example.org** with the checks of the names, the terms box, the email and
+**Get the certificate**, and runs `cert get` and then `website https`;
+**Use this machine's certificate**, when every name is one of its own; and **Use
+one that is here…**, which opens **Serve shop.example.org over HTTPS** and
+**Serve it over HTTPS**. nginx restarts once, since a certificate that nginx has
+not had is in its view only after a start, and Spark holds its ports, so no
+visitor is turned away. For a website served over HTTPS: **Turn HTTPS off…**,
+which asks **Turn HTTPS off for shop.example.org?**, says that pages and
+passwords then travel unencrypted and that the certificate stays in certd, and
+runs `website https shop.example.org --off`.
+
+A website whose file was changed by hand has none of these buttons: **The file
+was changed by hand, so website does not write it: add the HTTPS server yourself,
+as website(8) shows.** ([WEB-107](../../errors/WEB-107.md)). A site that nginx
+serves by a file that is not a website's at all, such as a server in `nginx.conf`,
+is **Set up by hand** and says **nginx serves this site by a file made by hand,
+which website does not change: add HTTPS to it yourself.**
+
+**Remove…** asks **Remove shop.example.org?**, says that it removes nginx's site,
+that its folder is kept unless the box below is ticked and that its certificate
+stays in certd, and says whether nginx restarts once, when no other site uses the
+certificate, or reads its settings again. **Also remove its folder
+/shared/www/sites/shop.example.org and everything in it** is not ticked, and
+warns that what is in it cannot be brought back from this server unless a
+snapshot has it. The name is typed first, **so that the website is not removed by
+a slip**. It runs `website remove shop.example.org`, with `--files` when the box
+is ticked, and says **shop.example.org is removed. Its folder is kept. Its
+certificate stays in certd.**
+
+### Who may do what
+
+Anyone who signs in can read the list and a website's page. An administrator whose
+console is unlocked checks, adds, serves over HTTPS, takes off HTTPS and removes.
+Each change is checked before anything is changed, and nginx's own check of the new
+set of sites runs first, so that a mistake never stops a site that runs; a change
+that nginx refuses, or a site that does not answer after it
+([WEB-104](../../errors/WEB-104.md)), is taken back. The commands are website(8)'s,
+so a person at a terminal does the same with `elevate website`.
+
+### On a phone
+
+The websites are cards, one to a row, with the same columns as labels. Every
+button and box is 44 pixels tall at least, and a name is a link of that height.
+The palette has each website, with its kind and whether it is **HTTP only** or
+**Changed by hand**, **Add a website**, **Get a certificate for NAME** for each
+website served over HTTP, and **Remove NAME**.
+
 ## Databases
 
 **Databases** makes the databases of PostgreSQL and the roles that own them, shows
@@ -3569,6 +3834,13 @@ records, each with **Copy**, and this server looks for them for up to 10
 minutes. certd renews a certificate proved by port 80 by itself; one proved by
 DNS is not renewed by itself, and certd warns 21 days and again 7 days before
 it ends. **This runs** shows `cert get`.
+
+Under the checks, **Where it is used** says who uses a certificate of that name:
+**shop.example.org is used by nginx.**, with the websites that use it as links, or
+**No nginx site answers for shop.example.org yet. The certificate is kept until a
+site uses it.** An administrator then has **Add a website**, which opens the page
+that adds one with the name, and the certificate when it is there, filled in (see
+"Websites").
 
 **Upload your own…** asks for the certificate's name, its chain and its private
 key, as text or as files. The server checks that the chain leads to an

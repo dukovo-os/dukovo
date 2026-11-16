@@ -286,6 +286,30 @@ certificate from `cert get` is one). Later
 renewals reach nginx without a restart, and requests being served are not
 lost.
 
+### A website's certificate
+
+A website that `website add` made names its own certificate, in its own
+file, and `website https` does it:
+
+```
+$ elevate cert get shop.example.org --name shop.example.org --name www.shop.example.org --agree-terms
+$ elevate website https shop.example.org --certificate shop.example.org
+```
+
+The certificate must name every name of the site, or `website https` refuses
+it and says which names it lacks ([WEB-106](../../errors/WEB-106.md)). A
+certificate got with `cert get` or added with `cert add` serves a site, and
+so does `this-machine` for a site whose names are all the machine's own.
+`website` adds the certificate to the `certificates` of
+nginx's service file by an override that it keeps, writes the HTTPS server
+of the site, makes port 80 answer with a redirect, and restarts nginx once,
+since a certificate nginx has not had before is in its view only after a
+start. Renewals then reach nginx without a restart, as for any service.
+`website add --certificate NAME` does it in one step for a certificate that
+is there. `website https NAME --off` serves the site over HTTP only again;
+the certificate stays in certd, and `cert remove` removes it. The chapter
+on [services](services.md#websites-a-file-each) has the rest of `website`.
+
 ### PostgreSQL
 
 PostgreSQL listens on the machine itself alone, with TLS off. Before you
@@ -320,7 +344,10 @@ the machine's name and its domain, which makes `this-machine` anew and tells wha
 changes for the browsers and phones that trusted the old one. See
 [Certificates](web-console.md#certificates), [Getting a
 certificate](web-console.md#getting-a-certificate) and [The machine's
-name](web-console.md#the-machines-name) in the chapter on the console.
+name](web-console.md#the-machines-name) in the chapter on the console. Under
+the checks of **Get a certificate from Let's Encrypt**, **Where it is used** says
+which websites use the name, and **Add a website** there opens the page that adds
+one, with the name filled in (see [Websites](web-console.md#websites)).
 
 ## Troubleshooting
 
