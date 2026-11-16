@@ -120,10 +120,11 @@ websites.plan are run: they answer with what a machine without nginx says.
 Nor are the Certificates page's changes but its reads: certificate.get asks
 Let's Encrypt for a certificate of names that are not this machine's,
 certificate.add reads its certificate and key from variables of the
-playbook that this test does not give, certificate.revoke and
-certificate.remove name the certificate shop, which only the boot test
-admin-certificates makes, and machine.rename would rename the lab machine,
-whose name its inventory and its console's certificate go by (SET_UP).
+playbook that this test does not give, certificate.revoke,
+certificate.remove and certificate.forget name the certificate shop, which
+only the boot test admin-certificates makes, and machine.rename would rename
+the lab machine, whose name its inventory and its console's certificate go by
+(SET_UP).
 console.certificate is tried, as the console's reach is (TRIED). Their tasks
 are the commands the console shows, which the boot test admin-certificates
 runs, and the browser test web-console/certificates uses.
@@ -243,9 +244,9 @@ UNDER = {"ssh.on", "ssh.off"}
 # restarts nginx.
 # certificate.get asks Let's Encrypt for names that are not this machine's;
 # certificate.add reads a certificate and its key from variables this test
-# does not give; certificate.revoke and certificate.remove name the
-# certificate shop, which only admin-certificates makes; machine.rename
-# would rename the lab machine.
+# does not give; certificate.revoke, certificate.remove and
+# certificate.forget name the certificate shop, which only admin-certificates
+# makes; machine.rename would rename the lab machine.
 # alerts.email, alerts.webhook-add and alerts.push-add take a password, an
 # address and a token or a subscription, which a task reads from variables of
 # the playbook that this test does not give, and each makes a channel that
@@ -270,7 +271,8 @@ SET_UP = {
     "security.unblock", "private.add", "private.remove",
     "updates.apply", "updates.unstage", "updates.undo", "updates.hold", "updates.unhold", "updates.later",
     "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
-    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "machine.rename",
+    "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "certificate.forget",
+    "machine.rename",
     "apps.tonight", "apps.tonight-all", "apps.not-tonight",
     "databases.add", "databases.password", "databases.allow", "databases.deny", "databases.remove",
     "apps.sheet", "apps.install",

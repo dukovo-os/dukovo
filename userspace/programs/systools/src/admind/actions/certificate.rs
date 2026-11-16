@@ -4,7 +4,8 @@
 //! The certificates' actions (ADR 0515): the list, one certificate,
 //! renewing one, what the checks before an order find, getting one from an
 //! authority as a task, adding one the person made, revoking, removing,
-//! and what certd and `cert` did. Each runs `cert`, cert(8), which reads
+//! what certd and `cert` did, and the certificates certd asks for again and
+//! stopping that. Each runs `cert`, cert(8), which reads
 //! the store certd keeps; a change runs as an administrator, as `elevate
 //! cert renew NAME` does at a terminal.
 //!
@@ -801,6 +802,81 @@ impl Action for History {
     }
 }
 
+/// `cert wanted --json`: the certificates that could not be got, which
+/// certd asks the authority for again, and how the tries went.
+pub struct Wanted;
+
+impl Action for Wanted {
+    const ID: &'static str = "certificate.wanted";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/certificates/wanted/all";
+    const RUNS: Runs = Runs::AsThePerson;
+    const TESTS: Tests = PAGE_TESTS;
+    const TITLE: &'static str = "Show the certificates certd tries to get again";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["cert", "wanted", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples {
+            good: vec![Nothing {}],
+            bad: vec![json!({ "name": "shop" }), json!({ "given_up": true })],
+            undo: None,
+        }
+    }
+}
+
+/// `cert forget NAME`: certd does not ask for the certificate again, and its
+/// alert goes. Nothing puts the record back: getting the certificate again
+/// makes a new one.
+pub struct Forget;
+
+impl Action for Forget {
+    const ID: &'static str = "certificate.forget";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/certificates/{name}/forget";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = PAGE_TESTS;
+    const TITLE: &'static str = "Stop trying to get a certificate";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        ["cert", "forget", args.name.as_str()].map(String::from).to_vec()
+    }
+
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.name.clone())
+    }
+
+    /// `cert wanted --json`, which everyone may run: the record is what the
+    /// change takes away.
+    fn probe(_: &Named) -> Option<Vec<String>> {
+        Some(["cert", "wanted", "--json"].map(String::from).to_vec())
+    }
+
+    /// The time of the first try of the record called `args.name`, or `none`
+    /// when certd has none.
+    fn probed(args: &Named, output: &str) -> Option<String> {
+        let wanted: Value = serde_json::from_str(output).ok()?;
+        let found =
+            wanted.get("wanted")?.as_array()?.iter().find(|entry| {
+                entry.get("name").and_then(Value::as_str) == Some(args.name.as_str())
+            });
+        Some(match found {
+            Some(entry) => entry.get("first_ms")?.to_string(),
+            None => "none".to_string(),
+        })
+    }
+
+    fn examples() -> Examples<Named> {
+        Examples { good: vec![Named { name: "shop".into() }], bad: bad_names(), undo: None }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{REGISTRY, Registered};
@@ -959,7 +1035,7 @@ mod tests {
     /// Each action of the Certificates page: its id, its address, whether it
     /// changes anything, who runs it, and the command its first example
     /// makes.
-    const PAGE: [(&str, &str, bool, Runs, &[&str]); 6] = [
+    const PAGE: [(&str, &str, bool, Runs, &[&str]); 8] = [
         (
             "certificate.check",
             "/api/1/certificates/check/{names}",
@@ -1010,6 +1086,20 @@ mod tests {
             false,
             Runs::AsThePerson,
             &["cert", "history", "--json"],
+        ),
+        (
+            "certificate.wanted",
+            "/api/1/certificates/wanted/all",
+            false,
+            Runs::AsThePerson,
+            &["cert", "wanted", "--json"],
+        ),
+        (
+            "certificate.forget",
+            "/api/1/certificates/{name}/forget",
+            true,
+            Runs::AsAdministrator,
+            &["cert", "forget", "shop"],
         ),
     ];
 
@@ -1078,6 +1168,17 @@ mod tests {
             panic!("the history is not found");
         };
         assert_eq!(history.id(), "certificate.history");
+        let Found::Action(wanted, _) = find(REGISTRY, false, "/api/1/certificates/wanted/all")
+        else {
+            panic!("the wanted certificates are not found");
+        };
+        assert_eq!(wanted.id(), "certificate.wanted");
+        let Found::Action(forget, params) = find(REGISTRY, true, "/api/1/certificates/shop/forget")
+        else {
+            panic!("forgetting is not found");
+        };
+        assert_eq!(forget.id(), "certificate.forget");
+        assert_eq!(params["name"], "shop");
     }
 
     #[test]
@@ -1364,6 +1465,36 @@ mod tests {
         assert_eq!(add.probed(&args, "nonsense"), None);
         let undo = add.example_values().2.unwrap();
         assert_eq!((undo.action, undo.args), ("certificate.remove", json!({ "name": "shop" })));
+    }
+
+    #[test]
+    fn forgetting_compares_the_first_try_of_the_record_and_nothing_puts_it_back() {
+        let forget = registered("certificate.forget");
+        let args = first_example("certificate.forget");
+        let prepared = forget.prepare(args.clone()).unwrap();
+        assert_eq!(prepared.probe.unwrap(), ["cert", "wanted", "--json"]);
+        assert!(forget.compares());
+        let wanted = r#"{"format": 1, "wanted": [
+            {"name": "blog", "first_ms": 1700000000000},
+            {"name": "shop", "first_ms": 1800000000000, "tries": 3}
+        ]}"#;
+        assert_eq!(forget.probed(&args, wanted).as_deref(), Some("1800000000000"));
+        // A certificate certd has no record of, and an answer that does not
+        // read.
+        assert_eq!(forget.probed(&args, r#"{"format": 1, "wanted": []}"#).as_deref(), Some("none"));
+        assert_eq!(forget.probed(&args, "not json"), None);
+        assert_eq!(forget.probed(&args, "[]"), None);
+        assert_eq!(forget.example_values().2.map(|undo| undo.action), None);
+        // The store is certd's: the change names no file.
+        assert!(prepared.files.is_empty());
+    }
+
+    #[test]
+    fn the_wanted_certificates_are_a_read_that_takes_nothing() {
+        let wanted = registered("certificate.wanted");
+        assert!(!wanted.compares());
+        assert_eq!(argv("certificate.wanted", json!({})), ["cert", "wanted", "--json"]);
+        assert!(wanted.prepare(json!({ "name": "shop" })).is_err());
     }
 
     #[test]
