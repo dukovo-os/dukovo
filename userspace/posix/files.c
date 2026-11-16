@@ -12,7 +12,8 @@
 // and the read-only /system; what each refuses, with Linux's errors; the
 // owners of descriptions and the modes of stdio streams; absolute links
 // beneath directory descriptors, the identity of a named pipe opened by
-// its path, a slash after the name an open makes, and close_range.
+// its path, a slash after the name an open makes, close_range, and the
+// space a removed tmpfs file gives back.
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -1017,6 +1018,23 @@ static void mapped(void) {
 	CHECK(!close(fd) && !unlink("/tmp/mapped"));
 }
 
+// A tmpfs charges a file by its length and gives the bytes back when the
+// file is removed, so that a program that writes a large file and removes
+// it can write another at once, as on Linux (tmpfs.rs: the directory's
+// name map must not keep the node until an RCU grace period ends).
+static void tmpfs_space_returns(void) {
+	struct statvfs vfs;
+	CHECK(statvfs("/tmp", &vfs) == 0 && vfs.f_bavail > 0);
+	off_t reach = (off_t)((uint64_t)vfs.f_bavail * vfs.f_frsize / 10 * 6);
+	static const char *const names[] = {"/tmp/space-a", "/tmp/space-b"};
+	for(int i = 0; i < 2; i++) {
+		int fd = open(names[i], O_RDWR | O_CREAT | O_TRUNC, 0644);
+		CHECK(fd >= 0);
+		CHECK(pwrite(fd, "x", 1, reach) == 1);
+		CHECK(!close(fd) && !unlink(names[i]));
+	}
+}
+
 // The folders by their plain names and by Unix's (ADRs 0113 and 0114):
 // each Unix name is a link to the folder that holds what it held, and
 // the .hidden of the root and of /system list them, so that ls leaves
@@ -1697,6 +1715,7 @@ int main(void) {
 	RUN(climbing);
 	RUN(path_forms);
 	RUN(mapped);
+	RUN(tmpfs_space_returns);
 	RUN(folder_names);
 	RUN(named_descriptors);
 	RUN(modes);

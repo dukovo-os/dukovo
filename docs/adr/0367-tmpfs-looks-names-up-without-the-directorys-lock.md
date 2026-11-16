@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0367. tmpfs looks names up without the directory's lock
 
-- Status: Accepted
+- Status: Accepted; the map holds its nodes weakly
 - Date: 2026-11-04
 
 ## Context
@@ -36,6 +36,12 @@ at.
   and sorted index. It changes them together, under its lock, in
   `add_name`, `remove`, `rename` and `rename_within`. `lookup` reads the
   map alone.
+- The map holds each node weakly. A removed name's link is freed after a
+  grace period, and a strong reference in it would keep the node alive
+  that long, with the bytes its file is charged for, where Linux gives
+  the space back when `unlink` returns. The entries and the open files own
+  the nodes. `lookup` upgrades the reference it finds, and a failed
+  upgrade is a name removed after the lookup: not found.
 
 ## Consequences
 

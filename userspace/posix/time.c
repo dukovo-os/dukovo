@@ -353,6 +353,29 @@ static void timers(void) {
 			;
 		CHECK(alarms == 1);
 	}
+	// An armed timer never reads as 0, as on Linux: getitimer turns the
+	// timer off and on again with what it read, so a 0 read for a timer
+	// that is due but has not sent its signal loses the signal. A read of
+	// 0 after the signal went out is right, though the handler may run a
+	// moment after the call that saw it, so a 0 read counts as a fault
+	// only if the signal never comes.
+	alarms = 0;
+	struct itimerval soon = {{0, 0}, {0, 1}};
+	CHECK(setitimer(ITIMER_PROF, &soon, NULL) == 0);
+	int zero_reads = 0;
+	start = check_now_ns();
+	while(!alarms && check_now_ns() - start < 2000000000LL) {
+		struct itimerval left;
+		CHECK(getitimer(ITIMER_PROF, &left) == 0);
+		if(alarms || left.it_value.tv_sec || left.it_value.tv_usec)
+			continue;
+		for(int wait = 0; wait < 200 && !alarms; wait++)
+			check_sleep_ms(1);
+		if(!alarms)
+			zero_reads++;
+	}
+	CHECK(zero_reads == 0);
+	CHECK(alarms == 1);
 	// alarm() says what was left of the last one.
 	CHECK(alarm(5) == 0);
 	CHECK(alarm(0) >= 4);

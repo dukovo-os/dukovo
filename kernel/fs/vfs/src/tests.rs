@@ -407,6 +407,19 @@ fn tmpfs_has_a_size_limit() {
 }
 
 #[test]
+fn tmpfs_gives_a_removed_files_space_back_at_once() {
+    let vfs = Vfs::new(tmpfs(1 << 20), "tmpfs").unwrap();
+    let root = vfs.root();
+    let big = std::vec![1u8; 700 << 10];
+    write(&vfs, &root, "a", &big).unwrap();
+    assert_eq!(write(&vfs, &root, "b", &big), Err(Error::NoSpace));
+    vfs.remove(&K, &root, "a").unwrap();
+    assert_eq!(vfs.stat(&K, &root, "a").err(), Some(Error::NotFound));
+    write(&vfs, &root, "b", &big).unwrap();
+    assert_eq!(vfs.stat(&K, &root, "b").unwrap().size, big.len() as u64);
+}
+
+#[test]
 fn paths_stay_beneath_their_directory() {
     let vfs = vfs();
     let root = vfs.root();
