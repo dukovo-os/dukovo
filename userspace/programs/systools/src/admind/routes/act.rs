@@ -134,8 +134,16 @@ pub async fn action(
     }
     let job = tokio::task::spawn_local(async move {
         if let (Some(read), Some(came)) = (&prepared.cuts_off, &came) {
-            refuse_cutting_off(&shared, &prepared, read, came, live.as_ref(), token.as_ref())
-                .await?;
+            let refused =
+                refuse_cutting_off(&shared, &prepared, read, came, live.as_ref(), token.as_ref())
+                    .await;
+            // A refusal here, of the caller's rights or of the cut, is logged
+            // as one of the run's own is.
+            if let Err(failure) = refused {
+                let done = Err(failure);
+                said(peer, prepared.action, &whose, &done);
+                return done.and_then(|done: Done| run::answer(&prepared, &done.ran, done.changed));
+            }
         }
         let begun = prepared
             .action
