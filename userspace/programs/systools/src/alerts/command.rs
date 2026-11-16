@@ -98,6 +98,12 @@ pub(crate) fn active() -> Result<Vec<Active>, Fail> {
     items(&request("list"), WAIT, false)
 }
 
+/// Where the channels stand now, as `alerts status` shows them, for a
+/// caller that is root.
+pub(crate) fn channels() -> Result<Vec<Channel>, Fail> {
+    items(&request("status"), WAIT, false)
+}
+
 /// What the command line asks for.
 #[derive(Debug, PartialEq, Eq)]
 enum Command {

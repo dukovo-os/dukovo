@@ -20,8 +20,9 @@ it finds
 hurts: whether other machines can reach more than they should, whether
 SSH takes passwords from anyone, whether an account has no password,
 whether an update is waiting, whether the clock was set, whether a
-service gave up, whether an early warning is still active, and whether
-the people's files have snapshots. It says for each thing whether it
+service gave up, whether an early warning is still active, whether
+alerts reach anyone beyond the screen, and whether the people's files
+have snapshots. It says for each thing whether it
 passed, gave a warning, failed, or could not be looked at. It needs an
 administrator, since it reads the password hashes and the firewall: run
 it with *elevate*(8), which a person who is not one is told, in one
@@ -55,8 +56,9 @@ time     clock                 passed   synchronized 4 min ago
 services failed                passed   none gave up
 health   early warnings        passed   none active
 health   hardware              skipped  hardware check has not run on this computer
+alerts   reach                 passed   no channel is set up: alerts reach this server's screens
 backups  snapshots             passed   a snapshot of /users and /shared is made each day
-13 passed, 1 warning, 1 skipped
+14 passed, 1 warning, 1 skipped
 ```
 
 A check that was skipped did not run, and says why; it is not a fault. A
@@ -123,6 +125,9 @@ its result in the same way.
 |  health
 :  hardware
 :  The last *hardware check* warned or failed: one line for each of its warnings and failures, under its own HW ID. Skipped when none has run: *dukovo-check* does not run one, which takes minutes
+|  alerts
+:  reach
+:  At least one channel is set up (an email account, a webhook or a browser, as *alerts status* lists them), and none took a message in the last 24 hours while each failed in that time: its last failure is within 24 hours and later than its last success, or it has never had one (*SEC-170*). It passes, saying which channels took a message, when one did; when channels are set and have had nothing to send; and, with the words "no channel is set up: alerts reach this server's screens", on a computer with none, which is how every computer is installed. It is skipped, as "alertd did not answer", when *alertd*(8) cannot be asked
 |  backups
 :  snapshots
 :  The *snap* service is off, or _snap.toml_ leaves out _/users_ or _/shared_ (*SEC-160*)
@@ -182,7 +187,7 @@ one. A run that Ctrl-C stopped keeps no result.
       "detail": "hardware check has not run on this computer"
     }
   ],
-  "counts": { "passed": 13, "warning": 1, "failed": 0, "skipped": 1 }
+  "counts": { "passed": 14, "warning": 1, "failed": 0, "skipped": 1 }
 }
 ```
 
@@ -196,8 +201,8 @@ _checked_ is when the run ended, in UTC, and _release_ the release of the
 system that ran it.
 
 Each of _results_, in the order of the report, has an _area_, one of
-*network*, *ssh*, *accounts*, *updates*, *time*, *services*, *health* and
-*backups*; the name of the _check_ as the report gives it; a _result_ of
+*network*, *ssh*, *accounts*, *updates*, *time*, *services*, *health*,
+*alerts* and *backups*; the name of the _check_ as the report gives it; a _result_ of
 *passed*, *warning*, *failed* or *skipped* (in lower case here, where the
 report writes *FAILED*); and a _detail_. A warning or a failure also has
 an _id_ and a _fix_, a sentence on what to do; they are left out of a
@@ -213,7 +218,7 @@ Each run also writes one line to the log, at the level of its status
 checks ended each way and the IDs it found:
 
 ```
-dukovo-check: check ended with status 2: 13 passed, 1 warning, 1 skipped (SEC-110)
+dukovo-check: check ended with status 2: 14 passed, 1 warning, 1 skipped (SEC-110)
 ```
 
 *log -s dukovo-check* shows them (*log*(1)).
@@ -262,6 +267,9 @@ says what it means, why it matters and what to do.
 |  SEC-160
 :  backups
 :  No snapshot is made of _/users_ and _/shared_
+|  SEC-170
+:  alerts
+:  No alert has reached anyone for a day: each channel that is set up failed, and none took a message
 
 A line of *health* that repeats another tool's finding has that tool's
 ID: *MET-101* to *MET-104* for the early warnings of *metricsd*(8), and

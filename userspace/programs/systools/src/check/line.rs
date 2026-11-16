@@ -19,6 +19,7 @@ pub(crate) enum Area {
     Time,
     Services,
     Health,
+    Alerts,
     Backups,
 }
 
@@ -32,6 +33,7 @@ impl Area {
             Area::Time => "time",
             Area::Services => "services",
             Area::Health => "health",
+            Area::Alerts => "alerts",
             Area::Backups => "backups",
         }
     }
@@ -78,12 +80,13 @@ pub(crate) enum Problem {
     ClockNotSet,
     ServiceGaveUp,
     NoSnapshots,
+    NoAlertReached,
 }
 
 impl Problem {
     /// Every problem, for the tests that check each one's ID and advice.
     #[cfg(test)]
-    pub(crate) const ALL: [Problem; 12] = [
+    pub(crate) const ALL: [Problem; 13] = [
         Problem::FirewallAllowsAll,
         Problem::FirewallOff,
         Problem::SshPasswords,
@@ -96,6 +99,7 @@ impl Problem {
         Problem::ClockNotSet,
         Problem::ServiceGaveUp,
         Problem::NoSnapshots,
+        Problem::NoAlertReached,
     ];
 
     pub(crate) fn id(self) -> &'static str {
@@ -112,6 +116,7 @@ impl Problem {
             Problem::ClockNotSet => "SEC-140",
             Problem::ServiceGaveUp => "SEC-150",
             Problem::NoSnapshots => "SEC-160",
+            Problem::NoAlertReached => "SEC-170",
         }
     }
 
@@ -164,6 +169,10 @@ impl Problem {
             Problem::NoSnapshots => {
                 "Put /users and /shared in the places of /system/settings/snap.toml, and start \
                  the snapshots with elevate service snap start."
+            }
+            Problem::NoAlertReached => {
+                "Run elevate alerts status to see why each channel failed and follow the page of \
+                 its ID, then run elevate alerts test to try them again."
             }
         }
     }
