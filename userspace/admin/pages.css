@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  *
  * What only some pages draw: the range control, the Overview's grid, the
- * account's choices and the list of log lines (lib/log-list.js). The
+ * account's choices, the list of log lines (lib/log-list.js) and the steps
+ * of a flow (lib/steps.js). The
  * entries of those pages name this file, so that the shell's start does not
  * carry it. Icons are not here: every one has its rule in console.css and its
  * file in icons/. Same rules as console.css: rem, and px for borders and focus
@@ -66,4 +67,26 @@
   .dk .lline.on .lrow { outline: 2px solid Highlight; outline-offset: -2px; box-shadow: none; }
   .dk .lv { forced-color-adjust: none; background: CanvasText; }
   .dk .lv.d { background: none; border-color: CanvasText; }
+}
+
+/* The steps of a flow (lib/steps.js): a round tick, the step's title with its
+   state in words, the last line of what it printed and, when it failed, what
+   stands. The tick is never the only sign: the word beside it says it too. */
+.chk-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .714rem; }
+.chk-list li { display: flex; gap: .714rem; align-items: flex-start; }
+.chk-list .tick { margin-top: .143rem; }
+.tick.run { border-color: var(--accent); box-shadow: inset 0 0 0 .214rem var(--bg), inset 0 0 0 1rem var(--accent); }
+.tick.bad { background: var(--bad); border-color: var(--bad); color: var(--bg); }
+.flow-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .286rem; }
+.flow-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .143rem .571rem; }
+.flow-head b { min-width: 0; overflow-wrap: anywhere; }
+.flow-state { font-size: .929rem; color: var(--muted); }
+.flow-step[data-state="failed"] .flow-state { color: var(--bad); font-weight: 600; }
+.flow-line, .flow-stands { margin: 0; overflow-wrap: anywhere; }
+.flow-problem:empty { display: none; }
+.flow-problem:focus { outline: none; }
+.flow-problem:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (forced-colors: active) {
+  .dk .tick.run { forced-color-adjust: none; border-color: Highlight; box-shadow: inset 0 0 0 1rem Highlight; }
+  .dk .tick.bad { forced-color-adjust: none; background: CanvasText; border-color: CanvasText; color: Canvas; }
 }
