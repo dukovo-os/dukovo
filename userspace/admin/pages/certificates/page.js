@@ -18,7 +18,9 @@ import { makeName } from './name.js';
 import { machineOf } from './name-model.js';
 import { makeRenewals } from './renewals.js';
 
-const READS = { list: '/api/1/certificates', history: '/api/1/certificates/history/all', signIn: '/api/1/security/sign-in' };
+const READS = {
+  list: '/api/1/certificates', history: '/api/1/certificates/history/all', signIn: '/api/1/security/sign-in', sites: '/api/1/websites',
+};
 const ABOUT = '/api/1/console/about';
 const MACHINE = '/api/1/machine/name';
 const TASKS = '/api/1/tasks';
@@ -30,8 +32,9 @@ export async function show(view) {
   // The form is the biggest part of the page, and is read while the first reads are asked.
   const gotGet = import('./get.js');
   const admin = view.session.admin === true;
+  // `sites` is what the websites say they serve with; null until read, and left so when they could not be.
   const data = {
-    list: null, history: null, serving: null, machine: null, about: null,
+    list: null, history: null, serving: null, machine: null, about: null, sites: null,
   };
   let latest = 0;
   let stopped = false;
@@ -124,6 +127,7 @@ export async function show(view) {
     data.list = Array.isArray(value('list')) ? value('list') : undefined;
     data.history = Array.isArray(value('history')) ? value('history') : undefined;
     data.serving = value('signIn')?.console?.certificate ?? data.serving;
+    data.sites = value('sites') ?? data.sites;
     if (first) {
       data.about = value('about') ?? null;
       data.machine = value('machine') === undefined ? undefined : machineOf(value('machine'));

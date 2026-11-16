@@ -216,6 +216,57 @@ test('the names are checked when the field is left, and the checks are drawn wit
   assert.match(text(form(page)), /Whether port 80 reaches this server from outside can only be told by asking\. Try it first asks/);
 });
 
+test('Where it is used names each website that serves with the certificate, each a link to its page', async (context) => {
+  const page = await openCertificates(context);
+  assert.ok(page.calls.includes('/api/1/websites'));
+  await typeNames(page);
+  const used = form(page).querySelectorAll('p').find((one) => /is used by nginx/.test(one.textContent));
+  assert.equal(text(used), 'shop.example.org is used by nginx. The website that uses it: shop.example.org.');
+  assert.equal(link(used, 'shop.example.org').getAttribute('href'), '/websites/shop.example.org');
+  assert.equal(link(used, 'Add a website'), undefined, 'a certificate that is used has no Add a website beside it');
+});
+
+test('a certificate that two websites use names both, with the last after "and"', async (context) => {
+  const sites = { websites: [
+    { name: 'shop.example.org', names: ['shop.example.org'], certificate: 'shop.example.org' },
+    { name: 'blog', names: ['blog.example.org'], certificate: 'shop.example.org' },
+  ] };
+  const page = await openCertificates(context, { world: { reads: { '/api/1/websites': sites } } });
+  await typeNames(page);
+  const used = form(page).querySelectorAll('p').find((one) => /is used by nginx/.test(one.textContent));
+  assert.equal(text(used), 'shop.example.org is used by nginx. The websites that use it: shop.example.org and blog.example.org.');
+  assert.deepEqual(used.querySelectorAll('a').map((one) => one.getAttribute('href')), ['/websites/shop.example.org', '/websites/blog']);
+});
+
+test('a name nothing uses yet has the way to add a website for it, with the name already in the form', async (context) => {
+  const page = await openCertificates(context);
+  await typeNames(page, 'new.example.org');
+  const used = form(page).querySelectorAll('p').find((one) => /No nginx site answers/.test(one.textContent));
+  assert.equal(text(used), 'No nginx site answers for new.example.org yet. The certificate is kept until a site uses it. Add a website');
+  assert.equal(link(used, 'Add a website').getAttribute('href'), '/websites/add?name=new.example.org');
+});
+
+test('a certificate that is kept and unused has the way to add a website that serves with it', async (context) => {
+  const page = await openCertificates(context);
+  await typeNames(page, 'photos.example.org');
+  const used = form(page).querySelectorAll('p').find((one) => /No nginx site answers/.test(one.textContent));
+  assert.equal(link(used, 'Add a website').getAttribute('href'), '/websites/add?name=photos.example.org&certificate=photos.example.org');
+});
+
+test('the websites are a read that anyone may make, a reader included, and a failed read is not shown to them', async (context) => {
+  const page = await openCertificates(context, { session: { admin: false } });
+  assert.ok(page.calls.includes('/api/1/websites'));
+  assert.deepEqual(page.problems, []);
+});
+
+test('websites that cannot be read leave the line as it was, and no problem is shown for it', async (context) => {
+  const page = await openCertificates(context, { world: { reads: { '/api/1/websites': refusal('ADM-123', 'The command failed', 422) } } });
+  await typeNames(page);
+  assert.match(text(form(page)), /shop\.example\.org is used by nginx\./);
+  assert.doesNotMatch(text(form(page)), /The website that uses it/);
+  assert.deepEqual(page.problems, []);
+});
+
 test('a name that cannot be asked for is told under the field and nothing is read', async (context) => {
   const page = await openCertificates(context);
   await typeNames(page, '*.example.org');

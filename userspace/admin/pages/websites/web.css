@@ -2,3 +2,105 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
+
+/*
+ * The Websites pages: the list, Add a website with what happens beside it, and
+ * a site's page. On a phone the table becomes a card for each site, the two
+ * columns of Add a website are one, the files of the preview fill the screen,
+ * and every button and box is 44 px tall, under the container query the shell
+ * uses (a dialog is outside the page, so the window decides for it). Same rules
+ * as console.css: rem, and px for borders and focus rings.
+ */
+.web-page { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.web-page p { margin: 0; }
+.web-errors:empty, .web-flow:empty, .web-after:empty, .web-run-slot:empty, .web-trials:empty, .web-checks:empty, .web-unlock:empty { display: none; }
+.web-list, .web-site, .web-form, .web-after, .web-flow { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+.web-empty { display: flex; flex-direction: column; gap: .714rem; align-items: flex-start; padding: 1.143rem; border: 1px dashed var(--border); border-radius: .429rem; }
+.web-foot { display: flex; flex-wrap: wrap; align-items: center; gap: .571rem 1rem; }
+.web-tone-warn { color: var(--warn); }
+.tbl small.web-tone-warn { color: var(--warn); }
+.web-check { display: flex; flex-direction: column; gap: .571rem; min-width: 0; }
+.web-check:empty { display: none; }
+
+/* Add a website: the form, and what happens beside it */
+.web-add { display: flex; flex-wrap: wrap; gap: 1.143rem; align-items: flex-start; }
+.web-form { flex: 999 1 32.5rem; }
+.web-side { flex: 1 1 24rem; min-width: 0; display: flex; flex-direction: column; gap: .857rem; }
+.web-body { display: flex; flex-direction: column; gap: .857rem; min-width: 0; }
+.web-area { height: auto; padding: .357rem .571rem; resize: vertical; }
+.web-cards .web-card { display: flex; flex-direction: column; gap: .571rem; }
+.web-cards .radio-card > span { display: flex; flex-direction: column; gap: .143rem; }
+.web-cards .radio-card.web-warn { border-color: rgba(201, 138, 27, .6); }
+.web-words { overflow-wrap: anywhere; }
+.web-why { color: var(--warn); }
+.web-sub { display: flex; flex-direction: column; gap: .714rem; padding: .143rem .857rem .571rem 2.286rem; }
+.web-sub .banner > div { gap: .571rem; }
+.web-card-body { display: flex; flex-direction: column; gap: .857rem; }
+.web-checks-box { display: flex; flex-direction: column; gap: .429rem; }
+.web-checks-box h3, .web-runs h3, .web-flow h2, .web-after h2 { margin: 0; font: 600 .929rem var(--font-ui); }
+.web-name-checks { gap: .429rem; }
+.web-name-checks li { overflow-wrap: anywhere; }
+.web-rows { gap: .571rem; }
+.web-rows li { overflow-wrap: anywhere; }
+.web-rows .ic.ok { color: var(--ok); }
+.web-rows .ic.warn { color: var(--warn); }
+.web-checks { display: flex; flex-direction: column; gap: .429rem; }
+.web-checks p { display: flex; gap: .429rem; align-items: flex-start; overflow-wrap: anywhere; }
+.web-unlock { display: flex; flex-direction: column; gap: .571rem; align-items: flex-start; }
+.web-runs { display: flex; flex-direction: column; gap: .429rem; }
+.web-runs[hidden], .web-unlock[hidden] { display: none; }
+.web-trials { display: flex; flex-direction: column; gap: .714rem; }
+.web-run-slot { display: flex; flex-direction: column; gap: 1rem; }
+.web-steps { min-width: 0; }
+.web-after { align-items: flex-start; }
+
+/* A site's page */
+.web-names { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .143rem; overflow-wrap: anywhere; }
+.web-site .rows dd { overflow-wrap: anywhere; }
+.web-site .rows dd .btns { margin-top: .429rem; flex-wrap: wrap; }
+.web-file { display: flex; flex-direction: column; gap: .429rem; min-width: 0; }
+.web-file-head { display: flex; flex-wrap: wrap; align-items: center; gap: .286rem .571rem; overflow-wrap: anywhere; }
+.web-file-text { padding: .571rem .714rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--sunken); overflow-x: auto; max-height: 28rem; }
+.web-file-text:focus-visible, .web-lines:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* The preview of the files: each line has its number */
+.web-preview { max-width: 50rem; }
+.web-lines { padding: .571rem .714rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--sunken); overflow-x: auto; max-height: 22rem; white-space: pre; overflow-wrap: normal; }
+.web-line { display: block; }
+.web-no { display: inline-block; min-width: 2.2rem; margin-right: .714rem; color: var(--muted); text-align: right; user-select: none; }
+
+/* The phone: one column, a card for each site, and buttons and boxes of 44 px */
+@container (max-width: 51.4rem) {
+  .web-list .tbl-box { border: 0; }
+  .web-list .tbl.stack tr { margin: .571rem 0; }
+  .web-list .tbl.stack td::before { margin-bottom: .143rem; }
+  .web-list td[data-label="Site"] a { display: inline-flex; align-items: center; min-height: 3.143rem; }
+  .web-add { flex-direction: column; align-items: stretch; }
+  .web-form, .web-side { flex: 1 1 auto; width: 100%; }
+  .web-sub { padding-left: .857rem; }
+  .web-page .btns { flex-direction: column; align-items: stretch; }
+  .web-page .btn, .web-page .input, .web-page .select { min-height: 3.143rem; box-sizing: border-box; }
+  .web-page .btn { text-align: center; justify-content: center; }
+  .web-page label.check { min-height: 3.143rem; align-items: center; }
+  .web-page .rows { grid-template-columns: minmax(0, 1fr); gap: .143rem; }
+  .web-page .rows dd { margin-bottom: .571rem; }
+  .web-page .web-area { min-height: 7rem; }
+  .web-names a, .web-page .rows a { display: inline-flex; align-items: center; min-height: 3.143rem; }
+}
+
+/* The preview is outside the page, so the window decides: the whole screen on a phone. */
+@media (max-width: 51.4rem) {
+  dialog.web-preview { max-width: none; width: 100%; height: 100%; max-height: 100%; margin: 0; border: 0; border-radius: 0; }
+  dialog.web-preview > form { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  dialog.web-preview .dialog-body { flex: 1 1 auto; overflow-y: auto; }
+  dialog.web-preview .dialog-head, dialog.web-preview .dialog-foot { border-radius: 0; }
+  .web-lines { max-height: none; }
+}
+
+/* Forced colours: the empty state, the file boxes and the card marked as a warning keep an outline. */
+@media (forced-colors: active) {
+  .dk .web-empty { border-color: CanvasText; }
+  .dk .web-file-text, .dk .web-lines { border-color: CanvasText; }
+  .dk .web-cards .radio-card.web-warn { border-color: CanvasText; }
+  .dk .web-cards .radio-card.on { outline: 2px solid Highlight; outline-offset: -2px; }
+}

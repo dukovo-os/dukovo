@@ -110,6 +110,13 @@ the commands the console shows, which the boot test admin-websites runs, and
 the browser test web-console/databases uses. databases.list is run: it
 answers with what a machine without PostgreSQL says.
 
+Nor are the Websites' changes (SET_UP): websites.add, websites.https and
+websites.remove need nginx installed and on, and a site to work on, which a
+lab machine has not, and each restarts or reloads nginx. Their tasks are the
+commands the console shows, which the boot test admin-websites runs, and the
+browser test web-console/websites uses. websites.list, websites.check and
+websites.plan are run: they answer with what a machine without nginx says.
+
 Nor are the Certificates page's changes but its reads: certificate.get asks
 Let's Encrypt for a certificate of names that are not this machine's,
 certificate.add reads its certificate and key from variables of the
@@ -165,8 +172,9 @@ from console import (
 # history they read; checks.run runs dukovo-check, as checks.last does; the
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
-# Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps and
-# Databases pages whose examples need what only their tests set up (SET_UP); and the grow of a
+# Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps,
+# Databases and Websites pages whose examples need what only their tests set up
+# (SET_UP); and the grow of a
 # second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
@@ -208,6 +216,9 @@ UNDER = {"ssh.on", "ssh.off"}
 # databases.remove need PostgreSQL installed and on, and a database to work
 # on, which a lab machine has not; databases.allow and databases.deny also
 # make PostgreSQL listen on the network and restart.
+# websites.add, websites.https and websites.remove need nginx installed and on
+# and a site to work on, which a lab machine has not, and each reloads or
+# restarts nginx.
 # certificate.get asks Let's Encrypt for names that are not this machine's;
 # certificate.add reads a certificate and its key from variables this test
 # does not give; certificate.revoke and certificate.remove name the
@@ -227,6 +238,7 @@ SET_UP = {
     "apps.tonight", "apps.tonight-all", "apps.not-tonight",
     "databases.add", "databases.password", "databases.allow", "databases.deny", "databases.remove",
     "apps.sheet", "apps.install",
+    "websites.add", "websites.https", "websites.remove",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.

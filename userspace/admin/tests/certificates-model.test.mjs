@@ -402,6 +402,29 @@ test('how an order ended is said in words', () => {
   assert.match(get.TRY_WORDS, /Try it first asks Let's Encrypt's staging authority, installs nothing and does not count against Let's Encrypt's limits/);
 });
 
+test('where a certificate is used names the websites that serve with it, and the way to add one when nothing does', () => {
+  const sites = { websites: [
+    { name: 'shop.example.org', names: ['shop.example.org', 'www.shop.example.org'], certificate: 'shop.example.org' },
+    { name: 'blog', names: ['blog.example.org'], certificate: 'shop.example.org' },
+    { name: 'photos.example.org', names: ['photos.example.org'], certificate: null },
+  ] };
+  const line = get.whereUsedLine('shop.example.org', list(), ['shop.example.org'], sites);
+  assert.equal(line.words, 'shop.example.org is used by nginx.');
+  assert.deepEqual(line.sites, [
+    { name: 'shop.example.org', first: 'shop.example.org', href: '/websites/shop.example.org' },
+    { name: 'blog', first: 'blog.example.org', href: '/websites/blog' },
+  ]);
+  assert.equal(line.add, null, 'a certificate that is used has no Add a website beside it');
+  // A certificate that nothing uses is offered a site, with its name and the certificate when it is one that is here.
+  assert.equal(get.whereUsedLine('new.example.org', list(), ['new.example.org'], sites).add, '/websites/add?name=new.example.org');
+  assert.equal(get.whereUsedLine('photos.example.org', list(), ['photos.example.org'], sites).add, '/websites/add?name=photos.example.org&certificate=photos.example.org');
+  assert.equal(get.whereUsedLine('*.example.org', list(), ['*.example.org'], sites).add, '/websites/add', 'a wildcard is no name of a site');
+  // The websites that could not be read leave the words as they were.
+  assert.deepEqual(get.whereUsedLine('shop.example.org', list(), ['shop.example.org'], null), { words: 'shop.example.org is used by nginx.', sites: [], add: null });
+  // A site that serves with a certificate which certd does not list as used still means nginx uses it.
+  assert.equal(get.whereUsedLine('photos.example.org', list(), ['photos.example.org'], { websites: [{ name: 'p', certificate: 'photos.example.org' }] }).words, 'photos.example.org is used by nginx.');
+});
+
 test('the machine is read from hostnamectl, and its full name is its name and domain', () => {
   assert.deepEqual(name.machineOf(machineWithDomain()), {
     name: 'duke-nas.example.org', first: 'duke-nas', domain: 'example.org', local: 'duke-nas.local',

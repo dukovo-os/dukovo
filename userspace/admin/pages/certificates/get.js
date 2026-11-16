@@ -13,7 +13,7 @@ import { stepWords } from '../../lib/tasks-words.js';
 import { button, makeCard, setOff } from './cards.js';
 import {
   certName, checkPath, checkRows, DNS_RENEWAL, EMAIL_HINT, endedWords, getArgs, isReport, namesOf, namesProblem, openPortArgs,
-  PORT_TRY_SECONDS, plan, PROOFS, recordLine, recordsOf, TRY_DNS_WORDS, TRY_WORDS, termsLink, waitsForRecords, whereUsed,
+  PORT_TRY_SECONDS, plan, PROOFS, recordLine, recordsOf, TRY_DNS_WORDS, TRY_WORDS, termsLink, waitsForRecords, whereUsedLine,
 } from './get-model.js';
 import { suggestedDomain } from './model.js';
 
@@ -28,6 +28,17 @@ const running = (task) => task !== null && (task.state === 'running' || task.sta
 const MARKS = Object.freeze({
   ok: ['ok', 'Passed'], warn: ['warn', 'Warning'], bad: ['bad', 'Failed'], skip: ['off', 'Left out'],
 });
+
+/** The line of where a certificate is used, as nodes: the words, the websites that use it as links, and for an administrator the way to add one when none does. */
+function usedWords(line, admin) {
+  const links = line.sites.map((one) => h('a', { href: one.href }, one.first));
+  const joined = links.flatMap((link, at) => [at > 0 && (at === links.length - 1 ? ' and ' : ', '), link]);
+  return [
+    line.words,
+    links.length > 0 && [` ${links.length === 1 ? 'The website' : 'The websites'} that ${links.length === 1 ? 'uses' : 'use'} it: `, joined, '.'],
+    admin && line.add && [' ', h('a', { href: line.add }, 'Add a website')],
+  ];
+}
 
 /** The card. `ctx` is the page's (see page.js). Gives `{element, errors, draw, fill, adopt, running}`. */
 export function makeGet(ctx) {
@@ -139,7 +150,7 @@ export function makeGet(ctx) {
       else one.removeAttribute('aria-describedby');
     }
     fill(terms, 'Getting it agrees to ', termsLink(report) ? h('a', { href: termsLink(report), rel: 'noopener', target: '_blank' }, 'Let\'s Encrypt\'s terms of service') : 'Let\'s Encrypt\'s terms of service', '.');
-    fill(used, typed.length > 0 && rows !== null && whereUsed(certName(typed) ?? typed[0], ctx.data.list, typed));
+    fill(used, typed.length > 0 && rows !== null && usedWords(whereUsedLine(certName(typed) ?? typed[0], ctx.data.list, typed, ctx.data.sites), admin));
     drawCommand(p);
     fill(proof, dns() && `${DNS_RENEWAL} ${TRY_DNS_WORDS}`);
     drawProgress();
