@@ -22,6 +22,7 @@
 .hw-at .field { margin: 0; }
 .hw input[type="time"] { width: 9rem; }
 .hw .cmdtext { margin: 0; overflow-x: auto; }
+.hw-unit { display: flex; align-items: center; justify-content: flex-end; gap: .571rem; }
 @container (min-width: 51.5rem) {
   .hw { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hw > p, .hw-wide { grid-column: 1 / -1; }

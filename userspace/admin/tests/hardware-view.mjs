@@ -10,7 +10,7 @@ import { ApiError } from '../api.js';
 import { setUnlockSeconds } from '../unlock.js';
 import { usePage } from './fake-dom.mjs';
 import {
-  about, history, inventory, last, NOW, show, storage, time,
+  about, highest, history, inventory, last, NOW, sensors, show, storage, time, updates,
 } from './hardware-fixtures.mjs';
 
 /** Lets what waits on a promise run, as a click does. */
@@ -20,6 +20,17 @@ export const settle = async () => {
 
 /** The button of `root` whose words are `words`. */
 export const buttonOf = (root, words) => root.querySelectorAll('button').find((one) => one.textContent.trim() === words);
+
+/** Puts a `localStorage` in place that holds `entries` (the name the console keeps it under, then what it keeps), gives its map, and takes it away when the test ends. */
+export function useStore(context, entries = {}) {
+  const store = new Map(Object.entries(entries).map(([name, value]) => [`dukovo-admin.${name}`, JSON.stringify(value)]));
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: { getItem: (name) => store.get(name) ?? null, setItem: (name, value) => store.set(name, value), removeItem: (name) => store.delete(name) },
+    configurable: true,
+  });
+  context.after(() => { delete globalThis.localStorage; });
+  return store;
+}
 
 /** An admind refusal, as `api.js` raises it. */
 export const refusal = (id, title, status = 409) => new ApiError({
@@ -34,6 +45,9 @@ export const reads = () => ({
   '/api/1/hardware/history': history(),
   '/api/1/console/about': about(),
   '/api/1/storage': storage(),
+  '/api/1/hardware/sensors': sensors(),
+  '/api/1/hardware/highest': highest(),
+  '/api/1/updates/history': updates(),
   '/api/1/tasks': { tasks: [] },
   '/api/1/power': { shutdown: null },
   '/api/1/accounts': [{ name: 'chase', uid: 1000, console: true }],
@@ -69,6 +83,7 @@ export async function openHardware(context, {
   const notes = [];
   const expected = [];
   const listeners = {};
+  const timers = [];
   const view = {
     main: page.document.createElement('main'),
     slot: page.document.createElement('div'),
@@ -82,6 +97,7 @@ export async function openHardware(context, {
     prefs: { theme: 'dark', zone: 'UTC', commands: 'hidden' },
     head: (options) => { view.headed = options; },
     on: (event, listener) => { (listeners[event] ??= []).push(listener); },
+    every: (ms, fn) => timers.push([ms, fn]),
     go: () => {},
     notice: (words, options) => notes.push([words, options]),
     problem: (error, where) => problems.push([error, where]),
@@ -132,6 +148,11 @@ export async function openHardware(context, {
     answers,
     ran: (action) => ran.filter((call) => call[0] === action).map((call) => call[1]),
     ranWith: (action) => ran.filter((call) => call[0] === action),
+    /** Lets the minute pass `ms` long, as the shell does for a page that is seen. */
+    tick: async (ms) => {
+      for (const [every, fn] of timers) if (every === ms) await fn();
+      await settle();
+    },
     emit: async (event, data) => {
       for (const listener of listeners[event] ?? []) await listener(data);
       await settle();

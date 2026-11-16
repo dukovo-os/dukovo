@@ -10,10 +10,10 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, broken, clean, inventory, last, NOW, show, skipped, task,
+  about, broken, clean, inventory, last, NOW, sensors, show, skipped, storage, task,
 } from './hardware-fixtures.mjs';
 import {
-  buttonOf, openHardware, refusal, settle,
+  buttonOf, openHardware, refusal, settle, useStore,
 } from './hardware-view.mjs';
 
 const realObserver = globalThis.MutationObserver;
@@ -96,7 +96,7 @@ test('the sentence under the head gives the last check and what diskhealth says 
   const world = await openHardware(context);
   const lead = text(world.view.main.querySelector('#hw-lead'));
   assert.match(lead, /^Last check Nov 9 2:10 AM \(a full check\): 6 passed, 1 warning \(HW-115\), 2 skipped\./);
-  assert.match(lead, /diskhealth also reads every disk's health once a day; sdb has a warning\.$/);
+  assert.match(lead, /diskhealth reads each disk's health every 10 minutes, but a sleeping one; sdb has a warning\.$/);
   assert.equal(world.view.main.querySelector('#hw-lead').querySelector('a').getAttribute('href'), '/storage/sdb');
 });
 
@@ -426,4 +426,121 @@ test('leaving the page stops what it waits for', async (context) => {
   world.view.signal.dispatchEvent?.(new Event('abort'));
   await settle();
   assert.equal(world.calls.length, reads);
+});
+
+// ---- Temperatures and fans ----------------------------------------------------
+
+const rowsOf = (world) => world.card('temps').querySelectorAll('tbody tr').map(text);
+
+test('Temperatures and fans is a table of the processor, the disks and the zones, a line for each fan, and the line about alerts', async (context) => {
+  const world = await openHardware(context);
+  for (const read of ['/api/1/hardware/sensors', '/api/1/hardware/highest', '/api/1/updates/history']) assert.ok(world.calls.includes(read), read);
+  assert.deepEqual(world.card('temps').querySelectorAll('thead th').map(text), ['Sensor', 'Now', 'Highest, 30 days', 'Limit']);
+  assert.deepEqual(rowsOf(world), [
+    'Processor (Package id 0)41 °C63 °CYesterday 3:02 AM, during the update100 °Ccritical',
+    'Disk sda · WDC WD40EFRX-68N36 °Cread at 3:10 PM41 °CYesterday 3:10 AM, during the update50 °C, critical 60 °Cfor a hard disk',
+    'Disk nvme0 · Samsung SSD 98044 °Cread at 3:10 PM58 °CNov 12 2:14 PM70 °C, critical 85 °Cthe disk\'s own',
+    'Disk sdb · WDC WD40EFRX-68NAsleep since 2:10 AM: not read, so as not to wake it—50 °C, critical 60 °Cfor a hard disk',
+    'Zone acpitz32 °C—97 °Ccritical',
+  ]);
+  const card = text(world.card('temps'));
+  assert.match(card, /Disks are read every 10 minutes, but a sleeping one\. An alert goes out when a sensor stays within 5 °C of its critical limit, or a disk at its warning limit, for 5 minutes \(metricsd\)\./);
+  assert.match(card, /fan11,190 RPMfan2not judged: no fan on this header$/);
+  assert.equal(world.card('temps').querySelectorAll('td').find((cell) => cell.textContent.startsWith('41 °C')).getAttribute('data-label'), 'Now');
+  assert.equal(world.card('temps').getAttribute('aria-labelledby'), 'temps-h');
+});
+
+test('the cards come in the order of the phone, the temperatures and the lists across both columns', async (context) => {
+  const world = await openHardware(context);
+  const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'memory', 'power']);
+  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'power']);
+});
+
+test('the choice of Fahrenheit changes every temperature at once, is kept, and is the unit the page opens with next time', async (context) => {
+  const store = useStore(context);
+  const world = await openHardware(context);
+  const [celsius, fahrenheit] = world.card('temps').querySelectorAll('.seg button');
+  assert.deepEqual([celsius.textContent, celsius.getAttribute('aria-pressed'), fahrenheit.getAttribute('aria-pressed')], ['°C', 'true', 'false']);
+  const calls = world.calls.length;
+  fahrenheit.click();
+  assert.equal(world.calls.length, calls, 'no read is made for a change of unit');
+  assert.deepEqual([celsius.getAttribute('aria-pressed'), fahrenheit.getAttribute('aria-pressed')], ['false', 'true']);
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)106 °F145 °F.*212 °Fcritical$/);
+  assert.equal(JSON.parse(store.get('dukovo-admin.hardware.temps.unit')), 'F');
+  const again = await openHardware(context);
+  assert.match(rowsOf(again)[0], /106 °F/);
+  assert.equal(again.card('temps').querySelectorAll('.seg button')[1].getAttribute('aria-pressed'), 'true');
+});
+
+test('a machine whose kernel reads no sensor says so, keeps its disks\' rows and says that no fan can be read', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': sensors({ sensors: [], zones: [] }) } } });
+  const card = text(world.card('temps'));
+  assert.match(card, /The kernel reads no temperature on this machine\./);
+  assert.deepEqual(rowsOf(world).map((row) => row.slice(0, 9)), ['Disk sda ', 'Disk nvme', 'Disk sdb ']);
+  assert.match(card, /No fan speed can be read on this machine\.$/);
+  const bare = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': sensors({ sensors: [], zones: [], disks: [] }) } } });
+  assert.equal(bare.card('temps').querySelector('table'), null);
+  assert.match(text(bare.card('temps')), /The kernel reads no temperature on this machine\.No fan speed can be read on this machine\.$/);
+  assert.ok(!/Disks are read every 10 minutes/.test(text(bare.card('temps'))));
+});
+
+test('the disks that keep no health record are one muted line under the table', async (context) => {
+  const answer = storage();
+  answer.disks.push({ name: 'sdc', model: 'Expansion', health: null }, { name: 'vda', model: null, health: null });
+  const world = await openHardware(context, { world: { reads: { '/api/1/storage': answer } } });
+  assert.match(text(world.card('temps')), /2 disks keep no health record \(USB or virtual\) and are not read\./);
+  assert.equal(world.card('temps').querySelectorAll('p').find((one) => one.textContent.startsWith('2 disks')).classes.has('muted'), true);
+});
+
+test('a fan that stopped is in the error colour, and a temperature near its limit has its words', async (context) => {
+  const hot = sensors();
+  hot.sensors[0].value = 96;
+  hot.sensors[1].alarm = true;
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': hot } } });
+  const near = world.card('temps').querySelectorAll('td .st').find((one) => one.textContent === 'near its limit');
+  assert.ok(near.classes.has('warn'));
+  const stopped = world.card('temps').querySelectorAll('dd .st').find((one) => one.textContent === 'stopped');
+  assert.ok(stopped.classes.has('bad'));
+});
+
+test('the temperatures are read again each minute, without the highest, and a read that fails leaves what was read', async (context) => {
+  const world = await openHardware(context);
+  const reads = () => world.calls.filter((call) => call === '/api/1/hardware/sensors').length;
+  assert.equal(reads(), 1);
+  const warmer = sensors();
+  warmer.sensors[0].value = 55;
+  world.answers['/api/1/hardware/sensors'] = warmer;
+  await world.tick(60_000);
+  assert.equal(reads(), 2);
+  assert.equal(world.calls.filter((call) => call === '/api/1/hardware/highest').length, 1);
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)55 °C/);
+  world.answers['/api/1/hardware/sensors'] = refusal('ADM-500', 'down', 500);
+  await world.tick(60_000);
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)55 °C/);
+  assert.equal(world.problems.length, 0, 'a later failure says nothing, as the page says when it is offline');
+});
+
+test('temperatures that cannot be read are said, with the refusal where the card shows it, and the rest of the page stands', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/sensors': refusal('ADM-500', 'down', 500) } } });
+  assert.match(text(world.card('temps')), /The temperatures and fans could not be read\./);
+  assert.equal(world.problems.length, 1);
+  assert.equal(world.problems[0][1].slot, world.card('temps').querySelector('.hw-errors'));
+  assert.match(text(world.card('machine')), /Dell Inc\. OptiPlex 7040/);
+});
+
+test('without the highest or the update history the rows are still there, with a dash for the highest', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/highest': refusal('ADM-500', 'down', 500), '/api/1/updates/history': refusal('ADM-500', 'down', 500) } } });
+  assert.match(rowsOf(world)[0], /^Processor \(Package id 0\)41 °C—100 °Ccritical$/);
+  assert.equal(world.problems.length, 0);
+});
+
+test('a reader sees the temperatures too', async (context) => {
+  const world = await openHardware(context, { session: { admin: false } });
+  assert.equal(rowsOf(world).length, 5);
+});
+
+test('the card is reached by its address, and says it is reading while the first answer is awaited', async (context) => {
+  const world = await openHardware(context, { hash: '#temps', world: { reads: { '/api/1/hardware/sensors': () => new Promise(() => {}) } } });
+  assert.match(text(world.card('temps')), /Reading the temperatures…/);
 });

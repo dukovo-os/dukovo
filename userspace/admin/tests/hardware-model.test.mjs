@@ -10,11 +10,14 @@ import test from 'node:test';
 
 import { AREAS, checkArgs } from '../pages/hardware/check-model.js';
 import {
+  degrees, fanRows, noRecordWords, startTimes, tempRows, unitOf,
+} from '../pages/hardware/sensors-model.js';
+import {
   amountWords, checkRows, dateWords, diskNotes, earlierRows, endedCheck, firmwareWords, hasResult, memoryRunWords, memoryWords, MEMORY_TEST_ARGS,
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, broken, clean, history, inventory, last, NOW, show, skipped, storage, task, time,
+  about, broken, clean, highest, history, inventory, last, NOW, sensors, show, skipped, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -150,7 +153,7 @@ test('no more than five earlier checks are listed, and one with nothing to count
 
 test('the disks that need a look are named with a link to each, and none reporting health says nothing', () => {
   assert.deepEqual(diskNotes(storage()), {
-    lead: 'diskhealth also reads every disk\'s health once a day', notes: [{ words: 'sdb has a warning', href: '/storage/sdb' }],
+    lead: 'diskhealth reads each disk\'s health every 10 minutes, but a sleeping one', notes: [{ words: 'sdb has a warning', href: '/storage/sdb' }],
   });
   const failing = storage();
   failing.disks[0].health = { verdict: 'failing', rose: null };
@@ -198,4 +201,144 @@ test('the areas of the dialog are the six the action takes, and all of them are 
   assert.deepEqual(checkArgs(['disks'], true), { areas: 'disks', full: true });
   assert.equal(checkArgs([], false), null);
   assert.equal(checkArgs(['gpu'], true), null);
+});
+
+// ---- Temperatures and fans ----------------------------------------------------
+
+const seconds = Math.floor(NOW / 1000);
+const rowsOf = (answer = sensors(), more = {}) => tempRows(answer, highest(), {
+  unit: 'C', time, now: seconds, starts: startTimes(updates()), ...more,
+});
+const rowNamed = (found, name) => found.rows.find((row) => row.name.startsWith(name));
+
+test('a temperature is whole degrees in Celsius or Fahrenheit, and Celsius is the unit unless Fahrenheit was kept', () => {
+  assert.equal(degrees(41.4, 'C'), '41 °C');
+  assert.equal(degrees(41, 'F'), '106 °F');
+  assert.equal(degrees(-3.5, 'F'), '26 °F');
+  assert.deepEqual([unitOf('F'), unitOf('C'), unitOf(null), unitOf('K'), unitOf(undefined)], ['F', 'C', 'C', 'C', 'C']);
+});
+
+test('the rows are the processor, then each disk, then the other sensors and the thermal zones, each with its limit', () => {
+  const found = rowsOf();
+  assert.deepEqual(found.rows.map((row) => row.name), ['Processor (Package id 0)', 'Disk sda · WDC WD40EFRX-68N', 'Disk nvme0 · Samsung SSD 980', 'Disk sdb · WDC WD40EFRX-68N', 'Zone acpitz']);
+  assert.equal(found.none, false);
+  const [processor] = found.rows;
+  assert.deepEqual(processor.now, { text: '41 °C' });
+  assert.deepEqual(processor.limit, { text: '100 °C', note: 'critical' });
+  assert.deepEqual(found.rows.at(-1).limit, { text: '97 °C', note: 'critical' });
+  const board = tempRows({ sensors: [{ chip: 'nct6775-isa-0a30', label: 'SYSTIN', kind: 'temp', series: 'temp{nct6775-isa-0a30/SYSTIN}', value: 30, high: 80, crit: null }], zones: [], disks: [] }, [], { unit: 'C', time, now: seconds });
+  assert.equal(board.rows[0].name, 'SYSTIN');
+  assert.equal(board.rows[0].small, 'nct6775-isa-0a30');
+  assert.deepEqual(board.rows[0].limit, { text: '80 °C', note: 'high' });
+});
+
+test('the highest says when it was, and that an update was on when a change of the system is within half an hour of it', () => {
+  const [processor, sda, nvme] = rowsOf().rows;
+  assert.deepEqual(processor.highest, { text: '63 °C', note: 'Yesterday 3:02 AM, during the update' });
+  assert.deepEqual(sda.highest, { text: '41 °C', note: 'Yesterday 3:10 AM, during the update' });
+  assert.deepEqual(nvme.highest, { text: '58 °C', note: 'Nov 12 2:14 PM' });
+  assert.deepEqual(rowsOf(sensors(), { starts: [] }).rows[0].highest.note, 'Yesterday 3:02 AM');
+  assert.deepEqual(rowsOf(sensors(), { starts: [seconds - 40 * 60 - 7 * 3600] }).rows[0].highest.note, 'Yesterday 3:02 AM');
+  const none = rowsOf(sensors(), { starts: [] });
+  assert.deepEqual(rowNamed(none, 'Zone').highest, { text: '—', muted: true });
+  assert.deepEqual(tempRows(sensors(), null, { unit: 'C', time, now: seconds }).rows[0].highest, { text: '—', muted: true });
+});
+
+test('a highest from before the minute files reach is the hour it was in', () => {
+  const old = [{ series: 'temp{coretemp-isa-0000/Package id 0}', highest: [Date.UTC(2026, 9, 20, 3, 0, 0) / 1000, 71] }];
+  const [processor] = tempRows(sensors(), old, { unit: 'C', time, now: seconds }).rows;
+  assert.deepEqual(processor.highest, { text: '71 °C', note: 'in the hour from Oct 20 3:00 AM' });
+});
+
+test('every temperature, the highest and the limit change with the unit', () => {
+  const [processor, sda, nvme] = rowsOf(sensors(), { unit: 'F' }).rows;
+  assert.equal(processor.now.text, '106 °F');
+  assert.equal(processor.highest.text, '145 °F');
+  assert.equal(processor.limit.text, '212 °F');
+  assert.equal(sda.limit.text, '122 °F, critical 140 °F');
+  assert.equal(nvme.limit.text, '158 °F, critical 185 °F');
+});
+
+test('a disk says when it was read, and why it is not, whether it sleeps or diskhealth has stopped', () => {
+  const [, sda, nvme, sdb] = rowsOf().rows;
+  assert.deepEqual(sda.now, { text: '36 °C', note: 'read at 3:10 PM' });
+  assert.deepEqual(sda.limit, { text: '50 °C, critical 60 °C', note: 'for a hard disk' });
+  assert.deepEqual(nvme.limit, { text: '70 °C, critical 85 °C', note: 'the disk\'s own' });
+  assert.deepEqual(sdb.now, { text: 'Asleep since 2:10 AM: not read, so as not to wake it', muted: true });
+  const stale = sensors();
+  stale.disks[0].checked_ms = (seconds - 40 * 60) * 1000;
+  assert.deepEqual(rowsOf(stale).rows[1].now, { tone: 'warn', words: 'Last read at 2:32 PM' });
+  const old = sensors();
+  old.disks[0].checked_ms = Date.UTC(2026, 10, 13, 1, 40, 0);
+  assert.deepEqual(rowsOf(old).rows[1].now, { tone: 'warn', words: 'Last read yesterday 1:40 AM' });
+  const nothing = sensors();
+  nothing.disks[0].temperature_c = null;
+  nothing.disks[0].warning_c = null;
+  nothing.disks[0].critical_c = null;
+  assert.deepEqual(rowsOf(nothing).rows[1].now, { text: 'The disk gives no temperature', muted: true });
+  assert.deepEqual(rowsOf(nothing).rows[1].limit, { text: '—', muted: true });
+  const flash = sensors();
+  flash.disks[0].kind = 'ssd';
+  assert.equal(rowsOf(flash).rows[1].limit.note, 'for a solid-state disk');
+});
+
+test('a sensor within 5 degrees of its limit is in the warning colour, and at it in the error colour, with the words', () => {
+  const at = (value, more = {}) => rowsOf({ sensors: [{ chip: 'coretemp-isa-0000', label: 'Package id 0', kind: 'temp', series: 's', value, high: 84, crit: 100, ...more }], zones: [], disks: [] }).rows[0].now;
+  assert.deepEqual(at(94), { text: '94 °C' });
+  assert.deepEqual(at(95), { text: '95 °C', tone: 'warn', words: 'near its limit' });
+  assert.deepEqual(at(100), { text: '100 °C', tone: 'bad', words: 'at its limit' });
+  assert.deepEqual(at(80, { crit: null }), { text: '80 °C', tone: 'warn', words: 'near its limit' });
+  assert.deepEqual(at(60, { crit: null, high: null }), { text: '60 °C' });
+  assert.deepEqual(at(null), { text: '—', muted: true });
+});
+
+test('a disk at its warning limit is in the warning colour and at its critical limit in the error colour, with the words', () => {
+  const at = (value) => {
+    const answer = sensors();
+    answer.disks[0].temperature_c = value;
+    return rowsOf(answer).rows[1].now;
+  };
+  assert.deepEqual(at(49), { text: '49 °C', note: 'read at 3:10 PM' });
+  assert.deepEqual(at(50), { text: '50 °C', note: 'read at 3:10 PM', tone: 'warn', words: 'over its warning limit' });
+  assert.deepEqual(at(60), { text: '60 °C', note: 'read at 3:10 PM', tone: 'bad', words: 'over its critical limit' });
+});
+
+test('a machine with no sensor says so and keeps the disks\' rows, and one with nothing at all has no rows', () => {
+  const found = rowsOf({ format: 1, sensors: [], zones: [], disks: sensors().disks });
+  assert.equal(found.none, true);
+  assert.deepEqual(found.rows.map((row) => row.name.split(' ')[1]), ['sda', 'nvme0', 'sdb']);
+  assert.deepEqual(rowsOf({ format: 1, sensors: [], zones: [], disks: [] }), { rows: [], none: true });
+  assert.deepEqual(rowsOf(null), { rows: [], none: true });
+});
+
+test('a fan says its speed, stopped when it has an alarm, a fault or no speed under a minimum, and not judged with no minimum', () => {
+  assert.deepEqual(fanRows(sensors()).map((fan) => [fan.name, fan.words, fan.tone]), [
+    ['fan1', '1,190 RPM', 'ok'],
+    ['fan2', 'not judged: no fan on this header', 'off'],
+  ]);
+  const fan = (more) => fanRows({ sensors: [{ chip: 'c', label: 'fan1', kind: 'fan', value: 1000, min: null, alarm: false, fault: false, ...more }] })[0];
+  assert.deepEqual([fan({ alarm: true }).words, fan({ alarm: true }).tone], ['stopped', 'bad']);
+  assert.equal(fan({ alarm: 1 }).words, 'stopped');
+  assert.equal(fan({ fault: true }).words, 'stopped');
+  assert.equal(fan({ value: 0, min: 600 }).words, 'stopped');
+  assert.equal(fan({ value: 0, min: 0 }).words, 'not judged: no fan on this header');
+  assert.deepEqual([fan({ value: 400, min: 600 }).words, fan({ value: 400, min: 600 }).tone], ['400 RPM, under its minimum of 600 RPM', 'bad']);
+  assert.deepEqual(fanRows({ sensors: [] }), []);
+  assert.deepEqual(fanRows(null), []);
+});
+
+test('the disks that keep no health record are counted from the storage answer', () => {
+  const none = storage();
+  assert.equal(noRecordWords(none), null);
+  none.disks.push({ name: 'sdc', model: 'Expansion', health: null });
+  assert.equal(noRecordWords(none), '1 disk keeps no health record (USB or virtual) and is not read.');
+  none.disks.push({ name: 'vda', model: null, health: null });
+  assert.equal(noRecordWords(none), '2 disks keep no health record (USB or virtual) and are not read.');
+  assert.equal(noRecordWords(null), null);
+});
+
+test('the times of the changes of the system come from the update history, and only those that are times', () => {
+  assert.deepEqual(startTimes(updates()), [Date.UTC(2026, 10, 13, 3, 0, 0) / 1000]);
+  assert.deepEqual(startTimes({ changes: [{ time: 'soon' }] }), []);
+  assert.deepEqual(startTimes(null), []);
 });

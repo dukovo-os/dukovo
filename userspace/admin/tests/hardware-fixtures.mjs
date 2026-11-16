@@ -133,6 +133,60 @@ export const storage = () => ({
   ],
 });
 
+const READ = Math.floor(NOW / 1000) - 120;
+
+/**
+ * `hardware sensors --json` of a machine with a processor, a board zone, two
+ * fans (one with no fan on its header) and three disks: a hard disk read at
+ * 3:10 PM, an NVMe drive with limits of its own and a hard disk asleep since
+ * 2:10 AM.
+ */
+export const sensors = (more = {}) => plain({
+  format: 1,
+  sensors: [
+    {
+      chip: 'coretemp-isa-0000', label: 'Package id 0', kind: 'temp', series: 'temp{coretemp-isa-0000/Package id 0}', value: 41, high: 84, crit: 100, min: null, alarm: false, fault: false,
+    },
+    {
+      chip: 'nct6775-isa-0a30', label: 'fan1', kind: 'fan', series: 'fan{nct6775-isa-0a30/fan1}', value: 1190, high: null, crit: null, min: 600, alarm: false, fault: false,
+    },
+    {
+      chip: 'nct6775-isa-0a30', label: 'fan2', kind: 'fan', series: 'fan{nct6775-isa-0a30/fan2}', value: 0, high: null, crit: null, min: null, alarm: false, fault: false,
+    },
+  ],
+  zones: [{
+    series: 'temp{zone/acpitz}', value: 32, crit: 97,
+  }],
+  disks: [
+    {
+      disk: 'sda', model: 'WDC WD40EFRX-68N', kind: 'hdd', temperature_c: 36, checked_ms: READ * 1000, asleep_ms: null, warning_c: 50, critical_c: 60, limits_from: 'kind', series: 'temp{disk/sda}',
+    },
+    {
+      disk: 'nvme0', model: 'Samsung SSD 980', kind: 'nvme', temperature_c: 44, checked_ms: READ * 1000, asleep_ms: null, warning_c: 70, critical_c: 85, limits_from: 'disk', series: 'temp{disk/nvme0}',
+    },
+    {
+      disk: 'sdb', model: 'WDC WD40EFRX-68N', kind: 'hdd', temperature_c: 35, checked_ms: Date.UTC(2026, 10, 14, 2, 0, 0), asleep_ms: Date.UTC(2026, 10, 14, 2, 10, 0), warning_c: 50, critical_c: 60, limits_from: 'kind', series: 'temp{disk/sdb}',
+    },
+  ],
+  ...more,
+});
+
+/** `metrics show temp --highest --json` for those series: the highest of the last 30 days, with the time in seconds. */
+export const highest = () => plain([
+  { series: 'temp{coretemp-isa-0000/Package id 0}', highest: [Date.UTC(2026, 10, 13, 3, 2, 0) / 1000, 63] },
+  { series: 'temp{disk/sda}', highest: [Date.UTC(2026, 10, 13, 3, 10, 0) / 1000, 41] },
+  { series: 'temp{disk/nvme0}', highest: [Date.UTC(2026, 10, 12, 14, 14, 0) / 1000, 58] },
+  { series: 'temp{zone/acpitz}', highest: null },
+]);
+
+/** `GET /api/1/updates/history`: a change of the system at 3:00 AM on November 13, half an hour before the processor's highest. */
+export const updates = () => ({
+  changes: [{
+    start: 12, time: '2026-11-13T03:00:00Z', item: 'system', from: '0.13.0', to: '0.14.0', outcome: 'good', error: null,
+  }],
+  apps: [],
+});
+
 /** A running `hardware.check` as `GET /api/1/tasks` lists it. */
 export const task = (more = {}) => ({
   id: 41, action: 'hardware.check', args: {}, state: 'running', step: 4, steps: 11, words: 'disks sda self-test passed', started: Math.floor(NOW / 1000) - 120, ...more,
