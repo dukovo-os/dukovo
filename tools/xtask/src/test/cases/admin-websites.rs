@@ -22,8 +22,8 @@
 //! prints: nginx on, PHP-FPM installed and off, no site; lab-reader reads
 //! the same. websites.check is what `elevate website check --json` prints
 //! and passes: nginx accepts its settings, which include the websites'
-//! folder and answer 404 under /sites/ in the default server. lab-reader is
-//! ADM-122 for the check.
+//! folder, answer 404 under /sites/ in the default server and define the
+//! format of the sites' logs. lab-reader is ADM-122 for the check.
 //!
 //! The plan. websites.plan of a static site named for the machine,
 //! dukovo.local, with the machine's certificate is what the command prints
@@ -44,6 +44,13 @@
 //! the account php owns, answers 404, and so does a file whose name starts
 //! with a dot, and /sites/ under the default server of port 80. The other
 //! name answers, and the first site still does.
+//!
+//! The requests counted. A few requests to the PHP site, answered and not,
+//! are in the site's own log as a time, a status and a size and nothing else,
+//! and in the system's log too. `elevate website count --now` counts today so
+//! far, with at least those visits and errors, and websites.list has them as
+//! the site's visits and a size for its folder, as the command prints it and
+//! as lab-reader reads it (ADR 0570).
 //!
 //! A site file nginx does not read. A file written by hand into
 //! /system/settings/websites makes websites.check fail with nginx's line,
@@ -78,8 +85,9 @@
 //!
 //! The sites taken away. websites.https with off on the first site, then
 //! websites.remove of both: nginx's override has no certificate and no
-//! socket for port 443, the default server is gone, the folders are kept and
-//! nginx answers with its welcome page, port 443 shut.
+//! socket for port 443, the default server is gone, the folders are kept, the
+//! sites' logs are gone and nginx answers with its welcome page, port 443
+//! shut.
 //!
 //! Who may. lab-reader is ADM-122 for every change and for every read of an
 //! administrator's.
@@ -146,7 +154,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-websites",
-    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate has PostgreSQL listen on every address with TLS, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has it listen on localhost again, a second deny saying there is no line; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
+    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a few requests to the PHP site are in its own log as a time, a status and a size and nothing else, and after elevate website count --now websites.list has them as its visits, with a size for its folder, for alice as the command prints it and for lab-reader; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate has PostgreSQL listen on every address with TLS, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has it listen on localhost again, a second deny saying there is no line; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept, the sites' logs gone and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -179,6 +187,7 @@ chain=/tmp/chain.pem
 conf=/system/settings/websites
 override=/system/settings/spark/services/settings.d/nginx.toml
 sites=/shared/www/sites
+logs=/shared/services/org.nginx.nginx/nginx/logs/sites
 password=/tmp/phpdb.pw
 held=0
 checked=0
@@ -432,6 +441,35 @@ port_443_closed() {
 	return 0
 }
 
+# Five requests to the PHP site that are answered and two that are not.
+makes_requests() {
+	for n in 1 2 3 4 5; do
+		over_http -o /dev/null "http://$php/" || return 1
+	done
+	for n in 1 2; do
+		over_http -o /dev/null "http://$php/no-page-$n" || return 1
+	done
+}
+
+# Each line of the site's own log is a time, a status and a size, and holds
+# no address, no path and no agent.
+log_is_plain() {
+	elevate grep -q . "$logs/$php.log" || return 1
+	if elevate grep -q -v '^[0-9][0-9]*\.[0-9][0-9][0-9] [0-9][0-9][0-9] [0-9][0-9]*$' "$logs/$php.log"; then
+		return 1
+	fi
+	return 0
+}
+
+log_has_the_answers() {
+	elevate grep -q ' 200 ' "$logs/$php.log" && elevate grep -q ' 404 ' "$logs/$php.log"
+}
+
+# The system's log keeps the line of each request too.
+in_the_system_log() {
+	elevate log nginx | grep -q '"GET / HTTP/1.1" 200'
+}
+
 cert show this-machine --pem >"$chain"
 case "$1" in
 welcome)
@@ -455,6 +493,13 @@ php)
 	check dot_404 dot_file_is_404
 	check other_name other_name_answers
 	check first_site starter_answers
+	;;
+requests)
+	check made makes_requests
+	check log_file has_file "$logs/$php.log"
+	check log_plain log_is_plain
+	check log_answers log_has_the_answers
+	check system_log eventually in_the_system_log
 	;;
 broken)
 	check written broken_file
@@ -496,6 +541,8 @@ sites_gone)
 	check no_default lacks_file "$conf/_default.conf"
 	check no_sites no_site_files
 	check closed port_443_closed
+	check no_php_log lacks_file "$logs/$php.log"
+	check no_log lacks_file "$logs/$machine.log"
 	;;
 esac
 echo "$1 $held of $checked"
@@ -679,6 +726,7 @@ fn admin_websites(vm: &mut Vm, case: &Case) -> Result<(), String> {
     the_plan(vm, &mut test)?;
     a_static_site_over_https(vm, &mut test)?;
     a_php_site(vm, &mut test)?;
+    the_requests_counted(vm, &mut test)?;
     a_site_file_nginx_does_not_read(vm, &mut test)?;
     a_database_for_a_site(vm, &mut test)?;
     other_machines_may_connect(vm, &mut test)?;
@@ -741,7 +789,7 @@ fn the_machine_with_no_site(vm: &mut Vm, test: &mut Test) -> Result<(), String> 
     has_members(
         "nginx's settings",
         &check["nginx_conf"],
-        &json!({"includes": true, "hides_sites": true}),
+        &json!({"includes": true, "hides_sites": true, "logs_sites": true}),
     )?;
     if check["check"]["passed"] != json!(true) || check["websites"] != json!([]) {
         return Err(format!("the check of a machine with no site says {check}"));
@@ -807,6 +855,49 @@ fn a_php_site(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     }
     let on = json!({"installed": true, "enabled": true, "running": true});
     has_members("PHP-FPM", &list["php_fpm"], &on)
+}
+
+/// A few requests to the PHP site, which its own log holds and the system's
+/// log too, and the count of today so far: what `elevate website count
+/// --now --json` prints has at least those visits and errors, the list has
+/// them as the site's visits with a size for its folder, as the route and
+/// the command say it, and the reader reads the same.
+fn the_requests_counted(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    step(vm, "requests", 5, 120)?;
+    unlock(vm)?;
+    test.unlocked()?;
+    let counted = test.printed(vm, "elevate website count --now --json")?;
+    let site = row(&counted, "sites", PHP)
+        .ok_or_else(|| format!("the count has no site {PHP}: {counted}"))?;
+    // The script made 5 requests that were answered and 2 that were not, and
+    // the checks of the PHP site made more before them.
+    let day = &site["day"];
+    let at_least = |member: &str, least: u64| day[member].as_u64().unwrap_or(0) >= least;
+    if !at_least("visits", 5) || !at_least("errors", 2) || day["complete"] != json!(true) {
+        return Err(format!("the count of {PHP} says {site}, not 5 visits and 2 errors or more"));
+    }
+    let list = same_as_command(vm, test, "/api/1/websites", "website list --json", &[])?;
+    let listed = row(&list, "websites", PHP)
+        .ok_or_else(|| format!("the list has no {PHP} after the count: {list}"))?;
+    let visits = &listed["visits"];
+    if visits["days"][0] != json!([day["day"], day["visits"], day["errors"], day["bytes"]])
+        || visits["last_7_days"].as_u64().unwrap_or(0) < 5
+    {
+        return Err(format!("the visits of {PHP} are {visits}, and the count said {day}"));
+    }
+    for name in [MACHINE, PHP] {
+        let size = &row(&list, "websites", name)
+            .ok_or_else(|| format!("the list has no {name} after the count: {list}"))?["size"];
+        let at_least = |member: &str| size[member].as_u64().unwrap_or(0) >= 1;
+        if !at_least("bytes") || !at_least("files") || size["complete"] != json!(true) {
+            return Err(format!("the size of {name} is {size} after the count"));
+        }
+    }
+    let reader = test.read(Who::Reader, "/api/1/websites")?;
+    if reader != list {
+        return Err(format!("the reader reads {reader}, and alice {list}"));
+    }
+    Ok(())
 }
 
 /// A file that nginx does not read, written by hand, which the check names
@@ -1031,7 +1122,7 @@ fn the_sites_taken_away(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     if list["websites"] != json!([]) {
         return Err(format!("the list after both removals is {list}"));
     }
-    step(vm, "sites_gone", 7, 300)
+    step(vm, "sites_gone", 9, 300)
 }
 
 /// The reader is ADM-122 for every change, and for every read that an
