@@ -176,6 +176,7 @@ from console import (
     PASSWORD_FILE,
     Console,
     Failure,
+    address,
     make_token,
     put_back,
     remove_token,
@@ -402,6 +403,18 @@ class Round:
         return changed
 
 
+def undo_first(console, undo, args):
+    """Brings the machine to the state `undo` leaves, so that the change after it has something to
+    do. An undo refused with 422 finds that state already: the firewall will not remove an address
+    that is not in its never-block list, as on a machine that never had it. The change's first task
+    must then report a change, which the round checks, so a refusal for any other reason still
+    fails the test."""
+    path, rest = address(undo["path"], args)
+    status, text = console.call("POST", path, rest)
+    if status not in (200, 422):
+        raise Failure(f"POST {path} was answered {status}: {text}")
+
+
 def main():
     machine, ssh_port, console_port = sys.argv[1:4]
     without_lab_account()
@@ -434,8 +447,7 @@ def main():
                     continue
                 undo = action["examples"]["undo"]
                 if undo is not None:
-                    # From the state the undo leaves, so that the change has something to do.
-                    route(console, round_.by_id(undo["action"]), undo["args"])
+                    undo_first(console, round_.by_id(undo["action"]), undo["args"])
                 checked_before = round_.would_change(action)
                 first = round_.run_task(action)
                 second = round_.run_task(action)

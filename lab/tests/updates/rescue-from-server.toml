@@ -16,6 +16,13 @@ time = "40m"
 fresh = true
 host_needs = ["python3"]
 
+# The fresh start is seen through first. A start that the health check
+# has not seen through when the reset comes counts as cut short too: on
+# a fast machine the check below is in place before sysupdate sees that
+# start through, and Rescue would then come a cut early.
+[[step]]
+serial = "is seen through"
+
 [[step]]
 host = "sh {here}/update-server.sh serve {port:updates}"
 background = true

@@ -5,6 +5,13 @@ about = "Rescue, started by three starts cut short, reinstalls Dukovo into slot 
 time = "30m"
 fresh = true
 
+# The fresh start is seen through first. A start that the health check
+# has not seen through when the reset comes counts as cut short too: on
+# a fast machine the check below is in place before sysupdate sees that
+# start through, and Rescue would then come a cut early.
+[[step]]
+serial = "is seen through"
+
 [[step]]
 run = "sh -c 'echo \"kept by Rescue\" > /users/lab/rescue-keep.txt'"
 [[step]]
