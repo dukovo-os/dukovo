@@ -18,6 +18,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::path::Path;
 
+use tuf::url::Url;
+
 use super::super::machine;
 use crate::firewall;
 use crate::ip;
@@ -352,20 +354,23 @@ pub fn global_ipv6_addresses() -> Vec<Ipv6Addr> {
 }
 
 /// Reads the facts of this machine for `names`, to be asked of the
-/// authority at `directory_host`: with `http`, resolves each name and
-/// reads the interfaces and the firewall.
+/// authority at `directory`: with `http`, resolves each name and reads the
+/// interfaces and the firewall. Let's Encrypt is on the internet without
+/// being looked up, so that a machine that cannot resolve names yet still
+/// finds that a name of its own leads nowhere the authority reaches.
 pub fn gather<'a>(
     now: i64,
     names: &'a [(String, Vec<IpAddr>)],
     http: bool,
-    directory_host: &str,
+    directory: &Url,
     firewall_text: &'a str,
     with_inbound: bool,
 ) -> Facts<'a> {
-    let public_authority = http && {
-        let addresses = lookup(directory_host);
-        !addresses.is_empty() && addresses.iter().all(|address| !private_address(*address))
-    };
+    let public_authority = http
+        && (super::is_public_authority(&directory.to_string()) || {
+            let addresses = lookup(directory.host());
+            !addresses.is_empty() && addresses.iter().all(|address| !private_address(*address))
+        });
     Facts {
         now,
         names,
@@ -471,6 +476,23 @@ mod tests {
 
     fn ip6(text: &str) -> Ipv6Addr {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn lets_encrypt_is_on_the_internet_without_a_look_up() {
+        for directory in [super::super::LETS_ENCRYPT, super::super::LETS_ENCRYPT_STAGING] {
+            let url = Url::parse(directory).unwrap();
+            let names = [(String::from("localhost"), vec![ip("127.0.0.1")])];
+            let facts = gather(NOW, &names, true, &url, "", false);
+            assert!(facts.public_authority, "{directory}");
+            let found = findings(&facts);
+            let failed: Vec<_> = found.iter().filter(|f| f.id == Some("CRT-102")).collect();
+            assert_eq!(failed.len(), 1, "{directory}");
+            assert!(failed[0].words.starts_with("localhost leads to 127.0.0.1, a private address"));
+        }
+        // Proving the names by DNS never asks whether the authority is public.
+        let url = Url::parse(super::super::LETS_ENCRYPT).unwrap();
+        assert!(!gather(NOW, &[], false, &url, "", false).public_authority);
     }
 
     fn facts<'a>(names: &'a [(String, Vec<IpAddr>)], firewall: &'a str) -> Facts<'a> {

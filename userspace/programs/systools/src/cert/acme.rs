@@ -220,6 +220,12 @@ pub fn is_lets_encrypt(directory: &str) -> bool {
     directory == LETS_ENCRYPT
 }
 
+/// Whether `directory` is one of Let's Encrypt's, production or staging: an
+/// authority on the internet, which needs no look-up to be known as one.
+pub fn is_public_authority(directory: &str) -> bool {
+    directory == LETS_ENCRYPT || directory == LETS_ENCRYPT_STAGING
+}
+
 /// Checks a name for a certificate: lowercase letters, digits and hyphens
 /// in labels of up to 63, dots between them, 253 in all, a dot at least,
 /// and `*.` first for a wildcard, which `by_hand` allows alone.
@@ -228,6 +234,24 @@ pub fn is_lets_encrypt(directory: &str) -> bool {
 ///
 /// With what is wrong with `name`.
 pub fn check_dns_name(name: &str, by_hand: bool) -> Result<(), String> {
+    name_fits(name, by_hand, 2)
+}
+
+/// Checks a name that `cert get --check` is asked about: as
+/// [`check_dns_name`] does, but a name of one label is let through, since
+/// what the check finds of `localhost` or of a name with no domain is what
+/// a person asks to be told.
+///
+/// # Errors
+///
+/// With what is wrong with `name`.
+pub fn check_dns_name_to_check(name: &str, by_hand: bool) -> Result<(), String> {
+    name_fits(name, by_hand, 1)
+}
+
+/// Whether `name` is a name for a certificate with at least `labels` labels
+/// in it, as [`check_dns_name`] says.
+fn name_fits(name: &str, by_hand: bool, labels: usize) -> Result<(), String> {
     let (wildcard, host) = match name.strip_prefix("*.") {
         Some(rest) => (true, rest),
         None => (false, name),
@@ -243,7 +267,7 @@ pub fn check_dns_name(name: &str, by_hand: bool) -> Result<(), String> {
              addresses come with a later release)"
         ));
     }
-    let labels: Vec<&str> = host.split('.').collect();
+    let parts: Vec<&str> = host.split('.').collect();
     let label_fits = |label: &&str| {
         (1..=63).contains(&label.len())
             && label
@@ -252,7 +276,7 @@ pub fn check_dns_name(name: &str, by_hand: bool) -> Result<(), String> {
             && !label.starts_with('-')
             && !label.ends_with('-')
     };
-    if host.len() > 253 || labels.len() < 2 || !labels.iter().all(label_fits) {
+    if host.len() > 253 || parts.len() < labels || !parts.iter().all(label_fits) {
         return Err(format!(
             "`{}` is not a name an authority issues for: it has lowercase letters, digits and `-` \
              in labels of up to 63 characters, with a dot between them; write a name that is not \
@@ -269,11 +293,30 @@ pub fn check_dns_name(name: &str, by_hand: bool) -> Result<(), String> {
 ///
 /// With what is wrong with them.
 pub fn check_names(names: &[String], by_hand: bool) -> Result<(), String> {
+    check_names_with(names, by_hand, check_dns_name)
+}
+
+/// [`check_names`] for the names `cert get --check` is asked about, of
+/// which one of a single label is let through ([`check_dns_name_to_check`]).
+///
+/// # Errors
+///
+/// With what is wrong with them.
+pub fn check_names_to_check(names: &[String], by_hand: bool) -> Result<(), String> {
+    check_names_with(names, by_hand, check_dns_name_to_check)
+}
+
+/// [`check_names`], with `check` the rule for each name.
+fn check_names_with(
+    names: &[String],
+    by_hand: bool,
+    check: fn(&str, bool) -> Result<(), String>,
+) -> Result<(), String> {
     if names.is_empty() || names.len() > NAMES_MAX {
         return Err(format!("a certificate has 1 to {NAMES_MAX} names, not {}", names.len()));
     }
     for (number, name) in names.iter().enumerate() {
-        check_dns_name(name, by_hand)?;
+        check(name, by_hand)?;
         if names[..number].contains(name) {
             return Err(format!("{name} is named twice"));
         }
@@ -927,7 +970,11 @@ fn plan(options: &Get, store: &Store, locked: bool) -> Result<Plan, Fail> {
              example.com`"
         )));
     };
-    check_names(&names, options.dns).map_err(fail)?;
+    if options.check {
+        check_names_to_check(&names, options.dns).map_err(fail)?;
+    } else {
+        check_names(&names, options.dns).map_err(fail)?;
+    }
     let directory = if let Some(directory) = &options.directory {
         directory.clone()
     } else if options.staging || options.dry_run {
@@ -971,7 +1018,9 @@ pub fn authority_words(directory: &str) -> String {
 /// `cert get`.
 pub fn get(options: &Get) -> Result<i32, Fail> {
     if options.check {
-        return check_order(options);
+        // Status 1 says that a check failed, with the findings printed; a
+        // refusal to check has none to print, so it ends with 2.
+        return check_order(options).map_err(|refusal| Fail { code: 2, ..refusal });
     }
     let mut trace = Trace::default();
     let result = order_certificate(options, &mut trace);
@@ -1048,7 +1097,7 @@ fn order_certificate(options: &Get, trace: &mut Trace) -> Result<i32, Fail> {
     };
     let with_inbound = matches!(serving, Ok(Serving::Files(_)));
     let facts =
-        preflight::gather(now, &looked, !options.dns, directory.host(), &firewall, with_inbound);
+        preflight::gather(now, &looked, !options.dns, &directory, &firewall, with_inbound);
     let verdict = preflight::check(&facts);
     for warning in &verdict.warnings {
         eprintln!("cert: {warning}");
@@ -1141,7 +1190,7 @@ fn check_order(options: &Get) -> Result<i32, Fail> {
     // what nginx or a service holds has.
     let with_inbound = !matches!(holder, None | Some(Holder::Free | Holder::Other(_)));
     let mut facts =
-        preflight::gather(now, &looked, http, directory.host(), &firewall, with_inbound);
+        preflight::gather(now, &looked, http, &directory, &firewall, with_inbound);
     facts.holder = holder;
     let terms_url = terms_url_within(&directory, TERMS_WAIT);
     let dns: Vec<dns::Record> = if options.dns {
@@ -1389,7 +1438,7 @@ fn renew_certificate(
         Who::Certd => None,
     });
     let with_inbound = who == Who::Certd || matches!(serving, Ok(Serving::Files(_)));
-    let facts = preflight::gather(now, &looked, true, directory.host(), &firewall, with_inbound);
+    let facts = preflight::gather(now, &looked, true, &directory, &firewall, with_inbound);
     let verdict = preflight::check(&facts);
     if !verdict.failures.is_empty() {
         trace.detail = Some(verdict.failures_with_ids.join("; "));
