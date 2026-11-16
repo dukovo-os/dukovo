@@ -33,13 +33,12 @@ test('with the machine\'s own certificate the code holds the first private addre
   assert.equal(found.url, 'https://10.0.0.5:8443/alerts?phone=1');
   assert.equal(found.own, true);
   assert.equal(found.push, false);
-  assert.equal(found.named, false);
 });
 
 test('with another certificate reached by a name, the code holds that name and push can work', () => {
   const found = addressOf({ about: about(), machine: machine('00:11'), hostname: 'duke-nas.example.org' });
   assert.equal(found.url, 'https://duke-nas.example.org:8443/alerts?phone=1');
-  assert.deepEqual([found.own, found.named, found.push], [false, true, true]);
+  assert.deepEqual([found.own, found.push], [false, true]);
 });
 
 test('another certificate reached by an address, `localhost` or a .local name holds the address, and push cannot work', () => {

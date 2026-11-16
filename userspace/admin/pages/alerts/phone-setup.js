@@ -1,27 +1,20 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// Setting up a phone. On a computer, a card of steps with a code to scan; on
-// the phone itself, which the code opens at `/alerts?phone=1`, a panel that
-// gets alerts there and says how to add the console to the home screen. The
-// page reads this file when it draws either; the QR code's own files are read
-// by the card alone.
+// Setting up a phone: on a computer, a card of steps with a code to scan; on
+// the phone, which the code opens at `/alerts?phone=1`, a panel that gets
+// alerts there and says how to add the console to the home screen. The page
+// reads this file when it draws either; the code's own files, the card alone.
 
 import { fill, h, icon } from '../../dom.js';
-import { keep } from '../../lib/store.js';
-import { PHONE_DONE_KEY } from './phone-flag.js';
 import {
   addressOf, certificateWords, fingerprintGroups, HOME_MENU_WORDS, STEPS,
 } from './phone-setup-model.js';
 
-/** `GET`s `path` for what the card shows; null when it could not be read. */
+/** What `path` answers, or null. */
 const read = (view, path) => view.api.get(path).catch(() => null);
 
-/**
- * The card of the steps for a computer. `ctx` is the page's: `{view, load,
- * push, hostname}`. Gives `{element, draw}`; `draw()` reads the console's
- * address and certificate and draws the steps.
- */
+/** The card of steps for a computer. `ctx` is the page's: `{view, load, push, hostname}`. `draw()` reads the address and certificate and draws the steps. */
 export function makePhoneCard(ctx) {
   const { view } = ctx;
   const body = h('div', { class: 'al-body' });
@@ -54,8 +47,8 @@ export function makePhoneCard(ctx) {
 }
 
 /**
- * The panel of the phone itself. `ctx` is the page's: `{view, test, push,
- * install}`; `install` is the browser's offer to add the console to the home
+ * The panel of the phone itself. `ctx` is the page's: `{test, push, install,
+ * notNow}`; `install` is the browser's offer to add the console to the home
  * screen, when it made one. Gives `{element}`.
  */
 export function makePhonePanel(ctx) {
@@ -73,7 +66,7 @@ export function makePhonePanel(ctx) {
     add.addEventListener('click', () => ctx.install?.prompt());
     const later = h('button', { class: 'btn', type: 'button' }, 'Not now');
     later.addEventListener('click', () => {
-      keep(PHONE_DONE_KEY, true);
+      ctx.notNow();
       element.hidden = true;
     });
     fill(body, h('ul', { class: 'al-steps' },

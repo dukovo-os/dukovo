@@ -18,8 +18,9 @@ import { graphOf, ROOT, shown, sizeOf } from './graph.mjs';
 const LIMIT = 150_000;
 
 // The start is held under the limit with room for what the console takes in
-// next: a change that adds to it raises this number and says what grew.
-const START_PLAN = 148_821;
+// next: a change that adds to it raises this number and says what grew. The
+// manifest's link in index.html (51 bytes) is what the last 1 byte is for.
+const START_PLAN = 148_822;
 
 /** The files `index.html` names: its scripts and style sheets, as paths on disk. */
 function pageFiles() {
@@ -106,13 +107,14 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Move and Reliability keep a little room for what they gain; the Terminal's
 // graph is as it was.
 // Report a problem's row is 7,000 more than it was, for the cuts the page makes.
+// Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 const PAGE_LIMITS = {
   updates: 70_000,
   apps: 55_000,
   hardware: 55_000,
   certificates: 60_000,
   report: 67_000,
-  alerts: 60_000,
+  alerts: 65_000,
   security: 147_000,
   move: 107_000,
   reliability: 22_000,
@@ -125,6 +127,7 @@ const PART_LIMITS = {
   'pages/updates/overview.js': 8_000,
   'pages/hardware/overview.js': 8_000,
   'pages/alerts/overview.js': 8_000,
+  'pages/alerts/phone-setup.js': 8_000,
   'sw.js': 6_000,
 };
 

@@ -24,24 +24,21 @@ export const firstAddress = (addresses) => {
 };
 
 /**
- * What the code holds. `about` is `GET /api/1/console/about` (`addresses`,
- * `port`, `fingerprint`), `machine` is `certificate.show this-machine`
- * (`fingerprint_sha256`) or null when it could not be read, `hostname` the
- * name this page was reached by. Gives `{url, host, named, push, own,
- * fingerprint}`, or null when the machine has no address to give. `named`:
- * the address is a name that the other certificate names (so push can work);
- * with the machine's own certificate, or an address, it cannot.
+ * What the code holds, from `GET /api/1/console/about`, the machine's own
+ * certificate (`certificate.show this-machine`, or null), and the name this
+ * page was reached by: `{url, push, own, fingerprint}`, or null when the
+ * machine has no address. `push` is true when the address is a name that
+ * another certificate names, the one case where a phone can get push.
  */
 export function addressOf({ about, machine, hostname }) {
   const own = servesOwnCertificate(about?.fingerprint, machine?.fingerprint_sha256);
-  const known = normal(about?.fingerprint) !== '' && normal(machine?.fingerprint_sha256) !== '';
-  const named = known && !own && isNamedHost(hostname);
+  const named = !own && normal(about?.fingerprint) !== '' && normal(machine?.fingerprint_sha256) !== '' && isNamedHost(hostname);
   const host = named ? hostname : firstAddress(about?.addresses);
   if (host === null) return null;
   const shown = host.includes(':') ? `[${host}]` : host;
   const port = Number.isInteger(about?.port) ? `:${about.port}` : '';
   return {
-    url: `https://${shown}${port}/alerts?phone=1`, host, named, push: named, own, fingerprint: about?.fingerprint ?? null,
+    url: `https://${shown}${port}/alerts?phone=1`, push: named, own, fingerprint: about?.fingerprint ?? null,
   };
 }
 

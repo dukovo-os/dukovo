@@ -9,7 +9,7 @@
 // unlocked, never on a timer.
 
 import { fill, h, icon } from '../../dom.js';
-import { recall } from '../../lib/store.js';
+import { keep, recall } from '../../lib/store.js';
 import { makeActive, makeRecent } from './active.js';
 import { makeChannels } from './channels.js';
 import { listOf } from './channels-model.js';
@@ -47,6 +47,7 @@ export async function show(view) {
     pushId: () => push.id(),
     removed: (channel) => push.removed(channel),
     hostname: undefined,
+    notNow: () => keep(PHONE_DONE_KEY, true),
     install: null,
     installed: null,
     push: null,
