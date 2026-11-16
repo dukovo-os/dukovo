@@ -34,7 +34,7 @@ test('the list has a row for each app installed for everyone, the flawed first, 
   assert.deepEqual(app.view.headed.crumbs, []);
   const rows = rowsOf(app.view.main.querySelectorAll('table')[0]);
   assert.deepEqual(rows.map((row) => row[0].replace(/\s+/g, ' ')), [
-    'VValkeyio.valkey.valkey', 'PPHP-FPMnet.php.php-fpm', 'PPostgreSQLorg.postgresql.postgresql', 'Nnginxio.nginx.nginx', 'PPythonorg.python.python', 'SSQLiteorg.sqlite.sqlite',
+    'VValkeyio.valkey.valkey', 'PPHP-FPMnet.php.php-fpm', 'PPostgreSQLorg.postgresql.postgresql', 'Nnginxorg.nginx.nginx', 'PPythonorg.python.python', 'SSQLiteorg.sqlite.sqlite',
   ]);
   assert.deepEqual(rows.map((row) => row[1]), ['8.0.3', '8.4.2', '17.2', '1.27.3', '3.15.2', '3.47.2']);
   assert.deepEqual(rows.map((row) => row[2]), [
@@ -164,8 +164,46 @@ test('the facts of an app are its service with its state, its account, what it m
   assert.equal(facts.get('Updates').querySelector('a').getAttribute('href'), '/updates');
 });
 
+test('nginx\'s page says how many websites there are and PostgreSQL\'s how many databases, each with a link to manage them, and no other app\'s page has such a line', async (context) => {
+  const web = await openApps(context, { rest: 'org%2Enginx%2Enginx' });
+  const row = (app, name) => app.view.main.querySelectorAll('.apps-panel dl dt').findIndex((term) => term.textContent === name);
+  const at = row(web, 'Websites');
+  assert.notEqual(at, -1);
+  const line = web.view.main.querySelectorAll('.apps-panel dl dd')[at];
+  assert.equal(line.textContent, '2 · Manage');
+  assert.equal(line.querySelector('a').getAttribute('href'), '/websites');
+  assert.ok(web.calls.includes('/api/1/websites'));
+  assert.ok(!web.calls.includes('/api/1/databases'));
+  const data = await openApps(context, { rest: 'org%2Epostgresql%2Epostgresql' });
+  const where = row(data, 'Databases');
+  assert.notEqual(where, -1);
+  assert.equal(data.view.main.querySelectorAll('.apps-panel dl dd')[where].textContent, '3 · Manage');
+  assert.equal(data.view.main.querySelectorAll('.apps-panel dl dd')[where].querySelector('a').getAttribute('href'), '/databases');
+  const other = await openApps(context, { rest: VALKEY });
+  assert.equal(row(other, 'Websites'), -1);
+  assert.equal(row(other, 'Databases'), -1);
+  assert.ok(!other.calls.includes('/api/1/websites'));
+});
+
+test('a reader is not asked for the databases, which only an administrator may list, and is given the link without a count', async (context) => {
+  const app = await openApps(context, { rest: 'org%2Epostgresql%2Epostgresql', session: { admin: false } });
+  assert.ok(!app.calls.includes('/api/1/databases'));
+  const terms = app.view.main.querySelectorAll('.apps-panel dl dt');
+  const at = terms.findIndex((term) => term.textContent === 'Databases');
+  assert.equal(app.view.main.querySelectorAll('.apps-panel dl dd')[at].textContent, 'Manage');
+  const web = await openApps(context, { rest: 'org%2Enginx%2Enginx', session: { admin: false } });
+  assert.ok(web.calls.includes('/api/1/websites'), 'anyone may list the websites');
+});
+
+test('a list of websites that cannot be read leaves the line without a count, and the page stays', async (context) => {
+  const app = await openApps(context, { rest: 'org%2Enginx%2Enginx', world: { reads: { '/api/1/websites': refusal('ADM-103', 'busy', 503) } } });
+  const at = app.view.main.querySelectorAll('.apps-panel dl dt').findIndex((term) => term.textContent === 'Websites');
+  assert.equal(app.view.main.querySelectorAll('.apps-panel dl dd')[at].textContent, 'Manage');
+  assert.equal(app.problems.length, 0);
+});
+
 test('an app that nothing uses, and an older bundle info that does not say, are told apart', async (context) => {
-  const none = await openApps(context, { rest: 'io%2Enginx%2Enginx' });
+  const none = await openApps(context, { rest: 'org%2Enginx%2Enginx' });
   assert.ok(none.view.main.querySelector('.apps-panel').textContent.includes('Nothing installed uses it.'));
   const older = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/apps/io.valkey.valkey': valkey({ used_by: undefined, provides: undefined, service_list: undefined }) } } });
   const text = older.view.main.querySelector('.apps-panel').textContent;
@@ -185,7 +223,7 @@ test('the versions are the one offered, the one installed and the one kept for g
 });
 
 test('an app with no version kept says that an update keeps the one it replaces, and has no Go back', async (context) => {
-  const app = await openApps(context, { rest: 'io%2Enginx%2Enginx' });
+  const app = await openApps(context, { rest: 'org%2Enginx%2Enginx' });
   assert.ok(app.view.main.querySelector('.apps-versions').textContent.includes('No earlier version is kept yet'));
   assert.equal(control(app.view.main, 'back'), null);
 });
@@ -411,7 +449,7 @@ test('Remove its data too asks for the app\'s name, and runs nothing until it is
 
 test('Remove on an app that nothing uses says nothing of users, and a refusal stays in the dialog', async (context) => {
   const refused = refusal('ADM-105', 'The app is in use', 409);
-  const app = await openApps(context, { rest: 'io%2Enginx%2Enginx', world: { answers: { 'apps.remove': refused } } });
+  const app = await openApps(context, { rest: 'org%2Enginx%2Enginx', world: { answers: { 'apps.remove': refused } } });
   await app.press(control(app.view.main, 'remove'));
   assert.ok(!app.dialog().textContent.includes('uses it'));
   await app.submit();

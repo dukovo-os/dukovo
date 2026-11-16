@@ -107,12 +107,15 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Move and Reliability keep a little room for what they gain; the Terminal's
 // graph is as it was.
 // Report a problem's row is 7,000 more than it was, for the cuts the page makes.
+// Apps' row is 1,100 more than it was, for the mark that the page that adds an
+// app draws too, which has a module of its own, and for the count of what
+// nginx and PostgreSQL manage.
 // Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
 const PAGE_LIMITS = {
   updates: 70_000,
-  apps: 55_000,
+  apps: 56_100,
   hardware: 61_000,
   certificates: 60_000,
   report: 67_000,

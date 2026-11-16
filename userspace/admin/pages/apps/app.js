@@ -11,12 +11,13 @@
 import { fill, h, icon } from '../../dom.js';
 import { copyBox } from '../snapshots/copy-box.js';
 import {
-  ASKED_WORDS, bannerOf, byline, dataFolders, fixedWords, flawLine, heldWords, linksOf, mayUseOf, noFlawsWords,
+  ASKED_WORDS, bannerOf, byline, dataFolders, fixedWords, flawLine, heldWords, linksOf, manageOf, mayUseOf, noFlawsWords,
   READER_LINE, RISK_WORDS, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf,
 } from './app-model.js';
 import { ownCommands } from './list-model.js';
+import { onPress } from './list.js';
+import { square } from './mark.js';
 import { jobWords, updateCall } from './run-model.js';
-import { onPress, square } from './list.js';
 import { versionsTable } from './versions.js';
 
 const capital = (words) => words.charAt(0).toUpperCase() + words.slice(1);
@@ -33,7 +34,8 @@ const lines = (items) => h('ul', { class: 'apps-lines' }, items.map((item) => h(
  * `{element, set, paint, focus}`: `set(data)` draws the app of `data.info`
  * (`bundle info --json`) with its list row `data.row`, Spark's list of
  * services `data.show` (or null), `updates.settings` as `data.settings` (or
- * null), the sheet of an update that stopped to ask, `data.sheet` (or null),
+ * null), the list of what the app manages, `data.managed` (the websites of
+ * nginx or the databases of PostgreSQL, or null), the sheet of an update that stopped to ask, `data.sheet` (or null),
  * `data.admin`, and `data.links` (`{updates, services}`: which pages there
  * are); `paint(jobs)` puts the words of a running task in the page and keeps
  * the buttons off while it runs; `focus(action)` puts focus on the button
@@ -66,7 +68,7 @@ export function makeApp(view, act) {
   }
 
   /** The rows of facts, from `bundle info`. */
-  function facts({ info, show, settings, links }) {
+  function facts({ info, show, settings, managed, links }) {
     const services = servicesOf(info, show);
     const used = usedByOf(info);
     const provides = linksOf(info, 'provides');
@@ -76,12 +78,14 @@ export function makeApp(view, act) {
     const size = sizeWords(info);
     const rule = ruleWords(settings);
     const noFlaws = noFlawsWords(info);
+    const manage = manageOf(info.id, managed, links);
     return h('dl', { class: 'rows' },
       fact('Service', services === null
         ? lines(serviceLines(info))
         : services.map((one) => h('div', {}, h('a', { href: one.href }, one.name), ' · ',
           one.state ? [h('span', { class: `st ${one.state.kind}` }, one.state.word), `, ${one.boot}`] : capital(one.boot)))),
       services && services.length > 0 && fact('Runs as', runsAs(services)),
+      manage && fact(manage.name, manage.count === null ? null : `${manage.count} · `, h('a', { href: manage.href }, 'Manage')),
       fact('May use', lines([...may, may.length > 0 ? 'nothing else' : 'nothing'])),
       fact('Provides', provides && lines(provides)),
       fact('Uses', uses && lines(uses)),
@@ -140,9 +144,9 @@ export function makeApp(view, act) {
   /** Draws the app, unless what it says is what is drawn. */
   function set(data) {
     const {
-      info, row, show, settings, sheet, admin, links,
+      info, row, show, settings, managed, sheet, admin, links,
     } = data;
-    const key = JSON.stringify([info, row.update, row.flaws, show, settings, sheet, admin, links]);
+    const key = JSON.stringify([info, row.update, row.flaws, show, settings, managed, sheet, admin, links]);
     if (key === drawn) return;
     drawn = key;
     current = { id: info.id, updates: row.update.state === 'update' };
@@ -154,11 +158,11 @@ export function makeApp(view, act) {
     const services = servicesOf(info, show);
     const title = h('h2', { id: 'apps-h', tabindex: '-1' }, `${info.name} ${info.version}`);
     fill(element,
-      h('div', { class: 'apps-title' }, square(row, true), h('div', {}, title, h('span', { class: 'muted' }, byline(info)))),
+      h('div', { class: 'apps-title' }, square(row, 'apps-ic', true), h('div', {}, title, h('span', { class: 'muted' }, byline(info)))),
       h('p', { class: 'apps-job', role: 'status', hidden: true }),
       sheet !== null && askedNode(info, sheet, admin),
       banner && bannerNode(banner),
-      facts({ info, show, settings, links }),
+      facts({ info, show, settings, managed, links }),
       h('h3', {}, 'Versions'),
       versionsTable(view, {
         info, update: row.update, admin: admin && info.for_everyone !== false, back: (button) => act.back(button),

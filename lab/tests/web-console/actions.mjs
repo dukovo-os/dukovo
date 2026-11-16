@@ -74,8 +74,11 @@ const SKIPPED = new Set([
 // metricsd writes every 10 minutes, which a machine that has run for less
 // has no points of (ADM-123); apps.show asks after the app that its example
 // names, which a machine without that app in its catalog answers with
-// `bundle info`'s own words (ADM-123).
+// `bundle info`'s own words (ADM-123); apps.sheet asks the catalogs for the
+// sheet of the app that its example names, which a machine that has none
+// listing it answers with APP-101 (422).
 const MAY_REFUSE = new Map([
+  ["apps.sheet", "APP-101"],
   ["apps.show", "ADM-123"],
   ["checks.last", "ADM-123"],
   ["metrics.usage", "ADM-123"],

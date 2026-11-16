@@ -62,7 +62,7 @@ test('the apps are rows with their version and what waits, the apps of a person 
   assert.deepEqual([provider.group, provider.kind, provider.filters], ['Apps', 'app', { state: STATES }]);
   const items = await provider.items(cx);
   assert.deepEqual(items.map((item) => item.key), [
-    'io.valkey.valkey', 'net.php.php-fpm', 'org.postgresql.postgresql', 'io.nginx.nginx', 'org.python.python', 'org.sqlite.sqlite',
+    'io.valkey.valkey', 'net.php.php-fpm', 'org.postgresql.postgresql', 'org.nginx.nginx', 'org.python.python', 'org.sqlite.sqlite',
   ]);
   assert.deepEqual(items[0], {
     key: 'io.valkey.valkey',

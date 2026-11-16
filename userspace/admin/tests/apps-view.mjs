@@ -36,8 +36,11 @@ const reads = () => ({
   '/api/1/tasks': { tasks: [] },
   '/api/1/services': services(),
   '/api/1/updates/settings': settings(),
+  '/api/1/websites': { format: 1, websites: [{ name: 'shop.example.org' }, { name: 'blog.example.org' }] },
+  '/api/1/databases': { format: 1, databases: [{ name: 'shop' }, { name: 'blog' }, { name: 'wiki' }] },
   '/api/1/apps/io.valkey.valkey': valkey(),
-  '/api/1/apps/io.nginx.nginx': plain('io.nginx.nginx', 'nginx', '1.27.3'),
+  '/api/1/apps/org.nginx.nginx': plain('org.nginx.nginx', 'nginx', '1.27.3'),
+  '/api/1/apps/org.postgresql.postgresql': plain('org.postgresql.postgresql', 'PostgreSQL', '17.2'),
 });
 
 /**

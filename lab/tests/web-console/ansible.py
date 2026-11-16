@@ -94,10 +94,12 @@ runs them all, and the browser test web-console/security uses them.
 Nor are the Updates' and Apps' actions whose examples need the update
 server or the catalog that only a boot test makes: an update to apply,
 unstage or undo, a hold of the system (which asks the server for the release
-to hold at), and an app to show, update, roll back, hold, let go or remove
-(SET_UP). Their tasks are the commands the console shows, which the boot test
-admin-updates runs, and the browser tests web-console/updates and
-web-console/apps use. The reads and the settings' changes of the Updates page
+to hold at), and an app to show, update, roll back, hold, let go or remove,
+the sheet of an app to read and an app to install (SET_UP). Their tasks are the
+commands the console shows, which the boot test admin-updates runs, and the
+browser tests web-console/updates, web-console/apps and web-console/add-app
+use. apps.search is run: it answers with what the catalogs it can read list.
+The reads and the settings' changes of the Updates page
 are run: they need no server, and updates.check answers with what it could not
 reach.
 
@@ -199,7 +201,9 @@ UNDER = {"ssh.on", "ssh.off"}
 # apps.show, apps.update, apps.update-all, apps.rollback, apps.hold,
 # apps.unhold, apps.remove, apps.tonight and apps.not-tonight name an app of
 # the test catalog, which a lab machine has not installed, and apps.tonight-all
-# asks for the update of each such app.
+# asks for the update of each such app; apps.sheet and apps.install name an app
+# of the test catalog too, which no catalog a lab machine reads lists (the sheet
+# is refused with APP-101, and the install has nothing to fetch).
 # databases.add, databases.password, databases.allow, databases.deny and
 # databases.remove need PostgreSQL installed and on, and a database to work
 # on, which a lab machine has not; databases.allow and databases.deny also
@@ -222,6 +226,7 @@ SET_UP = {
     "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "machine.rename",
     "apps.tonight", "apps.tonight-all", "apps.not-tonight",
     "databases.add", "databases.password", "databases.allow", "databases.deny", "databases.remove",
+    "apps.sheet", "apps.install",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.
