@@ -11691,17 +11691,23 @@ fn answer_prompt_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> 
 /// empty line nukesh may show, faded, the command usually run next or a
 /// failed one fixed (ADR 0280): the cursor then stands on the hint's first
 /// letter, right after the prompt and its space, and nothing is typed yet.
+/// A hint longer than the screen is wide goes on over the lines below, none
+/// of them longer than the prompt's.
 fn prompt_waits(screen: &[String], prompt: &str) -> (bool, String) {
     let shown = |line: &str| {
         let line = line.trim_end();
         let line = line.split("      ").next().unwrap_or(line).trim_end();
         line.strip_suffix('?').unwrap_or(line).trim_end().to_string()
     };
-    let Some(last) = screen.iter().rev().map(|line| shown(line)).find(|line| !line.is_empty())
-    else {
+    let lines: Vec<String> = screen.iter().map(|line| shown(line)).collect();
+    let Some(end) = lines.iter().rposition(|line| !line.is_empty()) else {
         return (false, String::new());
     };
-    let hinted = last.contains(&format!("{prompt} ?"));
+    let cursor = format!("{prompt} ?");
+    let hinted = lines[..=end].iter().rposition(|line| line.contains(&cursor)).is_some_and(|at| {
+        lines[at + 1..=end].iter().all(|line| !line.is_empty() && line.len() <= lines[at].len())
+    });
+    let last = lines[end].clone();
     (last.ends_with(prompt) || hinted, last)
 }
 
@@ -12066,6 +12072,17 @@ mod tests {
         let hinted =
             screen(&["alice@dukovo ~ $ ?at /system/settings/admin.toml | nc -N 10.0.2.2 34269"]);
         assert!(prompt_waits(&hinted, "$").0);
+        // A hint wider than the screen, the third time a long command came
+        // after the one before it: the prompt's line is the widest.
+        let hint =
+            format!("alice@studio ~ $ ?lear; echo \"host: $(hostname)\"; {}", "x".repeat(60));
+        let wrapped = screen(&["prompt: 1", &hint, &"y".repeat(hint.len()), "vice sshd status"]);
+        assert_eq!(prompt_waits(&wrapped, "$"), (true, "vice sshd status".to_string()));
+        // A command whose typed line wraps, running, and output after a gap.
+        let running = screen(&[&format!("alice@studio ~ $ echo {}", "x".repeat(70)), "xx", "?"]);
+        assert!(!prompt_waits(&running, "$").0);
+        assert!(!prompt_waits(&screen(&["alice@studio ~ $ ?at x", "", "out"]), "$").0);
+        assert!(!prompt_waits(&screen(&["alice@studio ~ $ ?at x", &"z".repeat(40)]), "$").0);
         // A typed line that has not ended, and a command that runs, are no prompt.
         assert!(
             !prompt_waits(&screen(&["alice@dukovo ~ $ cat /system/settings/admin.toml?"]), "$").0
