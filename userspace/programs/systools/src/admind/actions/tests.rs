@@ -597,6 +597,20 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "ssh.on",
             "ssh.off",
             "ssh.undo",
+            "updates.set",
+            "updates.channel",
+            "updates.check-add",
+            "updates.check-remove",
+            "updates.essential",
+            "updates.unstage",
+            "updates.undo",
+            "updates.hold",
+            "updates.unhold",
+            "apps.update",
+            "apps.rollback",
+            "apps.hold",
+            "apps.unhold",
+            "apps.remove",
         ]
     );
     for action in console.as_array().unwrap() {
@@ -1303,6 +1317,11 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("account.password", "current"),
     ("account.password", "new"),
     ("account.key-add", "line"),
+    // A page or a service, one of the two, and a page's address is one the
+    // check reads: no space or control character in it, which a pattern
+    // cannot say as the check does.
+    ("updates.check-add", "url"),
+    ("updates.check-add", "service"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1429,6 +1448,15 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
         "account.key-add",
         r#"{"line":"command=\"x\" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f lab"}"#,
     ),
+    // Nothing to change, a restart time for a machine that does not update
+    // by itself, a check of both a page and a service, and an `insecure`
+    // that is for a page: the code's, since each is a way of combining
+    // fields.
+    ("updates.set", "{}"),
+    ("updates.set", r#"{"restart":"03:30","unattended":false}"#),
+    ("updates.check-add", r#"{"name":"x"}"#),
+    ("updates.check-add", r#"{"name":"x","service":"nginx","url":"https://a/"}"#),
+    ("updates.check-add", r#"{"insecure":true,"name":"x","service":"nginx"}"#),
 ];
 
 fn lab_action(id: &str) -> &'static dyn Registered {

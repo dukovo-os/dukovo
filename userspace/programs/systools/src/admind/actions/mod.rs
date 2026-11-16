@@ -48,6 +48,7 @@
 
 mod account;
 mod accounts;
+mod apps;
 mod backups;
 mod certificate;
 pub mod checks;
@@ -69,6 +70,7 @@ mod snapshots;
 mod ssh;
 mod storage;
 mod trial;
+mod updates;
 
 use std::fmt;
 use std::net::IpAddr;
@@ -1024,6 +1026,32 @@ registry![
     private::Serve,
     private::Add,
     private::Remove,
+    updates::Last,
+    updates::Check,
+    updates::Slots,
+    updates::History,
+    updates::Advisories,
+    updates::Settings,
+    updates::Set,
+    updates::SetChannel,
+    updates::Checks,
+    updates::CheckAdd,
+    updates::CheckRemove,
+    updates::SetEssential,
+    updates::Apply,
+    updates::Unstage,
+    updates::Undoing,
+    updates::Hold,
+    updates::Unhold,
+    updates::Failed,
+    apps::List,
+    apps::Show,
+    apps::Update,
+    apps::UpdateAll,
+    apps::Rollback,
+    apps::Hold,
+    apps::Unhold,
+    apps::Remove,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
