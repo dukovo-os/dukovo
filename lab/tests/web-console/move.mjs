@@ -24,7 +24,9 @@
 // thumb reaches. Each look is the console's own: dark, light, high contrast,
 // forced colours and less motion, each checked by axe (console.mjs's lookAll).
 // Nothing is staged when a run ends, so that the next engine finds the machine
-// as this one did. The restart that the last step names is not pressed: the
+// as this one did. A restore that is staged says how to restart, and Restart
+// now… (`POST /api/1/power/restart`, as the Hardware page's has it) asks first
+// what the restart finishes; it is asked and cancelled, never answered: the
 // boot test admin-move restarts a second machine and finds the first one's name,
 // accounts and network. The accounts are the two that move.toml made.
 
@@ -76,6 +78,7 @@ const LOCKED_WORDS = "Unlock the console to look for backups on the plugged-in d
 const NOT_KEPT = "The key is not kept.";
 const STAGED_WORDS = "Nothing changes until this machine restarts, and you can cancel until then.";
 const RESTART = "elevate reboot";
+const POWER_RESTART = "/api/1/power/restart";
 const ADMINS_ONLY = "This page is for administrators.";
 
 // What the browsers called, over all of them, for the check at the end.
@@ -316,6 +319,27 @@ async function cards(t, page, sent, plan, how) {
   await t.see(check.getByText(/1 change for the new network port/));
 }
 
+/**
+ * Restart now… is there beside the command, asks first (the console asks to
+ * unlock if it is locked) and says what the restart finishes. It is asked and
+ * not answered: the restart would end the test, so Cancel closes the question,
+ * and nothing is sent to `POST /api/1/power/restart`.
+ */
+async function restartIsAsked(t, page, restart, sent) {
+  ensure((await restart.getByRole("button", { name: "Restart", exact: true }).count()) === 0, "the page has a button called only Restart: it is Restart now…, which asks first");
+  await t.see(buttonOf(restart, "Restart now…"));
+  await buttonOf(restart, "Restart now…").click();
+  const asked = await unlockDialog(page).waitFor({ state: "visible", timeout: 2000 }).then(() => true, () => false);
+  if (asked) await answerUnlock(t, page);
+  const dialog = page.getByRole("dialog", { name: /^Restart .+\?$/ });
+  await t.see(dialog);
+  await t.see(dialog.getByText(/^To finish the restore( from .+)?\. .+ restarts in one minute, and you can cancel until then\./));
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await t.gone(dialog);
+  await sleep(500);
+  ensure(toPath(sent, POWER_RESTART).length === 0, "Restart now… sent a restart before it was confirmed");
+}
+
 /** Step 4 with a typed key: Stage it asks for the key again, runs as a task, and ends as Staged with Cancel. */
 async function stageTyped(t, page, sent, plan, keys) {
   await unlockNow(page);
@@ -335,7 +359,7 @@ async function stageTyped(t, page, sent, plan, keys) {
   await t.see(restart.getByText(STAGED_WORDS));
   await t.see(restart.getByRole("group", { name: "The command that restarts this machine" }).getByText(RESTART, { exact: true }));
   ensure((await restart.getByRole("button", { name: "Stage it", exact: true }).count()) === 0, "Stage it is there while a restore is staged");
-  ensure((await restart.getByRole("button", { name: "Restart", exact: true }).count()) === 0, "the page has a Restart button, which the Hardware page brings");
+  await restartIsAsked(t, page, restart, sent);
   ensure((await readBackups(page)).staged !== null, "the machine says nothing is staged after Stage it");
   await keyOnlyIn(page, sent, keys.right, [PLAN, STAGE]);
   await lookAll(t, page, "move-staged");
