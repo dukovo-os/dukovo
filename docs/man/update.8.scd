@@ -84,9 +84,9 @@ that the update server offers.
 	Holds one thing back at the version the channel offers now, or the
 	one it runs: a newer one is taken as usual, and the held one is
 	not. *system* and *firmware* are kept in the *[hold]* table of
-	*updates.toml*(5); an app as *bundle hold* keeps it. A held
-	version gets no security fixes, so a hold is for a while, not for
-	good. *sysupdate stage --version* still stages a held release
+	*updates.toml*(5); an app as *bundle hold* keeps it, for everyone
+	when root holds it. A held version gets no security fixes, so a
+	hold is for a while, not for good. *sysupdate stage --version* still stages a held release
 	when asked by name.
 
 *unhold* _item_

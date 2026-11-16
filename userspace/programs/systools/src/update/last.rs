@@ -68,14 +68,20 @@ fn text(checked_ms: u64, by: By, updates: &str) -> String {
 /// the last one, made now by `by`. A person who is not root cannot, and
 /// it is no fault: there is nothing to keep it in.
 pub(crate) fn keep(by: By, updates: &str) {
-    // SAFETY: geteuid has no arguments and cannot fail.
-    if unsafe { libc::geteuid() } != 0 {
+    if !is_root() {
         return;
     }
     let now = util::now_ns() / 1_000_000;
     if let Err(why) = keep_in(Path::new(FILE), &text(now, by, updates)) {
         eprintln!("update: cannot keep the check in {FILE}: {}", util::strip_os_error(&why));
     }
+}
+
+/// Whether this process runs as root: the one that may write what update
+/// keeps for everyone.
+pub(crate) fn is_root() -> bool {
+    // SAFETY: geteuid has no arguments and cannot fail.
+    unsafe { libc::geteuid() == 0 }
 }
 
 /// Writes `text` to `file`: to a file beside it, which is renamed over it,

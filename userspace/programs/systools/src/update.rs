@@ -558,7 +558,13 @@ fn undo(item: &str, keep: sysupdate::Keep) -> Result<i32, Fail> {
 /// `update hold ITEM` (`on`) or `update unhold ITEM`.
 fn hold(item: &str, on: bool) -> Result<i32, Fail> {
     if item != "system" && item != "firmware" {
-        return bundle(&[if on { "hold" } else { "unhold" }, item]);
+        // The hold of an administrator, which the console's is, is of the
+        // app everyone has; another person's is of their own.
+        let mut words = vec![if on { "hold" } else { "unhold" }, item];
+        if last::is_root() {
+            words.push("--for-everyone");
+        }
+        return bundle(&words);
     }
     let mut settings = Settings::load()?;
     let version = if !on {

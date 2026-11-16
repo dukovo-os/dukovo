@@ -286,8 +286,11 @@ fn plan(now: &Settings, automatic: bool, wanted: &Wanted) -> Result<Plan, String
         after.unattended = unattended;
         changes.push(("unattended", switch_word(unattended).to_string()));
     }
+    // `minutes_of_day` reads a sign as a digit, which a time written by
+    // hand may have; one this command writes has none.
     if let Some(Some(time)) = &wanted.restart
-        && minutes_of_day(time).is_none()
+        && (minutes_of_day(time).is_none()
+            || !time.bytes().all(|b| b.is_ascii_digit() || b == b':'))
     {
         return Err(format!("{time} is not a time of day: use HH:MM, as 03:30"));
     }
@@ -505,7 +508,7 @@ system = \"1.0.0-alpha.2\"
         assert!(
             refused(KEPT, &["--unattended", "off", "--restart", "04:00"]).contains("unattended")
         );
-        for bad in ["25:00", "3:30", "03:60", "noon", "03:30:00", ""] {
+        for bad in ["25:00", "3:30", "03:60", "noon", "03:30:00", "", "+3:30"] {
             assert!(refused(KEPT, &["--restart", bad]).contains("HH:MM"), "{bad}");
         }
         // Both together, or with unattended given, are fine.
