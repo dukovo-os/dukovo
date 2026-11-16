@@ -71,8 +71,10 @@ pub enum Request {
     /// `catalog` or the first that lists it (ADR 0383), as `Install`.
     Get { id: String, catalog: Option<String>, everyone: bool, yes: bool },
     /// Lists the bundles the catalogs list whose ID or name holds every
-    /// one of `words`.
-    Search { words: Vec<String> },
+    /// one of `words`; with `json`, as one JSON document of the bundles of
+    /// the catalogs read now and of the catalogs that could not be, and
+    /// then `words` may be none, for every bundle.
+    Search { words: Vec<String>, json: bool },
     /// Lists the catalogs.
     Catalogs,
     /// Adds catalog `name` at `url`, with the root sent with the request:
@@ -218,7 +220,14 @@ impl Request {
                 whose(*everyone),
                 if *yes { "yes" } else { "ask" }
             ),
-            Request::Search { words } => format!("search\t{}\n", words.join("\t")),
+            Request::Search { words, json: false } => format!("search\t{}\n", words.join("\t")),
+            Request::Search { words, json: true } => {
+                let mut line = "search-json".to_string();
+                for word in words {
+                    line += &format!("\t{word}");
+                }
+                line + "\n"
+            }
             Request::Catalogs => "catalogs\n".into(),
             Request::CatalogAdd { name, url } => format!("catalog-add\t{name}\t{url}\n"),
             Request::CatalogRemove { name } => format!("catalog-remove\t{name}\n"),
@@ -296,6 +305,11 @@ impl Request {
             }),
             ["search", words @ ..] if !words.is_empty() => Ok(Request::Search {
                 words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
+                json: false,
+            }),
+            ["search-json", words @ ..] => Ok(Request::Search {
+                words: words.iter().map(|w| checked_word(w)).collect::<Result<_, _>>()?,
+                json: true,
             }),
             ["catalogs"] => Ok(Request::Catalogs),
             ["add-ons"] => Ok(Request::AddOns),
@@ -1003,7 +1017,9 @@ mod tests {
                 everyone: true,
                 yes: true,
             },
-            Request::Search { words: vec!["rip".into(), "grep tool".into()] },
+            Request::Search { words: vec!["rip".into(), "grep tool".into()], json: false },
+            Request::Search { words: vec!["rip".into(), "grep tool".into()], json: true },
+            Request::Search { words: Vec::new(), json: true },
             Request::Catalogs,
             Request::CatalogAdd { name: "feed".into(), url: "https://example.org/catalog/".into() },
             Request::CatalogRemove { name: "dukovo".into() },
@@ -1082,6 +1098,8 @@ mod tests {
             "get\tio.github.burntsushi.ripgrep\tDukovo\tme\task",
             "search",
             "search\t",
+            "search-json\t",
+            "search-json\trip\t",
             "catalog-add\tfeed\tftp://example.org/",
             "catalog-remove\t../x",
             "update\tme\tcheck",
@@ -1101,6 +1119,18 @@ mod tests {
         ] {
             assert!(Request::read(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_lines_an_older_bundle_sends_still_read() {
+        // The words of a search with no `--json`, and a search of no words
+        // that only `--json` makes.
+        assert_eq!(
+            Request::read("search\trip"),
+            Ok(Request::Search { words: vec!["rip".into()], json: false })
+        );
+        assert_eq!(Request::read("search-json"), Ok(Request::Search { words: vec![], json: true }));
+        assert_eq!(Request::read("search"), Err("not a request bundled knows".into()));
     }
 
     #[test]

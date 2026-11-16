@@ -73,7 +73,7 @@ use crate::bundles::protocol::{
 use crate::bundles::registry::{self, Installed, Place, Registry, Trust, base_id};
 use crate::bundles::services::{self, Record};
 use crate::bundles::sheet::{self, Facts};
-use crate::bundles::{MANIFEST, confine, signed, sizes, snapshots, sums, tonight};
+use crate::bundles::{MANIFEST, confine, documents, signed, sizes, snapshots, sums, tonight};
 use crate::util::{self, Fail};
 use crate::{proc, signin, sys};
 
@@ -2282,8 +2282,21 @@ fn read_catalogs() -> (Vec<Catalog>, Vec<String>) {
     catalogs::read_all(Path::new(catalogs::SETTINGS), Path::new(catalogs::DEFAULTS))
 }
 
-/// The catalogs read anew, and why each other could not be.
-type Opened = (Vec<(Catalog, catalogs::Open)>, Vec<String>);
+/// A catalog that could not be read, and why.
+struct Unread {
+    catalog: String,
+    why: String,
+}
+
+impl Unread {
+    /// What is said of it on a line of text.
+    fn note(&self) -> String {
+        format!("catalog {} could not be read: {}", self.catalog, self.why)
+    }
+}
+
+/// The catalogs read anew, and each other, which could not be.
+type Opened = (Vec<(Catalog, catalogs::Open)>, Vec<Unread>);
 
 /// Reads every catalog that is on anew, or `only`: each one read, and why
 /// each other could not be.
@@ -2310,7 +2323,7 @@ fn open_catalogs(only: Option<&str>) -> Result<Opened, String> {
     for catalog in chosen {
         match catalogs::open(&catalog, state) {
             Ok(read) => open.push((catalog, read)),
-            Err(why) => failed.push(format!("catalog {} could not be read: {why}", catalog.name)),
+            Err(why) => failed.push(Unread { catalog: catalog.name, why }),
         }
     }
     Ok((open, failed))
@@ -2327,7 +2340,7 @@ fn search(
     let (open, failed) = open_catalogs(None)?;
     let state = Path::new(catalogs::STATE);
     let (all, _) = read_catalogs();
-    let mut notes = failed;
+    let mut notes: Vec<String> = failed.iter().map(Unread::note).collect();
     let mut found = 0;
     for catalog in all.iter().filter(|c| !c.off) {
         let index = match open.iter().find(|(c, _)| c.name == catalog.name) {
@@ -2355,6 +2368,75 @@ fn search(
         said += &format!("; {note}");
     }
     Ok(said)
+}
+
+/// Why no catalog could be read, as one line that ends in the ID of the
+/// error it is.
+fn none_read(failed: &[Unread]) -> String {
+    let notes: Vec<String> = failed.iter().map(Unread::note).collect();
+    format!("{} (APP-103)", notes.join("; "))
+}
+
+/// [`open_catalogs`], with an ID at the end of each refusal: one for no
+/// catalog set to be read, and one for the catalog asked for that is not
+/// there or is off.
+fn open_for_asker(only: Option<&str>) -> Result<Opened, String> {
+    open_catalogs(only)
+        .map_err(|why| format!("{why} ({})", if only.is_some() { "APP-101" } else { "APP-103" }))
+}
+
+/// `bundle search --json`: what the catalogs that could be read list,
+/// read anew, of every bundle whose ID or name holds every word, or of
+/// every bundle with none; the catalogs that could not be, with why, are
+/// not searched as they last were: their bundles could not be fetched.
+fn search_json(
+    shared: &Shared,
+    connection: &mut Connection,
+    asker: u32,
+    words: &[String],
+) -> Result<String, String> {
+    let (hits, unread) = {
+        let _reading = shared.catalogs();
+        let (open, failed) = open_for_asker(None)?;
+        if open.is_empty() {
+            return Err(none_read(&failed));
+        }
+        let state = Path::new(catalogs::STATE);
+        let mut hits = Vec::new();
+        for (catalog, read) in &open {
+            let flaws = catalogs::read_flaws(state, &catalog.name);
+            for entry in read.index.search(words) {
+                hits.push(Hit {
+                    catalog: catalog.name.clone(),
+                    id: entry.id.clone(),
+                    version: entry.version.clone(),
+                    name: entry.name.clone(),
+                    flags: catalogs::flags(flaws.as_ref(), &entry.id, &entry.version),
+                });
+            }
+        }
+        let unread: Vec<(String, String)> =
+            failed.into_iter().map(|u| (u.catalog, u.why)).collect();
+        (hits, unread)
+    };
+    // What the asker has installed of each, or else what everyone has.
+    let hits: Vec<(Hit, Option<String>)> = {
+        let registry = shared.lock();
+        hits.into_iter()
+            .map(|hit| {
+                let installed = registry
+                    .installed(Place::User(asker), &hit.id)
+                    .or_else(|| registry.installed(Place::Everyone, &hit.id))
+                    .map(|i| i.version.clone());
+                (hit, installed)
+            })
+            .collect()
+    };
+    let found = hits.len();
+    let document =
+        crate::json::line(&documents::Search::of(hits, unread)).map_err(|fail| fail.message)?;
+    connection.send(&Answer::Document(document)).map_err(|e| format!("{e}"))?;
+    Ok(format!("{found} found"))
 }
 
 /// `bundle install ID`: the newest version of `id` that `catalog`, or the
@@ -2398,7 +2480,7 @@ fn get(
                 Some(only) => format!("catalog {only} does not list {id}"),
                 None => format!("no catalog lists {id}"),
             };
-            for note in failed {
+            for note in failed.iter().map(Unread::note) {
                 why += &format!("; {note}");
             }
             return Err(why);
@@ -2629,7 +2711,7 @@ fn find_updates(
         match open_catalogs(Some(name)) {
             Ok((read, failed)) => {
                 open.extend(read);
-                notes.extend(failed);
+                notes.extend(failed.iter().map(Unread::note));
             }
             Err(why) => notes.push(why),
         }
@@ -3719,7 +3801,10 @@ fn serve(shared: &Shared, stream: UnixStream) {
         Ok(Request::Get { id, catalog, everyone, yes }) => {
             get(shared, &mut connection, asker, &id, catalog.as_deref(), everyone, yes)
         }
-        Ok(Request::Search { words }) => search(shared, &mut connection, &words),
+        Ok(Request::Search { words, json: false }) => search(shared, &mut connection, &words),
+        Ok(Request::Search { words, json: true }) => {
+            search_json(shared, &mut connection, asker, &words)
+        }
         Ok(Request::Catalogs) => list_catalogs(&mut connection),
         Ok(Request::CatalogRemove { name }) => catalog_remove(shared, asker, &name),
         Ok(Request::Update { ids, everyone, check, yes }) => {

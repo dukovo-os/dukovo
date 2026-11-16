@@ -22,7 +22,8 @@
 //!   `bundle remove ID` ask bundled(8), which installs, seals and removes
 //!   bundles (ADR 0223).
 //! - `bundle search WORD...`, `bundle install ID` and `bundle catalog`
-//!   find, fetch and set the catalogs bundled installs from (ADR 0383).
+//!   find, fetch and set the catalogs bundled installs from (ADR 0383);
+//!   `bundle search --json` says what they list as one JSON document.
 //! - `bundle update`, `bundle rollback ID`, `bundle hold ID`, `bundle
 //!   unhold ID` and `bundle history` update bundles from their catalogs,
 //!   go back, hold one at its version and say what was done (ADR 0384).
@@ -84,6 +85,7 @@ const USAGE: &str =
        bundle install FILE.dkv [--unsigned] [--for-everyone] [--yes]
        bundle install ID [--from CATALOG] [--for-everyone] [--yes]
        bundle search WORD...
+       bundle search --json [WORD...]
        bundle catalog
        bundle catalog add NAME URL ROOT-FILE
        bundle catalog remove NAME
@@ -207,7 +209,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let output_ok = sub == Some("pack") || output.is_none();
     let days_ok = sub == Some("feed") || days.is_none();
     let unsigned_ok = sub == Some("install") || !unsigned;
-    let json_ok = matches!(sub, Some("list" | "info")) || !json;
+    let json_ok = matches!(sub, Some("list" | "info" | "search")) || !json;
     if sub != Some("hold") && why.is_some() {
         return Err(usage(USAGE.into()));
     }
@@ -278,6 +280,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             install(what, everyone, yes, unsigned)
         }
         (Some("install"), [id]) if !unsigned => get(id, from, everyone, yes),
+        (Some("search"), words) if json => search_json(words),
         (Some("search"), words) if !words.is_empty() => search(words),
         (Some("catalog"), []) => list_catalogs(),
         (Some("catalog"), [add, name, url, root]) if add == "add" => add_catalog(name, url, root),
@@ -1186,7 +1189,7 @@ fn list(json: bool) -> Result<i32, Fail> {
 /// catalogs list whose ID or name holds every word.
 fn search(words: &[String]) -> Result<i32, Fail> {
     let (_stream, mut input) =
-        ask(&Request::Search { words: words.to_vec() }, None).map_err(fail)?;
+        ask(&Request::Search { words: words.to_vec(), json: false }, None).map_err(fail)?;
     let mut hits = Vec::new();
     let said = loop {
         match answer(&mut input)? {
@@ -1226,6 +1229,26 @@ fn search(words: &[String]) -> Result<i32, Fail> {
         );
     }
     Ok(0)
+}
+
+/// `bundle search --json [WORD...]`: bundled's document of the bundles
+/// of the catalogs it could read, which holds each other one and why. It
+/// is no failure that nothing matches; it is one that no catalog could be
+/// read, which bundled says, with its ID.
+fn search_json(words: &[String]) -> Result<i32, Fail> {
+    let request = Request::Search { words: words.to_vec(), json: true };
+    let (_stream, mut input) = ask(&request, None).map_err(fail)?;
+    loop {
+        match answer(&mut input)? {
+            Answer::Document(text) => println!("{text}"),
+            Answer::Ok(_) => return Ok(0),
+            Answer::Error(why) => {
+                eprintln!("bundle: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
 }
 
 /// `bundle catalog`: each catalog, whether it is on, how many bundles it
