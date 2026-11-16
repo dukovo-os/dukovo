@@ -17,6 +17,10 @@ import { graphOf, ROOT, shown, sizeOf } from './graph.mjs';
 // 150 KB is 150,000 bytes here, the smaller of the two readings.
 const LIMIT = 150_000;
 
+// The start is held under the limit with room for what the console takes in
+// next: a change that adds to it raises this number and says what grew.
+const START_PLAN = 147_100;
+
 /** The files `index.html` names: its scripts and style sheets, as paths on disk. */
 function pageFiles() {
   const html = readFileSync(`${ROOT}index.html`, 'utf8');
@@ -36,6 +40,11 @@ test('the shell starts within 150 KB', () => {
   const size = sizeOf(files);
   const list = [...files].map((file) => `${statSync(file).size} ${shown(file)}`).sort((a, b) => parseInt(b, 10) - parseInt(a, 10));
   assert.ok(size <= LIMIT, `the shell starts with ${size} bytes, over ${LIMIT}:\n${list.join('\n')}`);
+});
+
+test('the shell starts within the number its next work has left room for', () => {
+  const size = sizeOf(shellStart().files);
+  assert.ok(size <= START_PLAN, `the shell starts with ${size} bytes, over the ${START_PLAN} that its next work has left room for`);
 });
 
 test('the shell starts with the page, its script and its sheet', () => {

@@ -10,7 +10,8 @@
  * 109.375% or 131.25%. Borders and focus rings stay in px. theme.js puts the
  * theme on the root element: light is the base, and dark and hc (high
  * contrast) swap the tokens. Nothing loads from outside the console. What
- * only some pages draw is in pages.css, which their entries name.
+ * only some pages draw is in pages.css, which their entries name; what a
+ * dialog or the sign-in page draws is in dialogs.css and sign-in.css.
  */
 .dk {
   --page: #F2F5F9; --bg: #FFFFFF; --pane: #F5F8FC; --sunken: #ECF1F6; --border: #D4DDE7; --control: #6B7989;
@@ -225,11 +226,6 @@ html, body { margin: 0; }
 .cmd pre { margin: 0; font: .893rem/1.55 var(--font-mono); white-space: pre-wrap; color: var(--text); }
 .inline-cmd { display: block; margin-top: .286rem; font: .893rem var(--font-mono); color: var(--muted); }
 .dialog { width: 100%; max-width: 44.286rem; border: 1px solid var(--btn-b); border-radius: .5rem; background: var(--bg); box-shadow: var(--shadow); display: flex; flex-direction: column; }
-.dialog-head { display: flex; align-items: center; gap: .714rem; padding: .857rem 1.143rem; border-bottom: 1px solid var(--border); background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-radius: .5rem .5rem 0 0; }
-.dialog-head h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); }
-.dialog-head .btn { margin-left: auto; }
-.dialog-body { padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: .857rem; }
-.dialog-foot { display: flex; flex-wrap: wrap; gap: .571rem; justify-content: flex-end; padding: .857rem 1.143rem; border-top: 1px solid var(--border); background: var(--pane); border-radius: 0 0 .5rem .5rem; }
 /* The pages C2a built, and what they added to the boards */
 .dk .mark-dark { display: none; }
 .dk.dark .mark-dark, .dk.hc .mark-dark { display: block; }
@@ -274,31 +270,16 @@ html, body { margin: 0; }
 dialog.dialog { padding: 0; margin: 5rem auto 1.143rem; color: var(--text); }
 dialog.dialog:not([open]) { display: none; }
 dialog.dialog::backdrop { background: var(--scrim); }
-.dialog-head .ic { color: var(--bad); }
-.dialog-body { --gap: .857rem; padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: var(--gap); }
-.dialog-body.roomy { --gap: 1rem; padding: 1.714rem; }
-.dialog-title { font: 400 1.357rem var(--font-ui); color: var(--instr); }
-.lockup { display: flex; align-items: center; gap: .714rem; }
-.lockup b { font: 600 1.214rem var(--font-brand); }
-/* The sign-in page: dialogs in the middle, the note on the certificate below. */
+/* The sign-in page's frame; its dialogs and its note are in sign-in.css. */
 .sign-in { flex: 1; display: flex; flex-direction: column; }
-.sign-in-dialogs { flex: 1; display: flex; flex-wrap: wrap; gap: 2rem; justify-content: center; align-items: flex-start; padding: 4.571rem 1.143rem 2.286rem; }
-.sign-in-note { display: flex; justify-content: center; padding: 0 1.143rem 2.286rem; }
-.sign-in-note .banner { max-width: 58.571rem; }
-.sign-in-dialogs .banner { flex-basis: 100%; }
 /* The second step's pages */
 .panel { --gap: .714rem; display: flex; flex-direction: column; gap: var(--gap); padding: .857rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--bg); }
 .panel h3 { font-size: 1rem; }
 .qr-row { display: flex; flex-wrap: wrap; gap: 1.143rem; align-items: flex-start; }
 .qr { width: 14.286rem; height: 14.286rem; flex: none; border: 1px solid var(--border); border-radius: .286rem; forced-color-adjust: none; }
-.qr-text { flex: 1 1 15.714rem; display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
 .secret { font: 600 1.071rem/1.5 var(--font-mono); letter-spacing: .04em; overflow-wrap: anywhere; user-select: all; }
-.codes { list-style: none; margin: 0; padding: .714rem .857rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(12.143rem, 1fr)); gap: .429rem 1.143rem;
-  border: 1px dashed var(--sel-b); border-radius: .357rem; background: var(--sunken); font: 1rem/1.4 var(--font-mono); user-select: all; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 @media (max-width: 480px) {
-  .sign-in-dialogs { padding-top: 1.714rem; }
-  .dialog-body.roomy { padding: 1.286rem; }
   .main { padding: 1rem 1.143rem 1.714rem; }
 }
 /* ---- The shell (design 4) ---- */
@@ -451,12 +432,9 @@ fieldset.choices legend { font-weight: 600; padding: 0; margin-bottom: .286rem; 
   font: inherit; font-size: .857rem; color: var(--muted); text-decoration: none; min-height: 3.714rem; background: none; border: 0; cursor: pointer; }
 .tabbar a.cur { color: var(--accent); font-weight: 600; }
 dialog.sheet { margin: 0; max-width: none; width: 100%; height: 100%; max-height: none; border-radius: 0; border: 0; overflow-y: auto; }
-dialog.sheet .dialog-head { border-radius: 0; }
 .sheet .nav { min-height: 3.143rem; width: 100%; background: none; font: inherit; cursor: pointer; text-align: left; }
 .sheet-nav, .sheet-account { display: flex; flex-direction: column; padding: .571rem .857rem; }
 /* A table that becomes a list of cards on a phone (its rules are in the narrow block below) */
-/* The More sheet's mark is not a warning. */
-.sheet .dialog-head .ic { color: var(--accent); }
 /* Narrower than 78.5rem (1100 px at 100% text): the navigation and a drawer open over the page. */
 @container (max-width: 78.55rem) {
   .frame, .frame.with-drawer { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "content"; }

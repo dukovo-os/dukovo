@@ -180,8 +180,10 @@ export class Element {
     }
   }
 
+  /** Opens the dialog, and gives focus to the element that asks for it with `autofocus`, as a browser does. */
   showModal() {
     this.open = true;
+    this.querySelector('[autofocus]')?.focus();
   }
 
   close(value = this.returnValue) {
@@ -192,8 +194,13 @@ export class Element {
   }
 }
 
-/** A page with a body, and the calls the views make on `document`. */
-export function makeDocument() {
+/**
+ * A page with a head and a body, and the calls the views make on `document`.
+ * A style sheet linked into the head loads a moment later, as one that comes
+ * from the cache does, unless `loadsSheets` is false and the test fires the
+ * link's `load` or `error` itself.
+ */
+export function makeDocument({ loadsSheets = true } = {}) {
   const document = {
     activeElement: null,
     createElement: (tag) => new Element(tag, document),
@@ -201,6 +208,14 @@ export function makeDocument() {
     getElementById: (id) => document.body.descendants.find((node) => node.id === id) ?? null,
     querySelector: (selector) => document.body.querySelector(selector),
   };
+  document.head = new Element('head', document);
+  if (loadsSheets) {
+    const append = document.head.append.bind(document.head);
+    document.head.append = (...nodes) => {
+      append(...nodes);
+      for (const node of nodes) if (node.tag === 'link') queueMicrotask(() => node.fire('load'));
+    };
+  }
   document.body = new Element('body', document);
   document.activeElement = document.body;
   return document;
@@ -210,10 +225,11 @@ export function makeDocument() {
  * Makes a page the global one for the test `context`, with a clipboard that
  * holds what was copied (or refuses when `refuses`) and a selection that
  * remembers the node it was given, and gives `{document, copied, selected}`.
- * All of it is taken away when the test ends.
+ * `loadsSheets` is makeDocument's. All of it is taken away when the test
+ * ends.
  */
-export function usePage(context, { refuses = false } = {}) {
-  const document = makeDocument();
+export function usePage(context, { refuses = false, loadsSheets = true } = {}) {
+  const document = makeDocument({ loadsSheets });
   const copied = [];
   let selected = null;
   document.createRange = () => ({ selectNodeContents: (node) => { selected = node; } });

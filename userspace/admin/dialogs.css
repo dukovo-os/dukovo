@@ -1,0 +1,24 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * What a dialog draws: its head, body and foot. frame.js links it once the
+ * first page has drawn, and the modules that can open a dialog sooner (the
+ * unlock dialog, the sign-in page and the failure page) link it themselves
+ * and wait for it, so that no dialog shows before it has its look. Same rules
+ * as console.css: rem, and px for borders and focus rings.
+ */
+.dialog-head { display: flex; align-items: center; gap: .714rem; padding: .857rem 1.143rem; border-bottom: 1px solid var(--border); background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-radius: .5rem .5rem 0 0; }
+.dialog-head h2 { font: 400 1.214rem var(--font-ui); color: var(--instr); }
+.dialog-head .btn { margin-left: auto; }
+.dialog-head .ic { color: var(--bad); }
+.dialog-body { --gap: .857rem; padding: 1rem 1.143rem; display: flex; flex-direction: column; gap: var(--gap); }
+.dialog-body.roomy { --gap: 1rem; padding: 1.714rem; }
+.dialog-title { font: 400 1.357rem var(--font-ui); color: var(--instr); }
+.dialog-foot { display: flex; flex-wrap: wrap; gap: .571rem; justify-content: flex-end; padding: .857rem 1.143rem; border-top: 1px solid var(--border); background: var(--pane); border-radius: 0 0 .5rem .5rem; }
+@media (max-width: 480px) {
+  .dialog-body.roomy { padding: 1.286rem; }
+}
+/* The More sheet's own head: square, with a mark that is not a warning. */
+dialog.sheet .dialog-head { border-radius: 0; }
+.sheet .dialog-head .ic { color: var(--accent); }

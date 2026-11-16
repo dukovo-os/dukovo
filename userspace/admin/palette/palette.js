@@ -13,7 +13,7 @@
 // names the row in hand. index-model.js decides what the rows are and
 // lib/fuzzy.js what each query finds; this file draws them and takes keys.
 
-import { focusBack, h, icon, uniqueId } from '../dom.js';
+import { focusBack, h, icon, sheet, uniqueId } from '../dom.js';
 import { changeDone, findAction, taskStarted } from '../lib/action-model.js';
 import { showKey } from '../lib/command-model.js';
 import { highlight } from '../lib/fuzzy.js';
@@ -72,19 +72,6 @@ function loadThings(cx, name) {
     if (things?.promise === promise) things = null;
   });
   return promise;
-}
-
-let styled = null;
-
-/** The palette's own style sheet, linked once; resolves when it has loaded, so that the dialog does not open bare. */
-function loadStyles() {
-  styled ??= new Promise((resolve) => {
-    const link = h('link', { rel: 'stylesheet', href: new URL('./palette.css', import.meta.url).pathname });
-    link.addEventListener('load', resolve);
-    link.addEventListener('error', resolve);
-    document.head.append(link);
-  });
-  return styled;
 }
 
 let announcer = null;
@@ -455,7 +442,8 @@ function createPalette(cx, ended) {
   }, () => {});
   applyRecent(index.rows, recent);
 
-  loadStyles().then(() => {
+  // The dialog does not open before its sheet has loaded, so that it is never bare.
+  sheet('/palette/palette.css').then(() => {
     if (cancelled) {
       ended();
       return;

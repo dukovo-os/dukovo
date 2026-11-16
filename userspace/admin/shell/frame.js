@@ -7,7 +7,7 @@
 // `enterShell` once the session is known, and `stop` when it ends.
 
 import { get, post, request, whenUnreachable } from '../api.js';
-import { h } from '../dom.js';
+import { h, sheet } from '../dom.js';
 import { makeCommands } from '../lib/command.js';
 import { makeTime } from '../lib/time.js';
 import { PAGES } from '../pages.js';
@@ -334,6 +334,8 @@ export async function enterShell({ app, session: first, signOut, signInAgain, on
   tasks.load().catch(() => {});
   nav.readBadges('start');
   await router.start();
+  // Every dialog from here on has its look; nothing waits for the sheet.
+  sheet('/dialogs.css');
 
   return {
     stop() {

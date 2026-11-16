@@ -1,14 +1,18 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// The words dom.js makes from what admind says, and how work that moves
-// the page waits for a press to end. The functions that build elements are
-// checked in a browser, by the lab's web-console tests.
+// The words dom.js makes from what admind says, how work that moves the page
+// waits for a press to end, and how a style sheet is linked once and waited
+// for. The functions that build elements are checked in a browser, by the
+// lab's web-console tests.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { asSentence, CLICK_WAIT_MS, pressWatch, waitInWords } from '../dom.js';
+import {
+  asSentence, CLICK_WAIT_MS, pressWatch, sheet, waitInWords,
+} from '../dom.js';
+import { usePage } from './fake-dom.mjs';
 
 test('a title that names what happened gets a full stop, and a sentence keeps its own mark', () => {
   assert.equal(asSentence('That code is not right'), 'That code is not right.');
@@ -112,4 +116,36 @@ test('a new press before the wait ends holds the work to the new press', () => {
   send('click');
   runTimers();
   assert.deepEqual(done, ['checked']);
+});
+
+/** Whether `promise` has resolved after the work that is waiting has run. */
+const resolved = async (promise) => {
+  const nothing = Symbol('nothing');
+  return (await Promise.race([promise, new Promise((done) => setImmediate(() => done(nothing)))])) !== nothing;
+};
+
+test('a style sheet is linked once, and its promise resolves when it has loaded', async (context) => {
+  const { document } = usePage(context, { loadsSheets: false });
+  const first = sheet('/loaded.css');
+  const again = sheet('/loaded.css');
+  assert.equal(again, first, 'the second call gives the first one\'s promise');
+  const links = document.head.querySelectorAll('link');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].getAttribute('rel'), 'stylesheet');
+  assert.equal(links[0].getAttribute('href'), '/loaded.css');
+  assert.equal(await resolved(first), false, 'it waits while the sheet loads');
+  links[0].fire('load');
+  assert.equal(await resolved(first), true);
+});
+
+test('a style sheet that is there already resolves at once, and one that fails to load resolves too', async (context) => {
+  const { document } = usePage(context, { loadsSheets: false });
+  sheet('/there.css');
+  document.head.querySelector('link').fire('load');
+  assert.equal(await resolved(sheet('/there.css')), true);
+  assert.equal(document.head.querySelectorAll('link').length, 1, 'no second link');
+
+  const failing = sheet('/missing.css');
+  document.head.querySelectorAll('link')[1].fire('error');
+  assert.equal(await resolved(failing), true, 'what waits for it is shown bare and not left out');
 });

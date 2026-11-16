@@ -5,7 +5,7 @@
 // failed, and the frame of a session that the sign-in rules limit to adding
 // a second step. app.js reads this file when one of them is called for.
 
-import { errorSlot, h, marks, showError } from './dom.js';
+import { errorSlot, h, marks, sheet, showError } from './dom.js';
 import { followEvents } from './shell/events.js';
 import { setUnlockSeconds } from './unlock.js';
 
@@ -13,7 +13,8 @@ import { setUnlockSeconds } from './unlock.js';
 const STREAM_RETRY_MS = 5000;
 
 /** The page for a start that failed: what admind said, and a button that starts again with `retry`. */
-export function showFailure({ app, error, retry }) {
+export async function showFailure({ app, error, retry }) {
+  await Promise.all([sheet('/sign-in.css'), sheet('/dialogs.css')]);
   const problem = errorSlot('start-error');
   document.title = 'Dukovo Admin';
   app.replaceChildren(
