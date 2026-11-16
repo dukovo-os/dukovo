@@ -80,6 +80,9 @@
 //! `certd` keeps the machine's certificates, which `cert` lists, adds and
 //! removes, and which Spark copies for the services that name them (ADR
 //! 0512).
+//! `website` adds, lists, checks and removes nginx's websites, and takes one
+//! to HTTPS, with nginx's own check run on the new set before it is live
+//! (ADR 0569).
 //! `bundle` makes, signs, installs and runs bundles, which `bundled`
 //! installs, seals and removes (ADRs 0221 to 0223 and 0225); called by a
 //! name that is no tool's, through a link in a commands folder of
@@ -265,6 +268,7 @@ mod util;
 mod volumed;
 mod watch;
 mod watchdog;
+mod website;
 mod wg;
 mod wgd;
 mod which;
@@ -472,6 +476,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("w", sessions::w),
     ("watch", watch::main),
     ("watchdog", watchdog::main),
+    ("website", website::main),
     ("wg", wg::main),
     ("wgd", wgd::main),
     ("which", which::main),
@@ -488,7 +493,7 @@ const TOOLS: &[(&str, Tool)] = &[
 /// that the channel it was to change is not there, or that a test through
 /// a channel failed.
 const USAGE_TWO: &[&str] =
-    &["alerts", "getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "which"];
+    &["alerts", "getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "website", "which"];
 
 /// The tool named `name`.
 fn tool(name: &str) -> Option<Tool> {

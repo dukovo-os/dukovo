@@ -28,9 +28,6 @@
 //! as, with what the service holds, not with the caller's access, which is
 //! what the prompt guards (ADR 0224).
 
-// website(8), written beside it, calls `run`; this goes when it does.
-#![allow(dead_code)]
-
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
