@@ -23,16 +23,16 @@ use crate::sysupdate::health::{CONFIG, Check, Config};
 use crate::util::{self, Fail, fail, usage};
 
 /// The most seconds a check may be given.
-const TIMEOUT_MAX: u64 = 600;
+pub(crate) const TIMEOUT_MAX: u64 = 600;
 
 /// The seconds a check is given when it is not said.
 const TIMEOUT: u64 = 30;
 
 /// The longest web address.
-const URL_MAX: usize = 2048;
+pub(crate) const URL_MAX: usize = 2048;
 
 /// The longest name of a check.
-const NAME_MAX: usize = 64;
+pub(crate) const NAME_MAX: usize = 64;
 
 /// The members of `update checks --json` after `format`.
 #[derive(Debug, Serialize)]
@@ -185,7 +185,7 @@ fn show(args: &mut Args) -> Result<i32, Fail> {
 }
 
 /// The name of a check, if it is one.
-fn check_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_name(name: &str) -> Result<(), String> {
     let first = name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
     let fits = (1..=NAME_MAX).contains(&name.len())
         && first
@@ -201,10 +201,10 @@ fn check_name(name: &str) -> Result<(), String> {
 }
 
 /// The address of a web page, if it is one a check may ask for.
-fn check_url(url: &str) -> Result<(), String> {
-    let scheme = url.starts_with("https://") || url.starts_with("http://");
+pub(crate) fn check_url(url: &str) -> Result<(), String> {
+    let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
     let plain = !url.chars().any(|c| c.is_control() || c.is_whitespace());
-    if scheme && plain && url.len() <= URL_MAX {
+    if rest.is_some_and(|rest| !rest.is_empty()) && plain && url.len() <= URL_MAX {
         Ok(())
     } else {
         Err(format!(
@@ -510,6 +510,7 @@ deadline = 600
             (&["x"][..], "--url or --service"),
             (&["x", "--url", "https://a/", "--service", "nginx"], "--url or --service"),
             (&["x", "--url", "ftp://a/"], "is not an address"),
+            (&["x", "--url", "https://"], "is not an address"),
             (&["x", "--url", "https://a b/"], "is not an address"),
             (&["x", "--service", "nginx", "--insecure"], "--insecure"),
             (&["x", "--service", "../x"], "is not a service's name"),

@@ -55,7 +55,7 @@
 //! metered, unless updates.toml(5) says `metered = "download"`.
 
 mod advisories;
-mod checks;
+pub(crate) mod checks;
 mod documents;
 mod held;
 mod last;
