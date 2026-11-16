@@ -7,6 +7,7 @@
 // table. The palette reads the rows from here too.
 
 import { counted } from '../../lib/size-words.js';
+import { tonightOf } from '../../lib/tonight-model.js';
 import {
   appHref, checkOf, flawWords, isText, listOf, offersOf, SEVERITIES, updateWords, urgent,
 } from './apps-model.js';
@@ -45,6 +46,8 @@ function rowOf(bundle, offer, check) {
     version: String(bundle.version ?? ''),
     everyone: bundle.for_everyone === true,
     held: bundle.held === true,
+    hold: bundle.held === true ? { at: bundle.held_since_ms ?? null, by: bundle.held_by ?? null, why: bundle.held_reason ?? null } : null,
+    tonight: tonightOf(bundle.tonight),
     initial: initialOf(name),
     tint: tintOf(bundle.id),
     href: appHref(bundle.id),

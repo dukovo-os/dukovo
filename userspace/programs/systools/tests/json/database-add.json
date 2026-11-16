@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "database": "shop",
+  "role": "shop",
+  "password": "A-PASSWORD-OF-32-CHARACTERS-LONG",
+  "host": "127.0.0.1",
+  "port": 5432
+}

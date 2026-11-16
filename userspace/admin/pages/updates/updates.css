@@ -19,6 +19,9 @@
 .upd-row { display: flex; gap: .714rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .upd-row > :first-child { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
 .upd-note { color: var(--warn); }
+.upd-sheet { margin: .286rem 0 0; max-height: 14rem; overflow: auto; }
+.upd-put { display: flex; flex-wrap: wrap; align-items: center; gap: .286rem .571rem; }
+.upd-row > .btns { flex: 0 1 auto; }
 .upd-tries { margin: 0; padding-left: 1.5rem; display: flex; flex-direction: column; gap: .286rem; }
 .upd-search, .upd-full, .upd-kept { display: flex; flex-direction: column; gap: .571rem; }
 .upd-search:empty, .upd-full:empty { display: none; }
@@ -34,5 +37,6 @@
   .upd .btn { min-height: 3.143rem; }
   .upd .radio-card { min-height: 3.143rem; }
   .upd .cards-row { flex-direction: column; }
-  .upd-row > .btn { flex: 1 1 100%; }
+  .upd-row > .btn, .upd-row > .btns { flex: 1 1 100%; }
+  .upd-row > .btns > *, .upd .menu-box > .btn { flex: 1 1 auto; }
 }

@@ -122,11 +122,28 @@ which finds a fault in an address line; bytes of alternate bits, 0x55 and
 then 0xAA, which flip every bit both ways; and random values.
 
 A memory test that finds nothing, in a system that runs, is a good sign
-and not a proof. To test all of the memory, choose *Test the memory* in
-the start menu. It runs memtest86+ before Dukovo starts, so that every
-address can be tested. memtest86+ is a separate program, free software
-by its own authors; [memtest.org](https://memtest.org) says what it tests
-and how to read its screen.
+and not a proof. Two things test more of it.
+
+`elevate hardware memtest --next-start` asks the kernel to test all the free
+memory at the next start, before the first program runs, with the same three
+patterns, and to take each part that reads back wrong out of use until the next
+restart. It takes about 4 minutes for each 16 GiB of memory and stops after an
+hour. It is asked for once: restart when it suits you, and the start after the
+test is the usual one. The machine is offline while the test runs and nobody
+needs to be at it. `elevate hardware memtest --cancel` takes the ask back, and
+`hardware memtest --status` says whether one is asked and what the last
+tests found. The start menu has one start for something other than the usual
+one, so an update waiting to be tried or a search of `changes bisect` refuses the
+ask ([HW-105](../../errors/HW-105.md)). A test that finds errors says in how
+many places, and is [HW-103](../../errors/HW-103.md) and an alert of the kind
+Hardware; one that did not end, because the power went or the machine stopped,
+is [HW-104](../../errors/HW-104.md).
+
+To test every address, with more tests, choose *Test the memory* in the start
+menu. It runs memtest86+ before Dukovo starts, which needs someone at the
+machine. memtest86+ is a separate program, free software by its own authors;
+[memtest.org](https://memtest.org) says what it tests and how to read its
+screen.
 
 The check can also say of memory's faults without a test: the memory
 controller counts the errors it corrects, and the ones it cannot. A
@@ -151,6 +168,16 @@ elevate log -s hardware
 what release ran it. `hardware last --json` gives the file itself, and
 `hardware check --json` gives the result in the same form, in place of
 the lines as they end, for another program to read.
+
+## From the web console
+
+The web console's **Hardware** page runs the quick and the full check from
+**Check the hardware**, shows the last result and the five before it, tests the
+memory in the same three ways (**Test part of the memory**, **Test at the next
+restart…** and the start menu's test), runs a disk's short or extended test, and
+restarts or shuts the machine down. See [Hardware](web-console.md#hardware),
+[Checking the hardware](web-console.md#checking-the-hardware) and [Testing the
+memory](web-console.md#testing-the-memory) in the chapter on the console.
 
 ## What to do with a result
 

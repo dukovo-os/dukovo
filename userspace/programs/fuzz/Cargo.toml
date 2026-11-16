@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The fuzz targets of the update path's parsers (ADR 0536), run by
+# `./ob test fuzz` with cargo-fuzz on the pinned nightly. They build on
+# the host, in a workspace and with a Cargo.lock of their own, apart from
+# the programs' for Radix and from their host builds.
+
+[package]
+name = "update-fuzz"
+description = "cargo-fuzz targets for the parsers and verifiers of Dukovo's updates (ADR 0536)"
+version.workspace = true
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/dukovo-os/dukovo"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+ring = "0.17.14"
+serde_json = "1.0.140"
+slots = { path = "../slots" }
+system-release = { path = "../system-release" }
+tuf = { path = "../tuf" }
+
+[[bin]]
+name = "release-list"
+path = "fuzz_targets/release-list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tuf-root"
+path = "fuzz_targets/tuf-root.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tuf-targets"
+path = "fuzz_targets/tuf-targets.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tuf-snapshot"
+path = "fuzz_targets/tuf-snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tuf-timestamp"
+path = "fuzz_targets/tuf-timestamp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rollout"
+path = "fuzz_targets/rollout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "advisories"
+path = "fuzz_targets/advisories.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canary-report"
+path = "fuzz_targets/canary-report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slot-state"
+path = "fuzz_targets/slot-state.rs"
+test = false
+doc = false
+bench = false
+
+# Writes the seed corpus from the fixtures (`cargo run --bin seeds`).
+[[bin]]
+name = "seeds"
+path = "src/bin/seeds.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
+
+[workspace]
+
+[workspace.package]
+# Keep in step with the root Cargo.toml (a unit test of ob checks it).
+version = "0.15.0"

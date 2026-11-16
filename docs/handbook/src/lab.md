@@ -282,10 +282,13 @@ the machine, leaving out the test files
 scripts are not a bundle but a file the sqlite port builds for the lab,
 which `./ob lab` names, with the other ports' such files, in
 `DUKOVO_LAB_PORTS` (the folder of the ports' builds, `out/ports`) and
-`lab/tests/services/copy-port-file.sh` copies over. With an image given
-by `--image`, `./ob lab` packs no bundles but names the ones this tree
-packed already, if any. Without the bundles or the ports' builds those
-tests are skipped too.
+`lab/tests/services/copy-port-file.sh` copies over. From the nginx and
+Python bundles `./ob lab` also signs a catalog with throwaway keys, in
+`out/lab-catalog`, which it names in `DUKOVO_LAB_CATALOG` for the web
+console's test of adding an app (`lab/tests/web-console/add-app-catalog.sh`
+copies it over). With an image given by `--image`, `./ob lab` packs no
+bundles but names the ones this tree packed already, if any. Without the
+bundles or the ports' builds those tests are skipped too.
 
 Removable media go in and out with steps of their own: `usb` plugs and
 pulls a USB stick, `card` puts a memory card in a card reader, `disc` a

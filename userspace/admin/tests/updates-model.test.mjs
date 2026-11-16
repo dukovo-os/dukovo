@@ -16,9 +16,10 @@ import {
 } from '../pages/updates/happened-model.js';
 import { appRows as appHistory, startRows } from '../pages/updates/history-model.js';
 import {
-  appOffers, appRows, appsHead, atWords, checkedWords, offerOf, checkOf, clockWords, couldNot, firmwareCard, fixesFor, heldRows, holdChoices, keptWords,
-  readyCount, runningOf, securityCard, systemCard, whyUnchecked, withdrawnWords, withHolds, worstOf,
+  appOffers, appRows, appsHead, atWords, checkedWords, offerOf, checkOf, clockWords, couldNot, firmwareCard, fixesFor, fixingOf, heldRows, holdCall, holdChoices, holdStory,
+  keptWords, LATER_CHOICES, laterOf, namesOf, readyCount, runningOf, securityCard, systemCard, untilWords, whyUnchecked, withdrawnWords, withHolds, worstOf,
 } from '../pages/updates/model.js';
+import { putOff } from '../pages/updates/put-off.js';
 import {
   argsOf, channelNote, checksCard, formOf, noteOf, whatCheck,
 } from '../pages/updates/settings-model.js';
@@ -518,4 +519,216 @@ test('a hold the check was made before is laid over it, and a hold that is gone 
   const unknown = withHolds(checkOf(last(checkWith({ system: 'held' }))), { channel: 'stable' });
   assert.equal(offerOf(unknown, 'system').state, 'held', 'settings that say nothing of holds change nothing');
   assert.equal(withHolds(null, settings()), null);
+});
+
+// ---- Remind me later ------------------------------------------------------------------------
+
+const WEEK = 7 * 86_400_000;
+const names = namesOf([{ name: 'chase', uid: 1000 }]);
+const entry = (more = {}) => ({
+  item: 'system', version: '0.16.0', until_ms: NOW + WEEK, by: 1000, at_ms: NOW - 60_000, stands: true, ...more,
+});
+const ready = (more = {}) => ({
+  item: 'system', from: '0.14.0', to: '0.16.0', state: 'update', later_until_ms: null, ...more,
+});
+/** The System card of an update that fixes no advisory. */
+const calm = (more = {}) => systemCard({
+  check: checkOf(last(checkWith({ system: 'update' }))), slots: null, settings: settings(more.settings), running: null, time, now: NOW, names,
+});
+
+test('an update is put off while the machine says its entry stands: its version, before its time', () => {
+  assert.deepEqual(putOff(ready(), [entry()], NOW), { until: NOW + WEEK, by: 1000, at: NOW - 60_000 });
+  assert.equal(putOff(ready(), [entry({ stands: false })], NOW), null, 'an advisory, or a check that cannot tell, ended it');
+  assert.equal(putOff(ready(), [entry({ version: '0.15.0' })], NOW), null, 'a newer release ends it');
+  assert.equal(putOff(ready(), [entry({ until_ms: NOW - 1 })], NOW), null, 'its time came');
+  assert.equal(putOff(ready(), [entry({ item: 'firmware' })], NOW), null, 'another item\'s entry');
+  assert.equal(putOff(ready({ state: 'held' }), [entry()], NOW), null, 'only an update that is ready is put off');
+  assert.equal(putOff(null, [entry()], NOW), null);
+  assert.equal(putOff(ready(), [], NOW), null);
+  assert.equal(putOff(ready(), [entry({ by: null })], NOW).by, null);
+});
+
+test('the check a person just made may say it stands before the one the machine kept does', () => {
+  const fresh = ready({ later_until_ms: NOW + 1000 });
+  assert.equal(putOff(fresh, [entry({ stands: false })], NOW).until, NOW + WEEK);
+  assert.equal(putOff(fresh, [entry({ stands: false, version: '0.15.0' })], NOW), null);
+  assert.equal(putOff(ready({ later_until_ms: NOW - 1 }), [entry({ stands: false })], NOW), null);
+  assert.equal(putOff(fresh, [], NOW), null, 'settings that were read and hold no entry say it is not put off');
+  assert.deepEqual(putOff(fresh, null, NOW), { until: NOW + 1000, by: null, at: null }, 'settings that could not be read leave the check\'s word');
+  assert.equal(putOff(ready(), null, NOW), null);
+});
+
+test('a time put off to is said as a day and a clock, and who put it off by the account\'s name', () => {
+  assert.equal(untilWords(NOW + WEEK, time), 'Nov 21 at 3:12 PM');
+  assert.equal(untilWords(NOW + 3_600_000, time), 'today at 4:12 PM');
+  assert.deepEqual([...namesOf({ accounts: [{ name: 'chase', uid: 1000 }] })], [[1000, 'chase']]);
+  assert.equal(holdStory({ by: 1000 }, time, names), 'held by chase');
+});
+
+test('Later is offered on an update that is ready and fixes no advisory, with its two choices', () => {
+  const say = calm();
+  assert.deepEqual(say.later, { state: 'ask', words: null });
+  assert.deepEqual(say.buttons, ['stage', 'hold']);
+  assert.deepEqual(LATER_CHOICES, [{ label: 'Remind me tomorrow', for: 'day' }, { label: 'Remind me in a week', for: 'week' }]);
+});
+
+test('an update that fixes an advisory is never put off, and the card says why', () => {
+  const say = systemCard({ check: checkOf(last()), slots: null, settings: settings(), running: null, time, now: NOW, names });
+  assert.deepEqual(say.later, { state: 'fixes', words: 'It fixes DKSA-2026-0001 (high): it is not put off. Hold it if you must.' });
+  assert.deepEqual(say.buttons, ['stage', 'hold'], 'Hold stays');
+  const put = systemCard({ check: checkOf(last()), slots: null, settings: settings({ later: [entry()] }), running: null, time, now: NOW, names });
+  assert.equal(put.later.state, 'fixes', 'an entry that an advisory ended shows the offer as before');
+});
+
+test('an update put off says until when and by whom, and Remind me now is for an administrator to press', () => {
+  const say = calm({ settings: { later: [entry()] } });
+  assert.deepEqual(say.later, { state: 'put', words: 'Put off until Nov 21 at 3:12 PM by chase' });
+  assert.equal(calm({ settings: { later: [entry({ by: 1001 })] } }).later.words, 'Put off until Nov 21 at 3:12 PM by account 1001');
+  assert.equal(calm({ settings: { later: [entry({ by: null })] } }).later.words, 'Put off until Nov 21 at 3:12 PM');
+  assert.equal(calm({ settings: { later: [entry({ stands: false })] } }).later.state, 'ask', 'an entry that does not stand puts nothing off');
+});
+
+test('an update whose advisories could not be read is not put off, and the card says it cannot tell', () => {
+  const doc = checkWith({ system: 'update' });
+  doc.unchecked = [{ item: 'security', why: 'the server did not answer' }];
+  const say = systemCard({ check: checkOf(last(doc)), slots: null, settings: settings(), running: null, time, now: NOW, names });
+  assert.deepEqual(say.later, { state: 'unknown', words: 'Whether it fixes an advisory cannot be told, so it is not put off.' });
+});
+
+test('there is no Later without settings, on an update that is not ready, or on a part that was not checked', () => {
+  const doc = checkOf(last(checkWith({ system: 'update' })));
+  assert.equal(systemCard({ check: doc, slots: null, settings: null, running: null, time }).later, null);
+  assert.equal(card({ system: 'held' }).later, null);
+  assert.equal(card({ system: 'waiting' }).later, null);
+  assert.equal(card({ system: 'current' }).later, null);
+  assert.equal(laterOf(null, { settings: settings(), fixing: [], now: NOW, time, names }), null);
+});
+
+test('what an update fixes is told from the check, an offered release alone, and an app\'s flaws that were read', () => {
+  const one = checkOf(last());
+  assert.deepEqual(fixingOf(one, ready(), null).map((flaw) => flaw.id), ['DKSA-2026-0001']);
+  assert.deepEqual(fixingOf(one, ready({ to: '0.17.0' }), null), [], 'another release');
+  assert.deepEqual(fixingOf(one, ready({ item: 'firmware', to: '0.16.0' }), null).map((flaw) => flaw.id), ['DKSA-2026-0001']);
+  assert.deepEqual(fixingOf(one, ready({ item: 'firmware', to: '2026.3' }), null), [], 'a firmware set is told by its own version');
+  const none = checkOf(last(checkWith()));
+  assert.deepEqual(fixingOf(none, ready(), null), []);
+  const apps = advisories().apps;
+  const nginx = { item: 'org.nginx.nginx', from: '1.2.0', to: '1.3.0', state: 'update' };
+  assert.deepEqual(fixingOf(one, nginx, apps).map((flaw) => flaw.id), ['DKSA-2026-0002']);
+  assert.equal(fixingOf(one, nginx, null), null, 'the apps\' flaws were not read, so it cannot be told');
+  assert.deepEqual(fixingOf(none, nginx, null), [], 'an app with no flaws needs none read');
+  const unread = checkWith();
+  unread.unchecked = [{ item: 'security', why: '' }];
+  assert.equal(fixingOf(checkOf(last(unread)), ready(), null), null);
+  assert.equal(fixingOf(null, ready(), null), null);
+});
+
+test('the Firmware card has Later too, and says who held a held set and why', () => {
+  const offered = checkOf(last(checkWith({ firmware: 'update' }, { system: { state: 'current' } })));
+  const say = firmwareCard({
+    check: offered, slots: null, settings: settings({ later: [entry({ item: 'firmware', version: '2026.3' })] }), now: NOW, time, names,
+  });
+  assert.deepEqual(say.later, { state: 'put', words: 'Put off until Nov 21 at 3:12 PM by chase' });
+  assert.equal(firmwareCard({
+    check: offered, slots: null, settings: settings(), now: NOW, time, names,
+  }).later.state, 'ask');
+  assert.equal(firmwareCard({ check: offered, slots: null }).later, null);
+  const held = checkOf(last(checkWith({ firmware: 'held' })));
+  const reasons = { firmware: { version: '2026.3', text: 'The new set breaks the dock', by: 1000, at_ms: NOW - 86_400_000 } };
+  assert.equal(firmwareCard({
+    check: held, slots: null, settings: settings({ hold_reasons: reasons }), time, names,
+  }).story, 'Held yesterday at 3:12 PM by chase: "The new set breaks the dock"');
+  assert.equal(firmwareCard({ check: held, slots: null, settings: settings(), time, names }).story, null);
+});
+
+test('the System card of a version held because it was asked says when, by whom and why', () => {
+  const reasons = { system: { version: '0.16.0', text: 'Waiting for the nginx fix in alpha.3', by: 1000, at_ms: NOW - 3_600_000 } };
+  const say = systemCard({
+    check: checkOf(last(checkWith({ system: 'held' }, { system: { held_because: 'asked' } }))),
+    slots: null,
+    settings: settings({ hold: { system: '0.16.0', firmware: null }, hold_reasons: reasons }),
+    running: null,
+    time,
+    names,
+  });
+  assert.deepEqual(say.lines, ['Held today at 2:12 PM by chase: "Waiting for the nginx fix in alpha.3"', 'It is held until you release it. A held version gets no security fixes.']);
+  const bare = systemCard({
+    check: checkOf(last(checkWith({ system: 'held' }, { system: { held_because: 'asked', held_reason: 'From the check' } }))), slots: null, settings: settings(), running: null, time, names,
+  });
+  assert.equal(bare.lines[0], 'Held: "From the check"', 'the check says the reason when the settings do not');
+});
+
+test('the Apps card rows say what Later and Tonight say of each update, for apps that are told of', () => {
+  const doc = checkWith();
+  doc.offers.push(
+    { item: 'org.a', from: '8.0.3', to: '8.0.4', state: 'update' },
+    { item: 'org.b', from: '1.0.0', to: '2.0.0', state: 'update' },
+    { item: 'org.c', from: '1.0.0', to: '1.1.0', state: 'held' },
+  );
+  const apps = [
+    { id: 'org.a', name: 'A', for_everyone: true, tonight: { to: '8.0.4', asked_ms: 1, by: 1000, missed_ms: null, starts_ms: 2 } },
+    { id: 'org.b', name: 'B', for_everyone: true },
+    { id: 'org.c', name: 'C', for_everyone: true, held: true, held_reason: 'app tests use this version', held_by: 1000, held_since_ms: 5 },
+  ];
+  const later = [entry({ item: 'org.b', version: '2.0.0' })];
+  const say = { settings: settings({ later }), now: NOW, time, names };
+  const rows = appRows(checkOf(last(doc)), apps, [], say);
+  assert.deepEqual(rows.map((row) => [row.id, row.state, row.tonight?.words ?? null, row.later?.state ?? null]), [
+    ['org.a', 'update', 'Installs tonight', 'ask'],
+    ['org.b', 'update', null, 'put'],
+    ['org.c', 'held', null, null],
+  ]);
+  assert.equal(rows[1].later.words, 'Put off until Nov 21 at 3:12 PM by chase');
+  assert.deepEqual(rows[2].lines, ['Held at 1.0.0 · app tests use this version'], 'a held row says why');
+  const told = appRows(checkOf(last(doc)), apps, [], { ...say, settings: settings({ apps: 'auto', later }) });
+  assert.equal(told.some((row) => row.later), false, 'apps that update by themselves have no reminder to put off');
+  assert.equal(told[0].tonight.words, 'Installs tonight', 'and may still wait for the night');
+  assert.equal('later' in appRows(checkOf(last(doc)), apps, []).at(0), false, 'without the page\'s settings a row says neither');
+});
+
+test('an app update that fixes an advisory has no Later, and one whose flaws were not read cannot say', () => {
+  const doc = checkOf(last());
+  const withFlaws = appRows(doc, bundles().bundles, advisories().apps, { settings: settings(), now: NOW, time, names });
+  assert.deepEqual(withFlaws[0].later, { state: 'fixes', words: 'It fixes DKSA-2026-0002 (high): it is not put off. Hold it if you must.' });
+  const unread = appRows(doc, bundles().bundles, null, { settings: settings(), now: NOW, time, names });
+  assert.equal(unread[0].later.state, 'unknown');
+});
+
+test('what is held says when, by whom and why: the system, the firmware set, an app, and a fallback', () => {
+  const say = { time, names };
+  const reasons = {
+    system: { version: '0.16.0', text: 'Waiting for the nginx fix in alpha.3', by: 1000, at_ms: Date.UTC(2026, 10, 2, 3, 6) },
+    firmware: { version: '2026.3', text: 'breaks the dock', by: 1000, at_ms: NOW },
+  };
+  const apps = [{
+    id: 'org.example.notes', name: 'notes', version: '1.2.0', held: true, held_reason: 'app tests use this version', held_by: 1000, held_since_ms: Date.UTC(2026, 10, 2, 4, 0),
+  }, {
+    id: 'org.example.old', name: 'old', version: '1.0.0', held: true, held_reason: null, held_by: null, held_since_ms: null,
+  }];
+  const rows = heldRows(settings({ hold: { system: '0.16.0', firmware: '2026.3' }, hold_reasons: reasons }), apps, say);
+  assert.deepEqual(rows.map((row) => [row.title, row.held]), [
+    ['System 0.16.0', 'held on Nov 2 at 3:06 AM by chase: "Waiting for the nginx fix in alpha.3"'],
+    ['Firmware set 2026.3', 'held today at 3:12 PM by chase: "breaks the dock"'],
+    ['notes 1.2.0', 'held on Nov 2 at 4:00 AM by chase: "app tests use this version"'],
+    ['old 1.0.0', null],
+  ]);
+  const standing = heldRows(settings({ hold: { system: '0.16.1', firmware: null }, hold_reasons: reasons }), [], say);
+  assert.equal(standing[0].held, null, 'a reason is shown only while the hold names the version it was written for');
+  assert.equal(heldRows(settings({ hold: { system: '0.16.0', firmware: null }, hold_reasons: reasons }), [])[0].held, null, 'without the page\'s clock nothing is said');
+});
+
+test('a hold the health check made after a fallback keeps its words, and says when it was taken back', () => {
+  const held = { version: '0.16.0', why: 'fell-back', at_ms: Date.UTC(2026, 10, 10, 3, 6), start: 42 };
+  const rows = heldRows(settings({ hold: { system: '0.16.0', firmware: null }, held }), [], { time, names });
+  assert.equal(rows[0].held, 'held after it was taken back on Nov 10 at 3:06 AM (UPD-105)');
+  assert.match(rows[0].line, /taken back, so it is not staged again until you release it/);
+});
+
+test('what can be held says what the dialog that asks why is about, and the hold keeps the reason with it', () => {
+  const choices = holdChoices(checkOf(last()), settings(), bundles().bundles);
+  assert.deepEqual(choices.map((choice) => choice.what), ['the system update 0.16.0', 'the firmware set 2026.3', 'nginx at 1.2.0']);
+  assert.deepEqual(holdCall(choices[0]), { action: 'updates.hold', args: { item: 'system' } });
+  assert.deepEqual(holdCall(choices[1], 'breaks the dock'), { action: 'updates.hold', args: { item: 'firmware', why: 'breaks the dock' } });
+  assert.deepEqual(holdCall(choices[2], 'app tests use this version'), { action: 'apps.hold', args: { id: 'org.nginx.nginx', why: 'app tests use this version' } });
+  assert.deepEqual(holdCall(choices[2], ''), { action: 'apps.hold', args: { id: 'org.nginx.nginx' } });
 });

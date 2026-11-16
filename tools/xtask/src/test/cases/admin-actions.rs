@@ -22,11 +22,14 @@
 //! is BAK-101 and move.plan, which finds no backups, ADM-123: admin-backups
 //! and admin-move call them with what they need, and accounts.show, which
 //! names an account this guest has not made, ACC-101: admin-accounts makes
-//! it. websites.check and websites.plan are answered 200 here, though the
-//! guest has no nginx and the example's owner is no account: their commands
-//! end with status 1 and print the JSON that says why, which is an answer
-//! (admin-websites has nginx and the sites). A change an administrator makes is ADM-122 for bob and ADM-106 for
-//! alice while her session is locked, and so is a read that runs as an
+//! it. apps.sheet, which names an app that no catalog of the guest lists, is
+//! APP-101, or APP-103 when the guest can read none: admin-updates reads the
+//! sheet of an app of a catalog it adds. websites.check and websites.plan are
+//! answered 200 here, though the guest has no nginx and the example's owner is
+//! no account: their commands end with status 1 and print the JSON that says
+//! why, which is an answer (admin-websites has nginx and the sites). A change
+//! an administrator makes is ADM-122 for bob and ADM-106 for alice while her
+//! session is locked, and so is a read that runs as an
 //! administrator, whose route is a POST when it takes or answers with a
 //! secret (move.plan, backups.key). A change a person makes with their own
 //! rights is theirs to make, locked or not. console.export is called here:
@@ -92,7 +95,7 @@ const ROUTE: &str = "admin-actions";
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-actions",
-    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, or the machine's own refusal for one that names what this guest has not (snapshots.browse, backups.show, move.plan, accounts.show); a change or a read an administrator runs ADM-122 for bob and ADM-106 for alice locked, by POST for a change and for a read that takes or answers with a secret; console.export, which a person runs with their own rights, copies the settings for bob and for alice locked and changes nothing the second time; a name in an address that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; each change's answer says changed, which is true for a restart and a renewal, which compare nothing, and false for the second run of each change whose compares is true, from the state the first left, with changed nothing at the end of its log line; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
+    about: "Each action of the web console is called through its route and typed as its shown command, and both do the same: the list of GET /api/1/actions is the one admin actions --json prints; a read is 200 for bob and alice, or the machine's own refusal for one that names what this guest has not (snapshots.browse, backups.show, move.plan, accounts.show, apps.sheet); a change or a read an administrator runs ADM-122 for bob and ADM-106 for alice locked, by POST for a change and for a read that takes or answers with a secret; console.export, which a person runs with their own rights, copies the settings for bob and for alice locked and changes nothing the second time; a name in an address that is none ADM-125 with its field; a token made with admin token add reads and changes within its scopes, is ADM-124 outside them, ADM-108 with a cookie and ADM-115 once removed; POST /api/1/show and admin show give the command that, typed in alice's elevated pane, prints what a read's route answers and leaves the example service as the route's change did; the undo of examples.undo puts a change back; console.reach changes admin.toml keeping its comments, has admind read it again, and puts back the same by its undo and by its shown command, and refuses a word that is no reach with ADM-125 and the field reach; admind's log has a line for each change and none for a read that worked; each change's answer says changed, which is true for a restart and a renewal, which compare nothing, and false for the second run of each change whose compares is true, from the state the first left, with changed nothing at the end of its log line; certificate.renew makes the machine's certificate anew, which the console then serves, with its fingerprint in the issue file (ADR 0514)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -559,6 +562,11 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
 /// - `apps.show` shows the app `org.example.notes`, which no catalog of
 ///   this guest lists and nobody installed: bundle info ends with its own
 ///   words, ADM-123, 422. `admin-updates` installs apps and shows one.
+/// - `apps.sheet` reads the sheet of the same app from the catalogs: when
+///   the guest can read the catalog its image comes with, none lists the
+///   app, APP-101, 422; when it cannot, which a guest with no way out may
+///   not, APP-103, 422. `admin-updates` reads the sheet of an app of a
+///   catalog it adds.
 /// - `updates.slots` reads the slots of an installed system, which this
 ///   guest, started from a USB stick, has none of: sysupdate ends with its
 ///   own words, ADM-123, 422. `admin-updates` reads them on an installed
@@ -575,6 +583,7 @@ fn may_refuse(id: &str) -> &'static [(u16, &'static str)] {
         "move.plan" => &[(422, "ADM-123")],
         "accounts.show" => &[(422, "ACC-101")],
         "apps.show" | "updates.slots" => &[(422, "ADM-123")],
+        "apps.sheet" => &[(422, "APP-101"), (422, "APP-103")],
         _ => &[],
     }
 }
@@ -650,6 +659,9 @@ fn projection(id: &str, answer: &Value) -> Value {
         | "reliability.failed" | "reliability.start" | "reliability.starts" | "service.status"
         | "service.timers" | "service.usage" | "storage.health" | "storage.log" | "storage.show"
         | "storage.usage" => shape(answer),
+        // A catalog the guest cannot read is said with the words of why
+        // each time it is tried, which are not always the same ones.
+        "apps.search" => shape(answer),
         _ => answer.clone(),
     }
 }
@@ -1529,6 +1541,15 @@ mod tests {
             assert_eq!(projection(id, &sessions(5)), projection(id, &sessions(7)), "{id}");
         }
         assert_eq!(projection("accounts.last", &json!([{"failed": 0}])), json!("array"));
+        // A search says why a catalog was not read in words that may differ.
+        let found = |why: &str| {
+            json!({"format": 1, "bundles": [], "unread": [{"catalog": "dukovo", "why": why}]})
+        };
+        assert_eq!(
+            projection("apps.search", &found("no route to host")),
+            projection("apps.search", &found("the network did not answer"))
+        );
+        assert_ne!(projection("apps.search", &found("x")), projection("apps.search", &json!({})));
         assert_ne!(projection("accounts.list", &sessions(5)), projection("accounts.list", &sessions(7)));
     }
 
@@ -1667,6 +1688,13 @@ mod tests {
         assert_eq!(said, None);
         assert!(read_answer(reply(422, &refusal("ADM-123")), "accounts.show", "alice").is_err());
         assert!(read_answer(reply(422, &refusal("ACC-101")), "account.show", "bob").is_err());
+        // An app no catalog lists is APP-101, and no catalog read APP-103.
+        for error in ["APP-101", "APP-103"] {
+            let said = read_answer(reply(422, &refusal(error)), "apps.sheet", "bob");
+            assert_eq!(said.unwrap(), None, "{error}");
+        }
+        assert!(read_answer(reply(422, &refusal("ADM-123")), "apps.sheet", "bob").is_err());
+        assert!(read_answer(reply(422, &refusal("APP-101")), "apps.search", "bob").is_err());
         // Any other read answers 200 or fails the test, whatever it says.
         for id in [
             "service.list",

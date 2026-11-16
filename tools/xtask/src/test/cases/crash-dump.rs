@@ -50,26 +50,28 @@ const PASSWORD: &str = "queen of hearts";
 /// Where the dumps are saved.
 const FOLDER: &str = "/system/state/crash";
 
-/// alertd's notification of the panic (ADR 0485), which consoled shows on
-/// the bottom line. It is critical, so it stays there until a key is
-/// pressed. notifyd sends a notification only to the programs following
-/// it then, so whether it shows depends on whether consoled follows
-/// notifyd by the time alertd sends it.
-const PANIC_NOTICE: &str = "alertd (alerts): The machine restarted after a kernel panic";
+/// How each of alertd's notifications starts, which consoled shows on the
+/// bottom line: the panic's (ADR 0485), or a disk's that is full. A
+/// critical one stays there until a key is pressed. notifyd sends a
+/// notification only to the programs following it then, so whether the
+/// panic's shows depends on whether consoled follows notifyd by the time
+/// alertd sends it.
+const ALERT_NOTICE: &str = "alertd (alerts): ";
 
-/// [`answer_prompt`], after taking the panic's notification off the
-/// bottom line whenever it is there: below the prompt, it would be the
-/// screen's last line. Shift takes it off and types nothing.
+/// [`answer_prompt`], after taking an alert's notification off the bottom
+/// line whenever one is there: below the prompt, it would be the screen's
+/// last line. Shift takes it off and types nothing.
 fn answer(vm: &mut Vm, prompt: &str, text: &str) -> Result<(), String> {
     answer_within(vm, prompt, text, 60)
 }
 
 /// [`answer`], waiting up to `seconds` for the prompt: for every test that
-/// types after a start that follows a panic, as update-panic does.
+/// types after a start that follows a panic, as update-panic does, or on
+/// a machine whose disk is full, as update-disk-full does.
 pub fn answer_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     loop {
-        if vm.screen()?.iter().any(|line| line.contains(PANIC_NOTICE)) {
+        if vm.screen()?.iter().any(|line| line.contains(ALERT_NOTICE)) {
             vm.press(&["shift"])?;
         }
         match answer_prompt_within(vm, prompt, text, 2) {

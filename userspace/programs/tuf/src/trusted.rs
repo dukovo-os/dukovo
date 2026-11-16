@@ -19,6 +19,7 @@ use std::collections::{HashMap, HashSet};
 use crate::metadata::{
     Delegator, Error, Kind, Root, Signed, Snapshot, Targets, Timestamp, check_file,
 };
+use crate::time;
 
 /// The trusted metadata of one update.
 #[derive(Debug)]
@@ -81,6 +82,17 @@ impl Trusted {
     /// Whether `meta` has expired: never, offline.
     fn expired<T: Kind>(&self, meta: &Signed<T>) -> bool {
         !self.offline && meta.expired(self.now)
+    }
+
+    /// The failure for `meta`, which `what` names and has expired: when
+    /// it expired, and what the computer's clock says, since a clock that
+    /// is wrong is the usual reason.
+    fn expiry<T: Kind>(&self, what: &str, meta: &Signed<T>) -> Error {
+        Error::Expired(format!(
+            "{what} expired at {}, and this computer's clock says {}",
+            time::format(meta.expires),
+            time::format(self.now)
+        ))
     }
 
     /// The trusted root.
@@ -151,7 +163,7 @@ impl Trusted {
             return Err(order("timestamp after snapshot"));
         }
         if self.expired(&self.root) {
-            return Err(Error::Expired("the final root has expired".into()));
+            return Err(self.expiry("the final root", &self.root));
         }
         let new = Signed::<Timestamp>::parse(data)?;
         new.verified_by(&self.root.signed, "timestamp")?;
@@ -179,7 +191,7 @@ impl Trusted {
     fn check_timestamp(&self) -> Result<(), Error> {
         match &self.timestamp {
             Some(timestamp) if self.expired(timestamp) => {
-                Err(Error::Expired("timestamp.json has expired".into()))
+                Err(self.expiry("timestamp.json", timestamp))
             }
             Some(_) => Ok(()),
             None => Err(order("no timestamp")),
@@ -231,7 +243,7 @@ impl Trusted {
             return Err(order("no snapshot"));
         };
         if self.expired(snapshot) {
-            return Err(Error::Expired("snapshot.json has expired".into()));
+            return Err(self.expiry("snapshot.json", snapshot));
         }
         let expected = timestamp.signed.snapshot().version;
         if snapshot.version != expected {
@@ -283,7 +295,7 @@ impl Trusted {
             )));
         }
         if self.expired(&new) {
-            return Err(Error::Expired(format!("{role} has expired")));
+            return Err(self.expiry(role, &new));
         }
         self.targets.insert(role.to_string(), new);
         self.delegations.insert((delegator.to_string(), role.to_string()));

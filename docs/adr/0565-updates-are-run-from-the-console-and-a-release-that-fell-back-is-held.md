@@ -105,6 +105,10 @@ at once, and test the memory once at the next restart.
   release that fixes what made the start fail is not blocked.
 - A hold that cannot be written is logged and said in the notice, with
   the command that holds it; the fallback has happened all the same.
+- The health check's service view holds `/system/settings` to write, as
+  a whole: every service reads the settings, and a view cannot hold one
+  folder of them apart. It adds little to a service that already writes
+  the system slots and the EFI system partitions.
 
 ### A wanted check that fails is told
 

@@ -9,7 +9,9 @@ import assert from 'node:assert/strict';
 import test, { afterEach, beforeEach, mock } from 'node:test';
 
 import { ApiError } from '../api.js';
-import { checkWith, failed, found, last, NOW, running, search, settings, slots } from './updates-fixtures.mjs';
+import {
+  bundles, checkWith, failed, found, last, NOW, running, search, settings, slots,
+} from './updates-fixtures.mjs';
 import {
   buttonOf, openUpdates, refusal, settle,
 } from './updates-view.mjs';
@@ -172,14 +174,83 @@ test('Hold and Release change the hold and read again', async (context) => {
   assert.deepEqual(world.ran('updates.unhold').at(-1), { item: 'system' });
 });
 
-test('hold a version picks from what can be held', async (context) => {
+test('hold a version picks from what can be held, and asks why before it holds', async (context) => {
   const world = await openUpdates(context);
   const card = world.card('held');
   assert.match(text(card), /Hold a version/);
-  await world.press(card, 'Hold it');
-  assert.deepEqual(world.ran('updates.hold'), [{ item: 'system' }]);
+  await world.press(card, 'Hold it…');
+  const dialog = world.dialog();
+  assert.equal(dialog.querySelector('h2').textContent, 'Hold the system update 0.16.0');
+  assert.match(dialog.textContent, /Why \(optional\)/);
+  assert.match(dialog.textContent, /Everyone who can sign in sees the reason, here and with update settings\./);
+  assert.equal(dialog.querySelector('input').getAttribute('maxlength'), '200');
+  assert.equal(world.ran('updates.hold').length, 0, 'nothing is held until the dialog says so');
+  await world.submit();
+  assert.deepEqual(world.ran('updates.hold'), [{ item: 'system' }], 'a hold needs no reason');
+  assert.equal(world.dialog(), null);
   await world.press(world.card('held'), 'Release');
   assert.deepEqual(world.ran('apps.unhold'), [{ id: 'org.example.notes' }]);
+});
+
+test('the reason of a hold goes with it, as one line of at most 200 characters', async (context) => {
+  const world = await openUpdates(context);
+  await world.press(world.card('held'), 'Hold it…');
+  const input = world.dialog().querySelector('input');
+  input.value = '  Waiting for the nginx fix in alpha.3 ';
+  await world.submit();
+  assert.deepEqual(world.ran('updates.hold'), [{ item: 'system', why: 'Waiting for the nginx fix in alpha.3' }]);
+  await world.press(world.card('held'), 'Hold it…');
+  const again = world.dialog().querySelector('input');
+  again.value = 'two\tcolumns';
+  await world.submit();
+  assert.match(world.dialog().textContent, /The reason is one line/);
+  again.value = 'x'.repeat(201);
+  await world.submit();
+  assert.match(world.dialog().textContent, /The reason is at most 200 characters/);
+  assert.equal(world.ran('updates.hold').length, 1, 'a reason that does not fit holds nothing');
+  again.value = 'x'.repeat(200);
+  await world.submit();
+  assert.equal(world.ran('updates.hold').at(-1).why.length, 200);
+  assert.equal(world.dialog(), null);
+});
+
+test('the reason of an app\'s hold goes to apps.hold, and the dialog says where it is read', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': last(checkWith({ system: 'current', firmware: 'current' })) } } });
+  await world.press(world.card('held'), 'Hold it…');
+  const dialog = world.dialog();
+  assert.equal(dialog.querySelector('h2').textContent, 'Hold nginx at 1.2.0');
+  assert.match(dialog.textContent, /here and with bundle list/);
+  dialog.querySelector('input').value = 'app tests use this version';
+  await world.submit();
+  assert.deepEqual(world.ran('apps.hold'), [{ id: 'org.nginx.nginx', why: 'app tests use this version' }]);
+});
+
+test('each hold says when, by whom and why, and a fallback keeps its own words', async (context) => {
+  const reasons = {
+    system: { version: '0.16.0', text: 'Waiting for the nginx fix in alpha.3', by: 1000, at_ms: Date.UTC(2026, 10, 2, 3, 6) },
+  };
+  const apps = bundles();
+  apps.bundles[1] = { ...apps.bundles[1], held_reason: 'app tests use this version', held_by: 1000, held_since_ms: Date.UTC(2026, 10, 3, 9, 0) };
+  const world = await openUpdates(context, {
+    world: {
+      reads: {
+        '/api/1/updates/settings': settings({ hold: { system: '0.16.0', firmware: null }, hold_reasons: reasons }),
+        '/api/1/apps': apps,
+      },
+    },
+  });
+  assert.match(text(world.card('held')), /System 0\.16\.0 · held on Nov 2 at 3:06 AM by chase: "Waiting for the nginx fix in alpha\.3"/);
+  assert.match(text(world.card('held')), /notes 1\.2\.0 · held on Nov 3 at 9:00 AM by chase: "app tests use this version"/);
+  assert.match(text(world.card('apps')), /Held at 1\.2\.0 · app tests use this version/);
+  const fell = await openUpdates(context, {
+    world: {
+      reads: {
+        '/api/1/updates/settings': settings({ hold: { system: '0.16.0', firmware: null }, held: { version: '0.16.0', why: 'fell-back', at_ms: Date.UTC(2026, 10, 10, 3, 6), start: 42 } }),
+      },
+    },
+  });
+  assert.match(text(fell.card('held')), /System 0\.16\.0 · held after it was taken back on Nov 10 at 3:06 AM \(UPD-105\)/);
+  assert.match(text(fell.card('held')), /It was taken back, so it is not staged again until you release it\./);
 });
 
 test('an app\'s update runs for the app, and several run together', async (context) => {
@@ -212,6 +283,212 @@ test('an update that asks for more stops with the sheet\'s words, and Update any
   assert.match(text(world.card('apps')), /It asks for the camera, which 1\.2\.0 did not\./);
   await world.press(world.card('apps'), 'Update anyway');
   assert.deepEqual(world.ran('apps.update').at(-1), { id: 'org.nginx.nginx', yes: true });
+});
+
+// ---- Remind me later -------------------------------------------------------------------
+
+const WEEK = 7 * 86_400_000;
+const entry = (item, version, more = {}) => ({
+  item, version, until_ms: NOW + WEEK, by: 1000, at_ms: NOW, stands: true, ...more,
+});
+/** The offers of an update ready for the system and the firmware set, and two apps, that fix no advisory. */
+const calm = () => last(check2());
+const appList = (more = {}) => ({
+  bundles: [
+    { id: 'org.a', name: 'A', version: '8.0.3', for_everyone: true, held: false, ...more['org.a'] },
+    { id: 'org.b', name: 'B', version: '1.0.0', for_everyone: true, held: false, ...more['org.b'] },
+  ],
+});
+
+test('Later puts the reminder of the system update off for a day or a week, and Remind me now brings it back', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm() } } });
+  const system = world.card('system');
+  assert.ok(buttonOf(system, 'Later ▾'));
+  assert.equal(buttonOf(system, 'Later ▾').getAttribute('aria-haspopup'), 'menu');
+  await world.press(system, 'Later ▾');
+  assert.deepEqual(system.querySelectorAll('.menu-item').map((one) => one.textContent), ['Remind me tomorrow', 'Remind me in a week']);
+  world.answers['/api/1/updates/settings'] = settings({ later: [entry('system', '0.16.0')] });
+  await world.press(system, 'Remind me in a week');
+  assert.deepEqual(world.ran('updates.later'), [{ item: 'system', for: 'week' }]);
+  assert.match(text(world.card('system')), /Put off until Nov 21 at 3:12 PM by chase · Remind me now/);
+  assert.equal(buttonOf(world.card('system'), 'Later ▾'), undefined, 'a reminder that is put off asks for no more time');
+  assert.ok(buttonOf(world.card('system'), 'Stage it'), 'the rest of the card is as before');
+  world.answers['/api/1/updates/settings'] = settings();
+  await world.press(world.card('system'), 'Remind me now');
+  assert.deepEqual(world.ran('updates.later').at(-1), { item: 'system', for: 'off' });
+  assert.ok(buttonOf(world.card('system'), 'Later ▾'));
+  assert.doesNotMatch(text(world.card('system')), /Put off until/);
+  await world.press(world.card('system'), 'Later ▾');
+  await world.press(world.card('system'), 'Remind me tomorrow');
+  assert.deepEqual(world.ran('updates.later').at(-1), { item: 'system', for: 'day' });
+});
+
+test('Later is on the firmware set too, and on each app that is told of', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList() } } });
+  assert.ok(buttonOf(world.card('firmware'), 'Later ▾'));
+  assert.equal(buttonOf(world.card('apps'), 'Later ▾').getAttribute('aria-label'), 'Later for A');
+  await world.press(world.card('firmware'), 'Later ▾');
+  await world.press(world.card('firmware'), 'Remind me in a week');
+  assert.deepEqual(world.ran('updates.later'), [{ item: 'firmware', for: 'week' }]);
+  const row = world.card('apps').querySelectorAll('li')[1];
+  await world.press(row, 'Later ▾');
+  await world.press(row, 'Remind me tomorrow');
+  assert.deepEqual(world.ran('updates.later').at(-1), { item: 'org.b', for: 'day' });
+});
+
+test('an app that is put off says until when and by whom, with Remind me now', async (context) => {
+  const settled = settings({ later: [entry('org.a', '8.0.4', { by: 1001 })] });
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList(), '/api/1/updates/settings': settled } } });
+  const row = world.card('apps').querySelectorAll('li')[0];
+  assert.match(text(row), /Put off until Nov 21 at 3:12 PM by account 1001 · Remind me now/);
+  assert.equal(buttonOf(row, 'Later ▾'), undefined);
+  await world.press(row, 'Remind me now');
+  assert.deepEqual(world.ran('updates.later'), [{ item: 'org.a', for: 'off' }]);
+});
+
+test('an update that fixes an advisory has no Later, and a line that says why; Hold stays', async (context) => {
+  const world = await openUpdates(context);
+  assert.match(text(world.card('system')), /It fixes DKSA-2026-0001 \(high\): it is not put off\. Hold it if you must\./);
+  assert.equal(buttonOf(world.card('system'), 'Later ▾'), undefined);
+  assert.ok(buttonOf(world.card('system'), 'Hold this version'));
+  assert.match(text(world.card('apps')), /It fixes DKSA-2026-0002 \(high\): it is not put off\. Hold it if you must\./);
+  assert.equal(buttonOf(world.card('apps'), 'Later ▾'), undefined);
+  assert.equal(world.ran('updates.later').length, 0);
+});
+
+test('an advisory that came after the reminder was put off shows the offer as before, with its advisory', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates/settings': settings({ later: [entry('system', '0.16.0', { stands: false })] }) } } });
+  assert.doesNotMatch(text(world.card('system')), /Put off until/);
+  assert.match(text(world.card('system')), /It fixes DKSA-2026-0001/);
+});
+
+test('an update whose advisories could not be read says it cannot tell, and is not put off', async (context) => {
+  const doc = check2();
+  doc.unchecked = [{ item: 'security', why: 'the update server did not answer' }];
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': last(doc) } } });
+  assert.match(text(world.card('system')), /Whether it fixes an advisory cannot be told, so it is not put off\./);
+  assert.equal(buttonOf(world.card('system'), 'Later ▾'), undefined);
+});
+
+test('apps that update by themselves have no reminder to put off', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList(), '/api/1/updates/settings': settings({ apps: 'auto' }) } } });
+  assert.equal(buttonOf(world.card('apps'), 'Later ▾'), undefined);
+  assert.ok(buttonOf(world.card('system'), 'Later ▾'), 'the system is told of whatever the apps do');
+  assert.ok(buttonOf(world.card('apps'), 'Tonight'));
+});
+
+test('a reader sees what is put off, and has no menu and no Remind me now', async (context) => {
+  const settled = settings({ later: [entry('system', '0.16.0')] });
+  const world = await openUpdates(context, { session: { admin: false }, world: { reads: { '/api/1/updates': calm(), '/api/1/updates/settings': settled } } });
+  assert.match(text(world.card('system')), /Put off until Nov 21 at 3:12 PM by chase/);
+  assert.doesNotMatch(text(world.card('system')), /Remind me now/);
+  assert.equal(buttonOf(world.card('firmware'), 'Later ▾'), undefined);
+  assert.equal(buttonOf(world.card('apps'), 'Tonight'), undefined);
+  assert.equal(buttonOf(world.card('apps'), 'Install tonight'), undefined);
+});
+
+test('a refused Later says so in the card and changes nothing', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm() }, answers: { 'updates.later': refusal('UPD-107', 'It fixes an advisory') } } });
+  await world.press(world.card('system'), 'Later ▾');
+  await world.press(world.card('system'), 'Remind me tomorrow');
+  assert.equal(world.problems.length, 1);
+  assert.doesNotMatch(text(world.card('system')), /Put off until/);
+});
+
+// ---- Install in tonight's window -------------------------------------------------------
+
+test('Tonight asks for an app\'s update in tonight\'s window, with the words of the window', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList() } } });
+  assert.match(text(world.card('apps')), /Installs tonight, between 2:00 and 3:00 AM\./);
+  assert.doesNotMatch(text(world.card('apps')), /restart time/);
+  const row = world.card('apps').querySelectorAll('li')[0];
+  await world.press(row, 'Tonight');
+  assert.deepEqual(world.ran('apps.tonight'), [{ id: 'org.a' }]);
+});
+
+test('the window is the hour before the restart time of the server', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList(), '/api/1/updates/settings': settings({ unattended: true, restart: '04:30' }) } } });
+  assert.match(text(world.card('apps')), /Installs tonight, between 3:30 and 4:30 AM: the hour before this server's restart time\./);
+});
+
+test('Install tonight sits beside Install now, and asks for every update', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList() } } });
+  const apps = world.card('apps');
+  assert.deepEqual(apps.querySelectorAll('.btns button').map((one) => one.textContent).filter((one) => /^Install/.test(one)), ['Install 2 now', 'Install tonight']);
+  await world.press(apps, 'Install tonight');
+  assert.deepEqual(world.ran('apps.tonight-all'), [{}]);
+  assert.equal(world.ran('apps.update-all').length, 0);
+});
+
+test('one update has Tonight on its row and no Install tonight', async (context) => {
+  const world = await openUpdates(context);
+  assert.ok(buttonOf(world.card('apps'), 'Tonight'));
+  assert.equal(buttonOf(world.card('apps'), 'Install tonight'), undefined);
+});
+
+test('an app that waits for tonight says so, and Not tonight takes it off', async (context) => {
+  const asked = { tonight: { to: '8.0.4', asked_ms: NOW - 60_000, by: 1000, missed_ms: null, starts_ms: NOW + 3_600_000 } };
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList({ 'org.a': asked }) } } });
+  const row = world.card('apps').querySelectorAll('li')[0];
+  assert.match(text(row), /Installs tonight/);
+  assert.ok(buttonOf(row, 'Not tonight'));
+  assert.equal(buttonOf(row, 'Tonight'), undefined);
+  assert.ok(buttonOf(row, 'Update'), 'it can still be taken now');
+  assert.ok(buttonOf(world.card('apps'), 'Install tonight'), 'the other app is not asked for yet');
+  await world.press(row, 'Not tonight');
+  assert.deepEqual(world.ran('apps.not-tonight'), [{ id: 'org.a' }]);
+});
+
+test('a window that passed while the machine was off says it installs tonight', async (context) => {
+  const missed = { tonight: { to: '8.0.4', asked_ms: NOW - 86_400_000, by: 1000, missed_ms: NOW - 3_600_000, starts_ms: NOW + 3_600_000 } };
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList({ 'org.a': missed }) } } });
+  assert.match(text(world.card('apps')), /The window passed while the machine was off: it installs tonight\./);
+});
+
+test('an update that asks for more stops with the sheet first, and Install tonight anyway asks with yes', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList() }, answers: { 'apps.tonight': { ok: true, task: 9, result: { task: 9 } } } } });
+  const row = () => world.card('apps').querySelectorAll('li')[0];
+  await world.press(row(), 'Tonight');
+  world.answers['/api/1/tasks/9'] = {
+    id: 9,
+    action: 'apps.tonight',
+    args: { id: 'org.a' },
+    state: 'done',
+    status: 1,
+    log: ['A 8.0.4 asks for more than 8.0.3 did:', '  - it may listen on all addresses', 'bundle: not queued: it asks for more than 8.0.3 did: network; --yes queues it anyway'],
+  };
+  await world.emit('task', { id: 9, action: 'apps.tonight', state: 'done' });
+  assert.match(text(row()), /It asks for more than the version before\./);
+  assert.match(row().querySelector('pre').textContent, /A 8\.0\.4 asks for more than 8\.0\.3 did:\n {2}- it may listen on all addresses/);
+  assert.doesNotMatch(row().querySelector('pre').textContent, /yes queues it anyway/);
+  assert.equal(buttonOf(row(), 'Tonight'), undefined);
+  await world.press(row(), 'Install tonight anyway');
+  assert.deepEqual(world.ran('apps.tonight').at(-1), { id: 'org.a', yes: true });
+  assert.ok(buttonOf(row(), 'Update anyway'));
+});
+
+test('an update that asks for more ends done with status 1, and its sheet is read from the task', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList() }, answers: { 'apps.update': { ok: true, task: 8, result: { task: 8 } } } } });
+  await world.press(world.card('apps').querySelectorAll('li')[0], 'Update');
+  world.answers['/api/1/tasks/8'] = {
+    id: 8, action: 'apps.update', args: { id: 'org.a' }, state: 'done', status: 1, log: ['A 8.0.4 asks for more:', 'Install it? [y/N] ', 'bundle: not installed: nobody was there to say yes'],
+  };
+  await world.emit('task', { id: 8, action: 'apps.update', state: 'done' });
+  const row = world.card('apps').querySelectorAll('li')[0];
+  assert.equal(row.querySelector('pre').textContent, 'A 8.0.4 asks for more:');
+  assert.ok(buttonOf(row, 'Update anyway'));
+  assert.ok(buttonOf(row, 'Install tonight anyway'));
+});
+
+test('an update that ended well leaves no sheet', async (context) => {
+  const world = await openUpdates(context, { world: { reads: { '/api/1/updates': calm(), '/api/1/apps': appList() }, answers: { 'apps.update': { ok: true, task: 7, result: { task: 7 } } } } });
+  await world.press(world.card('apps').querySelectorAll('li')[0], 'Update');
+  world.answers['/api/1/tasks/7'] = {
+    id: 7, action: 'apps.update', args: { id: 'org.a' }, state: 'done', status: 0, log: ['A is updated'],
+  };
+  await world.emit('task', { id: 7, action: 'apps.update', state: 'done' });
+  assert.equal(world.card('apps').querySelector('pre'), null);
+  assert.ok(buttonOf(world.card('apps').querySelectorAll('li')[0], 'Update'));
 });
 
 test('a flaw fixed by an update is read from the advisories only when apps have flaws and updates', async (context) => {

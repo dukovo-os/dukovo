@@ -29,6 +29,7 @@ export const ROUTES = {
   unstage: "POST /api/1/updates/unstage",
   hold: "POST /api/1/updates/{item}/hold",
   unhold: "POST /api/1/updates/{item}/unhold",
+  later: "POST /api/1/updates/{item}/later",
   failed: "GET /api/1/updates/failed",
   bisectStatus: "GET /api/1/updates/bisect",
   bisect: "POST /api/1/updates/bisect",

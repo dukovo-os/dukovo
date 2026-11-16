@@ -56,6 +56,25 @@ cargo kani setup
 ./ob test kani
 ```
 
+The slot state of the installed system, `State` in
+`userspace/programs/slots` (ADR 0452), has proof harnesses of its own
+(`proofs.rs`), which `./ob test kani` checks with a host build of the
+programs' workspace. The properties they prove are plain functions that
+the crate's unit tests also run over all 648 states, so `cargo test`
+checks the same logic without Kani.
+
+The parsers and verifiers of the update path, from the release list and
+TUF's metadata to the rollouts, the advisories, the canary reports and the
+slot state's blocks, are fuzzed with cargo-fuzz (ADR 0536). The targets are
+in `userspace/programs/fuzz`, and `./ob test fuzz` runs them, each for 60
+seconds or for `--seconds`, or the one `--target` names. The corpus grows in
+`.cache/fuzz/`, and the input of a crash is left in `out/fuzz/`:
+
+```sh
+cargo install --locked cargo-fuzz --version 0.13.2
+./ob test fuzz --target release-list --seconds 120
+```
+
 The capability core's derivation tree, retyping and revocation are also
 modelled in TLA+ (`kernel/cap/tla/`, ADR 0024), and so are how the
 scheduler blocks, wakes and switches threads between CPUs and how an

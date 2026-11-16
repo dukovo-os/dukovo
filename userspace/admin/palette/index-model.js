@@ -39,7 +39,8 @@ const AREA_ICONS = {
   services: 'services', certificates: 'certs', security: 'security', console: 'info', metrics: 'reliability',
   reliability: 'reliability', logs: 'logs', network: 'network', firewall: 'firewall', storage: 'storage',
   snapshots: 'snapshots', backups: 'snapshots', move: 'server', accounts: 'accounts', account: 'accounts',
-  ssh: 'security', private: 'security',
+  ssh: 'security', private: 'security', alerts: 'bell', apps: 'apps', websites: 'globe', databases: 'db',
+  hardware: 'hardware', updates: 'updates', reports: 'report', power: 'power', machine: 'server',
 };
 
 // How a state word is drawn: the board's `st` tones.

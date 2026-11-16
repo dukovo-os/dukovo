@@ -36,6 +36,7 @@ pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod reasons;
 pub(crate) mod request;
+pub(crate) mod space;
 pub(crate) mod stage;
 pub(crate) mod starts;
 pub(crate) mod verify;

@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "bundles": [
+    {
+      "id": "org.nginx.nginx",
+      "name": "nginx",
+      "version": "1.30.5",
+      "catalog": "dukovo",
+      "flaws": { "state": "known", "count": 1, "worst": "high" },
+      "installed": "1.30.4"
+    },
+    {
+      "id": "org.python.python",
+      "name": "python",
+      "version": "3.13.1",
+      "catalog": "dukovo",
+      "flaws": { "state": "none", "count": 0, "worst": null },
+      "installed": null
+    },
+    {
+      "id": "org.example.notes",
+      "name": "notes",
+      "version": "0.2.0",
+      "catalog": "lab",
+      "flaws": { "state": "unknown", "count": 0, "worst": null },
+      "installed": null
+    }
+  ],
+  "unread": [
+    { "catalog": "far", "why": "the network did not answer" }
+  ]
+}

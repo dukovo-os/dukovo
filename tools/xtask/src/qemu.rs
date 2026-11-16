@@ -100,6 +100,12 @@ pub struct Machine {
     /// Boot this kernel directly; `firmware`, `media` and `image` are then
     /// not used.
     pub direct: Option<DirectBoot>,
+    /// Log every write, discard and flush to the boot image in this file
+    /// (QEMU's `blklogwrites`, read by [`crate::writelog`]). The image is
+    /// then attached without `snapshot=on`, as the log is the record of
+    /// what reaches it: it must be a copy made for this run, which the
+    /// guest changes.
+    pub write_log: Option<PathBuf>,
 }
 
 impl Machine {
@@ -173,9 +179,16 @@ impl Machine {
             args.push("-drive".into());
             args.push(format!("if=pflash,format=raw,file={}", option_value(vars)));
         }
-        // `snapshot=on` keeps the image file unchanged whatever the guest writes.
-        let drive =
-            format!("if=none,id=boot,format=raw,snapshot=on,file={}", option_value(&self.image));
+        let image = option_value(&self.image);
+        let drive = match &self.write_log {
+            Some(log) => format!(
+                "if=none,id=boot,driver=blklogwrites,file.driver=file,file.filename={image},\
+                 log.driver=file,log.filename={},log-sector-size=512,log-append=off",
+                option_value(log)
+            ),
+            // `snapshot=on` keeps the image file unchanged whatever the guest writes.
+            None => format!("if=none,id=boot,format=raw,snapshot=on,file={image}"),
+        };
         args.extend(["-drive".into(), drive]);
         match self.media {
             Media::Usb => args.extend([
@@ -349,6 +362,7 @@ pub fn run_command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         gdb,
         qmp: None,
         extra,
+        write_log: None,
         direct: None,
     };
     let accel = if machine.kvm { "KVM" } else { "no KVM, so it runs slower" };
@@ -418,6 +432,7 @@ mod tests {
             gdb: false,
             qmp: None,
             extra: vec!["-s".into()],
+            write_log: None,
             direct: None,
         }
     }
@@ -438,6 +453,22 @@ mod tests {
         assert!(args.contains("-serial mon:stdio"));
         assert!(args.contains("-accel tcg -cpu max"));
         assert!(args.ends_with("-display none -s"));
+    }
+
+    #[test]
+    fn a_write_log_attaches_the_image_through_blklogwrites_without_a_snapshot() {
+        let mut m = machine(Firmware::Uefi, Media::Disk);
+        m.write_log = Some("out/test/replay/a,b.log".into());
+        let args = m.args();
+        let drive = args.iter().find(|arg| arg.starts_with("if=none,id=boot")).unwrap();
+        assert_eq!(
+            drive,
+            "if=none,id=boot,driver=blklogwrites,file.driver=file,\
+             file.filename=out/test.img,log.driver=file,log.filename=out/test/replay/a,,b.log,\
+             log-sector-size=512,log-append=off"
+        );
+        assert!(!args.join(" ").contains("snapshot=on"));
+        assert!(args.join(" ").contains("ide-hd,drive=boot,bootindex=0"));
     }
 
     #[test]

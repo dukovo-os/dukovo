@@ -139,6 +139,26 @@ it, so it must not lead alertd into the local network.
   certificate names no address, so push on the phone needs a
   certificate from an authority at that name; the page says so, and
   that email and webhooks reach a phone until then.
+- **A disk's temperature, and a disk that sleeps.** diskhealth looks at
+  each disk every 10 minutes, and metricsd keeps each disk's
+  temperature as the series `temp{disk/NAME}` and warns of a disk
+  running hot (MET-108) as it warns of a hot sensor, with the same
+  five minutes in a row before it tells and the same drop before it
+  clears: one place for every warning of heat, while diskhealth only
+  reads. A look must never wake a disk, so before it reads a SATA
+  disk's SMART data the kernel asks the disk's power mode with ATA
+  CHECK POWER MODE, a command no disk spins up for, and reads nothing
+  from a disk in standby or one that does not say: GET_HEALTH fails
+  with `would_block`. That is an error, not a new flag in the answer,
+  since a new constant in the C headers would rebuild every port. A
+  sleeping disk keeps what was last read of it and says since when it
+  sleeps; its series has a gap, never a made-up point. A USB disk is
+  never asked, since some bridges spin a disk up for any command passed
+  through. A disk's limits are its own where it gives them (an NVMe
+  drive's WCTEMP and CCTEMP; a SATA disk's attribute 190 when it counts
+  as the makers who use it do), else its kind's: a hard disk 50 °C to
+  warn and 60 °C critical, a SATA flash disk 65 and 70, an NVMe drive
+  70 and 80.
 - **ring does it all.** ECDH on P-256, HKDF, AES-128-GCM and ECDSA
   signing are ring's, which alertd has already through rustls: no new
   crate. RFC 8291's Appendix A example is a unit test: its keys, salt

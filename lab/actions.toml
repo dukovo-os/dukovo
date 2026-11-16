@@ -2135,6 +2135,114 @@ compares = true
 tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
 
 [[action]]
+id = "apps.search"
+title = "Search the catalogs' apps"
+area = "apps"
+changes = false
+method = "GET"
+path = "/api/1/apps/catalog/search"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/add-app", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.sheet"
+title = "Read an app's sheet before it is installed"
+area = "apps"
+changes = false
+method = "GET"
+path = "/api/1/apps/catalog/{id}/sheet"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/add-app", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.install"
+title = "Install an app from the catalogs"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/catalog/{id}/install"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/add-app", ansible = "web-console/ansible" }
+
+[[action]]
+id = "databases.list"
+title = "List the databases"
+area = "databases"
+changes = false
+method = "GET"
+path = "/api/1/databases"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
+id = "databases.add"
+title = "Add a database"
+area = "databases"
+changes = true
+method = "POST"
+path = "/api/1/databases/add"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
+id = "databases.password"
+title = "Make a new password for a database's role"
+area = "databases"
+changes = true
+method = "POST"
+path = "/api/1/databases/{name}/password"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
+id = "databases.allow"
+title = "Let other machines into a database"
+area = "databases"
+changes = true
+method = "POST"
+path = "/api/1/databases/{name}/allow"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
+id = "databases.deny"
+title = "Shut other machines out of a database"
+area = "databases"
+changes = true
+method = "POST"
+path = "/api/1/databases/{name}/deny"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
+id = "databases.remove"
+title = "Remove a database"
+area = "databases"
+changes = true
+method = "POST"
+path = "/api/1/databases/{name}/remove"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
 id = "reports.crashes"
 title = "List the crashes that can be reported"
 area = "reports"

@@ -196,6 +196,7 @@ pub const STD_LINKS: &[(&str, &str)] = &[
     ("system/commands/cloud-setup", "systools"),
     ("system/commands/column", "systools"),
     ("system/commands/crontab", "systools"),
+    ("system/commands/database", "systools"),
     ("system/commands/df", "systools"),
     ("system/commands/device", "systools"),
     ("system/commands/dig", "systools"),

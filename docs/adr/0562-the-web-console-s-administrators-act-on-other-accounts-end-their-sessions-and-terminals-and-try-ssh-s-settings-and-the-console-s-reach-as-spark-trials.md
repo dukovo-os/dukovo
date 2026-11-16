@@ -210,4 +210,4 @@ gives to type at a terminal.
   the daily snapshots of `/system/settings/` and the journal's copies
   would then keep.
 - **A mesh VPN as the default private access.** It is an app, and
-  belongs with the apps (C7).
+  belongs with the apps that Add an app installs.

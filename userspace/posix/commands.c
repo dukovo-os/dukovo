@@ -166,6 +166,7 @@ static const char *const ELSEWHERE[][2] = {
 		{"admin", "the admin-actions boot test's: it lists and shows actions and makes API tokens through authd"},
 		{"admind", "the admin boot test's service: it serves the web console over HTTPS and signs people in through authd"},
 		{"tune", "the tune boot test's service and command: it sets the kernel's settings through a capability only that service holds"},
+		{"database", "the admin-websites boot test's: it adds websites to nginx and databases to PostgreSQL, which this test's system in memory has neither of"},
 		{"website", "the admin-websites boot test's: it adds websites to nginx and databases to PostgreSQL, which this test's system in memory has neither of"},
 };
 

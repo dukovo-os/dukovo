@@ -16,17 +16,26 @@ the machine, and how to put a change back; showing the command of an action,
 and using the API from a script; following a long task; the network cards
 and the firewall; the disks and the log's own space; the snapshots and the
 backups; moving to new hardware; the accounts, with their keys, tokens and
-sessions, and your own; the security page, with the checks and the score, the
+sessions, and your own; the apps, and their updates, holds and data; adding an app, a website and a
+database; the certificates, with the machine's name and the certificate the
+console serves;
+the security page, with the checks and the score, the
 sign-in rules, the addresses blocked after wrong sign-ins, SSH, who may reach the
-console and private access with WireGuard; the terminal; and what to do when
+console and private access with WireGuard; the hardware, with the checks of
+the machine, its temperatures, its memory and restarting or shutting it down;
+the updates of the system, its firmware and its apps; the terminal; reporting
+a problem; the alerts, and getting them on a phone; and what to do when
 something goes wrong
 or does not work. The references are dukovo-admin(7), admind(8),
 admin(8), admin.toml(5), authd(8), user(8), passwd(1), lastlog(8), who(1),
 last(1), log(1), network(8), network(5), firewall(8), ssh-server(8), wireguard(8),
 storage(8), diskhealth(8),
-scrub(8), logtrim(8), snap(1), backup(8), snap.toml(5) and backup.toml(5); the
+scrub(8), logtrim(8), snap(1), backup(8), snap.toml(5), backup.toml(5), update(8),
+updates.toml(5), sysupdate(8), updated(8), bundle(1), bundled(8), changes(1),
+hardware(8), shutdown(8), metrics(1), cert(8), certd(8), hostnamectl(1),
+report(1), reportd(8), alerts(8), alertd(8), database(8), website(8) and alerts.toml(5); the
 decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
-0561 and ADR 0562.
+0561, ADR 0562, ADR 0565, ADR 0566, ADR 0567, ADR 0568 and ADR 0569.
 
 | Task | How |
 | --- | --- |
@@ -76,6 +85,24 @@ decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 | Take the second steps from someone who lost their phone | **Remove second steps…** on their account, or `elevate user steps reset NAME`; see "When someone loses their phone" |
 | End someone's session, terminal or SSH connection | **End**, under **Signed in now** on their account; see "Ending a session" |
 | Stop an account from signing in | **Disable the account…** on its page, or `elevate user disable NAME` |
+| See the apps installed for everyone, and which have an update | **Apps**; see "Apps" |
+| Take every app update at once | **Update all (3)** on **Apps**, or `elevate bundle update --for-everyone --yes`; see "The list" under "Apps" |
+| Install an app's update in the night | **Tonight** on the app's page or its row on **Updates**, or `elevate bundle update ID --for-everyone --tonight`; see "One app" |
+| Take no update of an app for a while, and say why | **Hold at 8.0.3** on the app's page, then **Why (optional)**, or `elevate bundle hold ID --for-everyone --why TEXT`; see "One app" |
+| Put an app back to the version before, or remove it | **Go back to this** or **Remove…** on the app's page, or `elevate bundle rollback ID --for-everyone` or `elevate bundle remove ID --for-everyone` |
+| Install an app from the catalogs | **Add an app** on **Apps**, then **Install for everyone**, or `elevate bundle install ID --for-everyone`; see "Add an app" |
+| Read what an app asks for before it is installed | Press its row on **Add an app**, or `bundle sheet ID`; see "The sheet" under "Add an app" |
+| Add a website | **Add a website** on **Websites**, or `elevate website add NAME --owner ACCOUNT`; see "Add a website" under "Websites" |
+| See whether nginx accepts the websites | **Check the sites** on **Websites**, or `elevate website check` |
+| Serve a website over HTTPS | **Get a certificate** or **Use one that is here…** on the website's page, or `elevate website https NAME --certificate NAME`; see "A website's page" |
+| Take a website off HTTPS, or remove it | **Turn HTTPS off…** or **Remove…** on the website's page, or `elevate website https NAME --off` or `elevate website remove NAME` |
+| Make a database and its password | **Add a database**, or `elevate database add NAME --json`; see "Databases" |
+| Let other machines connect to a database | **Let other machines connect** on the database's page, or `elevate database allow NAME --from NETWORK`; see "A database's page" |
+| Make a new password for a database | **Make a new password** on the database's page, or `elevate database password NAME --json` |
+| See each certificate, who uses it and when it runs out | **Certificates**; see "Certificates" |
+| Get a certificate from Let's Encrypt | **Get one from Let's Encrypt** on **Certificates**, or `elevate cert get NAME`; see "Getting a certificate" |
+| Make the console serve another certificate | **Use for this console** on the certificate, or `elevate admin certificate NAME --try 300`; see "The certificate the console serves" |
+| Change the machine's name or its domain | **Change…** under **Name and domain** on **Certificates**, or `elevate hostnamectl set-hostname NAME --apply`; see "The machine's name" |
 | See what lowers the health score, and run the checks again | **Security**, then **Check again**; see "The score and the checks" |
 | Change how long a console session lasts, or who gives a second step | **Change…** on **Sign-in rules**, or `elevate admin sign-in`; see "Sign-in rules" |
 | See which addresses were blocked for wrong passwords, and let one in | **Blocked after failed sign-ins**, then **Unblock**, or `elevate firewall blocked` and `elevate firewall unblock ADDRESS` |
@@ -84,6 +111,19 @@ decisions are ADR 0514, ADR 0515, ADR 0516, ADR 0517, ADR 0461, ADR 0463, ADR
 | Reach the console from a phone away from home | **Set up private access…**, then **Add a device…**, on **Security**; see "Private access with WireGuard" |
 | Undo a network or firewall change that cut the console off | Wait for the time the banner shows, or `elevate network undo` or `elevate firewall undo` at the machine |
 | Undo an SSH change, or a change of who may reach the console, that cut you off | Wait for the time the banner shows, or `elevate ssh-server undo` or `elevate admin undo` at the machine |
+| See what the machine is, how hot it runs, and check it | **Hardware**, then **Check the hardware**, or `elevate hardware check`; see "Hardware" |
+| Test all the memory at the next restart | **Test at the next restart…** under **Memory test** on **Hardware**, or `elevate hardware memtest --next-start`; see "Testing the memory" |
+| Restart the machine, at a time or in a minute, or shut it down | **Restart…**, **Restart at** and **Shut down…** under **Restart or shut down** on **Hardware**, or `elevate shutdown -r +1`; see "Restart or shut down" |
+| See whether an update is ready, and stage it | **Updates**, then **Stage it**, or `elevate update apply --only system`; see "Updates" |
+| Take an update back, or keep one from being staged | **Take it back**, **Go back…** and **Hold this version** on **Updates**, or `elevate update undo system` and `elevate update hold system`; see "Going back" and "Holding a version back" |
+| Hold a version and keep the reason | **Hold a version**, then **Hold it…** and **Why (optional)**, or `elevate update hold system --why TEXT`; see "Holding a version back" |
+| Not be told of an update for a day or a week | **Later** on the update's card, or `elevate update later system --for 7d`; see "Putting a reminder off" |
+| Change how often the machine looks for updates, and what it does with them | **How this server updates**, then **Save**, or `elevate update set`; see "How this server updates" |
+| Report a problem to the Dukovo project, and see every byte first | **Report a problem**, at the foot of the list of pages, then **Send**; see "Report a problem" |
+| See where alerts go, and send a test alert | **Alerts**, then **Send a test alert**, or `elevate alerts test`; see "Where alerts go" |
+| Get an email when something needs you | **Get an email when something needs you** under **Finish setting up**, or **Email** on **Alerts**, or `elevate alerts email set`; see "Email" |
+| Choose which kinds of alert a place is told of | **Edit what it is told** on **Alerts**, or `elevate alerts channel CHANNEL --about KINDS`; see "What each channel is told" |
+| Get alerts as notices on a phone | **Get alerts in this browser** and **Set up a phone** on **Alerts**; see "This browser" and "Set up a phone" |
 | Keep the settings in your own Git | `admin export DIR` |
 | Find out what an error means | **Help**, then **What error messages mean**; see "When something goes wrong" |
 | Start the console again | `elevate service admind restart` |
@@ -382,13 +422,22 @@ at once (see "Your preferences"); and **Sign out**. When terminals run,
 
 The list of pages shows the machine's name above it, then one entry for
 each page the session may use: **Overview**, **Logs**, **Reliability**,
-**Networking**, **Firewall**, **Services**, and **Terminal**, which an
-account that may not open one does not see (see "The Terminal entry is
-missing"). The page you are on is marked, and the entries under it show
-while you are in it: **Services** has **Scheduled tasks**, and **Terminal**
+**Storage**, **Snapshots and backups**, **Networking**, **Firewall**,
+**Accounts**, **Services**, **Apps**, **Certificates**, **Security**,
+**Hardware**, **Updates** and **Terminal**, which an account that may not open
+one does not see (see "The Terminal entry is missing"), and, at the foot,
+**Report a problem**. **Add an app**, **Websites** and **Databases** are not
+entries of the list: **Apps** is marked while you are on them, and they open from
+**Apps**, from the pages that link to them and from the command palette. The page
+you are on is marked, and the entries under it show
+while you are in it: **Snapshots and backups** has **Backups**,
+**Services** has **Scheduled tasks**, and **Terminal**
 has **Sessions** and **Terminal settings**. A number beside **Sessions**
 says how many terminals you have, and a screen reader says it with the
-name, "Sessions, 2 running". The number is read when the console opens,
+name, "Sessions, 2 running". A number beside **Updates** says how many
+parts of the machine have an update ready (see "Updates"). **Alerts** is not
+in the list: it is a tab of the bar on a phone, and the pages that raise an
+alert link to it (see "Alerts and the phone"). The number is read when the console opens,
 when a task or a change comes (at most once in 30 seconds), and every 5
 minutes while the tab is in view.
 
@@ -404,7 +453,7 @@ the text's size. At the 100% text size:
 | --- | --- |
 | 1100 pixels and more | The list of pages stays at the left, and Tasks opens beside the page |
 | 720 to 1099 pixels | **Pages** in the header opens the list over the page, and Tasks opens over it too |
-| Under 720 pixels, a phone | A bar of tabs along the bottom, **Overview** and **More**. The header keeps the mark, the machine's name, a magnifying glass for the search, the lock as an icon, Tasks while a task runs or needs a look, and, while a change is tried, a warning mark with the time left. A drawer fills the screen |
+| Under 720 pixels, a phone | A bar of tabs along the bottom, **Overview**, **Services**, **Logs**, **Alerts** for an administrator, and **More**. The header keeps the mark, the machine's name, a magnifying glass for the search, the lock as an icon, Tasks while a task runs or needs a look, and, while a change is tried, a warning mark with the time left. A drawer fills the screen |
 
 A larger text size makes the narrower layouts come at a wider window.
 
@@ -673,6 +722,7 @@ words under the ring say what its colour says:
 | SEC-140 | The clock has not synchronized in a day | 4 |
 | SEC-150 | A service gave up after its restarts, each, at most 12 in all | 4 |
 | SEC-160 | No snapshot schedule covers the people's and shared folders | 8 |
+| SEC-170 | Alerts reach nobody: each channel that is set up failed, and none took one in a day | 6 |
 | MET-… | An early warning is active, each | 4 |
 | HW-… | The last hardware check warned or failed, each | 6 |
 | Any other | A check this table does not know yet | 3 |
@@ -689,7 +739,11 @@ $ elevate dukovo-check
 Under the ring is **N things to look at**, the first four of them, and **See
 all N** for the rest. The list holds the checks that did not pass and what
 the pages add: a service that gave up, a certificate that is revoked, has
-ended or ends within 14 days, an administrator's account with no second
+ended or ends within 14 days, an update that is ready or was taken back and
+held, a check for updates that could not be made or is a week old, a hardware
+check that warned or failed, a restart or a shut down that waits, no place that
+alerts go to, or one whose last try failed (for an administrator), an
+administrator's account with no second
 step, a task of the last 24 hours that failed or was stopped, a file changed
 by hand that nobody has marked seen in 7 days, and a change that is being
 tried, such as a service's file under `service try`, with the time it is
@@ -739,7 +793,10 @@ and whether `metricsd`, which writes them, runs.
 **This server** shows the machine's name, its system and whether it fell
 back to the earlier version, the machine and its processor and memory, how
 long it has been up, the time in its zone and whether its clock is in sync,
-your last two sign-ins, and the SSH host key. A fact the machine does not
+your last two sign-ins, and the SSH host key. The pages add a row each:
+**Updates** says when the machine last looked for updates and how many are
+ready, **Checked 12 minutes ago, 1 ready**, and **Machine** says the maker and
+the model and when the hardware was last checked. A fact the machine does not
 say is left out. **Using the most memory** lists the five services that hold
 the most, with their CPU and what they are. A service that is not running
 holds none and is left out.
@@ -770,8 +827,20 @@ takes the score from 62 to 70.** **Skip for now** goes to the next step, and
 has **Continue on its page** in place of **Set up**: **Bring everything from your
 old machine** is offered on a machine that has no backup place and one person's
 account, and goes to Move to new hardware. The Snapshots and backups page
-gives the step **Copy your data off this server** too. A machine whose pages
-have no steps says **This server has nothing to set up yet.**
+gives the step **Copy your data off this server** too.
+
+The Alerts page gives the step **Get an email when something needs you**, for
+administrators. It says why: an alert also shows on this server's screens,
+which nobody may be looking at, and an email waits for you. The step asks for
+**Send to**, **Mail server**, **Port**, **Sign in as**, **Password** and **From
+(optional)**, as the Email card of Alerts does, and every kind of alert goes to
+it (see "Email"). When it is saved the step sends a test alert and says **Sent
+a test alert: it reached email.**, or that it did not reach email and why. The
+step is done when email is set up, and says so, **Email is set up**, or **No
+email yet**. Where alerts go is read as root, so a console that is locked
+says **Unlock to see if it is set up** and the step is not counted as done. A
+machine whose pages have no steps says **This server has nothing to set up
+yet.**
 
 ## What changed
 
@@ -1301,8 +1370,9 @@ like that is **long**, and `admin actions --json` says which are, in its
 `long`. A long action answers at once with a task number, `202` and
 `{"task": 42}`, and the console runs its command on its own, as an
 administrator, with no 30 seconds' limit. The work goes on without the page,
-shows from another browser, and can be stopped. No action of this release
-is long yet.
+shows from another browser, and can be stopped. An update, the install of an
+app, a backup, a scrub and a certificate order are long, and so is each step of
+adding a website.
 
 **Tasks**, in the header, opens a drawer that lists the tasks that wait or
 run and those that ended lately, each with its step and bar, and stops one
@@ -1777,7 +1847,11 @@ the console"). The page is at `/reliability`, one start at
 `/reliability/starts/N` and the whole journal at `/reliability/changes`.
 
 The head has **7 days**, **30 days** and **1 year**, which choose how far back
-the page looks, and **Copy settings to Git...**. The range is in the address,
+the page looks, **Save as report…**, which opens Report a problem (see "Report a
+problem"), and **Copy settings to Git...**. **Save as report…** is about the
+failed start when it fell in the range, and otherwise about **Something
+else**, with the range counted in the note, **Reliability, Nov 8 to 14: 2 failed starts, 1
+crash**. The range is in the address,
 as `?range=30d`. A year counts by the month, and the others by the day, in
 your time zone. The cards are:
 
@@ -1785,7 +1859,7 @@ your time zone. The cards are:
 | --- | --- |
 | Health | The score of the last checks, as the Overview has it, such as **92, good**, with **How the score works**. Without `dukovo-check` it says **Checks are not on this server yet.**, and an account that is no administrator, **The health score is for administrators.** |
 | Problems a day | A bar for each day (or month) of the failed starts, crashes and errors in the log, with the total over the range in words. **Show the numbers** has them as a table |
-| Events by day | A row each for **Starts**, **Services** (errors in the log), **Updates** (a start whose release is not the one before it), **Changes** (the journal's rows) and **Crashes**, and a column for each day (or month) |
+| Events by day | A row each for **Starts**, **Services** (errors in the log), **Updates** (a start whose release is not the one before it), **Changes** (the journal's rows), **Crashes** and **Hardware checks** (each check of the machine, with how many passed, warned or failed and a link to Hardware), and a column for each day (or month) |
 | Starts | The starts the machine keeps, newest first |
 | A failed start | Only while a start that is kept has failed (see "When a start fails") |
 | Crashes | The kernel crash dumps, newest first |
@@ -2681,9 +2755,11 @@ at a terminal, or in another tab, is shown the same way when the page opens,
 with **Stage it** off. A second `backup restore --machine` is refused with
 BAK-104, and leaves the first as it was: when another tab staged one while this
 page still offered **Stage it**, its task fails that way, and the page shows the
-one staged first, with **Cancel**. To finish, restart the machine. The console has no button for that yet:
-the page gives `elevate reboot` in a box with **Copy**, to type at a terminal
-(**Terminal** in the list of pages opens one). At the restart, before any
+one staged first, with **Cancel**. To finish, restart the machine: **Restart now…**
+asks first, as **Hardware** does (see "Restart or shut down"), and restarts it in
+a minute, counting the minute on the card; the page also gives `elevate reboot` in
+a box with **Copy**, to type at a terminal (**Terminal** in the list of pages
+opens one). At the restart, before any
 service starts, the staged places take the place of the new install's, and what
 they replaced is kept in `/snapshots/machine-restore`. The console is then at
 the old machine's name.
@@ -2926,22 +3002,942 @@ The list is a stack of cards, each with the name, what the account can do and
 when it was last active. One account is one column, each row a card, and buttons
 are as wide as the page and 44 pixels tall at least.
 
+## Apps
+
+**Apps**, in the list of pages, shows the apps that are installed for everyone
+on this machine, each with its version, whether an update waits for it and
+what is known to be wrong with the version it runs. Each app has a page of its
+own. Anyone who signs in can look at them. Updating, holding, going back and
+removing are for administrators, who unlock the console first (see "Unlocking
+the console"). The list is at `/apps` and an app's page at `/apps/ID`, with the
+app's ID, such as `org.nginx.nginx`.
+
+It reads `bundle list`, `bundle info` and `update settings`, and runs `bundle
+update`, `bundle hold`, `bundle unhold`, `bundle rollback` and `bundle remove`,
+each for everyone (bundle(1), bundled(8), update(8)). "Updates, snapshots,
+backups and recovery" says how apps are kept up to date. **Add an app**, which
+administrators see at the top of the list, opens the page that installs one (see
+"Add an app").
+
+### The list
+
+The table has a row for each app installed for everyone: the apps with known
+flaws first, the worst first, then those that have an update, then the rest by
+name. A line over the table says when the apps were last checked, **Checked 4
+minutes ago.**, or **Not checked yet.**
+
+| Column | What it says |
+| --- | --- |
+| App | Its name and ID, which open its page |
+| Version | The version it runs |
+| Update | **Up to date**, or the version that is offered with **fixes only** or **new version** beside it, **Held at 8.0.3**, **Reaches this machine on day 3 of its waves**, **Could not check** or **Not checked yet**. Under it, when the catalog lists flaws of the version it runs, **2 known flaws, worst high** |
+
+**fixes only** is an update whose last number goes up and whose other numbers
+stay, 8.0.3 to 8.0.4. Every other change is a **new version**, since a version
+with fewer numbers, or with a tag such as `-alpha.1`, makes no promise of what
+changes. While an update, a going back or a removal runs, its row says so in
+place of its update, and the buttons that would start another wait.
+
+**Update all (N)** is on the page when more than one app has an update. It runs
+`bundle update --for-everyone --yes`, a task that takes every update as it asks,
+also one that asks for more than the version it replaces (see "Tasks"). To read
+what an update asks for first, press **Update** on the app's own page: it stops
+there and shows it (see "One app").
+
+**Yours**, under the table, lists the apps that a person installed for
+themselves: their name, version and the commands that update and remove them,
+each with **Copy**. They are in that person's own account, and no button on
+the page runs them. With no app installed for everyone the list says **No apps
+yet.**
+
+### One app
+
+The page of an app starts with its name, its version and who makes it. A
+banner under it says what waits and what is wrong: **8.0.4 is available (fixes
+only)**, or that the version it runs has known flaws, each with its ID,
+severity, a line about it and where it is fixed, and that the version on offer
+fixes them or that no fix is known. The page does not judge the risk: it says
+that whether a flaw matters depends on what the app may use, which it lists
+below.
+
+The facts, each only when there is something to say:
+
+| Row | What it says |
+| --- | --- |
+| Service | Each service the app runs, as a link to its page, with its state and whether it starts at boot |
+| Runs as | The accounts its services run as |
+| Websites, Databases | For nginx and for PostgreSQL: how many there are, with **Manage**, which opens the page that lists them (see "Websites" and "Databases"). An administrator reads the count of databases; anyone else has **Manage** alone |
+| May use | What the app is allowed to use, a line for each thing, and **nothing else** |
+| Provides, Uses | What it offers other apps, and what it asks of them |
+| Used by | The apps that use it, or **Nothing installed uses it.** |
+| Data | Where its settings and data are, under `/shared/services/ID/ACCOUNT` |
+| Flaws | What the catalog says of the version it runs |
+| Size | What the app's files take, **9 MB installed**, and what its data takes, **1.2 GB of data in 3,412 files, measured today at 3:06 AM** |
+| Hold | For an app that is held: **Held at 8.0.3 since Nov 2 at 3:06 AM by admin: "app tests use this version"**, with who held it, when, and the reason if one was kept |
+| Updates | **Update by themselves** or **Tell me**, as chosen on the Updates page, with **Change on the Updates page** |
+
+Under the facts is a table of versions: the one on offer, with **available** or
+**held back**; the one installed, with **installed** or **held**, and when it
+was installed; and the one kept for going back, with **Go back to this**. An
+update keeps the version it replaces, so there is one to go back to after the
+first. The buttons are:
+
+| Button | What it does | What it runs |
+| --- | --- | --- |
+| **Update to 8.0.4** | Updates the app, as a task | `bundle update ID --for-everyone` |
+| **Update anyway** | In place of **Update**, when the update stopped to ask: takes it as it asks | `bundle update ID --for-everyone --yes` |
+| **Tonight** | When an update waits: asks that it is installed in tonight's window, not now | `bundle update ID --for-everyone --tonight` |
+| **Not tonight** | In place of **Tonight** once it is asked for: takes the app off the window | `bundle update ID --for-everyone --not-tonight` |
+| **Hold at 8.0.3** | Asks **Why (optional)**, then takes no update of this app, security fixes included, until it is released | `bundle hold ID --for-everyone`, with `--why TEXT` when you wrote a reason |
+| **Release the hold** | Takes updates again | `bundle unhold ID --for-everyone` |
+| **Settings…** | Opens the page of the app's service | |
+| **Remove…** | Asks, then removes the app | `bundle remove ID --for-everyone` |
+
+An update that stops to ask shows what the version asks for beside **This
+update asks for more than the version installed does. Read what it asks for
+before you go on.** Each button shows the command it runs under it, as the Show
+command panel does (see "Showing the command"). An app that is a person's own
+has no button: the page gives its commands to copy.
+
+**Go back to this** asks **Go back to 8.0.3?** and says what it does: the app
+goes back to that version and is held there, and its data comes back as that
+version left it, its services' data at once and the rest at its next run. What
+was written since the update is kept in its snapshot for 30 days. **Remove…**
+asks **Remove NAME?**, says that the app is removed for everyone and its
+services stop, and lists each app that uses it and what stops with it. Then it
+asks what becomes of the app's data: **Keep its data**, which leaves its
+settings and data where they are for a later version to pick up, or **Remove its
+data too**, which removes them with the copies kept for going back, cannot be
+undone and asks for the app's name to be typed before **Remove the app** goes
+on.
+
+**Size** has two parts, joined by a dot: what the app's files take, **9 MB
+installed**, and what its data takes. bundled measures the data once a day, at
+the lowest priority, for the apps installed for everyone (see bundled(8)), so the
+number is as old as the last measure, a day at most, and the row says when:
+**1.2 GB of data in 3,412 files, measured today at 3:06 AM**. Until the first
+measure the row says **its data is measured once a day; not yet**. A count
+that its limits stopped says **at least 1.2 GB of data: counting stopped at its
+limits (Nov 16)**. An app that runs no service has no data folder, and an app
+that is a person's own is not measured, so each says only what its files take.
+`bundle info ID --json` gives the same as `data_size`, and `info` measures nothing.
+
+**Hold at 8.0.3** asks **Why (optional)** before it holds: one line of at most 200
+characters. Everyone who can sign in sees the reason, here and with `bundle
+list`, so it is not for what should stay private. The **Hold** row then says
+who held the app, when and why, and `bundle history` shows the reason as the
+note of the hold. **Release the hold** needs no question, and takes the reason
+away with the hold. At a terminal, `elevate bundle hold ID --for-everyone --why
+TEXT` does the same.
+
+**Tonight** is for an update that would restart an app's services in the middle of
+the day. It asks that the update is installed in the hour before the restart time
+that the Updates page sets, or between 2:00 and 3:00 AM without one; under the
+buttons the page says which hour, **Installs tonight, between 2:00 and 3:00 AM:
+the hour before this server's restart time.**, and above the facts a note says
+**Installs tonight** once it is asked for. A computer that was off through the
+window installs nothing in the day: the note says **The window passed while the
+machine was off: it installs tonight.**, and the request waits for the next
+window. An update that asks for more than the version it replaces stops with its
+sheet, as **Update** does, and **Install tonight anyway** queues it as it asks.
+**Not tonight** takes the app off the window, and `bundle list` says **installs
+tonight** at the line of an app that is in it. The Updates page has **Tonight** for
+each app, and **Install tonight** for all that wait at once (see "App updates"
+under "Updates").
+
+### Who may do what
+
+Anyone who signs in sees the list and every app's page. An administrator whose
+console is unlocked updates, holds, goes back and removes. Anyone else is told
+**An administrator can update, hold, go back and remove apps.** in place of the
+buttons. The list is read again every 30 seconds while the tab is shown, and
+when a task or a change comes.
+
+### On a phone
+
+The list is a stack of cards, each app's version and update under its name. An
+app's page is a page of its own there, and the list is not drawn beside it as it
+is on a wide window. The banner comes first, then the facts one to a row, then
+the versions, and the buttons one to a row and as wide as the page, 44 pixels
+tall at least.
+
+## Add an app
+
+**Add an app** installs an app from the catalogs, for everyone. It opens from
+**Add an app** at the top of **Apps**, from the command palette (see "The command
+palette"), and from **Websites** and **Databases** when the app they need is not
+installed. It is at `/apps/add`,
+and the sheet of an app, which says what the app is and what it may use before it
+is installed, is at `/apps/add/ID`. The list of pages marks **Apps** while you
+are on it. Anyone who signs in can search the catalogs and read a sheet;
+installing is for administrators, who unlock the console first (see "Unlocking the
+console").
+
+It reads `bundle search --json`, `bundle sheet --json` and `bundle list`, and
+runs `bundle install` and, for a service the app brings, `service enable`
+(bundle(1), bundled(8), service(8)). "Installing from a catalog" in the chapter on
+bundles says what each does.
+
+### Setups and the catalogs
+
+The head has two links, **Installed (6)**, which is the list of **Apps**, and **Add
+an app**. Under them is the box **Search apps and setups**: type a name, or what
+you want to do, such as a website. A search has at most five words, each of
+letters, digits, dots, `@` and dashes; the page says why when it is not. It is
+sent a moment after you stop typing, and it is kept in the address, so that the
+way back from a sheet keeps it.
+
+**Ready-made setups** are cards that open the page that does the job. Each
+shows what it uses, and each is a page of this console that shows every command
+it runs before it runs it:
+
+| Setup | Uses | Opens |
+| --- | --- | --- |
+| **Static website** | nginx | **Add a website**, to serve the files of a folder |
+| **PHP website with a database** | nginx, PHP-FPM and PostgreSQL | **Add a website**, to serve PHP pages, with the box for a database ticked |
+| **A database** | PostgreSQL | **Add a database** |
+| **Private access for your devices** | WireGuard | **Security**, where private access is set up |
+
+A card whose apps are not installed says **Installs nginx first**, or names the
+ones that are missing, and the page it opens offers their install as its first
+step. The search narrows the cards by their titles and what they use.
+
+**Apps in the catalogs** is a table, sorted by name:
+
+| Column | What it says |
+| --- | --- |
+| App | Its name and ID, which open its sheet |
+| Version | The newest version a catalog lists |
+| Catalog | Which catalog lists it |
+| Flaws | **No known flaws**, or **2 known flaws, worst high**, which is marked when the worst is high or critical; **Flaws not listed** when the catalog gives none |
+| Installed | **Installed** with **Version 1.30.5** for an app that is installed, else **Not installed** |
+
+A catalog that could not be read has a banner, **The catalog dukovo could not be
+read: why. The list shows the others.**, with **Look at the connection on the
+Updates page** when the network is why. When there is no row the page says why:
+**No app in the catalogs matches “word”.** with **Clear the search**, **No app is
+listed: no catalog could be read.**, or **No catalog is turned on.** with the
+command `bundle catalog`, which lists them.
+
+### The sheet
+
+A row opens the sheet beside the list on a wide window, and on a page of its own on
+a phone. Reading a sheet downloads the app, since that is how its facts are
+checked: the page says **Reading the sheet. The app is downloaded to read it, so
+this can take a moment.** Nothing is installed or run by it, and it is never
+done by itself or on a timer: only when you open a sheet. bundled keeps the one
+download last read for the install that follows, so a sheet read just before an
+install is not fetched twice (see bundle(1)). When the app cannot be fetched
+the page says **The app could not be fetched: why.** and **Nothing was installed
+or kept.**, with **Try again** and the ID's page when it has one
+([APP-101](../../errors/APP-101.md), [APP-103](../../errors/APP-103.md)).
+
+The sheet has what the plain sheet of `bundle install` has, in the same order:
+
+| Part | What it says |
+| --- | --- |
+| Title | The app's name and version, and under it **Dukovo catalog · signed · BSD-2-Clause**: the catalog, whether it is signed, and the licence. A key this computer does not know yet says **signed by a key this computer does not know yet** in the warning colour. Then the summary |
+| **Who made it** | The publisher, and a link to where the app is supported |
+| **Its size** | **3.1 MB to download, 9 MB installed** |
+| **Flaws** | The known flaws of this version, each with its ID, severity and the version that fixes it, and that whether one matters depends on what the app may use |
+| **Runs as services** | Each service, **nginx · as its own account, nginx · off until you turn it on**, and **A bundle that runs services is installed for everyone.** |
+| **May use** | Each permission in the system's words, and **and nothing else**. One that the system asks for with a warning, such as connecting out to anything, starts with **Warning:** and says why in the publisher's words |
+| **Commands that run with your access** | The commands that run with the access of whoever runs them, with **These run with the access of whoever runs them; the first time each asks, with a warning, in that person's terminal.** When there are none: **Its commands run in its sandbox.** |
+| **Its data** | The folder of each service, such as `/shared/services/org.nginx.nginx/nginx`, which **Made at its first start; only its account may read it.** and whether **Snapshots and backups copy /shared.** or **No backup place copies /shared yet.**, with **Add a backup place** |
+| **Works with** | What the app **Provides** and **Uses**, with the installed apps that offer what it uses, and **Needs PHP-FPM, which is not installed.** when one is missing |
+
+An app that is installed already says **Version 1.30.5 is installed. Updating is on
+its page.** with **Open its page**, and has no **Install for everyone**. An app
+that bundled would refuse, because its key is not one the system takes, because
+it needs another kind of computer, or because its ID belongs to another catalog,
+says **This app would not be installed.** and why, in the error colour, and has
+no button that installs it.
+
+The buttons are **Install for everyone**, which administrators have, **Show
+command**, which shows `elevate bundle install ID --for-everyone` with **Copy** (see
+"Showing the command"), and **Cancel**, which goes back to the list with the
+search kept. Anyone else is told **An administrator installs apps for everyone.**
+in place of the first.
+
+### Installing
+
+**Install for everyone** asks nothing more, since the sheet was the question. A
+locked console asks for the unlock first. It runs
+
+```
+$ elevate bundle install org.nginx.nginx --for-everyone --yes --sha256 HASH
+```
+
+as a task, whose lines show under the button and in **Tasks**. The hash is the
+SHA-256 of the file whose sheet you read, and only that file installs. When the
+catalog offers another file by then, most often a newer version, bundled
+installs nothing, and the page says **The catalog has a newer version than the
+sheet you read. Read it again.** with **Read it again**
+([APP-102](../../errors/APP-102.md)): the new sheet may ask for more than the one
+you read. An install that fails says why in the task's last line, with **Try
+again**, and leaves nothing half installed.
+
+An app as large as PHP or PostgreSQL takes the time of its download; leaving the
+page keeps the task, which goes on and shows in **Tasks** (see "Tasks").
+
+### After the install
+
+When the task ends, the sheet becomes a list of what happened:
+
+- **Installed nginx 1.30.6 for everyone.**
+- For each service, **Its service nginx is off.** with **Turn it on**, which starts
+  it, and **Open its service**; or, once it is on, **Its service nginx is on:
+  running, on at boot.**
+- **Its data is in /shared/services/org.nginx.nginx/nginx once it has started.**
+
+Under it is the next step for the app: **Add a website** for nginx, **Add a
+database** for PostgreSQL, **Add a PHP website** for PHP-FPM, and **Open its page**
+for any other app, and **Back to the catalogs**. The page of nginx and of
+PostgreSQL under **Apps** then has a line that links to what they serve (see
+"One app").
+
+### Who may do what
+
+Anyone who signs in can search, read a sheet and see what is installed. An
+administrator whose console is unlocked installs. A reader sees no
+**Install for everyone**. The installed apps are read again when an install ends
+or a change comes.
+
+### On a phone
+
+The apps are cards, one to a row, with the version, the catalog, the flaws and
+whether it is installed under the name. A sheet is a page of its own, and
+**Install for everyone** is a button as wide as the page, 44 pixels tall at
+least, at the end of the sheet.
+
+## Websites
+
+**Websites** lists the websites that nginx serves, adds one, serves one over
+HTTPS and removes one. It is at `/websites`, and it opens from **Manage** on
+nginx's page under **Apps** (see "One app"), from the setups of **Add an app**,
+from **Where it is used** on **Certificates** and from the command palette (see
+"The command palette"). It is not an entry of the list of pages: **Apps** is
+marked while you are on it. **Add a website** is at `/websites/add`, and a
+website's page is at `/websites/NAME`.
+
+Anyone who signs in can read the list and a website's page. Adding, changing
+and removing a website is for administrators with the console unlocked (see
+"Unlocking the console"); anyone else is told **Only an administrator can add,
+change or remove a website.** The check of the sites and the plan of an add run
+nginx's own check and read what only root can read, so they are for
+administrators too.
+
+It reads `website list --json`, and, for administrators, `website check --json`
+and `website add --dry-run --json`. It runs `website add`, `website https` and
+`website remove`, `cert get` for a certificate from Let's Encrypt, `bundle
+install` for nginx and PHP-FPM, `service enable`, `firewall test` to ask whether
+a rule closes port 80 or 443, and `firewall allow` for a port that a rule closes
+(website(8), cert(8), bundle(1), service(8), firewall(8)). "Websites, a file each" in the chapter on services says what each
+does.
+
+### The list
+
+Above the table, a line says when nginx does not run, and when a PHP website is
+there and PHP-FPM does not: **nginx is not installed: no site answers.** with
+**Add it from the apps**, which opens its sheet (see "Add an app"); **nginx is
+off: no site answers.** with **Turn it on**; **PHP-FPM is not installed: its PHP
+pages fail.**; and **PHP-FPM is off: its PHP pages fail.**
+
+The table has a row for each website:
+
+| Column | What it says |
+| --- | --- |
+| Site | Its first name, which opens its page, with the other names under it. **Changed by hand** when its file was changed or made by hand, with the title **Kept as you wrote it** |
+| Serves | **Files**, **PHP pages**, or **Set up by hand** for a file that is neither, and the folder |
+| HTTPS | **HTTP only**, in the warning colour; **Let's Encrypt · renews Dec 14**; **This machine's certificate**; **Certificate shop (added)**; or **Certificate shop, which certd does not have**, in the warning colour |
+| State | **Answers** when nginx runs and nothing is wrong. Else what is wrong, with its ID: **nginx is not installed**, **nginx is off**, **PHP-FPM is off: its PHP pages fail**, or what `website list` found in the site's files, such as a folder that is not there |
+
+**Add a website** and **Check the sites** are for administrators. Under the table
+are **Read again** and, where commands are shown, `website list` (see "Showing
+the command"). An empty list says **No websites yet.** with **Add a website**;
+a reader is told **An administrator adds one. At a terminal:** and given
+`elevate website add NAME` to copy.
+
+**Check the sites** runs `website check --json` as an administrator. It says
+**nginx's check of the sites passed.**, or **nginx's check of the sites failed,
+so nothing is changed until it passes.** with nginx's own line, which names the
+file of the site that nginx refuses; that site's row then shows the line as its
+state ([WEB-103](../../errors/WEB-103.md)). It also says when `nginx.conf` lacks
+one of the two lines the websites need: **nginx's settings do not include the
+websites' folder** with the line to add at the end of its `http` block, or **The
+default server does not hide /sites/, so a site's folder is served there too.**
+with the lines to add before `location /` in the default server. Each has the
+lines in a box with **Copy** ([WEB-102](../../errors/WEB-102.md)).
+
+### Add a website
+
+**Add a website** is one page for the address, the certificate, the web server
+and the files. It opens with **One step for the address, the certificate, the web
+server and the files. The firewall and backups are checked too; the page changes
+them only when you press their buttons.** A reader sees that and the command
+`elevate website add NAME`, with **Back to the websites**. A setup of **Add an
+app** opens the page with the kind chosen, and with the box for a database
+ticked for the PHP setup; **Add a website** under **Where it is used** on
+**Certificates** opens it with the name, and the certificate when one is there,
+filled in.
+
+**Address** has the **Domain**, the name people type to reach the site, such as
+`shop.example.org`. It is lowercased as you type and checked by the rule that
+certificates follow, in the page and again by the command: a name has dots
+between its labels, and a wildcard or an address by number is not a name a
+website answers to. **Also answer for www.shop.example.org** is ticked for a
+name with a dot that does not start with `www.` and is not one of this machine's
+own names. **More names** opens a box of one name a line; a website has 1 to 20
+names in all. Under them **The checks**, which run a moment after you stop typing,
+ask for each name what **Get a certificate** asks (see "Getting a certificate"):
+whether it leads to this server, and whether a rule closes port 80, with **Open
+port 80**. A name of this machine, or a name without a dot, is not looked up,
+and the page says so.
+
+**What it serves** has two cards:
+
+| Card | What it does |
+| --- | --- |
+| **Files from a folder** | **nginx serves the files as they are. A PHP file is never sent as text: it is not found.** |
+| **PHP pages** | **nginx passes .php files to PHP-FPM, which runs them as the account php, for every PHP site of this server.** Its box, **Also make a PostgreSQL database for it · next**, makes the database as a step after the site, on **Databases**. When PHP-FPM is not installed the card says **Installs PHP-FPM first (net.php.php) · Read its sheet** |
+
+**Files** has the **Folder**, which is `/shared/www/sites/shop.example.org` unless
+you name another under `/shared/www/sites`, and says **The folder is there with 14
+files: they are kept, and served as they are.** when it is there. **Who may
+change them** is an account: the signed-in person first, then the
+administrators, then the others. The page says that the account owns the folder and changes its
+files, over SSH (sftp) when SSH is on, that nginx reads them and, for PHP, that the
+site's PHP reads them and writes only in its `uploads` folder.
+
+**Certificate** has **How the website gets its certificate**:
+
+| Card | What it does |
+| --- | --- |
+| **From Let's Encrypt** | **Let's Encrypt checks that the names lead here, over port 80, then gives a certificate for 90 days; certd renews it.** It has the box **I agree to Let's Encrypt's terms of service**, **Contact email (optional)**, and, when the first name is longer than 64 characters, **A shorter name for the certificate**. The certificate is named for the first name. Not offered for a name without a dot |
+| **This machine's own** | **Browsers warn until they trust this machine's certificate; Certificates says how.** Offered when every name is one of this machine's own names, and then the default |
+| **One that is here** | **A certificate certd has already, which names every name of the site.** A list of those that are not revoked or past their end |
+| **None, HTTP only** | **Pages and passwords travel unencrypted.** In the warning colour |
+
+**What happens** is read with `website add --dry-run --json`, as an
+administrator, so a locked console says **The checks of the names, nginx and the
+folder, and the files, are read as an administrator. Unlock to see them.** with
+**Unlock**. It is read a moment after the form changes, and shows, as a list of
+what the page will do:
+
+- **Installs nginx first, from the catalog.**, and the same for PHP-FPM.
+- The certificate: **Gets a certificate for shop.example.org and
+  www.shop.example.org from Let's Encrypt; certd renews it by itself.**, **Serves
+  it with this machine's own certificate. Browsers warn until they trust it.**,
+  **Serves it with the certificate shop that is here.** or **Serves it over HTTP
+  only: pages and passwords travel unencrypted.**
+- The folder: **Makes /shared/www/sites/shop.example.org with a starter page,
+  owned by alice.** or **Keeps /shared/www/sites/shop.example.org as it is, owned
+  by alice.**
+- The site: **Adds nginx's site for both names, HTTPS only: http:// sends visitors
+  to https://.**, **Adds nginx's site for both names, over HTTP.**, or, for Let's
+  Encrypt, **Adds nginx's site for both names, then turns HTTPS on once the
+  certificate is got.**
+- **Restarts nginx once, to give it the certificate and port 443: Spark holds its
+  ports, so no visitor is turned away.** and **Turns PHP-FPM on.**
+- The firewall: **Nothing to change: ports 80 and 443 reach nginx (no rule closes
+  them)**, or **Rule 3 closes port 443** with **Open port 443**. That button opens
+  the port for 10 minutes as a trial, and a banner says **A port is open for a
+  while so that the website can be reached. Keep it once the website is live, or
+  undo it now.** with **Keep this change** and **Undo now** (see "Trying a change"). The page never
+  changes the firewall by itself.
+- The backups: **Nothing to change: /shared is in the nightly backup to nas**, or
+  **No backup place copies /shared yet** with **Add a backup place**; and
+  **Snapshots: /shared has a snapshot every day** or **Snapshots: snap.toml does
+  not name /shared, so the sites have none**.
+
+A check of the plan that fails stops the add: the button is off, and the page
+says **Put right what the plan says first.** and the check's words with its ID,
+such as a name that a site answers to already ([WEB-101](../../errors/WEB-101.md)),
+a certificate that does not name every name ([WEB-106](../../errors/WEB-106.md)),
+or nginx's own line ([WEB-103](../../errors/WEB-103.md)). A check that only warns
+is shown and does not stop it. Where commands are shown, **This runs** lists the
+commands, one for each step, as in the next part.
+
+**Add the website** adds it. **Preview the files first** opens **The files that
+adding the site writes**: each file the command would write, its path with **new**
+or **changes**, and its text with the line numbers. **Only a preview: nothing is
+written until Add the website is pressed.** **Cancel** goes back to the list.
+
+### Adding it
+
+**Add the website** runs the steps that apply, in order, and shows each as
+waiting, running, done or failed, under **Adding shop.example.org**:
+
+1. **Install nginx**, and **Install PHP-FPM** for a PHP site, when one is not
+   installed: `elevate bundle install org.nginx.nginx --for-everyone --yes
+   --sha256 HASH`, with the hash of the sheet the page read when the kind was
+   chosen. While it reads, the button says why it waits: **Reading the sheet of
+   nginx…**; when it cannot, **The sheet of nginx could not be read, so it cannot
+   be installed from here: read it in the apps first.**
+2. **Add shop.example.org**: `elevate website add shop.example.org --name
+   www.shop.example.org --kind php --owner alice`, with `--folder` for a folder
+   other than the usual and `--certificate` for this machine's own certificate or
+   one that is here.
+3. **Get the certificate for shop.example.org**, for Let's Encrypt only: `elevate
+   cert get shop.example.org --name shop.example.org --name www.shop.example.org
+   --agree-terms`. The site is added over HTTP first, since Let's Encrypt reaches
+   it by port 80.
+4. **Serve shop.example.org over HTTPS**: `elevate website https shop.example.org
+   --certificate shop.example.org`.
+
+When every step is done the page says **shop.example.org is live:
+https://shop.example.org/**, with **Open its page**, **Add another** and, when the
+box was ticked, **Make its database**, which opens **Add a database** for the site
+(see "Databases"). It is a button and not a step, since the password of a database
+is shown once and you must be there to keep it. For this machine's own
+certificate the page adds that browsers warn until they trust it.
+
+When a step fails, a banner says what stands, and a step is never undone by the
+page: each command takes back its own half-made change.
+
+| Failed at | What the page says | What it offers |
+| --- | --- | --- |
+| The install | **Nothing about the website was changed.** and the install's own words | **Try again**, **Change the form** |
+| The add | **Nothing was changed: the command took its changes back.** and the error's words, with nginx's line for [WEB-103](../../errors/WEB-103.md) | **Try again**, **Change the form** |
+| The certificate | **shop.example.org is live over HTTP. The certificate was not got: the site's page has Get the certificate to try again.** | **Open its page** |
+| HTTPS | **shop.example.org is live over HTTP, and certd keeps the certificate shop. Try again turns HTTPS on.** | **Try again**, **Open its page** |
+
+**Try again** starts at the step that failed, and says **Done already:** with the
+steps before it. A failed order for a certificate is not tried again by itself:
+certd keeps no order that failed, so the order is made again from the website's
+page.
+
+### A website's page
+
+A website's page has its first name as its title, its state in a pill, and for
+administrators **Check the sites**, which runs the check of the list and shows
+what it found of this site. A banner tells when nginx does not run, and a banner for each problem found
+in the site's files, with its ID. It has these rows:
+
+| Row | What it says |
+| --- | --- |
+| Names | Each name, as a link to the site over `https` or `http` |
+| Serves | **PHP pages from /shared/www/sites/shop.example.org, owned by alice**, and, for an administrator whose session has the terminal, **Open the Terminal** |
+| HTTPS | As in the list, with the certificate as a link to **Certificates**, and **Ends Dec 14, certd renews it from Nov 14** |
+| Its database | The databases made for it that **Databases** has read since this page of the console was opened, as links, or **None that this page knows of**, and **Make its database** |
+| Its file | `/system/settings/websites/shop.example.org.conf` and **As website wrote it**, **Changed by hand · kept as you wrote it**, or **Added by hand · website does not write it, and keeps it as you wrote it**. **Show the file** shows its text, and a file changed by hand has a line that it is also a row of **What changed**, with **Keep it** and **Put back** (see "What changed") |
+
+The HTTPS row has the buttons for what can be done. For a website served over
+HTTP only: **Get a certificate**, which opens **Get a certificate for
+shop.example.org** with the checks of the names, the terms box, the email and
+**Get the certificate**, and runs `cert get` and then `website https`;
+**Use this machine's certificate**, when every name is one of its own; and **Use
+one that is here…**, which opens **Serve shop.example.org over HTTPS** and
+**Serve it over HTTPS**. nginx restarts once, since a certificate that nginx has
+not had is in its view only after a start, and Spark holds its ports, so no
+visitor is turned away. For a website served over HTTPS: **Turn HTTPS off…**,
+which asks **Turn HTTPS off for shop.example.org?**, says that pages and
+passwords then travel unencrypted and that the certificate stays in certd, and
+runs `website https shop.example.org --off`.
+
+A website whose file was changed by hand has none of these buttons: **The file
+was changed by hand, so website does not write it: add the HTTPS server yourself,
+as website(8) shows.** ([WEB-107](../../errors/WEB-107.md)). A site that nginx
+serves by a file that is not a website's at all, such as a server in `nginx.conf`,
+is **Set up by hand** and says **nginx serves this site by a file made by hand,
+which website does not change: add HTTPS to it yourself.**
+
+**Remove…** asks **Remove shop.example.org?**, says that it removes nginx's site,
+that its folder is kept unless the box below is ticked and that its certificate
+stays in certd, and says whether nginx restarts once, when no other site uses the
+certificate, or reads its settings again. **Also remove its folder
+/shared/www/sites/shop.example.org and everything in it** is not ticked, and
+warns that what is in it cannot be brought back from this server unless a
+snapshot has it. The name is typed first, **so that the website is not removed by
+a slip**. It runs `website remove shop.example.org`, with `--files` when the box
+is ticked, and says **shop.example.org is removed. Its folder is kept. Its
+certificate stays in certd.**
+
+### Who may do what
+
+Anyone who signs in can read the list and a website's page. An administrator whose
+console is unlocked checks, adds, serves over HTTPS, takes off HTTPS and removes.
+Each change is checked before anything is changed, and nginx's own check of the new
+set of sites runs first, so that a mistake never stops a site that runs; a change
+that nginx refuses, or a site that does not answer after it
+([WEB-104](../../errors/WEB-104.md)), is taken back. The commands are website(8)'s,
+so a person at a terminal does the same with `elevate website`.
+
+### On a phone
+
+The websites are cards, one to a row, with the same columns as labels. Every
+button and box is 44 pixels tall at least, and a name is a link of that height.
+The palette has each website, with its kind and whether it is **HTTP only** or
+**Changed by hand**, **Add a website**, **Get a certificate for NAME** for each
+website served over HTTP, and **Remove NAME**.
+
+## Databases
+
+**Databases** makes the databases of PostgreSQL and the roles that own them, shows
+how a program connects to each, lets other machines connect and removes a
+database. It is at `/databases`, and it opens from **Manage**, on the page of the
+PostgreSQL app under **Apps**, from **Make its database** on a website's page, and
+from the command palette (see "The command palette"). It is not an entry of the
+list of pages: **Apps** is marked while you are on it. A database's page is at
+`/databases/NAME`, and **Add a database** is at `/databases/add`.
+
+Listing the databases signs in to PostgreSQL as its superuser, so it is for
+administrators with the console unlocked (see "Unlocking the console"). Anyone
+else is told **Only an administrator can list the databases: listing them signs
+in to PostgreSQL as its superuser.** An administrator whose console is locked is
+told **Listing the databases signs in to PostgreSQL as its superuser, so the
+console has to be unlocked first.** with **Unlock**. The page reads when it opens,
+after a change, when the console is unlocked and when you press **Read again**,
+and never on a timer.
+
+It reads `database list --json`, and runs `database add --json`, `database
+password --json`, `database allow`, `database deny` and `database remove`, and
+`service enable` for PostgreSQL (database(8), service(8)). "Databases for
+programs and websites" in the chapter on PostgreSQL says what each does.
+
+### The list
+
+The line over the table says how PostgreSQL stands, **Running** and **PostgreSQL
+19.0 · running · listens on this machine only**, or **listens on the network, TLS
+with this-machine's certificate**, with a link to its service. When it does not
+run, a banner says so and what to do: **PostgreSQL is not installed.** with **Add
+PostgreSQL**, which opens its sheet (see "Add an app"); **PostgreSQL is off.**,
+with **Its first start makes the cluster.** and **Turn it on**; or **PostgreSQL is
+not running.** with **Open the service**.
+
+The table has a row for each database:
+
+| Column | What it says |
+| --- | --- |
+| Database | Its name, which opens its page, **for shop.example.org** when it was made for a website, and **Its indexes need to be rebuilt** when the system's sorting data changed since it was made |
+| Owner | The role that owns it |
+| Who connects | One line each: **Programs on this server, with the password**, **webdev, by its account**, **192.168.1.0/24, over TLS with the password**, and **and 1 line written by hand** for lines of `pg_hba.conf` that `database` did not write and that name it |
+| Size | How much room it takes |
+| Sessions | How many programs are signed in to it now |
+
+Under the table, **PostgreSQL's own databases are not listed.** An empty list says
+**No databases yet.** with **Add a database**. When PostgreSQL itself found a
+mistake in `pg_hba.conf`, a banner gives its words with the line, and **What
+DB-104 means** ([DB-104](../../errors/DB-104.md)).
+
+### Add a database
+
+**Add a database** makes the role and the database, and shows the password once.
+It opens with **A PostgreSQL 19 database and the role that owns it. Snapshots and
+backups copy it with /shared.** Reached from a website's page it adds **for
+shop.example.org**, starts the name as the site's first word, and has **Back**, which
+returns to the site. A reader sees the form with its button off and **Only an
+administrator can add a database.**, and so does an administrator while PostgreSQL
+is not running.
+
+**Database** has three fields:
+
+| Field | What it holds |
+| --- | --- |
+| **Name** | Lowercase letters, digits and `_`, starting with a letter, up to 63 characters; not a name that starts with `pg_`, and not `postgres`, `template0` or `template1`. From a site, its first word, with each other character made `_`, and a number after it when that name is taken: `shop`, `shop_2` |
+| **Owned by** | The role, which is the name unless you change it: **A new PostgreSQL role, with rights over this database only.** A role or a database of that name that is there already is refused |
+| **Text and sorting** | **UTF-8, sorted as English (US)**, the default, or **UTF-8, sorted by character code, the same on every machine**. The first says **If the system's language data changes in an update, PostgreSQL asks for its indexes to be rebuilt; the Databases page will say so.** |
+
+**Who connects** has three cards, and each says what it does:
+
+| Card | What it does |
+| --- | --- |
+| **Programs on this server, with a password** | The default, and the only way a website's PHP can connect. **They connect to 127.0.0.1, port 5432, as shop, with a long password made now and shown once.** Nothing else changes |
+| **An account of this server, by the socket** | **The role is named for the account and signs in as it, with no password, through PostgreSQL's socket.** Choose the account; **Owned by** then takes its name. **A service of another bundle cannot reach the socket yet: for a website's PHP, choose a password.** |
+| **Programs on other machines, with a password** | Lets the networks you name sign in as the role, with its password, over TLS. **Addresses** are one network a line, such as `192.168.1.0/24` or `2001:db8::/64`, at most 20. **Certificate** is this machine's own unless you choose another, and a note says when it does not name this machine. To let every address in, type **anywhere**. **PostgreSQL restarts once to listen on the network: its open sessions end.** |
+
+**Backups** says what copies the database: **Before each snapshot of /shared,
+PostgreSQL's backup hook asks it for a checkpoint, so the copy starts as after a
+power cut, which PostgreSQL recovers from.** and whether **/shared is in the
+nightly backup to nas** or **No backup place copies /shared yet.** with **Add a
+backup place**. A database is not copied on its own: its files are copied with
+`/shared`.
+
+**What happens** lists, before anything is done: the role, **Makes the PostgreSQL
+role shop, which signs in with a password, from this server only**; the database,
+**Makes the database shop, owned by shop, UTF-8, sorted as English (US). Other roles
+may not connect to it.**; the firewall; and the restart, **Restart: none; the
+database is ready at once.** or **Restart: PostgreSQL restarts once, and its
+open sessions end.** For other machines the firewall row says **PostgreSQL listens
+on the network, and only the addresses you named may sign in. Port 5432 is open to
+every address while PostgreSQL runs, as for any service that listens; a firewall
+rule can narrow it.** The page changes no firewall rule: **Firewall** is where one
+is made. Where commands are shown, **This runs** has `database add`, and `database
+allow` for other machines (see "Showing the command").
+
+**Add the database** runs `database add NAME --json`, with `--owner`, `--peer`,
+`--locale` and `--site` as the form says, and then, for other machines, `database
+allow NAME --from NETWORK --certificate NAME`. Each is a step that shows its
+state. The password is in the first step's answer alone, and it is shown once, in a
+box with **Copy** and **Save as file**, which saves `shop-postgresql.txt` with the
+connection settings and the password: **The password of shop. It is shown only
+now: copy it or save it. Lost, it is replaced by a new one on the database's
+page.** Leaving the page before then asks first, since the password would be lost.
+Nothing keeps it afterwards: not the console, not PostgreSQL, which holds only a
+verifier that cannot be turned back into it, and not a log.
+
+When the first step fails nothing was made. When the second fails the database
+is made, programs on this server can connect with the password, and the page says
+so, with **Open its page** to try again.
+
+### Connection settings
+
+After an add, and on a database's page, **Connection settings** says what a
+program needs, for each way that applies:
+
+| | Programs on this server | An account, by the socket | Other machines |
+| --- | --- | --- | --- |
+| Host | `127.0.0.1` | `/system/live/services/postgres` | The machine's name |
+| Port | 5432 | 5432 | 5432 |
+| Database | The database | The database | The database |
+| User | Its role | The account | Its role |
+| Password | The one shown once | None: PostgreSQL knows the account | The one shown once |
+| TLS | Not needed | Not needed | Required: `sslmode=verify-full`, with this server's certificate |
+
+For other machines, **Download the certificate** saves the server's certificate as
+`NAME.pem`, which a program names as its `sslrootcert`. Each way has examples with
+**Copy**, for PHP, for `psql` and as a URL, and by the socket two for `psql`; none
+holds the password, which a program reads from where you keep it:
+
+```
+new PDO('pgsql:host=127.0.0.1;port=5432;dbname=shop', 'shop', $password);
+psql "host=127.0.0.1 dbname=shop user=shop"
+postgresql://shop@127.0.0.1:5432/shop
+```
+
+### A database's page
+
+A database's page has **About this database**, with its owner, its text and
+sorting, its size and its sessions, **for shop.example.org** as a link to the site,
+and **No one is connected now.** or **2 programs are connected now.** Under it are
+the connection settings, and:
+
+- **Who connects** lists each line, **Programs on this server, with the password**,
+  **webdev, by its account**, **192.168.1.0/24, over TLS with the password**, each
+  network with **Remove**, and lines written by hand in `pg_hba.conf`, which stay
+  as they are. **Let other machines connect** asks for the networks and the
+  certificate, and runs `database allow`. **Stop them**, for every network, and
+  **Remove**, for one, run `database deny`. When no network is left, PostgreSQL
+  goes back to listening on this machine only and restarts once, and the dialog
+  says so first.
+- **Password and removal** has **Make a new password**, which asks first, **Programs
+  that use the old one stop signing in until they have the new one.**, and shows the
+  new password once as the first was shown. It is not there for a role that signs
+  in as an account, which has no password. **Remove…** asks **Remove shop?**, says
+  **Removes the database shop and everything in it. Its data stays in the snapshots
+  of /shared until they are pruned.**, says **Ends its 2 open sessions.** when
+  programs are signed in, and asks for the name to be typed. **Also remove the role
+  shop** is ticked when the role was made with the database and owns nothing else.
+
+When the system's sorting data changed since a database was made, its page says
+**Its sorting data changed in an update: rebuild its indexes, then tell PostgreSQL
+that it did.** with the two commands to run, each with **Copy**.
+
+### Who may do what
+
+Only administrators use this page, and only with the console unlocked (see the
+top of the section). A change that restarts PostgreSQL says so before it is made,
+since the open sessions of every database end. The commands are database(8)'s, so
+a person at a terminal does the same with `elevate database`.
+
+### On a phone
+
+The databases are cards, one to a row, and the password box is as wide as the
+page, with **Copy** and **Save as file** 44 pixels tall at least. The palette has
+each database, and **Add a database** and **Make a new password for NAME**.
+
+## Certificates
+
+**Certificates**, in the list of pages, shows the certificates this machine
+keeps, who uses each and when it runs out, and is where a certificate is got,
+uploaded, renewed, revoked and removed, where the console is told which
+certificate to serve, and where the machine's name is changed. Anyone who
+signs in can look at it. Changing anything is for administrators, who unlock
+the console first (see "Unlocking the console"). The page is at
+`/certificates`, and its cards have addresses of their own: `#certificates`,
+`#get`, `#renewals` and `#name`; `/certificates#upload` opens the dialog that
+uploads one, and `/certificates/NAME` opens a certificate's fingerprint.
+
+It reads `cert list`, `cert history`, `cert show` and `hostnamectl status`, and
+runs `cert get`, `cert add`, `cert renew`, `cert revoke`, `cert remove`,
+`admin certificate` and `hostnamectl set-hostname` (cert(8), certd(8),
+hostnamectl(1), admin(8)). The chapter "Certificates" says what each command
+does and how a service takes a certificate.
+
+### The list
+
+**Certificates on this server** has a row for each certificate:
+
+| Column | What it says |
+| --- | --- |
+| Certificate | Its first name, and how many more it has. **this console** marks the one the console serves; `this-machine` says **made by this server** |
+| From | **This server**, **Let's Encrypt**, or the authority an uploaded certificate came from; **Not from an authority this server trusts** under one that has none |
+| Good until | The date, and a note under it when it ends soon, has ended or was revoked |
+| Used by | The services that use it, each as a link to its page, or why none does |
+| Actions | The buttons of the row |
+
+A line under the table says which Let's Encrypt account the machine has, **Let's
+Encrypt account: made on Nov 2, with no contact email**. Under it, **Warnings go
+to the alerts (email, webhooks and this console).**, with **Open the alerts**. A renewal that failed puts a line under its row with what
+happened, the ID of the failure and two buttons: **Check again**, which opens
+**Get a certificate from Let's Encrypt** with the names filled in, and **Retry**.
+
+The buttons depend on where the certificate came from. **More** opens the
+others:
+
+| Certificate | Buttons | Under More |
+| --- | --- | --- |
+| This server's own | **Show fingerprint**, **Make it anew…** | **Use this server's own certificate again**, when the console serves another |
+| From Let's Encrypt | **Renew now**, or **Renew by DNS…** for one that was proved by DNS | **Show fingerprint**, **Use for this console**, **Revoke…**, **Remove…** |
+| Uploaded | **Replace…** | **Show fingerprint**, **Use for this console**, **Remove…** |
+| A reader's view | **Show fingerprint** | |
+
+**Remove…** is there only when no service uses the certificate; under **More**
+a line says which do. Each button that changes something shows the command it
+runs, as the Show command panel does (see "Showing the command").
+
+**Show fingerprint** opens the certificate: its SHA-256 fingerprint with
+**Copy**, its names, who made it, when it is good and who uses it. **Save the
+certificate** saves its chain as `NAME.crt`, for a browser or a phone to trust
+once the fingerprint is the one the browser shows. **Make it anew…** asks first and says that browsers
+and phones that trusted the old certificate warn again, and shows the new
+fingerprint when it is made. **Renew now** runs `cert renew NAME`; a
+certificate that was proved by DNS cannot be renewed that way, and the button
+says **Renew by DNS…** and opens the form below. **Revoke…** asks why: **No
+reason given**, **Its key may have been seen by someone else**, **A new
+certificate replaces it** or **The site is gone**. It says that revoking tells
+the authority never to trust the certificate again, that services keep using it
+until a new one replaces it, and that it cannot be undone. **Remove…** says
+that the server forgets the certificate and its key, and that it does not tell
+the authority: revoke first when someone else may have seen the key.
+
+### Getting a certificate
+
+**Get one from Let's Encrypt**, at the top of the page, goes to **Get a
+certificate from Let's Encrypt**. Type the **Domain**: the names of the site,
+separated by spaces, the first being the certificate's name. **Prove the
+name** is **Through port 80**, where Let's Encrypt connects to this server on
+port 80, or **Through DNS, for private services**, where you add a TXT record
+for each name; a wildcard needs DNS. **Contact email (optional)** is kept by
+Let's Encrypt, and the server warns you itself when a certificate runs out.
+
+**The checks** run as you type, and each says **Passed**, **Warning**,
+**Failed** or **Left out**. They ask whether each name leads to this server
+([CRT-101](../../errors/CRT-101.md), [CRT-102](../../errors/CRT-102.md) and
+[CRT-104](../../errors/CRT-104.md)), whether the firewall closes port 80
+([CRT-103](../../errors/CRT-103.md); **Open port 80** opens it for a while),
+whether the clock is right ([CRT-105](../../errors/CRT-105.md)) and whether
+another program holds port 80 ([CRT-106](../../errors/CRT-106.md)). **Get the
+certificate** orders it as a task, and its steps show in the card. **Try it
+first** asks Let's Encrypt's staging authority, which installs nothing and
+does not count against Let's Encrypt's limits. By DNS the card lists the TXT
+records, each with **Copy**, and this server looks for them for up to 10
+minutes. certd renews a certificate proved by port 80 by itself; one proved by
+DNS is not renewed by itself, and certd warns 21 days and again 7 days before
+it ends. **This runs** shows `cert get`.
+
+Under the checks, **Where it is used** says who uses a certificate of that name:
+**shop.example.org is used by nginx.**, with the websites that use it as links, or
+**No nginx site answers for shop.example.org yet. The certificate is kept until a
+site uses it.** An administrator then has **Add a website**, which opens the page
+that adds one with the name, and the certificate when it is there, filled in (see
+"Websites").
+
+**Upload your own…** asks for the certificate's name, its chain and its private
+key, as text or as files. The server checks that the chain leads to an
+authority it trusts, unless **It is not from an authority this server trusts (a
+private authority)** is ticked, and that the key is the certificate's. The key
+goes to the command once, as a secret, and the browser keeps nothing of it. The
+chain and the key together are at most 64 KiB. **Replace…** does the same for an
+uploaded certificate that has a new version.
+
+### Renewals
+
+**Renewals** lists what happened to the certificates in the last 90 days: each
+got, renewed, failed, revoked or removed, with its time, its name and, for a
+failure, the words and the ID. **Show all** lists the older ones.
+
+### The certificate the console serves
+
+**Use for this console** makes the console serve that certificate, as a change
+that is tried for 5 minutes (`admin certificate NAME --try 300`). The console
+changes without a restart. A banner on the page says **This console now serves
+NAME's certificate. Keep it once this page has come back on it.**, with the time
+it is undone, **Keep this change** and **Undo now**. A change that the browser
+does not come back on is undone by itself (see "Trying a change"). The console
+refuses a certificate that does not name the address this browser opened it
+by ([ADM-141](../../errors/ADM-141.md)), so that the change cannot lock you out
+behind a warning. The page offers **Use for this console** only for a
+certificate that names that address. For one that names the machine's full name
+and not the address in use, the row says **Open the console at** that address
+**and choose it there**; for one that names neither, it says **This certificate
+does not name this machine. Give the machine that name first (Name and domain,
+below) to use it for the console.** A revoked certificate, one that has ended
+and the one the console serves are not offered. **Use this server's own certificate
+again** puts the machine's own back.
+
+### The machine's name
+
+**Name and domain** shows the machine's **Name**, its first word, and its
+**Domain**, the rest of the name, or **none**; and under them **Full name:
+duke-nas.example.org · On this network: duke-nas.local**. **Change…** asks
+**Change the machine's name**, with the **Name** and the **Domain (optional)**.
+A name has letters, digits and `-`, none of its words starts or ends with `-`,
+a word has at most 63 characters and the whole name 64. While you type, the
+dialog says what the change does:
+
+- the name on the local network changes at once, and the old one stops
+  answering;
+- the server makes its own certificate anew, and browsers and phones that
+  trusted the old one warn again;
+- certificates from Let's Encrypt do not change, since they name the domains
+  you gave them;
+- how you reach the console: if you came by the machine's name, this page
+  takes you to the new address when it is done, and says where the console is
+  still, by number, if that does not answer.
+
+**Change the name** runs `hostnamectl set-hostname NAME --apply`, which waits
+for the new certificate. The page reads nothing more after it, since the old
+name no longer answers. The card says **The machine is called NAME now. The new
+fingerprint:** with the fingerprint, and has **Open the console at NAME.local**,
+or **Reload this page** for a browser that came by number. A machine with a
+domain is reached at its first word with `.local` on its own network, and at its
+full name wherever the domain's records lead, with the same certificate.
+
+### Who may do what
+
+Anyone who signs in sees the list, the renewals and the name. An administrator
+gets, uploads, renews, revokes and removes certificates, changes the console's
+certificate and the machine's name; anyone else is told **An administrator can
+get, upload, renew, revoke and remove certificates and change this machine's
+name.** The page reads again every minute while the tab is shown, and when the
+connection returns.
+
+### On a phone
+
+The table is a stack of cards, each certificate's dates and users under its
+name, and the buttons are 44 pixels tall at least; under **More** each is as
+wide as the card. The dialogs that upload a certificate and change the name have
+boxes as tall as a thumb.
+
 ## Security
 
 **Security**, in the list of pages, is where the machine's safety is read and
-changed in one place: the health score and what lowers it, who may sign in to
-the console, the addresses blocked after wrong sign-ins, SSH, who may reach the
-console, and a private way in from outside the house. Anyone who signs in sees
-the score, the findings and the rows. Changing anything, and seeing the blocked
-addresses and private access, are for administrators, who unlock the console
-first. The page is at `/security`, and each card has an address of its own:
-`/security#checks`, `#sign-in`, `#blocked`, `#ssh`, `#reach` and `#private`.
+changed in one place: the health score and what lowers it, where alerts go, who
+may sign in to the console, the addresses blocked after wrong sign-ins, SSH, who
+may reach the console, and a private way in from outside the house. Anyone who
+signs in sees the score, the findings and the rows. Changing anything, and seeing
+where alerts go, the blocked addresses and private access, are for
+administrators, who unlock the console first. The page is at `/security`, and
+each card has an address of its own: `/security#checks`, `#alerts`, `#sign-in`,
+`#blocked`, `#ssh`, `#reach` and `#private`.
 
-It reads `dukovo-check`, `admin settings`, `ssh-server show`, `firewall blocked`
-and `wireguard show`, and runs `admin sign-in`, `ssh-server`, `admin reach`,
-`firewall unblock`, `firewall never-block` and `wireguard` (dukovo-check(8),
-admin(8), ssh-server(8), firewall(8), wireguard(8)). "Users and administration"
-and "Networking and firewalls" say what the commands do.
+It reads `dukovo-check`, `alerts status`, `admin settings`, `ssh-server show`,
+`firewall blocked` and `wireguard show`, and runs `alerts test`, `admin
+sign-in`, `ssh-server`, `admin reach`, `firewall unblock`, `firewall
+never-block` and `wireguard` (dukovo-check(8), alerts(8), admin(8),
+ssh-server(8), firewall(8), wireguard(8)). "Users and administration" and
+"Networking and firewalls" say what the commands do.
 
 ### The score and the checks
 
@@ -2964,12 +3960,13 @@ takes off, **+6**, its ID as a link to its help page, and a button for the fix:
 | **SEC-112** Blocking of repeated wrong passwords is off | **Show how** | Says which file and line to change |
 | **SEC-120** An account has an empty password | **Set a password…** | Opens that account, named in the finding |
 | **SEC-121** No account is an administrator | **Choose one…** | Opens Accounts |
-| **SEC-130**, **SEC-131** Updates | **Updates** | Opens the Updates page; on a machine without it, **Show how** gives the command |
+| **SEC-130**, **SEC-131** Updates | **Updates** | Opens the Updates page |
 | **SEC-140** The clock has not synchronized | **Show how** | Says what to look at |
 | **SEC-150** A service gave up | **See it** | Opens that service |
 | **SEC-160** No snapshots of the folders people use | **Snapshots** | Opens Snapshots |
+| **SEC-170** No alert has reached anyone | **Where alerts go** | Opens Alerts |
 | **MET-…** A disk or a filesystem | **See it** | Opens Storage, or the Overview for the rest |
-| **HW-…** The hardware | **See it** | Opens the hardware page, or Storage for a disk |
+| **HW-…** The hardware | **See it** | Opens Hardware |
 
 **Show how** opens the advice and, where there is one, the command for a
 terminal with **Copy**. A finding that has no button of its own has **Show how**
@@ -2990,6 +3987,23 @@ Dukovo.** At a terminal:
 ```sh
 elevate dukovo-check
 ```
+
+### The Alerts card
+
+**Alerts** shows, for each kind of alert, the places that are told of it:
+**Data at risk**, **Something stopped** and **Hardware**, each with its places,
+**email** and **ntfy (ntfy.sh)**, and **(critical only)** after a place that is
+not told of warnings. A kind that no place hears says **no channel** in the
+colour of a warning, since it reaches this server's screens alone. **Send a test
+alert** sends one to every place and says which took it, **Last test reached
+email and ntfy (ntfy.sh) at 7:20 AM.**, and **It failed at** and the place
+for each that refused it. **Alert settings** opens the Alerts page. A machine
+with no place set up says **Alerts reach this server's screens only. No email,
+webhook or browser is set up to take them.** with **Set up alerts**. An
+administrator reads the card with the console unlocked; anyone else reads **Alerts
+are for administrators.** and a locked console says **Unlock to see where alerts
+go.** The finding SEC-170 says that every place that is set up failed in the last
+day. See "Alerts and the phone".
 
 ### Sign-in rules
 
@@ -3232,6 +4246,459 @@ The cards are one column. A finding is a card with its buttons as wide as the
 page, the blocked addresses and the devices are lists of cards, and the QR code
 fills the width, up to 320 pixels, with **Show the settings as text** under it.
 Buttons are 44 pixels tall at least.
+
+## Hardware
+
+**Hardware**, in the list of pages, says what this machine is, what its last
+hardware check found, how hot it runs, how its disks and memory are, which
+devices the system found and which driver took each, and restarts or shuts the
+machine down. Anyone who signs in can look at it. Checking the hardware, testing
+the memory, reading the disks' own tests and the memory modules, restarting
+and shutting down are for administrators, who unlock the console first (see
+"Unlocking the console"). The page is at `/hardware`, and its cards have
+addresses of their own: `#machine`, `#check`, `#temps`, `#disks`, `#memory`,
+`#devices` and `#power`.
+
+It reads `hardware show`, `hardware last`, `hardware history`, `hardware
+sensors`, `hardware devices`, `hardware memtest --status`, `metrics show` and
+`shutdown --show`, and runs `hardware check`, `hardware memtest`, `shutdown -r`, `shutdown -P` and
+`shutdown -c` (hardware(8), diskhealth(8), shutdown(8)). "Checking the
+hardware" says what a check looks at and what each result means.
+
+Over the cards, a line says when the last check was and how it went, **Last
+check Nov 9 2:10 AM (a quick check): 8 passed, 1 warning (HW-115), 2
+skipped.**, then **diskhealth reads each disk's health every 10 minutes, but a
+sleeping one** and, for each disk that has a warning or is failing, **sdb has a
+warning** as a link to its page under Storage. While a check runs, the line says
+its step instead. The Overview lists a warning or a failure of the
+last check, and a restart that waits, among what needs a look (see "The health
+score").
+
+### This machine
+
+**This machine** lists what the firmware and the kernel say, and leaves out
+what they do not say:
+
+| Row | What it says |
+| --- | --- |
+| Model | The maker, the model and the kind of case |
+| Processor | Its name, its cores and threads and its clock |
+| Memory | How much, **16 GiB**. For an administrator whose console is unlocked it also says the slots in use, the kind and speed, and whether the memory corrects errors, and opens the modules with **Show the modules (2)**. A locked console has **Show the modules**, which asks to unlock; anyone else is told **An administrator sees the slots** |
+| Firmware | The firmware's version and date, **BIOS 1.24.0, Jul 12, 2023**, with a link to the firmware sets on the Updates page. The machine's own firmware is its maker's to update |
+| Up for | How long the machine has run. After a start that fell back to the version before it says so, with **What happened** |
+
+### Checking the hardware
+
+**Check the hardware**, at the top of the page, asks **What to check**: **Memory**,
+**Disks**, **Processors**, **Sensors**, **Battery** and **Network cards**, each
+ticked, and **A full check, which takes hours**. A quick check takes about 3
+minutes; **Check now** starts it as a task and the lead line says its steps (see
+"Tasks"). The button waits while a check runs. It runs `hardware check`, with
+the areas that were left unticked left out (see "Checking the hardware" in the
+handbook for what each area does).
+
+**Last check** shows the result as a pill, the worst result of the check, and
+each check with its result in a word, **Failed**, **Warning**, **Passed** or
+**Skipped**, its name and area, what it found and, for a warning or a failure,
+its ID as a link to the page that says what to do. **Earlier checks** opens the
+five before it. A check that ended without a result, because it failed or was
+stopped, says **The check did not finish.** with why. A machine that was never
+checked says **Not checked yet.**
+
+### Temperatures and fans
+
+**Temperatures and fans** has a row for each temperature the kernel reads, each
+disk, and each thermal zone of the firmware. **Show in** chooses **°C** or
+**°F** and this browser keeps the choice. The table says:
+
+| Column | What it says |
+| --- | --- |
+| Sensor | Its name, and for a sensor of the kernel the chip it is on |
+| Now | The temperature. **near its limit** and **at its limit** change its colour and say so in words |
+| Highest, 30 days | The highest the history holds, with when it was and **during the update** when an update's restart came within 30 minutes of it |
+| Limit | The sensor's critical limit, or its high limit, and which |
+
+The processor's rows come first, then the disks', then the other sensors' and the
+zones'. A fan has a line with its speed; a machine that reads none says **No fan
+speed can be read on this machine.** and one with no temperature **The kernel
+reads no temperature on this machine.** The line under the table says when an
+alert goes out: when a sensor stays within 5 °C of its critical limit, or a
+disk at its warning limit, for 5 minutes (metricsd(8)). The page reads the
+temperatures again every minute. "Disk temperatures" says how a disk's is read
+and when it sleeps.
+
+### Disks
+
+**Disks** lists each disk with its name, which opens its page under Storage, its
+model and its health, **Healthy**, **Wearing**, **Failing** or **Not checked**.
+For an administrator whose console is unlocked it adds the last **Short test**
+and **Extended test** the disk's own log holds, such as **Short test Nov 9,
+passed (at hour 21,800)**, and a button for each:
+
+- **Short test** checks the one disk: its health, its short self-test and a
+  read of 256 places, about 3 minutes.
+- **Extended test** runs the disk's long self-test and reads all of it, which
+  takes hours.
+
+Each runs `hardware check disks --disk NAME` as a task, and the row says
+**Testing: 40%** while it runs. A locked administrator sees **Unlock to see the
+disks' own tests**, and anyone else **Administrators see the disks' own
+tests**. A disk that keeps no health record, as a virtual disk, says **This disk
+does not report its health or its tests.**
+
+### Testing the memory
+
+**Memory test** has three ways, each with what it takes:
+
+- **While the system runs.** **Test part of the memory** tests up to 1 GiB of the
+  free memory, in about a minute, and keeps the result with the last check. A running system cannot test the memory it uses, so this is a good sign and not
+  a proof. **Last run** says how the last one went, **Nov 9 2:10 AM · passed,
+  1.0G tested by 4 CPUs**, or **never**.
+- **All of it, at the next restart.** **Test at the next restart…** asks **Test
+  the memory at the next restart?** and says that the next start tests the free
+  memory first, about a minute for each 4 GiB, then starts the system as usual;
+  that the server is offline meanwhile and nobody needs to be at it; and that the
+  test stops after an hour at most. **Restart now and test** restarts the
+  machine in a minute, **At the next restart** changes nothing now, and
+  **Cancel** asks for nothing. The test is asked for once: the start after it is
+  the usual one. It runs `hardware memtest --next-start`. Once it is asked, the
+  card says **The memory is tested at the next restart (asked Nov 16, 3:10 PM by
+  admin)**, with **Don't test**, which runs `hardware memtest --cancel`, and
+  **Restart now…**, which restarts for the test. The console waits for the machine
+  for 10 minutes and one more for each 4 GiB of memory, 70 at the most, before it
+  says that the machine is not answering (see "The machine is restarting"). A start that a try of an update or a search for a change has
+  taken refuses the ask ([HW-105](../../errors/HW-105.md)).
+- **For the fullest test, from the start menu.** Restart, choose Troubleshooting,
+  then Test the memory (memtest86+). It runs until you turn the machine off or
+  press `Esc`, so someone must be at the machine, and it leaves no record. The
+  card's own **Restart now…** is a restart with that reason; it asks as any
+  restart does.
+
+After a test at a start, the card says what it found: **Nov 16, at the start:
+passed · 15.2 of 16 GiB tested in 4 minutes**. A test that found errors says in
+how many places, that those parts are out of use until the next restart, and
+that the memory should be replaced ([HW-103](../../errors/HW-103.md)), and has
+**Report a problem**. One that did not finish says so ([HW-104](../../errors/HW-104.md)): the
+power went or the machine stopped during it, which failing memory can cause. One
+that the start menu did not run, because an update was tried first, says **Ask
+again.** An administrator is also told by an alert about hardware when a test at
+the start finds errors (see "Alerts and the phone").
+
+### Devices
+
+**Devices** reads the list when you press **Show the devices**: every card and
+port the system can tell of, with the driver that took it. The rows are in
+groups, **Network**, **Storage**, **USB**, **Display** and **Other**, with
+**Device**, **Driver**, **State** and **Where**. A device that works and needs
+nothing, such as a USB hub or a bridge, is folded under **Hidden**. A device with
+no driver says **none** and **No driver**, or **Not told** where the system
+cannot tell. **No cable** marks a network card without a link. A device you need
+and that has no driver has **Report it**, which opens a report about the
+hardware; the report carries its IDs, which are the vendor and device numbers,
+never a serial number (see "Report a problem").
+
+### Restart or shut down
+
+**Restart or shut down** says that a restart or a shut down begins a minute after
+you ask and can be cancelled until then, and that a restart can be set for a
+time of day.
+
+- **Restart…** asks **Restart NAME?** and says that the machine restarts in one
+  minute, that the console, SSH and every service stop and start again by
+  themselves, and that open terminals end. It lists who else is signed in and
+  with how many browsers and terminals, **alice is signed in with 1 browser and
+  1 terminal**, and each task that runs and stops, **Back up to a place for nas
+  is running and stops**. **Restart in a minute** runs `shutdown -r +1`.
+- **Restart at** and **Restart at that time** set a restart for a time of day,
+  `shutdown -r 03:00`, which is the next 3:00 by the machine's clock.
+- **Shut down…** asks **Shut down NAME?** and says that the machine does not come
+  back until someone presses its power button, and to use Restart if nobody can
+  reach it. The button stays off until the machine's name is typed exactly as it
+  is written. **Shut down in a minute** runs `shutdown -P +1`.
+
+While one waits, a line on the card says **duke-nas restarts at 3:00 AM**,
+counted in seconds for the last minute, with **Cancel**, which runs `shutdown
+-c`; the Overview lists it as **Restarts at 3:00 AM**, with **Cancel it from
+Hardware.** A restart or a shut down that waits is the machine's
+one: a later one replaces it. A restart is refused while a change is tried and
+while a search for the change that broke a start runs
+([ADM-142](../../errors/ADM-142.md)), and the dialog says why in the console's own
+words. After a shut down the page says **duke-nas is shutting
+down. It will not answer again until someone turns it on.**
+
+### Who may do what
+
+Anyone who signs in reads every card. Anyone who is not an administrator is told
+**An administrator can check the hardware and restart or shut down this
+machine.**, and reads **An administrator can test the memory.** and **An
+administrator can restart or shut down this machine.** in place of the buttons.
+The page reads again when a check of its own ends, and the temperatures every
+minute.
+
+### On a phone
+
+The cards are in a column. The tables of temperatures and devices are stacks of
+cards, each reading's name over its values, and the buttons, the time box and the
+folds are 44 pixels tall at least. **Restart at that time** is as wide as the
+card.
+
+## Updates
+
+**Updates**, in the list of pages, shows when the machine last asked for updates
+and what each part of it can be updated to: the system, its firmware set and the
+apps. It stages an update, holds a version back, restarts to finish an update,
+goes back to the version before, and sets how the machine updates and what it
+checks after an update. Anyone who signs in can look at it and press **Check
+now**. Everything else is for administrators, who unlock the console first (see
+"Unlocking the console"). The page is at `/updates`, and its cards have
+addresses of their own: `#system`, `#apps`, `#security`, `#firmware`, `#held`,
+`#settings`, `#checks`, `#history` and, after a start that failed, `#happened`.
+
+It reads `update last`, `update settings`, `update checks`, `update history`,
+`update advisories`, `sysupdate status`, `changes --failed` and `bundle list`,
+and runs `update check`, `update apply`, `update hold`, `update unhold`, `update
+undo`, `update set`, `sysupdate channel`, `sysupdate unstage`, `update checks`,
+`bundle update`, `bundle hold`, `bundle unhold`, `changes bisect` and
+`shutdown` (update(8), sysupdate(8), updated(8), bundle(1), changes(1)). "Updates,
+snapshots, backups and recovery" says what each of them does, and how an update
+is tried and proved. A number beside **Updates** in the list of pages says how
+many parts have an update ready, and a screen reader says it with the name,
+"Updates, 1 ready".
+
+Under the heading the page says when the last check was, **Checked 12 minutes
+ago by the daily check.**, or **Not checked yet.**; and, always, how an update
+goes: **Each update of the system starts as a try: if it fails a required check,
+the machine goes back to the version before by itself. The system and the apps
+update apart, so one can go back without the other. This page comes back by
+itself after a restart.** **Check now** asks the update server,
+**Asking the update server…**, and shows what it says. It runs as you and keeps
+nothing: the daily check keeps the result that the Overview and the list of
+pages read. A part that could not be checked says **Could not check:** and
+why, and never says that it is up to date.
+
+### The System card
+
+**System** shows the version the machine runs, a pill, and a line that says where
+the system stands. The states are:
+
+| Pill | What it says | Buttons |
+| --- | --- | --- |
+| **Up to date** | **The stable channel offers nothing newer.** | |
+| **Update ready** | **1.0.0-alpha.2 is ready · 412 MB to download**, what it fixes, **Fixes DKSA-2026-0007, high: summary**, and that it goes through another release first when it does | **Stage it**, **Hold this version**, **Later** |
+| **Staged** | **1.0.0-alpha.2 is staged in slot B**, **It starts at the next restart and has 3 tries to prove itself.** | **Restart now…**, **Restart at 3:00 AM** or a time box with **Restart at that time**, **Take it back** |
+| **Waiting** | **1.0.0-alpha.2 reaches this machine on day 3 of its waves**, and why the waves are paused when they are | **Hold this version** |
+| **Held** | **1.0.0-alpha.2 is held**, **It is held until you release it. A held version gets no security fixes.** | **Release the hold** |
+| **Withdrawn** | **1.0.0-alpha.2 was withdrawn**, and why | |
+| **Could not check** | **Could not check:** and why | |
+| **Not checked yet** | **Not checked yet.** | |
+
+**Stage it** runs `update apply --only system`: it puts the update in the spare
+slot, to start at the next restart, which you choose, and the card then shows
+its progress. **Hold this version** holds it with no reason written; **Hold a
+version**, under "Holding a version back", asks for one. **Later** puts the
+reminder off (see "Putting a reminder off"). **Restart now…** asks first and restarts in a minute (see
+"Restart or shut down", under "Hardware"). **Restart at 3:00 AM** is there when
+updates.toml has a restart time, with that time; otherwise the card has a
+**Restart at** box. **Take it back** puts the update out of the spare slot
+before it starts. While an update is staged, a banner at the top of the page says
+**Restart to finish the update** with **Restart now…**. After the restart the page
+comes back by itself: if the update proved itself it shows the new version, and
+if it failed a required check the machine went back (see "The update was taken
+back").
+
+A release that the keys withdrew while the machine runs it says **The release
+this system runs, 1.0.0-alpha.1, was withdrawn:** with the reason and what to do,
+**Go back to the version before.** or **Stay on it until the next release.**,
+and **Go back…** for the first.
+
+### Going back
+
+Under the System card, **Kept for going back: 1.0.0-alpha.0 in slot A** says which
+version the machine can go back to, with **Go back to it…**; without it the card
+says **No version is kept for going back.** An administrator whose console is
+locked sees **Unlock to see the version kept for going back.** with **Show the
+slots**, since the slots are read as root.
+
+**Go back…** asks **Go back to 1.0.0-alpha.0?** and says that the machine restarts
+into it, and that it is kept as the version before, so that you can come back to
+the one you leave the same way. It asks **Settings**: **The settings from before
+the update to 1.0.0-alpha.1**, which are put back at the next start as a
+fallback does, with today's kept apart, or **Keep today's settings**. **Go back
+and restart** runs `update undo system` and asks for the restart.
+
+### Firmware
+
+**Firmware** is the firmware set the drivers load, not the machine's own firmware,
+which is its maker's to update. It says **Firmware set 2026.11 · 2026.12 is
+offered**, with **Stage it** and **Later**, and **After the system update has
+proved itself** when **Stage it** is off, since the two share the spare slot. A
+held set says so, with its reason when it has one, and **Release the hold**.
+
+### App updates
+
+**Apps** lists each app that has an update, with its name, **8.0.3 to 8.0.4**,
+**fixes only** or **new version**, and what the update fixes, **Fixes 1 security
+advisory, high**. **Update** takes it, as a task; an update that asks for more
+than the version it replaces stops with its sheet in the row, and **Update
+anyway** takes it as it asks. The card's pill says how many wait, **3 waiting**.
+A held app says **Held at 8.0.3**, with the reason when one was kept, **Held at
+8.0.3 · Waiting for the nginx fix**, and one that waits for its wave **Reaches
+this machine soon**. The **Apps** page lists every app, not only those that have
+an update.
+
+An administrator has these buttons on a row that waits:
+
+| Button | What it does | What it runs |
+| --- | --- | --- |
+| **Update** | Takes the update now, as a task | `bundle update ID --for-everyone` |
+| **Tonight** | Asks that the update is installed in tonight's window, not now | `bundle update ID --for-everyone --tonight` |
+| **Not tonight** | In place of **Tonight** once it is asked for: takes the app off the window | `bundle update ID --for-everyone --not-tonight` |
+| **Later** | Puts the reminder off (see "Putting a reminder off") | `update later ID --for 1d` or `--for 7d` |
+
+The window is the hour before the restart time that **How this server updates**
+sets, and 2:00 to 3:00 AM without one. Under the buttons the card says it,
+**Installs tonight, between 2:00 and 3:00 AM: the hour before this server's
+restart time.**, and a row that is asked for says **Installs tonight**. A
+computer that was off through the window installs nothing in the day: the row says
+**The window passed while the machine was off: it installs tonight.**, and the
+request waits for the next window. An update that asks for more than the version
+it replaces is not queued by **Tonight**: the row shows what it asks for, and
+**Install tonight anyway** queues it as it asks, as **Update anyway** takes it.
+A held app and one with no update are not queued.
+
+When more than one app waits, **Install 3 now** takes them all, and **Install
+tonight** asks for them all to wait for the window. **Install 3 now** runs `bundle update
+--for-everyone --yes`, and **Install tonight** runs `bundle update --for-everyone
+--tonight --yes`, both as tasks that take every update as it asks, also one that
+asks for more than the version it replaces (see "Tasks"). To read what an
+update asks for first, press **Update** on its row, or on the app's own page.
+
+### Security fixes
+
+**Security** says how many advisories apply to the release the system runs, **1
+advisory applies to this system**, and how many flaws the apps have, **2 flaws
+in apps**, or **No advisory applies to this system.** Each advisory has its ID,
+severity and summary and says how its fix stands: **1.0.0-alpha.2 has the fix
+and is offered.**, **The fix is staged: restart to finish the update.**, **The fix
+reaches this machine in a later wave.**, **The fix is held until you release it.**
+or **No release has the fix yet.** **Show the advisories** lists them whole, with
+the apps' flaws and the version of each app that fixes it.
+
+### Holding a version back
+
+**Held** lists what is held: **System 1.0.0-alpha.2**, **Firmware set 2026.12** or an
+app at its version, each with **Release**. Under a row the page says when it was
+held, who held it and why, **held on Nov 2 at 3:06 AM by admin: "Waiting for the
+nginx fix"**, each part that is known. **Hold a version** chooses one of the
+system's offered release, the firmware set or an app, and **Hold it…** asks
+**Why (optional)**: one line of at most 200 characters, with no line break. The
+note under the box says that everyone who can sign in sees the reason, here and
+with `update settings`, or with `bundle list` for an app, so it is not for what
+should stay private. **Hold it** then holds the version, with the reason if you
+wrote one. A held version is not staged, and a newer one is taken as usual. A
+held version gets no security fixes: **hold for a while, not for good.** A
+release that fell back is held by itself, **It was taken back, so it is not
+staged again until you release it.** (see "The update was taken back"). **Release**
+lifts the hold, and the reason with it.
+
+The reason is for the people who read the hold later. For the system and the
+firmware set it is kept beside the version it was given for, and counts only
+while the hold names that version. For an app it is the note of the hold in the
+app's history, which `bundle history` shows. At a terminal,
+`elevate update hold system --why "Waiting for the nginx fix"` and `elevate
+bundle hold ID --for-everyone --why TEXT` do the same, and holding again at the
+same version without a reason keeps the reason it has. **Hold this version** on
+the System card holds at once, with no reason; **Hold at 8.0.3** on an app's page
+asks why first (see "One app").
+
+### Putting a reminder off
+
+An update that is not urgent can be put off for a day or a week, so that no
+reader tells of it meanwhile. **Later**, beside the buttons of the System card, the
+Firmware card and each row of **Apps**, opens a menu, **Remind me tomorrow** and
+**Remind me in a week**. The card then says **Put off until Nov 23 at 3:06 AM by
+admin**, with **Remind me now**, which brings the reminder back at once. This runs
+`update later ITEM --for 1d` or `--for 7d`, and `--off` for **Remind me now**
+(update(8)).
+
+The update is not held, and **Stage it** or **Update** takes it whenever you ask.
+The reminder ends by itself at its time, or when a newer release or an advisory
+comes. No notice of the update is sent while it stands, and neither the number
+beside **Updates** nor the Overview counts it; a notice of an advisory is never put off.
+
+**Later** is not offered for an update that fixes a security advisory. The card
+says **It fixes DKSA-2026-0007 (high): it is not put off. Hold it if you must.**
+When the page cannot tell whether an update fixes one, since the check could not
+read the advisories, it says **Whether it fixes an advisory cannot be told, so it
+is not put off.** and the machine refuses it the same way
+([UPD-107](../../errors/UPD-107.md)). A held update has no **Later** either: a
+hold is the other way to wait. A row of **Apps** has it only while the apps are
+set to **Tell me**, since apps that update by themselves are not told of. An
+account that is not an administrator sees that an update is put off and until
+when, and has no menu.
+
+### How this server updates
+
+**How this server updates** asks five questions, each with its choices, and
+**Save** keeps the answers:
+
+| Question | Choices |
+| --- | --- |
+| **Look for updates** | **Every day, and tell me**, **Every day, download and tell me**, **Never** |
+| **The system** | **When I say**, **By itself, and restart at** a time of day |
+| **Apps** | **Tell me**, **Update by themselves** |
+| **On a metered connection** | **Wait**, **Download anyway** |
+| **Channel** | **Stable**, **Beta**, **Nightly** |
+
+A note under a choice says what it costs: **Never** says that nobody is told of
+security fixes, and that a warning comes after 7 days
+([SEC-131](../../errors/SEC-131.md)); **By itself** says that outside its time
+nothing restarts on its own; a channel older than the one now says that the
+system does not go back to an older version through a channel, but waits until
+the channel passes the version it runs. **Save** runs `update set` and `sysupdate
+channel` with what moved, and **Undo** next to **Saved.** puts them back. The
+choices are the ones in updates.toml(5). A reader sees the answers in words.
+
+### Checks after an update
+
+**Checks after an update** shows what the machine looks at after an update starts,
+before it keeps it. **Required** lists the services that must run again, **These
+services run again: nginx**, and the checks that take the update back when one
+fails, each as **name · https://localhost/ answers within 20 s**. **Wanted** lists
+the checks that send an alert and leave the update, **If one fails, you get an
+alert and the update stays.** A line says that the update is seen through after
+so many seconds with no restart and has so many seconds to start every service.
+**Add a check…** asks **What**, **A web address answers** or **A service is
+running**, **Address or service**, **Name**, **If it fails**, **Wanted: you get an
+alert and the update stays** or **Required: the update is taken back**, and
+**Seconds it may take**, and **This console answers** fills in the console's own
+address; **Add a service…** adds a service to those that must run again. **Remove**
+takes one away.
+
+### History
+
+**History** is closed until you press **Show the history**. It lists each change of
+the system and the firmware set by the start that first ran it, with when, what
+and **How it went**, **Good**, **Not finished** or **Failed**; and what was done to
+each app, with the app, **Installed**, **Updated**, **Rolled back**, **Removed**,
+**Held**, **Released**, **Waiting**, **Failed** or **A flaw was found**, the versions
+and whether it was done by itself or by whom. **Show all** lists beyond the
+newest 20.
+
+### Who may do what
+
+Anyone who signs in sees every card but the slots, and can press **Check now**.
+An administrator, with the console unlocked, stages, holds, releases, goes back,
+sets and adds checks. Anyone else reads **An administrator can stage updates, hold
+versions and change these settings.** and **An administrator can go back to the
+version before.** The page reads again when a task or a change of its own ends,
+and when the connection returns.
+
+### On a phone
+
+The cards are in a column, and each button, choice and box is 44 pixels tall at
+least. A choice of the settings fills the width, one to a row, and so does the
+button that goes with a row of a list.
 
 ## The terminal
 
@@ -3513,6 +4980,375 @@ account is [ADM-131](../../errors/ADM-131.md), the same for each, so that
 one cannot tell them apart. A token never opens a terminal
 ([ADM-124](../../errors/ADM-124.md)): a script has SSH.
 
+## Report a problem
+
+**Report a problem**, at the foot of the list of pages, writes a report of what
+went wrong, shows every byte of it, and sends it to the Dukovo project when you
+press **Send**. Anyone who signs in can make a report about a crash or about
+something else. A report about a failed start or about a service is an
+administrator's to send. The page is at `/report`.
+
+It reads `report crashes` and, for an administrator, `changes --failed`, and runs
+`report draft`, `report redact`, `report send`, `report list`, `report status`,
+`report retry` and `report delete` (report(1), reportd(8)). "Reporting a problem"
+says what a report holds, where it goes and what the project does with it.
+
+At the top the page says **Nothing leaves this server until you press Send, and
+you see every byte first. Reports go to reports.dukovo.org over an encrypted
+connection.** **What you send when you report a problem**, closed, says what the
+report holds: your answers, facts about this machine (the Dukovo version, the
+maker and model, the processor, the memory, the device numbers of its PCI and USB
+devices, and the language) and what it is about; that user names, home folders,
+the host name, addresses, email addresses, Wi-Fi network names, serial numbers
+and the machine's ID are taken out and marked before you see it, in your own
+words too; and that no registers, files, account or cookie go with it.
+
+### What went wrong
+
+**What went wrong?** lists what the page can report, the one the machine found
+first:
+
+| Choice | When it is there |
+| --- | --- |
+| The failed start: **The update to 1.0.0-alpha.2 was taken back**, or **Start 14 failed** | The last start failed or fell back; for an administrator. **Found by this server** at its time, and the check that failed |
+| A crash: **nginx stopped with an error** | Each crash that was not reported yet, the newest first. The first few show; **Show 3 more** lists the rest |
+| A service: **postgres failed** | Each service that failed, with its log; for an administrator |
+| **The hardware** | Always: a part or a device that does not work as it should |
+| **Installing or updating Dukovo** | Always: an install or an update that went wrong |
+| **Something else** | Always |
+
+A choice that the machine found says what it is in a line of its own, and **Anything to
+add? (optional)** takes a note after it. The three others ask **What
+happened?**, which is needed, **What did you expect?** and **How can it be made
+to happen again?**, which are not. The address can choose for you:
+`/report?about=failure`, `?about=crash&id=ID`, `?about=service&name=NAME`,
+`?about=hardware`, `?about=update` and `?about=other`, each with `&note=TEXT` to
+fill the note. **Report it**, on the Overview's notice of a failed start and on
+the card that says what happened to it on Updates, **Save as report…** on
+Reliability, **Report a problem** after a memory test at the start that found
+errors and **Report it** under Devices on Hardware go to them. A person who is
+not an administrator and follows a link to a failed start or a service reads **A
+report about a failed start or a service is an administrator's to send. Ask an
+administrator, or choose what else went wrong.** What you type is kept in this
+browser until you send, and **Discard** forgets it.
+
+**This is a security problem.** sends the report encrypted to the security team's
+key, which the reports server keeps no readable copy of. It turns **Save to a
+file…** and **Download by QR code…** off, since a security report is sent encrypted
+only (see "A report for the security team", in "Reporting a problem").
+
+### Exactly what is sent
+
+Once a choice is made the page asks reportd to draft the report, and **Exactly
+what is sent** shows it, with its size. The text is reportd's, never the
+browser's: the page sends the report by the hash of the text it showed, so that
+the bytes sent are the bytes you read. A mark in the text shows what was taken
+out, **[user]** for a user name and the others, and **[cut]** what you cut;
+**Taken out before anything is shown:** counts them by kind. **What the report
+holds** under the choices lists its parts and their sizes, and **Leave out the
+logs** drafts it again without them.
+
+You can take out more, and write your answers again; you cannot change what the
+system gathered:
+
+- **Cut line** is on each line the system gathered, a log's or a crash's, and
+  shows when the pointer is on the line or the arrow keys reach it, and always on
+  a phone. Select words and **Cut these words** cuts the words, or **Cut these
+  lines** the lines; each shows as **[cut]**. The head of the report, which says
+  where it comes from, and the headings cannot be cut.
+- **Edit your answers** writes your three answers again in place. A line of what
+  you wrote that starts with `==` gets a space before it, so that what you type
+  never passes for a heading.
+- **Undo all my changes** puts the text as reportd drafted it, and **Draft again**
+  drafts it anew, after asking **Draft again?** when you would lose cuts or
+  answers.
+
+A line the system gathered can be cut and not typed into, so what reaches the
+project from the system is what the system wrote, or less
+([RPT-104](../../errors/RPT-104.md), [RPT-105](../../errors/RPT-105.md)). Drafts
+are kept in memory for 60 minutes from the last change, and a restart of reportd
+or of the console ends them: the page says **Draft the report again to go on.**
+with **Draft again**.
+
+### Send, save, or take it to a phone
+
+- **Send** gives the report to reportd, **The report was given to reportd to
+  send.**, and says **Sent as report 14.** When reports.dukovo.org cannot be
+  reached it says **Queued: it is sent when reports.dukovo.org can be reached.**
+  reportd tries again after 1, 5, 15 and 60 minutes, then every hour for 30 days,
+  and **Retry now** tries at once.
+- **Save to a file…** saves the text as `report-2026-11-16.txt` in your browser's
+  downloads, and nothing is sent.
+- **Download by QR code…** makes a link that a phone on the same network opens
+  to get the text, as a file to keep: the console draws a code of
+  `https://HOST:PORT/once/TOKEN/report.txt` and the console's fingerprint to
+  compare, and **Make a new link** when it ends. The link is good for one
+  download in 10 minutes, needs no sign-in, uses the console's own port and no
+  new rule of the firewall, and is in no log. A second request is told that it
+  was used ([ADM-140](../../errors/ADM-140.md)).
+
+At a terminal `report --save FILE` does the same (see "Showing the command").
+
+### Reports from this server
+
+**Reports from this server** lists each report that was sent from this machine,
+with **Sent**, **Problem** and **Status**. **Check the status** asks the reports
+server how each stands, which it does only when you press it (see "Where a
+report stands", in "Reporting a problem"). **Queued** says when the next try is and
+why the last failed, **Could not be sent** says that it was tried for 30 days,
+**Could not ask: reports.dukovo.org did not answer** says that the server was
+not reached, and a report that was asked about says **Received** or the words
+the server gives. **Delete** asks **Keep it** or
+**Delete**, and deletes the report on the reports server and here.
+
+### Who may do what
+
+A person who is not an administrator reads **A report about a failed start or
+about a service is made by an administrator.** A machine whose reportd does not run says **reportd is not running, so
+no report can be drafted: `elevate service reportd start`**, with **Try again**
+and **Open the page of reportd**.
+
+### On a phone
+
+The page is one column: the choices, then what the report holds and the
+buttons, then the text. Each button is as wide as the column and 44 pixels tall
+at least, and **Cut line** is on every line.
+
+## Alerts and the phone
+
+**Alerts** shows what alertd tells of and where it tells it: on this machine's
+screens, by email, to a webhook, and to a browser as a notice on a computer or a
+phone, even with the console closed. The page is for administrators, since every
+alerts command needs root. Anyone else reads **Alerts are for administrators.**
+with **Who are the administrators?**, which opens Accounts, and an
+administrator whose console is locked reads **Unlock to see the alerts.** with
+**Unlock** (see "Unlocking the console"). The page is at `/alerts`. It is not in
+the list of pages: it is a tab of the bar along the bottom of a phone, and the
+Overview, the Security page, the Certificates page and the banner of a backup
+that is overdue or failed link to it, and the command palette finds it. Its cards have addresses of their own:
+`#active`, `#browser`, `#channels`, `#email`, `#recent` and `#phone`.
+
+It reads `alerts list`, `alerts history` and `alerts status`, and runs `alerts
+test`, `alerts email`, `alerts webhook`, `alerts push` and `alerts channel`
+(alerts(8), alertd(8), alerts.toml(5)). "Alerts: email, ntfy and webhooks" says
+what an alert is and how each channel is set up at a terminal, and "Setting up
+alert email" goes through an email account.
+
+Under the heading the page says **One message per change, with this server's
+name. An alert is told when it starts, when it gets worse and when it clears,
+never again while it stays.** When alertd does not run, a banner says **alertd
+is not running, so nothing is told:** `elevate service alertd start`, with
+**alertd's service**, which opens it under Services.
+
+### Active and recent
+
+**Active** lists each alert that is raised now, the critical ones first and then
+the oldest: its severity as a pill, its title, since when and which program
+raised it, what it says, and a link to the page it is about, **Open Storage**,
+**Open Backups**, **Open Certificates**, **Open Hardware**, **Open What
+happened** for an update or a start that failed, or **Open sshd service**, with
+the service's name, for a service. An alert that is about none of these has no
+link. **No
+alerts are active.** says that nothing is raised, and **Refresh** reads again.
+
+**Recent** lists the last 20 changes, newest first: its title, then its
+severity, **Raised**, **Cleared**, **Told** or **Test**, the time and which
+program told it, with **Show all on Reliability**. A machine that has told
+nothing says **No alert has been raised or cleared.**
+
+### Where alerts go
+
+**Where alerts go** lists the places an alert is told. The first row is always
+**On this server's screens and at the next sign-in**, which alertd tells of every
+change and nothing turns off. Each channel that is set up has a row:
+
+| Part of a row | What it says |
+| --- | --- |
+| Name | **email**, the kind of a webhook and its host such as **ntfy (ntfy.sh)**, or **push · Alice's phone** for a browser. **This browser** marks the browser that shows the page |
+| **Told of:** | What the channel hears, **every kind** or the kinds in words such as **data at risk, hardware**, then **every alert** or **critical only**, and **and when one clears** |
+| Last | **Last sent** and when, or **Nothing has been sent yet.** |
+| A failure | **Last failed**, when, and what the server said, with the ID of the failure: [ALR-101](../../errors/ALR-101.md) to [ALR-105](../../errors/ALR-105.md). How many messages wait to be tried again |
+
+A row has **Edit what it is told**, **Send a test alert** when its last try
+failed, and **Remove**, which asks first and says what goes with the channel:
+**The addresses, the mail server and its password are taken out of
+alerts.toml.**, **Its address and token are taken out of alerts.toml.**, or
+**That browser gets no more alerts from this server.** A machine with no channel
+says **Alerts reach this server's screens only.**
+
+**Send a test alert**, at the top of the page, sends one to every channel, and
+lists what each said under the heading, **email: sent** or **ntfy (ntfy.sh):
+failed:** and the server's words, with the failure's ID. A machine with no
+channel says **No channel is set up: alerts go to this server's screens only.**
+
+**Add a webhook…** asks for the **Kind**: **ntfy**, **Matrix**, **Slack**,
+**Discord** or **Any address that takes a POST**. It asks for the **Address**,
+which is a secret and shows as dots, since an ntfy topic's address or a Slack
+webhook's address is the secret itself; the **Token**, when the service takes one
+(Matrix needs it); and for Matrix the **Room**. It also asks how bad an alert
+must be and what the webhook is told of (see "What each channel is told" below).
+**Add the webhook** runs `alerts webhook add`. The address and the token go in
+alerts.toml and are never shown again. A plain `http` address is taken only for
+**Any address that takes a POST** on this machine's own network.
+
+### What each channel is told
+
+Each alert says what it is about, and a channel hears the kinds it asks for. The
+kinds are:
+
+| Kind | What it holds |
+| --- | --- |
+| **Data at risk** | A disk failing or wearing out, a filesystem nearly full, a mirror missing a disk, a backup failed or late |
+| **Something stopped** | A service, an update or a start that failed, a certificate running out, the kernel stopping, memory running low |
+| **Hardware** | A sensor or a disk running hot, the memory test at the start |
+
+**Edit what it is told** opens **What it is told of**, a box for each kind,
+all ticked for a channel that was never narrowed, and **Save**, which runs
+`alerts channel CHANNEL --about KINDS`: `email`, `webhook:1` or `push:ID` for the
+channel, and `all` or the kinds with commas. At least one kind must stay
+ticked. A channel that is not told of a kind hears nothing of it, and a phone
+told of **Data at risk** alone does not buzz for a certificate that runs out; the
+alert is still on the screen, in **Active** and in every channel that hears its
+kind. Three alerts are about no kind and go to every channel: a system whose
+files are not the release's, a browser that stopped getting alerts, and an alert
+that a script raised with no kind. A test always goes to every channel.
+
+The page says so when a kind has nobody to hear it: **Hardware alerts reach no
+channel: only this server's screens.**, with **Edit what email is told**. The
+**Alerts** card of Security shows the same at a glance, each kind and the channels
+that hear it, **no channel** in warning colours, with **Send a test alert** and
+**Alert settings** (see "Security"). How bad an alert must be, **Every alert** or
+**Critical alerts only**, and **Tell me when an alert clears** are chosen where a
+channel is added or its email is saved.
+
+### Email
+
+**Email** takes **Send to**, one address a line or separated by commas, up to
+eight; **Mail server**, the provider's, always used over TLS; **Port**, **587
+(STARTTLS)** or **465 (TLS from the start)**; **Sign in as** and **Password**,
+which many providers want as an app password made for this; and **From
+(optional)**, `alerts@` and this server's name unless the provider wants the
+account's own address. It also asks how bad an alert must be and what email is
+told of. The password is a secret field and is not read back: with email set up,
+**Leave empty to keep the password it has.** and **Email is set up. Saving
+replaces its addresses, server and sign-in: they are not read back here.**
+
+**Save** runs `alerts email set` and offers **Send a test alert** at once.
+**Remove email** takes the account out. Under the fields, **This runs** shows the
+command that the form makes, once every field is right and with the password
+left out. The same fields, without the kinds, are the step **Get an email when
+something needs you** of **Finish setting up** (see "Setting the machine up"),
+which sends a test alert when it is saved and says **Sent a test alert: it
+reached email.** or why it did not.
+
+### This browser
+
+**This browser** turns alerts on in the browser that shows the page: a notice
+shows on the device when an alert is raised, even with the console closed. It
+needs no account at a third party and nothing to install. Before it is on, the
+card says **Get a notice on this device when an alert is raised, even with the
+console closed.** and asks for a **Name** for the browser, which is how it is
+listed in **Where alerts go**, and, under **What it is told**, how bad an alert
+must be and which kinds.
+
+**Get alerts in this browser** then starts the console's notice service in the
+browser, asks the browser to allow notices (**This browser said no. Allow
+notifications for this site in the browser's settings, then try again.** when it
+is refused), asks the machine for its push key (`alerts push key`), subscribes,
+and gives the subscription to the machine (`alerts push add`). The card then says
+**This browser gets alerts.** with **Send a test** and **Turn off in this
+browser**, which takes the browser out of alerts on the machine and ends its
+subscription. A browser without push says **This browser cannot get push
+notices. Email and webhooks such as ntfy reach your phone.**
+
+The card says, before push is on and after, what leaves the machine: **A push
+notice goes from this server to the push service of your browser's maker (for
+Chromium-based browsers, Google's; for Firefox, Mozilla's), which hands it to the
+browser. The notice's words are encrypted on this server for this browser alone
+(RFC 8291): the push service cannot read them. The push service does see this
+server's IP address, when each notice is sent and how big it is, the address it
+gave your browser (which it can tie to that browser), and this server's push key,
+which is the same on every notice, with the project's address as its contact, not
+yours. Nothing is sent until you turn push on in a browser, and Turn off ends
+it.** "Privacy and security reporting" says the same.
+
+A notice holds the machine's name, the alert's title and the first line of what
+it says, and **and 2 more** when several changes were told together. A cleared
+alert starts with **Cleared:**. Pressing it opens the page the alert is about,
+**Storage** for a disk, **Backups**, a service's page, **Certificates**,
+**Hardware** for a heat alert or the memory test, **Updates** at **What
+happened** for a start that failed or an update that did not go, and **Alerts**
+for the rest. The key that signs each notice is made the first time alertd
+starts and is kept in its own state; a new key would end every browser's alerts,
+so a key that does not read is never replaced (see alertd(8)). A browser that
+the push service no longer knows is dropped and told to the other channels as an
+alert of its own ([ALR-104](../../errors/ALR-104.md)), so that a phone that
+stopped getting alerts does not go unnoticed.
+
+The notice service is `/sw.js`. It shows a notice for each push and opens a page
+when the notice is pressed, and does nothing else: it has no `fetch` handler
+and keeps no page, so the console never runs from a copy that an update left
+behind.
+
+A browser starts a notice service only for a page whose certificate it trusts,
+and the machine's own certificate names no address a browser knows. When the
+browser says no, the card says **This browser does not trust this server's
+certificate, so it cannot get push notices. Two ways:** give the console a
+certificate from Let's Encrypt for a name such as `duke-nas.example.org`,
+proving the name by DNS on a private network, then use it for this console and
+open the console by that name (see "Certificates"); or trust this server's own
+certificate on the device, by saving it from **This machine** under
+Certificates with **Save the certificate** and adding it to the device's trusted
+certificates. **Until then, email and webhooks such as ntfy reach your phone.**
+
+### Set up a phone
+
+**Set up a phone** is a card of five steps on a computer, with a panel on the
+phone itself. A narrow screen, a phone's, does not show the card. The page shows
+both to administrators only.
+
+1. **Scan this with the phone's camera.** The page draws a QR code of the
+   console's address, `https://HOST:PORT/alerts?phone=1`, and prints the address
+   beside it. The code holds an address and nothing else: no token, no session
+   and no secret, so a person who sees it learns only what anyone on the network
+   can find. HOST is the name this page was reached by, when the console serves a
+   certificate other than the machine's own and the name is a real name, not an
+   address or a `.local` name. Otherwise it is the machine's first private
+   address. A machine with no address a phone could reach says **This server has
+   no network address that a phone could reach.**
+2. **Check the certificate.** The page shows the console's SHA-256 fingerprint in
+   groups of eight bytes. For the machine's own certificate, a phone warns that it
+   does not know it: compare the fingerprint the phone shows with this one, and
+   go on only if they are the same. For another certificate the phone should trust
+   it, and the same comparison holds if it warns.
+3. **Sign in on the phone with your account**, with its second step as anywhere
+   (see "Signing in").
+4. **Turn on alerts on the phone: the page there shows how.** When the address is
+   not a name that a certificate names, the step says **Push notices need a
+   certificate the phone trusts:** and gives the two ways above.
+5. **Add it to the home screen from the browser's menu: it then opens like an
+   app. No app store, no account.**
+
+**Done on the phone: show it** reads the page again. On the phone the address
+opens **Set up this phone**: **Signed in**, **Get alerts on this phone**, which
+becomes **This phone gets alerts.** with **Send a test**, **Add to the home
+screen** when the browser offers it (or **Use the browser's menu: Add to the
+home screen.**), and **Not now**, which puts the panel away in this browser. The
+console's name for the home screen is **Dukovo Admin**, and from there it opens in
+a window of its own, with no address bar.
+
+### Who may do what
+
+Only an administrator sees the page, and only with the console unlocked: alerts
+commands run as root. Anyone else is told to ask an administrator.
+
+### On a phone
+
+**Alerts** is a tab of the bar along the bottom, with **Overview**, **Services**
+and **Logs**, for an administrator. The cards are a column, and each button, box
+and choice is at least 44 pixels tall. The card of steps is for a larger screen:
+the phone shows its panel, **Set up this phone**, when it is opened from the code.
+
 ## When something goes wrong
 
 Every failure that the console's server reports has an ID, such as
@@ -3530,6 +5366,8 @@ its field, and not in a box at the foot of the page.
 | The console's helper for your session stopped, [ADM-111](../../errors/ADM-111.md) or [ADM-112](../../errors/ADM-112.md) | **The console's helper for your session stopped.** with **Try again** |
 | A part of Dukovo that the machine lacks, [ADM-129](../../errors/ADM-129.md) | In place of the answer: **This needs `dukovo-check`, which this server does not have yet.** |
 | The machine does not answer | A banner across the page (below) |
+| The machine is restarting, for a restart you asked for or an update | A banner that says why, with **Waiting since** and the time (see "The machine is restarting") |
+| An update was taken back | **Back, on 1.0.0-alpha.1: the update was taken back.** with **See what happened** (see "The update was taken back") |
 | Anything else | The error view |
 
 ### The error view
@@ -3583,6 +5421,68 @@ machine does not answer is not sent: **The server is not answering. Nothing
 was done.** When the machine answers again, to a look or to anything the
 page asks meanwhile, the banner goes at once, and the Overview, Tasks and the
 numbers in the navigation read again.
+
+### The machine is restarting
+
+When you restart the machine from the console, or an update or a test of the
+memory does, the page does not say that the machine is not answering. It says
+what the restart is for, in a banner across the top with **Waiting since 3:10
+PM**, and looks for the machine by itself, without **Try now**. The words follow
+the restart:
+
+| The restart | The banner says |
+| --- | --- |
+| The console's own, as when it takes another certificate | **The console is restarting.** |
+| The machine's, from **Hardware** | **duke-nas is restarting. This page comes back by itself when it answers.** |
+| An update | **duke-nas is restarting into 1.0.0-alpha.2. It has three tries to prove itself; the console answers again in a few minutes.** |
+| A test of the memory at the start | **duke-nas is restarting and tests its memory first, which can take up to an hour. This page comes back by itself when it answers.** |
+| A search for the change that broke a start | **duke-nas is restarting for try 2 of 3 of changes bisect. It restarts again by itself after the try.** |
+
+The page waits 2 minutes for the console to come back, and 10 minutes for the
+machine. A test of the memory waits 10 minutes and one more for each 4 GiB of
+memory, 70 at the most. When that time has passed with no answer, the banner is
+the one of "When the console does not answer". When the machine answers, the
+page says **Back** for a few seconds; the Overview, Tasks and the numbers in the
+navigation read again. After an update it says which release the machine runs
+(see "The update was taken back").
+
+### The update was taken back
+
+An update starts as a try. The machine restarts into it and runs its checks (see
+"Checks after an update"), and when a required one fails it goes back to the
+version before, by itself, and restarts again. What you see, in this order:
+
+- The banner after the restart says **Back, on 1.0.0-alpha.1: the update was
+  taken back.** with **See what happened** and **Close**, and stays until you
+  close it. After an update that went well it says **Back** for a few seconds.
+- The Overview shows the notice of the failed start with **What happened**, which
+  becomes **See it again** once you have opened it, and **Report it**. Among
+  what needs a look it lists **1.0.0-alpha.2 was taken back and is held**, **It
+  is not staged again until you release it.** The alert that goes to the places
+  you set up is of the kind **Something stopped** (see "What each channel is
+  told").
+- **What happened**, at `/updates#happened`, is the card of **The update to
+  1.0.0-alpha.2 was taken back**. It says which start, its release and its slot,
+  **Its check:** with the ID of the check that failed as a link to its page,
+  **What failed** in the machine's own words, **What changed since the last good
+  start** as a list, and **The machine went back to 1.0.0-alpha.1 with the
+  settings from before the update. Nothing was lost.**, or with today's
+  settings when that was the choice. **Report it** opens Report a problem about
+  the failed start, with what the machine kept (see "Report a problem").
+- The release is held: **It was taken back, so it is not staged again until you
+  release it.** **Release the hold** on **Updates** lifts it, when the cause is
+  mended or you want the update again (see "Holding a version back"). A newer
+  release is taken as usual.
+
+A start that failed and was not an update has the same card, headed **The start
+Nov 13 at 3:05 AM failed**, and, for an administrator with two changes or more
+to tell apart, **Find which change broke it**: **Start the search**, which
+restarts the machine up to as many times as the base 2 logarithm of the changes,
+rounded up, leaving some changes out at each try, **Stop the search** between
+tries, and **Make sure** when the answer came by elimination. A try is a start
+like any other and nothing is changed for good. After an update was taken back
+the search is not offered, since it cannot start the slot of that update (see
+"When a start fails").
 
 ### Tasks that need a look
 

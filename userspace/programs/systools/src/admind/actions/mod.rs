@@ -55,6 +55,7 @@ mod bisect;
 mod certificate;
 pub mod checks;
 mod console;
+mod databases;
 mod firewall;
 mod hardware;
 #[cfg(any(test, feature = "lab"))]
@@ -1278,6 +1279,15 @@ registry![
     apps::Hold,
     apps::Unhold,
     apps::Remove,
+    apps::Search,
+    apps::Sheet,
+    apps::Install,
+    databases::List,
+    databases::Add,
+    databases::Password,
+    databases::Allow,
+    databases::Deny,
+    databases::Remove,
     reports::Crashes,
     reports::Draft,
     reports::Redact,

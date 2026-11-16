@@ -11,9 +11,13 @@
 // `GET /api/1/apps/{id}` runs: where the app came from and its licence, its
 // services, what it may use, what it provides, uses and what uses it, its data,
 // its size, its flaws and its versions, with Hold (`bundle hold`,
-// `POST /api/1/apps/{id}/hold`), Release the hold (`bundle unhold`,
-// `POST /api/1/apps/{id}/unhold`) and Remove… (`bundle remove`,
-// `POST /api/1/apps/{id}/remove`, a task).
+// `POST /api/1/apps/{id}/hold`, which asks "Why (optional)" first and keeps
+// the reason with the hold), Release the hold (`bundle unhold`,
+// `POST /api/1/apps/{id}/unhold`), Tonight and Not tonight for an app that has
+// an update (`bundle update --tonight`, `POST /api/1/apps/{id}/tonight` and
+// `POST /api/1/apps/{id}/not-tonight`; every update at once is
+// `POST /api/1/apps/tonight`, which the Updates page's Install tonight asks)
+// and Remove… (`bundle remove`, `POST /api/1/apps/{id}/remove`, a task).
 //
 // The apps are nginx, which has a service and a data folder, and Python, which
 // has neither, both installed for everyone by apps.toml before each engine and
@@ -70,8 +74,14 @@ const ROUTES = {
   show: "GET /api/1/apps/{id}",
   hold: "POST /api/1/apps/{id}/hold",
   unhold: "POST /api/1/apps/{id}/unhold",
+  tonight: "POST /api/1/apps/{id}/tonight",
+  tonightAll: "POST /api/1/apps/tonight",
+  notTonight: "POST /api/1/apps/{id}/not-tonight",
   remove: "POST /api/1/apps/{id}/remove",
 };
+
+// What the hold is asked with, and what the page says of it.
+const REASON = "lab: the client needs this version";
 
 /** The path of a route as the table names it, for the app `id`: `GET /api/1/apps/{id}` is `/api/1/apps/org.nginx.nginx`. */
 const pathOf = (route, id = "") => route.slice(route.indexOf(" ") + 1).replace("{id}", encodeURIComponent(id));
@@ -209,6 +219,25 @@ async function leadShown(page) {
   ensure(add + lead > 0, "the list neither has Add an app nor says where apps come from");
 }
 
+/** The Size row says what `bundle info` says of the files and of the data: measured, cut short, not measured yet, or no data to measure. */
+function sizeAsAnswered(facts, info, where) {
+  if (!Number.isFinite(info.bytes)) {
+    ensure(facts.Size === undefined, `${where} has a size and ${ROUTES.show} gives none`);
+    return;
+  }
+  const size = facts.Size ?? "";
+  ensure(/^\d[\d.,]* (?:B|KB|MB|GB|TB|PB) installed/.test(size), `${where} says ${JSON.stringify(size)} of its size`);
+  const walk = info.data_size;
+  if (walk !== null && typeof walk === "object") {
+    ensure(size.includes(walk.complete === false ? "counting stopped at its limits" : `of data in ${walk.files.toLocaleString("en-US")} file`), `${where} says ${JSON.stringify(size)} of its data and ${ROUTES.show} says ${JSON.stringify(walk)}`);
+    if (walk.complete === false) ensure(size.includes(" · at least "), `${where} does not say "at least" of a walk that its limits ended: ${size}`);
+  } else if (info.for_everyone !== false && info.service_list.length > 0) {
+    ensure(size.endsWith("its data is measured once a day; not yet"), `${where} says ${JSON.stringify(size)} of data that was not measured`);
+  } else {
+    ensure(!size.includes("data"), `${where} says ${JSON.stringify(size)} of data that it has no folder for`);
+  }
+}
+
 /** The page's facts of an app are what `bundle info` says of it. */
 async function factsAsAnswered(t, page, info) {
   const facts = await factsOf(page);
@@ -265,9 +294,10 @@ async function factsAsAnswered(t, page, info) {
     }
   }
 
-  // Size, flaws and the rule the apps update by.
-  if (Number.isFinite(info.bytes)) ensure(/^\d/.test(facts.Size ?? ""), `${where} says ${JSON.stringify(facts.Size)} of its size`);
-  else ensure(facts.Size === undefined, `${where} has a size and ${ROUTES.show} gives none`);
+  // Size: what the files take, and what the data took at the last walk.
+  sizeAsAnswered(facts, info, where);
+
+  // Flaws and the rule the apps update by.
   const known = info.flaws?.known ?? [];
   if (known.length > 0) {
     for (const flaw of known) await t.see(panel(page).locator(".banner").getByText(flaw.id).first());
@@ -355,15 +385,51 @@ async function purgeNeedsTheName(t, page, info) {
   await t.gone(dialog);
 }
 
-/** Hold at VERSION holds the app and Release the hold lets it go: the panel, the row and the machine say so each time. */
+/** Presses `control`, which asks a question of its own: answers the unlock if it comes first, and gives the dialog called `name`. */
+async function opensDialog(t, page, control, name) {
+  await control.click();
+  const asked = await unlockDialog(page).waitFor({ state: "visible", timeout: 2000 }).then(() => true, () => false);
+  if (asked) await answerUnlock(t, page);
+  const dialog = page.getByRole("dialog", { name, exact: true });
+  await t.see(dialog);
+  return dialog;
+}
+
+/** Hold at VERSION asks why first, holds the app with the reason, and Release the hold lets it go: the panel, the row and the machine say so each time. */
 async function holdAndRelease(t, page, info) {
   const held = `Held at ${info.version}: no update is taken, security fixes included. Release the hold to take updates again.`;
-  await pressAndAnswer(t, page, button(page, `Hold at ${info.version}`), pathOf(ROUTES.hold, info.id));
+  const title = `Hold ${info.name} at ${info.version}`;
+  const path = pathOf(ROUTES.hold, info.id);
+
+  // Cancel in the question holds nothing, and the keyboard is where it was.
+  let dialog = await opensDialog(t, page, button(page, `Hold at ${info.version}`), title);
+  await t.see(dialog.getByText(`Holding keeps ${info.name} at ${info.version}: no update is taken, security fixes included, until you release the hold.`, { exact: true }));
+  await t.see(dialog.getByText("Everyone who can sign in sees the reason, here and with bundle list.", { exact: true }));
+  ensure((await dialog.getByLabel("Why (optional)", { exact: true }).getAttribute("maxlength")) === "200", "the reason may have more than 200 characters");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await t.gone(dialog);
+  ensure((await readApp(page, info.id)).held !== true, `${info.id} was held by Cancel`);
+  ensure((await focusedAction(page)) === "hold", `the keyboard is on ${JSON.stringify(await focusedAction(page))} after Cancel, not on Hold`);
+
+  // The reason goes with the hold.
+  dialog = await opensDialog(t, page, button(page, `Hold at ${info.version}`), title);
+  await lookAll(t, page, "apps-hold-why");
+  await dialog.getByLabel("Why (optional)", { exact: true }).fill(REASON);
+  const sent = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === path);
+  await pressAndAnswer(t, page, dialog.getByRole("button", { name: "Hold it", exact: true }), path);
+  const body = (await sent).postData() ?? "";
+  ensure(body.includes(`"why":${JSON.stringify(REASON)}`) || body.includes(`"why": ${JSON.stringify(REASON)}`), `${ROUTES.hold} was sent ${JSON.stringify(body)}, without the reason`);
+  await t.gone(dialog);
   await t.see(button(page, "Release the hold"));
   await t.see(panel(page).getByText(held, { exact: true }));
   await t.see(rowOf(page, info.id).locator('td[data-label="Update"]').getByText(`Held at ${info.version}`));
   ensure((await readApp(page, info.id)).held === true, `${info.id} is not held on the machine`);
+  const listed = (await readApps(page)).find((bundle) => bundle.id === info.id);
+  ensure(listed?.held_reason === REASON, `${ROUTES.list} says ${JSON.stringify(listed?.held_reason)} of why ${info.id} is held`);
   ensure((await focusedAction(page)) === "hold", `the keyboard is on ${JSON.stringify(await focusedAction(page))} after Hold, not on the button that now releases`);
+  // The Hold row says since when, by whom and why.
+  const facts = await factsOf(page);
+  ensure(new RegExp(`^Held at ${info.version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} since .+ by \\S+: "${REASON}"$`).test(facts.Hold ?? ""), `the Hold row says ${JSON.stringify(facts.Hold)}`);
   await lookAll(t, page, "apps-held");
 
   await pressAndAnswer(t, page, button(page, "Release the hold"), pathOf(ROUTES.unhold, info.id));
@@ -371,6 +437,54 @@ async function holdAndRelease(t, page, info) {
   await t.gone(panel(page).getByText(held, { exact: true }));
   ensure((await readApp(page, info.id)).held !== true, `${info.id} is still held on the machine`);
   ensure(!(await rowOf(page, info.id).locator('td[data-label="Update"]').innerText()).includes("Held at"), "the row still says held");
+  ensure((await factsOf(page)).Hold === undefined, "the panel still has a Hold row after Release");
+  const after = (await readApps(page)).find((bundle) => bundle.id === info.id);
+  ensure(after?.held_reason == null, `${ROUTES.list} still says ${JSON.stringify(after?.held_reason)} of a hold that was released`);
+}
+
+/**
+ * Tonight asks for an app's update in tonight's window, with the window in
+ * words, and Not tonight takes the request away; an app with no update has
+ * neither. The lab's catalog may offer no app an update: then the script says
+ * so, and checks that the apps it has show neither button. Gives the routes it
+ * called.
+ */
+async function tonightAndNot(t, page, bundles) {
+  const waiting = bundles.find((bundle) => bundle.for_everyone === true && bundle.held !== true && isText(bundle.update) && bundle.update !== bundle.version);
+  if (waiting === undefined) {
+    console.log("no app of this machine has an update to ask for tonight, so Tonight was not pressed");
+    for (const id of [NGINX, PYTHON]) {
+      await openApp(t, page, id);
+      for (const name of ["Tonight", "Not tonight"]) ensure((await button(page, name).count()) === 0, `the page of ${id} has ${name} and no update waits`);
+    }
+    return [];
+  }
+  const info = await openApp(t, page, waiting.id);
+  await t.see(button(page, `Update to ${waiting.update}`));
+  const words = await panel(page).locator(".apps-buttons").innerText();
+  ensure(words.includes("Installs tonight, between "), `the page of ${waiting.id} does not say the window: ${words}`);
+  await pressAndAnswer(t, page, button(page, "Tonight"), pathOf(ROUTES.tonight, info.id));
+  const asked = await appsBecome(page, (all) => all.some((one) => one.id === info.id && (one.tonight != null || one.version === waiting.update)), `be asked for tonight or be updated: ${info.id}`, 120);
+  const now = asked.find((one) => one.id === info.id);
+  if (now.tonight == null) {
+    // A request made inside the window runs at once.
+    console.log(`${info.id} was updated at once, so the window is open now; Not tonight was not pressed`);
+    return [`POST ${pathOf(ROUTES.tonight, info.id)}`];
+  }
+  await t.see(button(page, "Not tonight"));
+  await t.gone(button(page, "Tonight"));
+  await t.see(panel(page).getByText(/^Installs tonight, between /));
+  await pressAndAnswer(t, page, button(page, "Not tonight"), pathOf(ROUTES.notTonight, info.id));
+  await t.see(button(page, "Tonight"));
+  ensure((await focusedAction(page)) === "tonight", `the keyboard is on ${JSON.stringify(await focusedAction(page))} after Not tonight, not on Tonight`);
+  const taken = (await readApps(page)).find((one) => one.id === info.id);
+  ensure(taken.tonight == null, `${info.id} still installs tonight after Not tonight`);
+  // Every update at once is the route of the Updates page's Install tonight.
+  const all = await fetchAsPage(page, "POST", pathOf(ROUTES.tonightAll), {});
+  ensure(all.status === 200, `${ROUTES.tonightAll} was answered ${all.status}: ${all.text}`);
+  await appsBecome(page, (found) => found.some((one) => one.id === info.id && one.tonight != null), `be asked for tonight by ${ROUTES.tonightAll}`, 120);
+  await pressAndAnswer(t, page, button(page, "Not tonight"), pathOf(ROUTES.notTonight, info.id));
+  return [`POST ${pathOf(ROUTES.tonight, info.id)}`, `POST ${pathOf(ROUTES.notTonight, info.id)}`, `POST ${pathOf(ROUTES.tonightAll)}`];
 }
 
 /** Remove… with Keep its data takes the app away as a task, and the page leaves its panel for the list. */
@@ -426,6 +540,8 @@ async function administrator(t) {
 
   await removeIsAsked(t, page, nginx);
   await holdAndRelease(t, page, nginx);
+  const asked = await tonightAndNot(t, page, await readApps(page));
+  await openApp(t, page, NGINX);
 
   const python = await openApp(t, page, PYTHON);
   await factsAsAnswered(t, page, python);
@@ -448,6 +564,7 @@ async function administrator(t) {
     routeFor(ROUTES.hold, NGINX),
     routeFor(ROUTES.unhold, NGINX),
     routeFor(ROUTES.remove, NGINX),
+    ...asked,
   ]);
   await signOut(t, page);
   await page.context().close();

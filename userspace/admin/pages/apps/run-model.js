@@ -11,7 +11,9 @@ import { listOf } from './apps-model.js';
 export const updateAllCall = () => ({ action: 'apps.update-all', args: {} });
 export const updateCall = (id, { yes = false } = {}) => ({ action: 'apps.update', args: yes ? { id, yes: true } : { id } });
 export const rollbackCall = (id) => ({ action: 'apps.rollback', args: { id } });
-export const holdCall = (id, held) => ({ action: held ? 'apps.unhold' : 'apps.hold', args: { id } });
+export const holdCall = (id, held, why = null) => ({ action: held ? 'apps.unhold' : 'apps.hold', args: held || !why ? { id } : { id, why } });
+export const tonightCall = (id, { yes = false } = {}) => ({ action: 'apps.tonight', args: yes ? { id, yes: true } : { id } });
+export const notTonightCall = (id) => ({ action: 'apps.not-tonight', args: { id } });
 export const removeCall = (id, data) => ({ action: 'apps.remove', args: { id, data } });
 
 /** What the button that updates every app says on the way. */
@@ -24,6 +26,8 @@ export function runWords(kind, name, version = null) {
   const words = {
     update: { unlock: `update ${name}`, running: `Updating ${name}${version ? ` to ${version}` : ''}`, done: `${name} is updated.`, busy: 'Starting…' },
     rollback: { unlock: `go back on ${name}`, running: `Going back on ${name}${version ? ` to ${version}` : ''}`, done: `${name} is back.`, busy: 'Starting…' },
+    tonight: { unlock: `put the update of ${name} off until tonight`, running: `Asking for ${name} tonight`, done: `${name} installs tonight.`, busy: 'Starting…' },
+    notTonight: { unlock: `take ${name} off tonight's window`, done: `${name} does not install tonight.`, busy: 'Taking it off…' },
     hold: { unlock: `hold ${name}`, done: `${name} is held at ${version}.`, busy: 'Holding…' },
     unhold: { unlock: `release ${name}`, done: `${name} is released.`, busy: 'Releasing…' },
     remove: { unlock: `remove ${name}`, running: `Removing ${name}`, done: `${name} is removed.`, busy: 'Starting…' },
@@ -33,7 +37,7 @@ export function runWords(kind, name, version = null) {
 
 /** The actions that run as tasks on an app, and what each does; `apps.update-all` has no app of its own. */
 const TASK_KINDS = Object.freeze({
-  'apps.update': 'update', 'apps.update-all': 'update', 'apps.rollback': 'rollback', 'apps.remove': 'remove',
+  'apps.update': 'update', 'apps.update-all': 'update', 'apps.tonight': 'tonight', 'apps.rollback': 'rollback', 'apps.remove': 'remove',
 });
 
 const running = (task) => task.state === 'waiting' || task.state === 'running';
@@ -83,7 +87,9 @@ export function makeJobs() {
 }
 
 /** The first words of a job. */
-const JOB_WORDS = Object.freeze({ update: 'Updating…', rollback: 'Going back…', remove: 'Removing…' });
+const JOB_WORDS = Object.freeze({
+  update: 'Updating…', tonight: 'Asking for tonight…', rollback: 'Going back…', remove: 'Removing…',
+});
 
 /** What a job says of how far it is: "Updating… 41%", "Updating… step 2 of 4". */
 export function jobWords(job) {

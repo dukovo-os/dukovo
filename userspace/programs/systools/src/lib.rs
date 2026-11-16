@@ -320,6 +320,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("cloud-setup", cloud::main),
     ("column", column::main),
     ("crontab", crontab::main),
+    ("database", database::main),
     ("df", df::main),
     ("device", device::main),
     ("dig", dig::dig),
@@ -489,11 +490,14 @@ const TOOLS: &[(&str, Tool)] = &[
 /// The tools whose Linux versions exit with 2, not 1, for a mistake in
 /// the command line: procps-ng's pgrep and pkill, iputils' ping, and
 /// which; update, whose exit status 1 says that something applies
-/// (`update advisories`, ADR 0534); and alerts, whose exit status 1 says
+/// (`update advisories`, ADR 0534); alerts, whose exit status 1 says
 /// that the channel it was to change is not there, or that a test through
-/// a channel failed.
-const USAGE_TWO: &[&str] =
-    &["alerts", "getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "website", "which"];
+/// a channel failed; and database and website, whose exit status 1 says
+/// that PostgreSQL or nginx, or what was asked of it, refused, with an ID.
+const USAGE_TWO: &[&str] = &[
+    "alerts", "database", "getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "website",
+    "which",
+];
 
 /// The tool named `name`.
 fn tool(name: &str) -> Option<Tool> {

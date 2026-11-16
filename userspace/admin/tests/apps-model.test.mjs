@@ -9,12 +9,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { askedMore, sheetOf } from '../lib/asked-more.js';
 import {
-  appHref, askedMore, checkOf, fixesWords, flawWords, idOf, offersOf, sheetOf, updateWords,
+  appHref, checkOf, fixesWords, flawWords, idOf, offersOf, updateWords,
 } from '../pages/apps/apps-model.js';
 import {
   bannerOf, byline, dataFolders, fixedWords, flawLine, flawsOf, heldWords, linksOf, manageOf, manageRead, mayUseOf, noFlawsWords,
-  NO_PREVIOUS, permissionLine, REMOVE_CHOICES, removeLead, rollbackWords, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf, usersWords,
+  holdRow, NO_PREVIOUS, permissionLine, REMOVE_CHOICES, removeLead, rollbackWords, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf, usersWords,
   versionsOf,
 } from '../pages/apps/app-model.js';
 import {
@@ -22,7 +23,7 @@ import {
 } from '../pages/apps/list-model.js';
 import { initialOf, tintOf } from '../pages/apps/mark.js';
 import {
-  holdCall, jobWords, makeJobs, removeCall, rollbackCall, runWords, updateAllCall, updateCall,
+  holdCall, jobWords, makeJobs, notTonightCall, removeCall, rollbackCall, runWords, tonightCall, updateAllCall, updateCall,
 } from '../pages/apps/run-model.js';
 import {
   last, list, plain, services, settings, task, time, valkey,
@@ -324,11 +325,56 @@ test('the apps that use an app are links with what they use it for, and none is 
 test('the data is the folder of each service, its size is told when it is known, and the rule is the Updates page\'s', () => {
   assert.deepEqual(dataFolders(valkey(), servicesOf(valkey())), ['/shared/services/io.valkey.valkey/valkey']);
   assert.deepEqual(dataFolders(valkey(), [{ account: 'a' }, { account: 'a' }, { account: 'b' }]), ['/shared/services/io.valkey.valkey/a', '/shared/services/io.valkey.valkey/b']);
-  assert.equal(sizeWords(valkey({ bytes: 9_437_184 })), '9.44 MB');
-  assert.equal(sizeWords(valkey({ bytes: null })), null);
+  assert.equal(sizeWords(valkey({ bytes: 9_437_184 }), time), '9.44 MB installed');
+  assert.equal(sizeWords(valkey({ bytes: null }), time), null);
   assert.equal(ruleWords(settings('auto')), 'Update by themselves');
   assert.equal(ruleWords(settings('notify')), 'Tell me');
   assert.equal(ruleWords(null), null);
+});
+
+// What the Size row says in each state of its table: measured, cut short, not measured yet, no data folder, and a person's own app.
+const SIZE = { bytes: 1_240_000_000, files: 3412, complete: true, measured_ms: Date.UTC(2026, 10, 16, 3, 41) };
+
+test('the Size row says what the files take and what the data takes, as the last daily walk found it', () => {
+  assert.equal(sizeWords(valkey({ data_size: SIZE }), time), '9.44 MB installed · 1.24 GB of data in 3,412 files, measured today at 3:41 AM');
+  assert.equal(sizeWords(valkey({ data_size: { ...SIZE, files: 1, measured_ms: Date.UTC(2026, 10, 15, 22, 5) } }), time), '9.44 MB installed · 1.24 GB of data in 1 file, measured yesterday at 10:05 PM');
+  assert.equal(sizeWords(valkey({ data_size: { ...SIZE, measured_ms: Date.UTC(2026, 10, 2, 3, 41) } }), time), '9.44 MB installed · 1.24 GB of data in 3,412 files, measured on Nov 2 at 3:41 AM');
+});
+
+test('a walk that its limits ended says at least, and when', () => {
+  const cut = { bytes: 940_000_000_000, files: 9_999_999, complete: false, measured_ms: Date.UTC(2026, 10, 14, 3, 41) };
+  assert.equal(sizeWords(valkey({ data_size: cut }), time), '9.44 MB installed · at least 940 GB of data: counting stopped at its limits (Nov 14)');
+  assert.equal(sizeWords(valkey({ data_size: { ...cut, measured_ms: Date.UTC(2026, 10, 16, 3, 41) } }), time), '9.44 MB installed · at least 940 GB of data: counting stopped at its limits (today)');
+});
+
+test('an app that was not measured yet says its data is measured once a day, and one with no data folder or of the person\'s own says only its files', () => {
+  assert.equal(sizeWords(valkey({ data_size: null }), time), '9.44 MB installed · its data is measured once a day; not yet');
+  assert.equal(sizeWords(valkey({ data_size: null, service_list: [] }), time), '9.44 MB installed', 'no service, no data folder');
+  assert.equal(sizeWords(valkey({ data_size: null, for_everyone: false }), time), '9.44 MB installed', 'a person\'s own app is not measured');
+  assert.equal(sizeWords(valkey({ data_size: undefined }), time), '9.44 MB installed', 'an older bundle info says nothing of it');
+  assert.equal(sizeWords(valkey({ bytes: undefined, data_size: SIZE }), time), '1.24 GB of data in 3,412 files, measured today at 3:41 AM');
+  assert.equal(sizeWords(valkey({ data_size: { bytes: 5, complete: true } }), time), '9.44 MB installed', 'a walk without its time is not told');
+});
+
+test('the hold row says since when, by whom and why, and nothing it does not know', () => {
+  const names = new Map([[1000, 'admin']]);
+  const held = valkey({ held: true });
+  assert.equal(holdRow(held, { at: Date.UTC(2026, 10, 2, 3, 6), by: 1000, why: 'app tests use this version' }, time, names), 'Held at 8.0.3 since Nov 2 at 3:06 AM by admin: "app tests use this version"');
+  assert.equal(holdRow(held, { at: Date.UTC(2026, 10, 16, 3, 6), by: 1000, why: null }, time, names), 'Held at 8.0.3 since today at 3:06 AM by admin');
+  assert.equal(holdRow(held, { at: null, by: 1001, why: null }, time, names), 'Held at 8.0.3 by account 1001');
+  assert.equal(holdRow(held, { at: null, by: null, why: null }, time, names), 'Held at 8.0.3');
+  assert.equal(holdRow(held, null, time, names), 'Held at 8.0.3');
+});
+
+test('a row of the list keeps who held the app and why, and what is asked for tonight', () => {
+  const more = list();
+  more.bundles[5] = { ...more.bundles[5], held_reason: 'tests use 3.47', held_by: 1000, held_since_ms: 5 };
+  more.bundles[1] = { ...more.bundles[1], tonight: { to: '8.0.4', asked_ms: 1, by: 1000, missed_ms: null, starts_ms: 2 } };
+  const row = (id) => rowsOf(more, last()).everyone.find((one) => one.id === id);
+  assert.deepEqual(row('org.sqlite.sqlite').hold, { at: 5, by: 1000, why: 'tests use 3.47' });
+  assert.equal(row('io.valkey.valkey').hold, null);
+  assert.deepEqual(row('io.valkey.valkey').tonight, { words: 'Installs tonight', missed: false });
+  assert.equal(row('org.nginx.nginx').tonight, null);
 });
 
 test('the versions are the one offered, the one installed and the one kept, with what each is', () => {
@@ -377,6 +423,11 @@ test('each button makes the call of its action, and the arguments that action ta
   assert.deepEqual(rollbackCall('a.b'), { action: 'apps.rollback', args: { id: 'a.b' } });
   assert.deepEqual(holdCall('a.b', false), { action: 'apps.hold', args: { id: 'a.b' } });
   assert.deepEqual(holdCall('a.b', true), { action: 'apps.unhold', args: { id: 'a.b' } });
+  assert.deepEqual(holdCall('a.b', false, 'app tests use this version'), { action: 'apps.hold', args: { id: 'a.b', why: 'app tests use this version' } });
+  assert.deepEqual(holdCall('a.b', true, 'a reason'), { action: 'apps.unhold', args: { id: 'a.b' } }, 'a release has no reason');
+  assert.deepEqual(tonightCall('a.b'), { action: 'apps.tonight', args: { id: 'a.b' } });
+  assert.deepEqual(tonightCall('a.b', { yes: true }), { action: 'apps.tonight', args: { id: 'a.b', yes: true } });
+  assert.deepEqual(notTonightCall('a.b'), { action: 'apps.not-tonight', args: { id: 'a.b' } });
   assert.deepEqual(removeCall('a.b', 'keep'), { action: 'apps.remove', args: { id: 'a.b', data: 'keep' } });
   assert.deepEqual(removeCall('a.b', 'purge'), { action: 'apps.remove', args: { id: 'a.b', data: 'purge' } });
 });
@@ -389,6 +440,16 @@ test('each button says what it does to the unlock dialog, the notice and its own
   assert.equal(runWords('remove', 'Valkey').running, 'Removing Valkey');
   assert.equal(runWords('hold', 'Valkey', '8.0.3').done, 'Valkey is held at 8.0.3.');
   assert.equal(runWords('unhold', 'Valkey').unlock, 'release Valkey');
+  assert.equal(runWords('tonight', 'Valkey').done, 'Valkey installs tonight.');
+  assert.equal(runWords('notTonight', 'Valkey').done, 'Valkey does not install tonight.');
+});
+
+test('a request for tonight is a task that runs on the app, and says so while it runs', () => {
+  const jobs = makeJobs();
+  jobs.started(13, 'apps.tonight', { id: 'io.valkey.valkey' });
+  assert.equal(jobWords(jobs.of('io.valkey.valkey')), 'Asking for tonight…');
+  const ended = jobs.event({ id: 13, action: 'apps.tonight', state: 'done' });
+  assert.deepEqual([ended.ended.kind, ended.ended.app, ended.state], ['tonight', 'io.valkey.valkey', 'done']);
 });
 
 // ---- the tasks ----
@@ -456,7 +517,9 @@ test('an update that stopped to ask is told from one that failed, and its sheet 
   };
   assert.equal(askedMore(asked), true);
   assert.equal(sheetOf(asked), 'valkey 8.0.4 asks for more than 8.0.3 does:\n  - it may listen on all addresses');
-  assert.equal(askedMore({ ...asked, state: 'done' }), false);
+  assert.equal(askedMore({ ...asked, state: 'done' }), false, 'a task that ended well is not one that asked');
+  assert.equal(askedMore({ ...asked, state: 'done', status: 1 }), true, 'the update answers for status 1, so it ends done');
+  assert.equal(askedMore({ ...asked, state: 'done', status: 0 }), false);
   assert.equal(askedMore({ state: 'failed', log: ['bundle: no route to the catalog'] }), false);
   assert.equal(askedMore(null), false);
   assert.equal(sheetOf({ log: ['one', 'two'] }), 'one\ntwo');

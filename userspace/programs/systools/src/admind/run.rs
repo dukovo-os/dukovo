@@ -577,6 +577,7 @@ mod tests {
             ("apps.update", [0, 1].as_slice()),
             ("apps.tonight", [0, 1].as_slice()),
             ("alerts.test", [0, 1].as_slice()),
+            ("apps.search", [0, 1].as_slice()),
             ("websites.check", [0, 1].as_slice()),
             ("websites.plan", [0, 1].as_slice()),
         ] {
@@ -600,6 +601,7 @@ mod tests {
             "apps.update",
             "apps.tonight",
             "alerts.test",
+            "apps.search",
             "websites.check",
             "websites.plan",
         ];

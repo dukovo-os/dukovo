@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// The steps this folder gives to Finish setting up and to /setup (design
-// 12.2): until C5 and C6 add the six real ones, a step that only a lab build
-// has, which runs the lab's long action. A shipped build does not offer that
-// action, so `available` is false there and the card and the page show no
+// The steps this folder gives to Finish setting up and to /setup: a step that
+// only a lab build has, which runs the lab's long action. The pages give the
+// real ones (Snapshots, Security and Alerts). A shipped build does not offer
+// that action, so `available` is false there and the card and the page show no
 // step at all.
 //
 // A step is `{id, title, order, points, action, available, done, summary,
