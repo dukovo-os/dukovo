@@ -3,7 +3,7 @@
 
 [package]
 name = "radix-rge-net"
-description = "Realtek's 2.5 and 5 gigabit Ethernet controllers for the Radix kernel: the RTL8125 and RTL8126 families"
+description = "Realtek's 2.5, 5 and 10 gigabit Ethernet controllers for the Radix kernel: the RTL8125, RTL8126 and RTL8127 families"
 version.workspace = true
 edition.workspace = true
 license = "(Apache-2.0 OR MIT) AND ISC"

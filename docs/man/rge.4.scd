@@ -5,24 +5,25 @@ rge(4) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-rge - Realtek's RTL8125 and RTL8126 2.5 and 5 gigabit Ethernet chips
+rge - Realtek's RTL8125, RTL8126 and RTL8127 2.5, 5 and 10 gigabit Ethernet chips
 
 # DESCRIPTION
 
 Realtek's PCI Express Ethernet controllers at 2.5 Gb/s, the RTL8125A,
-RTL8125B and RTL8125D, and at 5 Gb/s, the RTL8126A, on desktop boards,
-cards and laptops since 2019, among them Killer's E3000 and E5000 and
-the Framework Desktop's port. OpenBSD's and FreeBSD's *rge* drive them,
-and Linux's *r8169*. Realtek's gigabit chips are *re*(4)'s.
+RTL8125B and RTL8125D, at 5 Gb/s, the RTL8126A, and at 10 Gb/s, the
+RTL8127, on desktop boards, cards and laptops since 2019, among them
+Killer's E3000 and E5000 and the Framework Desktop's port. OpenBSD's and
+FreeBSD's *rge* drive them, and Linux's *r8169*. Realtek's gigabit chips
+are *re*(4)'s.
 
-Two PCI device IDs, and Killer's two, stand for the chips, which the
+Three PCI device IDs, and Killer's two, stand for the chips, which the
 driver tells apart by the revision their registers give, as OpenBSD's
 does. It refuses a revision it does not know.
 
 The driver sets the chip and its PHY up as OpenBSD's does, translated
 from OpenBSD's ISC-licensed code, and reads the MAC address the chip's
 boot code left in its registers. Its tests check that the register
-reads and writes it makes on each of the six chip revisions are, byte
+reads and writes it makes on each of the seven chip revisions are, byte
 for byte, those OpenBSD's own code makes on the same model of the chips,
 which *tools/rge-openbsd-check* runs.
 
@@ -36,7 +37,11 @@ What it leaves out:
   its *rtl_nic* files. Realtek does not say what its patches fix; a
   link that is slow to come up or drops on one of these chips should be
   reported with the chip the kernel log names.
-- *The RTL8127*, Realtek's 10 Gb/s chip, which is not driven yet.
+- *The RTL8127ATF*, the RTL8127 with an SFP+ cage for a module. It has
+  the RTL8127's revision, and the driver tells it by what the MAC's
+  register 0xd006 reads. OpenBSD sets up no SerDes for the module, and
+  the one Linux has is under the GPL, so the driver refuses the card and
+  the kernel log says so (ADR 0581).
 - *Offloads*: no checksums, VLAN tag stripping, receive side scaling,
   interrupt moderation or wake on LAN (ADR 0197).
 

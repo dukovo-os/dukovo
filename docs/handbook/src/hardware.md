@@ -61,14 +61,12 @@ the exact chips.
 
 | Device | Status | Driver |
 | --- | --- | --- |
-| Intel 82540 to 82547 and 82571 to 82583 gigabit, and the chipset Ethernet of the 6 to 200 series (82579, I219) | Works | e1000(4) |
+| Intel 82540 to 82547 and 82571 to 82583 gigabit, and the chipset Ethernet from the 6 series to Nova Lake (82579, I217, I218, I219) | Works | e1000(4) |
 | Intel I210, I211, I350, 82576 and 82580 | Works | igb(4) |
 | Intel I225 and I226, 2.5 Gb/s | Works | igc(4) |
 | Intel 82599, X540 and X550, 10 Gb/s | Works | ixgbe(4) |
-| Intel I217, I218, and the I219 of Cannon Lake and later chipsets | Not yet | |
 | Realtek RTL8111, RTL8168, RTL8169 and RTL810x | Works | re(4) |
-| Realtek RTL8125 and RTL8126, 2.5 and 5 Gb/s, and Killer E3000 and E5000 | Works | rge(4) |
-| Realtek RTL8127, 10 Gb/s | Not yet | |
+| Realtek RTL8125, RTL8126 and RTL8127, 2.5, 5 and 10 Gb/s, and Killer E3000 and E5000 | Works | rge(4) |
 | Atheros AR813x, AR815x, AR816x and AR817x, Killer E2200, E2400 and E2500 | Works | alc(4) |
 | Broadcom NetXtreme: BCM5717 to BCM5720 in servers, BCM5761, BCM5762, the BCM57765 family and BCM57780 | Works | bge(4) |
 | USB Ethernet adapters and docks (CDC ECM and NCM), ASIX AX88179 and AX88179A, and phones' USB tethering | Works | cdc_ether(4) |

@@ -43,13 +43,18 @@ const RX_ERROR: u32 = 0x0010_0000;
 const TX_SOF: u32 = 0x2000_0000;
 const TX_EOF: u32 = 0x1000_0000;
 
-const KINDS: [(Kind, u32); 6] = [
+/// Where the RTL8127's EPHY page register (0x0ffe) lands among the
+/// EPHY's registers, whose address is seven bits.
+const EPHY_PAGE_REGISTER: usize = 0x7e;
+
+const KINDS: [(Kind, u32); 7] = [
     (Kind::R25, 0x6090_0000),
     (Kind::R25B, 0x6410_0000),
     (Kind::R25D1, 0x6880_0000),
     (Kind::R25D2, 0x6890_0000),
     (Kind::R26_1, 0x6490_0000),
     (Kind::R26_2, 0x64a0_0000),
+    (Kind::R27, 0x6c90_0000),
 ];
 
 fn alloc(pages: usize) -> Option<Dma> {
@@ -91,6 +96,10 @@ struct State {
     mac: Vec<u16>,
     phy: Vec<u16>,
     ephy: [u16; 0x80],
+    /// The page the EPHY's extended address register selected, and the
+    /// writes since the chip was made: page, register, value.
+    ephy_page: u16,
+    ephy_writes: Vec<(u16, usize, u16)>,
     /// The configuration space, in words, as the CSI registers reach it.
     csi: Vec<u32>,
     revision: u32,
@@ -107,6 +116,22 @@ struct State {
     hung: bool,
 }
 
+/// Where the fields of a descriptor are, and the bits of a received
+/// buffer's status, in the format the chip is set to.
+#[derive(Clone, Copy)]
+struct Layout {
+    stride: u64,
+    rx_address: u64,
+    rx_status: u64,
+    sof: u32,
+    eof: u32,
+    error: u32,
+}
+
+/// What a chip of the second format writes over a received buffer's
+/// address.
+const HASH: u64 = 0x5eed_0000_dead_beef;
+
 struct Chip {
     state: Mutex<State>,
 }
@@ -118,6 +143,8 @@ impl Chip {
             mac: std::vec![0; 0x8000],
             phy: std::vec![0; 0x8000],
             ephy: [0; 0x80],
+            ephy_page: 0,
+            ephy_writes: Vec::new(),
             csi: std::vec![0; 0x400],
             revision,
             log: String::new(),
@@ -147,8 +174,9 @@ impl Chip {
                 *word = (i as u32).wrapping_mul(0x1656_67b1);
             }
         }
-        // The PHY says it is up.
+        // The PHY says it is up, and no SFP+ cage is behind the MAC.
         state.phy[0xa420 >> 1] = 3;
+        state.mac[0xd006 >> 1] = 0;
         Chip::put(
             &mut state,
             reg::ADDR0,
@@ -216,6 +244,12 @@ impl Chip {
                 let addr = ((v >> 16) & 0x7f) as usize;
                 if v & reg::ephyar::BUSY != 0 {
                     state.ephy[addr] = v as u16;
+                    if addr == EPHY_PAGE_REGISTER {
+                        state.ephy_page = v as u16;
+                    } else {
+                        let page = state.ephy_page;
+                        state.ephy_writes.push((page, addr, v as u16));
+                    }
                     Chip::put(state, at, 4, u64::from(v & !reg::ephyar::BUSY));
                 } else {
                     let read = reg::ephyar::BUSY | (v & 0x7fff_0000) | u32::from(state.ephy[addr]);
@@ -242,10 +276,42 @@ impl Chip {
         Chip::get(state, lo, 4) | (Chip::get(state, lo + 4, 4) << 32)
     }
 
+    /// The descriptor format the chip's registers select: in the receive
+    /// configuration and again in the MAC's register 0xeb58, which the
+    /// driver must set alike.
+    fn layout(state: &State) -> Layout {
+        let second = Chip::get(state, reg::RXCFG, 4) as u32 & rxcfg::ENBDESCV1 == 0;
+        assert_eq!(
+            state.mac[0xeb58 >> 1] & 3,
+            if second { 2 } else { 1 },
+            "the descriptor format is selected the same way twice"
+        );
+        if second {
+            Layout {
+                stride: 16,
+                rx_address: 0,
+                rx_status: 12,
+                sof: 0x2000_0000,
+                eof: 0x1000_0000,
+                error: 0x0040_0000,
+            }
+        } else {
+            Layout {
+                stride: 32,
+                rx_address: 16,
+                rx_status: 28,
+                sof: RX_SOF,
+                eof: RX_EOF,
+                error: RX_ERROR,
+            }
+        }
+    }
+
     fn transmit(state: &mut State) {
         let base = Chip::ring(state, reg::TXDESC_ADDR_LO);
+        let layout = Chip::layout(state);
         loop {
-            let at = base + (state.tx_index * 32) as u64;
+            let at = base + (state.tx_index as u64) * layout.stride;
             let command = u32_at(at);
             if command & OWN == 0 {
                 break;
@@ -269,27 +335,36 @@ impl Chip {
             return false;
         }
         let base = Chip::ring(&state, reg::RXDESC_ADDR_LO);
+        let layout = Chip::layout(&state);
+        // Whatever the format calls an error.
+        let error = if status & RX_ERROR != 0 { layout.error } else { 0 };
+        assert_eq!(status & !RX_ERROR, 0);
         let mut data = frame.to_vec();
         data.extend_from_slice(&[0xfc, 0xfc, 0xfc, 0xfc]);
         let mut offset = 0;
         let mut first = true;
         while offset < data.len() {
-            let at = base + (state.rx_index * 32) as u64;
-            let command = u32_at(at + 28);
+            let at = base + (state.rx_index as u64) * layout.stride;
+            let command = u32_at(at + layout.rx_status);
             if command & OWN == 0 {
                 return false;
             }
             let room = (command & 0x3fff) as usize;
             let piece = room.min(data.len() - offset);
-            fake_memory_write(u64_at(at + 16), &data[offset..offset + piece]);
-            offset += piece;
-            let mut written = (command & EOR) | status;
-            if first {
-                written |= RX_SOF;
+            fake_memory_write(u64_at(at + layout.rx_address), &data[offset..offset + piece]);
+            if layout.stride == 16 {
+                // The second format has the frame's hash where the buffer's
+                // address was.
+                fake_memory_write(at, &HASH.to_le_bytes());
             }
-            written |= if offset == data.len() { RX_EOF } else { 0 };
+            offset += piece;
+            let mut written = (command & EOR) | error;
+            if first {
+                written |= layout.sof;
+            }
+            written |= if offset == data.len() { layout.eof } else { 0 };
             written |= piece as u32;
-            fake_memory_write(at + 28, &written.to_le_bytes());
+            fake_memory_write(at + layout.rx_status, &written.to_le_bytes());
             state.rx_index = if command & EOR != 0 { 0 } else { state.rx_index + 1 };
             first = false;
         }
@@ -386,9 +461,9 @@ fn identifies_the_cards() {
     assert_eq!(identify(0x10ec, 0x8125), Some(Model { name: None }));
     assert_eq!(identify(0x10ec, 0x8126), Some(Model { name: None }));
     assert_eq!(identify(0x10ec, 0x3000), Some(Model { name: Some("Killer E3000") }));
+    assert_eq!(identify(0x10ec, 0x8127), Some(Model { name: None }));
     assert_eq!(identify(0x10ec, 0x5000), Some(Model { name: Some("Killer E5000") }));
-    // The RTL8127 and the gigabit chips are not this driver's.
-    assert_eq!(identify(0x10ec, 0x8127), None);
+    // The gigabit chips are not this driver's.
     assert_eq!(identify(0x10ec, 0x8168), None);
     assert_eq!(identify(0x8086, 0x8125), None);
 }
@@ -399,10 +474,11 @@ fn tells_the_chips_apart() {
         // The revision's bits alone, whatever else the register holds.
         assert_eq!(Kind::from_txcfg(revision | 0x0300_0700), Some(kind));
     }
-    // The RTL8127.
-    assert_eq!(Kind::from_txcfg(0x6c90_0000), None);
+    // A revision the driver does not know.
+    assert_eq!(Kind::from_txcfg(0x7000_0000), None);
     assert_eq!(Kind::R25.name(), "Realtek RTL8125A");
     assert_eq!(Kind::R26_2.name(), "Realtek RTL8126A");
+    assert_eq!(Kind::R27.name(), "Realtek RTL8127");
 }
 
 #[test]
@@ -415,13 +491,14 @@ fn reaches_the_standard_phy_registers() {
 /// The FNV-1a hashes and lengths of the logs OpenBSD's functions wrote,
 /// chip by chip, against this model (`make_harness.py hash` prints them):
 /// see the module's documentation.
-const OPENBSD: [(Kind, u64, usize); 6] = [
+const OPENBSD: [(Kind, u64, usize); 7] = [
     (Kind::R25, 0x717cc8f6e03ecdcc, 1239),
     (Kind::R25B, 0xb1767a06123f4be7, 751),
     (Kind::R25D1, 0xb3352f5a1d0bed78, 1267),
     (Kind::R25D2, 0xaa0d6d467740d319, 802),
     (Kind::R26_1, 0x9675b32ca4bd3f6b, 1553),
     (Kind::R26_2, 0xa140f81a2b1729dc, 1097),
+    (Kind::R27, 0xfe5286f92247e5fb, 1878),
 ];
 
 #[test]
@@ -442,6 +519,10 @@ impl Chip {
 
     fn phy_reg(&self, at: u16) -> u16 {
         self.state.lock().unwrap().phy[usize::from(at >> 1)]
+    }
+
+    fn set_mac_reg(&self, at: u16, value: u16) {
+        self.state.lock().unwrap().mac[usize::from(at >> 1)] = value;
     }
 
     fn csi_reg(&self, at: usize) -> u32 {
@@ -478,8 +559,8 @@ fn frame(len: usize, seed: u8) -> Vec<u8> {
 
 #[test]
 fn refuses_what_it_does_not_drive() {
-    // The RTL8127.
-    let (_, regs) = chip(0x6c90_0000, false);
+    // A revision the driver does not know.
+    let (_, regs) = chip(0x7000_0000, false);
     assert!(matches!(try_start(regs), Err(Error::Unsupported(_))));
     assert!(matches!(try_start(Mmio::fake(Arc::new(Gone), reg::END)), Err(Error::Device(_))));
     let (chip, _) = chip(0x6410_0000, false);
@@ -736,4 +817,157 @@ fn stops_when_dropped() {
     let _ = chip.log();
     drop(card);
     assert!(chip.log().contains("w1 0037 10\n"));
+}
+
+#[test]
+fn refuses_the_rtl8127_with_an_sfp_cage() {
+    let (chip, regs) = chip(0x6c90_0000, false);
+    chip.set_mac_reg(0xd006, 0x0007);
+    let refused = try_start(regs);
+    assert!(
+        matches!(refused, Err(Error::Unsupported(what)) if what.starts_with("the RTL8127ATF")),
+        "{:?}",
+        refused.err()
+    );
+    // It is left as it was found: not reset, no rings given.
+    assert_eq!(chip.reg(reg::CMD, 1), 0);
+    assert_eq!(chip.reg(reg::RXDESC_ADDR_LO, 4), 0);
+}
+
+#[test]
+fn starts_the_rtl8127_without_a_cage() {
+    let (_, card) = started(0x6c90_0000, Interrupt::Msi);
+    assert_eq!(card.kind(), Kind::R27);
+    assert_eq!(card.info().model, "Realtek RTL8127");
+    assert_eq!((card.info().receive_slots, card.info().transmit_slots), (256, 255));
+}
+
+#[test]
+fn selects_the_second_descriptor_format_on_the_rtl8127_alone() {
+    for (kind, revision) in KINDS {
+        let (chip, _card) = started_on(revision, Interrupt::Msi, true);
+        let second = kind == Kind::R27;
+        assert_eq!(chip.reg(reg::RXCFG, 4) as u32 & rxcfg::ENBDESCV1 == 0, second, "{kind:?}");
+        if second {
+            assert_eq!(chip.mac_reg(0xeb58) & 3, 2);
+        } else {
+            assert_eq!(chip.mac_reg(0xeb58) & 1, 1, "{kind:?}");
+        }
+        if matches!(kind, Kind::R26_1 | Kind::R26_2 | Kind::R27) {
+            assert_eq!(chip.reg(0xd8, 1) & 2 != 0, second, "{kind:?}");
+        }
+    }
+}
+
+#[test]
+fn sets_the_rtl8127_up_for_one_vector() {
+    let (chip, _card) = started_on(0x6c90_0000, Interrupt::Msi, true);
+    let off = u64::from(reg::int_cfg0::EN | reg::int_cfg0::AUTO_CLEAR_IMR);
+    assert_eq!(chip.reg(reg::INT_CFG0, 1) & (off | u64::from(reg::int_cfg0::AVOID_MISS_INTR)), 0);
+    // Of the FIFO protection register's eight bits, only the
+    // lowest is cleared, though OpenBSD asks for more.
+    assert_eq!(chip.reg(reg::RADMFIFO_PROTECT, 1) & 1, 0);
+    assert_eq!(chip.mac_reg(0xe614) & 0x0f00, 0x0f00);
+    assert_eq!(chip.mac_reg(0xd40c) & 0xe038, 0x8020);
+    assert_eq!(chip.mac_reg(0xe00c) & 0x1000, 0);
+    assert_eq!(chip.mac_reg(0xc0c2) & 0x0040, 0);
+    assert_eq!(chip.mac_reg(0xea1c) & 0x0304, 0);
+}
+
+#[test]
+fn writes_the_rtl8127s_ephy_through_its_pages() {
+    let (chip, _card) = started(0x6c90_0000, Interrupt::Msi);
+    let state = chip.state.lock().unwrap();
+    assert_eq!(state.ephy_writes.len(), 36);
+    // 0x8088 and 0x9c1c: the top four bits are the page, and the EPHY
+    // keeps seven bits of the rest.
+    assert_eq!(state.ephy_writes[0], (8, 0x08, 0x0064));
+    assert_eq!(state.ephy_writes[35], (9, 0x1c, 0x0140));
+    assert_eq!(state.ephy_page, 0);
+    // The chips before it have no EPHY pages.
+    drop(state);
+    let (chip, _card) = started(0x6410_0000, Interrupt::Msi);
+    assert!(chip.state.lock().unwrap().ephy_writes.iter().all(|&(page, ..)| page == 0));
+}
+
+#[test]
+fn advertises_ten_gigabits_on_the_rtl8127() {
+    let (chip, _card) = started(0x6c90_0000, Interrupt::Msi);
+    let fast = reg::ADV_2500TFDX | reg::ADV_5000TFDX | reg::ADV_10000TFDX;
+    assert_eq!(chip.phy_reg(0xa5d4) & fast, fast);
+    // Its energy efficient Ethernet is off at 10 Gb/s too.
+    assert_eq!(chip.phy_reg(0xa5d0) & 0x000e, 0);
+    assert_eq!(chip.phy_reg(0xa6d4) & 0x0003, 0);
+    // The chips before it do not.
+    let (chip, _card) = started(0x64a0_0000, Interrupt::Msi);
+    assert_eq!(chip.phy_reg(0xa5d4) & reg::ADV_10000TFDX, 0);
+}
+
+#[test]
+fn says_a_ten_gigabit_link_on_the_rtl8127() {
+    let (chip, card) = started(0x6c90_0000, Interrupt::Msi);
+    let link = |status: u16| {
+        chip.set_reg(reg::PHYSTAT, 2, u64::from(status));
+        card.link()
+    };
+    let up = |mbps, full_duplex| Link { up: true, mbps, full_duplex };
+    use phystat::*;
+    assert_eq!(link(LINK | FDX | MBPS_10000), up(10000, true));
+    assert_eq!(link(LINK | FDX | MBPS_5000), up(5000, true));
+    assert_eq!(link(LINK | FDX | MBPS_2500), up(2500, true));
+    // The fastest speed the status holds wins.
+    assert_eq!(link(LINK | FDX | MBPS_10000 | MBPS_5000), up(10000, true));
+    assert_eq!(link(FDX | MBPS_10000), Link::default());
+}
+
+#[test]
+fn receives_frames_through_the_rtl8127s_rings() {
+    let (chip, mut card) = started(0x6c90_0000, Interrupt::Msi);
+    let mut buffer = [0u8; 2048];
+    assert_eq!(card.receive(&mut buffer), None);
+    // Around the ring more than once, each frame whole in a buffer, the
+    // chip having written its hash over the buffer's address each time.
+    for n in 0..600 {
+        let sent = frame(60 + n % 1400, n as u8);
+        assert!(chip.deliver(&sent, 0));
+        assert_eq!(card.receive(&mut buffer), Some(sent.len()), "frame {n}");
+        assert_eq!(&buffer[..sent.len()], &sent[..]);
+    }
+    assert_eq!(card.dropped(), 0);
+    // One the chip found wrong, and one too long for a slot, in two.
+    assert!(chip.deliver(&frame(100, 1), RX_ERROR));
+    assert!(chip.deliver(&frame(3000, 2), 0));
+    let good = frame(64, 3);
+    assert!(chip.deliver(&good, 0));
+    assert_eq!(card.receive(&mut buffer), Some(good.len()));
+    assert_eq!(&buffer[..good.len()], &good[..]);
+    assert_eq!(card.dropped(), 3);
+}
+
+#[test]
+fn sends_frames_through_the_rtl8127s_ring() {
+    let (chip, mut card) = started(0x6c90_0000, Interrupt::Msi);
+    let short = frame(42, 9);
+    assert!(card.send(&short));
+    assert!(chip.sent().is_empty(), "not before the flush");
+    card.flush();
+    let sent = chip.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(&sent[0][..42], &short[..]);
+    assert_eq!(&sent[0][42..], &[0u8; 18]);
+    // Around the ring more than once, a few at a time.
+    for round in 0..100 {
+        let frames: Vec<Vec<u8>> = (0..5).map(|n| frame(1514, round + n)).collect();
+        for frame in &frames {
+            assert!(card.send(frame), "round {round}");
+        }
+        card.flush();
+        assert_eq!(chip.sent(), frames);
+    }
+    // The ring holds one less than its descriptors.
+    chip.hang();
+    for n in 0..255 {
+        assert!(card.send(&frame(60, n as u8)), "frame {n}");
+    }
+    assert!(!card.can_send());
 }
