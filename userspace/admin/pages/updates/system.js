@@ -8,7 +8,9 @@
 // back is back.js, read when first needed.
 
 import { fill, h } from '../../dom.js';
-import { button, makeCard, paragraphs, taskLine } from './cards.js';
+import {
+  button, laterParts, makeCard, paragraphs, taskLine,
+} from './cards.js';
 import {
   clockWords, firmwareCard, keptWords, MAKER_WORDS, systemCard, withdrawnWords,
 } from './model.js';
@@ -36,8 +38,9 @@ export function makeSystem(ctx) {
   function draw() {
     const { data, admin } = ctx;
     const say = systemCard({
-      check: data.check, slots: data.slots, settings: data.settings, failed: data.failed?.failed, running: data.running, time: view.time,
+      check: data.check, slots: data.slots, settings: data.settings, failed: data.failed?.failed, running: data.running, time: view.time, now: Date.now(), names: data.names,
     });
+    const later = laterParts(ctx, card, 'system', 'the system update', say.later);
     const withdrawn = withdrawnWords(data.check);
     const kept = keptWords(data.slots);
     const time = data.settings?.restart;
@@ -52,6 +55,7 @@ export function makeSystem(ctx) {
       goback: () => button('Go back…', goBack),
     };
     const shown = admin ? [...say.buttons, ...(withdrawn?.buttons ?? [])].map((id) => buttons[id]()) : [];
+    if (later.menu) shown.splice(say.buttons.indexOf('hold') + 1, 0, later.menu);
     const picker = admin && say.state === 'staged' && !time
       ? h('div', { class: 'field' }, h('label', { for: at.id }, 'Restart at'), h('div', { class: 'btns' }, at, button('Restart at that time', () => ctx.restartAt(at.value))))
       : null;
@@ -59,6 +63,7 @@ export function makeSystem(ctx) {
     card.head(say.version, say.pill);
     fill(card.body,
       paragraphs([say.title, ...say.lines], true),
+      later.line,
       withdrawn && paragraphs(withdrawn.lines),
       taskLine(ctx.task('system')) && h('p', { class: 'muted' }, taskLine(ctx.task('system'))),
       shown.length > 0 && h('div', { class: 'btns' }, ...shown),
@@ -78,7 +83,10 @@ export function makeFirmware(ctx) {
 
   function draw() {
     const { data, admin } = ctx;
-    const say = firmwareCard({ check: data.check, slots: data.slots, running: data.running });
+    const say = firmwareCard({
+      check: data.check, slots: data.slots, running: data.running, settings: data.settings, now: Date.now(), time: ctx.view.time, names: data.names,
+    });
+    const later = laterParts(ctx, card, 'firmware', 'the firmware set', say.later);
     const stage = (one) => !say.reason && ctx.run(card, 'updates.apply', { item: 'firmware' }, one, { unlock: 'stage the firmware set', running: 'Staging the firmware set', done: 'The firmware set is staged.' })
       .then((result) => (result.task ? ctx.begin(result.task, 'updates.apply', { item: 'firmware' }) : result.ok && ctx.reload(card.heading)));
     const release = (one) => ctx.run(card, 'updates.unhold', { item: 'firmware' }, one, { unlock: 'release the hold', done: 'The hold is released.' }).then((result) => result.ok && ctx.reload(card.heading));
@@ -90,8 +98,10 @@ export function makeFirmware(ctx) {
     card.head(null, say.pill);
     fill(card.body,
       h('p', {}, h('b', {}, say.title)),
+      say.story && h('p', {}, say.story),
+      later.line,
       taskLine(ctx.task('firmware')) && h('p', { class: 'muted' }, taskLine(ctx.task('firmware'))),
-      (stageButton || (say.buttons.includes('release') && admin)) && h('div', { class: 'btns' }, stageButton, say.buttons.includes('release') && admin && button('Release the hold', release)),
+      (stageButton || later.menu || (say.buttons.includes('release') && admin)) && h('div', { class: 'btns' }, stageButton, later.menu, say.buttons.includes('release') && admin && button('Release the hold', release)),
       say.reason && h('p', { id: 'firmware-why', class: 'hint' }, say.reason),
       h('p', { class: 'muted' }, MAKER_WORDS));
   }

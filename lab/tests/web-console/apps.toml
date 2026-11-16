@@ -5,14 +5,18 @@
 # what `bundle list --json` says, which `GET /api/1/apps` runs, and one app's
 # page at /apps/{id} held to what `bundle info --json` says of it, which
 # `GET /api/1/apps/{id}` runs, with its services, what it may use, provides,
-# uses and what uses it, its data and its versions. Hold and Release the hold
-# (`POST /api/1/apps/{id}/hold` and `POST /api/1/apps/{id}/unhold`) change the
-# row and the panel and the machine says so; Remove… asks a locked
-# administrator to unlock first, says what the app is removed for and asks for
-# its name before it removes the data too; Remove… with Keep its data
-# (`POST /api/1/apps/{id}/remove`, a task) takes nginx away and the page
-# leaves its panel for the list, and this test finds the data folder where it
-# was. An app that is not installed says so, a reader sees every fact and no
+# uses and what uses it, its data, its size and its versions. Hold, which asks
+# why first, and Release the hold (`POST /api/1/apps/{id}/hold`, with the
+# reason, and `POST /api/1/apps/{id}/unhold`) change the row and the panel and
+# the machine says so; an app that has an update has Tonight and Not tonight
+# (`POST /api/1/apps/{id}/tonight` and `POST /api/1/apps/{id}/not-tonight`,
+# and `POST /api/1/apps/tonight` for every update at once), which the apps of
+# this test's machine may not have, and the script says so when they do not;
+# Remove… asks a locked administrator to unlock first, says what the app is
+# removed for and asks for its name before it removes the data too; Remove…
+# with Keep its data (`POST /api/1/apps/{id}/remove`, a task) takes nginx away
+# and the page leaves its panel for the list, and this test finds the data
+# folder where it was. An app that is not installed says so, a reader sees every fact and no
 # button, and a phone at 390 by 844 shows the list and an app alone. Each look
 # is dark, light, high contrast, forced colours and less motion, checked by axe.
 #
@@ -24,7 +28,7 @@
 # updating an app are tested with the Updates page. The accounts are two that
 # this test makes and removes, an administrator and a reader, so no script
 # needs the lab's password.
-about = "The web console's Apps pages in each engine: the apps from what bundle list says, an app's facts from bundle info, Hold and Release the hold, Remove asks to unlock, says what uses the app and asks for its name before the data goes, nginx removed with its data kept, an app that is not there, a reader, and the phone"
+about = "The web console's Apps pages in each engine: the apps from what bundle list says, an app's facts and size from bundle info, Hold with its reason and Release the hold, Tonight and Not tonight where an app has an update, Remove asks to unlock, says what uses the app and asks for its name before the data goes, nginx removed with its data kept, an app that is not there, a reader, and the phone"
 time = "20m"
 host_needs = ["curl", "scp"]
 

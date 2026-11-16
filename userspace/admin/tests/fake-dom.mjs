@@ -141,6 +141,10 @@ export class Element {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
 
+  removeEventListener(type, listener) {
+    this.listeners.set(type, (this.listeners.get(type) ?? []).filter((one) => one !== listener));
+  }
+
   /** Calls the listeners of `type` with an event that says whether it was prevented, and gives the event. */
   fire(type, more = {}) {
     const event = {
@@ -229,6 +233,9 @@ export function makeDocument({ loadsSheets = true } = {}) {
     createElementNS: (_, tag) => new Element(tag, document),
     getElementById: (id) => document.body.descendants.find((node) => node.id === id) ?? null,
     querySelector: (selector) => document.body.querySelector(selector),
+    // A menu listens for a press outside it; nothing here presses outside.
+    addEventListener() {},
+    removeEventListener() {},
   };
   document.head = new Element('head', document);
   if (loadsSheets) {

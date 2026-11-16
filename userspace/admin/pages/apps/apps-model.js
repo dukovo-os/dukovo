@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// What an app's update says: the offers of the last check, the words of an
-// update and of the flaws it fixes, and what a task that stopped to ask leaves
-// behind. The Apps pages and the Updates page say an app's update in these
-// words: `updateWords`, `fixesWords`, `flawWords`, `offersOf`, `checkOf`,
-// `askedMore` and `sheetOf`; `appHref` is the address of an app's page and
-// `idOf` the app that an address names.
+// What an app's update says: the offers of the last check, and the words of an
+// update and of the flaws it fixes. The Apps pages and the Updates page say an
+// app's update in these words: `updateWords`, `fixesWords`, `flawWords`,
+// `offersOf` and `checkOf`; `appHref` is the address of an app's page and
+// `idOf` the app that an address names. What a task that stopped to ask leaves
+// behind is lib/asked-more.js.
 
 import { counted } from '../../lib/size-words.js';
 import { kindOfUpdate, versionPair } from '../../lib/version-words.js';
@@ -108,17 +108,4 @@ export function fixesWords(flaws) {
 export function flawWords(flaws) {
   if (flaws?.state !== 'known' || !(flaws.count > 0)) return null;
   return `${counted(flaws.count, 'known flaw')}${SEVERITIES.includes(flaws.worst) ? `, worst ${flaws.worst}` : ''}`;
-}
-
-/** The line that `bundle update` asks its question with, when an update asks for more than the version it replaces. */
-const QUESTION = /Install it\?/;
-
-/** Whether the task `task` (read whole, with its log) ended because the update asks for more than the version it replaces, and waits for a yes. */
-export const askedMore = (task) => task?.state === 'failed' && listOf(task.log).some((line) => QUESTION.test(line));
-
-/** The sheet that came before the question, the lines that say what the update asks for. */
-export function sheetOf(task) {
-  const lines = listOf(task?.log);
-  const asked = lines.findIndex((line) => QUESTION.test(line));
-  return (asked === -1 ? lines : lines.slice(0, asked)).join('\n').trim();
 }

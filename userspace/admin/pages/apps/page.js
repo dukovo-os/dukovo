@@ -12,16 +12,17 @@
 // wanted.
 
 import { h, icon } from '../../dom.js';
+import { namesOf } from '../../lib/hold-words.js';
 import { PAGES } from '../../pages.js';
 import { askToUnlock, isUnlocked } from '../../unlock.js';
 import { atMostEvery } from '../overview/refresh.js';
-import { askedMore, idOf, sheetOf } from './apps-model.js';
+import { idOf } from './apps-model.js';
 import { makeList } from './list.js';
 import {
   ADD_LEAD, checkedWords, noSuchApp, rowsOf,
 } from './list-model.js';
 import {
-  holdCall, makeJobs, runWords, UPDATE_ALL_WORDS, updateAllCall, updateCall,
+  holdCall, makeJobs, notTonightCall, runWords, tonightCall, UPDATE_ALL_WORDS, updateAllCall, updateCall,
 } from './run-model.js';
 
 /** How often the apps are read again while the tab is shown. */
@@ -54,6 +55,7 @@ export async function show(view) {
   let info = null;
   let services = null;
   let settings = null;
+  let names = new Map();
   let managed = null;
   let row = null;
   let latest = 0;
@@ -95,15 +97,17 @@ export async function show(view) {
     return result;
   }
 
-  /** Opens a dialog for the app on show, once the person has unlocked; `open` gives the dialog's function. Focus goes back to the button `action`, which a redraw while the dialog was open may have made new. */
+  /** Opens a dialog for the app on show, once the person has unlocked; `open` gives the dialog's function. Focus goes back to the button `action`, which a redraw while the dialog was open may have made new. Gives what the dialog gave, whether it made its change. */
   async function ask(words, open, action) {
-    if (!(await unlockFor(words))) return;
+    if (!(await unlockFor(words))) return false;
+    let done = false;
     try {
-      await (await open())(view, { info, started });
+      done = await (await open())(view, { info, started });
     } catch (error) {
       view.problem(error);
     }
     app?.focus(action);
+    return done;
   }
 
   const act = {
@@ -115,9 +119,25 @@ export async function show(view) {
         draw();
       }
     },
-    async hold(button, held) {
-      const result = await run(holdCall(info.id, held), button, runWords(held ? 'unhold' : 'hold', info.name, info.version));
+    async tonight(button, { yes = false }) {
+      const result = await run(tonightCall(info.id, { yes }), button, runWords('tonight', info.name));
       if (result.ok) {
+        stopped.delete(info.id);
+        draw();
+      }
+    },
+    async notTonight(button) {
+      if ((await run(notTonightCall(info.id), button, runWords('notTonight', info.name))).ok) {
+        await read();
+        app?.focus('tonight');
+      }
+    },
+    async hold(button, held) {
+      // Holding asks why first, in a dialog; releasing is one press.
+      const made = held
+        ? (await run(holdCall(info.id, true), button, runWords('unhold', info.name))).ok
+        : await ask(runWords('hold', info.name).unlock, async () => (await import('./hold.js')).openHold, 'hold');
+      if (made) {
         await read();
         app?.focus('hold');
       }
@@ -166,12 +186,13 @@ export async function show(view) {
     }
   }
 
-  /** An update, going back or a removal ended: an update that stopped to ask is read for its sheet, a removal of the app on show leaves its page. */
+  /** An update, going back or a removal ended: an update that stopped to ask (it ends done with status 1, or failed) is read for its sheet, a removal of the app on show leaves its page. */
   async function ended(job, state) {
     if (job.app !== null) stopped.delete(job.app);
-    if (job.kind === 'update' && state === 'failed' && job.app !== null) {
+    if ((job.kind === 'update' || job.kind === 'tonight') && state !== 'stopped' && job.app !== null) {
       try {
         const task = await view.api.get(`/api/1/tasks/${job.id}`);
+        const { askedMore, sheetOf } = await import('../../lib/asked-more.js');
         if (askedMore(task)) stopped.set(job.app, sheetOf(task));
       } catch {
         // The task's log is in the Tasks list.
@@ -199,13 +220,14 @@ export async function show(view) {
         })
         : null;
       const counted = one && model.manageRead(wanted, admin);
-      const [bundles, checked, found, spark, rule, manage] = await Promise.all([
+      const [bundles, checked, found, spark, rule, manage, who] = await Promise.all([
         view.api.get('/api/1/apps'),
         soft(view.api.get('/api/1/updates'), undefined),
         one,
         one && soft(view.api.get('/api/1/services'), null),
         one && soft(view.api.get('/api/1/updates/settings'), null),
         counted && soft(view.api.get(counted), null),
+        one && soft(view.api.get('/api/1/accounts'), null),
       ]);
       if (mine !== latest) return;
       const listed = (Array.isArray(bundles?.bundles) ? bundles.bundles : []).some((bundle) => bundle?.id === wanted);
@@ -216,6 +238,7 @@ export async function show(view) {
       info = found?.answer ?? null;
       services = spark;
       settings = rule;
+      names = namesOf(who);
       managed = manage;
       failed = false;
       draw();
@@ -257,7 +280,7 @@ export async function show(view) {
     const own = rowsOf({ bundles: [info] }, last);
     row = [...rows.everyone, ...rows.yours].find((one) => one.id === info.id) ?? [...own.everyone, ...own.yours][0];
     app.set({
-      info, row, show: services, settings, managed, admin, links, sheet: row.update.state === 'update' ? stopped.get(info.id) ?? null : null,
+      info, row, show: services, settings, names, managed, admin, links, sheet: row.update.state === 'update' ? stopped.get(info.id) ?? null : null,
     });
   }
 

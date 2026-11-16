@@ -6,6 +6,7 @@
 // uses and what uses it, its data, its versions, and the words of the
 // questions that going back and removing ask.
 
+import { atWords, byWords } from '../../lib/hold-words.js';
 import { NGINX_ID, POSTGRESQL_ID } from '../../lib/known-bundles.js';
 import { bytesWords, counted } from '../../lib/size-words.js';
 import { appHref, capital, isText, listOf, urgent, worstOf } from './apps-model.js';
@@ -238,8 +239,44 @@ export function manageOf(id, answer, links) {
 /** The data folder of each service of the app, which ADR 0385 puts at `/shared/services/ID/ACCOUNT`. */
 export const dataFolders = (info, services) => [...new Set(services.map((service) => `/shared/services/${info.id}/${service.account}`))];
 
-/** The size of the app, "9 MB", or null when it is not told. */
-export const sizeWords = (info) => (Number.isFinite(info.bytes) ? bytesWords(info.bytes) : null);
+/** The day of `ms` in words: "today", "yesterday", "Nov 16". */
+const dayWords = (ms, time) => atWords(ms, time).replace(/ at \d{1,2}:\d{2} [AP]M$/, '').replace(/^on /, '');
+
+/** `count` and "files", with the thousands set apart as the page writes numbers: "3,412 files". */
+const filesWords = (count) => `${count.toLocaleString('en-US')} ${count === 1 ? 'file' : 'files'}`;
+
+/**
+ * The Size row of the app, or null when it says nothing: what its own files
+ * take, and what its data takes as `bundled`'s last daily walk found it
+ * (`info.data_size`, `{bytes, files, complete, measured_ms}`, or null while
+ * nothing was measured). A walk that its limits ended counts at least that
+ * much. An app with no service has no data folder, and an app that is a
+ * person's own is not measured, so each says only what it takes itself.
+ * `time` is the console's (lib/time.js).
+ */
+export function sizeWords(info, time) {
+  const own = Number.isFinite(info.bytes) ? `${bytesWords(info.bytes)} installed` : null;
+  const size = info.data_size;
+  let data = null;
+  if (size && Number.isFinite(size.bytes) && Number.isFinite(size.measured_ms)) {
+    data = size.complete === false
+      ? `at least ${bytesWords(size.bytes)} of data: counting stopped at its limits (${dayWords(size.measured_ms, time)})`
+      : `${bytesWords(size.bytes)} of data in ${filesWords(size.files ?? 0)}, measured ${atWords(size.measured_ms, time)}`;
+  } else if (size === null && info.for_everyone !== false && listOf(info.service_list).length > 0) {
+    data = 'its data is measured once a day; not yet';
+  }
+  return [own, data].filter(Boolean).join(' · ') || null;
+}
+
+/**
+ * The hold row of an app that is held: "Held at 8.0.3 since Nov 2 by admin:
+ * "app tests use this version"". `hold` is `{at, by, why}` from the list
+ * (`held_since_ms`, `held_by`, `held_reason`) and `names` the accounts' (lib/hold-model.js).
+ */
+export function holdRow(info, hold, time, names) {
+  const since = Number.isFinite(hold?.at) ? ` since ${atWords(hold.at, time).replace(/^on /, '')}` : '';
+  return `Held at ${info.version}${since}${byWords(hold?.by, names)}${isText(hold?.why) ? `: "${hold.why}"` : ''}`;
+}
 
 /** How the apps update, from `updates.settings` (`update settings --json`): "Update by themselves", "Tell me", or null when it is not told. */
 export function ruleWords(settings) {
@@ -284,6 +321,9 @@ export const rollbackWords = (info) => `Goes back to ${info.previous} and holds 
 
 /** What holding says under the buttons of a held app. */
 export const heldWords = (info) => `Held at ${info.version}: no update is taken, security fixes included. Release the hold to take updates again.`;
+
+/** What the question that asks why says before an app is held. */
+export const holdLead = (info) => `Holding keeps ${info.name} at ${info.version}: no update is taken, security fixes included, until you release the hold.`;
 
 /** What a reader is told in place of the buttons. */
 export const READER_LINE = 'An administrator can update, hold, go back and remove apps.';

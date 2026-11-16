@@ -36,6 +36,7 @@ const reads = () => ({
   '/api/1/tasks': { tasks: [] },
   '/api/1/services': services(),
   '/api/1/updates/settings': settings(),
+  '/api/1/accounts': [{ name: 'chase', uid: 1000, console: true }],
   '/api/1/websites': { format: 1, websites: [{ name: 'shop.example.org' }, { name: 'blog.example.org' }] },
   '/api/1/databases': { format: 1, databases: [{ name: 'shop' }, { name: 'blog' }, { name: 'wiki' }] },
   '/api/1/apps/io.valkey.valkey': valkey(),
@@ -57,9 +58,14 @@ export async function openApps(context, {
   context.mock.method(Date, 'now', () => NOW);
   setUnlockSeconds(unlocked ? 900 : null);
   const controller = new AbortController();
+  // The question that asks why a hold is made has a slot that watches for a problem.
+  const realObserver = globalThis.MutationObserver;
+  globalThis.MutationObserver = class { observe() {} disconnect() {} };
   context.after(() => {
     controller.abort();
     setUnlockSeconds(null);
+    if (realObserver === undefined) delete globalThis.MutationObserver;
+    else globalThis.MutationObserver = realObserver;
   });
   const who = {
     name: 'chase', admin: true, terminal: true, ...session,

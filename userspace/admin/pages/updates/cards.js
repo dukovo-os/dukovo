@@ -6,6 +6,8 @@
 // words say it), the place a refusal goes, and a task's step.
 
 import { fill, h } from '../../dom.js';
+import { menu } from '../../shell/menus.js';
+import { LATER_CHOICES } from './model.js';
 
 /** A card: `{element, heading, errors, top, body, head(title, pill, extra)}`; `top` is where a line that waits goes, `head` draws the heading, whose title is the card's name and then what it is. */
 export function makeCard(id, name) {
@@ -34,6 +36,38 @@ export function button(label, onclick, kind = '') {
   const one = h('button', { class: `btn${kind ? ` ${kind}` : ''}`, type: 'button' }, label);
   one.addEventListener('click', () => onclick(one));
   return one;
+}
+
+/** "Later ▾": the menu that puts an update's reminder off; `pick(for, button)` is told of the choice. `name` says which update it is for. */
+export function laterMenu(name, pick) {
+  const made = menu({
+    label: `Put off the reminder of ${name}`,
+    content: ['Later', h('span', { 'aria-hidden': 'true' }, ' ▾')],
+    items: () => LATER_CHOICES.map((one) => ({ label: one.label, onSelect: () => pick(one.for, made.button) })),
+  });
+  made.button.setAttribute('class', 'btn');
+  made.button.setAttribute('aria-label', `Later for ${name}`);
+  return made.element;
+}
+
+/** The line of an update that is put off, "Put off until Nov 23 at 3:06 AM by admin · Remind me now"; the button is for an administrator. */
+export const putLine = (words, remind) => h('div', { class: 'upd-put' }, words, remind && [' · ', button('Remind me now', remind)]);
+
+/**
+ * What Later says under an update's words and beside its buttons, for `item`
+ * (`system`, `firmware` or an app's ID) called `name`: `{line, menu}`. `later`
+ * is `laterOf`'s (model.js); `card` is where a refusal goes. Only an
+ * administrator is given the menu and Remind me now.
+ */
+export function laterParts(ctx, card, item, name, later) {
+  const set = async (kind, one) => {
+    const words = { unlock: 'put the reminder off', done: kind === 'off' ? 'The reminder is back.' : 'The reminder is put off.' };
+    if ((await ctx.run(card, 'updates.later', { item, for: kind }, one, words)).ok) await ctx.reload(card.heading);
+  };
+  if (!later) return { line: null, menu: null };
+  if (later.state === 'put') return { line: putLine(later.words, ctx.admin && ((one) => set('off', one))), menu: null };
+  if (later.state === 'ask') return { line: null, menu: ctx.admin ? laterMenu(name, set) : null };
+  return { line: h('p', { class: 'muted' }, later.words), menu: null };
 }
 
 /** The step a task of this page is at: "Step 2 of 4: fetching, 41%", or null while it has none. */

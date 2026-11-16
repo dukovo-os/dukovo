@@ -16,7 +16,7 @@ import { button, makeCard } from './cards.js';
 import { makeChecks } from './checks.js';
 import { makeHeld } from './held.js';
 import {
-  appOffers, checkedWords, checkOf, runningOf, slotVersion, withHolds,
+  appOffers, checkedWords, checkOf, namesOf, runningOf, slotVersion, withHolds,
 } from './model.js';
 import { makeSettings } from './settings.js';
 import { makeFirmware, makeSystem } from './system.js';
@@ -25,18 +25,18 @@ const PROMISE = 'Each update of the system starts as a try: if it fails a requir
 
 /** What the page reads when it opens, by name. */
 const READS = {
-  last: '/api/1/updates', settings: '/api/1/updates/settings', checks: '/api/1/updates/checks', failed: '/api/1/updates/failed', apps: '/api/1/apps', about: '/api/1/console/about', tasks: '/api/1/tasks',
+  last: '/api/1/updates', settings: '/api/1/updates/settings', checks: '/api/1/updates/checks', failed: '/api/1/updates/failed', apps: '/api/1/apps', about: '/api/1/console/about', tasks: '/api/1/tasks', accounts: '/api/1/accounts',
 };
 
 /** The tasks of this page, and which card shows each. */
-const WATCHED = ['updates.apply', 'apps.update', 'apps.update-all'];
+const WATCHED = ['updates.apply', 'apps.update', 'apps.update-all', 'apps.tonight'];
 const running = (task) => task.state === 'running' || task.state === 'waiting';
 const cardOf = (task) => (['system', 'firmware'].includes(task.args?.item) ? task.args.item : 'apps');
 
 export async function show(view) {
   const admin = view.session.admin === true;
   const data = {
-    check: null, settings: null, checks: null, failed: null, apps: null, flaws: null, slots: null, slotsState: admin ? 'locked' : 'reader', running: null,
+    check: null, settings: null, checks: null, failed: null, apps: null, flaws: null, slots: null, slotsState: admin ? 'locked' : 'reader', running: null, names: new Map(),
   };
   const tasks = new Map();
   const notes = new Map();
@@ -171,6 +171,7 @@ export async function show(view) {
     data.failed = got.failed;
     data.apps = Array.isArray(got.apps?.bundles) ? got.apps.bundles : null;
     data.running = runningOf(got.about);
+    data.names = namesOf(got.accounts);
     tasks.clear();
     for (const task of Array.isArray(got.tasks?.tasks) ? got.tasks.tasks : []) if (WATCHED.includes(task.action) && running(task)) tasks.set(task.id, task);
     await readSlotsNow();
@@ -221,8 +222,19 @@ export async function show(view) {
       drawAll();
       return;
     }
-    if (task.state !== 'done' && task.action === 'apps.update' && task.args?.id) notes.set(task.args.id, task.note || task.words || 'It asks for more than the version before.');
-    ctx.say(task.state === 'done' ? 'The update is done.' : 'The update did not finish.');
+    const app = ['apps.update', 'apps.tonight'].includes(task.action) ? task.args?.id : null;
+    let asked = false;
+    if (app && task.state !== 'done') {
+      notes.set(app, { words: task.note || task.words || 'It asks for more than the version before.', sheet: '' });
+    } else if (app) {
+      // An update that asks for more than the version before ends with status 1, which is `done`: its log has the sheet.
+      const whole = await view.api.get(`/api/1/tasks/${task.id}`).catch(() => null);
+      const { askedMore, sheetOf } = await import('../../lib/asked-more.js');
+      asked = askedMore(whole);
+      if (asked) notes.set(app, { words: 'It asks for more than the version before. Read what it asks for before you go on.', sheet: sheetOf(whole) });
+      else notes.delete(app);
+    }
+    ctx.say(asked ? 'The update asks for more than the version before.' : task.state === 'done' ? 'The update is done.' : 'The update did not finish.');
     await read();
   });
   view.on('unlock', async () => {
