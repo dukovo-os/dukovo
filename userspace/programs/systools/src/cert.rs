@@ -577,14 +577,32 @@ fn one_name(args: &mut Args, what: &str) -> Result<String, Fail> {
     name.ok_or_else(|| usage(format!("{what} takes the name of a certificate")))
 }
 
-/// `cert add NAME --chain FILE --key FILE [--replace] [--untrusted]`.
+/// Where `cert add` takes the certificate and its key from.
+enum Source {
+    /// A file of the chain and a file of the key.
+    Files { chain: PathBuf, key: PathBuf },
+    /// One PEM stream on standard input.
+    Input,
+}
+
+/// `cert add NAME --chain FILE --key FILE [--replace] [--untrusted]` or
+/// `cert add NAME --from - [--replace] [--untrusted]`.
 fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
-    let (mut name, mut chain, mut key) = (None, None, None);
+    let (mut name, mut chain, mut key, mut from) = (None, None, None, false);
     let (mut replace, mut untrusted) = (false, false);
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(option) if option == "chain" => chain = Some(PathBuf::from(args.value()?)),
             Arg::Long(option) if option == "key" => key = Some(PathBuf::from(args.value()?)),
+            Arg::Long(option) if option == "from" => {
+                if args.value()? != "-" {
+                    return Err(usage(
+                        "--from takes `-`, the standard input, which holds the key and the chain"
+                            .into(),
+                    ));
+                }
+                from = true;
+            }
             Arg::Long(option) if option == "replace" => replace = true,
             Arg::Long(option) if option == "untrusted" => untrusted = true,
             Arg::Operand(operand) if name.is_none() => name = Some(operand),
@@ -592,17 +610,38 @@ fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let name = name.and_then(|name| name.into_string().ok());
-    let (Some(name), Some(chain), Some(key)) = (name, chain, key) else {
-        return Err(usage("add takes NAME, --chain FILE and --key FILE".into()));
+    let source = match (from, chain, key) {
+        (true, None, None) => Some(Source::Input),
+        (false, Some(chain), Some(key)) => Some(Source::Files { chain, key }),
+        _ => None,
+    };
+    let (Some(name), Some(source)) = (name, source) else {
+        return Err(usage("add takes NAME, and --chain FILE and --key FILE or --from -".into()));
     };
     need_root()?;
     let now = now();
     need_clock(now)?;
     let store = Store::system();
-    let lock = store.lock().map_err(fail)?;
-    let request = add::Request { name: &name, chain: &chain, key: &key, replace, untrusted };
     let roots = tls::roots(&[], "cert");
-    let checked = add::check(&store, &request, &roots, now).map_err(fail)?;
+    // The input is read before the lock is taken: a person at a terminal
+    // may take as long as they like to paste it.
+    let stream = match &source {
+        Source::Input => Some(add::read_stream(&mut std::io::stdin().lock()).map_err(fail)?),
+        Source::Files { .. } => None,
+    };
+    let lock = store.lock().map_err(fail)?;
+    let replaced = replace && store.generation(&name).map_err(fail)?.is_some();
+    let checked = match (&source, &stream) {
+        (Source::Files { chain, key }, _) => {
+            let request = add::Request { name: &name, chain, key, replace, untrusted };
+            add::check(&store, &request, &roots, now)
+        }
+        (Source::Input, Some(stream)) => {
+            add::check_stream(&store, &name, replace, untrusted, stream, &roots, now)
+        }
+        (Source::Input, None) => Err(String::from("there is no input")),
+    }
+    .map_err(fail)?;
     let files = Files {
         chain: &checked.chain,
         key: &checked.key,
@@ -611,6 +650,19 @@ fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
         acme: None,
     };
     store.install(&lock, &name, &files).map_err(fail)?;
+    let event = if replaced { history::Event::Replaced } else { history::Event::Added };
+    let detail = format!(
+        "{}, runs out {}",
+        checked.details.names.join(", "),
+        util::time_text(checked.details.not_after, "%F", true)
+    );
+    if let Err(why) = history::append(
+        &store,
+        &lock,
+        &history::Entry::new(now, &name, event, &detail, history::By::Cert),
+    ) {
+        eprintln!("cert: the history cannot be written: {why}");
+    }
     drop(lock);
     println!(
         "{name} added: {}, runs out {}",

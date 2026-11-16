@@ -31,6 +31,22 @@ pub const FILE_MAX: u64 = 64 * 1024;
 /// The most certificates in a chain file.
 const CHAIN_MAX: usize = 10;
 
+/// The error ID of a chain that leads to no authority the system trusts.
+const CHAIN_NOT_TRUSTED: &str = "CRT-111";
+
+/// The error ID of a key that is not the certificate's or that the system
+/// cannot sign with.
+const KEY_WRONG: &str = "CRT-112";
+
+/// The error ID of a certificate that is not valid now, names nothing, or
+/// is an authority's.
+const CERTIFICATE_WRONG: &str = "CRT-113";
+
+/// `why`, with the ID of its page at the end.
+fn with_id(why: String, id: &str) -> String {
+    format!("{why} ({id})")
+}
+
 /// What a person asked `cert add` to add.
 pub struct Request<'a> {
     pub name: &'a str,
@@ -76,6 +92,96 @@ pub fn check(
     let chain = read_limited(request.chain)?;
     let key = read_limited(request.key)?;
     check_texts(&chain, &key, request.untrusted, roots, now)
+}
+
+/// What `cert add --from -` calls the one input in its messages.
+const STREAM: &str = "the input";
+
+/// Reads the input of `cert add --from -`, one PEM stream that holds the
+/// key and the chain: at most a chain's and a key's [`FILE_MAX`] each.
+///
+/// # Errors
+///
+/// With why it cannot be read, is too long, or is not text.
+pub fn read_stream(input: &mut dyn Read) -> Result<String, String> {
+    let most = 2 * FILE_MAX;
+    let mut bytes = Vec::new();
+    input
+        .take(most + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| format!("{STREAM}: {}", util::strip_os_error(&err)))?;
+    if bytes.len() as u64 > most {
+        return Err(format!(
+            "{STREAM} is larger than {} KiB, the most the key and the chain take together",
+            most / 1024
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{STREAM} is not PEM text"))
+}
+
+/// Splits what [`read_stream`] read into the chain and the key, which may
+/// come in either order: the certificates, in the order they came, and the
+/// one private key, each at most [`FILE_MAX`] bytes as it is stored.
+///
+/// # Errors
+///
+/// With what is wrong with the stream's blocks: any that is neither a
+/// certificate nor a private key, none or more than one key, or a part too
+/// long.
+fn split_stream(stream: &str) -> Result<(Text, Text), String> {
+    let blocks = inspect::pem_blocks(stream).map_err(|why| format!("{STREAM}: {why}"))?;
+    let (mut chain, mut keys) = (String::new(), Vec::new());
+    for block in &blocks {
+        if block.label == inspect::CERTIFICATE {
+            chain.push_str(&inspect::pem_encode(&block.label, &block.der));
+        } else if block.label.ends_with("PRIVATE KEY") {
+            keys.push(block);
+        } else {
+            return Err(format!(
+                "{STREAM} holds a {} block, which is neither a certificate nor a private key",
+                block.label
+            ));
+        }
+    }
+    let [key] = keys.as_slice() else {
+        return Err(match keys.len() {
+            0 => format!("{STREAM} holds no private key: it holds the key and the chain"),
+            count => format!("{STREAM} holds {count} private keys: it holds one"),
+        });
+    };
+    let key = inspect::pem_encode(&key.label, &key.der);
+    for (what, text) in [("certificates", &chain), ("a key", &key)] {
+        if text.len() as u64 > FILE_MAX {
+            return Err(format!(
+                "{STREAM} holds {what} of more than {} KiB, which is the most certd keeps",
+                FILE_MAX / 1024
+            ));
+        }
+    }
+    Ok((
+        Text { shown: STREAM.to_string(), text: chain },
+        Text { shown: STREAM.to_string(), text: key },
+    ))
+}
+
+/// Checks the stream of `cert add --from -`, `stream`, as [`check`] checks
+/// the two files.
+///
+/// # Errors
+///
+/// With the first thing that is wrong, in words that say what to do.
+pub fn check_stream(
+    store: &Store,
+    name: &str,
+    replace: bool,
+    untrusted: bool,
+    stream: &str,
+    roots: &RootCertStore,
+    now: i64,
+) -> Result<Checked, String> {
+    check_name(store, name, replace)?;
+    let (chain, key) = split_stream(stream)?;
+    check_texts(&chain, &key, untrusted, roots, now)
 }
 
 /// Step 1: the name is a name, is not certd's own, and is free, or is an
@@ -150,8 +256,9 @@ pub(super) fn check_texts(
             blocks.len()
         ));
     };
-    let private = inspect::private_key(block).map_err(|why| format!("{}: {why}", key.shown))?;
-    inspect::key_fits(&certificates, &private)?;
+    let private = inspect::private_key(block)
+        .map_err(|why| with_id(format!("{}: {why}", key.shown), KEY_WRONG))?;
+    inspect::key_fits(&certificates, &private).map_err(|why| with_id(why, KEY_WRONG))?;
     let details = check_first(&certificates[0], &chain.shown, now)?;
     let mut notes = Vec::new();
     match inspect::trust(&certificates, roots, now) {
@@ -164,15 +271,19 @@ pub(super) fn check_texts(
              it will warn"
         )),
         Trust::UnknownIssuer(issuer) => {
-            return Err(format!(
-                "the chain stops at {issuer}, which no authority Dukovo trusts signed: the file \
-                 lacks {issuer}'s intermediate certificate, which your authority gives with the \
-                 certificate (put it after the certificate in {}); a private authority that the \
-                 clients trust and this machine does not is taken with --untrusted",
-                chain.shown
+            return Err(with_id(
+                format!(
+                    "the chain stops at {issuer}, which no authority Dukovo trusts signed: the \
+                     file lacks {issuer}'s intermediate certificate, which your authority gives \
+                     with the certificate (put it after the certificate in {}); a private \
+                     authority that the clients trust and this machine does not is taken with \
+                     --untrusted",
+                    chain.shown
+                ),
+                CHAIN_NOT_TRUSTED,
             ));
         }
-        Trust::Refused(why) => return Err(why),
+        Trust::Refused(why) => return Err(with_id(why, CHAIN_NOT_TRUSTED)),
     }
     Ok(Checked {
         chain: certificates
@@ -195,22 +306,34 @@ fn check_first(
     let details = inspect::details(first).map_err(|why| format!("{chain_file}: {why}"))?;
     if details.not_after <= now {
         let date = util::local_time(details.not_after, "%F");
-        return Err(format!("the certificate ran out on {date}: add one that is valid now"));
+        return Err(with_id(
+            format!("the certificate ran out on {date}: add one that is valid now"),
+            CERTIFICATE_WRONG,
+        ));
     }
     if details.not_before > now {
         let date = util::local_time(details.not_before, "%F");
-        return Err(format!("the certificate starts on {date}, which is not yet: add it then"));
+        return Err(with_id(
+            format!("the certificate starts on {date}, which is not yet: add it then"),
+            CERTIFICATE_WRONG,
+        ));
     }
     if details.names.is_empty() {
-        return Err(String::from(
-            "the certificate names no host: it has no DNS or IP name among its subject \
-             alternative names, which is where clients look",
+        return Err(with_id(
+            String::from(
+                "the certificate names no host: it has no DNS or IP name among its subject \
+                 alternative names, which is where clients look",
+            ),
+            CERTIFICATE_WRONG,
         ));
     }
     if details.authority {
-        return Err(format!(
-            "the first certificate is a certificate authority's, not a server's: put the \
-             server's certificate first in {chain_file}"
+        return Err(with_id(
+            format!(
+                "the first certificate is a certificate authority's, not a server's: put the \
+                 server's certificate first in {chain_file}"
+            ),
+            CERTIFICATE_WRONG,
         ));
     }
     Ok(details)
@@ -291,6 +414,7 @@ mod tests {
         assert!(why.contains("lacks CN=Test Intermediate's intermediate certificate"), "{why}");
         assert!(why.contains("after the certificate in chain.pem"), "{why}");
         assert!(why.contains("--untrusted"), "{why}");
+        assert!(why.ends_with("(CRT-111)"), "{why}");
     }
 
     #[test]
@@ -321,7 +445,7 @@ mod tests {
         let leaf = fixtures::server(&pki.middle, &Server::default());
         let other = fixtures::server(&pki.middle, &Server::default());
         let why = run(&full(&leaf, &pki), &other.key, false, &pki.roots).unwrap_err();
-        assert_eq!(why, "the key is not the certificate's");
+        assert_eq!(why, "the key is not the certificate's (CRT-112)");
     }
 
     #[test]
@@ -331,6 +455,7 @@ mod tests {
         let nonsense = inspect::pem_encode("PRIVATE KEY", &[1, 2, 3]);
         let why = run(&full(&leaf, &pki), &nonsense, false, &pki.roots).unwrap_err();
         assert!(why.contains("not one the system can sign with"), "{why}");
+        assert!(why.ends_with("(CRT-112)"), "{why}");
     }
 
     #[test]
@@ -361,7 +486,10 @@ mod tests {
             &Server { not_after: NOW - 2 * DAY, ..Server::default() },
         );
         let why = run(&full(&leaf, &pki), &leaf.key, false, &pki.roots).unwrap_err();
-        assert_eq!(why, "the certificate ran out on 2027-01-13: add one that is valid now");
+        assert_eq!(
+            why,
+            "the certificate ran out on 2027-01-13: add one that is valid now (CRT-113)"
+        );
     }
 
     #[test]
@@ -372,7 +500,10 @@ mod tests {
             &Server { not_before: NOW + 3 * DAY, ..Server::default() },
         );
         let why = run(&full(&leaf, &pki), &leaf.key, false, &pki.roots).unwrap_err();
-        assert_eq!(why, "the certificate starts on 2027-01-18, which is not yet: add it then");
+        assert_eq!(
+            why,
+            "the certificate starts on 2027-01-18, which is not yet: add it then (CRT-113)"
+        );
     }
 
     #[test]
@@ -382,6 +513,7 @@ mod tests {
             fixtures::server(&pki.middle, &Server { names: Vec::new(), ..Server::default() });
         let why = run(&full(&leaf, &pki), &leaf.key, false, &pki.roots).unwrap_err();
         assert!(why.starts_with("the certificate names no host"), "{why}");
+        assert!(why.ends_with("(CRT-113)"), "{why}");
     }
 
     #[test]
@@ -391,6 +523,7 @@ mod tests {
         let why = run(&full(&leaf, &pki), &leaf.key, false, &pki.roots).unwrap_err();
         assert!(why.contains("a certificate authority's, not a server's"), "{why}");
         assert!(why.contains("first in chain.pem"), "{why}");
+        assert!(why.ends_with("(CRT-113)"), "{why}");
     }
 
     #[test]
@@ -426,6 +559,115 @@ mod tests {
 
     fn store(scratch: &Scratch) -> Store {
         Store::at(&scratch.0.join("certificates"), Duration::from_secs(5))
+    }
+
+    fn stream(text: &str, untrusted: bool, roots: &RootCertStore) -> Result<Checked, String> {
+        let scratch = Scratch::new("add-stream");
+        check_stream(&store(&scratch), "nas.example", false, untrusted, text, roots, NOW)
+    }
+
+    #[test]
+    fn a_stream_with_the_key_then_the_chain_is_added_as_the_two_files_are() {
+        let pki = pki();
+        let leaf = fixtures::server(&pki.middle, &Server::default());
+        let checked =
+            stream(&format!("{}{}", leaf.key, full(&leaf, &pki)), false, &pki.roots).unwrap();
+        assert_eq!(checked.details.names, ["nas.example"]);
+        assert_eq!(checked.chain, full(&leaf, &pki));
+        assert_eq!(checked.key, leaf.key);
+        assert!(checked.notes.is_empty());
+    }
+
+    #[test]
+    fn a_stream_takes_the_key_in_any_place_and_keeps_the_certificates_in_order() {
+        let pki = pki();
+        let leaf = fixtures::server(&pki.middle, &Server::default());
+        let after = stream(&format!("{}{}", full(&leaf, &pki), leaf.key), false, &pki.roots);
+        assert_eq!(after.unwrap().chain, full(&leaf, &pki));
+        let first = fixtures::chain_file(&[&leaf.der]);
+        let second = fixtures::chain_file(&[pki.middle.der()]);
+        let between = stream(&format!("{first}{}{second}", leaf.key), false, &pki.roots).unwrap();
+        assert_eq!(between.chain, full(&leaf, &pki));
+        // Windows line ends and blank lines between the blocks are no matter.
+        let windows = format!("{}\n{}", leaf.key, full(&leaf, &pki)).replace('\n', "\r\n");
+        assert_eq!(stream(&windows, false, &pki.roots).unwrap().key, leaf.key);
+    }
+
+    #[test]
+    fn a_stream_without_a_key_or_with_two_is_refused_and_so_is_any_other_block() {
+        let pki = pki();
+        let leaf = fixtures::server(&pki.middle, &Server::default());
+        let why = stream(&full(&leaf, &pki), false, &pki.roots).unwrap_err();
+        assert_eq!(why, "the input holds no private key: it holds the key and the chain");
+        let two = format!("{}{}{}", leaf.key, leaf.key, full(&leaf, &pki));
+        let why = stream(&two, false, &pki.roots).unwrap_err();
+        assert_eq!(why, "the input holds 2 private keys: it holds one");
+        let other = inspect::pem_encode("PUBLIC KEY", b"x");
+        let why = stream(&format!("{other}{}{}", leaf.key, full(&leaf, &pki)), false, &pki.roots)
+            .unwrap_err();
+        assert_eq!(
+            why,
+            "the input holds a PUBLIC KEY block, which is neither a certificate nor a private key"
+        );
+        let why = stream(&leaf.key, false, &pki.roots).unwrap_err();
+        assert!(why.starts_with("the input holds 0 certificates"), "{why}");
+        let why = stream("not PEM\n", false, &pki.roots).unwrap_err();
+        assert!(why.starts_with("the input: line 1"), "{why}");
+    }
+
+    #[test]
+    fn a_stream_is_refused_with_the_id_of_the_check_it_fails() {
+        let pki = pki();
+        let leaf = fixtures::server(&pki.middle, &Server::default());
+        let lacking = format!("{}{}", leaf.key, fixtures::chain_file(&[&leaf.der]));
+        let why = stream(&lacking, false, &pki.roots).unwrap_err();
+        assert!(why.contains("the chain stops at CN=Test Intermediate"), "{why}");
+        assert!(why.contains("after the certificate in the input"), "{why}");
+        assert!(why.ends_with("(CRT-111)"), "{why}");
+        assert!(stream(&lacking, true, &pki.roots).is_ok());
+        let other = fixtures::server(&pki.middle, &Server::default());
+        let why =
+            stream(&format!("{}{}", other.key, full(&leaf, &pki)), false, &pki.roots).unwrap_err();
+        assert_eq!(why, "the key is not the certificate's (CRT-112)");
+        let old = fixtures::server(
+            &pki.middle,
+            &Server { not_after: NOW - 2 * DAY, ..Server::default() },
+        );
+        let why =
+            stream(&format!("{}{}", old.key, full(&old, &pki)), false, &pki.roots).unwrap_err();
+        assert!(why.ends_with("(CRT-113)"), "{why}");
+    }
+
+    #[test]
+    fn a_stream_and_each_part_of_it_are_limited_to_what_certd_keeps() {
+        let big = vec![b'-'; usize::try_from(2 * FILE_MAX).unwrap() + 1];
+        let why = read_stream(&mut big.as_slice()).unwrap_err();
+        assert_eq!(
+            why,
+            "the input is larger than 128 KiB, the most the key and the chain take together"
+        );
+        assert_eq!(read_stream(&mut &big[1..]).unwrap().len(), big.len() - 1);
+        assert_eq!(read_stream(&mut &[0xff_u8][..]).unwrap_err(), "the input is not PEM text");
+        let pki = pki();
+        let leaf = fixtures::server(&pki.middle, &Server::default());
+        let long_key = inspect::pem_encode("PRIVATE KEY", &vec![7; 50_000]);
+        let why =
+            stream(&format!("{long_key}{}", full(&leaf, &pki)), false, &pki.roots).unwrap_err();
+        assert_eq!(why, "the input holds a key of more than 64 KiB, which is the most certd keeps");
+    }
+
+    #[test]
+    fn a_stream_names_the_same_refusals_of_the_name_as_the_files_do() {
+        let pki = pki();
+        let leaf = fixtures::server(&pki.middle, &Server::default());
+        let scratch = Scratch::new("add-stream-name");
+        let store = store(&scratch);
+        put(&store, "nas.example", Kind::Added);
+        let text = format!("{}{}", leaf.key, full(&leaf, &pki));
+        let why =
+            check_stream(&store, "nas.example", false, false, &text, &pki.roots, NOW).unwrap_err();
+        assert!(why.starts_with("the certificate nas.example exists"), "{why}");
+        assert!(check_stream(&store, "nas.example", true, false, &text, &pki.roots, NOW).is_ok());
     }
 
     fn put(store: &Store, name: &str, kind: Kind) {
