@@ -238,6 +238,17 @@ test('a restart is cancelled from its line, which then reads again and goes away
   assert.equal(await cancelRestart(world.view), true);
 });
 
+test('only an administrator is offered Cancel on the line', async (context) => {
+  const world = open(context);
+  const own = pendingRestart(world.view);
+  assert.equal(own.element.querySelector('.btns').hidden, false);
+  world.view.session = { name: 'sam', admin: false, kinds: [], host: 'duke-nas' };
+  const reader = pendingRestart(world.view);
+  reader.set({ end: 'reboot', in_seconds: 60, at_ms: AT });
+  assert.equal(reader.element.hidden, false, 'a reader sees the line');
+  assert.equal(reader.element.querySelector('.btns').hidden, true, 'and no button that would be refused');
+});
+
 test('the event of a restart set, changed or cancelled keeps the line current', async (context) => {
   const world = open(context);
   const line = pendingRestart(world.view);

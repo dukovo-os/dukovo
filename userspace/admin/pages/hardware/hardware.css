@@ -2,3 +2,32 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
+
+/* The Hardware page: its cards in a column on a phone, and two columns on a
+   wide screen, where those that hold lists take both. The cards, pills,
+   banners, buttons and rows are console.css's. Same rules: rem, and px for
+   borders and focus rings. */
+.hw { display: grid; gap: 1rem; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.hw > p { margin: 0; }
+.hw-lead { font-weight: 600; }
+.hw-lead:empty, .hw-errors:empty, .hw-pending:empty { display: none; }
+.hw-body, .hw-action { display: flex; flex-direction: column; gap: .714rem; }
+.hw-body p { margin: 0; }
+.hw-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .714rem; }
+.hw-check p { margin: 0 0 .143rem; overflow-wrap: anywhere; }
+.hw-earlier { padding-top: .714rem; border-top: 1px solid var(--border); }
+.hw-earlier ul, .hw-modules ul { margin: .429rem 0 0; padding-left: 1.5rem; display: flex; flex-direction: column; gap: .286rem; }
+.hw summary { cursor: pointer; }
+.hw-at { display: flex; gap: .714rem; align-items: flex-end; flex-wrap: wrap; }
+.hw-at .field { margin: 0; }
+.hw input[type="time"] { width: 9rem; }
+.hw .cmdtext { margin: 0; overflow-x: auto; }
+@container (min-width: 51.5rem) {
+  .hw { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hw > p, .hw-wide { grid-column: 1 / -1; }
+}
+@container (max-width: 51.4rem) {
+  .hw .btn, .hw input[type="time"], .hw summary { min-height: 3.143rem; }
+  .hw summary { display: flex; align-items: center; }
+  .hw-at > .btn { flex: 1 1 100%; }
+}

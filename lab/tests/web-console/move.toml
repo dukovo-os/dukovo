@@ -24,9 +24,9 @@
 # page chooses a key file by. A second place, which holds nothing, gives a key
 # that is valid and is not the backups': the wrong key. What a restart then
 # does, the machine's name and accounts and the network under the new card, is
-# the boot test admin-move's, which has two machines; the restart that the
-# page's last step names (`elevate reboot`) is not pressed here, and nothing
-# is left staged at the end. This test's last steps put the machine back: the
+# the boot test admin-move's, which has two machines; the page's Restart now…
+# is asked and cancelled here, never answered, and nothing is left staged at
+# the end. This test's last steps put the machine back: the
 # places and their keys removed, the stick unplugged and the accounts
 # removed. The script runs each engine one after the other, so that an engine
 # the lab PC lacks is skipped within it and the steps after it still run.
