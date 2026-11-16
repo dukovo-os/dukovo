@@ -94,6 +94,19 @@ that is not listed is a bug.
 	for it and the key to encrypt for, in files of _/system/state/alerts_
 	that root alone reads (*alertd*(8)).
 
+*Websites*
+	For each website of *website*(8), a file in nginx's data folder, in
+	which nginx writes each request's time, status and number of bytes
+	sent, and no address, no path and no agent. *logturn*(8) turns it
+	over each day and keeps two copies, so a request is kept for about
+	two days, in files that root and nginx read. *website count* counts
+	the files once a day and keeps in
+	_/system/state/websites/counts.json_, which anyone can read, each
+	site's visits, errors and bytes sent for each day, for 400 days, and
+	the size of its folder; what is kept of a site that is gone goes
+	after 30 days (*website*(8)). It says how many and how big, never
+	who or what.
+
 # SENT ON ITS OWN
 
 *netd*

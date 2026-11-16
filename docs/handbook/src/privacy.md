@@ -42,6 +42,7 @@ as below.
 | Notifications | notifyd's memory only | The last 64, until notifyd stops |
 | The machine's history: processors, memory, disks, networks, temperatures and services | `/system/state/metrics`, kept by metricsd | A reading a minute for two weeks, and each hour's average, least and greatest for 13 months ("Metrics and early warnings") |
 | Alerts | `/system/state/alerts`, kept by alertd, in files that root alone reads | The active alerts, the newest 1000 to 2000 changes, for 24 hours at most the messages not yet delivered, the key that signs notices to browsers, and the subscription of each browser that gets alerts until it is turned off ("Alerts: email, ntfy and webhooks") |
+| Websites: the time, status and bytes of each request a website answers, with no address, path or agent; then each day's visits, errors and bytes, and the size of each site's folder | The requests in a file for each site in nginx's data folder, `/shared/services/org.nginx.nginx/nginx/logs/sites`, which root and nginx read; the counts in `/system/state/websites/counts.json`, kept by `website count`, which anyone can read | The requests for about two days, in two turned copies; the counts for 400 days a site, and for 30 days after a site is removed ("Websites, a file each") |
 
 A crash goes nowhere by itself. Dukovo offers to report it once, at the
 next sign-in, and sends nothing until you have read the whole report and
