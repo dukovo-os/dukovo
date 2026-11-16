@@ -66,6 +66,13 @@ Whatever the settings, a staged release that the release keys withdraw
 is unstaged at the next check, and the console says so: it is never
 tried (ADR 0469).
 
+Each check ends by keeping what it found, as *update check --json*
+says it, in _/system/state/sysupdate/last-check.json_, which *update
+last* reads: the web console shows it when it opens, so that a page does
+not ask the update server. The record is replaced whole, so that a
+reader finds the last one or the one before. A check that cannot be
+kept says so in the log and goes on.
+
 It never restarts the machine otherwise. What it does goes to the log
 under *updated*, and what it tells goes to *notifyd*(8).
 
@@ -86,6 +93,10 @@ does not, is described in *dukovo-privacy*(7).
 
 _/system/settings/sysupdate/updates.toml_
 	What it does (*updates.toml*(5)).
+
+_/system/state/sysupdate/last-check.json_
+	What the last check found, one line, written after each check
+	(*update*(8), *update last*).
 
 _/system/live/netd/metered_
 	Whether the connection is metered, which *netd*(8) writes; updated
