@@ -5,7 +5,9 @@
 // (lab repository, docs/test-files.md, "Browser tests"): the console's
 // command palette (design 11). Ctrl+K opens it with the focus in its field;
 // Esc closes it and the focus goes back to where it was. A page found by its
-// words is gone to. "rest diskh" finds Restart diskhealth first, with the
+// words is gone to, and so is a card of the Alerts page: "alerts in this
+// browser" finds Get alerts in this browser, which goes to /alerts#browser.
+// "rest diskh" finds Restart diskhealth first, with the
 // command it runs in one line under the row, equal to what
 // `POST /api/1/show` answers; Tab opens the form with the Show command panel
 // under it; Enter asks to unlock, a cancel keeps the form, and Enter after
@@ -148,6 +150,20 @@ async function goesToAPage(t, page) {
     (await page.evaluate(() => document.activeElement?.tagName)) === "H1",
     "the page does not have the focus after the palette took the person to it",
   );
+}
+
+/** The Alerts page's cards are found by their words, for an administrator: "Get alerts in this browser" goes to the card of that name, by its hash. */
+async function findsAlerts(t, page) {
+  const palette = await openPalette(t, page);
+  await fieldOf(palette).fill("alerts in this browser");
+  const row = palette.getByRole("option", { name: /^Get alerts in this browser, A notice on this device/ });
+  await t.see(row.first());
+  ensure((await row.count()) === 1, `"alerts in this browser" has ${await row.count()} rows of the Alerts page's, not one`);
+  await row.click();
+  await t.gone(palette);
+  await t.see(page.getByRole("heading", { name: "Alerts", level: 1, exact: true }));
+  const where = new URL(page.url());
+  ensure(where.pathname === "/alerts" && where.hash === "#browser", `the row went to ${where.pathname}${where.hash}, not /alerts#browser`);
 }
 
 /** "rest diskh" finds the restart first, with its command under the row, and Tab opens the form with the panel. */
@@ -356,6 +372,7 @@ export default async function check(t) {
 
   await closesWithEsc(t, page);
   await goesToAPage(t, page);
+  await findsAlerts(t, page);
   let palette = await findsTheRestart(t, page, shown);
   await runsAfterTheUnlock(t, page, palette);
   palette = await remembers(t, page);

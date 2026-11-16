@@ -100,7 +100,8 @@ test('every icon rule is one line that names the icon\'s own file', () => {
 });
 
 test('every icon rule has its file in icons/ and every file has its rule', () => {
-  const files = readdirSync(`${ROOT}icons`).sort();
+  // The manifest's two icons for the home screen are PNG files, drawn by no rule.
+  const files = readdirSync(`${ROOT}icons`).filter((name) => !/^app-\d+\.png$/.test(name)).sort();
   assert.deepEqual(files, iconNamesWithRules.map((name) => `${name}.svg`).sort());
   assert.equal(new Set(iconNamesWithRules).size, iconNamesWithRules.length, 'a rule is made twice');
 });
