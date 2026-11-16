@@ -654,7 +654,7 @@ every setting. What differs on Dukovo:
 | --- | --- |
 | `/etc/nginx/nginx.conf` | `/shared/services/org.nginx.nginx/nginx/conf/nginx.conf` |
 | `/var/www/html` | `/shared/www` |
-| `/var/log/nginx/access.log` and `error.log` | The system's log: `elevate log nginx` |
+| `/var/log/nginx/access.log` and `error.log` | The system's log: `elevate log nginx`; and for each website, a file of the time, status and size of its requests (see *Websites, a file each*) |
 | `systemctl reload nginx` | `elevate service nginx reload` |
 | `sudo nginx -t` | `elevate nginx -t` |
 | Runs as `www-data` or `nginx` | Runs as the account `nginx` |
@@ -702,8 +702,10 @@ firewall says of the ports, and changes nothing; with `--json` it says it
 for a program.
 
 `nginx.conf` must include the websites' folder, at the end of its `http`
-block, and answer 404 under `/sites/` in its default server, so that a
-site's folder is never served as a path of the machine's own address:
+block, answer 404 under `/sites/` in its default server, so that a
+site's folder is never served as a path of the machine's own address, and
+define the format of the sites' own logs in its `http` block, before the
+servers (see *What a site counts*):
 
 ```
 include /system/settings/websites/*.conf;
@@ -715,12 +717,16 @@ location ^~ /sites/ {
 }
 ```
 
+```
+log_format site '$msec $status $body_bytes_sent';
+```
+
 The second goes in the default server, before `location / {`. The
-`nginx.conf` of the bundle has both. `website check` asks nginx whether it accepts the
-settings as they are, and whether `nginx.conf` has both lines; a file that
+`nginx.conf` of the bundle has all three. `website check` asks nginx whether it accepts the
+settings as they are, and whether `nginx.conf` has all three; a file that
 has not says which, with the lines to add
 ([WEB-102](../../errors/WEB-102.md)). `website list`, which anyone may run, shows
-each site with its kind, its certificate and its folder, and what is wrong
+each site with its kind, its certificate, its size and its folder, and what is wrong
 with it that can be seen from the files.
 
 A site is served over HTTPS with a certificate of certd (see
@@ -747,8 +753,31 @@ refuses the handshake of an HTTPS request for a name no site has, and
 with the last.
 
 `website remove shop.example.org` removes the site's file, has nginx read
-its settings again and gives back what the service file held. The folder
-is kept unless `--files` is given.
+its settings again and gives back what the service file held, and removes
+the site's log of requests. The folder is kept unless `--files` is given.
+
+#### What a site counts
+
+Each site writes a line for each request to a file of its own, as well as
+to the system's log: `/shared/services/org.nginx.nginx/nginx/logs/sites/NAME.log`.
+The line holds the time, the status and the bytes of the answer's body,
+as `1763175600.123 200 5120`, and no address, no path and no agent, so
+it says how many and how big, never who or what. `logturn` turns the file
+over and keeps two turned copies, so a request is kept for about two days.
+
+Once a day, a little after midnight UTC, the service `website-count` runs
+`website count`. It counts the visits (a status from 200 to 399), the
+errors (400 to 599) and the bytes sent for the day just ended, measures
+what each site's folder takes, at the lowest priority, and keeps the
+numbers in `/system/state/websites/counts.json`, for 400 days a site. Both
+show in `website list`: its Size column, and `visits` and `size` with
+`--json`. The numbers of a day that a limit cut short (a log file of
+more than 2 GiB, or one that took over a minute to read) are marked as at
+least. `elevate website count --now` counts today so far.
+
+A site that `website` added before the sites were logged has no such
+file, and `website list --json` says `"visits": null` for it until
+`website https` writes its file again.
 
 `website` writes a site's file from a template, so that it can tell a file
 it wrote from one a person changed. A file you changed is served as you
@@ -839,9 +868,11 @@ access_log /shared/services/org.nginx.nginx/nginx/logs/access.log;
 A path that does not start with `/` is in nginx's bundle, which it
 cannot write to. A file in the `logs` folder is turned over for you:
 `logturn` renames it once a day, has nginx open it again (nginx's file
-says `logs = { files = ["logs/*.log"], reopen = "SIGUSR1" }`), keeps
-14 turned files, and compresses all but the newest with zstd, so
-`access.log.1` is yesterday's and `access.log.2.zst` the day before's.
+says `logs = { files = ["logs/*.log", "logs/sites/*.log"], keep = 2,
+reopen = "SIGUSR1" }`), keeps 2 turned files, and compresses all but the
+newest with zstd, so `access.log.1` is yesterday's and `access.log.2.zst`
+the day before's. The files of the websites, in `logs/sites`, are turned
+the same way.
 `zstd -d` reads one. [Log files of a service](#log-files-of-a-service)
 says how.
 

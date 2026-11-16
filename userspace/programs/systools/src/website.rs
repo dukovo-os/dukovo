@@ -21,14 +21,16 @@
 //!
 //! The modules: [`conf`] reads nginx's syntax; [`plan`] makes the files
 //! and the keys; [`change`] and [`remove`] are the changes, [`preview`] the
-//! plan of an add, and [`list`] what `list` and `check` say; [`host`] is
-//! what is asked of the machine, [`folder`] the sites' folders, [`stage`]
-//! nginx's check of a new set and the lock, and [`answer`] the check that
-//! the site answers.
+//! plan of an add, and [`list`] what `list` and `check` say; [`count`]
+//! counts each site's requests and the size of its folder once a day;
+//! [`host`] is what is asked of the machine, [`folder`] the sites' folders,
+//! [`stage`] nginx's check of a new set and the lock, and [`answer`] the
+//! check that the site answers.
 
 mod answer;
 mod change;
 mod conf;
+mod count;
 mod folder;
 mod host;
 mod list;
@@ -60,7 +62,8 @@ const USAGE: &str = "usage: website [list] [--json]\n       website check [--jso
     website add NAME ... --dry-run [--json]\n       \
     website https NAME --certificate NAME [--progress]\n       \
     website https NAME --off [--progress]\n       \
-    website remove NAME [--files] [--progress]";
+    website remove NAME [--files] [--progress]\n       \
+    website count [--now] [--json]";
 
 /// The most names a website answers to.
 pub const NAMES_MAX: usize = 20;
@@ -88,6 +91,7 @@ enum Command {
     Add { request: AddRequest, dry_run: bool, json: bool, progress: bool },
     Https { name: String, how: Https, progress: bool },
     Remove { name: String, files: bool, progress: bool },
+    Count { now: bool, json: bool },
 }
 
 impl Command {
@@ -286,6 +290,20 @@ fn parse_read(args: &mut Args) -> Result<(bool, bool), Fail> {
     Ok((json, help))
 }
 
+/// Reads what `website count` was asked.
+fn parse_count(args: &mut Args) -> Result<Command, Fail> {
+    let (mut now, mut json, mut help) = (false, false, false);
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(option) if option == "now" => now = true,
+            Arg::Long(option) if option == "json" => json = true,
+            Arg::Long(option) if option == "help" => help = true,
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    Ok(if help { Command::Help } else { Command::Count { now, json } })
+}
+
 /// Reads what was asked.
 fn parse(args: &mut Args) -> Result<Command, Fail> {
     let subcommand = args.subcommand();
@@ -302,6 +320,7 @@ fn parse(args: &mut Args) -> Result<Command, Fail> {
         Some(Some("add")) => parse_add(args),
         Some(Some("https")) => parse_https(args),
         Some(Some("remove")) => parse_remove(args),
+        Some(Some("count")) => parse_count(args),
         _ => Err(usage(format!(
             "no such command: {}\n{USAGE}",
             subcommand.unwrap_or_default().to_string_lossy()
@@ -385,6 +404,17 @@ fn execute(
             tell(out, &lines)?;
             Ok(0)
         }
+        Command::Count { now, json } => {
+            let report =
+                count::count(&Ctx { paths, host, steps: &off }, now, count::Limits::STANDARD)
+                    .map_err(change::Refusal::into_fail)?;
+            if json {
+                writeln!(out, "{}", report.json().map_err(fail)?)?;
+            } else {
+                write!(out, "{}", report.plain())?;
+            }
+            Ok(0)
+        }
     }
 }
 
@@ -396,6 +426,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             "only root changes websites and asks nginx about them: elevate first, as `sudo website ...`"
                 .into(),
         ));
+    }
+    // The daily count is work that can wait. One asked for is not.
+    if matches!(command, Command::Count { now: false, .. })
+        && let Err(why) = crate::bundles::sizes::lower_priority()
+    {
+        eprintln!("website: {why}");
     }
     let mut out = io::stdout().lock();
     execute(command, &Paths::system(), &System, &mut out)

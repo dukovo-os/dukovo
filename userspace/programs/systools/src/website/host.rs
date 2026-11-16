@@ -13,12 +13,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use spark_api::show::State;
 
 use super::answer::{self, Fetch, Reply};
-use crate::bundles::as_service;
+use crate::bundles::{as_service, sizes};
 use crate::cert::inspect::{chain_of, details};
 use crate::cert::store::Store;
 use crate::util::strip_os_error;
@@ -188,6 +188,18 @@ pub trait Host {
 
     /// Writes a line to the system's log.
     fn log(&self, line: &str);
+
+    /// The time now, in seconds since 1970.
+    fn now(&self) -> i64;
+
+    /// Walks the folders `requests` name, as the walk of the bundles'
+    /// sizes does: at the idle priority, in a process of its own, with its
+    /// limits.
+    ///
+    /// # Errors
+    ///
+    /// Why the walk could not be started.
+    fn measure(&self, requests: &[sizes::Request]) -> Result<Vec<sizes::Line>, String>;
 }
 
 /// The machine.
@@ -397,6 +409,15 @@ impl Host for System {
         if let Err(fail) = logger::log("website", 6, line) {
             eprintln!("website: the log was not written: {}", fail.message);
         }
+    }
+
+    fn now(&self) -> i64 {
+        let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+    }
+
+    fn measure(&self, requests: &[sizes::Request]) -> Result<Vec<sizes::Line>, String> {
+        sizes::measure(sizes::PROGRAM, requests, sizes::KILL_AFTER)
     }
 }
 

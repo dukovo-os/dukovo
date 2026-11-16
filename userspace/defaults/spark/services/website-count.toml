@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# Website counts: website(8) counts, once a day, the requests each website
+# answered the day before and what its folder takes, and keeps the numbers
+# in /system/state/websites/counts.json for `website list` and the web
+# console (ADR 0570). It reads the log file of each website that nginx
+# writes and logturn(8) turns over, and changes nothing else.
+#
+# service.toml(5) explains each setting. `service check website-count`
+# checks this file, and `service edit website-count` checks it as you save.
+
+service_version = 1
+description = "Website counts"
+program = "/system/commands/website"
+arguments = ["count"]
+# It runs once for each time of its timer, and ends.
+restart = "never"
+
+[limits]
+# It reads a log file a line at a time, and the walk of the folders runs
+# in a process of its own in this domain.
+memory = "128M"
+
+# Ten minutes past midnight in UTC, where the day of each line of the logs
+# ends, and up to five minutes after, so that it does not start with
+# everything else that runs then. A machine that was off at the time
+# counts soon after it starts.
+[timer]
+at = ["10 0 * * *"]
+time_zone = "UTC"
+spread = "5m"
+
+# What it holds beyond what every service reads (service.toml(5)): the
+# whole tree, since the log files are in nginx's data folder and view and
+# the counts are in the state, and the folder of each site is anywhere
+# under the sites' folder; and Spark's control socket, which it asks
+# whether nginx is installed.
+[permissions]
+runs-with-your-access = true

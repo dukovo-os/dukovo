@@ -165,7 +165,7 @@ admin-websites userspace/programs/systools/src/cert/ userspace/programs/dkv/ use
 admin-websites userspace/spark/src/supervisor/runs.rs userspace/programs/spark-api/src/run.rs userspace/spark/src/supervisor/
 admin-websites ports/nginx/ ports/php/ ports/postgresql/ ports/locales/ ports/curl/ ports/openssl/ ports/netcat/
 admin-websites tools/xtask/src/bundles.rs tools/xtask/src/ports.rs tools/xtask/src/licenses.rs
-admin-websites userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
+admin-websites userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/website-count.toml
 admin-websites tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
 ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
 ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs

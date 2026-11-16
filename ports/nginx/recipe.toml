@@ -50,7 +50,12 @@ start = "when-enabled"
 limits = { memory = "512M", open_files = 65536 }
 after = ["netd", "resolved"]
 ready = { when = "listening", timeout = 30 }
-logs = { files = ["logs/*.log"], reopen = "SIGUSR1" }
+# Each website logs its requests to a file of its own in logs/sites, which
+# website(8) counts the day after (ADR 0570). A service has one number of
+# turned files to keep, so logs/*.log keeps 2 as well: a count needs the
+# day just ended only, which the file and its two turned copies hold, and
+# a file holds a line for each request.
+logs = { files = ["logs/*.log", "logs/sites/*.log"], keep = 2, reopen = "SIGUSR1" }
 # Spark makes port 80 for IPv4 and for IPv6 and holds them across a
 # restart and an update, so that no client is refused (ADR 0477);
 # nginx-service passes them on. Another port, 443 for one, is added to
