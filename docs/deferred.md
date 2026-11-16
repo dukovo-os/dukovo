@@ -43,7 +43,6 @@ list is kept current instead.
 | The release train is off: `.github/release-train.json` says `"enabled": false`, so the release-train bot writes what it would do into its job summary and cuts no branch and opens no issue (ADRs 0458, 0534) | The first release branch is cut at 1.0.0, and the backport bot has no release branch to copy to until then | 1.0.0, when a maintainer sets `"enabled": true` |
 | The daily scan cannot ask OSV about db1, mandoc, netcat and zip, whose recipes say `[upstream] none`: db1 is Berkeley DB 1.85 as glibc 2.1.3 carried it and only Debian keeps it, mandoc keeps its source in CVS, OpenBSD does not release nc by itself, and Info-ZIP publishes archives alone; `./ob security scan` lists them as not asked about, with their reasons (ADR 0534) | OSV answers for a git commit or a package of an ecosystem, and these projects have no public git repository to take the commit of a release from | A project that publishes git, or a decision by the maintainers to ask by a distribution's source package |
 | The full update test matrix on a self-hosted runner: power-cut replay with QEMU's blklogwrites, upgrade paths from 12 months back, Kani on the slot-state reader, fuzzing of release lists and TUF metadata (ADR 0450) | Each needs many VM starts or tooling of its own; `update-power-cut` cuts one stage at one point meanwhile | Before 1.0.0-alpha.1 |
-| Bit-for-bit reproducible images: grub-mkrescue still writes random identifiers (ADRs 0010, 0457) | The three-build check before signing depends on it | Before 1.0.0-alpha.1 |
 | Send the 27 mlibc and frigg patches upstream | Prepared; planned after the audit's last part | Audit 10 |
 | smoltcp's own tests in CI, with its three UDP broadcast tests mended or changed for the kernel's patch (ADR 0182) | CI runs radix-net's tests, which drive the patched stack, but not the crate's own; those three already fail with the patch | Before the smoltcp patch goes upstream |
 | Trademark clearance of the project's name | Legal review | Before 1.0.0-alpha.1 |
@@ -496,7 +495,7 @@ machine asks for them.
 | Rebuilding a mirror onto a new disk without manual steps | ADR 0315 |
 | The filesystem, label and ID of a partition that is not mounted, in `storage show` as a person: blkid must open the device, which only an administrator may, so the console's Storage page, which reads as the person, shows such a partition with no filesystem; an unlocked administrator's page could read them through `elevate` | storage(8) |
 | `ls --app` naming the app that downloaded a file (needs provenance tags) | ADR 0442 |
-| Bit-for-bit reproducible images | ADR 0010, ADR 0382 |
+| Disk and ISO images compared byte for byte between machines (the tree, its release list and each image's identifiers are, ADR 0535): each machine's image holds a release signed with its own keys, until the system's first root is signed on the hardware keys | ADR 0010, ADR 0382, ADR 0535 |
 | A git settings page in Settings (on hold) | Git work, ADR 0287 |
 
 ### Benchmarks

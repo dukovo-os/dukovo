@@ -10,7 +10,6 @@
 //! 0401), whose SSH key sshd reads only from a home that is the account's
 //! or root's and that authd, finding it there, leaves as it is.
 
-use std::io::Read as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -20,6 +19,7 @@ use radix_btrfs::BtrfsFs;
 use radix_btrfs::node::BtrfsNode;
 use radix_vfs::{Access, Kind, NodeRef, Slice};
 
+use crate::identity::{self, Ids};
 use crate::{Context, Error, Result};
 
 /// The time the image is made at, in seconds since 1970: what the clock
@@ -31,21 +31,22 @@ fn clock() -> u64 {
     TIME.get().copied().unwrap_or(0).saturating_mul(1_000_000_000)
 }
 
-/// The random bytes the crate makes subvolumes' UUIDs of: the system's.
-fn random(out: &mut [u8]) {
-    let read = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(out));
-    if read.is_err() {
-        disk::Rng::system().fill(out);
-    }
+/// The limit a file's or directory's time is held to, in nanoseconds
+/// since 1970: the time the image is made at, as `SOURCE_DATE_EPOCH`
+/// asks of what a build writes. `None` before [`host_clock`].
+fn limit() -> Option<u64> {
+    TIME.get().map(|time| time.saturating_mul(1_000_000_000))
 }
 
-/// Gives the kernel's filesystem crates on the host [`clock`] and
-/// [`random`], which read `time` (seconds since 1970), for the files they
-/// make: the first time given is kept.
+/// Gives the kernel's filesystem crates on the host [`clock`], which
+/// reads `time` (seconds since 1970), for the files they make: the first
+/// time given is kept. Their random bytes, which name a Btrfs's
+/// subvolumes, come from [`identity::fill`]: from the identifiers of
+/// [`make`], never from the system's random numbers (ADR 0535).
 pub fn host_clock(time: u64) {
     let _ = TIME.set(time);
     radix_vfs::set_clock(clock);
-    radix_vfs::set_random(random);
+    radix_vfs::set_random(identity::fill);
 }
 
 /// What a filesystem error says, for `what`.
@@ -63,11 +64,13 @@ pub struct Owned {
 }
 
 /// Makes a Btrfs labelled `label` in the file `output`, of `bytes`, at
-/// `time` (seconds since 1970): the subvolumes `subvolumes` in its top
-/// directory, each holding what the directory of its name in `staging`
-/// holds, and the first made read-only. Returns its UUID, which the
-/// boot menu of an installed system finds it by (ADR 0307). Files are
-/// root's but those in the trees `owned` names.
+/// the time `ids` has (seconds since 1970): the subvolumes `subvolumes`
+/// in its top directory, each holding what the directory of its name in
+/// `staging` holds, and the first made read-only. Returns its UUID,
+/// which the boot menu of an installed system finds it by (ADR 0307).
+/// Files are root's but those in the trees `owned` names. Every UUID in
+/// it is one of `ids`', so the same staging tree and the same `ids` make
+/// the same bytes (ADR 0535).
 ///
 /// # Errors
 ///
@@ -78,9 +81,10 @@ pub fn make(
     bytes: u64,
     label: &str,
     subvolumes: &[&str],
-    time: u64,
+    ids: &Ids,
     owned: &[Owned],
 ) -> Result<[u8; 16]> {
+    let time = ids.epoch();
     host_clock(time);
     let _ = std::fs::remove_file(output);
     let file = std::fs::OpenOptions::new()
@@ -91,22 +95,26 @@ pub fn make(
         .context(|| format!("making {}", output.display()))?;
     file.set_len(bytes).context(|| format!("making {}", output.display()))?;
     let device = disk::Device::whole(file, bytes, 512);
-    let mut rng = disk::Rng::system();
+    // The crate draws four UUIDs of its own to start, which the ones of
+    // `ids` replace.
+    identity::for_crates(ids, "btrfs-defaults");
     let options = Options {
-        fsid: disk::btrfs::new_uuid(&mut rng),
-        dev_uuid: disk::btrfs::new_uuid(&mut rng),
-        chunk_tree_uuid: disk::btrfs::new_uuid(&mut rng),
-        top_uuid: disk::btrfs::new_uuid(&mut rng),
+        fsid: ids.uuid("btrfs-fsid"),
+        dev_uuid: ids.uuid("btrfs-dev"),
+        chunk_tree_uuid: ids.uuid("btrfs-chunk-tree"),
+        top_uuid: ids.uuid("btrfs-top"),
         ..Options::new(label.as_bytes(), time)
     };
     let shown = output.display().to_string();
     disk::btrfs::make(&device, &options).map_err(|why| Error::new(format!("{shown}: {why}")))?;
     let part = device.part(0, device.sectors()).context(|| format!("opening {shown}"))?;
+    identity::for_crates(ids, "btrfs-mount");
     let fs = BtrfsFs::mount_writable(BlockFile::new(part, false).into_ref())
         .map_err(|err| failed(&shown, err))?;
     fs.set_compress(true);
     let top = radix_vfs::FileSystem::root(&*fs);
     for name in subvolumes {
+        identity::for_crates(ids, &format!("btrfs-subvol:{name}"));
         top.make_subvolume(name).map_err(|err| failed(&format!("making {name}"), err))?;
         let subvolume = top.lookup(name).map_err(|err| failed(name, err))?;
         copy_owned(&staging.join(name), &subvolume, Path::new(name), owned)?;
@@ -131,10 +139,14 @@ fn access_of(meta: &std::fs::Metadata, path: &Path, owned: &[Owned]) -> Access {
     Access { owner, group, mode: (meta.permissions().mode() & 0o7777) as u16 }
 }
 
-/// The nanoseconds since 1970 of `meta`'s last change of contents.
+/// The nanoseconds since 1970 of `meta`'s last change of contents, no
+/// later than the time the image is made at ([`limit`]): a file ob wrote
+/// a moment ago has the commit's time, as every other does, so that the
+/// same tree is the same filesystem whenever it is built (ADR 0535).
 fn modified(meta: &std::fs::Metadata) -> u64 {
     let (secs, nanos) = (meta.mtime().max(0) as u64, meta.mtime_nsec().max(0) as u64);
-    secs.saturating_mul(1_000_000_000).saturating_add(nanos)
+    let time = secs.saturating_mul(1_000_000_000).saturating_add(nanos);
+    limit().map_or(time, |limit| time.min(limit))
 }
 
 /// Writes what the directory `from` holds into `to`, in the order of its
@@ -174,7 +186,10 @@ fn copy_owned(from: &Path, to: &NodeRef, at: &Path, owned: &[Owned]) -> Result<(
                 .create(name, Kind::Directory, access_of(&meta, &staged, owned))
                 .map_err(|err| failed(&shown, err))?;
             copy_owned(&path, &dir, &staged, owned)?;
-            dir.set_times(None, Some(modified(&meta))).map_err(|err| failed(&shown, err))?;
+            // A folder is dated when it was made, which is whenever the
+            // staging was: every one has the time of the image.
+            let made = limit().unwrap_or_else(|| modified(&meta));
+            dir.set_times(None, Some(made)).map_err(|err| failed(&shown, err))?;
         } else if kind.is_file() {
             let data = std::fs::read(&path).context(|| format!("reading {shown}"))?;
             let access = access_of(&meta, &staged, owned);
@@ -244,8 +259,8 @@ mod tests {
         std::fs::write(staging.join("@b/home/.ssh/authorized_keys"), "ssh-ed25519 AAAA lab\n")
             .unwrap();
         let owned = [Owned { path: "@b/home".into(), owner: 1001, group: 1002 }];
-        make(&staging, &output, 160 << 20, "test-root", &["@a", "@b"], 1_793_592_777, &owned)
-            .unwrap();
+        let ids = Ids::new("0.15.0", 1_793_592_777, "installed");
+        make(&staging, &output, 160 << 20, "test-root", &["@a", "@b"], &ids, &owned).unwrap();
 
         if let Some(btrfs) = btrfs_tool() {
             let out = Command::new(btrfs)
@@ -289,6 +304,52 @@ mod tests {
         for node in [&home, &keys] {
             assert_eq!((node.access().owner, node.access().group), (1001, 1002));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same staging tree and identifiers make the same bytes, however
+    /// far apart the builds are, and another kind of image does not (ADR
+    /// 0535).
+    #[test]
+    fn the_same_tree_and_identifiers_make_the_same_filesystem() {
+        let dir = std::env::temp_dir().join(format!("ob-rootfs-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let staging = dir.join("staging");
+        let dated = |path: &Path, seconds: u64| {
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+                .unwrap();
+        };
+        let subvolumes = ["@a", "@b", "@c"];
+        for name in subvolumes {
+            let deep = staging.join(name).join("commands/deep");
+            std::fs::create_dir_all(&deep).unwrap();
+            std::fs::write(deep.join("new"), "now\n".repeat(5000)).unwrap();
+            std::os::unix::fs::symlink("new", deep.join("link")).unwrap();
+            std::fs::write(deep.join("old"), "then\n").unwrap();
+            // One file is older than the image, which keeps its time.
+            dated(&deep.join("old"), 1_700_000_000);
+        }
+        // The files ob writes are dated after the image's time, whenever
+        // the build runs.
+        let write_later = |seconds: u64| {
+            for name in subvolumes {
+                dated(&staging.join(name).join("commands/deep/new"), seconds);
+            }
+        };
+        let make_kind = |name: &str, kind: &str| {
+            let output = dir.join(name);
+            let ids = Ids::new("0.15.0", 1_793_592_777, kind);
+            make(&staging, &output, 160 << 20, "same", &subvolumes, &ids, &[]).unwrap();
+            std::fs::read(&output).unwrap()
+        };
+        write_later(1_793_592_800);
+        let one = make_kind("one.btrfs", "installed");
+        assert_eq!(one, make_kind("two.btrfs", "installed"));
+        // A build a day on, and folders made when the staging was.
+        write_later(1_793_679_000);
+        assert_eq!(one, make_kind("three.btrfs", "installed"));
+        assert_ne!(one, make_kind("other.btrfs", "cloud"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

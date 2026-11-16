@@ -798,8 +798,9 @@ impl Toolchain {
         process::create_dir(&self.autotools())?;
         process::create_dir(&self.cmake().join("Platform"))?;
         let sysroot = ctx.out.join("sysroot");
-        write_script(&self.cc(), &self.compiler_script(&sysroot, false))?;
-        write_script(&self.cxx(), &self.compiler_script(&sysroot, true))?;
+        let maps = crate::repro::cc_flags(ctx);
+        write_script(&self.cc(), &self.compiler_script(&sysroot, &maps, false))?;
+        write_script(&self.cxx(), &self.compiler_script(&sysroot, &maps, true))?;
         let script = |name: &str, path: &Path| {
             format!(
                 "#!/bin/sh\n# Written by ob (ob(1), PORTS): the Radix toolchain's {name}.\n\
@@ -826,7 +827,7 @@ impl Toolchain {
             &self.autotools().join("config.site"),
             include_str!("../autotools/config.site"),
         )?;
-        write_file(&self.libc_cross_file(), &self.libc_cross(&sysroot))?;
+        write_file(&self.libc_cross_file(), &self.libc_cross(&sysroot, &maps))?;
         write_file(&self.cross_file(), &self.programs_cross())?;
         self.write_cmake(&sysroot)?;
         Ok(())
@@ -844,7 +845,10 @@ impl Toolchain {
     /// shared library, both on the shared C library, for bundles that ship
     /// libraries of their own (ADR 0071). Linux's target, rather than
     /// none, makes Clang link with LLD itself (for no OS it hands linking
-    /// to the host's GCC).
+    /// to the host's GCC). It names the checkout and the build directory by
+    /// the names of [`crate::repro`] in `__FILE__`, assertions and debug
+    /// information, so that a program does not depend on where it was
+    /// built (ADR 0535).
     ///
     /// The C++ compiler is the same with Clang's C++ driver, libc++'s
     /// headers before the C library's (as libc++ needs: its own
@@ -852,7 +856,7 @@ impl Toolchain {
     /// links, libc++, libc++abi and libunwind before the C library (ADR
     /// 0090). `-nostdinc++` leaves out the headers and `-nostdlib++` or
     /// `-nodefaultlibs` the libraries, as libc++'s own build asks.
-    fn compiler_script(&self, sysroot: &Path, cxx: bool) -> String {
+    fn compiler_script(&self, sysroot: &Path, maps: &[String], cxx: bool) -> String {
         let lib = sysroot.join("system/libraries");
         let (what, clang) =
             if cxx { ("C++ compiler", self.clangxx()) } else { ("C compiler", self.clang.clone()) };
@@ -900,7 +904,7 @@ for arg do
 	set -- "$@" "$arg"
 done
 set -- -isystem '{sysroot}/system/include' -isystem '{resource}/include' \
-	-fPIE -ffunction-sections -fdata-sections "$@"
+	-fPIE -ffunction-sections -fdata-sections {maps}"$@"
 {headers}set -- --target=x86_64-unknown-linux-musl \
 	-U__linux__ -U__linux -Ulinux -U__gnu_linux__ \
 	-D__radix__ -D__dukovo__ \
@@ -922,6 +926,7 @@ fi
 exec '{clang}' "$@"
 "#,
             version = self.version,
+            maps = maps.iter().fold(String::new(), |all, flag| format!("{all}'{flag}' ")),
             sysroot = sysroot.display(),
             resource = self.resource.display(),
             lib = lib.display(),
@@ -981,15 +986,20 @@ exec '{clang}' "$@"
         )
     }
 
+    /// The link to the toolchain's Rust folder that Cargo for Radix makes
+    /// in a workspace's folder, and gives the patched crates through.
+    pub const RUST_LINK: &str = ".radix-rust";
+
     /// Cargo for programs on Rust's standard library (ADR 0070), as
     /// `cargo` is used: `x86_64-radix-cargo build --release`. It builds for
     /// the x86_64-unknown-radix target against the rust-std port's
     /// sysroot, with the crates the ports patch for Radix in place of
     /// crates.io's (those the workspace's Cargo.lock names, so Cargo has no
-    /// unused patches to warn of; all of them before there is one), and
-    /// links with the toolchain's C compiler, which the cc crate builds C
-    /// with too. The pinned Rust toolchain builds, whatever a port's tree
-    /// pins.
+    /// unused patches to warn of; all of them before there is one), given
+    /// through a link to the toolchain's Rust folder, `.radix-rust`, in the
+    /// workspace's folder, and links with the toolchain's C compiler, which
+    /// the cc crate builds C with too. The pinned Rust toolchain builds,
+    /// whatever a port's tree pins.
     fn cargo_script(&self, ctx: &Ctx) -> Result<String> {
         let pin = ctx.root.join("rust-toolchain.toml");
         let text =
@@ -1031,11 +1041,37 @@ while [ -z "$lock" ]; do
 	fi
 	dir=$(dirname "$dir")
 done
+# The patched crates, which are in the toolchain's Rust folder, are given
+# through a link to it in the workspace's folder: Cargo names a crate
+# inside the workspace by its path from there, and one outside by its
+# whole path, which every name Cargo gives what it builds would then hold
+# (ADR 0535).
+link=
+if [ -n "$lock" ]; then
+	link=${{lock%/*}}/{link}
+	if [ "$(readlink "$link" 2>/dev/null)" != '{rust}' ]; then
+		if [ -e "$link" ] && [ ! -L "$link" ]; then
+			link=
+		else
+			ln -sfn '{rust}' "$link" 2>/dev/null || link=
+		fi
+	fi
+fi
 for patch in '{patches}'/*.toml; do
 	[ -f "$patch" ] || continue
-	name=${{patch##*/}}
-	name=${{name%-*}}
-	if [ -z "$lock" ] || grep -qx "name = \"$name\"" "$lock"; then
+	crate=${{patch##*/}}
+	crate=${{crate%.toml}}
+	name=${{crate%-*}}
+	if [ -n "$lock" ] && ! grep -qx "name = \"$name\"" "$lock"; then
+		continue
+	fi
+	path=$(sed -n 's/^path = "\(.*\)"$/\1/p' "$patch")
+	rest=${{path#'{rust}'/}}
+	if [ -n "$link" ] && [ "$rest" != "$path" ] && [ -d "$link/$rest" ]; then
+		table=$name-$(printf '%s' "${{crate##*-}}" | tr . _)
+		set -- --config "patch.crates-io.$table.package=\"$name\"" \
+			--config "patch.crates-io.$table.path=\"$link/$rest\"" "$@"
+	else
 		set -- --config "$patch" "$@"
 	fi
 done
@@ -1044,8 +1080,9 @@ build | b | check | c | clippy | doc | d | fetch | run | r | rustc | test | t | 
 	set -- --target '{spec}' -Zjson-target-spec "$@" ;;
 esac
 unset RUSTFLAGS CARGO_BUILD_RUSTFLAGS CARGO_BUILD_TARGET
+us=$(printf '\037')
 export RUSTUP_TOOLCHAIN='{channel}'
-export CARGO_ENCODED_RUSTFLAGS='--sysroot={rust}'
+export CARGO_ENCODED_RUSTFLAGS='--sysroot={rust}'{remaps}
 export CARGO_TARGET_X86_64_UNKNOWN_RADIX_LINKER='{cc}'
 export CC_x86_64_unknown_radix='{cc}'
 export AR_x86_64_unknown_radix='{ar}'
@@ -1054,6 +1091,12 @@ export CARGO_FUTURE_INCOMPAT_REPORT_FREQUENCY=never
 exec cargo "$command" "$@"
 "#,
             patches = self.crate_patches().display(),
+            link = Self::RUST_LINK,
+            // The flags are separated by the unit separator, as Cargo reads
+            // them from CARGO_ENCODED_RUSTFLAGS.
+            remaps = crate::repro::rustc_flags(ctx)
+                .iter()
+                .fold(String::new(), |all, flag| format!("{all}\"$us\"'{flag}'")),
             spec = ctx.root.join(crate::userspace::STD_TARGET_SPEC).display(),
             rust = self.rust().display(),
             cc = self.cc().display(),
@@ -1066,7 +1109,7 @@ exec cargo "$command" "$@"
     /// as an error makes mlibc's ifunc check fail, as it must there. The
     /// sysroot's headers come after all others, for the kernel's
     /// (`radix/`) only: the C library has its own.
-    fn libc_cross(&self, sysroot: &Path) -> String {
+    fn libc_cross(&self, sysroot: &Path, maps: &[String]) -> String {
         let clangxx = self.clangxx();
         format!(
             "# Written by ob (ob(1), PORTS): Meson's cross file for the C library.\n\
@@ -1081,10 +1124,10 @@ exec cargo "$command" "$@"
              \n\
              [built-in options]\n\
              c_args = ['-fPIC', '-ffunction-sections', '-fdata-sections', '-D__radix__', \
-             '-D__dukovo__', '-D__unix__', '-idirafter', '{radix}']\n\
+             '-D__dukovo__', '-D__unix__', '-idirafter', '{radix}'{maps}]\n\
              cpp_args = ['-fPIC', '-ffunction-sections', '-fdata-sections', \
              '-Werror=unknown-attributes', '-D__radix__', '-D__dukovo__', '-D__unix__', \
-             '-idirafter', '{radix}']\n\
+             '-idirafter', '{radix}'{maps}]\n\
              c_link_args = ['-nostdlib', '{builtins}']\n\
              cpp_link_args = ['-nostdlib', '{builtins}']\n\
              \n{host}",
@@ -1095,6 +1138,7 @@ exec cargo "$command" "$@"
             ar = self.tools["ar"].display(),
             strip = self.tools["strip"].display(),
             radix = sysroot.join("system/include").display(),
+            maps = maps.iter().fold(String::new(), |all, flag| format!("{all}, '{flag}'")),
             builtins = self.builtins.display(),
             host = HOST_MACHINE,
         )
@@ -1224,9 +1268,38 @@ fn build_ports(ctx: &Ctx, rebuild: &[String], pack: bool) -> Result<Ports> {
     Ok(ports)
 }
 
+/// The environment variables that name the toolchain's programs for a
+/// port's build.sh, and the wrapper each names. A wrapper is named as it
+/// is on `PATH`, where the toolchain's folder comes first, and not by
+/// where it is: configure records the compiler as it is given, and some
+/// programs keep that record (`jq --build-configuration`, `curl-config`),
+/// which would then hold where the checkout is (ADR 0535).
+const BUILD_TOOLS: [(&str, &str); 7] = [
+    ("CC", "cc"),
+    ("CXX", "c++"),
+    ("AR", "ar"),
+    ("RANLIB", "ranlib"),
+    ("NM", "nm"),
+    ("STRIP", "strip"),
+    ("OBJCOPY", "objcopy"),
+];
+
+/// The time every port is built at, as `SOURCE_DATE_EPOCH`: 2026-01-01
+/// 00:00:00 UTC, whatever the commit. What a port records of its build,
+/// a `__DATE__` or a manual page's date, is then the same at every
+/// commit, so that a port cached by its stamp at one commit is the port
+/// another builds from the same recipe (ADR 0535). It is part of every
+/// port's stamp: changing it builds every port again. The programs on
+/// Rust's standard library are built at it too
+/// ([`crate::userspace::std_cargo`]).
+pub const PORT_TIME: &str = "1767225600";
+
 /// What went into a port's build: its directory's files, the toolchain
 /// (its version, and the wrappers, cross files and site file ob writes),
-/// the kernel's system call headers, and the builds of the ports it needs.
+/// what the environment ob gives build.sh names the toolchain's programs
+/// and how its Rust crates are named, the time it is built at
+/// ([`PORT_TIME`]), the kernel's system call headers, and the builds of
+/// the ports it needs.
 fn inputs_hash(
     ctx: &Ctx,
     dir: &Path,
@@ -1257,6 +1330,9 @@ fn inputs_hash(
     }
     toolchain.version.hash(&mut hasher);
     toolchain.builtins.hash(&mut hasher);
+    BUILD_TOOLS.hash(&mut hasher);
+    crate::rustc_wrapper::FORMAT.hash(&mut hasher);
+    PORT_TIME.hash(&mut hasher);
     if recipe.source.rust_src {
         rust_src(ctx)?.1.hash(&mut hasher);
     }
@@ -1648,7 +1724,6 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![toolchain.bin()];
     paths.extend(std::env::split_paths(&path));
-    let tool = |name: &str| toolchain.bin().join(format!("{TRIPLE}-{name}"));
     let mut cmd = Command::new("sh");
     cmd.arg(dir.join("build.sh"))
         .current_dir(&work)
@@ -1669,13 +1744,7 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env("PREFIX", "/system")
         .env("JOBS", jobs.to_string())
         .env("HOST", TRIPLE)
-        .env("CC", toolchain.cc())
-        .env("CXX", toolchain.cxx())
-        .env("AR", tool("ar"))
-        .env("RANLIB", tool("ranlib"))
-        .env("NM", tool("nm"))
-        .env("STRIP", tool("strip"))
-        .env("OBJCOPY", tool("objcopy"))
+        .envs(BUILD_TOOLS.map(|(variable, name)| (variable, format!("{TRIPLE}-{name}"))))
         .env("CFLAGS", "-O2")
         .env("CXXFLAGS", "-O2")
         .env("CROSS_FILE", toolchain.cross_file())
@@ -1687,7 +1756,21 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env_remove("PKG_CONFIG_PATH")
         .env("PKG_CONFIG_LIBDIR", sysroot.join("system/libraries/pkgconfig"))
         .env("PKG_CONFIG_SYSROOT_DIR", &sysroot)
-        .env("SOURCE_DATE_EPOCH", crate::image::source_date_epoch(ctx).unwrap_or("0".into()));
+        .env("SOURCE_DATE_EPOCH", PORT_TIME)
+        // The host's language must not reach a build either: uutils'
+        // uucore, for one, builds in the translations of LANG's.
+        .env("LANG", "C.UTF-8")
+        .env("LC_ALL", "C.UTF-8")
+        // What a recipe that sets compiler flags itself, and does not use
+        // the toolchain's wrappers, adds to them so that what it builds
+        // does not record where it was built (ADR 0535): the flags for
+        // Rust's compiler, as Cargo's CARGO_ENCODED_RUSTFLAGS has them,
+        // separated by the unit separator.
+        .env("REMAP_RUSTFLAGS", crate::repro::rustc_flags(ctx).join("\x1f"));
+    // A port's crates and the crates ports patch for Radix are path
+    // dependencies outside its workspace, whose identity Cargo would take
+    // from where the checkout is (ADR 0535).
+    crate::rustc_wrapper::configure(ctx, &mut cmd);
     process::run(ctx, &mut cmd)
         .map_err(|err| Error::new(format!("port {}: {err}", recipe.name)))?;
     if let Some(spec) = &recipe.bundle {
@@ -1793,6 +1876,13 @@ pub fn image_files(ctx: &Ctx, recipe: &Recipe, sysroot: &Path) -> Result<Vec<(St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ports_are_built_at_the_start_of_2026() {
+        // 56 years from 1970, 14 of them leap years, in seconds.
+        let days = 56 * 365 + 14;
+        assert_eq!(PORT_TIME.parse::<u64>().unwrap(), days * 86_400);
+    }
 
     #[test]
     fn header_hash_ignores_comments_but_not_code() {

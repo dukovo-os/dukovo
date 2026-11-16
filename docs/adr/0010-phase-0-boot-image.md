@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0010. Phase 0 builds its image with the host's GRUB
 
-- Status: Accepted
+- Status: Accepted; images are reproducible, with identifiers made from the build, since [0535](0535-a-release-is-built-twice-by-ci-in-different-places-and-must-come-out-the-same.md)
 - Date: 2026-10-20
 
 ## Context

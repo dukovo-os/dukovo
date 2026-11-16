@@ -37,8 +37,8 @@ done >"$PORT_INFO/image"
 unset CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_TARGET
 cargo build --release --no-default-features --features "uudoc,$features" --bin uudoc \
 	--target-dir "$PORT_BUILD/host" --jobs "$JOBS"
-# The generator dates each page today; the commit's date makes the same
-# pages each build.
+# The generator dates each page today; the ports' fixed build time makes
+# the same pages each build.
 man="$SYSROOT/system/resources/man/man1"
 date=$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%d)
 mkdir -p "$man"

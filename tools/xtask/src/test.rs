@@ -3662,6 +3662,9 @@ fn kani(ctx: &Ctx) -> Result<()> {
     for library in PROVED_LIBRARIES {
         step(&format!("Checking the Kani proofs of {library}"));
         let mut cmd = kernel::cargo(ctx, "kani")?;
+        // Kani runs its own compiler, not rustc, which ob's rustc wrapper
+        // does not take.
+        crate::rustc_wrapper::unconfigure(&mut cmd);
         // Kani builds with its own toolchain, so it gets a directory of its
         // own instead of sharing the kernel's.
         cmd.arg("--target-dir").arg(ctx.target.join("kani"));
@@ -3728,6 +3731,7 @@ pub fn build_test_image(
     let built_image = image::build(
         ctx,
         &ImageSpec {
+            kind: name,
             kernel: &built.kernel,
             timeout: 0,
             cmdline: &cmdline_slot(),
@@ -3764,6 +3768,7 @@ fn build_installed_test_image(
     image::build(
         ctx,
         &ImageSpec {
+            kind: "dukovo-test-installed",
             kernel: &built.kernel,
             timeout: 0,
             cmdline: &cmdline_slot(),

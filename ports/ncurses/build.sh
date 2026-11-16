@@ -46,6 +46,10 @@ quiet x86_64-radix-configure "$PORT_SRC" CPPFLAGS=-D_GNU_SOURCE --with-build-cc=
 	--with-manpage-format=normal --without-manpage-renames
 quiet make -j"$JOBS"
 quiet make install DESTDIR="$SYSROOT"
+# The manual of terminfo says in a comment where its parts were read from,
+# by their paths in this build; two machines would not agree on them
+# (ADR 0535).
+sed -i "s|$PORT_SRC/man/\.\./include/|../include/|g" "$SYSROOT/system/resources/man/man5/terminfo.5"
 for name in ncursesw curses tinfo; do
 	ln -sf libncurses.a "$SYSROOT/system/libraries/lib$name.a"
 done

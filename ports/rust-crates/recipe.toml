@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Crates from crates.io that programs in Rust need and that do not build
-# for Radix as they are (ADR 0080), or that bring a crate whose license
-# the system's programs may not link (kernel/deny.toml): each patched in
+# for Radix as they are (ADR 0080), that bring a crate whose license the
+# system's programs may not link (kernel/deny.toml), or that build
+# differently each time (ADR 0535): each patched in
 # patches/<crate>.patch and installed into the toolchain, where Cargo for
 # Radix gives programs the patched crate in place of crates.io's. One
 # version of each semver line: a program's Cargo.lock names that version.
@@ -57,6 +58,12 @@ name = "getrandom"
 version = "0.4.3"
 sha256 = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 license = "MIT OR Apache-2.0"
+
+[[crate]]
+name = "i18n-embed-fl"
+version = "0.9.4"
+sha256 = "04b2969d0b3fc6143776c535184c19722032b43e6a642d710fa3f88faec53c2d"
+license = "MIT"
 
 [[crate]]
 name = "if-addrs"

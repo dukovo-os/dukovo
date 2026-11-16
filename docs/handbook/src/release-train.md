@@ -313,7 +313,60 @@ $ ./ob security scan
 $ ./ob security scan --json | jq '.findings[] | select(.severity == null)'
 ```
 
+## The release is built twice
+
+A release is signed only when the builds of its commit agree (ADR 0457),
+so CI builds it twice before anyone signs. The workflow
+`.github/workflows/reproducible.yml` runs every Monday at 04:23 UTC, on
+each push to a `release/**` branch, by hand, and on a pull request that
+changes the workflow, the identifiers, the images, the release build or
+one of the recipes that keep paths and times out of a build (ADR 0535).
+
+Both builds run `./ob release build`. The first is made in the runner's
+own checkout with the ports that `ci.yml` cached. The second is made on
+another runner in `/srv/dukovo-second`, by another user with a home of
+its own, under `umask 0002`, in the time zone of Auckland, with
+`LC_ALL=C.UTF-8` and one processor fewer, and builds every port from its
+source. It takes about two hours. A third job compares the lists of
+files, and when they differ it names each path that does, runs diffoscope
+on the first twenty that differ in content, uploads the reports as the
+artifact `reproducible-report`, and fails.
+
+To build a release on a machine of one's own, and to compare it with a run:
+
+```console
+$ ./ob release build --out out/mine
+...
+<the SHA-256 of the release list, 64 hexadecimal digits>
+$ cat out/mine/system.json.sha256
+```
+
+The job "Compare the builds" prints both builds' values, and
+`system.json.sha256` is in the artifacts `reproducible-first` and
+`reproducible-second`; the three are the same when the builds agree. `files.txt` lists every folder, file and
+link of the tree, with its mode, SHA-256, size and time, sorted, so that
+`diff` of two of them shows what differs. The tree itself stays in
+`out/release-build-tree`.
+
+The build trusts the repository's own root, not the machine's release
+keys, and signs nothing; `releases/README.md` says which root.
+
 ## Troubleshooting
+
+**The reproducible workflow failed.** Open the job "Compare the builds":
+its summary lists the paths that differ, and the artifact
+`reproducible-report` has diffoscope's report on each of the first twenty
+that differ in content. A path in a binary with a string such as
+`/home/runner/work` or `/srv/dukovo-second` is a compiler that was not
+told to write the path down under another name: `tools/xtask/src/repro.rs`
+has the names, and the recipe or build script that runs the compiler needs
+its flag. A path that differs in mode or time only has `files.txt`'s
+lines to show it. A first or second job that failed did so building, and
+its log says where.
+
+**A pull request ran the reproducible workflow and took two hours.** It
+changes a file the workflow watches, which are the files that decide what
+goes into a release's tree. The run is cancelled by the next push.
 
 **The release-train job's summary says it is disabled.** The train is
 enabled at 1.0.0. Set `"enabled": true` in `.github/release-train.json`

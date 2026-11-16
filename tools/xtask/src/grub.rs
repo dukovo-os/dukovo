@@ -55,7 +55,13 @@ const EXTRA_DEPS: &str = "depends bli part_gpt\n";
 /// What a build depends on, kept beside it: when this changes, GRUB is
 /// built again.
 const RECIPE: &str =
-    "grub 2.12, f3c97391, extra_deps bli part_gpt, configure flags of grub.rs, recipe 1";
+    "grub 2.12, f3c97391, extra_deps bli part_gpt, configure flags of grub.rs, recipe 2";
+
+/// What the unpacked sources and the build directories are called in what
+/// GRUB's code writes down (its assertions and fatal errors carry
+/// `__FILE__`, and its modules debug information), in the place of where
+/// they are: the images' GRUB is then the same on every machine (ADR 0535).
+const WORK_NAME: &str = "/build/grub";
 
 /// The platforms built: GRUB's name for each, and what `configure` is
 /// told for it.
@@ -216,6 +222,8 @@ pub fn build(ctx: &Ctx) -> Result<Grub> {
             .arg(format!("--target={target}"))
             .args(CONFIGURE)
             .arg("AWK=gawk")
+            // `configure` sets `-Os` only when the variable is empty.
+            .arg(format!("TARGET_CFLAGS=-Os -ffile-prefix-map={}={WORK_NAME}", work.display()))
             .current_dir(&build);
         logged(ctx, &mut configure, &build.join("configure.log"))?;
         let mut make = Command::new("make");

@@ -104,6 +104,9 @@ pub fn cargo(ctx: &Ctx) -> Command {
     for var in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_TARGET"] {
         cmd.env_remove(var);
     }
+    // Each crate's identity is what it is, not where the checkout is
+    // (ADR 0535).
+    crate::rustc_wrapper::configure(ctx, &mut cmd);
     cmd
 }
 

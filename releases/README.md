@@ -22,6 +22,23 @@ before the key ceremony, and the ceremony comes before 1.0.0-alpha.1.
 Until then, every build machine signs its releases with keys of its own
 in `.cache/release-keys`, and nothing it signs is deployed.
 
+`stand-in-root.json` is a root made once with `system-release keys`,
+whose secret keys were deleted when it was made, so that no one can sign
+for it and nothing that trusts it can be updated. `./ob release build`
+puts it in the tree it builds, until `metadata/1.root.json` exists and is
+used in its place: a tree that held a build machine's own root would differ
+from the same tree built on another machine (ADR 0535). Nothing that is
+shipped trusts it.
+
+## Building a release twice
+
+`./ob release build` builds the system as the commit makes it and prints
+the SHA-256 of its release list, unsigned; CI's `reproducible.yml` runs it
+twice in different places and compares (ADR 0535), and `ob release sign`
+compares its own third build with the last line it printed (ADR 0457).
+Two builds of one commit make the same list, so the keys sign it only
+when they do.
+
 ## Setting up the update server
 
 Once, from the maintainer's computer, the same way as for the catalog

@@ -25,6 +25,7 @@ mod fixture;
 mod frames;
 mod grub;
 mod grub_theme;
+mod identity;
 mod image;
 mod kernel;
 mod krelocs;
@@ -41,8 +42,10 @@ mod ports;
 mod process;
 mod qemu;
 mod release;
+mod repro;
 mod riscv;
 mod rootfs;
+mod rustc_wrapper;
 mod scaling;
 mod screen;
 mod security;
@@ -773,7 +776,8 @@ when it could not run (cargo-audit missing, OSV out of reach, a tag it could not
 resolve)."
         }
         "release" => {
-            "Usage: ./ob release server setup [--dukovo]
+            "Usage: ./ob release build [--out <dir>]
+       ./ob release server setup [--dukovo]
        ./ob release channel <repository> (<channel> <version>
                                           | --firmware <version>|none <channel>)
        ./ob release advisories <repository>
@@ -784,6 +788,20 @@ resolve)."
        ./ob release canaries [--json]
        ./ob release canary (add <name> <key> | remove <name>
                             | <name> red|green <reason> | <name> auto)
+
+`build` builds the system as this commit makes it, as the slot of an image
+holds it, and writes what two builds of the commit are compared by (ADR 0535)
+into <dir>, by default out/release-build: files.txt, a list with a line for
+each folder, file and link of the tree (its kind, mode, SHA-256, size and
+time, and a link's target), sorted by path; system.json, the release list
+unsigned, as `system-release list` writes it; and system.json.sha256. The last
+line it prints is that SHA-256, which two builds of one commit make the same
+on any machines (ADR 0457's three builds). It signs nothing: the tree trusts a
+fixed root, releases/metadata/1.root.json once the key ceremony has signed it
+and releases/stand-in-root.json until then, and not this machine's, which
+would make the tree differ from every other machine's. The tree stays in
+out/release-build-tree. SOURCE_DATE_EPOCH is the commit's time unless it is
+set, and the build takes as long as `./ob build`.
 
 Deploys the system's releases to the update server (ADR 0467), reached over
 SSH as `$OB_UPDATE_SSH` (default updates.dukovo.org), as `ob catalog` deploys
@@ -1265,6 +1283,9 @@ fn clean(ctx: &Ctx, all: bool) -> Result<()> {
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = rustc_wrapper::internal(&argv) {
+        return code;
+    }
     if let Some(code) = corpus::internal(&argv) {
         return code;
     }

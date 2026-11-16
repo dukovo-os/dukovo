@@ -437,7 +437,9 @@ pub struct Programs {
     pub ports: Ports,
 }
 
-/// Cargo arguments that build `core` for the user target.
+/// Cargo arguments that build `core` for the user target, with the
+/// paths of the checkout, Cargo's crates and Rust's sources written down
+/// under names that are the same on every machine (ADR 0535).
 pub fn target_args(ctx: &Ctx) -> Vec<String> {
     vec![
         "--target".into(),
@@ -445,6 +447,11 @@ pub fn target_args(ctx: &Ctx) -> Vec<String> {
         "-Zjson-target-spec".into(),
         "-Zbuild-std=core,compiler_builtins,alloc".into(),
         "-Zbuild-std-features=compiler-builtins-mem".into(),
+        "--config".into(),
+        format!(
+            "target.{TARGET_NAME}.rustflags={}",
+            crate::repro::toml_array(&crate::repro::rustc_flags(ctx))
+        ),
     ]
 }
 
@@ -464,13 +471,24 @@ pub fn cargo(ctx: &Ctx, subcommand: &str) -> std::process::Command {
 /// Radix, which builds for their own target against the sysroot the
 /// rust-std port builds, with the crates the ports patch for Radix in
 /// place of crates.io's, linked by the Radix C compiler (ADR 0070). It
-/// points libsqlite3-sys at the sqlite port's library ([`sqlite_env`]).
+/// points libsqlite3-sys at the sqlite port's library ([`sqlite_env`]),
+/// builds at the ports' time ([`ports::PORT_TIME`]), and runs rustc
+/// through `ob` ([`crate::rustc_wrapper`]).
 pub fn std_cargo(ctx: &Ctx, subcommand: &str, toolchain: &ports::Toolchain) -> Command {
     let mut cmd = Command::new(toolchain.cargo());
     cmd.current_dir(&ctx.root)
         .args([subcommand, "--manifest-path", STD_MANIFEST])
         .env("CARGO_TARGET_DIR", ctx.target.join("programs"))
-        .envs(sqlite_env(&ctx.out.join("sysroot")));
+        .envs(sqlite_env(&ctx.out.join("sysroot")))
+        // A crate that records a time takes this one instead of the
+        // clock's or a file's: rust-embed, which age builds its
+        // translations in with, records when each file was made, which is
+        // when Cargo unpacked the crate (ADR 0535).
+        .env("SOURCE_DATE_EPOCH", ports::PORT_TIME);
+    // The crates the ports patch for Radix are path dependencies outside
+    // this workspace, whose identity Cargo would take from where the
+    // checkout is (ADR 0535).
+    crate::rustc_wrapper::configure(ctx, &mut cmd);
     cmd
 }
 
@@ -594,7 +612,7 @@ pub fn std_program(ctx: &Ctx, package: &str) -> Result<PathBuf> {
 }
 
 /// Checks that the programs on Rust's standard library take each crate
-/// the ports patch for Radix from the port, not from crates.io: Cargo
+/// the ports patch from the port, not from crates.io: Cargo
 /// keeps a version Cargo.lock names that the port has no patch for.
 fn check_patched(ctx: &Ctx, toolchain: &ports::Toolchain) -> Result<()> {
     let patches = toolchain.crate_patches();
@@ -619,8 +637,8 @@ fn check_patched(ctx: &Ctx, toolchain: &ports::Toolchain) -> Result<()> {
             patched.iter().filter(|(n, _)| n == name).map(|(_, v)| v.as_str()).collect();
         if !versions.is_empty() {
             return Err(crate::Error::new(format!(
-                "userspace/programs uses {name} {version} from crates.io, which does not \
-                 build for Radix"
+                "userspace/programs uses {name} {version} from crates.io, not the copy \
+                 the ports patch"
             ))
             .hint(format!(
                 "the ports patch {name} {}: run `cargo update --manifest-path {STD_MANIFEST} \

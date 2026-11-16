@@ -7,6 +7,8 @@
 /kernel/target/
 # The crates ob patches for the kernel (ADR 0182)
 /kernel/patched/
+# Cargo for Radix's link to the toolchain's Rust folder (ob(1))
+.radix-rust
 
 # Caches used by ./ob --container
 /.cache/

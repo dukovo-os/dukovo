@@ -39,10 +39,16 @@ for crate in "vendor/libc-$new" vendor/unwinding-0.2.10; do
 done
 
 # Flags meant for other builds must not reach this one. The libraries
-# carry LLVM's bitcode too, so that programs can link them with LTO.
+# carry LLVM's bitcode too, so that programs can link them with LTO. Their
+# panics and debug information name the sources by the names ob gives the
+# checkout, not by where it is ($REMAP_RUSTFLAGS, ob(1), PORTS): the
+# programs that inline them carry those names, and must not differ between
+# machines.
 unset CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_TARGET CARGO_TARGET_DIR
 target=x86_64-unknown-radix
-RUSTFLAGS="-Zforce-unstable-if-unmarked -Cembed-bitcode=yes" "${CARGO:-cargo}" build --offline --release \
+us=$(printf '\037')
+CARGO_ENCODED_RUSTFLAGS="-Zforce-unstable-if-unmarked${us}-Cembed-bitcode=yes${us}${REMAP_RUSTFLAGS:?}" \
+	"${CARGO:-cargo}" build --offline --release \
 	-p sysroot --features backtrace --target "$RUST_TARGET" -Zjson-target-spec \
 	--target-dir "$PORT_BUILD/target" --jobs "$JOBS"
 

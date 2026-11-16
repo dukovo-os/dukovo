@@ -1925,9 +1925,36 @@ _target/userspace/_).
 	are changed with *release canary* (ADR 0533), and *rollout canary*
 	is refused. *bundle*(1) says what a computer does with one.
 
-*release* *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
-	Deploy the system's releases to the update server and check what it
-	serves (ADR 0467), over the same SSH login as *catalog*.
+*release* *build* [*--out* _dir_] | *server* *setup* [*--dukovo*] | *channel* _repository_ (_channel_ _version_ | *--firmware* _version_|*none* _channel_) | *advisories* _repository_ | *deploy* _repository_ | *send* [*--copy-only*] _repository_ | *check* [*--root* _file_] [_url_] | *rollout* (*pause* _version_ _reason_ | *resume* _version_) | *canaries* [*--json*] | *canary* (*add* _name_ _key_ | *remove* _name_ | _name_ *red*|*green* _reason_ | _name_ *auto*)
+	Build the system's release, and deploy the system's releases to the
+	update server and check what it serves (ADR 0467), over the same SSH
+	login as *catalog*.
+
+	*build* builds the system as this commit makes it, as the slot of
+	an image holds it, and writes what two builds of the commit are
+	compared by (ADR 0535) into _dir_, by default
+	_out/release-build_:
+
+	- _files.txt_, a list with one line for each folder, file and link
+	  of the tree, sorted by path: its kind (*d*, *f* or *l*), its mode
+	  in octal, a file's SHA-256 and size, a file's time in seconds
+	  since 1970, its path, and a link's target, separated by tabs;
+	- _system.json_, the release list, unsigned, as *system-release
+	  list* writes it, which is what *system-release make* signs;
+	- _system.json.sha256_, the list's SHA-256.
+
+	The last line it prints is that SHA-256: two builds of one commit
+	print the same one, on any machine, and ADR 0457's three builds
+	must agree on it. *build* signs nothing. The tree trusts a root of
+	the repository's, not this machine's release keys, which would make
+	every machine's tree its own: _releases/metadata/1.root.json_ once
+	the key ceremony has signed it, and _releases/stand-in-root.json_,
+	whose keys were thrown away, until then. The tree is left in
+	_out/release-build-tree_, for reading a file that differs. It takes
+	as long as *ob build*, and *SOURCE_DATE_EPOCH* is the commit's time
+	unless it is set. CI runs *build* twice in different
+	places and compares the results (_.github/workflows/reproducible.yml_).
+
 	*server setup* is *catalog server setup*, which sets up both; it
 	writes the server's online key for the system's releases to
 	_releases/keys/online.json_, for the release keys' next root to name
@@ -2357,12 +2384,18 @@ _build.sh_
 	bundle (*PORT_BUNDLE*), *SYSROOT*, *TOOLCHAIN*, Cargo for Radix
 	(*CARGO_RADIX*), *PREFIX* (_/system_), *JOBS*, *HOST*
 	(*x86_64-radix*), the toolchain's programs as *CC*, *CXX*, *AR*,
-	*RANLIB*, *NM*, *STRIP* and *OBJCOPY*, *CFLAGS* and *CXXFLAGS*, the
+	*RANLIB*, *NM*, *STRIP* and *OBJCOPY*, by their names (such as
+	*x86_64-radix-cc*), which *PATH* finds in the toolchain's _bin/_
+	first, so that what a package records of its build holds no path of
+	the checkout, *CFLAGS* and *CXXFLAGS*, the
 	Meson cross files (*CROSS_FILE*, *LIBC_CROSS_FILE*), the CMake
 	toolchain file (*CMAKE_TOOLCHAIN_FILE*), *RUST_TARGET* (the target
 	specification of programs on Rust's standard library), pkg-config's
-	settings for the sysroot and *SOURCE_DATE_EPOCH*; the host's own
-	*CPPFLAGS*, *LDFLAGS* and *PKG_CONFIG_PATH* are taken away.
+	settings for the sysroot and *SOURCE_DATE_EPOCH*, which is
+	2026-01-01 00:00:00 UTC for every port at every commit, so that a port
+	cached at one commit is the port another builds; *LANG* and *LC_ALL*
+	are _C.UTF-8_, and the host's own *CPPFLAGS*, *LDFLAGS* and
+	*PKG_CONFIG_PATH* are taken away.
 
 Sources are fetched once into _target/ports/_: with git by commit, and
 checked to be that commit; release archives from their *url* or, when
@@ -2446,8 +2479,13 @@ library for Radix (ADR 0080), used as *cargo* is: it builds for the
 links with *x86_64-radix-cc*, and gives the program the crates the
 rust-crates port patched for Radix in place of crates.io's, each one
 the workspace's Cargo.lock names (all of them when there is no
-Cargo.lock yet). Cargo warns of a patch it then finds no use for, such
-as one for another version of a crate the lock names. When *ob* builds
+Cargo.lock yet), and the libc crate the rust-std port patched. It gives
+them through a link to the toolchain's Rust folder they are in,
+_.radix-rust_, that it makes in the workspace's folder: Cargo names a
+crate inside the workspace by its path from there, so that the names of
+what it builds do not depend on where the checkout is (ADR 0535). Cargo warns of a
+patch it then finds no use for, such as one for another version of a
+crate the lock names. When *ob* builds
 the programs on Rust's standard library itself, it gives Cargo
 *SQLITE3_LIB_DIR* and *SQLITE3_INCLUDE_DIR*, the sysroot's _libraries_
 and _include_, and *SQLITE3_STATIC*, so that libsqlite3-sys links the
@@ -2502,9 +2540,18 @@ fails the build.
 	_key_: for a server that is not at the usual port or takes a key of
 	its own, as the lab's is. Empty by default.
 
+*RUSTC_WRAPPER*
+	A program Cargo runs rustc through, such as *sccache*. *ob* runs
+	Cargo with *RUSTC_WRAPPER* set to itself, which gives each crate an
+	identity that does not depend on where the checkout is (ADR 0535),
+	and runs the program set here in turn.
+
 *SOURCE_DATE_EPOCH*
-	Timestamp for files in the image. By default *ob* uses the time of the
-	current Git commit.
+	Timestamp for files in the image, and, with the version and the kind
+	of image, what the identifiers of its disks and filesystems are made
+	from (ADR 0535). By default *ob* uses the time of the current Git
+	commit. Ports, and the programs on Rust's standard library, are built
+	at a time of their own, whatever this says.
 
 # FILES
 

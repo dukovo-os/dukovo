@@ -17,6 +17,9 @@ system-release - check, sign, offer, publish, pack, keep Rescue of and make keys
 *--version* _version_ *--commit* _commit_ *--toolchain* _toolchain_
 *--built* _seconds_ [*--updates-from* _version_]
 
+*system-release list* *--tree* _dir_ *--version* _version_ *--commit* _commit_
+*--toolchain* _toolchain_ *--built* _seconds_ [*--updates-from* _version_] [*--out* _file_]
+
 *system-release keys* [*--rotate* _role_ | *--online* _key_] _dir_
 
 *system-release online-key* *--out* _key_ _secret_
@@ -103,11 +106,15 @@ one POSIX tar archive, for a machine with no network or for a mirror
 (ADR 0466). It holds the metadata with every root, the list and every
 file, once, and is read where it is; Linux's *tar* lists and unpacks it.
 
-*make*, *keys*, *online-key*, *add*, *channel*, *advisories*, *refresh*,
+*make*, *list*, *keys*, *online-key*, *add*, *channel*, *advisories*, *refresh*,
 *publish*, *pack* and *served* are for the machines that build Dukovo and serve
 its updates, where *ob*(1) and the update server's scripts run them. *make* lists the slot staged in the folder *--tree*, signs the
 list with the keys in *--keys* and lays out its repository in *--out*,
 which it makes afresh, then reads the repository back as *check* does.
+*list* writes the list *make* would sign, unsigned, to *--out* or the
+standard output, and needs no keys: builds on machines whose keys differ
+compare it, and the SHA-256 of its bytes, to see that they made the same
+release (ADR 0535, *ob*(1) *release build*).
 *keys* makes an Ed25519 key for each role in _dir_, as _<role>.key_,
 readable by its owner alone, and the first root, _root.json_, which names
 them. *keys --rotate* _role_ replaces that role's key and signs the next
@@ -356,8 +363,9 @@ rollout, every channel and every security advisory's index entry: what
 	snapshot and timestamp.
 
 *--out* _dir_
-	Where *make* lays out the repository; for *rescue*, the EFI system
-	partition's mount point; for *pack*, the update file; for
+	Where *make* lays out the repository; for *list*, the file that
+	takes the list, in place of the standard output; for *rescue*, the
+	EFI system partition's mount point; for *pack*, the update file; for
 	*online-key*, the public half of the key.
 
 *--commit* _commit_, *--toolchain* _toolchain_

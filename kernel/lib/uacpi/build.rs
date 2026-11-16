@@ -91,6 +91,13 @@ fn main() {
         flags.extend(HOST.iter().map(ToString::to_string));
     }
     flags.push(format!("-I{}", dir.join("vendor/include").display()));
+    // The kernel's image must not depend on where the checkout is, and the
+    // C's `__FILE__` and debug information name the sources by their paths:
+    // the checkout is written down as `/dukovo`, as `ob` has the Rust
+    // compiler write it (ADR 0535). The crate is three folders down.
+    if let Some(root) = dir.ancestors().nth(3) {
+        flags.push(format!("-ffile-prefix-map={}=/dukovo", root.display()));
+    }
 
     let clang = tool("RADIX_CLANG", "clang");
     let ar = tool("RADIX_AR", "llvm-ar");

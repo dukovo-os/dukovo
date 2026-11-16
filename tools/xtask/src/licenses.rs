@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ports::{Port, Ports};
+use crate::ports::{Port, Ports, Toolchain};
 use crate::process::{self, step};
 use crate::{Context, Ctx, Error, Result, VERSION, kernel, patched, userspace};
 
@@ -561,7 +561,13 @@ fn listed_packages(
             name: entry.name,
             version: entry.version,
         };
-        match entry.source {
+        let source = match (entry.source, ports) {
+            (Source::Path(path), Some(ports)) => {
+                Source::Path(through_link(&path, &ports.toolchain.rust()).unwrap_or(path))
+            }
+            (source, _) => source,
+        };
+        match source {
             Source::Path(path) if own.is_some_and(|dir| path.starts_with(dir)) => continue,
             Source::Path(path)
                 if ports.is_some_and(|ports| path.starts_with(&ports.toolchain.dir)) =>
@@ -683,7 +689,7 @@ fn patched_crate(ports: &Ports, name: &str, version: &str) -> Option<Package> {
             sha256: Some(krate.sha256.clone()),
             notices: notice_files(dir),
             comment: format!(
-                "A crate from crates.io, patched for Radix by ports/{} of Dukovo.",
+                "A crate from crates.io, patched by ports/{} of Dukovo.",
                 port.recipe.name
             ),
         })
@@ -787,6 +793,15 @@ fn std_packages(ctx: &Ctx, ports: &Ports) -> Result<Vec<Package>> {
     Ok(packages)
 }
 
+/// Where `path`, a crate Cargo for Radix gave through the workspace's
+/// link to the toolchain's Rust folder `rust` (`.radix-rust`, ob(1)), is
+/// in that folder; `None` for a path not through the link.
+fn through_link(path: &Path, rust: &Path) -> Option<PathBuf> {
+    let mut parts = path.components();
+    while parts.next()?.as_os_str() != Toolchain::RUST_LINK {}
+    Some(rust.join(parts.as_path()))
+}
+
 /// Where a crate came from, as `cargo tree` prints it.
 #[derive(Debug, PartialEq, Eq)]
 enum Source {
@@ -811,9 +826,8 @@ fn parse_tree_line(line: &str) -> Option<TreeEntry> {
     let license = license.trim().trim_end_matches("(*)").trim().replace('/', " OR ");
     // A procedural macro runs only while building, but what it writes is
     // in the program: listed as any other crate.
-    let package = package.trim();
-    let package = package.strip_suffix("(proc-macro)").unwrap_or(package).trim();
-    let mut words = package.splitn(3, ' ');
+    let package = package.replacen(" (proc-macro)", "", 1);
+    let mut words = package.trim().splitn(3, ' ');
     let name = words.next()?.to_string();
     let version = words.next()?.strip_prefix('v')?.to_string();
     let source = match words.next().map(|s| s.trim().trim_start_matches('(').trim_end_matches(')'))
@@ -1646,7 +1660,31 @@ mod tests {
         let entry =
             parse_tree_line("serde_derive v1.0.229 (proc-macro)|MIT OR Apache-2.0").unwrap();
         assert_eq!((entry.name.as_str(), entry.source), ("serde_derive", Source::Registry));
+        let entry = parse_tree_line(
+            "i18n-embed-fl v0.9.4 (proc-macro) (/src/w/.radix-rust/crates/i18n-embed-fl-0.9.4)|MIT",
+        )
+        .unwrap();
+        assert_eq!(
+            (entry.version.as_str(), entry.source),
+            ("0.9.4", Source::Path("/src/w/.radix-rust/crates/i18n-embed-fl-0.9.4".into()))
+        );
         assert_eq!(parse_tree_line("").map(|e| e.name), None);
+    }
+
+    /// A crate Cargo for Radix gave through the workspace's link is listed
+    /// from the toolchain, where the ports that patch it put it.
+    #[test]
+    fn maps_crates_through_the_link() {
+        let rust = Path::new("/src/out/toolchain/rust");
+        assert_eq!(
+            through_link(Path::new("/src/userspace/programs/.radix-rust/crates/nix-0.30.1"), rust),
+            Some(PathBuf::from("/src/out/toolchain/rust/crates/nix-0.30.1"))
+        );
+        assert_eq!(
+            through_link(Path::new("/src/userspace/programs/.radix-rust/vendor/libc"), rust),
+            Some(PathBuf::from("/src/out/toolchain/rust/vendor/libc"))
+        );
+        assert_eq!(through_link(Path::new("/src/kernel/lib/klog"), rust), None);
     }
 
     /// The kernel area is permissive only (ADR 0021): copyleft licenses
