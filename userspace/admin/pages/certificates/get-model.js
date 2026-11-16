@@ -36,6 +36,9 @@ export const DNS_RENEWAL = 'certd does not renew a certificate proved by DNS. It
 /** What the check of port 80 cannot tell, and the button that asks. */
 export const TRY_WORDS = 'Whether port 80 reaches this server from outside can only be told by asking. Try it first asks Let\'s Encrypt\'s staging authority, installs nothing and does not count against Let\'s Encrypt\'s limits.';
 
+/** What the staging test needs when the names are proved by DNS. */
+export const TRY_DNS_WORDS = 'By DNS the test has records of its own to add: the staging authority asks for other values than the real one.';
+
 /** The names typed in `text`: split at spaces, commas and line ends, in small letters, each once. */
 export function namesOf(text) {
   const names = String(text ?? '').split(/[\s,]+/).map((name) => name.trim().toLowerCase()).filter(Boolean);
@@ -202,14 +205,6 @@ export function getArgs({
   args.agree_terms = true;
   return args;
 }
-
-/** The arguments of `certificate.check` that `checkPath` reads, for the Show command. */
-export const checkArgs = (names, dns) => {
-  const as = certName(names);
-  return {
-    names: names.join(','), ...(as !== null && as !== names[0] ? { as } : {}), ...(dns ? { dns: true } : {}),
-  };
-};
 
 /** The arguments of `firewall.add` that open port 80 for a while. */
 export const openPortArgs = (seconds = PORT_TRY_SECONDS) => ({

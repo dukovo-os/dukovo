@@ -2,3 +2,55 @@
  * SPDX-FileCopyrightText: 2026 The Dukovo contributors
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  */
+
+/* The Certificates page: its cards in a column, and the list's table, which
+   becomes a card for each certificate on a phone. The cards, pills, banners,
+   buttons, rows and the table are console.css's. Same rules: rem, and px for
+   borders and focus rings. */
+.certs { display: flex; flex-direction: column; gap: 1rem; }
+.certs > p, .certs-banners:empty { margin: 0; }
+.certs-lead { color: var(--muted); }
+.certs-ended { align-items: center; }
+.certs-lines-box { display: flex; flex-direction: column; gap: .429rem; }
+.certs-lines-box p { margin: 0; }
+.certs-banners { display: flex; flex-direction: column; gap: .714rem; }
+.certs-banners:empty { display: none; }
+.certs-body { display: flex; flex-direction: column; gap: .714rem; }
+.certs-body p { margin: 0; }
+.certs-errors:empty, .certs-status:empty, .certs-command:empty, .certs-progress[hidden] { display: none; }
+.certs-tone-warn { color: var(--warn); }
+.certs-tone-bad { color: var(--bad); }
+.certs-tone-ok { color: var(--ok); }
+.certs-actions .btns { flex-wrap: wrap; }
+.certs-failure td { background: var(--bad-soft); }
+.certs-failure td > * + * { margin-top: .429rem; }
+.certs-more { position: relative; }
+.certs-more > summary { list-style: none; cursor: pointer; }
+.certs-more > summary::-webkit-details-marker { display: none; }
+.certs-more > summary::after { content: " \25be"; }
+.certs-menu { display: flex; flex-direction: column; gap: .429rem; align-items: flex-start; margin-top: .429rem; min-width: 14rem; padding: .571rem; border: 1px solid var(--border); border-radius: .429rem; background: var(--pane); }
+.certs-form { display: flex; flex-direction: column; gap: .857rem; }
+.certs-form .choices { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .429rem; }
+.certs-form .choices .cards-row { display: flex; flex-wrap: wrap; gap: .571rem; }
+.certs-form .choices .radio-card { flex: 1 1 16rem; }
+.certs-checks-box { display: flex; flex-direction: column; gap: .429rem; }
+.certs-checks-box h3 { margin: 0; font: 600 .929rem var(--font-ui); }
+.certs-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .429rem; }
+.certs-check { display: flex; flex-wrap: wrap; gap: .429rem; align-items: center; overflow-wrap: anywhere; }
+.certs-progress { display: flex; flex-direction: column; gap: .571rem; padding: .714rem .857rem; border: 1px solid var(--sel-b); border-radius: .357rem; background: var(--sel-1); }
+.certs-records { margin: 0; padding-left: 1.25rem; display: flex; flex-direction: column; gap: .429rem; overflow-wrap: anywhere; }
+.certs-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .571rem; }
+.certs-line { overflow-wrap: anywhere; }
+.certs-when { color: var(--muted); }
+.certs-then { display: block; }
+.certs-fingerprint { overflow-wrap: anywhere; }
+.certs-pem { width: 100%; min-height: 7rem; height: auto; padding: .429rem .571rem; resize: vertical; white-space: pre; }
+.certs-reasons { display: flex; flex-direction: column; gap: .429rem; }
+@container (max-width: 51.4rem) {
+  .certs .btn, .certs .input, .certs-more > summary, .certs-file, .dialog .certs-file { min-height: 3.143rem; }
+  .certs .btn.small, .certs-more > summary { display: inline-flex; align-items: center; }
+  .certs-menu { width: 100%; }
+  .certs-menu .btn { width: 100%; justify-content: flex-start; }
+  .certs-form .choices .radio-card { flex-basis: 100%; }
+  .certs-actions .btns > .btn { flex: 1 1 auto; }
+}

@@ -15,6 +15,8 @@ import * as get from '../pages/certificates/get-model.js';
 import * as past from '../pages/certificates/history-model.js';
 import * as model from '../pages/certificates/model.js';
 import * as name from '../pages/certificates/name-model.js';
+import * as rename from '../pages/certificates/rename-model.js';
+import * as change from '../pages/certificates/row-model.js';
 import * as upload from '../pages/certificates/upload-model.js';
 import {
   about, byDns, certificate, closed, FINGERPRINT, history, list, machine, machineWithDomain, NOW, oneMissing, own, report,
@@ -49,10 +51,9 @@ test('an issuer is a distinguished name: Let\'s Encrypt, the organisation, the c
 });
 
 test('this server\'s own certificate ends 800 days after it was made, and says its date in full', () => {
-  assert.equal(model.lifeDays(own()), model.SELF_LIFE_DAYS);
-  assert.equal(model.SELF_LIFE_DAYS, 800);
+  const made = own();
+  assert.equal((model.secondsOf(made.not_after) - model.secondsOf(made.not_before)) / 86_400, 800);
   assert.deepEqual(row('this-machine').end, { date: 'Jan 13, 2029', note: null, tone: null });
-  assert.equal(model.lifeDays({ not_before: 'x' }), null);
 });
 
 test('Good until says the day, then when it renews by itself or that it cannot', () => {
@@ -156,7 +157,7 @@ test('Use for this console is offered where the certificate names the address th
   assert.equal(offer(certificate({ days_left: -1, names: ['192.168.1.10'] })).offer, null);
   // On the standard port the address has no port.
   assert.equal(offer(certificate({ names: ['duke-nas.example.org'] }), { port: 443 }).url, 'https://duke-nas.example.org/');
-  assert.equal(model.servingWords('shop.example.org'), 'This console now serves shop.example.org\'s certificate. Keep it once this page has come back on it.');
+  assert.equal(change.servingWords('shop.example.org'), 'This console now serves shop.example.org\'s certificate. Keep it once this page has come back on it.');
 });
 
 test('each kind of row has the buttons it should, and a reader only looks', () => {
@@ -176,7 +177,7 @@ test('each kind of row has the buttons it should, and a reader only looks', () =
   assert.deepEqual(model.actionsOf(certificate(), { admin: false, serving: null }), { buttons: ['show'], more: [], removeNote: null });
   for (const id of ['show', 'make-anew', 'renew', 'renew-dns', 'replace', 'use', 'again', 'revoke', 'remove']) assert.ok(model.ACTION_WORDS[id], id);
   assert.equal(model.ACTION_WORDS.show, 'Show fingerprint');
-  assert.deepEqual(model.REVOKE_REASONS.map((one) => one.id), ['unspecified', 'key-compromise', 'superseded', 'cessation-of-operation']);
+  assert.deepEqual(change.REVOKE_REASONS.map((one) => one.id), ['unspecified', 'key-compromise', 'superseded', 'cessation-of-operation']);
 });
 
 test('the line under the head is certd\'s, and says ARI and 14 days', () => {
@@ -279,8 +280,6 @@ test('a name that cannot be asked for is refused before anything is sent', () =>
 test('the checks are read from an address of the names, and the certificate\'s name when it is not the first', () => {
   assert.equal(get.checkPath(['shop.example.org', 'www.shop.example.org'], false), '/api/1/certificates/check/shop.example.org%2Cwww.shop.example.org');
   assert.equal(get.checkPath(['*.shop.example.org', 'shop.example.org'], true), '/api/1/certificates/check/*.shop.example.org%2Cshop.example.org?as=shop.example.org&dns=true');
-  assert.deepEqual(get.checkArgs(['shop.example.org'], true), { names: 'shop.example.org', dns: true });
-  assert.deepEqual(get.checkArgs(['*.shop.example.org'], false), { names: '*.shop.example.org', as: 'shop.example.org' });
   assert.equal(get.isReport(report()), true);
   assert.equal(get.isReport(null), false);
   assert.equal(get.isReport({ checks: 'x' }), false);
@@ -413,31 +412,31 @@ test('the machine is read from hostnamectl, and its full name is its name and do
   assert.equal(name.machineOf({}), null);
   assert.equal(name.machineOf(null), null);
   assert.equal(name.machineWords(name.machineOf(machineWithDomain())), 'Full name: duke-nas.example.org · On this network: duke-nas.local');
-  assert.equal(name.fullNameOf('office-nas', 'example.org'), 'office-nas.example.org');
-  assert.equal(name.fullNameOf('office-nas', ' .example.org. '), 'office-nas.example.org');
-  assert.equal(name.fullNameOf('office-nas', ''), 'office-nas');
-  assert.equal(name.localOf('Office-NAS.example.org'), 'office-nas.local');
+  assert.equal(rename.fullNameOf('office-nas', 'example.org'), 'office-nas.example.org');
+  assert.equal(rename.fullNameOf('office-nas', ' .example.org. '), 'office-nas.example.org');
+  assert.equal(rename.fullNameOf('office-nas', ''), 'office-nas');
+  assert.equal(rename.localOf('Office-NAS.example.org'), 'office-nas.local');
 });
 
 test('a name follows the rules of hostname(5)', () => {
-  assert.equal(name.nameProblem('office-nas', 'example.org'), '');
-  assert.equal(name.nameProblem('Office1', ''), '');
-  assert.equal(name.nameProblem('', ''), 'Give the machine a name.');
-  assert.match(name.nameProblem('office.nas', ''), /one word: put the rest in Domain/);
-  assert.match(name.nameProblem('-office', ''), /none starting or ending with -/);
-  assert.match(name.nameProblem('office-', ''), /none starting or ending with -/);
-  assert.match(name.nameProblem('of fice', ''), /Use letters, digits and -/);
-  assert.match(name.nameProblem('office_nas', ''), /Use letters, digits and -/);
-  assert.match(name.nameProblem('office', 'bad..domain'), /Use letters, digits and -/);
-  assert.equal(name.nameProblem('a'.repeat(63), ''), '');
-  assert.equal(name.nameProblem('a'.repeat(64), ''), 'A word of the name is 63 characters at most.');
-  assert.equal(name.nameProblem('a'.repeat(30), `${'b'.repeat(30)}.com`), 'A name is 64 characters at most.');
-  assert.equal(name.fullNameProblem('x'.repeat(64)), 'A word of the name is 63 characters at most.');
+  assert.equal(rename.nameProblem('office-nas', 'example.org'), '');
+  assert.equal(rename.nameProblem('Office1', ''), '');
+  assert.equal(rename.nameProblem('', ''), 'Give the machine a name.');
+  assert.match(rename.nameProblem('office.nas', ''), /one word: put the rest in Domain/);
+  assert.match(rename.nameProblem('-office', ''), /none starting or ending with -/);
+  assert.match(rename.nameProblem('office-', ''), /none starting or ending with -/);
+  assert.match(rename.nameProblem('of fice', ''), /Use letters, digits and -/);
+  assert.match(rename.nameProblem('office_nas', ''), /Use letters, digits and -/);
+  assert.match(rename.nameProblem('office', 'bad..domain'), /Use letters, digits and -/);
+  assert.equal(rename.nameProblem('a'.repeat(63), ''), '');
+  assert.equal(rename.nameProblem('a'.repeat(64), ''), 'A word of the name is 63 characters at most.');
+  assert.equal(rename.nameProblem('a'.repeat(30), `${'b'.repeat(30)}.com`), 'A name is 64 characters at most.');
+  assert.equal(rename.fullNameProblem('x'.repeat(64)), 'A word of the name is 63 characters at most.');
 });
 
 test('the dialog says four things for the address the browser comes by', () => {
   const now = name.machineOf(machineWithDomain());
-  const lines = (host, more = {}) => name.renameLines(now, 'office-nas.example.org', {
+  const lines = (host, more = {}) => rename.renameLines(now, 'office-nas.example.org', {
     host, port: 9090, address: '192.168.1.10', ...more,
   });
   const common = [
@@ -458,26 +457,26 @@ test('the dialog says four things for the address the browser comes by', () => {
   // Without an address to fall back on.
   assert.equal(lines('duke-nas.local', { address: null })[3], 'You reach this console as duke-nas.local. After the change it is at https://office-nas.local:9090/; this page takes you there.');
   // The local name does not change when only the domain does.
-  assert.equal(name.renameLines(now, 'duke-nas.example.com', { host: '192.168.1.10', port: 9090, address: null })[0], 'The name on the local network stays duke-nas.local.');
+  assert.equal(rename.renameLines(now, 'duke-nas.example.com', { host: '192.168.1.10', port: 9090, address: null })[0], 'The name on the local network stays duke-nas.local.');
   // The standard port has no number.
-  assert.match(name.renameLines(now, 'office-nas.example.org', { host: 'duke-nas.local', port: 443, address: '192.168.1.10' })[3], /is at https:\/\/office-nas\.local\/; this page/);
+  assert.match(rename.renameLines(now, 'office-nas.example.org', { host: 'duke-nas.local', port: 443, address: '192.168.1.10' })[3], /is at https:\/\/office-nas\.local\/; this page/);
 });
 
 test('the link after the change goes to the new name, and not for a browser that came by number', () => {
   const now = name.machineOf(machineWithDomain());
-  assert.deepEqual(name.followAddress('duke-nas.local', now, 'office-nas.example.org', 9090), { host: 'office-nas.local', url: 'https://office-nas.local:9090/' });
-  assert.deepEqual(name.followAddress('duke-nas.example.org', now, 'office-nas.example.org', 9090), { host: 'office-nas.example.org', url: 'https://office-nas.example.org:9090/' });
-  assert.equal(name.followAddress('192.168.1.10', now, 'office-nas.example.org', 9090), null);
-  assert.equal(name.followAddress('nas', now, 'office-nas.example.org', 9090).host, 'office-nas.local');
-  assert.equal(name.originOf('2001:db8::5', 9090), 'https://[2001:db8::5]:9090/');
-  assert.equal(name.originOf('x.local', ''), 'https://x.local/');
+  assert.deepEqual(rename.followAddress('duke-nas.local', now, 'office-nas.example.org', 9090), { host: 'office-nas.local', url: 'https://office-nas.local:9090/' });
+  assert.deepEqual(rename.followAddress('duke-nas.example.org', now, 'office-nas.example.org', 9090), { host: 'office-nas.example.org', url: 'https://office-nas.example.org:9090/' });
+  assert.equal(rename.followAddress('192.168.1.10', now, 'office-nas.example.org', 9090), null);
+  assert.equal(rename.followAddress('nas', now, 'office-nas.example.org', 9090).host, 'office-nas.local');
+  assert.equal(rename.originOf('2001:db8::5', 9090), 'https://[2001:db8::5]:9090/');
+  assert.equal(rename.originOf('x.local', ''), 'https://x.local/');
 });
 
 test('the new fingerprint is read from what the command printed', () => {
   const lines = ['hostnamectl: the name is office-nas.example.org', `hostnamectl: this-machine's certificate now names office-nas.example.org: SHA256 ${SHOWN_FINGERPRINT.toLowerCase()}`];
-  assert.equal(name.fingerprintOf(lines), SHOWN_FINGERPRINT);
-  assert.equal(name.fingerprintOf(['hostnamectl: the name is x']), '');
-  assert.equal(name.fingerprintOf(undefined), '');
+  assert.equal(rename.fingerprintOf(lines), SHOWN_FINGERPRINT);
+  assert.equal(rename.fingerprintOf(['hostnamectl: the name is x']), '');
+  assert.equal(rename.fingerprintOf(undefined), '');
   assert.equal(name.renamedWords('x', 'AB:CD'), 'The machine is called x now. The new fingerprint: AB:CD');
   assert.match(name.renamedWords('x', ''), /Its certificate is made anew/);
 });

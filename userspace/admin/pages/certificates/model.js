@@ -12,9 +12,6 @@ import { EXPIRING_DAYS, stateOf } from './palette.js';
 /** The name of the certificate this server makes for itself. */
 export const SELF = 'this-machine';
 
-/** How long this server's own certificate lasts, in days. */
-export const SELF_LIFE_DAYS = 800;
-
 /** How many days before the end certd warns about a certificate it cannot renew: one added by hand, or one proved by DNS. */
 export const BY_HAND_DAYS = 21;
 
@@ -90,13 +87,6 @@ export function fromWords(certificate) {
 
 /** How many names there are beyond the first. */
 export const moreNames = (certificate) => Math.max(0, (certificate.names ?? []).length - 1);
-
-/** How long the certificate lived, in whole days, from its dates; null when they do not read. */
-export function lifeDays(certificate) {
-  const from = secondsOf(certificate.not_before);
-  const to = secondsOf(certificate.not_after);
-  return from === null || to === null ? null : Math.round((to - from) / DAY_SECONDS);
-}
 
 /**
  * Whether certd cannot renew the certificate by itself: one added by hand,
@@ -203,9 +193,6 @@ export function useOffer(certificate, {
   return { offer: 'none', words: 'This certificate does not name this machine. Give the machine that name first (Name and domain, below) to use it for the console.' };
 }
 
-/** The refusal of a console certificate that is not served: the name of the trial's banner line. */
-export const servingWords = (name) => `This console now serves ${name}'s certificate. Keep it once this page has come back on it.`;
-
 /**
  * What a row can be asked: `{buttons, more, removeNote}`, each an id the
  * page draws as a button (`show`, `make-anew`, `renew`, `renew-dns`,
@@ -289,17 +276,3 @@ export function accountWords(list, time, now = Date.now()) {
 
 /** The names a person can give a certificate asked for under `first`: the Domain the form suggests, from the machine's name; null when it has no domain. */
 export const suggestedDomain = (machine) => (machine?.domain ? `${machine.first}.${machine.domain}` : null);
-
-/** The reasons `cert revoke` takes, as the authority records them, and the words a person reads. */
-export const REVOKE_REASONS = Object.freeze([
-  { id: 'unspecified', words: 'No reason given' },
-  { id: 'key-compromise', words: 'Its key may have been seen by someone else' },
-  { id: 'superseded', words: 'A new certificate replaces it' },
-  { id: 'cessation-of-operation', words: 'The site is gone' },
-]);
-
-/** What revoking does not do: the services that have the certificate keep using it. */
-export const REVOKE_WORDS = 'Revoking tells the authority never to trust it again. Services keep using the certificate until a new one replaces it, and a revoked certificate cannot be undone.';
-
-/** What making this server's own certificate anew does to browsers. */
-export const MAKE_ANEW_WORDS = 'This server makes its own certificate again. Browsers and phones that trusted the old one warn again, and its new fingerprint is shown when it is made.';
