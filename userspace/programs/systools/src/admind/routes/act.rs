@@ -15,6 +15,10 @@
 //! and the journal reads the files the action names before and after. It
 //! changed nothing only when each of those reads the same.
 //!
+//! A change that restarts the machine (ADR 0565) is refused before it runs
+//! while a trial of settings runs, and while the other kind of restart is
+//! set or runs: [`refuse_restarting`].
+//!
 //! A long action (ADR 0516) is not run in the request: it starts a task,
 //! which [`tasks`](crate::admind::tasks) runs, and the answer is 202 with
 //! the task's number.
@@ -39,7 +43,7 @@ use serde_json::{Value, json};
 use super::{Context, Live, Outcome, Reply, Text, shown};
 use crate::admind::actions::show;
 use crate::admind::actions::{
-    self, Caller, CutsOffRead, Params, Prepared, Registered, Runs, Trial,
+    self, Caller, CutsOffRead, Params, Prepared, Registered, Restarts, Runs, Trial,
 };
 use crate::admind::caller::{self, TokenCall};
 use crate::admind::errors::{Failure, Kind};
@@ -51,6 +55,7 @@ use crate::admind::run::{self, Ran};
 use crate::admind::serve::look_at_trials;
 use crate::admind::shared::{Shared, unix_now};
 use crate::admind::tasks;
+use crate::admind::trials;
 use crate::admind::who::{self, Account};
 
 /// Who asks for a change, as the journal names them.
@@ -112,6 +117,16 @@ pub async fn action(
         card: cx.connection.to.and_then(|to| reach::card_of(to.ip())),
     });
     let (shared, peer) = (Rc::clone(cx.shared), cx.peer);
+    // Before a task too: a confirming try of the search is long.
+    if let Some(restarts) = prepared.action.restarts() {
+        let refused =
+            refuse_restarting(&shared, &prepared, restarts, live.as_ref(), token.as_ref()).await;
+        if let Err(failure) = refused {
+            let id = failure.own_id.as_deref().unwrap_or(failure.kind.id());
+            log(6, &format!("{whose} from {peer}: {} was not run: {id}", prepared.action.id()));
+            return Err(failure);
+        }
+    }
     if prepared.action.long() {
         return long(&shared, peer, prepared, &asker, &whose, live.as_ref(), token.as_ref());
     }
@@ -147,6 +162,18 @@ pub async fn action(
                     shared.tell_trials(Instant::now());
                 }
             }
+        }
+        // A restart or a shut down set or cancelled is told to the open
+        // tabs as soon as Spark says so.
+        let sets_power =
+            prepared.action.area() == actions::POWER || prepared.action.restarts().is_some();
+        if let Ok(probed) = &probed
+            && probed.ran.status == 0
+            && sets_power
+            && prepared.action.changes()
+        {
+            let reading = Rc::clone(&shared);
+            tokio::task::spawn_local(async move { look_at_trials(&reading).await });
         }
         // A change that names no files has none that moved.
         let mut files_same = true;
@@ -350,6 +377,99 @@ async fn refuse_cutting_off(
         .action
         .cuts_off(&prepared.args, came.from, &shown)
         .map_err(|why| Failure::new(Kind::CutsOff, why))
+}
+
+/// Refuses a change that restarts the machine (ADR 0565) while a trial of
+/// settings runs, which the restart would undo half way (ADM-142), and
+/// while the other kind of restart is set or runs (UPD-106): for a
+/// restart or a shut down, the search for a bad change, whose tries
+/// restart the machine on their own and would be spoiled; for the search,
+/// a restart or a shut down that is set. When admind cannot tell, because
+/// Spark does not answer or the search's state does not read, the change
+/// is refused all the same: the guard fails closed. The caller is checked
+/// first, so that only one who may make the change learns what runs.
+///
+/// # Errors
+///
+/// As [`actions::authorize`] for the caller; ADM-142 and UPD-106 as above.
+async fn refuse_restarting(
+    shared: &Rc<Shared>,
+    prepared: &Prepared,
+    restarts: Restarts,
+    live: Option<&Live>,
+    token: Option<&TokenCall>,
+) -> Result<(), Failure> {
+    let by = match (live, token) {
+        (Some(live), _) => {
+            permit_session(shared, prepared, live)?;
+            session_elevator(live)
+        }
+        (None, Some(token)) => {
+            permit_token(prepared, token)?;
+            token_elevator(prepared, token)
+        }
+        (None, None) => return Err(super::ended()),
+    };
+    let document = trials::document(shared.spark.get()).await.map_err(|why| {
+        let why = format!(
+            "{why}, so the console cannot tell whether a trial runs, which a restart would undo: \
+             nothing was done"
+        );
+        Failure::new(Kind::TrialRuns, why)
+    })?;
+    if let Some(trial) = document.trials.first() {
+        let (page, _) = trials::owner(&trial.id);
+        let why = format!(
+            "the trial `{}` runs, and a restart would undo it half way: keep or undo it at {page} \
+             first; nothing was done",
+            trial.id
+        );
+        return Err(Failure::new(Kind::TrialRuns, why));
+    }
+    match restarts {
+        Restarts::Search => match &document.shutdown {
+            None => Ok(()),
+            Some(set) => Err(other_restart(format!(
+                "a {} is set, in {} seconds, and the search restarts the machine on its own: \
+                 cancel it first; nothing was done",
+                set.end, set.in_seconds
+            ))),
+        },
+        Restarts::Machine => {
+            let argv: Vec<String> = shared.search.get().iter().map(ToString::to_string).collect();
+            let running = match run::elevated(shared, by, &argv, None, run::RUN_TIME).await {
+                Ok(ran) if ran.status == 0 => searching(&ran.output),
+                _ => None,
+            };
+            match running {
+                Some(false) => Ok(()),
+                Some(true) => Err(other_restart(
+                    "the search for a bad change runs, and restarts the machine for each try: \
+                     stop it on the Updates page first; nothing was done"
+                        .into(),
+                )),
+                None => Err(other_restart(
+                    "the console cannot tell whether the search for a bad change runs, whose \
+                     tries a restart would spoil: nothing was done"
+                        .into(),
+                )),
+            }
+        }
+    }
+}
+
+/// [`actions::OTHER_RESTART`], with `detail`: a restart or a shut down is
+/// set, or the search for a bad change runs.
+fn other_restart(detail: String) -> Failure {
+    let id = actions::OTHER_RESTART.0.to_string();
+    Failure { own_id: Some(id), ..Failure::new(Kind::Cannot, detail) }
+}
+
+/// Whether `changes bisect --status --json` printed that the search runs;
+/// None when what it printed does not say.
+fn searching(output: &str) -> Option<bool> {
+    let value: Value = serde_json::from_str(output.trim()).ok()?;
+    value.get("running")?.as_bool()
 }
 
 /// A change's command that ran, and what its probe found.

@@ -28,6 +28,7 @@ mod changes;
 mod cuts_off;
 mod follow;
 mod fuzz;
+mod restarts;
 mod secrets;
 mod signed_in;
 mod tasks;
@@ -251,7 +252,9 @@ fn token_answer(hex: &str) -> Option<&'static str> {
 /// with a service's error ID; `/system/commands/echo` writes its words
 /// and ends with the status 3; anything else writes its words, or for a
 /// command asked for JSON `{"ran": WORDS}`, and ends well; `lab-unlock`,
-/// `lab-key` and `lab-peers` print JSON. The command is noted in `calls`
+/// `lab-key` and `lab-peers` print JSON, and so do `changes bisect
+/// --status --json`, that no search runs, and `lab-search`, that one does.
+/// The command is noted in `calls`
 /// as a call of `elevate`, so that a test sees it among the worker's, and
 /// what it read on its input, if anything, as a call of `elevate-input`:
 /// admind has written it, and closed the pipe, before it asks authd.
@@ -283,6 +286,12 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
     }
     if command[0] == "lab-peers" {
         output.write_all(crate::admind::actions::tests::LAB_PEERS.as_bytes()).unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
+    if command[0] == "changes" || command[0] == "lab-search" {
+        let running = command[0] == "lab-search";
+        let printed = json!({ "running": running, "attempt": null, "of": null });
+        output.write_all(format!("{printed}\n").as_bytes()).unwrap();
         return vec!["ok 4321".into(), "ended 0".into()];
     }
     if command[0] == "lab-unlock" || command[0] == "lab-key" {

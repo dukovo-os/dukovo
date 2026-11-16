@@ -31,7 +31,7 @@ pub(super) async fn send_on(world: &World, req: Req, connection: &Rc<Connection>
 
 /// Spark's document while the trial `id` has `left_ms` to run, which is
 /// none of the others.
-fn trying(id: &str, left_ms: u64) -> String {
+pub(super) fn trying(id: &str, left_ms: u64) -> String {
     let document = Show {
         now_ms: 100_000,
         trials: vec![show::Trial {
@@ -47,18 +47,18 @@ fn trying(id: &str, left_ms: u64) -> String {
 }
 
 /// Spark's document while the network's settings are tried.
-fn trying_network() -> String {
+pub(super) fn trying_network() -> String {
     trying("network", 60_000)
 }
 
 /// Spark's document while nothing is tried.
-fn trying_nothing() -> String {
+pub(super) fn trying_nothing() -> String {
     show::to_json(&Show { now_ms: 100_000, ..Show::default() }).unwrap()
 }
 
 /// The path of the socket of the Spark that the console of `world` reads,
 /// named for the test.
-fn spark_path(world: &World, what: &str) -> &'static str {
+pub(super) fn spark_path(world: &World, what: &str) -> &'static str {
     let path = std::env::temp_dir().join(format!("admind-{what}-{}", std::process::id()));
     let path: &'static str = path.to_string_lossy().into_owned().leak();
     world.console.shared.spark.set(path);
@@ -153,7 +153,7 @@ fn the_session_says_where_the_browser_came_from_and_the_address_it_came_to() {
     });
 }
 
-async fn unlock(world: &World, session: &Session) {
+pub(super) async fn unlock(world: &World, session: &Session) {
     let body = json!({ "kind": "password", "password": "right" });
     let done = send(world, post("/api/1/unlock", &body).by(session)).await;
     assert_eq!(done.status, 200, "{}", done.body);
@@ -161,7 +161,7 @@ async fn unlock(world: &World, session: &Session) {
 
 /// The next event of a tab that is not a `change`, which each change that
 /// the tests make has as well.
-async fn next_trial(next: &mut impl AsyncFnMut() -> String) -> String {
+pub(super) async fn next_trial(next: &mut impl AsyncFnMut() -> String) -> String {
     loop {
         let told = next().await;
         if !told.starts_with("event: change") {
@@ -171,7 +171,7 @@ async fn next_trial(next: &mut impl AsyncFnMut() -> String) -> String {
 }
 
 /// Whether a tab is told nothing but rows of the journal for a moment.
-async fn no_trial(next: &mut impl AsyncFnMut() -> String) -> bool {
+pub(super) async fn no_trial(next: &mut impl AsyncFnMut() -> String) -> bool {
     tokio::time::timeout(Duration::from_millis(100), next_trial(next)).await.is_err()
 }
 

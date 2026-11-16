@@ -49,6 +49,7 @@
 mod account;
 mod accounts;
 mod backups;
+mod bisect;
 mod certificate;
 pub mod checks;
 mod console;
@@ -59,6 +60,7 @@ pub mod logs;
 mod metrics;
 mod moving;
 mod network;
+mod power;
 mod private;
 mod reliability;
 pub mod secret;
@@ -447,6 +449,32 @@ pub struct Undo {
     pub args: Value,
 }
 
+/// The area of the actions that set and cancel a restart or a shut down:
+/// admind reads Spark as soon as one of its changes answers, as it does
+/// after any change that restarts the machine, so that the open tabs are
+/// told at once (`event: power`, ADR 0565).
+pub const POWER: &str = power::AREA;
+
+/// The ID admind refuses a change that restarts the machine with, and its
+/// title, while the other kind of restart is set or runs: the updates'
+/// UPD-106, since it is about them, with the status of ADM-128.
+pub const OTHER_RESTART: (&str, &str) = ("UPD-106", "A restart is pending, or changes bisect runs");
+
+/// What a change that restarts the machine is, for the guard that refuses
+/// it while something a restart would spoil runs (ADR 0565).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restarts {
+    /// It restarts or powers off the machine once, a minute from when it
+    /// answers. It is refused while a trial of settings runs, which the
+    /// restart would undo unasked, and while the search for a bad change
+    /// runs, whose restarts are its own.
+    Machine,
+    /// It starts or goes on with the search for a bad change, which
+    /// restarts the machine once for each try. It is refused while a
+    /// trial runs, and while a restart or a shut down is set.
+    Search,
+}
+
 /// One action of the console.
 pub trait Action: 'static {
     /// `area.verb`, such as `service.restart`.
@@ -490,6 +518,13 @@ pub trait Action: 'static {
     /// cannot try the change (ADR 0562, ADM-137). None, the default, for an
     /// action that cuts off nothing a trial does not put back.
     const CUTS_OFF: Option<CutsOff<Self::Args>> = None;
+    /// Whether it restarts the machine, and how: such a change is refused
+    /// while a trial of settings runs (ADM-142) and while the other kind
+    /// of restart is set or runs (UPD-106), and when admind cannot tell,
+    /// so that the guard fails closed. None, the default, for an action
+    /// that restarts nothing. It answers before the machine goes down,
+    /// a minute later, so it never needs to be [`Action::LONG`].
+    const RESTARTS: Option<Restarts> = None;
     /// Its five tests.
     const TESTS: Tests;
     /// What a person reads as its name in the palette and in the journal:
@@ -680,6 +715,8 @@ pub trait Registered: Sync + fmt::Debug {
     ///
     /// The words of the refusal, as above.
     fn cuts_off(&self, args: &Value, from: IpAddr, shown: &str) -> Result<(), String>;
+    /// [`Action::RESTARTS`].
+    fn restarts(&self) -> Option<Restarts>;
     fn tests(&self) -> Tests;
     fn title(&self) -> &'static str;
     /// Whether a change's `changed` comes from comparing, its probe's
@@ -775,6 +812,9 @@ impl<A: Action> Registered for Entry<A> {
         let typed: A::Args = serde_json::from_value(args.clone())
             .map_err(|_| format!("the arguments of {} do not read", A::ID))?;
         (cuts_off.cuts)(&typed, from, shown)
+    }
+    fn restarts(&self) -> Option<Restarts> {
+        A::RESTARTS
     }
     fn tests(&self) -> Tests {
         A::TESTS
@@ -1011,6 +1051,14 @@ registry![
     private::Serve,
     private::Add,
     private::Remove,
+    power::Status,
+    power::Restart,
+    power::Shutdown,
+    power::Cancel,
+    bisect::Status,
+    bisect::Begin,
+    bisect::Stop,
+    bisect::Confirm,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
@@ -1039,7 +1087,8 @@ pub fn offered() -> &'static [&'static dyn Registered] {
 /// compared from a probe (`compares`), the field naming an account it is
 /// never done to by the caller's own (`not_self`, null for none), the
 /// card whose browsers it is refused for when it would cut them off
-/// (`cuts_off`, null for none), its error IDs, the names of its five
+/// (`cuts_off`, null for none), whether it restarts the machine
+/// (`restarts`), its error IDs, the names of its five
 /// tests, the JSON Schema of its arguments (`input`), and its examples:
 /// the arguments that work, and for a change the action and
 /// arguments that put back what the first did (null when nothing does).
@@ -1063,6 +1112,7 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "compares": action.compares(),
                     "not_self": action.not_self(),
                     "cuts_off": action.cuts_off_card(),
+                    "restarts": action.restarts().is_some(),
                     "errors": action.errors(),
                     "tests": action.tests(),
                     "input": schema(action.fields()),

@@ -218,11 +218,13 @@ areas'. Besides the routes of the actions there are these:
 *GET /api/1/actions*
 	The list: a JSON array with an object for each action, with its *id*,
 	*title*, *area*, *changes*, *method*, *path*, *runs*, *long*,
-	*compares*, *secret\_answer*, *errors*, *tests*, *input* and
-	*examples*. *compares* is true for a change whose *changed* is found by
-	comparing what it moves before and after it, and false for any other
-	action. *secret\_answer* is true for an action whose command prints a
-	secret. *input* is the JSON Schema of the action's arguments, in which
+	*compares*, *secret\_answer*, *not\_self*, *cuts\_off*, *restarts*,
+	*errors*, *tests*, *input* and *examples*. *compares* is true for a
+	change whose *changed* is found by comparing what it moves before and
+	after it, and false for any other action. *secret\_answer* is true for
+	an action whose command prints a secret. *restarts* is true for a
+	change that restarts or powers off the machine, which is refused while
+	a trial runs (see *Restarting the machine*, below). *input* is the JSON Schema of the action's arguments, in which
 	a secret is text marked *writeOnly*. *admin actions --json* prints the
 	same. A session or a token of any scope may ask.
 
@@ -763,6 +765,40 @@ the read needs the area's full scope for a token. A device's name is 1 to
 	with *wireguard show --json*, as the caller's administrator, first,
 	and refuses too when that read fails or does not say.
 
+*Restarting the machine*. The Hardware page, and the pages that offer
+Restart now, restart or shut down the machine with *shutdown*(8), a
+minute after the change answers or at a time of day: the minute lets the
+page count down, and gives a person who clicked by mistake the time to
+cancel. Spark stops admind with the rest, and the page waits for the
+console to answer again.
+
+*GET /api/1/power* (*power.status*, area *power*)
+	*shutdown --show --json*: the restart or shut down that is set, if one
+	is. Spark's read socket answers anyone, so it runs as the person.
+
+*POST /api/1/power/restart* (*power.restart*, area *power*)
+	*shutdown -r +1 --no-wall*, or *shutdown -r HH:MM --no-wall* with
+	*at*, a time of day from 00:00 to 23:59 by the machine's clock.
+	*power.cancel* undoes it.
+
+*POST /api/1/power/shutdown* (*power.shutdown*, area *power*)
+	*shutdown -P +1 --no-wall*: turns the machine off in a minute. Only
+	its power button turns it on again. *power.cancel* undoes it.
+
+*POST /api/1/power/cancel* (*power.cancel*, area *power*)
+	*shutdown -c --no-wall*: cancels what is set. With nothing set it
+	changes nothing, and says so.
+
+A change with *restarts* set is refused before it runs while a trial of
+settings runs (ADM-142), which the restart would undo half way: keep or
+undo the trial first. A restart or a shut down is refused while the search
+for a bad change runs (UPD-106), whose tries restart the machine on their
+own; the search is refused while a restart or a shut down is set. admind
+reads Spark's read socket for the trials and what is set, and *changes
+bisect --status --json*, as the caller's administrator, for the search.
+When either does not answer, the change is refused all the same: the
+guard fails closed.
+
 An action's arguments are the parts of its address, such as _name_ above,
 and the members of the JSON object in its body, which may be empty,
 together. A name in both, a member the action does not have, or a body
@@ -1220,6 +1256,17 @@ a signed-in session. It tells:
 	runs. The round that finds the last trial gone tells the empty list
 	once. The page counts down by its own clock between two tellings.
 
+*event: power*
+	*{"shutdown": {"end": "reboot", "in\_seconds": 41, "at\_ms":
+	1800000060000}}*, the restart or shut down that is set, as *shutdown
+	--show --json* prints it, with the seconds left as of when it is
+	sent; *{"shutdown": null}* when none is. It is told to every stream
+	of every signed-in session: to one that opens while one is set, at
+	once, and to all of them each time what is set changes. admind sees
+	that when it reads Spark: as soon as a *power* change answers, and at
+	each 30-second round, so a restart set or cancelled at a terminal is
+	told too.
+
 A comment line, *: keep*, comes every 25 seconds, so that nothing between
 the browser and admind closes a stream that says nothing. A session with a
 stream open is not idle; once its last stream has closed and a minute has
@@ -1376,7 +1423,12 @@ have the program yet, *ADM-130* too many terminals, *ADM-131* no such
 terminal, *ADM-132* the terminal is not open to this account, *ADM-133* the
 question came by a connection opened before the change, *ADM-134* the
 console follows as many logs as it may, *ADM-135* nothing is being tried by
-that name. *detail* says what happened this time, in authd's own words where
+that name, *ADM-136* not on your own account from the console, *ADM-137* the
+browser comes through what the change takes away, *ADM-139* the session has
+ended already, *ADM-140* the one-time link was used or has ended, *ADM-141*
+the certificate does not name the address the browser uses, and *ADM-142* a
+trial runs, which a restart would undo. *ADM-138* is given by *admin*(8),
+not admind. *detail* says what happened this time, in authd's own words where
 authd refused. ADM-125 also has the *field* whose value cannot work, and
 ADM-123 the *command* with its words, status and error output. Each ID has a
 page in the support center that says what to do.

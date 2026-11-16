@@ -42,7 +42,7 @@ use super::tasks::Tasks;
 use super::terminal::Terminals;
 use super::terminal::protocol::Why;
 use super::tls::Certificate;
-use super::trials::{self, Trials};
+use super::trials::{self, Power, Trials};
 use super::websocket::Code;
 use super::who::Sources;
 use crate::admin_settings::Settings;
@@ -190,7 +190,18 @@ pub struct Shared {
     pub trials: RefCell<Trials>,
     /// Spark's read socket: [`trials::READ`], or a test's own.
     pub spark: Cell<&'static str>,
+    /// The restart or shut down that is set, as Spark last said
+    /// (ADR 0565).
+    pub power: RefCell<Power>,
+    /// The command that says whether the search for a bad change runs,
+    /// which a restart is refused during: [`SEARCH`], or a test's own.
+    pub search: Cell<&'static [&'static str]>,
 }
+
+/// `changes bisect --status --json`, which says whether the search for a
+/// bad change runs (`running`). It runs as the caller's administrator:
+/// the search's state is not admind's to read.
+pub const SEARCH: &[&str] = &["changes", "bisect", "--status", "--json"];
 
 impl Shared {
     /// What admind starts with, asking the authd at `authd`.
@@ -229,6 +240,8 @@ impl Shared {
             follows: RefCell::default(),
             trials: RefCell::default(),
             spark: Cell::new(trials::READ),
+            power: RefCell::default(),
+            search: Cell::new(SEARCH),
         })
     }
 

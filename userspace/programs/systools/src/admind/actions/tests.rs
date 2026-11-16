@@ -597,6 +597,12 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "ssh.on",
             "ssh.off",
             "ssh.undo",
+            "power.restart",
+            "power.shutdown",
+            "power.cancel",
+            "updates.bisect",
+            "updates.bisect-stop",
+            "updates.bisect-confirm",
         ]
     );
     for action in console.as_array().unwrap() {
@@ -708,6 +714,13 @@ fn keeps_the_rules(actions: &'static [&'static dyn Registered]) {
             action.cuts_off_card().is_none()
                 || (action.changes() && action.runs() == Runs::AsAdministrator && !action.long()),
             "{id}: what can cut off its browser is a change an administrator runs at once"
+        );
+        // A change that restarts the machine is refused while a trial or
+        // the other kind of restart runs, which authd's administrator reads.
+        assert!(
+            action.restarts().is_none()
+                || (action.changes() && action.runs() == Runs::AsAdministrator),
+            "{id}: what restarts the machine is a change an administrator runs"
         );
         secrets::keeps_secrets(*action);
         let (good, _, undo) = action.example_values();

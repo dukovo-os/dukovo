@@ -6,8 +6,9 @@
 //! unlock changes, `session` with why it ended when it does, `task` for
 //! each change of a task's state, step or progress (ADR 0516), `change` for
 //! each row of the journal that ends, a console change's or a hand edit's,
-//! `trial` with the trials that run, and a comment every 25 seconds so that
-//! nothing between the browser and admind closes a stream that says nothing.
+//! `trial` with the trials that run, `power` with the restart or shut down
+//! that is set, and a comment every 25 seconds so that nothing between the
+//! browser and admind closes a stream that says nothing.
 //!
 //! A tab that opens is told where each task is that waits, runs or ended
 //! in the last minute, so that it has no gap between what it asked for and
@@ -24,6 +25,12 @@
 //! admind's upkeep, which tells them every time while one runs and once
 //! more, with none, when the last has ended). Each tells the time left of
 //! each trial as of when it is sent, so that a tab corrects its countdown.
+//!
+//! The restart or shut down that is set is told the same way (ADR 0565): to
+//! a tab that opens while one is set, and to every tab each time what is
+//! set changes, which admind sees when it reads Spark (a `power` change
+//! reads it as soon as it answers, and the upkeep every round). Its
+//! seconds left are as of when it is sent.
 //!
 //! An open stream is a tab: while a session has one, it is not idle, and
 //! once its last stream has closed and 60 seconds have passed, an
@@ -52,6 +59,7 @@ use crate::admind::log;
 use crate::admind::shared::{Shared, seconds_left, unix_now};
 use crate::admind::tasks::Told;
 use crate::admind::trials::Running;
+use crate::power::Pending;
 
 /// How long a stream may say nothing.
 const KEEP_TIME: Duration = Duration::from_secs(25);
@@ -104,6 +112,20 @@ fn change_event(row: &Row) -> Bytes {
 fn trial_event(running: &[Running]) -> Bytes {
     let data = json!({ "trials": running });
     Bytes::from(format!("event: trial\ndata: {data}\n\n"))
+}
+
+/// The event that tells the restart or shut down that is set, with the
+/// seconds left at `now_ms` (milliseconds since 1970), or that none is.
+fn power_event(set: Option<&Pending>, now_ms: u64) -> Bytes {
+    let shutdown = set.map(|set| {
+        json!({
+            "end": set.end,
+            "in_seconds": set.at_ms.saturating_sub(now_ms) / 1000,
+            "at_ms": set.at_ms,
+        })
+    });
+    let data = json!({ "shutdown": shutdown });
+    Bytes::from(format!("event: power\ndata: {data}\n\n"))
 }
 
 /// `GET /api/1/events`: counts the tab in and starts its stream.
@@ -193,11 +215,13 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
     let mut row_news = shared.journal.news.subscribe();
     // The unlock last told, so that only a change is, what of each task,
     // where in the journal's news the tab is, and how often the trials had
-    // been told when this stream last sent them: none, until it has.
+    // been told, and what is set to end the machine had changed, when this
+    // stream last sent them: none, until it has.
     let mut told = None;
     let mut told_tasks = Told::default();
     let mut told_rows = shared.journal.news.position();
     let mut told_trials = None;
+    let mut told_power = None;
     loop {
         let Some(until) = shared.with_session(&cookie, |session| session.unlocked_until) else {
             let reason = shared.endings.borrow().reason(&authd);
@@ -221,6 +245,15 @@ async fn stream(shared: Rc<Shared>, cookie: String, authd: String, sender: mpsc:
         let trials_due = told_trials.map_or(!running.is_empty(), |told| told != times);
         told_trials = Some(times);
         if trials_due && !tell(&sender, trial_event(&running)).await {
+            break;
+        }
+        // Likewise what is set to end the machine: to a tab that opens only
+        // if something is.
+        let (times, set) = shared.power.borrow().told();
+        let power_due = told_power.map_or(set.is_some(), |told| told != times);
+        told_power = Some(times);
+        let now_ms = crate::util::now_ns() / 1_000_000;
+        if power_due && !tell(&sender, power_event(set.as_ref(), now_ms)).await {
             break;
         }
         let (due, held) = shared.tasks.events(&mut told_tasks, tokio::time::Instant::now());
@@ -368,6 +401,25 @@ mod tests {
             )
         );
         assert_eq!(trial_event(&[]), Bytes::from("event: trial\ndata: {\"trials\":[]}\n\n"));
+    }
+
+    #[test]
+    fn what_is_set_to_end_the_machine_is_told_with_its_seconds_left_as_it_is_sent() {
+        let set = Pending { end: "reboot", in_seconds: 60, at_ms: 1_800_000_060_000 };
+        assert_eq!(
+            power_event(Some(&set), 1_800_000_018_500),
+            Bytes::from(
+                "event: power\ndata: {\"shutdown\":{\"at_ms\":1800000060000,\"end\":\"reboot\",\
+                 \"in_seconds\":41}}\n\n"
+            )
+        );
+        // Its time gone by is no time left, never a time that wraps.
+        let late = power_event(Some(&set), 1_800_000_090_000);
+        assert!(String::from_utf8(late.to_vec()).unwrap().contains("\"in_seconds\":0"));
+        assert_eq!(
+            power_event(None, 0),
+            Bytes::from("event: power\ndata: {\"shutdown\":null}\n\n")
+        );
     }
 
     #[test]

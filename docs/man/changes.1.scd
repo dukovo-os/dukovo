@@ -11,7 +11,8 @@ changes - what changed between two starts of the computer
 
 *changes* [*--failed* | *--between* _start_ _start_ | *--list*]++
 *changes* (*--list* | *--failed*) *--json*++
-*changes bisect* [*--yes* | *--status* [*--json*] | *--stop* | *--confirm* [*--yes*]]
+*changes bisect* [*--confirm*] [*--yes*] [*--later*]++
+*changes bisect* (*--status* [*--json*] | *--stop*)
 
 # DESCRIPTION
 
@@ -127,13 +128,44 @@ above, or *null* when no start kept has failed (the exit status is 0).
 This differs from the text, which also takes a failed try. _since_good_
 is what changed from the last good start before it to it, as in the text,
 and an empty array when none is kept before it or nothing changed. _bisect_ is the
-search, as *bisect --status --json* gives it.
+search's state: _running_ is whether a search waits on a try; _try_ the
+number of the try the next start is, and _of_ the most tries the search
+takes, counting those made, which falls as tries narrow the changes. Both
+are *null* when none runs, and with no search at all _running_ is
+*false*.
 
-*bisect --status --json* is that object alone: _running_ is whether a
-search waits on a try; _try_ the number of the try the next start is, and
-_of_ the most tries the search takes, counting those made, which falls
-as tries narrow the changes. Both are *null* when none runs, and with no
-search at all _running_ is *false*.
+*bisect --status --json* is that object with the rest of the search,
+for the web console:
+
+```
+{"running": true, "try": 2, "of": 2, "failed_start": 42,
+ "levers": [{"what": "org.nginx.nginx", "kind": "app", "version": "1.30.6",
+   "at_ms": 1794500580000}],
+ "cannot": [{"what": "enp1s0", "kind": "card",
+   "why": "the machine's hardware, which no restart changes"}],
+ "tries": [{"try": 1, "left_out": ["system", "org.nginx.nginx"],
+   "confirm": false, "verdict": "good", "start": 43,
+   "at_ms": 1794501000000}],
+ "next_ms": 1794501120000, "result": null}
+```
+
+_failed_start_ is the start the search is about. _levers_ are the changes
+it can leave out, numbered from 1 in that order as *--status* numbers
+them: _what_ is the app's ID, *system* or *boot options*, _kind_ *slot*,
+*options* or *app*, _version_ what the failed start ran, and _at_ms_ when
+that was installed, where known. _cannot_ are the changes it cannot try
+apart, and why. Each try has the changes it left out, whether it confirms
+a change named by elimination, its _verdict_ once judged (*good*,
+*failed*, *unfinished*, *otherwise* or *not-started*; *null* while it is
+waited on), and the start that was it, and when. _next_ms_ is when Spark
+restarts the machine for the next try, while it is set: *--later*'s
+restart; the health check's own, a minute after a try's result, is not
+set ahead, and is *null* then. _result_ is *null* until the search ends,
+then _end_ (*found*, *not-found*, *otherwise*, *not-started*, *broken* or
+*stopped*), for *found* the change's _what_ and _version_, whether a try
+_confirmed_ it, and _undo_, the lines that say how to undo it; and
+_words_, the lines of the result as *--status* prints them. With no search
+at all every member is empty, *null* or *false*.
 
 # FINDING THE CHANGE
 
@@ -184,6 +216,12 @@ the next usual start is F's again until the fix is taken.
 *--yes*
 	Do not ask before the first restart. Without it, an answer of no
 	writes nothing and ends with status 1.
+
+*--later*
+	Restart for the first try in a minute, through Spark, instead of at
+	once, so that whoever asked is answered first: the web console asks
+	so. *shutdown --show* shows the restart, and *shutdown -c* cancels
+	it; the try is then the next start, whenever that is.
 
 *--status*
 	Show the search: the failed start, the levers, each try and what

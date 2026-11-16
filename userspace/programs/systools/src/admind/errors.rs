@@ -102,11 +102,20 @@ pub enum Kind {
     CutsOff,
     /// ADM-139: the console session or terminal named has ended already.
     SessionGone,
+    /// ADM-140: the one-time link was read already, or its time ran out,
+    /// or admind restarted since it was made.
+    OnceGone,
+    /// ADM-141: the certificate does not name the address the browser
+    /// asks for the console by.
+    NotNamed,
+    /// ADM-142: a trial of settings runs, which a restart or a shut down
+    /// would end half way.
+    TrialRuns,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 38] = [
+    pub const ALL: [Kind; 41] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -145,6 +154,9 @@ impl Kind {
         Kind::NotSelf,
         Kind::CutsOff,
         Kind::SessionGone,
+        Kind::OnceGone,
+        Kind::NotNamed,
+        Kind::TrialRuns,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -188,6 +200,9 @@ impl Kind {
             Kind::NotSelf => "ADM-136",
             Kind::CutsOff => "ADM-137",
             Kind::SessionGone => "ADM-139",
+            Kind::OnceGone => "ADM-140",
+            Kind::NotNamed => "ADM-141",
+            Kind::TrialRuns => "ADM-142",
         }
     }
 
@@ -226,7 +241,12 @@ impl Kind {
             | Kind::TooManyTerminals
             | Kind::OldConnection
             | Kind::NotSelf
-            | Kind::CutsOff => 409,
+            | Kind::CutsOff
+            | Kind::NotNamed
+            | Kind::TrialRuns => 409,
+            // The link was good and is not now: it is never good again. A
+            // token that was never made is answered 404 by its route.
+            Kind::OnceGone => 410,
             // The console has the action, and this machine not its program.
             Kind::NoProgram => 501,
             Kind::AuthdSilent | Kind::WorkerSilent => 502,
@@ -285,6 +305,9 @@ impl Kind {
             Kind::NotSelf => "Not on your own account from the console",
             Kind::CutsOff => "This browser comes through what the change takes away",
             Kind::SessionGone => "That session has ended already",
+            Kind::OnceGone => "The one-time link was used or has ended",
+            Kind::NotNamed => "The certificate does not name the address this browser uses",
+            Kind::TrialRuns => "A trial runs: keep or undo it before a restart",
         }
     }
 
@@ -326,6 +349,13 @@ impl Kind {
             Kind::NotSelf => Some("Do this from another administrator's account."),
             Kind::CutsOff => Some("Make the change from a browser that does not come through it."),
             Kind::SessionGone => Some("Reload the list: it shows what is signed in now."),
+            Kind::OnceGone => Some("Ask the person who sent it for a new link."),
+            Kind::NotNamed => {
+                Some("Open the console by a name the certificate has, then change it from there.")
+            }
+            Kind::TrialRuns => {
+                Some("Keep or undo the change being tried, then restart or shut down.")
+            }
             Kind::NotJson
             | Kind::BadRequest
             | Kind::Refused
@@ -592,6 +622,20 @@ mod tests {
         assert!(Kind::NotSelf.fix().is_some_and(|fix| fix.contains("another administrator")));
         assert!(Kind::CutsOff.fix().is_some_and(|fix| fix.contains("does not come through")));
         assert!(Kind::SessionGone.fix().is_some_and(|fix| fix.contains("Reload")));
+    }
+
+    #[test]
+    fn a_used_link_a_certificate_s_names_and_a_trial_before_a_restart_have_their_own() {
+        let named = [
+            (Kind::OnceGone, "ADM-140", 410),
+            (Kind::NotNamed, "ADM-141", 409),
+            (Kind::TrialRuns, "ADM-142", 409),
+        ];
+        for (kind, id, status) in named {
+            assert_eq!((kind.id(), kind.status()), (id, status));
+            assert!(kind.fix().is_some(), "{id} says what to do");
+        }
+        assert!(Kind::TrialRuns.fix().is_some_and(|fix| fix.contains("Keep or undo")));
     }
 
     #[test]

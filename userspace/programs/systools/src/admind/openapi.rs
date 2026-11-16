@@ -208,7 +208,7 @@ fn route_operation(entry: &Entry, actions: &[&dyn Registered]) -> Value {
         "summary": summary(entry.route),
         "tags": [tag(entry.access)],
         "security": security(entry.access, post),
-        "responses": responses(success_of(entry.route), &route_kinds(entry), &[]),
+        "responses": responses(success_of(entry.route), &route_kinds(entry), &[], &[]),
     });
     let parameters: Vec<Value> =
         parameters_of(entry.path).map(|name| id_parameter(name, entry.path)).collect();
@@ -272,7 +272,12 @@ fn action_operation(action: &dyn Registered) -> Value {
         "description": describe(action),
         "tags": [tag(Access::Api)],
         "security": security(Access::Api, action.posts()),
-        "responses": responses(action_success(action), &action_kinds(action), action.errors()),
+        "responses": responses(
+            action_success(action),
+            &action_kinds(action),
+            action.errors(),
+            &refusals(action),
+        ),
     });
     let given = |field: &Field| example.and_then(|given| given.get(field.name));
     let mut parameters: Vec<Value> =
@@ -630,6 +635,9 @@ fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
         if action.cuts_off_card().is_some() {
             kinds.push(Kind::CutsOff);
         }
+        if action.restarts().is_some() {
+            kinds.push(Kind::TrialRuns);
+        }
     }
     if action.long() {
         kinds.push(Kind::NoStore);
@@ -637,11 +645,24 @@ fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
     kinds
 }
 
+/// The refusals of `action` that admind gives with an ID of another area,
+/// as ADM-128 is answered, with their titles: UPD-106 for a change that
+/// restarts the machine.
+pub fn refusals(action: &dyn Registered) -> Vec<(&'static str, &'static str)> {
+    action.restarts().map(|_| actions::OTHER_RESTART).into_iter().collect()
+}
+
 /// The responses of an operation: its success, one for each status that
 /// `kinds` give, listing the error IDs that come with it, and 431, which
 /// any request may meet before a route is found. `own` are the IDs the
-/// action's command can give instead of ADM-123.
-fn responses(success: (&str, Value), kinds: &[Kind], own: &[&str]) -> Value {
+/// action's command can give instead of ADM-123, and `refused` those
+/// admind refuses it with as it does with ADM-128 ([`refusals`]).
+fn responses(
+    success: (&str, Value),
+    kinds: &[Kind],
+    own: &[&str],
+    refused: &[(&'static str, &'static str)],
+) -> Value {
     let mut all = Map::new();
     all.insert(success.0.into(), success.1);
     all.insert("431".into(), head_too_large());
@@ -653,6 +674,9 @@ fn responses(success: (&str, Value), kinds: &[Kind], own: &[&str]) -> Value {
         for id in own {
             ids.insert(id, "The command gave this ID");
         }
+    }
+    for (id, title) in refused {
+        by_status.entry(Kind::Cannot.status()).or_default().insert(id, title);
     }
     for (status, ids) in &by_status {
         all.insert(status.to_string(), error_response(*status, ids));

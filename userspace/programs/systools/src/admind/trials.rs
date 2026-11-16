@@ -21,7 +21,9 @@
 //! more connection and never passes an old one.
 //!
 //! Spark's `show` document, which lists the trials and the last ones
-//! undone, comes from Spark's read socket, which answers anyone.
+//! undone, comes from Spark's read socket, which answers anyone. It also
+//! says whether a restart or a shut down is set ([`Power`]), which the
+//! open tabs are told as `event: power` when it changes (ADR 0565).
 //!
 //! The open tabs are told which trials run, with the time each has left,
 //! as `event: trial` (`routes::events`): when a trial begins or ends by a
@@ -71,7 +73,7 @@ const KNOWN: [(&str, &str, &str); 4] = [
 /// The page that owns the trial `id` and the words for what it tries.
 /// A trial the console does not know the way to is a change on the
 /// services' page.
-fn owner(id: &str) -> (String, String) {
+pub fn owner(id: &str) -> (String, String) {
     if let Some((_, page, what)) = KNOWN.iter().find(|(known, ..)| *known == id) {
         return (page.to_string(), what.to_string());
     }
@@ -102,6 +104,44 @@ struct Began {
     /// When Spark undoes it unless it is kept, as last read: none until
     /// admind reads Spark after its own action began it.
     ends: Option<Instant>,
+}
+
+/// The restart or shut down that is set, as admind last read it from
+/// Spark, and how often it has changed: the tabs are told it as `event:
+/// power` each time it does (ADR 0565).
+#[derive(Debug, Default)]
+pub struct Power {
+    /// The one that is set; None for none, and before Spark first answers.
+    set: Option<crate::power::Pending>,
+    /// How many times it has changed since admind started.
+    times: u64,
+}
+
+impl Power {
+    /// Takes `set`, read from Spark now, and says whether it differs from
+    /// what was read before: another end, or a time that moved by more
+    /// than [`SAME_END`]. The time is to the second, so one read again
+    /// moves a little.
+    pub fn read(&mut self, set: Option<crate::power::Pending>) -> bool {
+        let same = match (&self.set, &set) {
+            (None, None) => true,
+            (Some(was), Some(now)) => {
+                let moved = was.at_ms.abs_diff(now.at_ms);
+                was.end == now.end && u128::from(moved) <= SAME_END.as_millis()
+            }
+            _ => false,
+        };
+        self.set = set;
+        if !same {
+            self.times += 1;
+        }
+        !same
+    }
+
+    /// How many times what is set has changed, and what is set now.
+    pub fn told(&self) -> (u64, Option<crate::power::Pending>) {
+        (self.times, self.set.clone())
+    }
 }
 
 /// The trials being tried, by their IDs (`network`, `firewall`), and the
@@ -325,6 +365,21 @@ pub fn fake_spark(path: &str, answers: Vec<String>) -> std::thread::JoinHandle<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::power::Pending;
+
+    #[test]
+    fn what_is_set_changes_by_its_end_and_a_time_that_moved_and_not_by_a_read_again() {
+        let restart = |at_ms| Some(Pending { end: "reboot", in_seconds: 60, at_ms });
+        let mut power = Power::default();
+        assert!(!power.read(None), "none is what admind starts with");
+        assert!(power.read(restart(100_000)));
+        assert!(!power.read(restart(101_000)), "read again a second later");
+        assert!(power.read(restart(160_000)), "asked again a minute later");
+        let off = Some(Pending { end: "poweroff", in_seconds: 60, at_ms: 160_000 });
+        assert!(power.read(off));
+        assert!(power.read(None), "cancelled");
+        assert_eq!(power.told(), (4, None));
+    }
 
     const SECOND: Duration = Duration::from_secs(1);
 

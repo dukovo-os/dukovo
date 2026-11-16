@@ -9,10 +9,17 @@
 //! Spark stops the services in order and then turns the machine off,
 //! restarts it or halts it; with `--force` it skips the services. The
 //! options are systemd's and sysvinit's.
+//!
+//! `shutdown --show` says the shutdown that is set for later, if one is,
+//! from Spark's read socket, which answers anyone; with `--json` as one
+//! object, which the web console reads (`power.status`).
 
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+
+use serde::Serialize;
+use spark_api::show;
 
 use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail, usage};
@@ -73,6 +80,9 @@ fn ask(request: &str) -> Result<String, Fail> {
     }
 }
 
+/// Spark's words when it is asked to cancel and nothing is set.
+const NOTHING_SET: &str = "no shutdown is pending";
+
 /// How the machine ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum End {
@@ -120,11 +130,77 @@ fn local_hm() -> (u32, u32) {
     (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
 }
 
-/// shutdown(8): `shutdown [-H|-P|-r|-h] [-k] [--no-wall] [TIME] [MESSAGE...]`, or
-/// `shutdown -c`.
+/// A shutdown that is set for later, as `shutdown --show --json` prints
+/// it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Pending {
+    /// What it ends in: `reboot`, `poweroff` or `halt`, the words of its
+    /// command.
+    pub end: &'static str,
+    /// How long until it begins, as Spark said it.
+    pub in_seconds: u64,
+    /// When it begins, in milliseconds since 1970: the time of the read
+    /// and [`Pending::in_seconds`], so to the second. Spark's own times are
+    /// since the machine started, which a page cannot show as a time of
+    /// day.
+    pub at_ms: u64,
+}
+
+/// The shutdown that Spark's `show` document `document`, read at `now_ms`
+/// (milliseconds since 1970), says is set, if one is. An end that this
+/// program does not know the words of is told as Spark said it would
+/// never be: a halt.
+pub fn pending(document: &show::Show, now_ms: u64) -> Option<Pending> {
+    let shutdown = document.shutdown.as_ref()?;
+    let end = match shutdown.end.as_str() {
+        "restart" => End::Reboot,
+        "power off" => End::PowerOff,
+        _ => End::Halt,
+    };
+    Some(Pending {
+        end: end.verb(),
+        in_seconds: shutdown.in_seconds,
+        at_ms: now_ms.saturating_add(shutdown.in_seconds.saturating_mul(1000)),
+    })
+}
+
+/// What `shutdown --show --json` prints.
+#[derive(Serialize)]
+struct Shown {
+    format: u32,
+    shutdown: Option<Pending>,
+}
+
+/// `shutdown --show [--json]`: the shutdown that is set, from Spark's read
+/// socket.
+fn show(json: bool) -> Result<i32, Fail> {
+    let document = show::parse(&read("show")?).map_err(fail)?;
+    let pending = pending(&document, util::now_ns() / 1_000_000);
+    if json {
+        let shown = Shown { format: 1, shutdown: pending };
+        println!("{}", serde_json::to_string(&shown).map_err(|err| fail(err.to_string()))?);
+        return Ok(0);
+    }
+    match pending {
+        None => println!("No shutdown is set."),
+        Some(pending) => {
+            let at = i64::try_from(pending.at_ms / 1000).unwrap_or(i64::MAX);
+            let when = util::local_time(at, "%a %Y-%m-%d %H:%M:%S %Z");
+            println!(
+                "The system {} is set for {when}, in {} seconds; `shutdown -c` cancels it.",
+                pending.end, pending.in_seconds
+            );
+        }
+    }
+    Ok(0)
+}
+
+/// shutdown(8): `shutdown [-H|-P|-r|-h] [-k] [--no-wall] [TIME] [MESSAGE...]`,
+/// `shutdown -c`, or `shutdown --show [--json]`.
 pub fn shutdown(args: &mut Args) -> Result<i32, Fail> {
     let mut end = End::PowerOff;
     let (mut cancel, mut warn_only, mut wall) = (false, false, true);
+    let (mut showing, mut json) = (false, false);
     let mut operands = Vec::new();
     while let Some(arg) = args.next()? {
         match arg {
@@ -137,6 +213,8 @@ pub fn shutdown(args: &mut Args) -> Result<i32, Fail> {
             Arg::Short('k') => warn_only = true,
             Arg::Long(l) if l == "no-wall" => wall = false,
             Arg::Short('c') => cancel = true,
+            Arg::Long(l) if l == "show" => showing = true,
+            Arg::Long(l) if l == "json" => json = true,
             Arg::Long(l) if l == "help" => {
                 println!(
                     "shutdown [OPTIONS...] [TIME] [WALL...]\n\n\
@@ -147,7 +225,8 @@ pub fn shutdown(args: &mut Args) -> Result<i32, Fail> {
                      \x20 -h             Equivalent to --poweroff\n\
                      \x20 -k             Don't halt/power off/reboot, just send warnings\n\
                      \x20    --no-wall   Don't send a wall message\n\
-                     \x20 -c             Cancel a pending shutdown\n\n\
+                     \x20 -c             Cancel a pending shutdown\n\
+                     \x20    --show      Show the pending shutdown (--json as an object)\n\n\
                      TIME is `now', `+MINUTES' or `HH:MM'; the default is +1."
                 );
                 return Ok(0);
@@ -156,10 +235,27 @@ pub fn shutdown(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
+    if json && !showing {
+        return Err(usage("--json goes with --show".into()));
+    }
+    if showing {
+        if cancel || !operands.is_empty() {
+            return Err(usage("--show takes no time and goes with no other request".into()));
+        }
+        return show(json);
+    }
     if cancel {
-        ask("cancel")?;
-        if wall {
-            eprintln!("The system shutdown has been cancelled.");
+        // As systemd's: with nothing set there is nothing to cancel, and
+        // that is no failure, so a script or a play can cancel twice.
+        match self::request("cancel")?.strip_prefix("error: ") {
+            Some(why) if why.trim_end() == NOTHING_SET => {
+                if wall {
+                    eprintln!("No shutdown was set.");
+                }
+            }
+            Some(why) => return Err(fail(why.trim_end().to_string())),
+            None if wall => eprintln!("The system shutdown has been cancelled."),
+            None => {}
         }
         return Ok(0);
     }
@@ -262,5 +358,41 @@ mod tests {
         assert_eq!(delay("09:00", (10, 0)), Some(23 * 3600));
         assert_eq!(delay("24:00", (10, 0)), None);
         assert_eq!(delay("soon", (10, 0)), None);
+    }
+
+    /// Spark's `show` document with `shutdown`, written an hour after the
+    /// machine started.
+    fn document(shutdown: Option<(&str, u64)>) -> show::Show {
+        show::Show {
+            show_version: show::VERSION,
+            now_ms: 3_600_000,
+            shutdown: shutdown
+                .map(|(end, in_seconds)| show::Shutdown { end: end.into(), in_seconds }),
+            ..show::Show::default()
+        }
+    }
+
+    #[test]
+    fn the_pending_shutdown_is_told_in_the_command_s_words_with_its_time() {
+        assert_eq!(pending(&document(None), 5_000), None);
+        // The time is the read's, by the clock of days, and not Spark's,
+        // which counts from the start.
+        let restart = pending(&document(Some(("restart", 60))), 5_000).unwrap();
+        assert_eq!(restart, Pending { end: "reboot", in_seconds: 60, at_ms: 65_000 });
+        assert_eq!(pending(&document(Some(("power off", 1))), 0).unwrap().end, "poweroff");
+        assert_eq!(pending(&document(Some(("halt", 1))), 0).unwrap().end, "halt");
+        let shown = Shown { format: 1, shutdown: Some(restart) };
+        assert_eq!(
+            serde_json::to_string(&shown).unwrap(),
+            r#"{"format":1,"shutdown":{"end":"reboot","in_seconds":60,"at_ms":65000}}"#
+        );
+        let none = Shown { format: 1, shutdown: None };
+        assert_eq!(serde_json::to_string(&none).unwrap(), r#"{"format":1,"shutdown":null}"#);
+    }
+
+    #[test]
+    fn a_time_at_the_end_of_the_clock_does_not_wrap() {
+        let far = pending(&document(Some(("restart", u64::MAX))), u64::MAX - 5).unwrap();
+        assert_eq!(far.at_ms, u64::MAX);
     }
 }
