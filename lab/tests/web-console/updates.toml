@@ -9,10 +9,12 @@
 # its release; Later, which puts an update's reminder off, and Remind me now
 # (`POST /api/1/updates/{item}/later`); Stage it and Take it back; an app's
 # update, and Tonight and Install tonight for it (`POST /api/1/apps/{id}/tonight`,
-# `POST /api/1/apps/tonight` and `POST /api/1/apps/{id}/not-tonight`), where
-# the machine's catalog offers one; the advisories, the history, a check and a
-# service added and removed; a reader and a phone at 390 by 844. Each look is
-# dark, light, high contrast, forced colours and less motion, checked by axe.
+# `POST /api/1/apps/tonight` and `POST /api/1/apps/{id}/not-tonight`) and
+# Update all on the Apps page (`POST /api/1/apps/update`), where the machine's
+# catalog offers an update, and two for Update all; the advisories, the
+# history, a check and a service added and removed; a reader and a phone at
+# 390 by 844. Each look is dark, light, high contrast, forced colours and less
+# motion, checked by axe.
 #
 # The steps after that are in one engine each, since each changes the machine
 # for good. Check now with the update server not answering: the machine's
@@ -37,7 +39,7 @@
 # update server for the whole test, and the machine reads it as a canary (the
 # release is paused on its first day, ADR 0469). Its last steps put back what
 # the test changed.
-about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, Go back to the version before an update that proved itself with its choice of settings and its restart, and the search for the change that broke a start, with its two restarts"
+about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, Update all on the Apps page, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, Go back to the version before an update that proved itself with its choice of settings and its restart, and the search for the change that broke a start, with its two restarts"
 time = "105m"
 fresh = true
 host_needs = ["curl", "python3", "scp"]
