@@ -163,9 +163,10 @@ impl Fake {
         fake
     }
 
-    /// nginx is not installed.
+    /// nginx is not installed: Spark knows none, and its file is not there.
     pub fn without_nginx(self) -> Fake {
         self.nginx.set(None);
+        let _ = fs::remove_file(self.real(SERVICE));
         self
     }
 

@@ -194,9 +194,18 @@ pub fn load_with(ctx: &Ctx<'_>, conf: bool) -> Result<State, Refusal> {
         conf,
         service,
         over,
-        nginx: ctx.host.state(NGINX).map_err(plain)?,
-        php: ctx.host.state(PHP_FPM).map_err(plain)?,
+        nginx: known(ctx, NGINX)?,
+        php: known(ctx, PHP_FPM)?,
     })
+}
+
+/// What Spark says of `service`. Spark reads a bundle's service file as
+/// the service first starts, so one that never ran is not Spark's yet: its
+/// file there says that it is installed, and off.
+fn known(ctx: &Ctx<'_>, service: &str) -> Result<Option<Svc>, Refusal> {
+    let file = ctx.paths.real(&crate::servicefiles::path(service));
+    let said = ctx.host.state(service).map_err(Refusal::plain)?;
+    Ok(said.or_else(|| file.exists().then_some(Svc { enabled: false, running: false })))
 }
 
 /// A site file that was written live, and what was there before.

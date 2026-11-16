@@ -392,6 +392,16 @@ fn the_list_in_words_is_a_table_and_what_is_wrong_under_it() {
 }
 
 #[test]
+fn a_bundles_service_that_never_ran_is_installed_and_off() {
+    // Spark reads such a service's file as it first starts.
+    let fake = Fake::new().without_php();
+    assert_eq!(json_of(&fake, &["list", "--json"], 0)["php_fpm"]["installed"], false);
+    fake.put("/system/settings/spark/services/php-fpm.toml", "");
+    let said = json_of(&fake, &["list", "--json"], 0);
+    assert_eq!(said["php_fpm"], json!({"installed": true, "enabled": false, "running": false}));
+}
+
+#[test]
 fn the_list_as_json_has_the_members_a_page_reads() {
     let fake = Fake::new();
     fake.added(&[SHOP, WWW_SHOP], Kind::Static, None);
