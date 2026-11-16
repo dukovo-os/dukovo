@@ -454,3 +454,40 @@ code{font:.9em ui-monospace,Menlo,Consolas,monospace;background:rgba(255,255,255
 @media (min-width:60rem){.paths{grid-template-columns:repeat(3,1fr)}}
 /* The version picker shows once site.js has the list of copies to fill it with. */
 select[data-versions]:not(.ready){display:none!important}
+
+/* Supported hardware: what works by kind of machine, the status pills, the
+   list's filter and "Check your machine" (site.js). */
+.doc [hidden]{display:none!important}
+.hwkinds{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,15rem),1fr));gap:.9rem;margin:1.6rem 0}
+.hwkinds>div{background:var(--glass);border:1px solid var(--edge);border-radius:14px;padding:1rem 1.1rem;display:grid;gap:.45rem;align-content:start}
+.hwkinds h3{margin:0;font-size:1rem}
+.hwkinds p{margin:0;font-size:.9rem;color:var(--muted)}
+.hwpill{display:inline-flex;align-items:center;gap:.4rem;justify-self:start;font:600 .76rem/1 var(--body);padding:.32rem .6rem;border-radius:999px;white-space:nowrap;border:1px solid}
+.hwpill::before{content:"";width:.5rem;height:.5rem;border-radius:50%;background:currentColor}
+.hw-ok{color:#62C27A;border-color:rgba(98,194,122,.4);background:rgba(98,194,122,.08)}
+.hw-part{color:#F2C14E;border-color:rgba(242,193,78,.4);background:rgba(242,193,78,.08)}
+.hw-plan{color:#8FB4F5;border-color:rgba(127,168,240,.4);background:rgba(127,168,240,.08)}
+.hw-no{color:#EE8A8C;border-color:rgba(231,120,122,.4);background:rgba(231,120,122,.08)}
+.hwtable td:first-child{min-width:16rem}
+.hwtable td:nth-child(2){width:9.5rem}
+.hwtable td:nth-child(3){font:500 .82rem ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+.hwfilter{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:1rem 0}
+.hwfilter label{flex:1 1 15rem;display:flex}
+.hwfilter input{flex:1;min-width:0;background:var(--panel);color:var(--fg);border:1px solid var(--edge);border-radius:10px;padding:.55rem .8rem;font:15px var(--body)}
+.hwchips{display:flex;flex-wrap:wrap;gap:.35rem}
+.hwchips button,.hwrow button{font:600 .82rem var(--body);color:var(--muted);background:transparent;border:1px solid var(--edge);border-radius:999px;padding:.4rem .75rem;cursor:pointer}
+.hwchips button[aria-pressed="true"]{color:var(--fg);border-color:var(--ember);background:rgba(240,160,75,.12)}
+.hwcheck{background:var(--panel);border:1px solid var(--edge);border-radius:14px;padding:1rem;margin:1rem 0;display:grid;gap:.6rem}
+.hwcheck label{font-size:.85rem;color:var(--muted)}
+.hwcheck textarea{width:100%;min-height:10rem;resize:vertical;background:var(--code);color:var(--fg);border:1px solid var(--edge);border-radius:10px;padding:.7rem;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.hwrow{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.hwrow button{border-radius:8px;color:var(--fg)}
+.hwrow button.primary{background:var(--ember);border-color:var(--ember);color:#1A1006}
+.hwcount{font-size:.82rem;color:var(--muted)}
+.hwverdict:empty{display:none}
+.hwverdict{background:var(--panel-2);border:1px solid var(--edge);border-radius:10px;padding:.7rem .9rem;font-size:.92rem;color:#CBD5E4}
+.hwres{list-style:none;margin:0;padding:0;display:grid;gap:.4rem}
+.hwres li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.2rem .8rem;align-items:start;padding:.55rem .75rem;border:1px solid var(--edge);border-radius:10px;background:var(--glass);color:var(--fg);font-size:.9rem}
+.hwres small{display:block;font:400 .74rem ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);overflow-wrap:anywhere}
+.hwres em{grid-column:1/-1;font-style:normal;font-size:.82rem;color:var(--muted)}
+html:not(.js) .hwcheck,html:not(.js) .hwfilter{display:none}
