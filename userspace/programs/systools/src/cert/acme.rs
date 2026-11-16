@@ -452,6 +452,9 @@ pub async fn open_account(
             "cert: another account was kept for {text} while this one was made: this run uses the new one"
         );
     }
+    if let Err(why) = super::accounts::write(store, &lock) {
+        eprintln!("cert: the summary of the accounts cannot be written: {why}");
+    }
     Ok(account)
 }
 

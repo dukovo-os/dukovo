@@ -47,6 +47,12 @@ const LOCK_FILE: &str = ".lock";
 /// The folder of the accounts at authorities, beside the store's.
 const ACCOUNTS: &str = "accounts";
 
+/// The file of what was done to the certificates, beside the store's.
+const HISTORY: &str = "history";
+
+/// What anyone may read of the accounts at authorities, beside the store's.
+const ACCOUNTS_PUBLIC: &str = "accounts.json";
+
 /// What certd knows of a certificate beyond its files.
 pub const META_FILE: &str = "certificate.toml";
 
@@ -208,6 +214,18 @@ impl Store {
     /// (ADR 0513).
     pub fn accounts(&self) -> PathBuf {
         self.dir.parent().unwrap_or(&self.dir).join(ACCOUNTS)
+    }
+
+    /// The file of what was done to the certificates, beside the store's
+    /// (certd(8)).
+    pub fn history(&self) -> PathBuf {
+        self.dir.parent().unwrap_or(&self.dir).join(HISTORY)
+    }
+
+    /// The file that tells anyone when each account was made and whether
+    /// it has a contact, but never the contact or the account's key.
+    pub fn accounts_public(&self) -> PathBuf {
+        self.dir.parent().unwrap_or(&self.dir).join(ACCOUNTS_PUBLIC)
     }
 
     /// The text of account file `file` of the accounts folder, if there
