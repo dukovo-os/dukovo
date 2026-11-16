@@ -148,7 +148,7 @@ test('Restart now runs the restart, then counts the minute and tells the shell w
   assert.equal(await done, true);
   assert.deepEqual(world.ran.map(([action, args]) => [action, args]), [['power.restart', { at: null }]]);
   assert.equal(world.dialog(), null, 'the question closes');
-  const line = world.view.slot.querySelector('.pending');
+  const line = world.view.slot.querySelector('.banner.info');
   assert.ok(line && !line.hidden, 'the line is shown at the top of the page');
   assert.match(line.textContent, /^duke-nas restarts in 60 seconds/);
   pass(30);
@@ -185,7 +185,7 @@ test('a restart that admind refuses is said in the dialog, which stays open', as
   assert.ok(world.problems[0][1].slot, 'the refusal goes under the fields');
   world.dialog().querySelector('button').click();
   assert.equal(await done, false);
-  assert.equal(world.view.slot.querySelector('.pending'), null, 'no line for what was not set');
+  assert.equal(world.view.slot.querySelector('.banner.info'), null, 'no line for what was not set');
 });
 
 test('a locked console asks to unlock first, and a person who does not has nothing run', async (context) => {
@@ -219,7 +219,7 @@ test('a restart at a time takes HH:MM and says so when it is not one', async (co
   world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 3600, at_ms: AT } };
   assert.equal(await restartAt(world.view, '03:00'), true);
   assert.deepEqual(world.ran[0].slice(0, 2), ['power.restart', { at: '03:00' }]);
-  const line = world.view.slot.querySelector('.pending');
+  const line = world.view.slot.querySelector('.banner.info');
   assert.match(line.textContent, /^duke-nas restarts at 3:00 AM/);
   pass(2);
   assert.equal(world.expected.length, 0, 'an hour away is not counted in seconds');
@@ -229,7 +229,7 @@ test('a restart is cancelled from its line, which then reads again and goes away
   const world = open(context);
   world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 3600, at_ms: AT } };
   await restartAt(world.view, '03:00');
-  const line = world.view.slot.querySelector('.pending');
+  const line = world.view.slot.querySelector('.banner.info');
   world.answers['/api/1/power'] = { shutdown: null };
   line.querySelector('button').click();
   await settle();
@@ -280,7 +280,7 @@ test('a shut down needs the machine\'s name typed, and then says the machine wil
   await world.submit();
   assert.equal(await done, true);
   assert.deepEqual(world.ran[0].slice(0, 2), ['power.shutdown', {}]);
-  assert.match(world.view.slot.querySelector('.pending').textContent, /^duke-nas shuts down in 60 seconds/);
+  assert.match(world.view.slot.querySelector('.banner.info').textContent, /^duke-nas shuts down in 60 seconds/);
   pass(60);
   assert.equal(world.expected.length, 0, 'a shut down is not a restart the shell waits out');
   assert.match(world.view.main.textContent, /duke-nas is shutting down\. It will not answer again until someone turns it on\./);

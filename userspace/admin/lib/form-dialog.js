@@ -61,7 +61,7 @@ export function openFormDialog(view, {
     h('form', { method: 'dialog', novalidate: true },
       head(`${id}-h`, icon, title),
       h('div', { class: 'dialog-body' },
-        h('div', { id: `${id}-lead`, class: 'dialog-lead' }, ...[].concat(lead).map((words) => (typeof words === 'string' ? h('p', {}, words) : words))),
+        h('div', { id: `${id}-lead` }, ...[].concat(lead).map((words) => (typeof words === 'string' ? h('p', {}, words) : words))),
         ...fields,
         typedField,
         errors,

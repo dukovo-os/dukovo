@@ -37,7 +37,8 @@ export function pendingRestart(view, options = {}) {
   const words = h('span', { role: 'timer', 'aria-live': 'off' });
   const status = h('span', { class: 'sr-only', role: 'status' });
   const cancel = h('button', { class: 'btn small', type: 'button' }, 'Cancel');
-  const element = h('div', { class: 'pending', hidden: true }, words, ' ', cancel, status);
+  const element = h('div', { class: 'banner info', hidden: true },
+    icon('power'), h('div', {}, h('p', {}, words), h('div', { class: 'btns' }, cancel), status));
 
   const keyOf = (shutdown) => `${shutdown.end}:${shutdown.at_ms}`;
   const stop = () => {
