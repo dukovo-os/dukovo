@@ -132,7 +132,8 @@ pub trait Host {
     /// Spark's line, when the file does not pass.
     fn service_check(&self, service: &str) -> Result<(), String>;
 
-    /// Restarts `service`, and waits until Spark says it runs.
+    /// Restarts `service`, and waits until Spark says it runs, and nginx
+    /// until it answers.
     ///
     /// # Errors
     ///
@@ -147,7 +148,7 @@ pub trait Host {
     fn reload(&self, service: &str) -> Result<(), String>;
 
     /// Turns `service` on, now and at boot, or off, and when on waits
-    /// until Spark says it runs.
+    /// until Spark says it runs, and nginx until it answers.
     ///
     /// # Errors
     ///
@@ -250,6 +251,32 @@ fn running_within(name: &str) -> Result<(), String> {
     }
 }
 
+/// Waits until nginx answers on port 80, for `START_WAIT`. Spark holds
+/// nginx's sockets and says it runs as soon as it has started it, while
+/// nginx still reads its settings: until it answers, a site does not, and
+/// a signal to read its settings again would end it.
+fn nginx_answers() -> Result<(), String> {
+    let ask = Fetch { port: 80, host: "localhost".into(), path: "/".into(), certificate: None };
+    let until = Instant::now() + START_WAIT;
+    loop {
+        let why = match answer::fetch(&ask, &[]) {
+            Ok(_) => return Ok(()),
+            Err(why) => why,
+        };
+        if Instant::now() >= until {
+            let wait = START_WAIT.as_secs();
+            return Err(format!("nginx did not answer on port 80 within {wait} seconds: {why}"));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Waits until `service` runs, and nginx until it answers.
+fn up(service: &str) -> Result<(), String> {
+    running_within(service)?;
+    if service == NGINX { nginx_answers() } else { Ok(()) }
+}
+
 impl Host for System {
     fn accounts(&self) -> Vec<accounts::User> {
         match fs::read_to_string(accounts::PASSWD) {
@@ -295,7 +322,7 @@ impl Host for System {
     fn restart(&self, service: &str) -> Result<(), String> {
         crate::service::change("restart", service, &["--quiet".to_string()])
             .map_err(|fail| fail.message)?;
-        running_within(service)
+        up(service)
     }
 
     fn reload(&self, service: &str) -> Result<(), String> {
@@ -304,7 +331,7 @@ impl Host for System {
 
     fn turn(&self, service: &str, on: bool) -> Result<(), String> {
         servicefiles::turn(service, on).map_err(|fail| fail.message)?;
-        if on { running_within(service) } else { Ok(()) }
+        if on { up(service) } else { Ok(()) }
     }
 
     fn nginx_check(&self, conf: &str) -> Result<Checked, String> {

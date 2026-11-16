@@ -92,7 +92,8 @@ change nginx and its service file, so they need root: run them with
 	nginx's service file needs for the certificate and for port 443, as
 	it is told in THE FILES, restarts nginx when that changes and nginx
 	runs, and turns on nginx, and PHP-FPM for a PHP site, when they are
-	off. *--progress* tells each step as it begins, as _step N of M:
+	off. After a restart or a start it waits, for up to 30 seconds, until
+	nginx answers on port 80 before it goes on. *--progress* tells each step as it begins, as _step N of M:
 	words_.
 
 *website add* _name_ ... *--dry-run* [*--json*]
