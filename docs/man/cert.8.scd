@@ -5,16 +5,17 @@ cert(8) "Dukovo" "Dukovo Manual"
 
 # NAME
 
-cert - list, add, get, renew, revoke and remove the machine's certificates
+cert - list, add, get, check, renew, revoke, remove and recall the machine's certificates
 
 # SYNOPSIS
 
 *cert list* [*--json*]++
 *cert show* _name_ [*--json*] [*--pem*]++
 *cert add* _name_ *--chain* _file_ *--key* _file_ [*--replace*] [*--untrusted*]++
-*cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--dry-run*]++
-[*--directory* _url_] [*--email* _address_] [*--agree-terms*]++
-[*--key* *ecdsa-p256*|*ecdsa-p384*] [*--profile* _profile_] [*--yes*]++
+*cert add* _name_ *--from* *-* [*--replace*] [*--untrusted*]++
+*cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--dry-run*] [*--directory* _url_] [*--email* _address_] [*--agree-terms*] [*--key* *ecdsa-p256*|*ecdsa-p384*] [*--profile* _profile_] [*--yes*] [*--progress*]++
+*cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--directory* _url_] *--check* [*--json*]++
+*cert history* [_name_] [*-n* _number_] [*--json*]++
 *cert revoke* _name_ [*--reason* _reason_]++
 *cert remove* _name_++
 *cert renew* _name_++
@@ -36,10 +37,10 @@ A name is 1 to 64 of the letters _a_ to _z_, the digits and _-_ and _._,
 beginning with a letter or a digit, with no two dots in a row. It is
 usually the site's name, as *example.com*.
 
-*list*, *show* and *check* may be run by anyone, as certificates are
-public and keys are not shown. *add*, *get*, *remove*, *renew* and
-*revoke* change what services are given, so they need root: run them
-with *elevate*(8).
+*list*, *show*, *check*, *history* and *get* with *--check* may be run by
+anyone, as certificates are public and keys are not shown. *add*, *get*,
+*remove*, *renew* and *revoke* change what services are given, so they
+need root: run them with *elevate*(8).
 
 # COMMANDS
 
@@ -53,13 +54,18 @@ with *elevate*(8).
 	certd will renew it, as _renews_ and the date, once certd has chosen
 	it (at its next look: *certd*(8)), and _revoked_ in the
 	error's colour once it is revoked. With *--json*, an array of objects
-	with *name*, *kind*, *names*, *not_before* and *not_after* (RFC 3339,
-	UTC), *days_left*, *fingerprint_sha256* (lowercase hexadecimal, no
+	with *name*, *kind*, *names*, *not\_before* and *not\_after* (RFC 3339,
+	UTC), *days\_left*, *fingerprint\_sha256* (lowercase hexadecimal, no
 	colons), *issuer*, *trusted* (whether the system's authorities vouch
-	for it) and *used_by*, and for a certificate from an authority
-	*renews* (RFC 3339, UTC, when certd has chosen it) and *revoked*
-	(*true* when it is). A certificate that does not read gets a line on
-	standard error and makes the exit status 1.
+	for it), *used\_by* and *account*, and for a certificate from an
+	authority *renews* (RFC 3339, UTC, when certd has chosen it) and
+	*revoked* (*true* when it is). *account* is the account at the
+	authority the certificate came from, *made\_ms* (when it was made,
+	in milliseconds since 1970) and *contact* (whether it has a contact
+	address), and *null* for a certificate no authority issued; it never
+	has the address, which only root reads (*certd*(8)). A certificate
+	that does not read gets a line on standard error and makes the exit
+	status 1.
 
 *cert show* _name_ [*--json*] [*--pem*]
 	Shows everything about a certificate, a line each: its kind, when
@@ -76,9 +82,12 @@ with *elevate*(8).
 	shows the key. With *--pem*, it prints the chain,
 	the certificate first, which is what a client given a copy of it
 	trusts, as in *curl --cacert*. With *--json*, the object *list*
-	gives.
+	gives, without *account*, with *made*, *serial*, *key*, *chain* (the
+	subjects), *why\_not\_trusted* and *files*, and *chain\_pem*, the
+	chain as *--pem* prints it, which is public as the file is.
 
-*cert add* _name_ *--chain* _file_ *--key* _file_ [*--replace*] [*--untrusted*]
+*cert add* _name_ *--chain* _file_ *--key* _file_ [*--replace*] [*--untrusted*]++
+*cert add* _name_ *--from* *-* [*--replace*] [*--untrusted*]
 	Adds the certificate in _file_ of *--chain* with the key in the
 	file of *--key*, as the authority gave them: PEM, the server's
 	certificate first and then the intermediate certificates that lead
@@ -110,7 +119,23 @@ with *elevate*(8).
 	A self-signed certificate is taken, with a note that browsers warn
 	about it unless told to trust it.
 
-*cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--dry-run*] [*--directory* _url_] [*--email* _address_] [*--agree-terms*] [*--key* _type_] [*--profile* _profile_] [*--yes*]
+	With *--from -* in place of the two files, the key and the chain
+	are one PEM text on standard input, in either order, as the web
+	console sends them: one private key, and the certificates, the
+	server's first. White space between the blocks is ignored and
+	anything else that is not a block is refused. The input is at most
+	128 KiB, of which the key and the chain keep 64 KiB each. It is
+	checked as the two files are. A check that fails ends with its
+	reason, and with an error ID in parentheses at the end of it, whose
+	page says what to do: *CRT-111* when the chain does not lead to an
+	authority this machine trusts (most often the intermediate
+	certificate is missing, which a private authority is also told by
+	*--untrusted*), *CRT-112* when the key is not the certificate's or
+	not one the system signs with, and *CRT-113* when the certificate is
+	not valid now, names no DNS or IP name, or is an authority's.
+
+*cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--dry-run*] [*--directory* _url_] [*--email* _address_] [*--agree-terms*] [*--key* _type_] [*--profile* _profile_] [*--yes*] [*--progress*]++
+*cert get* _name_ [*--name* _domain_]... [*--dns*] [*--staging*] [*--directory* _url_] *--check* [*--json*]
 	Gets a certificate for one or more domain names from an ACME
 	authority, Let's Encrypt unless *--directory* or *--staging* says
 	another, and installs it under _name_ (*certificates from an
@@ -164,6 +189,59 @@ with *elevate*(8).
 	*--yes*
 		Replace a certificate that has more than 30 days left without
 		asking, and let *--dns* run with no terminal.
+
+	*--progress*
+		Tell each step on a line of its own, for a program that shows
+		them: *step* _N_ *of* _M_*:* and the words of the step, again
+		with other words when what the step is doing changes, and
+		*progress* _P_*%* for how far it has come. The steps are the
+		checks, the order, the authority's check of the names, the
+		certificate and, unless *--dry-run*, its installing; under
+		*--dns* a step waits for the TXT records, and before it a
+		line *add:* _name_ *TXT* "_value_" is written for each, as a
+		DNS provider's page takes it, the name without its last dot.
+
+	*--check*
+		Make the checks that come before an order (*certificates from
+		an authority*, below) and order nothing, so that anyone may ask,
+		and not only root. It exits 0 when no check failed and 1 when
+		one did, with each check's result on standard output; a
+		mistake in what is asked ends with 2 and its reason on
+		standard error. A name of one word, such as *localhost*, is let
+		through, so that the check says what is wrong with it. *--check*
+		does not go with *--progress*, which tells the steps of an
+		order.
+
+	*--json*
+		With *--check*, the result as one JSON object: *format* (1),
+		*checks*, an array of objects with *id* (the error ID of a
+		warning or a failure that has one, else *null*), *result*
+		(*passed*, *warning*, *failed* or *skipped*), *name* (the DNS
+		name it is about, *null* for a check of the machine) and
+		*words*; *firewall\_rule*, the number *firewall list* gives
+		the rule that decides on port 80, *null* when none decides;
+		*port80\_holder*, which program holds port 80 as far as a
+		person who cannot bind it can tell (*nginx*, *certd*, the
+		name of a service, or *another program*), *null* when it is
+		free or not told; *terms\_url*, the address of the authority's
+		terms of service, *null* when it gave none in a few seconds;
+		and *dns\_records*, the name and *type* of each TXT record that
+		*--dns* asks for. The IDs are *CRT-101* to *CRT-106*.
+
+*cert history* [_name_] [*-n* _number_] [*--json*]
+	Shows what was done to the certificates, the oldest first, from
+	_/system/state/certd/history_, which certd and *cert* write: a line
+	for each time the machine's certificate was made, a certificate was
+	got, renewed, added, replaced, revoked or removed, and each time
+	getting or renewing one failed, with the reason and the error ID
+	at its end when it has one. With a _name_, that certificate's
+	lines alone; with *-n*, the newest _number_ of them. A line has the
+	time, the certificate, what happened, the words, and who did it
+	(*certd* or *cert*), with how long an order took when that is
+	known. With *--json*, an array of objects with *at\_ms*
+	(milliseconds since 1970), *name*, *event* (*made*, *renewed*,
+	*got*, *added*, *replaced*, *revoked*, *removed* or *failed*),
+	*detail*, *took\_ms* (or *null*) and *by*. Anyone may read it.
 
 *cert revoke* _name_ [*--reason* _reason_]
 	Revokes a certificate from an authority, through the account that
@@ -284,6 +362,16 @@ _/system/state/certd/accounts_
 	The account at each authority, a file for each: its host, with the
 	port when the address has one, and _.json_. Readable by root alone.
 
+_/system/state/certd/accounts.json_
+	When each account was made and whether it has a contact, never the
+	contact or the key, which *cert list* shows to everyone. certd
+	writes it (0644).
+
+_/system/state/certd/history_
+	What *cert history* shows: a JSON line for each event, which certd
+	and *cert* append while they hold the store's lock. It is cut to
+	the newest 1000 lines when it passes 2000 (0644).
+
 _/system/live/certd/acme-challenge_
 	Where the answers to an authority's check go when nginx holds port
 	80; each file is taken away when the order ends.
@@ -300,7 +388,8 @@ _/system/settings/spark/services_
 
 0 when it did what was asked; 1 when it was refused or failed, with a
 message that starts with *cert:* and names the cause; 2 for a mistake in
-the command line.
+the command line. *cert get --check* ends with 1 when a check failed,
+which it has told on standard output, and with 2 when it was refused.
 
 # EXAMPLES
 
@@ -317,6 +406,12 @@ installs nothing:
 
 ```
 elevate cert get example.com --dry-run --agree-terms
+```
+
+Ask what is wrong before ordering, which anyone may do:
+
+```
+cert get example.com --name example.com --name www.example.com --check
 ```
 
 A wildcard certificate, by DNS:
@@ -338,6 +433,19 @@ Put _certificates = ["example.com"]_ in nginx's file and name
 _/system/live/certificates/nginx/example.com/fullchain.pem_ and
 _.../key.pem_ in its settings (*nginx.conf*, in the bundle's data
 folder).
+
+Add the key and the chain from one text, as a program that holds them
+does:
+
+```
+cat example.com.key example.com.chain.pem | elevate cert add example.com --from -
+```
+
+What was done to the certificates:
+
+```
+cert history example.com -n 5
+```
 
 The fingerprint of this machine's own certificate, to compare with the
 one a browser shows before trusting it:
