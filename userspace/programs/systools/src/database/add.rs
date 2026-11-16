@@ -90,7 +90,7 @@ pub const HOST: &str = "127.0.0.1";
 /// The failure for a statement of `add` that PostgreSQL refused: a name
 /// that is taken is DB-102, `what` saying which, and anything else is
 /// PostgreSQL's own words.
-fn refused(error: &Error, what: &str, name: &str) -> Fail {
+pub(super) fn refused(error: &Error, what: &str, name: &str) -> Fail {
     match error {
         Error::Server(pg) if pg.is_taken() => errors::taken(what, name),
         other => errors::said(other),
@@ -126,7 +126,7 @@ pub fn run(host: &mut dyn Host, sql: &str) -> Result<Vec<Answer>, Fail> {
 }
 
 /// Whether the lookup `sql` finds a row.
-fn found(host: &mut dyn Host, sql: &str) -> Result<bool, Fail> {
+pub(super) fn found(host: &mut dyn Host, sql: &str) -> Result<bool, Fail> {
     Ok(run(host, sql)?.first().is_some_and(|answer| !answer.rows.is_empty()))
 }
 
@@ -281,7 +281,7 @@ pub fn password(host: &mut dyn Host, name: &str, random: &dyn SecureRandom) -> R
 }
 
 /// The failure for a database that is not there.
-fn no_database(name: &str) -> Fail {
+pub(super) fn no_database(name: &str) -> Fail {
     fail(format!("there is no database called {name}; `database list` shows them"))
 }
 
@@ -344,7 +344,7 @@ pub fn remove(host: &mut dyn Host, ask: &Remove) -> Result<Vec<String>, Fail> {
 }
 
 /// The programs with sessions open to `name`, and how many each has.
-fn sessions(host: &mut dyn Host, name: &str) -> Result<Vec<(String, u64)>, Fail> {
+pub(super) fn sessions(host: &mut dyn Host, name: &str) -> Result<Vec<(String, u64)>, Fail> {
     let answers = run(host, &built(sql::sessions_of(name))?)?;
     let Some(answer) = answers.first() else { return Ok(Vec::new()) };
     let (Some(program), Some(count)) = (

@@ -9,12 +9,14 @@
 
 use std::fs::TryLockError;
 use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use manifest::service::OVERRIDES;
 use spark_api::show::State;
@@ -37,6 +39,31 @@ pub const SERVICE: &str = "postgresql";
 
 /// The port PostgreSQL listens on.
 pub const PORT: u16 = 5432;
+
+/// The bundle PostgreSQL's service and its commands are in.
+pub const BUNDLE: &str = "org.postgresql.postgresql";
+
+/// The top of `/shared`, which snapshots and backups hold.
+pub const SHARED: &str = "/shared";
+
+/// Where the snapshots of `/shared` are read.
+pub const SNAPSHOTS_OF_SHARED: &str = "/snapshots/shared";
+
+/// The folder of the copies the bundle's backup hook makes, from the top
+/// of `/shared`: in the home of the account postgres.
+pub const DUMPS_IN_SHARED: &str = "services/org.postgresql.postgresql/postgres/dumps";
+
+/// The folder of those copies now.
+pub const DUMPS: &str = "/shared/services/org.postgresql.postgresql/postgres/dumps";
+
+/// The folder of PostgreSQL's socket, which `pg_restore` is told with `-h`.
+pub const SOCKET_DIR: &str = "/system/live/services/postgres";
+
+/// The command that runs a bundle's command.
+const BUNDLE_COMMAND: &str = "/system/commands/bundle";
+
+/// How much of what `pg_restore` says is kept.
+pub const SAID_MAX: usize = 16 * 1024;
 
 /// How long a restart is waited for: the server must answer again.
 pub const RESTART_WAIT: Duration = Duration::from_secs(60);
@@ -84,6 +111,51 @@ impl Files {
     }
 }
 
+/// The time now, as a person at the machine reads it and as a document
+/// writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clock {
+    /// Milliseconds since 1970.
+    pub ms: u64,
+    /// The local year, month, day, hour and minute.
+    pub local: (i64, u32, u32, u32, u32),
+}
+
+impl Clock {
+    /// The time on the machine's clock.
+    #[must_use]
+    pub fn now() -> Clock {
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
+        Clock { ms, local: crate::snap::local(i64::try_from(ms / 1000).unwrap_or(i64::MAX)) }
+    }
+
+    /// The local day as a name has it: `20261116`.
+    #[must_use]
+    pub fn day(&self) -> String {
+        let (year, month, day, _, _) = self.local;
+        format!("{year:04}{month:02}{day:02}")
+    }
+
+    /// The local day and minute as a name has them: `20261116_0200`.
+    #[must_use]
+    pub fn minute(&self) -> String {
+        let (_, _, _, hour, minute) = self.local;
+        format!("{}_{hour:02}{minute:02}", self.day())
+    }
+}
+
+/// A folder that holds the copies of the databases that a backup made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Folder {
+    /// `live` for the folder in use, or the name of the snapshot of
+    /// `/shared` the folder is in.
+    pub from: String,
+    /// The folder.
+    pub path: PathBuf,
+}
+
 /// The machine a command works on.
 pub trait Host {
     /// Runs `sql` as the role postgres, signing in first when it has not.
@@ -128,6 +200,26 @@ pub trait Host {
 
     /// The files of the service.
     fn files(&self) -> &Files;
+
+    /// The folder of the copies that the backup hook makes.
+    fn dumps(&self) -> PathBuf;
+
+    /// The folders of those copies in the snapshots of `/shared`, newest
+    /// snapshot first. Empty when the snapshots cannot be read, which
+    /// is said on standard error.
+    fn snapshot_dumps(&mut self) -> Vec<Folder>;
+
+    /// The time now.
+    fn now(&mut self) -> Clock;
+
+    /// Runs the bundle's `pg_restore` as root with `argv`, which reads the
+    /// copy from `copy`, an open file, as its standard input.
+    ///
+    /// # Errors
+    ///
+    /// What `pg_restore` said, the first [`SAID_MAX`] bytes of it, or why
+    /// it did not run.
+    fn pg_restore(&mut self, argv: &[String], copy: File) -> Result<(), String>;
 
     /// Waits `time`, as the server takes it to do something.
     fn pause(&mut self, time: Duration);
@@ -263,6 +355,61 @@ impl Host for Machine {
         &self.files
     }
 
+    fn dumps(&self) -> PathBuf {
+        PathBuf::from(DUMPS)
+    }
+
+    fn snapshot_dumps(&mut self) -> Vec<Folder> {
+        let shared = Path::new(SHARED);
+        let found = crate::snap::place(shared).and_then(|place| {
+            let snapshots = crate::snap::snapshots(&place)?;
+            Ok((place, snapshots))
+        });
+        match found {
+            // A snapshot whose name could not be in the path of a copy that
+            // is put back is left out: it would be listed and refused.
+            Ok((place, snapshots)) => snapshots
+                .iter()
+                .rev()
+                .filter(|snapshot| super::names::snapshot_name_ok(&snapshot.name))
+                .map(|snapshot| Folder {
+                    from: snapshot.name.clone(),
+                    path: place.shown.join(&snapshot.name).join(DUMPS_IN_SHARED),
+                })
+                .collect(),
+            Err(failed) => {
+                eprintln!("database: the snapshots of {SHARED} are not read: {}", failed.message);
+                Vec::new()
+            }
+        }
+    }
+
+    fn now(&mut self) -> Clock {
+        Clock::now()
+    }
+
+    fn pg_restore(&mut self, argv: &[String], copy: File) -> Result<(), String> {
+        let mut child = Command::new(BUNDLE_COMMAND)
+            .args(["run", "--command", "pg_restore", BUNDLE])
+            .args(argv)
+            .stdin(Stdio::from(copy))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("{BUNDLE_COMMAND} did not start: {error}"))?;
+        let said = child.stderr.take().map_or_default(kept_words);
+        let status = child.wait().map_err(|error| format!("pg_restore: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            let how = status.code().map_or_else(
+                || "was ended by a signal".to_string(),
+                |code| format!("ended with status {code}"),
+            );
+            Err(if said.is_empty() { format!("pg_restore {how}") } else { said })
+        }
+    }
+
     fn pause(&mut self, time: Duration) {
         thread::sleep(time);
     }
@@ -272,6 +419,24 @@ impl Host for Machine {
             eprintln!("database: cannot write to the log: {}", failed.message);
         }
     }
+}
+
+/// The first [`SAID_MAX`] bytes of what a program wrote to `stream`, as
+/// text, with a line that says so when there was more. The rest is read
+/// and left, so that the program does not stop on a full pipe.
+fn kept_words(mut stream: impl Read) -> String {
+    let mut kept = Vec::new();
+    let _ = (&mut stream).take(SAID_MAX as u64).read_to_end(&mut kept);
+    let more = io::copy(&mut stream, &mut io::sink()).is_ok_and(|rest| rest > 0);
+    let mut words = String::from_utf8_lossy(&kept).trim_end().to_string();
+    if more {
+        // Not in the middle of a line.
+        if let Some(end) = words.rfind('\n') {
+            words.truncate(end);
+        }
+        words.push_str("\n(more of what pg_restore said is not kept)");
+    }
+    words
 }
 
 /// When the server started, to see that a restart made a new one.

@@ -7,12 +7,14 @@
 //! noted.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::Seek;
+use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
-use super::server::{Files, Host, Service};
+use super::server::{Clock, Files, Folder, Host, Service};
 use super::wire::{Answer, Error, PgError};
 use super::{hba, names::Network, sql};
 use crate::util::Fail;
@@ -37,6 +39,23 @@ description = \"PostgreSQL, the database server\"
 program = \"/applications/org.postgresql.postgresql/bin/postgresql-service\"
 ";
 
+/// What a backup's hook is, as the service file says.
+const COPYING_HOOK: &str = "\
+[backup]
+before = [\"/applications/org.postgresql.postgresql/bin/postgresql-backup\"]
+time_limit = 3600
+";
+
+/// What the hook was before it copied: a checkpoint.
+const CHECKPOINT_HOOK: &str = "\
+[backup]
+before = [\"/applications/org.postgresql.postgresql/bin/psql\", \"-X\", \"-q\", \"-c\", \"CHECKPOINT\"]
+";
+
+/// 2026-11-16 02:00 UTC, in milliseconds since 1970, which is what the
+/// fake's clock says at first.
+pub const START_MS: u64 = 1_794_794_400_000;
+
 /// A role.
 #[derive(Clone, Debug)]
 struct Role {
@@ -59,6 +78,24 @@ struct Database {
     locale: String,
     /// The collation version it recorded, and the system's now.
     versions: Option<(String, String)>,
+    /// Whether it takes connections.
+    open: bool,
+    /// How many connections it takes besides the superuser's: -1 for any.
+    limit: i32,
+}
+
+/// A call of `pg_restore`, as the fake saw it.
+#[derive(Clone, Debug)]
+pub struct RestoreCall {
+    /// What it was given as arguments.
+    pub argv: Vec<String>,
+    /// How long the copy it was given to read is.
+    pub length: u64,
+    /// Where in the copy it was to start reading.
+    pub offset: u64,
+    /// Whether the database it put the copy into took no connection but
+    /// the superuser's.
+    pub closed: bool,
 }
 
 /// A statement the machine refuses.
@@ -115,6 +152,17 @@ pub struct Fake {
     deaf: bool,
     /// When it last read them.
     loaded: u64,
+    /// The time now, and how much each look at it moves it on.
+    clock: Clock,
+    step: u64,
+    /// The snapshots that hold copies, oldest first.
+    snapshots: Vec<String>,
+    /// Every call of `pg_restore`.
+    restores: Vec<RestoreCall>,
+    /// What `pg_restore` says when it fails.
+    restore_error: Option<String>,
+    /// The databases a copy was put into, and how long the copy was.
+    restored: BTreeMap<String, u64>,
 }
 
 impl Fake {
@@ -168,6 +216,12 @@ impl Fake {
             probe_error: None,
             deaf: false,
             loaded: 1,
+            clock: Clock { ms: START_MS, local: (2026, 11, 16, 2, 0) },
+            step: 0,
+            snapshots: Vec::new(),
+            restores: Vec::new(),
+            restore_error: None,
+            restored: BTreeMap::new(),
         }
     }
 
@@ -221,9 +275,122 @@ impl Fake {
                 provider: 'c',
                 locale: "en_US.UTF-8".into(),
                 versions: None,
+                open: true,
+                limit: -1,
             },
         );
         self
+    }
+
+    /// The copy of `name` that the hook made is `bytes` long and was
+    /// written at `at_ms`.
+    ///
+    /// # Panics
+    ///
+    /// When the file cannot be written.
+    #[must_use]
+    pub fn with_copy(self, name: &str, bytes: usize, at_ms: u64) -> Fake {
+        write_copy(&self.folder.join("dumps"), name, bytes, at_ms);
+        self
+    }
+
+    /// The snapshot `snapshot`, which is newer than those before it, has a
+    /// copy of `name` of `bytes` that was written at `at_ms`.
+    ///
+    /// # Panics
+    ///
+    /// When the file cannot be written.
+    #[must_use]
+    pub fn with_snapshot_copy(
+        mut self,
+        snapshot: &str,
+        name: &str,
+        bytes: usize,
+        at_ms: u64,
+    ) -> Fake {
+        write_copy(&self.snapshot_folder(snapshot), name, bytes, at_ms);
+        if !self.snapshots.iter().any(|one| one == snapshot) {
+            self.snapshots.push(snapshot.into());
+        }
+        self
+    }
+
+    /// The folder of the copies in the snapshot `snapshot`.
+    pub fn snapshot_folder(&self, snapshot: &str) -> PathBuf {
+        self.folder.join("snapshots").join(snapshot).join("dumps")
+    }
+
+    /// The folder of the copies now.
+    pub fn copies_folder(&self) -> PathBuf {
+        self.folder.join("dumps")
+    }
+
+    /// The service's backup hook is the one that copies the databases.
+    ///
+    /// # Panics
+    ///
+    /// When the file cannot be written.
+    #[must_use]
+    pub fn with_copying_hook(self) -> Fake {
+        self.with_hook(COPYING_HOOK)
+    }
+
+    /// The service's backup hook only writes a checkpoint.
+    ///
+    /// # Panics
+    ///
+    /// When the file cannot be written.
+    #[must_use]
+    pub fn with_checkpoint_hook(self) -> Fake {
+        self.with_hook(CHECKPOINT_HOOK)
+    }
+
+    /// The service file ends with `hook`.
+    fn with_hook(self, hook: &str) -> Fake {
+        fs::write(&self.files.service, format!("{SERVICE_FILE}\n{hook}")).unwrap();
+        self
+    }
+
+    /// The clock says `local` and `ms`, and moves `step` milliseconds on
+    /// each time it is looked at.
+    #[must_use]
+    pub fn at(mut self, local: (i64, u32, u32, u32, u32), ms: u64, step: u64) -> Fake {
+        self.clock = Clock { ms, local };
+        self.step = step;
+        self
+    }
+
+    /// `pg_restore` ends with `words` on its error output.
+    #[must_use]
+    pub fn failing_restore(mut self, words: &str) -> Fake {
+        self.restore_error = Some(words.into());
+        self
+    }
+
+    /// Every call of `pg_restore`.
+    pub fn restores(&self) -> &[RestoreCall] {
+        &self.restores
+    }
+
+    /// How long the copy was that was put into `name`, if one was.
+    pub fn restored(&self, name: &str) -> Option<u64> {
+        self.restored.get(name).copied()
+    }
+
+    /// The sessions open to `name`: how many, of every program.
+    pub fn open_sessions(&self, name: &str) -> u64 {
+        self.sessions.get(name).map_or(0, |programs| programs.iter().map(|(_, n)| n).sum())
+    }
+
+    /// Whether `name` takes connections, and how many besides the
+    /// superuser's: the fake's own record of what was asked.
+    pub fn takes(&self, name: &str) -> Option<(bool, i32)> {
+        self.databases.get(name).map(|db| (db.open, db.limit))
+    }
+
+    /// The comment of the database `name`.
+    pub fn comment_of(&self, name: &str) -> Option<String> {
+        self.databases.get(name)?.comment.clone()
     }
 
     /// The role `name` has no password.
@@ -524,6 +691,38 @@ impl Fake {
             });
             return Ok(Fake::answer(&["owner", "password", "comment"], rows.into_iter().collect()));
         }
+        if sql.starts_with(
+            "SELECT pg_catalog.pg_get_userbyid(d.datdba) AS owner, pg_catalog.pg_encoding",
+        ) {
+            let name = literal_of(sql.rsplit("WHERE d.datname = ").next().unwrap_or(""));
+            let rows = self.databases.get(&name).map(|db| {
+                let libc = db.provider == 'c';
+                vec![
+                    Some(db.owner.clone()),
+                    Some("UTF8".into()),
+                    Some(db.provider.to_string()),
+                    libc.then(|| db.locale.clone()),
+                    libc.then(|| db.locale.clone()),
+                    Some(db.locale.clone()),
+                    db.comment.clone(),
+                ]
+            });
+            return Ok(Fake::answer(
+                &["owner", "encoding", "provider", "collate", "ctype", "locale", "comment"],
+                rows.into_iter().collect(),
+            ));
+        }
+        if let Some(rest) =
+            sql.strip_prefix("SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE datname = ")
+        {
+            let name = literal_of(rest);
+            let ended = self.sessions.remove(&name).unwrap_or_default();
+            let rows = ended
+                .iter()
+                .flat_map(|(_, count)| (0..*count).map(|_| vec![Some("t".to_string())]))
+                .collect();
+            return Ok(Fake::answer(&["pg_terminate_backend"], rows));
+        }
         if sql.starts_with("SELECT application_name, count(*) AS sessions") {
             let name = literal_of(sql.split("WHERE datname = ").nth(1).unwrap_or(""));
             let rows = self.sessions.get(&name).map_or_default(|programs| {
@@ -766,9 +965,12 @@ impl Fake {
             }
             let owner = ident_of(rest.split(" OWNER ").nth(1).unwrap_or(""));
             let builtin = rest.contains("LOCALE_PROVIDER builtin");
-            let locale = literal_of(
-                rest.rsplit(" 'UTF8' ").next().unwrap_or("").rsplit("LOCALE ").next().unwrap_or(""),
-            );
+            let after = |key: &str| rest.split(key).nth(1).map(literal_of);
+            let locale = after("BUILTIN_LOCALE ")
+                .or_else(|| after("LC_COLLATE "))
+                .or_else(|| after("LOCALE "))
+                .unwrap_or_default();
+            let limit = if rest.contains(" CONNECTION LIMIT 0") { 0 } else { -1 };
             self.databases.insert(
                 name,
                 Database {
@@ -777,6 +979,8 @@ impl Fake {
                     provider: if builtin { 'b' } else { 'c' },
                     locale,
                     versions: None,
+                    open: true,
+                    limit,
                 },
             );
             return Ok("CREATE DATABASE".into());
@@ -804,6 +1008,35 @@ impl Fake {
             self.roles.remove(&name).ok_or_else(|| server("42704", "no such role"))?;
             return Ok("DROP ROLE".into());
         }
+        if let Some(rest) = sql.strip_prefix("ALTER DATABASE ") {
+            let name = ident_of(rest);
+            if let Some(to) = rest.split(" RENAME TO ").nth(1) {
+                let to = ident_of(to);
+                if !self.databases.contains_key(&name) {
+                    return Err(server("3D000", "no such database"));
+                }
+                if self.databases.contains_key(&to) {
+                    return Err(server("42P04", "database already exists"));
+                }
+                if self.open_sessions(&name) > 0 {
+                    return Err(server("55006", "database is being accessed by other users"));
+                }
+                if let Some(db) = self.databases.remove(&name) {
+                    self.databases.insert(to, db);
+                }
+                return Ok("ALTER DATABASE".into());
+            }
+            let db =
+                self.databases.get_mut(&name).ok_or_else(|| server("3D000", "no such database"))?;
+            if let Some(allow) = rest.split(" WITH ALLOW_CONNECTIONS ").nth(1) {
+                db.open = allow == "true";
+            } else if let Some(limit) = rest.split(" WITH CONNECTION LIMIT ").nth(1) {
+                db.limit = limit.parse().map_err(|_| broken(format!("fake: {sql}")))?;
+            } else {
+                return Err(broken(format!("the fake does not know the statement {sql}")));
+            }
+            return Ok("ALTER DATABASE".into());
+        }
         if let Some(rest) = sql.strip_prefix("ALTER ROLE ") {
             let name = ident_of(rest);
             self.roles.get_mut(&name).ok_or_else(|| server("42704", "no such role"))?.password =
@@ -826,6 +1059,18 @@ impl Fake {
         }
         Err(broken(format!("the fake does not know the statement {sql}")))
     }
+}
+
+/// Writes the copy of `name` in `folder`: `bytes` long, starting as a
+/// copy made with `pg_dump -Fc` does, and last written at `at_ms`.
+fn write_copy(folder: &Path, name: &str, bytes: usize, at_ms: u64) {
+    fs::create_dir_all(folder).unwrap();
+    let path = folder.join(format!("{name}.dump"));
+    let mut content = b"PGDMP".to_vec();
+    content.resize(bytes.max(content.len()), 0);
+    fs::write(&path, content).unwrap();
+    let file = OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_modified(UNIX_EPOCH + Duration::from_millis(at_ms)).unwrap();
 }
 
 /// The quoted identifier at the start of `text`.
@@ -941,6 +1186,51 @@ impl Host for Fake {
 
     fn files(&self) -> &Files {
         &self.files
+    }
+
+    fn dumps(&self) -> PathBuf {
+        self.copies_folder()
+    }
+
+    fn snapshot_dumps(&mut self) -> Vec<Folder> {
+        self.snapshots
+            .iter()
+            .rev()
+            .map(|snapshot| Folder { from: snapshot.clone(), path: self.snapshot_folder(snapshot) })
+            .collect()
+    }
+
+    fn now(&mut self) -> Clock {
+        let now = self.clock;
+        self.clock.ms += self.step;
+        now
+    }
+
+    fn pg_restore(&mut self, argv: &[String], mut copy: File) -> Result<(), String> {
+        let length = copy.metadata().map_or(0, |meta| meta.len());
+        let offset = copy.stream_position().unwrap_or(u64::MAX);
+        let target = argv
+            .iter()
+            .position(|word| word == "-d")
+            .and_then(|at| argv.get(at + 1))
+            .cloned()
+            .unwrap_or_default();
+        let closed = self.databases.get(&target).is_some_and(|db| db.limit == 0);
+        self.restores.push(RestoreCall { argv: argv.to_vec(), length, offset, closed });
+        let mut magic = [0u8; 5];
+        if copy.read_exact_at(&mut magic, 0).is_err() || &magic != b"PGDMP" {
+            return Err(
+                "pg_restore: error: input file does not appear to be a valid archive".into()
+            );
+        }
+        if let Some(words) = &self.restore_error {
+            return Err(words.clone());
+        }
+        if !self.databases.contains_key(&target) {
+            return Err(format!("pg_restore: error: database \"{target}\" does not exist"));
+        }
+        self.restored.insert(target, length);
+        Ok(())
     }
 
     fn pause(&mut self, _time: Duration) {}

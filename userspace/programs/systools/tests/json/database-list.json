@@ -7,7 +7,8 @@
     "version": "19.0",
     "listen": "*",
     "ssl": true,
-    "certificate": "this-machine"
+    "certificate": "this-machine",
+    "copies": true
   },
   "databases": [
     {
@@ -20,7 +21,8 @@
       "sessions": 1,
       "site": "shop.example.org",
       "made_by_database": true,
-      "collation_mismatch": false
+      "collation_mismatch": false,
+      "copy": { "at_ms": 1794794400000, "bytes": 12345 }
     }
   ],
   "roles": [
