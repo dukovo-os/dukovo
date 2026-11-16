@@ -182,7 +182,8 @@ set to zero. *allow* takes up to 20 at a time.
 
 # JSON
 
-*--json* prints one line of JSON, with *"format": 1* first. The members
+*--json* prints one line of JSON, with *"format":1* first; the documents
+below are shown on several lines. The members
 of a document are only added to, never changed or taken away, as long as
 *format* is 1.
 
@@ -302,7 +303,7 @@ A database for a website, and its password, which is shown once:
 
 ```
 # database add shop --site shop.example.org --json
-{"format": 1, "database": "shop", "role": "shop", "password": "kT3x0Gv9uQ1mYwZb5nR2LcHd7SpJaEfA", "host": "127.0.0.1", "port": 5432}
+{"format":1,"database":"shop","role":"shop","password":"kT3x0Gv9uQ1mYwZb5nR2LcHd7SpJaEfA","host":"127.0.0.1","port":5432}
 ```
 
 A database for a program that runs as an account of the machine, with
@@ -310,7 +311,7 @@ no password:
 
 ```
 # database add notes --peer notes --json
-{"format": 1, "database": "notes", "role": "notes", "password": null, "host": null, "port": 5432}
+{"format":1,"database":"notes","role":"notes","password":null,"host":null,"port":5432}
 ```
 
 Letting the machines of a network connect, with this machine's
