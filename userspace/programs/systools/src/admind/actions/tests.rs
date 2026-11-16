@@ -637,6 +637,9 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "apps.hold",
             "apps.unhold",
             "apps.remove",
+            "websites.add",
+            "websites.https",
+            "websites.remove",
         ]
     );
     for action in console.as_array().unwrap() {
@@ -1364,6 +1367,14 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("certificate.check", "names"),
     ("certificate.get", "names"),
     ("certificate.get", "agree_terms"),
+    // The other names of a site are names as `website` reads them, each
+    // once and none the site's own, which a pattern of the letters a name
+    // has cannot say; and a site is served over HTTPS with a certificate
+    // or taken back to HTTP with off, one of the two, which two optional
+    // fields cannot say.
+    ("websites.plan", "names"),
+    ("websites.add", "names"),
+    ("websites.https", "off"),
     // A page or a service, one of the two, and a page's address is one the
     // check reads: no space or control character in it, which a pattern
     // cannot say as the check does.
@@ -1556,6 +1567,30 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("alerts.webhook-add", r#"{"kind":"json","room":"!a:b.test","url":"https://x.example.org"}"#),
     ("alerts.webhook-add", r#"{"kind":"slack","token":"t","url":"https://hooks.slack.com/x"}"#),
     ("alerts.push-add", r#"{"name":"   ","subscription":"{}"}"#),
+    // An address by number is no name for a site, a name twice and a name
+    // with an empty label are no names, which `website` says; and HTTPS
+    // takes a certificate or off, one of the two.
+    ("websites.plan", r#"{"kind":"static","name":"10.0.0.1","owner":"webdev"}"#),
+    (
+        "websites.plan",
+        r#"{"kind":"static","name":"shop.lab.example","names":"shop.lab.example","owner":"webdev"}"#,
+    ),
+    (
+        "websites.plan",
+        r#"{"kind":"static","name":"shop.lab.example","names":"a..b","owner":"webdev"}"#,
+    ),
+    ("websites.add", r#"{"kind":"static","name":"10.0.0.1","owner":"webdev"}"#),
+    (
+        "websites.add",
+        r#"{"kind":"static","name":"shop.lab.example","names":"shop.lab.example","owner":"webdev"}"#,
+    ),
+    (
+        "websites.add",
+        r#"{"kind":"static","name":"shop.lab.example","names":"a..b","owner":"webdev"}"#,
+    ),
+    ("websites.https", r#"{"name":"shop.lab.example"}"#),
+    ("websites.https", r#"{"name":"shop.lab.example","off":false}"#),
+    ("websites.https", r#"{"certificate":"this-machine","name":"shop.lab.example","off":true}"#),
 ];
 
 fn lab_action(id: &str) -> &'static dyn Registered {

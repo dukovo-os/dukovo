@@ -2229,3 +2229,75 @@ runs = "as-the-person"
 long = false
 compares = false
 tests = { checks = "admind::actions::reports::tests", route = "admin-reports", same_as_command = "admin-reports", browser = "web-console/report", ansible = "web-console/ansible" }
+
+[[action]]
+id = "websites.list"
+title = "List the websites"
+area = "websites"
+changes = false
+method = "GET"
+path = "/api/1/websites"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::websites::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/websites", ansible = "web-console/ansible" }
+
+[[action]]
+id = "websites.check"
+title = "Check the websites"
+area = "websites"
+changes = false
+method = "GET"
+path = "/api/1/websites/check"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::websites::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/websites", ansible = "web-console/ansible" }
+
+[[action]]
+id = "websites.plan"
+title = "Plan a website"
+area = "websites"
+changes = false
+method = "GET"
+path = "/api/1/websites/plan/{name}"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::websites::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/websites", ansible = "web-console/ansible" }
+
+[[action]]
+id = "websites.add"
+title = "Add a website"
+area = "websites"
+changes = true
+method = "POST"
+path = "/api/1/websites/add"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::websites::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/websites", ansible = "web-console/ansible" }
+
+[[action]]
+id = "websites.https"
+title = "Serve a website over HTTPS"
+area = "websites"
+changes = true
+method = "POST"
+path = "/api/1/websites/{name}/https"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::websites::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/websites", ansible = "web-console/ansible" }
+
+[[action]]
+id = "websites.remove"
+title = "Remove a website"
+area = "websites"
+changes = true
+method = "POST"
+path = "/api/1/websites/{name}/remove"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::websites::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/websites", ansible = "web-console/ansible" }

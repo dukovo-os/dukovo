@@ -33,6 +33,8 @@ const CRATES = {
   checks: 'userspace/programs/systools/src/update/checks.rs',
   // The certificate actions' field, as `use super::certificate` names it: `certificate::NAME`.
   certificate: `${ACTIONS}certificate.rs`,
+  // website(8)'s limits of a name and of a folder's path, which the websites' actions hold a value to.
+  'crate::website': 'userspace/programs/systools/src/website.rs',
   // hostnamectl(1)'s limit of a name, which the machine's actions hold a new name to.
   'crate::hostnamectl': 'userspace/programs/systools/src/hostnamectl.rs',
   // wireguard(8)'s readers, which the private access actions check with.

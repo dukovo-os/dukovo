@@ -566,7 +566,8 @@ mod tests {
         // each prints its JSON then too. apps.update's 1, and apps.tonight's,
         // is the stop that says what an update asks for before it is told yes.
         // alerts.test's 1 is a channel that refused the test, which the JSON it
-        // printed says.
+        // printed says. websites.check's 1 is settings that nginx refuses and
+        // websites.plan's a check of the plan that failed, each with its JSON.
         for (id, answers) in [
             ("hardware.last", [0, 1, 2, 3].as_slice()),
             ("hardware.check", [0, 1, 2].as_slice()),
@@ -576,6 +577,8 @@ mod tests {
             ("apps.update", [0, 1].as_slice()),
             ("apps.tonight", [0, 1].as_slice()),
             ("alerts.test", [0, 1].as_slice()),
+            ("websites.check", [0, 1].as_slice()),
+            ("websites.plan", [0, 1].as_slice()),
         ] {
             let action =
                 crate::admind::actions::REGISTRY.iter().find(|action| action.id() == id).unwrap();
@@ -597,6 +600,8 @@ mod tests {
             "apps.update",
             "apps.tonight",
             "alerts.test",
+            "websites.check",
+            "websites.plan",
         ];
         for action in crate::admind::actions::REGISTRY.iter().filter(|a| !named.contains(&a.id())) {
             assert_eq!(action.answers(), [0], "{}", action.id());

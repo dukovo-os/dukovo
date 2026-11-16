@@ -58,7 +58,7 @@ const PAGE_TESTS: Tests = Tests {
 /// What a certificate's name matches, as `check` checks it, apart from its
 /// length: a lowercase letter or a digit, then more of them, and hyphens
 /// and dots, with no two dots in a row.
-const NAME_PATTERN: &str = "^(?!.*\\.\\.)[a-z0-9][a-z0-9.-]*$";
+pub(super) const NAME_PATTERN: &str = "^(?!.*\\.\\.)[a-z0-9][a-z0-9.-]*$";
 
 /// A certificate, by its name.
 #[derive(Debug, Deserialize, Serialize)]
@@ -84,7 +84,7 @@ pub(super) fn check_name(name: &str) -> Result<(), Bad> {
 }
 
 /// [`check_name`] for the field `field`, which holds a certificate's name.
-fn check_name_of(field: &'static str, name: &str) -> Result<(), Bad> {
+pub(super) fn check_name_of(field: &'static str, name: &str) -> Result<(), Bad> {
     if check_certificate(name).is_ok() {
         return Ok(());
     }

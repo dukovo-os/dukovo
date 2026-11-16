@@ -77,6 +77,7 @@ mod ssh;
 mod storage;
 mod trial;
 mod updates;
+mod websites;
 
 use std::fmt;
 use std::net::IpAddr;
@@ -1285,6 +1286,12 @@ registry![
     reports::Status,
     reports::Retry,
     reports::Delete,
+    websites::List,
+    websites::Check,
+    websites::Plan,
+    websites::Add,
+    websites::Https,
+    websites::Remove,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
