@@ -7,11 +7,11 @@
 # administration programs in bin, libpq in lib, the modules the server
 # loads with dlopen in lib/postgresql (PL/pgSQL, the encoding conversions,
 # the Snowball dictionaries, pgoutput, libpqwalreceiver and the contrib
-# modules), the files the server reads in share, the service's script in
-# bin and the files it starts from in conf (ADR 0522), and the test suites
-# in tests, with the programs that run them. libpq goes into the sysroot
-# too, as a static library with its headers, for the ports built on it
-# (PHP).
+# modules), the files the server reads in share, the service's script and
+# its backup hook's in bin and the files it starts from in conf (ADRs 0522
+# and 0570), and the test suites in tests, with the programs that run them.
+# libpq goes into the sysroot too, as a static library with its headers, for
+# the ports built on it (PHP).
 #
 # Radix's ABI is Linux's (radix-posix(7)), so the build takes PostgreSQL's
 # linux template: unnamed POSIX semaphores, -fPIC for shared code, the
@@ -286,10 +286,12 @@ done
 cp -R "$installed/share/." "$PORT_BUNDLE/share/"
 rm -f "$PORT_BUNDLE"/share/extension/xml2*
 
-# The service, and the two files its first start copies into the cluster
-# (ADR 0522), in conf as the other bundles' services keep theirs.
+# The service and its backup hook, and the two files the service's first
+# start copies into the cluster (ADRs 0522 and 0570), in conf as the other
+# bundles' services keep theirs.
 mkdir -p "$PORT_BUNDLE/conf"
 install -m 0755 "$PORT_DIR/postgresql-service" "$PORT_BUNDLE/bin/postgresql-service"
+install -m 0755 "$PORT_DIR/postgresql-backup" "$PORT_BUNDLE/bin/postgresql-backup"
 install -m 0644 "$PORT_DIR/pg_hba.conf" "$PORT_BUNDLE/conf/pg_hba.conf"
 install -m 0644 "$PORT_DIR/pg_ident.conf" "$PORT_BUNDLE/conf/pg_ident.conf"
 
@@ -432,10 +434,11 @@ check_program() {
 }
 for program in "$PORT_BUNDLE"/bin/* "$tests/pg_regress" "$tests/pg_isolation_regress" \
 	"$tests/isolationtester"; do
-	# The service is a script, which /bin/sh runs.
-	if [ "${program##*/}" != postgresql-service ]; then
-		check_program "$program"
-	fi
+	# The service and its backup hook are scripts, which /bin/sh runs.
+	case ${program##*/} in
+	postgresql-service | postgresql-backup) ;;
+	*) check_program "$program" ;;
+	esac
 done
 for module in "$PORT_BUNDLE"/lib/postgresql/*.so "$PORT_BUNDLE/lib/libpq.so.5" \
 	"$tests/regress/regress.so"; do
