@@ -134,7 +134,8 @@ test('the page runs no action that this file does not name, and none of the name
   const { readFileSync, readdirSync } = await import('node:fs');
   const folder = new URL('../pages/security/', import.meta.url);
   const source = readdirSync(folder).filter((name) => name.endsWith('.js')).map((name) => readFileSync(new URL(name, folder), 'utf8')).join('\n');
-  const named = new Set([...source.matchAll(/(?:run\(|action: |action = )'([a-z-]+\.[a-z-]+)'/g)].map((found) => found[1]));
+  // The Alerts card's actions are listed with the Alerts page's, in alerts-actions.test.mjs.
+  const named = new Set([...source.matchAll(/(?:run\(|action: |action = )'((?!alerts\.)[a-z-]+\.[a-z-]+)'/g)].map((found) => found[1]));
   // The sign-in rules and the reads are asked by their route, not by an id.
   for (const id of named) assert.ok(id in CALLS, `${id} is named by the page and not tested here`);
   for (const id of ['checks.run', 'security.unblock', 'ssh.keep', 'console.undo', 'private.add', 'private.remove']) assert.ok(named.has(id) || source.includes(`'${id}'`), `${id} is run by the page`);

@@ -18,7 +18,7 @@ const kept = (...results) => ({ version: 1, checked: '2026-11-20T05:17:03Z', rel
 test('each check of the table weighs what the design says', () => {
   const table = {
     'SEC-101': 10, 'SEC-102': 15, 'SEC-110': 6, 'SEC-111': 4, 'SEC-112': 6, 'SEC-120': 20,
-    'SEC-121': 10, 'SEC-130': 6, 'SEC-131': 4, 'SEC-140': 4, 'SEC-150': 4, 'SEC-160': 8,
+    'SEC-121': 10, 'SEC-130': 6, 'SEC-131': 4, 'SEC-140': 4, 'SEC-150': 4, 'SEC-160': 8, 'SEC-170': 6,
   };
   assert.deepEqual(Object.fromEntries(Object.keys(WEIGHTS).map((id) => [id, weightOf(id)])), table);
   for (const [id, weight] of Object.entries(table)) {

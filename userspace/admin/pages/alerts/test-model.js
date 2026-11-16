@@ -42,3 +42,11 @@ export function lastTestWords(rows, clock) {
     ...rows.filter((row) => !row.ok).map((row) => `It failed at ${row.name}.`),
   ].filter(Boolean).join(' ');
 }
+
+/** What the card of Security says of a test, `{words, bad}`, from the answer of `alerts.test` and the `clock` it was sent at. */
+export function testSaid(answer, clock) {
+  const deliveries = deliveriesOf(answer);
+  if (deliveries === null) return { words: 'The test alert was sent.', bad: false };
+  const rows = testRows(deliveries);
+  return { words: lastTestWords(rows, clock), bad: rows.some((row) => !row.ok) };
+}

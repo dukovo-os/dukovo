@@ -108,6 +108,7 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // graph is as it was.
 // Report a problem's row is 7,000 more than it was, for the cuts the page makes.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
+// Security's is 1,500 more than 147,000, for the rows of its Alerts card, one for each kind of alert.
 const PAGE_LIMITS = {
   updates: 70_000,
   apps: 55_000,
@@ -115,7 +116,7 @@ const PAGE_LIMITS = {
   certificates: 60_000,
   report: 67_000,
   alerts: 65_000,
-  security: 147_000,
+  security: 148_500,
   move: 107_000,
   reliability: 22_000,
   terminal: 149_908,

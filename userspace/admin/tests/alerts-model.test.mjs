@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  channelsWords, joinWords, kindRows, kindsOf, listOf, shortName,
+  joinWords, kindRows, kindsOf, listOf, shortName,
 } from '../pages/alerts/channels-model.js';
 import {
   emailArgs, emailProblems, isAddress, isPrivateHost, roomProblem, takesToken, tokenProblem, urlProblem, webhookArgs,
@@ -66,8 +66,6 @@ test('what a channel is told reads as the page says it', () => {
 test('a channel goes by its short name in a sentence', () => {
   assert.equal(shortName(email), 'email');
   assert.equal(shortName(ntfy), 'ntfy (ntfy.sh)');
-  assert.equal(channelsWords([email, ntfy]), 'email and ntfy (ntfy.sh)');
-  assert.equal(channelsWords([]), null);
 });
 
 test('Security\'s rows name the channels told of each kind, and a kind no channel gets is a warning', () => {

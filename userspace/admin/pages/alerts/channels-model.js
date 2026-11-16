@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// What the console says of alertd's channels, as plain values, for the Alerts
-// page and the Alerts card of Security. The channels are `alerts status
-// --json`, a line each: `{channel, kind, host, severity, cleared, about,
-// number, id, name, last_ok, last_error: [seconds, words], error_id, waiting}`.
-// It imports nothing, since Security reads it on every visit.
+// What the console says of alertd's channels, for the Alerts page and the
+// Alerts card of Security, which loads it on every visit. A channel is a line
+// of `alerts status --json`: `{channel, kind, host, severity, cleared, about,
+// number, id, name, last_ok, last_error: [seconds, words], error_id,
+// waiting}`.
 
 /** The kinds of alert a channel may be told of, as alerts.toml(5) names them in `about`. */
 export const KINDS = Object.freeze([
@@ -33,11 +33,6 @@ export function kindsOf(channel) {
 
 /** The name a channel goes by in a sentence: "email" for the email channel, whatever address it holds, else alertd's own. */
 export const shortName = (channel) => (channel.kind === 'email' ? 'email' : channel.channel);
-
-/** "email and ntfy (ntfy.sh)", or null when no channel is set. */
-export function channelsWords(channels) {
-  return channels.length === 0 ? null : joinWords(channels.map(shortName));
-}
 
 /**
  * A row for each kind of alert: `{id, label, words, tone}`. `words` names the
