@@ -43,6 +43,7 @@ pub const RXDESC_ADDR_LO: usize = 0x00e4;
 pub const RXDESC_ADDR_HI: usize = 0x00e8;
 pub const PPSW: usize = 0x00f2;
 pub const TIMERINT3: usize = 0x00f4;
+pub const RADMFIFO_PROTECT: usize = 0x0402;
 /// The 64 interrupt moderation timers.
 pub const INTMITI: usize = 0x0a00;
 /// Where the standard PHY registers are among the PHY's OCP registers,
@@ -63,6 +64,8 @@ pub mod int_cfg0 {
     pub const MITIGATION_BYPASS: u8 = 0x04;
     pub const CLKREQ_8126: u8 = 0x08;
     pub const RDU_BYPASS_8126: u8 = 0x10;
+    pub const AUTO_CLEAR_IMR: u8 = 0x20;
+    pub const AVOID_MISS_INTR: u8 = 0x40;
 }
 
 pub mod cmd {
@@ -98,6 +101,8 @@ pub mod rxcfg {
     pub const BROAD: u32 = 0x0000_0008;
     pub const RUNT: u32 = 0x0000_0010;
     pub const ERRPKT: u32 = 0x0000_0020;
+    /// The first descriptor format, which the RTL8127 does without.
+    pub const ENBDESCV1: u32 = 0x0100_0000;
     /// Every frame filter.
     pub const FILTERS: u32 = ALLPHYS | INDIV | MULTI | BROAD | RUNT | ERRPKT;
     /// What the receiver is set to, by family.
@@ -127,6 +132,7 @@ pub mod phystat {
     pub const MBPS_1000: u16 = 0x0010;
     pub const MBPS_2500: u16 = 0x0400;
     pub const MBPS_5000: u16 = 0x1000;
+    pub const MBPS_10000: u16 = 0x4000;
 }
 
 pub mod ephyar {
@@ -134,6 +140,9 @@ pub mod ephyar {
     pub const BUSY: u32 = 0x8000_0000;
     pub const ADDR_MASK: u32 = 0x0000_007f;
     pub const ADDR_SHIFT: u32 = 16;
+    /// The register the RTL8127's EPHY takes the page of its next
+    /// register in.
+    pub const EXT_ADDR: u16 = 0x0ffe;
 }
 
 pub const TXSTART_START: u16 = 0x0001;
@@ -161,6 +170,7 @@ pub const CPLUSCMD_RXCSUM: u16 = 0x0020;
 /// register 0xa5d4.
 pub const ADV_2500TFDX: u16 = 0x0080;
 pub const ADV_5000TFDX: u16 = 0x0100;
+pub const ADV_10000TFDX: u16 = 0x1000;
 
 /// The standard PHY registers and bits FreeBSD's `mii.h` names.
 pub mod mii {

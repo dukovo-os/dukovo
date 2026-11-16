@@ -4,13 +4,16 @@
 //! Intel's Ethernet in the chipset (ADR 0361): the MAC in the platform
 //! controller hub (PCH), with a PHY chip of its own beside it, joined by
 //! a fast link for frames and by SMBus for when the host sleeps. Two
-//! generations, FreeBSD's `pch2lan` and `pch_spt`:
+//! generations, in the order FreeBSD's `e1000_mac_type` has them ([`Mac`]):
 //!
 //! - the 82579LM and 82579V, with Intel's 6 and 7 series chipsets
 //!   (Cougar Point and Panther Point), as on the Dell Precision T1650;
-//! - the I219-LM and I219-V with the 100 and 200 series (Sunrise Point
-//!   and Union Point), Lewisburg, and Comet Lake's H series, as on the
-//!   Dell OptiPlex 7040.
+//! - the I217 and the I218, with the 8 and 9 series chipsets (Lynx Point
+//!   and Wildcat Point) and their laptop forms;
+//! - the I219-LM and I219-V from the 100 series on: Sunrise Point and
+//!   Union Point, Lewisburg and Comet Lake's H series, as on the Dell
+//!   OptiPlex 7040, then Cannon Lake and every chipset after it to Nova
+//!   Lake.
 //!
 //! The PHY has masters besides the driver: the management engine (ME),
 //! which runs Intel AMT on vPro machines and may be using it, and the
@@ -42,6 +45,11 @@
 //!    loss and hang workarounds), the K1 power states and, on the I219,
 //!    the latency tolerance it reports to the platform.
 //!
+//! The I217 and later chips differ from the 82579 in where the NVM is
+//! and which of these steps they take; a step that only some generations
+//! need is written as the generation test FreeBSD makes for it, and
+//! [`Mac`] orders the generations so that the test reads the same.
+//!
 //! On the 82579 with the ME running, a register write can be lost while
 //! the ME holds the bus they share, so every write waits until it lets
 //! go, and a ring tail that did not take stops the card
@@ -51,10 +59,12 @@
 //! its rings can hang it until the machine resets, and the next driver
 //! resets it as this one does at its start, before any ring is loaded.
 //!
-//! Energy Efficient Ethernet, wake on LAN, jumbo frames, the I217 and
-//! I218, and the I219s of Cannon Lake and later are not done.
+//! Energy Efficient Ethernet, wake on LAN, jumbo frames and the 82577 and
+//! 82578 are not done.
 
 mod nvm;
+
+use core::cell::Cell;
 
 use radix_hw::pci::Function;
 use radix_hw::{Dma, Mmio};
@@ -105,11 +115,13 @@ mod reg {
     pub const H2ME: usize = 0x5b50;
     pub const FWSM: usize = 0x5b54;
     pub const FEXTNVM11: usize = 0x5bbc;
+    pub const FEXTNVM12: usize = 0x5bc0;
     pub const FFLT_DBG: usize = 0x5f04;
     pub const FCRTV_PCH: usize = 0x5f40;
     /// The I219's NVM registers, from here in BAR 0.
     pub const FLASH: usize = 0xe000;
-    /// How far the 82579's registers go, and the I219's.
+    /// How far the registers go of the chips with a flash BAR of their
+    /// own, and of those without.
     pub const END_PCH2: usize = FCRTV_PCH + 4;
     pub const END_SPT: usize = FLASH + super::nvm::END;
 }
@@ -123,6 +135,7 @@ const STATUS_LAN_INIT_DONE: u32 = 1 << 9;
 const STATUS_PHYRA: u32 = 1 << 10;
 /// CTRL_EXT's.
 const CTRL_EXT_LPCD: u32 = 1 << 2;
+const CTRL_EXT_DPG_EN: u32 = 1 << 3;
 const CTRL_EXT_FORCE_SMBUS: u32 = 1 << 11;
 const CTRL_EXT_RO_DIS: u32 = 1 << 17;
 const CTRL_EXT_PHYPDEN: u32 = 1 << 20;
@@ -156,12 +169,20 @@ const FEXTNVM3_PHY_CFG_COUNTER_50MS: u32 = 2 << 26;
 const FEXTNVM4_BEACON_MASK: u32 = 0x7;
 const FEXTNVM4_BEACON_8US: u32 = 0x7;
 const FEXTNVM4_BEACON_16US: u32 = 0x3;
-/// FEXTNVM6's, and PCIEANACFG's in the same place.
+/// FEXTNVM6's, and PCIEANACFG's in the same place: the PLL clock
+/// request held through K1, the longer K1 entry condition, and K1 off.
+const FEXTNVM6_REQ_PLL_CLK: u32 = 1 << 8;
+const FEXTNVM6_ENABLE_K1_ENTRY_CONDITION: u32 = 1 << 9;
 const FEXTNVM6_K1_OFF_ENABLE: u32 = 1 << 31;
 /// FEXTNVM7's.
 const FEXTNVM7_DISABLE_SMB_PERST: u32 = 1 << 5;
 /// FEXTNVM11's.
 const FEXTNVM11_DISABLE_MULR_FIX: u32 = 1 << 13;
+/// FEXTNVM12's power-down state of the PHY in K1, set to P1.
+const FEXTNVM12_PHYPD_CTRL_MASK: u32 = 0x00c0_0000;
+const FEXTNVM12_PHYPD_CTRL_P1: u32 = 0x0080_0000;
+/// FFLT_DBG's DMA clock gate.
+const FFLT_DBG_DMA_CLOCK_UNGATE: u32 = 1 << 12;
 /// PHY_CTRL's, which the OEM bits follow.
 const PHY_CTRL_D0A_LPLU: u32 = 1 << 1;
 const PHY_CTRL_GBE_DISABLE: u32 = 1 << 6;
@@ -173,6 +194,8 @@ const KMRN_REN: u32 = 1 << 21;
 const KMRN_CTRL: u32 = 0x1;
 const KMRN_TIMEOUTS: u32 = 0x4;
 const KMRN_INBAND_PARAM: u32 = 0x9;
+const KMRN_K1_CONFIG: u32 = 0x7;
+const KMRN_K1_ENABLE: u16 = 1 << 1;
 const KMRN_HD_CTRL: u32 = 0x10;
 const KMRN_K0S_CTRL: u32 = 0x1e;
 const KMRN_K0S_MIN_TIME_SHIFT: u32 = 4;
@@ -259,7 +282,9 @@ mod phy {
     pub const SMB_CTRL: u32 = phy_reg(769, 23);
     pub const PAUSE_TIME: u32 = phy_reg(769, 27);
     pub const KMRN_FIFO_CTRLSTA: u32 = phy_reg(770, 16);
+    pub const INBAND_CTRL: u32 = phy_reg(770, 18);
     pub const PM_CTRL: u32 = phy_reg(770, 17);
+    pub const TIMEOUTS: u32 = phy_reg(770, 21);
     pub const PLL_CLOCK_GATE: u32 = phy_reg(772, 28);
     pub const TX_PTR_GAP: u32 = phy_reg(776, 20);
     pub const TX_CFG: u32 = phy_reg(776, 23);
@@ -312,6 +337,13 @@ mod phy {
     pub const PM_CTRL_K1_CLK_REQ: u16 = 1 << 9;
     pub const PM_CTRL_K1_ENABLE: u16 = 1 << 14;
     pub const PLL_CLOCK_GATE_MASK: u16 = 0x7ff;
+    /// INBAND_CTRL's link status transmit timeout, in units of 10 µs.
+    pub const INBAND_TX_TIMEOUT_MASK: u16 = 0x3f00;
+    pub const INBAND_TX_TIMEOUT_SHIFT: u32 = 8;
+    /// TIMEOUTS's K1 exit timeout, and what the chips from Meteor Lake
+    /// need in it.
+    pub const TIMEOUTS_K1_EXIT_MASK: u16 = 0x0fc0;
+    pub const TIMEOUTS_K1_EXIT: u16 = 0x0f00;
     pub const ULP_CONFIG1_START: u16 = 1 << 0;
     /// What ULP_CONFIG1 has cleared to leave ULP: the power-up
     /// indication, sticky ULP, reset to SMBus, wake on LAN to the host,
@@ -336,6 +368,12 @@ const LAN_INIT_US: u32 = 150_000;
 const ULP_US: u32 = 2_500_000;
 const MASTER_US: u32 = 80_000;
 const LPCD_US: u32 = 100_000;
+/// How long a failed MDIC transaction waits before it is tried again.
+const MDIC_RETRY_US: u32 = 10_000;
+/// How often MDIC is tried on the chips from Meteor Lake, whose PHY
+/// fails a transaction now and then while its clock and the MAC's
+/// synchronise.
+const MDIC_ATTEMPTS: u32 = 3;
 
 /// The pause time and flow control refresh FreeBSD sets for these
 /// chips: unused, with flow control off, but the PHY takes it too.
@@ -351,38 +389,78 @@ const TRANSMIT: usize = 256;
 const ITR: u32 = 1_000_000_000 / (20_000 * 256);
 const TIPG: u32 = 8 | (8 << 10) | (6 << 20);
 
-/// Which generation a chip is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which generation a chip is, oldest first, as FreeBSD's `e1000_mac_type`
+/// orders them: a step for a generation and those after it reads
+/// `mac >= Mac::X`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mac {
-    /// The 82579, FreeBSD's pch2lan.
+    /// The 82579 of the 6 and 7 series chipsets, FreeBSD's pch2lan.
     Pch2,
-    /// The I219 of Sunrise Point and the chipsets that have it as
-    /// Sunrise Point does, FreeBSD's pch_spt.
+    /// The I217 of Lynx Point, the 8 series chipsets, and the
+    /// I218-LM2 and I218-V2, which FreeBSD gives no ultra low power mode
+    /// step: its pch_lpt for the device IDs without ULP.
+    Lpt,
+    /// The I218 of the laptop chipsets, Lynx Point-LP and Wildcat
+    /// Point-LP (the -LM, -V, -LM3 and -V3), whose PHY the driver takes
+    /// out of ultra low power mode and whose K1 power state needs a
+    /// workaround of its own: FreeBSD's pch_lpt with ULP.
+    LptLp,
+    /// The I219 of Sunrise Point and the chipsets that have it as Sunrise
+    /// Point does, the 100 and 200 series, Lewisburg and Comet Lake's H
+    /// and V series: FreeBSD's pch_spt.
     Spt,
+    /// The I219 of Cannon Lake, Ice Lake and Comet Lake: FreeBSD's
+    /// pch_cnp.
+    Cnp,
+    /// The I219 of Tiger Lake: FreeBSD's pch_tgp.
+    Tgp,
+    /// The I219 of Alder Lake and Raptor Lake: FreeBSD's pch_adp.
+    Adp,
+    /// The I219 of Meteor Lake and Lunar Lake: FreeBSD's pch_mtp.
+    Mtp,
+    /// The I219 of Arrow Lake and Panther Lake: FreeBSD's pch_ptp.
+    Ptp,
+    /// The I219 of Nova Lake: FreeBSD's pch_nvp.
+    Nvp,
 }
 
 impl Mac {
     /// How far its registers go.
     fn end(self) -> usize {
-        match self {
-            Mac::Pch2 => reg::END_PCH2,
-            Mac::Spt => reg::END_SPT,
-        }
+        if self <= Mac::LptLp { reg::END_PCH2 } else { reg::END_SPT }
     }
 
     /// Whether its NVM is in a flash BAR of its own, BAR 1.
     pub fn flash_bar(self) -> bool {
-        self == Mac::Pch2
+        self <= Mac::LptLp
     }
 }
 
-/// The chips, by device ID.
+/// The chips, by device ID, as FreeBSD's e1000_set_mac_type has them.
 pub fn identify(device: u16) -> Option<(&'static str, Mac)> {
     Some(match device {
         0x1502 => ("82579LM", Mac::Pch2),
         0x1503 => ("82579V", Mac::Pch2),
+        0x153a => ("I217-LM", Mac::Lpt),
+        0x153b => ("I217-V", Mac::Lpt),
+        0x15a0 => ("I218-LM", Mac::Lpt),
+        0x15a1 => ("I218-V", Mac::Lpt),
+        0x155a | 0x15a2 => ("I218-LM", Mac::LptLp),
+        0x1559 | 0x15a3 => ("I218-V", Mac::LptLp),
         0x156f | 0x15b7 | 0x15b9 | 0x15d7 | 0x15e3 | 0x0d53 => ("I219-LM", Mac::Spt),
         0x1570 | 0x15b8 | 0x15d8 | 0x15d6 | 0x0d55 => ("I219-V", Mac::Spt),
+        0x15bd | 0x15bb | 0x15df | 0x15e1 | 0x0d4e | 0x0d4c => ("I219-LM", Mac::Cnp),
+        0x15be | 0x15bc | 0x15e0 | 0x15e2 | 0x0d4f | 0x0d4d => ("I219-V", Mac::Cnp),
+        0x15fb | 0x15f9 | 0x15f4 => ("I219-LM", Mac::Tgp),
+        0x15fc | 0x15fa | 0x15f5 => ("I219-V", Mac::Tgp),
+        0x1a1e | 0x1a1c | 0x550c | 0x0dc7 | 0x0dc5 => ("I219-LM", Mac::Adp),
+        0x1a1f | 0x1a1d | 0x550d | 0x0dc8 | 0x0dc6 => ("I219-V", Mac::Adp),
+        0x550a | 0x550e | 0x5510 => ("I219-LM", Mac::Mtp),
+        0x550b | 0x550f | 0x5511 => ("I219-V", Mac::Mtp),
+        0x57a0 | 0x57b3 | 0x57b5 | 0x57b7 => ("I219-LM", Mac::Ptp),
+        0x57a1 | 0x57b4 | 0x57b6 | 0x57b8 => ("I219-V", Mac::Ptp),
+        0x57b9 => ("I219-LM", Mac::Nvp),
+        0x57ba => ("I219-V", Mac::Nvp),
         _ => return None,
     })
 }
@@ -393,7 +471,8 @@ pub struct Platform<'a> {
     /// Its PCI function, whose configuration space the reset and the
     /// latency tolerance read.
     pub function: &'a Function,
-    /// The 82579's flash registers, its BAR 1 ([`Mac::flash_bar`]).
+    /// The flash registers of the 82579, I217 and I218, their BAR 1
+    /// ([`Mac::flash_bar`]).
     pub flash: Option<Mmio>,
     /// The time in nanoseconds, by which the running chip waits, as it
     /// cannot sleep.
@@ -432,17 +511,25 @@ pub fn start(
         });
     let csr = Csr { regs: regs.clone(), interlock, clock };
     let nvm = Nvm::new(mac, &regs, flash);
-    let mut pch = Pch { mac, csr, function: function.clone(), nvm, link: Link::default() };
-    pch.wake_phy(delay)?;
+    let mut pch = Pch {
+        mac,
+        csr,
+        function: function.clone(),
+        nvm,
+        link: Link::default(),
+        phy_revision: 0,
+        probing: Cell::new(false),
+    };
+    pch.phy_revision = pch.wake_phy(delay)?;
     let csr = &pch.csr;
     csr.write(reg::PBA, PBA_26K);
-    if mac == Mac::Spt {
+    if mac >= Mac::Spt {
         csr.update(reg::FEXTNVM11, FEXTNVM11_DISABLE_MULR_FIX, 0);
     }
     pch.reset(delay)?;
     let csr = &pch.csr;
     csr.write(reg::WUFC, 0);
-    pch.init(delay);
+    pch.init(delay)?;
     let address = shared::registers_mac(&regs).unwrap_or(fallback_mac);
     pch.set_address(address);
     let sizes = (RECEIVE, TRANSMIT);
@@ -551,6 +638,12 @@ pub(crate) struct Pch {
     nvm: Option<Nvm>,
     /// The link as the driver last saw it.
     link: Link,
+    /// The PHY's revision, the low four bits of its second ID register.
+    phy_revision: u8,
+    /// Whether the driver is probing for the PHY or switching its
+    /// interface, when a failed transaction is expected and not tried
+    /// again.
+    probing: Cell<bool>,
 }
 
 impl Pch {
@@ -603,8 +696,30 @@ impl Pch {
     }
 
     /// One MDIO transaction with the PHY at `address`: reads register
-    /// `number`, or writes `write` to it.
+    /// `number`, or writes `write` to it. On the chips from Meteor Lake
+    /// a transaction that failed is tried twice more, 10 ms apart, unless
+    /// the driver is probing for the PHY, as FreeBSD's
+    /// e1000_read_phy_reg_mdic does.
     fn mdic(
+        &self,
+        address: u32,
+        number: u32,
+        write: Option<u16>,
+        delay: &mut dyn FnMut(u32),
+    ) -> Option<u16> {
+        let attempts = if self.mac >= Mac::Mtp && !self.probing.get() { MDIC_ATTEMPTS } else { 1 };
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                delay(MDIC_RETRY_US);
+            }
+            if let Some(value) = self.mdic_once(address, number, write, delay) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    fn mdic_once(
         &self,
         address: u32,
         number: u32,
@@ -687,8 +802,9 @@ impl Pch {
         delay(2);
     }
 
-    /// The PHY's ID, if it answers on MDIO: two tries, as the PHY may
-    /// not answer while its link to the MAC changes. The flag is held.
+    /// The PHY's ID with its revision in the low four bits, if it answers
+    /// on MDIO: two tries, as the PHY may not answer while its link to
+    /// the MAC changes. The flag is held.
     fn phy_id(&self, delay: &mut dyn FnMut(u32)) -> Option<u32> {
         for _ in 0..2 {
             let Some(high) = self.phy_read(phy::ID1, delay).filter(|&id| id != 0xffff) else {
@@ -697,8 +813,8 @@ impl Pch {
             let Some(low) = self.phy_read(phy::ID2, delay).filter(|&id| id != 0xffff) else {
                 continue;
             };
-            let id = (u32::from(high) << 16) | (u32::from(low) & phy::REVISION_MASK);
-            if id != 0 {
+            let id = (u32::from(high) << 16) | u32::from(low);
+            if id & phy::REVISION_MASK != 0 {
                 return Some(id);
             }
         }
@@ -706,15 +822,15 @@ impl Pch {
     }
 
     /// The PHY's ID, if it answers, with the flag held; on the 82579,
-    /// after putting MDIO in slow mode if it does not at first. An I219
-    /// that answers, with no ME, is taken off SMBus in the PHY and the
-    /// MAC.
+    /// after putting MDIO in slow mode if it does not at first. A PHY of
+    /// the I217 or later that answers, with no ME, is taken off SMBus in
+    /// the PHY and the MAC.
     fn phy_answers(&self, delay: &mut dyn FnMut(u32)) -> Option<u32> {
         let id = self.phy_id(delay).or_else(|| {
             let slow = self.mac == Mac::Pch2 && self.set_mdio_slow(delay);
             slow.then(|| self.phy_id(delay)).flatten()
         });
-        if id.is_some() && self.mac == Mac::Spt && !self.me() {
+        if id.is_some() && self.mac >= Mac::Lpt && !self.me() {
             let _ = self.phy_update(phy::SMB_CTRL, 0, phy::SMB_CTRL_FORCE_SMBUS, delay);
             self.csr.update(reg::CTRL_EXT, 0, CTRL_EXT_FORCE_SMBUS);
         }
@@ -738,19 +854,18 @@ impl Pch {
         delay(1_000);
         csr.write(reg::CTRL, control & !CTRL_LANPHYPC_OVERRIDE);
         csr.flush();
-        match self.mac {
-            Mac::Pch2 => delay(50_000),
-            Mac::Spt => {
-                wait_for(delay, LPCD_US, 5_000, || csr.read(reg::CTRL_EXT) & CTRL_EXT_LPCD != 0);
-                delay(30_000);
-            }
+        if self.mac == Mac::Pch2 {
+            delay(50_000);
+        } else {
+            wait_for(delay, LPCD_US, 5_000, || csr.read(reg::CTRL_EXT) & CTRL_EXT_LPCD != 0);
+            delay(30_000);
         }
     }
 
-    /// Takes the I219's PHY out of ultra low power mode: by asking the
-    /// ME, which runs it then, or with no ME by power-cycling it and
-    /// clearing its ULP settings, then resetting it. FreeBSD's
-    /// e1000_disable_ulp_lpt_lp, forced.
+    /// Takes the PHY of the I218 and the I219 out of ultra low power
+    /// mode: by asking the ME, which runs it then, or with no ME by
+    /// power-cycling it and clearing its ULP settings, then resetting it.
+    /// FreeBSD's e1000_disable_ulp_lpt_lp, forced.
     fn leave_ulp(&self, delay: &mut dyn FnMut(u32)) {
         let csr = &self.csr;
         if self.me() {
@@ -766,6 +881,9 @@ impl Pch {
             return;
         }
         self.toggle_lanphypc(delay);
+        // Switching the PHY's interface fails a transaction, which is not
+        // tried again.
+        self.probing.set(true);
         let _ = (|| {
             // The MAC may be in PCI Express mode with the PHY on SMBus.
             let smb = match self.phy_read(phy::SMB_CTRL, delay) {
@@ -788,6 +906,7 @@ impl Pch {
             csr.update(reg::FEXTNVM7, 0, FEXTNVM7_DISABLE_SMB_PERST);
             Some(())
         })();
+        self.probing.set(false);
         self.release();
         self.reset_phy(delay);
         delay(50_000);
@@ -795,17 +914,23 @@ impl Pch {
 
     /// Makes the PHY answer and resets it, before the driver touches it
     /// further: FreeBSD's e1000_init_phy_workarounds_pchlan, with the
-    /// check of the PHY's ID e1000_init_phy_params_pchlan makes.
-    fn wake_phy(&self, delay: &mut dyn FnMut(u32)) -> Result<(), Error> {
+    /// check of the PHY's ID e1000_init_phy_params_pchlan makes. The
+    /// PHY's revision.
+    fn wake_phy(&self, delay: &mut dyn FnMut(u32)) -> Result<u8, Error> {
         let me = self.me();
         self.gate_phy_config(true);
-        if self.mac == Mac::Spt {
+        if self.mac >= Mac::LptLp {
             self.leave_ulp(delay);
         }
-        let result = self.reach_phy(delay);
-        if result.is_ok() && !self.reset_blocked(delay) {
-            self.reset_phy_only(delay);
-        }
+        let result = self.reach_phy(delay).and_then(|id| {
+            if !self.reset_blocked(delay) {
+                self.reset_phy_only(delay);
+                if !self.reset_blocked(delay) {
+                    self.set_k1_exit(delay)?;
+                }
+            }
+            Ok(id)
+        });
         if self.mac == Mac::Pch2 && !me {
             delay(10_000);
             self.gate_phy_config(false);
@@ -823,31 +948,36 @@ impl Pch {
                 id
             }
         };
-        let expected = match self.mac {
-            Mac::Pch2 => phy::ID_82579,
-            Mac::Spt => phy::ID_I217,
-        };
+        let expected = if self.mac == Mac::Pch2 { phy::ID_82579 } else { phy::ID_I217 };
         match id {
-            Some(id) if id == expected => Ok(()),
+            Some(id) if id & phy::REVISION_MASK == expected => Ok((id & !phy::REVISION_MASK) as u8),
             Some(_) => Err(Error::Device("its PHY is not the one its MAC goes with")),
             None => Err(Error::Device("its PHY does not answer")),
         }
     }
 
-    /// Reaches the PHY: if it does not answer, on the I219 by forcing
-    /// the MAC to SMBus, then on either by power-cycling the PHY, which
-    /// the ME may block. Its ID, as it answered; none for an 82579 that
+    /// Reaches the PHY: if it does not answer, on the I217 and later by
+    /// forcing the MAC to SMBus, then on any by power-cycling the PHY,
+    /// which the ME may block. Its ID, as it answered; none for an 82579 that
     /// was power-cycled, which is read after its reset, as FreeBSD reads
     /// it.
     fn reach_phy(&self, delay: &mut dyn FnMut(u32)) -> Result<Option<u32>, Error> {
         if !self.acquire(delay) {
             return Err(Error::Timeout("taking the PHY from the ME"));
         }
+        // The PHY may not answer while its interface changes, and then a
+        // failed transaction is not tried again.
+        self.probing.set(true);
         let result = (|| {
+            if self.mac >= Mac::Mtp {
+                // The PHY may not answer yet: the failure is let be, and
+                // the timeout is set again once the PHY is reset.
+                self.reconfigure_k1_exit(delay);
+            }
             if let Some(id) = self.phy_answers(delay) {
                 return Ok(Some(id));
             }
-            if self.mac == Mac::Spt {
+            if self.mac >= Mac::Lpt {
                 self.csr.update(reg::CTRL_EXT, CTRL_EXT_FORCE_SMBUS, 0);
                 // The MAC may still be retrying earlier reads.
                 delay(50_000);
@@ -869,8 +999,32 @@ impl Pch {
             self.csr.update(reg::CTRL_EXT, 0, CTRL_EXT_FORCE_SMBUS);
             self.phy_answers(delay).map(Some).ok_or(Error::Device("its PHY does not answer"))
         })();
+        self.probing.set(false);
         self.release();
         result
+    }
+
+    /// Sets the PHY's power-down state in K1 and its K1 exit timeout,
+    /// which the chips from Meteor Lake need to keep the MAC's clock and
+    /// the PHY's in step: whether the PHY took it. The flag is held.
+    /// FreeBSD's e1000_reconfigure_k1_exit_timeout.
+    fn reconfigure_k1_exit(&self, delay: &mut dyn FnMut(u32)) -> bool {
+        self.csr.update(reg::FEXTNVM12, FEXTNVM12_PHYPD_CTRL_P1, FEXTNVM12_PHYPD_CTRL_MASK);
+        delay(1_000);
+        self.phy_update(phy::TIMEOUTS, phy::TIMEOUTS_K1_EXIT, phy::TIMEOUTS_K1_EXIT_MASK, delay)
+    }
+
+    /// Takes the flag and sets the K1 exit timeout where the chip needs it.
+    fn set_k1_exit(&self, delay: &mut dyn FnMut(u32)) -> Result<(), Error> {
+        if self.mac < Mac::Mtp {
+            return Ok(());
+        }
+        if !self.acquire(delay) {
+            return Err(Error::Timeout("taking the PHY from the ME"));
+        }
+        let done = self.reconfigure_k1_exit(delay);
+        self.release();
+        if done { Ok(()) } else { Err(Error::Device("its PHY does not take the K1 exit timeout")) }
     }
 
     /// Resets the PHY alone, by CTRL's PHY reset, and waits for the
@@ -998,7 +1152,7 @@ impl Pch {
         value &= !phy::SMB_ADDR_MASK;
         value |= ((strap >> 17) & 0x7f) as u16;
         value |= phy::SMB_ADDR_PEC_EN | phy::SMB_ADDR_VALID;
-        if self.mac == Mac::Spt {
+        if self.mac >= Mac::Lpt {
             let frequency = (strap >> 12) & 0x3;
             if let Some(frequency) = frequency.checked_sub(1) {
                 value &= !phy::SMB_ADDR_FREQ_MASK;
@@ -1076,13 +1230,23 @@ impl Pch {
         csr.write(reg::IMC, u32::MAX);
         let _ = csr.read(reg::ICR);
         csr.update(reg::KABGTXD, KABGTXD_BGSQLBIAS, 0);
+        if self.mac >= Mac::Ptp {
+            // The chip leaves its reset with dynamic power gating on,
+            // which lets it gate its own power while the driver runs it.
+            csr.update(reg::CTRL_EXT, 0, CTRL_EXT_DPG_EN);
+        }
         Ok(())
     }
 
     /// Sets the chip up after a reset: FreeBSD's e1000_init_hw_ich8lan,
     /// with e1000_initialize_hw_bits_ich8lan's errata settings and the
     /// link set up as e1000_setup_link_ich8lan does, flow control off.
-    fn init(&self, delay: &mut dyn FnMut(u32)) {
+    ///
+    /// # Errors
+    ///
+    /// The PHY of a chip from Meteor Lake does not take its K1 exit
+    /// timeout.
+    fn init(&self, delay: &mut dyn FnMut(u32)) -> Result<(), Error> {
         let csr = &self.csr;
         csr.update(reg::CTRL_EXT, (1 << 22) | CTRL_EXT_PHYPDEN, 0);
         csr.update(reg::TXDCTL0, TXDCTL_BIT_22, 0);
@@ -1093,10 +1257,11 @@ impl Pch {
         csr.update(reg::TARC1, tarc1.0 | (1 << 24) | (1 << 26) | (1 << 30), tarc1.1);
         // NFS filtering can corrupt descriptors.
         csr.update(reg::RFCTL, RFCTL_NFSW_DIS | RFCTL_NFSR_DIS, 0);
-        if self.mac == Mac::Spt {
+        if self.mac >= Mac::Lpt {
             csr.update(reg::PBECCSTS, PBECCSTS_ECC_ENABLE, 0);
             csr.update(reg::CTRL, CTRL_MEHE, 0);
         }
+        self.set_k1_exit(delay)?;
         for word in 0..32 {
             csr.write(reg::MTA + 4 * word, 0);
         }
@@ -1123,7 +1288,12 @@ impl Pch {
         // set.
         let gcr = csr.read(reg::GCR) & !GCR_NO_SNOOP_ALL;
         csr.write(reg::GCR, gcr | !GCR_NO_SNOOP_ALL);
+        if self.mac >= Mac::Tgp {
+            // With its DMA clock gated, the chip loses packets.
+            csr.update(reg::FFLT_DBG, FFLT_DBG_DMA_CLOCK_UNGATE, 0);
+        }
         csr.update(reg::CTRL_EXT, CTRL_EXT_RO_DIS, 0);
+        Ok(())
     }
 
     /// Sets the copper link up: the MAC takes its speed from the PHY,
@@ -1215,52 +1385,21 @@ impl Pch {
     fn on_link(&self, link: Link, delay: &mut dyn FnMut(u32)) {
         let csr = &self.csr;
         if link.up {
-            let half_10 = link.mbps == 10 && !link.full_duplex;
-            let (gap, emi) = if half_10 {
-                // Fewer collisions, and less receive latency in the PHY.
-                (0xff, 0)
-            } else if self.mac == Mac::Spt && link.full_duplex && link.mbps != 1000 {
-                (0xc, 1)
-            } else {
-                (0x08, 1)
-            };
-            csr.update(reg::TIPG, gap, TIPG_IPGT_MASK);
-            if self.acquire(delay) {
-                let rx_config = match self.mac {
-                    Mac::Pch2 => phy::EMI_82579_RX_CONFIG,
-                    Mac::Spt => phy::EMI_I217_RX_CONFIG,
-                };
-                self.emi_write(rx_config, emi, delay);
-                if self.mac == Mac::Spt {
-                    let gate = if link.mbps == 1000 { 0xfa } else { 0x3e8 };
-                    self.phy_update(phy::PLL_CLOCK_GATE, gate, phy::PLL_CLOCK_GATE_MASK, delay);
-                    if link.mbps == 1000 {
-                        self.phy_update(phy::PM_CTRL, phy::PM_CTRL_K1_CLK_REQ, 0, delay);
-                        // At least 0x18 between the transmit pointers.
-                        if let Some(gap) = self.phy_read(phy::TX_PTR_GAP, delay)
-                            && (gap >> 2) & 0x3ff < 0x18
-                        {
-                            self.phy_write(
-                                phy::TX_PTR_GAP,
-                                (gap & !(0x3ff << 2)) | (0x18 << 2),
-                                delay,
-                            );
-                        }
-                    } else {
-                        self.phy_write(phy::TX_PTR_GAP, 0xc023, delay);
-                    }
-                }
-                self.release();
-            }
+            self.set_up_speed(link, delay);
         }
-        if self.mac == Mac::Spt {
+        if self.mac >= Mac::Lpt {
             // I217 packet loss: an 8 µs beacon.
             csr.update(reg::FEXTNVM4, FEXTNVM4_BEACON_8US, FEXTNVM4_BEACON_MASK);
+            if self.mac == Mac::LptLp {
+                self.k1_workaround_lpt_lp(link, delay);
+            }
             self.report_latency(link);
-            // K1 off as the analog configuration has it, and K0s's
-            // shortest time.
-            let k1_off = csr.read(reg::PCIEANACFG) & FEXTNVM6_K1_OFF_ENABLE;
-            csr.update(reg::FEXTNVM6, k1_off, FEXTNVM6_K1_OFF_ENABLE);
+            if self.mac == Mac::Spt {
+                // K1 off as the analog configuration has it.
+                let k1_off = csr.read(reg::PCIEANACFG) & FEXTNVM6_K1_OFF_ENABLE;
+                csr.update(reg::FEXTNVM6, k1_off, FEXTNVM6_K1_OFF_ENABLE);
+            }
+            // K0s's shortest time.
             if self.acquire(delay) {
                 let k0s = self.kmrn_read(KMRN_K0S_CTRL, delay);
                 let k0s = (k0s & !KMRN_K0S_MIN_TIME_MASK) | (1 << KMRN_K0S_MIN_TIME_SHIFT);
@@ -1287,6 +1426,101 @@ impl Pch {
             self.phy_update(phy::KMRN_FIFO_CTRLSTA, preamble, phy::FIFO_PREAMBLE_MASK, delay);
             self.release();
         }
+    }
+
+    /// Sets the interpacket gap and the PHY's settings for the speed and
+    /// duplex of a link that is up.
+    fn set_up_speed(&self, link: Link, delay: &mut dyn FnMut(u32)) {
+        let csr = &self.csr;
+        let half_10 = link.mbps == 10 && !link.full_duplex;
+        let (gap, emi) = if half_10 {
+            // Fewer collisions, and less receive latency in the PHY.
+            (0xff, 0)
+        } else if self.mac >= Mac::Spt && link.full_duplex && link.mbps != 1000 {
+            (0xc, 1)
+        } else {
+            (0x08, 1)
+        };
+        csr.update(reg::TIPG, gap, TIPG_IPGT_MASK);
+        if !self.acquire(delay) {
+            return;
+        }
+        let rx_config =
+            if self.mac == Mac::Pch2 { phy::EMI_82579_RX_CONFIG } else { phy::EMI_I217_RX_CONFIG };
+        self.emi_write(rx_config, emi, delay);
+        if self.mac >= Mac::Lpt {
+            let gate = if link.mbps != 1000 {
+                0x3e8
+            } else if self.mac >= Mac::Mtp {
+                0x1d5
+            } else {
+                0xfa
+            };
+            self.phy_update(phy::PLL_CLOCK_GATE, gate, phy::PLL_CLOCK_GATE_MASK, delay);
+            if link.mbps == 1000 {
+                self.phy_update(phy::PM_CTRL, phy::PM_CTRL_K1_CLK_REQ, 0, delay);
+            }
+        }
+        if self.mac >= Mac::Spt {
+            if link.mbps == 1000 {
+                // At least 0x18 between the transmit pointers.
+                if let Some(gap) = self.phy_read(phy::TX_PTR_GAP, delay)
+                    && (gap >> 2) & 0x3ff < 0x18
+                {
+                    self.phy_write(phy::TX_PTR_GAP, (gap & !(0x3ff << 2)) | (0x18 << 2), delay);
+                }
+            } else {
+                self.phy_write(phy::TX_PTR_GAP, 0xc023, delay);
+            }
+        }
+        self.release();
+    }
+
+    /// Works around what the I218 of the laptop chipsets does with K1:
+    /// at 1000 Mb/s it can miss two DMA completions and stop its DMA
+    /// writes, so K1 is off while the PLL clock request is set; at 10 Mb/s
+    /// and at 100 Mb/s half duplex, on early PHY revisions, its
+    /// transmitter can hang unless the in-band transmit timeout is longer.
+    /// FreeBSD's e1000_k1_workaround_lpt_lp, for a link up or down.
+    fn k1_workaround_lpt_lp(&self, link: Link, delay: &mut dyn FnMut(u32)) {
+        let csr = &self.csr;
+        let fextnvm6 = csr.read(reg::FEXTNVM6);
+        if link.up && link.mbps == 1000 {
+            if !self.acquire(delay) {
+                return;
+            }
+            let k1 = self.kmrn_read(KMRN_K1_CONFIG, delay);
+            self.kmrn_write(KMRN_K1_CONFIG, k1 & !KMRN_K1_ENABLE, delay);
+            delay(10);
+            csr.write(reg::FEXTNVM6, fextnvm6 | FEXTNVM6_REQ_PLL_CLK);
+            self.kmrn_write(KMRN_K1_CONFIG, k1, delay);
+            self.release();
+            return;
+        }
+        let mut fextnvm6 = fextnvm6 & !FEXTNVM6_REQ_PLL_CLK;
+        let full_100 = link.mbps == 100 && link.full_duplex;
+        if self.phy_revision <= 5 && link.up && !full_100 {
+            // At 10 Mb/s the PHY also waits longer before it enters K1.
+            let (timeout, k1_entry) = if link.mbps == 100 { (5, false) } else { (50, true) };
+            if k1_entry {
+                fextnvm6 |= FEXTNVM6_ENABLE_K1_ENTRY_CONDITION;
+            } else {
+                fextnvm6 &= !FEXTNVM6_ENABLE_K1_ENTRY_CONDITION;
+            }
+            if !self.acquire(delay) {
+                return;
+            }
+            let written = self.phy_read(phy::INBAND_CTRL, delay).is_some_and(|inband| {
+                let inband = inband & !phy::INBAND_TX_TIMEOUT_MASK;
+                let inband = inband | (timeout << phy::INBAND_TX_TIMEOUT_SHIFT);
+                self.phy_write(phy::INBAND_CTRL, inband, delay)
+            });
+            self.release();
+            if !written {
+                return;
+            }
+        }
+        csr.write(reg::FEXTNVM6, fextnvm6);
     }
 
     /// Tells the platform how long the I219 can wait for memory before

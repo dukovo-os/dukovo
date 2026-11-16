@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The driver of the Ethernet in the chipset against a simulated 82579
-//! and I219: the MAC's registers, a PHY behind MDIC with its pages at
-//! two addresses, the chipset's flash behind its registers, and a
+//! The driver of the Ethernet in the chipset against a simulated chip of
+//! each generation, from the 82579 to the I219 of Nova Lake: the MAC's
+//! registers, a PHY behind MDIC with its pages at two addresses, the chipset's flash behind its registers, and a
 //! management engine that may hold the PHY, block its resets, keep it in
 //! ultra low power mode or hold the bus a write needs.
 
@@ -28,6 +28,7 @@ const STATUS: usize = 0x0008;
 const STRAP: usize = 0x000c;
 const CTRL_EXT: usize = 0x0018;
 const MDIC: usize = 0x0020;
+const FEXTNVM6: usize = 0x0010;
 const FEXTNVM4: usize = 0x0024;
 const FEXTNVM: usize = 0x0028;
 const KMRNCTRLSTA: usize = 0x0034;
@@ -43,8 +44,10 @@ const LEDCTL: usize = 0x0e00;
 const EXTCNF_CTRL: usize = 0x0f00;
 const EXTCNF_SIZE: usize = 0x0f08;
 const PHY_CTRL: usize = 0x0f10;
+const PCIEANACFG: usize = 0x0f18;
 const IOSFPC: usize = 0x0f28;
 const PBA: usize = 0x1000;
+const PBECCSTS: usize = 0x100c;
 const RDBAL: usize = 0x2800;
 const RDLEN: usize = 0x2808;
 const RDH: usize = 0x2810;
@@ -59,6 +62,8 @@ const RAH0: usize = 0x5404;
 const H2ME: usize = 0x5b50;
 const FWSM: usize = 0x5b54;
 const FEXTNVM11: usize = 0x5bbc;
+const FEXTNVM12: usize = 0x5bc0;
+const FFLT_DBG: usize = 0x5f04;
 const FLASH: usize = 0xe000;
 const SIZE: usize = 0x2_0000;
 
@@ -67,10 +72,12 @@ const CTRL_LANPHYPC_OVERRIDE: u32 = 1 << 16;
 const CTRL_LANPHYPC_VALUE: u32 = 1 << 17;
 const CTRL_RST: u32 = 1 << 26;
 const CTRL_PHY_RST: u32 = 1 << 31;
+const CTRL_MEHE: u32 = 1 << 19;
 const STATUS_LAN_INIT_DONE: u32 = 1 << 9;
 const STATUS_PHYRA: u32 = 1 << 10;
 const STATUS_GIO_MASTER_ENABLE: u32 = 1 << 19;
 const CTRL_EXT_LPCD: u32 = 1 << 2;
+const CTRL_EXT_DPG_EN: u32 = 1 << 3;
 const CTRL_EXT_FORCE_SMBUS: u32 = 1 << 11;
 const CTRL_EXT_DRV_LOAD: u32 = 1 << 28;
 const SWFLAG: u32 = 1 << 5;
@@ -80,6 +87,19 @@ const FWSM_FW_VALID: u32 = 1 << 15;
 const FWSM_PCIM2PCI: u32 = 1 << 24;
 const H2ME_ULP: u32 = 1 << 11;
 const H2ME_ENFORCE_SETTINGS: u32 = 1 << 12;
+const FEXTNVM6_REQ_PLL_CLK: u32 = 1 << 8;
+const FEXTNVM6_ENABLE_K1_ENTRY_CONDITION: u32 = 1 << 9;
+const FEXTNVM6_K1_OFF_ENABLE: u32 = 1 << 31;
+const FEXTNVM11_DISABLE_MULR_FIX: u32 = 1 << 13;
+const FEXTNVM12_PHYPD_CTRL_MASK: u32 = 0x00c0_0000;
+const FEXTNVM12_PHYPD_CTRL_P1: u32 = 0x0080_0000;
+const PBECCSTS_ECC_ENABLE: u32 = 1 << 16;
+const FFLT_DBG_DMA_CLOCK_UNGATE: u32 = 1 << 12;
+/// The bits of FFLT_DBG the jumbo frame workaround clears.
+const FFLT_DBG_JUMBO: u32 = 0xf << 14;
+/// The Kumeran register that holds K1's enable.
+const KMRN_K1_CONFIG: u32 = 0x7;
+const KMRN_K1_ENABLE: u16 = 1 << 1;
 
 /// The PHY's registers, as (page, number).
 const PHY_CONTROL: (u32, u32) = (0, 0);
@@ -93,10 +113,18 @@ const LED_CONFIG: (u32, u32) = (768, 30);
 const KMRN_MODE_CTRL: (u32, u32) = (769, 16);
 const SMB_CTRL: (u32, u32) = (769, 23);
 const KMRN_FIFO: (u32, u32) = (770, 16);
+const INBAND_CTRL: (u32, u32) = (770, 18);
 const PM_CTRL: (u32, u32) = (770, 17);
+const PHY_TIMEOUTS: (u32, u32) = (770, 21);
+const EMI_ADDR: (u32, u32) = (0, 0x10);
 const PLL_GATE: (u32, u32) = (772, 28);
 const TX_PTR_GAP: (u32, u32) = (776, 20);
 const ULP_CONFIG1: (u32, u32) = (779, 16);
+
+/// What a test seeds in the PHY's registers the newer steps change, so
+/// that a step that leaves the rest alone shows.
+const TIMEOUTS_SEED: u16 = 0xffff;
+const INBAND_SEED: u16 = 0x00ff;
 
 /// The flash registers.
 const HSFSTS: usize = 0x04;
@@ -149,6 +177,8 @@ struct Setup {
     arbiter: bool,
     /// Whether the I219's ME left the PHY in ULP.
     ulp: bool,
+    /// The PHY's revision, the low four bits of its second ID register.
+    revision: u16,
 }
 
 impl Setup {
@@ -161,6 +191,7 @@ impl Setup {
             dead: false,
             arbiter: false,
             ulp: false,
+            revision: if mac == Mac::Pch2 { 2 } else { 3 },
         }
     }
 }
@@ -194,6 +225,14 @@ struct State {
     faddr: u32,
     fdata0: u32,
     sent: Vec<Vec<u8>>,
+    /// The PHY register whose next transactions fail, and how many.
+    failing: Option<((u32, u32), u32)>,
+    /// The transactions the PHY did not answer, as it is out of reach.
+    unanswered: u32,
+    fextnvm12_writes: u32,
+    /// What the driver wrote to FEXTNVM6 and to Kumeran's K1 register, in
+    /// order.
+    k1_log: Vec<(&'static str, u32)>,
 }
 
 struct Fake {
@@ -202,7 +241,7 @@ struct Fake {
 
 /// What the NVM loads into the MAC's registers at a reset.
 fn loaded(mac: Mac) -> [(usize, u32); 6] {
-    let strap = (0x48 << 17) | (2 << 12) | if mac == Mac::Spt { 1 << 1 } else { 0 };
+    let strap = (0x48 << 17) | (2 << 12) | if mac >= Mac::Spt { 1 << 1 } else { 0 };
     [
         (STRAP, strap),
         (FEXTNVM, 1 << 27),
@@ -216,12 +255,11 @@ fn loaded(mac: Mac) -> [(usize, u32); 6] {
 impl Fake {
     fn new(setup: Setup) -> Arc<Fake> {
         let mut phy = HashMap::new();
-        let id = match setup.mac {
-            Mac::Pch2 => 0x0092,
-            Mac::Spt => 0x00a3,
-        };
+        let id = if setup.mac == Mac::Pch2 { 0x0090 } else { 0x00a0 };
         phy.insert((0, 2), 0x0154);
-        phy.insert((0, 3), id);
+        phy.insert((0, 3), id | setup.revision);
+        phy.insert(PHY_TIMEOUTS, TIMEOUTS_SEED);
+        phy.insert(INBAND_CTRL, INBAND_SEED);
         // ULP's settings, sticky and on SMBus, and K1 off.
         phy.insert(ULP_CONFIG1, 0x0114);
         phy.insert(SMB_CTRL, 0x0001);
@@ -229,10 +267,7 @@ impl Fake {
         // The NVM: two banks of 2048 words. The 82579's starts a sector
         // into the flash, with its first bank valid; the I219's at 0,
         // with its second.
-        let (base, bank) = match setup.mac {
-            Mac::Pch2 => (4096, 0),
-            Mac::Spt => (0, 1),
-        };
+        let (base, bank) = if setup.mac.flash_bar() { (4096, 0) } else { (0, 1) };
         let mut flash = std::vec![0xffu8; 16384];
         let mut word = |at: usize, value: u16| {
             flash[base + 2 * at..base + 2 * at + 2].copy_from_slice(&value.to_le_bytes());
@@ -245,6 +280,8 @@ impl Fake {
             word(start + 2 * pair, *data);
             word(start + 2 * pair + 1, *number);
         }
+        let mut kmrn = HashMap::new();
+        kmrn.insert(KMRN_K1_CONFIG, KMRN_K1_ENABLE | 1);
         let state = State {
             setup,
             regs: std::vec![0; SIZE / 4],
@@ -253,7 +290,7 @@ impl Fake {
             page: 0,
             emi_address: 0,
             emi: HashMap::new(),
-            kmrn: HashMap::new(),
+            kmrn,
             reachable: !setup.dead && !setup.smbus,
             on_smbus: setup.smbus,
             lanphypc_low: false,
@@ -272,6 +309,10 @@ impl Fake {
             faddr: 0,
             fdata0: 0,
             sent: Vec::new(),
+            failing: None,
+            unanswered: 0,
+            fextnvm12_writes: 0,
+            k1_log: Vec::new(),
         };
         let fake = Arc::new(Fake { state: Mutex::new(state) });
         Fake::reset(&mut fake.state.lock().unwrap());
@@ -295,6 +336,12 @@ impl Fake {
         state.regs[RAL0 / 4] = u32::from_le_bytes([MAC[0], MAC[1], MAC[2], MAC[3]]);
         state.regs[RAH0 / 4] = u32::from(u16::from_le_bytes([MAC[4], MAC[5]])) | (1 << 31);
         state.regs[STATUS / 4] = STATUS_LAN_INIT_DONE | STATUS_PHYRA;
+        // Dynamic power gating is on at reset; the analog configuration
+        // asks for K1 off; the receive path's debug bits are as the jumbo
+        // frame workaround leaves them.
+        state.regs[CTRL_EXT / 4] = CTRL_EXT_DPG_EN;
+        state.regs[PCIEANACFG / 4] = FEXTNVM6_K1_OFF_ENABLE;
+        state.regs[FFLT_DBG / 4] = FFLT_DBG_JUMBO;
     }
 
     fn reg(&self, at: usize) -> u32 {
@@ -309,6 +356,17 @@ impl Fake {
         self.state.lock().unwrap().link = link;
     }
 
+    /// Has the PHY fail the next `times` transactions with `register`.
+    fn fail(&self, register: (u32, u32), times: u32) {
+        self.state.lock().unwrap().failing = Some((register, times));
+    }
+
+    /// Takes what the driver wrote to FEXTNVM6 and Kumeran's K1 register
+    /// since the last call.
+    fn take_k1_log(&self) -> Vec<(&'static str, u32)> {
+        std::mem::take(&mut self.state.lock().unwrap().k1_log)
+    }
+
     /// One MDIO transaction, with what MDIC holds after it.
     fn mdic(state: &mut State, value: u32) -> u32 {
         assert_ne!(state.regs[EXTCNF_CTRL / 4] & SWFLAG, 0, "MDIO with the software flag held");
@@ -319,6 +377,7 @@ impl Fake {
         let forced = state.regs[CTRL_EXT / 4] & CTRL_EXT_FORCE_SMBUS != 0;
         let answers = !state.setup.dead && (state.reachable || (state.on_smbus && forced));
         if !answers {
+            state.unanswered += 1;
             return (value & !0xffff) | (1 << 28) | (1 << 30);
         }
         let key = match address {
@@ -336,6 +395,13 @@ impl Fake {
             }
             _ => panic!("no PHY at address {address}"),
         };
+        if let Some((register, times)) = state.failing
+            && register == key
+            && times > 0
+        {
+            state.failing = Some((register, times - 1));
+            return (value & !0xffff) | (1 << 28) | (1 << 30);
+        }
         let result = match (key, op) {
             ((0, 0x10), 1) => {
                 state.emi_address = data;
@@ -471,7 +537,7 @@ impl Registers for Fake {
         assert_eq!(size, 4, "32-bit registers");
         let mut state = self.state.lock().unwrap();
         if offset >= FLASH {
-            assert_eq!(state.setup.mac, Mac::Spt, "the 82579's flash is in BAR 1");
+            assert!(!state.setup.mac.flash_bar(), "the flash of this chip is in BAR 1");
             return Fake::flash_read(&state, offset - FLASH, size);
         }
         let value = match offset {
@@ -522,7 +588,7 @@ impl Registers for Fake {
             state.writes_while_busy += 1;
         }
         if offset >= FLASH {
-            assert_eq!(state.setup.mac, Mac::Spt, "the 82579's flash is in BAR 1");
+            assert!(!state.setup.mac.flash_bar(), "the flash of this chip is in BAR 1");
             return Fake::flash_write(&mut state, offset - FLASH, size, u64::from(value));
         }
         match offset {
@@ -566,6 +632,9 @@ impl Registers for Fake {
                     let data = *state.kmrn.get(&at).unwrap_or(&0);
                     state.regs[KMRNCTRLSTA / 4] = (value & !0xffff) | u32::from(data);
                 } else {
+                    if at == KMRN_K1_CONFIG {
+                        state.k1_log.push(("k1", value & 0xffff));
+                    }
                     state.kmrn.insert(at, value as u16);
                     state.regs[KMRNCTRLSTA / 4] = value;
                 }
@@ -575,6 +644,14 @@ impl Registers for Fake {
                     state.ulp_done = false;
                 }
                 state.regs[H2ME / 4] = value;
+            }
+            FEXTNVM6 => {
+                state.k1_log.push(("fextnvm6", value));
+                state.regs[FEXTNVM6 / 4] = value;
+            }
+            FEXTNVM12 => {
+                state.fextnvm12_writes += 1;
+                state.regs[FEXTNVM12 / 4] = value;
             }
             IMC => state.regs[IMS / 4] &= !value,
             IMS => state.regs[IMS / 4] |= value,
@@ -606,27 +683,35 @@ impl Registers for Config {
     fn write(&self, _offset: usize, _size: usize, _value: u64) {}
 }
 
-fn model(mac: Mac) -> Model {
-    let device = match mac {
+/// A device ID of each generation.
+fn device(mac: Mac) -> u16 {
+    match mac {
         Mac::Pch2 => 0x1502,
+        Mac::Lpt => 0x153a,
+        Mac::LptLp => 0x155a,
         Mac::Spt => 0x15b7,
-    };
-    crate::identify(0x8086, device).unwrap()
+        Mac::Cnp => 0x15bd,
+        Mac::Tgp => 0x15fb,
+        Mac::Adp => 0x1a1e,
+        Mac::Mtp => 0x550a,
+        Mac::Ptp => 0x57a0,
+        Mac::Nvp => 0x57b9,
+    }
+}
+
+fn model(mac: Mac) -> Model {
+    crate::identify(0x8086, device(mac)).unwrap()
 }
 
 fn function(mac: Mac) -> Function {
-    let device = match mac {
-        Mac::Pch2 => 0x1502,
-        Mac::Spt => 0x15b7,
-    };
     let address = Address { segment: 0, bus: 0, device: 0x1f, function: 6 };
-    Function::probe(address, Mmio::fake(Arc::new(Config(device)), CONFIG_SIZE)).unwrap()
+    Function::probe(address, Mmio::fake(Arc::new(Config(device(mac))), CONFIG_SIZE)).unwrap()
 }
 
 fn start(fake: &Arc<Fake>, interrupt: Interrupt) -> Result<Running, Error> {
     let mac = fake.state.lock().unwrap().setup.mac;
     let regs = Mmio::fake(fake.clone(), SIZE);
-    let flash = (mac == Mac::Pch2).then(|| Mmio::fake(Arc::new(FlashBar(fake.clone())), 0x1000));
+    let flash = mac.flash_bar().then(|| Mmio::fake(Arc::new(FlashBar(fake.clone())), 0x1000));
     let function = function(mac);
     let platform = Platform { function: &function, flash, clock };
     pch::start(model(mac), regs, platform, interrupt, FALLBACK, &mut alloc, &mut no_delay)
@@ -653,8 +738,7 @@ fn the_chips_are_known_by_their_device_ids() {
     assert_eq!(crate::identify(0x8086, 0x15b8).map(|m| m.name), Some("I219-V"));
     assert_eq!(crate::identify(0x8086, 0x1503).map(|m| m.name), Some("82579V"));
     assert!(model(Mac::Spt).msi());
-    // Cannon Lake's I219 is not one of them yet.
-    assert_eq!(crate::identify(0x8086, 0x15bb), None);
+    assert_eq!(crate::identify(0x8086, 0x15bb).map(|m| m.kind), Some(Kind::Pch(Mac::Cnp)));
     assert!(Mac::Pch2.flash_bar() && !Mac::Spt.flash_bar());
 }
 
@@ -919,4 +1003,284 @@ fn an_82579_out_of_reach_is_power_cycled_and_read_after_its_reset() {
     let fake = Fake::new(setup);
     assert!(matches!(start(&fake, Interrupt::Polled), Err(Error::Device(_))));
     assert_eq!(fake.state.lock().unwrap().toggles, 0);
+}
+
+#[test]
+fn every_id_freebsd_lists_is_its_generation() {
+    let table: [(Mac, &[u16], &[u16]); 9] = [
+        (Mac::Lpt, &[0x153a, 0x15a0], &[0x153b, 0x15a1]),
+        (Mac::LptLp, &[0x155a, 0x15a2], &[0x1559, 0x15a3]),
+        (
+            Mac::Spt,
+            &[0x156f, 0x15b7, 0x15b9, 0x15d7, 0x15e3, 0x0d53],
+            &[0x1570, 0x15b8, 0x15d8, 0x15d6, 0x0d55],
+        ),
+        (
+            Mac::Cnp,
+            &[0x15bd, 0x15bb, 0x15df, 0x15e1, 0x0d4e, 0x0d4c],
+            &[0x15be, 0x15bc, 0x15e0, 0x15e2, 0x0d4f, 0x0d4d],
+        ),
+        (Mac::Tgp, &[0x15fb, 0x15f9, 0x15f4], &[0x15fc, 0x15fa, 0x15f5]),
+        (
+            Mac::Adp,
+            &[0x1a1e, 0x1a1c, 0x550c, 0x0dc7, 0x0dc5],
+            &[0x1a1f, 0x1a1d, 0x550d, 0x0dc8, 0x0dc6],
+        ),
+        (Mac::Mtp, &[0x550a, 0x550e, 0x5510], &[0x550b, 0x550f, 0x5511]),
+        (Mac::Ptp, &[0x57a0, 0x57b3, 0x57b5, 0x57b7], &[0x57a1, 0x57b4, 0x57b6, 0x57b8]),
+        (Mac::Nvp, &[0x57b9], &[0x57ba]),
+    ];
+    let mut listed = 0;
+    for (mac, lms, vs) in table {
+        for (ids, ending) in [(lms, "LM"), (vs, "V")] {
+            for &id in ids {
+                let family = match (mac, id) {
+                    (Mac::Lpt, 0x153a | 0x153b) => "I217",
+                    (Mac::Lpt | Mac::LptLp, _) => "I218",
+                    _ => "I219",
+                };
+                let name = std::format!("{family}-{ending}");
+                assert_eq!(pch::identify(id), Some((name.as_str(), mac)), "{id:#06x}");
+                listed += 1;
+            }
+        }
+    }
+    // Sunrise Point's 11 were driven before; the other 52 are the newer
+    // chips'.
+    assert_eq!(listed, 11 + 52);
+    assert_eq!(pch::identify(0x1502), Some(("82579LM", Mac::Pch2)));
+    assert_eq!(pch::identify(0x1503), Some(("82579V", Mac::Pch2)));
+    // The 82577 and 82578 are another kind of chip, not driven.
+    for id in [0x10ea, 0x10eb, 0x10ef, 0x10f0] {
+        assert_eq!(pch::identify(id), None, "{id:#06x}");
+        assert_eq!(crate::identify(0x8086, id), None, "{id:#06x}");
+    }
+}
+
+#[test]
+fn the_generations_are_ordered_as_freebsds() {
+    let order = [
+        Mac::Pch2,
+        Mac::Lpt,
+        Mac::LptLp,
+        Mac::Spt,
+        Mac::Cnp,
+        Mac::Tgp,
+        Mac::Adp,
+        Mac::Mtp,
+        Mac::Ptp,
+        Mac::Nvp,
+    ];
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
+    let with_flash_bar: Vec<Mac> = order.into_iter().filter(|mac| mac.flash_bar()).collect();
+    assert_eq!(with_flash_bar, [Mac::Pch2, Mac::Lpt, Mac::LptLp]);
+}
+
+#[test]
+fn an_i217_starts_from_its_flash_bar_without_ulp() {
+    let mut setup = Setup::new(Mac::Lpt);
+    setup.ulp = true;
+    let fake = Fake::new(setup);
+    let card = start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(card.info().model, "I217-LM");
+    assert_eq!(fake.reg(H2ME), 0, "the ME is not asked to leave ULP");
+    assert!(fake.state.lock().unwrap().ulp_done);
+    // The NVM's configuration, read through BAR 1 from the first bank, and
+    // the SMBus clock from STRAP.
+    assert_eq!(fake.phy((769, 28)), 0x1234);
+    assert_eq!(fake.phy(SMB_ADDR) & 0x1100, 0x0100);
+    assert_ne!(fake.reg(PBECCSTS) & PBECCSTS_ECC_ENABLE, 0);
+    assert_ne!(fake.reg(CTRL) & CTRL_MEHE, 0);
+    assert_eq!(fake.reg(IOSFPC), 0, "no Sunrise Point errata");
+    assert_eq!(fake.reg(TARC0) & (3 << 28), 0);
+    assert_eq!(fake.reg(FEXTNVM11) & FEXTNVM11_DISABLE_MULR_FIX, 0);
+    assert_eq!(fake.reg(FEXTNVM4) & 7, 7, "an 8 µs beacon");
+    // The EMI receive configuration register is the I217's, not the
+    // 82579's.
+    assert_eq!(fake.state.lock().unwrap().emi.get(&0xb20c), Some(&1));
+    assert_eq!(fake.phy(PLL_GATE) & 0x7ff, 0xfa);
+    assert_eq!(fake.phy(TX_PTR_GAP), 0x8 << 2, "no transmit pointer gap before Sunrise Point");
+    assert_eq!(fake.take_k1_log(), [], "nor the I218's K1 workaround");
+}
+
+#[test]
+fn an_i218_of_a_laptop_leaves_ulp() {
+    let mut setup = Setup::new(Mac::LptLp);
+    setup.ulp = true;
+    let fake = Fake::new(setup);
+    let card = start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(card.info().model, "I218-LM");
+    assert_eq!(fake.reg(H2ME) & (H2ME_ULP | H2ME_ENFORCE_SETTINGS), 0);
+    assert!(!fake.state.lock().unwrap().ulp_done, "the ME took the PHY out of ULP");
+    // With no ME, the driver power-cycles the PHY and clears its ULP
+    // settings itself.
+    let mut setup = Setup::new(Mac::LptLp);
+    setup.me = false;
+    setup.smbus = true;
+    let fake = Fake::new(setup);
+    start(&fake, Interrupt::Polled).unwrap();
+    assert!(fake.state.lock().unwrap().toggles >= 1, "LANPHYPC power-cycled the PHY");
+    let ulp = fake.phy(ULP_CONFIG1);
+    assert_eq!(ulp & 0x1d74, 0, "ULP's settings cleared");
+    assert_ne!(ulp & 1, 0, "and committed");
+    assert_eq!(fake.phy(SMB_CTRL) & 1, 0, "the PHY off SMBus");
+    assert_eq!(fake.reg(CTRL_EXT) & CTRL_EXT_FORCE_SMBUS, 0, "and the MAC");
+    assert_ne!(fake.phy(PM_CTRL) & (1 << 14), 0, "K1 back on");
+}
+
+#[test]
+fn an_i218_keeps_k1_from_missing_dma_completions_at_1000() {
+    let mut setup = Setup::new(Mac::LptLp);
+    setup.revision = 5;
+    let fake = Fake::new(setup);
+    let mut card = start(&fake, Interrupt::Polled).unwrap();
+    // At 1000 Mb/s: K1 off while the PLL clock request is made, then K1's
+    // setting as it was.
+    let k1 = u32::from(KMRN_K1_ENABLE | 1);
+    assert_eq!(
+        fake.take_k1_log(),
+        [("k1", k1 & !u32::from(KMRN_K1_ENABLE)), ("fextnvm6", FEXTNVM6_REQ_PLL_CLK), ("k1", k1)]
+    );
+    // The link goes down: the request is withdrawn, the PHY left alone.
+    fake.set_link(None);
+    poll(&mut card);
+    assert_eq!(fake.reg(FEXTNVM6), 0);
+    assert_eq!(fake.phy(INBAND_CTRL), INBAND_SEED);
+    // 100 Mb/s half duplex: a transmit timeout of 5, K1 entry as it is.
+    fake.set_link(Some((100, false)));
+    poll(&mut card);
+    assert_eq!(fake.phy(INBAND_CTRL), (INBAND_SEED & !0x3f00) | (5 << 8));
+    assert_eq!(fake.reg(FEXTNVM6) & FEXTNVM6_ENABLE_K1_ENTRY_CONDITION, 0);
+    // 10 Mb/s: a timeout of 50, and K1 entered later.
+    fake.set_link(Some((10, true)));
+    poll(&mut card);
+    assert_eq!(fake.phy(INBAND_CTRL), (INBAND_SEED & !0x3f00) | (50 << 8));
+    assert_ne!(fake.reg(FEXTNVM6) & FEXTNVM6_ENABLE_K1_ENTRY_CONDITION, 0);
+    // 100 full needs neither: the timeout and the K1 entry condition stay
+    // as they were.
+    fake.set_link(Some((100, true)));
+    poll(&mut card);
+    assert_eq!(fake.phy(INBAND_CTRL), (INBAND_SEED & !0x3f00) | (50 << 8));
+    let fextnvm6 = fake.reg(FEXTNVM6);
+    assert_eq!(fextnvm6 & FEXTNVM6_REQ_PLL_CLK, 0);
+    assert_ne!(fextnvm6 & FEXTNVM6_ENABLE_K1_ENTRY_CONDITION, 0);
+    // A PHY of revision 6 never needs the timeouts.
+    let mut setup = Setup::new(Mac::LptLp);
+    setup.revision = 6;
+    let fake = Fake::new(setup);
+    let mut card = start(&fake, Interrupt::Polled).unwrap();
+    fake.set_link(Some((100, false)));
+    poll(&mut card);
+    fake.set_link(Some((10, false)));
+    poll(&mut card);
+    assert_eq!(fake.phy(INBAND_CTRL), INBAND_SEED);
+    assert_eq!(fake.reg(FEXTNVM6), 0);
+}
+
+#[test]
+fn a_cannon_lake_i219_has_no_sunrise_point_errata() {
+    let fake = Fake::new(Setup::new(Mac::Cnp));
+    let mut card = start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(card.info().model, "I219-LM");
+    assert_eq!(fake.reg(IOSFPC), 0);
+    assert_eq!(fake.reg(TARC0) & (3 << 28), 0);
+    assert_ne!(fake.reg(FEXTNVM11) & FEXTNVM11_DISABLE_MULR_FIX, 0);
+    assert_eq!(fake.reg(FEXTNVM6) & FEXTNVM6_K1_OFF_ENABLE, 0, "not taken from PCIEANACFG");
+    // What Sunrise Point's chip had before it, it has.
+    assert_ne!(fake.reg(PBECCSTS) & PBECCSTS_ECC_ENABLE, 0);
+    assert_eq!(fake.phy(TX_PTR_GAP), 0x18 << 2);
+    fake.set_link(Some((100, true)));
+    poll(&mut card);
+    assert_eq!(fake.reg(TIPG) & 0x3ff, 0x0c);
+    assert_eq!(fake.phy(TX_PTR_GAP), 0xc023);
+    let spt = Fake::new(Setup::new(Mac::Spt));
+    start(&spt, Interrupt::Polled).unwrap();
+    assert_ne!(spt.reg(FEXTNVM6) & FEXTNVM6_K1_OFF_ENABLE, 0, "Sunrise Point's takes it");
+}
+
+#[test]
+fn a_tiger_lake_i219_ungates_its_dma_clock() {
+    let fake = Fake::new(Setup::new(Mac::Tgp));
+    start(&fake, Interrupt::Polled).unwrap();
+    // The jumbo frame workaround clears its own bits and leaves this one.
+    assert_eq!(fake.reg(FFLT_DBG), FFLT_DBG_DMA_CLOCK_UNGATE);
+    let fake = Fake::new(Setup::new(Mac::Cnp));
+    start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(fake.reg(FFLT_DBG), 0);
+}
+
+#[test]
+fn a_meteor_lake_i219_sets_its_k1_exit_timeout() {
+    let fake = Fake::new(Setup::new(Mac::Mtp));
+    let mut card = start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(fake.reg(FEXTNVM12) & FEXTNVM12_PHYPD_CTRL_MASK, FEXTNVM12_PHYPD_CTRL_P1);
+    assert_eq!(fake.phy(PHY_TIMEOUTS), (TIMEOUTS_SEED & !0x0fc0) | 0x0f00);
+    assert_eq!(
+        fake.state.lock().unwrap().fextnvm12_writes,
+        3,
+        "before the PHY is probed, after its reset, and after the MAC's"
+    );
+    assert_eq!(fake.phy(PLL_GATE) & 0x7ff, 0x1d5, "the PLL clock gate at 1000");
+    fake.set_link(Some((100, true)));
+    poll(&mut card);
+    assert_eq!(fake.phy(PLL_GATE) & 0x7ff, 0x3e8);
+    // Alder Lake's needs none of it.
+    let fake = Fake::new(Setup::new(Mac::Adp));
+    start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(fake.state.lock().unwrap().fextnvm12_writes, 0);
+    assert_eq!(fake.phy(PHY_TIMEOUTS), TIMEOUTS_SEED);
+    assert_eq!(fake.phy(PLL_GATE) & 0x7ff, 0xfa);
+}
+
+#[test]
+fn a_meteor_lake_i219_retries_a_phy_access_that_failed() {
+    // The autonegotiation advertisement is read twice in vain, then
+    // answers.
+    let fake = Fake::new(Setup::new(Mac::Mtp));
+    fake.fail(PHY_ANAR, 2);
+    start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(fake.phy(PHY_ANAR) & 0x01e0, 0x01e0);
+    // Without the retries, as on Alder Lake, that read is lost.
+    let fake = Fake::new(Setup::new(Mac::Adp));
+    fake.fail(PHY_ANAR, 2);
+    start(&fake, Interrupt::Polled).unwrap();
+    assert_eq!(fake.phy(PHY_ANAR), 0);
+    // Three failures in a row lose a write: the receive configuration
+    // at 10 Mb/s half duplex is not written, and is when it answers.
+    let fake = Fake::new(Setup::new(Mac::Mtp));
+    let mut card = start(&fake, Interrupt::Polled).unwrap();
+    fake.fail(EMI_ADDR, 3);
+    fake.set_link(Some((10, false)));
+    poll(&mut card);
+    assert_eq!(fake.state.lock().unwrap().emi.get(&0xb20c), Some(&1));
+    fake.fail(EMI_ADDR, 2);
+    fake.set_link(Some((100, false)));
+    poll(&mut card);
+    fake.set_link(Some((10, false)));
+    poll(&mut card);
+    assert_eq!(fake.state.lock().unwrap().emi.get(&0xb20c), Some(&0));
+}
+
+#[test]
+fn a_meteor_lake_i219_on_smbus_is_probed_without_retries() {
+    let mut setup = Setup::new(Mac::Mtp);
+    setup.smbus = true;
+    let fake = Fake::new(setup);
+    start(&fake, Interrupt::Polled).unwrap();
+    // The K1 exit timeout's page select, and the PHY ID's two tries; each
+    // fails once, not three times.
+    assert_eq!(fake.state.lock().unwrap().unanswered, 3);
+    assert_eq!(fake.phy(PHY_ANAR) & 0x01e0, 0x01e0, "and it is set up once it answers");
+}
+
+#[test]
+fn a_panther_lake_i219_turns_dynamic_power_gating_off() {
+    for mac in [Mac::Ptp, Mac::Nvp] {
+        let fake = Fake::new(Setup::new(mac));
+        start(&fake, Interrupt::Polled).unwrap();
+        assert_eq!(fake.reg(CTRL_EXT) & CTRL_EXT_DPG_EN, 0, "{mac:?}");
+    }
+    let fake = Fake::new(Setup::new(Mac::Mtp));
+    start(&fake, Interrupt::Polled).unwrap();
+    assert_ne!(fake.reg(CTRL_EXT) & CTRL_EXT_DPG_EN, 0);
 }

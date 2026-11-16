@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0361. Intel's chipset Ethernet: the 82579 and the I219 get a driver of their own in `radix-intel-net`
 
-- Status: Accepted
+- Status: Accepted; extended to the I217, the I218 and the I219s of Cannon Lake to Nova Lake since [0580](0580-intels-chipset-ethernet-reaches-the-i217-the-i218-and-the-i219s-to-nova-lake.md)
 - Date: 2026-11-03
 
 ## Context

@@ -75,6 +75,7 @@ machine with AMT, an AMD machine and a laptop; see
 | A lab test of a keyring entry set and read back | Needs a console sign-in with a password, which tests cannot type yet | Lab harness |
 | A lab test of `whois` | Needs a reachable whois server | Lab harness |
 | Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | 10 GbE in the lab: two Intel X520, X540 or X550 cards and a cable |
+| Intel's I217, I218 and I219s of Cannon Lake and later, and Realtek's RTL8127, on real chips (ADRs 0580, 0581) | No lab machine has one and QEMU emulates none; the unit tests check FreeBSD's and OpenBSD's sequences | A machine or card with one |
 | `services/log-forward` on the Mint lab PC, where it skips: AppArmor's profile for rsyslogd lets it read no configuration outside /etc; a local rule in `/etc/apparmor.d/local/usr.sbin.rsyslogd` allowing `/run/user/*/dukovo-lab/** rw,` lets it run | AppArmor's rules are the lab PC owner's to change, never a test's | A local AppArmor rule on the lab PC |
 
 ### Installer, boot and cloud (Phase 14)
@@ -330,6 +331,7 @@ These come from finished work; the releases themselves are in the
 | What PostgreSQL's build works around (ADR 0521, `ports/postgresql/build.sh`): the processes' titles in `ps`, such as `postgres: checkpointer`, which Radix has no way to set; `sync_file_range(2)`, without which the `*_flush_after` settings are 0; and `backtrace(3)`, which looks for a `libgcc_s` that a bundle does not have, so backtraces are off | Found by the build, not by a program that needs them yet | Kernel and C library work, each removing its workaround |
 | A cap on the memory a user's pipes hold (Linux's `pipe-user-pages-soft`) (ADR 0497) | Pipe buffers are kernel memory, not yet charged to a resource domain | Charging kernel memory to resource domains |
 | The RTS5260 card reader; UHS-I, MultiMediaCards and Memory Sticks on Realtek readers (ADR 0448) | Only GPL drivers describe them | Realtek's documentation or a BSD driver |
+| The RTL8127ATF, the RTL8127 with an SFP+ cage (ADR 0581) | rge(4) refuses it: OpenBSD's driver sets up no SerDes for the cage, and Linux's setup is under the GPL | A BSD-licensed description of its SerDes setup |
 | AML fixes reach Dukovo when uACPI is vendored again (ADR 0200) | `aml=off` works around a firmware table uACPI cannot run until then | Upstream |
 | eSpeak NG is pinned to a commit of master after 1.52.0 (`ports/espeak-ng`, version `1.53.0~git20261108`); the pin moves to the 1.53.0 release | No release holds the fixes of nine memory-safety flaws that OSS-Fuzz's records name, and `ob ports outdated` does not watch a port pinned to a commit alone, so the move is done when the release is tagged | The 1.53.0 release |
 
@@ -405,7 +407,8 @@ machine asks for them.
 | ENA's low-latency queues; gVNIC's DQO queue format; SFP+ modules; fiber and SerDes gigabit cards | ADR 0197 |
 | Legacy INTx interrupts through `_PRT`, for cards and SD controllers without MSI | ADRs 0197, 0198, 0437 |
 | MSI-X with several queues in driver programs | ADR 0198 |
-| Intel PCH Ethernet: Energy Efficient Ethernet, wake on LAN, jumbo frames, I217, I218, newer I219s, 82577 and 82578 | ADR 0361 |
+| Intel PCH Ethernet: Energy Efficient Ethernet, wake on LAN, jumbo frames, 82577 and 82578 | ADRs 0361, 0580 |
+| K1 kept off on the two Meteor Lake laptops Linux lists for it (Dell Pro 16 Plus PB16250, ThinkPad P14s Gen 5): the list goes by the machine's DMI names, which the driver does not see | ADR 0580 |
 | Promiscuous mode for packet capture | ADR 0346 |
 | Firewall rules for outbound traffic and rate limits | ADR 0334 |
 | `netcheck` saying that a firewall rule stops this machine's own DNS, HTTPS or time (NET-151): the firewall filters only what other machines start, so no rule can until it has outbound rules | ADR 0334, ADR 0489 |
