@@ -18,8 +18,9 @@ the owner's attention, such as a disk that is filling, a backup that is
 late or a service that keeps failing. Services and root's scripts raise
 an alert on alertd's socket, alertd keeps which are active and what has
 happened to them, and it tells the owner of each change once: on the
-screen at once, at the next sign-in, and by email and webhooks as
-*alerts.toml*(5) says. Spark runs it as the *alertd* service, after
+screen at once, at the next sign-in, by email and webhooks as
+*alerts.toml*(5) says, and in the browsers that asked for alerts by Web
+Push. Spark runs it as the *alertd* service, after
 *notifyd*(8) and before *logforward*(8).
 
 *alerts*(8) is its command: it lists what is active and what happened,
@@ -159,6 +160,52 @@ an error: a channel is known by its kind and host, such as *email to
 ops@example.com* and *ntfy (ntfy.sh)*. When a server refuses, the error
 quotes the server's own words, so that *alerts test* shows what to fix.
 
+## Browsers
+
+A browser that has the web console open can ask for alerts, and then
+shows them as the system's notifications even when no page of the
+console is open (ADR 0566). The browser's maker runs a push service, and
+the browser gives alertd its address there, the endpoint, with a key to
+encrypt for: alertd posts each message to the endpoint, and the push
+service passes it to the browser when it is next online, for up to a
+day. Each browser is a channel of its own, *push to* _name_, with the
+name the person gave it, and is told the changes it asked for, warnings
+and above or only critical ones, with clears or without, gathered and
+tried again as an email is.
+
+Web Push encrypts each message for its browser alone (RFC 8291): the
+push service carries it and cannot read it. A message is the first
+change and how many there are, at most 3,000 bytes before it is
+encrypted; the console's page shows the rest. alertd signs each message
+with the machine's own key (VAPID, RFC 8292), which it makes the first
+time it starts and keeps in _/system/state/alerts/vapid.pem_; the
+browser takes only messages signed by the key it subscribed with. A new
+key would end every browser's alerts, so a key file that does not read
+is never replaced: browsers get no alerts until it is mended, and the
+log says so.
+
+What a browser gives alertd is a secret, as whoever holds it can send to
+that browser, and alertd keeps it in
+_/system/state/alerts/push.json_, which only root may read. No endpoint
+or key is ever in the log, an error or an answer of the socket: a
+browser is known by its name and its push service's host. alertd keeps
+at most 32 browsers.
+
+An endpoint is an _https://_ address of a host on the internet. alertd
+looks the host up at each message and connects only to an address it
+checked, and it refuses a host with any address on a private, loopback
+or link-local network, so that a page cannot make alertd post into the
+local network. A push service of one's own on such a network is let
+through by *[push] private* in *alerts.toml*(5). A redirect is not
+followed.
+
+When a push service answers that the subscription is gone, as it does
+when the browser's data was cleared or it turned the console's
+notifications off, alertd removes the browser, logs it (ALR-104), and
+records the event *push-ended:*_id_, which the other channels are told,
+with *alertd* as its source. Any other refusal is a failure that is
+tried again, and *alerts status* quotes it (ALR-105).
+
 ## Services
 
 alertd asks Spark what its services are doing every 10 seconds, and
@@ -193,6 +240,8 @@ The system's services and root's scripts raise alerts. These raise them:
 
 *service:*_name_
 	A service that is not running as asked, as above.
+
+alertd records the event *push-ended:*_id_ itself, as above.
 
 The events *update-fell-back*, *start-failed*, *update-failed*,
 *update-check-wanted*, *update-not-staged*, *update-not-verified* and
@@ -251,6 +300,27 @@ item, after which alertd closes the connection. Every request has an
 	last sent, *last_error*, when it last failed and why, and
 	*waiting*, how many messages wait, and then *{"end":true}*.
 
+*{"ask":"push-key"}*
+	The machine's public key, which a browser subscribes with:
+	*{"public\_key":"..."}*, the uncompressed P-256 point in
+	base64url.
+
+*{"ask":"push-add","subscribe":{...}}*
+	Keeps a browser's subscription: its *name*, 1 to 64 characters on
+	one line; the *endpoint*, *p256dh* and *auth* that its push
+	manager gave; and, if it likes, the least *severity* to tell,
+	whether it is told of what is *cleared*, and *by*, the account it
+	is for. It answers *{"id":"..."}*. The same endpoint again
+	replaces what is kept for it and keeps its ID.
+
+*{"ask":"push-remove","id":"..."}*
+	Takes the browser of that ID away. It answers *{"ok":true}*.
+
+*{"ask":"push-list"}*
+	A line for each browser: its *id*, *name*, the *host* of its push
+	service, *by* and *added\_ms*, its *severity* and *cleared*, and
+	then *{"end":true}*. It never gives an endpoint or a key.
+
 A request alertd does not take is answered with *{"error":"..."}* and
 the reason. A request has 5 seconds in all to arrive and may be 16 KiB
 at most, and alertd serves 16 connections at a time; one more is told
@@ -294,6 +364,13 @@ _/system/state/alerts/history_
 _/system/state/alerts/outbox.json_
 	The messages that wait to be sent. They hold the alerts' words and
 	no secret.
+
+_/system/state/alerts/push.json_
+	The browsers that get alerts, with their endpoints and keys, which
+	only root may read.
+
+_/system/state/alerts/vapid.pem_
+	The machine's key for Web Push, which only root may read.
 
 _/system/live/sign-in/alerts_
 	The notice the next sign-in shows.

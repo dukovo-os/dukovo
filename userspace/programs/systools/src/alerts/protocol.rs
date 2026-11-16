@@ -15,6 +15,10 @@
 //! | `history` | `count`   | a [`Change`] a line, oldest first, then [`End`] |
 //! | `test`    |           | a [`Delivery`] a line, one per channel, then [`End`] |
 //! | `status`  |           | a [`Channel`] a line, then [`End`]              |
+//! | `push-key` |          | [`PushKey`]: the key a browser subscribes with  |
+//! | `push-add` | `subscribe` | [`Added`]: a browser's subscription, kept    |
+//! | `push-remove` | `id`  | [`Done`]                                        |
+//! | `push-list` |         | a [`Browser`] a line, then [`End`]              |
 //!
 //! A request alertd does not take is answered with a [`Refusal`]. Only
 //! root's processes may ask, and each alert belongs to the resource
@@ -142,8 +146,8 @@ pub fn key_part(text: &str) -> String {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Request {
-    /// `raise`, `event`, `clear`, `set`, `list`, `history`, `test` or
-    /// `status`.
+    /// `raise`, `event`, `clear`, `set`, `list`, `history`, `test`,
+    /// `status`, `push-key`, `push-add`, `push-remove` or `push-list`.
     pub ask: String,
     /// raise and event: the alert.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -164,6 +168,79 @@ pub struct Request {
     /// the screen's bottom line.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub shown: bool,
+    /// push-add: the browser's subscription.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscribe: Option<Subscribe>,
+    /// push-remove: the ID of the subscription to remove.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// A browser's subscription to alerts by Web Push (ADR 0566), as the
+/// page that asks for it gives it: what the browser's `PushManager`
+/// made, a name for it, and what it is to be told.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Subscribe {
+    /// What the person calls it: "Firefox on a phone".
+    pub name: String,
+    /// Where its messages go: the browser maker's push service.
+    pub endpoint: String,
+    /// The browser's public key and its authentication secret, base64url.
+    pub p256dh: String,
+    pub auth: String,
+    /// The least severe alert to tell: warning when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<Severity>,
+    /// Whether clears are told: yes when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleared: Option<bool>,
+    /// The kinds of alert to tell, or none for every kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub about: Option<Vec<String>>,
+    /// The account the subscription is for: the one signed in to the
+    /// console that asked; root when not given.
+    pub by: u32,
+}
+
+/// Names nothing that lets one send to the browser: whoever holds the
+/// endpoint and the keys can.
+impl std::fmt::Debug for Subscribe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subscribe").field("name", &self.name).finish_non_exhaustive()
+    }
+}
+
+/// The answer to push-add: the subscription's ID, which removes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Added {
+    pub id: String,
+}
+
+/// The answer to push-key: the machine's public key, the uncompressed
+/// P-256 point in base64url, which a browser subscribes with
+/// (`applicationServerKey`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushKey {
+    pub public_key: String,
+}
+
+/// A browser that gets alerts, as push-list shows it: never its endpoint
+/// or keys, only the host of its push service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Browser {
+    pub id: String,
+    pub name: String,
+    /// The push service's host: `updates.push.services.mozilla.com`.
+    pub host: String,
+    /// The account it is for, and when it was added, in milliseconds
+    /// since 1970.
+    pub by: u32,
+    pub added_ms: u64,
+    pub severity: Severity,
+    pub cleared: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<Vec<String>>,
 }
 
 /// The answer to a raise, event, clear or set that alertd took.

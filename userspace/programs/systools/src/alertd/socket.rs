@@ -32,7 +32,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::{Alertd, CONNECTIONS_MAX};
-use crate::alerts::protocol::{Alert, Done, End, REQUEST_MAX, Refusal, Request};
+use crate::alerts::protocol::{Added, Alert, Done, End, PushKey, REQUEST_MAX, Refusal, Request};
 use crate::deadline::Deadline;
 use crate::{notifyd, proc, sys};
 
@@ -203,6 +203,20 @@ fn answer(
         }
         "test" => lines(out, &alertd.test(source)),
         "status" => lines(out, &alertd.status()),
+        "push-key" => {
+            let key = PushKey { public_key: super::push::key()?.public_key() };
+            line(out, &key).map_err(|err| format!("cannot answer: {err}"))
+        }
+        "push-add" => {
+            let asked = request.subscribe.clone().ok_or("push-add needs a subscription")?;
+            let added = Added { id: alertd.push_add(asked)? };
+            line(out, &added).map_err(|err| format!("cannot answer: {err}"))
+        }
+        "push-remove" => {
+            alertd.push_remove(request.id.as_deref().ok_or("push-remove needs an id")?)?;
+            ok(out)
+        }
+        "push-list" => lines(out, &alertd.push_list()),
         other => Err(format!("alertd does not know '{other}'")),
     }
 }
@@ -232,7 +246,7 @@ mod tests {
     use std::time::Instant;
 
     use super::super::tests::{fixture, warning};
-    use crate::alerts::protocol::{Active, Change, Channel, Severity, State};
+    use crate::alerts::protocol::{Active, Browser, Change, Channel, Severity, State, Subscribe};
 
     fn root() -> Result<Who, String> {
         Ok(Who { source: "backup".into() })
@@ -298,6 +312,47 @@ mod tests {
         assert_eq!(keys.len(), 2);
         assert!(
             keys.contains(&"other:theirs".to_string()) && keys.contains(&"backup:new".to_string())
+        );
+    }
+
+    #[test]
+    fn a_browser_is_added_listed_without_its_secrets_and_removed_by_its_id() {
+        let (alertd, _screen, dir) = fixture("socket-push", Vec::new());
+        super::super::push::start(&dir);
+        let key = ask_json(&alertd, &request("push-key"));
+        let key: PushKey = serde_json::from_str(&key[0]).unwrap();
+        assert_eq!(key.public_key.len(), 87, "65 bytes in base64url");
+        let secret = "gAAAAABpZ2V0LWEtc2VjcmV0";
+        let subscribe = Subscribe {
+            name: "Phone".into(),
+            endpoint: format!("https://updates.push.services.mozilla.com/wpush/v2/{secret}"),
+            p256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+                .into(),
+            auth: "BTBZMqHH6r4Tts7J_aSIgg".into(),
+            by: 1000,
+            ..Subscribe::default()
+        };
+        let added =
+            ask_json(&alertd, &Request { subscribe: Some(subscribe), ..request("push-add") });
+        let added: Added = serde_json::from_str(&added[0]).unwrap();
+        let listed = ask_json(&alertd, &request("push-list"));
+        assert_eq!(listed.len(), 2);
+        assert!(!listed[0].contains(secret) && !listed[0].contains("BTBZ"), "{}", listed[0]);
+        let browser: Browser = serde_json::from_str(&listed[0]).unwrap();
+        assert_eq!(
+            (browser.id.as_str(), browser.name.as_str(), browser.host.as_str(), browser.by),
+            (added.id.as_str(), "Phone", "updates.push.services.mozilla.com", 1000)
+        );
+        let status = ask_json(&alertd, &request("status"));
+        assert!(status[0].contains("push to Phone"), "{status:?}");
+        let remove = Request { id: Some(added.id.clone()), ..request("push-remove") };
+        assert_eq!(ask_json(&alertd, &remove), [r#"{"ok":true}"#]);
+        let gone = ask_json(&alertd, &remove);
+        assert!(gone[0].contains("no browser gets alerts as"), "{gone:?}");
+        assert_eq!(ask_json(&alertd, &request("push-list")), [r#"{"end":true}"#]);
+        assert_eq!(
+            ask_json(&alertd, &request("push-add")),
+            [r#"{"error":"push-add needs a subscription"}"#]
         );
     }
 

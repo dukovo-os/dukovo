@@ -182,6 +182,20 @@ A message is delivered when the server answers with a 2xx status. Any
 other answer is said as it came, so that *alerts test* names what to fix:
 *ntfy answered 403 Forbidden: forbidden*.
 
+# BROWSERS
+
+A browser that asks for alerts from the web console is a channel too,
+and alertd keeps it in a file of its own, not here (*alertd*(8),
+*Browsers*). The *[push]* table says one thing about them:
+
+*private =* _list_
+	The networks a browser's push service may be on besides the
+	internet, each an address or an address and its prefix length:
+	*["10.0.2.2", "fd00::/8"]*. Without it, alertd posts only to a
+	push service whose every address is on the internet, so that a
+	page cannot make it post into the local network. List a network
+	only for a push service of one's own on it.
+
 # WHAT A CHANNEL IS TOLD
 
 *severity =* _text_

@@ -354,6 +354,12 @@ pub fn send(channel: &Configured, id: &str, changes: &[Change], host: &str) -> R
             };
             webhook::send(hook, &post)
         }
+        // A push carries the change, not these words: the console's
+        // service worker writes what the browser shows.
+        Target::Push(push) => {
+            let now = crate::util::now_ns() / 1_000_000_000;
+            super::push::send(&push.subscription, changes, host, now, &push.private)
+        }
     }
 }
 

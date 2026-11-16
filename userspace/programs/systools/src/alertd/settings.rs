@@ -24,6 +24,7 @@ use std::path::{Component, Path, PathBuf};
 use toml::{Table, Value};
 use tuf::Url;
 
+use super::push::{Network, Push};
 use crate::alerts::protocol::{Change, Severity, State};
 
 /// The settings file.
@@ -98,6 +99,9 @@ pub struct Channel {
 pub enum Target {
     Email(Email),
     Webhook(Webhook),
+    /// A browser, by Web Push: kept in alertd's own `push.json`, not in
+    /// alerts.toml, as a browser adds and removes itself.
+    Push(Box<Push>),
 }
 
 /// The submission server and the addresses of the email channel.
@@ -162,6 +166,9 @@ pub struct Webhook {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub channels: Vec<Channel>,
+    /// `[push] private`: the networks a browser's push service may be
+    /// on besides the internet, for a push service of one's own.
+    pub private: Vec<Network>,
 }
 
 /// The settings in [`FILE`], and what is wrong in it, a line each; no
@@ -219,11 +226,21 @@ pub fn read_settings(text: &str, host: &str) -> (Settings, Vec<String>) {
     };
     let mut wrong: Vec<String> = table
         .keys()
-        .filter(|key| !["email", "webhook"].contains(&key.as_str()))
+        .filter(|key| !["email", "webhook", "push"].contains(&key.as_str()))
         .map(|key| {
-            format!("{FILE}: no setting is called {key}; there is [email] and each address is a [[webhook]]")
+            format!(
+                "{FILE}: no setting is called {key}; there is [email], [push], and each address \
+                 is a [[webhook]]"
+            )
         })
         .collect();
+    let private = match table.get("push") {
+        None => Vec::new(),
+        Some(push) => push_private(push).unwrap_or_else(|why| {
+            wrong.push(format!("{FILE}: [push]: {why}"));
+            Vec::new()
+        }),
+    };
     let mut channels = Vec::new();
     if let Some(email) = table.get("email") {
         match email_channel(email, host) {
@@ -244,11 +261,28 @@ pub fn read_settings(text: &str, host: &str) -> (Settings, Vec<String>) {
         Some(_) => wrong.push(format!("{FILE}: webhook is not a [[webhook]] table")),
     }
     name_uniquely(&mut channels);
-    (Settings { channels }, wrong)
+    (Settings { channels, private }, wrong)
+}
+
+/// The networks `[push] private` lists.
+fn push_private(entry: &Value) -> Result<Vec<Network>, String> {
+    let table = entry.as_table().ok_or("push is not a [push] table")?;
+    unknown_key(table, &["private"])?;
+    match table.get("private") {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                let text = item.as_str().ok_or("private is not a list of addresses")?;
+                Network::parse(text).map_err(|why| format!("private: {why}"))
+            })
+            .collect(),
+        Some(_) => Err("private is not a list of addresses".into()),
+    }
 }
 
 /// Gives a channel whose name an earlier one has a number after it.
-fn name_uniquely(channels: &mut [Channel]) {
+pub(super) fn name_uniquely(channels: &mut [Channel]) {
     for at in 1..channels.len() {
         let name = channels[at].name.clone();
         let mut number = 1;
@@ -503,6 +537,26 @@ mod tests {
     }
 
     #[test]
+    fn push_private_names_the_networks_a_push_service_may_be_on() {
+        let text = "[push]\nprivate = [\"10.0.2.0/24\", \"fd00::/8\"]\n";
+        let (settings, wrong) = read_settings(text, HOST);
+        assert!(wrong.is_empty(), "{wrong:?}");
+        let networks = ["10.0.2.0/24", "fd00::/8"].map(|text| Network::parse(text).unwrap());
+        assert_eq!(settings.private, networks);
+        let (settings, wrong) = read_settings("[push]\nprivate = [\"ten\"]\n", HOST);
+        assert!(settings.private.is_empty());
+        assert_eq!(
+            wrong,
+            [format!(
+                "{FILE}: [push]: private: ten is not an address or a network such as \
+                 192.168.0.0/16"
+            )]
+        );
+        let (_, wrong) = read_settings("[push]\nkey = \"x\"\n", HOST);
+        assert_eq!(wrong, [format!("{FILE}: [push]: no setting is called key")]);
+    }
+
+    #[test]
     fn email_with_every_setting_is_read() {
         let channel = one(r#"
             [email]
@@ -683,7 +737,8 @@ mod tests {
             ("webhook = [5]\n".into(), "webhook 1: it is not a table of settings"),
             (
                 "colour = 5\n".into(),
-                "no setting is called colour; there is [email] and each address is a [[webhook]]",
+                "no setting is called colour; there is [email], [push], and each address is a \
+                 [[webhook]]",
             ),
         ] {
             let refused = one(&text).unwrap_err();

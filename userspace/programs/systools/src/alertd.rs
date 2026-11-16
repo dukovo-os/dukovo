@@ -7,9 +7,10 @@
 //! ([`crate::alerts::protocol`]); alertd keeps which alerts are active
 //! and what happened to them in `/system/state/alerts`, and tells the
 //! owner of each change once: at once as a notification on the screen and
-//! in the notice at the next sign-in ([`notify`]), and by email and
-//! webhooks as alerts.toml(5) says, gathered into one message every 30
-//! seconds and tried again until it gets through ([`deliver`]). alertd
+//! in the notice at the next sign-in ([`notify`]), by email and
+//! webhooks as alerts.toml(5) says, and to the browsers that subscribed
+//! ([`push`], ADR 0566), gathered into one message every 30 seconds and
+//! tried again until it gets through ([`deliver`]). alertd
 //! also watches Spark, and raises `service:<name>` for a service that has
 //! not run as asked for a minute ([`services`]).
 //!
@@ -20,7 +21,8 @@
 //!   can read it, as it holds passwords and tokens;
 //! - [`deliver`] batching, retries and the outbox, [`text`] the words
 //!   of the messages, [`email`] SMTP submission with TLS, [`webhook`]
-//!   ntfy, Matrix, Slack, Discord and JSON;
+//!   ntfy, Matrix, Slack, Discord and JSON, [`push`] Web Push to a
+//!   browser, with the machine's key and the browsers' subscriptions;
 //! - [`socket`] one thread for each connection, at most 16, and the check
 //!   of who asks.
 //!
@@ -38,6 +40,7 @@
 mod deliver;
 mod email;
 mod notify;
+pub(crate) mod push;
 mod services;
 pub(crate) mod settings;
 mod socket;
@@ -50,19 +53,21 @@ use std::fs;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crate::alerts::protocol::{Active, Alert, Change, Channel, Delivery, SOCKET, Severity};
+use crate::alerts::protocol::{
+    Active, Alert, Browser, Change, Channel, Delivery, SOCKET, Severity, Subscribe,
+};
 use crate::args::Args;
 use crate::util::{self, Fail};
 use deliver::{Message, Outbox};
 use notify::Tell;
-use settings::Settings;
+use settings::{Settings, Target};
 use state::{Snapshot, State, Store};
 
 /// The most connections served at once; another is refused as busy.
@@ -86,13 +91,37 @@ extern "C" fn on_hangup(_: libc::c_int) {
 struct Core {
     state: State,
     outbox: Outbox,
+    /// alerts.toml's channels, then one for each browser that gets
+    /// alerts.
     settings: Settings,
+    /// The browsers that get alerts, as `push.json` keeps them.
+    subscriptions: Vec<push::Subscription>,
+}
+
+impl Core {
+    /// Makes the push channels those of the browsers now, after
+    /// alerts.toml's, and drops what waits for a channel that is gone;
+    /// the lines that say what was dropped.
+    fn push_channels(&mut self) -> Vec<String> {
+        let channels = &mut self.settings.channels;
+        channels.retain(|channel| !matches!(channel.target, Target::Push(_)));
+        let private = &self.settings.private;
+        channels.extend(self.subscriptions.iter().map(|browser| browser.channel(private)));
+        settings::name_uniquely(channels);
+        let names: Vec<String> = channels.iter().map(|channel| channel.name.clone()).collect();
+        self.outbox.keep_only(&names)
+    }
 }
 
 /// Everything alertd holds, shared by its threads.
 struct Alertd {
     core: Mutex<Core>,
     store: Store,
+    /// The state folder, which keeps `push.json`.
+    dir: PathBuf,
+    /// Held while the browsers change, from reading them to writing
+    /// `push.json`: one change at a time, and the file in their order.
+    pushes: Mutex<()>,
     /// The machine's name, as the messages say it.
     host: String,
     /// What the thread that tells the screen is to tell.
@@ -133,6 +162,8 @@ impl Alertd {
         Alertd {
             core: Mutex::new(core),
             store: Store::new(dir),
+            dir: dir.to_path_buf(),
+            pushes: Mutex::new(()),
             host,
             tells,
             serving: AtomicUsize::new(0),
@@ -265,10 +296,10 @@ impl Alertd {
         for problem in &problems {
             log(4, problem);
         }
-        let names: Vec<String> = settings.channels.iter().map(|c| c.name.clone()).collect();
+        let count = settings.channels.len();
         let mut guard = self.lock();
-        let lines = guard.outbox.keep_only(&names);
         guard.settings = settings;
+        let lines = guard.push_channels();
         let snapshot = Snapshot { outbox: guard.outbox.take_text(), ..Snapshot::default() };
         let writer = self.store.begin();
         drop(guard);
@@ -276,7 +307,116 @@ impl Alertd {
         for line in lines {
             log(4, &line);
         }
-        log(6, &format!("read alerts.toml: {} channels", names.len()));
+        log(6, &format!("read alerts.toml: {count} channels"));
+    }
+
+    /// The browsers that get alerts.
+    fn push_list(&self) -> Vec<Browser> {
+        self.lock().subscriptions.iter().map(push::Subscription::browser).collect()
+    }
+
+    /// Keeps the subscription `asked`, of a browser that is to get
+    /// alerts, and gives its ID.
+    fn push_add(&self, asked: Subscribe) -> Result<String, String> {
+        push::key()?;
+        let now_ms = util::now_ns() / 1_000_000;
+        let (id, line) = self.change_pushes(|browsers, private| {
+            let id = push::add(browsers, asked, now_ms, private)?;
+            let added = browsers.iter().find(|browser| browser.id == id);
+            let line = added.map(|browser| {
+                format!(
+                    "{} gets alerts from now on, by its push service at {}, for account {}",
+                    browser.name,
+                    browser.host(),
+                    browser.by
+                )
+            });
+            Ok((id, line))
+        })?;
+        log(6, &line.unwrap_or_default());
+        Ok(id)
+    }
+
+    /// Takes away the browser `id`'s subscription.
+    fn push_remove(&self, id: &str) -> Result<(), String> {
+        let name = self.change_pushes(|browsers, _| {
+            let name = browsers.iter().find(|browser| browser.id == id).map(|b| b.name.clone());
+            push::remove(browsers, id);
+            name.ok_or_else(|| format!("no browser gets alerts as {id}; alerts status lists them"))
+        })?;
+        log(6, &format!("{name} no longer gets alerts: it was removed"));
+        Ok(())
+    }
+
+    /// Takes away the subscriptions of `ids`, which their browsers ended
+    /// (ALR-104), and records an event for each, which the other channels
+    /// are told.
+    fn push_ended(&self, ids: &[String]) {
+        let ended = self.change_pushes(|browsers, _| {
+            let ended: Vec<push::Subscription> =
+                browsers.iter().filter(|browser| ids.contains(&browser.id)).cloned().collect();
+            browsers.retain(|browser| !ids.contains(&browser.id));
+            Ok(ended)
+        });
+        let ended = match ended {
+            Ok(ended) => ended,
+            Err(why) => return log(3, &why),
+        };
+        for browser in ended {
+            log(
+                4,
+                &format!(
+                    "{} no longer gets alerts: its browser ended the subscription at {} (ALR-104)",
+                    browser.name,
+                    browser.host()
+                ),
+            );
+            let alert = Alert::new(
+                format!("push-ended:{}", browser.id),
+                Severity::Warning,
+                &format!("{} no longer gets alerts", browser.name),
+                "Its browser ended the subscription, as a browser does when its data is \
+                 cleared or alerts are turned off for the console (ALR-104). Turn alerts on \
+                 again in that browser, on the console's Alerts page, to get them there.",
+            );
+            if let Err(why) = self.event(push::SOURCE, alert, false) {
+                log(4, &format!("cannot record that {} ended: {why}", browser.name));
+            }
+        }
+    }
+
+    /// Does what `op` does to the browsers, with the networks alerts.toml
+    /// lets a push service be on, keeps them in `push.json`, then makes
+    /// the channels theirs. Nothing changes when `op` refuses or the
+    /// file cannot be written. What `op` gave.
+    fn change_pushes<T>(
+        &self,
+        op: impl FnOnce(&mut Vec<push::Subscription>, &[push::Network]) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _one = self.pushes.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut browsers, private) = {
+            let core = self.lock();
+            (core.subscriptions.clone(), core.settings.private.clone())
+        };
+        let done = op(&mut browsers, &private)?;
+        push::save(&self.dir, &browsers).map_err(|err| {
+            format!(
+                "cannot keep {}: {}",
+                self.dir.join(push::STORE_FILE).display(),
+                util::strip_os_error(&err)
+            )
+        })?;
+        let mut guard = self.lock();
+        guard.subscriptions = browsers;
+        let lines = guard.push_channels();
+        let snapshot = Snapshot { outbox: guard.outbox.take_text(), ..Snapshot::default() };
+        let writer = self.store.begin();
+        drop(guard);
+        writer.write(snapshot);
+        for line in lines {
+            log(4, &line);
+        }
+        Ok(done)
     }
 
     /// Starts a thread for each message that is due at `now`, and gives
@@ -324,6 +464,10 @@ impl Alertd {
         for line in lines {
             log(4, &line);
         }
+        let ended = push::take_ended();
+        if !ended.is_empty() {
+            self.push_ended(&ended);
+        }
     }
 }
 
@@ -343,19 +487,27 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     for problem in &problems {
         log(3, problem);
     }
-    let (mut outbox, problem) = load_outbox(dir);
+    let (outbox, problem) = load_outbox(dir);
     if let Some(problem) = problem {
         log(3, &problem);
     }
-    let names: Vec<String> = settings.channels.iter().map(|c| c.name.clone()).collect();
-    for line in outbox.keep_only(&names) {
+    if let Some(why) = push::start(dir) {
+        log(3, &format!("no browser can get alerts: {why}"));
+    }
+    let (subscriptions, problem) = push::load(dir);
+    if let Some(problem) = problem {
+        log(3, &problem);
+    }
+    let mut core = Core { state, outbox, settings, subscriptions };
+    for line in core.push_channels() {
         log(4, &line);
     }
+    let channels = core.settings.channels.len();
     let listener = listen()?;
-    let tells = notify::start(&state.active());
-    let alertd = Arc::new(Alertd::new(dir, Core { state, outbox, settings }, host, tells));
+    let tells = notify::start(&core.state.active());
+    let alertd = Arc::new(Alertd::new(dir, core, host, tells));
     start_threads(&alertd);
-    log(6, &format!("keeping alerts at {SOCKET}; {} channels", names.len()));
+    log(6, &format!("keeping alerts at {SOCKET}; {channels} channels"));
     let served = serve(&alertd, &listener);
     let _ = fs::remove_file(SOCKET);
     served.map_err(|err| util::failed(&"alertd", err))?;
@@ -525,7 +677,8 @@ mod tests {
         let core = Core {
             state: State::default(),
             outbox: Outbox::default(),
-            settings: Settings { channels },
+            settings: Settings { channels, ..Settings::default() },
+            subscriptions: Vec::new(),
         };
         (Arc::new(Alertd::new(&dir, core, "server".into(), tx)), rx, dir)
     }
@@ -550,6 +703,59 @@ mod tests {
                 room: None,
             }),
         }
+    }
+
+    pub(super) fn browser(name: &str) -> Subscribe {
+        Subscribe {
+            name: name.into(),
+            endpoint: format!("https://fcm.googleapis.com/fcm/send/{name}"),
+            p256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+                .into(),
+            auth: "BTBZMqHH6r4Tts7J_aSIgg".into(),
+            by: 1000,
+            ..Subscribe::default()
+        }
+    }
+
+    fn waiting(alertd: &Alertd) -> Vec<(String, usize)> {
+        alertd.status().into_iter().map(|channel| (channel.channel, channel.waiting)).collect()
+    }
+
+    #[test]
+    fn a_browser_gets_the_changes_and_one_that_ends_is_taken_away_and_told_to_the_others() {
+        let (alertd, _screen, dir) = fixture("push", vec![json_channel(1)]);
+        push::start(&dir);
+        let id = alertd.push_add(browser("Phone")).unwrap();
+        assert_eq!(push::load(&dir).0.len(), 1);
+        alertd.raise("backup", warning("backup-late")).unwrap();
+        assert_eq!(
+            waiting(&alertd),
+            [("json (127.0.0.1)".to_string(), 1), ("push to Phone".to_string(), 1)]
+        );
+        alertd.push_ended(std::slice::from_ref(&id));
+        assert_eq!(push::load(&dir), (Vec::new(), None));
+        // Its message is dropped with it; the others are told it ended,
+        // in the message that gathers the changes of these 30 seconds.
+        assert_eq!(waiting(&alertd), [("json (127.0.0.1)".to_string(), 1)]);
+        let told = alertd.history(1).pop().unwrap();
+        assert_eq!(
+            (told.source.as_str(), told.state, told.alert.key, told.alert.title.as_str()),
+            ("alertd", Kind::Event, format!("push-ended:{id}"), "Phone no longer gets alerts")
+        );
+    }
+
+    #[test]
+    fn two_browsers_of_one_name_are_two_channels_and_a_reload_keeps_them() {
+        let (alertd, _screen, dir) = fixture("push-names", Vec::new());
+        push::start(&dir);
+        alertd.push_add(browser("Phone")).unwrap();
+        let other = Subscribe { endpoint: "https://push.example.net/x".into(), ..browser("Phone") };
+        alertd.push_add(other).unwrap();
+        let names: Vec<String> = waiting(&alertd).into_iter().map(|(name, _)| name).collect();
+        assert_eq!(names, ["push to Phone", "push to Phone 2"]);
+        // alerts.toml read again (there is none here) keeps the browsers.
+        alertd.reload();
+        assert_eq!(waiting(&alertd).len(), 2);
     }
 
     #[test]
@@ -681,7 +887,12 @@ mod tests {
         let (state, problems) = State::load(&dir);
         assert_eq!(problems, Vec::<String>::new());
         let (tx, rx) = sync_channel(16);
-        let core = Core { state, outbox: Outbox::default(), settings: Settings::default() };
+        let core = Core {
+            state,
+            outbox: Outbox::default(),
+            settings: Settings::default(),
+            subscriptions: Vec::new(),
+        };
         let restarted = Alertd::new(&dir, core, "server".into(), tx);
         assert_eq!(restarted.active().len(), 2);
         restarted.set("diskhealth", vec![warning("smart:a"), warning("smart:b")]).unwrap();
