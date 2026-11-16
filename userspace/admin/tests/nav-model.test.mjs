@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { PAGES } from '../pages.js';
 import {
   badgeName, badgesDue, currentEntry, navEntries, phoneTabs,
 } from '../shell/nav-model.js';
@@ -56,6 +57,40 @@ test('the phone has the entries with a place in order, and More holds the rest',
   const { tabs, more } = phoneTabs(pages, { admin: false, terminal: false });
   assert.deepEqual(tabs.map((one) => one.id), ['overview', 'logs']);
   assert.deepEqual(more.map((one) => one.id), ['services', 'report']);
+});
+
+test('an entry that has a place and no navigation holds it, and is left out for a session that may not see it', () => {
+  const alerts = entry('alerts', null, { needs: 'admin', phone: 4 });
+  const listed = [...pages, alerts];
+  const admin = phoneTabs(listed, { admin: true, terminal: false });
+  assert.deepEqual(admin.tabs.map((one) => one.id), ['overview', 'logs', 'alerts']);
+  assert.equal(admin.more.includes(alerts), false, 'More lists the navigation, which does not have it');
+  const reader = phoneTabs(listed, { admin: false, terminal: false });
+  assert.deepEqual(reader.tabs.map((one) => one.id), ['overview', 'logs']);
+});
+
+test('a place that an entry of the navigation claims is not taken by one that is in none', () => {
+  const apart = entry('apart', null, { phone: 1 });
+  assert.deepEqual(phoneTabs([apart, ...pages], { admin: true, terminal: false }).tabs.map((one) => one.id), ['overview', 'logs']);
+});
+
+test('the bar has four places at most, and More after them', () => {
+  const many = Array.from({ length: 6 }, (_, number) => entry(`p${number}`, { order: number + 1 }, { phone: number + 1 }));
+  assert.deepEqual(phoneTabs(many, { admin: true, terminal: false }).tabs.map((one) => one.id), ['p0', 'p1', 'p2', 'p3']);
+});
+
+test('the phone\'s bar of the console is Overview, Services, Logs, Alerts for an administrator and the same without Alerts for a reader', () => {
+  const titles = (session) => phoneTabs(PAGES, session).tabs.map((one) => one.title);
+  assert.deepEqual(titles({ admin: true, terminal: true }), ['Overview', 'Services', 'Logs', 'Alerts']);
+  assert.deepEqual(titles({ admin: false, terminal: false }), ['Overview', 'Services', 'Logs']);
+});
+
+test('More holds the pages of the navigation that the bar does not, and Reliability is one of them', () => {
+  const more = (session) => phoneTabs(PAGES, session).more.map((one) => one.id);
+  assert.ok(more({ admin: true, terminal: true }).includes('reliability'));
+  assert.equal(more({ admin: true, terminal: true }).at(-1), 'report');
+  assert.equal(more({ admin: false, terminal: false }).includes('alerts'), false);
+  for (const id of ['overview', 'services', 'logs']) assert.equal(more({ admin: true, terminal: true }).includes(id), false, id);
 });
 
 test('badges are read at the start, then at most every 30 s on events and every 5 min while seen', () => {

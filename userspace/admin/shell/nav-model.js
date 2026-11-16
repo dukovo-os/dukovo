@@ -7,16 +7,16 @@
 
 import { matchPage } from './route-model.js';
 
-function listed(entry, session) {
-  if (!entry.nav) return false;
+/** Whether `session` may see `entry`. */
+function may(entry, session) {
   if (entry.needs === 'admin' && !session.admin) return false;
-  if (entry.nav.flag && !session[entry.nav.flag]) return false;
+  if (entry.nav?.flag && !session[entry.nav.flag]) return false;
   return true;
 }
 
 /** The entries `session` sees, `{main, bottom}`, each by `nav.order`; `bottom` sits apart under the rule. */
 export function navEntries(pages, session) {
-  const visible = pages.filter((entry) => listed(entry, session));
+  const visible = pages.filter((entry) => entry.nav && may(entry, session));
   const byOrder = (a, b) => a.nav.order - b.nav.order;
   return {
     main: visible.filter((entry) => !entry.nav.bottom).sort(byOrder),
@@ -34,11 +34,12 @@ export function badgeName(title, badge) {
   return `${title}, ${badge.count} ${badge.label ?? ''}`.trimEnd();
 }
 
-/** The phone's tabs by their place (1 to 4; the first in the navigation wins a place two claim), and the rest, which More opens. */
+/** The phone's tabs by their place (1 to 4; the navigation's entries win a place two claim, then those it does not list), and the rest, which More opens. */
 export function phoneTabs(pages, session) {
   const { main, bottom } = navEntries(pages, session);
+  const apart = pages.filter((entry) => !entry.nav && may(entry, session));
   const places = new Map();
-  for (const entry of [...main, ...bottom]) {
+  for (const entry of [...main, ...bottom, ...apart]) {
     if (entry.phone && !places.has(entry.phone)) places.set(entry.phone, entry);
   }
   const tabs = [...places.entries()].sort(([a], [b]) => a - b).slice(0, 4).map(([, entry]) => entry);
