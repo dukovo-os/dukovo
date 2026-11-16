@@ -57,6 +57,7 @@
   .db-list .tbl-box { border: 0; }
   .db-list .tbl.stack tr { margin: .571rem 0; }
   .db-list .tbl.stack td::before { margin-bottom: .143rem; }
+  .db-list td[data-label="Database"] a { display: inline-flex; align-items: center; min-height: 3.143rem; }
   .db-add { flex-direction: column; align-items: stretch; }
   .db-form, .db-side { flex: 1 1 auto; width: 100%; }
   .db-sub { padding-left: .857rem; }
