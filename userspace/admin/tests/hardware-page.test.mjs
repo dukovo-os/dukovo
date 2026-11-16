@@ -10,7 +10,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, broken, clean, diskHealth, inventory, last, NOW, sensors, show, skipped, storage, task,
+  about, broken, clean, devices, diskHealth, inventory, last, NOW, sensors, show, skipped, storage, task,
 } from './hardware-fixtures.mjs';
 import {
   buttonOf, openHardware, refusal, settle, useStore,
@@ -450,11 +450,11 @@ test('Temperatures and fans is a table of the processor, the disks and the zones
   assert.equal(world.card('temps').getAttribute('aria-labelledby'), 'temps-h');
 });
 
-test('the cards come in the order of the phone, with the temperatures and the restart across both columns', async (context) => {
+test('the cards come in the order of the phone, with the temperatures, the devices and the restart across both columns', async (context) => {
   const world = await openHardware(context);
   const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
-  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'power']);
-  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'power']);
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'devices', 'power']);
+  assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'devices', 'power']);
 });
 
 test('the choice of Fahrenheit changes every temperature at once, is kept, and is the unit the page opens with next time', async (context) => {
@@ -655,4 +655,84 @@ test('the disks that cannot be read, and a machine with none, are said', async (
   assert.match(text(down.card('disks')), /The disks could not be read\./);
   const none = await openHardware(context, { world: { reads: { '/api/1/storage': { disks: [] } } } });
   assert.match(text(none.card('disks')), /No disk was found\./);
+});
+
+// ---- Devices -------------------------------------------------------------------
+
+const tablesOf = (world) => world.card('devices').querySelectorAll('table').map((table) => [text(table.querySelector('caption')), table.querySelectorAll('tbody tr').map(text)]);
+
+test('the devices are not read until the card is asked, and then come in a table for each group with the hidden ones folded away', async (context) => {
+  const world = await openHardware(context);
+  assert.ok(!world.calls.includes('/api/1/hardware/devices'));
+  assert.match(text(world.card('devices')), /Every card and port the system can tell of/);
+  await world.press(world.card('devices'), 'Show the devices');
+  assert.ok(world.calls.includes('/api/1/hardware/devices'));
+  assert.deepEqual(tablesOf(world), [
+    ['Network · 2', [
+      'Intel I219-LMnet0 · 8086:15b8e1000ePCI 0000:00:1f.6Working'.replace('e1000ePCI 0000:00:1f.6Working', 'e1000eWorkingPCI 0000:00:1f.6'),
+      'Intel I210net1 · 8086:1533igbNo cablePCI 0000:03:00.0',
+    ]],
+    ['Storage · 2', [
+      'Intel Q170 SATA controllersda, sdb · 8086:a102ahciWorkingPCI 0000:00:17.0',
+      'Seagate Expansionsdc · 0bc2:2312usb-storageWorkingUSB 2-1',
+    ]],
+    ['USB · 1', ['FTDI FT232R serial adapter0403:6001ftdi_sioWorkingUSB 1-2']],
+    ['Display · 1', ['Intel HD Graphics 5308086:1912efifbWorkingPCI 0000:00:02.0']],
+    ['Other · 2', [
+      'Intel Management Engine interface8086:a13anoneNo driverPCI 0000:00:16.0',
+      'Unknown device1234:5678Not told—PCI 0000:04:00.0',
+    ]],
+    ['Hidden devices', [
+      'Intel PCI bridge8086:a110pcieportWorkingPCI 0000:00:1c.0',
+      'Intel host bridge8086:1910noneWorkingPCI 0000:00:00.0',
+    ]],
+  ]);
+  const hidden = world.card('devices').querySelector('details');
+  assert.equal(text(hidden.querySelector('summary')), 'Hidden: 2 devices that work and need nothing, such as USB hubs and bridges');
+  assert.equal(hidden.querySelectorAll('table').length, 1);
+  assert.equal(world.card('devices').querySelectorAll('table').length - 1, 5, 'the hidden ones are in a table of their own, inside the fold');
+});
+
+test('a device with no cable has a warning state, and one no driver took is not "Not told"', async (context) => {
+  const world = await openHardware(context);
+  await world.press(world.card('devices'), 'Show the devices');
+  const states = world.card('devices').querySelectorAll('.st');
+  assert.ok(states.find((one) => one.textContent === 'No cable').classes.has('warn'));
+  assert.ok(states.find((one) => one.textContent === 'No driver').classes.has('off'));
+  assert.ok(states.find((one) => one.textContent === 'Working').classes.has('ok'));
+  assert.equal(states.filter((one) => one.textContent === 'Not told').length, 0, '"Not told" is the driver\'s, which the system could not tell');
+  assert.equal(world.card('devices').querySelectorAll('td').filter((cell) => cell.textContent === 'Not told').length, 1);
+  assert.equal(world.card('devices').querySelectorAll('td').find((cell) => cell.textContent === 'Not told').getAttribute('data-label'), 'Driver');
+});
+
+test('the card says how to report a device that needs a driver, and moves focus to its heading when it has drawn', async (context) => {
+  const world = await openHardware(context);
+  await world.press(world.card('devices'), 'Show the devices');
+  const link = world.card('devices').querySelectorAll('a').find((one) => one.textContent === 'Report it');
+  assert.equal(link.getAttribute('href'), '/report?about=hardware');
+  assert.match(text(world.card('devices')), /A device with no driver that you need\? Report it; the report carries its IDs \(vendor and device numbers, never a serial\)\./);
+  assert.equal(world.document.activeElement, world.card('devices').querySelector('h2'));
+  assert.equal(buttonOf(world.card('devices'), 'Show the devices'), undefined);
+});
+
+test('a reader may open the devices, and a list that cannot be read leaves the button to try again', async (context) => {
+  const reader = await openHardware(context, { session: { admin: false } });
+  await reader.press(reader.card('devices'), 'Show the devices');
+  assert.equal(tablesOf(reader).length, 6);
+  const down = await openHardware(context, { world: { reads: { '/api/1/hardware/devices': refusal('ADM-500', 'down', 500) } } });
+  await down.press(down.card('devices'), 'Show the devices');
+  assert.equal(down.problems.length, 1);
+  assert.equal(down.problems[0][1].slot, down.card('devices').querySelector('.hw-errors'));
+  const again = buttonOf(down.card('devices'), 'Show the devices');
+  assert.equal(again.getAttribute('aria-disabled'), null);
+  down.answers['/api/1/hardware/devices'] = devices();
+  await down.press(down.card('devices'), 'Show the devices');
+  assert.equal(tablesOf(down).length, 6);
+});
+
+test('a machine whose list is empty says so', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/devices': { format: 1, devices: [] } } } });
+  await world.press(world.card('devices'), 'Show the devices');
+  assert.match(text(world.card('devices')), /The system lists no device\./);
+  assert.equal(world.card('devices').querySelectorAll('table').length, 0);
 });

@@ -10,6 +10,7 @@ import test from 'node:test';
 
 import { AREAS, checkArgs } from '../pages/hardware/check-model.js';
 import { healthWords } from '../lib/disk-model.js';
+import { devicesOf, hiddenWords } from '../pages/hardware/devices-model.js';
 import {
   disksOf, pillOf, testArgs, testsOf,
 } from '../pages/hardware/disks-model.js';
@@ -21,7 +22,7 @@ import {
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, broken, clean, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, storage, task, time, updates,
+  about, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -400,4 +401,40 @@ test('a log that cannot be read, a disk that keeps none and a log with neither t
   assert.deepEqual(testsOf(null, time, now), [{ words: 'Its own tests could not be read' }]);
   assert.deepEqual(testsOf(diskHealth('sda', { self_tests: null }), time, now), [{ words: 'This disk keeps no log of its own tests' }]);
   assert.deepEqual(testsOf(diskHealth('sda', { self_tests: [] }), time, now), [{ words: 'No short or extended test is in its log' }]);
+});
+
+// ---- Devices ---------------------------------------------------------------------
+
+test('the devices come in the groups of the page, in its order, with a group that holds none left out and the hidden ones apart', () => {
+  const { groups, hidden } = devicesOf(devices());
+  assert.deepEqual(groups.map((group) => [group.title, group.rows.length]), [['Network', 2], ['Storage', 2], ['USB', 1], ['Display', 1], ['Other', 2]]);
+  assert.deepEqual(hidden.map((row) => row.name), ['Intel PCI bridge', 'Intel host bridge']);
+  const only = devicesOf({ devices: [{ name: 'Intel I210', group: 'network', driver: 'igb' }] });
+  assert.deepEqual(only.groups.map((group) => group.title), ['Network']);
+  assert.deepEqual(devicesOf({ devices: [{ name: 'Odd', group: 'tape', driver: 'x' }] }).groups.map((group) => group.title), ['Other']);
+});
+
+test('a device says what it is to the system and its IDs, its driver, its state and where it is', () => {
+  const [net0, net1] = devicesOf(devices()).groups[0].rows;
+  assert.deepEqual(net0, {
+    name: 'Intel I219-LM', small: 'net0 · 8086:15b8', driver: { text: 'e1000e' }, state: { word: 'Working', tone: 'ok' }, where: 'PCI 0000:00:1f.6',
+  });
+  assert.deepEqual(net1.state, { word: 'No cable', tone: 'warn' });
+  const sata = devicesOf(devices()).groups[1].rows[0];
+  assert.equal(sata.small, 'sda, sdb · 8086:a102');
+  assert.equal(devicesOf({ devices: [{ group: 'other', driver: 'x' }] }).groups[0].rows[0].name, 'Unnamed device');
+  assert.equal(devicesOf({ devices: [{ group: 'other', ids: '1234:5678', driver: 'x' }] }).groups[0].rows[0].name, '1234:5678');
+});
+
+test('the system says "No driver" only where it knows none took the device, and "Not told" where it cannot tell', () => {
+  const [engine, unknown] = devicesOf(devices()).groups[4].rows;
+  assert.deepEqual([engine.driver, engine.state], [{ text: 'none', muted: true }, { word: 'No driver', tone: 'off' }]);
+  assert.deepEqual([unknown.driver, unknown.state], [{ text: 'Not told', muted: true }, null]);
+  assert.deepEqual(devicesOf({ devices: [{ group: 'usb', driver: 'usbhid', state: 'asleep' }] }).groups[0].rows[0].state, { word: 'asleep', tone: 'off' });
+});
+
+test('an answer that is not a list of devices has none, and the folded line counts the hidden ones', () => {
+  for (const answer of [null, {}, { devices: null }, []]) assert.deepEqual(devicesOf(answer), { groups: [], hidden: [] });
+  assert.equal(hiddenWords(23), 'Hidden: 23 devices that work and need nothing, such as USB hubs and bridges');
+  assert.equal(hiddenWords(1), 'Hidden: 1 device that works and needs nothing, such as a USB hub or a bridge');
 });

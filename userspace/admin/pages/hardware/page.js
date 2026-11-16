@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // Hardware: what this machine is, its last check and the check itself, the
-// temperatures and fans, the memory test, and restarting or shutting it down.
-// The page reads what it shows when it opens and again when a check of its
-// own ends; the memory's modules only for an administrator whose console is
+// temperatures and fans, the disks and their own tests, the memory test, the
+// devices, and restarting or shutting it down. The page reads what it shows
+// when it opens and again when a check of its own ends; the memory's modules
+// and the disks' own tests only for an administrator whose console is
 // unlocked. The temperatures are read apart from the rest, since the cards do
-// not wait for them, and again every minute. The dialog that checks and the
-// restart's dialogs are read when a button asks.
+// not wait for them, and again every minute. The dialog that checks, the
+// restart's dialogs and the list of devices are read when a button asks.
 
 import { fill, h } from '../../dom.js';
 import { stepWords } from '../../lib/tasks-words.js';
@@ -114,14 +115,19 @@ export async function show(view) {
   const tempsCard = makeCard('temps', 'Temperatures and fans');
   fill(tempsCard.body, h('p', { class: 'muted' }, 'Reading the temperatures…'));
   let temps = null;
+  const devicesCard = makeCard('devices', 'Devices');
+  fill(devicesCard.body,
+    h('p', {}, 'Every card and port the system can tell of, with the driver that took it. The list is read when you ask.'),
+    h('div', { class: 'btns' }, button('Show the devices', async (one) => (await import('./devices.js')).drawDevices(ctx, devicesCard, one))));
   const disks = makeDisks(ctx);
   const memory = makeMemory(ctx);
   const power = makePower(ctx);
   ctx.pendingHost = power.host;
 
   // The cards come in when the first read is in, so that none says "Not checked yet" before it knows.
-  let cards = [machine, check, tempsCard, disks, memory, power].map((one) => one.element);
+  let cards = [machine, check, tempsCard, disks, memory, devicesCard, power].map((one) => one.element);
   tempsCard.element.classList.add('hw-wide');
+  devicesCard.element.classList.add('hw-wide');
   power.element.classList.add('hw-wide');
   view.head({ title: 'Hardware', commands: true, buttons: admin ? [checkNow] : [] });
   const host = h('div', { class: 'hw' }, lead, !admin && h('p', { class: 'muted' }, 'An administrator can check the hardware and restart or shut down this machine.'), say);

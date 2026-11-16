@@ -200,6 +200,27 @@ export const diskHealth = (disk = 'sda', more = {}) => plain({
   ...more,
 });
 
+const device = (name, group, more = {}) => ({
+  name, group, names: [], ids: '8086:1533', driver: 'igb', driver_told: true, state: 'working', where: 'PCI 0000:03:00.0', hidden: false, ...more,
+});
+
+/** `hardware devices --json`: two network cards (one with no cable), a controller, a USB disk and a serial adapter, a screen, a card the system cannot tell the driver of, one with no driver, and two bridges that work. */
+export const devices = () => plain({
+  format: 1,
+  devices: [
+    device('Intel I219-LM', 'network', { names: ['net0'], ids: '8086:15b8', driver: 'e1000e', where: 'PCI 0000:00:1f.6' }),
+    device('Intel I210', 'network', { names: ['net1'], state: 'no-link' }),
+    device('Intel Q170 SATA controller', 'storage', { names: ['sda', 'sdb'], ids: '8086:a102', driver: 'ahci', where: 'PCI 0000:00:17.0' }),
+    device('Seagate Expansion', 'storage', { names: ['sdc'], ids: '0bc2:2312', driver: 'usb-storage', where: 'USB 2-1' }),
+    device('FTDI FT232R serial adapter', 'usb', { ids: '0403:6001', driver: 'ftdi_sio', where: 'USB 1-2' }),
+    device('Intel HD Graphics 530', 'display', { ids: '8086:1912', driver: 'efifb', where: 'PCI 0000:00:02.0' }),
+    device('Intel Management Engine interface', 'other', { ids: '8086:a13a', driver: null, state: null, where: 'PCI 0000:00:16.0' }),
+    device('Unknown device', 'other', { ids: '1234:5678', driver: null, driver_told: false, state: null, where: 'PCI 0000:04:00.0' }),
+    device('Intel PCI bridge', 'other', { ids: '8086:a110', hidden: true, driver: 'pcieport', where: 'PCI 0000:00:1c.0' }),
+    device('Intel host bridge', 'other', { ids: '8086:1910', hidden: true, driver: null, where: 'PCI 0000:00:00.0' }),
+  ],
+});
+
 /** A running `hardware.check` as `GET /api/1/tasks` lists it. */
 export const task = (more = {}) => ({
   id: 41, action: 'hardware.check', args: {}, state: 'running', step: 4, steps: 11, words: 'disks sda self-test passed', started: Math.floor(NOW / 1000) - 120, ...more,
