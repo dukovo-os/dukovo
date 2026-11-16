@@ -474,7 +474,7 @@ Every phase has the same definition of done: code merged with CI green, tests ad
 
 **Status:** under way, in three parts that run side by side: services and hardening, remote management, and the web console. So far, services start along what they require, once ready and healthy (ADR 0470), and `service` shows what a service does (ADR 0471); the boot menu follows the serial console, and Dukovo installs on any serial port; the system's log goes to syslog servers over TLS, TCP or UDP; a crash dump of the kernel's state is kept across the restart after a panic; Phase 16's commands and services are held to their lab tests; the web console's lab tests drive real browsers (ADR 0510); the web console signs people in, with a second step if they have one, unlocks for changes and runs each session's work as the person, through `admind` and authd (ADR 0514); and CPython is a catalog bundle (ADR 0495).
 
-### Phase 17: Go toolchain port (M)
+### Phase 17: Go toolchain port (L)
 
 Go (BSD-3-Clause) as a new target, linking through mlibc as Go does on OpenBSD and Solaris rather than making raw system calls, with the Go test suite passing. One port unlocks a large share of modern server software: Podman (Phase 18), Caddy, Prometheus, Forgejo, many cloud tools, and the micro editor. It needs only the POSIX layer from Phase 8 and networking from Phase 12, so it can start once Phase 12 is done and run beside Phases 13 to 16.
 
