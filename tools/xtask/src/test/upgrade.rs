@@ -74,6 +74,10 @@ const SIGN_IN_SECONDS: u64 = 240;
 /// reads a whole slot and writes another.
 const COMMAND_SECONDS: u64 = 600;
 
+/// How long a command of a check of what the fill made may take, in
+/// seconds: each reads a few files and asks a service or two.
+const CHECK_SECONDS: u64 = 120;
+
 /// The name of the case that boots the fixture of `release`, under a
 /// BIOS if `bios`.
 pub fn case_name(release: &str, bios: bool) -> String {
@@ -358,8 +362,13 @@ fn as_root(command: &str) -> String {
 /// Types `command` at alice's prompt, waits for it to end, and checks that
 /// the screen then shows each of `shown`.
 fn run(vm: &mut Vm, command: &str, shown: &[&str]) -> Result<(), String> {
-    answer_within(vm, "$", &format!("clear; {command}"), COMMAND_SECONDS)?;
-    answer_within(vm, "$", "", COMMAND_SECONDS)?;
+    run_within(vm, command, shown, COMMAND_SECONDS)
+}
+
+/// [`run`], with `seconds` for the command to end in.
+fn run_within(vm: &mut Vm, command: &str, shown: &[&str], seconds: u64) -> Result<(), String> {
+    answer_within(vm, "$", &format!("clear; {command}"), seconds)?;
+    answer_within(vm, "$", "", seconds)?;
     vm.expect_screen(shown).map_err(|err| format!("`{command}`: {err}"))
 }
 
@@ -417,7 +426,8 @@ fn check_steps(runs: u32) -> Vec<(String, Vec<String>)> {
 fn check(vm: &mut Vm, runs: u32) -> Result<(), String> {
     for (command, shown) in check_steps(runs) {
         let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
-        run(vm, &command, &shown).map_err(|err| format!("check {runs}: {err}"))?;
+        run_within(vm, &command, &shown, CHECK_SECONDS)
+            .map_err(|err| format!("check {runs}: {err}"))?;
     }
     Ok(())
 }
@@ -484,9 +494,20 @@ fn try_update(vm: &mut Vm, version: &str, old: &str) -> Result<(), String> {
 }
 
 /// Fills the machine, updates it, goes back, and updates again; on a
-/// failure, says what the serial log tells of each start ([`story`]).
+/// failure, says what the screen shows and what the serial log tells of
+/// each start ([`story`]).
 fn update_from_release(vm: &mut Vm, case: &Case) -> Result<(), String> {
-    update_and_back(vm, case).map_err(|err| format!("{err}\n{}", story(&vm.log())))
+    update_and_back(vm, case).map_err(|err| {
+        let screen = match vm.screen() {
+            Ok(lines) => {
+                let lines: Vec<&str> =
+                    lines.iter().map(|line| line.trim_end()).filter(|l| !l.is_empty()).collect();
+                format!("the screen: {}", lines.join(" | "))
+            }
+            Err(why) => format!("the screen: {why}"),
+        };
+        format!("{err}\n{screen}\n{}", story(&vm.log()))
+    })
 }
 
 /// The lines of the serial log `log` that tell the case's story: the slot
