@@ -22,18 +22,23 @@
 # page with a minute's notice, counted down and cancelled once and then left
 # to come, falls back by itself: the shell's banner says "Back, on ...: the
 # update was taken back", What happened says what failed and what the machine
-# did, the release that fell back is held, and Release lets it go. The search
-# for a bad change of tests/startup/bisect.toml, begun from the page: four
-# changes, two tries, and Valkey named, with the machine restarting by itself
-# for each try.
+# did, the release that fell back is held, and Release lets it go. The good
+# update of tests/updates/stage-and-rollback.toml, staged here and proved by a
+# restart of the machine, is gone back from by the page
+# (`POST /api/1/updates/{item}/undo`): Go back to it… asks which settings the
+# version before starts with, the page asks to restart the machine as every
+# restart is asked, and it says that the machine runs the version before. The
+# search for a bad change of tests/startup/bisect.toml, begun from the page:
+# four changes, two tries, and Valkey named, with the machine restarting by
+# itself for each try.
 #
 # This test's first steps make an administrator and a reader that every script
 # signs in as, so no script needs the lab's password. The lab PC serves the
 # update server for the whole test, and the machine reads it as a canary (the
 # release is paused on its first day, ADR 0469). Its last steps put back what
 # the test changed.
-about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, and the search for the change that broke a start, with its two restarts"
-time = "90m"
+about = "The web console's Updates page in each engine: the cards against update last, check, settings and checks, Save and Undo, Check now with the server away, Hold with its reason and Release, Later and Remind me now, Stage it and Take it back, an app's update with Tonight and Install tonight, a check and a service added and removed, a reader and the phone; then the page's Restart now with its countdown, Cancel and the restart of an update that falls back, the banner Back, on, What happened, the release held after the fallback, Go back to the version before an update that proved itself with its choice of settings and its restart, and the search for the change that broke a start, with its two restarts"
+time = "105m"
 fresh = true
 host_needs = ["curl", "python3", "scp"]
 
@@ -156,6 +161,48 @@ expect = "fell-back"
 [[step]]
 run = "sh -c 'update settings --json | grep -c test.broken || true'"
 expect = "0"
+
+# The update of updates/stage-and-rollback.toml: staged, tried at the restart
+# and proved after 10 seconds, so that slot B is the default and slot A keeps
+# the version before it. The page goes back to that version with today's
+# settings kept and restarts the machine into it.
+[[step]]
+host = "sh {here}/../updates/copy-update.sh good {machine} {machine-port:22}"
+expect = "copied: good"
+[[step]]
+run = "sysupdate stage /users/lab/update-good"
+root = true
+expect = "-test.good in slot B: it starts at the next restart"
+[[step]]
+run = "sh -c '(sleep 2; reboot) > /dev/null 2>&1 &'"
+root = true
+[[step]]
+serial = "asked to restart the machine"
+[[step]]
+serial = "spark: started slot b, @system.b"
+[[step]]
+serial = "proved itself: it is now the default"
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot B", "-test.good, the default", "the previous version", "Next start: slot B"]
+# The console answers again before the page opens.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 120 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+# The page restarts the machine, which comes back on slot A.
+[[step]]
+browser = "updates-back.mjs"
+engines = ["chromium"]
+port = 9090
+[[step]]
+wait = "ready"
+[[step]]
+run = "sysupdate status"
+root = true
+expect = ["Running:  slot A", "Next start: slot A", "-test.good, the previous version"]
 
 # The search for a bad change of startup/bisect.toml: an update proved in slot
 # B and made the default again by `sysupdate rollback`, the boot option that
