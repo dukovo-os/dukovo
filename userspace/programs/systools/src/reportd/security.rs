@@ -36,19 +36,23 @@ pub fn recipients(text: &str) -> Result<Vec<age::x25519::Recipient>, String> {
     Ok(keys)
 }
 
+/// The ID of the page that says what no key of the security team means.
+const NO_KEY: &str = "RPT-103";
+
 /// The recipients in the file `path`.
 ///
 /// # Errors
 ///
-/// The file cannot be read, or holds no recipient.
+/// The file cannot be read, or holds no recipient; the words end with the
+/// ID of the page that says what to do.
 pub fn recipients_in(path: &str) -> Result<Vec<age::x25519::Recipient>, String> {
     let text = std::fs::read_to_string(path).map_err(|err| {
         format!(
-            "the security box has no keys ({path}: {}); write to {ADDRESS} instead",
+            "the security box has no keys ({path}: {}); write to {ADDRESS} instead ({NO_KEY})",
             crate::util::strip_os_error(&err)
         )
     })?;
-    recipients(&text).map_err(|why| format!("{path}: {why}"))
+    recipients(&text).map_err(|why| format!("{path}: {why} ({NO_KEY})"))
 }
 
 /// `bytes` encrypted to `keys`, in age's binary format.
@@ -113,6 +117,19 @@ mod tests {
             super::super::settings::RECIPIENTS,
             "/system/resources/report/security-recipients.txt"
         );
+    }
+
+    #[test]
+    fn a_file_that_gives_no_key_is_refused_with_the_id_of_its_page() {
+        let missing = std::env::temp_dir().join(format!("no-keys-{}.txt", std::process::id()));
+        let path = missing.to_str().unwrap();
+        let why = recipients_in(path).unwrap_err();
+        assert!(why.contains(path) && why.contains(ADDRESS), "{why}");
+        assert!(why.ends_with("instead (RPT-103)"), "{why}");
+        std::fs::write(&missing, "# none yet\n").unwrap();
+        let why = recipients_in(path).unwrap_err();
+        let _ = std::fs::remove_file(&missing);
+        assert!(why.contains("it holds no key") && why.ends_with("instead (RPT-103)"), "{why}");
     }
 
     #[test]
