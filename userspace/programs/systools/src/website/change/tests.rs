@@ -347,9 +347,11 @@ fn a_site_is_refused_when_nginx_refuses_its_own_settings_before_any_change() {
 #[test]
 fn a_site_is_refused_for_an_owner_who_is_not_a_person_and_for_an_account_that_is_not_there() {
     let fake = Fake::new();
+    // Not php: when the tests do not run as root, the fake's php is the
+    // process's own account, which may be a person's.
     for (owner, said) in [
         ("root", "root is not the account of a person"),
-        ("php", "php is not the account of a person"),
+        ("daemon", "daemon is not the account of a person"),
         ("nobody", "There is no account nobody"),
     ] {
         let mut asked = shop(Kind::Static, None);
