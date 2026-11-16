@@ -24,7 +24,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value, json};
 
-use super::apps::{check_id, id_body, list_argv as apps_argv, picked as app_picked};
+use super::apps::{check_id, list_argv as apps_argv, picked as app_picked};
 use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
 use crate::sysupdate::{health, online};
 use crate::update::checks;
@@ -75,11 +75,15 @@ const SERVICE_PATTERN: &str = "^[A-Za-z0-9_][A-Za-z0-9_.-]*$";
 const URL_PATTERN: &str = "^https?://[^ ]+$";
 
 /// What the item of an update to apply matches: the system, the firmware,
-/// the apps, or one app.
-const APPLY_PATTERN: &str = concat!("^(system|firmware|apps|", id_body!(), ")$");
+/// the apps, or one app. The app's part is `apps::ID_PATTERN` without its
+/// ends; a test holds the two the same.
+const APPLY_PATTERN: &str = "^(system|firmware|apps|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\
+     (@(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,2})?)$";
 
-/// What the item of a hold matches: the system, the firmware, or one app.
-const HOLD_PATTERN: &str = concat!("^(system|firmware|", id_body!(), ")$");
+/// What the item of a hold matches: the system, the firmware, or one app
+/// (as `APPLY_PATTERN` has it).
+const HOLD_PATTERN: &str = "^(system|firmware|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\
+     (@(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,2})?)$";
 
 /// The most characters of an item that is an app's ID with its line.
 const ITEM_MAX: usize = super::apps::ID_MAX;
@@ -92,90 +96,196 @@ fn or_list(words: &[&str]) -> String {
     super::backups::or_list(words)
 }
 
-/// A read of one of the update commands, which takes nothing and says
-/// what it prints as JSON.
-macro_rules! read {
-    ($(#[$meta:meta])* $name:ident, $id:literal, $path:literal, $runs:expr, $title:literal,
-     $answers:expr, [$($word:literal),+]) => {
-        $(#[$meta])*
-        pub struct $name;
+/// `update last --json`: the last check that ran as root, which the
+/// daily one of updated keeps, or none, which is status 3.
+pub struct Last;
 
-        impl Action for $name {
-            const ID: &'static str = $id;
-            const AREA: &'static str = AREA;
-            const CHANGES: bool = false;
-            const PATH: &'static str = $path;
-            const RUNS: Runs = $runs;
-            const ANSWERS: &'static [i32] = $answers;
-            const TESTS: Tests = TESTS;
-            const TITLE: &'static str = $title;
-            type Args = Nothing;
+impl Action for Last {
+    const ID: &'static str = "updates.last";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ANSWERS: &'static [i32] = &[0, 3];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the last check for updates";
+    type Args = Nothing;
 
-            fn argv(_: &Nothing) -> Vec<String> {
-                [$($word),+].map(String::from).to_vec()
-            }
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["update", "last", "--json"].map(String::from).to_vec()
+    }
 
-            fn examples() -> Examples<Nothing> {
-                Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
-            }
-        }
-    };
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
-read! {
-    /// `update last --json`: the last check that ran as root, which the
-    /// daily one of updated keeps, or none, which is status 3.
-    Last, "updates.last", "/api/1/updates", Runs::AsThePerson, "Show the last check for updates",
-    &[0, 3], ["update", "last", "--json"]
+/// `update check --json`: a check now, of the system, its firmware and
+/// the apps, with what could not be checked said in the answer.
+pub struct Check;
+
+impl Action for Check {
+    const ID: &'static str = "updates.check";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates/check";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ANSWERS: &'static [i32] = &[0];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Check for updates";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["update", "check", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
-read! {
-    /// `update check --json`: a check now, of the system, its firmware and
-    /// the apps, with what could not be checked said in the answer.
-    Check, "updates.check", "/api/1/updates/check", Runs::AsThePerson, "Check for updates", &[0],
-    ["update", "check", "--json"]
+/// `sysupdate status --json`: the slots, which version each holds and
+/// which starts next. The slots are an administrator's to read.
+pub struct Slots;
+
+impl Action for Slots {
+    const ID: &'static str = "updates.slots";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates/slots";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const ANSWERS: &'static [i32] = &[0];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the slots of the system";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["sysupdate", "status", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
-read! {
-    /// `sysupdate status --json`: the slots, which version each holds and
-    /// which starts next. The slots are an administrator's to read.
-    Slots, "updates.slots", "/api/1/updates/slots", Runs::AsAdministrator,
-    "Show the slots of the system", &[0], ["sysupdate", "status", "--json"]
+/// `update history --json`: each change of the system and the apps, by
+/// the start that first ran it.
+pub struct History;
+
+impl Action for History {
+    const ID: &'static str = "updates.history";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates/history";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ANSWERS: &'static [i32] = &[0];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show what was updated";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["update", "history", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
-read! {
-    /// `update history --json`: each change of the system and the apps, by
-    /// the start that first ran it.
-    History, "updates.history", "/api/1/updates/history", Runs::AsThePerson,
-    "Show what was updated", &[0], ["update", "history", "--json"]
+/// `update advisories --json`: the security advisories that apply to
+/// what the machine runs. 1 is one that does; 3 that none could be
+/// read.
+pub struct Advisories;
+
+impl Action for Advisories {
+    const ID: &'static str = "updates.advisories";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates/advisories";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ANSWERS: &'static [i32] = &[0, 1, 3];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the security advisories";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["update", "advisories", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
-read! {
-    /// `update advisories --json`: the security advisories that apply to
-    /// what the machine runs. 1 is one that does; 3 that none could be
-    /// read.
-    Advisories, "updates.advisories", "/api/1/updates/advisories", Runs::AsThePerson,
-    "Show the security advisories", &[0, 1, 3], ["update", "advisories", "--json"]
+/// `update settings --json`: how the machine updates, with what is not
+/// written in the file filled in.
+pub struct Settings;
+
+impl Action for Settings {
+    const ID: &'static str = "updates.settings";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates/settings";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ANSWERS: &'static [i32] = &[0];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show how the machine updates";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["update", "settings", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
-read! {
-    /// `update settings --json`: how the machine updates, with what is not
-    /// written in the file filled in.
-    Settings, "updates.settings", "/api/1/updates/settings", Runs::AsThePerson,
-    "Show how the machine updates", &[0], ["update", "settings", "--json"]
+/// `update checks --json`: what the machine checks after an update.
+pub struct Checks;
+
+impl Action for Checks {
+    const ID: &'static str = "updates.checks";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates/checks";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ANSWERS: &'static [i32] = &[0];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show the checks made after an update";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["update", "checks", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
-read! {
-    /// `update checks --json`: what the machine checks after an update.
-    Checks, "updates.checks", "/api/1/updates/checks", Runs::AsThePerson,
-    "Show the checks made after an update", &[0], ["update", "checks", "--json"]
-}
+/// `changes --failed --json`: the changes since the last good start
+/// to the newest that failed, and the search for the bad one.
+pub struct Failed;
 
-read! {
-    /// `changes --failed --json`: the changes since the last good start
-    /// to the newest that failed, and the search for the bad one.
-    Failed, "updates.failed", "/api/1/updates/failed", Runs::AsThePerson,
-    "Show what changed before a start failed", &[0], ["changes", "--failed", "--json"]
+impl Action for Failed {
+    const ID: &'static str = "updates.failed";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/updates/failed";
+    const RUNS: Runs = Runs::AsThePerson;
+    const ANSWERS: &'static [i32] = &[0];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Show what changed before a start failed";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["changes", "--failed", "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "all": true })], undo: None }
+    }
 }
 
 /// `update settings --json`, which says what the settings changes move.
@@ -1142,86 +1252,127 @@ fn in_settings(item: &str) -> bool {
     matches!(item, "system" | "firmware")
 }
 
-/// `update hold ITEM` or `update unhold ITEM`: a newer version is taken as
-/// usual, and the held one is not, or the hold is lifted.
-macro_rules! holding {
-    ($(#[$meta:meta])* $name:ident, $id:literal, $path:literal, $title:literal, $word:literal,
-     $on:expr, $other:literal) => {
-        $(#[$meta])*
-        pub struct $name;
+/// `update hold ITEM`.
+pub struct Hold;
 
-        impl Action for $name {
-            const ID: &'static str = $id;
-            const AREA: &'static str = AREA;
-            const CHANGES: bool = true;
-            const PATH: &'static str = $path;
-            const RUNS: Runs = Runs::AsAdministrator;
-            const TESTS: Tests = TESTS;
-            const TITLE: &'static str = $title;
-            type Args = Held;
+impl Action for Hold {
+    const ID: &'static str = "updates.hold";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/updates/{item}/hold";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Hold an update back";
+    type Args = Held;
 
-            fn argv(args: &Held) -> Vec<String> {
-                vec!["update".into(), $word.into(), args.item.clone()]
-            }
+    fn argv(args: &Held) -> Vec<String> {
+        vec!["update".into(), "hold".into(), args.item.clone()]
+    }
 
-            fn subject(args: &Held) -> Option<String> {
-                Some(args.item.clone())
-            }
+    fn subject(args: &Held) -> Option<String> {
+        Some(args.item.clone())
+    }
 
-            /// The system's and the firmware's holds are in updates.toml;
-            /// an app's is bundled's, whose state admind does not see.
-            fn files(args: &Held) -> Vec<String> {
-                if in_settings(&args.item) { vec![SETTINGS.to_string()] } else { Vec::new() }
-            }
+    /// The system's and the firmware's holds are in updates.toml;
+    /// an app's is bundled's, whose state admind does not see.
+    fn files(args: &Held) -> Vec<String> {
+        if in_settings(&args.item) { vec![SETTINGS.to_string()] } else { Vec::new() }
+    }
 
-            fn probe(args: &Held) -> Option<Vec<String>> {
-                Some(if in_settings(&args.item) { settings_argv() } else { apps_argv() })
-            }
+    fn probe(args: &Held) -> Option<Vec<String>> {
+        Some(if in_settings(&args.item) { settings_argv() } else { apps_argv() })
+    }
 
-            fn probed(args: &Held, output: &str) -> Option<String> {
-                if !in_settings(&args.item) {
-                    return app_picked(&args.item, output);
-                }
-                let document: Value = serde_json::from_str(output).ok()?;
-                let held = document.get("hold")?.get(&args.item)?.clone();
-                Some(json!({ "held": held }).to_string())
-            }
-
-            /// Held when the version, or for an app the flag, says so.
-            fn settled(args: &Held, now: &str) -> Option<bool> {
-                let held = if in_settings(&args.item) {
-                    !said(now, "held")?.is_null()
-                } else {
-                    said(now, "held")?.as_bool()?
-                };
-                Some(held == $on)
-            }
-
-            fn examples() -> Examples<Held> {
-                Examples {
-                    good: vec![Held { item: "system".into() }],
-                    bad: vec![json!({ "item": "everything" }), json!({ "item": "apps" }), json!({})],
-                    undo: Some(Undo { action: $other, args: json!({ "item": "system" }) }),
-                }
-            }
+    fn probed(args: &Held, output: &str) -> Option<String> {
+        if !in_settings(&args.item) {
+            return app_picked(&args.item, output);
         }
-    };
+        let document: Value = serde_json::from_str(output).ok()?;
+        let held = document.get("hold")?.get(&args.item)?.clone();
+        Some(json!({ "held": held }).to_string())
+    }
+
+    /// Held when the version, or for an app the flag, says so.
+    fn settled(args: &Held, now: &str) -> Option<bool> {
+        let held = if in_settings(&args.item) {
+            !said(now, "held")?.is_null()
+        } else {
+            said(now, "held")?.as_bool()?
+        };
+        Some(held)
+    }
+
+    fn examples() -> Examples<Held> {
+        Examples {
+            good: vec![Held { item: "system".into() }],
+            bad: vec![json!({ "item": "everything" }), json!({ "item": "apps" }), json!({})],
+            undo: Some(Undo { action: "updates.unhold", args: json!({ "item": "system" }) }),
+        }
+    }
 }
 
-holding! {
-    /// `update hold ITEM`.
-    Hold, "updates.hold", "/api/1/updates/{item}/hold", "Hold an update back", "hold", true,
-    "updates.unhold"
-}
+/// `update unhold ITEM`.
+pub struct Unhold;
 
-holding! {
-    /// `update unhold ITEM`.
-    Unhold, "updates.unhold", "/api/1/updates/{item}/unhold", "Stop holding an update back",
-    "unhold", false, "updates.hold"
+impl Action for Unhold {
+    const ID: &'static str = "updates.unhold";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/updates/{item}/unhold";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Stop holding an update back";
+    type Args = Held;
+
+    fn argv(args: &Held) -> Vec<String> {
+        vec!["update".into(), "unhold".into(), args.item.clone()]
+    }
+
+    fn subject(args: &Held) -> Option<String> {
+        Some(args.item.clone())
+    }
+
+    /// The system's and the firmware's holds are in updates.toml;
+    /// an app's is bundled's, whose state admind does not see.
+    fn files(args: &Held) -> Vec<String> {
+        if in_settings(&args.item) { vec![SETTINGS.to_string()] } else { Vec::new() }
+    }
+
+    fn probe(args: &Held) -> Option<Vec<String>> {
+        Some(if in_settings(&args.item) { settings_argv() } else { apps_argv() })
+    }
+
+    fn probed(args: &Held, output: &str) -> Option<String> {
+        if !in_settings(&args.item) {
+            return app_picked(&args.item, output);
+        }
+        let document: Value = serde_json::from_str(output).ok()?;
+        let held = document.get("hold")?.get(&args.item)?.clone();
+        Some(json!({ "held": held }).to_string())
+    }
+
+    /// Held when the version, or for an app the flag, says so.
+    fn settled(args: &Held, now: &str) -> Option<bool> {
+        let held = if in_settings(&args.item) {
+            !said(now, "held")?.is_null()
+        } else {
+            said(now, "held")?.as_bool()?
+        };
+        Some(!held)
+    }
+
+    fn examples() -> Examples<Held> {
+        Examples {
+            good: vec![Held { item: "system".into() }],
+            bad: vec![json!({ "item": "everything" }), json!({ "item": "apps" }), json!({})],
+            undo: Some(Undo { action: "updates.hold", args: json!({ "item": "system" }) }),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::apps::ID_PATTERN;
     use super::super::{Caller, Found, REGISTRY, Registered, authorize, find};
     use super::*;
     use crate::admind::errors::Kind;
@@ -1265,6 +1416,13 @@ mod tests {
     /// The members of `text`, a JSON object, as a value to compare.
     fn value(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
+    }
+
+    #[test]
+    fn the_patterns_that_take_an_app_have_the_apps_pattern_in_them() {
+        let id = &ID_PATTERN[1..ID_PATTERN.len() - 1];
+        assert_eq!(APPLY_PATTERN, format!("^(system|firmware|apps|{id})$"));
+        assert_eq!(HOLD_PATTERN, format!("^(system|firmware|{id})$"));
     }
 
     #[test]

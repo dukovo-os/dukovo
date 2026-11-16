@@ -45,18 +45,11 @@ pub(super) const ID_MAX: usize = 320;
 /// two labels or more of lowercase letters, digits and hyphens, none of
 /// which starts or ends with a hyphen or has over 63 characters, and a
 /// line of one to three numbers without leading zeros. The ID's own
-/// length, of 255 at most, is `check_full_id`'s. A macro, so that the
-/// patterns that hold it with other words are made of it at compile time.
-macro_rules! id_body {
-    () => {
-        "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\
-         (@(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,2})?"
-    };
-}
-pub(super) use id_body;
-
-/// [`id_body!`], whole.
-pub(super) const ID_PATTERN: &str = concat!("^", id_body!(), "$");
+/// length, of 255 at most, is `check_full_id`'s. A whole literal, which
+/// the console's tests read; `updates` holds its patterns that take an ID
+/// with other words to it.
+pub(super) const ID_PATTERN: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\
+     (@(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,2})?$";
 
 /// The field of an app's ID, for each action that takes one.
 const ID: Field = Field::text(
@@ -339,62 +332,83 @@ impl Action for Rollback {
     }
 }
 
-/// `bundle hold ID --for-everyone` or `bundle unhold ID --for-everyone`:
-/// updates leave the app as it is, or take it again.
-macro_rules! holding {
-    ($(#[$meta:meta])* $name:ident, $id:literal, $path:literal, $title:literal, $word:literal,
-     $held:expr, $other:literal) => {
-        $(#[$meta])*
-        pub struct $name;
+/// `bundle hold ID --for-everyone`: updates leave the app at the
+/// version it has.
+pub struct Hold;
 
-        impl Action for $name {
-            const ID: &'static str = $id;
-            const AREA: &'static str = AREA;
-            const CHANGES: bool = true;
-            const PATH: &'static str = $path;
-            const RUNS: Runs = Runs::AsAdministrator;
-            const TESTS: Tests = TESTS;
-            const TITLE: &'static str = $title;
-            type Args = Named;
+impl Action for Hold {
+    const ID: &'static str = "apps.hold";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/apps/{id}/hold";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Hold an app back";
+    type Args = Named;
 
-            fn argv(args: &Named) -> Vec<String> {
-                vec!["bundle".into(), $word.into(), args.id.clone(), "--for-everyone".into()]
-            }
+    fn argv(args: &Named) -> Vec<String> {
+        vec!["bundle".into(), "hold".into(), args.id.clone(), "--for-everyone".into()]
+    }
 
-            fn subject(args: &Named) -> Option<String> {
-                Some(args.id.clone())
-            }
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.id.clone())
+    }
 
-            fn probe(_: &Named) -> Option<Vec<String>> {
-                Some(list_argv())
-            }
+    fn probe(_: &Named) -> Option<Vec<String>> {
+        Some(list_argv())
+    }
 
-            fn probed(args: &Named, output: &str) -> Option<String> {
-                picked(&args.id, output)
-            }
+    fn probed(args: &Named, output: &str) -> Option<String> {
+        picked(&args.id, output)
+    }
 
-            /// Held, or not, as the change leaves it, when the app is there.
-            fn settled(_: &Named, now: &str) -> Option<bool> {
-                held_in(now).map(|held| held == $held)
-            }
+    /// Held, or not, as the change leaves it, when the app is there.
+    fn settled(_: &Named, now: &str) -> Option<bool> {
+        held_in(now)
+    }
 
-            fn examples() -> Examples<Named> {
-                named_examples(Some(Undo { action: $other, args: json!({ "id": EXAMPLE }) }))
-            }
-        }
-    };
+    fn examples() -> Examples<Named> {
+        named_examples(Some(Undo { action: "apps.unhold", args: json!({ "id": EXAMPLE }) }))
+    }
 }
 
-holding! {
-    /// `bundle hold ID --for-everyone`: updates leave the app at the
-    /// version it has.
-    Hold, "apps.hold", "/api/1/apps/{id}/hold", "Hold an app back", "hold", true, "apps.unhold"
-}
+/// `bundle unhold ID --for-everyone`: updates take the app again.
+pub struct Unhold;
 
-holding! {
-    /// `bundle unhold ID --for-everyone`: updates take the app again.
-    Unhold, "apps.unhold", "/api/1/apps/{id}/unhold", "Stop holding an app back", "unhold", false,
-    "apps.hold"
+impl Action for Unhold {
+    const ID: &'static str = "apps.unhold";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/apps/{id}/unhold";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Stop holding an app back";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        vec!["bundle".into(), "unhold".into(), args.id.clone(), "--for-everyone".into()]
+    }
+
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.id.clone())
+    }
+
+    fn probe(_: &Named) -> Option<Vec<String>> {
+        Some(list_argv())
+    }
+
+    fn probed(args: &Named, output: &str) -> Option<String> {
+        picked(&args.id, output)
+    }
+
+    /// Held, or not, as the change leaves it, when the app is there.
+    fn settled(_: &Named, now: &str) -> Option<bool> {
+        held_in(now).map(|held| !held)
+    }
+
+    fn examples() -> Examples<Named> {
+        named_examples(Some(Undo { action: "apps.hold", args: json!({ "id": EXAMPLE }) }))
+    }
 }
 
 /// What a removal does with the app's data.
