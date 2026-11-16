@@ -43,7 +43,7 @@ const KEY_WRONG: &str = "CRT-112";
 const CERTIFICATE_WRONG: &str = "CRT-113";
 
 /// `why`, with the ID of its page at the end.
-fn with_id(why: String, id: &str) -> String {
+fn with_id(why: &str, id: &str) -> String {
     format!("{why} ({id})")
 }
 
@@ -257,8 +257,8 @@ pub(super) fn check_texts(
         ));
     };
     let private = inspect::private_key(block)
-        .map_err(|why| with_id(format!("{}: {why}", key.shown), KEY_WRONG))?;
-    inspect::key_fits(&certificates, &private).map_err(|why| with_id(why, KEY_WRONG))?;
+        .map_err(|why| with_id(&format!("{}: {why}", key.shown), KEY_WRONG))?;
+    inspect::key_fits(&certificates, &private).map_err(|why| with_id(&why, KEY_WRONG))?;
     let details = check_first(&certificates[0], &chain.shown, now)?;
     let mut notes = Vec::new();
     match inspect::trust(&certificates, roots, now) {
@@ -272,7 +272,7 @@ pub(super) fn check_texts(
         )),
         Trust::UnknownIssuer(issuer) => {
             return Err(with_id(
-                format!(
+                &format!(
                     "the chain stops at {issuer}, which no authority Dukovo trusts signed: the \
                      file lacks {issuer}'s intermediate certificate, which your authority gives \
                      with the certificate (put it after the certificate in {}); a private \
@@ -283,7 +283,7 @@ pub(super) fn check_texts(
                 CHAIN_NOT_TRUSTED,
             ));
         }
-        Trust::Refused(why) => return Err(with_id(why, CHAIN_NOT_TRUSTED)),
+        Trust::Refused(why) => return Err(with_id(&why, CHAIN_NOT_TRUSTED)),
     }
     Ok(Checked {
         chain: certificates
@@ -307,29 +307,27 @@ fn check_first(
     if details.not_after <= now {
         let date = util::local_time(details.not_after, "%F");
         return Err(with_id(
-            format!("the certificate ran out on {date}: add one that is valid now"),
+            &format!("the certificate ran out on {date}: add one that is valid now"),
             CERTIFICATE_WRONG,
         ));
     }
     if details.not_before > now {
         let date = util::local_time(details.not_before, "%F");
         return Err(with_id(
-            format!("the certificate starts on {date}, which is not yet: add it then"),
+            &format!("the certificate starts on {date}, which is not yet: add it then"),
             CERTIFICATE_WRONG,
         ));
     }
     if details.names.is_empty() {
         return Err(with_id(
-            String::from(
-                "the certificate names no host: it has no DNS or IP name among its subject \
-                 alternative names, which is where clients look",
-            ),
+            "the certificate names no host: it has no DNS or IP name among its subject \
+             alternative names, which is where clients look",
             CERTIFICATE_WRONG,
         ));
     }
     if details.authority {
         return Err(with_id(
-            format!(
+            &format!(
                 "the first certificate is a certificate authority's, not a server's: put the \
                  server's certificate first in {chain_file}"
             ),

@@ -50,7 +50,7 @@ fn summary(store: &Store) -> Result<BTreeMap<String, Public>, String> {
     let mut found = BTreeMap::new();
     for entry in entries.flatten() {
         let Ok(file) = entry.file_name().into_string() else { continue };
-        if !file.ends_with(".json") {
+        if file.strip_suffix(".json").is_none() {
             continue;
         }
         let Ok(bytes) = fs::read(entry.path()) else { continue };

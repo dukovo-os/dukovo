@@ -162,11 +162,11 @@ fn append_to(path: &Path, entry: &Entry) -> Result<(), String> {
     // A crash may have left the last line unfinished: this one starts on a
     // line of its own, so that only the torn one is lost.
     let length = file.metadata().map_err(|err| failed(path, &err))?.len();
-    let mut last = [b'\n'];
+    let mut last = *b"\n";
     if length > 0 {
         file.read_exact_at(&mut last, length - 1).map_err(|err| failed(path, &err))?;
     }
-    if last != [b'\n'] {
+    if last != *b"\n" {
         line.insert(0, '\n');
     }
     file.write_all(line.as_bytes()).map_err(|err| failed(path, &err))?;

@@ -711,12 +711,12 @@ mod tests {
         let held = |services: &[(String, Vec<String>)], nginx_runs: bool| {
             holder_from(true, Some(services), nginx_runs)
         };
-        assert_eq!(holder_from(false, Some(&[nginx.clone()]), true), Holder::Free);
+        assert_eq!(holder_from(false, Some(std::slice::from_ref(&nginx)), true), Holder::Free);
         assert_eq!(holder_from(true, None, false), Holder::Unknown);
         assert_eq!(held(&[ssh.clone(), nginx.clone()], true), Holder::Nginx);
         assert_eq!(held(&[certd.clone(), nginx.clone()], true), Holder::Nginx);
-        assert_eq!(held(&[certd.clone()], false), Holder::Certd);
-        assert_eq!(held(&[wide.clone()], false), Holder::Other(String::from("lighttpd")));
+        assert_eq!(held(std::slice::from_ref(&certd), false), Holder::Certd);
+        assert_eq!(held(std::slice::from_ref(&wide), false), Holder::Other(String::from("lighttpd")));
         assert_eq!(held(&[certd, wide], false), Holder::Other(String::from("lighttpd")));
         // A socket nobody that runs names: nginx when it runs, as an order
         // assumes, else some program.
