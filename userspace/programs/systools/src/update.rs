@@ -620,8 +620,7 @@ fn undo(item: &str, keep: sysupdate::Keep) -> Result<i32, Fail> {
 /// The user who asked: the one `elevate` ran this for, when it is run as
 /// root through it, else this process's own.
 fn asker() -> u32 {
-    let elevated = std::env::var("SUDO_UID").ok().and_then(|uid| uid.parse().ok());
-    if last::is_root() { elevated.unwrap_or(0) } else { util::own_user() }
+    util::asker()
 }
 
 /// `update hold ITEM [--why TEXT]` (`on`) or `update unhold ITEM`.

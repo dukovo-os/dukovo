@@ -379,6 +379,16 @@ pub fn own_user() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// The user who asked: the one `elevate` ran this for, when it is run as
+/// root through it, else this process's own.
+pub fn asker() -> u32 {
+    let elevated = std::env::var("SUDO_UID").ok().and_then(|uid| uid.parse().ok());
+    match own_user() {
+        0 => elevated.unwrap_or(0),
+        own => own,
+    }
+}
+
 /// The name of user `uid`, or its number if it has none.
 pub fn user_name(uid: u32) -> String {
     with_user(uid, |pw| {

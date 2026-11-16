@@ -1542,9 +1542,10 @@ impl Action for Later {
             .as_array()?
             .iter()
             .find(|entry| entry["item"] == args.item.as_str())
-            .map_or(Value::Null, |entry| {
-                json!({ "version": entry["version"], "until_ms": entry["until_ms"] })
-            });
+            .map_or(
+                Value::Null,
+                |entry| json!({ "version": entry["version"], "until_ms": entry["until_ms"] }),
+            );
         Some(json!({ "later": put_off }).to_string())
     }
 

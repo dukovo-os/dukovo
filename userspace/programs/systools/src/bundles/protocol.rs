@@ -90,6 +90,11 @@ pub enum Request {
     /// Holds bundle `id` at its version, or lets it go; a hold may keep
     /// the reason `why`, which [`why_ok`] accepts.
     Hold { id: String, everyone: bool, on: bool, why: Option<String> },
+    /// Has the updates of `ids`, or of every app that has one when there
+    /// is none, installed in tonight's window and not now (`on`), or takes
+    /// the apps off it (ADR 0565). `by` is the user who asked, which
+    /// `elevate` knows and the connection does not say. An administrator's.
+    Tonight { ids: Vec<String>, on: bool, yes: bool, by: u32 },
     /// Turns updating by themselves on or off, for the asker's bundles or
     /// everyone's.
     Automatic { everyone: bool, on: bool },
@@ -236,6 +241,17 @@ impl Request {
                 if *on { "on" } else { "off" },
                 why.as_ref().map_or_else(String::new, |why| format!("\t{why}"))
             ),
+            Request::Tonight { ids, on, yes, by } => {
+                let mut line = format!(
+                    "tonight\t{}\t{}\t{by}",
+                    if *on { "on" } else { "off" },
+                    if *yes { "yes" } else { "ask" }
+                );
+                for id in ids {
+                    line += &format!("\t{id}");
+                }
+                line + "\n"
+            }
             Request::Automatic { everyone, on } => {
                 format!("automatic\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
             }
@@ -317,6 +333,12 @@ impl Request {
                     _ => return Err("the reason is not one line of 1 to 200 characters".into()),
                 },
             }),
+            ["tonight", state, answer, by, ids @ ..] => Ok(Request::Tonight {
+                ids: ids.iter().map(|id| checked_id(id)).collect::<Result<_, _>>()?,
+                on: on(state)?,
+                yes: yes(answer)?,
+                by: by.parse().map_err(|_| "who asked is not a user ID".to_string())?,
+            }),
             ["automatic", place, state] => {
                 Ok(Request::Automatic { everyone: everyone(place)?, on: on(state)? })
             }
@@ -388,6 +410,24 @@ pub struct Listed {
     /// The newest version the catalog listed when bundled last read it,
     /// when that is newer than this one.
     pub update: Option<String>,
+    /// While its update is asked for tonight, what was asked.
+    pub tonight: Option<Tonight>,
+}
+
+/// An update asked for tonight's window, as `list` says it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Tonight {
+    /// The version it installs, which was the newest when it was asked.
+    pub to: String,
+    /// When it was asked, in milliseconds since 1970.
+    pub asked_ms: u64,
+    /// The user ID of who asked.
+    pub by: u32,
+    /// When a window first passed without it, if one did.
+    pub missed_ms: Option<u64>,
+    /// When the window it installs in starts, in milliseconds since 1970:
+    /// now, in the window.
+    pub starts_ms: u64,
 }
 
 /// The bundle to run, as `run` finds it: where, and what bundled
@@ -574,7 +614,7 @@ impl Answer {
             Answer::Question => b"question\n".to_vec(),
             Answer::Document(text) => format!("document {}\n{text}", text.len()).into_bytes(),
             Answer::Listed(l) => format!(
-                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 l.place,
                 l.id,
                 one_line(&l.version),
@@ -588,6 +628,15 @@ impl Answer {
                 l.held_by.map_or_else(|| "-".into(), |by| by.to_string()),
                 // Empty for none: a reason may be any one line, `-` too.
                 l.held_reason.as_deref().map_or_else(String::new, one_line),
+                // Five words for what was asked for tonight, a dash each for none.
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| one_line(&t.to)),
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| t.asked_ms.to_string()),
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| t.by.to_string()),
+                l.tonight
+                    .as_ref()
+                    .and_then(|t| t.missed_ms)
+                    .map_or_else(|| "-".into(), |ms| ms.to_string()),
+                l.tonight.as_ref().map_or_else(|| "-".into(), |t| t.starts_ms.to_string()),
                 one_line(&l.name)
             )
             .into_bytes(),
@@ -843,6 +892,11 @@ impl Answer {
             since,
             by,
             reason,
+            to,
+            asked,
+            asked_by,
+            missed,
+            starts,
             name,
         ] = words.as_slice()
         {
@@ -874,6 +928,19 @@ impl Answer {
                     by => Some(by.parse().map_err(|_| bad("who held a bundle"))?),
                 },
                 held_reason: (!reason.is_empty()).then(|| one_line(reason)),
+                tonight: match *to {
+                    "-" => None,
+                    to => Some(Tonight {
+                        to: one_line(to),
+                        asked_ms: asked.parse().map_err(|_| bad("when it was asked"))?,
+                        by: asked_by.parse().map_err(|_| bad("who asked"))?,
+                        missed_ms: match *missed {
+                            "-" => None,
+                            ms => Some(ms.parse().map_err(|_| bad("when a window passed"))?),
+                        },
+                        starts_ms: starts.parse().map_err(|_| bad("when a window starts"))?,
+                    }),
+                },
             })));
         }
         Err(bad("not an answer bundle knows"))
@@ -962,6 +1029,19 @@ mod tests {
                 on: true,
                 why: Some("-".into()),
             },
+            Request::Tonight { ids: Vec::new(), on: true, yes: true, by: 1000 },
+            Request::Tonight {
+                ids: vec!["org.example.notes".into(), "org.example.tea@2".into()],
+                on: true,
+                yes: false,
+                by: 1000,
+            },
+            Request::Tonight {
+                ids: vec!["org.example.notes".into()],
+                on: false,
+                yes: false,
+                by: 0,
+            },
             Request::Automatic { everyone: false, on: true },
             Request::History { id: None },
             Request::History { id: Some("org.example.notes".into()) },
@@ -1012,6 +1092,11 @@ mod tests {
             "hold\torg.example.notes\tme\ton\t",
             "hold\torg.example.notes\tme\ton\ttwo\ttabs",
             "automatic\tall\ton",
+            "tonight\ton\tyes",
+            "tonight\ton\tyes\tme",
+            "tonight\tmaybe\tyes\t1000",
+            "tonight\ton\tsure\t1000",
+            "tonight\ton\task\t1000\tNotes",
             "history",
         ] {
             assert!(Request::read(bad).is_err(), "{bad:?}");
@@ -1055,6 +1140,13 @@ mod tests {
             held_by: Some(1000),
             held_reason: Some("app tests use this version".into()),
             update: Some("0.2.0".into()),
+            tonight: Some(Tonight {
+                to: "0.2.0".into(),
+                asked_ms: 1_793_200_000_000,
+                by: 1000,
+                missed_ms: Some(1_793_250_000_000),
+                starts_ms: 1_793_300_000_000,
+            }),
         };
         let unbound = Listed {
             catalog: None,
@@ -1063,6 +1155,12 @@ mod tests {
             held_by: None,
             held_reason: None,
             update: None,
+            tonight: None,
+            ..listed.clone()
+        };
+        // Asked, with no window missed yet.
+        let fresh = Listed {
+            tonight: Some(Tonight { missed_ms: None, ..listed.tonight.clone().unwrap() }),
             ..listed.clone()
         };
         // A hold with no reason, and one whose reason is a dash.
@@ -1073,6 +1171,7 @@ mod tests {
             Answer::Question,
             Answer::Listed(listed),
             Answer::Listed(unbound),
+            Answer::Listed(fresh),
             Answer::Listed(unsaid),
             Answer::Listed(dash),
             Answer::Document("{\"format\":1,\"id\":\"org.example.notes\"}".into()),

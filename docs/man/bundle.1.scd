@@ -43,6 +43,10 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle update* [_id_...] [*--check*] [*--for-everyone*] [*--yes*]
 
+*bundle update* [_id_...] *--for-everyone* *--tonight* [*--yes*]
+
+*bundle update* _id_... *--for-everyone* *--not-tonight*
+
 *bundle update --automatic* *on*|*off* [*--for-everyone*]
 
 *bundle rollback* _id_ [*--for-everyone*]
@@ -234,6 +238,23 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	it lists what would update, with the version installed, the newest
 	and the catalog, or *its own feed*, and, for each that waits for its
 	wave, why and how to take it now, and changes nothing.
+
+*update* [_id_...] *--for-everyone* *--tonight* [*--yes*]
+	Asks, through *elevate*(8), that the update of each _id_ given, or of
+	every app everyone has that has one, is installed in tonight's
+	window and not now: an app's services restart in the middle of the
+	day when it updates, and this puts that off. The window is the hour
+	before the restart time of *updates.toml*(5) (*update set --restart*),
+	and 2:00 to 3:00 without one; see TONIGHT. An update that asks for
+	more than the version it replaces shows its sheet, as above, and is
+	not queued unless *--yes* says it is taken as it asks. A held app, and
+	one with no update, are not queued: when apps are named and one of
+	them cannot be, none is. Asking again for an app changes the version
+	it will install to the newest one, and keeps when it was first asked.
+
+*update* _id_... *--for-everyone* *--not-tonight*
+	Takes each _id_ off tonight's window: its update waits for *bundle
+	update* or for updating by themselves, as before.
 
 *update --automatic* *on*|*off* [*--for-everyone*]
 	Says whether your bundles, or everyone's, through *elevate*(8),
@@ -571,6 +592,23 @@ Updating by themselves, once turned on, runs some minutes after
 the version it replaces never installs by itself: it waits for *bundle
 update*.
 
+# TONIGHT
+
+*bundle update --tonight* keeps the request in *bundled*(8)'s state, and
+*bundle list* says ", installs tonight" at the app's line. In the window,
+*bundled* installs each app asked for, one at a time, as an update that
+nobody is there for: it asks for more than the version it replaces only
+when *--yes* was said, else it waits as an update by itself does, and
+*bundle history* says so; a held app is left alone, and one that fails
+says why. The history's row names who asked, and says "as asked, in the
+window". A request made inside the window runs at once, and none starts in
+the last 5 minutes of it.
+
+A computer that was off through the window, or whose *bundled* was not
+running, installs nothing when it is on in the day: the request waits
+for the next window, and *bundle list --json* says when a window passed
+without it.
+
 # WAVES
 
 A catalog's update server may send the newest version of a bundle out in
@@ -682,6 +720,14 @@ bundle you can run, by ID and then yours before everyone's:
 	The newest version its catalog listed when bundled last read it, if
 	that is newer than *version*, else *null*. The list reads no
 	network; *bundle update --check* reads the catalogs anew.
+
+*tonight*
+	*null*, or, for an app of everyone's whose update is asked for
+	tonight's window (TONIGHT), an object: *to*, the version it
+	installs, *asked_ms*, when it was asked, and *by*, the user ID of who
+	asked, *missed_ms*, when a window first passed without it, or *null*,
+	and *starts_ms*, when the window it installs in starts, in
+	milliseconds since 1970: now, in the window with time left.
 
 *flaws*
 	What the catalog's list of known flaws says of this version

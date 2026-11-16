@@ -252,6 +252,25 @@ still there after 70 minutes. A person's own apps are not measured: their
 data is in their home. Nothing measures when asked. The result is
 _sizes.json_, which a later day replaces whole.
 
+An app installed for everyone can also be asked to update tonight
+(*bundle update --tonight*, *bundle*(1)). The request is kept in
+_tonight.json_ and an update installs in the window: the hour that ends
+at the time *restart* names in _updates.toml_ when *unattended* is on
+(*updates.toml*(5)), else 02:00 to 03:00 by the local clock; the window
+may cross midnight. The updater wakes when the window starts, and at
+least hourly while requests wait. In the window it installs each app
+asked for, one at a time, as an update by itself that nobody is there
+for: it asks for more than the version it replaces only when the person
+asked with *--yes*, else the update waits as an update by itself does,
+and says so once for that version. A held app is left alone and the
+history says "held". A request made inside the window runs at once,
+and none starts in the last 5 minutes of it, so that the restart at its
+end does not cut one off. When the computer was off or bundled was not
+running through the window, nothing installs in the day after; the
+request stays for the next window and *bundle list --json* says when a
+window passed without it. Each request is taken away when its update is
+installed, has failed, is held, or waits for a yes that was not given.
+
 bundled writes each install, update, going back, removal, hold and
 release, waiting update and failed one to _history_. A person is shown
 their own bundles' events and everyone's; root is shown all.
@@ -400,6 +419,11 @@ _/system/state/bundled/sizes.json_
 	What the data of each app installed for everyone takes, per app and
 	per folder, and when it was measured; mode 0600. Apps no longer
 	installed are dropped when it is written.
+
+_/system/state/bundled/tonight.json_
+	The apps asked to update tonight: for each, the version asked
+	for, whether *--yes* was said, who asked and when, and when a
+	window first passed without it; mode 0600.
 
 _/system/state/bundled/history_
 	What bundled did to bundles, a line of tab-separated fields each,

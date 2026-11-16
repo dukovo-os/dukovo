@@ -341,6 +341,169 @@ impl Action for UpdateAll {
     }
 }
 
+/// What `bundle list --json` says of app `id` that asking for tonight
+/// moves: whether its update is asked for tonight, and what was asked;
+/// `none` for an app that everyone has not got.
+fn tonight_picked(id: &str, output: &str) -> Option<String> {
+    Some(match row_of(id, output)? {
+        Some(row) => {
+            json!({ "tonight": row.get("tonight").cloned().unwrap_or(Value::Null) }).to_string()
+        }
+        None => "none".into(),
+    })
+}
+
+/// `bundle update ID --for-everyone --tonight [--yes]`: the app's update,
+/// for everyone, in tonight's window: the hour before the restart time of
+/// `updates.toml`, else 2:00 to 3:00. An update that asks for more than
+/// the version before stops with the sheet's words, as [`Update`] does,
+/// and is queued with `yes`.
+pub struct Tonight;
+
+impl Action for Tonight {
+    const ID: &'static str = "apps.tonight";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/apps/{id}/tonight";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const LONG: bool = true;
+    /// 1 is an update that stops to say what it asks for, as `apps.update`.
+    const ANSWERS: &'static [i32] = &[0, 1];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Install an app's update tonight";
+    type Args = Updating;
+
+    fn argv(args: &Updating) -> Vec<String> {
+        let mut argv = ["bundle", "update"].map(String::from).to_vec();
+        argv.extend([args.id.clone(), "--for-everyone".to_string(), "--tonight".to_string()]);
+        if args.yes == Some(true) {
+            argv.push("--yes".into());
+        }
+        argv
+    }
+
+    fn subject(args: &Updating) -> Option<String> {
+        Some(args.id.clone())
+    }
+
+    fn probe(_: &Updating) -> Option<Vec<String>> {
+        Some(list_argv())
+    }
+
+    fn probed(args: &Updating, output: &str) -> Option<String> {
+        tonight_picked(&args.id, output)
+    }
+
+    fn examples() -> Examples<Updating> {
+        Examples {
+            good: vec![Updating { id: EXAMPLE.into(), yes: None }],
+            bad: vec![
+                json!({ "id": "../x" }),
+                json!({ "id": "Notes" }),
+                json!({ "id": EXAMPLE, "yes": "yes" }),
+            ],
+            undo: Some(Undo { action: "apps.not-tonight", args: json!({ "id": EXAMPLE }) }),
+        }
+    }
+}
+
+/// What `bundle list --json` says of every app everyone has that asking
+/// for tonight moves: each one's ID with what was asked, as text to
+/// compare.
+fn tonight_all_picked(output: &str) -> Option<String> {
+    let document: Value = serde_json::from_str(output).ok()?;
+    let mut asked = serde_json::Map::new();
+    for row in document.get("bundles")?.as_array()? {
+        if row.get("for_everyone").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let id = row.get("id")?.as_str()?;
+        asked.insert(id.into(), row.get("tonight").cloned().unwrap_or(Value::Null));
+    }
+    Some(Value::Object(asked).to_string())
+}
+
+/// `bundle update --for-everyone --tonight --yes`: every app everyone has
+/// that has an update, in tonight's window, taking what each asks for.
+pub struct TonightAll;
+
+impl Action for TonightAll {
+    const ID: &'static str = "apps.tonight-all";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/apps/tonight";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Install every app's update tonight";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["bundle", "update", "--for-everyone", "--tonight", "--yes"].map(String::from).to_vec()
+    }
+
+    fn probe(_: &Nothing) -> Option<Vec<String>> {
+        Some(list_argv())
+    }
+
+    fn probed(_: &Nothing, output: &str) -> Option<String> {
+        tonight_all_picked(output)
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples {
+            good: vec![Nothing {}],
+            bad: vec![json!({ "id": "org.example.notes" })],
+            // Which apps it queued is in the history of the list: each is
+            // taken off by name, with apps.not-tonight.
+            undo: None,
+        }
+    }
+}
+
+/// `bundle update ID --for-everyone --not-tonight`: takes the app off
+/// tonight's window.
+pub struct NotTonight;
+
+impl Action for NotTonight {
+    const ID: &'static str = "apps.not-tonight";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/apps/{id}/not-tonight";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Do not install an app's update tonight";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        ["bundle", "update"]
+            .map(String::from)
+            .into_iter()
+            .chain([args.id.clone(), "--for-everyone".to_string(), "--not-tonight".to_string()])
+            .collect()
+    }
+
+    fn subject(args: &Named) -> Option<String> {
+        Some(args.id.clone())
+    }
+
+    fn probe(_: &Named) -> Option<Vec<String>> {
+        Some(list_argv())
+    }
+
+    fn probed(args: &Named, output: &str) -> Option<String> {
+        tonight_picked(&args.id, output)
+    }
+
+    /// Taken off when nothing is asked for it.
+    fn settled(_: &Named, now: &str) -> Option<bool> {
+        Some(said(now, "tonight")?.is_null())
+    }
+
+    fn examples() -> Examples<Named> {
+        named_examples(Some(Undo { action: "apps.tonight", args: json!({ "id": EXAMPLE }) }))
+    }
+}
+
 /// `bundle rollback ID --for-everyone`: the version the app had before its
 /// last update, with the data it had then; bundled holds the app there.
 pub struct Rollback;

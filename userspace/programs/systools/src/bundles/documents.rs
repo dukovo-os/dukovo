@@ -38,7 +38,23 @@ struct Bundle {
     /// The newest version the catalog listed when bundled last read it,
     /// when that is newer than `version`.
     update: Option<String>,
+    /// While its update is asked for tonight's window, what was asked.
+    tonight: Option<Tonight>,
     flaws: Flaws,
+}
+
+/// An update asked for tonight, as `bundle list --json` says it.
+#[derive(Serialize)]
+struct Tonight {
+    /// The version it installs.
+    to: String,
+    asked_ms: u64,
+    /// The user ID of who asked.
+    by: u32,
+    /// When a window first passed without it, if one did.
+    missed_ms: Option<u64>,
+    /// When the window it installs in starts, in milliseconds since 1970.
+    starts_ms: u64,
 }
 
 /// What the catalog's list of known flaws says of the version: `unknown`
@@ -81,6 +97,14 @@ impl List {
                 held_by: row.held_by.filter(|_| row.held),
                 held_since_ms: row.held_since.filter(|_| row.held).map(|s| s.saturating_mul(1000)),
                 update: row.update,
+                // Everyone's apps alone are asked for tonight.
+                tonight: row.tonight.filter(|_| row.place == Place::Everyone).map(|t| Tonight {
+                    to: t.to,
+                    asked_ms: t.asked_ms,
+                    by: t.by,
+                    missed_ms: t.missed_ms,
+                    starts_ms: t.starts_ms,
+                }),
                 flaws: Flaws::of(row.flags),
             })
             .collect();
@@ -112,6 +136,7 @@ mod tests {
             held_by: None,
             held_reason: None,
             update: None,
+            tonight: None,
         }
     }
 
@@ -121,6 +146,13 @@ mod tests {
             Listed {
                 catalog: Some("dukovo".into()),
                 update: Some("1.3.0".into()),
+                tonight: Some(crate::bundles::protocol::Tonight {
+                    to: "1.3.0".into(),
+                    asked_ms: 1_793_200_000_000,
+                    by: 1000,
+                    missed_ms: None,
+                    starts_ms: 1_793_300_000_000,
+                }),
                 ..row(
                     Place::Everyone,
                     "org.nginx.nginx",

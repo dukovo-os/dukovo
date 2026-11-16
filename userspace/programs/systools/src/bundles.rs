@@ -50,6 +50,7 @@ pub(crate) mod services;
 pub(crate) mod sheet;
 pub(crate) mod sizes;
 pub(crate) mod snapshots;
+pub(crate) mod tonight;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, IsTerminal, Read, Write};
@@ -86,6 +87,8 @@ const USAGE: &str =
        bundle catalog add NAME URL ROOT-FILE
        bundle catalog remove NAME
        bundle update [ID...] [--check] [--for-everyone] [--yes]
+       bundle update [ID...] --for-everyone --tonight [--yes]
+       bundle update ID... --for-everyone --not-tonight
        bundle update --automatic on|off [--for-everyone]
        bundle rollback ID [--for-everyone]
        bundle hold ID [--for-everyone] [--why TEXT]
@@ -148,9 +151,13 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut unsigned = false;
     let mut json = false;
     let mut why = None;
+    let mut tonight = false;
+    let mut not_tonight = false;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "check" => check_only = true,
+            Arg::Long(l) if l == "tonight" => tonight = true,
+            Arg::Long(l) if l == "not-tonight" => not_tonight = true,
             Arg::Long(l) if l == "json" => json = true,
             Arg::Long(l) if l == "clear" => clear = true,
             Arg::Long(l) if l == "automatic" && automatic.is_none() => {
@@ -225,7 +232,24 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let update_ok = sub == Some("update") || (!check_only && automatic.is_none());
     let automatic_ok = automatic.is_none() || (!check_only && !yes && operands.is_empty());
     let clear_ok = (sub == Some("default") && operands.len() == 1) || !clear;
-    if !everyone_ok || !yes_ok || !data_ok || !from_ok || !update_ok || !automatic_ok || !clear_ok {
+    // Tonight is an update's, for everyone's apps, one way or the other;
+    // taking an app off it names the apps and has no yes to give.
+    let night_ok = !(tonight || not_tonight)
+        || (sub == Some("update")
+            && everyone
+            && !check_only
+            && automatic.is_none()
+            && !(tonight && not_tonight)
+            && (!not_tonight || (!operands.is_empty() && !yes)));
+    if !everyone_ok
+        || !yes_ok
+        || !data_ok
+        || !from_ok
+        || !update_ok
+        || !automatic_ok
+        || !clear_ok
+        || !night_ok
+    {
         return Err(usage(USAGE.into()));
     }
     let folder = || operands.first().map_or(".", String::as_str);
@@ -260,6 +284,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("list"), []) => list(json),
         (Some("info"), [id]) => info(id, json),
         (Some("remove"), [id]) => remove(id, everyone, data),
+        (Some("update"), ids) if tonight || not_tonight => night(ids, tonight, yes),
         (Some("update"), []) if let Some(on) = automatic => {
             simple(&Request::Automatic { everyone, on }, "bundle")
         }
@@ -929,6 +954,32 @@ fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32,
     Ok(0)
 }
 
+/// `bundle update --for-everyone --tonight` (`on`) or `--not-tonight`: has
+/// the updates of `ids`, or of every app that has one, installed in
+/// tonight's window, or takes the apps off it.
+fn night(ids: &[String], on: bool, yes: bool) -> Result<i32, Fail> {
+    let ids = ids.iter().map(|id| checked(id)).collect::<Result<Vec<_>, _>>()?;
+    let request = Request::Tonight { ids, on, yes, by: util::asker() };
+    let (_stream, mut input) = ask(&request, None).map_err(fail)?;
+    loop {
+        match answer(&mut input)? {
+            Answer::Note(note) => println!("bundle: {note}"),
+            // An update that asks for more than the version it replaces:
+            // what it asks for, and then why it is not queued.
+            Answer::Sheet(text) => print!("{text}"),
+            Answer::Ok(said) => {
+                println!("bundle: {said}");
+                return Ok(0);
+            }
+            Answer::Error(why) => {
+                eprintln!("bundle: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
+}
+
 /// What `bundle update --check` finds for this person's bundles.
 pub(crate) struct Pending {
     /// Each bundle whose catalog, or feed, lists a newer version.
@@ -1116,8 +1167,10 @@ fn list(json: bool) -> Result<i32, Fail> {
         };
         // The reason of a hold, only where a hold has one.
         let held = row.held_reason.as_ref().filter(|_| row.held);
+        // Only an app of everyone's is asked for tonight.
+        let tonight = if row.tonight.is_some() { ", installs tonight" } else { "" };
         println!(
-            "{:width$}  {:version_width$}  {whose:9}  {:flaws_width$}  {}{}",
+            "{:width$}  {:version_width$}  {whose:9}  {:flaws_width$}  {}{}{tonight}",
             row.id,
             row.version,
             row.flags.shown(),

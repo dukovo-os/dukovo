@@ -125,6 +125,9 @@ system = "2026.3.1"
 	machine takes one: a file with *restart* and without *unattended*
 	is refused. *update set --unattended on --restart* _HH:MM_ writes
 	both, and *--unattended off* takes the time away with the setting.
+	The hour before it is also the window in which *bundled*(8)
+	installs the apps asked for with *bundle update --tonight*; without
+	it that window is 02:00 to 03:00.
 
 *[hold]*
 	The versions held back, as *update hold* writes them: *system*,
