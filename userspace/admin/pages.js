@@ -191,7 +191,7 @@ const ENTRIES = [
   {
     id: 'websites', title: 'Websites', path: '/websites', icon: 'globe', under: 'apps',
     keywords: ['site', 'nginx', 'php', 'domain'],
-    css: ['boards.css', 'pages.css', 'pages/websites/web.css'],
+    css: ['dialogs.css', 'boards.css', 'pages.css', 'lib/trial-banner.css', 'pages/websites/web.css'],
     load: () => import('./pages/websites/page.js'),
     parts: { palette: () => import('./pages/websites/palette.js') },
   },

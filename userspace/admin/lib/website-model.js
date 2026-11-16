@@ -305,6 +305,38 @@ export const getStep = (form) => stepOf('get', `Get the certificate for ${form.n
 /** The step that serves the site `name` over HTTPS with `certificate`. */
 export const httpsStep = (name, certificate) => stepOf('https', `Serve ${name} over HTTPS`, 'websites.https', httpsArgs(name, certificate), name, STANDS.https(name, certificate));
 
+/** The step that serves the site `name` over HTTP only again; the certificate stays in certd. */
+export const offStep = (name) => ({
+  id: 'off',
+  title: `Serve ${name} over HTTP only`,
+  action: 'websites.https',
+  args: httpsArgs(name, null),
+  wait: 'task',
+  words: {
+    unlock: `serve ${name} over HTTP only`,
+    running: `Turning HTTPS off for ${name}`,
+    done: `${name} is served over HTTP only.`,
+    failed: `HTTPS was not turned off for ${name}`,
+    stands: `${name} is still served over HTTPS: nothing was changed.`,
+  },
+});
+
+/** The step that removes the site `name`, and with `files` its folder. */
+export const removeStep = (name, files) => ({
+  id: 'remove',
+  title: `Remove ${name}`,
+  action: 'websites.remove',
+  args: removeArgs(name, files),
+  wait: 'task',
+  words: {
+    unlock: `remove the website ${name}`,
+    running: `Removing ${name}`,
+    done: `${name} is removed.`,
+    failed: `${name} was not removed`,
+    stands: `${name} is still there: nothing was changed.`,
+  },
+});
+
 /**
  * The steps that add a site, in order. `missing` are the apps to install
  * first, as `{id, name, sha256}`. A certificate from Let's Encrypt is two
@@ -480,7 +512,9 @@ export function httpsOf(site, list, date) {
   const none = { certificate: null, ends: null, renews: null };
   if (!site.https) return { ...none, words: 'HTTP only', tone: 'warn' };
   if (!site.certificate) return { ...none, words: 'HTTPS, with a certificate certd does not keep', tone: 'warn' };
-  const found = (Array.isArray(list) ? list : []).find((one) => one.name === site.certificate);
+  // Without the list of certificates all that is known is the name.
+  if (!Array.isArray(list)) return { ...none, certificate: site.certificate, words: `Certificate ${site.certificate}`, tone: '' };
+  const found = list.find((one) => one.name === site.certificate);
   if (!found) return { ...none, certificate: site.certificate, words: `Certificate ${site.certificate}, which certd does not have`, tone: 'warn' };
   const base = {
     certificate: found.name, tone: found.revoked === true ? 'warn' : '', ends: found.not_after ? date(found.not_after) : null, renews: found.renews ? date(found.renews) : null,

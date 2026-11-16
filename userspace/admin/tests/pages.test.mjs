@@ -97,12 +97,16 @@ test('Add an app, Websites and Databases are pages of their own that the navigat
     assert.equal(entry.phone, null, `${entry.id}: no tab`);
     assert.equal(entry.needs, 'person', `${entry.id}: a reader may open it`);
     assert.equal(typeof entry.load, 'function', `${entry.id}: load`);
-    assert.deepEqual(entry.css.slice(0, 2), ['boards.css', 'pages.css'], `${entry.id}: the sheets of the boards and the pages`);
-    assert.equal(entry.css.length, 3, `${entry.id}: and one of its own`);
-    assert.ok(existsSync(new URL(entry.css[2], ROOT)), `${entry.id}: its own sheet is a file`);
+    // Websites opens a port for a time: it lists dialogs.css first and the tried change's banner before its own sheet.
+    const lead = entry.id === 'websites' ? ['dialogs.css'] : [];
+    const banner = entry.id === 'websites' ? ['lib/trial-banner.css'] : [];
+    assert.deepEqual(entry.css.slice(0, lead.length + 2), [...lead, 'boards.css', 'pages.css'], `${entry.id}: the sheets of the boards and the pages`);
+    assert.equal(entry.css.length, lead.length + 2 + banner.length + 1, `${entry.id}: and one of its own`);
+    assert.ok(existsSync(new URL(entry.css.at(-1), ROOT)), `${entry.id}: its own sheet is a file`);
     assert.ok(existsSync(new URL(`pages/${entry.id}/page.js`, ROOT)), `${entry.id}: page.js`);
   }
-  assert.deepEqual(entries.map((entry) => entry.css[2]), ['pages/add-app/add.css', 'pages/websites/web.css', 'pages/databases/db.css']);
+  assert.deepEqual(PAGES.find((entry) => entry.id === 'websites').css, ['dialogs.css', 'boards.css', 'pages.css', 'lib/trial-banner.css', 'pages/websites/web.css']);
+  assert.deepEqual(entries.map((entry) => entry.css.at(-1)), ['pages/add-app/add.css', 'pages/websites/web.css', 'pages/databases/db.css']);
   assert.deepEqual(entries.map((entry) => Object.keys(entry.parts)), [[], ['palette'], ['palette']]);
   assert.equal(PAGES.find((entry) => entry.id === 'apps').under, null, 'Apps stands for itself');
 });

@@ -13,7 +13,7 @@ import {
   addStep, allNames, backupRow, bothWords, certificateChoices, certificateNameOf, certificateNameProblem, certificateOf,
   certificatesFor, certificateSteps, checkWords, checkedProblems, confRows, covers, firewallRows, folderFor, folderProblem, folderWords,
   getArgs, getStep, handEditWords, httpsArgs, httpsLocked, httpsOf, httpsStep, installStep, KINDS, lastToUse, listed,
-  liveUrl, machineNamesOf, missingApps, nameProblem, namesOf, namesProblem, offLead, openPortArgs, outcomeOf, ownerChoices, planChecks, planRows,
+  liveUrl, machineNamesOf, missingApps, nameProblem, namesOf, namesProblem, offLead, offStep, openPortArgs, removeStep, outcomeOf, ownerChoices, planChecks, planRows,
   portsFor, previewFiles, removeArgs, removeLead, serveWords, serverLines, siteArgs, snapshotRow, stateOf, STANDS, stepsOf, testArgs,
   wwwDefault, wwwOf,
 } from '../lib/website-model.js';
@@ -269,6 +269,17 @@ test('what stands after each step fails is said in the step\'s words', () => {
   assert.equal(httpsStep('a.example', 'c').words.running, 'Turning on HTTPS for a.example');
 });
 
+test('turning HTTPS off and removing a site are one step each, with what stands said', () => {
+  const off = offStep('shop.example.org');
+  assert.deepEqual([off.action, off.args, off.wait], ['websites.https', { name: 'shop.example.org', off: true }, 'task']);
+  assert.equal(off.words.stands, 'shop.example.org is still served over HTTPS: nothing was changed.');
+  assert.equal(off.words.unlock, 'serve shop.example.org over HTTP only');
+  const gone = removeStep('shop.example.org', true);
+  assert.deepEqual([gone.action, gone.args], ['websites.remove', { name: 'shop.example.org', files: true }]);
+  assert.deepEqual(removeStep('a', false).args, { name: 'a' });
+  assert.equal(gone.words.stands, 'shop.example.org is still there: nothing was changed.');
+});
+
 test('the end of a run: done, left, and each failure with where Try again starts', () => {
   const steps = stepsOf(form(), [{ id: 'org.nginx.nginx', name: 'nginx', sha256: 's' }]);
   assert.deepEqual(outcomeOf({ done: true, failed: null, answers: [], left: false }, steps), {
@@ -443,7 +454,9 @@ test('a site\'s HTTPS in the list\'s words', () => {
   assert.equal(httpsOf(site({ certificate: 'intranet' }), list, date).words, 'Certificate intranet (added)');
   const gone = httpsOf(site({ certificate: 'blog.example.org' }), list, date);
   assert.deepEqual([gone.tone, gone.words], ['warn', 'Let\'s Encrypt · blog.example.org is revoked']);
-  assert.equal(httpsOf(site(), null, date).words, 'Certificate shop.example.org, which certd does not have');
+  assert.deepEqual(httpsOf(site(), null, date), {
+    words: 'Certificate shop.example.org', tone: '', certificate: 'shop.example.org', ends: null, renews: null,
+  }, 'without the list, only the name is known');
 });
 
 test('a hand edit is shown, and the console says it does not write that file', () => {
