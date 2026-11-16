@@ -4434,8 +4434,8 @@ with **Who are the administrators?**, which opens Accounts, and an
 administrator whose console is locked reads **Unlock to see the alerts.** with
 **Unlock** (see "Unlocking the console"). The page is at `/alerts`. It is not in
 the list of pages: it is a tab of the bar along the bottom of a phone, and the
-Overview, the Security page, the Certificates page and the Backups page link to
-it, and the command palette finds it. Its cards have addresses of their own:
+Overview, the Security page, the Certificates page and the banner of a backup
+that is overdue or failed link to it, and the command palette finds it. Its cards have addresses of their own:
 `#active`, `#browser`, `#channels`, `#email`, `#recent` and `#phone`.
 
 It reads `alerts list`, `alerts history` and `alerts status`, and runs `alerts
