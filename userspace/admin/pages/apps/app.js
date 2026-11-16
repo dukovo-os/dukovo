@@ -158,7 +158,7 @@ export function makeApp(view, act) {
     const services = servicesOf(info, show);
     const title = h('h2', { id: 'apps-h', tabindex: '-1' }, `${info.name} ${info.version}`);
     fill(element,
-      h('div', { class: 'apps-title' }, square(row, true), h('div', {}, title, h('span', { class: 'muted' }, byline(info)))),
+      h('div', { class: 'apps-title' }, square(row, 'apps-ic', true), h('div', {}, title, h('span', { class: 'muted' }, byline(info)))),
       h('p', { class: 'apps-job', role: 'status', hidden: true }),
       sheet !== null && askedNode(info, sheet, admin),
       banner && bannerNode(banner),

@@ -3,7 +3,8 @@
 
 // The square that stands for an app: the first letter of its name, in one of
 // six colours that its ID picks. The installed apps and the apps of the
-// catalogs are marked the same way.
+// catalogs are marked the same way. The page names the class that its own
+// sheet gives the square, so that no page carries the rules of another's.
 
 import { h } from '../../dom.js';
 
@@ -17,5 +18,5 @@ export function tintOf(id) {
   return hash % 6;
 }
 
-/** The square with an app's initial, which stands for the app and is not read: its name is beside it. `row` is `{initial, tint}`. */
-export const square = (row, big = false) => h('span', { class: `apps-ic tint-${row.tint}${big ? ' big' : ''}`, 'aria-hidden': 'true' }, row.initial);
+/** The square with an app's initial, which stands for the app and is not read: its name is beside it. `row` is `{initial, tint}`; `kind` is the class that the page's sheet draws it with. */
+export const square = (row, kind, big = false) => h('span', { class: `${kind} tint-${row.tint}${big ? ' big' : ''}`, 'aria-hidden': 'true' }, row.initial);

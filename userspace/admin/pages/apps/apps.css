@@ -33,6 +33,15 @@ a.apps-who:hover b, a.apps-who:focus-visible b { text-decoration: underline; }
 .apps-yours p { margin: 0; }
 .apps-yours .cmd + .cmd { margin-top: .429rem; }
 
+/* An app's mark: its first letter in a square of one of six colours, white letters of at least 4.5 to 1 */
+.apps-ic { display: inline-grid; place-items: center; flex: none; width: 2.429rem; height: 2.429rem; border-radius: .5rem; color: #fff; font: 700 1rem var(--font-brand); background: #B0281F; }
+.apps-ic.big { width: 3.143rem; height: 3.143rem; font-size: 1.286rem; }
+.apps-ic.tint-1 { background: #1D6A31; }
+.apps-ic.tint-2 { background: #2C5C93; }
+.apps-ic.tint-3 { background: #5E4FA0; }
+.apps-ic.tint-4 { background: #8A4A12; }
+.apps-ic.tint-5 { background: #5A6878; }
+
 /* The panel */
 .apps-panel { gap: 1rem; }
 .apps-title { display: flex; align-items: center; gap: .857rem; min-width: 0; }
@@ -85,8 +94,9 @@ a.apps-who:hover b, a.apps-who:focus-visible b { text-decoration: underline; }
   .apps-versions .apps-action { align-items: stretch; }
 }
 
-/* Forced colours: the sheet is drawn in system colours. */
+/* Forced colours: the marks and the sheet are drawn in system colours, and what only a tint showed has an outline. */
 @media (forced-colors: active) {
+  .dk .apps-ic { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border: 1px solid ButtonText; }
   .dk .apps-sheet, .dk .apps-empty { border-color: CanvasText; }
   .dk .apps-panel .btn[aria-disabled="true"], .dk .apps-list .btn[aria-disabled="true"] { color: GrayText; border-color: GrayText; }
 }

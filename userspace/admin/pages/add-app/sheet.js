@@ -149,7 +149,7 @@ export function makePanel(view, {
     const model = sheet;
     const progress = h('div', { class: 'add-run', role: 'status' });
     fill(element,
-      h('div', { class: 'add-title' }, square(model, true), h('div', {}, heading(`${model.name} ${model.version}`),
+      h('div', { class: 'add-title' }, square(model, 'add-ic', true), h('div', {}, heading(`${model.name} ${model.version}`),
         h('span', { class: model.line.warn ? 'warn' : 'muted' }, model.line.warn && icon('warn'), model.line.words))),
       model.summary && h('p', {}, model.summary),
       model.refusal && h('div', { class: 'banner bad', role: 'note' }, icon('warn'), h('div', {}, h('p', {}, h('b', {}, 'This app would not be installed. '), model.refusal))),
@@ -223,7 +223,7 @@ export function makePanel(view, {
   async function drawAfter(info) {
     const after = afterOf(info, await readServices(view));
     fill(element,
-      h('div', { class: 'add-title' }, square(sheet, true), h('div', {}, heading(`${sheet.name} ${sheet.version}`), h('span', { class: 'muted' }, 'Installed'))),
+      h('div', { class: 'add-title' }, square(sheet, 'add-ic', true), h('div', {}, heading(`${sheet.name} ${sheet.version}`), h('span', { class: 'muted' }, 'Installed'))),
       h('h3', {}, 'What happened'),
       h('ul', { class: 'add-done', 'data-installed': info.id },
         h('li', {}, icon('check'), after.installed),

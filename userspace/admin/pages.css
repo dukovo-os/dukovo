@@ -3,11 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0 OR MIT
  *
  * What only some pages draw: the range control, the Overview's grid, the
- * account's choices, the list of log lines (lib/log-list.js) and the mark of
- * an app (pages/apps/mark.js). The entries of those pages name this file, so
- * that the shell's start does not carry it. Icons are not here: every one has
- * its rule in console.css and its file in icons/. Same rules as console.css:
- * rem, and px for borders and focus rings.
+ * account's choices and the list of log lines (lib/log-list.js). The
+ * entries of those pages name this file, so that the shell's start does not
+ * carry it. Icons are not here: every one has its rule in console.css and its
+ * file in icons/. Same rules as console.css: rem, and px for borders and focus
+ * rings.
  */
 .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(18.571rem, 1fr)); }
 .grid.two { grid-template-columns: repeat(auto-fit, minmax(27.143rem, 1fr)); }
@@ -58,14 +58,6 @@
   .ldet dd { margin-bottom: .429rem; }
   .ldet .btns .btn { flex: 1 1 100%; }
 }
-/* An app's mark: its first letter in a square of one of six colours, white letters of at least 4.5 to 1 */
-.apps-ic { display: inline-grid; place-items: center; flex: none; width: 2.429rem; height: 2.429rem; border-radius: .5rem; color: #fff; font: 700 1rem var(--font-brand); background: #B0281F; }
-.apps-ic.big { width: 3.143rem; height: 3.143rem; font-size: 1.286rem; }
-.apps-ic.tint-1 { background: #1D6A31; }
-.apps-ic.tint-2 { background: #2C5C93; }
-.apps-ic.tint-3 { background: #5E4FA0; }
-.apps-ic.tint-4 { background: #8A4A12; }
-.apps-ic.tint-5 { background: #5A6878; }
 @media (forced-colors: active) {
   .dk .seg button { border: 1px solid ButtonText; }
   .dk .seg button.on { outline: 2px solid Highlight; outline-offset: -2px; }
@@ -74,7 +66,6 @@
   .dk .lline.on .lrow { outline: 2px solid Highlight; outline-offset: -2px; box-shadow: none; }
   .dk .lv { forced-color-adjust: none; background: CanvasText; }
   .dk .lv.d { background: none; border-color: CanvasText; }
-  .dk .apps-ic { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border: 1px solid ButtonText; }
 }
 
 /* The steps of a flow (lib/steps.js): a mark, and the state in words beside it. */

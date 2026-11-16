@@ -106,21 +106,19 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // Move and Reliability keep a little room for what they gain; the Terminal's
 // graph is as it was.
 // Report a problem's row is 7,000 more than it was, for the cuts the page makes.
-// Apps' row is 1,000 more than it was, for the mark that the page that adds an
+// Apps' row is 1,100 more than it was, for the mark that the page that adds an
 // app draws too, which has a module of its own, and for the count of what
 // nginx and PostgreSQL manage.
 // Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart.
-// Pages.css holds an app's mark, which the Apps pages share, so that every page that lists it brings 740
-// bytes more: Hardware's row is 500, Move's 200 and Report's 100 more than they were, for that.
 const PAGE_LIMITS = {
   updates: 70_000,
-  apps: 56_000,
-  hardware: 61_500,
+  apps: 56_100,
+  hardware: 61_000,
   certificates: 60_000,
-  report: 67_100,
+  report: 67_000,
   alerts: 60_000,
   security: 147_000,
-  move: 107_200,
+  move: 107_000,
   reliability: 22_000,
   terminal: 149_908,
 };

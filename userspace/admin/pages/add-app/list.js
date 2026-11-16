@@ -71,7 +71,7 @@ export function makeList({ type, clear }) {
   const rowOf = (row, selected) => h('tr', { class: row.id === selected ? 'sel' : null },
     h('td', { 'data-label': 'App' },
       h('a', { class: 'add-who', href: row.href, 'aria-current': row.id === selected ? 'page' : null },
-        square(row), h('span', {}, h('b', {}, row.name), h('small', { class: 'mono' }, row.id)))),
+        square(row, 'add-ic'), h('span', {}, h('b', {}, row.name), h('small', { class: 'mono' }, row.id)))),
     h('td', { 'data-label': 'Version' }, row.version),
     h('td', { 'data-label': 'Catalog' }, row.catalog),
     h('td', { 'data-label': 'Flaws' }, h('span', { class: row.flaws.urgent ? 'small warn' : 'small' }, row.flaws.words)),

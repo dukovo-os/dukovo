@@ -30,6 +30,15 @@
 .setups .radio-card > span { display: flex; flex-direction: column; gap: .143rem; }
 .uses { display: flex; flex-wrap: wrap; gap: .286rem; margin-top: .429rem; }
 
+/* An app's mark (pages/apps/mark.js): the same square and the same six colours as the Apps pages' (apps.css), white letters of at least 4.5 to 1; a colour changed there is changed here (mark.test.mjs holds them together) */
+.add-ic { display: inline-grid; place-items: center; flex: none; width: 2.429rem; height: 2.429rem; border-radius: .5rem; color: #fff; font: 700 1rem var(--font-brand); background: #B0281F; }
+.add-ic.big { width: 3.143rem; height: 3.143rem; font-size: 1.286rem; }
+.add-ic.tint-1 { background: #1D6A31; }
+.add-ic.tint-2 { background: #2C5C93; }
+.add-ic.tint-3 { background: #5E4FA0; }
+.add-ic.tint-4 { background: #8A4A12; }
+.add-ic.tint-5 { background: #5A6878; }
+
 /* The table: an app's mark, its name and ID, and what the catalogs say of it */
 .add-who { display: flex; align-items: center; gap: .714rem; min-width: 0; color: inherit; text-decoration: none; }
 a.add-who:hover b, a.add-who:focus-visible b { text-decoration: underline; }
@@ -69,6 +78,7 @@ a.add-who:hover b, a.add-who:focus-visible b { text-decoration: underline; }
 
 /* Forced colours: what only a tint or a border showed is drawn in system colours. */
 @media (forced-colors: active) {
+  .dk .add-ic { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border: 1px solid ButtonText; }
   .dk .add-empty, .dk .setups a.radio-card { border-color: CanvasText; }
   .dk .seg a { border: 1px solid ButtonText; }
   .dk .seg a.on { outline: 2px solid Highlight; outline-offset: -2px; }
