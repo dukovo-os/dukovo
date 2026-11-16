@@ -280,7 +280,7 @@ pub(crate) fn cpu_name(brand: &str) -> String {
 }
 
 /// The clock a brand string ends with, as `@ 1.80GHz`, in MHz.
-fn named_mhz(brand: &str) -> Option<u32> {
+pub(crate) fn named_mhz(brand: &str) -> Option<u32> {
     let (_, clock) = brand.rsplit_once(" @ ")?;
     let ghz: f64 = clock.trim().strip_suffix("GHz")?.parse().ok()?;
     Some((ghz * 1000.0).round() as u32).filter(|&mhz| mhz > 0)
