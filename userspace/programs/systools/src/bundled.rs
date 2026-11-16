@@ -3194,7 +3194,7 @@ fn install_tonight(shared: &Shared, want: &tonight::Want) {
     let _ = fs::remove_file(&file);
     match result {
         Ok(_) => {
-            eprintln!("bundled: updated {id} {from} to {to} for everyone, in the window, as asked")
+            eprintln!("bundled: updated {id} {from} to {to} for everyone, in the window, as asked");
         }
         Err(why) => {
             let waits = why.starts_with(WAITS);

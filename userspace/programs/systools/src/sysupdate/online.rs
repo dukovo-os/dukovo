@@ -402,12 +402,6 @@ pub fn window_of(restart: Option<&str>) -> (u32, u32) {
     }
 }
 
-/// [`window_of`] the restart time of `settings`.
-#[must_use]
-pub fn window(settings: &Settings) -> (u32, u32) {
-    window_of(settings.restart.as_deref())
-}
-
 /// Refuses a channel there is not.
 ///
 /// # Errors
@@ -1280,8 +1274,8 @@ mod tests {
         }
         // The restart time of the settings, which needs an unattended machine.
         let unattended = Settings::parse("unattended = true\nrestart = \"05:00\"\n").unwrap();
-        assert_eq!(window(&unattended), (4 * 60, 5 * 60));
-        assert_eq!(window(&Settings::default()), (2 * 60, 3 * 60));
+        assert_eq!(window_of(unattended.restart.as_deref()), (4 * 60, 5 * 60));
+        assert_eq!(window_of(Settings::default().restart.as_deref()), (2 * 60, 3 * 60));
     }
 
     #[test]

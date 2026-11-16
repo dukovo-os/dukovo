@@ -422,7 +422,7 @@ mod tests {
     fn bundled_sleeps_until_the_window_and_an_hour_at_most() {
         let three = Window::of(Some("03:00"));
         let nap = |now: u64| nap(three, now, &utc);
-        assert_eq!(nap(at(0, 1, 30, 0)), Duration::from_secs(1800));
+        assert_eq!(nap(at(0, 1, 30, 0)), Duration::from_mins(30));
         assert_eq!(nap(at(0, 12, 0, 0)), NAP_MOST);
         // In the window, until just after its end.
         assert_eq!(nap(at(0, 2, 59, 0)), Duration::from_secs(61));
