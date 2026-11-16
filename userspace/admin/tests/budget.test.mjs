@@ -119,6 +119,8 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // the window's words and the sheet of an update that asks for more, and the
 // rows of the Apps card that carry them. The question that asks why, and the
 // sheet's reading, are loaded when they are wanted and are not in the row.
+// Apps' row is 5,400 more than it was, for the Size row's every state, the
+// hold row's words, and Tonight, Not tonight and the window's words.
 // Hardware's row is 6,000 more than the plan's: the disks' rows and the memory test at the next restart.
 // Alerts' is 5,000 more than 60,000: 4,000 for the kinds of alert each channel is told of and 1,000 for the card of Set up a phone.
 // Security's is 2,500 more than 147,000: 1,500 for the rows of its Alerts card, one for each kind of alert, and 1,000 for the steps' rules in pages.css.
@@ -126,7 +128,7 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // they bring; Websites' list reads the whole model of a site, its words and checks.
 const PAGE_LIMITS = {
   updates: 81_700,
-  apps: 56_100,
+  apps: 61_500,
   hardware: 61_000,
   certificates: 60_000,
   report: 67_000,

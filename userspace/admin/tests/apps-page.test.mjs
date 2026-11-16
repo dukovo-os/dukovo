@@ -10,7 +10,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { list, plain, task, valkey } from './apps-fixtures.mjs';
+import {
+  list, NOW, plain, settings, task, valkey,
+} from './apps-fixtures.mjs';
 import {
   control, openApps, refusal, rowsOf, settle,
 } from './apps-view.mjs';
@@ -159,7 +161,7 @@ test('the facts of an app are its service with its state, its account, what it m
   assert.equal(facts.get('Used by').textContent, 'PHP-FPM (sessions)');
   assert.ok(facts.get('Data').textContent.startsWith('/shared/services/io.valkey.valkey/valkey'));
   assert.ok(facts.get('Data').textContent.includes('edits made by hand stay through updates'));
-  assert.equal(facts.get('Size').textContent, '9.44 MB');
+  assert.equal(facts.get('Size').textContent, '9.44 MB installed');
   assert.equal(facts.get('Updates').textContent, 'Tell me · Change on the Updates page');
   assert.equal(facts.get('Updates').querySelector('a').getAttribute('href'), '/updates');
 });
@@ -231,9 +233,9 @@ test('an app with no version kept says that an update keeps the one it replaces,
 test('an administrator has Update, Hold, Settings and Remove, each with its command under it', async (context) => {
   const app = await openApps(context, { rest: VALKEY });
   const buttons = app.view.main.querySelector('.apps-buttons');
-  assert.deepEqual(buttons.querySelectorAll('.btn').map((one) => one.textContent), ['Update to 8.0.4', 'Hold at 8.0.3', 'Settings…', 'Remove…']);
+  assert.deepEqual(buttons.querySelectorAll('.btn').map((one) => one.textContent), ['Update to 8.0.4', 'Tonight', 'Hold at 8.0.3', 'Settings…', 'Remove…']);
   assert.equal(control(buttons, 'settings').getAttribute('href'), '/services/valkey');
-  assert.deepEqual(app.inlines.filter(([action]) => action !== 'apps.rollback').map(([action]) => action), ['apps.update-all', 'apps.update', 'apps.hold', 'apps.remove']);
+  assert.deepEqual(app.inlines.filter(([action]) => action !== 'apps.rollback').map(([action]) => action), ['apps.update-all', 'apps.update', 'apps.tonight', 'apps.hold', 'apps.remove']);
 });
 
 test('a reader sees every fact and no button, and is told who can', async (context) => {
@@ -286,19 +288,202 @@ test('an address that cannot be an app says so in its own words', async (context
 
 // ---- what the buttons do ----
 
-test('Hold runs apps.hold, then reads again, and focus goes to the button that is there now', async (context) => {
+test('Hold asks why first, then runs apps.hold, reads again, and focus goes to the button that is there now', async (context) => {
   const app = await openApps(context, { rest: VALKEY });
   const before = app.calls.filter((path) => path === '/api/1/apps/io.valkey.valkey').length;
-  app.answers({ '/api/1/apps/io.valkey.valkey': valkey({ held: true }) });
   await app.press(control(app.view.main, 'hold'));
-  assert.deepEqual(app.ran('apps.hold'), [{ id: 'io.valkey.valkey' }]);
+  assert.equal(app.dialog().querySelector('h2').textContent, 'Hold Valkey at 8.0.3');
+  assert.equal(app.ran('apps.hold').length, 0, 'nothing is held until the dialog says so');
+  app.answers({ '/api/1/apps/io.valkey.valkey': valkey({ held: true }) });
+  await app.submit();
+  assert.deepEqual(app.ran('apps.hold'), [{ id: 'io.valkey.valkey' }], 'a hold needs no reason');
   assert.equal(app.calls.filter((path) => path === '/api/1/apps/io.valkey.valkey').length, before + 1);
+  assert.equal(app.dialog(), null);
   const now = control(app.view.main, 'hold');
   assert.equal(now.textContent, 'Release the hold');
   assert.equal(app.document.activeElement, now);
   app.answers({ '/api/1/apps/io.valkey.valkey': valkey() });
   await app.press(now);
-  assert.deepEqual(app.ran('apps.unhold'), [{ id: 'io.valkey.valkey' }]);
+  assert.deepEqual(app.ran('apps.unhold'), [{ id: 'io.valkey.valkey' }], 'releasing is one press');
+});
+
+test('the reason of a hold goes with it as one line of at most 200 characters, and the dialog says who reads it', async (context) => {
+  const app = await openApps(context, { rest: VALKEY });
+  await app.press(control(app.view.main, 'hold'));
+  const dialog = app.dialog();
+  assert.equal(dialog.querySelector('label').textContent, 'Why (optional)');
+  assert.ok(dialog.textContent.includes('Holding keeps Valkey at 8.0.3: no update is taken, security fixes included, until you release the hold.'));
+  assert.ok(dialog.textContent.includes('Everyone who can sign in sees the reason, here and with `bundle list`.'));
+  const input = dialog.querySelector('input');
+  assert.equal(input.getAttribute('maxlength'), '200');
+  input.value = 'two\tcolumns';
+  await app.submit();
+  assert.ok(dialog.textContent.includes('The reason is one line'));
+  input.value = 'x'.repeat(201);
+  await app.submit();
+  assert.ok(dialog.textContent.includes('The reason is at most 200 characters.'));
+  assert.equal(app.ran('apps.hold').length, 0, 'a reason that does not fit holds nothing');
+  input.value = '  the client still needs 8.0.3 ';
+  await app.submit();
+  assert.deepEqual(app.ran('apps.hold'), [{ id: 'io.valkey.valkey', why: 'the client still needs 8.0.3' }]);
+});
+
+test('Cancel in the hold dialog holds nothing, and a locked administrator unlocks first', async (context) => {
+  const app = await openApps(context, { rest: VALKEY });
+  await app.press(control(app.view.main, 'hold'));
+  app.dialog().querySelectorAll('button').find((one) => one.textContent === 'Cancel').click();
+  await settle();
+  assert.equal(app.dialog(), null);
+  assert.equal(app.ran('apps.hold').length, 0);
+  const locked = await openApps(context, { rest: VALKEY, unlocked: false, session: { kinds: ['password'], host: 'duke-nas' } });
+  await locked.press(control(locked.view.main, 'hold'));
+  assert.equal(locked.dialog().querySelector('h2').textContent, 'Unlock to make changes');
+  assert.ok(locked.dialog().textContent.includes('You are about to hold Valkey.'));
+});
+
+test('a held app\'s page says since when, by whom and why, in the person\'s clock and the accounts\' names', async (context) => {
+  const held = valkey({ held: true });
+  const bundles = list();
+  Object.assign(bundles.bundles[1], { held: true, held_since_ms: Date.UTC(2026, 10, 2, 3, 6), held_by: 1000, held_reason: 'the client still needs 8.0.3' });
+  const named = await openApps(context, {
+    rest: VALKEY,
+    world: { reads: { '/api/1/apps/io.valkey.valkey': held, '/api/1/apps': bundles } },
+  });
+  const rows = (app) => new Map(app.view.main.querySelectorAll('.apps-panel dl dt').map((term, at) => [term.textContent, app.view.main.querySelectorAll('.apps-panel dl dd')[at].textContent]));
+  assert.equal(rows(named).get('Hold'), 'Held at 8.0.3 since Nov 2 at 3:06 AM by chase: "the client still needs 8.0.3"');
+  const nameless = await openApps(context, {
+    rest: VALKEY,
+    world: { reads: { '/api/1/apps/io.valkey.valkey': held, '/api/1/apps': bundles, '/api/1/accounts': refusal('ADM-103', 'busy', 503) } },
+  });
+  assert.match(rows(nameless).get('Hold'), /by account 1000: "the client still needs 8\.0\.3"$/);
+  bundles.bundles[1] = { ...bundles.bundles[1], held_since_ms: null, held_by: null, held_reason: null };
+  const bare = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/apps/io.valkey.valkey': held, '/api/1/apps': bundles } } });
+  assert.equal(rows(bare).get('Hold'), 'Held at 8.0.3', 'a hold that says nothing more says nothing more');
+  const free = await openApps(context, { rest: VALKEY });
+  assert.ok(!rows(free).has('Hold'));
+});
+
+test('the reason of a hold is the person\'s text and is drawn as text', async (context) => {
+  const held = valkey({ held: true });
+  const bundles = list();
+  Object.assign(bundles.bundles[1], { held: true, held_since_ms: Date.UTC(2026, 10, 2, 3, 6), held_by: 1000, held_reason: '<b>bold</b> & "quoted"' });
+  const app = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/apps/io.valkey.valkey': held, '/api/1/apps': bundles } } });
+  const row = app.view.main.querySelectorAll('.apps-panel dd').find((one) => one.textContent.startsWith('Held at'));
+  assert.ok(row.textContent.endsWith(': "<b>bold</b> & "quoted""'));
+  assert.equal(row.querySelectorAll('b').length, 0);
+});
+
+// ---- the size ----
+
+test('the Size row says what the files take and, once a day\'s walk has measured it, what the data takes', async (context) => {
+  const size = (app) => {
+    const terms = app.view.main.querySelectorAll('.apps-panel dl dt');
+    const at = terms.findIndex((term) => term.textContent === 'Size');
+    return at === -1 ? null : app.view.main.querySelectorAll('.apps-panel dl dd')[at].textContent;
+  };
+  const measured = Date.UTC(2026, 10, 16, 3, 0);
+  const walked = await openApps(context, {
+    rest: VALKEY, world: { reads: { '/api/1/apps/io.valkey.valkey': valkey({ data_size: { bytes: 50_000_000, files: 3412, complete: true, measured_ms: measured } }) } },
+  });
+  assert.equal(size(walked), '9.44 MB installed · 50 MB of data in 3,412 files, measured today at 3:00 AM');
+  const cut = await openApps(context, {
+    rest: VALKEY, world: { reads: { '/api/1/apps/io.valkey.valkey': valkey({ data_size: { bytes: 1_000_000_000, files: 200_000, complete: false, measured_ms: Date.UTC(2026, 10, 14, 3, 0) } }) } },
+  });
+  assert.equal(size(cut), '9.44 MB installed · at least 1 GB of data: counting stopped at its limits (Nov 14)');
+  const not = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/apps/io.valkey.valkey': valkey({ data_size: null }) } } });
+  assert.equal(size(not), '9.44 MB installed · its data is measured once a day; not yet');
+  const bare = await openApps(context, { rest: 'org%2Enginx%2Enginx', world: { reads: { '/api/1/apps/org.nginx.nginx': plain('org.nginx.nginx', 'nginx', '1.27.3', { data_size: null }) } } });
+  assert.equal(size(bare), '9.44 MB installed', 'an app with no service has no data folder to measure');
+  const own = await openApps(context, {
+    rest: 'org%2Eexample%2Etool', world: { reads: { '/api/1/apps/org.example.tool': plain('org.example.tool', 'Tool', '1.0.0', { for_everyone: false, data_size: null, service_list: [{ name: 'tool', account: 'tool', start: 'off' }] }) } },
+  });
+  assert.equal(size(own), '9.44 MB installed', 'an app that is a person\'s own is not measured');
+});
+
+// ---- tonight ----
+
+/** The line under the title that says an app installs tonight, apart from the banners. */
+const noteOf = (panel) => panel.querySelectorAll('p').find((one) => one.getAttribute('role') === 'note');
+
+/** The list with a request for tonight on Valkey, as `bundle list --json` gives it. */
+function askedTonight(more = {}) {
+  const bundles = list();
+  bundles.bundles[1].tonight = {
+    to: '8.0.4', asked_ms: NOW - 3_600_000, by: 1000, missed_ms: null, starts_ms: NOW + 14 * 3_600_000, ...more,
+  };
+  return bundles;
+}
+
+test('Tonight comes beside Update to X, with the window in words under the buttons, and asks apps.tonight', async (context) => {
+  const app = await openApps(context, { rest: VALKEY, world: { answers: { 'apps.tonight': began(5) } } });
+  const panel = app.view.main.querySelector('.apps-panel');
+  assert.deepEqual(panel.querySelectorAll('.apps-buttons .btn').slice(0, 2).map((one) => one.textContent), ['Update to 8.0.4', 'Tonight']);
+  assert.ok(panel.querySelector('.apps-buttons').textContent.includes('Installs tonight, between 2:00 and 3:00 AM.'));
+  await app.press(control(panel, 'tonight'));
+  assert.deepEqual(app.ran('apps.tonight'), [{ id: 'io.valkey.valkey' }]);
+  assert.equal(app.view.main.querySelector('.apps-job').textContent, 'Asking for tonight…');
+  assert.equal(control(app.view.main, 'hold').getAttribute('aria-disabled'), 'true', 'the buttons stay off while it is asked');
+  await app.emit('task', { id: 5, action: 'apps.tonight', state: 'done' });
+  assert.equal(app.view.main.querySelector('.apps-job').hidden, true);
+});
+
+test('the window is the hour before the restart time of this server, and is left out when settings cannot be read', async (context) => {
+  const timed = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/updates/settings': { ...settings(), restart: '03:30' } } } });
+  assert.ok(timed.view.main.querySelector('.apps-buttons').textContent.includes('Installs tonight, between 2:30 and 3:30 AM: the hour before this server\'s restart time.'));
+  const night = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/updates/settings': { ...settings(), restart: '00:30' } } } });
+  assert.ok(night.view.main.querySelector('.apps-buttons').textContent.includes('between 11:30 PM and 12:30 AM'));
+  const unread = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/updates/settings': refusal('ADM-103', 'busy', 503) } } });
+  assert.ok(!unread.view.main.querySelector('.apps-buttons').textContent.includes('Installs tonight'));
+  assert.equal(control(unread.view.main, 'tonight').textContent, 'Tonight', 'the button does not depend on the words');
+});
+
+test('an app asked for tonight says so, with Not tonight in place of Tonight, and Not tonight runs apps.not-tonight', async (context) => {
+  const app = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/apps': askedTonight() } } });
+  const panel = app.view.main.querySelector('.apps-panel');
+  assert.deepEqual(panel.querySelectorAll('.apps-buttons .btn').slice(0, 2).map((one) => one.textContent), ['Update to 8.0.4', 'Not tonight']);
+  assert.equal(control(panel, 'tonight'), null);
+  assert.ok(noteOf(panel).textContent.startsWith('Installs tonight, between 2:00 and 3:00 AM'));
+  assert.ok(app.inlines.some(([action, args]) => action === 'apps.not-tonight' && args.id === 'io.valkey.valkey'), 'its command is under it');
+  app.answers({ '/api/1/apps': list() });
+  const opener = control(panel, 'not-tonight');
+  opener.focus();
+  await app.press(opener);
+  assert.deepEqual(app.ran('apps.not-tonight'), [{ id: 'io.valkey.valkey' }]);
+  assert.equal(control(app.view.main, 'tonight').textContent, 'Tonight');
+  assert.equal(app.document.activeElement, control(app.view.main, 'tonight'), 'focus goes to the button that is there now');
+});
+
+test('a request that waited through a window the machine was off for says it installs tonight, in the machine\'s words', async (context) => {
+  const app = await openApps(context, { rest: VALKEY, world: { reads: { '/api/1/apps': askedTonight({ missed_ms: NOW - 9 * 3_600_000 }) } } });
+  const note = noteOf(app.view.main.querySelector('.apps-panel'));
+  assert.equal(note.textContent, 'The window passed while the machine was off: it installs tonight.');
+});
+
+test('a request for tonight that asks for more shows its sheet, then Install tonight anyway asks again with a yes', async (context) => {
+  const app = await openApps(context, { rest: VALKEY, world: { answers: { 'apps.tonight': began(7) } } });
+  await app.press(control(app.view.main, 'tonight'));
+  app.answers({
+    '/api/1/tasks/7': task(7, 'apps.tonight', { id: 'io.valkey.valkey' }, {
+      state: 'done', status: 1, log: ['valkey 8.0.4 asks for more than 8.0.3 does:', '  - it may listen on all addresses', 'bundle: not queued: it asks for more than 8.0.3 did: net.listen; --yes queues it anyway'],
+    }),
+  });
+  await app.emit('task', { id: 7, action: 'apps.tonight', state: 'done' });
+  const panel = app.view.main.querySelector('.apps-panel');
+  assert.equal(panel.querySelector('.apps-sheet').textContent, 'valkey 8.0.4 asks for more than 8.0.3 does:\n  - it may listen on all addresses');
+  assert.deepEqual(['update-yes', 'tonight-yes'].map((action) => control(panel, action).textContent), ['Update anyway', 'Install tonight anyway']);
+  assert.ok(app.inlines.some(([action, args]) => action === 'apps.tonight' && args.yes === true), 'its command is under it');
+  await app.press(control(panel, 'tonight-yes'));
+  assert.deepEqual(app.ran('apps.tonight'), [{ id: 'io.valkey.valkey' }, { id: 'io.valkey.valkey', yes: true }]);
+  assert.equal(app.view.main.querySelector('.apps-sheet'), null, 'the sheet goes when tonight is asked again');
+});
+
+test('a reader sees that an app installs tonight and has no button for it', async (context) => {
+  const app = await openApps(context, { rest: VALKEY, session: { admin: false }, world: { reads: { '/api/1/apps': askedTonight() } } });
+  const panel = app.view.main.querySelector('.apps-panel');
+  assert.ok(panel.textContent.includes('Installs tonight, between 2:00 and 3:00 AM'));
+  assert.equal(panel.querySelectorAll('button').length, 0);
+  assert.equal(control(panel, 'tonight'), null);
+  assert.equal(control(panel, 'not-tonight'), null);
 });
 
 test('Update runs apps.update, keeps the task, and the row and the page say how far it is while the buttons are off', async (context) => {
