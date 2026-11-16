@@ -133,6 +133,122 @@ export const storage = () => ({
   ],
 });
 
+const READ = Math.floor(NOW / 1000) - 120;
+
+/**
+ * `hardware sensors --json` of a machine with a processor, a board zone, two
+ * fans (one with no fan on its header) and three disks: a hard disk read at
+ * 3:10 PM, an NVMe drive with limits of its own and a hard disk asleep since
+ * 2:10 AM.
+ */
+export const sensors = (more = {}) => plain({
+  format: 1,
+  sensors: [
+    {
+      chip: 'coretemp-isa-0000', label: 'Package id 0', kind: 'temp', series: 'temp{coretemp-isa-0000/Package id 0}', value: 41, high: 84, crit: 100, min: null, alarm: false, fault: false,
+    },
+    {
+      chip: 'nct6775-isa-0a30', label: 'fan1', kind: 'fan', series: 'fan{nct6775-isa-0a30/fan1}', value: 1190, high: null, crit: null, min: 600, alarm: false, fault: false,
+    },
+    {
+      chip: 'nct6775-isa-0a30', label: 'fan2', kind: 'fan', series: 'fan{nct6775-isa-0a30/fan2}', value: 0, high: null, crit: null, min: null, alarm: false, fault: false,
+    },
+  ],
+  zones: [{
+    series: 'temp{zone/acpitz}', value: 32, crit: 97,
+  }],
+  disks: [
+    {
+      disk: 'sda', model: 'WDC WD40EFRX-68N', kind: 'hdd', temperature_c: 36, checked_ms: READ * 1000, asleep_ms: null, warning_c: 50, critical_c: 60, limits_from: 'kind', series: 'temp{disk/sda}',
+    },
+    {
+      disk: 'nvme0', model: 'Samsung SSD 980', kind: 'nvme', temperature_c: 44, checked_ms: READ * 1000, asleep_ms: null, warning_c: 70, critical_c: 85, limits_from: 'disk', series: 'temp{disk/nvme0}',
+    },
+    {
+      disk: 'sdb', model: 'WDC WD40EFRX-68N', kind: 'hdd', temperature_c: 35, checked_ms: Date.UTC(2026, 10, 14, 2, 0, 0), asleep_ms: Date.UTC(2026, 10, 14, 2, 10, 0), warning_c: 50, critical_c: 60, limits_from: 'kind', series: 'temp{disk/sdb}',
+    },
+  ],
+  ...more,
+});
+
+/** `metrics show temp --highest --json` for those series: the highest of the last 30 days, with the time in seconds. */
+export const highest = () => plain([
+  { series: 'temp{coretemp-isa-0000/Package id 0}', highest: [Date.UTC(2026, 10, 13, 3, 2, 0) / 1000, 63] },
+  { series: 'temp{disk/sda}', highest: [Date.UTC(2026, 10, 13, 3, 10, 0) / 1000, 41] },
+  { series: 'temp{disk/nvme0}', highest: [Date.UTC(2026, 10, 12, 14, 14, 0) / 1000, 58] },
+  { series: 'temp{zone/acpitz}', highest: null },
+]);
+
+/** `GET /api/1/updates/history`: a change of the system at 3:00 AM on November 13, half an hour before the processor's highest. */
+export const updates = () => ({
+  changes: [{
+    start: 12, time: '2026-11-13T03:00:00Z', item: 'system', from: '0.13.0', to: '0.14.0', outcome: 'good', error: null,
+  }],
+  apps: [],
+});
+
+/** `GET /api/1/storage/disks/DISK/health` as an administrator gets it: the disk's summary and its log of its own tests, newest first. */
+export const diskHealth = (disk = 'sda', more = {}) => plain({
+  disk,
+  model: 'WD Red',
+  verdict: 'passed',
+  hours: 21804,
+  self_tests: [
+    { kind: 'short', result: 'passed', at_hours: 21800 },
+    { kind: 'extended', result: 'passed', at_hours: 21604 },
+  ],
+  ...more,
+});
+
+const device = (name, group, more = {}) => ({
+  name, group, names: [], ids: '8086:1533', driver: 'igb', driver_told: true, state: 'working', where: 'PCI 0000:03:00.0', hidden: false, ...more,
+});
+
+/** `hardware devices --json`: two network cards (one with no cable), a controller, a USB disk and a serial adapter, a screen, a card the system cannot tell the driver of, one with no driver, and two bridges that work. */
+export const devices = () => plain({
+  format: 1,
+  devices: [
+    device('Intel I219-LM', 'network', { names: ['net0'], ids: '8086:15b8', driver: 'e1000e', where: 'PCI 0000:00:1f.6' }),
+    device('Intel I210', 'network', { names: ['net1'], state: 'no-link' }),
+    device('Intel Q170 SATA controller', 'storage', { names: ['sda', 'sdb'], ids: '8086:a102', driver: 'ahci', where: 'PCI 0000:00:17.0' }),
+    device('Seagate Expansion', 'storage', { names: ['sdc'], ids: '0bc2:2312', driver: 'usb-storage', where: 'USB 2-1' }),
+    device('FTDI FT232R serial adapter', 'usb', { ids: '0403:6001', driver: 'ftdi_sio', where: 'USB 1-2' }),
+    device('Intel HD Graphics 530', 'display', { ids: '8086:1912', driver: 'efifb', where: 'PCI 0000:00:02.0' }),
+    device('Intel Management Engine interface', 'other', { ids: '8086:a13a', driver: null, state: null, where: 'PCI 0000:00:16.0' }),
+    device('Unknown device', 'other', { ids: '1234:5678', driver: null, driver_told: false, state: null, where: 'PCI 0000:04:00.0' }),
+    device('Intel PCI bridge', 'other', { ids: '8086:a110', hidden: true, driver: 'pcieport', where: 'PCI 0000:00:1c.0' }),
+    device('Intel host bridge', 'other', { ids: '8086:1910', hidden: true, driver: null, where: 'PCI 0000:00:00.0' }),
+  ],
+});
+
+/** `GET /api/1/hardware/memtest`, which is `hardware memtest --status --json`: nothing asked and no test at a start kept, unless `more` says. */
+export const memtest = (more = {}) => plain({
+  format: 1, asked: null, last: null, history: [], ...more,
+});
+
+/** The test asked for at 3:10 PM on November 14, by chase. */
+export const asked = () => ({ at_ms: Date.UTC(2026, 10, 14, 15, 10, 0), by: 'chase' });
+
+/** The last test at a start, as `result` (`passed`, `errors`, `unfinished` or `not-taken`) gives it: at 3:06 AM on November 14, of a 16 GiB machine. */
+export const startTest = (result = 'passed', more = {}) => {
+  const base = {
+    at_ms: Date.UTC(2026, 10, 14, 3, 6, 0), start: 212, result, complete: true, tested_bytes: Math.round(15.2 * 2 ** 30), total_bytes: 16 * 2 ** 30, errors: 0, bad: [], retired: 0, seconds: 240,
+  };
+  const found = {
+    passed: {},
+    errors: {
+      errors: 3, retired: 2, bad: [{ from: '0x1000000', to: '0x1002fff', errors: 2 }, { from: '0x7f000000', to: '0x7f000fff', errors: 1 }],
+    },
+    unfinished: {
+      complete: false, tested_bytes: 0, errors: 0, seconds: 0,
+    },
+    'not-taken': {
+      complete: false, tested_bytes: 0, total_bytes: 0, seconds: 0,
+    },
+  }[result];
+  return plain({ ...base, ...found, ...more });
+};
+
 /** A running `hardware.check` as `GET /api/1/tasks` lists it. */
 export const task = (more = {}) => ({
   id: 41, action: 'hardware.check', args: {}, state: 'running', step: 4, steps: 11, words: 'disks sda self-test passed', started: Math.floor(NOW / 1000) - 120, ...more,

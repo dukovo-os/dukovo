@@ -9,12 +9,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { AREAS, checkArgs } from '../pages/hardware/check-model.js';
+import { healthWords } from '../lib/disk-model.js';
+import { devicesOf, hiddenWords } from '../pages/hardware/devices-model.js';
+import {
+  disksOf, pillOf, testArgs, testsOf,
+} from '../pages/hardware/disks-model.js';
+import { askedWords, startRun } from '../pages/hardware/memtest-lines.js';
+import {
+  hereWords, nextWords, quietMinutes, testMinutes,
+} from '../pages/hardware/memtest-model.js';
+import {
+  degrees, fanRows, noRecordWords, startTimes, tempRows, unitOf,
+} from '../pages/hardware/sensors-model.js';
 import {
   amountWords, checkRows, dateWords, diskNotes, earlierRows, endedCheck, firmwareWords, hasResult, memoryRunWords, memoryWords, MEMORY_TEST_ARGS,
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, broken, clean, history, inventory, last, NOW, show, skipped, storage, task, time,
+  about, asked, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, startTest, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -150,7 +162,7 @@ test('no more than five earlier checks are listed, and one with nothing to count
 
 test('the disks that need a look are named with a link to each, and none reporting health says nothing', () => {
   assert.deepEqual(diskNotes(storage()), {
-    lead: 'diskhealth also reads every disk\'s health once a day', notes: [{ words: 'sdb has a warning', href: '/storage/sdb' }],
+    lead: 'diskhealth reads each disk\'s health every 10 minutes, but a sleeping one', notes: [{ words: 'sdb has a warning', href: '/storage/sdb' }],
   });
   const failing = storage();
   failing.disks[0].health = { verdict: 'failing', rose: null };
@@ -198,4 +210,301 @@ test('the areas of the dialog are the six the action takes, and all of them are 
   assert.deepEqual(checkArgs(['disks'], true), { areas: 'disks', full: true });
   assert.equal(checkArgs([], false), null);
   assert.equal(checkArgs(['gpu'], true), null);
+});
+
+// ---- Temperatures and fans ----------------------------------------------------
+
+const seconds = Math.floor(NOW / 1000);
+const rowsOf = (answer = sensors(), more = {}) => tempRows(answer, highest(), {
+  unit: 'C', time, now: seconds, starts: startTimes(updates()), ...more,
+});
+const rowNamed = (found, name) => found.rows.find((row) => row.name.startsWith(name));
+
+test('a temperature is whole degrees in Celsius or Fahrenheit, and Celsius is the unit unless Fahrenheit was kept', () => {
+  assert.equal(degrees(41.4, 'C'), '41 °C');
+  assert.equal(degrees(41, 'F'), '106 °F');
+  assert.equal(degrees(-3.5, 'F'), '26 °F');
+  assert.deepEqual([unitOf('F'), unitOf('C'), unitOf(null), unitOf('K'), unitOf(undefined)], ['F', 'C', 'C', 'C', 'C']);
+});
+
+test('the rows are the processor, then each disk, then the other sensors and the thermal zones, each with its limit', () => {
+  const found = rowsOf();
+  assert.deepEqual(found.rows.map((row) => row.name), ['Processor (Package id 0)', 'Disk sda · WDC WD40EFRX-68N', 'Disk nvme0 · Samsung SSD 980', 'Disk sdb · WDC WD40EFRX-68N', 'Zone acpitz']);
+  assert.equal(found.none, false);
+  const [processor] = found.rows;
+  assert.deepEqual(processor.now, { text: '41 °C' });
+  assert.deepEqual(processor.limit, { text: '100 °C', note: 'critical' });
+  assert.deepEqual(found.rows.at(-1).limit, { text: '97 °C', note: 'critical' });
+  const board = tempRows({ sensors: [{ chip: 'nct6775-isa-0a30', label: 'SYSTIN', kind: 'temp', series: 'temp{nct6775-isa-0a30/SYSTIN}', value: 30, high: 80, crit: null }], zones: [], disks: [] }, [], { unit: 'C', time, now: seconds });
+  assert.equal(board.rows[0].name, 'SYSTIN');
+  assert.equal(board.rows[0].small, 'nct6775-isa-0a30');
+  assert.deepEqual(board.rows[0].limit, { text: '80 °C', note: 'high' });
+});
+
+test('the highest says when it was, and that an update was on when a change of the system is within half an hour of it', () => {
+  const [processor, sda, nvme] = rowsOf().rows;
+  assert.deepEqual(processor.highest, { text: '63 °C', note: 'Yesterday 3:02 AM, during the update' });
+  assert.deepEqual(sda.highest, { text: '41 °C', note: 'Yesterday 3:10 AM, during the update' });
+  assert.deepEqual(nvme.highest, { text: '58 °C', note: 'Nov 12 2:14 PM' });
+  assert.deepEqual(rowsOf(sensors(), { starts: [] }).rows[0].highest.note, 'Yesterday 3:02 AM');
+  assert.deepEqual(rowsOf(sensors(), { starts: [seconds - 40 * 60 - 7 * 3600] }).rows[0].highest.note, 'Yesterday 3:02 AM');
+  const none = rowsOf(sensors(), { starts: [] });
+  assert.deepEqual(rowNamed(none, 'Zone').highest, { text: '—', muted: true });
+  assert.deepEqual(tempRows(sensors(), null, { unit: 'C', time, now: seconds }).rows[0].highest, { text: '—', muted: true });
+});
+
+test('a highest from before the minute files reach is the hour it was in', () => {
+  const old = [{ series: 'temp{coretemp-isa-0000/Package id 0}', highest: [Date.UTC(2026, 9, 20, 3, 0, 0) / 1000, 71] }];
+  const [processor] = tempRows(sensors(), old, { unit: 'C', time, now: seconds }).rows;
+  assert.deepEqual(processor.highest, { text: '71 °C', note: 'in the hour from Oct 20 3:00 AM' });
+});
+
+test('every temperature, the highest and the limit change with the unit', () => {
+  const [processor, sda, nvme] = rowsOf(sensors(), { unit: 'F' }).rows;
+  assert.equal(processor.now.text, '106 °F');
+  assert.equal(processor.highest.text, '145 °F');
+  assert.equal(processor.limit.text, '212 °F');
+  assert.equal(sda.limit.text, '122 °F, critical 140 °F');
+  assert.equal(nvme.limit.text, '158 °F, critical 185 °F');
+});
+
+test('a disk says when it was read, and why it is not, whether it sleeps or diskhealth has stopped', () => {
+  const [, sda, nvme, sdb] = rowsOf().rows;
+  assert.deepEqual(sda.now, { text: '36 °C', note: 'read at 3:10 PM' });
+  assert.deepEqual(sda.limit, { text: '50 °C, critical 60 °C', note: 'for a hard disk' });
+  assert.deepEqual(nvme.limit, { text: '70 °C, critical 85 °C', note: 'the disk\'s own' });
+  assert.deepEqual(sdb.now, { text: 'Asleep since 2:10 AM: not read, so as not to wake it', muted: true });
+  const stale = sensors();
+  stale.disks[0].checked_ms = (seconds - 40 * 60) * 1000;
+  assert.deepEqual(rowsOf(stale).rows[1].now, { tone: 'warn', words: 'Last read at 2:32 PM' });
+  const old = sensors();
+  old.disks[0].checked_ms = Date.UTC(2026, 10, 13, 1, 40, 0);
+  assert.deepEqual(rowsOf(old).rows[1].now, { tone: 'warn', words: 'Last read yesterday 1:40 AM' });
+  const nothing = sensors();
+  nothing.disks[0].temperature_c = null;
+  nothing.disks[0].warning_c = null;
+  nothing.disks[0].critical_c = null;
+  assert.deepEqual(rowsOf(nothing).rows[1].now, { text: 'The disk gives no temperature', muted: true });
+  assert.deepEqual(rowsOf(nothing).rows[1].limit, { text: '—', muted: true });
+  const flash = sensors();
+  flash.disks[0].kind = 'ssd';
+  assert.equal(rowsOf(flash).rows[1].limit.note, 'for a solid-state disk');
+});
+
+test('a sensor within 5 degrees of its limit is in the warning colour, and at it in the error colour, with the words', () => {
+  const at = (value, more = {}) => rowsOf({ sensors: [{ chip: 'coretemp-isa-0000', label: 'Package id 0', kind: 'temp', series: 's', value, high: 84, crit: 100, ...more }], zones: [], disks: [] }).rows[0].now;
+  assert.deepEqual(at(94), { text: '94 °C' });
+  assert.deepEqual(at(95), { text: '95 °C', tone: 'warn', words: 'near its limit' });
+  assert.deepEqual(at(100), { text: '100 °C', tone: 'bad', words: 'at its limit' });
+  assert.deepEqual(at(80, { crit: null }), { text: '80 °C', tone: 'warn', words: 'near its limit' });
+  assert.deepEqual(at(60, { crit: null, high: null }), { text: '60 °C' });
+  assert.deepEqual(at(null), { text: '—', muted: true });
+});
+
+test('a disk at its warning limit is in the warning colour and at its critical limit in the error colour, with the words', () => {
+  const at = (value) => {
+    const answer = sensors();
+    answer.disks[0].temperature_c = value;
+    return rowsOf(answer).rows[1].now;
+  };
+  assert.deepEqual(at(49), { text: '49 °C', note: 'read at 3:10 PM' });
+  assert.deepEqual(at(50), { text: '50 °C', note: 'read at 3:10 PM', tone: 'warn', words: 'over its warning limit' });
+  assert.deepEqual(at(60), { text: '60 °C', note: 'read at 3:10 PM', tone: 'bad', words: 'over its critical limit' });
+});
+
+test('a machine with no sensor says so and keeps the disks\' rows, and one with nothing at all has no rows', () => {
+  const found = rowsOf({ format: 1, sensors: [], zones: [], disks: sensors().disks });
+  assert.equal(found.none, true);
+  assert.deepEqual(found.rows.map((row) => row.name.split(' ')[1]), ['sda', 'nvme0', 'sdb']);
+  assert.deepEqual(rowsOf({ format: 1, sensors: [], zones: [], disks: [] }), { rows: [], none: true });
+  assert.deepEqual(rowsOf(null), { rows: [], none: true });
+});
+
+test('a fan says its speed, stopped when it has an alarm, a fault or no speed under a minimum, and not judged with no minimum', () => {
+  assert.deepEqual(fanRows(sensors()).map((fan) => [fan.name, fan.words, fan.tone]), [
+    ['fan1', '1,190 RPM', 'ok'],
+    ['fan2', 'not judged: no fan on this header', 'off'],
+  ]);
+  const fan = (more) => fanRows({ sensors: [{ chip: 'c', label: 'fan1', kind: 'fan', value: 1000, min: null, alarm: false, fault: false, ...more }] })[0];
+  assert.deepEqual([fan({ alarm: true }).words, fan({ alarm: true }).tone], ['stopped', 'bad']);
+  assert.equal(fan({ alarm: 1 }).words, 'stopped');
+  assert.equal(fan({ fault: true }).words, 'stopped');
+  assert.equal(fan({ value: 0, min: 600 }).words, 'stopped');
+  assert.equal(fan({ value: 0, min: 0 }).words, 'not judged: no fan on this header');
+  assert.deepEqual([fan({ value: 400, min: 600 }).words, fan({ value: 400, min: 600 }).tone], ['400 RPM, under its minimum of 600 RPM', 'bad']);
+  assert.deepEqual(fanRows({ sensors: [] }), []);
+  assert.deepEqual(fanRows(null), []);
+});
+
+test('the disks that keep no health record are counted from the storage answer', () => {
+  const none = storage();
+  assert.equal(noRecordWords(none), null);
+  none.disks.push({ name: 'sdc', model: 'Expansion', health: null });
+  assert.equal(noRecordWords(none), '1 disk keeps no health record (USB or virtual) and is not read.');
+  none.disks.push({ name: 'vda', model: null, health: null });
+  assert.equal(noRecordWords(none), '2 disks keep no health record (USB or virtual) and are not read.');
+  assert.equal(noRecordWords(null), null);
+});
+
+test('the times of the changes of the system come from the update history, and only those that are times', () => {
+  assert.deepEqual(startTimes(updates()), [Date.UTC(2026, 10, 13, 3, 0, 0) / 1000]);
+  assert.deepEqual(startTimes({ changes: [{ time: 'soon' }] }), []);
+  assert.deepEqual(startTimes(null), []);
+});
+
+// ---- Disks ---------------------------------------------------------------------
+
+test('a disk\'s pill is the one Storage\'s list gives it', () => {
+  const healths = [null, { verdict: 'passed', rose: null }, { verdict: 'passed', rose: { title: 'x' } }, { verdict: 'warning', rose: null }, { verdict: 'failing', rose: null }];
+  for (const health of healths) {
+    const { word, tone } = healthWords(health);
+    assert.deepEqual(pillOf(health), { word, tone }, JSON.stringify(health));
+  }
+  assert.deepEqual(pillOf({ verdict: 'passed' }), { word: 'Healthy', tone: 'ok' });
+});
+
+test('the disks are the whole disks of the storage answer with their model and pill, and none when it was not read', () => {
+  assert.deepEqual(disksOf(storage()), [
+    { name: 'sda', model: 'WD Red', pill: { word: 'Healthy', tone: 'ok' }, hasHealth: true },
+    { name: 'sdb', model: 'WD Red', pill: { word: 'Wearing', tone: 'warn' }, hasHealth: true },
+  ]);
+  assert.deepEqual(disksOf({ disks: [{ name: 'vda', model: '', health: null }] }), [{ name: 'vda', model: null, pill: { word: 'Not checked', tone: 'off' }, hasHealth: false }]);
+  assert.equal(disksOf(null), null);
+  assert.equal(disksOf({}), null);
+});
+
+test('a test of one disk is the disks area with its name, and a full one is an extended test', () => {
+  assert.deepEqual(testArgs('sda', false), { areas: 'disks', disk: 'sda' });
+  assert.deepEqual(testArgs('nvme0n1', true), { areas: 'disks', disk: 'nvme0n1', full: true });
+});
+
+test('the last short and extended tests have the day, found from the hours the disk has been on, and the hour they were at', () => {
+  assert.deepEqual(testsOf(diskHealth(), time, Math.floor(NOW / 1000)), [
+    { words: 'Short test Nov 14, passed (at hour 21,800)', tone: null },
+    { words: 'Extended test Nov 6, passed (at hour 21,604)', tone: null },
+  ]);
+  const failed = diskHealth('sda', { self_tests: [{ kind: 'extended', result: 'failed', at_hours: 21000 }, { kind: 'short', result: 'aborted', at_hours: 20000 }] });
+  assert.deepEqual(testsOf(failed, time, Math.floor(NOW / 1000)).map((one) => [one.words, one.tone]), [
+    ['Short test Aug 31, aborted (at hour 20,000)', null],
+    ['Extended test Oct 12, failed (at hour 21,000)', 'bad'],
+  ]);
+  const newest = diskHealth('sda', { self_tests: [{ kind: 'short', result: 'passed', at_hours: 21800 }, { kind: 'short', result: 'failed', at_hours: 100 }] });
+  assert.equal(testsOf(newest, time, Math.floor(NOW / 1000)).length, 1, 'the log is newest first, and each kind is said once');
+});
+
+test('a test with no hours, a disk with no hours and a test that runs are said as far as they are known', () => {
+  const now = Math.floor(NOW / 1000);
+  assert.equal(testsOf(diskHealth('sda', { hours: null }), time, now)[0].words, 'Short test passed (at hour 21,800)');
+  assert.equal(testsOf(diskHealth('sda', { self_tests: [{ kind: 'extended', result: 'passed', at_hours: null }] }), time, now)[0].words, 'Extended test passed');
+  assert.equal(testsOf(diskHealth('sda', { self_tests: [{ kind: 'short', result: 'running', at_hours: null }] }), time, now)[0].words, 'Short test running');
+  assert.equal(testsOf(diskHealth('sda', { hours: 21000 }), time, now)[0].words.startsWith('Short test Nov 14, passed'), true, 'a test logged after the hours is today\'s');
+});
+
+test('a log that cannot be read, a disk that keeps none and a log with neither test say so', () => {
+  const now = Math.floor(NOW / 1000);
+  assert.deepEqual(testsOf(null, time, now), [{ words: 'Its own tests could not be read' }]);
+  assert.deepEqual(testsOf(diskHealth('sda', { self_tests: null }), time, now), [{ words: 'This disk keeps no log of its own tests' }]);
+  assert.deepEqual(testsOf(diskHealth('sda', { self_tests: [] }), time, now), [{ words: 'No short or extended test is in its log' }]);
+});
+
+// ---- Devices ---------------------------------------------------------------------
+
+test('the devices come in the groups of the page, in its order, with a group that holds none left out and the hidden ones apart', () => {
+  const { groups, hidden } = devicesOf(devices());
+  assert.deepEqual(groups.map((group) => [group.title, group.rows.length]), [['Network', 2], ['Storage', 2], ['USB', 1], ['Display', 1], ['Other', 2]]);
+  assert.deepEqual(hidden.map((row) => row.name), ['Intel PCI bridge', 'Intel host bridge']);
+  const only = devicesOf({ devices: [{ name: 'Intel I210', group: 'network', driver: 'igb' }] });
+  assert.deepEqual(only.groups.map((group) => group.title), ['Network']);
+  assert.deepEqual(devicesOf({ devices: [{ name: 'Odd', group: 'tape', driver: 'x' }] }).groups.map((group) => group.title), ['Other']);
+});
+
+test('a device says what it is to the system and its IDs, its driver, its state and where it is', () => {
+  const [net0, net1] = devicesOf(devices()).groups[0].rows;
+  assert.deepEqual(net0, {
+    name: 'Intel I219-LM', small: 'net0 · 8086:15b8', driver: { text: 'e1000e' }, state: { word: 'Working', tone: 'ok' }, where: 'PCI 0000:00:1f.6',
+  });
+  assert.deepEqual(net1.state, { word: 'No cable', tone: 'warn' });
+  const sata = devicesOf(devices()).groups[1].rows[0];
+  assert.equal(sata.small, 'sda, sdb · 8086:a102');
+  assert.equal(devicesOf({ devices: [{ group: 'other', driver: 'x' }] }).groups[0].rows[0].name, 'Unnamed device');
+  assert.equal(devicesOf({ devices: [{ group: 'other', ids: '1234:5678', driver: 'x' }] }).groups[0].rows[0].name, '1234:5678');
+});
+
+test('the system says "No driver" only where it knows none took the device, and "Not told" where it cannot tell', () => {
+  const [engine, unknown] = devicesOf(devices()).groups[4].rows;
+  assert.deepEqual([engine.driver, engine.state], [{ text: 'none', muted: true }, { word: 'No driver', tone: 'off' }]);
+  assert.deepEqual([unknown.driver, unknown.state], [{ text: 'Not told', muted: true }, null]);
+  assert.deepEqual(devicesOf({ devices: [{ group: 'usb', driver: 'usbhid', state: 'asleep' }] }).groups[0].rows[0].state, { word: 'asleep', tone: 'off' });
+});
+
+test('an answer that is not a list of devices has none, and the folded line counts the hidden ones', () => {
+  for (const answer of [null, {}, { devices: null }, []]) assert.deepEqual(devicesOf(answer), { groups: [], hidden: [] });
+  assert.equal(hiddenWords(23), 'Hidden: 23 devices that work and need nothing, such as USB hubs and bridges');
+  assert.equal(hiddenWords(1), 'Hidden: 1 device that works and needs nothing, such as a USB hub or a bridge');
+});
+
+const GIB = 2 ** 30;
+const NOW_SECONDS = NOW / 1000;
+
+test('the memory test takes a minute for each 4 GiB, at most an hour, and says nothing of a memory it does not know', () => {
+  assert.deepEqual([4, 16, 512].map((gib) => testMinutes(gib * GIB)), [1, 4, 60]);
+  assert.equal(testMinutes(1 * GIB), 1, 'a part of 4 GiB is a minute');
+  assert.equal(testMinutes(15.56 * GIB), 4);
+  assert.deepEqual([null, undefined, 0].map(testMinutes), [null, null, null]);
+  assert.equal(hereWords(16 * GIB), ' (about 4 minutes here)');
+  assert.equal(hereWords(4 * GIB), ' (about 1 minute here)');
+  assert.equal(hereWords(512 * GIB), ' (up to an hour here)');
+  assert.equal(hereWords(null), '');
+});
+
+test('a restart for the memory test may stay quiet for ten minutes and one for each 4 GiB, at most 70', () => {
+  assert.deepEqual([4, 16, 512].map((gib) => quietMinutes(gib * GIB)), [11, 14, 70]);
+  assert.equal(quietMinutes(240 * GIB), 70);
+  assert.equal(quietMinutes(236 * GIB), 69);
+  assert.equal(quietMinutes(null), 70, 'a memory that is not known may take the longest');
+});
+
+test('the card says what the next start does, with the time it takes here', () => {
+  assert.equal(nextWords(16 * GIB), 'The next start tests the free memory before the system starts, about a minute for each 4 GiB (about 4 minutes here), takes any bad part out of use, then starts as usual. The server is offline meanwhile, and nobody needs to be at it.');
+  assert.match(nextWords(null), /about a minute for each 4 GiB, takes any bad part out of use/);
+});
+
+test('the asked line says when, and by whom, as far as the answer does', () => {
+  assert.equal(askedWords(asked(), time, NOW_SECONDS), 'The memory is tested at the next restart (asked Nov 14, 3:10 PM by chase)');
+  assert.equal(askedWords({ at_ms: asked().at_ms }, time, NOW_SECONDS), 'The memory is tested at the next restart (asked Nov 14, 3:10 PM)');
+  assert.equal(askedWords({ by: 'chase' }, time, NOW_SECONDS), 'The memory is tested at the next restart (asked by chase)');
+  assert.equal(askedWords({}, time, NOW_SECONDS), 'The memory is tested at the next restart');
+  const old = { at_ms: Date.UTC(2025, 11, 30, 21, 5, 0), by: 'chase' };
+  assert.equal(askedWords(old, time, NOW_SECONDS), 'The memory is tested at the next restart (asked Dec 30, 2025, 9:05 PM by chase)');
+});
+
+test('each result of the test at a start has its own line, tone and offer', () => {
+  const run = (result, more) => startRun(startTest(result, more), time, NOW_SECONDS);
+  assert.deepEqual(run('passed'), { words: 'Nov 14, at the start: passed · 15.2 of 16 GiB tested in 4 minutes', tone: null, report: false });
+  assert.deepEqual(run('errors'), {
+    words: 'Nov 14, at the start: 3 errors in 2 places. Those parts are out of use until the next restart. The memory should be replaced (HW-103).',
+    tone: 'bad',
+    report: true,
+  });
+  assert.deepEqual(run('unfinished'), {
+    words: 'Nov 14: the test at the start did not finish (HW-104). The power went or the machine stopped during it, which failing memory can cause.',
+    tone: 'warn',
+    report: false,
+  });
+  assert.deepEqual(run('not-taken'), { words: 'Nov 14: the start menu did not run the test: an update was tried first. Ask again.', tone: 'off', report: false });
+});
+
+test('the line of a test at a start copes with one error, one place, a small memory and what the answer leaves out', () => {
+  const run = (result, more) => startRun(startTest(result, more), time, NOW_SECONDS).words;
+  assert.match(run('errors', { errors: 1, bad: [{ from: '0x1000', to: '0x1fff', errors: 1 }] }), /^Nov 14, at the start: 1 error in 1 place\. /);
+  assert.match(run('errors', { bad: [] }), /^Nov 14, at the start: 3 errors\. /, 'no places named, none counted');
+  assert.equal(run('passed', { tested_bytes: 480 * 2 ** 20, total_bytes: 512 * 2 ** 20, seconds: 45 }), 'Nov 14, at the start: passed · 480 of 512 MiB tested in less than a minute');
+  assert.equal(run('passed', { seconds: null }), 'Nov 14, at the start: passed · 15.2 of 16 GiB tested');
+  assert.equal(run('passed', { tested_bytes: 0 }), 'Nov 14, at the start: passed');
+  assert.equal(run('passed', { at_ms: Date.UTC(2025, 11, 30, 21, 5, 0) }), 'Dec 30, 2025, at the start: passed · 15.2 of 16 GiB tested in 4 minutes');
+});
+
+test('a test at a start that was never kept, or whose result is not known, is not said', () => {
+  for (const answer of [null, undefined, {}, { result: 'passed' }, { at_ms: 'now', result: 'passed' }]) assert.equal(startRun(answer, time, NOW_SECONDS), null);
+  assert.equal(startRun({ ...startTest('passed'), result: 'exploded' }, time, NOW_SECONDS), null);
 });

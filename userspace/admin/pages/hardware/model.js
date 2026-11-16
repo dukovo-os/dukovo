@@ -184,7 +184,7 @@ export const NOT_CHECKED = 'Not checked yet.';
 export const READER_CHECK = 'An administrator can check the hardware.';
 
 /** The sentence about the disks that starts under the head; what diskhealth does on its own. */
-export const DISKHEALTH_WORDS = 'diskhealth also reads every disk\'s health once a day';
+export const DISKHEALTH_WORDS = 'diskhealth reads each disk\'s health every 10 minutes, but a sleeping one';
 
 /** From `GET /api/1/storage`: `{lead, notes: [{words, href}]}`, "sdb has a warning" linking to the disk; null when no disk reports its health. */
 export function diskNotes(storage) {

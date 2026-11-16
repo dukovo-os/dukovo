@@ -25,6 +25,14 @@ test('the words of each kind of restart', () => {
   );
 });
 
+test('a restart that tests the memory first says that it can take up to an hour', () => {
+  assert.equal(
+    restartWords({ kind: 'memtest', host: 'duke-nas' }),
+    'duke-nas is restarting and tests its memory first, which can take up to an hour. This page comes back by itself when it answers.',
+  );
+  assert.match(restartWords({ kind: 'memtest' }), /^The machine is restarting and tests its memory first/);
+});
+
 test('going back to the version before is an update with the old version in its words', () => {
   assert.match(restartWords({ kind: 'update', host: 'duke-nas', version: '1.0.0-alpha.1' }), /^duke-nas is restarting into 1\.0\.0-alpha\.1\./);
 });
@@ -43,6 +51,13 @@ test('the console is quiet for two minutes after its own restart, and the machin
   assert.equal(quietMsOf('console'), 120_000);
   for (const kind of ['machine', 'update', 'bisect']) assert.equal(quietMsOf(kind), MACHINE_QUIET_MS, kind);
   assert.equal(MACHINE_QUIET_MS, 600_000);
+});
+
+test('a restart that knows how long the machine takes says so in minutes, and none or zero is the usual wait', () => {
+  assert.equal(quietMsOf('memtest', 14), 14 * 60_000);
+  assert.equal(quietMsOf('console', 5), 300_000);
+  for (const none of [null, undefined, 0]) assert.equal(quietMsOf('memtest', none), MACHINE_QUIET_MS);
+  assert.equal(quietMsOf('console', null), RESTART_QUIET_MS);
 });
 
 test('a restart or shut down that waits says how many seconds are left when it is a minute or less, and its time when it is more', () => {

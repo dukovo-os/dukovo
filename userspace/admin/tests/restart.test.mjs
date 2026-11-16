@@ -174,6 +174,31 @@ test('a restart that is not for an update tells the shell no version', async (co
   assert.equal(world.expected[0][1].version, null);
 });
 
+test('a restart that tests the memory first waits as long as the test may take, and says the test can take an hour', async (context) => {
+  const world = open(context);
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 60, at_ms: AT } };
+  const done = restartNow(world.view, { why: 'To test the memory first.', kind: 'memtest', quiet_minutes: 14 });
+  await settle();
+  assert.match(world.dialog().textContent, /^.*To test the memory first\. duke-nas restarts in one minute/s);
+  await world.submit();
+  assert.equal(await done, true);
+  pass(60);
+  assert.equal(world.expected.length, 1);
+  assert.match(world.expected[0][0], /^duke-nas is restarting and tests its memory first, which can take up to an hour\./);
+  assert.deepEqual(world.expected[0][1], { quietMs: 14 * 60_000, version: null });
+});
+
+test('a restart that gives no minutes keeps the usual ten', async (context) => {
+  const world = open(context);
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 60, at_ms: AT } };
+  const done = restartNow(world.view, { kind: 'memtest' });
+  await settle();
+  await world.submit();
+  await done;
+  pass(60);
+  assert.equal(world.expected[0][1].quietMs, MACHINE_QUIET_MS);
+});
+
 test('a restart that admind refuses is said in the dialog, which stays open', async (context) => {
   const world = open(context, { runs: { 'power.restart': refusal('UPD-106', 'A restart is already set') } });
   const done = restartNow(world.view);

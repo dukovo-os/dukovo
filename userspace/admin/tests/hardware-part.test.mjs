@@ -84,14 +84,15 @@ test('the row says what the machine is and when it was checked', async () => {
   assert.deepEqual(await rows(fakeCx({ '/api/1/hardware': new Error('down'), '/api/1/hardware/check': null })), []);
 });
 
-test('the palette has the check, with the state of its last result, and for an administrator the restart and the shut down', () => {
+test('the palette has the check, with the state of its last result, the temperatures, and for an administrator the restart and the shut down', () => {
   const items = (answer, admin) => palette.itemsOf(answer, admin);
   assert.deepEqual(items(last(), true).map((one) => [one.key, one.title, one.state, one.href]), [
     ['check', 'Check the hardware', 'warning', '/hardware#check'],
+    ['temps', 'Temperatures', undefined, '/hardware#temps'],
     ['restart', 'Restart this machine…', undefined, '/hardware#power'],
     ['shutdown', 'Shut down this machine…', undefined, '/hardware#power'],
   ]);
-  assert.deepEqual(items(last(), false).map((one) => one.key), ['check']);
+  assert.deepEqual(items(last(), false).map((one) => one.key), ['check', 'temps']);
   assert.equal(items(broken(), false)[0].state, 'failed');
   assert.equal(items(broken(), false)[0].detail, 'The last check has a failure');
   assert.equal(items(clean(), false)[0].state, 'passed');
@@ -104,13 +105,13 @@ test('the provider reads the last check once and knows who may restart', async (
   assert.deepEqual([provider.group, provider.kind], ['Hardware', 'hardware']);
   assert.deepEqual(provider.filters.state, ['failed', 'warning', 'passed']);
   const cx = fakeCx({ '/api/1/hardware/check': last() });
-  assert.equal((await provider.items(cx)).length, 3);
-  assert.equal((await provider.items(fakeCx({ '/api/1/hardware/check': last() }, { admin: false }))).length, 1);
+  assert.equal((await provider.items(cx)).length, 4);
+  assert.equal((await provider.items(fakeCx({ '/api/1/hardware/check': last() }, { admin: false }))).length, 2);
   assert.deepEqual(cx.calls, ['/api/1/hardware/check']);
   assert.equal((await provider.items(fakeCx({ '/api/1/hardware/check': new Error('down') }))).at(0).detail, 'Not checked yet');
 });
 
-test('the palette finds the check, the restart and the shut down, and filters by the state of the last check', async () => {
+test('the palette finds the check, the temperatures, the restart and the shut down, and filters by the state of the last check', async () => {
   const [provider] = palette.providers;
   const cx = fakeCx({ '/api/1/hardware/check': broken() });
   const collected = [{
@@ -120,6 +121,7 @@ test('the palette finds the check, the restart and the shut down, and filters by
   const made = buildIndex({ pages: PAGES, actions: listedActions(), collected, session: { admin: true } });
   const titles = (query) => find(made, query).map((one) => one.row.title);
   assert.deepEqual(titles('state:failed'), ['Check the hardware']);
+  assert.ok(titles('temperatures').includes('Temperatures'));
   assert.ok(titles('restart this').includes('Restart this machine…'));
   assert.ok(titles('shut down').includes('Shut down this machine…'));
   const row = find(made, 'restart this').find((one) => one.row.title === 'Restart this machine…').row;

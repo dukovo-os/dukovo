@@ -19,6 +19,14 @@
 @media (max-width: 480px) {
   .dialog-body.roomy { padding: 1.286rem; }
 }
+/* A dialog is mounted on the body, outside the page's container, so the
+   phone's 44 px targets that console.css gives under that container reach
+   nothing in it. The screen is asked instead: a media query counts rem at the
+   browser's own 16 px, so 45rem is the 720 px under which a page is a phone. */
+@media (max-width: 45rem) {
+  dialog .btn, dialog .input, dialog .select { min-height: 3.143rem; }
+  dialog .check { min-height: 3.143rem; align-items: center; }
+}
 /* The More sheet's own head: square, with a mark that is not a warning. */
 dialog.sheet .dialog-head { border-radius: 0; }
 .sheet .dialog-head .ic { color: var(--accent); }

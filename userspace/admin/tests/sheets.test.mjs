@@ -130,6 +130,16 @@ test('the icons of the power, devices and phone notices are there, as a file and
   }
 });
 
+test('the controls of a dialog are 44 px tall on a phone, by the screen and not by the page\'s container, which a dialog is outside', () => {
+  const dialogs = OTHER_SHEETS.get('dialogs.css');
+  const phone = /@media \(max-width: 45rem\) \{([^@]*)\}\s*(?:@|$)/.exec(dialogs)?.[1] ?? '';
+  for (const control of ['.btn', '.input', '.select', '.check']) {
+    assert.match(phone, new RegExp(`dialog ${control.replace('.', '\\.')}\\b[^{]*\\{[^}]*min-height: 3\\.143rem`), `dialogs.css gives dialog ${control} 44 px under 45rem`);
+  }
+  const phoneContainer = /@container \(max-width: 51\.4rem\) \{/.test(consoleCss);
+  assert.ok(phoneContainer, 'console.css has the phone\'s container rules, which dialogs are outside of');
+});
+
 test('no sheet but console.css has an icon rule', () => {
   for (const [name, css] of OTHER_SHEETS) assert.doesNotMatch(css, /\.ic-/, name);
 });

@@ -20,9 +20,11 @@ import { makeReads } from '../overview/admin-reads.js';
 import { commandBox, makeCard } from '../overview/card.js';
 import {
   alertRows, barsOf, BARS, bucketsOf, dumpRows, eventsOf, groupsOf, perWords, problemsOf, problemsWords, RANGES, rangeOf,
-  tableOf, timelineOf,
+  reportHref, tableOf, timelineOf,
 } from './model.js';
-import { ADMIN_READS, CHANGES_READ, cappedWords } from './reads-model.js';
+import {
+  ADMIN_READS, CHANGES_READ, cappedWords, HARDWARE_READ,
+} from './reads-model.js';
 import { makeFailed, makeStarts } from './starts.js';
 
 const SVG = 'http://www.w3.org/2000/svg';
@@ -100,7 +102,7 @@ function timelineItem(item, time, byDay) {
     h('div', { class: 'tl-body' },
       h('b', {}, item.title),
       item.sub && h('span', { class: 'muted small' }, item.sub),
-      item.href && h('a', { class: 'small', href: item.href }, 'Open the start')));
+      item.href && h('a', { class: 'small', href: item.href }, item.link)));
 }
 
 export async function show(view) {
@@ -108,6 +110,8 @@ export async function show(view) {
   // The key of the day (or month) chosen in the table, and what the last read drew.
   let chosen = null;
   let drawn = null;
+  // The failed start the machine keeps, which Save as report is about when it fell in the range.
+  let kept = null;
   let latest = 0;
   const reads = makeReads(view);
   let readingAll = reads.mayReadAll();
@@ -121,7 +125,8 @@ export async function show(view) {
     history.replaceState(null, '', `${location.pathname}?${new URLSearchParams({ range })}`);
     load();
   });
-  view.head({ title: 'Reliability', buttons: [control, exportButton], commands: true });
+  const saveReport = h('a', { class: 'btn', href: '/report?about=other' }, 'Save as report…');
+  view.head({ title: 'Reliability', buttons: [control, saveReport, exportButton], commands: true });
 
   // ---- the cards ----
 
@@ -242,25 +247,33 @@ export async function show(view) {
     const lines = [];
     if (results.starts.state !== 'ok') lines.push(reads.note(results.starts, 'the starts', retry));
     if (results.changes.state !== 'ok') lines.push(reads.note(results.changes, 'the changes', retry));
+    if (results.hardware.state !== 'ok') lines.push(reads.note(results.hardware, 'the hardware checks', retry));
     const admin = [results.records, results.dumps].find((result) => result.state !== 'ok');
     if (admin) lines.push(reads.note(admin, ADMIN_READS, retry));
     for (const words of capped) lines.push(h('p', { class: 'small muted' }, words));
     return lines;
   }
 
-  /** The table, the bars and the day, from the four reads that count. */
+  /** Points Save as report at what the range holds. */
+  function drawReport() {
+    if (drawn) saveReport.setAttribute('href', reportHref(kept, problemsOf(drawn.buckets, drawn.groups), drawn.buckets));
+  }
+
+  /** The table, the bars and the day, from the reads that count. */
   function drawEvents(buckets, results) {
     const sources = {
       starts: listOf(results.starts),
       records: results.records.state === 'ok' ? recordsOf(results.records.value)?.records ?? null : null,
       changes: listOf(results.changes, (value) => value?.changes),
       dumps: listOf(results.dumps),
+      hardware: listOf(results.hardware),
     };
     const unread = [];
     if (sources.starts === null) unread.push('start', 'update');
     if (sources.records === null) unread.push('error');
     if (sources.changes === null) unread.push('change');
     if (sources.dumps === null) unread.push('crash');
+    if (sources.hardware === null) unread.push('hardware');
     const groups = groupsOf(buckets, eventsOf(sources, view.time));
     const table = tableOf(buckets, groups, unread);
     const capped = [];
@@ -276,6 +289,7 @@ export async function show(view) {
     fill(problems.body, ...problemsChart(problemsOf(buckets, groups), rangeOf(range)),
       unread.length > 0 && h('p', { class: 'small muted' }, 'What could not be read is not counted.'));
     drawDay(false);
+    drawReport();
   }
 
   function drawCrashes(result) {
@@ -334,6 +348,7 @@ export async function show(view) {
       records: reads.read(readPath({ lines: MOST_LINES, priority: 'error', since }, { all: true }), { admin: true }),
       dumps: reads.read('/api/1/dumps', { admin: true }),
       alerts: reads.read('/api/1/alerts/history', { admin: true }),
+      hardware: reads.read(HARDWARE_READ),
     };
     /** Draws with the result of `promise`, unless the page was left or another read began. */
     const after = (promise, draw) => promise.then((result) => {
@@ -341,11 +356,15 @@ export async function show(view) {
     }, () => {});
     after(readChecks(view), drawHealth);
     after(got.starts, (result) => starts.draw(result));
-    after(got.failed, (result) => failed.draw(result));
+    after(got.failed, (result) => {
+      kept = result.state === 'ok' ? result.value?.failed ?? null : null;
+      failed.draw(result);
+      drawReport();
+    });
     after(got.dumps, drawCrashes);
     after(got.alerts, drawAlerts);
-    after(Promise.all([got.starts, got.records, got.changes, got.dumps]).then(([a, b, c, d]) => ({
-      starts: a, records: b, changes: c, dumps: d,
+    after(Promise.all([got.starts, got.records, got.changes, got.dumps, got.hardware]).then(([a, b, c, d, e]) => ({
+      starts: a, records: b, changes: c, dumps: d, hardware: e,
     })), (results) => drawEvents(buckets, results));
   }
 

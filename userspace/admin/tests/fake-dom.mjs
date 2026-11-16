@@ -81,6 +81,11 @@ export class Element {
     else this.removeAttribute('hidden');
   }
 
+  /** Whether `node` is this element or lies under it. */
+  contains(node) {
+    return node === this || this.descendants.includes(node);
+  }
+
   get isConnected() {
     let node = this;
     while (node.parent) node = node.parent;

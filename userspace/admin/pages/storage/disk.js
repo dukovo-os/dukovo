@@ -29,7 +29,7 @@ function rowsList(rows, hardware) {
     h('dd', { class: row.tone ?? null },
       row.tone && [icon('warn'), h('span', { class: 'sr-only' }, 'Worth a look: ')],
       row.items ? h('ul', { class: 'sto-items' }, row.items.map((item) => h('li', {}, item))) : row.value,
-      row.hardware && hardware && [' ', h('a', { href: '/hardware' }, 'Run one on the Hardware page')]),
+      row.hardware && hardware && [' ', h('a', { href: '/hardware#disks' }, 'Run one on the Hardware page')]),
   ]));
 }
 
@@ -56,7 +56,7 @@ export function makeDisk(view, {
   name, scrubber, steps, reread, links,
 }) {
   const state = h('span', { class: 'st off' });
-  const more = h('a', { class: 'more', href: '/hardware', hidden: !links.hardware }, 'Temperatures on the Hardware page');
+  const more = h('a', { class: 'more', href: '/hardware#temps', hidden: !links.hardware }, 'Temperatures on the Hardware page');
   const heading = h('h2', { id: 'sto-disk-h', tabindex: '-1' }, name, state, more);
   const note = h('p', { class: 'small muted' });
   const rowsBox = h('div', { class: 'grid sto-grid' });
