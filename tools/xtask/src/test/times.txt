@@ -21,6 +21,7 @@ acpi-thermal 32
 admin-accounts 480
 admin-actions 490
 admin-backups 600
+admin-certificates 480
 admin-commands 320
 admin-hardware 420
 admin-journal 270

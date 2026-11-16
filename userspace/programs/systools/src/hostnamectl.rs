@@ -47,7 +47,7 @@ const VERSION: &str = "/kernel/version";
 const DMI: &str = "/kernel/class/dmi/id";
 
 /// The longest host name, in bytes (hostname(5)).
-const NAME_MAX: usize = 64;
+pub(crate) const NAME_MAX: usize = 64;
 
 /// The longest one part of a host name, between dots (RFC 1035).
 const LABEL_MAX: usize = 63;
@@ -156,7 +156,7 @@ fn set_hostname(name: &str) -> Result<i32, Fail> {
 /// Why `name` is no host name: dot-separated words of letters, digits and
 /// `-`, none starting or ending with `-`, each 63 bytes at most and the
 /// whole 64, as hostname(5) and the installer take them.
-fn check_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("a host name is not empty".into());
     }

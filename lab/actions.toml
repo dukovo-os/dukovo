@@ -167,6 +167,102 @@ compares = false
 tests = { checks = "admind::actions::certificate::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
+id = "certificate.check"
+title = "Check the names for a certificate"
+area = "certificates"
+changes = false
+method = "GET"
+path = "/api/1/certificates/check/{names}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.get"
+title = "Get a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/get"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.add"
+title = "Add a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/add"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.revoke"
+title = "Revoke a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/revoke"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.remove"
+title = "Remove a certificate"
+area = "certificates"
+changes = true
+method = "POST"
+path = "/api/1/certificates/{name}/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "certificate.history"
+title = "Show what happened to the certificates"
+area = "certificates"
+changes = false
+method = "GET"
+path = "/api/1/certificates/history/all"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::certificate::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "machine.name"
+title = "Show the machine's name"
+area = "machine"
+changes = false
+method = "GET"
+path = "/api/1/machine/name"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::machine::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "machine.rename"
+title = "Rename the machine"
+area = "machine"
+changes = true
+method = "POST"
+path = "/api/1/machine/name"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::machine::tests", route = "admin-certificates", same_as_command = "admin-certificates", browser = "web-console/certificates", ansible = "web-console/ansible" }
+
+[[action]]
 id = "console.reach"
 title = "Set whom the console answers"
 area = "console"

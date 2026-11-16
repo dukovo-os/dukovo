@@ -10,6 +10,8 @@
 //! health check.
 //!
 //! - [`store`] is the folder of certificates and its lock;
+//! - [`history`] is what was done to them, which `cert history` shows;
+//! - [`accounts`] is what anyone may know of the accounts at authorities;
 //! - [`inspect`] reads PEM files and certificates, and checks a chain
 //!   against the system's roots;
 //! - [`machine`] makes `this-machine` and says when it needs making again;
@@ -22,6 +24,7 @@
 //! lines say why a service did not get its copy, and the `certificates` boot
 //! test covers it all.
 
+pub mod accounts;
 pub mod acme;
 mod add;
 // The certificates the tests of `cert` build on, which the console of a fuzz
@@ -30,6 +33,7 @@ mod add;
 #[cfg(any(test, feature = "fuzz"))]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod fixtures;
+pub mod history;
 pub mod inspect;
 pub mod machine;
 pub mod store;
@@ -48,9 +52,14 @@ use store::{Files, Kind, Store, Stored};
 /// What a mistake in the command line is told.
 const USAGE: &str = "usage: cert list [--json]\n       cert show NAME [--json] [--pem]\n       \
                      cert add NAME --chain FILE --key FILE [--replace] [--untrusted]\n       \
+                     cert add NAME --from - [--replace] [--untrusted]\n       \
                      cert get NAME [--name DNS]... [--dns] [--staging] [--dry-run]\n                \
                      [--directory URL] [--email ADDRESS] [--agree-terms]\n                \
-                     [--key ecdsa-p256|ecdsa-p384] [--profile PROFILE] [--yes]\n       \
+                     [--key ecdsa-p256|ecdsa-p384] [--profile PROFILE] [--yes]\n                \
+                     [--progress]\n       \
+                     cert get NAME [--name DNS]... [--dns] [--staging] [--directory URL]\n                \
+                     --check [--json]\n       \
+                     cert history [NAME] [-n NUMBER] [--json]\n       \
                      cert revoke NAME [--reason REASON]\n       \
                      cert remove NAME\n       cert renew NAME\n       cert check";
 
@@ -103,6 +112,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some("show") => show(args),
         Some("add") => add_certificate(args),
         Some("get") => get(args),
+        Some("history") => history(args),
         Some("revoke") => revoke(args),
         Some("remove") => remove(args),
         Some("renew") => renew(args),
@@ -203,6 +213,28 @@ fn summary(read: &Certificate, now: i64) -> Summary {
     }
 }
 
+/// What `list --json` gives of a certificate: its summary, and the account
+/// at the authority it came from.
+#[derive(Serialize)]
+struct Listed {
+    #[serde(flatten)]
+    summary: Summary,
+    /// When the account at the certificate's authority was made and whether
+    /// it has a contact; none for a certificate no authority issued, or an
+    /// authority whose account is not known. Never the address.
+    account: Option<accounts::Public>,
+}
+
+/// The account `read`'s authority keeps for this machine, from `accounts`.
+fn account_of(
+    read: &Certificate,
+    accounts: &std::collections::BTreeMap<String, accounts::Public>,
+) -> Option<accounts::Public> {
+    let acme = read.stored.acme.as_ref()?;
+    let directory = tuf::url::Url::parse(&acme.directory).ok()?;
+    accounts.get(&acme::account_file(&directory).ok()?).cloned()
+}
+
 /// Every certificate of `store`, read, or what is wrong with each that
 /// does not read.
 fn read_all(store: &Store, now: i64) -> Result<Vec<Result<Certificate, String>>, Fail> {
@@ -234,10 +266,17 @@ fn list(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     if json {
-        let summaries: Vec<Summary> = certificates.iter().map(|read| summary(read, now)).collect();
+        let accounts = accounts::read(&Store::system());
+        let entries: Vec<Listed> = certificates
+            .iter()
+            .map(|read| Listed {
+                summary: summary(read, now),
+                account: account_of(read, &accounts),
+            })
+            .collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&summaries).map_err(|err| fail(err.to_string()))?
+            serde_json::to_string_pretty(&entries).map_err(|err| fail(err.to_string()))?
         );
     } else {
         let colour = util::is_terminal(1) && std::env::var_os("NO_COLOR").is_none();
@@ -376,6 +415,8 @@ struct Shown {
     serial: String,
     key: String,
     chain: Vec<String>,
+    /// The chain as PEM, the certificate first: public, as the file is.
+    chain_pem: String,
     why_not_trusted: Option<String>,
     files: [String; 2],
 }
@@ -388,6 +429,7 @@ fn shown_json(read: &Certificate, now: i64, files: [String; 2]) -> Result<String
         serial: first.serial.clone(),
         key: first.key.clone(),
         chain: read.chain.iter().map(|details| details.subject.clone()).collect(),
+        chain_pem: String::from_utf8_lossy(&read.stored.chain).into_owned(),
         why_not_trusted: read.trust.why_not(),
         files,
     };
@@ -442,6 +484,69 @@ fn shown_text(read: &Certificate, now: i64, chain_file: &str, key_file: &str) ->
     text
 }
 
+/// `cert history [NAME] [-n NUMBER] [--json]`: what was done to the
+/// certificates, the oldest first and so the newest last, of `NAME` alone
+/// when it is given, and the newest NUMBER of them when `-n` says.
+fn history(args: &mut Args) -> Result<i32, Fail> {
+    let (mut json, mut name, mut limit) = (false, None, None);
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(option) if option == "json" => json = true,
+            Arg::Short('n') => limit = Some(args.number::<usize>()?),
+            Arg::Operand(operand) if name.is_none() => name = Some(operand),
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    let name = match name {
+        Some(name) => {
+            let name = name
+                .into_string()
+                .map_err(|_| usage("history takes the name of a certificate".into()))?;
+            service::check_certificate(&name).map_err(fail)?;
+            Some(name)
+        }
+        None => None,
+    };
+    let mut entries = history::read(&Store::system()).map_err(fail)?;
+    entries.retain(|entry| name.as_ref().is_none_or(|name| &entry.name == name));
+    if let Some(limit) = limit {
+        entries.drain(..entries.len().saturating_sub(limit));
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&entries).map_err(|err| fail(err.to_string()))?
+        );
+    } else {
+        print!("{}", history_text(&entries));
+    }
+    Ok(0)
+}
+
+/// `history`'s lines: when, the certificate, what happened and the words
+/// of it, and who did it, and how long it took when that is known.
+fn history_text(entries: &[history::Entry]) -> String {
+    let names = entries.iter().map(|entry| entry.name.chars().count()).max().unwrap_or(0);
+    let events = entries.iter().map(|entry| entry.event.word().len()).max().unwrap_or(0);
+    let mut text = String::new();
+    for entry in entries {
+        let time = util::local_time(entry.at_ms / 1_000, "%F %T");
+        let who = entry.by.word();
+        let by = match entry.took_ms {
+            None => who.to_string(),
+            Some(ms) if ms < 1_000 => format!("{who}, under 1 s"),
+            Some(ms) => format!("{who}, {} s", ms / 1_000),
+        };
+        text.push_str(&format!(
+            "{time}  {:<names$}  {:<events$}  {}  ({by})\n",
+            entry.name,
+            entry.event.word(),
+            entry.detail
+        ));
+    }
+    text
+}
+
 /// Refuses a change a person other than root asks for.
 fn need_root() -> Result<(), Fail> {
     if util::own_user() == 0 {
@@ -472,14 +577,32 @@ fn one_name(args: &mut Args, what: &str) -> Result<String, Fail> {
     name.ok_or_else(|| usage(format!("{what} takes the name of a certificate")))
 }
 
-/// `cert add NAME --chain FILE --key FILE [--replace] [--untrusted]`.
+/// Where `cert add` takes the certificate and its key from.
+enum Source {
+    /// A file of the chain and a file of the key.
+    Files { chain: PathBuf, key: PathBuf },
+    /// One PEM stream on standard input.
+    Input,
+}
+
+/// `cert add NAME --chain FILE --key FILE [--replace] [--untrusted]` or
+/// `cert add NAME --from - [--replace] [--untrusted]`.
 fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
-    let (mut name, mut chain, mut key) = (None, None, None);
+    let (mut name, mut chain, mut key, mut from) = (None, None, None, false);
     let (mut replace, mut untrusted) = (false, false);
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(option) if option == "chain" => chain = Some(PathBuf::from(args.value()?)),
             Arg::Long(option) if option == "key" => key = Some(PathBuf::from(args.value()?)),
+            Arg::Long(option) if option == "from" => {
+                if args.value()? != "-" {
+                    return Err(usage(
+                        "--from takes `-`, the standard input, which holds the key and the chain"
+                            .into(),
+                    ));
+                }
+                from = true;
+            }
             Arg::Long(option) if option == "replace" => replace = true,
             Arg::Long(option) if option == "untrusted" => untrusted = true,
             Arg::Operand(operand) if name.is_none() => name = Some(operand),
@@ -487,17 +610,38 @@ fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
         }
     }
     let name = name.and_then(|name| name.into_string().ok());
-    let (Some(name), Some(chain), Some(key)) = (name, chain, key) else {
-        return Err(usage("add takes NAME, --chain FILE and --key FILE".into()));
+    let source = match (from, chain, key) {
+        (true, None, None) => Some(Source::Input),
+        (false, Some(chain), Some(key)) => Some(Source::Files { chain, key }),
+        _ => None,
+    };
+    let (Some(name), Some(source)) = (name, source) else {
+        return Err(usage("add takes NAME, and --chain FILE and --key FILE or --from -".into()));
     };
     need_root()?;
     let now = now();
     need_clock(now)?;
     let store = Store::system();
-    let lock = store.lock().map_err(fail)?;
-    let request = add::Request { name: &name, chain: &chain, key: &key, replace, untrusted };
     let roots = tls::roots(&[], "cert");
-    let checked = add::check(&store, &request, &roots, now).map_err(fail)?;
+    // The input is read before the lock is taken: a person at a terminal
+    // may take as long as they like to paste it.
+    let stream = match &source {
+        Source::Input => Some(add::read_stream(&mut std::io::stdin().lock()).map_err(fail)?),
+        Source::Files { .. } => None,
+    };
+    let lock = store.lock().map_err(fail)?;
+    let replaced = replace && store.generation(&name).map_err(fail)?.is_some();
+    let checked = match (&source, &stream) {
+        (Source::Files { chain, key }, _) => {
+            let request = add::Request { name: &name, chain, key, replace, untrusted };
+            add::check(&store, &request, &roots, now)
+        }
+        (Source::Input, Some(stream)) => {
+            add::check_stream(&store, &name, replace, untrusted, stream, &roots, now)
+        }
+        (Source::Input, None) => Err(String::from("there is no input")),
+    }
+    .map_err(fail)?;
     let files = Files {
         chain: &checked.chain,
         key: &checked.key,
@@ -506,6 +650,17 @@ fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
         acme: None,
     };
     store.install(&lock, &name, &files).map_err(fail)?;
+    let event = if replaced { history::Event::Replaced } else { history::Event::Added };
+    let detail = format!(
+        "{}, runs out {}",
+        checked.details.names.join(", "),
+        util::time_text(checked.details.not_after, "%F", true)
+    );
+    history::record(
+        &store,
+        &lock,
+        &history::Entry::new(now, &name, event, &detail, history::By::Cert),
+    );
     drop(lock);
     println!(
         "{name} added: {}, runs out {}",
@@ -545,6 +700,14 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
         return Err(fail(format!("{}: remove it there first", each.join("; "))));
     }
     store.remove(&lock, &name).map_err(fail)?;
+    let entry = history::Entry::new(
+        now(),
+        &name,
+        history::Event::Removed,
+        "taken out of the store",
+        history::By::Cert,
+    );
+    history::record(&store, &lock, &entry);
     drop(lock);
     println!("{name} removed");
     if let Err(why) = tell_spark(power::CONTROL, &name) {
@@ -554,7 +717,8 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
 }
 
 /// `cert get NAME [--name DNS]... [--dns] [--staging] [--dry-run] [--directory URL]
-/// [--email ADDRESS] [--agree-terms] [--key TYPE] [--profile PROFILE] [--yes]`.
+/// [--email ADDRESS] [--agree-terms] [--key TYPE] [--profile PROFILE] [--yes]
+/// [--progress]`, or with `--check [--json]` what the checks before it find.
 fn get(args: &mut Args) -> Result<i32, Fail> {
     let mut options = acme::Get {
         name: String::new(),
@@ -568,6 +732,9 @@ fn get(args: &mut Args) -> Result<i32, Fail> {
         key: None,
         profile: None,
         yes: false,
+        check: false,
+        progress: false,
+        json: false,
     };
     let mut name = None;
     let text = |args: &mut Args| -> Result<String, Fail> {
@@ -587,6 +754,9 @@ fn get(args: &mut Args) -> Result<i32, Fail> {
             }
             Arg::Long(option) if option == "profile" => options.profile = Some(text(args)?),
             Arg::Long(option) if option == "yes" => options.yes = true,
+            Arg::Long(option) if option == "check" => options.check = true,
+            Arg::Long(option) if option == "progress" => options.progress = true,
+            Arg::Long(option) if option == "json" => options.json = true,
             Arg::Operand(operand) if name.is_none() => name = Some(operand),
             other => return Err(args.unknown(&other)),
         }
@@ -597,6 +767,14 @@ fn get(args: &mut Args) -> Result<i32, Fail> {
     if options.directory.is_some() && options.staging {
         return Err(usage(
             "--staging and --directory each name an authority: give one of them".into(),
+        ));
+    }
+    if options.json && !options.check {
+        return Err(usage("--json is for --check: it tells what the checks found".into()));
+    }
+    if options.check && options.progress {
+        return Err(usage(
+            "--check orders nothing, so it has no steps: leave out --progress".into(),
         ));
     }
     if let Some(email) = &options.email
@@ -656,6 +834,14 @@ fn renew(args: &mut Args) -> Result<i32, Fail> {
     }
     let lock = store.lock().map_err(fail)?;
     let details = machine::renew(&store, &lock, &util::hostname(), now).map_err(fail)?;
+    let entry = history::Entry::new(
+        now,
+        &name,
+        history::Event::Made,
+        &format!("for {}", util::hostname()),
+        history::By::Cert,
+    );
+    history::record(&store, &lock, &entry);
     drop(lock);
     println!(
         "{name} made anew: SHA-256 {}, runs out {}",
@@ -805,6 +991,82 @@ mod tests {
         assert!(text.contains("Chain:      1: CN=ec.example"));
         assert!(text.contains("/s/nas.example/key.pem"));
         assert!(!text.contains("BEGIN"));
+    }
+
+    #[test]
+    fn show_gives_the_chain_as_pem_beside_its_subjects_and_never_a_key() {
+        let mut found = certificate("nas.example", Kind::Added, &[], Trust::Trusted);
+        found.stored.chain = ECDSA.pem.as_bytes().to_vec();
+        let json = shown_json(&found, NOW, ["/c".into(), "/k".into()]).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["chain_pem"], ECDSA.pem);
+        assert!(value["chain_pem"].as_str().unwrap().starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(!json.contains("PRIVATE KEY"));
+        let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
+        let at = |key: &str| keys.iter().position(|each| *each == key).unwrap();
+        assert!(at("chain") < at("chain_pem") && at("chain_pem") < at("why_not_trusted"));
+        assert_eq!(value["fingerprint_sha256"], summary(&found, NOW).fingerprint_sha256);
+    }
+
+    #[test]
+    fn list_gives_the_account_of_the_authority_a_certificate_came_from_and_never_its_address() {
+        let accounts = std::collections::BTreeMap::from([(
+            String::from("acme-v02.api.letsencrypt.org.json"),
+            accounts::Public { made_ms: 1_793_613_600_000, contact: true },
+        )]);
+        let mut from_authority = certificate("shop.example", Kind::Acme, &[], Trust::Trusted);
+        from_authority.stored.acme = Some(store::Acme {
+            directory: acme::LETS_ENCRYPT.into(),
+            names: vec!["shop.example".into()],
+            challenge: store::Challenge::Http01,
+            key: store::KeyKind::EcdsaP256,
+            profile: None,
+            renew_at: None,
+            revoked: false,
+        });
+        let listed = Listed {
+            summary: summary(&from_authority, NOW),
+            account: account_of(&from_authority, &accounts),
+        };
+        let json = serde_json::to_string(&listed).unwrap();
+        assert!(
+            json.ends_with("\"account\":{\"made_ms\":1793613600000,\"contact\":true}}"),
+            "{json}"
+        );
+        // A certificate nobody issued, and an authority with no account known.
+        let added = certificate("nas.example", Kind::Added, &[], Trust::Trusted);
+        assert_eq!(account_of(&added, &accounts), None);
+        assert_eq!(account_of(&from_authority, &std::collections::BTreeMap::new()), None);
+        let none = Listed { summary: summary(&added, NOW), account: None };
+        assert!(serde_json::to_string(&none).unwrap().ends_with("\"account\":null}"));
+    }
+
+    #[test]
+    fn history_is_a_line_for_each_event_with_the_oldest_first() {
+        use history::{By, Entry, Event};
+        let entries = [
+            Entry::new(NOW, "a.example", Event::Renewed, "Let's Encrypt", By::Certd).took(4_200),
+            Entry::new(
+                NOW + 60,
+                "photos.example.org",
+                Event::Failed,
+                "port 80 was closed (CRT-103)",
+                By::Cert,
+            ),
+            Entry::new(NOW + 90, "a.example", Event::Got, "from a private authority", By::Cert)
+                .took(400),
+        ];
+        let text = history_text(&entries);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].ends_with("renewed  Let's Encrypt  (certd, 4 s)"), "{text}");
+        assert!(
+            lines[1]
+                .contains("  photos.example.org  failed   port 80 was closed (CRT-103)  (cert)")
+        );
+        assert!(lines[2].ends_with("(cert, under 1 s)"));
+        assert_eq!(lines[0].find("renewed"), lines[1].find("failed "));
+        assert!(history_text(&[]).is_empty());
     }
 
     #[test]

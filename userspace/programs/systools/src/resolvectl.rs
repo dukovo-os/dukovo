@@ -70,20 +70,32 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Ok(code)
         }
         Some("flush-caches") => {
-            let pid = fs::read_to_string(PID)
-                .ok()
-                .and_then(|text| text.trim().parse::<i32>().ok())
-                .ok_or_else(|| fail("resolvectl: resolved is not running".into()))?;
-            // SAFETY: kill(2) takes numbers and touches no memory.
-            if unsafe { libc::kill(pid, libc::SIGUSR2) } != 0 {
-                return Err(util::failed(&"resolvectl: resolved", io::Error::last_os_error()));
-            }
+            flush_caches()?;
             Ok(0)
         }
         Some(other) => {
             Err(usage(format!("resolvectl: no command '{other}': status, query or flush-caches")))
         }
     }
+}
+
+/// Has resolved empty its cache, as `resolvectl flush-caches` does, so that
+/// an answer of none from before a record was added is not kept for the
+/// zone's time.
+///
+/// # Errors
+///
+/// If resolved is not running or cannot be signalled.
+pub fn flush_caches() -> Result<(), Fail> {
+    let pid = fs::read_to_string(PID)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .ok_or_else(|| fail("resolvectl: resolved is not running".into()))?;
+    // SAFETY: kill(2) takes numbers and touches no memory.
+    if unsafe { libc::kill(pid, libc::SIGUSR2) } != 0 {
+        return Err(util::failed(&"resolvectl: resolved", io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 /// The name a reverse lookup asks for `address`.
