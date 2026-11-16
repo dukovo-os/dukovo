@@ -392,7 +392,7 @@ machine asks for them.
 | Item | Source |
 | --- | --- |
 | A `net.tcp_buffer_kib` kernel setting: the size of TCP sockets' buffers | ADR 0476 |
-| A TCP connection that outlives a moment in which its interface lacks its address, as on Linux: smoltcp ends it at the stack's next poll, without a reset, though the doc of the kernel's `Stack::configure` says it stays. netd keeps the addresses that stay through a reload, and those a card set to DHCP had until its lease comes, so a change of the settings no longer does this to them | Lab test `web-console/networking` (Phase 16, PR C4) |
+| A TCP connection that outlives a moment in which its interface lacks its address, as on Linux: smoltcp ends it at the stack's next poll, without a reset, though the doc of the kernel's `Stack::configure` says it stays. netd keeps the addresses that stay through a reload, and those a card set to DHCP had until its lease comes, so a change of the settings no longer does this to them | Lab test `web-console/networking` (Phase 16) |
 | An interface MTU below 1500 from DHCP's option 26 | ADR 0197 |
 | RSA keys made by certd: `this-machine` has an ECDSA P-256 key, since ring makes no RSA keys and every browser takes ECDSA; a certificate with an RSA key added by `cert add` works | ADR 0512 |
 | ENA's low-latency queues; gVNIC's DQO queue format; SFP+ modules; fiber and SerDes gigabit cards | ADR 0197 |
