@@ -1873,8 +1873,9 @@ version and when.
 With two changes or more the card offers to find which one broke the start:
 **Find which change broke it. The machine restarts up to 3 times, and nothing
 is changed for good.** The command to copy is `elevate changes bisect`. It
-restarts the machine, which the page does not do from a button, so the card
-says **Running it from the console comes with the Hardware page.** While the
+restarts the machine, which this page does not do from a button; the card
+says **An administrator can also run it from What happened on Updates.**,
+where a button starts it. While the
 search runs, the card says which try it is on, **Changes bisect is running: try
 2 of 3.**, and gives `elevate changes bisect --stop` to end it. Under them are
 `changes --failed`, which lists the changes again, and `troubleshoot`, which

@@ -264,7 +264,7 @@ test('the card of a failed start: what failed it, the changes since, and the off
   assert.deepEqual(card.offer, {
     words: 'Find which change broke it. The machine restarts up to 2 times, and nothing is changed for good.',
     command: 'elevate changes bisect',
-    later: 'Running it from the console comes with the Hardware page.',
+    later: 'An administrator can also run it from What happened on Updates.',
   });
   assert.equal(card.running, null);
 });

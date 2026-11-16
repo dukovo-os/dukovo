@@ -168,7 +168,7 @@ export function failedOf(answer, time) {
       ? {
         words: `Find which change broke it. The machine restarts up to ${counted(restarts, 'time')}, and nothing is changed for good.`,
         command: 'elevate changes bisect',
-        later: 'Running it from the console comes with the Hardware page.',
+        later: 'An administrator can also run it from What happened on Updates.',
       }
       : null,
   };
