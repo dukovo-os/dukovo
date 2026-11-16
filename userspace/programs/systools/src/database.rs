@@ -42,7 +42,7 @@ mod errors;
 mod fake;
 mod hba;
 mod list;
-mod names;
+pub(crate) mod names;
 pub mod scram;
 mod server;
 mod settings;

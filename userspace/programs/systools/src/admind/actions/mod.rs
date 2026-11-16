@@ -55,6 +55,7 @@ mod bisect;
 mod certificate;
 pub mod checks;
 mod console;
+mod databases;
 mod firewall;
 mod hardware;
 #[cfg(any(test, feature = "lab"))]
@@ -1272,6 +1273,12 @@ registry![
     apps::Hold,
     apps::Unhold,
     apps::Remove,
+    databases::List,
+    databases::Add,
+    databases::Password,
+    databases::Allow,
+    databases::Deny,
+    databases::Remove,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
