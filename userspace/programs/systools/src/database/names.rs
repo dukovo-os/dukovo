@@ -127,8 +127,10 @@ impl Network {
         Ok(Network::new(address, prefix))
     }
 
-    /// The network of `address`'s first `prefix` bits.
-    fn new(address: IpAddr, prefix: u8) -> Network {
+    /// The network of `address`'s first `prefix` bits, which may be at
+    /// most the address's length.
+    #[must_use]
+    pub fn new(address: IpAddr, prefix: u8) -> Network {
         let address = match address {
             IpAddr::V4(v4) => {
                 let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
@@ -140,6 +142,12 @@ impl Network {
             }
         };
         Network { address, prefix }
+    }
+
+    /// The first address of the network and the length of its prefix.
+    #[must_use]
+    pub fn parts(self) -> (IpAddr, u8) {
+        (self.address, self.prefix)
     }
 
     /// The network that `address` and `netmask` say, as PostgreSQL's

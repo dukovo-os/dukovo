@@ -13,8 +13,9 @@
 //! - [`add`] makes a database and the role that owns it, changes a
 //!   role's password and removes both;
 //! - [`allow`] lets other machines in over TLS and shuts them out, in
-//!   `pg_hba.conf` ([`hba`]), the server's settings ([`settings`]) and
-//!   the service's certificates;
+//!   `pg_hba.conf` ([`hba`]), the server's settings ([`settings`]), the
+//!   service's certificates and the firewall's rules for the port
+//!   ([`port`]);
 //! - [`list`] says what is there;
 //! - [`names`] is what a name, a sorting and a network may be, [`sql`] is
 //!   every statement sent, [`errors`] the refusals that have an ID, and
@@ -43,6 +44,7 @@ mod fake;
 mod hba;
 mod list;
 pub(crate) mod names;
+mod port;
 pub mod scram;
 mod server;
 mod settings;
@@ -76,11 +78,13 @@ command needs root; try elevate database.
             the JSON that --json prints
   allow     lets the networks, such as 192.168.1.0/24, sign in to NAME from
             other machines, over TLS with the certificate NAME (this-machine
-            when --certificate is not given); PostgreSQL restarts when it
-            has to listen on the network or read another certificate
+            when --certificate is not given), and opens port 5432 in the
+            firewall to the networks of every database and to no other;
+            PostgreSQL restarts when it has to listen on the network or
+            read another certificate
   deny      shuts the networks out again, or every one when --from is not
-            given; PostgreSQL listens on this machine only again when none
-            is left
+            given, and shuts port 5432 to those that no database names;
+            PostgreSQL listens on this machine only again when none is left
   remove    removes the database, which must have no open session unless
             --force ends them; --role removes its role too, when database
             made it and it owns nothing else
@@ -88,7 +92,8 @@ command needs root; try elevate database.
   --progress  tells each step of allow and deny as `step N of M: WORDS`
 
 A change takes the lock of database, so that two do not mix, and writes
-pg_hba.conf only between the two comment lines it keeps there.";
+pg_hba.conf and the firewall's rules only between the two comment lines it
+keeps in each.";
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq, Eq)]

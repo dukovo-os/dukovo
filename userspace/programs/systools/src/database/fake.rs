@@ -3,8 +3,8 @@
 
 //! A machine in memory for the tests of `database`: the part of
 //! PostgreSQL's answers that the commands read, with the files it reads
-//! in a folder of their own, and every statement, log line and restart
-//! noted.
+//! and the firewall's rules in a folder of their own, and every
+//! statement, log line, restart and load of the firewall noted.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -115,6 +115,12 @@ pub struct Fake {
     deaf: bool,
     /// When it last read them.
     loaded: u64,
+    /// Whether the firewall's rules are being tried.
+    firewall_tried: bool,
+    /// How many times the firewall loaded its rules.
+    firewall_loads: usize,
+    /// The loads of the firewall's rules that are still to fail.
+    firewall_loads_to_fail: usize,
 }
 
 impl Fake {
@@ -138,6 +144,7 @@ impl Fake {
         let files = Files {
             service: folder.join("services/postgresql.toml"),
             over: folder.join("services/settings.d/postgresql.toml"),
+            firewall: folder.join("firewall"),
         };
         let mut roles = BTreeMap::new();
         roles.insert("postgres".to_string(), Role { password: false, comment: None });
@@ -168,6 +175,9 @@ impl Fake {
             probe_error: None,
             deaf: false,
             loaded: 1,
+            firewall_tried: false,
+            firewall_loads: 0,
+            firewall_loads_to_fail: 0,
         }
     }
 
@@ -339,6 +349,27 @@ impl Fake {
         self
     }
 
+    /// The firewall's rules are `text`.
+    #[must_use]
+    pub fn with_firewall_rules(self, text: &str) -> Fake {
+        self.write_firewall(text);
+        self
+    }
+
+    /// The firewall's rules are being tried.
+    #[must_use]
+    pub fn with_a_firewall_trial(mut self) -> Fake {
+        self.firewall_tried = true;
+        self
+    }
+
+    /// The firewall does not take its rules the first `times` it is asked.
+    #[must_use]
+    pub fn failing_to_load_the_firewall(mut self, times: usize) -> Fake {
+        self.firewall_loads_to_fail = times;
+        self
+    }
+
     /// Every statement sent.
     pub fn sent(&self) -> &[String] {
         &self.sent
@@ -408,6 +439,25 @@ impl Fake {
     /// What the override of the service says, none for no file.
     pub fn override_text(&self) -> Option<String> {
         fs::read_to_string(&self.files.over).ok()
+    }
+
+    /// What the firewall's rules say, none for no file.
+    pub fn firewall_text(&self) -> Option<String> {
+        fs::read_to_string(&self.files.firewall).ok()
+    }
+
+    /// Writes the firewall's rules.
+    ///
+    /// # Panics
+    ///
+    /// When they cannot be written.
+    pub fn write_firewall(&self, text: &str) {
+        fs::write(&self.files.firewall, text).unwrap();
+    }
+
+    /// How many times the firewall loaded its rules.
+    pub fn firewall_loads(&self) -> usize {
+        self.firewall_loads
     }
 
     /// What `postgresql.auto.conf` sets.
@@ -937,6 +987,19 @@ impl Host for Fake {
             Some(why) => Err(why.clone()),
             None => Ok(()),
         }
+    }
+
+    fn firewall_is_tried(&mut self) -> bool {
+        self.firewall_tried
+    }
+
+    fn load_firewall(&mut self) -> Result<(), String> {
+        self.firewall_loads += 1;
+        if self.firewall_loads_to_fail > 0 {
+            self.firewall_loads_to_fail -= 1;
+            return Err("the kernel refused the rules".into());
+        }
+        Ok(())
     }
 
     fn files(&self) -> &Files {

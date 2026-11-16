@@ -3,12 +3,13 @@
 
 //! What `database` needs of the machine around PostgreSQL's statements:
 //! the session, Spark's word on the service, a restart, the certificates
-//! certd keeps, the accounts, the TLS check and the log. The commands
-//! work through [`Host`], so that a test can stand a machine in memory in
-//! their place.
+//! certd keeps, the accounts, the TLS check, the firewall's trial and its
+//! loading of rules, and the log. The commands work through [`Host`], so
+//! that a test can stand a machine in memory in their place.
 
 use std::fs::TryLockError;
 use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
@@ -24,7 +25,7 @@ use crate::cert::inspect;
 use crate::cert::store::Store;
 use crate::tls;
 use crate::util::{Fail, fail};
-use crate::{logger, service, servicefiles};
+use crate::{firewall, logger, service, servicefiles, trial};
 
 /// PostgreSQL's socket, in the service's live folder.
 pub const SOCKET: &str = "/system/live/services/postgres/.s.PGSQL.5432";
@@ -63,13 +64,16 @@ pub struct Service {
     pub running: bool,
 }
 
-/// The files of PostgreSQL's service that `database` changes.
+/// The files of PostgreSQL's service and of the firewall that `database`
+/// changes.
 #[derive(Clone, Debug)]
 pub struct Files {
     /// The service file Spark reads.
     pub service: PathBuf,
     /// Its override, which names the certificates.
     pub over: PathBuf,
+    /// The firewall's rules, which hold the block for the port.
+    pub firewall: PathBuf,
 }
 
 impl Files {
@@ -80,6 +84,7 @@ impl Files {
         Files {
             service: folder.join(format!("{SERVICE}.toml")),
             over: folder.join(OVERRIDES).join(format!("{SERVICE}.toml")),
+            firewall: PathBuf::from(firewall::SETTINGS),
         }
     }
 }
@@ -125,6 +130,20 @@ pub trait Host {
     ///
     /// What the handshake or the certificate said.
     fn probe(&mut self, name: &str) -> Result<(), String>;
+
+    /// Whether the firewall's rules are being tried (ADR 0472): Spark puts
+    /// the file back as it was when the trial ends, so a change of it now
+    /// would be lost. Spark that does not answer runs no trial, as
+    /// `firewall` takes it.
+    fn firewall_is_tried(&mut self) -> bool;
+
+    /// Has the firewall give the kernel the rules of its file, as
+    /// `firewall load` does.
+    ///
+    /// # Errors
+    ///
+    /// Why the kernel did not take them, in words.
+    fn load_firewall(&mut self) -> Result<(), String>;
 
     /// The files of the service.
     fn files(&self) -> &Files;
@@ -259,6 +278,14 @@ impl Host for Machine {
         wire::tls_probe(address, host, roots)
     }
 
+    fn firewall_is_tried(&mut self) -> bool {
+        trial::running(firewall::TRIAL).is_ok_and(|running| running.is_some())
+    }
+
+    fn load_firewall(&mut self) -> Result<(), String> {
+        firewall::load(&mut io::sink(), false).map(|_| ()).map_err(|failed| failed.message)
+    }
+
     fn files(&self) -> &Files {
         &self.files
     }
@@ -354,13 +381,14 @@ mod tests {
     }
 
     #[test]
-    fn the_files_are_the_service_and_its_override() {
+    fn the_files_are_the_service_its_override_and_the_firewall_s_rules() {
         let files = Files::system();
         assert_eq!(files.service, Path::new("/system/settings/spark/services/postgresql.toml"));
         assert_eq!(
             files.over,
             Path::new("/system/settings/spark/services/settings.d/postgresql.toml")
         );
+        assert_eq!(files.firewall, Path::new("/system/settings/firewall"));
     }
 
     #[test]

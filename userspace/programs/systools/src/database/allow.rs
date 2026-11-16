@@ -4,15 +4,18 @@
 //! `database allow` and `deny`: other machines let in to a database over
 //! TLS with its role's password, and shut out again.
 //!
-//! A change reaches three files, PostgreSQL's service override (which
-//! certificates Spark copies for it), `pg_hba.conf` (who may connect)
-//! and `postgresql.auto.conf` (where it listens and with what
-//! certificate, through `ALTER SYSTEM`). Before any of it takes effect
-//! PostgreSQL reads the files as they are now, and a mistake it finds
-//! puts all three back. Then the server reads them again, or restarts
-//! when it must listen elsewhere or read another certificate; one that
-//! does not answer as it should, and with the certificate, has the three
-//! put back and is started again.
+//! A change reaches four files, PostgreSQL's service override (which
+//! certificates Spark copies for it), `pg_hba.conf` (who may connect),
+//! `postgresql.auto.conf` (where it listens and with what certificate,
+//! through `ALTER SYSTEM`) and the firewall's rules, which hold the block
+//! that opens port 5432 to the networks of every database and to none
+//! else ([`port`]). Before any of it takes effect PostgreSQL reads its
+//! files as they are now, and a mistake it finds puts them all back. Then
+//! the firewall has the rules, and the server reads its files again, or
+//! restarts when it must listen elsewhere or read another certificate;
+//! one that does not answer as it should, and with the certificate, has
+//! the files put back, the firewall has them again, and the server is
+//! started again.
 
 use std::fs;
 use std::io;
@@ -20,9 +23,9 @@ use std::path::{Path, PathBuf};
 
 use super::add::{built, ready, run};
 use super::names::Network;
-use super::server::{Host, RELOAD_WAIT, value};
+use super::server::{Host, PORT, RELOAD_WAIT, value};
 use super::settings::{self, Change, Settings};
-use super::{errors, hba, sql};
+use super::{errors, hba, port, sql};
 use crate::cert::acme::steps::Steps;
 use crate::settings_edit;
 use crate::util::{Fail, fail};
@@ -48,10 +51,10 @@ pub struct Deny {
 }
 
 /// How many steps `allow` tells of.
-pub const ALLOW_STEPS: usize = 7;
+pub const ALLOW_STEPS: usize = 8;
 
 /// How many steps `deny` tells of.
-pub const DENY_STEPS: usize = 5;
+pub const DENY_STEPS: usize = 6;
 
 /// The mode of `pg_hba.conf`, when it has to be made again: the owner,
 /// postgres, is kept as it is.
@@ -59,6 +62,10 @@ const HBA_MODE: u32 = 0o600;
 
 /// The mode of a service's override.
 const OVERRIDE_MODE: u32 = 0o644;
+
+/// The mode of the firewall's rules, when the file has to be made:
+/// everyone may read them, as `firewall list` does.
+const FIREWALL_MODE: u32 = 0o644;
 
 /// The files of the server that a change touches.
 struct Server {
@@ -79,7 +86,7 @@ fn locate(host: &mut dyn Host) -> Result<Server, Fail> {
 }
 
 /// The text of the file `path`, or none when it is not there.
-fn read_optional(path: &Path) -> Result<Option<String>, Fail> {
+pub(super) fn read_optional(path: &Path) -> Result<Option<String>, Fail> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -204,6 +211,10 @@ struct Attempt {
     hba: String,
     /// The text of the override before, none for a file not there.
     over_before: Option<String>,
+    /// The firewall's rules.
+    firewall: PathBuf,
+    /// The text of the firewall's rules before, none for a file not there.
+    firewall_before: Option<String>,
     /// The text of `postgresql.auto.conf` before, none for no file.
     auto: Option<Vec<u8>>,
     /// The settings before.
@@ -212,11 +223,26 @@ struct Attempt {
     wrote_over: bool,
     /// Whether `pg_hba.conf` has been written.
     wrote_hba: bool,
+    /// Whether the firewall's rules have been written.
+    wrote_firewall: bool,
     /// The settings that were set or reset.
     applied: Vec<Change>,
 }
 
 impl Attempt {
+    /// Puts the firewall's rules back as they were and has the firewall
+    /// load them. Gives what went wrong, as words that follow "the change
+    /// was taken back, but".
+    fn put_firewall_back(&self, host: &mut dyn Host) -> Option<String> {
+        let before = self.firewall_before.as_deref().map(str::as_bytes);
+        if let Err(why) = restore(&self.firewall, before, FIREWALL_MODE) {
+            return Some(format!("the firewall's rules could not be put back ({why})"));
+        }
+        host.load_firewall()
+            .err()
+            .map(|why| format!("the firewall could not load the rules put back ({why})"))
+    }
+
     /// Puts the files and the settings back as they were, and then does
     /// what `then` says. Gives how it went, as words that follow
     /// "the change was taken back": empty when it all went well.
@@ -232,6 +258,9 @@ impl Attempt {
                 restore(&self.over, self.over_before.as_deref().map(str::as_bytes), OVERRIDE_MODE)
         {
             trouble.push(format!("the service's override could not be put back ({why})"));
+        }
+        if self.wrote_firewall {
+            trouble.extend(self.put_firewall_back(host));
         }
         if !self.applied.is_empty() {
             if then == Then::Restart {
@@ -269,13 +298,14 @@ impl Attempt {
     }
 }
 
-/// `database allow`: lets the networks in to the database over TLS.
+/// `database allow`: lets the networks in to the database over TLS, and
+/// opens port 5432 in the firewall to the networks of every database.
 ///
 /// # Errors
 ///
-/// DB-101, DB-104 and DB-105 as the command says; a plain failure for a
-/// database that is not there, or whose role has no password to sign in
-/// with.
+/// DB-101, DB-104, DB-105, DB-107 and DB-108 as the command says; a
+/// plain failure for a database that is not there, or whose role has no
+/// password to sign in with.
 pub fn allow(host: &mut dyn Host, ask: &Allow, steps: &Steps) -> Result<Vec<String>, Fail> {
     steps.next("checking the database, the networks and the certificate");
     ready(host)?;
@@ -316,6 +346,8 @@ pub fn allow(host: &mut dyn Host, ask: &Allow, steps: &Steps) -> Result<Vec<Stri
         .collect();
     let hba_after =
         hba::with_rules(&hba_before, &rules).map_err(|why| errors::not_passed(&why, ""))?;
+    let open_to = hba::rules(&hba_after).map_err(|why| errors::not_passed(&why, ""))?;
+    let (firewall_before, wanted) = firewall_plan(host, &open_to)?;
     let files = host.files().clone();
     let service_file = fs::read_to_string(&files.service)
         .map_err(|error| crate::util::failed(&files.service.display(), error))?;
@@ -330,9 +362,12 @@ pub fn allow(host: &mut dyn Host, ask: &Allow, steps: &Steps) -> Result<Vec<Stri
         over: files.over.clone(),
         hba: hba_before.clone(),
         over_before,
+        firewall: files.firewall.clone(),
+        firewall_before,
         settings,
         wrote_over: false,
         wrote_hba: false,
+        wrote_firewall: false,
         applied: Vec::new(),
     };
 
@@ -375,6 +410,11 @@ pub fn allow(host: &mut dyn Host, ask: &Allow, steps: &Steps) -> Result<Vec<Stri
         ));
     }
 
+    steps.next(&format!("opening port {PORT} to these networks only"));
+    if let Err(why) = write_firewall(host, &mut attempt, &wanted.text) {
+        return Err(stopped(host, &mut attempt, &why));
+    }
+
     let after =
         read_settings(host).map_err(|why| stopped_with(host, &mut attempt, &why, Then::Nothing))?;
     let restarts = over_after.is_some() || after.needs_restart(&changes, &listening);
@@ -408,7 +448,44 @@ pub fn allow(host: &mut dyn Host, ask: &Allow, steps: &Steps) -> Result<Vec<Stri
     if restarts {
         words.push("PostgreSQL restarted, and its open sessions ended".into());
     }
+    if let Some(rule) = &wanted.earlier {
+        words.push(format!(
+            "the firewall rule `{rule}` comes before database's rules for port {PORT} and decides \
+             first for the connections it names; database does not move it"
+        ));
+    }
     Ok(words)
+}
+
+/// The firewall's rules as they are, and as they are to be once the
+/// server is open to the networks of `open_to`, the lines of
+/// `pg_hba.conf`'s block that will be there. Refused while the firewall's
+/// rules are being tried, and when the file cannot take the block.
+///
+/// # Errors
+///
+/// DB-107 and DB-108; a plain failure when the file cannot be read.
+fn firewall_plan(
+    host: &mut dyn Host,
+    open_to: &[hba::Rule],
+) -> Result<(Option<String>, port::Wanted), Fail> {
+    if host.firewall_is_tried() {
+        return Err(errors::firewall_is_tried());
+    }
+    let before = read_optional(&host.files().firewall)?;
+    let wanted = port::wanted(before.as_deref().unwrap_or_default(), open_to)?;
+    Ok((before, wanted))
+}
+
+/// Writes `text` as the firewall's rules, unless the file holds it, and
+/// has the firewall load it.
+fn write_firewall(host: &mut dyn Host, attempt: &mut Attempt, text: &str) -> Result<(), String> {
+    if attempt.firewall_before.as_deref().unwrap_or_default() == text {
+        return Ok(());
+    }
+    attempt.wrote_firewall = true;
+    put(&attempt.firewall, text.as_bytes(), FIREWALL_MODE).map_err(|why| why.message)?;
+    host.load_firewall().map_err(|why| format!("the firewall did not take its rules: {why}"))
 }
 
 /// Sets and resets `changes`, one statement each, noting in `attempt`
@@ -458,12 +535,13 @@ fn answers_over_tls(host: &mut dyn Host, certificate: &str) -> Result<(), String
 }
 
 /// `database deny`: shuts the networks, or every one, out of the
-/// database, and has the server listen on this machine only again when
-/// no line of `database`'s is left.
+/// database, shuts port 5432 in the firewall to the networks that no
+/// database names, and has the server listen on this machine only again
+/// when no line of `database`'s is left.
 ///
 /// # Errors
 ///
-/// DB-101 and DB-104 as the command says.
+/// DB-101, DB-104, DB-107 and DB-108 as the command says.
 pub fn deny(host: &mut dyn Host, ask: &Deny, steps: &Steps) -> Result<Vec<String>, Fail> {
     steps.next("reading pg_hba.conf");
     ready(host)?;
@@ -481,7 +559,9 @@ pub fn deny(host: &mut dyn Host, ask: &Deny, steps: &Steps) -> Result<Vec<String
     let gone: Vec<String> = going.iter().map(|rule| rule.network.to_string()).collect();
     let hba_after =
         hba::without_rules(&hba_before, goes).map_err(|why| errors::not_passed(&why, ""))?;
-    let left = hba::rules(&hba_after).map_err(|why| errors::not_passed(&why, ""))?.len();
+    let open_to = hba::rules(&hba_after).map_err(|why| errors::not_passed(&why, ""))?;
+    let left = open_to.len();
+    let (firewall_before, wanted) = firewall_plan(host, &open_to)?;
     let settings = read_settings(host)?;
     let listening = running(host, settings::LISTEN)?;
     let changes = if left == 0 { settings.to_deny() } else { Vec::new() };
@@ -491,9 +571,12 @@ pub fn deny(host: &mut dyn Host, ask: &Deny, steps: &Steps) -> Result<Vec<String
         over: host.files().over.clone(),
         hba: hba_before,
         over_before: None,
+        firewall: host.files().firewall.clone(),
+        firewall_before,
         settings,
         wrote_over: false,
         wrote_hba: false,
+        wrote_firewall: false,
         applied: Vec::new(),
     };
 
@@ -517,6 +600,10 @@ pub fn deny(host: &mut dyn Host, ask: &Deny, steps: &Steps) -> Result<Vec<String
             &format!("PostgreSQL's check found {}", found.join("; ")),
             &back,
         ));
+    }
+    steps.next(&format!("closing port {PORT} to the networks no database names"));
+    if let Err(why) = write_firewall(host, &mut attempt, &wanted.text) {
+        return Err(stopped(host, &mut attempt, &why));
     }
     let after =
         read_settings(host).map_err(|why| stopped_with(host, &mut attempt, &why, Then::Nothing))?;
@@ -948,12 +1035,13 @@ mod tests {
         let words = deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
         assert_eq!(words, ["shop has no line in pg_hba.conf for other machines"]);
         assert_eq!((fake.changes(), fake.restarts(), fake.reloads()), (vec![], 0, 0));
+        assert_eq!((fake.firewall_text(), fake.firewall_loads()), (None, 0));
         let mut fake = open_to(&["10.0.2.0/24"]);
-        let reloads = fake.reloads();
+        let (reloads, loads) = (fake.reloads(), fake.firewall_loads());
         let ask = Deny { name: "shop".into(), networks: Some(vec![net("10.9.0.0/16")]) };
         let words = deny(&mut fake, &ask, &Steps::off()).unwrap();
         assert_eq!(words.len(), 1);
-        assert_eq!(fake.reloads(), reloads);
+        assert_eq!((fake.reloads(), fake.firewall_loads()), (reloads, loads));
         assert_eq!(fake.hba_rules().len(), 1);
     }
 
@@ -994,8 +1082,243 @@ mod tests {
         assert!(fake.changes().is_empty());
     }
 
+    /// The block of the firewall's rules that opens port 5432 to
+    /// `networks`, as `database` writes it.
+    fn block_for(networks: &[&str]) -> String {
+        let mut text =
+            String::from("# database(8): who reaches PostgreSQL from other machines (ADR 0570)\n");
+        for network in networks {
+            text.push_str(&format!("allow tcp 5432 from {network}\n"));
+        }
+        text.push_str("deny tcp 5432\n# database(8): end\n");
+        text
+    }
+
+    /// A server with `shop` and `blog`, neither let in.
+    fn two() -> Fake {
+        shop().with_database("blog", "blog")
+    }
+
+    #[test]
+    fn a_network_that_is_let_in_gets_port_5432_in_the_firewall_and_the_firewall_loads_it() {
+        let mut fake = shop();
+        allow(&mut fake, &lets("shop", &["192.168.1.0/24"]), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), block_for(&["192.168.1.0/24"]));
+        assert_eq!(fake.firewall_loads(), 1);
+        // The same again writes nothing and loads nothing.
+        allow(&mut fake, &lets("shop", &["192.168.1.0/24"]), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), block_for(&["192.168.1.0/24"]));
+        assert_eq!(fake.firewall_loads(), 1);
+    }
+
+    #[test]
+    fn the_block_is_the_union_of_every_database_s_networks_each_once_in_the_order_seen() {
+        let mut fake = two();
+        allow(&mut fake, &lets("shop", &["192.168.1.0/24"]), &Steps::off()).unwrap();
+        allow(&mut fake, &lets("blog", &["10.0.0.0/8", "192.168.1.0/24"]), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), block_for(&["192.168.1.0/24", "10.0.0.0/8"]));
+        assert_eq!(fake.firewall_loads(), 2);
+    }
+
+    #[test]
+    fn what_the_administrator_wrote_in_the_firewall_s_rules_is_kept_as_it_was() {
+        let before = "# Mine.\nallow tcp 22   # ssh\n\nallow tcp 8080";
+        let mut fake = shop().with_firewall_rules(before);
+        allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap();
+        assert_eq!(
+            fake.firewall_text().unwrap(),
+            format!("{before}\n\n{}", block_for(&["10.0.2.0/24"]))
+        );
+        deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), format!("{before}\n"));
+    }
+
+    #[test]
+    fn denying_one_database_keeps_the_networks_of_the_other() {
+        let mut fake = two();
+        allow(&mut fake, &lets("shop", &["192.168.1.0/24"]), &Steps::off()).unwrap();
+        allow(&mut fake, &lets("blog", &["10.0.0.0/8"]), &Steps::off()).unwrap();
+        deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), block_for(&["10.0.0.0/8"]));
+        assert_eq!(fake.firewall_loads(), 3);
+    }
+
+    #[test]
+    fn denying_a_network_that_another_database_has_too_keeps_it_in_the_block() {
+        let mut fake = two();
+        allow(&mut fake, &lets("shop", &["10.0.2.0/24", "192.168.1.0/24"]), &Steps::off()).unwrap();
+        allow(&mut fake, &lets("blog", &["10.0.2.0/24"]), &Steps::off()).unwrap();
+        let ask = Deny { name: "shop".into(), networks: Some(vec![net("10.0.2.0/24")]) };
+        deny(&mut fake, &ask, &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), block_for(&["192.168.1.0/24", "10.0.2.0/24"]));
+    }
+
+    #[test]
+    fn denying_the_last_network_takes_the_block_away_and_leaves_the_rest() {
+        let before = "# Mine.\nallow tcp 22\n";
+        let mut fake = shop().with_firewall_rules(before);
+        allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap();
+        deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), before);
+        assert_eq!(fake.firewall_loads(), 2);
+        // A second deny has nothing to take out and loads nothing.
+        deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_loads(), 2);
+    }
+
+    #[test]
+    fn a_server_opened_before_the_firewall_had_a_block_gets_one_from_the_next_deny() {
+        let mut fake = shop()
+            .listening_with("this-machine")
+            .with_hba_lines(&[("shop", "shop", "10.0.2.0/24"), ("shop", "shop", "192.168.1.0/24")]);
+        assert_eq!(fake.firewall_text(), None);
+        let ask = Deny { name: "shop".into(), networks: Some(vec![net("10.0.2.0/24")]) };
+        deny(&mut fake, &ask, &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), block_for(&["192.168.1.0/24"]));
+        deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), "");
+        // With no block before and none wanted, the file is not made.
+        let mut fake = shop().listening_with("this-machine").with_hba_lines(&[(
+            "shop",
+            "shop",
+            "10.0.2.0/24",
+        )]);
+        deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
+        assert_eq!((fake.firewall_text(), fake.firewall_loads()), (None, 0));
+    }
+
+    #[test]
+    fn a_firewall_trial_refuses_an_allow_with_db_107_before_anything_is_changed() {
+        let mut fake = shop().with_a_firewall_trial();
+        let failure = allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap_err();
+        assert!(failure.message.ends_with("nothing was changed (DB-107)"), "{}", failure.message);
+        assert!(failure.message.contains("elevate firewall keep"), "{}", failure.message);
+        assert_eq!(fake.hba_rules(), Vec::<String>::new());
+        assert_eq!((fake.override_text(), fake.firewall_text()), (None, None));
+        assert!(fake.auto().is_empty() && fake.changes().is_empty());
+        assert_eq!((fake.restarts(), fake.reloads(), fake.firewall_loads()), (0, 0, 0));
+        assert!(fake.logged().is_empty());
+    }
+
+    #[test]
+    fn a_firewall_trial_refuses_a_deny_that_has_something_to_do_and_no_other() {
+        let mut fake = shop()
+            .listening_with("this-machine")
+            .with_hba_lines(&[("shop", "shop", "10.0.2.0/24")])
+            .with_a_firewall_trial();
+        let before = fake.hba_text();
+        let failure = deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap_err();
+        assert!(failure.message.ends_with("nothing was changed (DB-107)"), "{}", failure.message);
+        assert_eq!(fake.hba_text(), before);
+        assert_eq!((fake.restarts(), fake.reloads(), fake.firewall_loads()), (0, 0, 0));
+        assert_eq!(fake.running("listen_addresses"), "*");
+        let words = deny(&mut fake, &all_of("blog"), &Steps::off()).unwrap();
+        assert_eq!(words, ["blog has no line in pg_hba.conf for other machines"]);
+    }
+
+    #[test]
+    fn a_block_that_is_not_whole_is_db_108_for_both_and_nothing_is_changed() {
+        let broken = "allow tcp 22\n# database(8): end\n";
+        let mut fake = shop().with_firewall_rules(broken);
+        let failure = allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap_err();
+        assert!(failure.message.ends_with("(DB-108)"), "{}", failure.message);
+        assert!(failure.message.contains("line 2 ends a block that no line starts"));
+        assert_eq!(fake.hba_rules(), Vec::<String>::new());
+        assert_eq!((fake.override_text(), fake.firewall_text().as_deref()), (None, Some(broken)));
+        assert!(fake.changes().is_empty());
+        assert_eq!((fake.restarts(), fake.reloads(), fake.firewall_loads()), (0, 0, 0));
+        let mut fake = shop()
+            .listening_with("this-machine")
+            .with_hba_lines(&[("shop", "shop", "10.0.2.0/24")])
+            .with_firewall_rules(broken);
+        let before = fake.hba_text();
+        let failure = deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap_err();
+        assert!(failure.message.ends_with("(DB-108)"), "{}", failure.message);
+        assert_eq!(fake.hba_text(), before);
+        assert_eq!((fake.restarts(), fake.reloads(), fake.firewall_loads()), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_file_that_would_hold_more_rules_than_the_firewall_does_is_db_108() {
+        let full = "allow tcp 22\n".repeat(127);
+        let mut fake = shop().with_firewall_rules(&full);
+        let failure = allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap_err();
+        assert!(failure.message.contains("129 rules"), "{}", failure.message);
+        assert!(failure.message.ends_with("(DB-108)"));
+        assert_eq!(fake.firewall_text().as_deref(), Some(full.as_str()));
+        assert_eq!(fake.hba_rules(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_rule_of_the_administrator_s_that_decides_first_is_told_and_not_moved() {
+        let mut fake = shop().with_firewall_rules("allow tcp 5432\n");
+        let words = allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap();
+        assert_eq!(words.len(), 3, "{words:?}");
+        assert_eq!(
+            words[2],
+            "the firewall rule `allow tcp 5432` comes before database's rules for port 5432 and \
+             decides first for the connections it names; database does not move it"
+        );
+        assert_eq!(
+            fake.firewall_text().unwrap(),
+            format!("allow tcp 5432\n\n{}", block_for(&["10.0.2.0/24"]))
+        );
+    }
+
+    #[test]
+    fn a_failure_after_the_firewall_step_puts_its_file_back_and_has_it_loaded_again() {
+        let before = "# Mine.\nallow tcp 22\n";
+        let mut fake = shop().with_firewall_rules(before).failing_to_restart(1);
+        let failure = allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap_err();
+        assert!(failure.message.contains("the change was taken back"), "{}", failure.message);
+        assert!(failure.message.ends_with("(DB-104)"));
+        assert_eq!(fake.firewall_text().as_deref(), Some(before));
+        assert_eq!(fake.firewall_loads(), 2, "written and loaded, then put back and loaded");
+        // A file that was not there is not there.
+        let mut fake = shop().failing_the_tls_check("TLS with PostgreSQL failed: bad certificate");
+        allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap_err();
+        assert_eq!((fake.firewall_text(), fake.firewall_loads()), (None, 2));
+        assert_eq!(fake.hba_rules(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_deny_that_fails_after_the_firewall_step_has_the_block_back() {
+        let mut fake = open_to(&["10.0.2.0/24"]);
+        let open = fake.firewall_text().unwrap();
+        fake = fake.failing_to_restart(1);
+        deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap_err();
+        assert_eq!(fake.firewall_text().unwrap(), open);
+        assert_eq!(fake.firewall_loads(), 3);
+    }
+
+    #[test]
+    fn a_firewall_that_does_not_take_its_rules_has_its_file_put_back_before_any_restart() {
+        let before = "allow tcp 22\n";
+        let mut fake = shop().with_firewall_rules(before).failing_to_load_the_firewall(1);
+        let failure = allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap_err();
+        assert!(
+            failure.message.contains("the firewall did not take its rules: the kernel refused"),
+            "{}",
+            failure.message
+        );
+        assert!(failure.message.ends_with("nothing was changed (DB-104)"), "{}", failure.message);
+        assert_eq!(fake.firewall_text().as_deref(), Some(before));
+        assert_eq!(fake.hba_rules(), Vec::<String>::new());
+        assert!(fake.auto().is_empty());
+        assert_eq!((fake.restarts(), fake.reloads(), fake.firewall_loads()), (0, 0, 2));
+        // The rules put back are loaded again, and the firewall says if it
+        // cannot.
+        let mut fake = shop().failing_to_load_the_firewall(2);
+        let failure = allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap_err();
+        assert!(
+            failure.message.contains("but the firewall could not load the rules put back"),
+            "{}",
+            failure.message
+        );
+    }
+
     #[test]
     fn the_steps_counted_are_those_each_command_tells() {
-        assert_eq!((ALLOW_STEPS, DENY_STEPS), (7, 5));
+        assert_eq!((ALLOW_STEPS, DENY_STEPS), (8, 6));
     }
 }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The refusals of database(8) that have an ID of their own, DB-101 to
-//! DB-106, each as the failure the command exits with. The ID ends the
+//! DB-108, each as the failure the command exits with. The ID ends the
 //! last line in parentheses, as the other tools' IDs do (`ACC-105`): the
 //! web console reads it from the last line of the command's error output
 //! when its action names it, and the support center's page for it is found
@@ -11,7 +11,9 @@
 //! The words do not start with the command's name: `main` puts it before
 //! the message. They never hold a password, nor the verifier of one.
 
+use super::server::PORT;
 use super::wire::{self, PgError};
+use crate::firewall::SETTINGS;
 use crate::util::{Fail, fail};
 
 /// DB-101: PostgreSQL is not installed.
@@ -97,6 +99,26 @@ pub fn no_account(name: &str) -> Fail {
     fail(format!("there is no account called {name}; `user list` shows the accounts (DB-106)"))
 }
 
+/// DB-107: the firewall's rules are being tried, so the block for the
+/// port could not be written.
+pub fn firewall_is_tried() -> Fail {
+    fail(format!(
+        "the firewall's rules are being tried, and a block for port {PORT} written now would be \
+         lost when the trial ends: keep or undo that change first, with `elevate firewall keep` \
+         or `elevate firewall undo`; nothing was changed (DB-107)"
+    ))
+}
+
+/// DB-108: the firewall's rules cannot take the block for the port; `why`
+/// says what is wrong with the file, as the code that reads the block
+/// does.
+pub fn firewall_block(why: &str) -> Fail {
+    fail(format!(
+        "the firewall's rules in {SETTINGS} cannot take the block for port {PORT}, and nothing \
+         was changed: {why} (DB-108)"
+    ))
+}
+
 /// The failure for what a session said after it started: PostgreSQL's own
 /// words, which hold no password, and no ID.
 pub fn said(error: &wire::Error) -> Fail {
@@ -142,6 +164,8 @@ mod tests {
             (taken_back("it did not answer", ", and PostgreSQL runs again"), "DB-104"),
             (no_certificate("nas"), "DB-105"),
             (no_account("ann"), "DB-106"),
+            (firewall_is_tried(), "DB-107"),
+            (firewall_block("line 3 starts a block that no line ends"), "DB-108"),
         ];
         for (refusal, id) in refusals {
             assert!(refusal.message.ends_with(&format!(" ({id})")), "{}", refusal.message);
