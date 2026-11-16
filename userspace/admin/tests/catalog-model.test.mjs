@@ -140,7 +140,9 @@ test('an empty table says why: no catalog is on, nothing matches, or no catalog 
   assert.equal(emptyOf(search(), []), null);
   assert.deepEqual(emptyOf({ bundles: [], unread: [] }, []), { kind: 'none', words: 'No catalog is turned on.', command: 'bundle catalog' });
   assert.deepEqual(emptyOf({ bundles: [], unread: [] }, ['zzz', 'x']), { kind: 'nomatch', words: 'No app in the catalogs matches “zzz x”.' });
-  assert.deepEqual(emptyOf({ bundles: [], unread: [{ catalog: 'a', why: 'b' }] }, ['zzz']), { kind: 'unread', words: 'No app is listed: no catalog could be read.' });
+  assert.deepEqual(emptyOf({ bundles: [], unread: [{ catalog: 'a', why: 'b' }] }, []), { kind: 'unread', words: 'No app is listed: no catalog could be read.' });
+  // With words, a catalog that was not read may be the only one: only the catalogs that were read are said to have no match.
+  assert.deepEqual(emptyOf({ bundles: [], unread: [{ catalog: 'a', why: 'b' }] }, ['zzz']), { kind: 'nomatch', words: 'No app in the catalogs that could be read matches “zzz”.' });
   assert.equal(emptyOf(null, []).kind, 'none');
 });
 

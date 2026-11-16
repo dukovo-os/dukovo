@@ -109,13 +109,17 @@ export function unreadOf(answer) {
 /**
  * What the table says when it has no row, as `{kind, words}`: no catalog is
  * on (no word was typed and nothing is listed, nothing unread), nothing
- * matches, or no catalog could be read. Null when there are rows.
+ * matches, or no catalog could be read. Null when there are rows. The answer
+ * does not say which catalogs were read, so a search with words that finds
+ * nothing says only that the catalogs that could be read have no match: the
+ * banners beside it say which could not.
  */
 export function emptyOf(answer, words) {
   if (listOf(answer?.bundles).length > 0) return null;
-  if (listOf(answer?.unread).length > 0) return { kind: 'unread', words: 'No app is listed: no catalog could be read.' };
-  if (words.length === 0) return { kind: 'none', words: 'No catalog is turned on.', command: 'bundle catalog' };
-  return { kind: 'nomatch', words: `No app in the catalogs matches “${words.join(' ')}”.` };
+  const unread = listOf(answer?.unread).length > 0;
+  if (words.length > 0) return { kind: 'nomatch', words: `No app in the catalogs ${unread ? 'that could be read ' : ''}matches “${words.join(' ')}”.` };
+  if (unread) return { kind: 'unread', words: 'No app is listed: no catalog could be read.' };
+  return { kind: 'none', words: 'No catalog is turned on.', command: 'bundle catalog' };
 }
 
 // ---- the ready-made setups ------------------------------------------------------
