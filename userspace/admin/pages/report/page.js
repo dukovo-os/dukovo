@@ -237,7 +237,7 @@ export async function show(view) {
 
   /** Drafts the report from the choice and the fields, and forgets the cuts. */
   async function draft() {
-    if (chosen() && ready(chosen(), fields)) {
+    if (chosen() && ready(chosen(), fields) && !older && !stopped) {
       await fetchText(DRAFTS, argsOf(), (answer) => {
         clearDraft();
         first = answer;

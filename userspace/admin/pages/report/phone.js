@@ -44,7 +44,7 @@ export async function openPhone(view, { draft, sha256, again }) {
     }
     fill(errors, h('div', { class: 'banner warn', role: 'alert' }, icon('warn'), h('div', {},
       h('p', {}, `${asSentence(error.title)} Draft the report again to make a link.`),
-      h('div', { class: 'btns' }, h('button', { class: 'btn', type: 'submit', value: 'again'}, 'Draft again')))));
+      h('div', { class: 'btns' }, h('button', { class: 'btn', type: 'submit', value: 'again' }, 'Draft again')))));
     renew.hidden = true;
   }
 
@@ -59,7 +59,9 @@ export async function openPhone(view, { draft, sha256, again }) {
       const answer = await view.api.post(`/api/1/reports/drafts/${draft}/phone`, { sha256 });
       if (view.signal.aborted) return;
       link = phoneLink({
-        ...answer,
+        url: answer.url,
+        fingerprint: answer.fingerprint_sha256,
+        expires_ms: answer.expires_ms,
         signal: view.signal,
         onEnded: () => {
           status.textContent = 'The link has ended. Make a new one to show another code.';

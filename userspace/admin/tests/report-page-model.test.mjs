@@ -12,7 +12,7 @@ import test from 'node:test';
 
 import { makeTime } from '../lib/time.js';
 import {
-  CUT, editsOf, gatheredOf, drafted, linesPick, normalize, piecesOf, rangesOf, rowsOf, shownLine, withLines, withWords, wordsPick,
+  CUT, editsOf, gatheredOf, drafted, linesPick, piecesOf, rangesOf, rowsOf, shownLine, withLines, withWords, wordsPick,
 } from '../pages/report/cuts-model.js';
 import {
   aboutOf, answersOf, bringsBackWords, choicesOf, draftArgs, emptyFields, fileNameOf, happenedOf, holdsWords, jsonOf, keyOf, listOf,
