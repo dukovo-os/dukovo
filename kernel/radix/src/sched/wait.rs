@@ -293,6 +293,12 @@ pub fn wait_until_or_timeout(
     }
 }
 
+/// As [`wake_all`], [`super::lazily`]: for a waker that holds a lock the
+/// threads it wakes will want.
+pub fn wake_all_lazily(key: usize) {
+    super::lazily(|| wake_all(key));
+}
+
 /// Wakes every thread waiting on `key`.
 pub fn wake_all(key: usize) {
     let mut table = TABLE.lock_irq();

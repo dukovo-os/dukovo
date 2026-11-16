@@ -21,7 +21,8 @@
 //! a hard error, and only while connected.
 //!
 //! Lock order: a socket's state, then a stack's, then the watches, then
-//! a sink's queue.
+//! a sink's queue. An error wakes the socket's waiters and pollers
+//! (ADR 0550).
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -34,6 +35,7 @@ use radix_net::{About, IpAddress, Reason, Report};
 use radix_sync::Mutex;
 
 use super::ports::{Protocol, Versions};
+use super::waiters::Waiters;
 use crate::user::Fifo;
 
 /// The most errors that wait for one socket; those after are lost, as
@@ -58,15 +60,19 @@ pub struct Sink {
     /// How many errors wait in `queue`, to be looked at without its lock.
     waiting: AtomicUsize,
     queue: Mutex<Fifo<Heard>>,
+    /// The socket's waiters, who look again when an error comes.
+    waiters: Arc<Waiters, Kmalloc>,
 }
 
 impl Sink {
-    /// A sink with nothing in it, on the heap.
-    pub fn new() -> Result<Arc<Sink, Kmalloc>, Status> {
+    /// A sink with nothing in it, on the heap, for the socket `waiters`
+    /// wait on.
+    pub fn new(waiters: Arc<Waiters, Kmalloc>) -> Result<Arc<Sink, Kmalloc>, Status> {
         let sink = Sink {
             error: AtomicU64::new(0),
             waiting: AtomicUsize::new(0),
             queue: Mutex::new(Fifo::new()),
+            waiters,
         };
         Arc::try_new_in(sink, HEAP.with(Flags::MAY_SLEEP)).map_err(|_| Kernel::NoMemory.status(0))
     }
@@ -246,4 +252,5 @@ pub fn hear(number: usize, report: &Report) {
         return;
     }
     watch.sink.error.store(error.0, Ordering::Release);
+    watch.sink.waiters.changed();
 }
