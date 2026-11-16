@@ -88,6 +88,16 @@ $STRIP -o "$PORT_BUNDLE/bin/python3" "$from/bin/python$version"
 cp -R "$from/lib/python$version" "$lib"
 rm -rf "$lib/config-$version"* "$lib/idlelib" "$lib/tkinter" "$lib/turtledemo" "$lib/turtle.py" \
 	"$lib/test/test_tkinter" "$lib/test/test_ttk" "$lib/test/test_idle"
+# build-details.json names the interpreter python$version, which the
+# install made and the bundle does not keep: the bundle's interpreter is
+# bin/python3. A program that reads the file to start Python (the
+# standard library's test checks that the path exists) must find one.
+details="$lib/build-details.json"
+sed -i "s|\"base_interpreter\": \"$prefix/bin/python$version\"|\"base_interpreter\": \"$prefix/bin/python3\"|" "$details"
+if ! grep -q "\"base_interpreter\": \"$prefix/bin/python3\"" "$details"; then
+	echo "python: $details does not name $prefix/bin/python3 as base_interpreter" >&2
+	exit 1
+fi
 # Python finds its platform's library by lib-dynload, where other systems
 # keep extension modules: a file keeps it in the bundle.
 printf '%s\n' "The extension modules are part of python3 on Dukovo, which loads no" \
