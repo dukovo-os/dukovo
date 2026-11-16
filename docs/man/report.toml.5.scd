@@ -63,7 +63,7 @@ company's, or to a staging server that tests the reports of a build.
 	security team's key, which the system brings. Set it only for a
 	server of your own with a team of its own. A file that cannot be read
 	or holds no key makes *report --security* refuse and say to write to
-	security@dukovo.org instead.
+	security@dukovo.org instead (*RPT-103*).
 
 # FILES
 

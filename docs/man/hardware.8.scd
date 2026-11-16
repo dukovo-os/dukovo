@@ -6,7 +6,8 @@ hardware(8) "Dukovo" "Dukovo Manual"
 # NAME
 
 hardware - check the memory, the disks, the processors, the sensors, the
-battery and the network cards for faults
+battery and the network cards for faults, and say what the machine is and
+has
 
 # SYNOPSIS
 
@@ -17,6 +18,16 @@ battery and the network cards for faults
 *hardware history* [*--json*]
 
 *hardware show* [*--json*]
+
+*hardware sensors* [*--json*]
+
+*hardware devices* [*--json*]
+
+*hardware memtest* *--next-start*
+
+*hardware memtest* *--cancel*
+
+*hardware memtest* *--status* [*--json*]
 
 # DESCRIPTION
 
@@ -83,6 +94,34 @@ corrects errors, how many slots the board has and each module in them,
 is told when the program holds the platform capability that reads those
 tables whole (*hwinfo*(8)), as a command run with *elevate*(8) does; for
 anyone else those three are _null_. See *WHAT THE MACHINE IS*.
+
+*hardware sensors* says what the machine's temperatures and fans read:
+each sensor of the hardware monitors, as *sensors*(1) reads it, each
+thermal zone of the firmware, and each disk, as *diskhealth*(8) last saw
+it. Each has the name of the series that *metricsd*(8) keeps its history
+under, so that *metrics show* gives the points. A disk is never asked, so
+that it is not woken: a disk that sleeps says since when, and is shown as
+asleep. On a machine with no sensor and no zone the lists are empty, and
+the text says so. It needs no rights. See *SENSORS*.
+
+*hardware devices* lists every PCI function and USB device the kernel
+found, as the Hardware page shows them: what it is called, its vendor and
+device numbers, what it is to the system (a network card's name, a
+disk's), the driver that took it where the system can tell, how it is
+doing, and where it is. Bridges and hubs, which work and need nothing,
+are marked hidden. No serial number is read. It needs no rights. See
+*DEVICES*.
+
+*hardware memtest* asks the kernel to test the free memory at the next
+start only, before it starts the first program. *--next-start* asks, and
+says about how long the test takes and how to restart; *--cancel* takes
+the ask back; *--status* says whether a test is asked, and what the last
+tests found. The first two need an administrator: run them with
+*elevate*(8). The test takes about 4 minutes for each 16 GiB of free
+memory, and stops after an hour. It tests what *hardware check memory*
+cannot, all the memory that is free, and takes each part that reads back
+wrong out of use until the next restart. It is asked for once: the next
+start after it is the usual one. See *THE MEMORY TEST AT THE START*.
 
 # AREAS
 
@@ -295,6 +334,154 @@ says them:
 ]
 ```
 
+# SENSORS
+
+*hardware sensors --json* prints one line of JSON. Where a member is not
+told it is _null_.
+
+```
+{"format":1,"sensors":[{"chip":"k10temp-pci-00c3","label":"Tctl","kind":"temp","series":"temp{k10temp-pci-00c3/Tctl}","value":48.5,"high":null,"crit":95.0,"min":null,"alarm":false,"fault":false}],"zones":[{"zone":"acpitz","series":"temp{zone/acpitz}","value":27.8}],"disks":[{"disk":"sda","model":"Samsung SSD 860","kind":"ssd","temperature_c":31,"checked_ms":1794000000000,"asleep_ms":null,"warning_c":65,"critical_c":70,"limits_from":"kind","series":"temp{disk/sda}"}]}
+```
+
+_format_ is the version of the document, 1. A member of _sensors_ is a
+temperature or a fan (_kind_ *temp* or *fan*) of the chip _chip_, with its
+_label_, its _value_ in degrees Celsius or revolutions a minute, the
+limits the sensor gives (_high_ and _crit_ for a temperature, _min_ for a
+fan), whether the monitor's _alarm_ is set and whether it says the sensor
+is faulty. _series_ is the name *metricsd*(8) keeps a temperature's
+history under, and _null_ for a fan. A member of _zones_ is a thermal zone
+of the firmware, with its _value_ in degrees Celsius.
+
+A member of _disks_ is what the *diskhealth* service wrote of the disk
+at its last look, _checked_ms_ milliseconds since 1970: its _kind_
+(*hdd*, *ssd* or *nvme*), its _temperature_c_, and the temperatures at
+which it is too hot, _warning_c_ and _critical_c_, with where they come
+from, _limits_from_: *disk*, the disk's own, or *kind*, the usual for its
+kind. A disk that sleeps has _asleep_ms_, the time since when, in
+milliseconds since 1970, and what it said at its last look before it;
+it is shown as asleep and not read. A disk that gives no temperature has
+_null_ for it and for the limits.
+
+The text has a line for each sensor, zone and disk, the name and what it
+reads, its limits, and *ALARM* when the monitor's alarm is set:
+
+```
+k10temp-pci-00c3/Tctl  48.5 °C (critical 95.0 °C)
+zone/acpitz            27.8 °C
+sda                    31 °C  warning 65 °C, critical 70 °C (for a solid-state disk)
+sdb                    asleep since 08:15, not read
+```
+
+# DEVICES
+
+*hardware devices --json* prints one line of JSON, with the version of
+the document, _format_ 1, and the list _devices_, the PCI functions first
+and then the USB devices. Where the system does not say a member it is
+_null_.
+
+```
+{"format":1,"devices":[{"group":"network","name":"Intel Corporation I211 Gigabit Network Connection","ids":"8086:1539","class":"Ethernet controller","system":["net0"],"driver":"radix-igb","driver_told":true,"state":"working","where":"PCI 0000:03:00.0","hidden":false}]}
+```
+
+*group*
+	The part of the page: *network*, *storage*, *usb*, *display* or
+	*other*.
+
+*name*, *ids*, *class*
+	What it is called, from the vendor's and the device's names (their
+	numbers where the databases of *lspci*(8) and *lsusb*(8) do not know
+	them), its vendor and device numbers, as _8086:1539_, which may be
+	carried in a report and are never a serial number, and what kind of
+	thing it is, as _Ethernet controller_, or _null_.
+
+*system*
+	What it is to the system: a network card's name, or the names of
+	the disks of a storage controller. A disk is named on its controller
+	only where the kernel's names leave no doubt.
+
+*driver*, *driver_told*
+	The driver that took it. The kernel does not list which driver uses a
+	PCI function; what can be told is told: a network card says its
+	driver, a SATA or NVMe controller's is the AHCI or the NVMe driver,
+	and a USB interface has a link to its driver or none. *driver_told*
+	is false where nothing is told, which is not the same as having
+	none: then _driver_ is _null_ and the text says *driver not told*.
+	With *driver_told* true and _driver_ _null_, none took it.
+
+*state*
+	*working* when its driver took it and it is in use, *no-link* for a
+	network card whose link is down, *no-driver* for a USB interface that
+	no driver took, or _null_ where nothing is told.
+
+*where*
+	Where it is: _PCI 0000:03:00.0_ or _USB 1-3.2_.
+
+*hidden*
+	True for bridges and hubs, which work and need nothing, so that the
+	page folds them away. The text does not list them, and says how many
+	there are.
+
+The text lists the devices that are not hidden, under *Network*,
+*Storage*, *USB*, *Display* and *Other*, a line for each: its name and
+numbers, what it is to the system, its driver and state, and where it is.
+
+# THE MEMORY TEST AT THE START
+
+*hardware memtest --next-start* writes the file _/system/state/hardware/memtest-asked.json_
+and makes the start menu take the next start as a test, the way it takes
+a try of *changes bisect* (*changes*(1)): the start's own boot options
+and *memtest=once*, as the start numbered 99 that *changes --list* names
+a memory test at the start. It changes no slot and no update, and a test
+that hangs or loses the power leaves the next start the usual one. The
+menu has one such start at a time, so the command refuses while an update
+waits to be tried, or while a search of *changes bisect* waits on a try
+(*HW-105*), and *changes bisect* refuses while a test is asked for.
+Asked twice, it is asked once. *--cancel* takes the file and the menu's
+choice away while the menu has not taken it; with nothing asked it says
+so and changes nothing.
+
+The kernel tests the free memory in blocks, leaving 64 MiB for itself,
+before the first program, says in the log how far it has come at each
+tenth and how it ended, takes each page that has an error out of use
+until the next restart, and keeps its result in _/kernel/boot/memtest_
+(*radix-sysfs*(5)), which is there only when the test ran. Once the start
+has been seen through (*sysupdate*(8) checks every start), *hardware*
+keeps the result, clears what was asked, and tells *alertd*(8): errors
+raise the critical alert *memory-test* (*HW-103*), a pass clears it, and
+a test the menu took that never told its end, because the power went or
+the machine stopped, is said once as a warning (*HW-104*). A test that
+ran, or did not finish, also has a line in *hardware history*. A test
+that was asked for and not taken, because an update was tried first, is
+kept as *not-taken*, and nothing is said.
+
+*hardware memtest --status --json* prints one line of JSON:
+
+```
+{"format":1,"asked":{"at_ms":1794000000000,"by":1000,"by_name":"alice"},"last":{"at_ms":1794000600000,"start":12,"result":"passed","complete":true,"tested_bytes":16106127360,"total_bytes":16623468544,"errors":0,"bad":[],"retired":0,"seconds":241},"history":[]}
+```
+
+_asked_ is _null_ when no test is asked, and otherwise when it was asked,
+in milliseconds since 1970, and by whom, _by_ the number of the user
+*elevate* ran it for and _by_name_ the name, or the number again where
+there is none. _last_ is _null_ when no test has run at a start, and
+otherwise the last one, which _history_ begins with: the newest first,
+at most the last ten. A test has _at_ms_, when its result was kept, the
+number of the _start_ that kept it, its _result_ (*passed*, *errors*,
+*unfinished*, or *not-taken*), whether it was _complete_, which is false
+when it stopped after an hour, the _tested_bytes_ of the _total_bytes_ it
+could take, the number of words that read back wrong, _errors_, the
+ranges they were in, _bad_, as objects of _from_ and _to_, the first and
+the last byte in physical addresses of hexadecimal, and _errors_ for the
+range, the pages taken out of use, _retired_, and the _seconds_ it took.
+
+The text says whether a test is asked, and where the last found errors:
+
+```
+$ hardware memtest --status
+asked for the next start (2026-11-16 10:12)
+last: 2026-11-15, start 12: passed, 15.2 of 16 GiB tested in 4 minutes
+```
+
 # IDS
 
 Each warning and failure has an ID, and a page with that ID in the
@@ -315,7 +502,15 @@ support center says what it means and what to do.
 |  HW-103
 :  memory
 :  failure
-:  The memory test read back a wrong value
+:  The memory test read back a wrong value, in a check or at the start
+|  HW-104
+:  memory
+:  warning
+:  The memory test at the start did not finish
+|  HW-105
+:  memory
+:  refusal
+:  The next start is taken already, so the memory test cannot be asked for, or a search cannot start
 |  HW-111
 :  disks
 :  failure
@@ -389,8 +584,14 @@ support center says what it means and what to do.
 	could be made (every one was skipped).
 
 *hardware last* gives the status the saved check ended with, or 3 when
-none is saved. *hardware history* and *hardware show* give 0, or 3 when
-the command line is wrong or what they read cannot be read.
+none is saved. *hardware history*, *hardware show*, *hardware sensors*
+and *hardware devices* give 0, or 3 when the command line is wrong or
+what they read cannot be read.
+
+*hardware memtest*: 0 when it did what was asked, or when there was
+nothing to take back; 1 when it was refused, because the person is not an
+administrator or the next start is taken (*HW-105*); 3 for a mistake in
+the command line.
 
 # SIGNALS
 
@@ -404,6 +605,23 @@ _/system/state/hardware/last.json_
 
 _/system/state/hardware/history_
 	A line for each check that was kept, as described under *HISTORY*.
+
+_/system/state/hardware/memtest-asked.json_
+	That a memory test is asked for the next start, with when and by
+	whom. It is there from *--next-start* until the start that is
+	told of it, or *--cancel*, and anyone may read it.
+
+_/system/state/hardware/memtest.json_
+	The last memory test at a start and the ten before it, as
+	*hardware memtest --status --json* prints them.
+
+_/kernel/boot/memtest_, _/kernel/cmdline_
+	The kernel's result of the test of this start, which is there only
+	when it ran, and the start's boot options, which have *memtest=once*
+	for it (*radix-sysfs*(5)).
+
+_/system/live/diskhealth/_
+	What *hardware sensors* reads of the disks (*diskhealth*(8)).
 
 _/kernel/class/dmi/id_, _/kernel/cpus_
 	What *hardware show* reads of the firmware and the processors.
@@ -457,8 +675,24 @@ hardware history
 hardware show
 ```
 
+The temperatures, and what the machine's cards and disks are:
+
+```
+hardware sensors
+hardware devices
+```
+
+The memory tested at the next start, and the restart that takes it:
+
+```
+elevate hardware memtest --next-start
+elevate shutdown -r now
+hardware memtest --status
+```
+
 # SEE ALSO
 
 *diskhealth*(8), *sensors*(1), *nic*(8), *netcheck*(8), *dmesg*(1),
-*elevate*(8), *hwinfo*(8), *lscpu*(1), *radix-block*(2), *radix-sysfs*(5),
-*log*(1), *systools*(1)
+*elevate*(8), *hwinfo*(8), *lscpu*(1), *lspci*(8), *lsusb*(8),
+*radix-block*(2), *radix-sysfs*(5), *log*(1), *metrics*(1), *metricsd*(8),
+*changes*(1), *alertd*(8), *shutdown*(8), *systools*(1)
