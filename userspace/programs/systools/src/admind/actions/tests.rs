@@ -642,6 +642,7 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "databases.allow",
             "databases.deny",
             "databases.remove",
+            "databases.restore",
             "websites.add",
             "websites.https",
             "websites.remove",
@@ -1299,6 +1300,8 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("network.set", "addresses"),
     ("network.set", "router"),
     ("network.set", "dns"),
+    // Force is for over only, which the schema cannot say of one field.
+    ("databases.restore", "force"),
     ("firewall.test", "from"),
     ("firewall.add", "protocol"),
     ("firewall.add", "ports"),
@@ -1411,6 +1414,16 @@ const CODE_DECIDES: &[(&str, &str)] = &[
 /// out.
 const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("lab.unlock", "{}"),
+    // A copy goes into a new database or over the database, not both, and
+    // force is for over: the code says so, the schema describes each field.
+    (
+        "databases.restore",
+        r#"{"as":"lab_old","from":"/shared/services/org.postgresql.postgresql/postgres/dumps/lab.dump","name":"lab","over":true}"#,
+    ),
+    (
+        "databases.restore",
+        r#"{"force":true,"from":"/shared/services/org.postgresql.postgresql/postgres/dumps/lab.dump","name":"lab"}"#,
+    ),
     ("metrics.around", r#"{"at":1,"range":"1h"}"#),
     ("storage.scrub", r#"{"mount":"/volumes/../etc"}"#),
     ("storage.log-set", "{}"),

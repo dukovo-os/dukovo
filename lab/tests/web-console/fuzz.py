@@ -151,6 +151,10 @@ DATABASES = {
     "databases.deny",
     # Removes a database with its data, which nothing puts back.
     "databases.remove",
+    # Puts a copy back into a new database or over a database, and needs a database and a copy of it
+    # that a backup made, which only the tests above have: the example's copy is a file that is not
+    # there, and what it makes is a database that must then be removed.
+    "databases.restore",
 }
 # The Websites page's changes, which need nginx installed and on and a site to work on, which a lab machine
 # has not (web-console/ansible.py says the same), and which the boot test admin-websites and the browser test

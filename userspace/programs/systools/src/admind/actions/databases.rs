@@ -21,6 +21,16 @@
 //! in no argument, no command and no file: the answer holds it, and a
 //! playbook's `register`.
 //!
+//! `copies` lists the copies of a database that backups made, in the folder
+//! in use and in the snapshots of `/shared`, and `restore` puts one back
+//! into a new database or over the database, which it keeps. A copy is a
+//! path, and only one of the backup hook's is taken: a file in the hook's
+//! folder or in the same folder of a snapshot, which `copies` gives. The
+//! command takes any copy, as root at a terminal may; the console's part is
+//! to ask for the ones that were made for it. Nothing puts a restore back:
+//! the new database is removed with `databases.remove`, and what `over`
+//! kept is the database as it was.
+//!
 //! The service's override, which names the certificates PostgreSQL
 //! serves, is the one file of `allow` and `deny` that admind sees.
 //! `pg_hba.conf` and the server's own settings are under PostgreSQL's
@@ -169,6 +179,51 @@ const ROLE: Field = Field::flag(
     "role",
     "Whether to remove the role that owns the database too, if the database made it and it owns \
      nothing else.",
+)
+.optional();
+
+/// What the path of a copy matches, as `database` takes one from the
+/// console: a file `NAME.dump` in the folder of the backup hook's copies in
+/// `/shared`, or in the same folder of a snapshot of `/shared`, whose name
+/// is printable ASCII that does not start with a dot.
+const COPY_PATTERN: &str = "^(/shared|/snapshots/shared/(?!\\.)[ -.0-~]{1,255})/services/org\\.postgresql\\.postgresql/postgres/dumps/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\\.dump$";
+
+/// The field of the copy to put back.
+const COPY: Field = Field::text(
+    "from",
+    "The copy to put back, by its path as databases.copies gives it: a file NAME.dump in \
+     /shared/services/org.postgresql.postgresql/postgres/dumps, or in the same folder of a snapshot \
+     of /shared.",
+    1,
+    512,
+    Some(COPY_PATTERN),
+);
+
+/// The field of the name of the new database a copy is put into.
+const AS: Field = Field::text(
+    "as",
+    "The name of the new database, which has the owner of the database: the database's name, \
+     _restored_ and the day when it is left out. A name by the same rule as the database's.",
+    1,
+    63,
+    Some(DATABASE_PATTERN),
+)
+.optional();
+
+/// The field that asks for the copy to go into the database itself.
+const OVER: Field = Field::flag(
+    "over",
+    "Whether to put the copy into the database itself, which is kept as its name, _before_ and the \
+     time. The new database is the one the programs use; the old one is removed when it is no longer \
+     needed.",
+)
+.optional();
+
+/// The field that asks for the open sessions to be ended, for a restore.
+const RESTORE_FORCE: Field = Field::flag(
+    "force",
+    "With over, whether to end the sessions that are open on the database, which stop at once, so \
+     that it can be kept.",
 )
 .optional();
 
@@ -742,9 +797,175 @@ impl Action for Remove {
     }
 }
 
+/// `database copies NAME --json`: the copies that backups made of the
+/// database, the newest first, in the folder in use and in the snapshots of
+/// `/shared`. It reads files only PostgreSQL's account may open, so it runs
+/// as an administrator.
+pub struct Copies;
+
+impl Action for Copies {
+    const ID: &'static str = "databases.copies";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = false;
+    const PATH: &'static str = "/api/1/databases/{name}/copies";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "List the copies of a database";
+    type Args = Named;
+
+    fn argv(args: &Named) -> Vec<String> {
+        ["database", "copies", &args.name, "--json"].map(String::from).to_vec()
+    }
+
+    fn examples() -> Examples<Named> {
+        Examples {
+            good: vec![Named { name: "lab".into() }],
+            bad: vec![json!({ "name": "Shop" }), json!({ "name": "a;b" }), json!({})],
+            undo: None,
+        }
+    }
+}
+
+/// A copy to put back, and where it goes.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Restoring {
+    /// The database the copy is of.
+    pub name: String,
+    /// The copy: a path that `databases.copies` gives.
+    pub from: String,
+    /// The name of the new database; by default the database's name,
+    /// `_restored_` and the day.
+    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
+    pub new: Option<String>,
+    /// Whether it goes into the database itself, which is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over: Option<bool>,
+    /// Whether the sessions open on the database are ended, for `over`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force: Option<bool>,
+}
+
+impl Args for Restoring {
+    const FIELDS: &'static [Field] = &[NAME, COPY, AS, OVER, RESTORE_FORCE];
+
+    fn check(&self) -> Result<(), Bad> {
+        const DONE: &str = "Nothing was restored.";
+        check_name("name", &self.name, DONE)?;
+        names::check_copy_path(&self.from).map_err(|why| bad("from", &why, DONE))?;
+        if let Some(new) = &self.new {
+            check_name("as", new, DONE)?;
+        }
+        if self.new.is_some() && self.over == Some(true) {
+            return Err(bad(
+                "over",
+                "A copy goes into a new database, which as names, or over the database itself, \
+                 which is kept: not both",
+                DONE,
+            ));
+        }
+        if self.force == Some(true) && self.over != Some(true) {
+            return Err(bad(
+                "force",
+                "Force ends the sessions that are open on the database, which only over needs",
+                DONE,
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The databases the list `output` has, with their owners, as text to
+/// compare: a restore adds one, and with `over` keeps another.
+fn databases_of(output: &str) -> Option<String> {
+    let document: Value = serde_json::from_str(output).ok()?;
+    let mut found: Vec<Value> = document
+        .get("databases")?
+        .as_array()?
+        .iter()
+        .map(|row| json!([row.get("name"), row.get("owner")]))
+        .collect();
+    found.sort_by_key(ToString::to_string);
+    Some(Value::Array(found).to_string())
+}
+
+/// `database restore NAME --from COPY [--as NEW | --over [--force]]
+/// --progress`: puts a copy back into a new database, or over the database
+/// itself, which is kept, as a task: the copy may be large. It never writes
+/// over what is there, so nothing puts it back but removing what it made.
+pub struct Restore;
+
+impl Action for Restore {
+    const ID: &'static str = "databases.restore";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/databases/{name}/restore";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const LONG: bool = true;
+    const ERRORS: &'static [&'static str] = &["DB-101", "DB-102", "DB-103", "DB-109", "DB-110"];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Put a copy back into a database";
+    type Args = Restoring;
+
+    fn argv(args: &Restoring) -> Vec<String> {
+        let mut argv: Vec<String> =
+            ["database", "restore", &args.name, "--from", &args.from].map(String::from).to_vec();
+        if let Some(new) = &args.new {
+            argv.extend(["--as".to_string(), new.clone()]);
+        }
+        for (option, given) in [("--over", args.over), ("--force", args.force)] {
+            if given == Some(true) {
+                argv.push(option.into());
+            }
+        }
+        argv.push("--progress".into());
+        argv
+    }
+
+    fn subject(args: &Restoring) -> Option<String> {
+        Some(args.name.clone())
+    }
+
+    fn probe(_: &Restoring) -> Option<Vec<String>> {
+        Some(list_argv())
+    }
+
+    fn probed(_: &Restoring, output: &str) -> Option<String> {
+        databases_of(output)
+    }
+
+    fn examples() -> Examples<Restoring> {
+        const LAB_COPY: &str = "/shared/services/org.postgresql.postgresql/postgres/dumps/lab.dump";
+        Examples {
+            good: vec![Restoring {
+                name: "lab".into(),
+                from: LAB_COPY.into(),
+                new: None,
+                over: None,
+                force: None,
+            }],
+            bad: vec![
+                json!({ "name": "lab", "from": "/etc/passwd" }),
+                json!({ "name": "lab", "from": "/shared/services/org.postgresql.postgresql/postgres/dumps/../data/x.dump" }),
+                json!({ "name": "lab", "from": "/shared/services/org.postgresql.postgresql/postgres/dumps/lab.sql" }),
+                json!({ "name": "lab", "from": LAB_COPY, "as": "Lab" }),
+                json!({ "name": "lab", "from": LAB_COPY, "as": "lab_old", "over": true }),
+                json!({ "name": "lab", "from": LAB_COPY, "force": true }),
+                json!({ "name": "Lab", "from": LAB_COPY }),
+                json!({ "name": "lab" }),
+            ],
+            // What it made is removed with `databases.remove`, which is
+            // for the person to choose: with `over` it is the database as
+            // it was that is kept, and the new one that is the database.
+            undo: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::show::yaml;
+    use super::super::tests::validate;
     use super::super::{Caller, Found, REGISTRY, Registered, authorize, find};
     use super::*;
     use crate::admind::errors::Kind;
@@ -764,6 +985,9 @@ mod tests {
     fn argv(id: &str, args: Value) -> Vec<String> {
         action(id).prepare(args).unwrap().argv
     }
+
+    /// A copy the backup hook made, as `databases.copies` says it.
+    const COPY_OF_LAB: &str = "/shared/services/org.postgresql.postgresql/postgres/dumps/lab.dump";
 
     /// What `database list --json` prints, as far as the actions read it:
     /// a database with a rule for another network, and the rules the
@@ -833,6 +1057,15 @@ mod tests {
                 false,
                 vec!["DB-101", "DB-103"],
             ),
+            ("databases.copies", false, "/api/1/databases/{name}/copies", false, false, vec![]),
+            (
+                "databases.restore",
+                true,
+                "/api/1/databases/{name}/restore",
+                true,
+                false,
+                vec!["DB-101", "DB-102", "DB-103", "DB-109", "DB-110"],
+            ),
         ] {
             let one = action(id);
             assert_eq!(one.area(), "databases", "{id}");
@@ -874,6 +1107,8 @@ mod tests {
                 ("databases.allow", json!({ "name": name, "from": "10.0.0.0/8" })),
                 ("databases.deny", json!({ "name": name })),
                 ("databases.add", json!({ "name": name, "owner": name })),
+                ("databases.copies", json!({ "name": name })),
+                ("databases.restore", json!({ "name": name, "from": COPY_OF_LAB })),
             ] {
                 assert!(action(id).prepare(args).is_ok(), "{id}: {name}");
             }
@@ -907,6 +1142,8 @@ mod tests {
                 ("databases.allow", json!({ "name": name, "from": "10.0.0.0/8" })),
                 ("databases.deny", json!({ "name": name })),
                 ("databases.add", json!({ "name": name })),
+                ("databases.copies", json!({ "name": name })),
+                ("databases.restore", json!({ "name": name, "from": COPY_OF_LAB })),
             ] {
                 let (kind, field, _) = refused(id, args);
                 assert_eq!((kind, field), (Kind::BadValue, Some("name")), "{id}: {name:?}");
@@ -1286,6 +1523,8 @@ mod tests {
             "databases.allow",
             "databases.deny",
             "databases.remove",
+            "databases.copies",
+            "databases.restore",
         ] {
             let (good, bad, _) = action(id).example_values();
             assert!(!good.is_empty() && !bad.is_empty(), "{id}");
@@ -1304,6 +1543,8 @@ mod tests {
             (true, "/api/1/databases/lab/allow", "databases.allow"),
             (true, "/api/1/databases/lab/deny", "databases.deny"),
             (true, "/api/1/databases/lab/remove", "databases.remove"),
+            (false, "/api/1/databases/lab/copies", "databases.copies"),
+            (true, "/api/1/databases/lab/restore", "databases.restore"),
             // A database called `add` is changed by two parts, as any.
             (true, "/api/1/databases/add/remove", "databases.remove"),
         ] {
@@ -1319,6 +1560,11 @@ mod tests {
         assert_eq!(Value::Object(params), json!({ "name": "add" }));
         assert!(matches!(find(REGISTRY, false, "/api/1/databases/add"), Found::WrongMethod));
         assert!(matches!(find(REGISTRY, true, "/api/1/databases"), Found::WrongMethod));
+        assert!(matches!(find(REGISTRY, true, "/api/1/databases/lab/copies"), Found::WrongMethod));
+        assert!(matches!(
+            find(REGISTRY, false, "/api/1/databases/lab/restore"),
+            Found::WrongMethod
+        ));
         assert!(matches!(
             find(REGISTRY, false, "/api/1/databases/lab/password"),
             Found::WrongMethod
@@ -1337,6 +1583,8 @@ mod tests {
             "databases.allow",
             "databases.deny",
             "databases.remove",
+            "databases.copies",
+            "databases.restore",
         ];
         let call = |list: &str, id: &str| {
             let scopes = Scopes::parse(list).unwrap();
@@ -1359,8 +1607,184 @@ mod tests {
             assert_eq!(session(true, false, id), Err(Kind::Locked), "{id}");
             assert_eq!(session(true, true, id), Ok(()), "{id}");
         }
-        // The list is the only read.
+        // The list and the copies are the reads.
         let reads: Vec<&str> = ids.iter().copied().filter(|id| !action(id).changes()).collect();
-        assert_eq!(reads, ["databases.list"]);
+        assert_eq!(reads, ["databases.list", "databases.copies"]);
+    }
+
+    #[test]
+    fn the_copies_are_a_read_of_the_commands_json_and_take_a_name() {
+        let copies = action("databases.copies");
+        assert_eq!(
+            argv("databases.copies", json!({ "name": "lab" })),
+            ["database", "copies", "lab", "--json"]
+        );
+        assert!(!copies.changes() && !copies.compares() && !copies.long());
+        let prepared = copies.prepare(json!({ "name": "lab" })).unwrap();
+        assert!(prepared.probe.is_none() && prepared.files.is_empty());
+        assert!(prepared.ansible.become_root);
+        assert_eq!(refused("databases.copies", json!({})).0, Kind::BadRequest);
+        assert_eq!(
+            refused("databases.copies", json!({ "name": "lab", "all": true })).0,
+            Kind::BadRequest
+        );
+        assert_eq!(copies.example_values().2, None);
+    }
+
+    #[test]
+    fn a_restore_names_the_copy_and_where_it_goes_and_asks_for_the_steps() {
+        let restore = action("databases.restore");
+        assert!(restore.long() && restore.changes() && restore.compares());
+        assert_eq!(
+            argv("databases.restore", json!({ "name": "lab", "from": COPY_OF_LAB })),
+            ["database", "restore", "lab", "--from", COPY_OF_LAB, "--progress"]
+        );
+        assert_eq!(
+            argv(
+                "databases.restore",
+                json!({ "name": "lab", "from": COPY_OF_LAB, "as": "lab_old" })
+            ),
+            ["database", "restore", "lab", "--from", COPY_OF_LAB, "--as", "lab_old", "--progress"]
+        );
+        assert_eq!(
+            argv(
+                "databases.restore",
+                json!({ "name": "lab", "from": COPY_OF_LAB, "over": true, "force": true })
+            ),
+            [
+                "database",
+                "restore",
+                "lab",
+                "--from",
+                COPY_OF_LAB,
+                "--over",
+                "--force",
+                "--progress"
+            ]
+        );
+        // A flag that is false is a flag left out, and no JSON is asked for a task.
+        let argv = argv(
+            "databases.restore",
+            json!({ "name": "lab", "from": COPY_OF_LAB, "over": false, "force": false }),
+        );
+        assert_eq!(argv, ["database", "restore", "lab", "--from", COPY_OF_LAB, "--progress"]);
+        assert!(!argv.contains(&"--json".to_string()));
+        let prepared =
+            restore.prepare(json!({ "name": "lab", "from": COPY_OF_LAB, "over": true })).unwrap();
+        assert_eq!(prepared.probe, Some(vec!["database".into(), "list".into(), "--json".into()]));
+        assert!(prepared.files.is_empty() && prepared.ansible.become_root);
+        assert_eq!(prepared.ansible.name, "Put a copy back into a database: lab");
+        // Nothing puts a restore back.
+        assert_eq!(restore.example_values().2, None);
+    }
+
+    #[test]
+    fn a_restore_refuses_what_is_not_a_way_to_restore_and_says_nothing_was_restored() {
+        for (args, field) in [
+            (json!({ "name": "lab", "from": COPY_OF_LAB, "as": "Lab" }), "as"),
+            (json!({ "name": "lab", "from": COPY_OF_LAB, "as": "pg_x" }), "as"),
+            (json!({ "name": "lab", "from": COPY_OF_LAB, "as": "lab_old", "over": true }), "over"),
+            (json!({ "name": "lab", "from": COPY_OF_LAB, "force": true }), "force"),
+            (json!({ "name": "lab", "from": COPY_OF_LAB, "over": false, "force": true }), "force"),
+            (json!({ "name": "lab", "from": "/etc/passwd" }), "from"),
+        ] {
+            let (kind, found, words) = refused("databases.restore", args.clone());
+            assert_eq!((kind, found), (Kind::BadValue, Some(field)), "{args}");
+            assert!(words.ends_with("Nothing was restored."), "{args}: {words}");
+        }
+        // The ways that are fine.
+        for args in [
+            json!({ "name": "lab", "from": COPY_OF_LAB, "as": "lab_old", "over": false }),
+            json!({ "name": "lab", "from": COPY_OF_LAB, "over": true, "force": false }),
+            json!({ "name": "lab", "from": COPY_OF_LAB, "force": false }),
+        ] {
+            assert!(action("databases.restore").prepare(args.clone()).is_ok(), "{args}");
+        }
+        for args in [
+            json!({ "name": "lab" }),
+            json!({ "from": COPY_OF_LAB }),
+            json!({ "name": "lab", "from": COPY_OF_LAB, "over": "yes" }),
+            json!({ "name": "lab", "from": COPY_OF_LAB, "to": "x" }),
+        ] {
+            assert_eq!(refused("databases.restore", args.clone()).0, Kind::BadRequest, "{args}");
+        }
+    }
+
+    #[test]
+    fn a_copy_is_taken_from_the_folder_of_the_hook_or_a_snapshot_of_it_and_the_schema_says_so() {
+        let pattern = COPY_PATTERN;
+        let live = "/shared/services/org.postgresql.postgresql/postgres/dumps";
+        let snapshot =
+            "/snapshots/shared/2026-11-16-0200.2/services/org.postgresql.postgresql/postgres/dumps";
+        let long = format!("{live}/{}.dump", "a".repeat(101));
+        let snapshot_255 = format!(
+            "/snapshots/shared/{}/services/org.postgresql.postgresql/postgres/dumps/x.dump",
+            "s".repeat(255)
+        );
+        let snapshot_256 = snapshot_255.replace(&"s".repeat(255), &"s".repeat(256));
+        let cases: Vec<(String, bool)> = vec![
+            (format!("{live}/lab.dump"), true),
+            (format!("{live}/Lab_2.x-y.dump"), true),
+            (format!("{live}/_x.dump"), true),
+            (format!("{snapshot}/lab.dump"), true),
+            (
+                "/snapshots/shared/before the update/services/org.postgresql.postgresql/postgres/dumps/a.dump"
+                    .into(),
+                true,
+            ),
+            (snapshot_255, true),
+            (snapshot_256, false),
+            (format!("{live}/{}.dump", "a".repeat(100)), true),
+            (long, false),
+            (format!("{live}/lab.sql"), false),
+            (format!("{live}/.dump"), false),
+            (format!("{live}/.lab.dump"), false),
+            (format!("{live}/-lab.dump"), false),
+            (format!("{live}/a b.dump"), false),
+            (format!("{live}/a/b.dump"), false),
+            (format!("{live}/../data/x.dump"), false),
+            (format!("{live}//lab.dump"), false),
+            (format!("{live}/lab.dump\n"), false),
+            (format!("{live}x/lab.dump"), false),
+            ("/shared/services/org.postgresql.postgresql/postgres/data/lab.dump".into(), false),
+            ("/shared/../etc/lab.dump".into(), false),
+            ("/users/ann/lab.dump".into(), false),
+            ("/snapshots/shared/.hidden/services/org.postgresql.postgresql/postgres/dumps/a.dump".into(), false),
+            ("/snapshots/shared//services/org.postgresql.postgresql/postgres/dumps/a.dump".into(), false),
+            ("/snapshots/shared/a\u{e9}/services/org.postgresql.postgresql/postgres/dumps/a.dump".into(), false),
+            ("/snapshots/users/x/services/org.postgresql.postgresql/postgres/dumps/a.dump".into(), false),
+            (String::new(), false),
+        ];
+        for (path, good) in cases {
+            let (min, max) = (1, 512);
+            let in_range = (min..=max).contains(&path.chars().count());
+            let by_pattern = in_range && validate::matches(pattern, &path).unwrap();
+            let args = json!({ "name": "lab", "from": path });
+            let by_action = action("databases.restore").prepare(args).is_ok();
+            assert_eq!(by_action, good, "{path:?}");
+            assert_eq!(by_pattern, good, "the schema, {path:?}");
+        }
+    }
+
+    #[test]
+    fn a_restore_moves_the_set_of_databases_and_the_probe_says_so() {
+        let args = json!({ "name": "shop", "from": COPY_OF_LAB });
+        let restore = action("databases.restore");
+        let before = restore.probed(&args, LIST).unwrap();
+        assert_eq!(before, r#"[["shop","shop"]]"#);
+        let after = LIST.replace(
+            "\"databases\": [",
+            "\"databases\": [{\"name\": \"shop_restored_20261116\", \"owner\": \"shop\"},",
+        );
+        assert_eq!(
+            restore.probed(&args, &after).unwrap(),
+            r#"[["shop","shop"],["shop_restored_20261116","shop"]]"#
+        );
+        // What each database holds is not the change's.
+        let busier = LIST.replace("\"sessions\": 1", "\"sessions\": 7").replace("8192", "16384");
+        assert_eq!(restore.probed(&args, &busier), Some(before));
+        for output in ["", "not json", "[]", r#"{"databases": 3}"#] {
+            assert_eq!(restore.probed(&args, output), None, "{output:?}");
+        }
     }
 }

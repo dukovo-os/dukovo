@@ -2243,6 +2243,30 @@ compares = true
 tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
 
 [[action]]
+id = "databases.copies"
+title = "List the copies of a database"
+area = "databases"
+changes = false
+method = "GET"
+path = "/api/1/databases/{name}/copies"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
+id = "databases.restore"
+title = "Put a copy back into a database"
+area = "databases"
+changes = true
+method = "POST"
+path = "/api/1/databases/{name}/restore"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::databases::tests", route = "admin-websites", same_as_command = "admin-websites", browser = "web-console/databases", ansible = "web-console/ansible" }
+
+[[action]]
 id = "reports.crashes"
 title = "List the crashes that can be reported"
 area = "reports"

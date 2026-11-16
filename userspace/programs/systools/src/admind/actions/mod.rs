@@ -1288,6 +1288,8 @@ registry![
     databases::Allow,
     databases::Deny,
     databases::Remove,
+    databases::Copies,
+    databases::Restore,
     reports::Crashes,
     reports::Draft,
     reports::Redact,
