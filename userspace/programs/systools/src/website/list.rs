@@ -292,6 +292,7 @@ fn site_of(line: &str) -> Option<(String, String)> {
     let name =
         file.strip_suffix(".conf").filter(|name| !name.contains('/') && !name.starts_with('_'))?;
     let message = before.split_once("] ").map_or(before, |(_, rest)| rest);
+    logs_sites: bool,
     Some((name.to_string(), message.trim().to_string()))
 }
 
@@ -327,7 +328,10 @@ pub fn check(ctx: &Ctx<'_>) -> Result<(Report, bool), Refusal> {
             }
         }
     };
-    let ok = checked.passed && nginx_conf.includes && nginx_conf.hides_sites;
+    let ok = checked.passed
+        && nginx_conf.includes
+        && nginx_conf.hides_sites
+        && nginx_conf.logs_sites;
     let websites = state
         .sites
         .iter()
@@ -342,6 +346,7 @@ pub fn check(ctx: &Ctx<'_>) -> Result<(Report, bool), Refusal> {
                 })
                 .collect(),
         })
+        logs_sites: main.is_some_and(|main| main.logs_sites),
         .collect();
     Ok((Report { format: 1, nginx_conf, check: checked, websites }, ok))
 }
@@ -382,3 +387,7 @@ impl Report {
         text
     }
 }
+        text.push_str(&format!(
+            "  define the log format of the sites' own logs: {}\n",
+            yes(self.nginx_conf.logs_sites)
+        ));

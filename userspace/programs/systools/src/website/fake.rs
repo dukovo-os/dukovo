@@ -23,7 +23,7 @@ use super::answer::{Fetch, Reply};
 use super::change::{self, AddRequest, Ctx, OVERRIDE, SERVICE};
 use super::conf::{self, Facts, Kind};
 use super::host::{BUNDLE_CONF, Checked, Host, NGINX, PHP_FPM, Paths, Rule, STATE, Svc};
-use super::plan::SETTINGS;
+use super::plan::{LOGS, NGINX_HOME, SETTINGS};
 use super::stage::{CONF, conf_view};
 use crate::cert::acme::steps::Steps;
 
@@ -145,6 +145,8 @@ impl Fake {
         fake.put(SERVICE, NGINX_SERVICE);
         fake.put(BUNDLE_CONF, NGINX_CONF);
         fake.put(&conf_view(), NGINX_CONF);
+        // nginx's service makes the folder of the sites' logs when it starts.
+        fs::create_dir_all(fake.real(LOGS)).expect("the sites' logs folder");
         // The installer makes the folder the overrides are in.
         fs::create_dir_all(fake.real("/system/settings/spark/services/settings.d")).expect("it");
         fs::create_dir_all(fake.real("/shared/www")).expect("the sites' folder");
@@ -179,6 +181,7 @@ impl Fake {
     pub fn never_started(self) -> Fake {
         let nginx = self.nginx_off();
         fs::remove_file(nginx.real(&conf_view())).expect("nginx's settings");
+        fs::remove_dir_all(nginx.real(&format!("{NGINX_HOME}/logs"))).expect("nginx's logs");
         nginx
     }
 

@@ -43,6 +43,25 @@ pub const DEFAULT_FILE: &str = "_default.conf";
 /// What certd's copies are called in nginx's view.
 pub const CERTD: &str = "/system/live/certd";
 
+/// nginx's data folder, in nginx's view and the machine's.
+pub const NGINX_HOME: &str = "/shared/services/org.nginx.nginx/nginx";
+
+/// The folder of the files the sites log their requests to, one each. A
+/// path in nginx's settings that does not start with `/` is in the
+/// bundle, which nginx cannot write to, so the files are named in full.
+pub const LOGS: &str = "/shared/services/org.nginx.nginx/nginx/logs/sites";
+
+/// The name of the log format of the sites' own files.
+pub const LOG_FORMAT_NAME: &str = "site";
+
+/// What a request is logged as in a site's own file: the time, the status
+/// and the bytes sent, and no address, path or agent.
+pub const LOG_FORMAT: &str = "$msec $status $body_bytes_sent";
+
+/// The line of `nginx.conf` that defines the format, as the bundle's file
+/// has it.
+pub const LOG_FORMAT_LINE: &str = "log_format site '$msec $status $body_bytes_sent';";
+
 /// The comment that heads an override `website` makes.
 pub const HEADER: &str = "# Keys website(8) keeps for nginx's websites (ADR 0569). Your own keys\n\
                           # here are kept; a list website changes keeps every item you added.\n";
@@ -67,8 +86,25 @@ pub fn first_line(name: &str) -> String {
     format!("# {name}, a website added by website(8) (ADR 0569).")
 }
 
+/// The lines that have each request of the site `name` go to the system's
+/// log, as the `http` block's own line would, and to the site's own file.
+/// A server with an `access_log` of its own inherits none, so the first
+/// line is the server-wide one again.
+fn log_lines(name: &str) -> String {
+    format!(
+        "    # Requests go to the system's log and to the site's own file.\n    \
+         access_log stderr;\n    access_log {LOGS}/{name}.log {LOG_FORMAT_NAME};\n"
+    )
+}
+
 /// The text of the file of site `spec`.
 pub fn site_text(spec: &Spec) -> String {
+    render(spec, true)
+}
+
+/// The text of the file of site `spec`, with the lines that have it log
+/// its requests to a file of its own when `logged`.
+fn render(spec: &Spec, logged: bool) -> String {
     let names = spec.names.join(" ");
     let mut text = format!(
         "{}\n# This file is the site: a change made here is kept and served, and\n\
@@ -76,20 +112,22 @@ pub fn site_text(spec: &Spec) -> String {
         first_line(&spec.name)
     );
     let body = server_body(spec);
+    let logs = if logged { log_lines(&spec.name) } else { String::new() };
     match &spec.certificate {
         Some(certificate) => {
             let base = format!("/system/live/certificates/nginx/{certificate}");
             text.push_str(&format!(
-                "server {{\n    listen 80;\n    listen [::]:80;\n    server_name {names};\n    \
-                 include acme-challenge.conf;\n    location / {{\n        \
+                "server {{\n    listen 80;\n    listen [::]:80;\n    server_name {names};\n\
+                 {logs}    include acme-challenge.conf;\n    location / {{\n        \
                  return 301 https://$host$request_uri;\n    }}\n}}\n\n\
                  server {{\n    listen 443 ssl;\n    listen [::]:443 ssl;\n    http2 on;\n    \
                  server_name {names};\n    ssl_certificate {base}/fullchain.pem;\n    \
-                 ssl_certificate_key {base}/key.pem;\n{body}}}\n"
+                 ssl_certificate_key {base}/key.pem;\n{logs}{body}}}\n"
             ));
         }
         None => text.push_str(&format!(
-            "server {{\n    listen 80;\n    listen [::]:80;\n    server_name {names};\n{body}}}\n"
+            "server {{\n    listen 80;\n    listen [::]:80;\n    server_name {names};\n\
+             {logs}{body}}}\n"
         )),
     }
     text
@@ -162,9 +200,11 @@ pub fn spec_of(name: &str, facts: &Facts) -> Option<Spec> {
 }
 
 /// Whether the file `text` of site `name`, which has `facts`, differs from
-/// what `website` writes for those facts.
+/// what `website` writes for those facts. A file that lacks the lines of
+/// the site's own log is what `website` wrote before it logged each site:
+/// it is not a change by hand, and `https` writes it again with them.
 pub fn by_hand(name: &str, text: &str, facts: &Facts) -> bool {
-    spec_of(name, facts).is_none_or(|spec| site_text(&spec) != text)
+    spec_of(name, facts).is_none_or(|spec| text != render(&spec, true) && text != render(&spec, false))
 }
 
 /// Whether the file `text` of site `name` does not start as `website`
@@ -186,6 +226,8 @@ pub struct Main {
     pub certificates: Vec<String>,
     /// Whether one of its servers listens on port 443.
     pub listens_443: bool,
+    /// Whether the `http` block has the log format the sites' own logs use.
+    pub logs_sites: bool,
     /// The place of the include's argument in the text.
     include_at: Option<Range<usize>>,
 }
@@ -203,6 +245,7 @@ pub fn read_main(text: &str) -> Result<Main, String> {
         names: Vec::new(),
         certificates: Vec::new(),
         listens_443: false,
+        logs_sites: false,
         include_at: None,
     };
     conf::visit(&directives, &mut |directive: &Directive, parents: &[&str]| {
@@ -212,6 +255,10 @@ pub fn read_main(text: &str) -> Result<Main, String> {
                 main.includes = true;
                 main.include_at =
                     main.include_at.take().or(directive.args.first().map(|a| a.span.clone()));
+            }
+            "log_format" if parents.last() == Some(&"http") && directive.args.len() == 2 => {
+                main.logs_sites |= directive.arg(0) == Some(LOG_FORMAT_NAME)
+                    && directive.arg(1) == Some(LOG_FORMAT);
             }
             "location" if in_server && directive.args.len() == 2 => {
                 let hides = directive.arg(0) == Some("^~") && directive.arg(1) == Some("/sites/");
@@ -273,6 +320,12 @@ pub fn conf_words(path: &str, main: &Main) -> Option<String> {
         words.push(format!(
             "its default server does not answer 404 under /sites/: add this inside it, before \
              location / {{:\n{lines}"
+        ));
+    }
+    if !main.logs_sites {
+        words.push(format!(
+            "it does not define the log format of the sites' own logs: add this line in its \
+             http block, before the servers:\n    {LOG_FORMAT_LINE}"
         ));
     }
     if words.is_empty() {
@@ -624,13 +677,13 @@ mod tests {
         let shown = "# shop.example.org, a website added by website(8) (ADR 0569).\n\
 # This file is the site: a change made here is kept and served, and\n\
 # the web console shows the site as changed by hand.\n\
-server {\n    listen 80;\n    listen [::]:80;\n    server_name shop.example.org www.shop.example.org;\n    \
-include acme-challenge.conf;\n    location / {\n        return 301 https://$host$request_uri;\n    }\n}\n\n\
+server {\n    listen 80;\n    listen [::]:80;\n    server_name shop.example.org www.shop.example.org;\n\
+@LOGS@    include acme-challenge.conf;\n    location / {\n        return 301 https://$host$request_uri;\n    }\n}\n\n\
 server {\n    listen 443 ssl;\n    listen [::]:443 ssl;\n    http2 on;\n    \
 server_name shop.example.org www.shop.example.org;\n    \
 ssl_certificate /system/live/certificates/nginx/shop.example.org/fullchain.pem;\n    \
-ssl_certificate_key /system/live/certificates/nginx/shop.example.org/key.pem;\n    \
-root /shared/www/sites/shop.example.org;\n    index index.php index.html;\n    \
+ssl_certificate_key /system/live/certificates/nginx/shop.example.org/key.pem;\n\
+@LOGS@    root /shared/www/sites/shop.example.org;\n    index index.php index.html;\n    \
 include acme-challenge.conf;\n\n    \
 # Files whose names start with a dot (.git, .env) are never served.\n    \
 location ~ /\\.(?!well-known/) {\n        return 404;\n    }\n\n    \
@@ -638,7 +691,53 @@ location ~ /\\.(?!well-known/) {\n        return 404;\n    }\n\n    \
 location ^~ /uploads/ {\n        location ~ \\.php$ {\n            return 404;\n        }\n    }\n\n    \
 location ~ \\.php$ {\n        try_files $uri =404;\n        fastcgi_pass 127.0.0.1:9000;\n        \
 include fastcgi.conf;\n    }\n\n    location / {\n        try_files $uri $uri/ =404;\n    }\n}\n";
-        assert_eq!(text, shown);
+        let logs = "    # Requests go to the system's log and to the site's own file.\n    \
+access_log stderr;\n    \
+access_log /shared/services/org.nginx.nginx/nginx/logs/sites/shop.example.org.log site;\n";
+        assert_eq!(text, shown.replace("@LOGS@", logs));
+    }
+
+    #[test]
+    fn each_server_of_a_site_logs_to_the_system_and_to_the_file_of_the_site() {
+        for (kind, certificate) in [
+            (Kind::Static, None),
+            (Kind::Php, None),
+            (Kind::Static, Some("shop.example.org")),
+            (Kind::Php, Some("this-machine")),
+        ] {
+            let text = site_text(&spec(kind, certificate));
+            let servers = text.matches("\nserver {").count() + usize::from(text.starts_with("server {"));
+            assert_eq!(servers, if certificate.is_some() { 2 } else { 1 }, "{text}");
+            assert_eq!(text.matches("    access_log stderr;\n").count(), servers, "{text}");
+            let own = format!("    access_log {LOGS}/shop.example.org.log {LOG_FORMAT_NAME};\n");
+            assert_eq!(text.matches(&own).count(), servers, "{text}");
+            // Each is the server's own, before its location blocks.
+            let first = text.find("access_log").unwrap();
+            assert!(first < text.find("location").unwrap(), "{text}");
+        }
+        assert!(LOGS.starts_with(NGINX_HOME) && LOGS.ends_with("/logs/sites"));
+        assert_eq!(LOG_FORMAT_LINE, format!("log_format {LOG_FORMAT_NAME} '{LOG_FORMAT}';"));
+    }
+
+    #[test]
+    fn a_file_written_before_the_sites_logged_is_not_one_changed_by_hand() {
+        for (kind, certificate) in [
+            (Kind::Static, None),
+            (Kind::Php, Some("this-machine")),
+        ] {
+            let made = spec(kind, certificate);
+            let old = render(&made, false);
+            assert!(!old.contains("access_log"), "{old}");
+            assert_ne!(old, site_text(&made));
+            let facts = conf::facts(&conf::parse(&old).unwrap());
+            assert!(!by_hand("shop.example.org", &old, &facts), "{old}");
+            assert!(!added_by_hand("shop.example.org", &old));
+            // A change of its own to either is a change by hand.
+            for text in [format!("{old}# kept\n"), site_text(&made).replacen("index", "indexed", 1)] {
+                let facts = conf::facts(&conf::parse(&text).unwrap());
+                assert!(by_hand("shop.example.org", &text, &facts), "{text}");
+            }
+        }
     }
 
     #[test]
@@ -708,6 +807,7 @@ include fastcgi.conf;\n    }\n\n    location / {\n        try_files $uri $uri/ =
         let text = include_str!("../../../../../ports/nginx/nginx.conf");
         let main = read_main(text).unwrap();
         assert!(main.includes && main.hides_sites, "the bundle's own file has both lines");
+        assert!(main.logs_sites, "and the format of the sites' logs");
         assert!(main.names.is_empty(), "its server's name is _: {:?}", main.names);
         assert!(main.certificates.is_empty() && !main.listens_443);
         // The sample HTTPS server is a comment until a person turns it on.
@@ -722,6 +822,21 @@ include fastcgi.conf;\n    }\n\n    location / {\n        try_files $uri $uri/ =
         let old = text.replace(INCLUDE_LINE, "").replace("location ^~ /sites/", "location /x/");
         let old = read_main(&old).unwrap();
         assert!(!old.includes && !old.hides_sites);
+        let old = read_main(&text.replace(LOG_FORMAT_LINE, "")).unwrap();
+        assert!(!old.logs_sites && old.includes && old.hides_sites);
+    }
+
+    #[test]
+    fn the_log_format_counts_only_in_the_http_block_and_only_as_the_sites_use_it() {
+        let wanted = LOG_FORMAT_LINE;
+        assert!(read_main(&format!("http {{ {wanted} }}")).unwrap().logs_sites);
+        assert!(!read_main(&format!("http {{ server {{ }} }}\n{wanted}")).unwrap().logs_sites);
+        assert!(!read_main(&format!("{wanted}\nhttp {{ }}")).unwrap().logs_sites);
+        assert!(!read_main(&format!("http {{ server {{ {wanted} }} }}")).unwrap().logs_sites);
+        // Another name, or another format of that name, is not what is counted.
+        assert!(!read_main("http { log_format site '$remote_addr $request'; }").unwrap().logs_sites);
+        assert!(!read_main("http { log_format sites '$msec $status $body_bytes_sent'; }").unwrap().logs_sites);
+        assert!(!read_main("http { log_format site '$msec $status $body_bytes_sent' escape=json; }").unwrap().logs_sites);
     }
 
     #[test]
@@ -761,9 +876,15 @@ include fastcgi.conf;\n    }\n\n    location / {\n        try_files $uri $uri/ =
         );
         assert!(words.contains("\n    include /system/settings/websites/*.conf;"), "{words}");
         assert!(words.contains("location ^~ /sites/ {\n        return 404;\n    }"), "{words}");
+        assert!(
+            words.contains("define the log format of the sites' own logs: add this line in its http block, before the servers:\n    log_format site '$msec $status $body_bytes_sent';"),
+            "{words}"
+        );
         main.includes = true;
         assert!(!conf_words("x", &main).unwrap().contains("include /system"));
         main.hides_sites = true;
+        assert!(conf_words("x", &main).unwrap().contains("log_format site"));
+        main.logs_sites = true;
         assert_eq!(conf_words("x", &main), None);
     }
 

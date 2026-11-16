@@ -541,7 +541,8 @@ fn the_check_as_json_says_nginx_conf_nginx_s_answer_and_each_site() {
             "nginx_conf": {
                 "path": "/shared/services/org.nginx.nginx/nginx/conf/nginx.conf",
                 "includes": true,
-                "hides_sites": true
+                "hides_sites": true,
+                "logs_sites": true
             },
             "check": {"passed": true, "line": null},
             "websites": [{"name": SHOP, "problems": []}]
@@ -599,6 +600,17 @@ fn the_check_fails_for_settings_that_lack_a_line_even_when_nginx_passes_them() {
 
 #[test]
 fn the_check_of_nginx_that_never_started_and_of_none_says_so_without_asking_nginx() {
+    // The same for the format of the sites' logs, which a file that was
+    // changed by hand before the sites were logged does not define.
+    let old = super::fake::NGINX_CONF.replace(plan::LOG_FORMAT_LINE, "");
+    fake.put(&stage::conf_view(), &old);
+    let said = json_of(&fake, &["check", "--json"], 1);
+    assert_eq!(said["nginx_conf"]["logs_sites"], false);
+    assert_eq!(said["nginx_conf"]["includes"], true);
+    assert_eq!(said["check"]["passed"], true);
+    let (result, out) = run(&fake, &["check"]);
+    assert_eq!(result.unwrap(), 1);
+    assert!(out.contains("define the log format of the sites' own logs: no\n"), "{out}");
     let fake = Fake::new().never_started();
     let said = json_of(&fake, &["check", "--json"], 1);
     assert_eq!(said["check"]["passed"], false);

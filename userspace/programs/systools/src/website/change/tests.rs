@@ -7,7 +7,7 @@
 
 use super::*;
 use crate::website::fake::{Fake, NGINX_CONF, NGINX_SERVICE, REFUSED, person, request};
-use crate::website::plan::INCLUDE_LINE;
+use crate::website::plan::{INCLUDE_LINE, LOG_FORMAT_LINE};
 use crate::website::remove::remove;
 
 const SHOP: &str = "shop.example.org";
@@ -301,6 +301,10 @@ fn a_site_is_refused_when_nginx_conf_lacks_what_the_websites_need() {
         (
             NGINX_CONF.replace("location ^~ /sites/", "location /x/"),
             "does not answer 404 under /sites/",
+        ),
+        (
+            NGINX_CONF.replace(LOG_FORMAT_LINE, ""),
+            "does not define the log format of the sites' own logs",
         ),
     ] {
         let fake = Fake::new();
