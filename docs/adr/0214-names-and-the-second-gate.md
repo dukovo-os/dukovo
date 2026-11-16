@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0214. Names on processes and capabilities, and the second gate
 
-- Status: Accepted
+- Status: Accepted; `kill` also reaches the user's processes in the caller's resource domain since [0526](0526-a-process-may-signal-its-user-s-processes-in-its-own-resource-domain.md)
 - Date: 2026-10-31
 
 ## Context

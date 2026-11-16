@@ -8,7 +8,9 @@
 // stacks and signal masks; and those CPython's test suite found (ADR
 // 0495): sysconf's answers, writev and readv of no buffers, strsignal's
 // words, pathconf's errors, the syslog mask, fma's sign of zero, dladdr
-// in a static program, and getaddrinfo's service names and IPv6 scopes.
+// in a static program, and getaddrinfo's service names and IPv6 scopes;
+// and one that PostgreSQL's setup found (ADR 0521): fflush(NULL) keeps
+// what a stream reading a pipe has read ahead.
 
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -215,6 +217,47 @@ static void popens(void) {
 		check_exit_child();
 	}
 	CHECK_CHILD(child);
+}
+
+// fflush(NULL), which a program calls before it forks or runs popen,
+// writes the streams with pending writes alone, as glibc and musl do: a
+// stream reading a pipe keeps what it has read ahead, which the pipe
+// cannot give again. initdb feeds PostgreSQL's single-user server its
+// setup through a pipe, and the server runs popen as it reads it.
+static void flush_all(void) {
+	int fds[2];
+	CHECK(pipe(fds) == 0);
+	CHECK(write(fds[1], "first\nsecond\nthird\n", 19) == 19);
+	close(fds[1]);
+	FILE *in = fdopen(fds[0], "r");
+	CHECK(in != NULL);
+	if(!in)
+		return;
+	// The first line's read takes the whole of the pipe into the buffer.
+	char line[32];
+	CHECK(fgets(line, sizeof(line), in) && strcmp(line, "first\n") == 0);
+	CHECK(fflush(NULL) == 0);
+	CHECK(fgets(line, sizeof(line), in) && strcmp(line, "second\n") == 0);
+	CHECK(fflush_unlocked(NULL) == 0);
+	CHECK(fgets(line, sizeof(line), in) && strcmp(line, "third\n") == 0);
+	CHECK(fgetc(in) == EOF && feof(in));
+	fclose(in);
+
+	// A stream with pending writes is written by either.
+	CHECK(pipe(fds) == 0);
+	FILE *out = fdopen(fds[1], "w");
+	CHECK(out != NULL);
+	if(!out)
+		return;
+	char text[16] = {0};
+	CHECK(fputs("pending", out) >= 0);
+	CHECK(fflush(NULL) == 0);
+	CHECK(read(fds[0], text, sizeof(text)) == 7 && memcmp(text, "pending", 7) == 0);
+	CHECK(fputs("unlocked", out) >= 0);
+	CHECK(fflush_unlocked(NULL) == 0);
+	CHECK(read(fds[0], text, sizeof(text)) == 8 && memcmp(text, "unlocked", 8) == 0);
+	fclose(out);
+	close(fds[0]);
 }
 
 // A catalog as gencat writes one: a header, a set, its messages and
@@ -520,6 +563,7 @@ int main(void) {
 	RUN(allocations);
 	RUN(environment);
 	RUN(popens);
+	RUN(flush_all);
 	RUN(catalogs);
 	RUN(finished);
 	RUN(bsd_lines);

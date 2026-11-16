@@ -384,16 +384,24 @@ impl<T: Clone, A: Allocator> Tree<T, A> {
     }
 
     /// Whether `sender` may send signals to `target`: itself, a process
-    /// below it in the tree, or one in its session that `same_user` says
-    /// acts for the same user as it (ADR 0214), given their handles.
-    pub fn may_signal(&self, sender: u64, target: u64, same_user: impl Fn(&T, &T) -> bool) -> bool {
+    /// below it in the tree, or one that `same_user` says acts for the same
+    /// user as it, in its session (ADR 0214) or in the resource domain that
+    /// `same_domain` says they share (ADR 0526), given their handles.
+    pub fn may_signal(
+        &self,
+        sender: u64,
+        target: u64,
+        same_user: impl Fn(&T, &T) -> bool,
+        same_domain: impl Fn(&T, &T) -> bool,
+    ) -> bool {
         if sender == target {
             return true;
         }
         let (Some(from), Some(to)) = (self.get(sender), self.get(target)) else {
             return false;
         };
-        (from.session == to.session && same_user(&from.handle, &to.handle))
+        let (one, other) = (&from.handle, &to.handle);
+        (same_user(one, other) && (from.session == to.session || same_domain(one, other)))
             || self.is_below(sender, to)
     }
 

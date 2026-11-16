@@ -1137,7 +1137,9 @@ fn build_posix(ctx: &Ctx, toolchain: &ports::Toolchain) -> Result<Vec<(String, P
 /// Builds the `dynamic` test as a bundle's program is built (ADR 0071):
 /// the program, on the shared C library, with its private library in
 /// `lib` beside it, found through its run path, and a library it opens
-/// with dlopen there too.
+/// with dlopen there too. The program exports its symbols
+/// (`--export-dynamic`) for that library to call, as PostgreSQL's server
+/// does for its modules.
 fn build_dynamic(ctx: &Ctx, toolchain: &ports::Toolchain) -> Result<Vec<(String, PathBuf)>> {
     let posix = ctx.root.join(POSIX_SOURCES);
     let sources = posix.join("dynamic");
@@ -1149,7 +1151,12 @@ fn build_dynamic(ctx: &Ctx, toolchain: &ports::Toolchain) -> Result<Vec<(String,
     let parts: [(PathBuf, &str, &str, &[&str]); 3] = [
         (lib.join("libgreet.so"), "-shared", "greet.c", &["-fPIC", "-Wl,-soname,libgreet.so"]),
         (lib.join("plugin.so"), "-shared", "plugin.c", &["-fPIC", "-lgreet", "-Wl,-rpath,$ORIGIN"]),
-        (out.join("dynamic"), "-dynamic", "main.c", &["-lgreet", "-Wl,-rpath,$ORIGIN/lib"]),
+        (
+            out.join("dynamic"),
+            "-dynamic",
+            "main.c",
+            &["-lgreet", "-Wl,-rpath,$ORIGIN/lib", "-Wl,--export-dynamic"],
+        ),
     ];
     let mut files = Vec::new();
     for (file, mode, source, args) in parts {

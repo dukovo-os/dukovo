@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0499. PHP is a bundle with its extensions built in, and its own test suite
 
-- Status: Accepted
+- Status: Accepted; `pgsql` and `pdo_pgsql` are built in since [0522](0522-postgresql-runs-as-a-service-that-stops-with-its-own-signal-and-time.md)
 - Date: 2026-11-13
 
 ## Context

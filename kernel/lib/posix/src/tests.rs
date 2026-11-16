@@ -375,14 +375,20 @@ fn groups_and_sessions_follow_posix() {
     assert_eq!(tree.new_session(12), Ok(12));
     assert_eq!(tree.get(12).unwrap().group, 12);
     assert_eq!(tree.set_group(10, 12, 11), Err(TreeError::NotPermitted));
-    // Signals: to itself, its descendants and its session's processes of
-    // its user; tracing: only its descendants.
+    // Signals: to itself, its descendants, and its user's processes in its
+    // session or its resource domain; tracing: only its descendants.
     let same = |_: &u64, _: &u64| true;
-    assert!(tree.may_signal(10, 12, same) && tree.may_signal(11, 10, same));
-    assert!(!tree.may_signal(12, 11, same));
+    let apart = |_: &u64, _: &u64| false;
+    assert!(tree.may_signal(10, 12, same, apart) && tree.may_signal(11, 10, same, apart));
+    // 12 has a session of its own now: its sibling reaches it only when
+    // they share a domain, as a service's processes do.
+    assert!(!tree.may_signal(12, 11, same, apart) && !tree.may_signal(11, 12, same, apart));
+    assert!(tree.may_signal(12, 11, same, same) && tree.may_signal(11, 12, same, same));
     let user = |pid: &u64| if *pid == 11 { 1000 } else { 0 };
     let users = |a: &u64, b: &u64| user(a) == user(b);
-    assert!(!tree.may_signal(11, 10, users) && tree.may_signal(10, 11, users));
+    assert!(!tree.may_signal(11, 10, users, apart) && tree.may_signal(10, 11, users, apart));
+    // A shared domain does not reach another user's processes.
+    assert!(!tree.may_signal(11, 10, users, same) && !tree.may_signal(12, 11, users, same));
     assert!(tree.may_trace(10, 12) && !tree.may_trace(11, 10) && !tree.may_trace(11, 12));
     let mut named = Vec::new();
     assert_eq!(tree.targets(10, 10, -11, &mut |m| named.push(m.pid)), 1);

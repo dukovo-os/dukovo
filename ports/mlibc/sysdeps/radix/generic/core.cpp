@@ -145,6 +145,12 @@ int Sysdeps<VmMap>::operator()(void *hint, size_t size, int prot, int flags, int
 		void **window) {
 	if(!size)
 		return EINVAL;
+	// Linux's MAP_HUGETLB, which <sys/mman.h> has only with mlibc's Linux
+	// interfaces: Radix has no huge pages to give, so the answers are
+	// Linux's when none is reserved, ENOMEM for memory and EINVAL for a
+	// file, and a program that asks for them maps ordinary pages after.
+	if(flags & 0x40000)
+		return (flags & MAP_ANONYMOUS) ? ENOMEM : EINVAL;
 	uint32_t map_flags = 0;
 	if(flags & MAP_FIXED)
 		map_flags |= RADIX_MAP_FLAGS_FIXED;

@@ -305,7 +305,14 @@ pub fn install(ctx: &Ctx, staging: &Path, extras: &Extras<'_>) -> Result<String>
 /// (`Apache-1.0`), the OpenLDAP Public License 2.8 for tables derived from
 /// ucgendat.c, and Solar Designer's crypt_blowfish, in the public domain
 /// with a permissive fallback. re2c, which writes its scanners, is in the
-/// public domain.
+/// public domain. PostgreSQL's bundle (ADR 0521) is under the PostgreSQL
+/// License, a permissive license of the BSD kind, with Henry Spencer's
+/// regular expression package under his own (`Spencer-99`), Philip
+/// Warner's notice on the archiver of pg_dump and Darrell Whitley's on the
+/// recombination operators of the genetic query optimizer, which SPDX has
+/// no identifiers for, and the double metaphone code of fuzzystrmatch
+/// under the terms of Perl itself: the Artistic License of Perl 5 or the
+/// GPL, of which the allow-list has the first.
 const BUNDLE_EXTRA_ALLOW: &[&str] = &[
     "MPL-2.0",
     "BSD-3-Clause WITH PCRE2-exception",
@@ -317,6 +324,11 @@ const BUNDLE_EXTRA_ALLOW: &[&str] = &[
     "OLDAP-2.8",
     "LicenseRef-crypt-blowfish-public-domain",
     "LicenseRef-re2c-public-domain",
+    "PostgreSQL",
+    "Spencer-99",
+    "Artistic-1.0-Perl",
+    "LicenseRef-pg-dump-Warner",
+    "LicenseRef-geqo-Whitley",
 ];
 
 /// What a bundle says of its licenses (ADR 0370): every component of the

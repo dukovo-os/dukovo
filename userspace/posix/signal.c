@@ -5,7 +5,8 @@
 // sigsuspend, sigtimedwait, default actions, stopping and continuing,
 // faults, interrupted calls, timers set again just after being
 // cancelled, the alternate stack, timers, floating-point state a handler
-// moves, and the values sigqueue sends and real-time signals queue.
+// moves, the values sigqueue sends and real-time signals queue, and whom
+// kill reaches.
 
 #include <fcntl.h>
 #include <setjmp.h>
@@ -587,6 +588,38 @@ static void queued(void) {
 	CHECK_ERROR(sigqueue(getpid(), 65, value), EINVAL);
 }
 
+// Whom kill reaches outside the caller's session: its user's processes in
+// its resource domain, as each of PostgreSQL's processes starts a session
+// of its own and wakes the others with signals (ADR 0526). The services
+// boot test checks that another domain's are out of reach.
+static void reach(void) {
+	int ready[2];
+	CHECK(pipe(ready) == 0);
+	pid_t sibling = check_fork();
+	if(sibling == 0) {
+		close(ready[0]);
+		CHECK(setsid() == getpid());
+		CHECK(write(ready[1], "r", 1) == 1);
+		for(;;)
+			pause();
+	}
+	close(ready[1]);
+	char byte;
+	CHECK(read(ready[0], &byte, 1) == 1);
+	close(ready[0]);
+	pid_t parent = getpid();
+	pid_t child = check_fork();
+	if(child == 0) {
+		CHECK(setsid() == getpid());
+		CHECK(kill(parent, 0) == 0);
+		CHECK(kill(sibling, SIGTERM) == 0);
+		check_exit_child();
+	}
+	CHECK_CHILD(child);
+	int status = check_wait(sibling);
+	CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
+}
+
 int main(void) {
 	check_start("signal");
 	RUN(handlers);
@@ -602,5 +635,6 @@ int main(void) {
 	RUN(moves);
 	RUN(nested);
 	RUN(queued);
+	RUN(reach);
 	return check_end();
 }

@@ -1,0 +1,79 @@
+SPDX-FileCopyrightText: 1996-2026 PostgreSQL Global Development Group
+SPDX-FileCopyrightText: 1994 The Regents of the University of California
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PostgreSQL
+
+Collation versions from the locales port
+
+PostgreSQL records the version of a collation when a database or a
+collation is made, and warns when it differs later, so that the indexes
+sorted by the old rules are rebuilt (REINDEX, ALTER DATABASE ... REFRESH
+COLLATION VERSION). For the C library's collations it takes the version of
+glibc, when __GLIBC__ is defined, because it has nothing better. The C
+library of Radix is not glibc, so the version is empty and a change to the
+sorting rules is never caught. Its locales are the data of the locales port,
+which compiles glibc's locale sources, and that port writes the version of
+the data, glibc's, in the file VERSION beside the locales. This takes the
+first line of that file as the version of every collation but C and POSIX,
+which have none, as on Linux, and gives none when the file is missing.
+
+diff --git a/src/backend/utils/adt/pg_locale_libc.c b/src/backend/utils/adt/pg_locale_libc.c
+--- a/src/backend/utils/adt/pg_locale_libc.c
++++ b/src/backend/utils/adt/pg_locale_libc.c
+@@ -1017,6 +1017,43 @@ strxfrm_libc(char *dest, size_t destsize, const char *src, pg_locale_t locale)
+ 	return strxfrm_l(dest, src, destsize, locale->lt);
+ }
+ 
++#ifdef __radix__
++/*
++ * The version of the locales the C library reads: the first line of the file
++ * that the locales port installs beside them, glibc's version, as the data is
++ * glibc's.  On Linux PostgreSQL takes the version of glibc for the same
++ * purpose, to warn of an index that was sorted by rules that have changed
++ * since.  It is read once in each backend; a file that is missing or empty
++ * gives no version, as C and POSIX have none.
++ */
++#define RADIX_LOCALE_VERSION_FILE "/system/libraries/locale/VERSION"
++
++static const char *
++radix_locale_version(void)
++{
++	static bool read_already = false;
++	static char version[64];
++
++	if (!read_already)
++	{
++		int			fd = open(RADIX_LOCALE_VERSION_FILE, O_RDONLY | PG_BINARY, 0);
++		ssize_t		len = -1;
++
++		if (fd >= 0)
++		{
++			do
++				len = read(fd, version, sizeof(version) - 1);
++			while (len < 0 && errno == EINTR);
++			close(fd);
++		}
++		version[Max(len, 0)] = '\0';
++		version[strcspn(version, "\r\n")] = '\0';
++		read_already = true;
++	}
++	return version[0] != '\0' ? version : NULL;
++}
++#endif
++
+ char *
+ get_collation_actual_version_libc(const char *collcollate)
+ {
+@@ -1029,6 +1066,12 @@ get_collation_actual_version_libc(const char *collcollate)
+ #if defined(__GLIBC__)
+ 		/* Use the glibc version because we don't have anything better. */
+ 		collversion = pstrdup(gnu_get_libc_version());
++#elif defined(__radix__)
++		/* The version of the locales port's data, as for glibc above. */
++		const char *version = radix_locale_version();
++
++		if (version != NULL)
++			collversion = pstrdup(version);
+ #elif defined(LC_VERSION_MASK)
+ 		locale_t	loc;
+ 

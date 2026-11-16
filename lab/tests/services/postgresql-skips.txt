@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+#
+# The tests of PostgreSQL's own suites that the lab test
+# services/postgresql leaves out, each group with the reason it fails on
+# Dukovo. A line is the suite's name and the test's name, with the reason
+# after them:
+#
+#   regress int4 the reason
+#
+# The suites are named `regress` for the core's, `plpgsql`, `isolation`,
+# `contrib/NAME` for a contrib module's, such as `contrib/pgcrypto`, and
+# `contrib/NAME/isolation` for the isolation tests of one that has them,
+# such as `contrib/pgrowlocks/isolation`. The test's name is the one the
+# suite's schedule has, and the one a failed test has in the test's own
+# report. The test makes a schedule of each suite without the tests listed
+# for it, as pg_regress takes no list of tests to leave out. When a gap
+# closes, its lines go: the gaps waiting on work are in docs/deferred.md.
+#
+# The list is empty: every test of the suites passed in a run under
+# emulation. A test that fails on hardware, or after a change, gets its
+# line here only with the reason found by reading what it asked for.

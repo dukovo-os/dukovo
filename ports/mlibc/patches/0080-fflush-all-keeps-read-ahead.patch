@@ -1,0 +1,51 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+fflush(NULL) and fflush_unlocked(NULL) flush only the streams with
+pending writes, as glibc and musl do. They flushed every stream, and a
+flush discards what a stream has read ahead: on a file it seeks back
+first, so nothing is lost, but a pipe cannot give the bytes again.
+Programs flush every stream before they fork or run popen(), and
+PostgreSQL's single-user server, which initdb feeds its setup through a
+pipe, runs `locale -a` with popen() while it reads that input: it lost
+the rest of its buffer and read a statement from the middle of a
+comment. Meant for upstream.
+
+--- a/options/ansi/generic/file-io.cpp
++++ b/options/ansi/generic/file-io.cpp
+@@ -795,10 +795,13 @@ long ftell(FILE *file_base) {
+ 
+ int fflush_unlocked(FILE *file_base) {
+ 	if(file_base == nullptr) {
+-		// Only flush the files but do not close them.
++		// Only flush the files but do not close them, and only those with
++		// pending writes: see fflush().
+ 		frg::unique_lock list_lock(mlibc::global_file_list_mutex);
+ 		int result = 0;
+ 		for(auto it : mlibc::global_file_list()) {
++			if(it->__dirty_end == it->__dirty_begin)
++				continue;
+ 			if(int e = it->flush(); e) {
+ 				errno = e;
+ 				result = EOF;
+@@ -815,12 +818,18 @@ int fflush_unlocked(FILE *file_base) {
+ }
+ int fflush(FILE *file_base) {
+ 	if(file_base == nullptr) {
+-		// Only flush the files but do not close them.
+-		// Every stream, and EOF if any failed (C and POSIX).
++		// Only flush the files but do not close them, and only those with
++		// pending writes, as glibc and musl do: a stream that is being
++		// read keeps what it has read ahead. flush() discards it, which a
++		// pipe cannot give again, and a program flushes every stream
++		// before it forks or runs popen(), while it may be reading its
++		// input from a pipe. EOF if any failed (C and POSIX).
+ 		frg::unique_lock list_lock(mlibc::global_file_list_mutex);
+ 		int result = 0;
+ 		for(auto it : mlibc::global_file_list()) {
+ 			frg::unique_lock lock(it->_lock);
++			if(it->__dirty_end == it->__dirty_begin)
++				continue;
+ 			if(int e = it->flush(); e) {
+ 				errno = e;
+ 				result = EOF;

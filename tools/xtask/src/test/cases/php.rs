@@ -12,11 +12,10 @@
 //! not one a search of PATH finds. A script on the disk of bundles checks
 //! what PHP's extensions are for: XML, multibyte strings, JSON, hashes,
 //! OpenSSL, regular expressions, time zones, compression, files, processes
-//! forked and run, sockets, System V shared memory and semaphores, opcache
-//! and curl. Tests of PHP's own suite, which the disk lists, check what the
-//! port changes in PHP.
-
-use std::process::Command;
+//! forked and run, sockets, System V shared memory and semaphores, opcache,
+//! curl and the PostgreSQL extensions' functions that need no server.
+//! Tests of PHP's own suite, which the disk lists, check what the port
+//! changes in PHP.
 
 use super::super::*;
 
@@ -30,13 +29,13 @@ const VOLUME: &str = "/volumes/vdb";
 const FILE: &str = "net.php.php-8.5.12.dkv";
 
 /// How many modules `php -m` lists under "PHP Modules": Core and the
-/// forty-two the bundle builds in, libxml among them, which the XML ones
+/// forty-four the bundle builds in, libxml among them, which the XML ones
 /// need, and Zend OPcache. OPcache is a Zend extension as well, and is
 /// listed again under "Zend Modules".
-const MODULES: usize = 43;
+const MODULES: usize = 45;
 
 /// How many checks [`CHECKS_SCRIPT`] makes.
-const CHECKS: usize = 24;
+const CHECKS: usize = 26;
 
 /// PHP's program, by its path, as a script names it.
 const PROGRAM: &str = "/applications/net.php.php/bin/php";
@@ -78,7 +77,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "php",
-    about: "PHP, the catalog's PHP, runs (ADR 0499): installed for everyone through elevate from its .dkv file, php asks whether it may run with her access and says it is 8.5.12; php -m lists its extensions, all built in; its php.ini and PHP_BINARY are in /applications, where the kernel's path to the program puts them; a script checks its XML, multibyte, JSON, hash, OpenSSL, regular expression, time zone, compression, file, process, socket, System V and shared memory, opcache and curl code",
+    about: "PHP, the catalog's PHP, runs (ADR 0499): installed for everyone through elevate from its .dkv file, php asks whether it may run with her access and says it is 8.5.12; php -m lists its extensions, all built in; its php.ini and PHP_BINARY are in /applications, where the kernel's path to the program puts them; a script checks its XML, multibyte, JSON, hash, OpenSSL, regular expression, time zone, compression, file, process, socket, System V and shared memory, opcache, curl and PostgreSQL code",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     cmdline: "lockdep",
@@ -183,6 +182,12 @@ c("ctype", ctype_digit("12"));
 c("tokenizer", count(token_get_all("<?php echo 1;")) > 3);
 c("session", session_status() == PHP_SESSION_NONE);
 
+// The PostgreSQL extensions, built on libpq, without a server to connect
+// to: pgsql escapes a string with libpq's own function, and PDO has its
+// driver.
+c("pgsql", pg_escape_string("it's") == "it''s");
+c("pdo_pgsql", in_array("pgsql", PDO::getAvailableDrivers()));
+
 // Opcache, on for the command line: its shared memory is there.
 c("opcache", opcache_get_status()["opcache_enabled"]);
 "#;
@@ -190,20 +195,13 @@ c("opcache", opcache_get_status()["opcache_enabled"]);
 /// Makes the disk of bundles, with the checks' script, `checks.php`, and
 /// the list of the suite's tests, `suite.txt`, beside the bundles.
 pub fn make_disk(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
-    make_bundle_files(ctx, disk, path)?;
-    let image = path.display().to_string();
     let list = SUITE.join("\n") + "\n";
-    for (name, text) in [("checks.php", CHECKS_SCRIPT), ("suite.txt", list.as_str())] {
-        let source = path.with_extension(name);
-        std::fs::write(&source, text)
-            .map_err(|err| format!("writing {}: {err}", source.display()))?;
-        let copied = host_tool(
-            Command::new("mcopy").args(["-i", &image]).arg(&source).arg(format!("::/{name}")),
-        );
-        let _ = std::fs::remove_file(&source);
-        copied?;
-    }
-    Ok(())
+    make_bundle_files_with(
+        ctx,
+        disk,
+        path,
+        &[("checks.php", CHECKS_SCRIPT), ("suite.txt", list.as_str())],
+    )
 }
 
 fn php(vm: &mut Vm, case: &Case) -> Result<(), String> {
@@ -236,7 +234,7 @@ fn php(vm: &mut Vm, case: &Case) -> Result<(), String> {
         vm,
         "$",
         "clear; php -m | grep -x -e dom -e mbstring -e openssl -e curl -e pcntl -e sockets -e \
-         'Zend OPcache' | sed 's/^/ext /'",
+         pgsql -e pdo_pgsql -e 'Zend OPcache' | sed 's/^/ext /'",
     )?;
     vm.expect_screen(&[
         "ext dom",
@@ -245,6 +243,8 @@ fn php(vm: &mut Vm, case: &Case) -> Result<(), String> {
         "ext curl",
         "ext pcntl",
         "ext sockets",
+        "ext pgsql",
+        "ext pdo_pgsql",
         "ext Zend OPcache",
     ])?;
     answer_prompt(

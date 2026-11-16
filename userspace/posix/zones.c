@@ -7,7 +7,7 @@
 // daylight saving time before 1970, now, and past 2037, where only each
 // zone file's TZ rule says; tzset's globals; TZ rules of a program's
 // own, and names that are no zone; /etc/localtime; and the dates,
-// numbers and sorting order of English's locales.
+// numbers, sorting order and money of English's locales.
 
 #include <langinfo.h>
 #include <locale.h>
@@ -175,11 +175,35 @@ static void locales(void) {
 	CHECK(setlocale(LC_ALL, "C") && strcoll("apple", "Banana") > 0);
 }
 
+// Money as a locale writes it, which nl_langinfo gives as glibc does,
+// each number a string of one byte: none in the C locale (byte 255), and
+// in en_US.UTF-8 two digits after the point and the dollar sign before
+// the amount, through nl_langinfo_l too, which PostgreSQL reads them by.
+static void money(void) {
+	CHECK(setlocale(LC_ALL, "C") != NULL);
+	CHECK(*nl_langinfo(FRAC_DIGITS) == '\377' && *nl_langinfo(P_SIGN_POSN) == '\377');
+	CHECK(!strcmp(nl_langinfo(MON_DECIMAL_POINT), "") && !strcmp(nl_langinfo(INT_CURR_SYMBOL), ""));
+	CHECK(setlocale(LC_ALL, "en_US.UTF-8") != NULL);
+	CHECK(*nl_langinfo(FRAC_DIGITS) == 2 && *nl_langinfo(INT_FRAC_DIGITS) == 2);
+	CHECK(*nl_langinfo(P_CS_PRECEDES) == 1 && *nl_langinfo(P_SEP_BY_SPACE) == 0);
+	CHECK(*nl_langinfo(N_SIGN_POSN) == 1 && *nl_langinfo(INT_P_CS_PRECEDES) == 1);
+	CHECK(!strcmp(nl_langinfo(MON_DECIMAL_POINT), ".") && !strcmp(nl_langinfo(MON_THOUSANDS_SEP), ","));
+	CHECK(!strcmp(nl_langinfo(INT_CURR_SYMBOL), "USD ") && !strcmp(nl_langinfo(CURRENCY_SYMBOL), "$"));
+	CHECK(!strcmp(nl_langinfo(POSITIVE_SIGN), "") && !strcmp(nl_langinfo(NEGATIVE_SIGN), "-"));
+	CHECK(nl_langinfo(MON_GROUPING)[0] == 3);
+	locale_t us = newlocale(LC_ALL_MASK, "en_US.UTF-8", 0);
+	CHECK(us != 0);
+	CHECK(*nl_langinfo_l(FRAC_DIGITS, us) == 2 && !strcmp(nl_langinfo_l(MON_DECIMAL_POINT, us), "."));
+	freelocale(us);
+	CHECK(setlocale(LC_ALL, "C") != NULL);
+}
+
 int main(void) {
 	check_start("zones");
 	RUN(zones);
 	RUN(globals);
 	RUN(localtime_file);
 	RUN(locales);
+	RUN(money);
 	return check_end();
 }

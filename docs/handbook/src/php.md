@@ -204,21 +204,20 @@ An administrator does the same with a folder of the computer's, and
 These extensions are built in, so there is nothing to load: Core, bcmath,
 bz2, calendar, ctype, curl, date, dom, exif, fileinfo, filter, ftp, hash,
 json, lexbor, libxml, mbstring (without its regular expressions, `mb_ereg`),
-mysqli, mysqlnd, openssl, pcntl, pcre, PDO, pdo_mysql, Phar, posix,
-random, Reflection, session, shmop, SimpleXML, sockets, SPL, standard,
-sysvsem, sysvshm, tokenizer, uri, xml, xmlreader, XMLWriter and zlib,
-and Zend OPcache. `php -m` lists them. TLS in the `openssl` extension
+mysqli, mysqlnd, openssl, pcntl, pcre, PDO, pdo_mysql, pdo_pgsql, pgsql,
+Phar, posix, random, Reflection, session, shmop, SimpleXML, sockets, SPL,
+standard, sysvsem, sysvshm, tokenizer, uri, xml, xmlreader, XMLWriter and
+zlib, and Zend OPcache. `php -m` lists them. TLS in the `openssl` extension
 and in `curl` checks certificates against the system's root certificates.
 
 These are missing, each as Dukovo does not have what it needs yet: `gd`
 (libgd), `intl` (ICU), `zip` (libzip), `sodium` (libsodium), `gmp`
 (GMP), `iconv` (the C library has no `iconv`), `sqlite3` and
-`pdo_sqlite` (SQLite), `pgsql` and `pdo_pgsql` (PostgreSQL's library),
-and `sysvmsg` (System V message queues). PCRE and opcache run without
-their JIT compilers, which map memory writable and executable at once, as
-Dukovo never does. Without `dl()`, an extension from PECL cannot be
-loaded: Dukovo links every program as a whole, so what PHP has is built
-into `php` itself.
+`pdo_sqlite` (SQLite), and `sysvmsg` (System V message queues). PCRE and
+opcache run without their JIT compilers, which map memory writable and
+executable at once, as Dukovo never does. Without `dl()`, an extension
+from PECL cannot be loaded: Dukovo links every program as a whole, so what
+PHP has is built into `php` itself.
 
 Some functions fall short of Linux's where the system does not have
 what they use yet: `dns_get_record`, `dns_check_record` (`checkdnsrr`) and
@@ -227,6 +226,32 @@ what they use yet: `dns_get_record`, `dns_check_record` (`checkdnsrr`) and
 `AF_UNIX` socket is a stream only, so `socket_create` of a datagram one
 fails, and with it passing a descriptor or credentials in a message; and
 `mail()` fails, as it does anywhere without `sendmail`.
+
+## Connecting to PostgreSQL
+
+`pgsql` and `pdo_pgsql` use the libpq of the PostgreSQL bundle, built into
+`php` and `php-fpm`. The PostgreSQL service listens on the machine itself,
+and the pages of PHP-FPM run as the account `php`, which is none of its
+roles: they connect over `127.0.0.1` with a role's password, as an
+application would to a server on another machine. An administrator makes
+the role and its database:
+
+```
+$ elevate createuser -U postgres --pwprompt shop
+$ elevate createdb -U postgres --owner shop shop
+```
+
+and a page connects with
+
+```php
+$db = new PDO('pgsql:host=127.0.0.1;dbname=shop', 'shop', $password);
+```
+
+or `pg_connect("host=127.0.0.1 dbname=shop user=shop password=$password")`.
+A script that a person runs with `php` may leave the host out instead:
+libpq looks for the socket in the service's folder, and the server takes
+the person's account as the role of the same name, which `createuser`
+makes, with no password.
 
 ## Its test suite
 

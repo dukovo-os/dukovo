@@ -1,0 +1,39 @@
+SPDX-FileCopyrightText: 1996-2026 PostgreSQL Global Development Group
+SPDX-FileCopyrightText: 1994 The Regents of the University of California
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: PostgreSQL
+
+Sockets in the service's live folder
+
+libpq and the server take /tmp for the folder of the Unix socket unless
+told otherwise (DEFAULT_PGSOCKET_DIR). The service's socket is in its live
+folder, /system/live/services/postgres, which Spark makes for the account
+postgres and the service script opens to everyone; this makes that folder
+the default of the server, libpq and so of psql and every program built
+on libpq, which then find the service without -h, as Debian's find
+/var/run/postgresql (its patch 51-default-sockets-in-var.patch). A server
+run by hand, without the service, has no such folder: it is started with
+-k or unix_socket_directories, and its clients are given PGHOST or -h.
+
+diff --git a/src/include/pg_config_manual.h b/src/include/pg_config_manual.h
+--- a/src/include/pg_config_manual.h
++++ b/src/include/pg_config_manual.h
+@@ -195,7 +195,18 @@
+  * support them yet.
+  */
+ #ifndef WIN32
++#ifdef __radix__
++/*
++ * The live folder of the service that runs the server.  It is where Spark
++ * makes a service's sockets, and it is the server's account's own: the
++ * service's script opens it to everyone, since the server authenticates each
++ * connection itself.  A server started by hand has no such folder and uses
++ * -k, unix_socket_directories or PGHOST.
++ */
++#define DEFAULT_PGSOCKET_DIR  "/system/live/services/postgres"
++#else
+ #define DEFAULT_PGSOCKET_DIR  "/tmp"
++#endif
+ #else
+ #define DEFAULT_PGSOCKET_DIR ""
+ #endif

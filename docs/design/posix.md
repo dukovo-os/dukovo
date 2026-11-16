@@ -538,7 +538,18 @@ and why:
 | 0055 | `getnameinfo` with IPv6 scopes, and without its warning |
 | 0056 | `res_query` asking the nameservers |
 | 0057 | `gethostbyaddr` from `/etc/hosts` and DNS |
+| 0058 | `getaddrinfo`'s loopback address in network byte order |
 | 0070 | `semop` and `semtimedop` through a sysdep; named semaphores from musl 1.2.5 (ADR 0490) |
+| 0071 | Corners CPython's tests found, as glibc has them: `writev` with no buffers, `strsignal`'s words, `fpathconf` and `pathconf` errors, `setlogmask(0)` and `openlog`'s options |
+| 0072 | `dladdr` in static programs |
+| 0073 | `fma` with the product's sign when the product rounds to zero |
+| 0074 | `getaddrinfo`: `EAI_SERVICE` for an unknown service, and IPv6 scopes after a `%` |
+| 0075 | CPU-time clocks of threads and processes |
+| 0076 | `prlimit` of any process, through a sysdep |
+| 0077 | `EINVAL` for a stream mode that does not start with `r`, `w` or `a` |
+| 0078 | `close_range`, through a sysdep |
+| 0080 | `fflush(NULL)` flushes only the streams with pending writes, so input keeps what it read ahead |
+| 0081 | `nl_langinfo`'s `LC_MONETARY` items, the numbers as strings of one byte as in glibc |
 
 Patches 0013 to 0022 fix what libc-test found (below); each says which
 of its tests it answers. One of mlibc's own tests changes with patch

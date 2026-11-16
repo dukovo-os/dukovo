@@ -2378,9 +2378,12 @@ manifest.
 
 A bundle's port installs into *PORT_BUNDLE* instead of the sysroot: a
 program _bin/NAME_ for each of its *commands* and *programs*, and
-anything else the bundle holds, such as _man/man1/_. Nothing of it reaches an image. *ob*
-gives the folder a _manifest.json_ (*manifest.json*(5)): the recipe's
-version, summary, license and home page, its git repository as the
+anything else the bundle holds, such as _man/man1/_. Nothing of it reaches an image.
+A bundle's port may also install a static library and its headers into
+the sysroot, for the ports built on it, as PostgreSQL's does for PHP;
+only what the port lists in *image* reaches an image. *ob* gives the
+folder a _manifest.json_ (*manifest.json*(5)): the recipe's version,
+summary, license and home page, its git repository as the
 source, the publisher "Dukovo catalog", each command running with
 the access of whoever runs it, as command-line tools do, which the
 install sheet says, an alias running the program it names, and the

@@ -968,7 +968,9 @@ pub struct Place {
 
 /// What every service's view holds without asking (ADR 0217): the
 /// system's programs, libraries, resources and settings and the kernel's
-/// files, read-only; the devices every program uses; notifyd's folder, as
+/// files, read-only; the devices every program uses, and the memory
+/// filesystem of shared memory and System V IPC, as Linux's `/dev/shm`
+/// is every service's (ADRs 0490, 0522); notifyd's folder, as
 /// notifications are always allowed; alertd's, so that the system's
 /// services raise alerts (ADR 0485), which alertd takes from root's
 /// processes alone; and resolved's,
@@ -992,6 +994,7 @@ pub const ALWAYS: &[(&str, bool)] = &[
     ("/devices/zero", false),
     ("/devices/random", false),
     ("/devices/urandom", false),
+    ("/devices/shm", true),
 ];
 
 /// Where a service sees its processes: those of its own domain alone

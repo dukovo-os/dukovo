@@ -265,7 +265,12 @@ windows (1.1), *runtime*, the Linux layer (1.3), and *plugins* (1.10).
 		*failures* }, a check Spark runs while it runs, as a service
 		file's *[health]*: *program* is one of *programs*, and the
 		others are *health.every*, *health.timeout* and
-		*health.failures*, with their defaults.
+		*health.failures*, with their defaults. Without a *socket*, the
+		command is what an update is checked by: the new version must
+		be running, with its last check passed, within 60 seconds, as
+		Spark reports it, or it goes back as above (ADR 0522); a service
+		of *start* *"on-connection"* that waits for its first
+		connection passes. With a *socket*, the socket is the check.
 
 	*timer* = { *at*, *every*, *after_boot*, *spread*, *catch_up*,
 	*time_zone* }

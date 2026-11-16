@@ -493,6 +493,23 @@ const WAVES_SITE: u8 = 34;
 /// this reason.
 const WAVES_PAUSE: (&str, &str, &str) = ("org.example.diary", "1.1.0", "bad logs");
 
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the
+/// `postgresql` test's scripts ([`cases::postgresql::make_disk`]), which
+/// the case would otherwise type.
+const POSTGRESQL_FILES: u8 = 35;
+
+/// [`Disk::fat`] for a [`BUNDLE_FILES`] disk that also holds the
+/// `postgresql-service` test's scripts
+/// ([`cases::postgresql_service::make_disk`]).
+const POSTGRESQL_SERVICE_FILES: u8 = 36;
+
+/// [`Disk::fat`] for a disk as [`ROOT`] makes one, with [`Disk::kib`] of
+/// free space after the Dukovo root partition: a disk larger than the
+/// image, as a server's is, whose root the case grows over it with `rdisk
+/// --grow` and `device resize max`, as a cloud machine's first boot does
+/// (ADR 0327), for bundles that need more room than an image's root has.
+const ROOT_ROOM: u8 = 37;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -960,7 +977,7 @@ enum Bus {
 impl Disk {
     /// Whether it holds Btrfs.
     fn btrfs(&self) -> bool {
-        matches!(self.fat, BTRFS | BTRFS_NEW | ROOT | BTRFS_LOG | BTRFS_RAID)
+        matches!(self.fat, BTRFS | BTRFS_NEW | ROOT | ROOT_ROOM | BTRFS_LOG | BTRFS_RAID)
     }
 
     /// Whether it holds exFAT.
@@ -1750,7 +1767,12 @@ fn case_budget(case: &Case, timeout: Duration) -> Duration {
 /// Whether `case` installs the catalog's bundles, which ob packs before
 /// the first such test of a run.
 fn needs_packing(case: &Case) -> bool {
-    case.disks.iter().any(|disk| matches!(disk.fat, BUNDLE_FILES | CATALOG_SITE | PHP_FILES))
+    case.disks.iter().any(|disk| {
+        matches!(
+            disk.fat,
+            BUNDLE_FILES | CATALOG_SITE | PHP_FILES | POSTGRESQL_FILES | POSTGRESQL_SERVICE_FILES
+        )
+    })
 }
 
 /// About how long packing the catalog's bundles takes on CI, in seconds,
@@ -2202,7 +2224,7 @@ pub const CASES: &[Case] = &[
     },
     Case {
         name: "services",
-        about: "service files in TOML: every shipped one reads with service check and is kept as Spark's last good copy; Spark converts a file of before Phase 13 with its comments as it starts its service; service new writes a template and service edit puts a file in place only once it reads; a file broken under a running service leaves its last good copy running; a service sees only the view its file declares, and reads there the secret service secret set kept for it",
+        about: "service files in TOML: every shipped one reads with service check and is kept as Spark's last good copy; Spark converts a file of before Phase 13 with its comments as it starts its service; service new writes a template and service edit puts a file in place only once it reads; a file broken under a running service leaves its last good copy running; a service sees only the view its file declares, and reads there the secret service secret set kept for it; its processes signal each other from sessions of their own, and not Spark",
         firmware: Firmware::Bios,
         media: Media::Usb,
         cmdline: "lockdep -- --services --posix /system/tests/posix/servicetest",
@@ -3960,7 +3982,8 @@ fn test_roots(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<T
         Ok(TestRoot { path, uuid })
     };
     let installed = cases.iter().any(|case| {
-        case.image == TestImage::Installed || case.disks.iter().any(|disk| disk.fat == ROOT)
+        case.image == TestImage::Installed
+            || case.disks.iter().any(|disk| matches!(disk.fat, ROOT | ROOT_ROOM))
     });
     let cloud = cases.iter().any(|case| case.image == TestImage::Cloud);
     Ok(TestRoots {
@@ -5237,7 +5260,7 @@ fn make_disks(
             made.push(image);
             continue;
         }
-        if disk.fat == ROOT {
+        if matches!(disk.fat, ROOT | ROOT_ROOM) {
             let root = root.ok_or("the Dukovo root's filesystem was not made")?;
             let first = if case.media.is_cd() {
                 // A CD's test image is an ISO, with no GPT to add the
@@ -5257,13 +5280,25 @@ fn make_disks(
                     .map_err(|err| format!("writing {}: {err}", image.path.display()))?;
                 image::append_root(&image.path, root).map_err(|err| err.to_string())?
             };
+            let mut bytes = image::ROOT_BYTES;
+            if disk.fat == ROOT_ROOM {
+                // The room goes at the disk's end, after the GPT's backup,
+                // which `rdisk --grow` moves there as on a cloud machine's
+                // disk; the root's check then reads to the end, which a root
+                // grown over the room reaches.
+                let room = disk.kib * 1024;
+                bytes = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&image.path)
+                    .and_then(|file| {
+                        let end = file.metadata()?.len() + room;
+                        file.set_len(end)?;
+                        Ok(end - first * 512)
+                    })
+                    .map_err(|err| format!("adding room to {}: {err}", image.path.display()))?;
+            }
             let tool = btrfs::tool(ctx).map_err(|err| err.to_string())?;
-            made.push(DiskImage {
-                offset: first * 512,
-                bytes: image::ROOT_BYTES,
-                btrfs: Some(tool),
-                ..image
-            });
+            made.push(DiskImage { offset: first * 512, bytes, btrfs: Some(tool), ..image });
             continue;
         }
         if disk.btrfs() {
@@ -5329,6 +5364,16 @@ fn make_disks(
         }
         if disk.fat == PHP_FILES {
             cases::php::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == POSTGRESQL_FILES {
+            cases::postgresql::make_disk(ctx, disk, &image.path)?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == POSTGRESQL_SERVICE_FILES {
+            cases::postgresql_service::make_disk(ctx, disk, &image.path)?;
             made.push(image);
             continue;
         }
@@ -5999,6 +6044,33 @@ fn make_bundle_disk(
     let image = path.display().to_string();
     for file in &files {
         host_tool(std::process::Command::new("mcopy").args(["-i", &image]).arg(file).arg("::/"))?;
+    }
+    Ok(())
+}
+
+/// Makes a [`BUNDLE_FILES`] disk that also holds `files`, each a name and
+/// its text, beside the bundles: what a test would otherwise type, a key at
+/// a time.
+fn make_bundle_files_with(
+    ctx: &Ctx,
+    disk: &Disk,
+    path: &Path,
+    files: &[(&str, &str)],
+) -> Result<(), String> {
+    make_bundle_files(ctx, disk, path)?;
+    let image = path.display().to_string();
+    for (name, text) in files {
+        let source = path.with_extension(name);
+        std::fs::write(&source, text)
+            .map_err(|err| format!("writing {}: {err}", source.display()))?;
+        let copied = host_tool(
+            std::process::Command::new("mcopy")
+                .args(["-i", &image])
+                .arg(&source)
+                .arg(format!("::/{name}")),
+        );
+        let _ = std::fs::remove_file(&source);
+        copied?;
     }
     Ok(())
 }
@@ -11445,6 +11517,47 @@ fn run_within(vm: &mut Vm, command: &str, seconds: u64) -> Result<(), String> {
         let screen = vm.screen()?;
         if screen.iter().any(|line| line.trim() == marker) {
             return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return screen_shows(&screen, &[&marker]);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Runs one step of a script on a test's disk of bundles, `sh script name`,
+/// which prints the checks it makes, `ok-<name>` for each that held, and
+/// then a line `name N of M`, N of its M checks having held, and waits up to
+/// `seconds` for the step to end with all `checks` of them holding.
+fn run_step(
+    vm: &mut Vm,
+    script: &str,
+    name: &str,
+    checks: usize,
+    seconds: u64,
+) -> Result<(), String> {
+    run_within(vm, &format!("clear; sh {script} {name}"), seconds)?;
+    vm.expect_screen(&[&format!("{name} {checks} of {checks}")])
+}
+
+/// Unlocks elevate in the pane, or keeps it unlocked for 15 minutes more,
+/// asking the password if it is locked: a long step may take it from the
+/// pane.
+fn unlock(vm: &mut Vm) -> Result<(), String> {
+    static UNLOCKS: AtomicU32 = AtomicU32::new(0);
+    let n = UNLOCKS.fetch_add(1, Ordering::Relaxed);
+    let marker = format!("unlocked-{n}");
+    answer_prompt(vm, "$", &format!("clear; elevate -v; echo unlocked-$(echo {n})"))?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut answered = false;
+    loop {
+        let screen = vm.screen()?;
+        if screen.iter().any(|line| line.trim() == marker) {
+            return Ok(());
+        }
+        if !answered && screen.iter().any(|line| line.contains("to unlock elevate in this pane")) {
+            answer_prompt(vm, "in this pane:", "queen of hearts")?;
+            answered = true;
         }
         if Instant::now() >= deadline {
             return screen_shows(&screen, &[&marker]);

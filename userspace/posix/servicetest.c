@@ -9,11 +9,12 @@
 // breaks a file under a running service, which Spark then runs from its
 // last good copy. Then (ADR 0217) it gives a service a secret with
 // `service secret` and starts it, as `servicetest --inside`, in the view
-// Spark builds of what its file declares, which it checks from inside.
-// Run as `servicetest --editor good|bad FILE`, it is the editor `service
-// edit` runs.
+// Spark builds of what its file declares, which it checks from inside,
+// with whom its processes may signal (ADR 0526). Run as `servicetest
+// --editor good|bad FILE`, it is the editor `service edit` runs.
 
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -232,7 +233,8 @@ static void broken(void) {
 
 // What the inside service checks: that its view holds what every service
 // reads, its own folder, its secret and a /tmp of its own, and nothing
-// past them; and that it acts for root without the bypass right.
+// past them; that it acts for root without the bypass right; and whom its
+// processes may signal.
 static void inside(void) {
 	// Its secret is a file, read-only, and in no variable.
 	const char *dir = getenv("SECRETS_DIRECTORY");
@@ -273,6 +275,23 @@ static void inside(void) {
 
 	// Root's file of mode 000 is closed to it: it has no bypass right.
 	CHECK_ERROR(open(OWN "/locked", O_RDONLY | O_CLOEXEC), EACCES);
+
+	// Its processes reach each other from sessions of their own, as they
+	// share its resource domain, and not Spark, whose domain is another:
+	// not with kill, nor prlimit (ADR 0526).
+	pid_t self = getpid();
+	pid_t child = check_fork();
+	if(child == 0) {
+		CHECK(setsid() == getpid());
+		CHECK(kill(self, 0) == 0);
+		CHECK_ERROR(kill(1, 0), EPERM);
+		struct rlimit limit;
+		CHECK_ERROR(prlimit(1, RLIMIT_CORE, NULL, &limit), EPERM);
+		struct rlimit none = {0, 0};
+		CHECK_ERROR(prlimit(1, RLIMIT_CORE, &none, NULL), EPERM);
+		check_exit_child();
+	}
+	CHECK_CHILD(child);
 }
 
 // Waits up to `seconds` for `path` to be there.
