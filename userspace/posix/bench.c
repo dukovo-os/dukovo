@@ -558,8 +558,64 @@ static void tcp_throughput(void) {
 	close(listening);
 }
 
-// The network benchmarks, over the loopback interface.
+// The bystanders' sockets, in their process.
+static int bystander_fds[5];
+
+// A bystander's thread, the `index`th: blocks on its sockets until the
+// process is killed, the fourth polling two of them.
+static void *bystander(void *index) {
+	char byte;
+	if((intptr_t)index == 3) {
+		struct pollfd fds[2] = {
+		    {.fd = bystander_fds[3], .events = POLLIN},
+		    {.fd = bystander_fds[4], .events = POLLIN},
+		};
+		poll(fds, 2, -1);
+	} else {
+		recv(bystander_fds[(intptr_t)index], &byte, 1, 0);
+	}
+	return NULL;
+}
+
+// Starts a process whose threads wait on sockets of their own that
+// nothing reaches, as an installed system's services wait on theirs: two
+// in recv on UDP sockets, one in accept on a TCP socket that listens, and
+// one polling another UDP socket and another listening TCP socket. A
+// round trip between two other sockets should not wake them (ADR 0550);
+// the benchmarks' BENCHCOUNT lines show it if it does. Returns its pid.
+static pid_t bystanders(void) {
+	int ready[2];
+	if(pipe(ready) != 0)
+		fail("pipe");
+	pid_t child = fork();
+	if(child < 0)
+		fail("fork");
+	if(child == 0) {
+		unsigned short port;
+		int types[5] = {SOCK_DGRAM, SOCK_DGRAM, SOCK_STREAM, SOCK_DGRAM, SOCK_STREAM};
+		for(int i = 0; i < 5; i++)
+			bystander_fds[i] = bound(types[i], &port);
+		pthread_t thread;
+		for(intptr_t i = 0; i < 4; i++)
+			if(i != 2 && pthread_create(&thread, NULL, bystander, (void *)i) != 0)
+				fail("pthread_create");
+		if(write(ready[1], "", 1) != 1)
+			fail("write");
+		accept(bystander_fds[2], NULL, NULL);
+		_exit(0);
+	}
+	char byte;
+	if(read(ready[0], &byte, 1) != 1)
+		fail("the bystanders");
+	close(ready[0]);
+	close(ready[1]);
+	return child;
+}
+
+// The network benchmarks, over the loopback interface, beside idle
+// sockets that others wait on.
 static void network(const int *cpus, int count) {
+	pid_t idle = bystanders();
 	tcp_connect(2000);
 	net_roundtrip("posix_tcp_roundtrip_same_cpu", 0, cpus[0], 20000);
 	if(count > 1)
@@ -568,6 +624,8 @@ static void network(const int *cpus, int count) {
 	if(count > 1)
 		net_roundtrip("posix_udp_roundtrip_cross_cpu", 1, cpus[1], 20000);
 	tcp_throughput();
+	kill(idle, SIGKILL);
+	waitpid(idle, NULL, 0);
 }
 
 // How much of the disk the disk benchmarks go through, a transfer after

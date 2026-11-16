@@ -107,11 +107,12 @@ pub use sockets::{
 
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::Waker;
 
 use managed::ManagedSlice;
 use smoltcp::iface::{Config, Interface, PollResult, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{self, Checksum, ChecksumCapabilities, DeviceCapabilities};
-use smoltcp::socket::{AnySocket, Socket, icmp};
+use smoltcp::socket::{AnySocket, Socket, icmp, tcp, udp};
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, Icmpv4Packet, Icmpv4Repr, IpCidr};
 
@@ -1202,6 +1203,39 @@ impl<L: Link> Stack<L> {
     /// then; the kernel's calls do not (ADR 0182).
     pub fn socket_mut<S: AnySocket<'static>>(&mut self, handle: SocketHandle) -> Option<&mut S> {
         self.sockets.try_get_mut(handle)
+    }
+
+    /// Registers `waker` with socket `handle`, to be woken whenever what
+    /// it can receive or send may have changed (ADR 0550). False if the
+    /// stack has no such socket. Never inlined: the frames of the calls
+    /// that make sockets have a budget (ADR 0058).
+    #[inline(never)]
+    pub fn set_waker(&mut self, handle: SocketHandle, waker: &Waker) -> bool {
+        if let Some(socket) = self.sockets.try_get_mut::<tcp::Socket<'static>>(handle) {
+            socket.register_recv_waker(waker);
+            socket.register_send_waker(waker);
+        } else if let Some(socket) = self.sockets.try_get_mut::<udp::Socket<'static>>(handle) {
+            socket.register_recv_waker(waker);
+            socket.register_send_waker(waker);
+        } else if let Some(socket) = self.sockets.try_get_mut::<icmp::Socket<'static>>(handle) {
+            socket.register_recv_waker(waker);
+            socket.register_send_waker(waker);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Wakes every socket's waker, after a change none of them can see,
+    /// to the stack's addresses or its link.
+    pub fn wake_sockets(&mut self) {
+        for (_, socket) in self.sockets.iter_mut() {
+            match socket {
+                Socket::Tcp(socket) => socket.wake(),
+                Socket::Udp(socket) => socket.wake(),
+                Socket::Icmp(socket) => socket.wake(),
+            }
+        }
     }
 
     /// Takes the socket `handle` out of the stack, with the buffers it was

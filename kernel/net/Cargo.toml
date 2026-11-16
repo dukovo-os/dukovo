@@ -26,6 +26,8 @@ bench = false
 # Multicast: an interface joins the groups its sockets join, telling the
 # routers with IGMP and MLD, 64 at most with the solicited-node groups of
 # its addresses (ADR 0336); ICMP sockets are programs' ping sockets too.
+# `async` for the sockets' wakers, which the kernel registers to wake only
+# the threads waiting on a socket that changed (ADR 0550).
 smoltcp = { version = "0.14.0", default-features = false, features = [
     "medium-ethernet",
     "medium-ip",
@@ -37,6 +39,7 @@ smoltcp = { version = "0.14.0", default-features = false, features = [
     "socket-tcp-cubic",
     "socket-tcp-reno",
     "socket-udp",
+    "async",
     "auto-icmp-echo-reply",
     "iface-max-addr-count-16",
     "iface-max-multicast-group-count-64",

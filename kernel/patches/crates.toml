@@ -15,7 +15,9 @@
 # FIN-WAIT at once, as Linux does (ADR 0185). It also lets a socket on any
 # address take one version of IP alone, gives an interface 16 addresses
 # (ADR 0332), and has a pool of listening sockets hold a SYN it has no
-# room for rather than reset it (ADR 0494).
+# room for rather than reset it (ADR 0494), and keeps a socket's wakers
+# registered after they wake, so that only the threads waiting on a
+# socket that changed wake (ADR 0550).
 [[crate]]
 name = "smoltcp"
 version = "0.14.0"

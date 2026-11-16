@@ -26,10 +26,10 @@
 //! them, `lo` 1 and the cards from 2 ([`Interface::index`]);
 //! `/kernel/class/net` and `/processes/net` show them.
 //!
-//! When a poll may have changed what a socket can do, the thread bumps
-//! one count for all of networking and wakes those who wait on it, and
-//! the pollers of every network socket: they look again
-//! ([`generation`], [`changed`]).
+//! When a poll changes what a socket can do, smoltcp wakes that socket's
+//! waker, and the threads waiting on that socket alone, and its pollers,
+//! look again ([`waiters`], ADR 0550). A change to an interface's
+//! addresses or link wakes every socket's ([`changed`]).
 //!
 //! The ICMP and ICMPv6 errors each interface hears about what datagram
 //! and ping sockets sent go to the sockets ([`errors`], ADR 0345).
@@ -57,6 +57,7 @@ pub mod ports;
 pub mod proc;
 pub mod program;
 pub mod tunnel;
+pub mod waiters;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -64,6 +65,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::task::Waker;
 
 use radix_hal::{Devices, Timer};
 use radix_hw::Mmio;
@@ -84,9 +86,8 @@ use radix_virtio::net::{MAX_FRAME, Net};
 use radix_virtio::{NO_VECTOR, Transport};
 
 use crate::Arch;
-use crate::sched::{self, Options, Policy, ThreadRef, wait};
+use crate::sched::{self, Options, Policy, ThreadRef};
 use crate::user::network::Ipv6Change;
-use crate::user::posix::poll::Polled;
 
 /// The most network interfaces besides the loopback one: cards, bridges
 /// and VLANs.
@@ -485,24 +486,20 @@ impl Interface {
     /// been received, takes its orphans that have gone, and wakes its
     /// thread if the stack has a timer due before the thread would wake.
     fn poll_here(&self) {
-        let (changed, due, wake_at) = {
+        let (due, wake_at) = {
             let mut stack = self.stack.lock();
             let now = sched::now_ns();
-            let changed = stack.poll(now);
-            if changed {
+            if stack.poll(now) {
                 self.refill(&mut stack, now);
             }
             let orphans = self.reap(&mut stack, now);
             let delay = stack.poll_delay(now).map(|delay| now.saturating_add(delay));
             let due = [delay, orphans].into_iter().flatten().min();
-            (changed, due, self.wake_at.load(Ordering::Relaxed))
+            (due, self.wake_at.load(Ordering::Relaxed))
         };
         links::wake_given();
         capture::wake_seen();
         firewall::log_dropped();
-        if changed {
-            self::changed();
-        }
         if due.is_some_and(|due| due < wake_at) {
             self.wake();
         }
@@ -608,7 +605,9 @@ impl Interface {
     }
 
     /// Takes `orphan`, on `stack`, its own, locked, to finish closing.
-    pub fn adopt(&self, _stack: &mut Stack<Card>, orphan: Orphan) {
+    pub fn adopt(&self, stack: &mut Stack<Card>, orphan: Orphan) {
+        // Its socket's waiters go with the socket (ADR 0550).
+        stack.set_waker(orphan.handle, Waker::noop());
         let mut orphans = self.orphans.lock();
         // There is room for every socket slot, and the orphan has one.
         if let Err(lost) = orphans.push_within_capacity(orphan) {
@@ -895,28 +894,16 @@ pub fn reach(to: IpAddress) -> Reach {
     reach
 }
 
-/// What networking has done so far, counted: what socket calls wait on.
-static GENERATION: AtomicU64 = AtomicU64::new(0);
-/// The pollers of every network socket.
-pub static POLLED: Polled = Polled::new();
-
-/// The key socket calls wait on.
-pub fn key() -> usize {
-    ptr::from_ref(&GENERATION) as usize
-}
-
-/// The count of changes so far: a socket call that finds it cannot go on
-/// waits until it moves.
-pub fn generation() -> u64 {
-    GENERATION.load(Ordering::Acquire)
-}
-
-/// What a socket can do may have changed: those who wait look again, and
-/// so do the pollers.
+/// A change that no socket sees, to an interface's addresses or link,
+/// may have changed what any socket can do: every socket's waiters and
+/// pollers look again ([`waiters`], ADR 0550). Each stack's lock is taken
+/// in turn, so the caller holds none.
 pub fn changed() {
-    GENERATION.fetch_add(1, Ordering::AcqRel);
-    wait::wake_all(key());
-    POLLED.changed();
+    let cards = COUNT.load(Ordering::Acquire).min(MAX_CARDS);
+    // Those taken away too: their sockets' calls find them gone.
+    for interface in LO.get().into_iter().chain(INTERFACES[..cards].iter().filter_map(Once::get)) {
+        interface.stack.lock().wake_sockets();
+    }
 }
 
 /// The address and router of the `ip=` and `gateway=` flags.
@@ -1862,8 +1849,8 @@ fn numbered(number: usize) -> Option<&'static Interface> {
     }
 }
 
-/// An interface's thread: polls its stack whenever there may be work,
-/// and tells socket calls when that may have changed what they can do.
+/// An interface's thread: polls its stack whenever there may be work;
+/// the sockets a poll changes wake their own waiters.
 fn run(number: usize) {
     let Some(interface) = numbered(number) else { return };
     if interface.gone() {
@@ -1878,11 +1865,10 @@ fn run(number: usize) {
     let polled = idle.is_some() && !interface.stack.lock().link().interrupts();
     let mut moved = 0;
     loop {
-        let (wake_at, changed, moved) = {
+        let (wake_at, moved) = {
             let mut stack = interface.stack.lock();
             let now = sched::now_ns();
-            let changed = stack.poll(now);
-            if changed {
+            if stack.poll(now) {
                 interface.refill(&mut stack, now);
             }
             let counted = stack.counters();
@@ -1910,7 +1896,7 @@ fn run(number: usize) {
             while let Some(event) = stack.take_ipv6_event() {
                 log_ipv6(interface, event);
             }
-            (wake_at, changed, stack.take_moved())
+            (wake_at, stack.take_moved())
         };
         links::wake_given();
         tunnel::wake_given();
@@ -1924,7 +1910,8 @@ fn run(number: usize) {
         if moved {
             addresses_changed();
         }
-        if changed || moved {
+        // A poll's changes to sockets woke their waiters themselves.
+        if moved {
             self::changed();
         }
         match wake_at {
