@@ -162,7 +162,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-websites",
-    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate has PostgreSQL listen on every address with TLS, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has it listen on localhost again, a second deny saying there is no line; databases.copies and databases.restore: the backup hook that Spark runs makes a copy of each database, the list and databases.copies tell it, and a copy put back as a new database by a task of three steps has the row as it was before the live one was changed, which stays changed; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
+    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate has PostgreSQL listen on every address with TLS, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has it listen on localhost again, a second deny saying there is no line; databases.copies and databases.restore: the backup hook that Spark runs makes a copy of each database, the list and databases.copies tell it, and a copy put back as a new database by a task of three steps has the row as it was before the live one was changed, which stays changed, its table is the database owner's, and no role called root is left; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -452,6 +452,14 @@ live_row_is_kept() {
 	test "$(last_guest phpdb)" = dormouse
 }
 
+owner_owns_the_copy() {
+	test "$(elevate psql -U postgres -d phpdb_back -X -A -t -c "SELECT tableowner FROM pg_tables WHERE tablename = 'guests'")" = phpdb
+}
+
+no_restorer_role() {
+	test "$(elevate psql -U postgres -X -A -t -c "SELECT count(*) FROM pg_roles WHERE rolname = 'root'")" = 0
+}
+
 without_443() {
 	if elevate grep -q 'port = 443' "$override"; then
 		return 1
@@ -542,6 +550,8 @@ changed)
 restored)
 	check old_row old_row_is_back
 	check live_row live_row_is_kept
+	check owner owner_owns_the_copy
+	check no_restorer no_restorer_role
 	;;
 session)
 	check open session_open
@@ -1036,8 +1046,9 @@ fn other_machines_may_connect(vm: &mut Vm, test: &mut Test) -> Result<(), String
 /// The backup hook, which Spark runs as backup(8) does before its
 /// snapshots, makes a copy of each database; the list and the copies say
 /// so, as the command does. With a row of the database changed, the copy
-/// put back as a new database, as a task, has the row as it was and leaves
-/// the database as it is; the new database is then removed.
+/// put back as a new database, as a task, has the row as it was, owned by
+/// the database's owner, and leaves the database as it is; the role the
+/// restore signed in as is gone, and the new database is then removed.
 fn a_copy_put_back(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     // pg_restore runs as root for the task, which has no pane to ask in, so
     // root is asked here, as it was for psql, if its answer is not kept for
@@ -1080,7 +1091,7 @@ fn a_copy_put_back(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     let new = row(&list, "databases", RESTORED)
         .ok_or_else(|| format!("the list has no database {RESTORED}: {list}"))?;
     has_members("the new database", new, &json!({"owner": DATABASE, "encoding": "UTF8"}))?;
-    step(vm, "restored", 2, 120)?;
+    step(vm, "restored", 4, 120)?;
 
     // The new database is taken away, and the database stays.
     test.unlocked()?;

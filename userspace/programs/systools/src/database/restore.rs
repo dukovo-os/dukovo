@@ -8,17 +8,29 @@
 //! `--as` the new database has a name of its own, and the database the
 //! copy is of is not touched. With `--over` it is the database itself that
 //! is replaced: the database as it is stays, renamed, and the copy goes
-//! into a new database with the old name, which takes no connection but
-//! the superuser's until it is whole, so that no program finds it empty.
-//! Every step that was made is taken back when a later one fails.
+//! into a new database with the old name, which its owner cannot connect
+//! to until it is whole, so that no program finds it empty. Every step
+//! that was made is taken back when a later one fails.
 //!
 //! The copy is opened once, here, without following a link, and what is
 //! checked of it is checked of that open file, which `pg_restore` then
 //! reads as its standard input: the file that was checked is the file that
 //! is put back, whatever is done to its name meanwhile. `pg_restore` is the
-//! bundle's own command, run as root, which the superuser's role lets in by
-//! the socket; it sets the role of the database's owner for the restore, so
-//! that the objects of the copy are the owner's.
+//! bundle's own command, run as root.
+//!
+//! A copy holds what the database's owner wrote, and putting it back runs
+//! some of it: a check or a default that calls a function of the owner's
+//! runs as each row goes in. So it is put back with the owner's rights and
+//! no more. `pg_restore` does not sign in as the superuser, whose session a
+//! `RESET ROLE` in such a function would go back to: it signs in as
+//! [`RESTORER`], a role made for the restore, which the server lets in by
+//! the socket as the account of the same name (`local all all peer`). That
+//! role holds no right of its own, inherits nothing, and may become the
+//! owner and no one else, which `pg_restore` does at once: what the copy
+//! does is done as the owner, and a way back out of the owner's role lands
+//! in a role that can do nothing. It may connect to the new database alone,
+//! and it is removed when the restore ends, well or not. A copy of a
+//! database that a role with every right owns is not put back here.
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
@@ -33,6 +45,11 @@ use super::wire::Error;
 use super::{errors, names};
 use crate::cert::acme::steps::Steps;
 use crate::util::{Fail, fail};
+
+/// The role `pg_restore` signs in as. It is called as the account the
+/// command runs as, root, since the server lets an account in by the
+/// socket as the role of its own name.
+pub const RESTORER: &str = "root";
 
 /// The longest copy that is put back: 64 GiB.
 pub const COPY_MAX: u64 = 64 << 30;
@@ -166,7 +183,7 @@ pub fn open_copy(path: &str) -> Result<File, Fail> {
 /// The database a copy is put back for, as it is: whose it is, how it
 /// stores and sorts text, and its comment.
 struct Original {
-    /// The role that owns it.
+    /// The role that owns it, which has not every right.
     owner: String,
     /// How a database like it is made.
     like: Like,
@@ -181,6 +198,13 @@ fn original(host: &mut dyn Host, name: &str) -> Result<Original, Fail> {
         return Err(no_database(name));
     };
     let owner = answer.first("owner").unwrap_or_default().to_string();
+    if answer.first("owner_super") != Some("f") {
+        return Err(fail(format!(
+            "{name} is owned by {owner}, a role with every right: database puts a copy back \
+             with no more than the rights of the database's owner, so it does not put back a \
+             copy of a database that such a role owns"
+        )));
+    }
     let locale = answer.first("locale");
     let sorting = match answer.first("provider") {
         Some("c") => {
@@ -232,6 +256,8 @@ fn free_name(
 struct Done<'a> {
     /// The database the copy is of.
     name: &'a str,
+    /// The role that owns it, and the new one.
+    owner: &'a str,
     /// The database the copy goes into.
     new: &'a str,
     /// Where `name` was renamed to, for `--over`.
@@ -243,12 +269,48 @@ struct Done<'a> {
     /// The database that takes no connection at all, by the name it has
     /// now.
     shut: Option<String>,
+    /// Whether [`RESTORER`] was made.
+    restorer: bool,
 }
 
 impl<'a> Done<'a> {
     /// Nothing made yet.
-    fn new(name: &'a str, new: &'a str, kept: Option<&'a str>) -> Done<'a> {
-        Done { name, new, kept, created: false, renamed: false, shut: None }
+    fn new(name: &'a str, owner: &'a str, new: &'a str, kept: Option<&'a str>) -> Done<'a> {
+        Done { name, owner, new, kept, created: false, renamed: false, shut: None, restorer: false }
+    }
+
+    /// Makes [`RESTORER`]: a role that may sign in, holds nothing, may
+    /// become the owner alone, and may connect to the new database alone.
+    fn let_restorer_in(&mut self, host: &mut dyn Host) -> Result<(), Fail> {
+        let made = built(sql::create_restorer(RESTORER))?;
+        host.sql(&made).map_err(|error| refused(&error, "role", RESTORER))?;
+        self.restorer = true;
+        run(host, &built(sql::may_become(RESTORER, self.owner))?)?;
+        run(host, &built(sql::connect_right(self.new, RESTORER, true))?)?;
+        Ok(())
+    }
+
+    /// Removes [`RESTORER`] when it was made. A role that cannot be removed
+    /// is left so that it signs in no more and may become no one, and the
+    /// words say so; none when it is gone.
+    fn restorer_gone(&mut self, host: &mut dyn Host) -> Option<String> {
+        if !std::mem::take(&mut self.restorer) {
+            return None;
+        }
+        let mut take = |statement: Result<String, String>| {
+            built(statement).and_then(|statement| run(host, &statement)).map(|_| ())
+        };
+        // The right to connect is a part of the role that would keep it.
+        let _ = take(sql::connect_right(self.new, RESTORER, false));
+        let why = match take(sql::drop_role(RESTORER)) {
+            Ok(()) => return None,
+            Err(why) => why.message,
+        };
+        let _ = take(sql::no_login(RESTORER));
+        let _ = take(sql::may_not_become(RESTORER, self.owner));
+        Some(format!(
+            "the role {RESTORER}, which put the copy back, stays and signs in no more ({why})"
+        ))
     }
 
     /// Takes back what was made, last first, and says how that went, in
@@ -256,6 +318,7 @@ impl<'a> Done<'a> {
     /// nothing had been made.
     fn undo(&mut self, host: &mut dyn Host) -> String {
         let mut said = Vec::new();
+        said.extend(self.restorer_gone(host));
         let mut stuck = false;
         if self.created {
             let dropped = sql::drop_database(self.new, false)
@@ -325,6 +388,14 @@ pub fn restore(host: &mut dyn Host, ask: &Restore, steps: &Steps) -> Result<Rest
     ready(host)?;
     let copy = open_copy(&ask.from)?;
     let original = original(host, &ask.name)?;
+    if found(host, &built(sql::role_exists(RESTORER))?)? {
+        return Err(fail(format!(
+            "there is a role called {RESTORER} already: database restore signs in as a role of \
+             that name, which it makes for the restore and removes after it; one left by a \
+             restore that was stopped is removed with `elevate psql -U postgres -c 'DROP ROLE \
+             {RESTORER}'`, and then the restore can run"
+        )));
+    }
     let (new, kept) = match &ask.target {
         Target::New(given) => (new_name(host, &ask.name, given.as_deref(), &began)?, None),
         Target::Over { force } => {
@@ -339,13 +410,15 @@ pub fn restore(host: &mut dyn Host, ask: &Restore, steps: &Steps) -> Result<Rest
             (ask.name.clone(), Some(kept))
         }
     };
-    let mut done = Done::new(&ask.name, &new, kept.as_deref());
+    let mut done = Done::new(&ask.name, &original.owner, &new, kept.as_deref());
     if let (Target::Over { force }, Some(kept)) = (&ask.target, &kept) {
         steps.next(&format!("keeping {} as {kept}", ask.name));
         keep(host, &mut done, *force)?;
     }
     steps.next(&format!("making the database {new}"));
-    if let Err(failure) = make(host, &mut done, &original, kept.is_some()) {
+    let made =
+        make(host, &mut done, &original, kept.is_some()).and_then(|()| done.let_restorer_in(host));
+    if let Err(failure) = made {
         return Err(done.failed(host, failure));
     }
     steps.next(&format!("putting the copy into {new}"));
@@ -354,10 +427,13 @@ pub fn restore(host: &mut dyn Host, ask: &Restore, steps: &Steps) -> Result<Rest
         let back = done.undo(host);
         return Err(errors::not_put_back(&new, &said, &back_words(&back)));
     }
+    if let Some(stays) = done.restorer_gone(host) {
+        host.log(&format!("restoring {}: {stays}", ask.name));
+    }
     if kept.is_some() {
         steps.next(&format!("letting programs connect to {new} again"));
-        let opened =
-            built(sql::connection_limit(&new, -1)).and_then(|statement| run(host, &statement));
+        let opened = built(sql::connect_right(&new, &original.owner, true))
+            .and_then(|statement| run(host, &statement));
         if let Err(failure) = opened {
             return Err(done.failed(host, failure));
         }
@@ -444,10 +520,10 @@ fn keep(host: &mut dyn Host, done: &mut Done<'_>, force: bool) -> Result<(), Fai
 }
 
 /// Makes the new database like the original: its owner, its sorting, no
-/// connection for anyone else but the superuser, and, when it takes the
-/// place of the original (`closed`), its comment. A database that takes the
-/// place of another takes no connection at all but the superuser's, until
-/// the copy is in it.
+/// connection for anyone but the owner, and, when it takes the place of the
+/// original (`closed`), its comment. A database that takes the place of
+/// another takes no connection of its owner's either, until the copy is in
+/// it.
 fn make(
     host: &mut dyn Host,
     done: &mut Done<'_>,
@@ -455,20 +531,23 @@ fn make(
     closed: bool,
 ) -> Result<(), Fail> {
     let new = done.new;
-    let statement = built(sql::create_like(new, &original.owner, &original.like, closed))?;
+    let statement = built(sql::create_like(new, &original.owner, &original.like))?;
     host.sql(&statement).map_err(|error| refused(&error, "database", new))?;
     done.created = true;
     run(host, &built(sql::revoke_connect(new))?)?;
-    if closed && let Some(comment) = &original.comment {
-        run(host, &built(sql::comment_on_database_as(new, comment))?)?;
+    if closed {
+        run(host, &built(sql::connect_right(new, &original.owner, false))?)?;
+        if let Some(comment) = &original.comment {
+            run(host, &built(sql::comment_on_database_as(new, comment))?)?;
+        }
     }
     Ok(())
 }
 
-/// The words of `pg_restore`: as the owner of the database, over the
-/// server's socket as its superuser, into the database `new`, and ending
-/// at the first thing it cannot do. The copy is read from its standard
-/// input.
+/// The words of `pg_restore`: signed in over the server's socket as
+/// [`RESTORER`], as the owner of the database from its first statement,
+/// into the database `new`, and ending at the first thing it cannot do.
+/// The copy is read from its standard input.
 #[must_use]
 pub fn pg_restore_argv(owner: &str, new: &str) -> Vec<String> {
     [
@@ -478,7 +557,7 @@ pub fn pg_restore_argv(owner: &str, new: &str) -> Vec<String> {
         "-h",
         SOCKET_DIR,
         "-U",
-        "postgres",
+        RESTORER,
         "-d",
         new,
     ]
@@ -672,9 +751,17 @@ mod tests {
                 "CREATE DATABASE \"shop_old\" OWNER \"shop\" TEMPLATE template0 ENCODING 'UTF8' \
                  LOCALE_PROVIDER libc LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8'",
                 "REVOKE ALL ON DATABASE \"shop_old\" FROM PUBLIC",
+                "CREATE ROLE \"root\" LOGIN NOINHERIT",
+                "GRANT \"shop\" TO \"root\" WITH INHERIT FALSE, SET TRUE",
+                "GRANT CONNECT ON DATABASE \"shop_old\" TO \"root\"",
+                "REVOKE CONNECT ON DATABASE \"shop_old\" FROM \"root\"",
+                "DROP ROLE \"root\"",
             ]
         );
         assert_eq!(restored.kept_as, None);
+        // The owner connects to it, and the role that put the copy in is gone.
+        assert_eq!(fake.connects("shop_old"), Some((true, vec![])));
+        assert!(!fake.has_role("root"));
         // The old one is as it was, and the new one has the copy.
         assert!(fake.has_database("shop"));
         assert_eq!(fake.restored("shop_old"), Some(4096));
@@ -694,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn pg_restore_is_run_as_the_owner_over_the_socket_and_reads_the_copy_from_its_start() {
+    fn pg_restore_signs_in_as_a_role_held_to_the_owner_and_reads_the_copy_from_its_start() {
         let (mut fake, copy) = shop();
         run_it(&mut fake, &ask(&copy, Target::New(Some("shop_old".into())))).unwrap();
         let calls = fake.restores();
@@ -708,12 +795,16 @@ mod tests {
                 "-h",
                 "/system/live/services/postgres",
                 "-U",
-                "postgres",
+                "root",
                 "-d",
                 "shop_old"
             ]
         );
         assert_eq!((calls[0].length, calls[0].offset, calls[0].closed), (4096, 0, false));
+        // It signed in as a role that holds nothing, may become the owner
+        // alone and may connect to the new database alone: never as the
+        // superuser, whose session a copy could go back to.
+        assert!(calls[0].held_to_the_owner);
         // No word of it is the copy's path, which is not named to it.
         assert!(calls[0].argv.iter().all(|word| !word.contains(".dump")));
         // The owner is the owner of the database, whoever it is.
@@ -735,17 +826,25 @@ mod tests {
             [
                 "ALTER DATABASE \"shop\" RENAME TO \"shop_before_20261116_0200\"",
                 "CREATE DATABASE \"shop\" OWNER \"shop\" TEMPLATE template0 ENCODING 'UTF8' \
-                 LOCALE_PROVIDER libc LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8' \
-                 CONNECTION LIMIT 0",
+                 LOCALE_PROVIDER libc LC_COLLATE 'en_US.UTF-8' LC_CTYPE 'en_US.UTF-8'",
                 "REVOKE ALL ON DATABASE \"shop\" FROM PUBLIC",
+                "REVOKE CONNECT ON DATABASE \"shop\" FROM \"shop\"",
                 "COMMENT ON DATABASE \"shop\" IS 'database(8): site shop.example.org'",
-                "ALTER DATABASE \"shop\" WITH CONNECTION LIMIT -1",
+                "CREATE ROLE \"root\" LOGIN NOINHERIT",
+                "GRANT \"shop\" TO \"root\" WITH INHERIT FALSE, SET TRUE",
+                "GRANT CONNECT ON DATABASE \"shop\" TO \"root\"",
+                "REVOKE CONNECT ON DATABASE \"shop\" FROM \"root\"",
+                "DROP ROLE \"root\"",
+                "GRANT CONNECT ON DATABASE \"shop\" TO \"shop\"",
             ]
         );
-        // The copy was put into the new one while it took no connection.
+        // The copy was put into the new one while its owner could not
+        // connect, by the role held to the owner.
         let calls = fake.restores();
         assert_eq!(calls.len(), 1);
         assert!(calls[0].closed);
+        assert!(calls[0].held_to_the_owner);
+        assert_eq!(fake.connects("shop"), Some((true, vec![])));
         assert_eq!(calls[0].argv.last().map(String::as_str), Some("shop"));
         assert_eq!(fake.restored("shop"), Some(4096));
         assert_eq!(fake.restored("shop_before_20261116_0200"), None);
@@ -919,6 +1018,104 @@ mod tests {
         );
         assert!(fake.has_database("shop") && !fake.has_database("shop_before_20261116_0200"));
         assert!(fake.comment_of("shop").is_some());
+    }
+
+    #[test]
+    fn a_database_that_a_role_with_every_right_owns_is_not_put_back() {
+        let mut fake =
+            Fake::new().with_database("shop", "postgres").with_copy("shop", 100, START_MS);
+        let copy = fake.copies_folder().join("shop.dump").to_string_lossy().into_owned();
+        let failure = run_it(&mut fake, &ask(&copy, Target::New(None))).unwrap_err();
+        assert!(
+            failure.message.starts_with("shop is owned by postgres, a role with every right"),
+            "{}",
+            failure.message
+        );
+        assert!(changes(&fake).is_empty());
+        assert!(fake.restores().is_empty());
+    }
+
+    #[test]
+    fn a_role_called_root_that_is_there_already_stops_the_restore_before_anything_is_made() {
+        let (fake, copy) = shop();
+        let mut fake = fake.with_role("root");
+        let failure = run_it(&mut fake, &ask(&copy, Target::Over { force: true })).unwrap_err();
+        assert!(
+            failure.message.starts_with("there is a role called root already"),
+            "{}",
+            failure.message
+        );
+        assert!(failure.message.contains("DROP ROLE root"), "{}", failure.message);
+        assert!(changes(&fake).is_empty());
+        assert!(fake.restores().is_empty());
+        // The role that was there is as it was.
+        assert_eq!(fake.role_of("root"), Some((true, None)));
+    }
+
+    #[test]
+    fn a_role_that_cannot_be_removed_after_the_restore_signs_in_no_more_and_is_logged() {
+        let (fake, copy) = shop();
+        let mut fake = fake.refusing(
+            "DROP ROLE",
+            "2BP01",
+            "role \"root\" cannot be dropped because some objects depend on it",
+        );
+        let restored =
+            run_it(&mut fake, &ask(&copy, Target::New(Some("shop_old".into())))).unwrap();
+        assert_eq!(restored.restored_as, "shop_old");
+        let changes = changes(&fake);
+        assert_eq!(
+            &changes[changes.len() - 2..],
+            ["ALTER ROLE \"root\" NOLOGIN", "REVOKE \"shop\" FROM \"root\""]
+        );
+        assert_eq!(fake.role_of("root"), Some((false, None)));
+        assert_eq!(fake.connects("shop_old"), Some((true, vec![])));
+        let logged = fake.logged().join("\n");
+        assert!(
+            logged.contains(
+                "restoring shop: the role root, which put the copy back, stays and \
+                 signs in no more (PostgreSQL said: "
+            ),
+            "{logged}"
+        );
+    }
+
+    #[test]
+    fn a_failure_while_the_role_is_made_takes_the_role_and_the_database_back() {
+        let (fake, copy) = shop();
+        let mut fake = fake.refusing("GRANT \"shop\" TO", "42501", "permission denied");
+        let failure =
+            run_it(&mut fake, &ask(&copy, Target::New(Some("shop_old".into())))).unwrap_err();
+        assert!(
+            failure
+                .message
+                .contains("permission denied (42501); the database shop_old was removed again"),
+            "{}",
+            failure.message
+        );
+        assert!(!fake.has_role("root"));
+        assert!(!fake.has_database("shop_old"));
+        assert!(fake.restores().is_empty());
+        // A role of that name that a rival made meanwhile is not removed.
+        let (fake, copy) = shop();
+        let mut fake = fake.refusing("CREATE ROLE", "42710", "role \"root\" already exists");
+        let failure = run_it(&mut fake, &ask(&copy, Target::Over { force: false })).unwrap_err();
+        assert!(failure.message.contains("(DB-102)"), "{}", failure.message);
+        assert!(!changes(&fake).iter().any(|change| change.starts_with("DROP ROLE")));
+        assert!(fake.has_database("shop") && !fake.has_database("shop_before_20261116_0200"));
+    }
+
+    #[test]
+    fn a_failed_restore_takes_the_role_away_before_the_database() {
+        let (fake, copy) = shop();
+        let mut fake = fake.failing_restore("pg_restore: error: bad");
+        run_it(&mut fake, &ask(&copy, Target::Over { force: false })).unwrap_err();
+        let changes = changes(&fake);
+        let at = |what: &str| changes.iter().position(|change| change.starts_with(what)).unwrap();
+        assert!(at("REVOKE CONNECT ON DATABASE \"shop\" FROM \"root\"") < at("DROP ROLE"));
+        assert!(at("DROP ROLE") < at("DROP DATABASE"));
+        assert!(!fake.has_role("root"));
+        assert!(!fake.restores()[0].argv.contains(&"postgres".to_string()));
     }
 
     #[test]

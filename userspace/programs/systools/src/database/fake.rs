@@ -63,6 +63,19 @@ struct Role {
     password: bool,
     /// Its comment.
     comment: Option<String>,
+    /// Whether it has every right, as postgres has.
+    superuser: bool,
+    /// Whether it may sign in.
+    login: bool,
+    /// The role it may become with SET ROLE, and inherits nothing of.
+    becomes: Option<String>,
+}
+
+impl Role {
+    /// A role that signs in, with a password or not, and holds nothing.
+    fn signing_in(password: bool) -> Role {
+        Role { password, comment: None, superuser: false, login: true, becomes: None }
+    }
 }
 
 /// A database.
@@ -82,6 +95,10 @@ struct Database {
     open: bool,
     /// How many connections it takes besides the superuser's: -1 for any.
     limit: i32,
+    /// Whether its owner keeps the right to connect.
+    owner_connects: bool,
+    /// The other roles that were given the right to connect.
+    connect: Vec<String>,
 }
 
 /// A call of `pg_restore`, as the fake saw it.
@@ -93,9 +110,13 @@ pub struct RestoreCall {
     pub length: u64,
     /// Where in the copy it was to start reading.
     pub offset: u64,
-    /// Whether the database it put the copy into took no connection but
-    /// the superuser's.
+    /// Whether the database it put the copy into took no connection of
+    /// its owner's, nor any but the superuser's.
     pub closed: bool,
+    /// Whether it signed in as a role that holds nothing of its own, may
+    /// become the database's owner alone and may connect to it, and was
+    /// told to become the owner.
+    pub held_to_the_owner: bool,
 }
 
 /// A statement the machine refuses.
@@ -188,7 +209,7 @@ impl Fake {
             over: folder.join("services/settings.d/postgresql.toml"),
         };
         let mut roles = BTreeMap::new();
-        roles.insert("postgres".to_string(), Role { password: false, comment: None });
+        roles.insert("postgres".to_string(), Role { superuser: true, ..Role::signing_in(false) });
         let running =
             [("listen_addresses", "localhost"), ("ssl", "off"), ("ssl_cert_file", "server.crt")]
                 .iter()
@@ -256,7 +277,7 @@ impl Fake {
     /// The server has a role called `name`, with a password.
     #[must_use]
     pub fn with_role(mut self, name: &str) -> Fake {
-        self.roles.insert(name.into(), Role { password: true, comment: None });
+        self.roles.insert(name.into(), Role::signing_in(true));
         self
     }
 
@@ -264,9 +285,7 @@ impl Fake {
     /// is made if it is not there, with a password.
     #[must_use]
     pub fn with_database(mut self, name: &str, owner: &str) -> Fake {
-        self.roles
-            .entry(owner.to_string())
-            .or_insert(Role { password: owner != "postgres", comment: None });
+        self.roles.entry(owner.to_string()).or_insert(Role::signing_in(owner != "postgres"));
         self.databases.insert(
             name.into(),
             Database {
@@ -277,6 +296,8 @@ impl Fake {
                 versions: None,
                 open: true,
                 limit: -1,
+                owner_connects: true,
+                connect: Vec::new(),
             },
         );
         self
@@ -386,6 +407,12 @@ impl Fake {
     /// superuser's: the fake's own record of what was asked.
     pub fn takes(&self, name: &str) -> Option<(bool, i32)> {
         self.databases.get(name).map(|db| (db.open, db.limit))
+    }
+
+    /// Whether the owner of `name` may connect to it, and the other roles
+    /// that may.
+    pub fn connects(&self, name: &str) -> Option<(bool, Vec<String>)> {
+        self.databases.get(name).map(|db| (db.owner_connects, db.connect.clone()))
     }
 
     /// The comment of the database `name`.
@@ -516,7 +543,7 @@ impl Fake {
         self.sent
             .iter()
             .filter(|statement| {
-                ["CREATE ", "COMMENT ", "REVOKE ", "DROP ", "ALTER "]
+                ["CREATE ", "COMMENT ", "GRANT ", "REVOKE ", "DROP ", "ALTER "]
                     .iter()
                     .any(|start| statement.starts_with(start))
             })
@@ -542,6 +569,11 @@ impl Fake {
     /// Whether the server has the role.
     pub fn has_role(&self, name: &str) -> bool {
         self.roles.contains_key(name)
+    }
+
+    /// Whether the role `name` may sign in, and the role it may become.
+    pub fn role_of(&self, name: &str) -> Option<(bool, Option<String>)> {
+        self.roles.get(name).map(|role| (role.login, role.becomes.clone()))
     }
 
     /// Whether the server has the database.
@@ -692,13 +724,15 @@ impl Fake {
             return Ok(Fake::answer(&["owner", "password", "comment"], rows.into_iter().collect()));
         }
         if sql.starts_with(
-            "SELECT pg_catalog.pg_get_userbyid(d.datdba) AS owner, pg_catalog.pg_encoding",
+            "SELECT pg_catalog.pg_get_userbyid(d.datdba) AS owner, r.rolsuper AS owner_super",
         ) {
             let name = literal_of(sql.rsplit("WHERE d.datname = ").next().unwrap_or(""));
             let rows = self.databases.get(&name).map(|db| {
                 let libc = db.provider == 'c';
+                let superuser = self.roles.get(&db.owner).is_some_and(|role| role.superuser);
                 vec![
                     Some(db.owner.clone()),
+                    Some(if superuser { "t" } else { "f" }.into()),
                     Some("UTF8".into()),
                     Some(db.provider.to_string()),
                     libc.then(|| db.locale.clone()),
@@ -708,7 +742,16 @@ impl Fake {
                 ]
             });
             return Ok(Fake::answer(
-                &["owner", "encoding", "provider", "collate", "ctype", "locale", "comment"],
+                &[
+                    "owner",
+                    "owner_super",
+                    "encoding",
+                    "provider",
+                    "collate",
+                    "ctype",
+                    "locale",
+                    "comment",
+                ],
                 rows.into_iter().collect(),
             ));
         }
@@ -948,7 +991,8 @@ impl Fake {
                 return Err(server("42710", "role already exists"));
             }
             let password = rest.contains(" PASSWORD ");
-            self.roles.insert(name, Role { password, comment: None });
+            let login = rest.contains(" LOGIN") && !rest.contains(" NOLOGIN");
+            self.roles.insert(name, Role { login, ..Role::signing_in(password) });
             return Ok("CREATE ROLE".into());
         }
         if let Some(rest) = sql.strip_prefix("COMMENT ON ROLE ") {
@@ -981,6 +1025,8 @@ impl Fake {
                     versions: None,
                     open: true,
                     limit,
+                    owner_connects: true,
+                    connect: Vec::new(),
                 },
             );
             return Ok("CREATE DATABASE".into());
@@ -997,6 +1043,56 @@ impl Fake {
         if sql.starts_with("REVOKE ALL ON DATABASE ") {
             return Ok("REVOKE".into());
         }
+        let connect = sql
+            .strip_prefix("GRANT CONNECT ON DATABASE ")
+            .and_then(|rest| rest.split_once(" TO "))
+            .map(|(db, role)| (db, role, true))
+            .or_else(|| {
+                sql.strip_prefix("REVOKE CONNECT ON DATABASE ")
+                    .and_then(|rest| rest.split_once(" FROM "))
+                    .map(|(db, role)| (db, role, false))
+            });
+        if let Some((db, role, give)) = connect {
+            let (db, role) = (ident_of(db), ident_of(role));
+            if !self.roles.contains_key(&role) {
+                return Err(server("42704", "no such role"));
+            }
+            let db =
+                self.databases.get_mut(&db).ok_or_else(|| server("3D000", "no such database"))?;
+            if role == db.owner {
+                db.owner_connects = give;
+            } else {
+                db.connect.retain(|one| *one != role);
+                if give {
+                    db.connect.push(role);
+                }
+            }
+            return Ok(if give { "GRANT" } else { "REVOKE" }.into());
+        }
+        if let Some(rest) = sql.strip_prefix("GRANT ") {
+            let (owner, rest) =
+                rest.split_once(" TO ").ok_or_else(|| broken(format!("fake: {sql}")))?;
+            let role = rest
+                .strip_suffix(" WITH INHERIT FALSE, SET TRUE")
+                .ok_or_else(|| broken(format!("the fake does not know the statement {sql}")))?;
+            let (owner, role) = (ident_of(owner), ident_of(role));
+            if !self.roles.contains_key(&owner) {
+                return Err(server("42704", "no such role"));
+            }
+            self.roles.get_mut(&role).ok_or_else(|| server("42704", "no such role"))?.becomes =
+                Some(owner);
+            return Ok("GRANT ROLE".into());
+        }
+        if let Some(rest) = sql.strip_prefix("REVOKE ") {
+            let (owner, role) =
+                rest.split_once(" FROM ").ok_or_else(|| broken(format!("fake: {sql}")))?;
+            let (owner, role) = (ident_of(owner), ident_of(role));
+            let role = self.roles.get_mut(&role).ok_or_else(|| server("42704", "no such role"))?;
+            if role.becomes.as_deref() == Some(owner.as_str()) {
+                role.becomes = None;
+            }
+            return Ok("REVOKE ROLE".into());
+        }
         if let Some(rest) = sql.strip_prefix("DROP DATABASE ") {
             let name = ident_of(rest);
             self.databases.remove(&name).ok_or_else(|| server("3D000", "no such database"))?;
@@ -1005,6 +1101,12 @@ impl Fake {
         }
         if let Some(rest) = sql.strip_prefix("DROP ROLE ") {
             let name = ident_of(rest);
+            if self.databases.values().any(|db| db.connect.contains(&name)) {
+                return Err(server(
+                    "2BP01",
+                    "role cannot be dropped because some objects depend on it",
+                ));
+            }
             self.roles.remove(&name).ok_or_else(|| server("42704", "no such role"))?;
             return Ok("DROP ROLE".into());
         }
@@ -1039,8 +1141,12 @@ impl Fake {
         }
         if let Some(rest) = sql.strip_prefix("ALTER ROLE ") {
             let name = ident_of(rest);
-            self.roles.get_mut(&name).ok_or_else(|| server("42704", "no such role"))?.password =
-                true;
+            let role = self.roles.get_mut(&name).ok_or_else(|| server("42704", "no such role"))?;
+            if rest.ends_with(" NOLOGIN") {
+                role.login = false;
+            } else {
+                role.password = true;
+            }
             return Ok("ALTER ROLE".into());
         }
         if let Some(rest) = sql.strip_prefix("ALTER SYSTEM SET ") {
@@ -1215,8 +1321,28 @@ impl Host for Fake {
             .and_then(|at| argv.get(at + 1))
             .cloned()
             .unwrap_or_default();
-        let closed = self.databases.get(&target).is_some_and(|db| db.limit == 0);
-        self.restores.push(RestoreCall { argv: argv.to_vec(), length, offset, closed });
+        let word_after = |flag: &str| {
+            argv.iter().position(|word| word == flag).and_then(|at| argv.get(at + 1)).cloned()
+        };
+        let user = word_after("-U").unwrap_or_default();
+        let db = self.databases.get(&target);
+        let closed = db.is_some_and(|db| !db.owner_connects || db.limit == 0);
+        // What it does is done as a role that holds nothing of its own and
+        // may become the owner alone, and that may connect to the database.
+        let held_to_the_owner = self.roles.get(&user).zip(db).is_some_and(|(role, db)| {
+            role.login
+                && !role.superuser
+                && role.becomes.as_deref() == Some(db.owner.as_str())
+                && db.connect.contains(&user)
+                && argv.contains(&format!("--role={}", db.owner))
+        });
+        self.restores.push(RestoreCall {
+            argv: argv.to_vec(),
+            length,
+            offset,
+            closed,
+            held_to_the_owner,
+        });
         let mut magic = [0u8; 5];
         if copy.read_exact_at(&mut magic, 0).is_err() || &magic != b"PGDMP" {
             return Err(

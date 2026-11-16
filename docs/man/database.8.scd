@@ -228,9 +228,9 @@ set to zero. *allow* takes up to 20 at a time.
 	With *--over* the copy goes into _name_ itself. The database as it is
 	is kept, renamed to _name_, *\_before\_* and the local day and
 	minute, as in *shop\_before\_20261116\_0200*, and a new database
-	called _name_ is made, with the comment the old one had, which takes
-	no connection but the superuser's while the copy is put into it, so
-	that no program finds it empty. It stops with the programs that have
+	called _name_ is made, with the comment the old one had, which its
+	owner cannot connect to while the copy is put into it, so that no
+	program finds it empty. It stops with the programs that have
 	a session open to _name_, by name, and does nothing (DB-103);
 	*--force* ends those sessions, and lets no other come in until
 	_name_ is renamed. The old database stays until it is removed with
@@ -244,9 +244,22 @@ set to zero. *allow* takes up to 20 at a time.
 	does (DB-109). What was checked is what is read: the open file is the
 	standard input of the bundle's *pg\_restore*, which *restore* runs as
 	root, as *--no-owner --role=* the owner *--exit-on-error -h
-	/system/live/services/postgres -U postgres -d* the new database. The
-	restore is made as the owner of the database, so the objects of the
-	copy are its own; a copy that needs a superuser, as an extension that
+	/system/live/services/postgres -U root -d* the new database.
+
+	A copy holds what the owner of the database wrote, and putting it
+	back runs some of it, as a check that calls a function of the
+	owner's. So the restore is made with the owner's rights and no more.
+	*pg\_restore* does not sign in as the superuser: it signs in as the
+	role *root*, which *restore* makes for it and PostgreSQL lets in by
+	the socket as the account root. That role holds no right of its own,
+	may connect to the new database alone, and may become the owner and
+	no one else, which *--role* does at once; a copy that steps out of
+	the owner's role finds a role that can do nothing. The role is
+	removed when the restore ends, whether it worked or not. A role
+	called *root* that is there already stops the restore before it makes
+	anything, as one left by a restore that was stopped does, and so does
+	a database that a role with every right owns. The objects of the copy
+	are the owner's; a copy that needs a superuser, as an extension that
 	PostgreSQL does not trust its owner with does, fails. The first time,
 	Dukovo asks whether the bundle may run with root's access.
 
@@ -423,8 +436,10 @@ The web console shows the page for it.
 	the last line says how what was made was taken back.
 
 Other failures have no ID: a database that is not there, a role that
-has no password to sign in with from other machines, or a statement
-PostgreSQL refused, which is told in its words with its error code.
+has no password to sign in with from other machines, a restore that
+finds a role called *root* there already or a database owned by a role
+with every right, or a statement PostgreSQL refused, which is told in
+its words with its error code.
 
 # EXAMPLES
 
