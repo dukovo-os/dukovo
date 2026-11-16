@@ -274,7 +274,7 @@ fn a_log_that_is_not_a_file_and_a_folder_of_logs_that_is_a_link_are_not_read() {
 }
 
 #[test]
-fn a_compressed_copy_that_asks_for_more_than_a_window_of_2_mib_is_refused() {
+fn a_compressed_copy_that_asks_for_a_window_over_the_limit_is_refused() {
     let fake = with_shop();
     let yesterday = fake.today() - 1;
     let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
