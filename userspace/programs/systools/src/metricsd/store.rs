@@ -731,7 +731,7 @@ fn read_at(
     let mut found: BTreeMap<String, Vec<(i64, f32)>> = BTreeMap::new();
     for (path, start, end) in data_files(dir, minutes)? {
         if end > from && start < to {
-            read_file(&path, minutes, (from, to), select, &mut found)?;
+            read_file(&path, minutes, (from, to), select, AVERAGE, &mut found)?;
         }
     }
     Ok(found
@@ -746,6 +746,73 @@ fn read_at(
         })
         .filter(|series| !series.points.is_empty())
         .collect())
+}
+
+/// The greatest value one series had over a range, and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Highest {
+    /// `metric{instance}`, or `metric` when it has no instance.
+    pub name: String,
+    /// When, in seconds since 1970: the minute of a point of the minute
+    /// files, or the start of the hour for one of the hour files, which
+    /// keep only an hour's maximum.
+    pub at: i64,
+    pub value: f32,
+}
+
+/// The highest value of each series `select` names from `from` up to
+/// `to`, seconds since 1970, from the store in `dir`; of every series when
+/// `select` is empty. A series with no point in the range is left out.
+///
+/// The last [`MINUTE_DAYS`] days are read from the minute files, each
+/// minute's own value, and what is before them from the hour files, each
+/// hour's maximum, so that a range of 30 days is covered whole. Where a
+/// minute and an hour have the same value, the minute is the time given.
+///
+/// # Errors
+///
+/// A file or folder that exists and cannot be read.
+pub fn highest(dir: &Path, from: i64, to: i64, select: &[Selector]) -> io::Result<Vec<Highest>> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    highest_at(dir, now, from, to, select)
+}
+
+/// [`highest`] as it is at time `now`.
+fn highest_at(
+    dir: &Path,
+    now: i64,
+    from: i64,
+    to: i64,
+    select: &[Selector],
+) -> io::Result<Vec<Highest>> {
+    let boundary = now - MINUTE_DAYS * DAY;
+    let mut best: BTreeMap<String, (i64, f32)> = BTreeMap::new();
+    // The hours before the minute files' days first, so that a minute
+    // with as high a value takes their place.
+    for (minutes, range) in [(false, (from, to.min(boundary))), (true, (from.max(boundary), to))] {
+        if range.0 >= range.1 {
+            continue;
+        }
+        let mut found: BTreeMap<String, Vec<(i64, f32)>> = BTreeMap::new();
+        for (path, start, end) in data_files(dir, minutes)? {
+            if end > range.0 && start < range.1 {
+                read_file(&path, minutes, range, select, MAXIMUM, &mut found)?;
+            }
+        }
+        for (name, points) in found {
+            for (at, value) in points {
+                // The first of equal values stays, unless it is an hour's
+                // and this is a minute's.
+                let replaces = best.get(&name).is_none_or(|&(kept_at, kept)| {
+                    value > kept || (minutes && value == kept && kept_at < boundary)
+                });
+                if replaces {
+                    best.insert(name.clone(), (at, value));
+                }
+            }
+        }
+    }
+    Ok(best.into_iter().map(|(name, (at, value))| Highest { name, at, value }).collect())
 }
 
 /// The minute files, or the hour files, in the order of their days, with
@@ -774,13 +841,20 @@ fn data_files(dir: &Path, minutes: bool) -> io::Result<Vec<(PathBuf, i64, i64)>>
     Ok(files)
 }
 
+/// Which of an hour's three values a point of an hour file is: its
+/// average, its minimum or its maximum.
+const AVERAGE: usize = 0;
+const MAXIMUM: usize = 2;
+
 /// Adds the points of `range` of the file at `path` for the series
-/// `select` names to `found`.
+/// `select` names to `found`. A point of an hour file is its value number
+/// `hour_value`.
 fn read_file(
     path: &Path,
     minutes: bool,
     range: (i64, i64),
     select: &[Selector],
+    hour_value: usize,
     found: &mut BTreeMap<String, Vec<(i64, f32)>>,
 ) -> io::Result<()> {
     let bytes = match fs::read(path) {
@@ -820,7 +894,7 @@ fn read_file(
             }
             Record::Row { at, values } if minutes => add(&columns, at, &mut values.into_iter()),
             Record::Hour { at, values } if !minutes => {
-                add(&columns, at, &mut values.into_iter().map(|[average, _, _]| average));
+                add(&columns, at, &mut values.into_iter().map(|hour| hour[hour_value]));
             }
             _ => {}
         }
@@ -1057,6 +1131,79 @@ mod tests {
         assert_eq!(points(&found, "cpu"), [(TEN, 29.5)]);
         let found = read_at(&dir, TEN + 3 * HOUR, TEN, TEN + 3 * HOUR, &[], None).unwrap();
         assert_eq!(found[0].points.len(), 120);
+    }
+
+    /// Two hours of `cpu` with a peak of 90 at 10:07 and one of 95 at
+    /// 11:20, `load` always 1, and a last row at 13:00 that folds the
+    /// hours.
+    fn two_hours(name: &str) -> PathBuf {
+        let dir = folder(name);
+        let mut store = Store::open(&dir, TEN).unwrap();
+        for step in 0..120 {
+            let cpu = match step {
+                7 => 90.0,
+                80 => 95.0,
+                _ => 10.0,
+            };
+            store.push(TEN + step * 60, &row(&[("cpu", cpu), ("load", 1.0)]));
+        }
+        store.push(TEN + 3 * HOUR, &row(&[("cpu", 1.0)]));
+        store.flush().unwrap();
+        dir
+    }
+
+    fn highest_of(found: &[Highest], name: &str) -> Option<(i64, f32)> {
+        found.iter().find(|h| h.name == name).map(|h| (h.at, h.value))
+    }
+
+    #[test]
+    fn the_highest_of_a_recent_range_is_a_minutes_own_value_and_its_time() {
+        let dir = two_hours("highest-minutes");
+        let now = TEN + 3 * HOUR;
+        let found = highest_at(&dir, now, TEN, now + 60, &[]).unwrap();
+        assert_eq!(highest_of(&found, "cpu"), Some((TEN + 80 * 60, 95.0)));
+        // Of equal values the first stays.
+        assert_eq!(highest_of(&found, "load"), Some((TEN, 1.0)));
+        let names: Vec<&str> = found.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["cpu", "load"]);
+
+        // Only what is asked for, and only what is in the range.
+        let only = highest_at(&dir, now, TEN, TEN + 600, &[Selector::parse("cpu")]).unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(highest_of(&only, "cpu"), Some((TEN + 7 * 60, 90.0)));
+        let none = highest_at(&dir, now, TEN, now, &[Selector::parse("nosuch")]).unwrap();
+        assert!(none.is_empty());
+        let before = highest_at(&dir, now, TEN - HOUR, TEN, &[]).unwrap();
+        assert!(before.is_empty());
+    }
+
+    #[test]
+    fn the_highest_of_an_old_range_is_an_hours_maximum_at_the_hours_start() {
+        let dir = two_hours("highest-hours");
+        let later = TEN + 40 * DAY;
+        let found = highest_at(&dir, later, TEN, TEN + 3 * HOUR, &[]).unwrap();
+        // The minute of the peak is gone with the minute files' days: the
+        // hour that held it is what is known.
+        assert_eq!(highest_of(&found, "cpu"), Some((TEN + HOUR, 95.0)));
+        assert_eq!(highest_of(&found, "load"), Some((TEN, 1.0)));
+        let first = highest_at(&dir, later, TEN, TEN + HOUR, &[Selector::parse("cpu")]).unwrap();
+        assert_eq!(highest_of(&first, "cpu"), Some((TEN, 90.0)));
+    }
+
+    #[test]
+    fn a_range_over_the_edge_of_the_minute_files_is_read_from_both_without_doubling() {
+        let dir = two_hours("highest-edge");
+        // The minute files' days start at 12:00: the two hours are read as
+        // hours, the row at 13:00 as a minute.
+        let now = TEN + 14 * DAY + 2 * HOUR;
+        let found = highest_at(&dir, now, TEN, now, &[]).unwrap();
+        assert_eq!(highest_of(&found, "cpu"), Some((TEN + HOUR, 95.0)));
+        // A minute as high as an hour's maximum is the time that is given.
+        let mut store = Store::open(&dir, TEN + 3 * HOUR).unwrap();
+        store.push(TEN + 3 * HOUR + 60, &row(&[("cpu", 95.0)]));
+        store.flush().unwrap();
+        let found = highest_at(&dir, now, TEN, now, &[Selector::parse("cpu")]).unwrap();
+        assert_eq!(highest_of(&found, "cpu"), Some((TEN + 3 * HOUR + 60, 95.0)));
     }
 
     #[test]
