@@ -26,8 +26,8 @@
 //! ADM-122 for bob and ADM-106 for alice while locked, and for what cannot
 //! work (an area that is none, one named twice, a disk with an area that is
 //! not the disks) ADM-125 with its field, and none of these starts a
-//! check. Asked for, it is a task that ends, and its log has the `step N of
-//! M` lines of the checks, counted one by one up to M. Then bob reads the
+//! check. Asked for, it is a task that ends, each check counted as a step
+//! of it up to the last, as many as the checks it keeps. Then bob reads the
 //! result the check kept, which is the file of a check made by root that
 //! everyone may read, the same as the command `hardware last --json` prints
 //! in alice's pane, and the history has the one line of the check, as the
@@ -72,7 +72,7 @@ const CHECK_SECONDS: u64 = 420;
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-hardware",
-    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that ends with the step N of M lines of its checks in its log; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working",
+    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that counts each check as a step, to the last; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it; hardware.sensors, hardware.highest and hardware.devices are the same document for bob and for alice, as the commands print it in alice's pane with status 0: QEMU has no sensor, and its virtio network card is driven by radix-virtio and working",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -249,17 +249,6 @@ fn without_the_tables(report: &Value) -> Value {
         report["memory"][member] = Value::Null;
     }
     report
-}
-
-/// The `step N of M: WORDS` lines of a task's log, as N, M and the words.
-fn step_lines<'a>(log: &[&'a str]) -> Vec<(u32, u32, &'a str)> {
-    log.iter()
-        .filter_map(|line| {
-            let (numbers, words) = line.strip_prefix("step ")?.split_once(": ")?;
-            let (step, steps) = numbers.split_once(" of ")?;
-            Some((step.parse().ok()?, steps.parse().ok()?, words))
-        })
-        .collect()
 }
 
 /// Makes bob, in group console and no administrator, once the owner alice
@@ -443,22 +432,15 @@ fn a_check(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
         _ => return Err(format!("the check task ended as {task}")),
     }
 
-    // The log has a line for each check, in order, each of the two areas.
-    let log: Vec<&str> =
-        task["log"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-    let steps = step_lines(&log);
-    let Some(&(_, total, _)) = steps.last() else {
-        return Err(format!("the check's log has no step N of M line: {log:?}"));
-    };
-    for (at, (step, of, words)) in steps.iter().enumerate() {
-        let area = words.split(' ').next().unwrap_or_default();
-        if *step != at as u32 + 1 || *of != total || !AREAS.split(' ').any(|wanted| wanted == area)
-        {
-            return Err(format!("step {step} of {of}: {words} is not the {}th of {total}", at + 1));
-        }
-    }
-    if steps.len() as u32 != total {
-        return Err(format!("the log has {} steps, and the last says of {total}", steps.len()));
+    // Each check was a step, counted to the last, which names one of the
+    // two areas: the steps are the task's progress, not lines of its log.
+    let (step, steps) = (task["step"].as_u64(), task["steps"].as_u64());
+    let area = task["words"].as_str().unwrap_or_default().split(' ').next().unwrap_or_default();
+    if step.is_none_or(|step| step == 0)
+        || step != steps
+        || !AREAS.split(' ').any(|wanted| wanted == area)
+    {
+        return Err(format!("the check task did not count its checks as its steps: {task}"));
     }
 
     // What it kept, for bob and for alice, and what the pane prints.
@@ -479,8 +461,9 @@ fn a_check(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
         return Err(format!("the kept check is {last}"));
     }
     let checks = last["checks"].as_array().ok_or("the kept check has no checks")?;
-    if checks.len() as u32 != total {
-        return Err(format!("the kept check has {} checks, and the log {total}", checks.len()));
+    if Some(checks.len() as u64) != steps {
+        let kept = checks.len();
+        return Err(format!("the kept check has {kept} checks, and the task {steps:?} steps"));
     }
     let mut counts = [0u64; 4];
     for check in checks {
