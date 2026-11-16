@@ -99,7 +99,7 @@ admin-reports userspace/programs/systools/src/authd/ userspace/programs/accounts
 admin-reports userspace/programs/systools/src/reportd.rs userspace/programs/systools/src/reportd/
 admin-reports userspace/programs/systools/src/reports.rs userspace/programs/systools/src/reports/
 admin-reports userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
-admin-reports tools/xtask/src/test/console_client.rs tools/xtask/src/test/cases/problem-report.rs lab/tests/reports/report-server.py
+admin-reports tools/xtask/src/test/console_client.rs tools/xtask/src/test/cases/problem-report.rs
 admin-reports kernel/fs/vfs/src/mount.rs kernel/fs/vfs/src/view.rs ports/netcat/
 admin-security userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin-security userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
