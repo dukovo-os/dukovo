@@ -668,6 +668,15 @@ fn projection(id: &str, answer: &Value) -> Value {
         // A catalog the guest cannot read is said with the words of why
         // each time it is tried, which are not always the same ones.
         "apps.search" => shape(answer),
+        // Each call keeps a draft of its own: its name is new each time,
+        // and the text, its hash and its parts are the same.
+        "reports.draft" => {
+            let mut draft = answer.clone();
+            if let Value::Object(fields) = &mut draft {
+                fields.remove("draft");
+            }
+            draft
+        }
         _ => answer.clone(),
     }
 }
@@ -958,8 +967,10 @@ fn read_as_command(vm: &mut Vm, test: &mut Test, action: &Action, command: &str)
     let reply = test.run(Who::Alice, action, &action.args)?;
     let Some(answer) = read_answer(reply, &action.id, "alice")? else {
         // The route says the machine has nothing to show, and the command
-        // typed says it too: it does not end well.
-        let status = test.pane.status(vm, command)?;
+        // typed says it too: it does not end well. Its input is empty, as
+        // the route's is, so that a command that reads it (report redact
+        // reads its edits) does not wait on the terminal.
+        let status = test.pane.status(vm, &format!("{command} < /dev/null"))?;
         if status == 0 {
             return Err("the route refused it, and the command ended with status 0".into());
         }
