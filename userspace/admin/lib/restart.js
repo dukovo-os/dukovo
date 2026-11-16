@@ -56,12 +56,14 @@ function lineFor(view, pending) {
  * Asks, and restarts the machine in a minute. `why` is a sentence that says
  * what the restart is for ("To finish the update to 1.0.0-alpha.2."), `kind`
  * and `version` shape the banner's words (`update` with the version it
- * brings, or the one it goes back to), and `pending` is the page's own line
- * from pendingRestart, which counts the minute. Gives whether the restart was
+ * brings, or the one it goes back to), `quiet_minutes` is how long the shell
+ * waits for the machine before it says it is not answering when the usual
+ * ten minutes are too few, and `pending` is the page's own line from
+ * pendingRestart, which counts the minute. Gives whether the restart was
  * set.
  */
 export async function restartNow(view, {
-  why = '', kind = 'machine', version = null, pending = null,
+  why = '', kind = 'machine', version = null, pending = null, quiet_minutes: quietMinutes = null,
 } = {}) {
   if (!(await unlocked(view, 'restart this machine'))) return false;
   const [people, tasks] = await Promise.all([signedIn(view), runningTasks(view)]);
@@ -79,7 +81,7 @@ export async function restartNow(view, {
   });
   if (!done) return false;
   const line = lineFor(view, pending);
-  line.expect({ kind, version });
+  line.expect({ kind, version, quietMinutes });
   await line.read();
   return true;
 }
