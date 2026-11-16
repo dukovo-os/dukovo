@@ -38,8 +38,11 @@ is 1 to 64 letters, digits, `-` and `.`, such as the site's name,
 certd makes a certificate called `this-machine` when it first starts. It
 names the machine, the machine's name with `.local`, which
 discoverd answers for on the local network (see
-[Networking](networking.md)), and `localhost`. It is good for 800 days and certd makes it again 30 days
-before it runs out, and whenever the machine is renamed.
+[Networking](networking.md)), and `localhost`. A machine whose name has a
+domain, such as `duke-nas.example.org`, is named by the full name, its first
+word, that word with `.local` and `localhost`. It is good for 800 days and
+certd makes it again 30 days before it runs out, and whenever the machine is
+renamed.
 
 Nobody but the machine vouches for it, so a browser warns of it, as it
 does for any certificate you made yourself. Before you tell the browser
@@ -254,6 +257,15 @@ certificates again on SIGHUP, without dropping a connection: nginx and
 PostgreSQL do.
 The copy a service reads is always a whole old pair or a whole new one.
 
+The web console is a service that names a certificate too. `admin certificate`
+says which one it serves, `this-machine` unless it was changed, and `elevate
+admin certificate NAME` makes it serve that one of `cert list`. `--try 300` makes
+the change a trial that is put back after 300 seconds unless `admin keep` comes
+in time, so that a certificate that a browser does not take cannot lock you out.
+The console refuses a certificate that does not name the address the browser
+used (see [The certificate the console
+serves](web-console.md#the-certificate-the-console-serves) and admin(8)).
+
 ### nginx
 
 nginx's HTTPS server is in `nginx.conf`, turned off, with the lines to
@@ -297,6 +309,18 @@ restart, and the sessions that are open keep going.
 `cert list` names nginx in its USED BY column once the file does, and
 `elevate cert remove` refuses to remove what a service file names,
 naming the file, so that the service does not stop starting.
+
+## From the web console
+
+The web console's **Certificates** page lists the certificates with who uses each
+and when it runs out, gets one from Let's Encrypt with the checks run first,
+uploads one, renews, revokes and removes, and makes the console serve another
+certificate as a change that is tried first. Under **Name and domain** it changes
+the machine's name and its domain, which makes `this-machine` anew and tells what
+changes for the browsers and phones that trusted the old one. See
+[Certificates](web-console.md#certificates), [Getting a
+certificate](web-console.md#getting-a-certificate) and [The machine's
+name](web-console.md#the-machines-name) in the chapter on the console.
 
 ## Troubleshooting
 
