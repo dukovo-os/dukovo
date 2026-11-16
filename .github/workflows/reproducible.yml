@@ -31,9 +31,13 @@ on:
   pull_request:
     # Only a change that can make a build differ runs this: the workflow
     # itself, what makes the identifiers and the images, the release build,
-    # and the recipes and flags that took paths and times out of a build.
+    # what the ports and the programs are built with (Cargo for Radix, the
+    # environment, the time), and the recipes and flags that took paths and
+    # times out of a build.
     paths:
       - .github/workflows/reproducible.yml
+      - tools/xtask/src/ports.rs
+      - tools/xtask/src/userspace.rs
       - tools/xtask/src/image.rs
       - tools/xtask/src/rootfs.rs
       - tools/xtask/src/release.rs

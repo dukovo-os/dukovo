@@ -166,9 +166,9 @@ when it is built in two places:
   tests above fix.
 - **CI builds twice, in places that differ.**
   `.github/workflows/reproducible.yml` runs weekly, on a push to
-  `release/**`, by hand and on a pull request that changes the workflow or
-  what makes identifiers, images, the release build or a recipe of this
-  decision.
+  `release/**`, by hand and on a pull request that changes the workflow,
+  what makes identifiers, images or the release build, what the ports and
+  the programs are built with, or a recipe of this decision.
   - The first job builds with the ports the ports job of `ci.yml` cached,
     under the keys it uses, in the runner's own checkout and home.
   - The second builds on another runner, in `/srv/dukovo-second`, as
@@ -194,8 +194,9 @@ when it is built in two places:
   who needs them told apart changes a partition's GUID with `rdisk`'s
   `u`. An installed system is not affected, as the installer gives it
   fresh identifiers.
-- The second build takes the ports from source, so a run is about two
-  hours of a runner, a job away from GitHub's six-hour limit.
+- The second build takes the ports from source, about an hour of a
+  runner, well inside GitHub's six-hour limit. In CI the two builds' trees
+  are the same in all 4,613 files, folders and links.
 - `./ob release build` needs every port, the kernel and GRUB, so it is as
   long as `./ob build`.
 - What a local build showed, from two checkouts built under different
@@ -229,10 +230,5 @@ when it is built in two places:
     is signed on the hardware keys and every machine's image holds the same
     release.
   - `ob release sign`, which compares the third build, is ADR 0457's.
-  - The first CI runs may find more files that differ; each is fixed at
-    its source. The ISO's file order, left to xorriso, and the ports that
-    build Rust, which only a run builds, are the ones to look at first.
-  - A second build cut down to the image's ports, if the run nears six
-    hours, waits for a run to show it is needed.
   - The sysroot's own files, which a build reads and no image holds, are
     not compared.
