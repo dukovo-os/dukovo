@@ -986,6 +986,10 @@ exec '{clang}' "$@"
         )
     }
 
+    /// The link to the toolchain's Rust folder that Cargo for Radix makes
+    /// in a workspace's folder, and gives the patched crates through.
+    pub const RUST_LINK: &str = ".radix-rust";
+
     /// Cargo for programs on Rust's standard library (ADR 0070), as
     /// `cargo` is used: `x86_64-radix-cargo build --release`. It builds for
     /// the x86_64-unknown-radix target against the rust-std port's
@@ -1044,7 +1048,7 @@ done
 # (ADR 0535).
 link=
 if [ -n "$lock" ]; then
-	link=${{lock%/*}}/.radix-rust
+	link=${{lock%/*}}/{link}
 	if [ "$(readlink "$link" 2>/dev/null)" != '{rust}' ]; then
 		if [ -e "$link" ] && [ ! -L "$link" ]; then
 			link=
@@ -1087,6 +1091,7 @@ export CARGO_FUTURE_INCOMPAT_REPORT_FREQUENCY=never
 exec cargo "$command" "$@"
 "#,
             patches = self.crate_patches().display(),
+            link = Self::RUST_LINK,
             // The flags are separated by the unit separator, as Cargo reads
             // them from CARGO_ENCODED_RUSTFLAGS.
             remaps = crate::repro::rustc_flags(ctx)
