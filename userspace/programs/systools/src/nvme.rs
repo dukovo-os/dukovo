@@ -9,7 +9,7 @@
 use std::io::{self, Write};
 
 use crate::args::{Arg, Args};
-use crate::diskhealth::{self, NvmeLog, Record, grouped};
+use crate::diskhealth::{self, NvmeLog, Reading, Record, grouped};
 use crate::util::{self, Fail};
 
 /// What the kernel shows of disk `name`, as text: its device's, or its
@@ -131,7 +131,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             let path = disk.to_string_lossy();
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
             match diskhealth::read(&name)? {
-                Some(Record::Nvme(log)) => {
+                Reading::Record(Record::Nvme(log)) => {
                     let _ = out.write_all(smart_log(&name, &log).as_bytes());
                     Ok(0)
                 }

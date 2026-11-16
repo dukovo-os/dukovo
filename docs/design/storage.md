@@ -426,7 +426,7 @@ log, which the NVMe driver reads on the admin queue under the
 controller's lock (`Controller::health`). Only those commands are sent;
 there is no pass-through of raw ones. The kernel hands the record over
 as it is, and diskhealth(8) judges it; Spark's diskhealth service looks
-at every disk at boot and every half hour and logs a disk's verdict
+at every disk at boot and every ten minutes and logs a disk's verdict
 when it changes.
 
 `SELF_TEST` (ADR 0488) starts, aborts or follows a disk's own self-test

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use super::check::{Area, Check, Problem, counted};
 use super::drivetest;
 use super::scan::{self, PIECE, Range, SLOW, Scan};
-use crate::diskhealth::{self, Record, Verdict};
+use crate::diskhealth::{self, Reading, Record, Verdict};
 use crate::probe;
 use crate::selftest::Test;
 use crate::util::{self, Fail, fail};
@@ -139,8 +139,13 @@ fn health(disk: &Disk) -> Check {
     let name = format!("{} health", disk.name);
     match diskhealth::read(&disk.name) {
         Err(fail) => Check::skipped(Area::Disks, &name, fail.message),
-        Ok(None) => Check::skipped(Area::Disks, &name, "it keeps no record of its health".into()),
-        Ok(Some(record)) => {
+        Ok(Reading::None) => {
+            Check::skipped(Area::Disks, &name, "it keeps no record of its health".into())
+        }
+        Ok(Reading::Asleep) => {
+            Check::skipped(Area::Disks, &name, diskhealth::asleep_words(&disk.name))
+        }
+        Ok(Reading::Record(record)) => {
             let early = diskhealth::early_warning_title(&disk.name, &record);
             health_verdict(disk, &record, early)
         }
