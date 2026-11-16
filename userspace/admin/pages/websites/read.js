@@ -9,7 +9,6 @@ import { h } from '../../dom.js';
 import { sitesOf } from '../../lib/website-route.js';
 import { PAGES } from '../../pages.js';
 import { matchPage } from '../../shell/route-model.js';
-import { dateWords, secondsOf } from '../certificates/model.js';
 
 const SITES = '/api/1/websites';
 const CERTIFICATES = '/api/1/certificates';
@@ -47,8 +46,19 @@ export async function readWebsites(view, slot) {
   };
 }
 
-/** A date from the ISO text `text` as the console writes one ("Dec 14"), in the person's time zone. */
-export const dateOf = (view) => (text) => dateWords(secondsOf(text), view.time);
+/**
+ * A date from the ISO text `text` as the console writes one ("Dec 14", and
+ * "Dec 14, 2027" in another year than this one), in the person's time zone;
+ * empty when `text` is no date. Written here and not taken from the
+ * Certificates model, which brings that page's palette with it.
+ */
+export const dateOf = (view) => (text) => {
+  const at = Date.parse(text ?? '');
+  if (Number.isNaN(at)) return '';
+  const format = (options) => new Intl.DateTimeFormat('en-US', { timeZone: view.time.zone, ...options });
+  const sameYear = format({ year: 'numeric' }).format(at) === format({ year: 'numeric' }).format(Date.now());
+  return format({ month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) }).format(at);
+};
 
 /** The link to the certificate `name` on Certificates. */
 export const certificateLink = (name) => h('a', { href: `/certificates/${encodeURIComponent(name)}` }, name);
