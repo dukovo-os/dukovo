@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! An update on a computer whose clock is a year behind (ADR 0536).
-//! timed is given no servers, so the clock stays as QEMU's `-rtc base=`
-//! sets it. TUF has no rule for a clock behind: the metadata is not too
+//! timed is given no servers and the clock is set as QEMU's `-rtc base=`
+//! started it, so that it stays a year behind. TUF has no rule for a clock behind: the metadata is not too
 //! new for it, so *sysupdate check* works, and the update stages from the
 //! test update server (`update-online`'s), starts at the restart and
 //! proves itself. A timestamp older than the one the machine read is
@@ -45,7 +45,7 @@ fn update_clock_behind(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     let bridge_files = expected(&dir, "bridge")?;
     let stale = std::fs::read(dir.join("stale-timestamp.json")).map_err(|err| err.to_string())?;
     let server = Server::start(&dir.join(TEST_SERVER_BEFORE_PULL))?;
-    start_with_a_wrong_clock(vm, &server, year_ahead(-A_YEAR))?;
+    start_with_a_wrong_clock(vm, &server, -A_YEAR)?;
 
     run(
         vm,

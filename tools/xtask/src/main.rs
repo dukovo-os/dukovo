@@ -635,7 +635,8 @@ release's own tree, from its tag v<version> in a git worktree, as
 target/fixtures/<version>/installed.img, and keeps a copy of the release
 keys it trusts (this checkout's .cache/release-keys, made first if absent)
 in target/fixtures/<version>/release-keys. The boot tests update-from-<version>
-boot a copy-on-write overlay of it. With --check, it says whether the
+boot a copy-on-write overlay of a sparse copy of it with room to grow its
+root into. With --check, it says whether the
 fixture is made and trusts .cache/release-keys (ADR 0536).
 
   --linux-kernel <file>

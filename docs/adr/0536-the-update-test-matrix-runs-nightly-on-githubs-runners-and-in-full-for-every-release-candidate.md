@@ -195,8 +195,9 @@ update. The first start of an update, which GRUB takes as a counted try
     starts at the restart and proves itself. The test checks that the
     server did each of these things.
   - `update-clock-ahead` and `update-clock-behind`: timed is given no
-    servers, so the clock stays as QEMU's `-rtc base=` sets it, a year
-    (365 days) ahead or behind the host's. A year ahead, `sysupdate
+    servers and, while it is stopped, the clock is set as QEMU's
+    `-rtc base=` started it, a year (365 days) ahead or behind the host's,
+    since a time server may have answered timed first. A year ahead, `sysupdate
     check` refuses the timestamp, which is good for a day, and says when
     it expired, what the computer's clock says and that the clock is to be
     set with `timedatectl set-time`; no file of a release is fetched, and
@@ -237,15 +238,19 @@ update. The first start of an update, which GRUB takes as a counted try
     releases are tagged, names the releases; a case under UEFI,
     `update-from-VERSION`, and one under BIOS, `update-from-VERSION-bios`,
     is made for each, so that the old release's GRUB `core.img` is the one
-    that starts. The boot disk is the fixture, attached with QEMU's
-    `snapshot=on`, so that what the guest writes is in a temporary file
-    and the fixture is never written. A second disk holds a full
+    that starts. The boot disk is a sparse copy of the fixture with a GiB
+    of room after its partitions, attached with QEMU's `snapshot=on`, so
+    that what the guest writes is in a temporary file and the fixture is
+    never written. A second disk holds a full
     repository of the build under test, with no file left out, since the
     slot it is staged from is the old release's, signed by the same keys,
     as version `good` of the test updates and updating from the oldest
     fixture release.
   - **The script.** At the old release's console alice, its
-    administrator, adds an account, bob (`user add`), sets a hostname and
+    administrator, grows the root over the room (`rdisk --grow`, `device
+    resize max`), as an installed machine's root fills its disk, since the
+    second stage builds a slot while both releases' slots are there, adds
+    an account, bob (`user add`), sets a hostname and
     a time zone (`hostname`, `timedatectl set-timezone`), makes the health
     check's wait 10 seconds (`health.toml`), turns on a service that is
     off by default (`service sshd enable`), writes files, one with a

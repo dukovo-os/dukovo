@@ -7,13 +7,17 @@
 //! UEFI as *update-from-VERSION* and under a BIOS as
 //! *update-from-VERSION-bios*, so that GRUB's *core.img* in the BIOS boot
 //! partition is the old release's too. The machine boots a copy-on-write
-//! overlay of the release's fixture (*ob fixture release VERSION*), the
-//! disk that release's own tree made, which is never written; the keys
-//! the fixture trusts are this checkout's, adopted before anything is
-//! signed when it has none.
+//! overlay of a sparse copy of the release's fixture (*ob fixture release
+//! VERSION*), the disk that release's own tree made, with a GiB of room
+//! after its partitions; the fixture is never written, and the keys it
+//! trusts are this checkout's, adopted before anything is signed when it
+//! has none.
 //!
 //! The old release runs first, and alice, its administrator, fills the
-//! machine with commands that release has: a second account, bob
+//! machine with commands that release has: the root grown to the disk's
+//! end (*rdisk --grow*, *device resize max*), as an installed machine's
+//! root fills its disk, since the second stage builds a slot while both
+//! releases' slots are there; a second account, bob
 //! (*user*), files in her home and a checksum of one, a hostname and a
 //! time zone (*hostname*, *timedatectl*), a setting of her shell, a
 //! service that is off until it is turned on, *sshd* (*service*), the
@@ -55,6 +59,11 @@ const BIOS_SUFFIX: &str = "-bios";
 /// root is [`image::ROOT_BYTES`] and holds two slots.
 const FULL_KIB: u64 = 512 * 1024;
 
+/// The room after the fixture's partitions on the disk the machine boots,
+/// which the fill grows the root over: a root of [`image::ROOT_BYTES`]
+/// holds two slots, and the second stage builds a third beside them.
+const ROOM: u64 = 1 << 30;
+
 /// The disk of the full repository, which Spark mounts at
 /// [`UPDATES`].
 const UPGRADE_DISKS: &[Disk] = &[update_full_disk(FULL_KIB, "UPDATES")];
@@ -73,6 +82,10 @@ const SIGN_IN_SECONDS: u64 = 240;
 /// How long a command typed at the console may take, in seconds: a stage
 /// reads a whole slot and writes another.
 const COMMAND_SECONDS: u64 = 600;
+
+/// How long a command of a check of what the fill made may take, in
+/// seconds: each reads a few files and asks a service or two.
+const CHECK_SECONDS: u64 = 120;
 
 /// The name of the case that boots the fixture of `release`, under a
 /// BIOS if `bios`.
@@ -213,6 +226,23 @@ pub fn fixture_image(ctx: &Ctx, case: &Case) -> Result<std::path::PathBuf, Strin
     Ok(image)
 }
 
+/// The disk `case` boots, made in the boot tests' folder `dir`: a sparse
+/// copy of its release's fixture with [`ROOM`] after it, which QEMU
+/// attaches as a copy-on-write overlay (`snapshot=on`).
+pub fn grown_fixture(ctx: &Ctx, case: &Case, dir: &Path) -> Result<std::path::PathBuf, String> {
+    let fixture = fixture_image(ctx, case)?;
+    let copy = dir.join(format!("{}.img", case.name));
+    (|| -> std::io::Result<()> {
+        let mut from = std::fs::File::open(&fixture)?;
+        let len = from.metadata()?.len();
+        let mut to = std::fs::File::create(&copy)?;
+        to.set_len(len + ROOM)?;
+        image::copy_sparse(&mut from, 0, &mut to, 0, len)
+    })()
+    .map_err(|err| format!("copying {} to {}: {err}", fixture.display(), copy.display()))?;
+    Ok(copy)
+}
+
 /// The FAT32 disk of `kib` KiB, labelled `label`, that holds the full
 /// repository of this build ([`UPDATE_FULL`]).
 pub const fn update_full_disk(kib: u64, label: &'static str) -> Disk {
@@ -311,10 +341,18 @@ pub fn make_full_disk(disk: &Disk, path: &Path, repository: &Path) -> Result<(),
 ///
 /// Each is a command typed at alice's prompt, and the lines the screen
 /// then shows. Only commands the manual pages of Dukovo 0.15.0 describe:
-/// *user*(8), *hostname*(5), *timedatectl*(1), *service*(8),
-/// *health.toml*(5), *bundle*(1) and *settings.toml*(5).
+/// *rdisk*(8), *device*(8), *user*(8), *hostname*(5), *timedatectl*(1),
+/// *service*(8), *health.toml*(5), *bundle*(1) and *settings.toml*(5).
 fn fill_steps() -> Vec<(String, Vec<&'static str>)> {
     vec![
+        // The root, sda3, grown over the room after it.
+        (
+            as_root("sh -c 'rdisk --grow sda 3 && device resize max /system/settings'"),
+            vec![
+                "/devices/sda3 grows from 512 MiB to",
+                "Resized device id 1 of '/system/settings' to",
+            ],
+        ),
         // Root's: an account, the machine's name and zone, the health
         // check's wait made short, and a service that is off until it is
         // turned on.
@@ -358,8 +396,13 @@ fn as_root(command: &str) -> String {
 /// Types `command` at alice's prompt, waits for it to end, and checks that
 /// the screen then shows each of `shown`.
 fn run(vm: &mut Vm, command: &str, shown: &[&str]) -> Result<(), String> {
-    answer_within(vm, "$", &format!("clear; {command}"), COMMAND_SECONDS)?;
-    answer_within(vm, "$", "", COMMAND_SECONDS)?;
+    run_within(vm, command, shown, COMMAND_SECONDS)
+}
+
+/// [`run`], with `seconds` for the command to end in.
+fn run_within(vm: &mut Vm, command: &str, shown: &[&str], seconds: u64) -> Result<(), String> {
+    answer_within(vm, "$", &format!("clear; {command}"), seconds)?;
+    answer_within(vm, "$", "", seconds)?;
     vm.expect_screen(shown).map_err(|err| format!("`{command}`: {err}"))
 }
 
@@ -386,13 +429,17 @@ fn check_steps(runs: u32) -> Vec<(String, Vec<String>)> {
                 "prompt: 1".into(),
             ],
         ),
+        // Spark's control socket is root's on 0.15.0, so the service's
+        // state is asked for as root.
         (
-            "echo \"host: $(hostname)\"; echo \"zone: $(readlink /system/settings/localtime | \
-             grep -c Europe/Berlin)\"; echo \"health: $(cat \
-             /system/settings/sysupdate/health.toml)\"; grep -q 'enabled = true' \
-             /system/settings/spark/services/sshd.toml && echo \"sshd file: on\"; service sshd \
-             status > /dev/null && echo \"sshd: running\""
-                .into(),
+            format!(
+                "echo \"host: $(hostname)\"; echo \"zone: $(readlink /system/settings/localtime \
+                 | grep -c Europe/Berlin)\"; echo \"health: $(cat \
+                 /system/settings/sysupdate/health.toml)\"; grep -q 'enabled = true' \
+                 /system/settings/spark/services/sshd.toml && echo \"sshd file: on\"; {} > \
+                 /dev/null && echo \"sshd: running\"",
+                as_root("service sshd status")
+            ),
             vec![
                 "host: studio".into(),
                 "zone: 1".into(),
@@ -413,7 +460,8 @@ fn check_steps(runs: u32) -> Vec<(String, Vec<String>)> {
 fn check(vm: &mut Vm, runs: u32) -> Result<(), String> {
     for (command, shown) in check_steps(runs) {
         let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
-        run(vm, &command, &shown)?;
+        run_within(vm, &command, &shown, CHECK_SECONDS)
+            .map_err(|err| format!("check {runs}: {err}"))?;
     }
     Ok(())
 }
@@ -430,13 +478,41 @@ fn restart(vm: &mut Vm) -> Result<(), String> {
     vm.expect("spark: asked to restart the machine")
 }
 
-/// Stages this build from the disk of the full repository.
+/// Stages this build from the disk of the full repository; on a failure,
+/// says what root finds of that disk, and what the serial log says of it.
 fn stage(vm: &mut Vm, version: &str) -> Result<(), String> {
     run(
         vm,
         &as_root(&format!("sysupdate stage {UPDATES}/{FULL}")),
         &[&format!("sysupdate: staged Dukovo {version} in slot B: it starts at the next restart")],
     )
+    .map_err(|err| format!("{err}\n{}", what_is_there(vm)))
+}
+
+/// What root sees of the disk of the full repository, one line, and the
+/// lines of the serial log that name its device or volumed.
+fn what_is_there(vm: &mut Vm) -> String {
+    let look = format!(
+        "ls {UPDATES} {UPDATES}/{FULL} {UPDATES}/{FULL}/metadata; ls {UPDATES}/{FULL}/files | wc \
+         -l; volumed --list; df {UPDATES}"
+    );
+    let command = as_root(&format!("sh -c '{look}'"));
+    let screen = answer_within(vm, "$", &format!("clear; {command}"), COMMAND_SECONDS)
+        .and_then(|()| answer_within(vm, "$", "", COMMAND_SECONDS))
+        .and_then(|()| vm.screen());
+    let seen = match screen {
+        Ok(lines) => {
+            let lines: Vec<&str> = lines.iter().map(|line| line.trim_end()).collect();
+            format!("root sees: {}", lines.join(" | "))
+        }
+        Err(err) => format!("root: {err}"),
+    };
+    let log = vm.log();
+    let said: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("vda") || line.contains("volumed") || line.contains("FAT"))
+        .collect();
+    format!("{seen}\nthe serial log of vda: {}", said.join(" | "))
 }
 
 /// Restarts into the staged update, and waits for it to prove itself.
@@ -451,8 +527,53 @@ fn try_update(vm: &mut Vm, version: &str, old: &str) -> Result<(), String> {
     sign_in(vm)
 }
 
-/// Fills the machine, updates it, goes back, and updates again.
+/// Fills the machine, updates it, goes back, and updates again; on a
+/// failure, says what the screen shows and what the serial log tells of
+/// each start ([`story`]).
 fn update_from_release(vm: &mut Vm, case: &Case) -> Result<(), String> {
+    update_and_back(vm, case).map_err(|err| {
+        let screen = match vm.screen() {
+            Ok(lines) => {
+                let lines: Vec<&str> =
+                    lines.iter().map(|line| line.trim_end()).filter(|l| !l.is_empty()).collect();
+                format!("the screen: {}", lines.join(" | "))
+            }
+            Err(why) => format!("the screen: {why}"),
+        };
+        format!("{err}\n{screen}\n{}", story(&vm.log()))
+    })
+}
+
+/// The lines of the serial log `log` that tell the case's story: the slot
+/// each start started and what its `/system` is, what sysupdate said,
+/// each command run as root, sshd's lines, and each service that could
+/// not start; the last [`STORY_LINES`] of them.
+fn story(log: &str) -> String {
+    const MARKS: [&str; 7] = [
+        "started slot",
+        "/system is",
+        "sysupdate:",
+        "could not start",
+        "elevated on",
+        "slot A",
+        "sshd",
+    ];
+    let lines: Vec<&str> =
+        log.lines().filter(|line| MARKS.iter().any(|mark| line.contains(mark))).collect();
+    let told = &lines[lines.len().saturating_sub(STORY_LINES)..];
+    let mut out = String::from("the serial log's starts, updates and elevated commands:");
+    for line in told {
+        out.push_str("\n  | ");
+        out.push_str(line);
+    }
+    out
+}
+
+/// How many lines of the serial log [`story`] tells at most.
+const STORY_LINES: usize = 150;
+
+/// [`update_from_release`], but for what a failure says.
+fn update_and_back(vm: &mut Vm, case: &Case) -> Result<(), String> {
     let old = release_of(case).ok_or_else(|| format!("{} is no update-from case", case.name))?;
     let version = test_update_version(UPDATE);
 
@@ -514,6 +635,26 @@ fn update_from_release(vm: &mut Vm, case: &Case) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_tells_the_starts_and_updates_of_the_serial_log() {
+        let log = "[    1.2] spark: started slot B, @system.b\n\
+                   [    1.3] timed: no server gave the time\n\
+                   [    2.0] spark: could not start reportd: /system/commands/reportd: not_found\n\
+                   [    9.1] authd: alice elevated on pts/0 (unlocked): process 9 runs sysupdate status\n";
+        let told = story(log);
+        assert!(told.contains("started slot B"), "{told}");
+        assert!(told.contains("could not start reportd"), "{told}");
+        assert!(told.contains("runs sysupdate status"), "{told}");
+        assert!(!told.contains("timed:"), "{told}");
+        let long = (0..STORY_LINES + 5)
+            .map(|n| format!("sysupdate: line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let told = story(&long);
+        assert_eq!(told.lines().count(), 1 + STORY_LINES);
+        assert!(told.ends_with(&format!("sysupdate: line {}", STORY_LINES + 4)), "{told}");
+    }
 
     fn named(name: &str) -> &'static Case {
         cases().iter().find(|case| case.name == name).unwrap()

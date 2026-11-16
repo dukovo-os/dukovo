@@ -260,9 +260,9 @@ pub enum TestImage {
     /// space after the root, as a cloud's disk is larger than its image.
     Cloud,
     /// The disk an old release's own tree made (`ob fixture release`,
-    /// [`upgrade`]): attached as it is, as a copy-on-write overlay that
-    /// the guest writes to and the file never is, so nothing is built or
-    /// put after its partitions.
+    /// [`upgrade`]): nothing is built; a sparse copy of it with room after
+    /// its partitions is attached as a copy-on-write overlay that the
+    /// guest writes to and the fixture never is.
     Fixture,
 }
 
@@ -503,12 +503,6 @@ const PHP_FILES: u8 = 33;
 /// diary 1.1.0's are held ([`WAVES_PAUSE`]).
 const WAVES_SITE: u8 = 34;
 
-/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a full
-/// repository of this build, in a folder `full`
-/// ([`upgrade::update_full_disk`], ADR 0536): what a stage from an old
-/// release's slot needs, since no file of it is known to be there.
-const UPDATE_FULL: u8 = 35;
-
 /// What the [`WAVES_SITE`] catalog's plan holds: diary 1.1.0's waves, with
 /// this reason.
 const WAVES_PAUSE: (&str, &str, &str) = ("org.example.diary", "1.1.0", "bad logs");
@@ -529,6 +523,12 @@ const POSTGRESQL_SERVICE_FILES: u8 = 36;
 /// --grow` and `device resize max`, as a cloud machine's first boot does
 /// (ADR 0327), for bundles that need more room than an image's root has.
 const ROOT_ROOM: u8 = 37;
+
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a full
+/// repository of this build, in a folder `full`
+/// ([`upgrade::update_full_disk`], ADR 0536): what a stage from an old
+/// release's slot needs, since no file of it is known to be there.
+const UPDATE_FULL: u8 = 38;
 
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
@@ -3450,10 +3450,16 @@ fn year_ahead(ahead: i64) -> u64 {
 /// `-rtc`'s `base=` and the date `time` seconds since 1970 is, in UTC,
 /// which is how QEMU reads it.
 fn rtc_base(time: u64) -> String {
+    format!("base={}", clock_text(time).replacen(' ', "T", 1))
+}
+
+/// The date and time `time` seconds since 1970 is, in UTC, as
+/// `YYYY-MM-DD hh:mm:ss`: what *timedatectl set-time* takes.
+fn clock_text(time: u64) -> String {
     let (year, month, day) = crate::image::civil(time / 86_400);
     let seconds = time % 86_400;
     format!(
-        "base={year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
         seconds / 3600,
         seconds / 60 % 60,
         seconds % 60
@@ -4033,7 +4039,7 @@ fn test_images(
             continue;
         }
         let bytes = match (key.0, roots.of(case)) {
-            // The disk is the fixture's own, attached as it is.
+            // The disk is a copy of the fixture's own, made at the boot.
             (TestImage::Fixture, _) => Vec::new(),
             (TestImage::Installed | TestImage::Cloud, Some(root)) => {
                 build_installed_test_image(ctx, built, dir, root.uuid)?
@@ -4969,11 +4975,14 @@ fn run_case(
         || dir.join(format!("{}.img", case.name)),
         |replaying| replaying.image.clone(),
     );
-    // A fixture's disk is booted where it is: QEMU keeps what the guest
-    // writes in a file of its own (`snapshot=on`), and the disk is never
-    // written.
-    let fixture =
-        if upgrade::needs_fixture(case) { Some(upgrade::fixture_image(ctx, case)?) } else { None };
+    // A fixture's disk is booted from a sparse copy with room after it:
+    // QEMU keeps what the guest writes in a file of its own
+    // (`snapshot=on`), and the fixture is never written.
+    let fixture = if upgrade::needs_fixture(case) {
+        Some(upgrade::grown_fixture(ctx, case, dir)?)
+    } else {
+        None
+    };
     let image = fixture.clone().unwrap_or(image);
     let qmp = dir.join(format!("{}.qmp", case.name));
     let disks = make_disks(ctx, dir, case, base, root)?;
@@ -11685,17 +11694,23 @@ fn answer_prompt_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> 
 /// empty line nukesh may show, faded, the command usually run next or a
 /// failed one fixed (ADR 0280): the cursor then stands on the hint's first
 /// letter, right after the prompt and its space, and nothing is typed yet.
+/// A hint longer than the screen is wide goes on over the lines below, none
+/// of them longer than the prompt's.
 fn prompt_waits(screen: &[String], prompt: &str) -> (bool, String) {
     let shown = |line: &str| {
         let line = line.trim_end();
         let line = line.split("      ").next().unwrap_or(line).trim_end();
         line.strip_suffix('?').unwrap_or(line).trim_end().to_string()
     };
-    let Some(last) = screen.iter().rev().map(|line| shown(line)).find(|line| !line.is_empty())
-    else {
+    let lines: Vec<String> = screen.iter().map(|line| shown(line)).collect();
+    let Some(end) = lines.iter().rposition(|line| !line.is_empty()) else {
         return (false, String::new());
     };
-    let hinted = last.contains(&format!("{prompt} ?"));
+    let cursor = format!("{prompt} ?");
+    let hinted = lines[..=end].iter().rposition(|line| line.contains(&cursor)).is_some_and(|at| {
+        lines[at + 1..=end].iter().all(|line| !line.is_empty() && line.len() <= lines[at].len())
+    });
+    let last = lines[end].clone();
     (last.ends_with(prompt) || hinted, last)
 }
 
@@ -11996,6 +12011,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_kind_of_disk_has_a_number_of_its_own() {
+        // A number two kinds share makes `make_disks` make each disk of the
+        // one it checks later as the other: each constant of this file
+        // whose doc names `Disk::fat` has a number of its own, and none is
+        // a FAT width.
+        let mut kind_doc = false;
+        let mut kinds: Vec<(u8, &str)> = Vec::new();
+        for line in include_str!("test.rs").lines() {
+            if line.starts_with("///") {
+                kind_doc |= line.contains("[`Disk::fat`]");
+                continue;
+            }
+            if kind_doc
+                && let Some((name, value)) = line
+                    .strip_prefix("const ")
+                    .and_then(|rest| rest.strip_suffix(';'))
+                    .and_then(|rest| rest.split_once(": u8 = "))
+            {
+                kinds.push((value.parse().unwrap(), name));
+            }
+            kind_doc = false;
+        }
+        assert!(kinds.iter().any(|&(kind, _)| kind == UPDATE_FULL), "{kinds:?}");
+        kinds.sort_unstable();
+        for pair in kinds.windows(2) {
+            assert_ne!(pair[0].0, pair[1].0, "{} and {} share a number", pair[0].1, pair[1].1);
+        }
+        for (kind, name) in &kinds {
+            assert!(![12, 16, 32].contains(kind), "{name} is the number of FAT{kind}");
+        }
+    }
+
+    #[test]
     fn each_case_that_starts_the_test_update_server_has_it_made() {
         let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/test/cases");
         let mut starting = Vec::new();
@@ -12027,6 +12075,17 @@ mod tests {
         let hinted =
             screen(&["alice@dukovo ~ $ ?at /system/settings/admin.toml | nc -N 10.0.2.2 34269"]);
         assert!(prompt_waits(&hinted, "$").0);
+        // A hint wider than the screen, the third time a long command came
+        // after the one before it: the prompt's line is the widest.
+        let hint =
+            format!("alice@studio ~ $ ?lear; echo \"host: $(hostname)\"; {}", "x".repeat(60));
+        let wrapped = screen(&["prompt: 1", &hint, &"y".repeat(hint.len()), "vice sshd status"]);
+        assert_eq!(prompt_waits(&wrapped, "$"), (true, "vice sshd status".to_string()));
+        // A command whose typed line wraps, running, and output after a gap.
+        let running = screen(&[&format!("alice@studio ~ $ echo {}", "x".repeat(70)), "xx", "?"]);
+        assert!(!prompt_waits(&running, "$").0);
+        assert!(!prompt_waits(&screen(&["alice@studio ~ $ ?at x", "", "out"]), "$").0);
+        assert!(!prompt_waits(&screen(&["alice@studio ~ $ ?at x", &"z".repeat(40)]), "$").0);
         // A typed line that has not ended, and a command that runs, are no prompt.
         assert!(
             !prompt_waits(&screen(&["alice@dukovo ~ $ cat /system/settings/admin.toml?"]), "$").0
@@ -12154,6 +12213,7 @@ mod tests {
         assert_eq!(rtc_base(1_794_560_400 + 3600), "base=2026-11-13T10:00:00");
         assert_eq!(rtc_base(0), "base=1970-01-01T00:00:00");
         assert_eq!(rtc_base(951_782_399), "base=2000-02-28T23:59:59");
+        assert_eq!(clock_text(951_782_399), "2000-02-28 23:59:59");
         assert!(rtc_ahead(3600).starts_with("base=20"));
         // A year behind and a year ahead are 730 days apart, a year of 365
         // days each way.
