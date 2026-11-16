@@ -14,7 +14,7 @@ import test from 'node:test';
 import { installedList, nginx, notes, OTHER_SHA, php, search, SHA } from './catalog-fixtures.mjs';
 import { plain } from './apps-fixtures.mjs';
 import {
-  cellsOf, control, openAdd, PATHS, refusal,
+  cellsOf, control, failedWith, openAdd, PATHS, refusal,
 } from './add-view.mjs';
 
 const NGINX = 'org%2Enginx%2Enginx';
@@ -391,13 +391,11 @@ test('an address that cannot be an app\'s ID says so and goes back to the list',
 
 // ---- the install ----
 
-test('Install for everyone runs the one step, a task, pinned by the sheet\'s hash, with its lines drawn under the sheet', async (context) => {
-  let drawn = null;
+test('Install for everyone runs the one step, a task, pinned by the sheet\'s hash, with its list drawn under the sheet', async (context) => {
   const app = await openAdd(context, {
     rest: NGINX,
     world: {
-      install: async (step, answers, stepView) => {
-        drawn = [stepView.main.classes.has('add-run'), stepView.main.closest('.add-panel') !== null, stepView.api === app.view.api];
+      install: async (step, answers) => {
         answers['/api/1/apps/org.nginx.nginx'] = plain('org.nginx.nginx', 'nginx', '1.30.6');
       },
     },
@@ -409,9 +407,34 @@ test('Install for everyone runs the one step, a task, pinned by the sheet\'s has
   assert.deepEqual(step.args, { id: 'org.nginx.nginx', sha256: SHA });
   assert.equal(step.wait, 'task');
   assert.equal(step.title, 'Install nginx 1.30.6 for everyone');
-  assert.equal(step.words.unlock, 'install nginx for everyone');
-  assert.equal(step.ok({}), true);
-  assert.deepEqual(drawn, [true, true, true], 'the lines are drawn in the panel, and the step runs on the page\'s view');
+  assert.deepEqual(step.words, {
+    unlock: 'install nginx for everyone', running: 'Installing nginx', done: 'nginx is installed.', failed: 'nginx was not installed',
+  });
+  assert.equal(app.steps[0].view, app.view, 'the step runs on the page\'s own view');
+});
+
+test('the list of steps that the runner draws stands in the panel while the install runs', async (context) => {
+  let release = null;
+  let inside = null;
+  const app = await openAdd(context, {
+    rest: NGINX,
+    world: {
+      install: (step, answers) => new Promise((resolve) => {
+        release = () => {
+          answers[`/api/1/apps/${step.args.id}`] = plain(step.args.id, 'nginx', '1.30.6');
+          resolve(undefined);
+        };
+      }),
+    },
+  });
+  app.press(control(app.view.main, 'install'));
+  await app.press(app.view.main);
+  const run = app.view.main.querySelector('.add-panel .add-run');
+  inside = run.querySelector('ol') !== null;
+  assert.ok(inside, 'the runner\'s list is in the panel under the sheet');
+  release();
+  await app.press(app.view.main);
+  assert.ok(app.view.main.querySelector('.add-done'));
 });
 
 test('what comes after: what was installed, its service that is off with Turn it on, where its data is, and the next step', async (context) => {
@@ -489,9 +512,9 @@ test('an install that fails leaves the sheet, says that nothing was installed, a
     world: {
       install: async (step, answers) => {
         tries += 1;
-        if (tries === 1) throw refusal('ADM-123', 'The command failed', 422);
+        if (tries === 1) return failedWith({ id: 4, state: 'failed', log: ['bundle: the disk is full'] });
         answers[`/api/1/apps/${step.args.id}`] = plain(step.args.id, 'nginx', '1.30.6');
-        return { ok: true };
+        return undefined;
       },
     },
   });
@@ -513,9 +536,9 @@ test('a catalog that changed between the sheet and the install is APP-102: the p
     world: {
       reads: { [SHEET]: () => { reads += 1; return nginx({ sha256: reads === 1 ? SHA : OTHER_SHA, version: reads === 1 ? '1.30.6' : '1.30.7' }); } },
       install: async (step, answers) => {
-        if (step.args.sha256 === SHA) throw refusal('APP-102', 'The catalog\'s file is not the one whose sheet you read', 409);
+        if (step.args.sha256 === SHA) return failedWith({ id: 5, state: 'failed', log: ['downloading', 'bundle: the catalog\'s file is not the one whose sheet you read (APP-102)'] });
         answers[`/api/1/apps/${step.args.id}`] = plain(step.args.id, 'nginx', '1.30.7');
-        return { ok: true };
+        return undefined;
       },
     },
   });
@@ -532,21 +555,33 @@ test('a catalog that changed between the sheet and the install is APP-102: the p
   assert.equal(words(app.view.main.querySelector('.add-done li')), 'Installed nginx 1.30.7 for everyone.');
 });
 
-test('an install that failed is known to be APP-102 by the task\'s log when the step raised nothing that says so', async (context) => {
+test('an install is known to be stale by the note of the task as it ended as well as by its log, and no other task is read', async (context) => {
   const app = await openAdd(context, {
     rest: NGINX,
-    world: {
-      reads: {
-        [PATHS.tasks]: { tasks: [{ id: 3, action: 'apps.install', args: { id: 'org.nginx.nginx' }, state: 'failed' }, { id: 9, action: 'apps.install', args: { id: 'org.other.app' }, state: 'failed' }] },
-        '/api/1/tasks/3': { id: 3, state: 'failed', log: ['downloading', 'bundle: the catalog\'s file changed (APP-102)'] },
-      },
-      install: async () => ({ ok: false }),
-    },
+    world: { install: async () => failedWith({ id: 3, state: 'failed', note: 'APP-102: the catalog\'s file changed', log: [] }) },
   });
   await app.press(control(app.view.main, 'install'));
   assert.ok(control(app.view.main.querySelector('.add-run'), 'read-again'));
-  assert.ok(app.calls.includes('/api/1/tasks/3'));
-  assert.ok(!app.calls.includes('/api/1/tasks/9'), 'only the install of this app counts');
+  assert.ok(!app.calls.some((path) => path.startsWith('/api/1/tasks')), 'what the runner gave is enough');
+});
+
+test('an install that failed with no task, as one that did not start, says that nothing was installed and does not say that the catalog moved', async (context) => {
+  const app = await openAdd(context, { rest: NGINX, world: { install: async () => failedWith(undefined) } });
+  await app.press(control(app.view.main, 'install'));
+  const run = app.view.main.querySelector('.add-run');
+  assert.ok(words(run).includes('Nothing was installed.'));
+  assert.equal(control(run, 'read-again'), null);
+});
+
+test('an install whose page was left before it ended draws nothing more and keeps the buttons usable', async (context) => {
+  const app = await openAdd(context, {
+    rest: NGINX,
+    world: { install: async () => ({ done: false, failed: null, answers: [], left: true }) },
+  });
+  await app.press(control(app.view.main, 'install'));
+  const run = app.view.main.querySelector('.add-run');
+  assert.ok(!words(run).includes('Nothing was installed.'));
+  assert.equal(control(app.view.main, 'install').getAttribute('aria-disabled'), null);
 });
 
 test('while the install runs a second press does nothing', async (context) => {
@@ -557,7 +592,7 @@ test('while the install runs a second press does nothing', async (context) => {
       install: (step, answers) => new Promise((resolve) => {
         release = () => {
           answers[`/api/1/apps/${step.args.id}`] = plain(step.args.id, 'nginx', '1.30.6');
-          resolve({ ok: true });
+          resolve(undefined);
         };
       }),
     },

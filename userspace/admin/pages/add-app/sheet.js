@@ -178,6 +178,7 @@ export function makePanel(view, {
     fill(progress);
     try {
       const outcome = await runInstall(view, sheet, progress);
+      if (outcome.left) return;
       if (outcome.ok) {
         installed();
         await drawAfter(outcome.info);

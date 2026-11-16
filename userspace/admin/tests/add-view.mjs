@@ -5,7 +5,8 @@
 // read gives, what each action answers, the address the page keeps, and a
 // record of what was asked, so that a test can type in the search, press a
 // button and see which call it made. The install runs through a function that
-// stands for lib/steps.js, which a test can make fail. Not a test itself, and
+// stands for lib/steps.js's `runSteps`, which gives the list and a promise of
+// how the steps ended, and which a test can make fail. Not a test itself, and
 // never installed.
 
 import { ApiError } from '../api.js';
@@ -34,12 +35,22 @@ export const control = (root, id) => root.querySelector(`[data-action="${id}"]`)
 /** The words of the cells of each row of `root`'s body, which may be a table. */
 export const cellsOf = (root) => root.querySelectorAll('tbody tr').map((row) => row.querySelectorAll('td').map((cell) => cell.textContent));
 
+/** How steps end when all went well: what `runSteps`' `finished` gives. */
+const ENDED = Object.freeze({
+  done: true, failed: null, answers: [], left: false,
+});
+
+/** How the steps end when the step failed: `task` is the task as it ended, or nothing when no task was made. */
+export const failedWith = (task) => ({
+  done: false, failed: 0, answers: [task], left: false,
+});
+
 /** The tests whose globals are put away already. */
 const patched = new WeakSet();
 
-/** The address of each read of the page's own: the apps, the search, the sheet, the backups, the services and the tasks. */
+/** The address of each read of the page's own: the apps, the search, the sheet, the backups and the services. */
 export const PATHS = Object.freeze({
-  apps: '/api/1/apps', search: '/api/1/apps/catalog/search', services: '/api/1/services', backups: '/api/1/backups', tasks: '/api/1/tasks',
+  apps: '/api/1/apps', search: '/api/1/apps/catalog/search', services: '/api/1/services', backups: '/api/1/backups',
 });
 
 /** What the reads answer when a test does not say otherwise: nothing but PostgreSQL is installed. */
@@ -50,7 +61,6 @@ const reads = () => ({
   '/api/1/apps/catalog/net.php.php/sheet': php(),
   [PATHS.services]: services(),
   [PATHS.backups]: backups('/users', '/shared'),
-  [PATHS.tasks]: { tasks: [] },
 });
 
 /**
@@ -139,13 +149,16 @@ export async function openAdd(context, {
     },
   };
   // The install's one step: by default the machine has the app afterwards, as it would after a task that is done.
-  runner.steps = async (stepView, list) => {
+  runner.steps = (stepView, list) => {
     steps.push({ view: stepView, steps: list });
     const [step] = list;
-    if (world.install) return world.install(step, answers, stepView);
-    const sheet = answers[`/api/1/apps/catalog/${step.args.id}/sheet`];
-    answers[`/api/1/apps/${step.args.id}`] = plain(step.args.id, sheet.name, sheet.version, { service_list: sheet.service_list });
-    return { ok: true };
+    const finished = (async () => {
+      if (world.install) return (await world.install(step, answers, stepView)) ?? ENDED;
+      const sheet = answers[`/api/1/apps/catalog/${step.args.id}/sheet`];
+      answers[`/api/1/apps/${step.args.id}`] = plain(step.args.id, sheet.name, sheet.version, { service_list: sheet.service_list });
+      return ENDED;
+    })();
+    return { element: page.document.createElement('ol'), finished };
   };
   page.document.body.append(view.main);
   const { show } = await import('../pages/add-app/page.js');

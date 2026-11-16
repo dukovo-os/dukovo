@@ -9,26 +9,25 @@
 import { isStale } from '../../lib/sheet-model.js';
 
 /**
- * How the step is run: lib/steps.js's `runSteps(view, steps)`, read when the
- * first install is pressed, so that a page that only looks does not carry it.
- * A test puts its own function here.
+ * How the steps are run: lib/steps.js's `runSteps(view, steps)`, which gives
+ * `{element, finished}`, read when the first install is pressed, so that a
+ * page that only looks does not carry it. A test puts its own function here.
  */
 export const runner = {
   steps: async (view, steps) => (await import('../../lib/steps.js')).runSteps(view, steps),
 };
 
-/** The words of the install, as lib/action.js takes them: the unlock dialog's, the notice's and the busy button's. */
+/** The words of the install, as lib/steps.js takes them: the unlock dialog's, the notice's, and the title of the error when it fails. */
 export const installWords = (name) => ({
-  unlock: `install ${name} for everyone`, running: `Installing ${name}`, done: `${name} is installed.`, busy: 'Installing…',
+  unlock: `install ${name} for everyone`, running: `Installing ${name}`, done: `${name} is installed.`, failed: `${name} was not installed`,
 });
 
-/** The step that installs the app of `sheet` (catalog-model's `sheetOf`) for everyone, from the very file whose sheet was read. */
+/** The step that installs the app of `sheet` (sheet-model's `sheetOf`) for everyone, from the very file whose sheet was read. */
 export const installStep = (sheet) => ({
   title: `Install ${sheet.name} ${sheet.version} for everyone`,
   action: 'apps.install',
   args: { id: sheet.id, sha256: sheet.sha256 },
   wait: 'task',
-  ok: () => true,
   words: installWords(sheet.name),
 });
 
@@ -38,33 +37,22 @@ export const soft = (promise) => promise.catch((error) => {
   return null;
 });
 
-/** The newest install of the app `id` that failed, read whole with its log; null when there is none or it cannot be read. */
-async function failedTask(view, id) {
-  const list = await soft(view.api.get('/api/1/tasks'));
-  const failed = (Array.isArray(list?.tasks) ? list.tasks : [])
-    .filter((task) => task?.action === 'apps.install' && task.args?.id === id && task.state === 'failed')
-    .sort((a, b) => b.id - a.id)[0];
-  return failed ? soft(view.api.get(`/api/1/tasks/${failed.id}`)) : null;
-}
-
 /**
  * Runs the install of `sheet` with the steps drawn into `box`, and says how it
  * ended: `{ok: true, info}` with `bundle info` of the app when it is installed
- * at the sheet's version, else `{ok: false, stale}`, where `stale` is true when
- * the catalog offered another file than the sheet's. The runner draws the
+ * at the sheet's version, else `{ok: false, stale, left}`: `stale` is true when
+ * the task's output says that the catalog offered another file than the
+ * sheet's, `left` when the page was left before the end. The runner draws the
  * failure itself.
  */
 export async function runInstall(view, sheet, box) {
-  let thrown = null;
-  try {
-    await runner.steps(Object.create(view, { main: { value: box } }), [installStep(sheet)]);
-  } catch (error) {
-    if (error?.name === 'AbortError') throw error;
-    thrown = error;
-  }
+  const run = await runner.steps(view, [installStep(sheet)]);
+  box.append(run.element);
+  const outcome = await run.finished;
+  if (outcome.left) return { ok: false, stale: false, left: true };
   const info = await soft(view.api.get(`/api/1/apps/${encodeURIComponent(sheet.id)}`));
   if (info?.version === sheet.version) return { ok: true, info };
-  return { ok: false, stale: isStale(thrown, await failedTask(view, sheet.id)) };
+  return { ok: false, stale: isStale(null, outcome.answers?.[0] ?? null), left: false };
 }
 
 /** Spark's list of services, or null when it could not be read. */
