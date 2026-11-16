@@ -5,7 +5,8 @@
 // update and of the flaws it fixes, and what a task that stopped to ask leaves
 // behind. The Apps pages and the Updates page say an app's update in these
 // words: `updateWords`, `fixesWords`, `flawWords`, `offersOf`, `checkOf`,
-// `askedMore` and `sheetOf`; `appHref` is the address of an app's page.
+// `askedMore` and `sheetOf`; `appHref` is the address of an app's page and
+// `idOf` the app that an address names.
 
 import { counted } from '../../lib/size-words.js';
 import { kindOfUpdate, versionPair } from '../../lib/version-words.js';
@@ -30,6 +31,21 @@ export const urgent = (worst) => worst === 'high' || worst === 'critical';
  * service: the server answers a path whose last part has a dot as a file.
  */
 export const appHref = (id) => `/apps/${encodeURIComponent(id).replaceAll('.', '%2E')}`;
+
+/**
+ * The app the address names, from what follows `/apps/`: an empty text for
+ * the list, the app's ID, or null when the address cannot be one.
+ */
+export function idOf(rest) {
+  const name = rest.replace(/\/$/, '');
+  if (name === '') return '';
+  try {
+    const id = decodeURIComponent(name);
+    return /^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The offers of the apps in `last`, what `updates.last` answers (`{checked_ms,

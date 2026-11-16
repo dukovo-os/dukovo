@@ -2,17 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the pages that add an app say: the words of a search, the rows and
-// banners of the catalogs, the setups, the sheet of an app that is not yet
-// installed for each kind of trust, a refusal, a service, a warning and a
-// folder, the stale sheet, and what comes after the install.
+// banners of the catalogs, the setups (lib/catalog-model.js), the sheet of an
+// app that is not yet installed for each kind of trust, a refusal, a service,
+// a warning and a folder, the stale sheet, and what comes after the install
+// (lib/sheet-model.js).
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  addHref, afterOf, DATA_WORDS, emptyOf, EVERYONE_WORDS, fetchWords, installCommand, isStale, MAX_WORDS, nextStep, providersOf,
-  READER_WORDS, rowsOf, SANDBOX_WORDS, searchPath, setupsOf, sheetHref, sheetOf, sheetPath, UNKNOWN_KEY, unreadOf, wordsOf, YOUR_ACCESS_WORDS,
+  addHref, emptyOf, MAX_WORDS, rowsOf, searchPath, setupsOf, sheetHref, sheetPath, unreadOf, wordsOf,
 } from '../lib/catalog-model.js';
+import { NGINX_ID, PHP_ID, POSTGRESQL_ID } from '../lib/known-bundles.js';
+import {
+  afterOf, DATA_WORDS, EVERYONE_WORDS, fetchWords, installCommand, isStale, nextStep, providersOf, READER_WORDS, SANDBOX_WORDS,
+  sheetOf, UNKNOWN_KEY, YOUR_ACCESS_WORDS,
+} from '../lib/sheet-model.js';
 import {
   backups, installedList, nginx, notes, OTHER_SHA, php, provider, search, SHA,
 } from './catalog-fixtures.mjs';
@@ -32,6 +37,10 @@ test('what is typed is lowercased and split at spaces, and anything the search w
   assert.equal(wordsOf('café').problem, 'Words of a search are letters, digits, dots, @ and dashes.');
   assert.equal(wordsOf('x'.repeat(65)).problem, 'Words of a search are letters, digits, dots, @ and dashes.');
   assert.equal(wordsOf('x'.repeat(64)).problem, null);
+});
+
+test('the bundles that the console knows by name have the IDs of the catalog', () => {
+  assert.deepEqual([NGINX_ID, PHP_ID, POSTGRESQL_ID], ['org.nginx.nginx', 'net.php.php', 'org.postgresql.postgresql']);
 });
 
 test('the addresses: the search with its words, the sheet of an app, and the pages with what was typed kept', () => {
@@ -165,6 +174,7 @@ test('the search filters the setups by their title and by what they use, every w
   assert.deepEqual(setupsOf('postgresql', []).map((one) => one.id), ['php', 'database']);
   assert.deepEqual(setupsOf('zzz', []), []);
   assert.deepEqual(setupsOf(undefined, []).length, 4);
+  assert.ok(setupsOf('', null).every((one) => one.says === null && one.installs.length === 0), 'apps that were not read say nothing of what is missing');
 });
 
 // ---- the sheet ----

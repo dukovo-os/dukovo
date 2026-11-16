@@ -15,10 +15,10 @@ import { h, icon } from '../../dom.js';
 import { PAGES } from '../../pages.js';
 import { askToUnlock, isUnlocked } from '../../unlock.js';
 import { atMostEvery } from '../overview/refresh.js';
-import { askedMore, sheetOf } from './apps-model.js';
+import { askedMore, idOf, sheetOf } from './apps-model.js';
 import { makeList } from './list.js';
 import {
-  ADD_LEAD, checkedWords, idOf, noSuchApp, rowsOf,
+  ADD_LEAD, checkedWords, noSuchApp, rowsOf,
 } from './list-model.js';
 import {
   holdCall, makeJobs, runWords, UPDATE_ALL_WORDS, updateAllCall, updateCall,

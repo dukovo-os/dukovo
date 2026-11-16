@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  appHref, askedMore, checkOf, fixesWords, flawWords, offersOf, sheetOf, updateWords,
+  appHref, askedMore, checkOf, fixesWords, flawWords, idOf, offersOf, sheetOf, updateWords,
 } from '../pages/apps/apps-model.js';
 import {
   bannerOf, byline, dataFolders, fixedWords, flawLine, flawsOf, heldWords, linksOf, manageOf, manageRead, mayUseOf, noFlawsWords,
@@ -18,7 +18,7 @@ import {
   versionsOf,
 } from '../pages/apps/app-model.js';
 import {
-  captionWords, checkedWords, idOf, ownCommands, paletteWords, rowsOf, stateWord, updatable,
+  captionWords, checkedWords, ownCommands, paletteWords, rowsOf, stateWord, updatable,
 } from '../pages/apps/list-model.js';
 import { initialOf, tintOf } from '../pages/apps/mark.js';
 import {

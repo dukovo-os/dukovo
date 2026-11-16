@@ -6,6 +6,7 @@
 // uses and what uses it, its data, its versions, and the words of the
 // questions that going back and removing ask.
 
+import { NGINX_ID, POSTGRESQL_ID } from '../../lib/known-bundles.js';
 import { bytesWords, counted } from '../../lib/size-words.js';
 import { appHref, capital, isText, listOf, urgent, worstOf } from './apps-model.js';
 
@@ -203,12 +204,9 @@ export function usedByOf(info) {
   }));
 }
 
-/** The bundles whose own pages manage what they serve: nginx's websites and PostgreSQL's databases. */
-export const NGINX_ID = 'org.nginx.nginx';
-export const POSTGRESQL_ID = 'org.postgresql.postgresql';
-
 /**
- * Where each of those apps' work is listed: the name of the row, the page
+ * Where the work of the bundles that have pages to manage it, nginx's
+ * websites and PostgreSQL's databases, is listed: the name of the row, the page
  * that manages it, the list that says how many there are, and whether only
  * an administrator may read it. `key` names the answer's list and the page
  * in the links.

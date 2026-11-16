@@ -12,21 +12,6 @@ import {
 } from './apps-model.js';
 import { initialOf, tintOf } from './mark.js';
 
-/**
- * The app the address names, from what follows `/apps/`: an empty text for
- * the list, the app's ID, or null when the address cannot be one.
- */
-export function idOf(rest) {
-  const name = rest.replace(/\/$/, '');
-  if (name === '') return '';
-  try {
-    const id = decodeURIComponent(name);
-    return /^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$/.test(id) ? id : null;
-  } catch {
-    return null;
-  }
-}
-
 /** "Checked 4 minutes ago.", and why the apps could not be checked when they could not; `time` is the console's (lib/time.js). An undefined `last` is a read that failed. */
 export function checkedWords(last, time) {
   if (last === undefined) return 'The last check could not be read.';
