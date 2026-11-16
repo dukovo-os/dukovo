@@ -29,7 +29,7 @@ name with a domain, such as _duke-nas.example.org_, it names the full
 name, the first word, the first word with _.local_ and *localhost*; one
 made before it named these is made again. It
 is valid from an hour before it is made, for clocks that differ, and
-for 800 days: Apple's systems refuse a TLS server certificate valid for
+for 800 days: some systems refuse a TLS server certificate valid for
 more than 825 days, even one a person chose to trust. It is for a TLS
 server, and not a certificate authority's.
 

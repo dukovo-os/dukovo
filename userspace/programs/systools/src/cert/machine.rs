@@ -9,7 +9,7 @@
 //! can serve HTTPS from the first boot; a person trusts it by its
 //! fingerprint (dukovo-certificates(7)). ECDSA P-256 is what every
 //! browser accepts and what ring can make. It lasts [`LIFETIME_DAYS`],
-//! under the 825 days Apple's systems accept of any server certificate.
+//! under the 825 days some systems accept of any server certificate.
 //!
 //! A clock that has not been set says 1970 or the year a battery died, and
 //! a certificate made then would be dated that year: while the clock says a

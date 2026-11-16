@@ -586,9 +586,9 @@ mod tests {
         let second = fixtures::chain_file(&[pki.middle.der()]);
         let between = stream(&format!("{first}{}{second}", leaf.key), false, &pki.roots).unwrap();
         assert_eq!(between.chain, full(&leaf, &pki));
-        // Windows line ends and blank lines between the blocks are no matter.
-        let windows = format!("{}\n{}", leaf.key, full(&leaf, &pki)).replace('\n', "\r\n");
-        assert_eq!(stream(&windows, false, &pki.roots).unwrap().key, leaf.key);
+        // CRLF line ends and blank lines between the blocks are no matter.
+        let crlf = format!("{}\n{}", leaf.key, full(&leaf, &pki)).replace('\n', "\r\n");
+        assert_eq!(stream(&crlf, false, &pki.roots).unwrap().key, leaf.key);
     }
 
     #[test]
