@@ -16,7 +16,7 @@ import { button, makeCard } from './cards.js';
 import { makeChecks } from './checks.js';
 import { makeHeld } from './held.js';
 import {
-  appOffers, checkedWords, checkOf, runningOf, slotVersion,
+  appOffers, checkedWords, checkOf, runningOf, slotVersion, withHolds,
 } from './model.js';
 import { makeSettings } from './settings.js';
 import { makeFirmware, makeSystem } from './system.js';
@@ -165,8 +165,8 @@ export async function show(view) {
     const got = Object.fromEntries(names.map((name, at) => [name, found[at].status === 'fulfilled' ? found[at].value : null]));
     const lastError = found[0].status === 'rejected' && found[0].reason?.name !== 'AbortError' ? found[0].reason : null;
     if (mine !== latest || view.signal.aborted) return;
-    data.check = checkOf(got.last);
     data.settings = got.settings;
+    data.check = withHolds(checkOf(got.last), data.settings);
     data.checks = got.checks;
     data.failed = got.failed;
     data.apps = Array.isArray(got.apps?.bundles) ? got.apps.bundles : null;
@@ -201,7 +201,7 @@ export async function show(view) {
     drawAll();
     const result = await view.api.run('updates.check', {}, { button: one, where: { slot: view.slot }, words: { unlock: 'check for updates', busy: 'Asking the update server…', done: 'The check is done.' } });
     checking = false;
-    if (result.ok && Array.isArray(result.result?.offers)) data.check = checkOf(result.result);
+    if (result.ok && Array.isArray(result.result?.offers)) data.check = withHolds(checkOf(result.result), data.settings);
     drawAll();
     if (result.ok) ctx.say(checkedWords(data.check, view.time));
   }

@@ -60,6 +60,25 @@ export function checkOf(answer, at = Date.now()) {
   };
 }
 
+/**
+ * The check with the holds of `settings` (`update settings --json`) laid over
+ * it: the check that is kept was made before a hold was set or released, so an
+ * offer for the held version says it is held, and a held one that settings no
+ * longer hold says it is ready. Settings that tell of no holds change nothing.
+ */
+export function withHolds(check, settings) {
+  const holds = settings?.hold;
+  if (!check || !holds || typeof holds !== 'object') return check;
+  const offers = check.offers.map((offer) => {
+    if (offer.item !== 'system' && offer.item !== 'firmware') return offer;
+    const version = text(holds[offer.item]);
+    if (offer.state === 'update' && version !== null && version === offer.to) return { ...offer, state: 'held', held_because: offer.held_because ?? 'asked' };
+    if (offer.state === 'held' && version === null) return { ...offer, state: 'update' };
+    return offer;
+  });
+  return { ...check, offers };
+}
+
 const BY = { updated: ' by the daily check', 'update check': ' by update check' };
 
 /** The line under the head: "Checked 12 minutes ago by the daily check.", "Checked just now.", "Not checked yet." */

@@ -16,8 +16,8 @@ import {
 } from '../pages/updates/happened-model.js';
 import { appRows as appHistory, startRows } from '../pages/updates/history-model.js';
 import {
-  appOffers, appRows, appsHead, atWords, checkedWords, checkOf, clockWords, couldNot, firmwareCard, fixesFor, heldRows, holdChoices, keptWords,
-  readyCount, runningOf, securityCard, systemCard, whyUnchecked, withdrawnWords, worstOf,
+  appOffers, appRows, appsHead, atWords, checkedWords, offerOf, checkOf, clockWords, couldNot, firmwareCard, fixesFor, heldRows, holdChoices, keptWords,
+  readyCount, runningOf, securityCard, systemCard, whyUnchecked, withdrawnWords, withHolds, worstOf,
 } from '../pages/updates/model.js';
 import {
   argsOf, channelNote, checksCard, formOf, noteOf, whatCheck,
@@ -503,4 +503,19 @@ test('a search that ended without a change says how', () => {
   assert.deepEqual(ended('otherwise').lines, ['A try failed in another way, so the search could not judge.']);
   assert.equal(ended('not-found').makeSure, false);
   assert.deepEqual(ended('nonsense').lines, ['The search could not go on.']);
+});
+
+test('a hold the check was made before is laid over it, and a hold that is gone is not', () => {
+  const doc = checkOf(last(checkWith({ system: 'update', firmware: 'update' })));
+  const held = withHolds(doc, settings({ hold: { system: '0.16.0', firmware: null } }));
+  assert.equal(offerOf(held, 'system').state, 'held');
+  assert.equal(offerOf(held, 'system').held_because, 'asked');
+  assert.equal(offerOf(held, 'firmware').state, 'update');
+  const older = withHolds(doc, settings({ hold: { system: '0.15.0', firmware: null } }));
+  assert.equal(offerOf(older, 'system').state, 'update', 'a hold of another version holds nothing of this one');
+  const gone = withHolds(checkOf(last(checkWith({ system: 'held' }, { system: { held_because: 'fell-back' } }))), settings({ hold: { system: null, firmware: null } }));
+  assert.equal(offerOf(gone, 'system').state, 'update');
+  const unknown = withHolds(checkOf(last(checkWith({ system: 'held' }))), { channel: 'stable' });
+  assert.equal(offerOf(unknown, 'system').state, 'held', 'settings that say nothing of holds change nothing');
+  assert.equal(withHolds(null, settings()), null);
 });
