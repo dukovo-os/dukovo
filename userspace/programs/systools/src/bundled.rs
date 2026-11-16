@@ -1673,13 +1673,16 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
     let state = Path::new(catalogs::STATE);
     let mut lists = std::collections::HashMap::new();
     let mut indexes = std::collections::HashMap::new();
+    let events = history::read(&self::state(history::HISTORY));
     for i in &installed {
         let name = installed_manifest(i.place, &i.id).map_or_else(|_| "?".into(), |m| m.name.0);
         let (bound, held) = {
             let registry = shared.lock();
             let bound = registry.catalog_bound(i.place, &i.id).map(|b| b.catalog.clone());
-            (bound, registry.held(i.place, &i.id).is_some())
+            (bound, registry.held(i.place, &i.id).map(|h| h.since))
         };
+        let (held_by, held_reason) =
+            if held.is_some() { hold_facts(&events, i.place, &i.id) } else { (None, None) };
         let flags = bound.clone().map_or(Flags::Unknown, |catalog| {
             let list = lists
                 .entry(catalog)
@@ -1705,12 +1708,28 @@ fn list(shared: &Shared, connection: &mut Connection, asker: u32) -> Result<Stri
             name: sheet::shown(&name, 60),
             flags,
             catalog: bound,
-            held,
+            held: held.is_some(),
+            held_since: held,
+            held_by,
+            held_reason,
             update,
         };
         connection.send(&Answer::Listed(listed)).map_err(|e| format!("{e}"))?;
     }
     Ok(format!("{} bundles", installed.len()))
+}
+
+/// Who held `id` in `place`, and the reason they gave: what the newest
+/// event of a hold or its release says, when that is a hold.
+fn hold_facts(events: &[Event], place: Place, id: &str) -> (Option<u32>, Option<String>) {
+    let newest = events
+        .iter()
+        .rev()
+        .find(|e| e.place == place && e.id == id && matches!(e.what, What::Held | What::Released));
+    match newest {
+        Some(e) if e.what == What::Held => (e.by, Some(e.note.clone()).filter(|n| !n.is_empty())),
+        _ => (None, None),
+    }
 }
 
 /// `bundle info`: the bundle's sheet, what the asker said of its
@@ -2694,6 +2713,7 @@ fn update(
     let waits =
         if waiting == 0 { String::new() } else { format!(", {waiting} waiting for their wave") };
     if check {
+        let events = history::read(&state(history::HISTORY));
         for p in &pending {
             if let Some(lines) = &p.waits {
                 for line in wave_lines(lines) {
@@ -2701,6 +2721,8 @@ fn update(
                 }
                 continue;
             }
+            let held_reason =
+                if p.held { hold_facts(&events, place, &p.installed.id).1 } else { None };
             let available = Available {
                 place,
                 id: p.installed.id.clone(),
@@ -2708,6 +2730,7 @@ fn update(
                 to: p.newest.clone(),
                 catalog: p.catalog.clone(),
                 held: p.held,
+                held_reason,
             };
             connection.send(&Answer::Available(available)).map_err(|e| format!("{e}"))?;
         }
@@ -3097,7 +3120,14 @@ fn go_back(
 
 /// `bundle hold` and `bundle unhold`: whether updates leave the bundle as
 /// it is.
-fn hold(shared: &Shared, asker: u32, id: &str, everyone: bool, on: bool) -> Result<String, String> {
+fn hold(
+    shared: &Shared,
+    asker: u32,
+    id: &str,
+    everyone: bool,
+    on: bool,
+    why: Option<&str>,
+) -> Result<String, String> {
     if everyone && asker != 0 {
         return Err("holding everyone's bundles is an administrator's: run it with elevate and \
                     --for-everyone"
@@ -3121,11 +3151,13 @@ fn hold(shared: &Shared, asker: u32, id: &str, everyone: bool, on: bool) -> Resu
         from: Some(installed.version.clone()),
         to: None,
         by: Some(asker),
-        note: String::new(),
+        // Why a hold is asked for is its event's note; a release says none.
+        note: why.filter(|_| on).unwrap_or_default().into(),
     });
     Ok(if on {
+        let kept = why.map_or_default(|why| format!("{}{why}", protocol::REASON_KEPT));
         format!(
-            "held {id} at {}: updates leave it as it is until `bundle unhold {id}`",
+            "held {id} at {}: updates leave it as it is until `bundle unhold {id}`{kept}",
             installed.version
         )
     } else {
@@ -3316,7 +3348,9 @@ fn serve(shared: &Shared, stream: UnixStream) {
             update(shared, &mut connection, asker, &ids, everyone, check, yes)
         }
         Ok(Request::Rollback { id, everyone }) => rollback(shared, asker, &id, everyone),
-        Ok(Request::Hold { id, everyone, on }) => hold(shared, asker, &id, everyone, on),
+        Ok(Request::Hold { id, everyone, on, why }) => {
+            hold(shared, asker, &id, everyone, on, why.as_deref())
+        }
         Ok(Request::Automatic { everyone, on }) => automatic(shared, asker, everyone, on),
         Ok(Request::History { id }) => history_of(&mut connection, asker, id.as_deref()),
         Ok(Request::Lines { name }) => match lines_of(&shared.lock(), asker, &name) {
@@ -3528,6 +3562,47 @@ mod tests {
     #[test]
     fn a_service_that_takes_long_to_stop_is_waited_for() {
         assert_eq!(stop_time([Some(300)]), Duration::from_secs(310));
+    }
+
+    fn hold_event(place: Place, id: &str, what: What, by: Option<u32>, note: &str) -> Event {
+        Event {
+            when: 1_793_000_000,
+            place,
+            id: id.into(),
+            what,
+            from: Some("1.0.0".into()),
+            to: None,
+            by,
+            note: note.into(),
+        }
+    }
+
+    #[test]
+    fn who_held_a_bundle_and_why_is_what_the_newest_event_of_its_hold_says() {
+        let id = "org.example.notes";
+        let (everyone, mine) = (Place::Everyone, Place::User(1000));
+        let events = [
+            hold_event(everyone, id, What::Held, Some(0), "first reason"),
+            hold_event(mine, id, What::Held, Some(1000), "mine"),
+            hold_event(everyone, "org.example.tea", What::Held, Some(0), "another app"),
+            hold_event(everyone, id, What::Updated, None, "from catalog dukovo"),
+            hold_event(everyone, id, What::Released, Some(0), ""),
+            hold_event(everyone, id, What::Held, Some(0), "app tests use this version"),
+            hold_event(everyone, id, What::Failed, None, "a failure after it"),
+        ];
+        // The newest hold is the one asked for, and what came after it says nothing of it.
+        assert_eq!(
+            hold_facts(&events, everyone, id),
+            (Some(0), Some("app tests use this version".into()))
+        );
+        // One place's hold is not another's.
+        assert_eq!(hold_facts(&events, mine, id), (Some(1000), Some("mine".into())));
+        // A release ends it, and a hold with no reason has none.
+        assert_eq!(hold_facts(&events[..5], everyone, id), (None, None));
+        let unsaid = [hold_event(everyone, id, What::Held, Some(0), "")];
+        assert_eq!(hold_facts(&unsaid, everyone, id), (Some(0), None));
+        // No event in the history, which keeps the newest thousand.
+        assert_eq!(hold_facts(&[], everyone, id), (None, None));
     }
 
     #[test]

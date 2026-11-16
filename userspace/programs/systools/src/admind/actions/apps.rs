@@ -23,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::updates::check_why;
 use super::{Action, Ansible, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
 
 /// The area of these actions: the scope a token needs, `apps`.
@@ -60,6 +61,21 @@ const ID: Field = Field::text(
     Some(ID_PATTERN),
 );
 
+/// What the reason kept with a hold matches: one line, with no control
+/// character, as `updates` has it for the system's.
+pub(super) const WHY_PATTERN: &str = "^[^\x00-\x1f\x7f]+$";
+
+/// The reason kept with a hold: optional, one line of 1 to 200
+/// characters that everyone who can sign in sees.
+pub(super) const WHY: Field = Field::text(
+    "why",
+    "Why it is held, in one line of at most 200 characters; everyone who can sign in sees it.",
+    1,
+    200,
+    Some(WHY_PATTERN),
+)
+.optional();
+
 /// Checks `id`, which names an app, or an app of a line: the rule of
 /// `manifest`, in the words the page shows under its field.
 pub(super) fn check_id(field: &'static str, id: &str) -> Result<(), Bad> {
@@ -93,6 +109,25 @@ impl Args for Named {
 /// most machines do not have.
 const EXAMPLE: &str = "org.example.notes";
 
+/// An app, by its ID, and why it is held, if that is said.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Holding {
+    pub id: String,
+    /// The reason kept with the hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+impl Args for Holding {
+    const FIELDS: &'static [Field] = &[ID, WHY];
+
+    fn check(&self) -> Result<(), Bad> {
+        check_id("id", &self.id)?;
+        check_why(self.why.as_deref())
+    }
+}
+
 /// Examples for an action that takes an app's ID.
 fn named_examples(undo: Option<Undo>) -> Examples<Named> {
     Examples {
@@ -120,17 +155,27 @@ fn row_of(id: &str, output: &str) -> Option<Option<Value>> {
     Some(found.cloned())
 }
 
-/// What the list says of app `id` that a change moves, its version and
-/// whether it is held, as text to compare; `none` for an app that
+/// What the list says of app `id` that a change moves, its version,
+/// whether it is held and why, as text to compare; `none` for an app that
 /// everyone does not have.
 pub(super) fn picked(id: &str, output: &str) -> Option<String> {
     Some(match row_of(id, output)? {
         Some(row) => {
             let member = |key: &str| row.get(key).cloned().unwrap_or(Value::Null);
-            json!({ "version": member("version"), "held": member("held") }).to_string()
+            json!({
+                "version": member("version"),
+                "held": member("held"),
+                "held_reason": member("held_reason"),
+            })
+            .to_string()
         }
         None => "none".into(),
     })
+}
+
+/// What the app of `now`, as [`picked`] says it, says of `key`.
+fn said(now: &str, key: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(now).ok()?.get(key).cloned()
 }
 
 /// Whether the app of `now`, as [`picked`] says it, is held, if it says.
@@ -332,8 +377,8 @@ impl Action for Rollback {
     }
 }
 
-/// `bundle hold ID --for-everyone`: updates leave the app at the
-/// version it has.
+/// `bundle hold ID --for-everyone [--why TEXT]`: updates leave the app at
+/// the version it has.
 pub struct Hold;
 
 impl Action for Hold {
@@ -344,31 +389,56 @@ impl Action for Hold {
     const RUNS: Runs = Runs::AsAdministrator;
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Hold an app back";
-    type Args = Named;
+    type Args = Holding;
 
-    fn argv(args: &Named) -> Vec<String> {
-        vec!["bundle".into(), "hold".into(), args.id.clone(), "--for-everyone".into()]
+    fn argv(args: &Holding) -> Vec<String> {
+        let mut argv =
+            vec!["bundle".into(), "hold".into(), args.id.clone(), "--for-everyone".into()];
+        if let Some(why) = &args.why {
+            argv.extend(["--why".into(), why.clone()]);
+        }
+        argv
     }
 
-    fn subject(args: &Named) -> Option<String> {
+    fn subject(args: &Holding) -> Option<String> {
         Some(args.id.clone())
     }
 
-    fn probe(_: &Named) -> Option<Vec<String>> {
+    fn probe(_: &Holding) -> Option<Vec<String>> {
         Some(list_argv())
     }
 
-    fn probed(args: &Named, output: &str) -> Option<String> {
+    fn probed(args: &Holding, output: &str) -> Option<String> {
         picked(&args.id, output)
     }
 
-    /// Held, or not, as the change leaves it, when the app is there.
-    fn settled(_: &Named, now: &str) -> Option<bool> {
-        held_in(now)
+    /// Held, or not, as the change leaves it, when the app is there; and
+    /// with the reason asked for, when one is.
+    fn settled(args: &Holding, now: &str) -> Option<bool> {
+        let held = held_in(now)?;
+        let reason = said(now, "held_reason");
+        Some(
+            held && args
+                .why
+                .as_ref()
+                .is_none_or(|why| reason.as_ref().and_then(Value::as_str) == Some(why)),
+        )
     }
 
-    fn examples() -> Examples<Named> {
-        named_examples(Some(Undo { action: "apps.unhold", args: json!({ "id": EXAMPLE }) }))
+    fn examples() -> Examples<Holding> {
+        let mut bad = named_examples(None).bad;
+        bad.extend([
+            json!({ "id": EXAMPLE, "why": "two\nlines" }),
+            json!({ "id": EXAMPLE, "why": "x".repeat(201) }),
+        ]);
+        Examples {
+            good: vec![Holding {
+                id: EXAMPLE.into(),
+                why: Some("app tests use this version".into()),
+            }],
+            bad,
+            undo: Some(Undo { action: "apps.unhold", args: json!({ "id": EXAMPLE }) }),
+        }
     }
 }
 
@@ -542,7 +612,8 @@ mod tests {
              "catalog": "dukovo", "held": false, "update": "1.3.0",
              "flaws": {"state": "known", "count": 2, "worst": "high"}},
             {"id": "org.nodejs.node@22", "name": "node", "version": "22.1.0", "for_everyone": true,
-             "catalog": "dukovo", "held": true, "update": null,
+             "catalog": "dukovo", "held": true, "held_reason": "app tests use this version",
+             "held_by": 1000, "held_since_ms": 1793100000000, "update": null,
              "flaws": {"state": "none", "count": 0, "worst": null}}
         ]
     }"#;
@@ -691,7 +762,12 @@ mod tests {
             assert_eq!(prepared.argv, ["bundle", word, "org.example.notes", "--for-everyone"]);
             assert!(prepared.files.is_empty() && prepared.probe.is_some(), "{id}");
             let (good, _, undo) = held.example_values();
-            assert_eq!(good, [json!({ "id": "org.example.notes" })]);
+            let wanted = if id == "apps.hold" {
+                json!({ "id": "org.example.notes", "why": "app tests use this version" })
+            } else {
+                json!({ "id": "org.example.notes" })
+            };
+            assert_eq!(good, [wanted], "{id}");
             assert_eq!(
                 undo,
                 Some(Undo { action: other, args: json!({ "id": "org.example.notes" }) }),
@@ -748,7 +824,7 @@ mod tests {
         let picked = action("apps.hold").probed(&args, LIST).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&picked).unwrap(),
-            json!({ "version": "1.2.0", "held": false })
+            json!({ "version": "1.2.0", "held": false, "held_reason": null })
         );
         // An update that is waiting is not part of it, nor the flaws.
         let later = LIST.replace("\"update\": \"1.3.0\"", "\"update\": \"1.4.0\"");
@@ -769,6 +845,40 @@ mod tests {
             assert_eq!(action("apps.hold").probed(&args, output), None, "{output:?}");
         }
         assert_eq!(action("apps.hold").probed(&json!({ "id": 3 }), LIST), None);
+    }
+
+    #[test]
+    fn a_hold_keeps_the_reason_it_is_given_as_one_line_of_at_most_200_characters() {
+        let hold = action("apps.hold");
+        for why in
+            ["app tests use this version", "--force", "it's \"fine\" $(x) é", &"é".repeat(200)]
+        {
+            let prepared = hold.prepare(json!({ "id": "org.example.notes", "why": why })).unwrap();
+            assert_eq!(
+                prepared.argv,
+                ["bundle", "hold", "org.example.notes", "--for-everyone", "--why", why],
+                "{why:?}"
+            );
+        }
+        // Without one, the command is as it was; a release takes none.
+        let plain = hold.prepare(json!({ "id": "org.example.notes" })).unwrap();
+        assert_eq!(plain.argv, ["bundle", "hold", "org.example.notes", "--for-everyone"]);
+        let (kind, field, _) =
+            refused("apps.unhold", json!({ "id": "org.example.notes", "why": "no" }));
+        assert_eq!((kind, field), (Kind::BadRequest, None));
+        for why in ["", "two\nlines", "a\ttab", "bell\u{7}", "del\u{7f}", &"x".repeat(201)] {
+            let (kind, field, _) =
+                refused("apps.hold", json!({ "id": "org.example.notes", "why": why }));
+            assert_eq!((kind, field), (Kind::BadValue, Some("why")), "{why:?}");
+        }
+        // The probe says the reason, and a hold is settled only with it.
+        let node = json!({ "id": "org.nodejs.node@22", "why": "app tests use this version" });
+        let said = hold.probed(&node, LIST).unwrap();
+        assert_eq!(hold.settled(&node, &said), Some(true), "{said}");
+        let other = json!({ "id": "org.nodejs.node@22", "why": "Another reason" });
+        assert_eq!(hold.settled(&other, &said), Some(false));
+        let none = json!({ "id": "org.nodejs.node@22" });
+        assert_eq!(hold.settled(&none, &said), Some(true));
     }
 
     #[test]
@@ -864,7 +974,12 @@ mod tests {
     fn the_examples_are_what_the_boot_and_lab_tests_run() {
         for id in ["apps.show", "apps.update", "apps.rollback", "apps.hold", "apps.unhold"] {
             let (good, bad, _) = action(id).example_values();
-            assert_eq!(good, [json!({ "id": "org.example.notes" })], "{id}");
+            let wanted = if id == "apps.hold" {
+                json!({ "id": "org.example.notes", "why": "app tests use this version" })
+            } else {
+                json!({ "id": "org.example.notes" })
+            };
+            assert_eq!(good, [wanted], "{id}");
             assert!(!bad.is_empty(), "{id}");
             for args in bad {
                 assert!(action(id).prepare(args.clone()).is_err(), "{id}: {args}");

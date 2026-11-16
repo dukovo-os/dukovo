@@ -8,6 +8,9 @@
       "for_everyone": false,
       "catalog": null,
       "held": false,
+      "held_reason": null,
+      "held_by": null,
+      "held_since_ms": null,
       "update": null,
       "flaws": {"state": "unknown", "count": 0, "worst": null}
     },
@@ -18,6 +21,9 @@
       "for_everyone": true,
       "catalog": "dukovo",
       "held": false,
+      "held_reason": null,
+      "held_by": null,
+      "held_since_ms": null,
       "update": "1.3.0",
       "flaws": {"state": "known", "count": 2, "worst": "high"}
     },
@@ -28,6 +34,9 @@
       "for_everyone": false,
       "catalog": "dukovo",
       "held": true,
+      "held_reason": "app tests use this version",
+      "held_by": 1000,
+      "held_since_ms": 1793100000000,
       "update": null,
       "flaws": {"state": "none", "count": 0, "worst": null}
     }

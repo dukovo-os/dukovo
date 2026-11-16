@@ -135,6 +135,23 @@ pub fn human(bytes: u64, si: bool) -> String {
     }
 }
 
+/// Writes `text` to `file` whole, with mode `mode`: to `file.partial`
+/// beside it, which is then renamed over it, so that a reader finds the
+/// old text or the new and never part of one.
+///
+/// # Errors
+///
+/// If the file beside it cannot be written or renamed.
+pub fn replace_whole(file: &std::path::Path, text: &str, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut partial = file.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = std::path::PathBuf::from(partial);
+    std::fs::write(&partial, text)?;
+    std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(mode))?;
+    std::fs::rename(&partial, file)
+}
+
 /// Nanoseconds since the epoch, now.
 pub fn now_ns() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)

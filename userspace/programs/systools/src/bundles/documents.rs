@@ -29,6 +29,12 @@ struct Bundle {
     /// feed, or from none.
     catalog: Option<String>,
     held: bool,
+    /// While it is held, the reason kept with the hold, if one was.
+    held_reason: Option<String>,
+    /// While it is held, the user ID of who held it.
+    held_by: Option<u32>,
+    /// While it is held, since when, in milliseconds since 1970.
+    held_since_ms: Option<u64>,
     /// The newest version the catalog listed when bundled last read it,
     /// when that is newer than `version`.
     update: Option<String>,
@@ -71,6 +77,9 @@ impl List {
                 for_everyone: row.place == Place::Everyone,
                 catalog: row.catalog,
                 held: row.held,
+                held_reason: row.held_reason.filter(|_| row.held),
+                held_by: row.held_by.filter(|_| row.held),
+                held_since_ms: row.held_since.filter(|_| row.held).map(|s| s.saturating_mul(1000)),
                 update: row.update,
                 flaws: Flaws::of(row.flags),
             })
@@ -99,6 +108,9 @@ mod tests {
             flags,
             catalog: None,
             held: false,
+            held_since: None,
+            held_by: None,
+            held_reason: None,
             update: None,
         }
     }
@@ -120,6 +132,9 @@ mod tests {
             Listed {
                 catalog: Some("dukovo".into()),
                 held: true,
+                held_since: Some(1_793_100_000),
+                held_by: Some(1000),
+                held_reason: Some("app tests use this version".into()),
                 ..row(Place::User(1000), "org.nginx.nginx", "1.1.0", Flags::None)
             },
         ];

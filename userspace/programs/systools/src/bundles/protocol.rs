@@ -24,6 +24,18 @@ pub const SOCKET: &str = "/system/live/bundled/socket";
 pub const LINE_MAX: usize = 4096;
 /// The longest sheet.
 pub const SHEET_MAX: usize = 64 * 1024;
+/// The most characters of the reason kept with a hold.
+pub const WHY_MAX: usize = 200;
+/// What an answer says between what was done and the reason kept with it.
+pub const REASON_KEPT: &str = "; the reason kept with it: ";
+
+/// Whether `text` can be the reason kept with a hold: one line of 1 to
+/// [`WHY_MAX`] characters, with no control character (a tab would break
+/// the history's fields and a request's).
+#[must_use]
+pub fn why_ok(text: &str) -> bool {
+    (1..=WHY_MAX).contains(&text.chars().count()) && !text.chars().any(char::is_control)
+}
 
 /// What bundle asks bundled.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,8 +87,9 @@ pub enum Request {
     Update { ids: Vec<String>, everyone: bool, check: bool, yes: bool },
     /// Goes back to the version bundle `id` replaced.
     Rollback { id: String, everyone: bool },
-    /// Holds bundle `id` at its version, or lets it go.
-    Hold { id: String, everyone: bool, on: bool },
+    /// Holds bundle `id` at its version, or lets it go; a hold may keep
+    /// the reason `why`, which [`why_ok`] accepts.
+    Hold { id: String, everyone: bool, on: bool, why: Option<String> },
     /// Turns updating by themselves on or off, for the asker's bundles or
     /// everyone's.
     Automatic { everyone: bool, on: bool },
@@ -217,9 +230,12 @@ impl Request {
                 line + "\n"
             }
             Request::Rollback { id, everyone } => format!("rollback\t{id}\t{}\n", whose(*everyone)),
-            Request::Hold { id, everyone, on } => {
-                format!("hold\t{id}\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
-            }
+            Request::Hold { id, everyone, on, why } => format!(
+                "hold\t{id}\t{}\t{}{}\n",
+                whose(*everyone),
+                if *on { "on" } else { "off" },
+                why.as_ref().map_or_else(String::new, |why| format!("\t{why}"))
+            ),
             Request::Automatic { everyone, on } => {
                 format!("automatic\t{}\t{}\n", whose(*everyone), if *on { "on" } else { "off" })
             }
@@ -291,10 +307,15 @@ impl Request {
             ["rollback", id, place] => {
                 Ok(Request::Rollback { id: checked_id(id)?, everyone: everyone(place)? })
             }
-            ["hold", id, place, state] => Ok(Request::Hold {
+            ["hold", id, place, state, rest @ ..] => Ok(Request::Hold {
                 id: checked_id(id)?,
                 everyone: everyone(place)?,
                 on: on(state)?,
+                why: match rest {
+                    [] => None,
+                    [why] if why_ok(why) => Some((*why).into()),
+                    _ => return Err("the reason is not one line of 1 to 200 characters".into()),
+                },
             }),
             ["automatic", place, state] => {
                 Ok(Request::Automatic { everyone: everyone(place)?, on: on(state)? })
@@ -357,6 +378,13 @@ pub struct Listed {
     pub catalog: Option<String>,
     /// Whether it is held at its version.
     pub held: bool,
+    /// While it is held, since when, in seconds since 1970.
+    pub held_since: Option<u64>,
+    /// While it is held, who held it: the user ID the newest event of its
+    /// hold names.
+    pub held_by: Option<u32>,
+    /// While it is held, the reason kept with it, if one was.
+    pub held_reason: Option<String>,
     /// The newest version the catalog listed when bundled last read it,
     /// when that is newer than this one.
     pub update: Option<String>,
@@ -488,6 +516,8 @@ pub struct Available {
     pub catalog: Option<String>,
     /// Whether it is held at its version.
     pub held: bool,
+    /// While it is held, the reason kept with the hold, if one was.
+    pub held_reason: Option<String>,
 }
 
 /// What bundled answers.
@@ -544,7 +574,7 @@ impl Answer {
             Answer::Question => b"question\n".to_vec(),
             Answer::Document(text) => format!("document {}\n{text}", text.len()).into_bytes(),
             Answer::Listed(l) => format!(
-                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "listed\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 l.place,
                 l.id,
                 one_line(&l.version),
@@ -554,6 +584,10 @@ impl Answer {
                 l.catalog.as_deref().unwrap_or("-"),
                 if l.held { "held" } else { "free" },
                 l.update.as_deref().map_or_else(|| "-".into(), one_line),
+                l.held_since.map_or_else(|| "-".into(), |since| since.to_string()),
+                l.held_by.map_or_else(|| "-".into(), |by| by.to_string()),
+                // Empty for none: a reason may be any one line, `-` too.
+                l.held_reason.as_deref().map_or_else(String::new, one_line),
                 one_line(&l.name)
             )
             .into_bytes(),
@@ -605,13 +639,14 @@ impl Answer {
                 .into_bytes()
             }
             Answer::Available(a) => format!(
-                "available\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "available\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 a.place,
                 a.id,
                 one_line(&a.from),
                 one_line(&a.to),
                 a.catalog.as_deref().unwrap_or("-"),
-                if a.held { "held" } else { "free" }
+                if a.held { "held" } else { "free" },
+                a.held_reason.as_deref().map_or_else(String::new, one_line)
             )
             .into_bytes(),
             Answer::Event(e) => format!("event\t{}", e.line()).into_bytes(),
@@ -772,7 +807,7 @@ impl Answer {
                 expires: time(expires)?,
             })));
         }
-        if let ["available", at, id, from, to, catalog, held] = words.as_slice() {
+        if let ["available", at, id, from, to, catalog, held, reason] = words.as_slice() {
             return Ok(Some(Answer::Available(Available {
                 place: place(at)?,
                 id: checked_id(id).map_err(|why| bad(&why))?,
@@ -787,14 +822,29 @@ impl Answer {
                     "free" => false,
                     _ => return Err(bad("neither held nor free")),
                 },
+                held_reason: (!reason.is_empty()).then(|| one_line(reason)),
             })));
         }
         if let ["revoked", permission] = words.as_slice() {
             let permission = checked_permission(permission).map_err(|why| bad(&why))?;
             return Ok(Some(Answer::Revoked(permission)));
         }
-        if let ["listed", place_word, id, version, key, when, flags, catalog, held, update, name] =
-            words.as_slice()
+        if let [
+            "listed",
+            place_word,
+            id,
+            version,
+            key,
+            when,
+            flags,
+            catalog,
+            held,
+            update,
+            since,
+            by,
+            reason,
+            name,
+        ] = words.as_slice()
         {
             let place = place(place_word)?;
             return Ok(Some(Answer::Listed(Listed {
@@ -815,6 +865,15 @@ impl Answer {
                     _ => return Err(bad("neither held nor free")),
                 },
                 update: (*update != "-").then(|| one_line(update)),
+                held_since: match *since {
+                    "-" => None,
+                    since => Some(since.parse().map_err(|_| bad("a hold's time"))?),
+                },
+                held_by: match *by {
+                    "-" => None,
+                    by => Some(by.parse().map_err(|_| bad("who held a bundle"))?),
+                },
+                held_reason: (!reason.is_empty()).then(|| one_line(reason)),
             })));
         }
         Err(bad("not an answer bundle knows"))
@@ -889,8 +948,20 @@ mod tests {
                 yes: true,
             },
             Request::Rollback { id: "org.example.notes".into(), everyone: false },
-            Request::Hold { id: "org.example.notes".into(), everyone: true, on: true },
-            Request::Hold { id: "org.example.notes".into(), everyone: false, on: false },
+            Request::Hold { id: "org.example.notes".into(), everyone: true, on: true, why: None },
+            Request::Hold { id: "org.example.notes".into(), everyone: false, on: false, why: None },
+            Request::Hold {
+                id: "org.example.notes".into(),
+                everyone: true,
+                on: true,
+                why: Some("app tests use this version".into()),
+            },
+            Request::Hold {
+                id: "org.example.notes".into(),
+                everyone: true,
+                on: true,
+                why: Some("-".into()),
+            },
             Request::Automatic { everyone: false, on: true },
             Request::History { id: None },
             Request::History { id: Some("org.example.notes".into()) },
@@ -938,11 +1009,34 @@ mod tests {
             "update\tme\tapply\task\tNotes",
             "rollback\torg.example.notes",
             "hold\torg.example.notes\tme\tsometimes",
+            "hold\torg.example.notes\tme\ton\t",
+            "hold\torg.example.notes\tme\ton\ttwo\ttabs",
             "automatic\tall\ton",
             "history",
         ] {
             assert!(Request::read(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_reason_is_one_line_of_at_most_200_characters() {
+        assert!(why_ok("Waiting for the nginx fix"));
+        assert!(why_ok(&"é".repeat(200)));
+        for bad in ["", "two\nlines", "a\ttab", "bell\x07", "del\x7f"] {
+            assert!(!why_ok(bad), "{bad:?}");
+        }
+        assert!(!why_ok(&"x".repeat(201)));
+        // A request line of the longest reason is no longer than a line may be.
+        let longest = Request::Hold {
+            id: "org.example.notes".into(),
+            everyone: true,
+            on: true,
+            why: Some("é".repeat(200)),
+        };
+        assert!(longest.line().len() < LINE_MAX);
+        assert_eq!(Request::read(longest.line().trim_end()), Ok(longest));
+        let too_long = format!("hold\torg.example.notes\tme\ton\t{}", "x".repeat(201));
+        assert!(Request::read(&too_long).is_err());
     }
 
     #[test]
@@ -957,14 +1051,30 @@ mod tests {
             flags: Flags::Known { count: 2, worst: Severity::High },
             catalog: Some("dukovo".into()),
             held: true,
+            held_since: Some(1_793_100_000),
+            held_by: Some(1000),
+            held_reason: Some("app tests use this version".into()),
             update: Some("0.2.0".into()),
         };
-        let unbound = Listed { catalog: None, held: false, update: None, ..listed.clone() };
+        let unbound = Listed {
+            catalog: None,
+            held: false,
+            held_since: None,
+            held_by: None,
+            held_reason: None,
+            update: None,
+            ..listed.clone()
+        };
+        // A hold with no reason, and one whose reason is a dash.
+        let unsaid = Listed { held_reason: None, ..listed.clone() };
+        let dash = Listed { held_reason: Some("-".into()), ..listed.clone() };
         let answers = [
             Answer::Sheet("Notes 0.1.0, for yourself\n  Signed by key RW...\n".into()),
             Answer::Question,
             Answer::Listed(listed),
             Answer::Listed(unbound),
+            Answer::Listed(unsaid),
+            Answer::Listed(dash),
             Answer::Document("{\"format\":1,\"id\":\"org.example.notes\"}".into()),
             Answer::Lines(Lines {
                 id: "org.nodejs.node".into(),
@@ -1051,6 +1161,7 @@ mod tests {
                 to: "1.1.0".into(),
                 catalog: Some("dukovo".into()),
                 held: true,
+                held_reason: Some("app tests use this version".into()),
             }),
             Answer::Available(Available {
                 place: Place::Everyone,
@@ -1059,6 +1170,7 @@ mod tests {
                 to: "2.1.0".into(),
                 catalog: None,
                 held: false,
+                held_reason: None,
             }),
             Answer::Event(crate::bundles::history::Event {
                 when: 1_793_000_000,

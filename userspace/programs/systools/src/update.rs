@@ -72,13 +72,15 @@ use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
 use crate::sysupdate::checked::Found;
 use crate::sysupdate::online::{self, Apps, Check, Metered, Plan, Settings};
+use crate::sysupdate::reasons::{Reason, Reasons};
 use crate::sysupdate::starts::{self, Outcome};
 use crate::sysupdate::{self, firmware, place, request, stage};
 use crate::util::{self, Fail, fail};
 use crate::{bundles, power};
 
 const USAGE: &str = "usage: update [check [--json] | apply [--only PART] [--yes] | undo ITEM \
-                     [--settings-from-before | --keep-settings] | hold ITEM | unhold ITEM | \
+                     [--settings-from-before | --keep-settings] | hold ITEM [--why TEXT] | \
+                     unhold ITEM | \
                      history [--json] | advisories [--json] | last [--json] | settings [--json] | \
                      set [--check WORD] [--apps WORD] [--unattended on|off] [--restart HH:MM | \
                      --no-restart] [--metered WORD] | checks [--json] | checks add NAME \
@@ -123,8 +125,14 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
     let mut item = None;
     let mut only = None;
     let mut keep = sysupdate::Keep::Unsaid;
+    let mut why = None;
     while let Some(arg) = args.next()? {
         match arg {
+            Arg::Long(name)
+                if name == "why" && action.as_deref() == Some("hold") && why.is_none() =>
+            {
+                why = Some(args.text()?);
+            }
             Arg::Long(name)
                 if name == "json"
                     && matches!(
@@ -157,13 +165,16 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
             _ => return Err(util::usage(USAGE.into())),
         }
     }
+    if why.as_deref().is_some_and(|why| !bundles::protocol::why_ok(why)) {
+        return Err(util::usage("--why takes one line of at most 200 characters".into()));
+    }
     let needs_item = || item.clone().ok_or_else(|| util::usage(USAGE.into()));
     match action.as_deref() {
         None | Some("check") => check(json),
         Some("apply") => apply(yes, only.as_deref()),
         Some("undo") => undo(&needs_item()?, keep),
-        Some("hold") => hold(&needs_item()?, true),
-        Some("unhold") => hold(&needs_item()?, false),
+        Some("hold") => hold(&needs_item()?, true, why.as_deref()),
+        Some("unhold") => hold(&needs_item()?, false, None),
         Some("history") => history(json),
         Some("advisories") => advise(json),
         Some(_) => Err(util::usage(USAGE.into())),
@@ -194,7 +205,14 @@ fn check(json: bool) -> Result<i32, Fail> {
     }
     println!("\nFirmware:");
     match firmware_offer() {
-        Ok(offer) => println!("update: {}", offer.said),
+        Ok(offer) => {
+            println!("update: {}", offer.said);
+            if offer.found == Found::Held
+                && let Some(reason) = Reasons::read().standing("firmware", offer.held.as_deref())
+            {
+                println!("  held: {}", reason.text);
+            }
+        }
         Err(why) => println!("update: the firmware cannot be checked: {}", why.message),
     }
     println!("\nApps:");
@@ -308,7 +326,8 @@ fn found() -> documents::Updates {
         security: documents::Security { system: Vec::new(), app_flaws: 0 },
     };
     let held = held::Held::read();
-    match system_offer(&mut updates.notes, held.as_ref()) {
+    let reasons = Reasons::read();
+    match system_offer(&mut updates.notes, held.as_ref(), &reasons) {
         Ok(offer) => updates.offers.push(offer),
         Err(why) => updates.unchecked.push(documents::Unchecked::new("system", &why.message)),
     }
@@ -316,7 +335,9 @@ fn found() -> documents::Updates {
         documents::RunningWithdrawn::new(&version, &withdrawal.reason, withdrawal.advice)
     });
     match firmware_offer() {
-        Ok(offer) => updates.offers.push(documents::Offer::firmware(&offer, held.as_ref())),
+        Ok(offer) => {
+            updates.offers.push(documents::Offer::firmware(&offer, held.as_ref(), &reasons));
+        }
         Err(why) => updates.unchecked.push(documents::Unchecked::new("firmware", &why.message)),
     }
     match bundles::pending_updates() {
@@ -341,6 +362,7 @@ fn found() -> documents::Updates {
 fn system_offer(
     notes: &mut Vec<String>,
     held: Option<&held::Held>,
+    reasons: &Reasons,
 ) -> Result<documents::Offer, Fail> {
     let root = place::root()?;
     let running = stage::running_version(&root)?;
@@ -354,7 +376,7 @@ fn system_offer(
         }
         _ => None,
     };
-    Ok(documents::Offer::system(&plan, &running, download, held))
+    Ok(documents::Offer::system(&plan, &running, download, held, reasons))
 }
 
 /// The release this system runs and its withdrawal, if the release keys
@@ -555,14 +577,24 @@ fn undo(item: &str, keep: sysupdate::Keep) -> Result<i32, Fail> {
     sysupdate::rollback(keep)
 }
 
-/// `update hold ITEM` (`on`) or `update unhold ITEM`.
-fn hold(item: &str, on: bool) -> Result<i32, Fail> {
+/// The user who asked: the one `elevate` ran this for, when it is run as
+/// root through it, else this process's own.
+fn asker() -> u32 {
+    let elevated = std::env::var("SUDO_UID").ok().and_then(|uid| uid.parse().ok());
+    if last::is_root() { elevated.unwrap_or(0) } else { util::own_user() }
+}
+
+/// `update hold ITEM [--why TEXT]` (`on`) or `update unhold ITEM`.
+fn hold(item: &str, on: bool, why: Option<&str>) -> Result<i32, Fail> {
     if item != "system" && item != "firmware" {
         // The hold of an administrator, which the console's is, is of the
         // app everyone has; another person's is of their own.
         let mut words = vec![if on { "hold" } else { "unhold" }, item];
         if last::is_root() {
             words.push("--for-everyone");
+        }
+        if let Some(why) = why {
+            words.extend(["--why", why]);
         }
         return bundle(&words);
     }
@@ -592,6 +624,7 @@ fn hold(item: &str, on: bool) -> Result<i32, Fail> {
         // The record of a release the health check held goes with the hold.
         held::forget();
     }
+    keep_reason(item, &settings, version.as_deref(), why)?;
     match version {
         Some(version) => println!(
             "update: {item} is held back at {version}: a newer version is taken as usual; until \
@@ -599,7 +632,51 @@ fn hold(item: &str, on: bool) -> Result<i32, Fail> {
         ),
         None => println!("update: {item} is no longer held back"),
     }
+    if let Some(why) = why {
+        println!("update: the reason kept with it: {why}");
+    }
     Ok(0)
+}
+
+/// The reasons after a hold of `item`: those `kept` that the holds in
+/// `hold` still name, and the reason `said` for `item` when there is one.
+fn reasons_after(kept: &Reasons, hold: &online::Hold, item: &str, said: Option<Reason>) -> Reasons {
+    let mut reasons = kept.clone();
+    reasons.drop_stale(hold);
+    if said.is_some() {
+        reasons.set(item, said);
+    }
+    reasons
+}
+
+/// Keeps the reason `why` for the hold of `item` at `version`, and
+/// drops each reason the holds in `settings` no longer name; a hold that
+/// was lifted has none. A hold put again at the version it had keeps the
+/// reason it had, when none is given.
+fn keep_reason(
+    item: &str,
+    settings: &Settings,
+    version: Option<&str>,
+    why: Option<&str>,
+) -> Result<(), Fail> {
+    let kept = Reasons::read();
+    let said = why.zip(version).map(|(text, version)| Reason {
+        version: version.into(),
+        text: text.into(),
+        by: asker(),
+        at_ms: util::now_ns() / 1_000_000,
+    });
+    let reasons = reasons_after(&kept, &settings.hold, item, said);
+    if reasons == kept {
+        return Ok(());
+    }
+    reasons.save().map_err(|why| {
+        fail(format!(
+            "{item} is held, but its reason is not kept: {}: {}",
+            crate::sysupdate::reasons::FILE,
+            util::strip_os_error(&why)
+        ))
+    })
 }
 
 /// `update history`: each change of the system and the firmware set, by
@@ -1051,6 +1128,54 @@ mod tests {
 
     fn settings(check: Check, unattended: bool, metered: Metered, apps: Apps) -> Settings {
         Settings { check, unattended, metered, apps, ..Settings::default() }
+    }
+
+    fn said(version: &str, text: &str) -> Reason {
+        Reason { version: version.into(), text: text.into(), by: 1000, at_ms: 1_794_000_000_000 }
+    }
+
+    fn hold(system: Option<&str>, firmware: Option<&str>) -> online::Hold {
+        online::Hold { system: system.map(Into::into), firmware: firmware.map(Into::into) }
+    }
+
+    #[test]
+    fn a_reason_is_refused_unless_it_is_one_line_of_at_most_200_characters() {
+        let run = |words: &[&str]| {
+            update(&mut Args::new("update", words.iter().map(OsString::from).collect()))
+        };
+        for why in ["two\nlines", "a\ttab", "bell\u{7}", &"x".repeat(201), ""] {
+            let failed = run(&["hold", "system", "--why", why]).unwrap_err();
+            assert!(failed.usage, "{why:?}");
+            assert_eq!(failed.message, "--why takes one line of at most 200 characters", "{why:?}");
+        }
+        // Only a hold takes one, and one that has it before its item as well.
+        assert!(run(&["unhold", "system", "--why", "no"]).unwrap_err().usage);
+        assert!(run(&["undo", "system", "--why", "no"]).unwrap_err().usage);
+        assert!(run(&["hold", "system", "--why"]).unwrap_err().usage);
+    }
+
+    #[test]
+    fn a_hold_keeps_its_reason_and_the_next_hold_or_unhold_drops_what_no_longer_stands() {
+        let nginx = said("1.0.0-alpha.2", "Waiting for the nginx fix");
+        let dock = said("2026.3", "The new set breaks the dock");
+        let kept = Reasons { system: Some(nginx.clone()), firmware: Some(dock.clone()) };
+        let both = hold(Some("1.0.0-alpha.2"), Some("2026.3"));
+        // A hold at the version it had, with no reason said, keeps the one it had.
+        assert_eq!(reasons_after(&kept, &both, "system", None), kept);
+        // A reason said replaces the one there, and only that item's.
+        let newer = said("1.0.0-alpha.2", "Still waiting");
+        let after = reasons_after(&kept, &both, "system", Some(newer.clone()));
+        assert_eq!((after.system.as_ref(), after.firmware.as_ref()), (Some(&newer), Some(&dock)));
+        // Held at another version since (or lifted), the reason of the old hold goes.
+        let moved = hold(Some("1.0.0-alpha.3"), Some("2026.3"));
+        let after = reasons_after(&kept, &moved, "system", None);
+        assert_eq!((after.system, after.firmware.as_ref()), (None, Some(&dock)));
+        let lifted = hold(None, Some("2026.3"));
+        assert_eq!(reasons_after(&kept, &lifted, "system", None).system, None);
+        // The reason of a hold made now is for the version it was made at.
+        let fresh = said("1.0.0-alpha.3", "New hold");
+        let after = reasons_after(&kept, &moved, "system", Some(fresh.clone()));
+        assert_eq!(after.system, Some(fresh));
     }
 
     #[test]

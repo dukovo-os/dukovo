@@ -12,7 +12,7 @@ update - see, take, hold back and undo every update: the system, its firmware se
 *update* [*check*] [*--json*]++
 *update apply* [*--only* _part_] [*--yes*]++
 *update undo* _item_ [*--settings-from-before* | *--keep-settings*]++
-*update hold* _item_++
+*update hold* _item_ [*--why* _text_]++
 *update unhold* _item_++
 *update history* [*--json*]++
 *update advisories* [*--json*]++
@@ -80,7 +80,7 @@ that the update server offers.
 	*sysupdate rollback*. An app's ID goes back to the app's version
 	before, as *bundle rollback* does.
 
-*hold* _item_
+*hold* _item_ [*--why* _text_]
 	Holds one thing back at the version the channel offers now, or the
 	one it runs: a newer one is taken as usual, and the held one is
 	not. *system* and *firmware* are kept in the *[hold]* table of
@@ -89,8 +89,21 @@ that the update server offers.
 	hold is for a while, not for good. *sysupdate stage --version* still stages a held release
 	when asked by name.
 
+	*--why* keeps a reason with the hold, so that whoever sees the hold
+	sees why: one line of 1 to 200 characters, with no control character
+	(else the status is 2). Everyone who can sign in sees it, as
+	*update settings* and *update check* say it, so it is not for what
+	should stay private. For *system* and *firmware* it is kept in
+	_/system/state/sysupdate/hold-reasons.json_ with the version it was
+	given for, who gave it (the user who ran *elevate*, not root) and
+	when; it counts only while the hold names that version, and the
+	next *hold* or *unhold* drops one that does not. For an app it is
+	the note of the hold's event in bundled's history (*bundle*(1)).
+	Holding again at the same version without *--why* keeps the reason
+	it has.
+
 *unhold* _item_
-	Lifts the hold.
+	Lifts the hold, and the reason kept with it.
 
 *history*
 	Each change of the system and the firmware set, by the start that
@@ -246,11 +259,14 @@ same exit status.
 	from, which it records in */system/state/sysupdate/held.json*, and
 	that record names the version the hold holds; else *asked*. *held_at*
 	is when it was held, for *fell-back*, and *null* for *asked*.
+	*held_reason* is the text *update hold --why* kept with the hold,
+	or *null*: with no reason, unless *state* is *held*.
 
 	An app: *item* is its ID; *from* is the version installed and *to*
 	the newest its catalog lists. *state* is *update*, or *held*
 	when *bundle hold* holds it at its version. *catalog* is the
-	catalog it updates from, or *null* for its own feed.
+	catalog it updates from, or *null* for its own feed. *held_reason*
+	is why it is held, as for the system, or *null*.
 
 *running_withdrawn*
 	*null*, or, when the release keys withdrew the release this system
@@ -310,6 +326,13 @@ With no check kept, it prints *null*, and ends with status 3.
 	from and that hold is still there, an object with *version*, *why*
 	(*fell-back*), *at_ms*, when, in milliseconds since 1970, and
 	*start*, the number of the start that fell back.
+
+*hold_reasons*
+	An object with *system* and *firmware*, each *null* or, while the
+	hold at that version stands, the reason *update hold --why* kept
+	with it: an object with *version*, the version held, *text*, *by*,
+	the user ID of who held it, and *at_ms*, when. The words of
+	*settings* say it as *hold system reason = text*, where there is one.
 
 *apps_automatic*
 	Whether *bundled*(8) updates the apps of everyone by themselves.
@@ -458,6 +481,11 @@ _/system/state/sysupdate/held.json_
 	The release the health check held after it fell back from it,
 	which the health check writes, *check* and *settings* read, and
 	*unhold system* takes away with the hold.
+
+_/system/state/sysupdate/hold-reasons.json_
+	The reasons kept with the holds of *system* and *firmware*, one
+	line of JSON, mode 0644, which *hold --why* writes, *check* and
+	*settings* read, and *unhold* takes from.
 
 _/system/state/starts_
 	The starts' records that *history* reads (*changes*(1)).

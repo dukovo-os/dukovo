@@ -33,6 +33,7 @@ pub mod health;
 pub(crate) mod keep_rescue;
 pub(crate) mod online;
 pub(crate) mod place;
+pub(crate) mod reasons;
 pub(crate) mod request;
 pub(crate) mod stage;
 pub(crate) mod starts;
@@ -291,6 +292,10 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
                 "sysupdate: {offers}; it is held back, as Dukovo {held} is: `update unhold system` \
                  lifts the hold"
             );
+            // Why, only where the hold keeps a reason.
+            if let Some(reason) = reasons::Reasons::read().standing("system", Some(&held)) {
+                println!("  held: {}", reason.text);
+            }
             return Ok(0);
         }
         online::Plan::Update { offered, from, release } => {

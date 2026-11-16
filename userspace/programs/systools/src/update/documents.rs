@@ -18,6 +18,7 @@ use crate::bundles::registry::Place;
 use crate::json;
 use crate::sysupdate::checked::Found;
 use crate::sysupdate::online::Plan;
+use crate::sysupdate::reasons::Reasons;
 use crate::sysupdate::starts::{Outcome, Start};
 
 /// The members of `update --json` after `format`.
@@ -85,6 +86,8 @@ pub(crate) struct SystemOffer {
     held_because: Option<&'static str>,
     /// With `state` `held` because it fell back: when, RFC 3339.
     held_at: Option<String>,
+    /// With `state` `held`: the reason kept with the hold, if one was.
+    held_reason: Option<String>,
 }
 
 /// What staging a release fetches.
@@ -109,6 +112,8 @@ pub(crate) struct FirmwareSet {
     held_because: Option<&'static str>,
     /// With `state` `held` because it fell back: when, RFC 3339.
     held_at: Option<String>,
+    /// With `state` `held`: the reason kept with the hold, if one was.
+    held_reason: Option<String>,
 }
 
 /// An app with a newer version in its catalog or its own feed.
@@ -122,6 +127,8 @@ pub(crate) struct App {
     state: Found,
     /// The catalog it updates from; none for its own feed.
     catalog: Option<String>,
+    /// With `state` `held`: the reason kept with the hold, if one was.
+    held_reason: Option<String>,
 }
 
 /// A release that was withdrawn, which this system runs.
@@ -144,13 +151,14 @@ pub(crate) struct Unchecked {
 
 impl Offer {
     /// What `plan` says of the system running `running`; `download` is
-    /// what staging the update fetches, and `held` the record of a
-    /// release the health check held.
+    /// what staging the update fetches, `held` the record of a release
+    /// the health check held, and `reasons` those kept with the holds.
     pub(crate) fn system(
         plan: &Plan,
         running: &str,
         download: Option<Download>,
         held: Option<&Held>,
+        reasons: &Reasons,
     ) -> Offer {
         let (to, state) = match plan {
             Plan::Current { offered } => (offered, Found::Current),
@@ -177,6 +185,12 @@ impl Offer {
             Plan::Held { held: version, .. } => Some(Because::of(held, version)),
             _ => None,
         };
+        let held_reason = match plan {
+            Plan::Held { held: version, .. } => {
+                reasons.standing("system", Some(version)).map(|reason| reason.text.clone())
+            }
+            _ => None,
+        };
         Offer::System(SystemOffer {
             item: "system",
             from: running.to_string(),
@@ -189,15 +203,21 @@ impl Offer {
             download,
             held_because: why.as_ref().map(|why| why.because),
             held_at: why.and_then(|why| why.at),
+            held_reason,
         })
     }
 
     /// What the channel offers of firmware; `held` is the record of a
     /// release the health check held, which is of the system, so that a
-    /// firmware set is held because it was asked for.
-    pub(crate) fn firmware(offer: &FirmwareOffer, held: Option<&Held>) -> Offer {
+    /// firmware set is held because it was asked for, and `reasons` are
+    /// those kept with the holds.
+    pub(crate) fn firmware(offer: &FirmwareOffer, held: Option<&Held>, reasons: &Reasons) -> Offer {
         let why = (offer.found == Found::Held)
             .then(|| Because::of(held, offer.held.as_deref().unwrap_or_default()));
+        let held_reason = (offer.found == Found::Held)
+            .then(|| reasons.standing("firmware", offer.held.as_deref()))
+            .flatten()
+            .map(|reason| reason.text.clone());
         Offer::Firmware(FirmwareSet {
             item: "firmware",
             from: offer.running.clone(),
@@ -205,6 +225,7 @@ impl Offer {
             state: offer.found,
             held_because: why.as_ref().map(|why| why.because),
             held_at: why.and_then(|why| why.at),
+            held_reason,
         })
     }
 
@@ -216,6 +237,7 @@ impl Offer {
             to: row.to.clone(),
             state: if row.held { Found::Held } else { Found::Update },
             catalog: row.catalog.clone(),
+            held_reason: row.held_reason.clone().filter(|_| row.held),
         })
     }
 }
@@ -359,6 +381,7 @@ mod tests {
             to: "1.3.0".into(),
             catalog: Some("dukovo".into()),
             held,
+            held_reason: held.then(|| "app tests use this version".into()),
         }
     }
 
@@ -375,6 +398,7 @@ mod tests {
                     "0.14.0",
                     Some(Download { files: 37, bytes: 19_322_880 }),
                     None,
+                    &Reasons::default(),
                 ),
                 Offer::firmware(
                     &FirmwareOffer {
@@ -386,6 +410,7 @@ mod tests {
                         held: None,
                     },
                     None,
+                    &Reasons::default(),
                 ),
                 Offer::app(&app(false)),
                 Offer::app(&Available { id: "org.example.notes".into(), ..app(true) }),
@@ -417,8 +442,10 @@ mod tests {
 
     #[test]
     fn the_system_offer_says_why_it_waits_is_held_or_withdrawn() {
-        let said =
-            |plan: Plan| serde_json::to_value(Offer::system(&plan, "0.15.0", None, None)).unwrap();
+        let said = |plan: Plan| {
+            serde_json::to_value(Offer::system(&plan, "0.15.0", None, None, &Reasons::default()))
+                .unwrap()
+        };
         let waiting = said(Plan::Waiting {
             offered: "0.16.0".into(),
             day: 3,
@@ -454,7 +481,8 @@ mod tests {
         .unwrap();
         let held = Plan::Held { offered: "0.16.0".into(), held: "0.15.1".into() };
         let said = |record: Option<&Held>| {
-            serde_json::to_value(Offer::system(&held, "0.15.0", None, record)).unwrap()
+            serde_json::to_value(Offer::system(&held, "0.15.0", None, record, &Reasons::default()))
+                .unwrap()
         };
         let fell = said(Some(&record));
         assert_eq!(fell["held_because"], "fell-back");
@@ -468,8 +496,14 @@ mod tests {
         }
         // What is not held says nothing of why.
         let current = Plan::Current { offered: "0.15.0".into() };
-        let current =
-            serde_json::to_value(Offer::system(&current, "0.15.0", None, Some(&record))).unwrap();
+        let current = serde_json::to_value(Offer::system(
+            &current,
+            "0.15.0",
+            None,
+            Some(&record),
+            &Reasons::default(),
+        ))
+        .unwrap();
         assert_eq!(current["held_because"], serde_json::Value::Null);
         assert_eq!(current["held_at"], serde_json::Value::Null);
         // A firmware set is held because it was asked for.
@@ -481,9 +515,55 @@ mod tests {
             found: Found::Held,
             held: Some("2026.3".into()),
         };
-        let held = serde_json::to_value(Offer::firmware(&firmware, Some(&record))).unwrap();
+        let held =
+            serde_json::to_value(Offer::firmware(&firmware, Some(&record), &Reasons::default()))
+                .unwrap();
         assert_eq!(held["state"], "held");
         assert_eq!(held["held_because"], "asked");
+        assert_eq!(held["held_reason"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_held_offer_says_the_reason_kept_with_its_hold_while_that_hold_stands() {
+        use crate::sysupdate::reasons::Reason;
+        let reason = |version: &str, text: &str| Reason {
+            version: version.into(),
+            text: text.into(),
+            by: 1000,
+            at_ms: 1_794_000_000_000,
+        };
+        let reasons = Reasons {
+            system: Some(reason("0.15.1", "Waiting for the nginx fix")),
+            firmware: Some(reason("2026.3", "The new set breaks the dock")),
+        };
+        let held = Plan::Held { offered: "0.16.0".into(), held: "0.15.1".into() };
+        let system =
+            serde_json::to_value(Offer::system(&held, "0.15.0", None, None, &reasons)).unwrap();
+        assert_eq!(system["held_reason"], "Waiting for the nginx fix");
+        // Held at another version, the reason is of a hold that is gone.
+        let other = Plan::Held { offered: "0.16.0".into(), held: "0.15.2".into() };
+        let system =
+            serde_json::to_value(Offer::system(&other, "0.15.0", None, None, &reasons)).unwrap();
+        assert_eq!(system["held_reason"], serde_json::Value::Null);
+        // Not held, there is none to say.
+        let current = Plan::Current { offered: "0.15.0".into() };
+        let system =
+            serde_json::to_value(Offer::system(&current, "0.15.0", None, None, &reasons)).unwrap();
+        assert_eq!(system["held_reason"], serde_json::Value::Null);
+        let firmware = FirmwareOffer {
+            take: None,
+            said: String::new(),
+            running: Some("2026.2".into()),
+            offered: Some("2026.3".into()),
+            found: Found::Held,
+            held: Some("2026.3".into()),
+        };
+        let held = serde_json::to_value(Offer::firmware(&firmware, None, &reasons)).unwrap();
+        assert_eq!(held["held_reason"], "The new set breaks the dock");
+        let apps = serde_json::to_value(Offer::app(&app(true))).unwrap();
+        assert_eq!(apps["held_reason"], "app tests use this version");
+        let apps = serde_json::to_value(Offer::app(&app(false))).unwrap();
+        assert_eq!(apps["held_reason"], serde_json::Value::Null);
     }
 
     fn start(number: u64, started: i64, outcome: Outcome, system: &str, firmware: &str) -> Start {

@@ -47,7 +47,7 @@ bundle - make, check, sign, pack, install, update and run bundles, and say what 
 
 *bundle rollback* _id_ [*--for-everyone*]
 
-*bundle hold* _id_ [*--for-everyone*]
+*bundle hold* _id_ [*--for-everyone*] [*--why* _text_]
 
 *bundle unhold* _id_ [*--for-everyone*]
 
@@ -248,9 +248,15 @@ folder and as a _.dkv_ file, which is a zip of the folder.
 	next run, and its services' data at once. Running it again goes
 	forward again.
 
-*hold* _id_ [*--for-everyone*], *unhold* _id_ [*--for-everyone*]
+*hold* _id_ [*--for-everyone*] [*--why* _text_], *unhold* _id_ [*--for-everyone*]
 	Holds a bundle at its version, so that no update changes it, or
-	lets it update again.
+	lets it update again. *--why* keeps a reason with the hold: one line
+	of 1 to 200 characters, with no control character, which *list* and
+	*update --check* say beside the bundle and which everyone who can
+	run it sees, so it is not for what should stay private. It is the
+	note of the hold's event in the history, so it goes with that event
+	after the history's newest thousand or so; a hold of a bundle that
+	is held already changes nothing, the reason it has included.
 
 *history* [_id_]
 	Shows what was done to your bundles and everyone's, or to _id_, the
@@ -665,6 +671,12 @@ bundle you can run, by ID and then yours before everyone's:
 
 *held*
 	Whether it is held at its version.
+
+*held_reason*, *held_by*, *held_since_ms*
+	While it is held: why, the text *bundle hold --why* kept, or *null*
+	where none was given; who, the user ID that held it, or *null*;
+	and since when, in milliseconds since 1970. All *null* when it is
+	not held.
 
 *update*
 	The newest version its catalog listed when bundled last read it, if

@@ -133,6 +133,12 @@ system = "2026.3.1"
 	newer one is taken as usual. A held version gets no security
 	fixes. *update unhold* removes the line.
 
+	This file keeps no reason for a hold: *update hold --why* keeps it in
+	_/system/state/sysupdate/hold-reasons.json_, with the version it was
+	given for, and *update settings --json* says it as *hold_reasons*
+	while the hold names that version. Settings put back from before an
+	update, with an older hold, bring it back without the reason.
+
 	When the health check falls back from a release, it holds that
 	release here too, so that an unattended machine does not stage it
 	again at its next check, and keeps why in
