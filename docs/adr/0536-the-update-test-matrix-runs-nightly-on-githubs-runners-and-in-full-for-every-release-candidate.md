@@ -195,8 +195,9 @@ update. The first start of an update, which GRUB takes as a counted try
     starts at the restart and proves itself. The test checks that the
     server did each of these things.
   - `update-clock-ahead` and `update-clock-behind`: timed is given no
-    servers, so the clock stays as QEMU's `-rtc base=` sets it, a year
-    (365 days) ahead or behind the host's. A year ahead, `sysupdate
+    servers and, while it is stopped, the clock is set as QEMU's
+    `-rtc base=` started it, a year (365 days) ahead or behind the host's,
+    since a time server may have answered timed first. A year ahead, `sysupdate
     check` refuses the timestamp, which is good for a day, and says when
     it expired, what the computer's clock says and that the clock is to be
     set with `timedatectl set-time`; no file of a release is fetched, and

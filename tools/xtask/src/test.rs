@@ -3450,10 +3450,16 @@ fn year_ahead(ahead: i64) -> u64 {
 /// `-rtc`'s `base=` and the date `time` seconds since 1970 is, in UTC,
 /// which is how QEMU reads it.
 fn rtc_base(time: u64) -> String {
+    format!("base={}", clock_text(time).replacen(' ', "T", 1))
+}
+
+/// The date and time `time` seconds since 1970 is, in UTC, as
+/// `YYYY-MM-DD hh:mm:ss`: what *timedatectl set-time* takes.
+fn clock_text(time: u64) -> String {
     let (year, month, day) = crate::image::civil(time / 86_400);
     let seconds = time % 86_400;
     format!(
-        "base={year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
         seconds / 3600,
         seconds / 60 % 60,
         seconds % 60
@@ -12187,6 +12193,7 @@ mod tests {
         assert_eq!(rtc_base(1_794_560_400 + 3600), "base=2026-11-13T10:00:00");
         assert_eq!(rtc_base(0), "base=1970-01-01T00:00:00");
         assert_eq!(rtc_base(951_782_399), "base=2000-02-28T23:59:59");
+        assert_eq!(clock_text(951_782_399), "2000-02-28 23:59:59");
         assert!(rtc_ahead(3600).starts_with("base=20"));
         // A year behind and a year ahead are 730 days apart, a year of 365
         // days each way.

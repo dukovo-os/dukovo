@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! An update check on a computer whose clock is a year ahead (ADR 0536).
-//! timed is given no servers, so the clock stays as QEMU's `-rtc base=`
-//! sets it, and the test update server (`update-online`'s) serves the
-//! signed metadata it published, whose timestamp is good for a day.
+//! timed is given no servers and the clock is set as QEMU's `-rtc base=`
+//! started it, so that it stays a year ahead, and the test update server
+//! (`update-online`'s) serves the signed metadata it published, whose
+//! timestamp is good for a day.
 //! *sysupdate check* refuses the expired timestamp with a message that
 //! names when it expired and what the computer's clock says, and says to
 //! set the clock; the server is asked for no file of a release, and
@@ -38,23 +39,31 @@ pub const CASE: Case = Case {
     second: None,
 };
 
-/// Starts the machine with a clock that timed leaves alone, and the
-/// update server `server` followed, and checks that the clock is `year`'s.
+/// Starts the machine with a clock that timed leaves alone, `ahead`
+/// seconds past the host's (before it, when negative), and the update
+/// server `server` followed, and checks that the clock is in that year.
 ///
 /// timed is told to ask no server, and said so in its log, before
 /// anything else is done: a clock that a time server had set would test
-/// nothing.
+/// nothing. A server may have answered timed before it was told, so
+/// while it is stopped the clock is set `ahead` again, as QEMU started
+/// it.
 pub(crate) fn start_with_a_wrong_clock(
     vm: &mut Vm,
     server: &Server,
-    year: u64,
+    ahead: i64,
 ) -> Result<(), String> {
     started(vm, 'a')?;
     vm.expect_anywhere("netd: net0 has 10.0.2.15/24")?;
+    let clock = clock_text(host_time_ahead(ahead));
     run(
         vm,
-        "printf 'servers =\\nfallback =\\n' > /system/settings/timed && service timed restart; \
-         until log timed | grep -q 'NTS servers none'; do sleep 1; done; echo \"told: $((6 * 7))\"",
+        &format!(
+            "printf 'servers =\\nfallback =\\n' > /system/settings/timed && service timed stop \
+             > /dev/null && TZ=UTC timedatectl set-time '{clock}' && service timed start > \
+             /dev/null; until log timed | grep -q 'NTS servers none'; do sleep 1; done; echo \
+             \"told: $((6 * 7))\""
+        ),
         &["told: 42"],
     )?;
     let settings = "/system/settings/sysupdate";
@@ -70,7 +79,10 @@ pub(crate) fn start_with_a_wrong_clock(
     )?;
     run(
         vm,
-        &format!("echo \"year: $(timedatectl | grep 'Universal time' | grep -c ' {year}-')\""),
+        &format!(
+            "echo \"year: $(timedatectl | grep 'Universal time' | grep -c ' {}-')\"",
+            year_ahead(ahead)
+        ),
         &["year: 1"],
     )
 }
@@ -80,7 +92,7 @@ fn update_clock_ahead(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     let dir = Path::new("out/test").join(TEST_SERVER);
     let server = Server::start(&dir.join(TEST_SERVER_BEFORE_PULL))?;
     let year = year_ahead(A_YEAR);
-    start_with_a_wrong_clock(vm, &server, year)?;
+    start_with_a_wrong_clock(vm, &server, A_YEAR)?;
     seen_through(vm)?;
     run(vm, &format!("{SLOT_STATE} > /tmp/before; echo \"kept: $((7 * 7))\""), &["kept: 49"])?;
 
