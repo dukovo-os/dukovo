@@ -61,8 +61,20 @@ Apps:
 with an app's ID goes back on that app alone. `update hold system`
 skips the version offered now; a newer one comes as usual, and `update
 unhold system` lifts the hold. Keep a hold short: a held version gets
-no security fixes. `update history` lists each update by the start that
-first ran it, and whether that start was good.
+no security fixes. `update hold system --why "Waiting for the nginx fix"`
+keeps a reason with the hold, one line of up to 200 characters, which
+`update settings` and `update check` show to everyone who can sign in, so it
+is not for what should stay private; `update unhold` lifts the reason with the
+hold, and an app's reason is the note of its hold in `bundle history`.
+`update history` lists each update by the start that first ran it, and
+whether that start was good.
+
+`update later system --for 7d` puts the reminder of an update off for a week,
+`--for 1d` for a day and `--off` brings it back now. The update is not held,
+and `update apply` takes it when asked; nothing tells of it meanwhile, and a
+newer release ends the reminder. An update that fixes a security advisory, or
+whose advisories could not all be read, is never put off
+([UPD-107](../../errors/UPD-107.md)).
 
 Once a day, and ten minutes after each start, the *updated* service
 checks for you. By default it only tells you, at the console, that an
@@ -78,6 +90,19 @@ next start. On a metered connection, such as a phone's hotspot, the
 checks find updates and wait to download them (see [Metered
 connections](#metered-connections)). updates.toml(5) and update(8) have
 the details.
+
+## From the web console
+
+The web console's **Updates** page shows what each part of the machine can be
+updated to and stages the system's update, restarts to finish it, goes back to
+the version before, holds a version back and sets how the machine updates and
+what it checks after an update; see [Updates](web-console.md#updates) in the
+chapter on the console, which says what each button runs. A restart that
+finishes an update shows a banner on every page while the machine is away, and
+an update that was taken back says so and says what happened (see [The update
+was taken back](web-console.md#the-update-was-taken-back)). The apps, each
+with its own update, hold, going back and removal, are on the **Apps** page
+([Apps](web-console.md#apps)).
 
 ## Security advisories
 
