@@ -128,6 +128,17 @@ console.certificate is tried, as the console's reach is (TRIED). Their tasks
 are the commands the console shows, which the boot test admin-certificates
 runs, and the browser test web-console/certificates uses.
 
+Nor are the Alerts' changes but alerts.test: the email account
+and a webhook are set up with a password, an address and a token that a
+task reads from variables of the playbook that this test does not give,
+a browser's subscription is one that only a browser makes, and the other
+four take away or change a channel that a lab machine has not set up.
+Their tasks are the commands the console shows, which the boot test
+admin-alerts runs, and the browser test web-console/alerts uses (SET_UP).
+alerts.list, alerts.channels and alerts.push-key read what any machine
+has and are run, and so is alerts.test, which a machine with no channel
+answers with an empty list of deliveries.
+
 Nor are the changes that restart the machine, which GET /api/1/actions marks
 `restarts`: a restart, a shut down and the search for a bad change would end
 the round with the machine, and a shut down would leave it off. Their tasks
@@ -173,9 +184,8 @@ from console import (
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
 # Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps,
-# Databases and Websites pages whose examples need what only their tests set up
-# (SET_UP); and the grow of a
-# second disk (ON_A_SECOND_DISK).
+# Databases, Websites and Alerts pages whose examples need what only their
+# tests set up (SET_UP); and the grow of a second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
     "firewall.add", "firewall.replace", "firewall.remove", "firewall.keep", "firewall.undo",
@@ -224,6 +234,14 @@ UNDER = {"ssh.on", "ssh.off"}
 # does not give; certificate.revoke and certificate.remove name the
 # certificate shop, which only admin-certificates makes; machine.rename
 # would rename the lab machine.
+# alerts.email, alerts.webhook-add and alerts.push-add take a password, an
+# address and a token or a subscription, which a task reads from variables of
+# the playbook that this test does not give, and each makes a channel that
+# would try to deliver to a machine that is not there; alerts.email-remove,
+# alerts.webhook-remove, alerts.push-remove and alerts.channel-about need the
+# channel to be there, which a lab machine has not set up. alerts.list,
+# alerts.channels, alerts.push-key and alerts.test read, or send to no
+# channel, and are run.
 SET_UP = {
     "snapshots.browse", "snapshots.browse-all", "snapshots.take", "snapshots.restore", "snapshots.restore-all",
     "backups.show", "backups.key", "backups.run", "backups.verify", "backups.add", "backups.remove", "backups.restore",
@@ -239,6 +257,8 @@ SET_UP = {
     "databases.add", "databases.password", "databases.allow", "databases.deny", "databases.remove",
     "apps.sheet", "apps.install",
     "websites.add", "websites.https", "websites.remove",
+    "alerts.email", "alerts.email-remove", "alerts.webhook-add", "alerts.webhook-remove",
+    "alerts.push-add", "alerts.push-remove", "alerts.channel-about",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.

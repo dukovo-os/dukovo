@@ -21,7 +21,7 @@ use std::collections::HashMap;
 
 use spark_api::show::{HealthState, Service, Show, State};
 
-use crate::alerts::protocol::{Alert, Severity, TITLE_MAX};
+use crate::alerts::protocol::{About, Alert, Severity, TITLE_MAX};
 
 /// How long a service must stay wrong before it is an alert, in
 /// milliseconds of Spark's clock.
@@ -95,6 +95,7 @@ fn alert(service: &Service) -> Alert {
         severity,
         title: title.chars().take(TITLE_MAX).collect(),
         detail: detail(service),
+        about: Some(About::Stopped.word().to_string()),
     }
 }
 
@@ -176,6 +177,7 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "service:web");
         assert_eq!(alerts[0].severity, Severity::Warning);
+        assert_eq!(alerts[0].kind(), Some(About::Stopped));
     }
 
     #[test]

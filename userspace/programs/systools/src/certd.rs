@@ -48,7 +48,7 @@ use std::time::{Duration, Instant};
 
 use ring::rand::{SecureRandom, SystemRandom};
 
-use crate::alerts::protocol::{Alert, Severity};
+use crate::alerts::protocol::{About, Alert, Severity};
 use crate::args::Args;
 use crate::cert::acme::{self, Who};
 use crate::cert::history::{self, By, Event};
@@ -584,7 +584,8 @@ fn alerts_of(notices: &[Notice]) -> Vec<Alert> {
                 severity,
                 &notice.title,
                 &detail,
-            );
+            )
+            .about(About::Stopped);
             match alert.invalid() {
                 None => Some(alert),
                 Some(why) => {
@@ -784,6 +785,7 @@ mod tests {
         assert_eq!(warning.len(), 1);
         assert_eq!(warning[0].key, "certificate:a.example");
         assert_eq!(warning[0].severity, Severity::Warning);
+        assert_eq!(warning[0].kind(), Some(About::Stopped));
         assert_eq!(warning[0].title, "The certificate a.example runs out on 2027-02-05");
         assert_eq!(
             warning[0].detail,

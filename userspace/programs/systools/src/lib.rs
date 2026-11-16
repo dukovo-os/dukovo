@@ -483,9 +483,12 @@ const TOOLS: &[(&str, Tool)] = &[
 
 /// The tools whose Linux versions exit with 2, not 1, for a mistake in
 /// the command line: procps-ng's pgrep and pkill, iputils' ping, and
-/// which; and update, whose exit status 1 says that something applies
-/// (`update advisories`, ADR 0534).
-const USAGE_TWO: &[&str] = &["getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "which"];
+/// which; update, whose exit status 1 says that something applies
+/// (`update advisories`, ADR 0534); and alerts, whose exit status 1 says
+/// that the channel it was to change is not there, or that a test through
+/// a channel failed.
+const USAGE_TWO: &[&str] =
+    &["alerts", "getfacl", "pgrep", "ping", "pkill", "setfacl", "update", "which"];
 
 /// The tool named `name`.
 fn tool(name: &str) -> Option<Tool> {

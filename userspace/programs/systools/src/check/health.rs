@@ -113,7 +113,7 @@ mod tests {
     use crate::util;
 
     fn active(key: &str, severity: Severity, title: &str, detail: &str) -> Active {
-        let alert = Alert { key: key.into(), severity, title: title.into(), detail: detail.into() };
+        let alert = Alert::new(key.into(), severity, title, detail);
         Active { source: "metricsd".into(), alert, since: NOW - 600, changed: NOW - 600 }
     }
 

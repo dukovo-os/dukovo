@@ -659,6 +659,138 @@ compares = false
 tests = { checks = "admind::actions::reliability::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/reliability", ansible = "web-console/ansible" }
 
 [[action]]
+id = "alerts.list"
+title = "List the alerts"
+area = "alerts"
+changes = false
+method = "GET"
+path = "/api/1/alerts"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.channels"
+title = "Show where alerts go"
+area = "alerts"
+changes = false
+method = "GET"
+path = "/api/1/alerts/channels"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.test"
+title = "Send a test alert"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/test"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.email"
+title = "Set up email for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/email"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.email-remove"
+title = "Remove email for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/email/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.webhook-add"
+title = "Add a webhook for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/webhooks"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.webhook-remove"
+title = "Remove a webhook for alerts"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/webhooks/{number}/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.push-key"
+title = "Read the key for browser alerts"
+area = "alerts"
+changes = false
+method = "GET"
+path = "/api/1/alerts/push/key"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.push-add"
+title = "Get alerts in a browser"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/push"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.push-remove"
+title = "Stop alerts in a browser"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/push/{id}/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "alerts.channel-about"
+title = "Choose the kinds of alert a channel is told of"
+area = "alerts"
+changes = true
+method = "POST"
+path = "/api/1/alerts/channels/about"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::alerts::tests", route = "admin-alerts", same_as_command = "admin-alerts", browser = "web-console/alerts", ansible = "web-console/ansible" }
+
+[[action]]
 id = "storage.show"
 title = "Show the disks and volumes"
 area = "storage"

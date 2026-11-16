@@ -216,6 +216,11 @@ fn answer(
             alertd.push_remove(request.id.as_deref().ok_or("push-remove needs an id")?)?;
             ok(out)
         }
+        "push-about" => {
+            let id = request.id.as_deref().ok_or("push-about needs an id")?;
+            alertd.push_about(id, request.about.as_deref())?;
+            ok(out)
+        }
         "push-list" => lines(out, &alertd.push_list()),
         other => Err(format!("alertd does not know '{other}'")),
     }
@@ -392,6 +397,62 @@ mod tests {
         let lines = ask_json(&alertd, &request("status"));
         let channel: Channel = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!((channel.channel.as_str(), channel.waiting), ("json (127.0.0.1)", 0));
+        // What the console shows of it: what it is and where, never the
+        // address, and the numbers a command takes.
+        assert_eq!(
+            (channel.kind.as_str(), channel.host.as_deref(), channel.number, channel.about),
+            ("json", Some("127.0.0.1"), Some(1), None)
+        );
+        assert_eq!((channel.severity, channel.cleared), (Severity::Warning, true));
+        assert!(!lines[0].contains("/alerts"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn a_browsers_kinds_are_asked_for_by_its_id_and_status_and_list_say_them() {
+        let (alertd, _screen, dir) = fixture("socket-about", Vec::new());
+        super::super::push::start(&dir);
+        let subscribe = Subscribe {
+            name: "Phone".into(),
+            endpoint: "https://updates.push.services.mozilla.com/wpush/v2/gAAAA".into(),
+            p256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+                .into(),
+            auth: "BTBZMqHH6r4Tts7J_aSIgg".into(),
+            by: 1000,
+            ..Subscribe::default()
+        };
+        let added =
+            ask_json(&alertd, &Request { subscribe: Some(subscribe), ..request("push-add") });
+        let id = serde_json::from_str::<Added>(&added[0]).unwrap().id;
+        let about = |words: Option<&[&str]>| Request {
+            id: Some(id.clone()),
+            about: words.map(|words| words.iter().map(ToString::to_string).collect()),
+            ..request("push-about")
+        };
+        assert_eq!(ask_json(&alertd, &about(Some(&["data", "hardware"]))), [r#"{"ok":true}"#]);
+        let listed: Browser =
+            serde_json::from_str(&ask_json(&alertd, &request("push-list"))[0]).unwrap();
+        assert_eq!(listed.about, Some(vec!["data".to_string(), "hardware".to_string()]));
+        let status: Channel =
+            serde_json::from_str(&ask_json(&alertd, &request("status"))[0]).unwrap();
+        assert_eq!(
+            (status.kind.as_str(), status.id.as_deref(), status.name.as_deref()),
+            ("push", Some(id.as_str()), Some("Phone"))
+        );
+        assert_eq!(status.about, Some(vec!["data".to_string(), "hardware".to_string()]));
+        assert_eq!(status.host.as_deref(), Some("updates.push.services.mozilla.com"));
+        // None is every kind again.
+        assert_eq!(ask_json(&alertd, &about(None)), [r#"{"ok":true}"#]);
+        let status: Channel =
+            serde_json::from_str(&ask_json(&alertd, &request("status"))[0]).unwrap();
+        assert_eq!(status.about, None);
+        // What is refused says why, and changes nothing.
+        let refused = ask_json(&alertd, &about(Some(&["colour"])));
+        assert!(
+            refused[0].contains("about names colour, which is no kind of alert"),
+            "{refused:?}"
+        );
+        let no_id = Request { ask: "push-about".into(), ..Request::default() };
+        assert_eq!(ask_json(&alertd, &no_id), [r#"{"error":"push-about needs an id"}"#]);
     }
 
     fn refusal(lines: &[String]) -> String {

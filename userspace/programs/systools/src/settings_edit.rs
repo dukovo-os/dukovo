@@ -12,7 +12,8 @@
 //! edits the console makes, which keep the comment after a value they replace and
 //! put a new key where a person would. [`set_strings`], [`push_string`],
 //! [`remove_string`] and [`remove_key`] edit a list of words, and
-//! [`push_table`] and [`remove_table`] the `[[tables]]` of one.
+//! [`push_table`] and [`remove_table`] the `[[tables]]` of one, and
+//! [`take_table`] takes out a `[table]`.
 //!
 //! [`write`] puts the new text into a new file beside the old one, which
 //! gets the old file's owner and mode and is made durable, and then takes
@@ -347,12 +348,16 @@ pub fn push_table<'a>(document: &'a mut DocumentMut, name: &str) -> Option<&'a m
 /// Takes out the first of the `[[name]]` tables of `document` that
 /// `which` picks, with the comments above it. When it was the last one,
 /// those comments stay at the end of the file, where they were before the
-/// first was added. Returns false when none is picked.
+/// first was added. When it was the first of several, and the first thing
+/// in the file, the comments above it are the file's own (the ones
+/// [`push_table`] put above the first it made), and stay above the table
+/// that is first now. Returns false when none is picked.
 pub fn remove_table(
     document: &mut DocumentMut,
     name: &str,
     which: impl Fn(&Table) -> bool,
 ) -> bool {
+    let first_in_file = document.iter().next().is_some_and(|(key, _)| key == name);
     let Some(tables) = document.get_mut(name).and_then(Item::as_array_of_tables_mut) else {
         return false;
     };
@@ -364,11 +369,63 @@ pub fn remove_table(
         .unwrap_or_default()
         .to_string();
     tables.remove(at);
-    if tables.is_empty() {
-        document.remove(name);
-        // What `push_table` put above the table: the comments, and the
-        // blank line it adds before the table that follows them.
-        if !prefix.trim().is_empty() {
+    if !tables.is_empty() {
+        if first_in_file
+            && at == 0
+            && !prefix.trim().is_empty()
+            && let Some(next) = tables.get_mut(0)
+        {
+            let own = next.decor().prefix().and_then(|own| own.as_str()).unwrap_or_default();
+            let kept = format!("{}\n\n", prefix.trim_end_matches('\n'));
+            let above = if own.trim().is_empty() { kept } else { format!("{kept}{own}") };
+            next.decor_mut().set_prefix(above);
+        }
+        return true;
+    }
+    document.remove(name);
+    // What `push_table` put above the table: the comments, and the
+    // blank line it adds before the table that follows them.
+    if !prefix.trim().is_empty() {
+        let after = document.trailing().as_str().unwrap_or_default().to_string();
+        document.set_trailing(format!("{}\n{after}", prefix.trim_end_matches('\n')));
+    }
+    true
+}
+
+/// Takes out the table `name` of `document`, with the comments above it.
+/// When it is the first table, the comments above it are the file's own
+/// (the ones [`table`] left above the first table it made), and they stay,
+/// above the next table or at the end of the file. Returns false when
+/// there is no table of that name.
+pub fn take_table(document: &mut DocumentMut, name: &str) -> bool {
+    let Some(table) = document.get(name).and_then(Item::as_table) else { return false };
+    let prefix =
+        table.decor().prefix().and_then(|prefix| prefix.as_str()).unwrap_or_default().to_string();
+    let first = document.iter().next().is_some_and(|(key, _)| key == name);
+    document.remove(name);
+    if !first || prefix.trim().is_empty() {
+        return true;
+    }
+    let kept = format!("{}\n\n", prefix.trim_end_matches('\n'));
+    let next = document.iter_mut().next().map(|(_, item)| item);
+    let above = match next {
+        Some(Item::Table(table)) => Some(table.decor_mut()),
+        Some(Item::ArrayOfTables(tables)) => tables.get_mut(0).map(Table::decor_mut),
+        _ => None,
+    };
+    match above {
+        // Where the table had a blank line above it, this one has the
+        // file's comments and one.
+        Some(decor)
+            if decor.prefix().and_then(|p| p.as_str()).is_none_or(|p| p.trim().is_empty()) =>
+        {
+            decor.set_prefix(kept);
+        }
+        Some(decor) => {
+            let own = decor.prefix().and_then(|p| p.as_str()).unwrap_or_default().to_string();
+            decor.set_prefix(format!("{kept}{own}"));
+        }
+        None => {
             let after = document.trailing().as_str().unwrap_or_default().to_string();
             document.set_trailing(format!("{}\n{after}", prefix.trim_end_matches('\n')));
         }
@@ -917,6 +974,19 @@ session-hours = 12
         assert!(back.contains("[[check]]\nname = \"b\"") && !back.contains("name = \"a\""));
         let gone = made(&one, |d| assert!(remove_table(d, "check", |_| true)));
         assert_eq!(gone, shipped);
+        // The first of two takes the file's comments to the second.
+        let header = "# The header.\n\n# Checks of your own.\n";
+        let pair = made(header, |d| {
+            push_table(d, "check").unwrap().insert("name", Item::Value(Value::from("a")));
+            push_table(d, "check").unwrap().insert("name", Item::Value(Value::from("b")));
+        });
+        assert_eq!(pair, format!("{header}\n[[check]]\nname = \"a\"\n\n[[check]]\nname = \"b\"\n"));
+        let after = made(&pair, |d| {
+            assert!(remove_table(d, "check", |t| t.get("name").and_then(Item::as_str) == Some("a")));
+        });
+        assert_eq!(after, format!("{header}\n[[check]]\nname = \"b\"\n"));
+        let last = made(&after, |d| assert!(remove_table(d, "check", |_| true)));
+        assert_eq!(last, header);
         made(&one, |d| assert!(!remove_table(d, "check", |_| false)));
         made(&one, |d| assert!(!remove_table(d, "other", |_| true)));
         // A table in a file with nothing else, and a key that holds a value.
@@ -925,5 +995,32 @@ session-hours = 12
         });
         assert_eq!(alone, "[[check]]\nname = \"a\"\n");
         made("check = 3\n", |d| assert!(push_table(d, "check").is_none()));
+    }
+
+    #[test]
+    fn a_table_goes_with_its_comments_and_the_files_own_comments_stay() {
+        let shipped = "# SPDX header\n\n# Where alerts go.\n# [email]\n# to = []\n";
+        let set = |d: &mut DocumentMut| {
+            set_string(table(d, "email").unwrap(), "server", "smtp.example.com");
+        };
+        let one = made(shipped, set);
+        assert_eq!(one, format!("{shipped}\n[email]\nserver = \"smtp.example.com\"\n"));
+        // The table alone: the file is as it was.
+        assert_eq!(made(&one, |d| assert!(take_table(d, "email"))), shipped);
+        // With a table of a list after it, the comments go above that.
+        let two = made(&one, |d| {
+            push_table(d, "webhook").unwrap().insert("kind", Item::Value(Value::from("ntfy")));
+        });
+        let gone = made(&two, |d| assert!(take_table(d, "email")));
+        assert_eq!(gone, format!("{shipped}\n[[webhook]]\nkind = \"ntfy\"\n"));
+        // A table that is not the first takes its own comments with it.
+        let late = "[[webhook]]\nkind = \"ntfy\"\n\n# The mail.\n[email]\nserver = \"s\"\n";
+        assert_eq!(
+            made(late, |d| assert!(take_table(d, "email"))),
+            "[[webhook]]\nkind = \"ntfy\"\n"
+        );
+        // Nothing to take, and a key that is not a table.
+        made(&one, |d| assert!(!take_table(d, "console")));
+        made("email = 3\n", |d| assert!(!take_table(d, "email")));
     }
 }

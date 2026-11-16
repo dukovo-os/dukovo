@@ -1020,6 +1020,42 @@ fn the_consoles_files_are_served_whole_and_any_page_of_it_is_the_shell() {
 }
 
 #[test]
+fn the_service_worker_and_the_manifest_are_the_consoles_files_for_anyone_and_the_worker_is_never_cached()
+ {
+    run(async {
+        let world = world("files-worker");
+        let worker = send(&world, get("/sw.js")).await;
+        assert_eq!((worker.status, worker.body.as_str()), (200, fixture::WORKER));
+        assert_eq!(worker.header("content-type"), Some("text/javascript; charset=utf-8"));
+        // A browser asks for a new worker every time it starts one, and so is told when it
+        // has changed.
+        assert_eq!(worker.header("cache-control"), Some("no-cache"));
+        assert!(worker.header("etag").is_some());
+        // Its scope is its own folder, the console's whole address: the header that
+        // would widen it is not sent.
+        assert_eq!(worker.header("service-worker-allowed"), None);
+        let policy = worker.header("content-security-policy").unwrap();
+        assert!(policy.contains("worker-src 'self'") && policy.contains("manifest-src 'self'"));
+        let manifest = send(&world, get("/manifest.webmanifest")).await;
+        assert_eq!((manifest.status, manifest.body.as_str()), (200, fixture::WEB_MANIFEST));
+        assert_eq!(manifest.header("content-type"), Some("application/manifest+json"));
+        assert_eq!(manifest.header("cache-control"), Some("no-cache"));
+        assert_eq!(manifest.header("service-worker-allowed"), None);
+        // They are files, so neither is the page router's: one that is not listed is a 404.
+        for path in ["/sw2.js", "/other.webmanifest", "/icons/app-192.png"] {
+            let none = send(&world, get(path)).await;
+            assert_eq!((none.status, none.error().as_str()), (404, "ADM-116"), "{path}");
+        }
+        // The one the browser holds is not sent again.
+        let held = get("/sw.js").with("if-none-match", worker.header("etag"));
+        let answered = send(&world, held).await;
+        assert_eq!((answered.status, answered.body.as_str()), (304, ""));
+        assert_eq!(answered.header("cache-control"), Some("no-cache"));
+        assert_eq!(answered.header("service-worker-allowed"), None);
+    });
+}
+
+#[test]
 fn a_file_has_the_manifests_hash_as_its_etag_and_one_the_browser_holds_is_304_with_no_body() {
     run(async {
         let world = world("files-etag");

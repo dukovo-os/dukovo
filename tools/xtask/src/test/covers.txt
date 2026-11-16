@@ -49,6 +49,13 @@ admin-accounts userspace/programs/systools/src/elevate.rs userspace/programs/sys
 admin-accounts userspace/programs/sshd/ ports/openssh/ ports/uutils-coreutils/ ports/netcat/
 admin-accounts userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sshd.toml
 admin-accounts tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+admin-alerts userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-alerts userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-alerts userspace/programs/systools/src/alerts.rs userspace/programs/systools/src/alerts/ userspace/programs/systools/src/alertd.rs
+admin-alerts userspace/programs/systools/src/alertd/ userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
+admin-alerts userspace/programs/systools/src/settings_edit.rs userspace/programs/monitoring-test/ ports/curl/
+admin-alerts userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/alertd.toml
+admin-alerts userspace/spark/tests/services/admin-alerts/ tools/xtask/src/test/console_client.rs ports/netcat/ ports/openssl/
 admin-backups userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
 admin-backups userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
 admin-backups userspace/programs/systools/src/backup.rs userspace/programs/systools/src/backup/ userspace/programs/systools/src/backup_errors.rs

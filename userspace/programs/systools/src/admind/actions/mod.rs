@@ -48,6 +48,7 @@
 
 mod account;
 mod accounts;
+mod alerts;
 mod apps;
 mod backups;
 mod bisect;
@@ -1153,6 +1154,17 @@ registry![
     reliability::Start,
     reliability::Dumps,
     reliability::Alerts,
+    alerts::List,
+    alerts::Channels,
+    alerts::Test,
+    alerts::Email,
+    alerts::EmailRemove,
+    alerts::WebhookAdded,
+    alerts::WebhookRemove,
+    alerts::PushKey,
+    alerts::PushAdded,
+    alerts::PushRemove,
+    alerts::ChannelAboutSet,
     storage::Show,
     storage::Usage,
     storage::Health,

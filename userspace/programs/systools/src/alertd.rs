@@ -49,6 +49,7 @@ pub(crate) mod text;
 pub(crate) mod trouble;
 mod webhook;
 
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::os::fd::AsRawFd;
@@ -131,7 +132,15 @@ struct Alertd {
     /// How many connections of those who may not ask are being read, to
     /// be refused.
     refusing: AtomicUsize,
+    /// The sources and the words they gave as the kind of an alert that
+    /// is none, which the log has said already.
+    unknown_kinds: Mutex<HashSet<(String, String)>>,
 }
+
+/// The most sources and words alertd remembers saying that a word is no
+/// kind of alert, so that a program that gives a new word each time fills
+/// neither the log nor the memory.
+const UNKNOWN_KINDS_MAX: usize = 64;
 
 /// Who hears of a change besides the history: the channels, from the
 /// queue, and the consoles, in a notification.
@@ -168,6 +177,7 @@ impl Alertd {
             tells,
             serving: AtomicUsize::new(0),
             refusing: AtomicUsize::new(0),
+            unknown_kinds: Mutex::new(HashSet::new()),
         }
     }
 
@@ -204,6 +214,9 @@ impl Alertd {
         for line in dropped {
             log(4, &line);
         }
+        for line in self.unknown_kind_lines(&changes) {
+            log(4, &line);
+        }
         if let Some(active) = alerts {
             // A full queue loses nothing that matters: the sign-in notice
             // is written from the next telling.
@@ -211,6 +224,30 @@ impl Alertd {
             let _ = self.tells.try_send(Tell { changes: told, active });
         }
         Ok(changes)
+    }
+
+    /// The lines to say in the log, once for each source and word, that an
+    /// alert in `changes` is about a word that is no kind: it is sent to
+    /// every channel, as an alert about none is, and never dropped.
+    fn unknown_kind_lines(&self, changes: &[Change]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for change in changes {
+            let Some(word) = change.alert.about.as_deref() else { continue };
+            if change.alert.kind().is_some() {
+                continue;
+            }
+            let mut said = self.unknown_kinds.lock().unwrap_or_else(PoisonError::into_inner);
+            if said.len() < UNKNOWN_KINDS_MAX
+                && said.insert((change.source.clone(), word.to_string()))
+            {
+                lines.push(format!(
+                    "alerts from {} name a kind alertd does not know, {word}: sent to every \
+                     channel",
+                    change.source
+                ));
+            }
+        }
+        lines
     }
 
     /// Raises, or updates, `alert` for `source`.
@@ -258,12 +295,12 @@ impl Alertd {
     /// too, and is not queued: it is sent here, and not again. How each
     /// went is the channel's newest delivery in `alerts status`.
     fn test(&self, source: &str) -> Vec<Delivery> {
-        let alert = Alert {
-            key: "test".into(),
-            severity: Severity::Warning,
-            title: "Test alert from alertd".into(),
-            detail: "If you can read this, alerts reach this channel.".into(),
-        };
+        let alert = Alert::new(
+            "test".into(),
+            Severity::Warning,
+            "Test alert from alertd",
+            "If you can read this, alerts reach this channel.",
+        );
         let Ok(changes) =
             self.apply(|state, now| Ok(vec![state.test(source, alert, now)]), Reach::SCREEN)
         else {
@@ -335,6 +372,20 @@ impl Alertd {
         })?;
         log(6, &line.unwrap_or_default());
         Ok(id)
+    }
+
+    /// Makes the kinds of alert the browser `id` is told of `about`, none
+    /// for every kind.
+    fn push_about(&self, id: &str, about: Option<&[String]>) -> Result<(), String> {
+        let (name, told) = self.change_pushes(|browsers, _| {
+            let name = push::set_about(browsers, id, about)?;
+            let told =
+                browsers.iter().find(|browser| browser.id == id).and_then(|b| b.about.clone());
+            Ok((name, told))
+        })?;
+        let told = told.map_or("every kind".to_string(), |words| words.join(", "));
+        log(6, &format!("{name} is told of: {told}"));
+        Ok(())
     }
 
     /// Takes away the browser `id`'s subscription.
@@ -689,18 +740,20 @@ mod tests {
             severity: Severity::Warning,
             title: format!("{key} title"),
             detail: String::new(),
+            about: None,
         }
     }
 
     pub(super) fn json_channel(port: u16) -> Configured {
         Configured {
             name: "json (127.0.0.1)".into(),
-            filter: Filter { severity: Severity::Warning, cleared: true },
+            filter: Filter::new(Severity::Warning, true),
             target: Target::Webhook(Webhook {
                 kind: HookKind::Json,
                 url: format!("http://127.0.0.1:{port}/alerts"),
                 token: None,
                 room: None,
+                place: 1,
             }),
         }
     }
@@ -756,6 +809,124 @@ mod tests {
         // alerts.toml read again (there is none here) keeps the browsers.
         alertd.reload();
         assert_eq!(waiting(&alertd).len(), 2);
+    }
+
+    /// Which channel's message holds which alerts, as the outbox says it.
+    fn queued(dir: &Path) -> Vec<(String, Vec<String>)> {
+        let text = fs::read_to_string(dir.join(state::OUTBOX_FILE)).unwrap_or_else(|_| "[]".into());
+        let messages: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+        messages
+            .iter()
+            .map(|message| {
+                let keys = message["changes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|change| change["alert"]["key"].as_str().unwrap().to_string())
+                    .collect();
+                (message["channel"].as_str().unwrap().to_string(), keys)
+            })
+            .collect()
+    }
+
+    fn about(key: &str, about: Option<&str>) -> Alert {
+        Alert { about: about.map(str::to_string), ..warning(key) }
+    }
+
+    #[test]
+    fn a_channel_is_queued_the_alerts_of_the_kinds_it_is_told_of_and_those_of_none() {
+        use crate::alerts::protocol::{About, Kinds};
+        let told = |name: &str, kinds: &[About]| {
+            let mut channel = json_channel(1);
+            channel.name = name.into();
+            channel.filter.about = Kinds::of(kinds);
+            channel
+        };
+        let channels = vec![
+            told("data", &[About::Data]),
+            told("hardware", &[About::Hardware]),
+            json_channel(1),
+        ];
+        let (alertd, _screen, dir) = fixture("kinds", channels);
+        alertd.raise("backup", about("backup-late", Some("data"))).unwrap();
+        alertd.raise("metricsd", about("temp:cpu", Some("hardware"))).unwrap();
+        alertd.raise("updated", about("update-not-verified", None)).unwrap();
+        alertd.raise("colours", about("colour", Some("colour"))).unwrap();
+        let queue = queued(&dir);
+        let keys = |channel: &str| -> Vec<&str> {
+            queue
+                .iter()
+                .filter(|(name, _)| name == channel)
+                .flat_map(|(_, keys)| keys.iter().map(String::as_str))
+                .collect()
+        };
+        // An alert about none, and one about a word that is no kind, go to
+        // every channel.
+        assert_eq!(keys("data"), ["backup-late", "update-not-verified", "colour"]);
+        assert_eq!(keys("hardware"), ["temp:cpu", "update-not-verified", "colour"]);
+        assert_eq!(keys("json (127.0.0.1)").len(), 4);
+    }
+
+    #[test]
+    fn a_word_that_is_no_kind_is_said_once_for_each_source_and_never_dropped() {
+        let (alertd, _screen, _dir) = fixture("kinds-said", vec![json_channel(1)]);
+        let change = |source: &str, word: Option<&str>| Change {
+            at: 0,
+            source: source.into(),
+            state: Kind::Raised,
+            alert: about("k", word),
+        };
+        let said = alertd.unknown_kind_lines(&[
+            change("backup", Some("colour")),
+            change("backup", Some("colour")),
+            change("backup", Some("data")),
+            change("backup", None),
+            change("metricsd", Some("colour")),
+            change("backup", Some("shape")),
+        ]);
+        assert_eq!(
+            said,
+            [
+                "alerts from backup name a kind alertd does not know, colour: sent to every channel",
+                "alerts from metricsd name a kind alertd does not know, colour: sent to every channel",
+                "alerts from backup name a kind alertd does not know, shape: sent to every channel",
+            ]
+        );
+        // Said once: the same again is said no more.
+        assert!(alertd.unknown_kind_lines(&[change("backup", Some("colour"))]).is_empty());
+        // It is sent, all the same.
+        alertd.raise("backup", about("k2", Some("colour"))).unwrap();
+        assert_eq!(alertd.status()[0].waiting, 1);
+    }
+
+    #[test]
+    fn a_browsers_kinds_are_kept_changed_and_read_back_as_its_filter() {
+        use crate::alerts::protocol::{About, Kinds};
+        let (alertd, _screen, dir) = fixture("push-about", Vec::new());
+        push::start(&dir);
+        let words =
+            |words: &[&str]| Some(words.iter().map(ToString::to_string).collect::<Vec<_>>());
+        let told = Subscribe { about: words(&["hardware"]), ..browser("Phone") };
+        let id = alertd.push_add(told).unwrap();
+        let filter = |alertd: &Alertd| alertd.lock().settings.channels[0].filter.about;
+        assert_eq!(filter(&alertd), Kinds::of(&[About::Hardware]));
+        assert_eq!(alertd.push_list()[0].about, words(&["hardware"]));
+        // Another set of kinds, kept in the order of the words, and the file.
+        alertd.push_about(&id, words(&["stopped", "data"]).as_deref()).unwrap();
+        assert_eq!(filter(&alertd), Kinds::of(&[About::Data, About::Stopped]));
+        assert_eq!(push::load(&dir).0[0].about, words(&["data", "stopped"]));
+        // All three, an empty list and none are every kind: no key kept.
+        for every in [words(&["data", "stopped", "hardware"]), words(&[]), None] {
+            alertd.push_about(&id, every.as_deref()).unwrap();
+            assert_eq!(filter(&alertd), Kinds::ALL);
+            assert_eq!(push::load(&dir).0[0].about, None);
+        }
+        // A word that is no kind, and a browser there is not, change nothing.
+        let refused = alertd.push_about(&id, words(&["data", "colour"]).as_deref()).unwrap_err();
+        assert!(refused.contains("about names colour, which is no kind of alert"), "{refused}");
+        assert_eq!(push::load(&dir).0[0].about, None);
+        let missing = alertd.push_about("0000000000000000", None).unwrap_err();
+        assert!(missing.contains("no browser gets alerts as 0000000000000000"), "{missing}");
     }
 
     #[test]

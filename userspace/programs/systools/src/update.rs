@@ -68,7 +68,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::alerts::client::Screen;
-use crate::alerts::protocol::{Alert, Severity};
+use crate::alerts::protocol::{About, Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
 use crate::sysupdate::checked::Found;
@@ -927,17 +927,36 @@ fn weekly_verify() {
         if let Err(why) = notifyd::send("updated", &text, "", Urgency::Critical) {
             println!("updated: cannot tell the consoles: {}", why.message);
         }
-        let detail = format!(
-            "{}\n`elevate sysupdate verify` checks again, and Rescue reinstalls the release.",
-            why.message
-        );
-        tell_alertd(&Alert::new(
-            "update-not-verified".into(),
-            Severity::Critical,
-            "The system's files are not the release's",
-            &detail,
-        ));
+        tell_alertd(&not_verified_alert(&why.message));
     }
+}
+
+/// The event that tells the owner that the system's files are not the
+/// release's, for `why`. It is about no kind, so that every channel gets
+/// it: no choice of kinds may hide it.
+fn not_verified_alert(why: &str) -> Alert {
+    let detail = format!(
+        "{why}\n`elevate sysupdate verify` checks again, and Rescue reinstalls the release."
+    );
+    Alert::new(
+        "update-not-verified".into(),
+        Severity::Critical,
+        "The system's files are not the release's",
+        &detail,
+    )
+}
+
+/// The event that tells the owner that an update could not be staged, for
+/// `why`.
+fn not_staged_alert(why: &str) -> Alert {
+    let detail = format!("{why}\n`log updated` says more; the next check tries again.");
+    Alert::new(
+        "update-not-staged".into(),
+        Severity::Warning,
+        "An update could not be staged",
+        &detail,
+    )
+    .about(About::Stopped)
 }
 
 /// Tells alertd of `alert`, an event that updated has told the consoles
@@ -1145,15 +1164,7 @@ fn system_round(settings: &Settings, metered: bool, put_off: &PutOff<'_>) -> boo
             Ok(None) => false,
             Err(why) => {
                 tell(&format!("the update could not be staged: {}", why.message));
-                tell_alertd(&Alert::new(
-                    "update-not-staged".into(),
-                    Severity::Warning,
-                    "An update could not be staged",
-                    &format!(
-                        "{}\n`log updated` says more; the next check tries again.",
-                        why.message
-                    ),
-                ));
+                tell_alertd(&not_staged_alert(&why.message));
                 false
             }
         };
@@ -1245,6 +1256,25 @@ mod tests {
     use system_release::rollout::{Advice, Rollout, Withdrawal};
 
     use super::*;
+
+    #[test]
+    fn files_that_are_not_the_releases_are_told_to_every_channel_and_a_staging_failure_is_not() {
+        let unverified = not_verified_alert("usr/bin/ls differs");
+        assert_eq!(
+            (unverified.key.as_str(), unverified.severity),
+            ("update-not-verified", Severity::Critical)
+        );
+        // About none, so that no choice of kinds hides it.
+        assert_eq!(unverified.about, None);
+        assert_eq!(unverified.invalid(), None);
+        let unstaged = not_staged_alert("the disk is full");
+        assert_eq!(
+            (unstaged.key.as_str(), unstaged.severity),
+            ("update-not-staged", Severity::Warning)
+        );
+        assert_eq!(unstaged.kind(), Some(About::Stopped));
+        assert_eq!(unstaged.invalid(), None);
+    }
 
     fn settings(check: Check, unattended: bool, metered: Metered, apps: Apps) -> Settings {
         Settings { check, unattended, metered, apps, ..Settings::default() }

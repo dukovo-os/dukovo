@@ -466,7 +466,9 @@ mod tests {
             assert_eq!(action.id(), id, "{path}");
             assert_eq!(params.get("start").and_then(Value::as_str), start, "{path}");
         }
-        for path in ["/api/1/starts/", "/api/1/starts/1/x", "/api/1/dumps/x", "/api/1/alerts"] {
+        // The alerts' own list is an address of its own, which the alerts'
+        // actions have.
+        for path in ["/api/1/starts/", "/api/1/starts/1/x", "/api/1/dumps/x"] {
             assert!(matches!(find(REGISTRY, false, path), Found::None), "{path}");
         }
         for path in ["/api/1/starts", "/api/1/starts/failed", "/api/1/starts/7", "/api/1/dumps"] {
