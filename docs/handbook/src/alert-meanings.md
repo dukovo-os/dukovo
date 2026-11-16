@@ -96,7 +96,18 @@ the new release, a service it needs did not come up, and the system
 restarted into the release before it. The machine is working, on the old
 release. The detail names the check that failed. `elevate sysupdate
 status` shows where the update stands; report the failure with the log
-(`elevate log sysupdate`) before trying again.
+(`elevate log sysupdate`) before trying again. The release that fell back
+is held, so the machine does not stage it again by itself; a newer
+release is taken as usual, and `elevate update unhold system` releases
+the hold once the cause is mended (UPD-105).
+
+### After the update to RELEASE, the wanted check NAME failed
+
+A warning, an event with the key `update-check-wanted`. A check of your
+own in `health.toml` that is not required failed while the update was
+tried. The update stays: only a required check sends the machine back.
+The detail gives the check's reason; `update checks` lists its command,
+and UPD-104 says what to do.
 
 ### This start of RELEASE failed its health check, and goes on
 

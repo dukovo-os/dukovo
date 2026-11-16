@@ -59,6 +59,9 @@ files.root-subvolumes = ["@system.a", "@system.b", "@system.new", "@firmware"]
 files.efi-system = "read-write"
 files.read-write = [
     "/system/state/sysupdate",
+    # updates.toml, where the start after a fallback holds the release it
+    # fell back from (sysupdate(8)).
+    "/system/settings/sysupdate",
     "/system/state/starts",
     "/system/state/bisect",
     "/system/live/sysupdate",
