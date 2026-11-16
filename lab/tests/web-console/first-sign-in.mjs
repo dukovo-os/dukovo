@@ -17,7 +17,10 @@
 // pages have steps to set the machine up with (the lab's long action),
 // the end is the offer to set it up, which leads to /setup: the step's form,
 // the command it runs, Set up, which asks to unlock first, and the step
-// done once the task ends. A step that an earlier engine already did leaves
+// done once the task ends. The alert email step is one of the steps: it says
+// that it needs the unlock to tell whether email is set up, its form is the
+// email's fields, and a Set up with a field wrong says which and runs nothing.
+// A step that an earlier engine already did leaves
 // no offer, and the end is the page that was asked for. An account that is
 // no administrator adds an authenticator app in the frame, which marks the
 // step done, and goes to the page it asked for, and is told that /setup is
@@ -47,6 +50,7 @@ import {
   signOut,
   signOutButton,
 } from "./console.mjs";
+import { sendsNothing } from "./trial.mjs";
 
 // The password that first-sign-in.toml gives the accounts it makes.
 const PASSWORD = "lab-console-password";
@@ -60,6 +64,16 @@ const REFUSED = "Mars/Olympus";
 // The action that the lab's step runs, and the step's own words.
 const LAB_ACTION = "lab.long";
 const STEP_TITLE = "Run the lab's long test";
+
+// The alert email step: its title, what it says while the console is locked,
+// and the route that Set up must not call while a field is wrong.
+const ALERT_TITLE = "Get an email when something needs you";
+const ALERT_LOCKED = "Unlock to see if it is set up";
+const ALERT_ROUTE = "/api/1/alerts/email";
+
+// The offer says how many steps there are, in words: the lab's has the steps of
+// every page that offers one on this machine.
+const OFFER_WORDS = /^(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten) steps?, a few minutes each\.$/;
 
 // The calls the test must have made by the end.
 const ROUTES = ["GET /api/1/account/preferences", "POST /api/1/account/preferences", "GET /api/1/console/about", "GET /api/1/account/second-step"];
@@ -208,10 +222,44 @@ async function stepDone(page) {
 /** The offer that ends an administrator's wizard, and the press that leads to /setup. */
 async function offer(t, page, host) {
   await t.see(page.getByRole("heading", { name: `Set up ${host} now?`, level: 2 }));
-  await t.see(page.getByText("One step, a few minutes each.", { exact: true }));
+  await t.see(page.getByText(OFFER_WORDS));
   await seeFocusOn(page, `Set up ${host} now?`);
   await lookAll(t, page, "welcome-offer");
   await page.getByRole("button", { name: "Set up", exact: true }).click();
+}
+
+/** The step of a list's item, by the words of its title. */
+const stepItem = (page, title) => page.getByRole("list", { name: "Steps" }).locator("button.step", { hasText: title });
+
+/**
+ * The alert email step: in the list, saying the unlock is needed to know whether
+ * email is set up, with the email's fields as its form (no kinds, which the
+ * step leaves at every one), and Set up with a field wrong names the field and
+ * sends nothing. The step that was shown is shown again after.
+ */
+async function alertStep(t, page) {
+  const item = stepItem(page, ALERT_TITLE);
+  await t.see(item);
+  await t.see(item.getByText(ALERT_LOCKED, { exact: true }));
+  await item.click();
+  await t.see(page.getByRole("heading", { name: ALERT_TITLE, level: 2 }));
+  for (const label of ["Send to", "Mail server", "Port", "Sign in as", "Password", "From (optional)"]) {
+    await t.see(page.getByLabel(label, { exact: true }));
+  }
+  ensure((await page.getByText("What it is told of", { exact: true }).count()) === 0, "the alert email step asks what it is told of, which it leaves at every kind");
+
+  // Nothing typed, and then a word that is no address: each is said, and nothing is sent.
+  const run = page.getByRole("button", { name: `Set up: ${ALERT_TITLE}`, exact: true });
+  ensure(await sendsNothing(page, run, ALERT_ROUTE), "Set up with no address sent the email's settings");
+  await t.see(page.getByText("Type at least one address.", { exact: true }));
+  await page.getByLabel("Send to", { exact: true }).fill("nobody");
+  ensure(await sendsNothing(page, run, ALERT_ROUTE), "Set up with a word that is no address sent the email's settings");
+  await t.see(page.getByText("nobody is not an email address.", { exact: true }));
+  await look(t, page, "setup-alert-email");
+
+  await page.getByLabel("Send to", { exact: true }).fill("");
+  await stepItem(page, STEP_TITLE).click();
+  await t.see(page.getByRole("heading", { name: "This step runs" }));
 }
 
 /** /setup: the lab's step, the command it runs, and Set up, which asks to unlock and runs a task that ends. */
@@ -225,9 +273,12 @@ async function setup(t, page, host, done) {
   const steps = page.getByRole("list", { name: "Steps" });
   await t.see(steps.getByText(STEP_TITLE));
   await t.see(steps.getByText(done ? "It ran to its end" : "It has not run yet", { exact: true }));
+  // The page shows the first step that is not done, which is another page's when it has one: the lab's step is chosen.
+  await stepItem(page, STEP_TITLE).click();
   await t.see(page.getByRole("heading", { name: "This step runs" }));
   await t.see(page.getByText(/lab-steps 3/).first());
   await lookAll(t, page, done ? "setup-done" : "setup");
+  await alertStep(t, page);
   if (done) {
     await t.see(page.getByRole("button", { name: `Set up again: ${STEP_TITLE}` }));
     return;
@@ -244,6 +295,8 @@ async function setup(t, page, host, done) {
   await t.see(page.getByText("Started. Its progress is in Tasks.", { exact: true }));
   await t.see(steps.getByText("It ran to its end", { exact: true }));
   ensure((await stepDone(page)) === true, "the step is marked done and the lab's task is not");
+  // The console is unlocked now, and the step reads whether email is set up: it is not.
+  await t.see(stepItem(page, ALERT_TITLE).getByText("No email yet", { exact: true }));
   await t.see(page.getByRole("button", { name: `Set up again: ${STEP_TITLE}` }));
   await look(t, page, "setup-ran");
 }

@@ -7,7 +7,8 @@
 // place at /snapshots/backups/{name} and a snapshot's folder at
 // /snapshots/browse. The page shows what `snap list --json` and `backup list
 // --json` say (`GET /api/1/snapshots` and `GET /api/1/backups`): the banner
-// for a backup that failed, What is protected, the snapshots by day and the
+// for a backup that failed, with Back up now and Alert settings (a link to
+// /alerts), What is protected, the snapshots by day and the
 // backup places. Take a snapshot now (`snap create`, `POST
 // /api/1/snapshots/take`), Browse (`snap browse`, `GET /api/1/snapshots/browse`
 // and, for an administrator outside their home, `GET
@@ -224,6 +225,10 @@ async function failedBanner(t, page) {
   await t.see(banner.getByText(/Nothing has been backed up there yet\./));
   await t.see(banner.getByText(/Snapshots on this server are (current|not current either)/));
   await t.see(banner.getByRole("button", { name: "Back up now", exact: true }));
+  // Alert settings is a link to the Alerts page, where the email and the webhooks are set.
+  const settings = banner.getByRole("link", { name: "Alert settings", exact: true });
+  await t.see(settings);
+  ensure((await settings.getAttribute("href")) === "/alerts", `Alert settings of the banner goes to ${await settings.getAttribute("href")}, not to /alerts`);
   await t.see(placesCard(page).getByRole("row", { name: new RegExp(`^${DEAD}`) }).getByText("failed", { exact: true }));
   await t.see(protectedCard(page).getByText(/, failed/).first());
 
