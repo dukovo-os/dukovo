@@ -409,7 +409,7 @@ mod tests {
             assert!(!action.lines(), "{id}");
             assert!(!action.secret_answer(), "{id}");
             assert_eq!(action.not_self(), None, "{id}");
-            assert_eq!(action.cuts_off_card(), None, "{id}");
+            assert_eq!(action.cuts_off_on(), None, "{id}");
         }
         let ours: Vec<_> = REGISTRY.iter().filter(|a| a.id().starts_with("hardware.")).collect();
         assert_eq!(ours.len(), ACTIONS.len());
