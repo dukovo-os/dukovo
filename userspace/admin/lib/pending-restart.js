@@ -37,8 +37,11 @@ export function pendingRestart(view, options = {}) {
   const words = h('span', { role: 'timer', 'aria-live': 'off' });
   const status = h('span', { class: 'sr-only', role: 'status' });
   const cancel = h('button', { class: 'btn small', type: 'button' }, 'Cancel');
+  const buttons = h('div', { class: 'btns' }, cancel);
+  // Only an administrator may cancel; anyone else sees the line and not a button that would be refused.
+  buttons.hidden = view.session?.admin !== true;
   const element = h('div', { class: 'banner info', hidden: true },
-    icon('power'), h('div', {}, h('p', {}, words), h('div', { class: 'btns' }, cancel), status));
+    icon('power'), h('div', {}, h('p', {}, words), buttons, status));
 
   const keyOf = (shutdown) => `${shutdown.end}:${shutdown.at_ms}`;
   const stop = () => {
