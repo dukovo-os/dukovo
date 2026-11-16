@@ -72,6 +72,7 @@ mod ioports;
 mod join;
 mod kdb;
 mod mce;
+mod memtest;
 mod net;
 mod oom;
 mod panic;
@@ -324,6 +325,9 @@ pub extern "Rust" fn radix_kernel_main(mut params: BootParams) -> ! {
     usb::wait_for_disks();
     hyperv::wait_for_disks();
     fs::disk::wait_for_discs();
+    // Once the disks are found, so that a disk's own threads are not
+    // starved of memory, and before anything else runs.
+    memtest::run_if_asked(flags.value("memtest"));
 
     if let Some(name) = settings.selftest {
         selftest::run(name);

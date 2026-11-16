@@ -50,6 +50,9 @@ struct Disk {
     smart: Vec<(u8, u8)>,
     /// An optical drive's: the disc and what it answers.
     drive: Option<atapi::Drive>,
+    /// What CHECK POWER MODE answers in the Count register; `None` aborts
+    /// it.
+    power_mode: Option<u8>,
 }
 
 /// What sector `sector` holds before it is written.
@@ -78,6 +81,7 @@ impl Disk {
             commands: Vec::new(),
             smart: Vec::new(),
             drive: None,
+            power_mode: Some(0xff),
         }
     }
 }
@@ -148,6 +152,8 @@ struct PortRegs {
     /// disk took.
     taken: u32,
     disk: Option<Disk>,
+    /// The Count register of the Register FIS that ends the command.
+    count: u8,
 }
 
 struct State {
@@ -252,7 +258,15 @@ impl PortRegs {
             return;
         }
         let mut failed = false;
+        self.count = 0;
         match code {
+            command::CHECK_POWER_MODE => {
+                assert!(buffers.is_empty() && flags & (1 << 6) == 0, "it moves no data");
+                match disk.power_mode {
+                    Some(count) => self.count = count,
+                    None => failed = true,
+                }
+            }
             command::IDENTIFY_DEVICE => {
                 let mut bytes = Vec::new();
                 for w in disk.identify {
@@ -367,10 +381,13 @@ impl PortRegs {
 
     /// Copies the Register FIS that ends a command to the received-frame
     /// area, as a controller does: its type, the interrupt bit, the
-    /// status and the error.
+    /// status, the error and the Count register.
     fn post_d2h(&self, status: u8, error: u8) {
         if self.fb != 0 {
-            fake_memory_write(self.fb + 0x40, &[0x34, 0x40, status, error]);
+            let mut frame = [0u8; 20];
+            frame[..4].copy_from_slice(&[0x34, 0x40, status, error]);
+            frame[12] = self.count;
+            fake_memory_write(self.fb + 0x40, &frame);
         }
     }
 
@@ -871,6 +888,61 @@ fn smart_pages_are_read_alone() {
         let op = Op::Smart(ata::smart::READ_DATA, 0);
         assert_eq!(port.submit(op, 0, wrong), Err(Error::BadRequest));
     }
+}
+
+#[test]
+fn a_disk_in_standby_or_that_does_not_say_is_left_alone() {
+    for count in [0x00, 0x01, 0x40, 0x41, 0x7f, 0x84, 0xfe] {
+        assert!(ata::asleep(Some(count)), "{count:#x}");
+    }
+    for count in [0x80, 0x81, 0x82, 0x83, 0xff] {
+        assert!(!ata::asleep(Some(count)), "{count:#x}");
+    }
+    assert!(ata::asleep(None));
+}
+
+#[test]
+fn the_power_mode_goes_alone_and_its_count_is_kept_until_the_next_is_asked() {
+    let mut disk = Disk::new();
+    disk.hold = true;
+    let sim = Sim::new(std::vec![(0, disk)]);
+    let (_, mut port) = one_port(&sim);
+    assert_eq!(port.power_mode_count(), None);
+    let (_memory, list) = buffers(1);
+    port.submit(Op::Read, 0, &list).unwrap();
+    assert!(!port.room(Op::PowerMode));
+    sim.finish(0, None);
+    wait_all(&mut port);
+    // In standby, then idle.
+    for count in [0x00, 0xff] {
+        sim.disk(0, |disk| disk.power_mode = Some(count));
+        let slot = port.submit(Op::PowerMode, 0, &[]).unwrap();
+        assert!(!port.room(Op::Read));
+        assert_eq!(port.power_mode_count(), None, "forgotten when asked again");
+        sim.finish(0, None);
+        assert_eq!(wait_all(&mut port), [(slot, Outcome::Done)]);
+        assert_eq!(port.power_mode_count(), Some(count));
+    }
+    // A read after it is no read of the power mode: the answer stays.
+    port.submit(Op::Read, 0, &list).unwrap();
+    sim.finish(0, None);
+    wait_all(&mut port);
+    assert_eq!(port.power_mode_count(), Some(0xff));
+    // A disk that aborts it says nothing.
+    sim.disk(0, |disk| disk.power_mode = None);
+    port.submit(Op::PowerMode, 0, &[]).unwrap();
+    sim.finish(0, None);
+    assert_eq!(port.complete(), None);
+    assert!(port.stopped());
+    port.recover(&mut no_delay);
+    assert_eq!(wait_all(&mut port), [(0, Outcome::Failed)]);
+    assert_eq!(port.power_mode_count(), None);
+    let asked = sim.disk(0, |disk| {
+        disk.commands.iter().filter(|c| c.0 == ata::command::CHECK_POWER_MODE).count()
+    });
+    assert_eq!(asked, 3);
+    // It moves no data.
+    assert_eq!(port.submit(Op::PowerMode, 0, &list), Err(Error::BadRequest));
 }
 
 #[test]

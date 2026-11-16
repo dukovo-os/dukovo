@@ -56,6 +56,7 @@ pub mod frames;
 pub mod heap;
 pub mod lease;
 pub mod magazine;
+pub mod memtest;
 pub mod page;
 pub mod platform;
 mod raw;

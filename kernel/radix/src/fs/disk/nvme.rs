@@ -85,7 +85,7 @@ impl Controller for NvmeLane {
             Op::WriteThrough => radix_nvme::Op::WriteThrough,
             Op::Flush => radix_nvme::Op::Flush,
             Op::Discard(count) => radix_nvme::Op::Deallocate(count / request.unit),
-            Op::Smart(..) => return Err(Error::Unsupported),
+            Op::Smart(..) | Op::PowerMode => return Err(Error::Unsupported),
         };
         // The namespace counts in its own blocks, the request in sectors.
         let Request { target, sector, data, unit, .. } = *request;
@@ -152,11 +152,18 @@ impl Controller for NvmeLane {
     fn health(disk: &Disk<NvmeLane>, _target: u32, page: &mut Page) -> Result<Health, Error> {
         let host = disk.controller(|lane| lane.host.clone()).ok_or(Error::Io)?;
         let mut log = [0u8; command::LOG_HEALTH_SIZE];
-        if let Err(err) = host.nvme.lock().health(&mut queue::delay, &mut log) {
+        let mut nvme = host.nvme.lock();
+        if let Err(err) = nvme.health(&mut queue::delay, &mut log) {
             warn!("Disk: {}: its health log could not be read: {err}", host.name);
             return Err(Error::Io);
         }
-        page.bytes_mut()[..log.len()].copy_from_slice(&log);
+        let identity = *nvme.identity();
+        drop(nvme);
+        let bytes = page.bytes_mut();
+        bytes[..log.len()].copy_from_slice(&log);
+        // Then the limits it gives for its temperature, after the log.
+        bytes[512..514].copy_from_slice(&identity.warning_kelvin.to_le_bytes());
+        bytes[514..516].copy_from_slice(&identity.critical_kelvin.to_le_bytes());
         Ok(Health::Nvme)
     }
 

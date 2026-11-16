@@ -177,6 +177,9 @@ const HEADER_PRDBC: usize = 4;
 /// command's DMA ends with one, its status register in byte 2.
 const RECEIVED_D2H: usize = RECEIVED_FIS + 0x40;
 const FIS_TYPE_D2H: u8 = 0x34;
+/// The word of that Register FIS whose low byte is the Count register
+/// (bits 7:0), which CHECK POWER MODE answers in (SATA 3.5, 10.5.6).
+const D2H_COUNT_WORD: usize = RECEIVED_D2H + 12;
 
 /// How long a link reset is held: at least a millisecond (10.4.2).
 pub const COMRESET_US: u32 = 1_000;
@@ -223,6 +226,10 @@ pub enum Op {
     /// buffer starts or aborts a self-test. Only for a disk whose SMART is
     /// on ([`Identity::smart`]).
     Smart(u8, u8),
+    /// CHECK POWER MODE, with no buffer: the disk says whether it is in
+    /// standby, and no disk spins up to say it. The answer is
+    /// [`Port::power_mode_count`] once the request is done.
+    PowerMode,
 }
 
 /// How a request ended.
@@ -285,6 +292,12 @@ pub struct Port {
     busy: u32,
     /// Whether the one in flight is a command that goes out alone.
     alone: bool,
+    /// Whether the one in flight is CHECK POWER MODE, whose answer
+    /// [`Port::collect`] keeps in `power_mode`.
+    asking_power_mode: bool,
+    /// The Count register the last CHECK POWER MODE ended with, if the
+    /// disk's Register FIS said one.
+    power_mode: Option<u8>,
     /// Finished slots not yet handed out, by how they ended.
     done: u32,
     failed: u32,
@@ -333,6 +346,8 @@ impl Port {
             },
             busy: 0,
             alone: false,
+            asking_power_mode: false,
+            power_mode: None,
             done: 0,
             failed: 0,
             retry: 0,
@@ -588,7 +603,7 @@ impl Port {
     /// Whether `op` goes out as a command alone: only while nothing else
     /// is in flight.
     pub fn alone(&self, op: Op) -> bool {
-        !self.info.queued || matches!(op, Op::Flush | Op::Trim(_) | Op::Smart(..))
+        !self.info.queued || matches!(op, Op::Flush | Op::Trim(_) | Op::Smart(..) | Op::PowerMode)
     }
 
     /// Starts a request: `op` on the disk's logical sectors from `sector`,
@@ -630,6 +645,14 @@ impl Port {
             Op::Smart(feature, low) => {
                 self.fill(slot, Taskfile::smart(feature, low), data, false);
             }
+            Op::PowerMode => {
+                // The last answer forgotten, so that only this one's shows.
+                let memory = self.mem();
+                memory.write32(RECEIVED_D2H, 0);
+                memory.write32(D2H_COUNT_WORD, 0);
+                self.power_mode = None;
+                self.fill(slot, Taskfile::check_power_mode(), &[], false);
+            }
             Op::Trim(length) => {
                 let memory = self.mem();
                 let mut entries = [0u8; BUFFER_SIZE];
@@ -656,6 +679,7 @@ impl Port {
         self.regs.write32(reg::CI, bit);
         self.busy |= bit;
         self.alone = alone;
+        self.asking_power_mode = op == Op::PowerMode;
         Ok(slot as u8)
     }
 
@@ -682,7 +706,7 @@ impl Port {
                 }
                 Ok(sectors)
             }
-            Op::Flush => {
+            Op::Flush | Op::PowerMode => {
                 if data.is_empty() {
                     Ok(0)
                 } else {
@@ -759,12 +783,27 @@ impl Port {
         let finished = self.busy & !active;
         if finished != 0 {
             device_barrier();
+            if self.asking_power_mode {
+                // It went alone, so the Register FIS is its own.
+                let memory = self.mem();
+                let answered = memory.read32(RECEIVED_D2H) as u8 == FIS_TYPE_D2H;
+                self.power_mode = answered.then(|| memory.read32(D2H_COUNT_WORD) as u8);
+                self.asking_power_mode = false;
+            }
             self.busy &= !finished;
             self.done |= finished;
             if self.busy == 0 {
                 self.alone = false;
             }
         }
+    }
+
+    /// The Count register the last CHECK POWER MODE ([`Op::PowerMode`])
+    /// ended with: 00h or 01h in standby, 80h to 83h or FFh idle or active
+    /// (ACS-4, 7.3). `None` when the disk's answer did not show, or no
+    /// such command has ended since the last was sent.
+    pub fn power_mode_count(&self) -> Option<u8> {
+        self.power_mode
     }
 
     /// Whether an error stopped the port, which then needs
@@ -821,6 +860,7 @@ impl Port {
         let error = (self.regs.read32(reg::TFD) >> 8) as u8;
         self.busy = 0;
         self.alone = false;
+        self.asking_power_mode = false;
         if !self.restart(status & irq::FATAL != 0, delay) {
             self.dead = true;
             self.failed |= in_flight;
@@ -869,6 +909,7 @@ impl Port {
         let in_flight = self.busy;
         self.busy = 0;
         self.alone = false;
+        self.asking_power_mode = false;
         self.stopped = None;
         self.errors = self.errors.wrapping_add(1);
         let same = self.restart(true, delay) && {

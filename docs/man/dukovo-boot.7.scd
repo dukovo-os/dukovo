@@ -633,6 +633,18 @@ them to *init*, and the kernel does not read them.
 	Read the CPUs' machine-check banks this often for errors the
 	hardware corrected, instead of every 300 seconds. *ob test* uses 1.
 
+*memtest*=once
+	Test the memory before the first program starts: the kernel takes
+	every free page but 64 MiB, writes each word's own address, then
+	two patterns that move through the memory, then random words, and
+	reads each back twice. A page that reads back wrong is taken out of
+	use until the next restart, and the result is
+	_/kernel/boot/memtest_ (*radix-sysfs*(5)). The test stops after an
+	hour. *hardware memtest --next-start* sets it for the next start
+	alone (*hardware*(8)).
+	*memtest*=fault runs the same test and flips one bit after the
+	first step, so that the boot tests see a page taken out of use.
+
 *usb*=off
 	Leave the USB controllers as the firmware left them: none is reset
 	or driven, and no USB device is found. See *USB*.

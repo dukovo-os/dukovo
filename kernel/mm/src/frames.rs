@@ -552,6 +552,14 @@ impl Frames {
         self.alloc_inner(0, flags, owner, 0, false, sequential)
     }
 
+    /// A block of 2^`order` frames that is free now, above the reserves,
+    /// for a caller that may sleep, without running the reclaim or
+    /// out-of-memory hooks: for the memory test at the start, which takes
+    /// what is free and nothing more.
+    pub fn alloc_spare(&self, order: u32, owner: Owner) -> Result<u64, AllocError> {
+        self.alloc_inner(order, Flags::MAY_SLEEP, owner, 0, false, false)
+    }
+
     /// The allocation itself. Without `reclaim`, a `MaySleep` allocation
     /// keeps out of the reserves but does not run the reclaim hook: the
     /// heap allocates its own bookkeeping this way, so reclaim never runs
