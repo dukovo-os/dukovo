@@ -61,6 +61,22 @@ const APPS: &[&str] = &["notify", "auto"];
 /// What the machine does with updates on a connection that is metered.
 const METERED: &[&str] = &["wait", "download"];
 
+/// What the reason kept with a hold matches: one line, with no control
+/// character. The characters are in the class as they are, which a JSON
+/// Schema pattern (ECMAScript's) reads as written.
+pub(super) const WHY_PATTERN: &str = "^[^\x00-\x1f\x7f]+$";
+
+/// The reason kept with a hold: optional, one line of 1 to 200
+/// characters that everyone who can sign in sees.
+pub(super) const WHY: Field = Field::text(
+    "why",
+    "Why it is held, in one line of at most 200 characters; everyone who can sign in sees it.",
+    1,
+    200,
+    Some(WHY_PATTERN),
+)
+.optional();
+
 /// What the time of a restart matches: `HH:MM`, from 00:00 to 23:59.
 const TIME_PATTERN: &str = "^([01][0-9]|2[0-3]):[0-5][0-9]$";
 
@@ -84,6 +100,10 @@ const APPLY_PATTERN: &str = "^(system|firmware|apps|[a-z0-9]([a-z0-9-]{0,61}[a-z
 /// (as `APPLY_PATTERN` has it).
 const HOLD_PATTERN: &str = "^(system|firmware|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\
      (@(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,2})?)$";
+
+/// What the item of a reminder matches: the system, the firmware, or one
+/// app, whose ID has no line, as `HOLD_PATTERN` has it without the line.
+const LATER_PATTERN: &str = "^(system|firmware|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+)$";
 
 /// The most characters of an item that is an app's ID with its line.
 const ITEM_MAX: usize = super::apps::ID_MAX;
@@ -1232,17 +1252,50 @@ pub struct Held {
     pub item: String,
 }
 
+/// What to hold back: the item of `update hold`.
+const HOLD_ITEM: Field = Field::text(
+    "item",
+    "What to hold back: system, firmware, or an app's ID.",
+    3,
+    ITEM_MAX,
+    Some(HOLD_PATTERN),
+);
+
 impl Args for Held {
-    const FIELDS: &'static [Field] = &[Field::text(
-        "item",
-        "What to hold back: system, firmware, or an app's ID.",
-        3,
-        ITEM_MAX,
-        Some(HOLD_PATTERN),
-    )];
+    const FIELDS: &'static [Field] = &[HOLD_ITEM];
 
     fn check(&self) -> Result<(), Bad> {
         check_item(&self.item, false, "Nothing was done.")
+    }
+}
+
+/// An item to hold back, and why, if that is said.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Holding {
+    pub item: String,
+    /// The reason kept with the hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// Why `why` is no reason to keep with a hold, if it is none.
+pub(super) fn check_why(why: Option<&str>) -> Result<(), Bad> {
+    match why {
+        Some(why) if !crate::bundles::protocol::why_ok(why) => Err(Bad {
+            field: "why",
+            why: "A reason is one line of at most 200 characters. Nothing was done.".into(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+impl Args for Holding {
+    const FIELDS: &'static [Field] = &[HOLD_ITEM, WHY];
+
+    fn check(&self) -> Result<(), Bad> {
+        check_item(&self.item, false, "Nothing was done.")?;
+        check_why(self.why.as_deref())
     }
 }
 
@@ -1252,7 +1305,7 @@ fn in_settings(item: &str) -> bool {
     matches!(item, "system" | "firmware")
 }
 
-/// `update hold ITEM`.
+/// `update hold ITEM [--why TEXT]`.
 pub struct Hold;
 
 impl Action for Hold {
@@ -1263,49 +1316,77 @@ impl Action for Hold {
     const RUNS: Runs = Runs::AsAdministrator;
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Hold an update back";
-    type Args = Held;
+    type Args = Holding;
 
-    fn argv(args: &Held) -> Vec<String> {
-        vec!["update".into(), "hold".into(), args.item.clone()]
+    fn argv(args: &Holding) -> Vec<String> {
+        let mut argv = vec!["update".into(), "hold".into(), args.item.clone()];
+        if let Some(why) = &args.why {
+            argv.extend(["--why".into(), why.clone()]);
+        }
+        argv
     }
 
-    fn subject(args: &Held) -> Option<String> {
+    fn subject(args: &Holding) -> Option<String> {
         Some(args.item.clone())
     }
 
-    /// The system's and the firmware's holds are in updates.toml;
-    /// an app's is bundled's, whose state admind does not see.
-    fn files(args: &Held) -> Vec<String> {
+    /// The system's and the firmware's holds are in updates.toml, and
+    /// that file does not hold the reason, which is under
+    /// `/system/state/sysupdate`, where admind does not see; an app's
+    /// hold is bundled's, whose state admind does not see either.
+    fn files(args: &Holding) -> Vec<String> {
         if in_settings(&args.item) { vec![SETTINGS.to_string()] } else { Vec::new() }
     }
 
-    fn probe(args: &Held) -> Option<Vec<String>> {
+    fn probe(args: &Holding) -> Option<Vec<String>> {
         Some(if in_settings(&args.item) { settings_argv() } else { apps_argv() })
     }
 
-    fn probed(args: &Held, output: &str) -> Option<String> {
+    /// The version held and the reason kept with it; for an app, what its
+    /// row of the list says.
+    fn probed(args: &Holding, output: &str) -> Option<String> {
         if !in_settings(&args.item) {
             return app_picked(&args.item, output);
         }
         let document: Value = serde_json::from_str(output).ok()?;
         let held = document.get("hold")?.get(&args.item)?.clone();
-        Some(json!({ "held": held }).to_string())
+        let reason = document
+            .get("hold_reasons")
+            .and_then(|reasons| reasons.get(&args.item))
+            .and_then(|reason| reason.get("text"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        Some(json!({ "held": held, "held_reason": reason }).to_string())
     }
 
-    /// Held when the version, or for an app the flag, says so.
-    fn settled(args: &Held, now: &str) -> Option<bool> {
+    /// Held when the version, or for an app the flag, says so, and with
+    /// the reason asked for, when one is.
+    fn settled(args: &Holding, now: &str) -> Option<bool> {
         let held = if in_settings(&args.item) {
             !said(now, "held")?.is_null()
         } else {
             said(now, "held")?.as_bool()?
         };
-        Some(held)
+        Some(
+            held && args.why.as_ref().is_none_or(|why| {
+                said(now, "held_reason").is_some_and(|r| r.as_str() == Some(why))
+            }),
+        )
     }
 
-    fn examples() -> Examples<Held> {
+    fn examples() -> Examples<Holding> {
         Examples {
-            good: vec![Held { item: "system".into() }],
-            bad: vec![json!({ "item": "everything" }), json!({ "item": "apps" }), json!({})],
+            good: vec![Holding {
+                item: "system".into(),
+                why: Some("Waiting for the nginx fix".into()),
+            }],
+            bad: vec![
+                json!({ "item": "everything" }),
+                json!({ "item": "apps" }),
+                json!({}),
+                json!({ "item": "system", "why": "two\nlines" }),
+                json!({ "item": "system", "why": "x".repeat(201) }),
+            ],
             undo: Some(Undo { action: "updates.unhold", args: json!({ "item": "system" }) }),
         }
     }
@@ -1370,6 +1451,127 @@ impl Action for Unhold {
     }
 }
 
+/// How long a reminder is put off for: `update later`'s `--for` and
+/// `--off`, as the console says them.
+const LATER_FOR: &[&str] = &["day", "week", "off"];
+
+/// An update to put off, and for how long.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Putting {
+    /// `system`, `firmware` or an app's ID.
+    pub item: String,
+    /// `day`, `week`, or `off` to bring the reminder back.
+    #[serde(rename = "for")]
+    pub put_off: String,
+}
+
+impl Args for Putting {
+    const FIELDS: &'static [Field] = &[
+        Field::text(
+            "item",
+            "What to put off: system, firmware, or an app's ID.",
+            3,
+            ITEM_MAX,
+            Some(LATER_PATTERN),
+        ),
+        Field::one_of(
+            "for",
+            "How long: day, week, or off to bring the reminder back now.",
+            LATER_FOR,
+        ),
+    ];
+
+    fn check(&self) -> Result<(), Bad> {
+        check_item(&self.item, false, "Nothing was done.")?;
+        // An app's ID with a line is a line of the app, which has no update to put off.
+        if self.item.contains('@') {
+            return Err(Bad {
+                field: "item",
+                why: "An item is system, firmware, or an app's ID, as org.example.app, with no \
+                      line. Nothing was done."
+                    .into(),
+            });
+        }
+        word_in("for", &self.put_off, LATER_FOR, "Nothing was done.")
+    }
+}
+
+/// `update later ITEM (--for 1d | --for 7d | --off)`: puts the reminder
+/// of an update off for a day or a week, or brings it back. An update
+/// that fixes an advisory is refused (UPD-107).
+pub struct Later;
+
+impl Action for Later {
+    const ID: &'static str = "updates.later";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/updates/{item}/later";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const ERRORS: &'static [&'static str] = &["UPD-107"];
+    const TESTS: Tests = TESTS;
+    const TITLE: &'static str = "Put an update off for a while";
+    type Args = Putting;
+
+    fn argv(args: &Putting) -> Vec<String> {
+        let mut argv = vec!["update".into(), "later".into(), args.item.clone()];
+        match args.put_off.as_str() {
+            "day" => argv.extend(["--for".into(), "1d".into()]),
+            "week" => argv.extend(["--for".into(), "7d".into()]),
+            _ => argv.push("--off".into()),
+        }
+        argv
+    }
+
+    fn subject(args: &Putting) -> Option<String> {
+        Some(args.item.clone())
+    }
+
+    /// The reminders are kept under `/system/state/sysupdate`, which admind
+    /// does not see: what the command's `settings` says of the item is
+    /// what moves.
+    fn probe(_: &Putting) -> Option<Vec<String>> {
+        Some(settings_argv())
+    }
+
+    /// The version put off and until when, or null for none.
+    fn probed(args: &Putting, output: &str) -> Option<String> {
+        let document: Value = serde_json::from_str(output.trim()).ok()?;
+        let put_off = document
+            .get("later")?
+            .as_array()?
+            .iter()
+            .find(|entry| entry["item"] == args.item.as_str())
+            .map_or(
+                Value::Null,
+                |entry| json!({ "version": entry["version"], "until_ms": entry["until_ms"] }),
+            );
+        Some(json!({ "later": put_off }).to_string())
+    }
+
+    /// Bringing the reminder back is settled when none is kept; putting it
+    /// off moves the time, so it never is.
+    fn settled(args: &Putting, now: &str) -> Option<bool> {
+        let kept = !said(now, "later")?.is_null();
+        Some(args.put_off == "off" && !kept)
+    }
+
+    fn examples() -> Examples<Putting> {
+        Examples {
+            good: vec![Putting { item: "system".into(), put_off: "week".into() }],
+            bad: vec![
+                json!({ "item": "system", "for": "month" }),
+                json!({ "item": "../x", "for": "day" }),
+                json!({ "item": "org.example.app@1", "for": "day" }),
+                json!({ "item": "apps", "for": "day" }),
+                json!({ "item": "system" }),
+                json!({ "for": "day" }),
+            ],
+            undo: Some(Undo { action: Self::ID, args: json!({ "item": "system", "for": "off" }) }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::apps::ID_PATTERN;
@@ -1394,7 +1596,12 @@ mod tests {
         "format": 1, "channel": "beta", "check": "notify", "apps": "notify",
         "metered": "wait", "unattended": true, "restart": "03:30",
         "hold": {"system": "1.0.0-alpha.2", "firmware": null},
-        "held": null, "apps_automatic": false, "apps_disagree": false,
+        "held": null,
+        "hold_reasons": {"firmware": null, "system": {"version": "1.0.0-alpha.2",
+            "text": "Waiting for the nginx fix", "by": 1000, "at_ms": 1794000000000}},
+        "later": [{"item": "org.example.notes", "version": "1.3.0", "until_ms": 1794700000000,
+            "by": 1000, "at_ms": 1794000000000, "stands": true}],
+        "apps_automatic": false, "apps_disagree": false,
         "server": "https://updates.dukovo.org/system/", "canary": false
     }"#;
 
@@ -1423,6 +1630,10 @@ mod tests {
         let id = &ID_PATTERN[1..ID_PATTERN.len() - 1];
         assert_eq!(APPLY_PATTERN, format!("^(system|firmware|apps|{id})$"));
         assert_eq!(HOLD_PATTERN, format!("^(system|firmware|{id})$"));
+        // An update is put off for an app's ID, whose line is not part of it.
+        let line = "(@(0|[1-9][0-9]*)(\\.(0|[1-9][0-9]*)){0,2})?";
+        let app = id.strip_suffix(line).unwrap();
+        assert_eq!(LATER_PATTERN, format!("^(system|firmware|{app})$"));
     }
 
     #[test]
@@ -2012,7 +2223,12 @@ mod tests {
             assert!(app.files.is_empty(), "{id}");
             assert_eq!(app.probe.as_deref(), Some(&apps_argv()[..]), "{id}");
             let (good, _, undo) = held.example_values();
-            assert_eq!(good, [json!({ "item": "system" })], "{id}");
+            let wanted = if on {
+                json!({ "item": "system", "why": "Waiting for the nginx fix" })
+            } else {
+                json!({ "item": "system" })
+            };
+            assert_eq!(good, [wanted], "{id}");
             assert_eq!(
                 undo,
                 Some(Undo { action: other, args: json!({ "item": "system" }) }),
@@ -2031,15 +2247,29 @@ mod tests {
             let system = json!({ "item": "system" });
             let firmware = json!({ "item": "firmware" });
             let said_system = held.probed(&system, SETTINGS_JSON).unwrap();
-            assert_eq!(value(&said_system), json!({ "held": "1.0.0-alpha.2" }), "{id}");
             let said_firmware = held.probed(&firmware, SETTINGS_JSON).unwrap();
-            assert_eq!(value(&said_firmware), json!({ "held": null }), "{id}");
+            if on {
+                // A hold moves the version held and the reason kept with it.
+                assert_eq!(
+                    value(&said_system),
+                    json!({ "held": "1.0.0-alpha.2", "held_reason": "Waiting for the nginx fix" }),
+                    "{id}"
+                );
+                assert_eq!(
+                    value(&said_firmware),
+                    json!({ "held": null, "held_reason": null }),
+                    "{id}"
+                );
+            } else {
+                assert_eq!(value(&said_system), json!({ "held": "1.0.0-alpha.2" }), "{id}");
+                assert_eq!(value(&said_firmware), json!({ "held": null }), "{id}");
+            }
             assert_eq!(held.settled(&system, &said_system), Some(on), "{id}");
             assert_eq!(held.settled(&firmware, &said_firmware), Some(!on), "{id}");
             let notes = json!({ "item": "org.nginx.nginx" });
             let list = r#"{"format": 1, "bundles": [
                 {"id": "org.nginx.nginx", "version": "1.2.0", "for_everyone": true,
-                 "held": true, "update": null}]}"#;
+                 "held": true, "held_reason": null, "update": null}]}"#;
             let said_app = held.probed(&notes, list).unwrap();
             assert_eq!(held.settled(&notes, &said_app), Some(on), "{id}");
             assert_eq!(held.probed(&notes, "[]"), None, "{id}");
@@ -2047,6 +2277,103 @@ mod tests {
             // An app that everyone has not got cannot be held or released.
             assert_eq!(held.settled(&notes, "none"), None, "{id}");
         }
+    }
+
+    #[test]
+    fn a_reminder_is_put_off_for_a_day_or_a_week_and_brought_back_by_the_administrator() {
+        let later = action("updates.later");
+        assert_eq!(
+            (later.changes(), later.runs(), later.long(), later.path(), later.compares()),
+            (true, Runs::AsAdministrator, false, "/api/1/updates/{item}/later", true)
+        );
+        assert_eq!(later.errors(), ["UPD-107"]);
+        for (put_off, words) in [("day", ["--for", "1d"]), ("week", ["--for", "7d"])] {
+            for item in ["system", "firmware", "org.example.notes"] {
+                let prepared = later.prepare(json!({ "item": item, "for": put_off })).unwrap();
+                assert_eq!(prepared.argv, ["update", "later", item, words[0], words[1]]);
+                assert!(prepared.files.is_empty());
+                assert_eq!(prepared.probe.as_deref(), Some(&settings_argv()[..]));
+            }
+        }
+        let off = later.prepare(json!({ "item": "system", "for": "off" })).unwrap();
+        assert_eq!(off.argv, ["update", "later", "system", "--off"]);
+        let (good, _, undo) = later.example_values();
+        assert_eq!(good, [json!({ "item": "system", "for": "week" })]);
+        assert_eq!(
+            undo,
+            Some(Undo { action: "updates.later", args: json!({ "item": "system", "for": "off" }) })
+        );
+        // Only an item that has an update, and a time that is offered.
+        for item in ["apps", "everything", "", "Firmware", "../x", "org.example.app@1"] {
+            let (kind, field, _) = refused("updates.later", json!({ "item": item, "for": "day" }));
+            assert_eq!((kind, field), (Kind::BadValue, Some("item")), "{item:?}");
+        }
+        for put_off in ["month", "1d", "", "Day"] {
+            let (kind, field, _) =
+                refused("updates.later", json!({ "item": "system", "for": put_off }));
+            assert_eq!((kind, field), (Kind::BadValue, Some("for")), "{put_off:?}");
+        }
+        assert_eq!(refused("updates.later", json!({ "item": "system" })).0, Kind::BadRequest);
+        assert_eq!(refused("updates.later", json!({ "for": "day" })).0, Kind::BadRequest);
+        // What moves is the item's entry in the settings' `later`.
+        let notes = json!({ "item": "org.example.notes", "for": "day" });
+        let kept = later.probed(&notes, SETTINGS_JSON).unwrap();
+        assert_eq!(
+            value(&kept),
+            json!({ "later": { "version": "1.3.0", "until_ms": 1_794_700_000_000_u64 } })
+        );
+        let system = json!({ "item": "system", "for": "day" });
+        let none = later.probed(&system, SETTINGS_JSON).unwrap();
+        assert_eq!(value(&none), json!({ "later": null }));
+        assert_eq!(later.probed(&system, "not json"), None);
+        assert_eq!(later.probed(&system, "[]"), None);
+        // Bringing it back is settled when none is kept; putting it off never is.
+        let back = |item: &str| json!({ "item": item, "for": "off" });
+        assert_eq!(later.settled(&back("system"), &none), Some(true));
+        assert_eq!(later.settled(&back("org.example.notes"), &kept), Some(false));
+        assert_eq!(later.settled(&system, &none), Some(false));
+        assert_eq!(later.settled(&notes, &kept), Some(false));
+        assert_eq!(later.settled(&system, "not json"), None);
+    }
+
+    #[test]
+    fn a_hold_keeps_the_reason_it_is_given_as_one_line_of_at_most_200_characters() {
+        let hold = action("updates.hold");
+        // The reason is one field of the command's words, whatever it says.
+        for why in
+            ["Waiting for the nginx fix", "--force", "it's \"fine\" $(x) é", &"é".repeat(200)]
+        {
+            let prepared = hold.prepare(json!({ "item": "system", "why": why })).unwrap();
+            assert_eq!(prepared.argv, ["update", "hold", "system", "--why", why], "{why:?}");
+            let app = hold.prepare(json!({ "item": "org.example.notes", "why": why })).unwrap();
+            assert_eq!(app.argv, ["update", "hold", "org.example.notes", "--why", why]);
+        }
+        // Without one, the command is as it was.
+        let plain = hold.prepare(json!({ "item": "system" })).unwrap();
+        assert_eq!(plain.argv, ["update", "hold", "system"]);
+        for why in ["", "two\nlines", "a\ttab", "bell\u{7}", "del\u{7f}", &"x".repeat(201)] {
+            let (kind, field, _) = refused("updates.hold", json!({ "item": "system", "why": why }));
+            assert_eq!((kind, field), (Kind::BadValue, Some("why")), "{why:?}");
+        }
+        // The same field, and its words, as the apps' hold has.
+        assert_eq!(WHY, super::super::apps::WHY);
+        // A hold is settled only with the reason asked for.
+        let system = json!({ "item": "system", "why": "Waiting for the nginx fix" });
+        let said = hold.probed(&system, SETTINGS_JSON).unwrap();
+        assert_eq!(hold.settled(&system, &said), Some(true));
+        let other = json!({ "item": "system", "why": "Another reason" });
+        assert_eq!(hold.settled(&other, &said), Some(false));
+        let none = json!({ "item": "system" });
+        assert_eq!(hold.settled(&none, &said), Some(true));
+        // An app's reason is the list's `held_reason`.
+        let list = r#"{"format": 1, "bundles": [
+            {"id": "org.nginx.nginx", "version": "1.2.0", "for_everyone": true, "held": true,
+             "held_reason": "app tests use this version", "update": null}]}"#;
+        let notes = json!({ "item": "org.nginx.nginx", "why": "app tests use this version" });
+        let said = hold.probed(&notes, list).unwrap();
+        assert_eq!(hold.settled(&notes, &said), Some(true));
+        let other = json!({ "item": "org.nginx.nginx", "why": "Another reason" });
+        assert_eq!(hold.settled(&other, &said), Some(false));
     }
 
     #[test]
@@ -2071,6 +2398,8 @@ mod tests {
             (true, "/api/1/updates/firmware/undo", "updates.undo"),
             (true, "/api/1/updates/system/hold", "updates.hold"),
             (true, "/api/1/updates/org.example.notes/unhold", "updates.unhold"),
+            (true, "/api/1/updates/system/later", "updates.later"),
+            (true, "/api/1/updates/org.example.notes/later", "updates.later"),
         ] {
             let found = find(REGISTRY, post, path);
             assert!(

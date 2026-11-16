@@ -48,7 +48,9 @@ pub(crate) mod registry;
 pub(crate) mod run;
 pub(crate) mod services;
 pub(crate) mod sheet;
+pub(crate) mod sizes;
 pub(crate) mod snapshots;
+pub(crate) mod tonight;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, IsTerminal, Read, Write};
@@ -85,9 +87,11 @@ const USAGE: &str =
        bundle catalog add NAME URL ROOT-FILE
        bundle catalog remove NAME
        bundle update [ID...] [--check] [--for-everyone] [--yes]
+       bundle update [ID...] --for-everyone --tonight [--yes]
+       bundle update ID... --for-everyone --not-tonight
        bundle update --automatic on|off [--for-everyone]
        bundle rollback ID [--for-everyone]
-       bundle hold ID [--for-everyone]
+       bundle hold ID [--for-everyone] [--why TEXT]
        bundle unhold ID [--for-everyone]
        bundle history [ID]
        bundle default NAME [LINE | --clear] [--for-everyone]
@@ -146,9 +150,14 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut days = None;
     let mut unsigned = false;
     let mut json = false;
+    let mut why = None;
+    let mut tonight = false;
+    let mut not_tonight = false;
     while let Some(arg) = args.next()? {
         match arg {
             Arg::Long(l) if l == "check" => check_only = true,
+            Arg::Long(l) if l == "tonight" => tonight = true,
+            Arg::Long(l) if l == "not-tonight" => not_tonight = true,
             Arg::Long(l) if l == "json" => json = true,
             Arg::Long(l) if l == "clear" => clear = true,
             Arg::Long(l) if l == "automatic" && automatic.is_none() => {
@@ -169,6 +178,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(l) if l == "license" => license = Some(args.text()?),
             Arg::Long(l) if l == "key" => key = Some(args.text()?),
             Arg::Long(l) if l == "from" => from = Some(args.text()?),
+            Arg::Long(l) if l == "why" && why.is_none() => why = Some(args.text()?),
             Arg::Long(l) if l == "output" => output = Some(args.text()?),
             Arg::Long(l) if l == "days" && days.is_none() => {
                 days = Some(match args.text()?.parse::<u32>() {
@@ -197,6 +207,12 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let days_ok = sub == Some("feed") || days.is_none();
     let unsigned_ok = sub == Some("install") || !unsigned;
     let json_ok = matches!(sub, Some("list" | "info")) || !json;
+    if sub != Some("hold") && why.is_some() {
+        return Err(usage(USAGE.into()));
+    }
+    if why.as_deref().is_some_and(|why| !protocol::why_ok(why)) {
+        return Err(usage("--why takes one line of at most 200 characters".into()));
+    }
     if !key_ok
         || !output_ok
         || !days_ok
@@ -216,7 +232,24 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let update_ok = sub == Some("update") || (!check_only && automatic.is_none());
     let automatic_ok = automatic.is_none() || (!check_only && !yes && operands.is_empty());
     let clear_ok = (sub == Some("default") && operands.len() == 1) || !clear;
-    if !everyone_ok || !yes_ok || !data_ok || !from_ok || !update_ok || !automatic_ok || !clear_ok {
+    // Tonight is an update's, for everyone's apps, one way or the other;
+    // taking an app off it names the apps and has no yes to give.
+    let night_ok = !(tonight || not_tonight)
+        || (sub == Some("update")
+            && everyone
+            && !check_only
+            && automatic.is_none()
+            && !(tonight && not_tonight)
+            && (!not_tonight || (!operands.is_empty() && !yes)));
+    if !everyone_ok
+        || !yes_ok
+        || !data_ok
+        || !from_ok
+        || !update_ok
+        || !automatic_ok
+        || !clear_ok
+        || !night_ok
+    {
         return Err(usage(USAGE.into()));
     }
     let folder = || operands.first().map_or(".", String::as_str);
@@ -251,14 +284,17 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         (Some("list"), []) => list(json),
         (Some("info"), [id]) => info(id, json),
         (Some("remove"), [id]) => remove(id, everyone, data),
+        (Some("update"), ids) if tonight || not_tonight => night(ids, tonight, yes),
         (Some("update"), []) if let Some(on) = automatic => {
             simple(&Request::Automatic { everyone, on }, "bundle")
         }
         (Some("update"), ids) => update(ids, everyone, check_only, yes),
         (Some("rollback"), [id]) => simple(&Request::Rollback { id: checked(id)?, everyone }, id),
-        (Some("hold"), [id]) => simple(&Request::Hold { id: checked(id)?, everyone, on: true }, id),
+        (Some("hold"), [id]) => {
+            simple(&Request::Hold { id: checked(id)?, everyone, on: true, why }, id)
+        }
         (Some("unhold"), [id]) => {
-            simple(&Request::Hold { id: checked(id)?, everyone, on: false }, id)
+            simple(&Request::Hold { id: checked(id)?, everyone, on: false, why: None }, id)
         }
         (Some("default"), [name]) if !clear && !everyone => show_default(name),
         (Some("default"), [name]) if clear => {
@@ -839,7 +875,14 @@ fn simple(request: &Request, what: &str) -> Result<i32, Fail> {
     let (_stream, mut input) = ask(request, None).map_err(fail)?;
     match answer(&mut input)? {
         Answer::Ok(done) => {
-            println!("{done}");
+            // A hold that keeps a reason says it on a line of its own.
+            match done.split_once(protocol::REASON_KEPT) {
+                Some((said, why)) => {
+                    println!("{said}");
+                    println!("bundle: the reason kept with it: {why}");
+                }
+                None => println!("{done}"),
+            }
             Ok(0)
         }
         Answer::Error(why) => {
@@ -898,6 +941,10 @@ fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32,
                 row.to,
                 row.catalog.as_deref().unwrap_or("its own feed")
             );
+            // Why, only where the hold keeps a reason.
+            if let Some(why) = row.held_reason.as_ref().filter(|_| row.held) {
+                println!("  held: {why}");
+            }
         }
     }
     for note in notes {
@@ -905,6 +952,32 @@ fn update(ids: &[String], everyone: bool, check: bool, yes: bool) -> Result<i32,
     }
     println!("{summary}");
     Ok(0)
+}
+
+/// `bundle update --for-everyone --tonight` (`on`) or `--not-tonight`: has
+/// the updates of `ids`, or of every app that has one, installed in
+/// tonight's window, or takes the apps off it.
+fn night(ids: &[String], on: bool, yes: bool) -> Result<i32, Fail> {
+    let ids = ids.iter().map(|id| checked(id)).collect::<Result<Vec<_>, _>>()?;
+    let request = Request::Tonight { ids, on, yes, by: util::asker() };
+    let (_stream, mut input) = ask(&request, None).map_err(fail)?;
+    loop {
+        match answer(&mut input)? {
+            Answer::Note(note) => println!("bundle: {note}"),
+            // An update that asks for more than the version it replaces:
+            // what it asks for, and then why it is not queued.
+            Answer::Sheet(text) => print!("{text}"),
+            Answer::Ok(said) => {
+                println!("bundle: {said}");
+                return Ok(0);
+            }
+            Answer::Error(why) => {
+                eprintln!("bundle: {why}");
+                return Ok(1);
+            }
+            _ => return Err(fail("bundled answered out of turn".into())),
+        }
+    }
 }
 
 /// What `bundle update --check` finds for this person's bundles.
@@ -1092,12 +1165,17 @@ fn list(json: bool) -> Result<i32, Fail> {
             Place::Everyone => "everyone",
             Place::User(_) => "you",
         };
+        // The reason of a hold, only where a hold has one.
+        let held = row.held_reason.as_ref().filter(|_| row.held);
+        // Only an app of everyone's is asked for tonight.
+        let tonight = if row.tonight.is_some() { ", installs tonight" } else { "" };
         println!(
-            "{:width$}  {:version_width$}  {whose:9}  {:flaws_width$}  {}",
+            "{:width$}  {:version_width$}  {whose:9}  {:flaws_width$}  {}{}{tonight}",
             row.id,
             row.version,
             row.flags.shown(),
-            row.name
+            row.name,
+            held.map_or_default(|why| format!(", held: {why}"))
         );
     }
     Ok(0)

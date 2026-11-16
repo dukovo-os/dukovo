@@ -125,6 +125,9 @@ system = "2026.3.1"
 	machine takes one: a file with *restart* and without *unattended*
 	is refused. *update set --unattended on --restart* _HH:MM_ writes
 	both, and *--unattended off* takes the time away with the setting.
+	The hour before it is also the window in which *bundled*(8)
+	installs the apps asked for with *bundle update --tonight*; without
+	it that window is 02:00 to 03:00.
 
 *[hold]*
 	The versions held back, as *update hold* writes them: *system*,
@@ -133,11 +136,22 @@ system = "2026.3.1"
 	newer one is taken as usual. A held version gets no security
 	fixes. *update unhold* removes the line.
 
+	This file keeps no reason for a hold: *update hold --why* keeps it in
+	_/system/state/sysupdate/hold-reasons.json_, with the version it was
+	given for, and *update settings --json* says it as *hold_reasons*
+	while the hold names that version. Settings put back from before an
+	update, with an older hold, bring it back without the reason.
+
 	When the health check falls back from a release, it holds that
 	release here too, so that an unattended machine does not stage it
 	again at its next check, and keeps why in
 	_/system/state/sysupdate/held.json_, which *update settings* and
 	*update check --json* read. *update unhold system* takes both away.
+
+	An update put off with *update later* is not here either: it is
+	kept in _/system/state/sysupdate/later.json_, which
+	*update settings --json* says as *later*. It is not a hold: the
+	update is told of again once its day or week is over.
 
 # EXAMPLES
 

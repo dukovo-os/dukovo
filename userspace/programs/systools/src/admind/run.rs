@@ -563,8 +563,8 @@ mod tests {
         // with 1 when a check of the names failed, and has printed each.
         // updates.last's 3 is no check kept yet, and updates.advisories' 1 is
         // an advisory that applies and its 3 a list that could not be read;
-        // each prints its JSON then too. apps.update's 1 is the stop that says
-        // what an update asks for before it is told yes.
+        // each prints its JSON then too. apps.update's 1, and apps.tonight's,
+        // is the stop that says what an update asks for before it is told yes.
         for (id, answers) in [
             ("hardware.last", [0, 1, 2, 3].as_slice()),
             ("hardware.check", [0, 1, 2].as_slice()),
@@ -572,6 +572,7 @@ mod tests {
             ("updates.last", [0, 3].as_slice()),
             ("updates.advisories", [0, 1, 3].as_slice()),
             ("apps.update", [0, 1].as_slice()),
+            ("apps.tonight", [0, 1].as_slice()),
         ] {
             let action =
                 crate::admind::actions::REGISTRY.iter().find(|action| action.id() == id).unwrap();
@@ -591,6 +592,7 @@ mod tests {
             "updates.last",
             "updates.advisories",
             "apps.update",
+            "apps.tonight",
         ];
         for action in crate::admind::actions::REGISTRY.iter().filter(|a| !named.contains(&a.id())) {
             assert_eq!(action.answers(), [0], "{}", action.id());

@@ -1775,6 +1775,18 @@ compares = true
 tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
 
 [[action]]
+id = "updates.later"
+title = "Put an update off for a while"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/{item}/later"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
 id = "updates.failed"
 title = "Show what changed before a start failed"
 area = "updates"
@@ -1832,6 +1844,42 @@ path = "/api/1/apps/update"
 runs = "as-administrator"
 long = true
 compares = false
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.tonight"
+title = "Install an app's update tonight"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/tonight"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.tonight-all"
+title = "Install every app's update tonight"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/tonight"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.not-tonight"
+title = "Do not install an app's update tonight"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/not-tonight"
+runs = "as-administrator"
+long = false
+compares = true
 tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
 
 [[action]]

@@ -78,6 +78,12 @@
   "installed": "2026-10-26T07:33:20Z",
   "folder": "/applications/org.example.notes",
   "data": "each person's data",
+  "data_size": {
+    "bytes": 1234567890,
+    "files": 3412,
+    "complete": true,
+    "measured_ms": 1793000100000
+  },
   "previous": "0.0.9",
   "held": true,
   "license": "MIT",

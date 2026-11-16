@@ -16,11 +16,14 @@ use serde::Serialize;
 use toml_edit::DocumentMut;
 
 use super::held::{Held, HeldDocument};
+use super::last;
 use crate::args::{Arg, Args};
 use crate::bundles::registry::{self, Place};
 use crate::json;
 use crate::settings_edit::{self, Changed};
+use crate::sysupdate::later::{Later, Said};
 use crate::sysupdate::online::{Apps, Check, Hold, Metered, SETTINGS, Settings, minutes_of_day};
+use crate::sysupdate::reasons::Reasons;
 use crate::util::{self, Fail, fail, usage};
 
 /// The members of `update settings --json` after `format`.
@@ -41,6 +44,12 @@ pub(crate) struct Document {
     /// The release the health check held after it fell back from it,
     /// while the hold it made is there.
     held: Option<HeldDocument>,
+    /// The reasons kept with the holds, each while the hold it was written
+    /// for stands.
+    hold_reasons: Reasons,
+    /// The updates put off with `update later`, each with whether it
+    /// still puts off the reminder, by the last check root kept.
+    later: Vec<Said>,
     /// Whether bundled updates the apps of everyone by themselves.
     apps_automatic: bool,
     /// Whether `apps` and bundled say different things of that.
@@ -58,8 +67,17 @@ pub(crate) struct HoldDocument {
 
 impl Document {
     /// The settings `settings` as they stand, with what the health check
-    /// kept in `held`, and whether bundled updates by themselves.
-    pub(crate) fn of(settings: &Settings, held: Option<&Held>, automatic: bool) -> Document {
+    /// kept in `held`, the reasons kept with the holds in `reasons`, the
+    /// updates put off in `later`, and whether bundled updates by
+    /// themselves.
+    pub(crate) fn of(
+        settings: &Settings,
+        held: Option<&Held>,
+        reasons: &Reasons,
+        later: Vec<Said>,
+        automatic: bool,
+    ) -> Document {
+        let hold_reasons = reasons.standing_of(&settings.hold);
         let Hold { system, firmware } = settings.hold.clone();
         let held = held
             .filter(|held| system.as_deref() == Some(held.version.as_str()))
@@ -73,6 +91,8 @@ impl Document {
             restart: settings.restart.clone(),
             hold: HoldDocument { system, firmware },
             held,
+            hold_reasons,
+            later,
             apps_automatic: automatic,
             apps_disagree: (settings.apps == Apps::Auto) != automatic,
             server: settings.server.clone(),
@@ -137,7 +157,17 @@ pub(crate) fn settings(args: &mut Args) -> Result<i32, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
-    let document = Document::of(&Settings::load()?, Held::read().as_ref(), automatic());
+    // What puts a reminder off is judged by the last check root kept: this
+    // reads no network.
+    let record = std::fs::read_to_string(last::FILE).ok();
+    let now_ms = util::now_ns() / 1_000_000;
+    let document = Document::of(
+        &Settings::load()?,
+        Held::read().as_ref(),
+        &Reasons::read(),
+        Later::read().said(record.as_deref(), now_ms),
+        automatic(),
+    );
     if json {
         return json::print(&document).map(|()| 0);
     }
@@ -161,6 +191,20 @@ fn lines(document: &Document) -> Vec<String> {
         format!("hold system = {}", or_none(&document.hold.system)),
         format!("hold firmware = {}", or_none(&document.hold.firmware)),
     ];
+    // The reason of a hold, only where it has one.
+    for (item, reason) in
+        [("system", &document.hold_reasons.system), ("firmware", &document.hold_reasons.firmware)]
+    {
+        if let Some(reason) = reason {
+            lines.push(format!("hold {item} reason = {}", reason.text));
+        }
+    }
+    // An update put off, only while it stands.
+    for put_off in document.later.iter().filter(|put_off| put_off.stands) {
+        let until =
+            util::local_time(i64::try_from(put_off.until_ms / 1000).unwrap_or(0), "%Y-%m-%d");
+        lines.push(format!("later {} = until {until}, version {}", put_off.item, put_off.version));
+    }
     if let Some(held) = &document.held {
         lines.push(format!(
             "update: Dukovo {} is held: it fell back, and is not staged again until `update \
@@ -374,6 +418,7 @@ pub(crate) fn set(args: &mut Args) -> Result<i32, Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sysupdate::reasons::Reason;
 
     /// A file as a person keeps it, with a comment for each key.
     const KEPT: &str = "\
@@ -398,6 +443,42 @@ system = \"1.0.0-alpha.2\"
 
     fn kept() -> Settings {
         Settings::parse(KEPT).unwrap()
+    }
+
+    /// The updates put off: the system's, which stands, and notes', which
+    /// the last check no longer finds offered.
+    fn put_off() -> Vec<Said> {
+        vec![
+            Said {
+                item: "system".into(),
+                version: "1.0.0-alpha.2".into(),
+                until_ms: 1_794_700_000_000,
+                by: 1000,
+                at_ms: 1_794_000_000_000,
+                stands: true,
+            },
+            Said {
+                item: "org.example.notes".into(),
+                version: "1.3.0".into(),
+                until_ms: 1_794_700_000_000,
+                by: 1000,
+                at_ms: 1_794_000_000_000,
+                stands: false,
+            },
+        ]
+    }
+
+    /// The reason kept with the hold `kept` has on the system.
+    fn reasons() -> Reasons {
+        Reasons {
+            system: Some(Reason {
+                version: "1.0.0-alpha.2".into(),
+                text: "Waiting for the nginx fix".into(),
+                by: 1000,
+                at_ms: 1_794_000_000_000,
+            }),
+            firmware: None,
+        }
     }
 
     /// The file `wanted` makes of `text`, and what is said of it.
@@ -425,16 +506,33 @@ system = \"1.0.0-alpha.2\"
             at_ms: 1_794_000_000_000,
             start: 14,
         };
-        let document = Document::of(&kept(), Some(&held), true);
+        let document = Document::of(&kept(), Some(&held), &reasons(), put_off(), true);
         let line = json::line(&document).unwrap();
         json::assert_golden(&line, include_str!("../../tests/json/update-settings.json"));
         // The defaults, where the file says nothing.
-        let plain = serde_json::to_value(Document::of(&Settings::default(), None, false)).unwrap();
+        let plain = serde_json::to_value(Document::of(
+            &Settings::default(),
+            None,
+            &Reasons::default(),
+            Vec::new(),
+            false,
+        ))
+        .unwrap();
         assert_eq!(plain["check"], "notify");
         assert_eq!(plain["restart"], serde_json::Value::Null);
         assert_eq!(plain["held"], serde_json::Value::Null);
         assert_eq!(plain["apps_disagree"], false);
         assert_eq!(plain["server"], "https://updates.dukovo.org/system/");
+    }
+
+    #[test]
+    fn an_update_put_off_is_told_in_words_only_while_it_stands() {
+        let said = lines(&Document::of(&kept(), None, &Reasons::default(), put_off(), false));
+        let until = util::local_time(1_794_700_000, "%Y-%m-%d");
+        assert!(said.contains(&format!("later system = until {until}, version 1.0.0-alpha.2")));
+        assert!(!said.iter().any(|line| line.contains("org.example.notes")), "{said:?}");
+        let none = lines(&Document::of(&kept(), None, &Reasons::default(), Vec::new(), false));
+        assert!(!none.iter().any(|line| line.starts_with("later")), "{none:?}");
     }
 
     #[test]
@@ -446,7 +544,14 @@ system = \"1.0.0-alpha.2\"
             start: 14,
         };
         let value = |settings: &Settings| {
-            serde_json::to_value(Document::of(settings, Some(&held), false)).unwrap()
+            serde_json::to_value(Document::of(
+                settings,
+                Some(&held),
+                &Reasons::default(),
+                Vec::new(),
+                false,
+            ))
+            .unwrap()
         };
         assert_eq!(value(&kept())["held"]["why"], "fell-back");
         // Lifted, or held at another version since.
@@ -457,10 +562,40 @@ system = \"1.0.0-alpha.2\"
     }
 
     #[test]
+    fn a_reason_is_told_only_while_the_hold_it_was_written_for_stands() {
+        let value = |settings: &Settings| {
+            serde_json::to_value(Document::of(settings, None, &reasons(), Vec::new(), false))
+                .unwrap()
+        };
+        let said = value(&kept());
+        assert_eq!(said["hold_reasons"]["system"]["text"], "Waiting for the nginx fix");
+        assert_eq!(said["hold_reasons"]["system"]["by"], 1000);
+        assert_eq!(said["hold_reasons"]["firmware"], serde_json::Value::Null);
+        // Lifted, or held at another version since, as settings put back from before an update.
+        let none = value(&Settings::default());
+        assert_eq!(none["hold_reasons"]["system"], serde_json::Value::Null);
+        let mut other = kept();
+        other.hold.system = Some("1.0.0-alpha.3".into());
+        assert_eq!(value(&other)["hold_reasons"]["system"], serde_json::Value::Null);
+        // The words add a line only where a reason stands.
+        let with = lines(&Document::of(&kept(), None, &reasons(), Vec::new(), false));
+        assert!(with.contains(&"hold system reason = Waiting for the nginx fix".to_string()));
+        let without = lines(&Document::of(&other, None, &reasons(), Vec::new(), false));
+        assert!(!without.iter().any(|line| line.contains("reason")));
+    }
+
+    #[test]
     fn apps_and_bundled_that_say_different_things_disagree() {
         let apps = |apps, automatic| {
             let settings = Settings { apps, ..Settings::default() };
-            serde_json::to_value(Document::of(&settings, None, automatic)).unwrap()
+            serde_json::to_value(Document::of(
+                &settings,
+                None,
+                &Reasons::default(),
+                Vec::new(),
+                automatic,
+            ))
+            .unwrap()
         };
         assert_eq!(apps(Apps::Auto, true)["apps_disagree"], false);
         assert_eq!(apps(Apps::Notify, false)["apps_disagree"], false);
@@ -574,11 +709,22 @@ system = \"1.0.0-alpha.2\"
 
     #[test]
     fn the_words_say_each_setting_and_what_needs_a_word_more() {
-        let document = Document::of(&Settings::default(), None, true);
+        let document =
+            Document::of(&Settings::default(), None, &Reasons::default(), Vec::new(), true);
         let lines = lines(&document);
         assert_eq!(lines[0], "channel = stable");
         assert!(lines.contains(&"restart = none".to_string()));
         assert!(lines.last().unwrap().contains("`update set --apps notify`"));
-        assert_eq!(super::lines(&Document::of(&Settings::default(), None, false)).len(), 8);
+        assert_eq!(
+            super::lines(&Document::of(
+                &Settings::default(),
+                None,
+                &Reasons::default(),
+                Vec::new(),
+                false,
+            ))
+            .len(),
+            8
+        );
     }
 }

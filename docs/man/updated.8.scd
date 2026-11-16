@@ -20,7 +20,11 @@ canary, it checks for a newer system, firmware set and apps, as
 
 - By default (*check = "notify"*, *apps = "notify"*) it tells whoever is
   signed in, on each console, that an update is ready and that
-  *elevate update apply* stages it. It changes nothing.
+  *elevate update apply* stages it. It changes nothing. An update put
+  off with *update later* (*update*(8)) is left out of the notice until
+  its time comes, or a newer release or an advisory ends it; when
+  every update is put off, there is no notice. The notice of a critical
+  or high advisory whose fix is not staged is never put off.
 - *check = "download"* fetches the system update first, so that staging
   it later needs no network.
 - *apps = "auto"* updates the apps installed for everyone by itself.
@@ -97,6 +101,10 @@ _/system/settings/sysupdate/updates.toml_
 _/system/state/sysupdate/last-check.json_
 	What the last check found, one line, written after each check
 	(*update*(8), *update last*).
+
+_/system/state/sysupdate/later.json_
+	The updates put off, which *update later* writes and each daily
+	check reads, with the advisories it reads in the same round.
 
 _/system/live/netd/metered_
 	Whether the connection is metered, which *netd*(8) writes; updated
