@@ -221,6 +221,34 @@ export const devices = () => plain({
   ],
 });
 
+/** `GET /api/1/hardware/memtest`, which is `hardware memtest --status --json`: nothing asked and no test at a start kept, unless `more` says. */
+export const memtest = (more = {}) => plain({
+  format: 1, asked: null, last: null, history: [], ...more,
+});
+
+/** The test asked for at 3:10 PM on November 14, by chase. */
+export const asked = () => ({ at_ms: Date.UTC(2026, 10, 14, 15, 10, 0), by: 'chase' });
+
+/** The last test at a start, as `result` (`passed`, `errors`, `unfinished` or `not-taken`) gives it: at 3:06 AM on November 14, of a 16 GiB machine. */
+export const startTest = (result = 'passed', more = {}) => {
+  const base = {
+    at_ms: Date.UTC(2026, 10, 14, 3, 6, 0), start: 212, result, complete: true, tested_bytes: Math.round(15.2 * 2 ** 30), total_bytes: 16 * 2 ** 30, errors: 0, bad: [], retired: 0, seconds: 240,
+  };
+  const found = {
+    passed: {},
+    errors: {
+      errors: 3, retired: 2, bad: [{ from: '0x1000000', to: '0x1002fff', errors: 2 }, { from: '0x7f000000', to: '0x7f000fff', errors: 1 }],
+    },
+    unfinished: {
+      complete: false, tested_bytes: 0, errors: 0, seconds: 0,
+    },
+    'not-taken': {
+      complete: false, tested_bytes: 0, total_bytes: 0, seconds: 0,
+    },
+  }[result];
+  return plain({ ...base, ...found, ...more });
+};
+
 /** A running `hardware.check` as `GET /api/1/tasks` lists it. */
 export const task = (more = {}) => ({
   id: 41, action: 'hardware.check', args: {}, state: 'running', step: 4, steps: 11, words: 'disks sda self-test passed', started: Math.floor(NOW / 1000) - 120, ...more,

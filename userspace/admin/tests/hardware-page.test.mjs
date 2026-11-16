@@ -10,7 +10,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, broken, clean, devices, diskHealth, inventory, last, NOW, sensors, show, skipped, storage, task,
+  about, asked, broken, clean, devices, diskHealth, inventory, last, memtest, NOW, sensors, show, skipped, startTest, storage, task,
 } from './hardware-fixtures.mjs';
 import {
   buttonOf, openHardware, refusal, settle, useStore,
@@ -254,10 +254,12 @@ test('the memory test card says why, what runs and what does not, and when it la
   const card = text(world.card('memory'));
   assert.match(card, /Memory can fail without a clear sign/);
   assert.match(card, /While the system runs\. The memory area of a quick check tests up to 1 GiB of the free memory, in about a minute\./);
-  assert.match(card, /All of it, from the start menu\. Restart, choose Troubleshooting, then Test the memory \(memtest86\+\)\./);
+  assert.match(card, /All of it, at the next restart\. The next start tests the free memory before the system starts, about a minute for each 4 GiB \(about 4 minutes here\), takes any bad part out of use, then starts as usual\. The server is offline meanwhile, and nobody needs to be at it\./);
+  assert.match(card, /For the fullest test, from the start menu\. Restart, choose Troubleshooting, then Test the memory \(memtest86\+\)\./);
   assert.match(card, /Last run: Nov 9 2:10 AM · passed, 1\.0G tested by 4 CPUs/);
   assert.match(card, /The test from the start menu leaves no record\./);
-  assert.ok(!card.includes('Test at the next restart'), 'memtest86+ does not end by itself');
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'));
+  assert.ok(card.indexOf('All of it, at the next restart') < card.indexOf('For the fullest test'), 'the start menu comes second');
 });
 
 test('Test part of the memory runs the memory area as a task', async (context) => {
@@ -289,6 +291,153 @@ test('the memory rows of a result with a failure come first in the last run', as
   assert.match(text(world.card('memory')), /Last run: Nov 9 2:10 AM · failed, 2 errors in 1\.0G \(HW-103\)/);
   const none = await openHardware(context, { world: { reads: { '/api/1/hardware/check': null } } });
   assert.match(text(none.card('memory')), /Last run: never/);
+});
+
+/** The dialog's choices, as the words on their buttons. */
+const choicesOf = (world) => world.dialog().querySelectorAll('button').map((one) => one.textContent);
+
+test('Test at the next restart asks in a dialog with three ways out, and Cancel runs nothing', async (context) => {
+  const world = await openHardware(context);
+  await world.press(world.card('memory'), 'Test at the next restart…');
+  assert.equal(world.dialog().querySelector('h2').textContent, 'Test the memory at the next restart?');
+  assert.match(world.dialog().textContent, /The next start tests the free memory first \(about 4 minutes here\), then starts the system as usual\. The server is offline meanwhile, and nobody needs to be at it\./);
+  assert.match(world.dialog().textContent, /Restart now and test restarts duke-nas in a minute/);
+  assert.deepEqual(choicesOf(world), ['Restart now and test', 'At the next restart', 'Cancel']);
+  assert.equal(world.document.activeElement, buttonOf(world.dialog(), 'At the next restart'), 'the choice that changes nothing now has the focus');
+  await world.press(world.dialog(), 'Cancel');
+  assert.deepEqual(world.ran('hardware.memtest'), []);
+  assert.deepEqual(world.ran('power.restart'), []);
+  assert.equal(world.dialog(), null);
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'), 'nothing was asked');
+});
+
+test('At the next restart asks for the test only, then shows it asked with Don\'t test and Restart now', async (context) => {
+  const world = await openHardware(context);
+  const card = world.card('memory');
+  world.answers['/api/1/hardware/memtest'] = memtest({ asked: asked() });
+  await world.press(card, 'Test at the next restart…');
+  await world.press(world.dialog(), 'At the next restart');
+  assert.deepEqual(world.ran('hardware.memtest'), [{}]);
+  assert.deepEqual(world.ran('power.restart'), [], 'it restarts nothing');
+  assert.equal(world.dialog(), null);
+  assert.match(text(card), /The memory is tested at the next restart \(asked Nov 14, 3:10 PM by chase\)/);
+  assert.equal(buttonOf(card, 'Test at the next restart…'), undefined, 'it is asked already');
+  assert.ok(buttonOf(card, 'Don\'t test'));
+  assert.ok(buttonOf(card, 'Restart now…'));
+  assert.equal(buttonOf(card, 'Restart now…').parent, buttonOf(card, 'Don\'t test').parent, 'Restart now stands beside Don\'t test');
+  assert.equal(card.querySelector('.hw-menu').hidden, true, 'the start menu\'s own restart is out of the way');
+  assert.equal(world.document.activeElement, buttonOf(card, 'Don\'t test'), 'the focus is on the button that undoes it');
+  assert.equal(world.ranWith('hardware.memtest')[0][2].where.slot, card.querySelector('.hw-errors'));
+});
+
+test('Restart now and test asks, then goes on to the restart\'s own question with the longer wait', async (context) => {
+  const world = await openHardware(context);
+  world.answers['/api/1/hardware/memtest'] = memtest({ asked: asked() });
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 0, at_ms: NOW } };
+  await world.press(world.card('memory'), 'Test at the next restart…');
+  await world.press(world.dialog(), 'Restart now and test');
+  assert.deepEqual(world.ran('hardware.memtest'), [{}]);
+  assert.equal(world.dialog().querySelector('h2').textContent, 'Restart duke-nas?');
+  assert.match(world.dialog().textContent, /To test the memory before the system starts\./);
+  await world.submit();
+  assert.deepEqual(world.ran('power.restart'), [{ at: null }]);
+  assert.equal(world.expected.length, 1);
+  assert.match(world.expected[0][0], /^duke-nas is restarting and tests its memory first, which can take up to an hour\./);
+  assert.equal(world.expected[0][1].quietMs, 14 * 60_000, '10 minutes and 1 for each 4 GiB of 15.6 GiB');
+});
+
+test('a test that was asked is shown asked, and Don\'t test cancels it and gives the focus back to the ask', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  const card = world.card('memory');
+  assert.match(text(card), /The memory is tested at the next restart \(asked Nov 14, 3:10 PM by chase\)/);
+  assert.equal(buttonOf(card, 'Test at the next restart…'), undefined);
+  world.answers['/api/1/hardware/memtest'] = memtest();
+  await world.press(card, 'Don\'t test');
+  assert.deepEqual(world.ran('hardware.memtest-cancel'), [{}]);
+  assert.equal(world.ranWith('hardware.memtest-cancel')[0][2].where.slot, card.querySelector('.hw-errors'));
+  assert.ok(!text(card).includes('The memory is tested at the next restart ('), 'nothing is asked now');
+  assert.equal(buttonOf(card, 'Don\'t test'), undefined);
+  assert.equal(world.document.activeElement, buttonOf(card, 'Test at the next restart…'));
+});
+
+test('Restart now beside Don\'t test restarts for the test, and the start menu\'s own restart is out of the way', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 0, at_ms: NOW } };
+  assert.equal(world.card('memory').querySelector('.hw-menu').hidden, true);
+  await world.press(world.card('memory'), 'Restart now…');
+  assert.match(world.dialog().textContent, /To test the memory before the system starts\./);
+  await world.submit();
+  assert.deepEqual(world.ran('power.restart'), [{ at: null }]);
+  assert.equal(world.expected[0][1].quietMs, 14 * 60_000);
+  assert.deepEqual(world.ran('hardware.memtest'), [], 'it is asked already');
+});
+
+test('a refusal of the test is said in the memory card, and Restart now and test restarts nothing then', async (context) => {
+  const error = refusal('HW-105', 'The next start is taken already');
+  const world = await openHardware(context, { world: { answers: { 'hardware.memtest': error } } });
+  await world.press(world.card('memory'), 'Test at the next restart…');
+  await world.press(world.dialog(), 'Restart now and test');
+  assert.equal(world.problems.length, 1);
+  assert.equal(world.problems[0][0], error);
+  assert.equal(world.problems[0][1].slot, world.card('memory').querySelector('.hw-errors'));
+  assert.equal(world.dialog(), null, 'no restart is offered');
+  assert.deepEqual(world.ran('power.restart'), []);
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'));
+});
+
+test('a reader sees that the test is asked, and has no button on it', async (context) => {
+  const world = await openHardware(context, { session: { admin: false }, world: { reads: { '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  assert.match(text(world.card('memory')), /The memory is tested at the next restart \(asked Nov 14, 3:10 PM by chase\)/);
+  assert.equal(world.card('memory').querySelectorAll('button').length, 0);
+  assert.match(text(world.card('memory')), /All of it, at the next restart\./);
+});
+
+test('the last run at a start comes beside the check\'s, in the colour of what it found', async (context) => {
+  const startOf = (world) => world.card('memory').querySelectorAll('p').find((one) => /^Nov 14.*(at the start|the test at the start|the start menu did not)/.test(one.textContent) && !one.hidden);
+  const reportOf = (world) => world.card('memory').querySelectorAll('a').find((one) => one.textContent === 'Report a problem');
+  const opened = (last) => openHardware(context, { world: { reads: { '/api/1/hardware/memtest': memtest({ last }) } } });
+
+  const none = await openHardware(context);
+  assert.equal(startOf(none), undefined, 'a machine that never tested at a start says nothing of it');
+  assert.equal(reportOf(none).parent.hidden, true);
+
+  const passed = await opened(startTest('passed'));
+  assert.equal(startOf(passed).textContent, 'Nov 14, at the start: passed · 15.2 of 16 GiB tested in 4 minutes');
+  assert.equal(startOf(passed).getAttribute('class'), 'hw-start');
+  assert.equal(reportOf(passed).parent.hidden, true);
+  assert.match(text(passed.card('memory')), /Last run: Nov 9 2:10 AM · passed, 1\.0G tested by 4 CPUs/, 'the check\'s own line stays');
+
+  const errors = await opened(startTest('errors'));
+  assert.equal(startOf(errors).textContent, 'Nov 14, at the start: 3 errors in 2 places. Those parts are out of use until the next restart. The memory should be replaced (HW-103).');
+  assert.equal(startOf(errors).getAttribute('class'), 'hw-start bad');
+  assert.equal(reportOf(errors).parent.hidden, false);
+  assert.equal(reportOf(errors).getAttribute('href'), '/report?about=hardware');
+
+  const unfinished = await opened(startTest('unfinished'));
+  assert.equal(startOf(unfinished).textContent, 'Nov 14: the test at the start did not finish (HW-104). The power went or the machine stopped during it, which failing memory can cause.');
+  assert.equal(startOf(unfinished).getAttribute('class'), 'hw-start warn');
+  assert.equal(reportOf(unfinished).parent.hidden, true);
+
+  const taken = await opened(startTest('not-taken'));
+  assert.equal(startOf(taken).textContent, 'Nov 14: the start menu did not run the test: an update was tried first. Ask again.');
+  assert.equal(startOf(taken).getAttribute('class'), 'muted');
+});
+
+test('a test at a start that cannot be read is said, and the ask is still there', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware/memtest': refusal('ADM-500', 'It broke', 500) } } });
+  assert.match(text(world.card('memory')), /The memory test at the start could not be read\./);
+  assert.ok(buttonOf(world.card('memory'), 'Test at the next restart…'));
+  assert.match(text(world.card('memory')), /Last run: Nov 9 2:10 AM/);
+});
+
+test('a machine whose memory is not known says no time for the test, and waits the longest for it', async (context) => {
+  const world = await openHardware(context, { world: { reads: { '/api/1/hardware': show({ memory: { bytes: null, ecc: null, slots: null, modules: null } }), '/api/1/hardware/memtest': memtest({ asked: asked() }) } } });
+  assert.doesNotMatch(text(world.card('memory')), /about \d+ minutes? here/);
+  assert.match(text(world.card('memory')), /about a minute for each 4 GiB, takes any bad part out of use/);
+  world.answers['/api/1/power'] = { shutdown: { end: 'reboot', in_seconds: 0, at_ms: NOW } };
+  await world.press(world.card('memory'), 'Restart now…');
+  await world.submit();
+  assert.equal(world.expected[0][1].quietMs, 70 * 60_000);
 });
 
 test('Restart now from the memory card gives the start menu as the reason', async (context) => {

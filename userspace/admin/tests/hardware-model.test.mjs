@@ -14,6 +14,10 @@ import { devicesOf, hiddenWords } from '../pages/hardware/devices-model.js';
 import {
   disksOf, pillOf, testArgs, testsOf,
 } from '../pages/hardware/disks-model.js';
+import { askedWords, startRun } from '../pages/hardware/memtest-lines.js';
+import {
+  hereWords, nextWords, quietMinutes, testMinutes,
+} from '../pages/hardware/memtest-model.js';
 import {
   degrees, fanRows, noRecordWords, startTimes, tempRows, unitOf,
 } from '../pages/hardware/sensors-model.js';
@@ -22,7 +26,7 @@ import {
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, storage, task, time, updates,
+  about, asked, broken, clean, devices, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, startTest, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -437,4 +441,70 @@ test('an answer that is not a list of devices has none, and the folded line coun
   for (const answer of [null, {}, { devices: null }, []]) assert.deepEqual(devicesOf(answer), { groups: [], hidden: [] });
   assert.equal(hiddenWords(23), 'Hidden: 23 devices that work and need nothing, such as USB hubs and bridges');
   assert.equal(hiddenWords(1), 'Hidden: 1 device that works and needs nothing, such as a USB hub or a bridge');
+});
+
+const GIB = 2 ** 30;
+const NOW_SECONDS = NOW / 1000;
+
+test('the memory test takes a minute for each 4 GiB, at most an hour, and says nothing of a memory it does not know', () => {
+  assert.deepEqual([4, 16, 512].map((gib) => testMinutes(gib * GIB)), [1, 4, 60]);
+  assert.equal(testMinutes(1 * GIB), 1, 'a part of 4 GiB is a minute');
+  assert.equal(testMinutes(15.56 * GIB), 4);
+  assert.deepEqual([null, undefined, 0].map(testMinutes), [null, null, null]);
+  assert.equal(hereWords(16 * GIB), ' (about 4 minutes here)');
+  assert.equal(hereWords(4 * GIB), ' (about 1 minute here)');
+  assert.equal(hereWords(512 * GIB), ' (up to an hour here)');
+  assert.equal(hereWords(null), '');
+});
+
+test('a restart for the memory test may stay quiet for ten minutes and one for each 4 GiB, at most 70', () => {
+  assert.deepEqual([4, 16, 512].map((gib) => quietMinutes(gib * GIB)), [11, 14, 70]);
+  assert.equal(quietMinutes(240 * GIB), 70);
+  assert.equal(quietMinutes(236 * GIB), 69);
+  assert.equal(quietMinutes(null), 70, 'a memory that is not known may take the longest');
+});
+
+test('the card says what the next start does, with the time it takes here', () => {
+  assert.equal(nextWords(16 * GIB), 'The next start tests the free memory before the system starts, about a minute for each 4 GiB (about 4 minutes here), takes any bad part out of use, then starts as usual. The server is offline meanwhile, and nobody needs to be at it.');
+  assert.match(nextWords(null), /about a minute for each 4 GiB, takes any bad part out of use/);
+});
+
+test('the asked line says when, and by whom, as far as the answer does', () => {
+  assert.equal(askedWords(asked(), time, NOW_SECONDS), 'The memory is tested at the next restart (asked Nov 14, 3:10 PM by chase)');
+  assert.equal(askedWords({ at_ms: asked().at_ms }, time, NOW_SECONDS), 'The memory is tested at the next restart (asked Nov 14, 3:10 PM)');
+  assert.equal(askedWords({ by: 'chase' }, time, NOW_SECONDS), 'The memory is tested at the next restart (asked by chase)');
+  assert.equal(askedWords({}, time, NOW_SECONDS), 'The memory is tested at the next restart');
+  const old = { at_ms: Date.UTC(2025, 11, 30, 21, 5, 0), by: 'chase' };
+  assert.equal(askedWords(old, time, NOW_SECONDS), 'The memory is tested at the next restart (asked Dec 30, 2025, 9:05 PM by chase)');
+});
+
+test('each result of the test at a start has its own line, tone and offer', () => {
+  const run = (result, more) => startRun(startTest(result, more), time, NOW_SECONDS);
+  assert.deepEqual(run('passed'), { words: 'Nov 14, at the start: passed · 15.2 of 16 GiB tested in 4 minutes', tone: null, report: false });
+  assert.deepEqual(run('errors'), {
+    words: 'Nov 14, at the start: 3 errors in 2 places. Those parts are out of use until the next restart. The memory should be replaced (HW-103).',
+    tone: 'bad',
+    report: true,
+  });
+  assert.deepEqual(run('unfinished'), {
+    words: 'Nov 14: the test at the start did not finish (HW-104). The power went or the machine stopped during it, which failing memory can cause.',
+    tone: 'warn',
+    report: false,
+  });
+  assert.deepEqual(run('not-taken'), { words: 'Nov 14: the start menu did not run the test: an update was tried first. Ask again.', tone: 'off', report: false });
+});
+
+test('the line of a test at a start copes with one error, one place, a small memory and what the answer leaves out', () => {
+  const run = (result, more) => startRun(startTest(result, more), time, NOW_SECONDS).words;
+  assert.match(run('errors', { errors: 1, bad: [{ from: '0x1000', to: '0x1fff', errors: 1 }] }), /^Nov 14, at the start: 1 error in 1 place\. /);
+  assert.match(run('errors', { bad: [] }), /^Nov 14, at the start: 3 errors\. /, 'no places named, none counted');
+  assert.equal(run('passed', { tested_bytes: 480 * 2 ** 20, total_bytes: 512 * 2 ** 20, seconds: 45 }), 'Nov 14, at the start: passed · 480 of 512 MiB tested in less than a minute');
+  assert.equal(run('passed', { seconds: null }), 'Nov 14, at the start: passed · 15.2 of 16 GiB tested');
+  assert.equal(run('passed', { tested_bytes: 0 }), 'Nov 14, at the start: passed');
+  assert.equal(run('passed', { at_ms: Date.UTC(2025, 11, 30, 21, 5, 0) }), 'Dec 30, 2025, at the start: passed · 15.2 of 16 GiB tested in 4 minutes');
+});
+
+test('a test at a start that was never kept, or whose result is not known, is not said', () => {
+  for (const answer of [null, undefined, {}, { result: 'passed' }, { at_ms: 'now', result: 'passed' }]) assert.equal(startRun(answer, time, NOW_SECONDS), null);
+  assert.equal(startRun({ ...startTest('passed'), result: 'exploded' }, time, NOW_SECONDS), null);
 });

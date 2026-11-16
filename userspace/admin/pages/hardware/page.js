@@ -8,7 +8,8 @@
 // and the disks' own tests only for an administrator whose console is
 // unlocked. The temperatures are read apart from the rest, since the cards do
 // not wait for them, and again every minute. The dialog that checks, the
-// restart's dialogs and the list of devices are read when a button asks.
+// dialog that asks for the memory test, the restart's dialogs and the list of
+// devices are read when a button asks.
 
 import { fill, h } from '../../dom.js';
 import { stepWords } from '../../lib/tasks-words.js';
@@ -18,13 +19,20 @@ import { makeCheck } from './check.js';
 import { makeDisks } from './disks.js';
 import { makeMachine } from './machine.js';
 import { makeMemory } from './memory.js';
+import { MEMTEST_RESTART_WHY, quietMinutes } from './memtest-model.js';
 import {
   diskNotes, endedCheck, hasResult, summaryWords,
 } from './model.js';
 import { makePower } from './power.js';
 
 const READS = {
-  machine: '/api/1/hardware', last: '/api/1/hardware/check', history: '/api/1/hardware/history', about: '/api/1/console/about', storage: '/api/1/storage', tasks: '/api/1/tasks',
+  machine: '/api/1/hardware',
+  last: '/api/1/hardware/check',
+  history: '/api/1/hardware/history',
+  about: '/api/1/console/about',
+  storage: '/api/1/storage',
+  tasks: '/api/1/tasks',
+  memtest: '/api/1/hardware/memtest',
 };
 const TEMPS = { sensors: '/api/1/hardware/sensors', highest: '/api/1/hardware/highest', updates: '/api/1/updates/history' };
 const TEMPS_MS = 60_000;
@@ -36,6 +44,8 @@ export async function show(view) {
   // `last` is null when no check was kept, and undefined when it could not be read.
   const data = {
     machine: null, inventory: null, access: admin ? 'locked' : 'reader', about: null, last: null, history: null, storage: null, ended: null,
+    // The memory test at the start: its answer, or undefined when it could not be read.
+    memtest: null,
     // The temperatures: null until read, undefined when they could not be.
     sensors: null, highest: null, updates: null,
   };
@@ -100,10 +110,24 @@ export async function show(view) {
       }
       return line;
     },
+    /** Reads whether the memory test is asked for, and draws the card again. */
+    async readMemtest() {
+      try {
+        data.memtest = await view.api.get(READS.memtest);
+      } catch (error) {
+        view.problem(error, { slot: memory.errors });
+        return;
+      }
+      memory.draw();
+    },
+    /** Asks for the memory test or cancels it, as `name` of memtest-dialog.js says. */
+    memtest: async (name, one, slot) => (await import('./memtest-dialog.js'))[name](ctx, one, slot),
+    /** Restarts for the memory test, which the shell waits longer for than for any other restart. */
+    restartToTest: () => ctx.power('restart', MEMTEST_RESTART_WHY, { kind: 'memtest', quiet_minutes: quietMinutes(data.machine?.memory?.bytes) }),
     async power(name, ...args) {
       const lib = await import('../../lib/restart.js');
       const pending = await ctx.pending();
-      if (name === 'restart') await lib.restartNow(view, { why: args[0], pending });
+      if (name === 'restart') await lib.restartNow(view, { why: args[0], pending, ...args[1] });
       else if (name === 'restartAt') await lib.restartAt(view, args[0], { pending });
       else await lib.shutDown(view, { pending });
     },
@@ -196,6 +220,7 @@ export async function show(view) {
     data.history = Array.isArray(got.history) ? got.history : null;
     data.about = got.about ?? null;
     data.storage = got.storage ?? null;
+    data.memtest = got.memtest;
     if (Array.isArray(got.tasks?.tasks)) {
       tasks.clear();
       for (const task of got.tasks.tasks) if (task.action === CHECK && running(task)) tasks.set(task.id, task);
