@@ -1063,12 +1063,14 @@ fn the_console_certificate(vm: &mut Vm, test: &mut Test, chain: &Chain) -> Resul
     }
 
     // What the test added is taken away, and the machine has its name back.
+    // lab was removed once before, in step 3: only these removals count.
     test.unlocked()?;
+    let before = test.history()?.len();
     removed(test, "lab-renamed")?;
     removed(test, "lab")?;
     let history = test.history()?;
     for name in ["lab", "lab-renamed"] {
-        if lines_of(&history, 0, name, "removed").len() != 1 {
+        if lines_of(&history, before, name, "removed").len() != 1 {
             return Err(format!("the history has no line of {name} removed: {history:?}"));
         }
     }

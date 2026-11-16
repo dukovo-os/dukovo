@@ -569,6 +569,9 @@ fn seen(document: &Value, name: &str) -> Result<Seen, String> {
 ///   app, APP-101, 422; when it cannot, which a guest with no way out may
 ///   not, APP-103, 422. `admin-updates` reads the sheet of an app of a
 ///   catalog it adds.
+/// - `reports.redact` cuts words from the draft its example names, which
+///   reportd never made: RPT-101, 422. The lab test web-console/report
+///   drafts a report and cuts from it.
 /// - `updates.slots` reads the slots of an installed system, which this
 ///   guest, started from a USB stick, has none of: sysupdate ends with its
 ///   own words, ADM-123, 422. `admin-updates` reads them on an installed
@@ -586,6 +589,7 @@ fn may_refuse(id: &str) -> &'static [(u16, &'static str)] {
         "accounts.show" => &[(422, "ACC-101")],
         "apps.show" | "updates.slots" => &[(422, "ADM-123")],
         "apps.sheet" => &[(422, "APP-101"), (422, "APP-103")],
+        "reports.redact" => &[(422, "RPT-101")],
         _ => &[],
     }
 }
@@ -787,15 +791,17 @@ fn who_may_ask(test: &mut Test, action: &Action) -> Result<(), String> {
 }
 
 /// A name with a space is refused, with its field, and a name with a
-/// slash is no address of the route.
+/// slash is no address of the route. A check's name may hold a space, so
+/// its bad name starts with one, which no name may.
 fn bad_names(test: &mut Test, action: &Action) -> Result<(), String> {
     let id = &action.id;
     let mut args = action.args.clone();
-    args["name"] = json!("a b");
-    let refused = test.run(Who::Alice, action, &args)?.refused(&format!("{id} for `a b`"), 400, "ADM-125")?;
+    let bad = if id == "updates.check-remove" { " a" } else { "a b" };
+    args["name"] = json!(bad);
+    let refused = test.run(Who::Alice, action, &args)?.refused(&format!("{id} for `{bad}`"), 400, "ADM-125")?;
     let field = refused.json()?["error"]["field"].as_str().map(str::to_string);
     if field.as_deref() != Some("name") {
-        return Err(format!("the refusal of `a b` names the field {field:?}, not name"));
+        return Err(format!("the refusal of `{bad}` names the field {field:?}, not name"));
     }
     args["name"] = json!("../x");
     test.run(Who::Alice, action, &args)?.refused(&format!("{id} for `../x`"), 404, "ADM-116")?;
