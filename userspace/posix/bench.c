@@ -1191,8 +1191,6 @@ int main(int argc, char **argv) {
 	futex_processes("posix_futex_shared_same_cpu", cpus[0], 50000);
 	if(count > 1)
 		futex_processes("posix_futex_shared_cross_cpu", cpus[1], 50000);
-	if(networked)
-		network(cpus, count);
 	if(disk_path)
 		disk(disk_path, DISK_VIRTIO);
 	if(nvme_path)
@@ -1205,6 +1203,12 @@ int main(int argc, char **argv) {
 		btrfs(btrfs_path);
 	if(git)
 		git_status(git, 50);
+	// Last: the process of idle sockets beside the network rows frees its
+	// memory when it ends, which leaves the pages a later row gets apart.
+	// An SD card's transfer takes a descriptor for each run of pages that
+	// lie together, and QEMU's emulation of each costs time.
+	if(networked)
+		network(cpus, count);
 	printf("posix-bench: done\n");
 	fflush(stdout);
 	return 0;
