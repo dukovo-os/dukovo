@@ -18,8 +18,9 @@ import {
   versionsOf,
 } from '../pages/apps/app-model.js';
 import {
-  captionWords, checkedWords, idOf, initialOf, ownCommands, paletteWords, rowsOf, stateWord, tintOf, updatable,
+  captionWords, checkedWords, idOf, ownCommands, paletteWords, rowsOf, stateWord, updatable,
 } from '../pages/apps/list-model.js';
+import { initialOf, tintOf } from '../pages/apps/mark.js';
 import {
   holdCall, jobWords, makeJobs, removeCall, rollbackCall, runWords, updateAllCall, updateCall,
 } from '../pages/apps/run-model.js';

@@ -10,6 +10,7 @@ import { counted } from '../../lib/size-words.js';
 import {
   appHref, checkOf, flawWords, isText, listOf, offersOf, SEVERITIES, updateWords, urgent,
 } from './apps-model.js';
+import { initialOf, tintOf } from './mark.js';
 
 /**
  * The app the address names, from what follows `/apps/`: an empty text for
@@ -24,16 +25,6 @@ export function idOf(rest) {
   } catch {
     return null;
   }
-}
-
-/** The letter in the square that stands for an app: the first of its name. */
-export const initialOf = (name) => (Array.from(String(name).trim())[0] ?? '?').toUpperCase();
-
-/** The colour of that square, one of six that an app's ID picks, the same every time. */
-export function tintOf(id) {
-  let hash = 0;
-  for (const letter of id) hash = (Math.imul(hash, 31) + letter.codePointAt(0)) >>> 0;
-  return hash % 6;
 }
 
 /** "Checked 4 minutes ago.", and why the apps could not be checked when they could not; `time` is the console's (lib/time.js). An undefined `last` is a read that failed. */

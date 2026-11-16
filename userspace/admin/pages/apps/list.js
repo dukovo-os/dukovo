@@ -12,13 +12,11 @@
 import { fill, h } from '../../dom.js';
 import { copyBox } from '../snapshots/copy-box.js';
 import { captionWords, ownCommands, updatable } from './list-model.js';
+import { square } from './mark.js';
 import { jobWords } from './run-model.js';
 
 /** How an update's state is drawn in a row: the pill's class, or none for the plain words. */
 const PILLS = Object.freeze({ update: 'pill info', waiting: 'pill', held: 'pill warn' });
-
-/** The square with an app's initial, which stands for the app and is not read: its name is beside it. */
-export const square = (row, big = false) => h('span', { class: `apps-ic tint-${row.tint}${big ? ' big' : ''}`, 'aria-hidden': 'true' }, row.initial);
 
 /** Calls `run(button)` when `button` is pressed, unless a task that runs has put it off. */
 export function onPress(button, run) {

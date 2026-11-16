@@ -15,8 +15,9 @@ import {
   READER_LINE, RISK_WORDS, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf,
 } from './app-model.js';
 import { ownCommands } from './list-model.js';
+import { onPress } from './list.js';
+import { square } from './mark.js';
 import { jobWords, updateCall } from './run-model.js';
-import { onPress, square } from './list.js';
 import { versionsTable } from './versions.js';
 
 const capital = (words) => words.charAt(0).toUpperCase() + words.slice(1);
