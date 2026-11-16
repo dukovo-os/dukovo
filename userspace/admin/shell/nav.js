@@ -27,7 +27,8 @@ export function createNav({ pages, session, host, parts, openMore }) {
 
   function link(entry, { child = null, badge = null } = {}) {
     const target = child ?? entry;
-    const here = currentEntry(pages, path)?.id === entry.id;
+    const at = currentEntry(pages, path);
+    const here = (at?.under ?? at?.id) === entry.id;
     const childHere = entry.children.some((one) => one.path === path);
     const current = child ? path === child.path : here && !childHere;
     const words = badgeName(target.title, badge);

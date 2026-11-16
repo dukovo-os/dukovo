@@ -83,9 +83,11 @@ test('a reader sees the list and no button, and the head has no Add an app', asy
   assert.equal(rowsOf(app.view.main.querySelectorAll('table')[0]).length, 6);
 });
 
-test('until there is a page to add an app, the head says where apps come from', async (context) => {
+test('with a page to add an app, an administrator\'s head links to it and has no line of commands', async (context) => {
   const app = await openApps(context);
-  assert.equal(app.view.headed.lead, 'Apps come from a catalog: bundle search WORD, then elevate bundle install ID --for-everyone.');
+  const [add] = app.view.headed.buttons.filter(Boolean);
+  assert.deepEqual([add.getAttribute('href'), add.textContent], ['/apps/add', 'Add an app']);
+  assert.equal(app.view.headed.lead, null);
   assert.equal(app.view.headed.commands, true);
 });
 

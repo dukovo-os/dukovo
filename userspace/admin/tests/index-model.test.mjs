@@ -62,6 +62,7 @@ test('the pages a person may see are rows, with their children and sections, and
     'Terminal', 'Terminal › Sessions', 'Terminal › Terminal settings', 'Terminal › Terminal keys',
     'Services', 'Services › Scheduled tasks',
     'Apps', 'Certificates', 'Security', 'Hardware', 'Updates', 'Report a problem', 'Alerts',
+    'Add an app', 'Websites', 'Databases',
   ]);
   const terminal = rows.find((one) => one.title === 'Terminal › Terminal keys');
   assert.deepEqual(terminal, {
@@ -356,9 +357,10 @@ test('with nothing typed the recent rows are a group of their own, first; with s
 test('groups come in the order of the index with no empty group, and the arrow keys walk them in that order', () => {
   const made = index();
   // "nginx" in full: a shorter word is found in the words of other actions too ("ngi" in "connection against the firewall").
+  // The Websites page lists it as a keyword, so its row comes last, in the pages' group.
   const groups = groupResults(made, find(made, 'nginx'), 'nginx');
-  assert.deepEqual(groups.map((group) => group.label), ['Actions', 'Services']);
-  assert.deepEqual(flatten(groups).map((one) => one.row.title), ['Start nginx', 'Restart nginx', 'Explain nginx', 'nginx']);
+  assert.deepEqual(groups.map((group) => group.label), ['Actions', 'Services', 'Settings and pages']);
+  assert.deepEqual(flatten(groups).map((one) => one.row.title), ['Start nginx', 'Restart nginx', 'Explain nginx', 'nginx', 'Websites']);
   assert.deepEqual(groupResults(made, [], 'zzzz'), []);
   assert.deepEqual(flatten([]), []);
 });
