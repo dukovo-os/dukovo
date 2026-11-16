@@ -3,7 +3,7 @@
 
 // What web-console/hardware drives in each engine, with the lab's browser
 // runner (lab repository, docs/test-files.md, "Browser tests"): the Hardware
-// page at /hardware, its first half. This machine is what `hardware show`
+// page at /hardware. This machine is what `hardware show`
 // says, which `GET /api/1/hardware` runs, with the memory's slots and modules
 // from `hardware inventory` (`GET /api/1/hardware/inventory`), which only an
 // unlocked administrator reads: a locked console shows the memory alone and a
@@ -23,16 +23,40 @@
 // (`POST /api/1/power/cancel`), and Shut down… asks for the machine's name
 // before it sets a shut down (`POST /api/1/power/shutdown`), which is taken
 // back within its minute. What is waiting is the machine's own
-// (`GET /api/1/power`). A reader sees every fact and no button, is told who
-// may change the machine, and is refused when a route is asked. A phone at 390
-// by 844 shows the page with no sideways scroll and controls 44 px tall. Each
+// (`GET /api/1/power`).
+//
+// The second half. Temperatures and fans hold a row for each temperature, each
+// disk and each thermal zone of `hardware sensors` (`GET /api/1/hardware/sensors`)
+// with the highest of 30 days beside it (`GET /api/1/hardware/highest`), and a
+// line for each fan; a machine that reads no temperature says so, and the
+// choice of °C or °F outlives the page. Disks lists each whole disk of
+// `storage show` (`GET /api/1/storage`) and, for an unlocked administrator, the
+// last tests of its own log (`GET /api/1/storage/disks/{disk}/health`), which
+// a locked one and a reader are told of in words; no test is started here,
+// since one takes minutes. Devices reads `hardware devices`
+// (`GET /api/1/hardware/devices`) only when its button is pressed, and lists
+// every device it gives, the ones that need nothing folded away; its
+// hardware.toml step holds that list to `lspci`. The memory card says what the
+// test at the next restart does, with the time it takes on this machine; Test
+// at the next restart… asks in a dialog with three ways out, and At the next
+// restart asks for the test only (`POST /api/1/hardware/memtest/next-start`),
+// after which the card says who asked and when, and offers Don't test
+// (`POST /api/1/hardware/memtest/cancel`), which takes it back. What is asked
+// is the machine's own (`GET /api/1/hardware/memtest`). The test is never let
+// run here, since it restarts the machine: Restart now and test is read and
+// never pressed, and the machine ends with nothing asked.
+//
+// A reader sees every fact and no button but the ones that change only the
+// look of the page or read a list, is told who may change the machine, and is
+// refused when a route that changes it is asked. A phone at 390 by 844 shows
+// the page with no sideways scroll and controls 44 px tall. Each
 // look is the console's own: dark, light, high contrast, forced colours and
 // less motion, each checked by axe (console.mjs's lookAll).
 //
-// This script is the page's first half: the devices and the temperatures are
-// not read here. hardware.toml puts the machine back before each engine: no
-// check is kept, and nothing is waiting to restart. The accounts are the two
-// that hardware.toml made, so no script needs the lab's password.
+// hardware.toml puts the machine back before each engine: no
+// check is kept, nothing is asked and nothing is waiting to restart. The
+// accounts are the two that hardware.toml made, so no script needs the lab's
+// password.
 
 import {
   ensure,
@@ -66,13 +90,26 @@ const ROUTES = {
   restart: "POST /api/1/power/restart",
   shutdown: "POST /api/1/power/shutdown",
   cancel: "POST /api/1/power/cancel",
+  sensors: "GET /api/1/hardware/sensors",
+  highest: "GET /api/1/hardware/highest",
+  devices: "GET /api/1/hardware/devices",
+  storage: "GET /api/1/storage",
+  asked: "GET /api/1/hardware/memtest",
+  ask: "POST /api/1/hardware/memtest/next-start",
+  unask: "POST /api/1/hardware/memtest/cancel",
 };
+
+// The disks' own tests are read for each disk, with its name for {disk}.
+const HEALTH = "GET /api/1/storage/disks/{disk}/health";
 
 /** The path of a route as the table names it: `GET /api/1/hardware` is `/api/1/hardware`. */
 const pathOf = (route) => route.slice(route.indexOf(" ") + 1);
 
 /** The method of a route as the table names it. */
 const methodOf = (route) => route.slice(0, route.indexOf(" "));
+
+/** The route as the browser's own requests are recorded, for `disk`: `GET /api/1/storage/disks/{disk}/health` is `GET /api/1/storage/disks/sdb/health`. */
+const healthOf = (disk) => HEALTH.replace("{disk}", encodeURIComponent(disk));
 
 // The words the page says where this test looks for them.
 const LEAD_READER = "An administrator can check the hardware and restart or shut down this machine.";
@@ -83,6 +120,15 @@ const READER_POWER = "An administrator can restart or shut down this machine.";
 const NO_AREA = "Choose at least one thing to check.";
 const WHY_OFF = "A check is running. Its step is under the heading.";
 const MEMORY_RESTART_WHY = "To test all of the memory from the start menu.";
+const MEMTEST_RESTART_WHY = "To test the memory before the system starts.";
+const ASK_TITLE = "Test the memory at the next restart?";
+const ASKED = "The memory is tested at the next restart";
+const NO_TEMPERATURE = "The kernel reads no temperature on this machine.";
+const NO_FAN = "No fan speed can be read on this machine.";
+const ALERT = "An alert goes out when a sensor stays within 5 °C of its critical limit";
+const LOCKED_TESTS = "Unlock to see the disks' own tests";
+const READER_TESTS = "Administrators see the disks' own tests";
+const NO_DEVICES = "The system lists no device.";
 const BAD_TIME = "A time is written HH:MM, from 00:00 to 23:59, such as 03:00. Nothing was set.";
 
 // The areas of the check dialog, in the words of their boxes. A check of one
@@ -572,6 +618,315 @@ async function memoryTest(t, page) {
   await lookAll(t, page, "hardware-earlier");
 }
 
+// --- Temperatures and fans ---
+
+/** Whole degrees as the page says them in `unit`, from Celsius. */
+const inUnit = (celsius, unit) => Math.round(unit === "F" ? (celsius * 9) / 5 + 32 : celsius);
+
+/** The number at the front of a cell's words, "41 °C" or "106 °F", and its unit; null when the cell has none. */
+function degreesOf(words) {
+  const found = /^(-?\d+) °([CF])/.exec(words);
+  return found === null ? null : { value: Number(found[1]), unit: found[2] };
+}
+
+/** Whether `words` say `celsius` in `unit`, within what a minute's change allows. */
+function near(words, celsius, unit) {
+  const shown = degreesOf(words);
+  return shown !== null && shown.unit === unit && Math.abs(shown.value - inUnit(celsius, unit)) <= (unit === "F" ? 6 : 3);
+}
+
+/** The rows of the card's table, each as its cells by the name of their column. */
+const rowsOf = (body) =>
+  body.locator("table.tbl tbody tr").evaluateAll((trs) => trs.map((tr) => Object.fromEntries([...tr.children].map((cell) => [cell.getAttribute("data-label"), cell.innerText.trim()]))));
+
+/**
+ * The Temperatures and fans card holds what `hardware sensors` says in `unit`:
+ * a row for each temperature, each disk and each thermal zone, the highest of
+ * 30 days from `hardware highest` beside them, and a line for each fan. A
+ * machine that reads no temperature says so. The page reads again every
+ * minute, so a number may be a degree or two off by the time it is compared.
+ */
+async function temperaturesAsAnswered(t, page, unit = "C") {
+  const where = "the Temperatures and fans card";
+  const body = card(page, "temps");
+  await eventually(async () => {
+    const answer = await readOf(page, ROUTES.sensors);
+    const found = Array.isArray(answer?.sensors) ? answer.sensors : [];
+    const temps = found.filter((one) => one.kind === "temp");
+    const fans = found.filter((one) => one.kind === "fan");
+    const zones = Array.isArray(answer?.zones) ? answer.zones : [];
+    const disks = Array.isArray(answer?.disks) ? answer.disks : [];
+    const peaks = await readOf(page, ROUTES.highest);
+    ensure(Array.isArray(peaks), `${ROUTES.highest} does not give a list: ${JSON.stringify(peaks)}`);
+
+    const words = await body.innerText();
+    ensure(!words.includes("Reading the temperatures"), `${where} is still reading`);
+    ensure(!words.includes("could not be read"), `${where} says it could not read, and ${ROUTES.sensors} answers`);
+    ensure(words.includes(NO_TEMPERATURE) === (temps.length === 0 && zones.length === 0), `${where} ${words.includes(NO_TEMPERATURE) ? "says" : "does not say"} that the kernel reads no temperature, and ${ROUTES.sensors} has ${temps.length} temperatures and ${zones.length} zones`);
+    const rows = await rowsOf(body);
+    ensure(rows.length === temps.length + zones.length + disks.length, `${where} has ${rows.length} rows, and ${ROUTES.sensors} has ${temps.length} temperatures, ${zones.length} zones and ${disks.length} disks`);
+    ensure(words.includes(ALERT) === (rows.length > 0), `${where} ${words.includes(ALERT) ? "has" : "has no"} line about alerts, and it has ${rows.length} rows`);
+
+    for (const sensor of temps) {
+      const named = rows.filter((row) => row.Sensor.includes(sensor.label));
+      ensure(named.length > 0, `${where} has no row for ${sensor.chip}/${sensor.label}`);
+      if (Number.isFinite(sensor.value)) ensure(named.some((row) => near(row.Now, sensor.value, unit)), `${where} says ${JSON.stringify(named.map((row) => row.Now))} for ${sensor.label}, not ${inUnit(sensor.value, unit)} °${unit}`);
+      const limit = Number.isFinite(sensor.crit) ? sensor.crit : sensor.high;
+      if (Number.isFinite(limit)) ensure(named.some((row) => row.Limit.startsWith(`${inUnit(limit, unit)} °${unit}`)), `${where} says ${JSON.stringify(named.map((row) => row.Limit))} for the limit of ${sensor.label}, not ${inUnit(limit, unit)} °${unit}`);
+    }
+    for (const zone of zones) {
+      const type = /^temp\{zone\/(.*)\}$/.exec(zone.series ?? "")?.[1] ?? "";
+      const named = rows.filter((row) => row.Sensor.startsWith(`Zone ${type}`));
+      ensure(named.length > 0, `${where} has no row for the zone ${type}`);
+      if (Number.isFinite(zone.value)) ensure(named.some((row) => near(row.Now, zone.value, unit)), `${where} says ${JSON.stringify(named.map((row) => row.Now))} for the zone ${type}, not ${inUnit(zone.value, unit)} °${unit}`);
+    }
+    for (const disk of disks) {
+      const row = rows.find((one) => one.Sensor.startsWith(`Disk ${disk.disk}`));
+      ensure(row !== undefined, `${where} has no row for the disk ${disk.disk}`);
+      if (Number.isFinite(disk.asleep_ms)) ensure(row.Now.startsWith("Asleep since"), `${where} says ${JSON.stringify(row.Now)} of the disk ${disk.disk}, which ${ROUTES.sensors} says is asleep`);
+      else {
+        // A disk that was not read for 20 minutes, or that gives no temperature, says so in words.
+        const said = /^(Last read|The disk gives no temperature)/.test(row.Now);
+        ensure(Number.isFinite(disk.temperature_c) ? near(row.Now, disk.temperature_c, unit) || said : said, `${where} says ${JSON.stringify(row.Now)} of the disk ${disk.disk}, and ${ROUTES.sensors} says ${disk.temperature_c}`);
+      }
+    }
+
+    // The highest of 30 days is a number that `hardware highest` gave, in the unit chosen.
+    const known = new Set(peaks.filter((one) => Array.isArray(one?.highest)).map((one) => `${inUnit(one.highest[1], unit)} °${unit}`));
+    for (const row of rows) {
+      const shown = degreesOf(row["Highest, 30 days"]);
+      if (shown !== null) ensure(known.has(`${shown.value} °${shown.unit}`), `${where} says ${JSON.stringify(row["Highest, 30 days"])} of the highest of ${row.Sensor}, which ${ROUTES.highest} does not give`);
+    }
+
+    const names = await body.locator("dl.rows dt").evaluateAll((all) => all.map((one) => one.textContent.trim()));
+    ensure(names.join("|") === fans.map((fan) => fan.label).join("|"), `${where} lists the fans ${JSON.stringify(names)}, and ${ROUTES.sensors} has ${JSON.stringify(fans.map((fan) => fan.label))}`);
+    ensure(words.includes(NO_FAN) === (fans.length === 0), `${where} ${words.includes(NO_FAN) ? "says" : "does not say"} that no fan can be read, and ${ROUTES.sensors} has ${fans.length}`);
+  }, 90);
+}
+
+/** The unit is °C at first; °F changes every number, the choice outlives the page, and °C puts it back. */
+async function temperatureUnit(t, page) {
+  const body = card(page, "temps");
+  const pressed = async (name) => (await buttonIn(body, name).getAttribute("aria-pressed")) === "true";
+  ensure((await pressed("°C")) && !(await pressed("°F")), "the Temperatures and fans card does not show °C at first");
+  await buttonIn(body, "°F").click();
+  ensure((await pressed("°F")) && !(await pressed("°C")), "°F is not the unit after it was chosen");
+  await temperaturesAsAnswered(t, page, "F");
+  await openHardware(t, page);
+  await eventually(async () => ensure(await pressed("°F"), "°F was not kept after the page was opened again"), 15);
+  await temperaturesAsAnswered(t, page, "F");
+  await buttonIn(body, "°C").click();
+  await temperaturesAsAnswered(t, page, "C");
+}
+
+// --- Disks ---
+
+/** The text of the line a disk's own tests make, by the kind the answer's log has. */
+const TEST_NAMES = { short: "Short test", extended: "Extended test" };
+
+/**
+ * The Disks card lists each whole disk of `storage show`. A locked console
+ * has a button that asks to unlock and has read no disk's own log; an
+ * unlocked administrator's card says the last short and extended tests of
+ * each log (`access` is `ok`), and a reader is told who sees them. Gives the
+ * disks whose log the page read.
+ */
+async function disksAsAnswered(t, page, access, seen = null) {
+  const where = "the Disks card";
+  const body = card(page, "disks");
+  const storage = await readOf(page, ROUTES.storage);
+  const disks = Array.isArray(storage?.disks) ? storage.disks : [];
+  const rows = body.locator("li.hw-check");
+  ensure((await rows.count()) === disks.length, `${where} lists ${await rows.count()} disks and ${ROUTES.storage} has ${disks.length}`);
+  if (disks.length === 0) await t.see(body.getByText("No disk was found.", { exact: true }));
+  const withLog = disks.filter((disk) => disk.health).map((disk) => disk.name);
+
+  if (access === "reader") {
+    await t.see(body.getByText(READER_TESTS, { exact: true }));
+    ensure((await body.getByRole("button").count()) === 0, `a reader's ${where} has a button`);
+  } else if (access === "locked") {
+    await t.see(buttonIn(body, LOCKED_TESTS));
+    for (const name of withLog) ensure(seen === null || !seen.has(healthOf(name)), `the page asked for ${healthOf(name)} before the console was unlocked`);
+    for (const name of withLog) mustBe(await askFor(page, healthOf(name)), 403, "ADM-106", `a locked administrator's ${healthOf(name)}`);
+  } else {
+    ensure((await buttonIn(body, LOCKED_TESTS).count()) === 0, `${where} still asks to unlock, and the console is unlocked`);
+  }
+  for (const [at, disk] of disks.entries()) {
+    const row = rows.nth(at);
+    ensure((await row.locator("p a b").first().innerText()) === disk.name, `${where}'s row ${at + 1} is not the disk ${disk.name}`);
+    if (access === "reader") continue;
+    for (const name of ["Short test", "Extended test"]) await t.see(buttonIn(row, name));
+    if (!disk.health) {
+      await t.see(row.getByText("This disk does not report its health or its tests.", { exact: true }));
+    } else if (access === "ok") {
+      const log = await askFor(page, healthOf(disk.name));
+      ensure(log.status === 200, `${healthOf(disk.name)} was answered ${log.status}: ${log.text}`);
+      await eventually(async () => {
+        const line = await row.locator("p.small").innerText();
+        const tests = Array.isArray(log.json?.self_tests) ? log.json.self_tests : null;
+        if (tests === null) return ensure(line.includes("This disk keeps no log of its own tests"), `${where} says ${JSON.stringify(line)} of ${disk.name}, whose log has no list of tests`);
+        const kinds = Object.keys(TEST_NAMES).filter((kind) => tests.some((one) => one.kind === kind));
+        if (kinds.length === 0) return ensure(line.includes("No short or extended test is in its log"), `${where} says ${JSON.stringify(line)} of ${disk.name}, whose log has no short or extended test`);
+        for (const kind of kinds) {
+          const test = tests.find((one) => one.kind === kind);
+          ensure(line.includes(`${TEST_NAMES[kind]}`) && line.includes(test.result), `${where} says ${JSON.stringify(line)} of ${disk.name}, whose last ${kind} test is ${test.result}`);
+          if (Number.isFinite(test.at_hours)) ensure(line.includes(`(at hour ${new Intl.NumberFormat("en-US").format(test.at_hours)})`), `${where} says ${JSON.stringify(line)} of ${disk.name}, whose last ${kind} test was at hour ${test.at_hours}`);
+        }
+      }, 30);
+    }
+  }
+  return access === "ok" ? withLog : [];
+}
+
+// --- Devices ---
+
+/**
+ * The Devices card is not read until it is asked. Then every device of
+ * `hardware devices` is in a table, the ones that work and need nothing
+ * folded away, and the card links to a report about a device that needs a
+ * driver. `seen` are the routes the page has asked for so far.
+ */
+async function devicesAsAnswered(t, page, seen = null) {
+  const where = "the Devices card";
+  const body = card(page, "devices");
+  if (seen !== null) ensure(!seen.has(ROUTES.devices), `the page asked for ${ROUTES.devices} before the Devices card was asked`);
+  const read = page.waitForResponse((answer) => answer.request().method() === "GET" && new URL(answer.url()).pathname === pathOf(ROUTES.devices), { timeout: 60_000 });
+  read.catch(() => {});
+  await buttonIn(body, "Show the devices").click();
+  const answer = await read;
+  ensure(answer.status() === 200, `${ROUTES.devices} was answered ${answer.status()}: ${await answer.text()}`);
+  const devices = (await answer.json()).devices;
+  ensure(Array.isArray(devices), `${ROUTES.devices} does not give a list of devices: ${JSON.stringify(devices)}`);
+  await page.waitForFunction(() => document.activeElement?.id === "devices-h", null, { timeout: 15_000 });
+
+  if (devices.length === 0) {
+    await t.see(body.getByText(NO_DEVICES, { exact: true }));
+    return;
+  }
+  const shown = await body.locator("div.hw-body > .tbl-box table").evaluateAll((tables) =>
+    tables.map((table) => ({ caption: table.querySelector("caption").textContent.trim(), rows: table.querySelectorAll("tbody tr").length })));
+  const visible = devices.filter((one) => one.hidden !== true);
+  const folded = devices.filter((one) => one.hidden === true);
+  ensure(shown.reduce((sum, table) => sum + table.rows, 0) === visible.length, `${where} lists ${shown.reduce((sum, table) => sum + table.rows, 0)} devices, and ${ROUTES.devices} has ${visible.length} that are not hidden`);
+  for (const table of shown) ensure(table.caption.endsWith(` · ${table.rows}`), `${where}'s table "${table.caption}" has ${table.rows} rows`);
+  const words = (await body.innerText()).replace(/\s+/g, " ");
+  for (const device of visible) {
+    const name = (device.name || device.ids || "").replace(/\s+/g, " ");
+    if (name !== "") ensure(words.includes(name), `${where} does not list ${name}`);
+  }
+  const details = body.locator("details");
+  if (folded.length === 0) {
+    ensure((await details.count()) === 0, `${where} folds devices away, and ${ROUTES.devices} hides none`);
+  } else {
+    ensure((await details.locator("summary").innerText()).startsWith(`Hidden: ${folded.length} device`), `${where} says ${JSON.stringify(await details.locator("summary").innerText())} of ${folded.length} hidden devices`);
+    await details.locator("summary").click();
+    ensure((await details.locator("tbody tr").count()) === folded.length, `${where} folds ${await details.locator("tbody tr").count()} devices away, and ${ROUTES.devices} hides ${folded.length}`);
+  }
+  const report = body.getByRole("link", { name: "Report it", exact: true });
+  await t.see(report);
+  ensure((await report.getAttribute("href")) === "/report?about=hardware", `${where}'s report link goes to ${await report.getAttribute("href")}`);
+}
+
+// --- The memory test at the next restart ---
+
+/** The paragraphs of the memory card that begin with `words`, which are shown. */
+const memoryLine = (page, words) => card(page, "memory").locator("p:not([hidden])", { hasText: new RegExp(`^${escaped(words)}`) });
+
+/** The words on what has the keyboard. */
+const focusedWords = (page) => page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
+
+/** How long the test takes here, as the card says it: a minute for each 4 GiB, an hour at most. */
+function hereWords(bytes) {
+  const minutes = Math.min(60, Math.ceil(bytes / (4 * GIB)));
+  return minutes >= 60 ? "up to an hour" : `about ${minutes === 1 ? "1 minute" : `${minutes} minutes`}`;
+}
+
+/** The card says what the next start does, with the time it takes on this machine, whether or not the test is asked. */
+async function nextWordsAsAnswered(t, page) {
+  const show = await readOf(page, ROUTES.show);
+  const here = show.memory?.bytes > 0 ? ` (${hereWords(show.memory.bytes)} here)` : "";
+  const words = `All of it, at the next restart. The next start tests the free memory before the system starts, about a minute for each 4 GiB${here}, takes any bad part out of use, then starts as usual. The server is offline meanwhile, and nobody needs to be at it.`;
+  await t.see(memoryLine(page, "All of it, at the next restart."));
+  ensure((await memoryLine(page, "All of it, at the next restart.").innerText()).replace(/\s+/g, " ") === words, `the memory card says ${JSON.stringify(await memoryLine(page, "All of it, at the next restart.").innerText())} of the test at the next restart, not ${JSON.stringify(words)}`);
+  await t.see(memoryLine(page, "For the fullest test, from the start menu."));
+}
+
+/** The last test at a start is said in the words of its result, or not at all while the machine has none. */
+async function startRunAsAnswered(page, status) {
+  const lines = card(page, "memory").locator("p:not([hidden])", { hasText: /at the start|the start menu did not run the test/ });
+  const report = card(page, "memory").getByRole("link", { name: "Report a problem", exact: true });
+  if (status.last === null) {
+    ensure((await lines.count()) === 0, `the memory card says ${JSON.stringify(await lines.allInnerTexts())} of a test at a start, and ${ROUTES.asked} has none`);
+    ensure((await report.count()) === 0, "the memory card offers a report about a test at a start, and the machine has none");
+    return;
+  }
+  const words = { passed: ": passed", errors: "(HW-103)", unfinished: "(HW-104)", "not-taken": "Ask again." }[status.last.result];
+  ensure(words !== undefined, `${ROUTES.asked} gives a test at a start with the result ${JSON.stringify(status.last.result)}`);
+  ensure((await lines.count()) === 1 && (await lines.first().innerText()).includes(words), `the memory card says ${JSON.stringify(await lines.allInnerTexts())} of a test at a start that ${status.last.result}`);
+  ensure((await report.count()) === (status.last.result === "errors" ? 1 : 0), `the memory card ${(await report.count()) === 1 ? "offers" : "does not offer"} a report, and the test at the start ${status.last.result}`);
+}
+
+/**
+ * Test at the next restart… asks in a dialog with three ways out, and Cancel
+ * asks for nothing. At the next restart asks for the test only: the card says
+ * who asked and when, offers Don't test and Restart now… (whose question says
+ * the restart is for the test and is cancelled), and keeps it across the page
+ * being opened again. Don't test takes it back, and the machine ends with
+ * nothing asked. Restart now and test is never pressed: it restarts the
+ * machine.
+ */
+async function memoryAtNextRestart(t, page, host) {
+  const memory = card(page, "memory");
+  const ask = buttonIn(memory, "Test at the next restart…");
+  await t.see(ask);
+  await nextWordsAsAnswered(t, page);
+  const before = await readOf(page, ROUTES.asked);
+  ensure(before?.asked === null, `${ROUTES.asked} says a memory test is asked before the test asks for one: hardware.toml cancels it before each engine`);
+  await startRunAsAnswered(page, before);
+
+  // The dialog, and Cancel.
+  const dialog = page.getByRole("dialog", { name: ASK_TITLE, exact: true });
+  await opensDialog(t, page, ask, dialog);
+  await t.see(dialog.getByText(/^The next start tests the free memory first/));
+  await t.see(dialog.getByText(/^Restart now and test restarts .+ in a minute/));
+  for (const choice of ["Restart now and test", "At the next restart", "Cancel"]) await t.see(buttonIn(dialog, choice));
+  await lookAll(t, page, "hardware-memtest-dialog");
+  ensure(await sendsNoPost(page, buttonIn(dialog, "Cancel"), pathOf(ROUTES.ask)), "Cancel in the memory test's question asked for the test");
+  await t.gone(dialog);
+  ensure((await readOf(page, ROUTES.asked)).asked === null, "a memory test is asked after Cancel");
+
+  // At the next restart: asked, and said so.
+  await opensDialog(t, page, ask, dialog);
+  await pressFor(t, page, buttonIn(dialog, "At the next restart"), pathOf(ROUTES.ask));
+  await t.gone(dialog);
+  const asked = (await readOf(page, ROUTES.asked)).asked;
+  ensure(asked !== null && asked.by === ADMIN && Number.isFinite(asked.at_ms), `${ROUTES.asked} says ${JSON.stringify(asked)} after the test was asked by ${ADMIN}`);
+  const said = new RegExp(`^${escaped(ASKED)} \\(asked [A-Z][a-z]{2} \\d{1,2}(, \\d{4})?, \\d{1,2}:\\d\\d [AP]M by ${escaped(ADMIN)}\\)$`);
+  await eventually(async () => ensure(said.test((await memoryLine(page, ASKED).innerText()).trim()), `the memory card says ${JSON.stringify(await memoryLine(page, ASKED).allInnerTexts())} of the test that was asked`), 30);
+  ensure((await ask.count()) === 0, "Test at the next restart… is still there when the test is asked");
+  await t.see(buttonIn(memory, "Don't test"));
+  await t.see(buttonIn(memory, "Restart now…"));
+  await eventually(async () => ensure((await focusedWords(page)) === "Don't test", `the keyboard is on ${JSON.stringify(await focusedWords(page))} after the test was asked, not on Don't test`), 15);
+  await lookAll(t, page, "hardware-memtest-asked");
+
+  // Opened again, it is still asked, and Restart now… says what the restart is for.
+  await openHardware(t, page);
+  await eventually(async () => ensure((await memoryLine(page, ASKED).count()) === 1, "the memory card does not say that the test is asked, once the page is opened again"), 30);
+  const restart = page.getByRole("dialog", { name: `Restart ${host}?`, exact: true });
+  await opensDialog(t, page, buttonIn(memory, "Restart now…"), restart);
+  await t.see(restart.getByText(new RegExp(`^${escaped(MEMTEST_RESTART_WHY)} `)));
+  ensure(await sendsNoPost(page, buttonIn(restart, "Cancel"), pathOf(ROUTES.restart)), "Cancel in the restart's question restarted the machine");
+  await t.gone(restart);
+  ensure((await readPower(page)) === null, "the machine has a restart set after a question that was cancelled");
+
+  // Don't test: nothing is asked, and the keyboard is back on the ask.
+  await pressFor(t, page, buttonIn(memory, "Don't test"), pathOf(ROUTES.unask));
+  await eventually(async () => ensure((await memoryLine(page, ASKED).count()) === 0, "the memory card still says the test is asked after Don't test"), 30);
+  ensure((await readOf(page, ROUTES.asked)).asked === null, `${ROUTES.asked} says a memory test is asked after Don't test`);
+  await t.see(buttonIn(memory, "Test at the next restart…"));
+  await eventually(async () => ensure((await focusedWords(page)) === "Test at the next restart…", `the keyboard is on ${JSON.stringify(await focusedWords(page))} after Don't test, not on Test at the next restart…`), 15);
+}
+
 // --- Restart or shut down ---
 
 /** Restart… and the memory card's Restart now… ask first, and say what the restart is for; Cancel closes the question, and nothing is sent. */
@@ -660,7 +1015,7 @@ async function shutDownAndCancel(t, page, host) {
 
 /** The links of the Overview and the palette lead to the cards, and the card's heading has the keyboard. */
 async function hashesLeadToCards(t, page) {
-  for (const [hash, id] of [["#check", "check-h"], ["#memory", "memory-h"], ["#power", "power-h"]]) {
+  for (const [hash, id] of [["#check", "check-h"], ["#temps", "temps-h"], ["#disks", "disks-h"], ["#memory", "memory-h"], ["#devices", "devices-h"], ["#power", "power-h"]]) {
     // From another page, so that the page is drawn again with the hash in its address.
     await page.goto(new URL("/", page.url()).href);
     await t.see(page.getByRole("heading", { level: 1, name: "Overview", exact: true }));
@@ -684,6 +1039,7 @@ async function administrator(t) {
   mustBe(await askFor(page, ROUTES.inventory), 403, "ADM-106", `a locked administrator's ${ROUTES.inventory}`);
   await machineAsAnswered(t, page, "locked");
   await notChecked(t, page, true);
+  await disksAsAnswered(t, page, "locked", a.seen);
   await lookAll(t, page, "hardware-first");
 
   const read = page.waitForResponse((answer) => answer.request().method() === "GET" && new URL(answer.url()).pathname === pathOf(ROUTES.inventory), { timeout: 120_000 });
@@ -695,17 +1051,25 @@ async function administrator(t) {
     ensure((await buttonIn(card(page, "machine"), "Show the modules").count()) === 0, "Show the modules is still there after the slots were read");
   }, 30);
   await machineAsAnswered(t, page, "ok", inventory);
+  const logs = await disksAsAnswered(t, page, "ok");
   await lookAll(t, page, "hardware-modules");
 
   await checkToItsEnd(t, page, t.engine === "chromium" ? AREAS : SOME);
   await memoryTest(t, page);
+
+  await temperaturesAsAnswered(t, page);
+  await temperatureUnit(t, page);
+  await lookAll(t, page, "hardware-temps");
+  await devicesAsAnswered(t, page, a.seen);
+  await lookAll(t, page, "hardware-devices");
+  await memoryAtNextRestart(t, page, host);
 
   await restartIsAsked(t, page, host);
   await restartAtATime(t, page, host);
   await shutDownAndCancel(t, page, host);
   await hashesLeadToCards(t, page);
 
-  mustHaveCalled(a.seen, Object.values(ROUTES));
+  mustHaveCalled(a.seen, [...Object.values(ROUTES), ...logs.map(healthOf)]);
   await signOut(t, page);
   await page.context().close();
 }
@@ -720,15 +1084,26 @@ async function reader(t) {
   await t.see(card(page, "memory").getByText(READER_TEST, { exact: true }));
   await t.see(card(page, "power").getByText(READER_POWER, { exact: true }));
   ensure((await checkNow(page).count()) === 0, "a reader has Check the hardware");
+  // The unit of the temperatures and the list of devices change nothing of the machine: a reader has those buttons and no other.
   const buttons = await page.locator("main .hw button").evaluateAll((all) => all.map((one) => one.textContent.trim()));
-  ensure(buttons.length === 0, `a reader's page has these buttons: ${buttons.join(", ")}`);
+  const others = buttons.filter((name) => !["°C", "°F", "Show the devices"].includes(name));
+  ensure(others.length === 0, `a reader's page has these buttons: ${others.join(", ")}`);
   ensure((await readPower(page)) === null, "the machine has a restart set, which a reader reads and no one set");
+  await temperaturesAsAnswered(t, page);
+  await disksAsAnswered(t, page, "reader");
+  await nextWordsAsAnswered(t, page);
+  const status = await readOf(page, ROUTES.asked);
+  ensure(status.asked === null, `${ROUTES.asked} says a memory test is asked, which no one asked`);
+  await startRunAsAnswered(page, status);
+  await devicesAsAnswered(t, page);
 
   mustBe(await askFor(page, ROUTES.inventory), 403, "ADM-122", "a reader's slots of the memory");
   mustBe(await askFor(page, ROUTES.check, {}), 403, "ADM-122", "a reader's check");
   mustBe(await askFor(page, ROUTES.restart, {}), 403, "ADM-122", "a reader's restart");
   mustBe(await askFor(page, ROUTES.shutdown, {}), 403, "ADM-122", "a reader's shut down");
   mustBe(await askFor(page, ROUTES.cancel, {}), 403, "ADM-122", "a reader's cancel");
+  mustBe(await askFor(page, ROUTES.ask, {}), 403, "ADM-122", "a reader's ask for the memory test");
+  mustBe(await askFor(page, ROUTES.unask, {}), 403, "ADM-122", "a reader's cancel of the memory test");
   await lookAll(t, page, "hardware-reader");
   await signOut(t, page);
   await page.context().close();
@@ -745,6 +1120,8 @@ async function phone(t) {
 
   await openHardware(t, page);
   await t.see(buttonIn(card(page, "power"), "Restart…"));
+  // The list of devices is opened, so that its tables are measured too.
+  await devicesAsAnswered(t, page);
   ensure((await sidewaysScroll(page)) === 0, `the phone's page scrolls ${await sidewaysScroll(page)} px sideways`);
   const small = await smallControls(page, "main button, main summary, main input[type=time], main a.btn");
   ensure(small.length === 0, `these controls of the phone's page are under 44 px tall: ${small.join(", ")}`);
@@ -755,6 +1132,15 @@ async function phone(t) {
   ensure((await sidewaysScroll(page)) === 0, `the phone's check dialog scrolls ${await sidewaysScroll(page)} px sideways`);
   await buttonIn(dialog, "Cancel").click();
   await t.gone(dialog);
+
+  // The question that asks for the memory test is a dialog outside the page, with controls a thumb reaches.
+  const ask = page.getByRole("dialog", { name: ASK_TITLE, exact: true });
+  await opensDialog(t, page, buttonIn(card(page, "memory"), "Test at the next restart…"), ask);
+  ensure((await sidewaysScroll(page)) === 0, `the phone's memory test question scrolls ${await sidewaysScroll(page)} px sideways`);
+  const tiny = await smallControls(page, "dialog button");
+  ensure(tiny.length === 0, `these controls of the phone's memory test question are under 44 px tall: ${tiny.join(", ")}`);
+  await buttonIn(ask, "Cancel").click();
+  await t.gone(ask);
   await signOut(t, page);
   await page.context().close();
 }
