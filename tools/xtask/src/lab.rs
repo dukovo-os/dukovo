@@ -503,7 +503,18 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             };
             match bundles {
                 Ok(bundles) => {
-                    lab.env(BUNDLES_ENV, bundles);
+                    lab.env(BUNDLES_ENV, &bundles);
+                    // A catalog of two of them, signed with throwaway
+                    // keys, for the web console's test of adding an app.
+                    step("Signing the test catalog, for the lab's test of adding an app");
+                    match test_catalog(ctx, &bundles) {
+                        Ok(catalog) => {
+                            lab.env(CATALOG_ENV, catalog);
+                        }
+                        Err(why) => {
+                            eprintln!("    note: the test of adding an app will skip: {why}");
+                        }
+                    }
                     // The same build made the ports, whose folders hold
                     // what they built for the lab's tests.
                     let ports = ctx.out.join("ports");
@@ -557,6 +568,18 @@ const UPDATES_ENV: &str = "DUKOVO_LAB_UPDATES";
 /// (`lab/tests/services/copy-bundle.sh`).
 const BUNDLES_ENV: &str = "DUKOVO_LAB_BUNDLES";
 
+/// The variable that names the folder of the test catalog, `out/lab-catalog`,
+/// for the web console's test of adding an app, whose host step
+/// (`lab/tests/web-console/add-app-catalog.sh`) copies it onto the machine:
+/// `catalog/`, as a server serves it, and `root.json`, its first root, of a
+/// catalog signed with throwaway keys that lists the bundles of
+/// [`CATALOG_BUNDLES`], packed from the same tree.
+const CATALOG_ENV: &str = "DUKOVO_LAB_CATALOG";
+
+/// The bundles the test catalog lists: the two the web console's test of
+/// adding an app searches for, reads the sheet of and installs.
+const CATALOG_BUNDLES: [&str; 2] = ["org.nginx.nginx", "org.python.python"];
+
 /// The variable that names the folder of the ports' builds, `out/ports`,
 /// whose `<port>/for-lab` folders hold what a port builds for the lab's
 /// tests, as SQLite's test program and its test scripts, for the host
@@ -568,6 +591,65 @@ const PORTS_ENV: &str = "DUKOVO_LAB_PORTS";
 /// is copied from, which `ob catalog server setup --dukovo` copies too
 /// (`lab/tests/updates/server-on-dukovo.sh`).
 const SERVER_ENV: &str = "DUKOVO_LAB_SERVER_FILES";
+
+/// The `.dkv` files of `ids` among `names`, the names of the files of the
+/// packed bundles: for each ID the files named `ID-VERSION.dkv`, with a
+/// number at the start of the version, which keeps `org.example.app` from
+/// taking the files of `org.example.app-extra`. An error names each ID with
+/// no file.
+fn files_of_bundles(names: &[String], ids: &[&str]) -> std::result::Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    let mut missing = Vec::new();
+    for id in ids {
+        let before = files.len();
+        for name in names {
+            let version = name.strip_prefix(&format!("{id}-"));
+            let packed = version.is_some_and(|version| {
+                version.starts_with(|c: char| c.is_ascii_digit())
+                    && version.ends_with(&format!(".{}", dkv::EXTENSION))
+            });
+            if packed {
+                files.push(name.clone());
+            }
+        }
+        if files.len() == before {
+            missing.push(*id);
+        }
+    }
+    if missing.is_empty() {
+        Ok(files)
+    } else {
+        Err(format!("no bundle was packed for {}", missing.join(" or ")))
+    }
+}
+
+/// Makes the test catalog in `out/lab-catalog` from the files of
+/// [`CATALOG_BUNDLES`] in `bundles`, and gives its folder: the site as the
+/// boot tests sign one, copied to `catalog`, and `root.json` beside it.
+fn test_catalog(ctx: &Ctx, bundles: &Path) -> std::result::Result<PathBuf, String> {
+    let read = |why: std::io::Error| format!("reading {}: {why}", bundles.display());
+    let names = std::fs::read_dir(bundles)
+        .map_err(read)?
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<std::io::Result<Vec<String>>>()
+        .map_err(read)?;
+    let files: Vec<PathBuf> = files_of_bundles(&names, &CATALOG_BUNDLES)?
+        .into_iter()
+        .map(|name| bundles.join(name))
+        .collect();
+    let signed =
+        crate::catalog::test_site(ctx, &files, None, None, &[]).map_err(|e| e.to_string())?;
+    let folder = ctx.out.join("lab-catalog");
+    if folder.exists() {
+        std::fs::remove_dir_all(&folder)
+            .map_err(|e| format!("removing {}: {e}", folder.display()))?;
+    }
+    crate::ports::copy_tree(ctx, &signed.join("site"), &folder.join("catalog"))
+        .map_err(|e| e.to_string())?;
+    process::copy(&signed.join("root.json"), &folder.join("root.json"))
+        .map_err(|e| e.to_string())?;
+    Ok(folder)
+}
 
 /// The console's fonts, which dukovo-lab reads the screen's text with:
 /// the PSF files the kernel and consoled draw in.
@@ -1051,6 +1133,35 @@ mod tests {
         ] {
             assert!(Key::parse(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_test_catalog_lists_the_files_of_its_bundles_and_no_others() {
+        let packed =
+            |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+        let names = packed(&[
+            "org.nginx.nginx-1.30.4.dkv",
+            "org.nginx.nginx-extra-1.0.0.dkv",
+            "org.python.python-3.13.1.dkv",
+            "org.python.python-3.12.8.dkv",
+            "org.python.python-3.13.1.dkv.sig",
+            "org.nodejs.node@22-22.1.0.dkv",
+        ]);
+        let files = files_of_bundles(&names, &CATALOG_BUNDLES).unwrap();
+        assert_eq!(
+            files,
+            packed(&[
+                "org.nginx.nginx-1.30.4.dkv",
+                "org.python.python-3.13.1.dkv",
+                "org.python.python-3.12.8.dkv",
+            ])
+        );
+        // Each ID with no file is named, and the others are not.
+        let only_nginx = packed(&["org.nginx.nginx-1.30.4.dkv"]);
+        let why = files_of_bundles(&only_nginx, &CATALOG_BUNDLES).unwrap_err();
+        assert!(why.contains("org.python.python") && !why.contains("nginx"), "{why}");
+        let why = files_of_bundles(&[], &CATALOG_BUNDLES).unwrap_err();
+        assert!(why.contains("org.nginx.nginx or org.python.python"), "{why}");
     }
 
     #[test]
