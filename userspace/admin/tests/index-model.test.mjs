@@ -109,7 +109,7 @@ test('whether an address is a page that is registered and that this person may s
 
 test('each action admind lists is a row, with who runs it and an icon of its area', () => {
   const rows = actionRows(ACTIONS);
-  assert.equal(rows.length, 160);
+  assert.equal(rows.length, 171);
   const restart = rows.find((one) => one.key === 'action:service.restart');
   assert.deepEqual(restart, {
     key: 'action:service.restart', kind: 'action', group: ACTIONS_GROUP, title: 'Restart a service', detail: '',
@@ -345,7 +345,7 @@ test('with nothing typed the recent rows are a group of their own, first; with s
   const made = index();
   applyRecent(made.rows, ['thing:service:nginx', 'page:/account']);
   // The list is cut at fifty rows, and the actions are more than that.
-  const empty = groupResults(made, find(made, '', 200), '');
+  const empty = groupResults(made, find(made, '', 400), '');
   assert.deepEqual(empty.map((group) => group.label), [RECENT_GROUP, 'Actions', 'Services', 'Certificates', 'Settings and pages']);
   assert.deepEqual(titles(empty[0].results), ['nginx', 'Your account'], 'in the order they were used');
   assert.equal(empty.find((group) => group.label === 'Services').results.some((one) => one.row.title === 'nginx'), false, 'and not twice');

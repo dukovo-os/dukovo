@@ -1367,6 +1367,16 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     // cannot say as the check does.
     ("updates.check-add", "url"),
     ("updates.check-add", "service"),
+    // Addresses, a server and a sender as the command's parser reads them,
+    // an account with no control character, and a Matrix room that is for
+    // a Matrix webhook alone; a browser's name that is not spaces alone.
+    ("alerts.email", "to"),
+    ("alerts.email", "server"),
+    ("alerts.email", "user"),
+    ("alerts.email", "from"),
+    ("alerts.webhook-add", "kind"),
+    ("alerts.webhook-add", "room"),
+    ("alerts.push-add", "name"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1518,6 +1528,18 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("updates.check-add", r#"{"name":"x"}"#),
     ("updates.check-add", r#"{"name":"x","service":"nginx","url":"https://a/"}"#),
     ("updates.check-add", r#"{"insecure":true,"name":"x","service":"nginx"}"#),
+    // An address that is no address, an account's password without the
+    // account, and a sender that is no address: what the command's parser
+    // reads. A Matrix webhook without its room, a room for another kind,
+    // a token for a kind that has none, and a browser's name of spaces
+    // alone: fields that go together in ways a schema does not say.
+    ("alerts.email", r#"{"server":"mail.example.org","to":"nobody"}"#),
+    ("alerts.email", r#"{"from":"nobody","server":"mail.example.org","to":"ops@example.org"}"#),
+    ("alerts.email", r#"{"password":"x","server":"mail.example.org","to":"ops@example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"matrix","url":"https://matrix.example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"json","room":"!a:b.test","url":"https://x.example.org"}"#),
+    ("alerts.webhook-add", r#"{"kind":"slack","token":"t","url":"https://hooks.slack.com/x"}"#),
+    ("alerts.push-add", r#"{"name":"   ","subscription":"{}"}"#),
 ];
 
 fn lab_action(id: &str) -> &'static dyn Registered {

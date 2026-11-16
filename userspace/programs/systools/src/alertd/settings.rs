@@ -479,7 +479,7 @@ fn recipients(table: &Table) -> Result<Vec<String>, String> {
 /// Whether `address` is `local@domain` in the plain form mail is sent to:
 /// no spaces, quotes, angle brackets or line breaks, which could end the
 /// address in SMTP's commands and start another.
-fn is_address(address: &str) -> bool {
+pub(crate) fn is_address(address: &str) -> bool {
     let Some((local, domain)) = address.split_once('@') else { return false };
     let local_char = |c: char| c.is_ascii_graphic() && !"<>()[]\\,;:\"@".contains(c);
     !local.is_empty() && local.len() <= 64 && local.chars().all(local_char) && is_host(domain)
@@ -487,7 +487,7 @@ fn is_address(address: &str) -> bool {
 
 /// Whether `host` is a host name or an IPv4 address: letters, digits,
 /// dots and hyphens.
-fn is_host(host: &str) -> bool {
+pub(crate) fn is_host(host: &str) -> bool {
     let edge = |c: char| c == '.' || c == '-';
     !host.is_empty()
         && host.len() <= 253
