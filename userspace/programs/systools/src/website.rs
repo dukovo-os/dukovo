@@ -405,8 +405,9 @@ fn execute(
             Ok(0)
         }
         Command::Count { now, json } => {
-            let report = count::count(&Ctx { paths, host, steps: &off }, now, count::Limits::STANDARD)
-                .map_err(change::Refusal::into_fail)?;
+            let report =
+                count::count(&Ctx { paths, host, steps: &off }, now, count::Limits::STANDARD)
+                    .map_err(change::Refusal::into_fail)?;
             if json {
                 writeln!(out, "{}", report.json().map_err(fail)?)?;
             } else {

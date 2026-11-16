@@ -364,10 +364,8 @@ pub fn check(ctx: &Ctx<'_>) -> Result<(Report, bool), Refusal> {
             }
         }
     };
-    let ok = checked.passed
-        && nginx_conf.includes
-        && nginx_conf.hides_sites
-        && nginx_conf.logs_sites;
+    let ok =
+        checked.passed && nginx_conf.includes && nginx_conf.hides_sites && nginx_conf.logs_sites;
     let websites = state
         .sites
         .iter()

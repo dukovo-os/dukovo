@@ -383,7 +383,10 @@ fn list_says_the_visits_and_the_size_of_each_site() {
 
     let plain = list::list(&fake.ctx()).unwrap().plain();
     let head = plain.lines().next().unwrap();
-    assert!(head.starts_with("NAME") && head.contains("SIZE") && head.ends_with("FOLDER"), "{head}");
+    assert!(
+        head.starts_with("NAME") && head.contains("SIZE") && head.ends_with("FOLDER"),
+        "{head}"
+    );
 }
 
 #[test]
@@ -432,7 +435,8 @@ fn a_site_that_is_listed_with_a_size_that_is_a_least_says_so() {
 fn a_site_keeps_the_newest_400_days() {
     let mut counts = Counts::default();
     for back in 0..450 {
-        let day = Day { day: day_text(20_000 - back), visits: 1, errors: 0, bytes: 0, complete: true };
+        let day =
+            Day { day: day_text(20_000 - back), visits: 1, errors: 0, bytes: 0, complete: true };
         counts.record(SHOP, day);
     }
     let days = &counts.sites[SHOP].days;
@@ -448,7 +452,8 @@ fn a_site_keeps_the_newest_400_days() {
     assert_eq!((days.len(), days[0].visits), (DAYS_KEPT, 9));
     assert_eq!(days[DAYS_KEPT - 1].day, day_text(20_000 - 398));
     // A day older than all of them is not kept.
-    counts.record(SHOP, Day { day: day_text(1000), visits: 1, errors: 0, bytes: 0, complete: true });
+    counts
+        .record(SHOP, Day { day: day_text(1000), visits: 1, errors: 0, bytes: 0, complete: true });
     assert_eq!(counts.sites[SHOP].days.len(), DAYS_KEPT);
     assert!(counts.sites[SHOP].days.iter().all(|day| day.day != day_text(1000)));
 }
@@ -475,7 +480,10 @@ fn what_is_kept_of_a_gone_site_goes_after_30_days_and_comes_back_with_the_site()
     assert!(counts.sites.contains_key("kept"));
 
     let mut counts = Counts::default();
-    counts.record("back", Day { day: day_text(20_000), visits: 1, errors: 0, bytes: 0, complete: true });
+    counts.record(
+        "back",
+        Day { day: day_text(20_000), visits: 1, errors: 0, bytes: 0, complete: true },
+    );
     counts.forget_gone(&[], start);
     counts.forget_gone(&["back"], start + 10 * DAY_MS);
     assert_eq!(counts.sites["back"].gone_since_ms, None);
@@ -486,7 +494,10 @@ fn what_is_kept_of_a_gone_site_goes_after_30_days_and_comes_back_with_the_site()
 fn a_count_drops_a_gone_site_after_30_days_in_the_file() {
     let fake = with_shop();
     let mut counts = Counts::default();
-    counts.record("old.example.org", Day { day: day_text(1), visits: 1, errors: 0, bytes: 0, complete: true });
+    counts.record(
+        "old.example.org",
+        Day { day: day_text(1), visits: 1, errors: 0, bytes: 0, complete: true },
+    );
     keep(fake.paths(), &counts).map_err(|refusal| refusal.words).unwrap();
     counted(&fake, false);
     let seen = kept(fake.paths()).unwrap();
@@ -541,11 +552,18 @@ fn a_walk_cut_short_marks_the_size_as_at_least() {
 fn the_report_says_each_site_in_words_and_in_json() {
     let fake = with_shop();
     let yesterday = fake.today() - 1;
-    put(&fake, &format!("{SHOP}.log"), (line(yesterday, 1, 200, 2048) + &line(yesterday, 2, 404, 5)).as_bytes());
+    put(
+        &fake,
+        &format!("{SHOP}.log"),
+        (line(yesterday, 1, 200, 2048) + &line(yesterday, 2, 404, 5)).as_bytes(),
+    );
     let report = counted(&fake, false);
     let plain = report.plain();
     assert!(
-        plain.starts_with(&format!("{SHOP}: {}: 1 visits, 1 errors, 2.1K sent; folder ", day_text(yesterday))),
+        plain.starts_with(&format!(
+            "{SHOP}: {}: 1 visits, 1 errors, 2.1K sent; folder ",
+            day_text(yesterday)
+        )),
         "{plain}"
     );
     assert!(plain.ends_with(" files\n"), "{plain}");
@@ -562,14 +580,7 @@ fn the_report_says_each_site_in_words_and_in_json() {
 
 #[test]
 fn the_files_of_a_site_s_log_are_told_from_those_of_another_s() {
-    for file in [
-        "a.log",
-        "a.log.1",
-        "a.log.2",
-        "a.log.2.zst",
-        "a.log.2.zst.new",
-        "a.log.10",
-    ] {
+    for file in ["a.log", "a.log.1", "a.log.2", "a.log.2.zst", "a.log.2.zst.new", "a.log.10"] {
         assert!(is_log_of(file, "a"), "{file}");
     }
     for file in [
@@ -641,7 +652,7 @@ fn a_site_that_was_added_before_the_sites_were_logged_has_no_visits_until_it_is_
     let old: String = logged
         .lines()
         .filter(|line| !line.contains("access_log") && !line.contains("Requests go to"))
-        .map(|line| format!("{line}\n"))
+        .map(|line| [line, "\n"].concat())
         .collect();
     assert!(!old.contains("access_log"));
     fake.put(&file, &old);
@@ -681,7 +692,18 @@ fn the_days_are_numbered_and_named_the_same_way_both_ways() {
     }
     assert_eq!(day_text(0), "1970-01-01");
     assert_eq!(day_text(20_000), "2024-10-04");
-    for bad in ["", "2026", "2026-11", "2026-1-15", "26-11-15", "2026-13-01", "2026-00-01", "2026-11-32", "abcd-ef-gh", "2026-11-15-01"] {
+    for bad in [
+        "",
+        "2026",
+        "2026-11",
+        "2026-1-15",
+        "26-11-15",
+        "2026-13-01",
+        "2026-00-01",
+        "2026-11-32",
+        "abcd-ef-gh",
+        "2026-11-15-01",
+    ] {
         assert_eq!(day_number(bad), None, "{bad}");
     }
 }

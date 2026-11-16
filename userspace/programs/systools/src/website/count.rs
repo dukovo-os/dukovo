@@ -202,7 +202,8 @@ impl Counts {
             }
         }
         self.sites.retain(|_, site| {
-            site.gone_since_ms.is_none_or(|since| now_ms.saturating_sub(since) <= GONE_DAYS * DAY_MS)
+            site.gone_since_ms
+                .is_none_or(|since| now_ms.saturating_sub(since) <= GONE_DAYS * DAY_MS)
         });
     }
 
@@ -619,7 +620,12 @@ impl Report {
     pub fn plain(&self) -> String {
         let sites = self.sites.iter().map(SiteReport::line);
         let problems = self.problems.iter().cloned();
-        sites.chain(problems).map(|line| format!("{line}\n")).collect()
+        let mut text = String::new();
+        for line in sites.chain(problems) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        text
     }
 }
 
@@ -667,7 +673,7 @@ pub fn count(ctx: &Ctx<'_>, today: bool, limits: Limits) -> Result<Report, Refus
             name: site.name.clone(),
             day: counted,
             size: None,
-            problems: tally.map(|tally| tally.problems).unwrap_or_default(),
+            problems: tally.map_or_else(Vec::new, |tally| tally.problems),
         });
     }
     let names: Vec<&str> = state.sites.iter().map(|site| site.name.as_str()).collect();

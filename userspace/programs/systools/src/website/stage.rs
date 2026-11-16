@@ -191,8 +191,7 @@ impl Staged {
         let conf = Dir::open(&paths.text(CONF)).map_err(words)?;
         // nginx's check opens the file of each site's log, which needs the
         // folder it is in.
-        logs_dir(paths, true)
-            .map_err(|error| format!("{LOGS}: {}", strip_os_error(&error)))?;
+        logs_dir(paths, true).map_err(|error| format!("{LOGS}: {}", strip_os_error(&error)))?;
         // Whatever an earlier change that was cut short left.
         let staged = Staged { conf };
         staged.remove_all();
@@ -394,7 +393,8 @@ mod tests {
     }
 
     #[test]
-    fn the_folder_of_the_sites_logs_is_made_for_nginx_in_its_data_folder_and_never_through_a_link() {
+    fn the_folder_of_the_sites_logs_is_made_for_nginx_in_its_data_folder_and_never_through_a_link()
+    {
         use std::os::unix::fs::MetadataExt;
         let tree = Scratch::new("logs");
         assert!(logs_dir(&tree.paths(), false).unwrap().is_none());

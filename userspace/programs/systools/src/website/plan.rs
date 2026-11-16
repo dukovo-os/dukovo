@@ -204,7 +204,8 @@ pub fn spec_of(name: &str, facts: &Facts) -> Option<Spec> {
 /// the site's own log is what `website` wrote before it logged each site:
 /// it is not a change by hand, and `https` writes it again with them.
 pub fn by_hand(name: &str, text: &str, facts: &Facts) -> bool {
-    spec_of(name, facts).is_none_or(|spec| text != render(&spec, true) && text != render(&spec, false))
+    spec_of(name, facts)
+        .is_none_or(|spec| text != render(&spec, true) && text != render(&spec, false))
 }
 
 /// Whether the file `text` of site `name` does not start as `website`
@@ -706,7 +707,8 @@ access_log /shared/services/org.nginx.nginx/nginx/logs/sites/shop.example.org.lo
             (Kind::Php, Some("this-machine")),
         ] {
             let text = site_text(&spec(kind, certificate));
-            let servers = text.matches("\nserver {").count() + usize::from(text.starts_with("server {"));
+            let servers =
+                text.matches("\nserver {").count() + usize::from(text.starts_with("server {"));
             assert_eq!(servers, if certificate.is_some() { 2 } else { 1 }, "{text}");
             assert_eq!(text.matches("    access_log stderr;\n").count(), servers, "{text}");
             let own = format!("    access_log {LOGS}/shop.example.org.log {LOG_FORMAT_NAME};\n");
@@ -721,10 +723,7 @@ access_log /shared/services/org.nginx.nginx/nginx/logs/sites/shop.example.org.lo
 
     #[test]
     fn a_file_written_before_the_sites_logged_is_not_one_changed_by_hand() {
-        for (kind, certificate) in [
-            (Kind::Static, None),
-            (Kind::Php, Some("this-machine")),
-        ] {
+        for (kind, certificate) in [(Kind::Static, None), (Kind::Php, Some("this-machine"))] {
             let made = spec(kind, certificate);
             let old = render(&made, false);
             assert!(!old.contains("access_log"), "{old}");
@@ -733,7 +732,8 @@ access_log /shared/services/org.nginx.nginx/nginx/logs/sites/shop.example.org.lo
             assert!(!by_hand("shop.example.org", &old, &facts), "{old}");
             assert!(!added_by_hand("shop.example.org", &old));
             // A change of its own to either is a change by hand.
-            for text in [format!("{old}# kept\n"), site_text(&made).replacen("index", "indexed", 1)] {
+            for text in [format!("{old}# kept\n"), site_text(&made).replacen("index", "indexed", 1)]
+            {
                 let facts = conf::facts(&conf::parse(&text).unwrap());
                 assert!(by_hand("shop.example.org", &text, &facts), "{text}");
             }
@@ -834,9 +834,19 @@ access_log /shared/services/org.nginx.nginx/nginx/logs/sites/shop.example.org.lo
         assert!(!read_main(&format!("{wanted}\nhttp {{ }}")).unwrap().logs_sites);
         assert!(!read_main(&format!("http {{ server {{ {wanted} }} }}")).unwrap().logs_sites);
         // Another name, or another format of that name, is not what is counted.
-        assert!(!read_main("http { log_format site '$remote_addr $request'; }").unwrap().logs_sites);
-        assert!(!read_main("http { log_format sites '$msec $status $body_bytes_sent'; }").unwrap().logs_sites);
-        assert!(!read_main("http { log_format site '$msec $status $body_bytes_sent' escape=json; }").unwrap().logs_sites);
+        assert!(
+            !read_main("http { log_format site '$remote_addr $request'; }").unwrap().logs_sites
+        );
+        assert!(
+            !read_main("http { log_format sites '$msec $status $body_bytes_sent'; }")
+                .unwrap()
+                .logs_sites
+        );
+        assert!(
+            !read_main("http { log_format site '$msec $status $body_bytes_sent' escape=json; }")
+                .unwrap()
+                .logs_sites
+        );
     }
 
     #[test]
