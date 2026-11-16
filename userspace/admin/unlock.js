@@ -8,7 +8,7 @@
 // header's control and the dialog both read and set it.
 
 import { post } from './api.js';
-import { clearError, errorSlot, h, icon, showError } from './dom.js';
+import { clearError, errorSlot, fill, h, icon, showError } from './dom.js';
 
 // With this many minutes left the header says the unlock is about to end.
 const WARN_MINUTES = 2;
@@ -128,7 +128,8 @@ export function accessControl(session) {
         button('Reset to 15 min', () => change('/api/1/unlock/extend')),
         button('Lock', async () => (await confirmLock()) && change('/api/1/lock')));
     } else {
-      element.replaceChildren(
+      // fill leaves out the false of a person who is no administrator, which replaceChildren would show as text.
+      fill(element,
         icon('lock'),
         h('span', {}, session.admin ? 'Limited access ·' : 'Limited access'),
         session.admin && button('Unlock', unlock));

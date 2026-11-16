@@ -252,6 +252,41 @@ path = "userspace/programs/systools/src/storage/show.golden.json"
 SPDX-FileCopyrightText = "2026 The Dukovo contributors"
 SPDX-License-Identifier = "Apache-2.0 OR MIT"
 
+# What `user show --json` prints for the account its tests build
+# (userspace/programs/systools/src/account/read.rs).
+[[annotations]]
+path = "userspace/programs/systools/src/account/read.golden.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+# What `ssh-server show --json` prints for the machine its tests build
+# (userspace/programs/systools/src/ssh_server/show.rs).
+[[annotations]]
+path = "userspace/programs/systools/src/ssh_server/show.golden.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+# What `admin settings --json` prints for the settings its tests build
+# (userspace/programs/systools/src/admin_settings.rs).
+[[annotations]]
+path = "userspace/programs/systools/src/admin_settings/settings.golden.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+# What `wireguard show --json` prints for the interface its tests build
+# (userspace/programs/systools/src/private_access/show.rs).
+[[annotations]]
+path = "userspace/programs/systools/src/private_access/show.golden.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
+# What `firewall blocked --json` prints for the blocks its tests build
+# (userspace/programs/systools/src/firewall/report.rs).
+[[annotations]]
+path = "userspace/programs/systools/src/firewall/blocked.golden.json"
+SPDX-FileCopyrightText = "2026 The Dukovo contributors"
+SPDX-License-Identifier = "Apache-2.0 OR MIT"
+
 # The RSA key the passkey tests sign with (ADR 0514): a throwaway key
 # OpenSSL made (`openssl genpkey -algorithm RSA`, as PKCS #8 DER), since
 # ring makes no RSA keys.

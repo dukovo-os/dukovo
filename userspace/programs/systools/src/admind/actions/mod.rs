@@ -46,6 +46,8 @@
 //! [`REGISTRY`] is the one list. The route table, `GET /api/1/actions`,
 //! `admin actions` and `lab/actions.toml` are all made from it.
 
+mod account;
+mod accounts;
 mod backups;
 mod certificate;
 pub mod checks;
@@ -57,15 +59,19 @@ pub mod logs;
 mod metrics;
 mod moving;
 mod network;
+mod private;
 mod reliability;
 pub mod secret;
+mod security;
 mod service;
 pub mod show;
 mod snapshots;
+mod ssh;
 mod storage;
 mod trial;
 
 use std::fmt;
+use std::net::IpAddr;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -143,8 +149,6 @@ pub enum Type {
         max: i64,
     },
     /// `true` or `false`.
-    // As `Number`: none in the list takes one.
-    #[cfg_attr(not(test), allow(dead_code))]
     Flag,
     /// A password or a key: one line of 1 to `max` characters, with no
     /// NUL, read into a [`Secret`] (ADR 0561). The schema marks it
@@ -202,7 +206,6 @@ impl Field {
     }
 
     /// A required argument that is `true` or `false`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn flag(name: &'static str, about: &'static str) -> Field {
         Field { name, kind: Type::Flag, required: true, about }
     }
@@ -222,7 +225,6 @@ impl Field {
     /// client leaves it out; a `null` in its place is read as left out too,
     /// which the schema does not say, since it only holds what a client
     /// ought to send.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn optional(self) -> Field {
         Field { required: false, ..self }
     }
@@ -476,6 +478,18 @@ pub trait Action: 'static {
     /// recovery key (ADR 0561). Its route is a `POST`, a read's too, and it
     /// is never a task, which keeps what its command prints.
     const SECRET_ANSWER: bool = false;
+    /// The field that names an account the caller may not do this to from
+    /// the console or with their token (ADR 0562, ADM-136): disabling or
+    /// removing it, taking its administrator right away, or ending one of
+    /// its sessions could lock the caller out, so another administrator,
+    /// or `elevate user ...` at a terminal, does it. None, the default, for
+    /// an action that does nothing to an account.
+    const NOT_SELF: Option<&'static str> = None;
+    /// What the change could cut off: the browser that asks for it, when
+    /// the browser comes through what the change takes away and Spark
+    /// cannot try the change (ADR 0562, ADM-137). None, the default, for an
+    /// action that cuts off nothing a trial does not put back.
+    const CUTS_OFF: Option<CutsOff<Self::Args>> = None;
     /// Its five tests.
     const TESTS: Tests;
     /// What a person reads as its name in the palette and in the journal:
@@ -546,6 +560,13 @@ pub trait Action: 'static {
         None
     }
 
+    /// Whether [`Action::NOT_SELF`] applies to `args`: always, the default,
+    /// or only for some, as `accounts.set` only when it takes the
+    /// administrator right away.
+    fn not_self_applies(_args: &Self::Args) -> bool {
+        true
+    }
+
     /// Whether `now`, the part of the probe's output that
     /// [`Action::probed`] picks, is already what the change leaves, so that
     /// the change would move nothing of it: for check mode (ADR 0545).
@@ -565,6 +586,33 @@ pub trait Action: 'static {
 
     /// Arguments for the tests that take every action from the list.
     fn examples() -> Examples<Self::Args>;
+}
+
+/// [`Action::CUTS_OFF`]: how admind tells, before a change runs, whether it
+/// would cut off the browser that asks for it. admind reads no file of the
+/// thing the change is to: what it needs comes from `read`, a command run
+/// as the caller's administrator, as the change will be.
+pub struct CutsOff<A> {
+    /// The network card the change can cut off. A request that came by
+    /// another card is never cut off, and nothing is read for it.
+    pub card: &'static str,
+    /// The command that says what the change would take away, for these
+    /// arguments. It prints no secret: admind reads what it prints.
+    pub read: fn(&A) -> Vec<String>,
+    /// Whether the change with these arguments leaves a browser at `from`
+    /// reaching the console, from what `read` printed: Err with the words
+    /// of the refusal when it does not, and when what was printed does not
+    /// read, so that the guard fails closed.
+    pub cuts: fn(&A, IpAddr, &str) -> Result<(), String>,
+}
+
+/// The read of [`Action::CUTS_OFF`] for a change's arguments.
+#[derive(Debug)]
+pub struct CutsOffRead {
+    /// The card a request must have come by for the change to cut it off.
+    pub card: &'static str,
+    /// The command to run, as the caller's administrator, before the change.
+    pub argv: Vec<String>,
 }
 
 /// What a change does to a trial of settings, by the trial's ID: admind
@@ -592,6 +640,12 @@ pub struct Prepared {
     pub probe: Option<Vec<String>>,
     /// What it does to a trial, when it answers well.
     pub trial: Option<Trial>,
+    /// The account that [`Action::NOT_SELF`] names, when the guard
+    /// applies to these arguments: the caller's own is refused.
+    pub not_self: Option<String>,
+    /// What [`Action::CUTS_OFF`] reads before the change, when the action
+    /// has one.
+    pub cuts_off: Option<CutsOffRead>,
     /// What its command reads on its input: the secrets it takes, as lines
     /// ([`Action::input`]), never kept and overwritten when it goes.
     pub input: Option<Secret>,
@@ -612,6 +666,20 @@ pub trait Registered: Sync + fmt::Debug {
     fn lines(&self) -> bool;
     /// [`Action::SECRET_ANSWER`].
     fn secret_answer(&self) -> bool;
+    /// [`Action::NOT_SELF`].
+    fn not_self(&self) -> Option<&'static str>;
+    /// The card of [`Action::CUTS_OFF`], None for an action without one.
+    fn cuts_off_card(&self) -> Option<&'static str>;
+    /// Whether the change with the prepared `args` leaves a browser at
+    /// `from` reaching the console, from what [`CutsOffRead::argv`]
+    /// printed (`shown`): Err with the refusal's words when it does not,
+    /// when `shown` does not read, or when `args` do not read as the
+    /// action's. Ok for an action with no [`Action::CUTS_OFF`].
+    ///
+    /// # Errors
+    ///
+    /// The words of the refusal, as above.
+    fn cuts_off(&self, args: &Value, from: IpAddr, shown: &str) -> Result<(), String>;
     fn tests(&self) -> Tests;
     fn title(&self) -> &'static str;
     /// Whether a change's `changed` comes from comparing, its probe's
@@ -696,6 +764,18 @@ impl<A: Action> Registered for Entry<A> {
     fn secret_answer(&self) -> bool {
         A::SECRET_ANSWER
     }
+    fn not_self(&self) -> Option<&'static str> {
+        A::NOT_SELF
+    }
+    fn cuts_off_card(&self) -> Option<&'static str> {
+        A::CUTS_OFF.map(|cuts_off| cuts_off.card)
+    }
+    fn cuts_off(&self, args: &Value, from: IpAddr, shown: &str) -> Result<(), String> {
+        let Some(cuts_off) = A::CUTS_OFF else { return Ok(()) };
+        let typed: A::Args = serde_json::from_value(args.clone())
+            .map_err(|_| format!("the arguments of {} do not read", A::ID))?;
+        (cuts_off.cuts)(&typed, from, shown)
+    }
     fn tests(&self) -> Tests {
         A::TESTS
     }
@@ -739,7 +819,23 @@ impl<A: Action> Registered for Entry<A> {
         let args = serde_json::to_value(&typed)
             .map_err(|err| Failure::new(Kind::Internal, format!("{} arguments: {err}", A::ID)))?;
         let ansible = A::ansible(&typed).keeping_secrets(A::Args::FIELDS, &args, A::SECRET_ANSWER);
-        Ok(Prepared { action: self, args, argv, ansible, files, probe, trial, input })
+        let not_self = A::NOT_SELF
+            .filter(|_| A::not_self_applies(&typed))
+            .and_then(|field| args.get(field)?.as_str().map(String::from));
+        let cuts_off = A::CUTS_OFF
+            .map(|cuts_off| CutsOffRead { card: cuts_off.card, argv: (cuts_off.read)(&typed) });
+        Ok(Prepared {
+            action: self,
+            args,
+            argv,
+            ansible,
+            files,
+            probe,
+            trial,
+            not_self,
+            cuts_off,
+            input,
+        })
     }
 
     fn probed(&self, args: &Value, output: &str) -> Option<String> {
@@ -822,8 +918,11 @@ registry![
     console::SetReach,
     console::About,
     console::Notices,
+    console::Keep,
+    console::Revert,
     reliability::Export,
     checks::Last,
+    checks::Run,
     metrics::Now,
     metrics::Usage,
     metrics::Around,
@@ -876,6 +975,42 @@ registry![
     moving::Plan,
     moving::Stage,
     moving::Cancel,
+    accounts::List,
+    accounts::ListAll,
+    accounts::Last,
+    accounts::Show,
+    accounts::Add,
+    accounts::Set,
+    accounts::Password,
+    accounts::Disable,
+    accounts::Enable,
+    accounts::Remove,
+    accounts::KeyAdd,
+    accounts::KeyRemove,
+    accounts::TokenRevoke,
+    accounts::StepsReset,
+    accounts::End,
+    account::Show,
+    account::Name,
+    account::Password,
+    account::KeyAdd,
+    account::KeyRemove,
+    security::SignIn,
+    security::SignInSet,
+    security::Blocked,
+    security::Unblock,
+    security::NeverBlock,
+    security::NeverBlockRemove,
+    ssh::Show,
+    ssh::SetThem,
+    ssh::On,
+    ssh::Off,
+    ssh::Keep,
+    ssh::Revert,
+    private::Show,
+    private::Serve,
+    private::Add,
+    private::Remove,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the
@@ -901,9 +1036,12 @@ pub fn offered() -> &'static [&'static dyn Registered] {
 /// The list `GET /api/1/actions` answers and `admin actions` prints: each
 /// action's id, title, area, whether it changes anything, its method and
 /// address, who runs it, whether it is a task, whether its `changed` is
-/// compared from a probe (`compares`), its error IDs, the names of its
-/// five tests, the JSON Schema of its arguments (`input`), and its
-/// examples: the arguments that work, and for a change the action and
+/// compared from a probe (`compares`), the field naming an account it is
+/// never done to by the caller's own (`not_self`, null for none), the
+/// card whose browsers it is refused for when it would cut them off
+/// (`cuts_off`, null for none), its error IDs, the names of its five
+/// tests, the JSON Schema of its arguments (`input`), and its examples:
+/// the arguments that work, and for a change the action and
 /// arguments that put back what the first did (null when nothing does).
 /// The bad examples are in the unit tests alone.
 pub fn listed(actions: &[&dyn Registered]) -> Value {
@@ -923,6 +1061,8 @@ pub fn listed(actions: &[&dyn Registered]) -> Value {
                     "long": action.long(),
                     "secret_answer": action.secret_answer(),
                     "compares": action.compares(),
+                    "not_self": action.not_self(),
+                    "cuts_off": action.cuts_off_card(),
                     "errors": action.errors(),
                     "tests": action.tests(),
                     "input": schema(action.fields()),

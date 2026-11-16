@@ -254,6 +254,46 @@ pub enum Request {
         /// The account.
         name: String,
     },
+    /// Account `name`'s second steps and API tokens, with none of their
+    /// secrets, answered as the person's own [`Console::Steps`] is.
+    /// Root's to ask.
+    StepsOf {
+        /// The account.
+        name: String,
+    },
+    /// Remove account `name`'s second steps, for a person who lost the
+    /// phone or key: the authenticator app, the passkeys, the recovery
+    /// codes and the trusted browsers go, and the person is told at their
+    /// next sign-in. Its API tokens stay. Root's to ask; the answer is `ok`
+    /// and how many of each went: the app (0 or 1), passkeys, recovery
+    /// codes and trusted browsers, separated by spaces.
+    StepsReset {
+        /// The account.
+        name: String,
+    },
+    /// Remove account `name`'s API token named `token`. Root's to ask.
+    TokenRemoveOf {
+        /// The account.
+        name: String,
+        /// The token's name.
+        token: String,
+    },
+    /// Hang up, or kill, account `name`'s session at the machine whose
+    /// leader is process `session`: one that authd started for it, at a
+    /// terminal, over SSH or as a console terminal's pane (ADR 0562). Its
+    /// processes are below authd, which alone may signal them, as the
+    /// kernel lets a process signal only its own session's and those below
+    /// it. `kill` sends SIGKILL; otherwise SIGHUP, as a closed terminal
+    /// does. Root's to ask; the answer is `ok` and how many of the
+    /// session's processes it was sent to.
+    EndSession {
+        /// The account.
+        name: String,
+        /// The process that leads the session.
+        session: u64,
+        /// SIGKILL rather than SIGHUP.
+        kill: bool,
+    },
     /// Remove account `name`: what acts for it ends, as with `Disable`,
     /// its lines go from the account files, and its number is never given
     /// again. Root's to ask; the answer is `ok` and its home, which the
@@ -1345,6 +1385,16 @@ impl Request {
             Request::Reset { name, password } => vec![b"reset", name.as_bytes(), password],
             Request::Disable { name } => vec![b"disable", name.as_bytes()],
             Request::Enable { name } => vec![b"enable", name.as_bytes()],
+            Request::StepsOf { name } => vec![b"steps-of", name.as_bytes()],
+            Request::StepsReset { name } => vec![b"steps-reset", name.as_bytes()],
+            Request::TokenRemoveOf { name, token } => {
+                vec![b"token-remove-of", name.as_bytes(), token.as_bytes()]
+            }
+            Request::EndSession { name, session, kill } => {
+                number = session.to_string();
+                let signal: &[u8] = if *kill { b"kill" } else { b"hang-up" };
+                vec![b"end-session", name.as_bytes(), number.as_bytes(), signal]
+            }
             Request::Remove { name } => vec![b"remove", name.as_bytes()],
             Request::Service { name, whose, home } => {
                 vec![b"service", name.as_bytes(), whose.as_bytes(), home.as_bytes()]
@@ -1592,6 +1642,20 @@ impl Request {
             }
             [b"disable", name] => Ok(Request::Disable { name: text(name)? }),
             [b"enable", name] => Ok(Request::Enable { name: text(name)? }),
+            [b"steps-of", name] => Ok(Request::StepsOf { name: text(name)? }),
+            [b"steps-reset", name] => Ok(Request::StepsReset { name: text(name)? }),
+            [b"token-remove-of", name, token] => {
+                Ok(Request::TokenRemoveOf { name: text(name)?, token: text(token)? })
+            }
+            [b"end-session", name, session, signal] => {
+                let kill = match signal {
+                    b"kill" => true,
+                    b"hang-up" => false,
+                    _ => return Err(malformed()),
+                };
+                let session = text(session)?.parse().map_err(|_| malformed())?;
+                Ok(Request::EndSession { name: text(name)?, session, kill })
+            }
             [b"remove", name] => Ok(Request::Remove { name: text(name)? }),
             [b"service", name, whose, home] => {
                 Ok(Request::Service { name: text(name)?, whose: text(whose)?, home: text(home)? })
@@ -1971,6 +2035,10 @@ impl Request {
             | Request::Choose { .. }
             | Request::Disable { .. }
             | Request::Enable { .. }
+            | Request::StepsOf { .. }
+            | Request::StepsReset { .. }
+            | Request::TokenRemoveOf { .. }
+            | Request::EndSession { .. }
             | Request::Remove { .. }
             | Request::Service { .. }
             | Request::SocketGroup { .. }
@@ -2015,6 +2083,14 @@ impl std::fmt::Debug for Request {
             Request::Reset { name, .. } => write!(f, "Reset {{ name: {name:?} }}"),
             Request::Disable { name } => write!(f, "Disable {{ name: {name:?} }}"),
             Request::Enable { name } => write!(f, "Enable {{ name: {name:?} }}"),
+            Request::StepsOf { name } => write!(f, "StepsOf {{ name: {name:?} }}"),
+            Request::StepsReset { name } => write!(f, "StepsReset {{ name: {name:?} }}"),
+            Request::TokenRemoveOf { name, token } => {
+                write!(f, "TokenRemoveOf {{ name: {name:?}, token: {token:?} }}")
+            }
+            Request::EndSession { name, session, kill } => {
+                write!(f, "EndSession {{ name: {name:?}, session: {session}, kill: {kill} }}")
+            }
             Request::Remove { name } => write!(f, "Remove {{ name: {name:?} }}"),
             Request::Service { name, whose, home } => {
                 write!(f, "Service {{ name: {name:?}, whose: {whose:?}, home: {home:?} }}")

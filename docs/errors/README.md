@@ -39,6 +39,7 @@ table and say what the area is, in two to five capitals.
 
 | Letters | Area | Since |
 | --- | --- | --- |
+| `ACC` | Accounts: user(8) and authd's accounts | 0.16.0 |
 | `ADM` | The web console, Dukovo Admin: its sign-in, second steps, unlock and requests | 0.16.0 |
 | `BAK` | Snapshots and backups: snap(1), backup(8) and moving a machine | 0.16.0 |
 | `BOOT` | Starting the computer: the health check of each start | 0.15.0 |

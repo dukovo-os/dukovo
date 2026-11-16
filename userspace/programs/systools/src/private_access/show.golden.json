@@ -1,0 +1,37 @@
+{
+  "format": 1,
+  "interfaces": [
+    {
+      "name": "wg0",
+      "address": "10.8.0.1/24",
+      "port": 51820,
+      "endpoint": "home.example.org",
+      "public_key": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=",
+      "up": true,
+      "devices": [
+        {
+          "name": "phone",
+          "public_key": "aJ7TlWZX/XND9O54UTiZPjByNwglHgoWcuhjgYX+tFk=",
+          "addresses": [
+            "10.8.0.2/32"
+          ],
+          "endpoint": "198.51.100.7:40122",
+          "latest_handshake_ms": 1763120000250,
+          "received": 1234,
+          "sent": 5678
+        },
+        {
+          "name": "yIfVfM4e",
+          "public_key": "yIfVfM4ezrB6rRvCftHpkKu04B8/UvfZa4lyBz++N3s=",
+          "addresses": [
+            "10.8.0.3/32"
+          ],
+          "endpoint": null,
+          "latest_handshake_ms": null,
+          "received": 0,
+          "sent": 0
+        }
+      ]
+    }
+  ]
+}

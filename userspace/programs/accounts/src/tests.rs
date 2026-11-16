@@ -353,6 +353,11 @@ fn requests_go_and_come_back() {
         },
         Request::Disable { name: "bob".into() },
         Request::Enable { name: "bob".into() },
+        Request::StepsOf { name: "bob".into() },
+        Request::StepsReset { name: "bob".into() },
+        Request::TokenRemoveOf { name: "bob".into(), token: "ansible".into() },
+        Request::EndSession { name: "bob".into(), session: 4123, kill: false },
+        Request::EndSession { name: "bob".into(), session: 4123, kill: true },
         Request::Remove { name: "bob".into() },
         Request::Service {
             name: "web".into(),
@@ -589,6 +594,15 @@ fn requests_go_and_come_back() {
     assert_eq!(elevate.encode(), b"elevate\0shell\0password\0pw\0linux\0/x\0LANG=C\0--\0id\0");
     assert_eq!(Request::Unlock { password: None, ask: true }.encode(), b"unlock\0ask\0\0");
     assert_eq!(Request::Disable { name: "bob".into() }.encode(), b"disable\0bob\0");
+    assert_eq!(Request::StepsOf { name: "bob".into() }.encode(), b"steps-of\0bob\0");
+    assert_eq!(
+        Request::TokenRemoveOf { name: "bob".into(), token: "ansible".into() }.encode(),
+        b"token-remove-of\0bob\0ansible\0"
+    );
+    assert_eq!(
+        Request::EndSession { name: "bob".into(), session: 4123, kill: false }.encode(),
+        b"end-session\0bob\x004123\0hang-up\0"
+    );
     // A secret goes in hexadecimal, so that it may hold any byte.
     assert_eq!(
         Request::KeyringSet { name: "a b".into(), secret: b"\0z".to_vec() }.encode(),
@@ -793,6 +807,12 @@ fn requests_go_and_come_back() {
         b"set\0bob\0admin\0yes\0admin\0no\0",
         b"set\0bob\0shell\0/bin/sh\0",
         b"set\0bob\0jobs-signed-out\0yes\0",
+        // A session that is not a number, a signal that is not one of the
+        // two, or a field missing.
+        b"end-session\0bob\0x\0hang-up\0",
+        b"end-session\0bob\0-1\0kill\0",
+        b"end-session\0bob\x004123\0term\0",
+        b"end-session\0bob\x004123\0",
         // A job with no command, a folder that is not a path, a setting
         // that is not NAME=value, an empty owner, or a label on two
         // lines; keep-running with a word it does not know, or two.

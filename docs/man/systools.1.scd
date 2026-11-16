@@ -262,6 +262,8 @@ error that starts with the tool's name.
 :  read and check every block of a Btrfs filesystem
 |  *sendmail*(8)
 :  send a message through the mail account alerts.toml names
+|  *ssh-server*(8)
+:  SSH's settings, and whether sshd is on
 |  *storage*(8)
 :  the disks, Btrfs volumes and other filesystems with their health, and give a grown disk's room to its last partition and filesystem
 |  *subvolume*(8)
@@ -310,6 +312,8 @@ error that starts with the tool's name.
 :  where a command is
 |  *whois*(1)
 :  who holds a domain, an address or an AS number
+|  *wireguard*(8)
+:  private access to this machine over WireGuard, and its devices
 |  *xxd*(1)
 :  a hex dump, and back
 

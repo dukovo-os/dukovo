@@ -307,7 +307,9 @@ times, and *enable* says when it does next.
 starts at boot, or its timer no longer starts it. Only root may.
 A service whose file is not in _/system/settings/spark/services_ yet
 gets a copy of the system's own there first, and the change is written
-only if Spark still reads the file after it. This is how *sshd*(8) is
+only if Spark still reads the file after it. An override in
+_settings.d_ that sets *enabled* wins over the file, so its line is
+changed too. This is how *sshd*(8) is
 turned on:
 
 ```

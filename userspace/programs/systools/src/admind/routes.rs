@@ -55,6 +55,7 @@ mod follow;
 mod lab;
 mod session;
 mod sign_in;
+mod signed_in;
 mod tasks;
 mod terminals;
 
@@ -286,6 +287,8 @@ pub(super) enum Route {
     TerminalEnd,
     PaneEnd,
     TerminalSocket,
+    SignedIn,
+    SignedInEnd,
     #[cfg(feature = "lab")]
     TestElevate,
 }
@@ -382,6 +385,8 @@ pub(super) const TABLE: &[Entry] = &[
     entry(Verb::Post, "/api/1/terminals/{id}/end", Route::TerminalEnd, Access::Full),
     entry(Verb::Post, "/api/1/terminals/panes/{pane}/end", Route::PaneEnd, Access::Full),
     entry(Verb::Get, "/api/1/terminal", Route::TerminalSocket, Access::Full),
+    entry(Verb::Get, "/api/1/accounts/{name}/sessions", Route::SignedIn, Access::Full),
+    entry(Verb::Post, "/api/1/accounts/{name}/sessions/{id}/end", Route::SignedInEnd, Access::Full),
     entry(Verb::Get, "/api/1/logs/follow", Route::Follow, Access::Full),
     entry(Verb::Get, "/api/1/console/fresh/{trial}", Route::Fresh, Access::Full),
     #[cfg(feature = "lab")]
@@ -646,6 +651,8 @@ fn ended_for(shared: &Shared, cookie: Option<&str>) -> Failure {
         Some("idle") => "no console tab was open for a while",
         Some("restarted") => "the console restarted",
         Some("worker") => "the process that works for your session stopped",
+        Some("by-administrator") => "an administrator ended this session",
+        Some("by-you") => "you ended this session from another browser",
         _ => return ended(),
     };
     Failure::new(Kind::SessionEnded, detail)
@@ -950,6 +957,8 @@ async fn dispatch(
         (Route::TerminalEnd, Some(live)) => terminals::end(cx, &live),
         (Route::PaneEnd, Some(live)) => terminals::end_pane(cx, &live),
         (Route::TerminalSocket, Some(live)) => terminals::open(cx, &live),
+        (Route::SignedIn, Some(live)) => signed_in::list(cx, &live),
+        (Route::SignedInEnd, Some(live)) => signed_in::end(cx, &live),
         (Route::Follow, Some(live)) => follow::open(cx, &live).await,
         (Route::Fresh, Some(_)) => session::fresh(cx).await,
         #[cfg(feature = "lab")]

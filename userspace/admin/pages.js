@@ -95,7 +95,7 @@ const ENTRIES = [
       { title: 'Second step', path: '/account#second-step' },
       { title: 'API tokens', path: '/account#tokens' },
     ],
-    css: ['pages.css'],
+    css: ['pages.css', 'pages/accounts/acc.css'],
     load: () => import('./pages/account/page.js'),
     parts: { overview: () => import('./pages/account/overview.js') },
   },
@@ -137,7 +137,7 @@ const ENTRIES = [
   {
     id: 'security', title: 'Security', path: '/security', icon: 'security', nav: { order: 120 },
     keywords: ['checks', 'ssh', 'blocked', 'unblock', 'wireguard', 'private access', 'sign-in rules'],
-    css: ['boards.css', 'pages.css', 'pages/security/sec.css'],
+    css: ['boards.css', 'pages.css', 'lib/trial-banner.css', 'pages/security/sec.css'],
     load: () => import('./pages/security/page.js'),
     parts: { overview: () => import('./pages/security/overview.js') },
   },

@@ -20,10 +20,12 @@ use hyper_util::rt::TokioIo;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{Context, Live, Outcome, Reply, single, unlocked};
+use accounts::console::Console;
+use accounts::request::Answer;
+
+use super::{Context, Live, Outcome, Reply, shown, single, unlocked};
 use crate::admind::errors::{Failure, Kind};
 use crate::admind::guard;
-use crate::admind::log;
 use crate::admind::shared::{Shared, unix_now};
 use crate::admind::terminal::shells::{self, Asked};
 use crate::admind::terminal::{
@@ -32,6 +34,7 @@ use crate::admind::terminal::{
 };
 use crate::admind::websocket;
 use crate::admind::who::{self, Account};
+use crate::admind::{audit, authd, log};
 
 /// Whether the account of `live` may use the console's terminals, and
 /// whether it is an administrator.
@@ -312,14 +315,49 @@ pub fn rename(cx: &Context<'_>, live: &Live) -> Outcome {
     Ok(Reply::json(json!({ "terminal": terminals.json(id, &live.authd) })))
 }
 
-/// `POST /api/1/terminals/{id}/end`: each of its panes ends.
+/// `POST /api/1/terminals/{id}/end`: each of its panes ends. By its
+/// owner, or, from the Accounts page, by an administrator whose session is
+/// unlocked (ADR 0562), which is an audit line and is told to the owner at
+/// their next sign-in. To anyone else another account's terminal is not
+/// there (ADM-131).
 pub fn end(cx: &Context<'_>, live: &Live) -> Outcome {
-    may_use(cx, live)?;
     let id = number(cx, "id")?;
-    let mut terminals = cx.shared.terminals.borrow_mut();
-    terminals.terminal_of(&live.name, id)?;
-    terminals.end_terminal(id);
+    let (owner, title) = {
+        let terminals = cx.shared.terminals.borrow();
+        let terminal = terminals.terminal(id).ok_or_else(no_terminal)?;
+        (terminal.account.clone(), terminal.name.clone())
+    };
+    if owner == live.name {
+        may_use(cx, live)?;
+    } else {
+        let who = who::read(&cx.shared.accounts, Account::Name(&live.name))
+            .map_err(|why| Failure::new(Kind::Internal, why))?;
+        if !who.admin {
+            return Err(no_terminal());
+        }
+        if !unlocked(cx.shared, &live.cookie) {
+            let why = "the session is locked: unlock it to end another account's terminal";
+            return Err(Failure::new(Kind::Locked, why));
+        }
+        audit(&format!(
+            "{} ended the console terminal \"{}\" of {owner}",
+            live.name,
+            shown(&title)
+        ));
+        let told = Console::TerminalEnded { name: owner, by: live.name.clone(), title };
+        tokio::task::spawn_local(tell_authd(cx.shared.authd.clone(), told));
+    }
+    cx.shared.terminals.borrow_mut().end_terminal(id);
     Ok(Reply::json(json!({ "done": true })))
+}
+
+/// Tells the authd at `socket` what `told` says, for its audit line and
+/// the person's next sign-in; a refusal is said in the log.
+async fn tell_authd(socket: String, told: Console) {
+    match authd::ask(&socket, told, &[]).await {
+        Ok((Answer::Done(_), _)) => {}
+        Ok((Answer::Refused(why), _)) | Err(why) => log(4, &why),
+    }
 }
 
 /// `POST /api/1/terminals/panes/{pane}/end`.

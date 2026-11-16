@@ -225,6 +225,25 @@ pub fn names(text: &str, key: &[u8], mut skipped: impl FnMut(usize)) -> bool {
     found
 }
 
+/// Whether `key`, as SSH carries it, is whole for its algorithm: an
+/// Ed25519 key's 32 bytes, or an ECDSA key's curve and its point
+/// uncompressed, and nothing after (RFC 8709, RFC 5656 3.1). A key that is
+/// not would never sign anyone in.
+pub(crate) fn whole(key: &[u8]) -> bool {
+    let mut key = Reader(key);
+    let point = |key: &mut Reader<'_>, curve: &[u8], size: usize| {
+        key.string() == Some(curve)
+            && key.string().is_some_and(|point| point.len() == size && point[0] == 4)
+    };
+    let shaped = match key.text() {
+        Some("ssh-ed25519") => key.string().is_some_and(|point| point.len() == 32),
+        Some("ecdsa-sha2-nistp256") => point(&mut key, b"nistp256", 65),
+        Some("ecdsa-sha2-nistp384") => point(&mut key, b"nistp384", 97),
+        _ => false,
+    };
+    shaped && key.end().is_some()
+}
+
 /// The key a public key's `line` holds, as `ssh-keygen` writes it in a
 /// `.pub` file: its algorithm, its base64 and maybe a comment. `None` for
 /// a line that holds none, or one of another kind than it says.
@@ -233,6 +252,61 @@ pub fn public_line(line: &str) -> Option<Vec<u8>> {
     let algorithm = words.next().filter(|word| is_key_type(word))?;
     let key = STANDARD.decode(words.next()?).ok()?;
     (algorithm_of(&key) == Some(algorithm)).then_some(key)
+}
+
+/// A key that a line of an `authorized_keys` file holds, for the tools
+/// that list and edit the file.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// The line's number in the file, from 1.
+    pub line: usize,
+    /// Whether options come before the key, so that authd passes the line
+    /// over (see [`names`]).
+    pub options: bool,
+    /// The key's algorithm, as SSH names it.
+    pub algorithm: String,
+    /// The key, as SSH carries it.
+    pub key: Vec<u8>,
+    /// What follows the key on the line.
+    pub comment: String,
+}
+
+/// The lines of `text`, an `authorized_keys` file's, that hold a key, in
+/// the order they come. A blank line, a comment and a line with no key in
+/// it are none.
+pub fn entries(text: &str) -> Vec<Entry> {
+    text.lines().enumerate().filter_map(|(at, line)| entry(at + 1, line)).collect()
+}
+
+/// The key `text`, line number `line`, holds, if any. Options come first,
+/// and a quoted one may hold spaces, so the key is taken to be the first
+/// word of a key's kind that a key of that kind follows.
+fn entry(line: usize, text: &str) -> Option<Entry> {
+    let text = text.trim();
+    if text.starts_with('#') {
+        return None;
+    }
+    let words: Vec<&str> = text.split_ascii_whitespace().collect();
+    (0..words.len().saturating_sub(1)).find_map(|at| {
+        // `public_line` reads the two words only, as the line it is given
+        // starts with its key.
+        let key = public_line(&format!("{} {}", words[at], words[at + 1]))?;
+        Some(Entry {
+            line,
+            options: at > 0,
+            algorithm: algorithm_of(&key)?.to_string(),
+            key,
+            comment: words[at + 2..].join(" "),
+        })
+    })
+}
+
+/// The fingerprint of the key a `.pub` file holds, as `ssh-keygen -l`
+/// shows it: `text` is the file's, whose first line is the key. `None` for
+/// a file that holds none.
+pub fn file_fingerprint(text: &str) -> Option<String> {
+    let key = public_line(text.lines().next()?)?;
+    Some(fingerprint(&key))
 }
 
 /// Whether `word` is a key's algorithm, as an `authorized_keys` line
@@ -266,7 +340,7 @@ fn open_at(at: Option<&OwnedFd>, name: &Path, directory: bool) -> io::Result<Own
 
 /// Checks that what `fd` is open on is `user`'s or root's, and that no
 /// one else may change it, as OpenSSH's StrictModes checks.
-fn safe(fd: &OwnedFd, user: &User, what: &str) -> Result<std::fs::Metadata, String> {
+pub(crate) fn safe(fd: &OwnedFd, user: &User, what: &str) -> Result<std::fs::Metadata, String> {
     let file = File::from(fd.try_clone().map_err(|err| format!("{what}: {err}"))?);
     let meta = file.metadata().map_err(|err| format!("{what}: {err}"))?;
     if meta.uid() != user.uid && meta.uid() != 0 {
@@ -494,12 +568,51 @@ mod tests {
     }
 
     #[test]
+    fn the_keys_of_a_file_are_listed() {
+        let (_, key) = ed25519(5);
+        let (_, other) = ed25519(6);
+        let file = format!(
+            "# alice's keys\n\n  ssh-ed25519 {} alice@laptop\n\
+             command=\"ssh-keygen -y\",restrict ssh-ed25519 {} a  restricted   key\n\
+             ssh-ed25519\nnot a key at all\nssh-ed25519 AAAA\necdsa-sha2-nistp256 {}\n",
+            STANDARD.encode(&key),
+            STANDARD.encode(&other),
+            STANDARD.encode(&key)
+        );
+        let found = entries(&file);
+        // The line with the wrong kind, the one cut short and the words
+        // that are no key are none.
+        assert_eq!(found.len(), 2);
+        assert_eq!((found[0].line, found[0].options), (3, false));
+        assert_eq!(found[0].algorithm, "ssh-ed25519");
+        assert_eq!(found[0].key, key);
+        assert_eq!(found[0].comment, "alice@laptop");
+        assert_eq!((found[1].line, found[1].options), (4, true));
+        assert_eq!(found[1].key, other);
+        assert_eq!(found[1].comment, "a restricted key");
+        assert!(entries("").is_empty());
+        assert!(entries("# ssh-ed25519\n").is_empty());
+    }
+
+    #[test]
     fn fingerprints_are_openssh_s() {
         // An Ed25519 key of the points 0 to 31, and its fingerprint as
         // `ssh-keygen -l` shows it, worked out apart from this code.
         let line = "AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
         let key = STANDARD.decode(line).unwrap();
         assert_eq!(fingerprint(&key), "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA");
+    }
+
+    #[test]
+    fn a_public_key_file_s_first_line_gives_its_fingerprint() {
+        let line = "AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
+        let fingerprint = "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA";
+        let file = format!("ssh-ed25519 {line} root@dukovo\n");
+        assert_eq!(file_fingerprint(&file).as_deref(), Some(fingerprint));
+        assert_eq!(file_fingerprint(&file.replace('\n', "")).as_deref(), Some(fingerprint));
+        assert_eq!(file_fingerprint(""), None);
+        assert_eq!(file_fingerprint("not a key\n"), None);
+        assert_eq!(file_fingerprint(&format!("\n{file}")), None);
     }
 
     #[test]
@@ -545,5 +658,32 @@ mod tests {
             assert!(read_authorized(&theirs).unwrap_err().contains("not me's"));
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_key_is_whole_only_with_all_its_algorithm_needs_and_no_more() {
+        let key = |parts: &[&[u8]]| {
+            let mut out = Vec::new();
+            for part in parts {
+                string(&mut out, part);
+            }
+            out
+        };
+        let mut point = vec![4u8; 65];
+        assert!(whole(&key(&[b"ssh-ed25519", &[7; 32]])));
+        assert!(whole(&key(&[b"ecdsa-sha2-nistp256", b"nistp256", &point])));
+        point.resize(97, 4);
+        assert!(whole(&key(&[b"ecdsa-sha2-nistp384", b"nistp384", &point])));
+        for short in [
+            key(&[b"ssh-ed25519"]),
+            key(&[b"ssh-ed25519", &[7; 31]]),
+            key(&[b"ssh-ed25519", &[7; 32], b"more"]),
+            key(&[b"ecdsa-sha2-nistp384", b"nistp256", &point]),
+            key(&[b"ecdsa-sha2-nistp384", b"nistp384", &point[1..]]),
+            key(&[b"ecdsa-sha2-nistp384", b"nistp384", &[2; 97]]),
+            key(&[b"ssh-rsa", &[1; 64]]),
+        ] {
+            assert!(!whole(&short), "{short:?}");
+        }
     }
 }

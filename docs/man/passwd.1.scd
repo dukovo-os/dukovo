@@ -23,6 +23,8 @@ one asked once. No rules are forced on a password: an empty one, or one
 shorter than 8 characters, gets a warning, and at a terminal the
 question whether to keep it.
 
+A name that no account has is refused with *ACC-101*.
+
 A wrong current password is answered only after a wait, which grows
 with each wrong one in a row (*authd*(8)). Only you and root, which an
 administrator is inside *elevate*(8), change your password.

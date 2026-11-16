@@ -284,6 +284,9 @@ impl Upkeep {
                 *shared.settings.borrow_mut() = merged(&old, read, false);
             }
         }
+        // The trial `console` takes effect now, not when its action
+        // answered (C5 9.2).
+        shared.trials.borrow_mut().reloaded(std::time::Instant::now());
         self.issue(shared);
     }
 }

@@ -656,11 +656,14 @@ fn what_needs_an_administrator(test: &mut Test) -> Result<(), String> {
     Ok(())
 }
 
-/// No byte of the recovery key `key` is in what the machine keeps: admind's
-/// log and authd's audit lines, which the serial console has, logd's
-/// records, the journal's rows and the tasks. The key was never typed in
-/// the guest, so none of these can have it from the test.
-pub(super) fn a_key_is_kept_nowhere(vm: &mut Vm, test: &mut Test, key: &str) -> Result<(), String> {
+/// What the machine keeps that a secret must not be in: admind's log and
+/// authd's audit lines, which the serial console has, logd's records, the
+/// journal's rows and the tasks, each with its name. A secret that was never
+/// typed in the guest cannot be in any of them from the test.
+pub(super) fn places_of_the_machine(
+    vm: &mut Vm,
+    test: &mut Test,
+) -> Result<Vec<(&'static str, String)>, String> {
     elevated(vm)?;
     test.unlocked()?;
     let mut places = vec![("the serial console's log, admind's and authd's lines", vm.log())];
@@ -675,7 +678,13 @@ pub(super) fn a_key_is_kept_nowhere(vm: &mut Vm, test: &mut Test, key: &str) -> 
     }
     places.push(("the journal's rows", journal));
     places.push(("the tasks", test.read(Who::Alice, "/api/1/tasks")?.to_string()));
-    for (what, text) in places {
+    Ok(places)
+}
+
+/// No byte of the recovery key `key` is in what the machine keeps
+/// ([`places_of_the_machine`]).
+pub(super) fn a_key_is_kept_nowhere(vm: &mut Vm, test: &mut Test, key: &str) -> Result<(), String> {
+    for (what, text) in places_of_the_machine(vm, test)? {
         if text.contains(key) {
             return Err(format!("the recovery key is in {what}"));
         }

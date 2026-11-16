@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: 2026 The Dukovo contributors
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+
+# The Accounts page and Your account of the web console in each engine (design
+# 7): the list held to `user list --json` and, once the console is unlocked,
+# `lastlog --json`; Add an account and its first sign-in in a second browser;
+# Can sign in to Dukovo Admin off, with its refused sign-in; a new password,
+# which `passwd` sets and the old one no longer opens; Disable and Enable, with
+# the account's session ending; the SSH keys, and the one that is an account's
+# only way in; a token that Revoke stops; Remove second steps for an account
+# with an authenticator app; the guards of the account in use; a reader's view
+# and their own account; and a phone at 390 by 844. Each look is dark, light,
+# high contrast, forced colours and less motion, checked by axe. The second
+# browser step is what an account is signed in with (design 7.7): the browsers
+# and terminals of an account, ended by the person and by an administrator. It
+# waits on admind's sessions route and is kept apart so that it can be finished
+# when the route is there.
+#
+# This test's first steps make, for each engine, an administrator, a reader, an
+# account for the second step and a person who has a terminal, each with the
+# lab's password and so no script needs it. The page makes two more accounts
+# for each engine, `wc-acc-n-ENGINE` with a full name, a password and a key, and
+# `wc-acc-k-ENGINE` with no password and one key, which the page removes with
+# its home folder kept. The steps after the first browser step look at what the
+# page did on the machine: the key file of the first, which `user key add`
+# wrote with the modes sshd(8) needs and the page's Remove changed to one line,
+# the full name and the console right that `user show` gives, the first
+# sign-in that `lastlog` records, and the folder that the second account left.
+# The last steps remove every account. The script runs each engine one after
+# the other, so that an engine the lab PC lacks is skipped within it and the
+# steps after it still run.
+about = "The web console's Accounts page and Your account in each engine: the list against user list and lastlog, Add an account and its first sign-in, Can sign in to Dukovo Admin off, a new password, Disable and Enable, SSH keys and the only way in, Revoke, Remove second steps, the guards of the account in use, the sessions and terminals of an account ended by the person and by an administrator, a reader, and the phone"
+time = "30m"
+host_needs = ["curl"]
+
+[[step]]
+run = "sh -c 'for engine in chromium firefox webkit; do echo lab-console-password | user add --admin wc-acc-$engine || exit 1; for name in wc-acc-r-$engine wc-acc-s-$engine wc-acc-t-$engine; do echo lab-console-password | user add $name || exit 1; user set --console --yes $name || exit 1; done; done'"
+root = true
+expect = ["Made wc-acc-chromium", "Made wc-acc-r-firefox", "Made wc-acc-s-webkit", "wc-acc-t-chromium is changed"]
+
+# What the page reads of the accounts is what these commands print.
+[[step]]
+run = "user list --json"
+root = true
+expect = ["wc-acc-chromium", "wc-acc-r-firefox", "wc-acc-s-webkit"]
+[[step]]
+run = "user show wc-acc-r-chromium --json"
+root = true
+expect = ["wc-acc-r-chromium", "keys"]
+
+# The console answers within seconds of the boot; its last answer is shown so
+# that a console that refuses this address says so in the failure.
+[[step]]
+host = "sh -c 'i=0; while [ $i -lt 60 ] && ! curl -sk --max-time 5 -o /dev/null https://{machine}:{machine-port:9090}/api/1/health; do sleep 1; i=$((i + 1)); done; curl -sk --max-time 5 https://{machine}:{machine-port:9090}/api/1/health'"
+expect = '{"ok":true}'
+[[step]]
+browser = "accounts.mjs"
+port = 9090
+
+# What the page did, read on the machine. The key file of the new account holds
+# the one key that is left, in the folder and with the modes that sshd(8) needs,
+# and is the account's own.
+[[step]]
+run = '''sh -c 'for e in chromium firefox webkit; do n=wc-acc-n-$e; user show $n --json > /dev/null 2>&1 || continue; echo "checked $n"; grep -o lab-key-two /users/$n/.ssh/authorized_keys; [ "$(grep -c ssh-ed25519 /users/$n/.ssh/authorized_keys)" = 1 ] && echo one-key; stat -c "%a %U" /users/$n/.ssh /users/$n/.ssh/authorized_keys; done' '''
+root = true
+expect = ["checked wc-acc-n-", "lab-key-two", "one-key", "700 wc-acc-n-", "600 wc-acc-n-"]
+# Add an account gave it a full name; Remove second steps took the app of the
+# account that had one.
+[[step]]
+run = '''sh -c 'for e in chromium firefox webkit; do user show wc-acc-n-$e --json 2>/dev/null | grep -o "Lab New"; user show wc-acc-s-$e --json 2>/dev/null | grep -q "\"app\": *false" && echo app-gone; done' '''
+root = true
+expect = ["Lab New", "app-gone"]
+# The first sign-in of the new account was in the web console.
+[[step]]
+run = "lastlog --json"
+root = true
+expect = ["wc-acc-n-", "\"web\""]
+# The account that had no password left its home folder, and is not an account.
+[[step]]
+run = '''sh -c 'ls -d /users/wc-acc-k-*; user list --json | grep -c wc-acc-k- || true' '''
+root = true
+expect = ["/users/wc-acc-k-", "0"]
+
+# What an account is signed in with, which waits on admind's sessions route.
+[[step]]
+browser = "accounts-sessions.mjs"
+port = 9090
+
+# The machine as it was: the accounts, and the home folder that the page kept.
+[[step]]
+run = '''sh -c 'for e in chromium firefox webkit; do for n in wc-acc-$e wc-acc-r-$e wc-acc-s-$e wc-acc-t-$e; do user remove --delete-home --yes $n || exit 1; done; user remove --delete-home --yes wc-acc-n-$e || true; rm -rf /users/wc-acc-k-$e; done; echo cleaned' '''
+root = true
+expect = ["wc-acc-chromium is removed", "wc-acc-t-webkit is removed", "cleaned"]

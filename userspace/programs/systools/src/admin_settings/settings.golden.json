@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "sign_in": {"second_step": "administrators", "session_hours": 8, "idle_minutes": 30},
+  "console": {"listen": 9090, "reach": "any", "certificate": "admin.example.org"},
+  "terminal": {"allowed": "nobody", "sessions_per_account": 4},
+  "wrong": null
+}

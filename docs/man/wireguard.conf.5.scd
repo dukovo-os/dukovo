@@ -78,6 +78,23 @@ One for each machine it reaches.
 	Sends it a packet each _seconds_ when nothing else has gone, so
 	that a NAT between them keeps the way open; *25* is the usual.
 
+# REMARKS THAT MEAN SOMETHING
+
+A remark is passed over, except two that *wireguard*(8) writes and reads
+in the file of the interface *wg0*, which holds private access to the
+machine:
+
+*# endpoint:* _host_
+	In the *[Interface]* section: what the machine's devices are told to
+	reach, a name or an address, which *wireguard serve* sets and
+	*wireguard add* gives each device as its *Endpoint*, with the
+	*ListenPort*.
+
+*# name:* _name_
+	On the line before a *[Peer]*: the device's name, which *wireguard add*
+	writes, and *wireguard show* and *wireguard remove* go by. A peer
+	without one is named by the first characters of its key.
+
 # EXAMPLE
 
 A laptop, *wg0*, reaching a server that knows its key:
@@ -99,4 +116,4 @@ routing table, as the kernel routes by subnet (ADR 0339).
 
 # SEE ALSO
 
-*wgd*(8), *wg*(8), *network*(5), *service.toml*(5)
+*wgd*(8), *wg*(8), *wireguard*(8), *network*(5), *service.toml*(5)

@@ -21,9 +21,16 @@ use std::os::unix::net::UnixStream;
 use accounts::request::{Answer, Request};
 use accounts::{User, wipe};
 
+use crate::account_errors;
 use crate::args::{Arg, Args};
 use crate::prompt;
 use crate::util::{self, Fail, fail, usage};
+
+pub(crate) mod keys;
+mod read;
+mod second;
+pub(crate) mod session;
+mod steps_json;
 
 /// Asks authd `request`; its answer.
 pub fn ask(request: &Request) -> Result<Answer, Fail> {
@@ -48,7 +55,7 @@ fn account(name: &str) -> Result<User, Fail> {
         .entries()
         .find(|u| u.name == name)
         .cloned()
-        .ok_or_else(|| fail(format!("there is no account {name}")))
+        .ok_or_else(|| account_errors::no_such_account(name))
 }
 
 /// The name of the account the program runs for.
@@ -178,7 +185,8 @@ pub fn passwd(args: &mut Args) -> Result<i32, Fail> {
 /// changes accounts.
 pub fn user(args: &mut Args) -> Result<i32, Fail> {
     let help = "Usage: user add [--admin] [--full-name NAME] name\n       \
-                user list\n       \
+                user list [--json]\n       \
+                user show [--json] [name]\n       \
                 user disable [--yes] name\n       \
                 user enable name\n       \
                 user remove [--keep-home | --archive-home | --delete-home] [--yes] name\n       \
@@ -186,7 +194,13 @@ pub fn user(args: &mut Args) -> Result<i32, Fail> {
                 user set [--full-name NAME] [--admin | --no-admin]\n                \
                          [--elevate-without-password | --elevate-with-password]\n                \
                          [--console | --no-console] [--jobs-signed-out never | allowed]\n                \
-                         [--yes] name";
+                         [--yes] name\n       \
+                user set --full-name NAME\n       \
+                user key add [name] line\n       \
+                user key remove [name] fingerprint\n       \
+                user end name session\n       \
+                user steps reset name\n       \
+                user token remove name token";
     let Some(subcommand) = args.subcommand() else {
         return match args.next()? {
             Some(Arg::Long(l)) if l == "help" => {
@@ -195,18 +209,24 @@ pub fn user(args: &mut Args) -> Result<i32, Fail> {
             }
             Some(other) => Err(args.unknown(&other)),
             None => Err(usage(format!(
-                "which? add, list, disable, enable, remove, rename or set\n{help}"
+                "which? add, list, show, disable, enable, remove, rename, set, key, end, steps or \
+                 token\n{help}"
             ))),
         };
     };
     match subcommand.to_str() {
         Some("add") => add(args),
         Some("list") => list(args),
+        Some("show") => read::show(args),
         Some("disable") => disable(args),
         Some("enable") => enable(args),
         Some("remove") => remove(args),
         Some("rename") => rename(args),
         Some("set") => set(args),
+        Some("key") => keys::key(args),
+        Some("end") => session::end(args),
+        Some("steps") => second::steps(args),
+        Some("token") => second::token(args),
         _ => Err(usage(format!("no such command: {}\n{help}", subcommand.to_string_lossy()))),
     }
 }
@@ -218,6 +238,17 @@ fn operands(
     args: &mut Args,
     what: &str,
     count: usize,
+    take: impl FnMut(&mut Args, &Arg) -> Result<bool, Fail>,
+) -> Result<(Vec<String>, bool), Fail> {
+    operands_between(args, what, count, count, take)
+}
+
+/// [`operands`] for a subcommand that takes from `least` to `most` names.
+fn operands_between(
+    args: &mut Args,
+    what: &str,
+    least: usize,
+    most: usize,
     mut take: impl FnMut(&mut Args, &Arg) -> Result<bool, Fail>,
 ) -> Result<(Vec<String>, bool), Fail> {
     let (mut names, mut yes) = (Vec::new(), false);
@@ -225,7 +256,7 @@ fn operands(
         match arg {
             Arg::Long(ref l) if l == "yes" => yes = true,
             Arg::Short('y') => yes = true,
-            Arg::Operand(ref operand) if names.len() < count => {
+            Arg::Operand(ref operand) if names.len() < most => {
                 let name =
                     operand.to_str().ok_or_else(|| fail("a name is letters and digits".into()))?;
                 names.push(name.to_string());
@@ -237,7 +268,7 @@ fn operands(
             }
         }
     }
-    if names.len() < count {
+    if names.len() < least {
         return Err(usage(what.to_string()));
     }
     Ok((names, yes))
@@ -272,21 +303,11 @@ impl Accounts {
         self.users
             .entries()
             .find(|u| u.name == name)
-            .ok_or_else(|| fail(format!("there is no account {name}")))
+            .ok_or_else(|| account_errors::no_such_account(name))
     }
 
     fn is_disabled(&self, name: &str) -> bool {
         self.disabled.as_ref().is_some_and(|names| names.iter().any(|n| n == name))
-    }
-
-    /// The administrators who can sign in, besides `name`.
-    fn other_admins(&self, name: &str) -> usize {
-        let admin = |u: &&User| u.is_person() && accounts::is_admin(u, &self.groups);
-        self.users
-            .entries()
-            .filter(admin)
-            .filter(|u| u.name != name && !self.is_disabled(&u.name))
-            .count()
     }
 }
 
@@ -302,41 +323,15 @@ fn not_own(name: &str, what: &str) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Goes on only if `name`, an administrator, is not the last who can
-/// sign in, or the person says so, warned: with none, no one can
-/// elevate.
-fn last_admin(accounts: &Accounts, name: &str, yes: bool, gone: &str) -> Result<(), Fail> {
-    let user = accounts.user(name)?;
-    if !accounts::is_admin(user, &accounts.groups) || accounts.other_admins(name) > 0 {
-        return Ok(());
-    }
-    eprintln!(
-        "{name} is the last administrator who can sign in. {gone}, no one can elevate to run \
-         commands as an administrator, or make another."
-    );
-    if yes || (prompt::interactive() && prompt::confirm("Go on anyway?")) {
-        Ok(())
-    } else if prompt::interactive() {
-        Err(fail("nothing changed".into()))
-    } else {
-        Err(fail("nothing changed: say --yes to go on".into()))
-    }
-}
-
 /// `user disable`: nothing signs in to the account, and everything it
 /// runs ends at once.
 fn disable(args: &mut Args) -> Result<i32, Fail> {
-    let (names, yes) = operands(args, "user disable needs a name", 1, |_, _| Ok(false))?;
+    // `--yes` is taken, and asks nothing: authd refuses what would leave
+    // no administrator (ACC-102).
+    let (names, _) = operands(args, "user disable needs a name", 1, |_, _| Ok(false))?;
     let name = &names[0];
-    let accounts = Accounts::read()?;
-    accounts.user(name)?;
+    Accounts::read()?.user(name)?;
     not_own(name, "disables")?;
-    last_admin(
-        &accounts,
-        name,
-        yes,
-        "With it disabled, until the startup-trouble menu resets its password",
-    )?;
     let answer = ask(&Request::Disable { name: name.clone() })?;
     done(answer, |ended| {
         let ended = match ended {
@@ -352,6 +347,7 @@ fn disable(args: &mut Args) -> Result<i32, Fail> {
 fn enable(args: &mut Args) -> Result<i32, Fail> {
     let (names, _) = operands(args, "user enable needs a name", 1, |_, _| Ok(false))?;
     let name = &names[0];
+    Accounts::read()?.user(name)?;
     let answer = ask(&Request::Enable { name: name.clone() })?;
     done(answer, |said| {
         if said.is_empty() {
@@ -435,7 +431,6 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
             accounts::USERS
         )));
     }
-    last_admin(&accounts, name, yes, "With it removed")?;
     if home == Home::Delete && !yes && prompt::interactive() {
         let question = format!("Delete {} and every file in it, for good?", user.home);
         if !prompt::confirm(&question) {
@@ -518,6 +513,11 @@ fn rename(args: &mut Args) -> Result<i32, Fail> {
         operands(args, "user rename needs the name and the new name", 2, |_, _| Ok(false))?;
     let (name, new) = (&names[0], &names[1]);
     accounts::check_name(new).map_err(fail)?;
+    let accounts = Accounts::read()?;
+    accounts.user(name)?;
+    if accounts.users.entries().any(|u| u.name == *new) {
+        return Err(account_errors::name_taken(new));
+    }
     not_own(name, "renames")?;
     let answer = ask(&Request::Rename { name: name.clone(), new: new.clone() })?;
     done(answer, |text| println!("{}.", capitalized(text)))
@@ -527,11 +527,12 @@ fn rename(args: &mut Args) -> Result<i32, Fail> {
 /// administrator's, whether it elevates without a password (ADR 0328),
 /// whether it signs in to the web console without being an administrator
 /// (ADR 0514), or whether its jobs may run while it is signed out (ADR
-/// 0478).
+/// 0478). With no name and `--full-name` alone, it changes one's own full
+/// name.
 fn set(args: &mut Args) -> Result<i32, Fail> {
     let (mut full_name, mut admin, mut without_password) = (None, None, None);
     let (mut console, mut jobs_signed_out) = (None, None);
-    let (names, yes) = operands(args, "user set needs a name", 1, |args, arg| {
+    let (names, _) = operands_between(args, "user set needs a name", 0, 1, |args, arg| {
         match arg {
             Arg::Long(l) if l == "full-name" => full_name = Some(args.text()?),
             Arg::Long(l) if l == "admin" => admin = Some(true),
@@ -555,7 +556,6 @@ fn set(args: &mut Args) -> Result<i32, Fail> {
         }
         Ok(true)
     })?;
-    let name = &names[0];
     if full_name.is_none()
         && admin.is_none()
         && without_password.is_none()
@@ -571,10 +571,22 @@ fn set(args: &mut Args) -> Result<i32, Fail> {
     if let Some(full_name) = &full_name {
         accounts::check_full_name(full_name).map_err(fail)?;
     }
-    if admin == Some(false) {
-        let accounts = Accounts::read()?;
-        last_admin(&accounts, name, yes, "Without it")?;
-    }
+    // With no name, one's own full name: authd lets anyone change that, and
+    // the other options are an administrator's.
+    let name = match names.into_iter().next() {
+        Some(name) => name,
+        None if admin.is_some()
+            || without_password.is_some()
+            || console.is_some()
+            || jobs_signed_out.is_some() =>
+        {
+            return Err(usage(
+                "user set needs a name for all but --full-name, which changes your own".into(),
+            ));
+        }
+        None => own_name()?,
+    };
+    Accounts::read()?.user(&name)?;
     let set = Request::Set {
         name: name.clone(),
         full_name,
@@ -603,6 +615,9 @@ fn add(args: &mut Args) -> Result<i32, Fail> {
     let name = name.into_string().map_err(|_| fail("a name is letters and digits".into()))?;
     accounts::check_name(&name).map_err(fail)?;
     accounts::check_full_name(&full_name).map_err(fail)?;
+    if Accounts::read()?.users.entries().any(|u| u.name == name) {
+        return Err(account_errors::name_taken(&name));
+    }
     let mut input = Input::new();
     if let Input::Terminal = input {
         let kind = if admin { "an administrator's account" } else { "an account" };
@@ -614,18 +629,26 @@ fn add(args: &mut Args) -> Result<i32, Fail> {
 }
 
 /// `text` with a capital first letter, as a sentence starts.
-fn capitalized(text: &str) -> String {
+pub(crate) fn capitalized(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
 /// `user list`: the people's accounts, as the passwd and group files
-/// have them.
+/// have them, or with `--json` as the console reads them.
 fn list(args: &mut Args) -> Result<i32, Fail> {
-    if let Some(arg) = args.next()? {
-        return Err(args.unknown(&arg));
+    let mut json = false;
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(l) if l == "json" => json = true,
+            other => return Err(args.unknown(&other)),
+        }
     }
     let accounts = Accounts::read()?;
+    if json {
+        read::list(&accounts)?;
+        return Ok(0);
+    }
     let mut out = io::stdout().lock();
     writeln!(
         out,

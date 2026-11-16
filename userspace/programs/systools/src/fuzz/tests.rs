@@ -1052,7 +1052,9 @@ fn a_few_thousand_random_inputs_through_every_entry_point_do_not_panic() {
     // The requests reached admind's checks, and not only the first of them.
     assert!(answered.len() >= 6, "{answered:?}");
     assert!(answered.get(&401).copied().unwrap_or(0) > 100, "{answered:?}");
-    assert!(answered.get(&200).copied().unwrap_or(0) > 100, "{answered:?}");
+    // The open paths are a few among the routes and every action's address,
+    // so the answers that say 200 are a thirtieth of the requests.
+    assert!(answered.get(&200).copied().unwrap_or(0) > 50, "{answered:?}");
     // Some asked authd, which refused.
     assert!(answered.get(&403).copied().unwrap_or(0) > 20, "{answered:?}");
 }

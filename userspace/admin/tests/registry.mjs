@@ -25,9 +25,14 @@ const ACTIONS = 'userspace/programs/systools/src/admind/actions/';
 const CRATES = {
   'radix_abi::resource_domain': 'abi/resource_domain.ridl',
   'manifest::service': 'userspace/programs/manifest/src/service.rs',
+  // The accounts library's limits: `accounts::NAME_MAX`.
+  accounts: 'userspace/programs/accounts/src/lib.rs',
   // systools' own log(1), as `use crate::log` names it.
   log: 'userspace/programs/systools/src/log.rs',
+  // wireguard(8)'s readers, which the private access actions check with.
+  'crate::private_access': 'userspace/programs/systools/src/private_access.rs',
   // What an action takes from another action file: `use super::metrics::WORDS`.
+  'super::accounts': `${ACTIONS}accounts.rs`,
   'super::backups': `${ACTIONS}backups.rs`,
   'super::metrics': `${ACTIONS}metrics.rs`,
   'super::snapshots': `${ACTIONS}snapshots.rs`,
@@ -118,8 +123,9 @@ function tokenize(text) {
 class Source {
   constructor(name, text) {
     this.name = name;
-    // What the registry says comes before each file's tests, whose strings the reader need not know.
-    this.text = text.split(/^#\[cfg\(test\)\]/m)[0];
+    // What the registry says comes before each file's tests, whose strings
+    // the reader need not know; `mod tests;` in another file cuts nothing.
+    this.text = text.split(/^#\[cfg\(test\)\](?!\s*mod \w+;)/m)[0];
     this.tokens = tokenize(this.text);
     this.imports = new Map();
     for (const [, path, names] of text.matchAll(/^use\s+([\w:]+)::\{([^}]*)\};/gm)) {

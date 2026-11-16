@@ -67,6 +67,8 @@ export function needsOf(show, now) {
 const TRIAL_PAGES = Object.freeze({
   network: { title: 'Network settings are being tried', href: '/networking', icon: 'network' },
   firewall: { title: 'Firewall rules are being tried', href: '/firewall', icon: 'firewall' },
+  ssh: { title: 'SSH settings are being tried', href: '/security', icon: 'security' },
+  console: { title: 'Settings of who may reach the console are being tried', href: '/security', icon: 'security' },
 });
 
 /** What a trial called `id` is, for the Overview: its words, the page that shows it and its icon. */

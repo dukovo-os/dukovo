@@ -105,7 +105,7 @@ test('whether an address is a page that is registered and that this person may s
 
 test('each action admind lists is a row, with who runs it and an icon of its area', () => {
   const rows = actionRows(ACTIONS);
-  assert.equal(rows.length, 69);
+  assert.equal(rows.length, 108);
   const restart = rows.find((one) => one.key === 'action:service.restart');
   assert.deepEqual(restart, {
     key: 'action:service.restart', kind: 'action', group: ACTIONS_GROUP, title: 'Restart a service', detail: '',
@@ -126,6 +126,13 @@ test('each action admind lists is a row, with who runs it and an icon of its are
   assert.deepEqual([dropped.icon, dropped.change, dropped.elevated], ['firewall', false, true]);
   const health = rows.find((one) => one.key === 'action:storage.health');
   assert.deepEqual([health.icon, health.change, health.elevated], ['storage', false, true]);
+  const disable = rows.find((one) => one.key === 'action:accounts.disable');
+  assert.deepEqual([disable.icon, disable.change, disable.elevated], ['accounts', true, true]);
+  const name = rows.find((one) => one.key === 'action:account.name');
+  assert.deepEqual([name.icon, name.change, name.elevated], ['accounts', true, false], 'Your account is the person\'s own, done as them');
+  const off = rows.find((one) => one.key === 'action:ssh.off');
+  assert.deepEqual([off.icon, off.change, off.elevated], ['security', true, true], 'SSH is on the Security page');
+  assert.equal(rows.find((one) => one.key === 'action:private.add').icon, 'security');
   const take = rows.find((one) => one.key === 'action:snapshots.take');
   assert.deepEqual([take.icon, take.change], ['snapshots', true]);
   const run = rows.find((one) => one.key === 'action:backups.run');

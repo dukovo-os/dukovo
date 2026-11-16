@@ -140,8 +140,8 @@ static void making(void) {
 	// No rules: an empty password is taken, with a warning.
 	ACCOUNT(0, "\n", "Made bob, number 1001, home /users/bob\n",
 			"With no password, anyone at this machine can sign in as bob.", USER, "add", "bob");
-	ACCOUNT(1, "x\n", "", "user: there is an account alice already", USER, "add", "alice");
-	ACCOUNT(1, "x\n", "", "user: there is an account root already", USER, "add", "root");
+	ACCOUNT(1, "x\n", "", "user: there is an account called alice already", USER, "add", "alice");
+	ACCOUNT(1, "x\n", "", "user: there is an account called root already", USER, "add", "root");
 	ACCOUNT(1, "x\n", "", "user: there is a group admins already", USER, "add", "admins");
 	ACCOUNT(1, "x\n", "", "user: `Mallory` cannot be a name", USER, "add", "Mallory");
 	ACCOUNT(1, "x\n", "", "no colon or line break", USER, "add", "--full-name", "a:b", "carol");
@@ -229,7 +229,7 @@ static void changing(void) {
 	ACCOUNT(0, "looking-glass\n", "", "The password of alice is changed.", PASSWD, "alice");
 	ASKS("check\0alice\0looking-glass\0", "ok\n", 0);
 	ASKS("check\0alice\0wonderland\0", WRONG, WAIT_MS);
-	ACCOUNT(1, "x\n", "", "passwd: there is no account nobody", PASSWD, "nobody");
+	ACCOUNT(1, "x\n", "", "passwd: there is no account called nobody", PASSWD, "nobody");
 }
 
 // As alice, with a root that acts for her.
@@ -298,7 +298,8 @@ static int carol_archive(char *path, size_t size) {
 // Accounts changed, disabled, renamed and removed (ADR 0220).
 static void lifecycle(void) {
 	// Settings: the full name, and being an administrator, but not
-	// taking away the last one's without a yes.
+	// taking away the last one's: authd refuses that (ACC-102), whoever
+	// asks.
 	OUTPUT("", "bob is changed: full name \"Bob Smith\".\n", USER, "set", "--full-name",
 			"Bob Smith", "bob");
 	CHECK(holds("/system/settings/passwd", "\nbob:x:1001:1001:Bob Smith:/users/bob:"));
@@ -306,10 +307,10 @@ static void lifecycle(void) {
 	CHECK(holds("/system/settings/group", "\nadmins:x:10:alice,bob\n"));
 	OUTPUT("", "bob is changed: not an administrator.\n", USER, "set", "--no-admin", "bob");
 	CHECK(holds("/system/settings/group", "\nadmins:x:10:alice\n"));
-	ACCOUNT(1, "", "", "user: nothing changed: say --yes to go on", USER, "set", "--no-admin",
-			"alice");
-	ACCOUNT(1, "", "", "alice is the last administrator who can sign in.", USER, "disable",
-			"alice");
+	ACCOUNT(1, "", "", "user: that would leave no administrator: alice is the only one", USER,
+			"set", "--no-admin", "alice");
+	ACCOUNT(1, "", "", "user: that would leave no administrator: alice is the only one", USER,
+			"disable", "alice");
 	ACCOUNT(1, "", "", "user: root is not a person's account", USER, "disable", "root");
 
 	// While bob runs something, his account is not renamed; disabled, it

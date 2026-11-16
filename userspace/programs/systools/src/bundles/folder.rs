@@ -69,6 +69,20 @@ impl Dir {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
+    /// Makes the file `name` beneath it, which must not be there, with
+    /// `mode` less the process's mask, and opens it to write: a link at
+    /// the name is no more followed than any file is.
+    pub fn create_new(&self, name: &str, mode: libc::mode_t) -> io::Result<OwnedFd> {
+        let name = c_name(name)?;
+        let flags =
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: both are valid; openat returns a descriptor we own.
+        let fd = unsafe { libc::openat(self.0.as_raw_fd(), name.as_ptr(), flags, mode) };
+        check(fd)?;
+        // SAFETY: openat made it.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
     /// Opens the folder `name` beneath it, not through a link.
     pub fn dir_at(&self, name: &str) -> io::Result<Dir> {
         self.open_at(name, true).map(Dir)

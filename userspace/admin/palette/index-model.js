@@ -38,7 +38,8 @@ const NOT_FOUND = new Set(['welcome']);
 const AREA_ICONS = {
   services: 'services', certificates: 'certs', security: 'security', console: 'info', metrics: 'reliability',
   reliability: 'reliability', logs: 'logs', network: 'network', firewall: 'firewall', storage: 'storage',
-  snapshots: 'snapshots', backups: 'snapshots', move: 'server', accounts: 'accounts',
+  snapshots: 'snapshots', backups: 'snapshots', move: 'server', accounts: 'accounts', account: 'accounts',
+  ssh: 'security', private: 'security',
 };
 
 // How a state word is drawn: the board's `st` tones.

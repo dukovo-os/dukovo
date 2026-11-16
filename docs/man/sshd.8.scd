@@ -308,6 +308,6 @@ with its connection, and *sshd --forward* as sshd closes its input.
 
 # SEE ALSO
 
-*ssh*(1), *sftp*(1), *scp*(1), *ssh-keygen*(1), *sshd_config*(5),
+*ssh*(1), *sftp*(1), *scp*(1), *ssh-keygen*(1), *sshd_config*(5), *ssh-server*(8),
 *sftp-server*(8), *authd*(8), *help-session*(1), *dukovo-rescue*(8), *login*(1), *service*(8),
 *service.toml*(5), *blocking.toml*(5), *last*(1), *firewall*(8)

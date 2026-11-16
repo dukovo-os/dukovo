@@ -109,5 +109,5 @@ running or the interface is not there, saying why.
 
 # SEE ALSO
 
-*wgd*(8), *wireguard.conf*(5), *ip*(8), *elevate*(8), *service*(8),
+*wgd*(8), *wireguard*(8), *wireguard.conf*(5), *ip*(8), *elevate*(8), *service*(8),
 *systools*(1)

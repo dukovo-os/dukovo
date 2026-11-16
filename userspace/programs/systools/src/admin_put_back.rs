@@ -27,14 +27,17 @@
 //! to no service is only written. When Spark cannot be asked, the files stay
 //! written, the command says so and exits 1.
 //!
-//! The two files of the Networking and Firewall pages are put to use too,
-//! as the pages' own changes are (ADR 0518): after `/system/settings/network`
-//! is written, Spark is asked to reload netd, as `service netd reload`
-//! does, which keeps the connections on the addresses that stay; after
-//! `/system/settings/firewall`, the kernel is given the file's rules, as
-//! `firewall load` does, which the command can do because elevate gives it
-//! the firewall capability. When either fails the files stay written, and
-//! the command says so and exits 1.
+//! The files that the Networking, Firewall and Security pages try are put
+//! to use too, as the pages' own changes are (ADRs 0518 and 0562): after
+//! `/system/settings/network` is written, Spark is asked to reload netd, as
+//! `service netd reload` does, which keeps the connections on the
+//! addresses that stay; after `/system/settings/ssh/sshd_config`, to reload
+//! sshd, which keeps the SSH connections that are open; after
+//! `/system/settings/admin.toml`, to reload admind, which answers whom the
+//! file says at once; after `/system/settings/firewall`, the kernel is given
+//! the file's rules, as `firewall load` does, which the command can do
+//! because elevate gives it the firewall capability. When one fails the
+//! files stay written, and the command says so and exits 1.
 //!
 //! A change that cannot be put back is said so in words, and nothing is
 //! written: a file the change made, a secret, a file not everyone may
@@ -55,7 +58,7 @@ use crate::admind::store::{self, Store};
 use crate::args::{Arg, Args};
 use crate::bundles::{registry, services};
 use crate::util::{self, Fail, fail, usage};
-use crate::{firewall, netd, power, servicefiles, settings_edit};
+use crate::{admin_settings, firewall, netd, power, servicefiles, settings_edit};
 
 /// What a mistake in the command line is told.
 const USAGE: &str = "usage: admin put-back ID";
@@ -71,8 +74,10 @@ struct Places {
     data: PathBuf,
     /// bundled's records of the services' files, by name.
     records: PathBuf,
-    /// netd's settings, network(5): netd reads them again when asked.
-    network: PathBuf,
+    /// The settings files whose services read them again when Spark asks
+    /// them to reload, each with its service: netd's network(5), sshd's
+    /// sshd_config(5) and admind's admin.toml(5).
+    reread: Vec<(PathBuf, &'static str)>,
     /// The firewall's rules, which `firewall load` gives the kernel.
     firewall: PathBuf,
 }
@@ -84,7 +89,11 @@ impl Places {
             service_files: PathBuf::from(servicefiles::DIR),
             data: PathBuf::from(services::DATA),
             records: Path::new(registry::STATE).join(services::RECORDS),
-            network: PathBuf::from(netd::SETTINGS),
+            reread: vec![
+                (PathBuf::from(netd::SETTINGS), "netd"),
+                (PathBuf::from(accounts::sshd_config::PATH), "sshd"),
+                (PathBuf::from(admin_settings::PATH), "admind"),
+            ],
             firewall: PathBuf::from(firewall::SETTINGS),
         }
     }
@@ -137,11 +146,15 @@ fn put_back(
         check_path(&restore.path)?;
     }
     let (mut spark_files, mut services) = (Vec::new(), Vec::new());
-    let (mut network, mut rules) = (false, false);
+    let (mut readers, mut rules) = (Vec::new(), false);
     for restore in &plan {
         let told = write_back(restore, &change)?;
         say(out, &told)?;
-        network |= Path::new(&restore.path) == places.network;
+        for (path, name) in &places.reread {
+            if Path::new(&restore.path) == path && !readers.contains(name) {
+                readers.push(*name);
+            }
+        }
         rules |= Path::new(&restore.path) == places.firewall;
         if let Some(name) = service_file_of(&restore.path, places)
             && !spark_files.contains(&name)
@@ -165,9 +178,10 @@ fn put_back(
     }
     // What could not be put to use, in words.
     let mut unreached = Vec::new();
-    // netd reads the settings file itself, as a bundle's service reads its
-    // data file, so it is asked to read it again in the same way.
-    let asked = services.iter().map(String::as_str).chain(network.then_some("netd"));
+    // netd, sshd and admind read their settings files themselves, as a
+    // bundle's service reads its data file, so each is asked to read its
+    // file again in the same way.
+    let asked = services.iter().map(String::as_str).chain(readers);
     for name in asked {
         match reload(name, ask) {
             Ok(told) => say(out, &told)?,

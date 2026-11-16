@@ -16,7 +16,12 @@
 //! carry with it.
 //!
 //! The reach says whether it changed anything by reading `admin reach`
-//! before and after (ADR 0515).
+//! before and after (ADR 0515). With `try` it is tried: the argv ends with
+//! `--try SECONDS`, and Spark undoes the change unless `console.keep`
+//! keeps it (the trial `console`, which covers all of `admin.toml`), so
+//! that a reach that shuts the person out is put back by itself.
+//! `console.undo` undoes it at once, and the sign-in rules
+//! (`security.sign-in-set`) are in that file and so in that trial.
 //!
 //! Two reads are in the area too: `console.about`, what the Overview shows
 //! of this server, and `console.notices`, what is kept for the next
@@ -25,9 +30,10 @@
 //! `null` for the rest, so they are answered 200 on any machine.
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
-use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Undo};
+use super::trial::{TRY, check_try, try_words};
+use super::{Action, Args, Bad, Examples, Field, Nothing, Runs, Tests, Trial, Undo};
 use crate::admin_settings::{self, Reach, Settings};
 
 /// The area of these actions: the scope a token needs, `console`.
@@ -41,6 +47,20 @@ const TESTS: Tests = Tests {
     browser: "web-console/actions",
     ansible: "web-console/ansible",
 };
+
+/// The tests of the trial's actions, `console.keep` and `console.undo`,
+/// which the Security page's boot and lab tests call.
+const TRIAL_TESTS: Tests = Tests {
+    checks: "admind::actions::console::tests",
+    route: "admin-security",
+    same_as_command: "admin-security",
+    browser: "web-console/security",
+    ansible: "web-console/ansible",
+};
+
+/// The trial that covers `admin.toml`, which Spark keeps by this name. It
+/// is the area's, as every trial is.
+const TRIAL: &str = AREA;
 
 /// `admin about --json`: what the Overview shows of this server.
 pub struct About;
@@ -96,23 +116,30 @@ impl Action for Notices {
 pub struct Reaching {
     /// `private` or `any`, as admin.toml writes it.
     pub reach: String,
+    /// How long the change is tried for, in seconds.
+    #[serde(default, rename = "try", skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<i64>,
 }
 
 impl Args for Reaching {
-    const FIELDS: &'static [Field] = &[Field::one_of(
-        "reach",
-        "Whom the console answers: private for machines on private networks, any for every machine.",
-        &["private", "any"],
-    )];
+    const FIELDS: &'static [Field] = &[
+        Field::one_of(
+            "reach",
+            "Whom the console answers: private for machines on private networks, any for every machine.",
+            &["private", "any"],
+        ),
+        TRY,
+    ];
 
     fn check(&self) -> Result<(), Bad> {
-        if Reach::parse(&self.reach).is_some() {
-            return Ok(());
+        if Reach::parse(&self.reach).is_none() {
+            return Err(Bad {
+                field: "reach",
+                why: "The console's reach is private or any. Nothing was done.".into(),
+            });
         }
-        Err(Bad {
-            field: "reach",
-            why: "The console's reach is private or any. Nothing was done.".into(),
-        })
+        check_try(self.seconds)?;
+        Ok(())
     }
 }
 
@@ -123,10 +150,10 @@ impl Args for Reaching {
 /// not been changed is as the example leaves it.
 const EXAMPLE: Reach = Reach::Private;
 
-/// `admin reach WORD`: makes admind answer the machines on private
-/// networks only, or any machine, and has it read the setting at once.
-/// What puts it back is itself, with the reach the console has when
-/// admin.toml says nothing.
+/// `admin reach WORD [--try SECONDS]`: makes admind answer the machines on
+/// private networks only, or any machine, and has it read the setting at
+/// once, or tries the change for a window. What puts it back is itself,
+/// with the reach the console has when admin.toml says nothing.
 pub struct SetReach;
 
 impl Action for SetReach {
@@ -135,12 +162,15 @@ impl Action for SetReach {
     const CHANGES: bool = true;
     const PATH: &'static str = "/api/1/console/reach";
     const RUNS: Runs = Runs::AsAdministrator;
+    const ERRORS: &'static [&'static str] = &["ADM-138"];
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Set whom the console answers";
     type Args = Reaching;
 
     fn argv(args: &Reaching) -> Vec<String> {
-        ["admin", "reach", args.reach.as_str()].map(String::from).to_vec()
+        let mut argv = ["admin", "reach", args.reach.as_str()].map(String::from).to_vec();
+        argv.extend(try_words(args.seconds));
+        argv
     }
 
     fn subject(args: &Reaching) -> Option<String> {
@@ -161,6 +191,10 @@ impl Action for SetReach {
         Reach::parse(output.trim()).map(|reach| reach.word().to_string())
     }
 
+    fn trial(args: &Reaching) -> Option<Trial> {
+        args.seconds.map(|_| Trial::Begins(TRIAL))
+    }
+
     /// The console's reach is already the one asked for when `admin reach`
     /// prints it.
     fn settled(args: &Reaching, now: &str) -> Option<bool> {
@@ -178,17 +212,101 @@ impl Action for SetReach {
 
     fn examples() -> Examples<Reaching> {
         let word = EXAMPLE.word();
+        // The first is the example the tests run and put back with the
+        // action itself; the second is the change tried, which Spark
+        // undoes after the window, as the first leaves the reach.
         Examples {
-            good: vec![Reaching { reach: word.into() }],
+            good: vec![
+                Reaching { reach: word.into(), seconds: None },
+                Reaching { reach: word.into(), seconds: Some(30) },
+            ],
             bad: vec![
                 json!({ "reach": "everyone" }),
                 json!({ "reach": "" }),
                 json!({ "reach": "Any" }),
                 json!({ "reach": word, "port": 443 }),
+                json!({ "reach": word, "try": 5 }),
                 json!({}),
             ],
             undo: Some(Undo { action: Self::ID, args: json!({ "reach": word }) }),
         }
+    }
+}
+
+/// `admin keep`: keeps the change of `admin.toml` that is being tried.
+pub struct Keep;
+
+impl Action for Keep {
+    const ID: &'static str = "console.keep";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/console/trial/keep";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const ERRORS: &'static [&'static str] = &["NET-179"];
+    const TESTS: Tests = TRIAL_TESTS;
+    const TITLE: &'static str = "Keep the console's settings";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["admin", "keep"].map(String::from).to_vec()
+    }
+
+    fn trial(_: &Nothing) -> Option<Trial> {
+        Some(Trial::Ends(TRIAL))
+    }
+
+    fn examples() -> Examples<Nothing> {
+        // What puts it back is the change that was tried, which Spark
+        // undoes, or `console.undo`.
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "id": "x" })], undo: None }
+    }
+}
+
+/// `admin undo`: undoes the change of `admin.toml` that is being tried.
+pub struct Revert;
+
+impl Action for Revert {
+    const ID: &'static str = "console.undo";
+    const AREA: &'static str = AREA;
+    const CHANGES: bool = true;
+    const PATH: &'static str = "/api/1/console/trial/undo";
+    const RUNS: Runs = Runs::AsAdministrator;
+    const ERRORS: &'static [&'static str] = &["NET-179"];
+    const TESTS: Tests = TRIAL_TESTS;
+    const TITLE: &'static str = "Undo the console's settings";
+    type Args = Nothing;
+
+    fn argv(_: &Nothing) -> Vec<String> {
+        ["admin", "undo"].map(String::from).to_vec()
+    }
+
+    fn files(_: &Nothing) -> Vec<String> {
+        vec![admin_settings::PATH.into()]
+    }
+
+    /// `admin settings --json`: what the file says of the reach and of the
+    /// sign-in rules, which the trial covers.
+    fn probe(_: &Nothing) -> Option<Vec<String>> {
+        Some(["admin", "settings", "--json"].map(String::from).to_vec())
+    }
+
+    /// The three tables the file holds, which the trial covers whole. What
+    /// the output says of a mistake in the file (`wrong`) is not a setting.
+    fn probed(_: &Nothing, output: &str) -> Option<String> {
+        let document: Value = serde_json::from_str(output).ok()?;
+        let mut picked = Map::new();
+        for key in ["sign_in", "console", "terminal"] {
+            picked.insert(key.into(), document.get(key)?.clone());
+        }
+        Some(Value::Object(picked).to_string())
+    }
+
+    fn trial(_: &Nothing) -> Option<Trial> {
+        Some(Trial::Ends(TRIAL))
+    }
+
+    fn examples() -> Examples<Nothing> {
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "id": "x" })], undo: None }
     }
 }
 
@@ -285,6 +403,40 @@ mod tests {
     }
 
     #[test]
+    fn with_a_window_the_change_is_tried_and_its_command_ends_with_the_seconds() {
+        let action = registered();
+        for word in ["private", "any"] {
+            let prepared = action.prepare(json!({ "reach": word, "try": 30 })).unwrap();
+            assert_eq!(prepared.argv, ["admin", "reach", word, "--try", "30"]);
+            assert_eq!(prepared.args, json!({ "reach": word, "try": 30 }));
+            assert_eq!(prepared.trial, Some(Trial::Begins("console")));
+            assert_eq!(
+                prepared.ansible.params["argv"],
+                json!(["admin", "reach", word, "--try", "30"])
+            );
+            // At once, it has no window and no trial.
+            let at_once = action.prepare(json!({ "reach": word })).unwrap();
+            assert_eq!((at_once.argv.len(), at_once.trial), (3, None));
+        }
+        let range = spark_api::trial::SECONDS;
+        for seconds in [*range.start(), *range.end()] {
+            assert!(action.prepare(json!({ "reach": "any", "try": seconds })).is_ok());
+        }
+        // The window is Spark's, and the refusal names the field.
+        for seconds in [json!(5), json!(9), json!(3601), json!(0), json!(-30)] {
+            let failure = action.prepare(json!({ "reach": "any", "try": seconds })).unwrap_err();
+            assert_eq!((failure.kind, failure.field), (Kind::BadValue, Some("try")), "{seconds}");
+            assert_eq!(
+                failure.detail,
+                "A change is tried for 10 to 3600 seconds. Nothing was done."
+            );
+        }
+        // The probe is the same with or without a window.
+        let tried = action.prepare(json!({ "reach": "any", "try": 30 })).unwrap();
+        assert_eq!(tried.probe.as_deref(), Some(&["admin".into(), "reach".into()][..]));
+    }
+
+    #[test]
     fn a_reach_is_private_or_any_and_the_refusal_names_the_field() {
         let words = "The console's reach is private or any. Nothing was done.";
         for reach in ["everyone", "", "Any", "PRIVATE", " any", "any ", "private\n", "0", "*"] {
@@ -324,6 +476,8 @@ mod tests {
             json!({ "reach": true }),
             json!({ "reach": ["any"] }),
             json!({ "reach": null }),
+            json!({ "reach": "any", "try": "30" }),
+            json!({ "reach": "any", "try": 1.5 }),
         ] {
             let failure = registered().prepare(args.clone()).unwrap_err();
             assert_eq!(failure.kind, Kind::BadRequest, "{args}");
@@ -338,7 +492,7 @@ mod tests {
             (true, Runs::AsAdministrator, "console", false)
         );
         assert_eq!(action.path(), "/api/1/console/reach");
-        assert!(action.errors().is_empty());
+        assert_eq!(action.errors(), ["ADM-138"], "a console that is being tried cannot be changed");
         let prepared = action.prepare(json!({ "reach": "any" })).unwrap();
         assert_eq!(prepared.files, ["/system/settings/admin.toml"]);
         assert_eq!(prepared.ansible.name, "Set whom the console answers: any");
@@ -370,7 +524,7 @@ mod tests {
     #[test]
     fn the_example_is_the_default_and_leaves_the_machines_the_tests_run_from_answered() {
         let (good, bad, undo) = registered().example_values();
-        assert_eq!(good, [json!({ "reach": "private" })]);
+        assert_eq!(good, [json!({ "reach": "private" }), json!({ "reach": "private", "try": 30 })]);
         assert_eq!(Reach::parse("private"), Some(Reach::default()));
         // The boot test's guest is reached from QEMU's user network, and
         // the lab's machine from the lab PC, which is on a private
@@ -394,6 +548,68 @@ mod tests {
             registered().prepare(good[0].clone()).unwrap().argv,
             ["admin", "reach", "private"]
         );
+    }
+
+    #[test]
+    fn keep_and_undo_end_the_trial_as_an_administrator_with_nothing_to_say() {
+        for (id, path, word, title) in [
+            ("console.keep", "/api/1/console/trial/keep", "keep", "Keep the console's settings"),
+            ("console.undo", "/api/1/console/trial/undo", "undo", "Undo the console's settings"),
+        ] {
+            let action = action(id);
+            assert_eq!(
+                (action.changes(), action.runs(), action.area(), action.long()),
+                (true, Runs::AsAdministrator, "console", false),
+                "{id}"
+            );
+            assert_eq!((action.path(), action.title()), (path, title), "{id}");
+            assert_eq!(action.errors(), ["NET-179"], "{id}");
+            assert!(action.posts(), "{id}");
+            assert_eq!(action.fields().len(), 0, "{id}");
+            let prepared = action.prepare(json!({})).unwrap();
+            assert_eq!(prepared.argv, ["admin", word], "{id}");
+            assert_eq!(prepared.trial, Some(Trial::Ends("console")), "{id}");
+            assert_eq!(prepared.ansible.name, title);
+            assert!(prepared.ansible.become_root);
+            assert_eq!(
+                (action.tests().route, action.tests().browser),
+                ("admin-security", "web-console/security")
+            );
+            let (good, bad, undo) = action.example_values();
+            assert_eq!((good, undo), (vec![json!({})], None), "{id}");
+            for args in bad {
+                assert_eq!(
+                    action.prepare(args.clone()).unwrap_err().kind,
+                    Kind::BadRequest,
+                    "{id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn undo_names_the_settings_file_and_compares_what_the_file_says() {
+        let action = action("console.undo");
+        assert!(action.compares());
+        assert!(!self::action("console.keep").compares());
+        let prepared = action.prepare(json!({})).unwrap();
+        assert_eq!(prepared.files, ["/system/settings/admin.toml"]);
+        assert_eq!(
+            prepared.probe.as_deref(),
+            Some(&["admin".to_string(), "settings".into(), "--json".into()][..])
+        );
+        let printed = |hours: u32, wrong: &str| {
+            format!(
+                r#"{{"format":1,"sign_in":{{"second_step":"if-set","session_hours":{hours},"idle_minutes":30}},"console":{{"listen":9090,"reach":"private","certificate":"c"}},"terminal":{{"allowed":"nobody","sessions_per_account":4}},"wrong":{wrong}}}"#
+            )
+        };
+        let picked = |output: &str| action.probed(&prepared.args, output);
+        assert_ne!(picked(&printed(12, "null")), picked(&printed(8, "null")));
+        assert_eq!(picked(&printed(12, "null")), picked(&printed(12, r#""x""#)));
+        assert!(picked(&printed(12, "null")).is_some());
+        for output in ["", "{}", "[]", r#"{"sign_in":{}}"#, "not json"] {
+            assert_eq!(picked(output), None, "{output:?}");
+        }
     }
 
     #[test]

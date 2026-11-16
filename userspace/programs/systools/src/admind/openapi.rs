@@ -210,8 +210,10 @@ fn route_operation(entry: &Entry, actions: &[&dyn Registered]) -> Value {
         "security": security(entry.access, post),
         "responses": responses(success_of(entry.route), &route_kinds(entry), &[]),
     });
-    if let Some(id) = parameters_of(entry.path).next() {
-        operation["parameters"] = json!([id_parameter(id, entry.path)]);
+    let parameters: Vec<Value> =
+        parameters_of(entry.path).map(|name| id_parameter(name, entry.path)).collect();
+    if !parameters.is_empty() {
+        operation["parameters"] = parameters.into();
     }
     if entry.route == Route::Follow {
         let query: Vec<Value> =
@@ -324,7 +326,8 @@ fn parameter(field: &Field, example: Option<&Value>, place: &str) -> Value {
 }
 
 /// The parameter `name` of a route's address, the number the console gave
-/// a change, a task, a terminal or a pane, or the name of a trial.
+/// a change, a task, a terminal or a pane, or the name of a trial, of an
+/// account, or of one of its sessions.
 fn id_parameter(name: &str, path: &str) -> Value {
     if name == "trial" {
         let pattern = format!("^[A-Za-z0-9][A-Za-z0-9._-]{{0,{}}}$", trial::ID_MAX - 1);
@@ -334,6 +337,24 @@ fn id_parameter(name: &str, path: &str) -> Value {
             "required": true,
             "description": "The trial's name, as Spark gives it: network, firewall, or service.NAME.",
             "schema": { "type": "string", "pattern": pattern },
+        });
+    }
+    if name == "name" {
+        return json!({
+            "name": name,
+            "in": "path",
+            "required": true,
+            "description": "The account's name, as GET /api/1/accounts lists it.",
+            "schema": { "type": "string", "pattern": "^[a-z_][a-z0-9_.-]*$" },
+        });
+    }
+    if name == "id" && path.contains("/sessions/") {
+        return json!({
+            "name": name,
+            "in": "path",
+            "required": true,
+            "description": "The session's name, as the sessions of the account list it.",
+            "schema": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
         });
     }
     let what = if name == "pane" {
@@ -489,6 +510,22 @@ const FOLLOW: &[Kind] = &[
     Kind::Internal,
 ];
 
+/// What an account's console sessions can answer with besides (ADR 0562):
+/// another account's, asked by one who is not an administrator or whose
+/// session is locked.
+const SIGNED_IN: &[Kind] = &[Kind::BadRequest, Kind::NotAdmin, Kind::Locked, Kind::Internal];
+
+/// What ending one of them can answer with besides: the session in use,
+/// which Sign out ends, and one that has ended already.
+const SIGNED_IN_END: &[Kind] = &[
+    Kind::BadRequest,
+    Kind::NotAdmin,
+    Kind::Locked,
+    Kind::NotSelf,
+    Kind::SessionGone,
+    Kind::Internal,
+];
+
 /// What the Terminal's socket can answer with besides: the opening request
 /// did not come from the console's page with the session's token.
 const SOCKET: &[Kind] = &[
@@ -519,6 +556,8 @@ fn own_kinds(route: Route) -> &'static [Kind] {
         | Route::TerminalEnd
         | Route::PaneEnd => TERMINAL,
         Route::TerminalSocket => SOCKET,
+        Route::SignedIn => SIGNED_IN,
+        Route::SignedInEnd => SIGNED_IN_END,
         Route::Changes
         | Route::Change
         | Route::Keep
@@ -585,6 +624,12 @@ fn action_kinds(action: &dyn Registered) -> Vec<Kind> {
     }
     if action.changes() {
         kinds.extend([Kind::Locked, Kind::NotAdmin, Kind::Refused]);
+        if action.not_self().is_some() {
+            kinds.push(Kind::NotSelf);
+        }
+        if action.cuts_off_card().is_some() {
+            kinds.push(Kind::CutsOff);
+        }
     }
     if action.long() {
         kinds.push(Kind::NoStore);
@@ -820,6 +865,8 @@ fn summary(route: Route) -> &'static str {
         }
         Route::SignInPasskey => "Gives a passkey's answer, a second step or the whole sign-in.",
         Route::Session => "Says who is signed in and what the page needs to go on.",
+        Route::SignedIn => "Lists an account's console sessions and terminals.",
+        Route::SignedInEnd => "Ends another console session of an account, as a sign-out does.",
         Route::SignOut => "Ends the session.",
         Route::Unlock => "Unlocks the session with a password, a code or a passkey.",
         Route::UnlockPasskeyOptions => "Asks what a passkey is to answer, to unlock.",

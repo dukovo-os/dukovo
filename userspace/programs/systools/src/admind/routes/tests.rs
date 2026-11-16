@@ -25,9 +25,11 @@ use crate::admind::shared::unix_now;
 
 mod act;
 mod changes;
+mod cuts_off;
 mod follow;
 mod fuzz;
 mod secrets;
+mod signed_in;
 mod tasks;
 mod terminals;
 mod trials;
@@ -189,6 +191,7 @@ fn script(calls: Calls) -> Arc<fixture::Script> {
                 _ => no(WRONG_PASSWORD),
             },
             "extend" => in_15_minutes(),
+            "terminal-ended" => ok(),
             "lock" | "end" => {
                 // As authd does, it answers once log has ended, so that
                 // admind reads the follow's end before it hears the lock.
@@ -247,11 +250,11 @@ fn token_answer(hex: &str) -> Option<&'static str> {
 /// refused as authd refuses one its scopes do not name; `broken` fails
 /// with a service's error ID; `/system/commands/echo` writes its words
 /// and ends with the status 3; anything else writes its words, or for a
-/// command asked for JSON `{"ran": WORDS}`, and ends well; `lab-unlock`
-/// and `lab-key` print JSON. The command is noted in `calls` as a call of
-/// `elevate`, so that a test sees it among the worker's, and what it read
-/// on its input, if anything, as a call of `elevate-input`: admind has
-/// written it, and closed the pipe, before it asks authd.
+/// command asked for JSON `{"ran": WORDS}`, and ends well; `lab-unlock`,
+/// `lab-key` and `lab-peers` print JSON. The command is noted in `calls`
+/// as a call of `elevate`, so that a test sees it among the worker's, and
+/// what it read on its input, if anything, as a call of `elevate-input`:
+/// admind has written it, and closed the pipe, before it asks authd.
 fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> {
     use std::io::{Read, Write};
     let fields: Vec<String> = (0..asked.fields.len()).map(|at| asked.text(at)).collect();
@@ -276,6 +279,10 @@ fn elevated(asked: &Asked, mut fds: Vec<OwnedFd>, calls: &Calls) -> Vec<String> 
     }
     if command[0] == "lab-log" {
         output.write_all(b"{\"n\": 1}\n\n{\"n\": 2}\n").unwrap();
+        return vec!["ok 4321".into(), "ended 0".into()];
+    }
+    if command[0] == "lab-peers" {
+        output.write_all(crate::admind::actions::tests::LAB_PEERS.as_bytes()).unwrap();
         return vec!["ok 4321".into(), "ended 0".into()];
     }
     if command[0] == "lab-unlock" || command[0] == "lab-key" {
@@ -655,10 +662,11 @@ fn every_route_is_found_by_its_own_verb_and_no_other_and_no_route_is_in_the_tabl
             Route::TerminalSocket,
             Route::Follow,
             Route::Fresh,
+            Route::SignedIn,
         ];
         assert_eq!(entry.verb == Verb::Get, reads.contains(&entry.route), "{}", entry.path);
     }
-    assert_eq!(TABLE.len(), 48 + usize::from(cfg!(feature = "lab")));
+    assert_eq!(TABLE.len(), 50 + usize::from(cfg!(feature = "lab")));
     assert!(matches!(lookup(Verb::Get, "/api/1/nothing"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api/1/health/"), Lookup::Missing));
     assert!(matches!(lookup(Verb::Get, "/api"), Lookup::Missing));
@@ -1878,7 +1886,7 @@ fn a_session_whose_worker_goes_ends_with_it() {
         let session = sessions::Session::new(
             "chase".into(),
             authd.clone(),
-            PEER.parse().unwrap(),
+            (PEER.parse().unwrap(), "a browser".into()),
             false,
             link.clone(),
         );

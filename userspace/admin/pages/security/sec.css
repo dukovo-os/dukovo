@@ -1,0 +1,108 @@
+/*
+ * SPDX-FileCopyrightText: 2026 The Dukovo contributors
+ * SPDX-License-Identifier: Apache-2.0 OR MIT
+ *
+ * The Security page (design 8): the score and its findings, the cards of the
+ * sign-in rules, the blocked addresses, SSH, the console's reach and private
+ * access, and the forms that change them. Colours come from the variables of
+ * console.css, which hold in dark, light and high contrast; forced colours are
+ * drawn in system colours below, and nothing here moves. The phone's layout is
+ * the same markup under the container query the shell uses (8.10). Same rules
+ * as console.css: rem, and px for borders and focus rings.
+ *
+ * The banner of a tried change has its own sheet, lib/trial-banner.css,
+ * which pages.js loads with this one, as it does for Networking.
+ */
+
+.sec { display: flex; flex-direction: column; gap: 1.143rem; min-width: 0; }
+.sec .grid { align-items: start; }
+.sec .card { min-width: 0; }
+.sec-top:empty, .sec-errors:empty, .sec-follows:empty, .sec-lead:empty, .sec-command:empty { display: none; }
+.sec-body { display: flex; flex-direction: column; gap: .714rem; min-width: 0; }
+.sec-body > p, .sec-lead p, .sec-follows p { margin: 0; overflow-wrap: anywhere; }
+.sec-body .tbl td.end { white-space: nowrap; }
+.sec-body .btn.link { padding-left: 0; padding-right: 0; }
+.card h2 .more { display: flex; gap: .571rem; align-items: center; }
+
+/* Grey bars stand where words are read; they are still, and nothing reads them. */
+.sec-bars { display: flex; flex-direction: column; gap: .571rem; }
+.sec-bar { display: block; height: .857rem; width: 40%; border-radius: .214rem; background: var(--sunken); }
+.sec-bar.wide { width: 80%; }
+
+/* The score */
+.sec-score { display: flex; flex-wrap: wrap; gap: 1.143rem; align-items: center; }
+.sec-score-words { display: flex; flex-direction: column; gap: .286rem; min-width: 0; flex: 1 1 14rem; }
+.sec-finds, .sec-passed, .sec-signins, .sec-never { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.sec-find { display: grid; grid-template-columns: 1fr auto; gap: .286rem .857rem; padding: .714rem 0; border-bottom: 1px solid var(--border); align-items: center; }
+.sec-find:last-child { border-bottom: 0; }
+.sec-find-words { display: flex; flex-direction: column; gap: .143rem; min-width: 0; overflow-wrap: anywhere; }
+.sec-find .sec-how { grid-column: 1 / -1; }
+.pts { font: 600 .893rem var(--font-mono); color: var(--warn); }
+.pts.bad { color: var(--bad); }
+.sec-how { display: flex; flex-direction: column; gap: .429rem; }
+.sec-how[hidden], .sec-passed[hidden] { display: none; }
+.sec-how p { margin: 0; }
+.sec-passed { gap: .286rem; padding-top: .286rem; }
+.sec-passed .small { overflow-wrap: anywhere; }
+
+/* The switch of SSH: a button with the console's own switch drawn in it. */
+.sec-switch { display: inline-flex; align-items: center; gap: .5rem; font: inherit; font-size: .929rem; color: var(--text); background: none; border: 0; padding: 0; cursor: pointer; min-height: 2rem; }
+.sec-switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sec-switch[aria-disabled="true"], .btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+
+/* SSH while a try runs: what to check, over the banner. */
+.sec-ssh-try { display: flex; flex-direction: column; gap: .571rem; }
+.sec-ssh-try:empty { display: none; }
+.sec-ssh-check { display: flex; flex-direction: column; gap: .429rem; padding: .714rem .857rem; border: 1px solid var(--border); border-radius: .357rem; background: var(--bg); }
+.sec-ssh-check[hidden] { display: none; }
+.sec-ssh-check p { margin: 0; overflow-wrap: anywhere; }
+.sec-signins { gap: .143rem; padding-left: 1.143rem; list-style: disc; }
+/* The reach of the banner is about the console, and an SSH connection is not the console's: its lines are left out. */
+#ssh .try-step { display: none; }
+
+/* The forms */
+.sec-lead { display: flex; flex-direction: column; gap: .429rem; }
+.sec-follows { display: flex; flex-direction: column; gap: .286rem; }
+.sec-choice, .sec-names { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: .429rem; }
+.sec-choice[hidden], .sec-names[hidden], .field[hidden] { display: none; }
+.sec-choice legend, .sec-names legend { font-weight: 600; font-size: .929rem; padding: 0; margin-bottom: .286rem; }
+.sec-choice-words { display: flex; flex-direction: column; gap: .143rem; }
+.sec-chips { display: flex; flex-wrap: wrap; gap: .429rem; }
+.sec-chip { display: inline-flex; align-items: center; gap: .357rem; padding: .214rem .643rem; border: 1px solid var(--border); border-radius: .714rem; background: var(--bg); cursor: pointer; font-size: .929rem; }
+.sec-chip:has(input:checked) { border-color: var(--sel-b); background: linear-gradient(var(--sel-1), var(--sel-2)); }
+.sec-chip:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+.sec-chip input { accent-color: var(--accent); }
+.sec-never li { display: flex; gap: .714rem; align-items: center; justify-content: space-between; padding: .286rem 0; border-bottom: 1px solid var(--border); }
+.sec-never li:last-child { border-bottom: 0; }
+.sec-command { display: flex; flex-direction: column; gap: .429rem; }
+.sec-command h3 { font: 600 .929rem var(--font-ui); margin: 0; }
+.field .select { max-width: 100%; }
+.dialog-body .rows { grid-template-columns: 1fr; }
+
+/* The phone (8.10): the findings and the tables are cards, the buttons fill the width, and SSH's switch is 44 px tall, as the shell's targets are. */
+@container (max-width: 51.4rem) {
+  .sec-switch { min-height: 3.143rem; }
+  .sec-find { grid-template-columns: minmax(0, 1fr); }
+  .sec-find .btns { flex-wrap: wrap; }
+  .sec-find .btn { flex: 1 1 auto; text-align: center; }
+  .sec-body .tbl td.end { white-space: normal; }
+  .sec-body .tbl td.end .btn { width: 100%; }
+  .sec-body .btns { flex-direction: column; align-items: stretch; }
+  .sec-body .btns .btn { width: 100%; }
+  .card h2 .more { flex-wrap: wrap; }
+  .rows { grid-template-columns: minmax(0, 1fr); }
+  .qr-row svg { width: 100%; max-width: 20rem; height: auto; }
+}
+
+/* Forced colours: the bars and the buttons that are off are drawn in system colours. */
+@media (forced-colors: active) {
+  .dk .sec-bar { background: GrayText; forced-color-adjust: none; }
+  /* A switch is a button, which forced colours draw with a border like the others. */
+  .dk .sec-switch { border: 1px solid ButtonText; padding: 0 .286rem; }
+  .dk .sec-switch:focus-visible { outline-color: Highlight; }
+  .dk .sec-switch[aria-disabled="true"], .dk .sec .btn[aria-disabled="true"] { opacity: 1; color: GrayText; border-color: GrayText; }
+  .dk .sec-chip, .dk .sec-ssh-check { border: 1px solid ButtonText; }
+  .dk .sec-chip:has(input:checked) { outline: 2px solid Highlight; outline-offset: -2px; }
+  .dk .pts { color: CanvasText; }
+  .dk .sw::after { background: ButtonText; }
+}

@@ -4,9 +4,12 @@
 //! The web console as the boot tests reach it: the host's curl, aimed
 //! through a port QEMU forwards at the console's port 9090 in the guest,
 //! as a browser at `localhost` would be. The `admin`, `admin-actions`,
-//! `admin-journal` and `admin-terminal` cases use it, with what they need
-//! of the machine: alice, the owner, whose password the pane asks for
-//! once, and the replies, cookies and certificates that curl prints.
+//! `admin-journal`, `admin-terminal`, `admin-accounts` and `admin-security`
+//! cases use it, with what they need of the machine: alice, the owner,
+//! whose password the pane asks for once, and the replies, cookies and
+//! certificates that curl prints. It holds the authenticator app too: the
+//! codes that `admin` and `admin-security` give at a second step, which the
+//! host computes from the secret the console showed.
 //!
 //! curl trusts the one certificate the machine served at first and no
 //! other, so a case that makes the machine serve another says so with
@@ -26,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -216,6 +219,22 @@ impl Console {
         self.post(browser, "/api/1/sign-in", &body)?.must(&format!("{name}'s sign-in"), 200)
     }
 
+    /// A request of an API token, with no session: `Authorization: Bearer`
+    /// and, for a body, JSON. The answer is whatever it is.
+    pub fn with_token(
+        &self,
+        token: &str,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Reply, String> {
+        let mut headers = vec![("Authorization".to_string(), format!("Bearer {token}"))];
+        if body.is_some() {
+            headers.push(("Content-Type".into(), "application/json".into()));
+        }
+        self.send(method, path, &headers, body.map(Value::to_string).as_deref())
+    }
+
     /// Reads the session of a browser that signed in, and keeps the token
     /// its page would.
     pub fn read_session(&self, browser: &mut Browser) -> Result<Value, String> {
@@ -223,6 +242,49 @@ impl Console {
         let token = session["csrf"].as_str().ok_or("the session has no token")?;
         browser.token = Some(token.to_string());
         Ok(session)
+    }
+}
+
+/// What the host keeps of the authenticator app it made up: its secret, and
+/// the last step of its codes that alice used, which authd refuses to
+/// take again.
+pub struct App {
+    /// The secret the app was begun with.
+    pub secret: Vec<u8>,
+    /// The last step it gave a code for.
+    pub last: Option<u64>,
+}
+
+impl Console {
+    /// Unix seconds by the guest's clock, which the console's own `Date`
+    /// header gives: the app's codes follow the clock of the machine that
+    /// checks them, which need not be the host's to the second.
+    pub fn guest_unix(&self) -> Result<u64, String> {
+        let reply = self.send("GET", "/api/1/health", &[], None)?;
+        match reply.header("date").and_then(http_date) {
+            Some(seconds) => Ok(seconds),
+            None => {
+                Ok(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs()))
+            }
+        }
+    }
+
+    /// The app's next code, which authd has not taken: the current step's,
+    /// or the next one's, which it takes too for a clock a little off. When
+    /// that is a step ahead of what it takes, this waits for the guest's
+    /// clock to come to it.
+    pub fn next_code(&self, app: &mut App) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            if let Some(step) = step_to_give(self.guest_unix()?, app.last) {
+                app.last = Some(step);
+                return Ok(app_code(&app.secret, step));
+            }
+            if Instant::now() >= deadline {
+                return Err("the guest's clock did not come to the app's next step in 90 s".into());
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
     }
 }
 
@@ -274,11 +336,35 @@ impl Events {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         loop {
             let text = self.text();
-            if let Some(event) = change_events(&text).into_iter().find(|event| event["id"] == id) {
+            if let Some(event) =
+                events_named(&text, "change").into_iter().find(|event| event["id"] == id)
+            {
                 return Ok(event);
             }
             if Instant::now() >= deadline {
                 return Err(format!("the stream did not tell row {id} in {seconds} s: {text:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+impl Events {
+    /// Waits up to `seconds` for the stream to tell that its session
+    /// ended, and gives the reason: `by-administrator`, `by-you`,
+    /// `signed-out`, `expired`, `idle` or `restarted`.
+    pub fn ended(&self, seconds: u64) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let text = self.text();
+            let told = events_named(&text, "session");
+            if let Some(reason) = told.iter().find_map(|event| event["ended"].as_str()) {
+                return Ok(reason.to_string());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "the stream did not tell its session ended in {seconds} s: {text:?}"
+                ));
             }
             std::thread::sleep(Duration::from_millis(250));
         }
@@ -293,18 +379,18 @@ impl Drop for Events {
     }
 }
 
-/// The data of each `change` event in `text`, which is what a stream said:
-/// its headers, then `event: NAME` and `data: JSON` lines, with a blank
-/// line after each event and a comment, `: keep`, now and then. An event
-/// whose data has not come, or is not JSON, is left out.
-pub fn change_events(text: &str) -> Vec<Value> {
+/// The data of each event called `wanted` in `text`, which is what a
+/// stream said: its headers, then `event: NAME` and `data: JSON` lines,
+/// with a blank line after each event and a comment, `: keep`, now and
+/// then. An event whose data has not come, or is not JSON, is left out.
+pub fn events_named(text: &str, wanted: &str) -> Vec<Value> {
     let mut named = None;
     let mut found = Vec::new();
     for line in text.lines() {
         if let Some(name) = line.strip_prefix("event: ") {
             named = Some(name);
         } else if let Some(data) = line.strip_prefix("data: ") {
-            if named == Some("change")
+            if named == Some(wanted)
                 && let Ok(event) = serde_json::from_str(data)
             {
                 found.push(event);
@@ -313,6 +399,168 @@ pub fn change_events(text: &str) -> Vec<Value> {
         }
     }
     found
+}
+
+/// What curl prints of each request, one line: the status, the version of
+/// HTTP and how many connections it opened for the request.
+const WRITE_OUT: &str = "%{http_code} %{http_version} %{num_connects}\\n";
+
+/// The three words of a line that [`WRITE_OUT`] printed.
+fn summary(line: &str) -> Option<(u16, String, u32)> {
+    let mut words = line.split_whitespace();
+    let status = words.next()?.parse().ok()?;
+    let version = words.next()?.to_string();
+    let connects = words.next()?.parse().ok()?;
+    words.next().is_none().then_some((status, version, connects))
+}
+
+/// The version of HTTP a run of curl asks for. The last of curl's two
+/// options for it wins, and each request of a run has its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Http {
+    /// HTTP/1.1.
+    One,
+    /// HTTP/2.
+    Two,
+}
+
+impl Http {
+    /// curl's option for it.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Http::One => "--http1.1",
+            Http::Two => "--http2",
+        }
+    }
+
+    /// The version as `%{http_version}` says it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Http::One => "1.1",
+            Http::Two => "2",
+        }
+    }
+}
+
+/// A request of a run of curl.
+pub struct Call {
+    method: &'static str,
+    path: String,
+    body: Option<String>,
+}
+
+impl Call {
+    /// A read of `path`.
+    pub fn get(path: &str) -> Call {
+        Call { method: "GET", path: path.to_string(), body: None }
+    }
+
+    /// A change of `path` with `body`.
+    pub fn post(path: &str, body: &Value) -> Call {
+        Call { method: "POST", path: path.to_string(), body: Some(body.to_string()) }
+    }
+
+    /// The headers the page sends with it: for a read the session's cookie
+    /// alone, as [`Console::get`] sends it, for a change those of a change.
+    pub fn headers(&self, browser: &Browser) -> Vec<(String, String)> {
+        let all = browser.page_headers();
+        if self.method == "GET" {
+            all.into_iter().filter(|(name, _)| name == "Cookie").collect()
+        } else {
+            all
+        }
+    }
+}
+
+/// What curl made of one request.
+pub struct Carried {
+    /// The answer.
+    pub reply: Reply,
+    /// The version of HTTP it went by.
+    pub version: String,
+    /// How many connections curl opened for it: none when it took the one
+    /// an earlier request had.
+    pub connects: u32,
+}
+
+/// What one run of curl did.
+pub struct Run {
+    /// What curl made of each request, in order.
+    pub carried: Vec<Carried>,
+    /// What curl said on its error output, with the last request's
+    /// `--verbose`.
+    pub said: String,
+    /// Whether curl ended without an error of its own.
+    pub ok: bool,
+}
+
+/// How a run of curl was told that the console ends the connection after an
+/// answer: whether `said`, curl's account of the last request, has the
+/// GOAWAY frame that closes an HTTP/2 connection with no error.
+pub fn goaway(said: &str) -> bool {
+    let said = said.to_ascii_lowercase();
+    said.contains("goaway") && said.contains("error=0")
+}
+
+impl Console {
+    /// Runs curl once for `calls`, with the session of `browser`, as one
+    /// run: with `--next`, curl takes the connection it has for the next
+    /// request, so the requests share one connection as a page's do.
+    pub fn carry(&self, browser: &Browser, http: Http, calls: &[Call]) -> Result<Run, String> {
+        let place =
+            self.pem.with_file_name(format!("carried-{}", CARRIED.fetch_add(1, Ordering::Relaxed)));
+        let mut command = Command::new("curl");
+        // The first word of the command line, as curl wants it.
+        command.arg("--disable");
+        let mut files = Vec::new();
+        for (number, call) in calls.iter().enumerate() {
+            if number > 0 {
+                command.arg("--next");
+            }
+            let file = place.with_extension(number.to_string());
+            command.args(["--silent", "--show-error", http.flag(), "--max-time", "90"]);
+            command.args(["--noproxy", "*", "--connect-to"]);
+            command.arg(format!("localhost:{PORT}:127.0.0.1:{}", self.port));
+            command.args(["--include", "--cacert"]).arg(&self.pem);
+            command.args(["--request", call.method]);
+            for (name, value) in call.headers(browser) {
+                command.arg("--header").arg(format!("{name}: {value}"));
+            }
+            if let Some(body) = &call.body {
+                command.arg("--data-binary").arg(body);
+            }
+            command.arg("--output").arg(&file);
+            command.args(["--write-out", WRITE_OUT]);
+            // What curl says of the last connection, for how it ended.
+            if number + 1 == calls.len() {
+                command.arg("--verbose");
+            }
+            command.arg(format!("{ORIGIN}{}", call.path));
+            files.push(file);
+        }
+        let out = command
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|err| format!("the console tests need the host's curl: {err}"))?;
+        let said = String::from_utf8_lossy(&out.stderr).into_owned();
+        let summaries = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut carried = Vec::new();
+        for (file, line) in files.iter().zip(summaries.lines()) {
+            let raw = std::fs::read(file).map_err(|err| format!("{}: {err}", file.display()))?;
+            let _ = std::fs::remove_file(file);
+            let (_, version, connects) = summary(line)
+                .ok_or_else(|| format!("curl's summary of a request is {line:?}, not as asked"))?;
+            carried.push(Carried { reply: parse_reply(&raw)?, version, connects });
+        }
+        if carried.len() != calls.len() {
+            return Err(format!(
+                "curl carried out {} of {} requests and said {said:?}",
+                carried.len(),
+                calls.len()
+            ));
+        }
+        Ok(Run { carried, said, ok: out.status.success() })
+    }
 }
 
 /// What a browser keeps of the console: the session's cookie and the token
@@ -505,6 +753,9 @@ const CLIENT: &str = include_str!("websocket_client.py");
 
 /// The clients started in this run, to give each a file for its errors.
 static CLIENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many runs of curl wrote their answers to files so far, to name them.
+static CARRIED: AtomicUsize = AtomicUsize::new(0);
 
 /// The seconds, besides the ones a command asks for, that the client has to
 /// answer it.
@@ -1097,12 +1348,193 @@ pub fn http_date(text: &str) -> Option<u64> {
         .checked_add(hours * 3600 + minutes * 60 + seconds)
 }
 
+/// Whether `reply` is the console's error `id` with `status`, as
+/// [`Reply::refused`] holds an answer to, for a reply that is only looked at.
+pub fn is_refusal(reply: &Reply, status: u16, id: &str) -> bool {
+    let said = reply.json().ok().and_then(|body| body["error"]["id"].as_str().map(str::to_string));
+    reply.status == status && said.as_deref() == Some(id)
+}
+
+/// Calls `look` every second until it gives `Ok(Ok(found))`, up to
+/// `seconds`: `what` is then said not to have happened, with the last
+/// state `look` gave as `Ok(Err(state))`. An `Err` ends it at once.
+pub fn wait_for<T>(
+    what: &str,
+    seconds: u64,
+    mut look: impl FnMut() -> Result<Result<T, String>, String>,
+) -> Result<T, String> {
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    loop {
+        match look()? {
+            Ok(found) => return Ok(found),
+            Err(state) if Instant::now() >= deadline => {
+                return Err(format!("{what} did not happen in {seconds} s: {state}"));
+            }
+            Err(_) => std::thread::sleep(Duration::from_secs(1)),
+        }
+    }
+}
+
+/// The trials in Spark's document.
+pub fn trials_of(document: &Value) -> Vec<&Value> {
+    document["trials"].as_array().map_or_default(|trials| trials.iter().collect())
+}
+
+/// The trial `id` of Spark's document, if it is being tried.
+pub fn trial_in<'a>(document: &'a Value, id: &str) -> Option<&'a Value> {
+    trials_of(document).into_iter().find(|trial| trial["id"] == id)
+}
+
+/// The entries of Spark's document for the trials `id` that were undone,
+/// oldest first.
+pub fn undone_in<'a>(document: &'a Value, id: &str) -> Vec<&'a Value> {
+    let undone = document["undone"].as_array();
+    undone.map_or_default(|all| all.iter().filter(|entry| entry["id"] == id).collect())
+}
+
+/// Whether the journal's `row` names `file` among its files.
+pub fn names(row: &Value, file: &str) -> bool {
+    row["files"].as_array().is_some_and(|files| files.iter().any(|one| one["path"] == file))
+}
+
+/// Whether `row` is Spark's row for a trial it undid, with its words `why`,
+/// that put `file` back.
+pub fn is_undone_row(row: &Value, file: &str, why: &str) -> bool {
+    row["who"] == "Spark" && row["how"] == "undone" && row["note"] == why && names(row, file)
+}
+
+/// SHA-1 (FIPS 180-4), which RFC 6238's codes are made with by default and
+/// authd checks them with.
+pub fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut state: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut padded = data.to_vec();
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&(data.len() as u64 * 8).to_be_bytes());
+    let (blocks, _) = padded.as_chunks::<64>();
+    for block in blocks {
+        let mut words = [0u32; 80];
+        for (word, bytes) in words.iter_mut().zip(block.as_chunks::<4>().0) {
+            *word = u32::from_be_bytes(*bytes);
+        }
+        for at in 16..80 {
+            words[at] =
+                (words[at - 3] ^ words[at - 8] ^ words[at - 14] ^ words[at - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = state;
+        for (at, word) in words.into_iter().enumerate() {
+            let (mix, constant) = match at {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let next = a
+                .rotate_left(5)
+                .wrapping_add(mix)
+                .wrapping_add(e)
+                .wrapping_add(constant)
+                .wrapping_add(word);
+            (a, b, c, d, e) = (next, a, b.rotate_left(30), c, d);
+        }
+        for (kept, new) in state.iter_mut().zip([a, b, c, d, e]) {
+            *kept = kept.wrapping_add(new);
+        }
+    }
+    let mut hash = [0u8; 20];
+    for (bytes, word) in hash.as_chunks_mut::<4>().0.iter_mut().zip(state) {
+        *bytes = word.to_be_bytes();
+    }
+    hash
+}
+
+/// HMAC-SHA1 (RFC 2104).
+pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
+    let mut block = [0u8; 64];
+    if key.len() > block.len() {
+        block[..20].copy_from_slice(&sha1(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let mut inner: Vec<u8> = block.iter().map(|byte| byte ^ 0x36).collect();
+    inner.extend_from_slice(data);
+    let mut outer: Vec<u8> = block.iter().map(|byte| byte ^ 0x5c).collect();
+    outer.extend_from_slice(&sha1(&inner));
+    sha1(&outer)
+}
+
+/// The app's six digits for 30-second `step` since 1970 (RFC 6238 with
+/// HMAC-SHA1, truncated as RFC 4226 says).
+pub fn app_code(secret: &[u8], step: u64) -> String {
+    let mac = hmac_sha1(secret, &step.to_be_bytes());
+    let at = usize::from(mac[19] & 0x0f);
+    let number = u32::from_be_bytes([mac[at], mac[at + 1], mac[at + 2], mac[at + 3]]) & 0x7fff_ffff;
+    format!("{:06}", number % 1_000_000)
+}
+
+/// The step of the app's code to give at guest time `now` when `after` is
+/// the last step authd took a code for: this one, or the next when this
+/// was taken already, which authd takes as well for a clock a little off.
+/// `None` when even that is not one it takes yet: the clock has to come to
+/// it.
+pub fn step_to_give(now: u64, after: Option<u64>) -> Option<u64> {
+    let current = now / 30;
+    let step = after.map_or(current, |after| current.max(after + 1));
+    (step <= current + 1).then_some(step)
+}
+
+/// Six digits that are none of the app's codes for the steps around `now`.
+pub fn wrong_code(secret: &[u8], now: u64) -> String {
+    let current = now / 30;
+    let right: Vec<String> =
+        (current.saturating_sub(2)..=current + 2).map(|step| app_code(secret, step)).collect();
+    (1u32..)
+        .map(|n| format!("{:06}", n * 123_457 % 1_000_000))
+        .find(|code| !right.contains(code))
+        .unwrap_or_default()
+}
+
+/// The bytes of RFC 4648's base32 `text`, with or without padding.
+pub fn from_base32(text: &str) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for letter in text.trim_end_matches('=').bytes() {
+        let value = match letter {
+            b'A'..=b'Z' => letter - b'A',
+            b'2'..=b'7' => letter - b'2' + 26,
+            _ => return None,
+        };
+        buffer = buffer << 5 | u32::from(value);
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(bytes)
+}
+
+/// The secret in an `otpauth://` URI.
+pub fn secret_of(uri: &str) -> Result<Vec<u8>, String> {
+    let query = uri.split_once('?').map_or("", |(_, query)| query);
+    let text = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("secret="))
+        .ok_or_else(|| format!("the app's URI {uri:?} has no secret"))?;
+    from_base32(text)
+        .filter(|secret| secret.len() >= 10)
+        .ok_or_else(|| format!("the secret {text:?} does not read"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn the_change_events_of_a_stream_are_read_from_its_text() {
+    fn the_events_of_a_stream_are_read_from_its_text_by_name() {
         let text = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n\
                     event: unlock\ndata: {\"unlock_seconds\":null}\n\n\
                     : keep\n\n\
@@ -1111,7 +1543,7 @@ mod tests {
                     event: change\ndata: {\"at\":1790000030,\"how\":\"by hand\",\"id\":8}\n\n\
                     event: change\ndata: not json\n\n\
                     event: change\n";
-        let found = change_events(text);
+        let found = events_named(text, "change");
         assert_eq!(
             found,
             [
@@ -1119,10 +1551,13 @@ mod tests {
                 json!({"at": 1790000030, "how": "by hand", "id": 8}),
             ]
         );
-        assert!(change_events("").is_empty());
+        assert!(events_named("", "change").is_empty());
         // Another event's data is not a change's, even if it is JSON.
-        assert!(change_events("event: task\ndata: {\"id\":1}\n\n").is_empty());
-        assert!(change_events("data: {\"id\":1}\n\n").is_empty());
+        assert!(events_named("event: task\ndata: {\"id\":1}\n\n", "change").is_empty());
+        assert!(events_named("data: {\"id\":1}\n\n", "change").is_empty());
+        let sessions = "event: unlock\ndata: {\"unlock_seconds\":null}\n\n\
+                        event: session\ndata: {\"ended\":\"by-administrator\"}\n\n";
+        assert_eq!(events_named(sessions, "session"), [json!({"ended": "by-administrator"})]);
     }
 
     #[test]
@@ -1577,5 +2012,206 @@ for line in sys.stdin:
         let started = Instant::now();
         finish(socket);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn sha1_has_the_standard_answers_across_block_ends() {
+        assert_eq!(hex(&sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+        assert_eq!(hex(&sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        let two_blocks = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+        assert_eq!(hex(&sha1(two_blocks)), "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+        // 55, 56 and 64 bytes: where the padding and the length change blocks.
+        assert_eq!(hex(&sha1(&[b'a'; 55])), "c1c8bbdc22796e28c0e15163d20899b65621d65a");
+        assert_eq!(hex(&sha1(&[b'a'; 56])), "c2db330f6083854c99d4b5bfb6e8f29f201be699");
+        assert_eq!(hex(&sha1(&[b'a'; 64])), "0098ba824b5c16427bd7a1122a5a442a25ec644d");
+        assert_eq!(hex(&sha1(&vec![b'a'; 1_000_000])), "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
+    }
+
+    #[test]
+    fn hmac_sha1_has_the_answers_of_rfc_2202() {
+        assert_eq!(
+            hex(&hmac_sha1(&[0x0b; 20], b"Hi There")),
+            "b617318655057264e28bc0b6fb378c8ef146be00"
+        );
+        assert_eq!(
+            hex(&hmac_sha1(b"Jefe", b"what do ya want for nothing?")),
+            "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"
+        );
+        // A key longer than a block is hashed first.
+        assert_eq!(
+            hex(&hmac_sha1(&[0xaa; 80], b"Test Using Larger Than Block-Size Key - Hash Key First")),
+            "aa4ae5e15272d00e95705637ce8a3b55ed402112"
+        );
+    }
+
+    #[test]
+    fn the_apps_codes_are_those_of_rfc_6238() {
+        // The RFC's SHA-1 secret, and its 8-digit codes cut to the last 6.
+        let secret = b"12345678901234567890";
+        for (time, code) in [
+            (59u64, "287082"),
+            (1_111_111_109, "081804"),
+            (1_111_111_111, "050471"),
+            (1_234_567_890, "005924"),
+            (2_000_000_000, "279037"),
+            (20_000_000_000, "353130"),
+        ] {
+            assert_eq!(app_code(secret, time / 30), code, "at {time}");
+        }
+    }
+
+    #[test]
+    fn a_code_is_given_for_this_step_or_the_next_and_otherwise_waits() {
+        // 1000 s is in step 33, which runs from 990 to 1019.
+        assert_eq!(step_to_give(1000, None), Some(33));
+        assert_eq!(step_to_give(1000, Some(10)), Some(33));
+        assert_eq!(step_to_give(1000, Some(32)), Some(33));
+        // Taken already: the next, which authd takes for a clock a little off.
+        assert_eq!(step_to_give(1000, Some(33)), Some(34));
+        // The next was taken too: wait for the clock.
+        assert_eq!(step_to_give(1000, Some(34)), None);
+        assert_eq!(step_to_give(1020, Some(34)), Some(35));
+    }
+
+    #[test]
+    fn a_wrong_code_is_none_of_the_codes_around_now() {
+        let secret = b"12345678901234567890";
+        for now in [0, 59, 1_111_111_109, 2_000_000_000] {
+            let wrong = wrong_code(secret, now);
+            assert_eq!(wrong.len(), 6);
+            for step in (now / 30).saturating_sub(2)..=now / 30 + 2 {
+                assert_ne!(wrong, app_code(secret, step), "now {now}, step {step}");
+            }
+        }
+    }
+
+    #[test]
+    fn base32_reads_the_rfc_4648_vectors_with_or_without_padding() {
+        for (text, want) in [
+            ("", ""),
+            ("MY======", "f"),
+            ("MZXQ====", "fo"),
+            ("MZXW6", "foo"),
+            ("MZXW6YQ=", "foob"),
+            ("MZXW6YTB", "fooba"),
+            ("MZXW6YTBOI======", "foobar"),
+        ] {
+            assert_eq!(from_base32(text).as_deref(), Some(want.as_bytes()), "{text}");
+        }
+        assert_eq!(from_base32("mzxw6"), None);
+        assert_eq!(from_base32("MZXW1"), None);
+    }
+
+    #[test]
+    fn the_secret_is_read_from_the_uri_as_authd_writes_it() {
+        let uri = "otpauth://totp/Dukovo%20(duke-nas):alice?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\
+                   &issuer=Dukovo%20(duke-nas)&algorithm=SHA1&digits=6&period=30";
+        assert_eq!(secret_of(uri).unwrap(), b"12345678901234567890");
+        assert!(secret_of("otpauth://totp/x?issuer=y").is_err());
+        assert!(secret_of("otpauth://totp/x?secret=!!!").is_err());
+        // Too short to be an app's secret.
+        assert!(secret_of("otpauth://totp/x?secret=MZXW6").is_err());
+    }
+
+    fn document() -> Value {
+        json!({
+            "now_ms": 51234,
+            "services": [],
+            "trials": [
+                {"id": "firewall", "files": ["/system/settings/firewall"], "services": ["firewall"], "user": 1000, "left_ms": 42000},
+            ],
+            "undone": [
+                {"id": "network", "why": "it was not kept in time", "at_ms": 100, "files": ["/system/settings/network"]},
+                {"id": "firewall", "why": "it was not kept in time", "at_ms": 200, "files": ["/system/settings/firewall"]},
+                {"id": "firewall", "why": "the machine started again before it was kept", "at_ms": 300, "files": ["/system/settings/firewall"]},
+            ],
+        })
+    }
+
+    #[test]
+    fn a_row_is_sparks_undo_of_a_file_by_its_words() {
+        let row = json!({
+            "id": 9, "who": "Spark", "how": "undone", "action": null, "note": "it was not kept in time",
+            "files": [{"path": "/system/settings/firewall", "before": {}, "after": {}}],
+        });
+        assert!(is_undone_row(&row, "/system/settings/firewall", "it was not kept in time"));
+        assert!(!is_undone_row(&row, "/system/settings/network", "it was not kept in time"));
+        assert!(!is_undone_row(
+            &row,
+            "/system/settings/firewall",
+            "the machine started again before it was kept"
+        ));
+        let mut other = row.clone();
+        other["how"] = json!("by hand");
+        assert!(!is_undone_row(&other, "/system/settings/firewall", "it was not kept in time"));
+        other["how"] = json!("undone");
+        other["who"] = json!("alice");
+        assert!(!is_undone_row(&other, "/system/settings/firewall", "it was not kept in time"));
+        assert!(
+            names(&row, "/system/settings/firewall") && !names(&row, "/system/settings/network")
+        );
+        assert!(!names(&json!({}), "/system/settings/firewall"));
+    }
+
+    #[test]
+    fn curls_summary_of_a_request_has_three_words() {
+        assert_eq!(summary("409 2 0"), Some((409, "2".to_string(), 0)));
+        assert_eq!(summary("200 1.1 1"), Some((200, "1.1".to_string(), 1)));
+        assert_eq!(summary("200 1.1"), None);
+        assert_eq!(summary("200 1.1 1 extra"), None);
+        assert_eq!(summary("ok 1.1 1"), None);
+        assert_eq!(summary(""), None);
+    }
+
+    #[test]
+    fn a_goaway_with_no_error_is_how_curl_says_the_server_ended_the_connection() {
+        let said = "* Connection #0 to host localhost left intact\n\
+                    < HTTP/2 409 \n* received GOAWAY, error=0, last_stream=5\n* Closing connection\n";
+        assert!(goaway(said));
+        assert!(goaway("* Received GOAWAY, error=0, last_stream=1"));
+        assert!(!goaway("* received GOAWAY, error=2, last_stream=5"));
+        assert!(!goaway("* Closing connection"));
+        assert!(!goaway(""));
+    }
+
+    #[test]
+    fn a_request_sends_the_cookie_alone_for_a_read_and_the_pages_headers_for_a_change() {
+        let browser = Browser { cookie: Some("abc".into()), token: Some("tok".into()) };
+        let read = Call::get("/api/1/session").headers(&browser);
+        assert_eq!(read, [("Cookie".to_string(), "__Host-dukovo=abc".to_string())]);
+        let change = Call::post("/api/1/firewall/add", &json!({})).headers(&browser);
+        assert!(change.iter().any(|(name, _)| name == "Origin"));
+        assert!(change.iter().any(|(name, value)| name == "X-Dukovo-CSRF" && value == "tok"));
+        assert!(change.iter().any(|(name, _)| name == "Cookie"));
+    }
+
+    #[test]
+    fn a_wait_gives_what_it_found_or_the_last_state_it_saw() {
+        let mut calls = 0;
+        let found = wait_for("a number", 5, || {
+            calls += 1;
+            Ok(if calls == 3 { Ok(calls) } else { Err(format!("call {calls}")) })
+        });
+        assert_eq!(found, Ok(3));
+        let never: Result<(), String> = wait_for("nothing", 0, || Ok(Err("still no".into())));
+        assert_eq!(never, Err("nothing did not happen in 0 s: still no".into()));
+        let failed: Result<(), String> = wait_for("it", 5, || Err("gone".into()));
+        assert_eq!(failed, Err("gone".into()));
+    }
+    #[test]
+    fn a_trial_and_the_undone_ones_are_found_by_their_name_in_sparks_document() {
+        let document = document();
+        assert_eq!(
+            trial_in(&document, "firewall").map(|trial| &trial["left_ms"]),
+            Some(&json!(42000))
+        );
+        assert!(trial_in(&document, "network").is_none());
+        let undone = undone_in(&document, "firewall");
+        assert_eq!(undone.len(), 2);
+        assert_eq!(undone[1]["why"], json!("the machine started again before it was kept"));
+        assert_eq!(undone_in(&document, "network").len(), 1);
+        assert!(undone_in(&json!({}), "firewall").is_empty());
+        assert!(trials_of(&json!({"trials": []})).is_empty());
+        assert_eq!(trials_of(&document).len(), 1);
     }
 }

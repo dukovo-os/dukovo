@@ -9,6 +9,7 @@
 //! its last tab closed, at sign-out, or when its worker ends.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -26,9 +27,18 @@ pub struct Session<W> {
     pub name: String,
     /// authd's name for the session.
     pub authd: String,
+    /// The name the Accounts page shows and ends it by (ADR 0562): 16
+    /// random hexadecimal digits, which open nothing. Neither the cookie
+    /// nor authd's name is ever shown to another session.
+    pub id: String,
+    /// The person's words for the browser, as the sign-in found them in
+    /// its `User-Agent`, such as `Firefox on Linux`.
+    pub browser: String,
     /// The browser's address at sign-in.
     pub from: IpAddr,
     pub started: Instant,
+    /// When it signed in, in Unix milliseconds, for the Accounts page.
+    pub since_ms: i64,
     /// The last request, or the last moment a tab's event stream was open.
     pub seen: Instant,
     /// The tabs whose event streams are open now.
@@ -50,22 +60,29 @@ pub struct Session<W> {
 }
 
 impl<W> Session<W> {
-    /// A session of `name`'s, signed in now from `from`, as authd started
-    /// it.
+    /// A session of `name`'s, signed in now from `from` with `browser`,
+    /// as authd started it.
     pub fn new(
         name: String,
         authd: String,
-        from: IpAddr,
+        (from, browser): (IpAddr, String),
         needs_step: bool,
         worker: W,
     ) -> Result<Session<W>, String> {
         let now = Instant::now();
         let csrf = random::<32>()?;
+        let id = random::<8>()?.iter().fold(String::with_capacity(16), |mut id, byte| {
+            let _ = write!(id, "{byte:02x}");
+            id
+        });
         Ok(Session {
             name,
             authd,
+            id,
+            browser,
             from,
             started: now,
+            since_ms: unix_ms(),
             seen: now,
             tabs: 0,
             closed: None,
@@ -147,6 +164,18 @@ impl<W> Sessions<W> {
         ended.iter().filter_map(|key| self.map.remove(key)).collect()
     }
 
+    /// The sessions of account `name`.
+    pub fn of_account<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Session<W>> {
+        self.map.values().filter(move |session| session.name == name)
+    }
+
+    /// Takes out the session of account `name` whose [`Session::id`] is
+    /// `id`, as an administrator or the account ends it.
+    pub fn take_id(&mut self, name: &str, id: &str) -> Option<Session<W>> {
+        let key = self.map.iter().find(|(_, s)| s.name == name && s.id == id).map(|(k, _)| *k)?;
+        self.map.remove(&key)
+    }
+
     /// Whether a session `which` picks is signed in.
     pub fn any(&self, which: impl Fn(&Session<W>) -> bool) -> bool {
         self.map.values().any(which)
@@ -161,6 +190,19 @@ impl<W> Sessions<W> {
     }
 }
 
+/// The Unix time now, in milliseconds.
+pub fn unix_ms() -> i64 {
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    since.map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// The Unix time in milliseconds of `at`, a moment before `now`, which is
+/// `now_ms`.
+pub fn ms_at(at: Instant, now: Instant, now_ms: i64) -> i64 {
+    let ago = i64::try_from(now.saturating_duration_since(at).as_millis()).unwrap_or(i64::MAX);
+    now_ms.saturating_sub(ago)
+}
+
 /// `N` bytes from the random source.
 pub fn random<const N: usize>() -> Result<[u8; N], String> {
     let mut bytes = [0u8; N];
@@ -173,7 +215,8 @@ mod tests {
     use super::*;
 
     fn session(name: &str) -> Session<()> {
-        Session::new(name.into(), "3f9a".into(), "192.0.2.7".parse().unwrap(), false, ()).unwrap()
+        let from = ("192.0.2.7".parse().unwrap(), "Firefox on Linux".into());
+        Session::new(name.into(), "3f9a".into(), from, false, ()).unwrap()
     }
 
     #[test]
@@ -210,6 +253,38 @@ mod tests {
         let ended = sessions.take_ended(start + Duration::from_hours(1), lasts, idle);
         assert_eq!(ended.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["a"]);
         assert_eq!(sessions.len(), 1);
+    }
+
+    #[test]
+    fn a_session_is_shown_and_ended_by_an_id_of_its_own_that_opens_nothing() {
+        let mut sessions = Sessions::default();
+        let cookie = sessions.add(session("helper")).unwrap();
+        sessions.add(session("helper")).unwrap();
+        sessions.add(session("owner")).unwrap();
+        let ids: Vec<String> = sessions.of_account("helper").map(|s| s.id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        for id in &ids {
+            assert_eq!(id.len(), 16);
+            assert!(id.bytes().all(|b| b.is_ascii_hexdigit()), "{id}");
+            assert!(!cookie.contains(id.as_str()));
+        }
+        // Another account's name does not reach it.
+        assert!(sessions.take_id("owner", &ids[0]).is_none());
+        let taken = sessions.take_id("helper", &ids[0]).unwrap();
+        assert_eq!((taken.name.as_str(), taken.browser.as_str()), ("helper", "Firefox on Linux"));
+        assert!(sessions.take_id("helper", &ids[0]).is_none());
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn a_moment_is_given_in_unix_milliseconds_from_the_clock_now() {
+        let now = Instant::now();
+        assert_eq!(ms_at(now - Duration::from_secs(3), now, 10_000), 7_000);
+        assert_eq!(ms_at(now, now, 10_000), 10_000);
+        // A moment after now, which cannot be, is now.
+        assert_eq!(ms_at(now + Duration::from_secs(1), now, 10_000), 10_000);
+        assert!(unix_ms() > 1_700_000_000_000);
     }
 
     #[test]

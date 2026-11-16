@@ -19,6 +19,8 @@ use crate::args::{Arg, Args};
 use crate::util::{self, Fail, fail, usage};
 use crate::{log, proc, sessions};
 
+mod json;
+
 /// How times are shown, as util-linux's `--time-format` names them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Times {
@@ -130,7 +132,7 @@ fn options(args: &mut Args) -> Result<Options, Fail> {
 
 /// The records of the file at `path`: none if there is none, and `None`
 /// if it may not be read.
-fn read(path: &str) -> Result<Option<Vec<Record>>, Fail> {
+pub(crate) fn read(path: &str) -> Result<Option<Vec<Record>>, Fail> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(signins::parse(&text))),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Some(Vec::new())),
@@ -305,13 +307,16 @@ pub fn lastb(args: &mut Args) -> Result<i32, Fail> {
     Ok(0)
 }
 
-/// lastlog(8): each account's last sign-in.
+/// lastlog(8): each account's last sign-in, or with `--json` as the console
+/// reads them.
 pub fn lastlog(args: &mut Args) -> Result<i32, Fail> {
     let mut only: Option<String> = None;
     let mut newer: Option<i64> = None;
     let mut older: Option<i64> = None;
+    let mut json = false;
     while let Some(arg) = args.next()? {
         match arg {
+            Arg::Long(l) if l == "json" => json = true,
             Arg::Short('u') => only = Some(args.text()?),
             Arg::Long(l) if l == "user" => only = Some(args.text()?),
             Arg::Short('t') => newer = Some(args.number()?),
@@ -342,22 +347,35 @@ pub fn lastlog(args: &mut Args) -> Result<i32, Fail> {
         accounts = vec![user];
     } else if !everyone {
         accounts.retain(|u| u.uid == own);
-        hint("lastlog");
+        if !json {
+            hint("lastlog");
+        }
     }
     let now = (util::now_ns() / 1_000_000_000) as i64;
-    let mut out = io::stdout().lock();
-    writeln!(out, "{:<16} {:<8} {:<16} Latest", "Username", "Port", "From")?;
+    let mut chosen = Vec::new();
     for user in accounts {
         let records = read(&signins::of(user.uid))?.unwrap_or_default();
-        let latest = signins::latest(&records).sign_in;
-        let time = latest.as_ref().map_or(0, |s| s.time);
-        if newer.is_some_and(|days| latest.is_none() || time < now - days * 86_400) {
+        let latest = signins::latest(&records);
+        let time = latest.sign_in.as_ref().map_or(0, |s| s.time);
+        let signed_in = latest.sign_in.is_some();
+        if newer.is_some_and(|days| !signed_in || time < now - days * 86_400) {
             continue;
         }
-        if older.is_some_and(|days| latest.is_some() && time >= now - days * 86_400) {
+        if older.is_some_and(|days| signed_in && time >= now - days * 86_400) {
             continue;
         }
-        let line = match &latest {
+        chosen.push((user, latest));
+    }
+    if json {
+        let rows: Vec<(&str, signins::Latest)> =
+            chosen.into_iter().map(|(user, latest)| (user.name.as_str(), latest)).collect();
+        println!("{}", json::render(&rows)?);
+        return Ok(0);
+    }
+    let mut out = io::stdout().lock();
+    writeln!(out, "{:<16} {:<8} {:<16} Latest", "Username", "Port", "From")?;
+    for (user, latest) in chosen {
+        let line = match &latest.sign_in {
             Some(place) => format!(
                 "{:<16} {:<8.8} {:<16.16} {}",
                 user.name,

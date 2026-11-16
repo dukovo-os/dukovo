@@ -90,8 +90,10 @@
 //! repair a system that will not start (ADR 0460).
 
 mod account;
+mod account_errors;
 mod admin;
 mod admin_about;
+mod admin_errors;
 mod admin_export;
 #[cfg(feature = "lab")]
 mod admin_lab;
@@ -197,6 +199,7 @@ mod pidstat;
 mod ping;
 mod power;
 mod priority;
+mod private_access;
 mod probe;
 mod proc;
 mod prompt;
@@ -235,6 +238,7 @@ mod snap;
 mod sound;
 mod ss;
 mod ssh_askpass;
+mod ssh_server;
 mod sshkeys;
 mod startup;
 mod storage;
@@ -434,6 +438,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("snap", snap::main),
     ("ss", ss::main),
     ("ssh-askpass-keyring", ssh_askpass::main),
+    ("ssh-server", ssh_server::main),
     ("startup", startup::main),
     ("storage", storage::main),
     ("subvolume", subvolume::main),
@@ -470,6 +475,7 @@ const TOOLS: &[(&str, Tool)] = &[
     ("which", which::main),
     ("who", sessions::who),
     ("whois", whois::main),
+    ("wireguard", private_access::main),
     ("xxd", xxd::main),
 ];
 

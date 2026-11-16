@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0220. Disabling an account ends everything it runs, and removed accounts' numbers are retired
 
-- Status: Accepted
+- Status: Accepted; the last administrator is refused by authd, not asked for, since [0562](0562-the-web-console-s-administrators-act-on-other-accounts-end-their-sessions-and-terminals-and-try-ssh-s-settings-and-the-console-s-reach-as-spark-trials.md)
 - Date: 2026-10-31
 
 ## Context

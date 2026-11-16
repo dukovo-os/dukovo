@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The console's errors (ADRs 0514, 0515 and 0517), all in this one place. Each
+//! The console's errors (ADRs 0514, 0515, 0517 and 0562), all in this one place. Each
 //! has an ID a person can quote, a title, the HTTP status it is answered
 //! with, and a fix the person can try. The detail is the sentence for this
 //! one time: where authd refused, its own words, which are written for
@@ -94,11 +94,19 @@ pub enum Kind {
     TooManyFollows,
     /// ADM-135: Spark has no trial by that name.
     NoTrial,
+    /// ADM-136: the request would end the account the caller is signed in
+    /// with, or the session it is using.
+    NotSelf,
+    /// ADM-137: the change would take away what the browser comes
+    /// through.
+    CutsOff,
+    /// ADM-139: the console session or terminal named has ended already.
+    SessionGone,
 }
 
 impl Kind {
     /// Every kind, in the order of their IDs.
-    pub const ALL: [Kind; 35] = [
+    pub const ALL: [Kind; 38] = [
         Kind::WrongPassword,
         Kind::WrongCode,
         Kind::PasskeyRefused,
@@ -134,6 +142,9 @@ impl Kind {
         Kind::OldConnection,
         Kind::TooManyFollows,
         Kind::NoTrial,
+        Kind::NotSelf,
+        Kind::CutsOff,
+        Kind::SessionGone,
     ];
 
     /// Its ID, `ADM-101` and on.
@@ -174,6 +185,9 @@ impl Kind {
             Kind::OldConnection => "ADM-133",
             Kind::TooManyFollows => "ADM-134",
             Kind::NoTrial => "ADM-135",
+            Kind::NotSelf => "ADM-136",
+            Kind::CutsOff => "ADM-137",
+            Kind::SessionGone => "ADM-139",
         }
     }
 
@@ -205,15 +219,24 @@ impl Kind {
             Kind::CommandFailed => 422,
             // What was asked is not now what it can be done to, the
             // account holds as many terminals as it may until it ends one,
-            // or the connection is one that proves nothing about a change
-            // made after it was opened.
-            Kind::Cannot | Kind::TooManyTerminals | Kind::OldConnection => 409,
+            // the connection is one that proves nothing about a change made
+            // after it was opened, or the change would cut off the one who
+            // asks.
+            Kind::Cannot
+            | Kind::TooManyTerminals
+            | Kind::OldConnection
+            | Kind::NotSelf
+            | Kind::CutsOff => 409,
             // The console has the action, and this machine not its program.
             Kind::NoProgram => 501,
             Kind::AuthdSilent | Kind::WorkerSilent => 502,
             Kind::TooBig => 413,
             Kind::WrongHost => 421,
-            Kind::NoRoute | Kind::NotKept | Kind::NoTerminal | Kind::NoTrial => 404,
+            Kind::NoRoute
+            | Kind::NotKept
+            | Kind::NoTerminal
+            | Kind::NoTrial
+            | Kind::SessionGone => 404,
             Kind::NoMethod => 405,
             Kind::NotJson => 415,
             Kind::Busy | Kind::NoStore => 503,
@@ -259,6 +282,9 @@ impl Kind {
             Kind::OldConnection => "This connection was opened before the change",
             Kind::TooManyFollows => "The console follows as many logs as it may",
             Kind::NoTrial => "Nothing is being tried by that name",
+            Kind::NotSelf => "Not on your own account from the console",
+            Kind::CutsOff => "This browser comes through what the change takes away",
+            Kind::SessionGone => "That session has ended already",
         }
     }
 
@@ -297,6 +323,9 @@ impl Kind {
             Kind::TooManyFollows => {
                 Some("Wait a little, then follow again, or end a follow you no longer need.")
             }
+            Kind::NotSelf => Some("Do this from another administrator's account."),
+            Kind::CutsOff => Some("Make the change from a browser that does not come through it."),
+            Kind::SessionGone => Some("Reload the list: it shows what is signed in now."),
             Kind::NotJson
             | Kind::BadRequest
             | Kind::Refused
@@ -470,17 +499,24 @@ pub fn refusal(attempt: Attempt, why: &str) -> Failure {
 mod tests {
     use super::*;
 
+    /// The ID that no kind has, since a command gives it: ADM-138, `admin
+    /// reach` or `admin sign-in` while the `console` trial runs.
+    const COMMAND_GIVEN: u16 = 138;
+
     #[test]
-    fn ids_run_from_101_without_a_gap_and_each_is_found_again() {
-        for (at, kind) in Kind::ALL.into_iter().enumerate() {
-            assert_eq!(kind.id(), format!("ADM-{}", 101 + at));
+    fn ids_run_from_101_without_a_gap_but_the_one_a_command_gives_and_each_is_found_again() {
+        let numbers = (101..).filter(|number| *number != COMMAND_GIVEN);
+        for (number, kind) in numbers.zip(Kind::ALL) {
+            assert_eq!(kind.id(), format!("ADM-{number}"));
             assert_eq!(Kind::of(kind.id()), Some(kind));
         }
         // Built, not written, so that `ob docs --check` finds no ID here
         // that has no page.
         let before = format!("ADM-{}", 101 - 1);
-        let after = format!("ADM-{}", 101 + Kind::ALL.len());
+        let command = format!("ADM-{COMMAND_GIVEN}");
+        let after = format!("ADM-{}", 101 + Kind::ALL.len() + 1);
         assert_eq!(Kind::of(&before), None);
+        assert_eq!(Kind::of(&command), None);
         assert_eq!(Kind::of(&after), None);
         assert_eq!(Kind::of(""), None);
     }
@@ -539,6 +575,23 @@ mod tests {
         };
         assert_eq!(refused.body()["error"]["id"], "ADM-134");
         assert_eq!(refused.retry_after, Some(30));
+    }
+
+    #[test]
+    fn acting_on_oneself_cutting_off_and_a_session_gone_have_their_own() {
+        let named = [
+            (Kind::NotSelf, "ADM-136", 409),
+            (Kind::CutsOff, "ADM-137", 409),
+            (Kind::SessionGone, "ADM-139", 404),
+        ];
+        for (kind, id, status) in named {
+            assert_eq!((kind.id(), kind.status()), (id, status));
+        }
+        // The two that refuse a change say what to do instead; a session
+        // that is gone needs nothing but a fresh list.
+        assert!(Kind::NotSelf.fix().is_some_and(|fix| fix.contains("another administrator")));
+        assert!(Kind::CutsOff.fix().is_some_and(|fix| fix.contains("does not come through")));
+        assert!(Kind::SessionGone.fix().is_some_and(|fix| fix.contains("Reload")));
     }
 
     #[test]

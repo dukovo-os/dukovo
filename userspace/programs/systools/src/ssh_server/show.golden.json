@@ -1,0 +1,17 @@
+{
+  "format": 1,
+  "on": true,
+  "running": true,
+  "port": 22,
+  "passwords": true,
+  "keys": true,
+  "allow_users": ["alice", "bob"],
+  "allow_groups": [],
+  "deny_users": [],
+  "deny_groups": ["guests"],
+  "forwarding": "remote",
+  "gateway_ports": "clientspecified",
+  "mistakes": [],
+  "host_key": "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA",
+  "trial": {"left_ms": 41000}
+}

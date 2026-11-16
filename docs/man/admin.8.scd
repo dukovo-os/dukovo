@@ -19,7 +19,15 @@ admin - the web console from a terminal: its address, its actions and its API to
 
 *admin show* _action_ [_name_=_value_ | _name_:=_json_]...
 
-*admin reach* [*private* | *any*]
+*admin reach* [*private* | *any*] [*--try* _seconds_]
+
+*admin keep*
+
+*admin undo*
+
+*admin settings* [*--json*]
+
+*admin sign-in* [*--second-step* *if-set*|*administrators*|*everyone*] [*--session-hours* _n_] [*--idle-minutes* _n_]
 
 *admin token add* _name_ *--scope* _scope_... [*--days* _n_]
 
@@ -48,9 +56,10 @@ as *service.restart*. Each has an _id_ of its area and a verb. The
 console runs an action's command, which is the command *show* prints: the
 button, the API call and the command typed at a terminal do the same.
 
-*about*, *notices*, *actions*, *show* and *reach* with no word need no
-rights. *reach* with a
-word is root's, as the file it changes is: *elevate*(8) it. *token* is the
+*about*, *notices*, *actions*, *show*, *settings*, *sign-in* with no option
+and *reach* with no word need no rights. *reach* with a word and
+*sign-in* with an option are root's, as the file they change is:
+*elevate*(8) them. *token* is the
 person's own, asked of *authd*(8) as that person, so it can never make or
 remove another's.
 
@@ -257,6 +266,89 @@ remove another's.
 	connection, so a connection that is made goes on, and the next one
 	from an address that *private* does not answer is closed.
 
+	With *--try* _seconds_ (10 to 3600) the change is Spark's trial
+	*console* (*service*(8), ADR 0472): Spark keeps the file as it was
+	and puts it back, and has *admind* read it again, unless *admin keep*
+	comes in time, so that a reach that leaves the person's own browser
+	outside undoes itself. It is how the console's Security page changes
+	the reach: the page keeps the change only once its browser has
+	reached the console over a connection made after *admind* read the
+	new file. While the trial runs, *reach* with a word and the sign-in
+	rules' changes are refused (ADM-138), since the undo would put back
+	the file as it was before both.
+
+	```
+	$ elevate admin reach private --try 120
+	/system/settings/admin.toml: trying the change for 120 s
+	The console's reach is now private: Spark undoes it at 21:42:10 unless it is kept, with `admin keep`.
+	```
+
+*keep*, *undo*
+	What the trial *console* comes to: *keep* ends it with the change in
+	force, and *undo* has Spark put the file back and *admind* read it
+	again now. With no trial they say so (NET-179). Root's, as Spark's
+	control socket is.
+
+*settings* [*--json*]
+	Prints what _/system/settings/admin.toml_ says (*admin.toml*(5)), a
+	line for each setting of its three tables. A file that is not there
+	gives the defaults. A file that does not read gives the defaults too,
+	and the reason, which is how the console's Security page shows it.
+	With *--json* it prints one line with an object of these fields, in
+	this order:
+
+	*format*
+		1. A reader that finds another number should stop.
+
+	*sign_in*
+		An object with *second_step* (*if-set*, *administrators* or
+		*everyone*), *session_hours* and *idle_minutes*.
+
+	*console*
+		An object with *listen*, *reach* (*private* or *any*) and
+		*certificate*.
+
+	*terminal*
+		An object with *allowed* (*everyone*, *administrators* or
+		*nobody*) and *sessions_per_account*.
+
+	*wrong*
+		Null, or why the file does not read, in the words that
+		*admind* writes in its log.
+
+	```
+	{"format":1,"sign_in":{"second_step":"if-set","session_hours":12,
+	"idle_minutes":30},"console":{"listen":9090,"reach":"private",
+	"certificate":"this-machine"},"terminal":{"allowed":"everyone",
+	"sessions_per_account":32},"wrong":null}
+	```
+
+*sign-in* [*--second-step* *if-set*|*administrators*|*everyone*] [*--session-hours* _n_] [*--idle-minutes* _n_]
+	With no option, prints the sign-in rules: who gives a second step,
+	the hours a session lasts, and the minutes it lasts with no console
+	page open. With options, sets those given in the *[sign-in]* table of
+	_/system/settings/admin.toml_ and nothing else, so that every
+	comment in the file stays, and then has Spark reload *admind*(8) (as
+	*service admind reload* does), which reads the file again at once;
+	*authd*(8) reads it at each sign-in. The bounds are those of
+	*admin.toml*(5): _n_ for *--session-hours* is 1 to 168, and for
+	*--idle-minutes* 5 to 1440. An option given twice, a value out of its
+	bounds and a word that is none of those given are mistakes in the
+	command line. When the file says what is asked already it changes
+	nothing and says so, and a file that *admind* would refuse is not
+	changed: *sign-in* says what is wrong with it. While the trial
+	*console* runs a change is refused (ADM-138), since its undo would put
+	back the file as it was before both. A change is root's:
+
+	```
+	$ admin sign-in
+	second-step    if-set
+	session-hours  12
+	idle-minutes   30
+	$ elevate admin sign-in --second-step administrators --session-hours 8
+	The sign-in rules are changed: admind has read them again, and authd reads them at each sign-in.
+	```
+
 *token add* _name_ *--scope* _scope_... [*--days* _n_]
 	Makes an API token named _name_ for the person who types it, which a
 	script gives the console as *Authorization: Bearer* and the token
@@ -319,7 +411,11 @@ remove another's.
 	The network settings, _/system/settings/network_, are put to use by
 	asking Spark to make *netd*(8) read them again, as *service netd
 	reload* does, and it says so; *netd* that does not run reads them when
-	it starts. The firewall's rules, _/system/settings/firewall_, are put to
+	it starts. In the same way, SSH's settings,
+	_/system/settings/ssh/sshd_config_, are put to use by asking *sshd*(8)
+	to read them again, which keeps the SSH connections that are open,
+	and the console's settings, _/system/settings/admin.toml_, by asking
+	*admind*(8) to. The firewall's rules, _/system/settings/firewall_, are put to
 	use by *firewall load* (*firewall*(8)), which gives the kernel the
 	rules in the file, and it prints what that prints. A change of both
 	puts both to use, each once. When *netd* cannot be asked or the rules
@@ -393,8 +489,9 @@ _/system/live/admind/issue_
 	changes. It is not there while the console is not running.
 
 _/system/settings/admin.toml_
-	The console's settings, which *admin reach* reads and, as root,
-	changes (*admin.toml*(5)), and *admin about* reads for the port.
+	The console's settings, which *admin reach* and *admin sign-in* read
+	and, as root, change (*admin.toml*(5)), *admin settings* shows, and
+	*admin about* reads for the port.
 
 _/system/live/sign-in/_, _/system/live/sysupdate/failure_
 	The notices *admin notices* lists.
@@ -415,11 +512,12 @@ _/system/state/admind/store.db_
 
 0 when it did what was asked; 1 when it did not, saying why, which
 includes a mistake in the command line, a refusal of *authd*(8), the
-console not running for *fingerprint*, for *reach* a change that was not
-made by root, a settings file that is not right and a Spark that did not
-take the reload, a change that cannot be put back or a store that cannot
-be opened for *put-back*, and a folder that *export* will not write in or
-a *git* that does not run.
+console not running for *fingerprint*, for *reach* and *sign-in* a change
+that was not made by root, a settings file that is not right, a trial that
+runs (ADM-138) and a Spark that did not take the reload or the trial, for
+*keep* and *undo* no trial (NET-179), a change that cannot be put back or a
+store that cannot be opened for *put-back*, and a folder that *export* will
+not write in or a *git* that does not run.
 
 # EXAMPLES
 

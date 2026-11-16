@@ -30,7 +30,7 @@ for guessing passwords
 
 *firewall dropped* [*--since* _time_] [*--json*]
 
-*firewall blocked*
+*firewall blocked* [*--json*]
 
 *firewall unblock* _address_
 
@@ -191,9 +191,10 @@ from anyone else.
 *blocked* lists the addresses blocked now: the address, until when, how
 many blocks in a row it has had, and why. Until is the local time of day
 when the block ends today, and the date and the time when it does not;
-with nothing blocked it says so in one line. An address is an IPv4
-address, or an IPv6 network of 64 bits, since one computer holds a whole
-/64:
+with nothing blocked it says so in one line. *--json* writes the
+settings and the blocks as the web console reads them (see JSON). An
+address is an IPv4 address, or an IPv6 network of 64 bits, since one
+computer holds a whole /64:
 
 ```
 $ elevate firewall blocked
@@ -248,9 +249,9 @@ the blocks, so that it answers an administrator's command inside
 
 # JSON
 
-With *--json*, *list*, *status*, *test* and *dropped* write one line,
-an object, as the web console reads them. The fields are in the order
-given here.
+With *--json*, *list*, *status*, *test*, *dropped* and *blocked* write
+one line, an object, as the web console reads them. The fields are in
+the order given here.
 
 *list --json*
 	*rules*, an array with an object for each rule: *number* (from 1, as
@@ -292,6 +293,23 @@ given here.
 	*card*, *why* (what the kernel says after the card, such as
 	*process 77 listens for this machine alone*, or *null*), *count*,
 	*first_ms* and *last_ms*.
+
+*blocked --json*
+	*format*, 1, which a reader that finds another number should stop at;
+	the settings of *blocking.toml*(5): *on* (*true* or *false*), *tries*,
+	*within_s*, *first_s* and *longest_s* (seconds) and *never* (an array
+	of the networks never blocked, as the file writes them); *blocks*, an
+	array with an object for each address blocked now, in authd's order:
+	*address* (an IPv4 address, or the IPv6 network of 64 bits, as
+	*blocked* writes it), *until_ms* (when the block ends, in
+	milliseconds since 1970), *in_a_row* (how many blocks of it came one
+	after another, each within a day of the end of the one before, this
+	one counted) and *why*; and *wrong*, *null*, or why the settings are
+	not given. A _blocking.toml_ that is not there says the defaults; one
+	that does not read leaves *on*, *tries*, *within_s*, *first_s*,
+	*longest_s* and *never* *null*, since authd then goes on with the
+	settings it read last, and *wrong* says what is wrong with it. It
+	asks authd, which answers an administrator's command alone.
 
 # EXIT STATUS
 

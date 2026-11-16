@@ -31,7 +31,7 @@ async fn unlock(world: &World, session: &Session) {
 
 /// Signs alice in, who has a second step, with the code the test authd
 /// takes.
-async fn sign_in_alice(world: &World) -> Session {
+pub(super) async fn sign_in_alice(world: &World) -> Session {
     let body = json!({ "name": "alice", "password": "right" });
     let answered = send(world, post("/api/1/sign-in", &body)).await;
     let ticket = answered.json()["step"]["ticket"].as_str().unwrap().to_string();

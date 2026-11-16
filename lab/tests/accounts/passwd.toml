@@ -8,7 +8,7 @@ time = "3m"
 [[step]]
 run = "passwd no-such-acct-xyz"
 exit = 1
-expect = "there is no account no-such-acct-xyz"
+expect = "there is no account called no-such-acct-xyz"
 # Someone who is not root cannot change another account's password.
 [[step]]
 run = "printf 'wrongpass\\nnewpw12345\\n' | passwd root"

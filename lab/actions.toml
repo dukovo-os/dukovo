@@ -203,6 +203,30 @@ compares = false
 tests = { checks = "admind::actions::console::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
 
 [[action]]
+id = "console.keep"
+title = "Keep the console's settings"
+area = "console"
+changes = true
+method = "POST"
+path = "/api/1/console/trial/keep"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::console::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "console.undo"
+title = "Undo the console's settings"
+area = "console"
+changes = true
+method = "POST"
+path = "/api/1/console/trial/undo"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::console::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
 id = "console.export"
 title = "Copy the settings to Git"
 area = "console"
@@ -225,6 +249,18 @@ runs = "as-the-person"
 long = false
 compares = false
 tests = { checks = "admind::actions::checks::tests", route = "admin-actions", same_as_command = "admin-actions", browser = "web-console/actions", ansible = "web-console/ansible" }
+
+[[action]]
+id = "checks.run"
+title = "Run the checks"
+area = "security"
+changes = true
+method = "POST"
+path = "/api/1/checks/run"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::checks::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
 
 [[action]]
 id = "metrics.now"
@@ -837,3 +873,435 @@ runs = "as-administrator"
 long = false
 compares = false
 tests = { checks = "admind::actions::moving::tests", route = "admin-move", same_as_command = "admin-move", browser = "web-console/move", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.list"
+title = "List the accounts"
+area = "accounts"
+changes = false
+method = "GET"
+path = "/api/1/accounts"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.list-all"
+title = "List the accounts as an administrator"
+area = "accounts"
+changes = false
+method = "GET"
+path = "/api/1/accounts/list/all"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.last"
+title = "Show when each account last signed in"
+area = "accounts"
+changes = false
+method = "GET"
+path = "/api/1/sign-ins/last"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.show"
+title = "Show an account"
+area = "accounts"
+changes = false
+method = "GET"
+path = "/api/1/accounts/{name}"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.add"
+title = "Add an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/add"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.set"
+title = "Change an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/set"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.password"
+title = "Change an account's password"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/password"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.disable"
+title = "Disable an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/disable"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.enable"
+title = "Enable an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/enable"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.remove"
+title = "Remove an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/remove"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.key-add"
+title = "Add an SSH key to an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/keys/add"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.key-remove"
+title = "Remove an SSH key from an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/keys/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.token-revoke"
+title = "Revoke an API token of an account"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/tokens/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.steps-reset"
+title = "Remove an account's second steps"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/second-step/reset"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "accounts.end"
+title = "End an account's session at the machine"
+area = "accounts"
+changes = true
+method = "POST"
+path = "/api/1/accounts/{name}/end"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::accounts::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "account.show"
+title = "Show your account"
+area = "account"
+changes = false
+method = "GET"
+path = "/api/1/account/show"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::account::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "account.name"
+title = "Change your full name"
+area = "account"
+changes = true
+method = "POST"
+path = "/api/1/account/name"
+runs = "as-the-person"
+long = false
+compares = true
+tests = { checks = "admind::actions::account::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "account.password"
+title = "Change your password"
+area = "account"
+changes = true
+method = "POST"
+path = "/api/1/account/password"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::account::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "account.key-add"
+title = "Add an SSH key to your account"
+area = "account"
+changes = true
+method = "POST"
+path = "/api/1/account/keys/add"
+runs = "as-the-person"
+long = false
+compares = true
+tests = { checks = "admind::actions::account::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "account.key-remove"
+title = "Remove an SSH key from your account"
+area = "account"
+changes = true
+method = "POST"
+path = "/api/1/account/keys/remove"
+runs = "as-the-person"
+long = false
+compares = true
+tests = { checks = "admind::actions::account::tests", route = "admin-accounts", same_as_command = "admin-accounts", browser = "web-console/accounts", ansible = "web-console/ansible" }
+
+[[action]]
+id = "security.sign-in"
+title = "Show the sign-in rules"
+area = "security"
+changes = false
+method = "GET"
+path = "/api/1/security/sign-in"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::security::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "security.sign-in-set"
+title = "Set the sign-in rules"
+area = "security"
+changes = true
+method = "POST"
+path = "/api/1/security/sign-in"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::security::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "security.blocked"
+title = "List the blocked addresses"
+area = "security"
+changes = false
+method = "GET"
+path = "/api/1/security/blocked"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::security::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "security.unblock"
+title = "Unblock an address"
+area = "security"
+changes = true
+method = "POST"
+path = "/api/1/security/unblock"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::security::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "security.never-block"
+title = "Never block a network"
+area = "security"
+changes = true
+method = "POST"
+path = "/api/1/security/never-block"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::security::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "security.never-block-remove"
+title = "Block a network again"
+area = "security"
+changes = true
+method = "POST"
+path = "/api/1/security/never-block/remove"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::security::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "ssh.show"
+title = "Show SSH's settings"
+area = "ssh"
+changes = false
+method = "GET"
+path = "/api/1/ssh"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::ssh::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "ssh.set"
+title = "Set SSH's settings"
+area = "ssh"
+changes = true
+method = "POST"
+path = "/api/1/ssh"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::ssh::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "ssh.on"
+title = "Turn SSH on"
+area = "ssh"
+changes = true
+method = "POST"
+path = "/api/1/ssh/on"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::ssh::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "ssh.off"
+title = "Turn SSH off"
+area = "ssh"
+changes = true
+method = "POST"
+path = "/api/1/ssh/off"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::ssh::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "ssh.keep"
+title = "Keep SSH's settings"
+area = "ssh"
+changes = true
+method = "POST"
+path = "/api/1/ssh/trial/keep"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::ssh::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "ssh.undo"
+title = "Undo SSH's settings"
+area = "ssh"
+changes = true
+method = "POST"
+path = "/api/1/ssh/trial/undo"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::ssh::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "private.show"
+title = "Show private access"
+area = "private"
+changes = false
+method = "GET"
+path = "/api/1/private"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::private::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "private.serve"
+title = "Set up private access"
+area = "private"
+changes = true
+method = "POST"
+path = "/api/1/private/serve"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::private::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "private.add"
+title = "Add a device"
+area = "private"
+changes = true
+method = "POST"
+path = "/api/1/private/devices/add"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::private::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "private.remove"
+title = "Remove a device"
+area = "private"
+changes = true
+method = "POST"
+path = "/api/1/private/devices/remove"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::private::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }

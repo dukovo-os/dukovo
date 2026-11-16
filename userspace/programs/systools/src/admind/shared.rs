@@ -106,11 +106,11 @@ pub fn seconds_left(until: Option<i64>, now: i64) -> Option<i64> {
     until.map(|until| until.saturating_sub(now)).filter(|left| *left > 0)
 }
 
-/// Tells the authd at `socket` that its session `session` ended. authd
-/// has forgotten a session whose worker ended, and then says so, which is
-/// no trouble.
-async fn tell_end(socket: String, session: String) {
-    if let Err(why) = authd::ask(&socket, Console::End { session }, &[]).await {
+/// Tells the authd at `socket` that its session `session` ended, and who
+/// ended it from the Accounts page, if someone did. authd has forgotten a
+/// session whose worker ended, and then says so, which is no trouble.
+async fn tell_end(socket: String, session: String, by: Option<String>) {
+    if let Err(why) = authd::ask(&socket, Console::End { session, by }, &[]).await {
         log(4, &why);
     }
 }
@@ -279,6 +279,19 @@ impl Shared {
     ///
     /// Outside a `LocalSet`.
     pub fn finish(&self, session: Session<Link>, reason: &'static str) -> JoinHandle<()> {
+        self.finish_by(session, reason, None)
+    }
+
+    /// The same, for a session that account `by` ended from the Accounts
+    /// page (ADR 0562), with `reason` `by-administrator` or `by-you`:
+    /// authd is told who, for its audit line and the person's next
+    /// sign-in.
+    pub fn finish_by(
+        &self,
+        session: Session<Link>,
+        reason: &'static str,
+        by: Option<&str>,
+    ) -> JoinHandle<()> {
         log(
             6,
             &format!("{}'s console session from {} ended: {reason}", session.name, session.from),
@@ -287,7 +300,8 @@ impl Shared {
         let authd = session.authd.clone();
         drop(session);
         let (code, why) = match reason {
-            "signed-out" => (Code::SessionEnded, Why::SignedOut),
+            "signed-out" | "by-you" => (Code::SessionEnded, Why::SignedOut),
+            "by-administrator" => (Code::SessionEnded, Why::Ended),
             "restarted" => (Code::Stopping, Why::Restart),
             _ => (Code::SessionEnded, Why::Idle),
         };
@@ -296,7 +310,7 @@ impl Shared {
         terminals.end_admin_panes(&authd, why);
         drop(terminals);
         self.changes.send_replace(());
-        tokio::task::spawn_local(tell_end(self.authd.clone(), authd))
+        tokio::task::spawn_local(tell_end(self.authd.clone(), authd, by.map(String::from)))
     }
 
     /// Keeps `session` and gives the cookie that names it. When the
@@ -313,7 +327,7 @@ impl Shared {
         let authd = session.authd.clone();
         let added = self.sessions.borrow_mut().add(session);
         added.map_err(|why| {
-            tokio::task::spawn_local(tell_end(self.authd.clone(), authd));
+            tokio::task::spawn_local(tell_end(self.authd.clone(), authd, None));
             Failure::new(Kind::Busy, why)
         })
     }
