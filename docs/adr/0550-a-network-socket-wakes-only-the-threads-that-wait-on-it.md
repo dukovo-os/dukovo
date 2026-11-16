@@ -97,6 +97,13 @@ on that socket's queue alone.
   machine. A program that polls many sockets while others poll theirs
   pays for that until `poll` waits on each object it looks at; that is
   a separate change.
+- smoltcp still goes through every socket of a stack for each packet and
+  each poll, so an idle socket is not free: the benchmarks' 11 idle
+  sockets cost a UDP round trip on one CPU about 5,000 instructions and a
+  TCP connection about 14,000, which their instruction budgets now
+  allow for. A round trip over a TCP connection passes its bytes straight
+  across (ADR 0186) and does not pay it. Finding a socket by its address
+  and port, as Linux does, is a separate change.
 - The kernel's wait table is one list, which `wake_all` goes through:
   waking a socket's waiters costs a walk of every thread waiting on
   anything. A wake walks it only when a thread waits on that socket.
