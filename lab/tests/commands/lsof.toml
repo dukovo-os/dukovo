@@ -4,9 +4,11 @@
 about = "lsof lists what a process holds: its folder, pipes and the files it opened, with --files only those; a name nothing runs under finds nothing and fails"
 time = "2m"
 
+# The columns are as wide as their widest value, so the heading's spaces
+# depend on the process numbers: each heading is matched alone.
 [[step]]
 run = "sh -c 'lsof -p $$'"
-expect = ["COMMAND PID USER", " cwd ", "/users/lab", " 0r ", "FIFO", " 1w "]
+expect = ["COMMAND ", " PID ", " USER ", " cwd ", "/users/lab", " 0r ", "FIFO", " 1w "]
 [[step]]
 run = "sh -c 'exec 3< /system/commands/ls; lsof --files -p $$'"
 expect = [" 3r ", "REG"]

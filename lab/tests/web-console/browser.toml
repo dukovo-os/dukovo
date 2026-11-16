@@ -32,9 +32,12 @@ root = true
 expect = "Active: active (running)"
 # The machine's own certificate, which certd made, named in nginx's service
 # file, and the HTTPS server its settings hold turned on, as their comments
-# say; a restart has Spark copy the certificate for nginx.
+# say; a restart has Spark copy the certificate for nginx. Spark holds
+# nginx's sockets, so nginx counts as running before it has copied its
+# settings into its folder, which a fast machine reaches first: the step
+# waits for the file.
 [[step]]
-run = '''sh -c 'sed -i "/^secrets = /a certificates = [\"this-machine\"]" /system/settings/spark/services/nginx.toml && cd /shared/services/org.nginx.nginx/nginx/conf && sed -i "/^    #server {/,/^    #}/s/^    #/    /" nginx.conf && service nginx restart && echo restarted' '''
+run = '''sh -c 'i=0; conf=/shared/services/org.nginx.nginx/nginx/conf/nginx.conf; while [ $i -lt 60 ] && [ ! -e $conf ]; do sleep 1; i=$((i + 1)); done; sed -i "/^secrets = /a certificates = [\"this-machine\"]" /system/settings/spark/services/nginx.toml && cd /shared/services/org.nginx.nginx/nginx/conf && sed -i "/^    #server {/,/^    #}/s/^    #/    /" nginx.conf && service nginx restart && echo restarted' '''
 root = true
 expect = "restarted"
 [[step]]

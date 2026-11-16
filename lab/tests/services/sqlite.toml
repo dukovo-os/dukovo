@@ -35,10 +35,11 @@ expect = ["ENABLE_FTS5", "OMIT_LOAD_EXTENSION", "THREADSAFE=1"]
 expect_not = "ENABLE_DBPAGE_VTAB"
 # The shell has no .recover, which SQLite compiles only with
 # SQLITE_ENABLE_DBPAGE_VTAB: security/vex.json states on that ground that
-# CVE-2026-119586, a flaw of .recover, does not affect Dukovo.
+# CVE-2026-119586, a flaw of .recover, does not affect Dukovo. The shell
+# ends with status 1 after an unknown command, so the step prints it.
 [[step]]
-run = "sh -c '/applications/org.sqlite.sqlite/bin/sqlite3 :memory: .recover 2>&1'"
-expect = 'unknown command or invalid arguments:  "recover"'
+run = """sh -c '/applications/org.sqlite.sqlite/bin/sqlite3 :memory: .recover 2>&1; echo "sqlite3 $?"'"""
+expect = ['unknown command or invalid arguments:  "recover"', "sqlite3 1"]
 # WAL in exclusive locking mode, 10000 rows from a recursive query, and
 # what the database says of them: the sum is 3 * (10000 * 10001 / 2). Then
 # a backup to a second file.

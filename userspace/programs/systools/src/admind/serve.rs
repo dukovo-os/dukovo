@@ -235,8 +235,7 @@ impl Upkeep {
                 }
             }
         }
-        let names = shared.certificate.borrow().names.clone();
-        *shared.identity.borrow_mut() = Identity::read(&names);
+        shared.read_identity();
         shared.maintain(std::time::Instant::now());
         shared.tasks.prune(tokio::time::Instant::now());
         if let Some(store) = &shared.store
@@ -275,9 +274,8 @@ impl Upkeep {
             Ok(certificate) => {
                 log(6, &format!("the certificate {} is read again", read.console.certificate));
                 *shared.settings.borrow_mut() = merged(&old, read, true);
-                let names = certificate.names.clone();
                 *shared.certificate.borrow_mut() = certificate;
-                *shared.identity.borrow_mut() = Identity::read(&names);
+                shared.read_identity();
             }
             Err(why) => {
                 log(4, &format!("{why}: admind goes on with the certificate it has"));

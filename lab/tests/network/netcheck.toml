@@ -7,12 +7,22 @@ time = "5m"
 # The machine has only just started, so its clock may not have been set
 # by a time server yet, which is a warning (exit status 2) and not a
 # failure: the loop asks again for a minute until no layer has failed.
-# The output is shown whatever the status, which ends the step.
+# A lab network that gives no router fails the gateway layer at once
+# (NET-121), which asking again does not change. The output is shown
+# whatever the status.
 [[step]]
-run = '''sh -c 'i=0; while [ $i -lt 30 ]; do netcheck > /tmp/netcheck.out; s=$?; [ $s -le 2 ] && break; sleep 2; i=$((i + 1)); done; cat /tmp/netcheck.out; [ $s -le 2 ]' '''
+run = '''sh -c 'i=0; while [ $i -lt 30 ]; do netcheck > /tmp/netcheck.out; s=$?; [ $s -le 2 ] && break; grep -q NET-121 /tmp/netcheck.out && break; sleep 2; i=$((i + 1)); done; cat /tmp/netcheck.out; [ $s -le 2 ] || grep -q NET-121 /tmp/netcheck.out' '''
+expect = ["link      passed", "address   passed"]
+# netcheck checks nothing past a gateway it does not have: on a lab
+# network whose DHCP server gives no router, as a lab PC that routes
+# nothing does for its real machines, the rest of the test is skipped,
+# and the layers below the gateway have passed.
+[[step]]
+run = "grep -c 'gateway   passed' /tmp/netcheck.out"
+or_skip = "the lab network gives no router (NET-121), so netcheck checks nothing past the address"
+[[step]]
+run = "cat /tmp/netcheck.out"
 expect = [
-    "link      passed",
-    "address   passed",
     "gateway   passed",
     "dns       passed",
     "mtu       passed",
