@@ -635,8 +635,9 @@ pub fn deny(host: &mut dyn Host, ask: &Deny, steps: &Steps) -> Result<Vec<String
     Ok(words)
 }
 
-/// `pg_hba.conf` as it will be with the lines of `database` gone, and
-/// where it is.
+/// `pg_hba.conf` as it will be with the lines of `database` gone, the
+/// firewall's rules as they will be with port 5432 shut to the networks
+/// that no line names any more, and where both are.
 pub struct Without {
     /// The file.
     path: PathBuf,
@@ -644,14 +645,22 @@ pub struct Without {
     text: String,
     /// The database whose lines go.
     database: String,
+    /// The firewall's rules.
+    firewall: PathBuf,
+    /// The text of the firewall's rules now, none for a file not there.
+    firewall_before: Option<String>,
+    /// The firewall's rules once the lines are gone.
+    firewall_after: String,
 }
 
 /// `pg_hba.conf` without the lines of `database`, or none when it has
-/// none there. Nothing is written.
+/// none there, and the firewall's rules without the networks that only
+/// those lines named. Nothing is written.
 ///
 /// # Errors
 ///
-/// DB-104 when the block is not whole.
+/// DB-104 when the block is not whole; DB-107 while the firewall's rules
+/// are being tried, and DB-108 when they cannot take the block.
 pub fn hba_without(host: &mut dyn Host, database: &str) -> Result<Option<Without>, Fail> {
     let server = locate(host)?;
     let text = read_hba(&server.hba)?;
@@ -661,27 +670,59 @@ pub fn hba_without(host: &mut dyn Host, database: &str) -> Result<Option<Without
     }
     let new = hba::without_rules(&text, |rule| rule.database == database)
         .map_err(|why| errors::not_passed(&why, ""))?;
-    Ok(Some(Without { path: server.hba, text: new, database: database.to_string() }))
+    let open_to = hba::rules(&new).map_err(|why| errors::not_passed(&why, ""))?;
+    let (firewall_before, wanted) = firewall_plan(host, &open_to)?;
+    Ok(Some(Without {
+        path: server.hba,
+        text: new,
+        database: database.to_string(),
+        firewall: host.files().firewall.clone(),
+        firewall_before,
+        firewall_after: wanted.text,
+    }))
 }
 
 /// Writes `pg_hba.conf` without the lines and has the server read it
-/// again. The database is gone by now, and a failure says so.
+/// again, and shuts port 5432 in the firewall to the networks that no
+/// database names any more. The database is gone by now: each is tried
+/// even when the other fails, and a failure says what stays.
 ///
 /// # Errors
 ///
-/// When the file cannot be written or the server does not read it again.
+/// When a file cannot be written, the server does not read it again, or
+/// the firewall does not take its rules.
 pub fn write_without(host: &mut dyn Host, without: &Without) -> Result<Vec<String>, Fail> {
-    let done = put(&without.path, without.text.as_bytes(), HBA_MODE).and_then(|()| reload(host));
-    match done {
-        Ok(()) => Ok(vec![format!(
-            "took {}'s lines out of pg_hba.conf, and PostgreSQL reads it again",
-            without.database
-        )]),
-        Err(why) => Err(fail(format!(
-            "the database {} was removed, but its lines stay in pg_hba.conf: {}",
-            without.database, why.message
-        ))),
+    let database = &without.database;
+    let hba = put(&without.path, without.text.as_bytes(), HBA_MODE).and_then(|()| reload(host));
+    let shuts = without.firewall_before.as_deref().unwrap_or_default() != without.firewall_after;
+    let firewall = if shuts {
+        put(&without.firewall, without.firewall_after.as_bytes(), FIREWALL_MODE)
+            .map_err(|why| why.message)
+            .and_then(|()| {
+                host.load_firewall()
+                    .map_err(|why| format!("the firewall did not take its rules: {why}"))
+            })
+    } else {
+        Ok(())
+    };
+    let mut stays = Vec::new();
+    if let Err(why) = &hba {
+        stays.push(format!("its lines stay in pg_hba.conf ({})", why.message));
     }
+    if let Err(why) = &firewall {
+        stays.push(format!(
+            "port {PORT} may stay open in the firewall to the networks they named ({why})"
+        ));
+    }
+    if !stays.is_empty() {
+        return Err(fail(format!("the database {database} was removed, but {}", stays.join("; "))));
+    }
+    let mut words =
+        vec![format!("took {database}'s lines out of pg_hba.conf, and PostgreSQL reads it again")];
+    if shuts {
+        words.push(format!("closed port {PORT} to the networks no database names"));
+    }
+    Ok(words)
 }
 
 #[cfg(test)]
@@ -1131,6 +1172,65 @@ mod tests {
         );
         deny(&mut fake, &all_of("shop"), &Steps::off()).unwrap();
         assert_eq!(fake.firewall_text().unwrap(), format!("{before}\n"));
+    }
+
+    fn removing(name: &str) -> super::super::add::Remove {
+        super::super::add::Remove { name: name.into(), role: false, force: false }
+    }
+
+    #[test]
+    fn removing_the_last_database_a_network_is_opened_for_shuts_port_5432_to_it() {
+        let before = "# Mine.\nallow tcp 22\n";
+        let mut fake = two().with_firewall_rules(before);
+        allow(&mut fake, &lets("shop", &["192.168.1.0/24"]), &Steps::off()).unwrap();
+        allow(&mut fake, &lets("blog", &["10.0.0.0/8"]), &Steps::off()).unwrap();
+        let words = super::super::add::remove(&mut fake, &removing("shop")).unwrap();
+        assert_eq!(words.last().unwrap(), "closed port 5432 to the networks no database names");
+        assert_eq!(
+            fake.firewall_text().unwrap(),
+            format!("{before}\n{}", block_for(&["10.0.0.0/8"]))
+        );
+        assert_eq!(fake.firewall_loads(), 3);
+        // The last one takes the block away and leaves the rest.
+        super::super::add::remove(&mut fake, &removing("blog")).unwrap();
+        assert_eq!(fake.firewall_text().unwrap(), before);
+        assert_eq!(fake.firewall_loads(), 4);
+        assert!(fake.hba_rules().is_empty());
+    }
+
+    #[test]
+    fn a_network_another_database_is_opened_for_stays_open_when_one_goes() {
+        let mut fake = two();
+        allow(&mut fake, &lets("shop", &["10.0.2.0/24"]), &Steps::off()).unwrap();
+        allow(&mut fake, &lets("blog", &["10.0.2.0/24"]), &Steps::off()).unwrap();
+        let loads = fake.firewall_loads();
+        let words = super::super::add::remove(&mut fake, &removing("shop")).unwrap();
+        assert_eq!(words.len(), 2, "{words:?}");
+        assert_eq!(fake.firewall_text().unwrap(), block_for(&["10.0.2.0/24"]));
+        assert_eq!(fake.firewall_loads(), loads);
+    }
+
+    #[test]
+    fn a_remove_while_the_firewall_is_tried_drops_nothing() {
+        let mut fake = open_to(&["10.0.2.0/24"]).with_a_firewall_trial();
+        let failure = super::super::add::remove(&mut fake, &removing("shop")).unwrap_err();
+        assert!(failure.message.ends_with("(DB-107)"), "{}", failure.message);
+        assert!(!fake.sent().iter().any(|statement| statement.starts_with("DROP")));
+        assert_eq!(fake.hba_rules().len(), 1);
+    }
+
+    #[test]
+    fn a_firewall_that_does_not_take_its_rules_after_a_remove_is_told() {
+        let mut fake = open_to(&["10.0.2.0/24"]).failing_to_load_the_firewall(1);
+        let failure = super::super::add::remove(&mut fake, &removing("shop")).unwrap_err();
+        assert_eq!(
+            failure.message,
+            "the database shop was removed, but port 5432 may stay open in the firewall to the \
+             networks they named (the firewall did not take its rules: the kernel refused the \
+             rules)"
+        );
+        // pg_hba.conf lost the lines all the same.
+        assert!(fake.hba_rules().is_empty());
     }
 
     #[test]

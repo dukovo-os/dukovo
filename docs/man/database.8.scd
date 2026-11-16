@@ -111,8 +111,8 @@ deny tcp 5432
 The block has an *allow* for each network that a line of the block of
 *pg\_hba.conf* names, whichever database the line is for, since 5432 is one
 port for all of them, each network once, in the order the lines come, and a
-*deny* that ends it. *deny* makes the block again from the lines that are
-left, and takes it away when none is. A block that is as it should be is not
+*deny* that ends it. *deny* and *remove* make the block again from the
+lines that are left, and take it away when none is. A block that is as it should be is not
 written again. A new block goes at the end of the file, after the rules the
 administrator wrote, and a block that is there is written where it is, so
 that the administrator may move it. Every other line stays as it was
@@ -126,9 +126,9 @@ A rule that the administrator wrote before the block, such as *allow tcp*
 or *allow tcp 5432*, decides first for the connections it names, and
 *database* does not move it: *allow* says so in a line of its output, and
 *list --json* has the rule as *earlier*. While the firewall's rules are
-being tried, *allow* and *deny* change nothing (DB-107). A file whose block
-is not whole, or that would hold more rules than the firewall holds, ends
-them the same way (DB-108).
+being tried, *allow*, *deny* and *remove* change nothing (DB-107). A file
+whose block is not whole, or that would hold more rules than the firewall
+holds, ends them the same way (DB-108).
 
 A change takes the lock _/system/state/databases/lock_ for as long as it
 runs, so that two do not mix; the second waits up to a minute.
@@ -221,8 +221,11 @@ set to zero. *allow* takes up to 20 at a time.
 	nothing, the firewall's rules included.
 
 *remove* _name_ [*--role*] [*--force*]
-	Drops the database _name_ with its data, and takes its lines out of
-	the block of *pg\_hba.conf*. It stops with the programs that have a
+	Drops the database _name_ with its data, takes its lines out of the
+	block of *pg\_hba.conf*, and shuts port 5432 in the firewall to the
+	networks that no database names any more. A firewall being tried, or
+	a firewall file that cannot take the block, ends it before anything is
+	dropped (DB-107, DB-108). It stops with the programs that have a
 	session open to it, by name, and does nothing (DB-103); *--force*
 	ends the sessions and drops it. With *--role*, the role that owned
 	it is dropped too, but only if *database* made it and it owns and may
@@ -356,15 +359,16 @@ The web console shows the page for it.
 *DB-107*
 	The firewall's rules are being tried (*firewall allow --try*), and
 	Spark would put the file back as it was before the trial, which would
-	lose the block of port 5432. *allow* and *deny* changed nothing. Keep
+	lose the block of port 5432. *allow*, *deny* and *remove* changed
+	nothing. Keep
 	or undo the trial with *firewall keep* or *firewall undo*, and run the
 	command again.
 
 *DB-108*
 	The firewall's rules cannot take the block of port 5432: the two
 	comment lines of the block do not make one block, or the file would
-	hold more rules than the firewall holds. *allow* and *deny* changed
-	nothing. The words say which, and the line; *list* shows them too.
+	hold more rules than the firewall holds. *allow*, *deny* and *remove*
+	changed nothing. The words say which, and the line; *list* shows them too.
 
 Other failures have no ID: a database that is not there, a role that
 has no password to sign in with from other machines, or a statement

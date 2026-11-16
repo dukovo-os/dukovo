@@ -689,8 +689,10 @@ impl Args for Removing {
 }
 
 /// `database remove NAME [--role] [--force]`: removes the database, and
-/// with `role` the role that owns it. It is the machine's data that goes:
-/// the playbook has to say it is meant too, in `dukovo_confirm_purge`.
+/// with `role` the role that owns it, and shuts port 5432 in the firewall
+/// to the networks that no database names any more. It is the machine's
+/// data that goes: the playbook has to say it is meant too, in
+/// `dukovo_confirm_purge`.
 pub struct Remove;
 
 impl Action for Remove {
@@ -699,7 +701,7 @@ impl Action for Remove {
     const CHANGES: bool = true;
     const PATH: &'static str = "/api/1/databases/{name}/remove";
     const RUNS: Runs = Runs::AsAdministrator;
-    const ERRORS: &'static [&'static str] = &["DB-101", "DB-103"];
+    const ERRORS: &'static [&'static str] = &["DB-101", "DB-103", "DB-107", "DB-108"];
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Remove a database";
     type Args = Removing;
@@ -720,6 +722,10 @@ impl Action for Remove {
 
     fn ansible(args: &Removing) -> Ansible {
         command_task::<Self>(args).when("dukovo_confirm_purge | bool")
+    }
+
+    fn files(_: &Removing) -> Vec<String> {
+        vec![FIREWALL.into()]
     }
 
     fn probe(_: &Removing) -> Option<Vec<String>> {
@@ -836,7 +842,7 @@ mod tests {
                 "/api/1/databases/{name}/remove",
                 false,
                 false,
-                vec!["DB-101", "DB-103"],
+                vec!["DB-101", "DB-103", "DB-107", "DB-108"],
             ),
         ] {
             let one = action(id);
@@ -1175,7 +1181,8 @@ mod tests {
         assert_eq!(prepared.ansible.when.as_deref(), Some("dukovo_confirm_purge | bool"));
         assert!(yaml(&prepared.ansible).ends_with("  when: \"dukovo_confirm_purge | bool\"\n"));
         assert!(prepared.ansible.become_root && !prepared.ansible.no_log);
-        assert!(prepared.files.is_empty());
+        // The firewall's rules, which lose the networks only it named.
+        assert_eq!(prepared.files, [FIREWALL]);
         for (args, field) in [
             (json!({ "name": "lab", "role": "yes" }), None),
             (json!({ "name": "lab", "force": 1 }), None),
