@@ -145,6 +145,11 @@ enum Who {
     Bob,
 }
 
+/// What one run of curl for several requests gives: each answer with how
+/// many connections curl opened for it, what curl said, and whether it
+/// ended well.
+type OnOneConnection = (Vec<(Reply, u32)>, String, bool);
+
 /// What the test keeps from one step to the next.
 struct Test {
     console: Console,
@@ -279,7 +284,7 @@ impl Test {
         &mut self,
         host: &str,
         calls: &[(&str, &str, Option<String>)],
-    ) -> Result<(Vec<(Reply, u32)>, String, bool), String> {
+    ) -> Result<OnOneConnection, String> {
         self.runs += 1;
         let place = self.console.pem.with_file_name(format!("named-{}", self.runs));
         let mut command = Command::new("curl");
