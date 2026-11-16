@@ -1371,8 +1371,8 @@ like that is **long**, and `admin actions --json` says which are, in its
 `{"task": 42}`, and the console runs its command on its own, as an
 administrator, with no 30 seconds' limit. The work goes on without the page,
 shows from another browser, and can be stopped. An update, the install of an
-app, a backup, a scrub and a certificate order are long, and so is each step of
-adding a website.
+app, a backup, a scrub and a certificate order are long, and so are adding a
+website, serving it over HTTPS and removing it.
 
 **Tasks**, in the header, opens a drawer that lists the tasks that wait or
 run and those that ended lately, each with its step and bar, and stops one
@@ -3475,15 +3475,15 @@ waiting, running, done or failed, under **Adding shop.example.org**:
    nginx…**; when it cannot, **The sheet of nginx could not be read, so it cannot
    be installed from here: read it in the apps first.**
 2. **Add shop.example.org**: `elevate website add shop.example.org --name
-   www.shop.example.org --kind php --owner alice`, with `--folder` for a folder
-   other than the usual and `--certificate` for this machine's own certificate or
-   one that is here.
+   www.shop.example.org --kind php --owner alice --progress`, with `--folder` for
+   a folder other than the usual and `--certificate` for this machine's own
+   certificate or one that is here.
 3. **Get the certificate for shop.example.org**, for Let's Encrypt only: `elevate
    cert get shop.example.org --name shop.example.org --name www.shop.example.org
-   --agree-terms`. The site is added over HTTP first, since Let's Encrypt reaches
-   it by port 80.
+   --agree-terms --yes --progress`, with `--email` when you gave one. The site is
+   added over HTTP first, since Let's Encrypt reaches it by port 80.
 4. **Serve shop.example.org over HTTPS**: `elevate website https shop.example.org
-   --certificate shop.example.org`.
+   --certificate shop.example.org --progress`.
 
 When every step is done the page says **shop.example.org is live:
 https://shop.example.org/**, with **Open its page**, **Add another** and, when the
@@ -3533,14 +3533,14 @@ not had is in its view only after a start, and Spark holds its ports, so no
 visitor is turned away. For a website served over HTTPS: **Turn HTTPS off…**,
 which asks **Turn HTTPS off for shop.example.org?**, says that pages and
 passwords then travel unencrypted and that the certificate stays in certd, and
-runs `website https shop.example.org --off`.
+runs `website https shop.example.org --off --progress`.
 
 A website whose file was changed by hand has none of these buttons: **The file
 was changed by hand, so website does not write it: add the HTTPS server yourself,
-as website(8) shows.** ([WEB-107](../../errors/WEB-107.md)). A site that nginx
-serves by a file that is not a website's at all, such as a server in `nginx.conf`,
-is **Set up by hand** and says **nginx serves this site by a file made by hand,
-which website does not change: add HTTPS to it yourself.**
+as website(8) shows.** ([WEB-107](../../errors/WEB-107.md)). A file in
+`/system/settings/websites` that `website` does not read as a site of files or of
+PHP pages is listed as **Set up by hand** and says **nginx serves this site by a
+file made by hand, which website does not change: add HTTPS to it yourself.**
 
 **Remove…** asks **Remove shop.example.org?**, says that it removes nginx's site,
 that its folder is kept unless the box below is ticked and that its certificate
@@ -3549,9 +3549,9 @@ certificate, or reads its settings again. **Also remove its folder
 /shared/www/sites/shop.example.org and everything in it** is not ticked, and
 warns that what is in it cannot be brought back from this server unless a
 snapshot has it. The name is typed first, **so that the website is not removed by
-a slip**. It runs `website remove shop.example.org`, with `--files` when the box
-is ticked, and says **shop.example.org is removed. Its folder is kept. Its
-certificate stays in certd.**
+a slip**. It runs `website remove shop.example.org --progress`, with `--files`
+when the box is ticked, and says **shop.example.org is removed. Its folder is
+kept. Its certificate stays in certd.**
 
 ### Who may do what
 

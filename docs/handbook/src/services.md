@@ -617,8 +617,10 @@ up to 30 seconds.
 
 nginx's settings are in its data folder,
 `/shared/services/org.nginx.nginx/nginx/conf`. `nginx.conf` holds the
-server on port 80 and, turned off, the same server over HTTPS; the other
-files are nginx's own, which `nginx.conf` includes. Edit them through
+server on port 80 and, turned off, the same server over HTTPS, and it
+includes the files of `/system/settings/websites`, one for each website (see
+*Websites, a file each*); the other files are nginx's own, which
+`nginx.conf` includes. Edit them through
 elevate, check them, have nginx read them again, and see what it said:
 
 ```
@@ -680,7 +682,9 @@ one more, up to 20 names in all. A name is a lowercase DNS name: an
 address by number and a wildcard are not names a site answers to.
 `--kind static`, the default, serves the files as they are and answers 404
 to a `.php` URL; `--kind php` hands the files that end in `.php` to
-PHP-FPM (see [Websites with PHP](php.md#websites-with-php)).
+PHP-FPM (see [Websites with PHP](php.md#websites-with-php)). Either way, a
+file whose name starts with a dot, such as `.git` or `.env`, is never
+served, except under `.well-known`.
 
 `website add` makes the folder, with a starter page when it has no
 `index.html` or `index.php`, and keeps a folder that is there as it is.
@@ -711,13 +715,13 @@ location ^~ /sites/ {
 }
 ```
 
-The second goes in the default server, before `location / {`.
-`website check` asks nginx whether it accepts the
+The second goes in the default server, before `location / {`. The
+`nginx.conf` of the bundle has both. `website check` asks nginx whether it accepts the
 settings as they are, and whether `nginx.conf` has both lines; a file that
 has not says which, with the lines to add
-([WEB-102](../../errors/WEB-102.md)). `website list` shows each site with
-its kind, its certificate and its folder, and what is wrong with it that
-can be seen from the files.
+([WEB-102](../../errors/WEB-102.md)). `website list`, which anyone may run, shows
+each site with its kind, its certificate and its folder, and what is wrong
+with it that can be seen from the files.
 
 A site is served over HTTPS with a certificate of certd (see
 [Certificates](certificates.md#a-websites-certificate)) that names every
