@@ -912,7 +912,7 @@ session-hours = 12
         assert!(two.ends_with("name = \"a\"\n\n[[check]]\nname = \"b\"\n"), "{two}");
         // The last takes the comments back to the end of the file.
         let back = made(&two, |d| {
-            assert!(remove_table(d, "check", |t| t.get("name").and_then(Item::as_str) == Some("a")))
+            assert!(remove_table(d, "check", |t| t.get("name").and_then(Item::as_str) == Some("a")));
         });
         assert!(back.contains("[[check]]\nname = \"b\"") && !back.contains("name = \"a\""));
         let gone = made(&one, |d| assert!(remove_table(d, "check", |_| true)));

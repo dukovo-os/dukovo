@@ -17,7 +17,6 @@ use serde::Serialize;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
 
 use crate::args::{Arg, Args};
-use crate::json;
 use crate::settings_edit::{self, Changed};
 use crate::sysupdate::health::{CONFIG, Check, Config};
 use crate::util::{self, Fail, fail, usage};
@@ -407,6 +406,7 @@ fn flipped(document: &mut DocumentMut, listed: &[String], service: &str, on: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json;
 
     /// health.toml as it ships, which has only comments for checks.
     const SHIPPED: &str = "\

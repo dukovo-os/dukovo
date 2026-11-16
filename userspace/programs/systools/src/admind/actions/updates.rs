@@ -1427,7 +1427,9 @@ mod tests {
 
     #[test]
     fn the_reads_are_the_commands_json_and_only_the_slots_are_an_administrator_s() {
-        let reads: [(&str, &str, Runs, &[i32], &[&str]); 8] = [
+        /// An action's ID, address, who runs it, its answers and its command.
+        type Read<'a> = (&'a str, &'a str, Runs, &'a [i32], &'a [&'a str]);
+        let reads: [Read<'_>; 8] = [
             (
                 "updates.last",
                 "/api/1/updates",
