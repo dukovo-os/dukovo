@@ -7,7 +7,9 @@
 //! an update file the owner names. The spare starts as a snapshot of the
 //! running slot, `@system.new`, and only the files the release changes
 //! are written into it, so a repository needs to hold only those; what
-//! the release no longer has is removed. Then every
+//! the release no longer has is removed. Before the first write, the
+//! sizes of the files it changes and a margin for Btrfs's metadata are
+//! checked against the root's free space ([`super::space`]). Then every
 //! file is read back against the signed list, and the slot is sealed
 //! read-only in the spare's place. The settings and the state are
 //! snapshotted for a fallback (ADR 0454), and last the slot state names
@@ -28,6 +30,7 @@ use system_release::store::Store;
 use super::keep_rescue;
 use super::online::{self, Plan};
 use super::place::{self, BUILDING, Root};
+use super::space;
 use crate::subvolume;
 use crate::util::{Fail, fail};
 
@@ -77,7 +80,8 @@ fn keep_signatures(offered: Option<&[u8]>) {
 /// What stopped it, in words for the administrator: the slot state
 /// refuses (an update is being tried, or this is not the default), the
 /// release is not signed by the trusted root, is not newer, or needs a
-/// file its repository lacks, or a write failed. The running slot and
+/// file its repository lacks, the root has too little room free for the
+/// files it changes, or a write failed. The running slot and
 /// the slot state are untouched by a stage that fails.
 pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
     let _lock = place::lock()?;
@@ -113,13 +117,17 @@ pub fn stage(root: &Root, asked: &Asked<'_>) -> Result<(), Fail> {
         say("removing a slot an earlier stage left half built");
         subvolume::remove(&building)?;
     }
+    // Before anything is written: a stage that cannot finish for want of
+    // room leaves the slot state and the running slot as they are.
+    let changes = changes(&root.slot(root.running), &release)?;
+    space::check(changes.bytes, space::free(&root.path(""))?)?;
     say(&format!(
         "building slot {} from slot {} and the release's changes",
         spare.letter().to_ascii_uppercase(),
         root.running.letter().to_ascii_uppercase()
     ));
     subvolume::snapshot_to(&root.slot(root.running), &building, false)?;
-    let changed = build(&building, &release, &store)?;
+    let changed = build(&building, &release, &store, Some(&changes))?;
     say(&format!("wrote {changed} changed files; reading the slot back against the signed list"));
     check(&building, &release)?;
     // The new version starts with the firmware the running one does: a
@@ -337,9 +345,16 @@ impl Files<'_> {
 
 /// Makes the tree at `slot`, a writable snapshot of a slot or empty, the
 /// release's: what it does not list is removed, and each file it lists
-/// whose contents differ is written from `files`. Returns how many files
-/// were written.
-pub fn build(slot: &Path, release: &Release, files: &Files<'_>) -> Result<usize, Fail> {
+/// whose contents differ is written from `files`. With `known`, the
+/// [`changes`] found in the slot `slot` is a snapshot of, those are the
+/// files written, and the others are not read again. Returns how many
+/// files were written.
+pub fn build(
+    slot: &Path,
+    release: &Release,
+    files: &Files<'_>,
+    known: Option<&Changes>,
+) -> Result<usize, Fail> {
     let listed: HashSet<&str> = release.files.iter().map(|e| e.path.as_str()).collect();
     // Directories writable while the slot is built; the release's modes
     // come last.
@@ -384,9 +399,11 @@ pub fn build(slot: &Path, release: &Release, files: &Files<'_>) -> Result<usize,
             Kind::File => {
                 let (sha256, size) =
                     entry.file().ok_or_else(|| fail(format!("{}: no hash", entry.path)))?;
-                let same = there.as_ref().is_some_and(|m| m.is_file() && m.len() == size)
-                    && sha256_file(&full).is_ok_and(|h| h == sha256);
-                if !same {
+                let write = match known {
+                    Some(changes) => changes.paths.contains(&entry.path),
+                    None => !holds(there.as_ref(), &full, sha256, size),
+                };
+                if write {
                     if there.is_some() {
                         remove(&full)?;
                     }
@@ -402,6 +419,47 @@ pub fn build(slot: &Path, release: &Release, files: &Files<'_>) -> Result<usize,
         set_mode(&slot.join(&entry.path), entry.mode_bits())?;
     }
     Ok(written)
+}
+
+/// The files of a release that a slot built from a snapshot of another
+/// writes, as [`changes`] finds them in that other slot, and their bytes
+/// in all.
+pub struct Changes {
+    /// Each file's path in the release's list.
+    paths: HashSet<String>,
+    /// The files' sizes added up.
+    pub bytes: u64,
+}
+
+/// The files of `release` that a slot built from a snapshot of `slot`
+/// writes: each that `slot` does not hold as listed, by [`holds`]. Each
+/// file of `slot` that the release lists at its size is read once, here,
+/// and [`build`] given the result does not read it again.
+///
+/// # Errors
+///
+/// If the release lists a file without its hash.
+pub fn changes(slot: &Path, release: &Release) -> Result<Changes, Fail> {
+    let mut changes = Changes { paths: HashSet::new(), bytes: 0 };
+    for entry in release.files.iter().filter(|entry| entry.kind == Kind::File) {
+        let (sha256, size) =
+            entry.file().ok_or_else(|| fail(format!("{}: no hash", entry.path)))?;
+        let full = slot.join(&entry.path);
+        let there = std::fs::symlink_metadata(&full).ok();
+        if !holds(there.as_ref(), &full, sha256, size) {
+            changes.paths.insert(entry.path.clone());
+            changes.bytes = changes.bytes.saturating_add(size);
+        }
+    }
+    Ok(changes)
+}
+
+/// Whether the file at `full`, whose metadata is `there` if it exists, is
+/// the release's file of SHA-256 `sha256` and `size` bytes: the stage
+/// leaves it as it is, and writes only a file that is not.
+fn holds(there: Option<&std::fs::Metadata>, full: &Path, sha256: &str, size: u64) -> bool {
+    there.is_some_and(|m| m.is_file() && m.len() == size)
+        && sha256_file(full).is_ok_and(|h| h == sha256)
 }
 
 /// Checks the tree at `slot` against the release, file by file, read back
@@ -547,4 +605,61 @@ pub fn about_update(root: &Root) -> Option<Vec<(String, String)>> {
 /// Whether a fallback put the settings from before the update back.
 pub fn restored(root: &Root) -> bool {
     root.path(restore::UPDATE).join(restore::RESTORED).exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use system_release::list::About;
+
+    use super::*;
+
+    /// Writes each of `files`, a path under `dir` and its bytes.
+    fn tree(dir: &Path, files: &[(&str, &[u8])]) {
+        for (path, bytes) in files {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_stage_writes_only_the_files_the_running_slot_does_not_hold() {
+        let base = std::env::temp_dir().join(format!("sysupdate-changes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (running, next) = (base.join("running"), base.join("next"));
+        tree(
+            &running,
+            &[
+                ("same", b"kept"),
+                ("edited", b"abcd"),
+                ("grown", b"ab"),
+                ("dropped", b"gone"),
+                ("in/side", b"x"),
+            ],
+        );
+        tree(
+            &next,
+            &[
+                ("same", b"kept"),
+                ("edited", b"abce"),
+                ("grown", b"abc"),
+                ("added", b"new!"),
+                ("in/side", b"x"),
+            ],
+        );
+        let about = About {
+            version: "0.16.0".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            toolchain: "1.95.0".into(),
+            built: 0,
+            updates_from: "0.15.0".into(),
+        };
+        let release = Release::of_tree(&next, about).unwrap();
+        let found = changes(&running, &release).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        let mut paths: Vec<&str> = found.paths.iter().map(String::as_str).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["added", "edited", "grown"]);
+        assert_eq!(found.bytes, 4 + 4 + 3);
+    }
 }

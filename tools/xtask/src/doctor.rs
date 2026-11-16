@@ -15,6 +15,9 @@ pub const MDBOOK_VERSION: &str = "0.4.52";
 /// Kani release the proof harnesses are checked with (ADR 0019).
 pub const KANI_VERSION: &str = "0.68.0";
 
+/// cargo-fuzz release the fuzz targets are run with (ADR 0536).
+pub const CARGO_FUZZ_VERSION: &str = "0.13.2";
+
 /// The oldest Node the tests of the web console's scripts run on: they are
 /// ES modules that Node's own test runner (`node --test`) runs.
 pub const NODE_MINIMUM: u32 = 20;
@@ -48,6 +51,22 @@ pub fn kani_install() -> String {
         "install it with `cargo install --locked kani-verifier --version {KANI_VERSION}`, then \
          run `cargo kani setup`"
     )
+}
+
+/// The installed cargo-fuzz's version, if any.
+pub fn cargo_fuzz_version() -> Option<String> {
+    process::find_program("cargo-fuzz")?;
+    let out = Command::new("cargo-fuzz").arg("--version").output().ok()?;
+    // "cargo-fuzz 0.13.2"
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.split_whitespace()
+        .find(|word| word.starts_with(|c: char| c.is_ascii_digit()))
+        .map(str::to_string)
+}
+
+/// How to install the pinned cargo-fuzz.
+pub fn cargo_fuzz_install() -> String {
+    format!("install it with `cargo install --locked cargo-fuzz --version {CARGO_FUZZ_VERSION}`")
 }
 
 /// Package names on the distributions `ob doctor` knows.
@@ -688,6 +707,20 @@ pub fn doctor(ctx: &Ctx) -> Result<()> {
             "Kani"
         ),
     }
+    match cargo_fuzz_version() {
+        Some(version) if version == CARGO_FUZZ_VERSION => {
+            println!("  ok       {:<15} {version}", "cargo-fuzz");
+        }
+        Some(version) => println!(
+            "  note     {:<15} {version} installed; `./ob test fuzz` needs {CARGO_FUZZ_VERSION}",
+            "cargo-fuzz"
+        ),
+        None => println!(
+            "  note     {:<15} not installed; only `./ob test fuzz` needs it (cargo install \
+             --locked cargo-fuzz --version {CARGO_FUZZ_VERSION})",
+            "cargo-fuzz"
+        ),
+    }
     match program_version("java", "--version") {
         Some(version) => println!("  ok       {:<15} {version}", "Java"),
         None => println!(
@@ -894,5 +927,16 @@ mod tests {
         let ci = include_str!("../../../.github/workflows/ci.yml").replace(": ", "=");
         let pin = format!("KANI_VERSION={KANI_VERSION}");
         assert!(ci.contains(&pin), ".github/workflows/ci.yml pins another Kani");
+    }
+
+    #[test]
+    fn the_update_matrix_pins_the_same_cargo_fuzz() {
+        let matrix =
+            include_str!("../../../.github/workflows/update-matrix.yml").replace(": ", "=");
+        let pin = format!("CARGO_FUZZ_VERSION={CARGO_FUZZ_VERSION}");
+        assert!(
+            matrix.contains(&pin),
+            ".github/workflows/update-matrix.yml pins another cargo-fuzz"
+        );
     }
 }

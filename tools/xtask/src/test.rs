@@ -105,6 +105,14 @@ const CABLE_DUMP: &str = "<cable dump>";
 /// boots a minute after the first is as far ahead as it would be if the
 /// two started together.
 const RTC_AN_HOUR_AHEAD: &str = "<rtc an hour ahead>";
+/// [`RTC_AN_HOUR_AHEAD`]'s kin for a clock a year (365 days) ahead of the
+/// host's, as a computer's clock is when a battery or a setting is wrong
+/// for that long (`update-clock-ahead`).
+const RTC_A_YEAR_AHEAD: &str = "<rtc a year ahead>";
+/// A clock a year (365 days) behind the host's (`update-clock-behind`).
+const RTC_A_YEAR_BEHIND: &str = "<rtc a year behind>";
+/// Seconds in the year of [`RTC_A_YEAR_AHEAD`] and [`RTC_A_YEAR_BEHIND`].
+const A_YEAR: i64 = 365 * 86_400;
 /// In a case's `qemu`, what comes after this, up to a [`PEER`], is the
 /// first boot's alone: a case's second boot runs without it, as a
 /// machine that lost a device while it was off (`firmware-fallback`).
@@ -251,6 +259,11 @@ pub enum TestImage {
     /// root turns cloud-setup and sshd on, with [`CLOUD_ROOM`] of free
     /// space after the root, as a cloud's disk is larger than its image.
     Cloud,
+    /// The disk an old release's own tree made (`ob fixture release`,
+    /// [`upgrade`]): nothing is built; a sparse copy of it with room after
+    /// its partitions is attached as a copy-on-write overlay that the
+    /// guest writes to and the fixture never is.
+    Fixture,
 }
 
 /// The free space after a cloud image's root on its test disk, which
@@ -469,7 +482,8 @@ const BLANK: u8 = 29;
 /// tests' signed updates of the installed system ([`update_releases_disk`],
 /// ADR 0451): a repository of each of [`TEST_UPDATES`] in a folder of its
 /// name, holding only the files that differ from the installed slot's,
-/// all a stage needs ([`test_updates`]).
+/// all a stage needs, and the installed release's own list
+/// ([`CURRENT_RELEASE`], [`test_updates`]).
 const UPDATE_RELEASES: u8 = 30;
 
 /// [`Disk::fat`] for a FAT32 disk on the whole disk holding the update
@@ -510,6 +524,12 @@ const POSTGRESQL_SERVICE_FILES: u8 = 36;
 /// (ADR 0327), for bundles that need more room than an image's root has.
 const ROOT_ROOM: u8 = 37;
 
+/// [`Disk::fat`] for a FAT32 disk on the whole disk holding a full
+/// repository of this build, in a folder `full`
+/// ([`upgrade::update_full_disk`], ADR 0536): what a stage from an old
+/// release's slot needs, since no file of it is known to be there.
+const UPDATE_FULL: u8 = 38;
+
 /// One of the boot tests' updates of an installed system (ADR 0451): this
 /// build's slot, under a version after this one's that updates from it,
 /// with kernel flags of its own, or a command broken.
@@ -529,14 +549,21 @@ pub struct TestUpdate {
 /// fails it, one whose kernel panics, one whose Spark stops responding
 /// (spark(8)'s `test-hang`), which the watchdog ends, and one that proves
 /// itself and starts with a boot option of its own, `bisect.test.fail=1`,
-/// which nothing reads but the `bisect` test's health check (ADR 0475).
-pub const TEST_UPDATES: [TestUpdate; 5] = [
+/// which nothing reads but the `bisect` test's health check (ADR 0475), and
+/// one whose flags name a Dukovo root no disk has ([`NO_ROOT`]).
+pub const TEST_UPDATES: [TestUpdate; 6] = [
     TestUpdate { name: "good", flags: "", broken: None },
     TestUpdate { name: "broken", flags: "", broken: Some("commands/logd") },
     TestUpdate { name: "panic", flags: "selftest=page-fault", broken: None },
     TestUpdate { name: "hang", flags: "test-hang", broken: None },
     TestUpdate { name: "bisect", flags: "bisect.test.fail=1", broken: None },
+    TestUpdate { name: "noroot", flags: NO_ROOT, broken: None },
 ];
+
+/// The flags of the `noroot` test update: a `root=UUID=` that no disk
+/// holds. GRUB puts a slot's flags after its own `root=`, and Spark takes
+/// the last one, so that the slot's starts find no root.
+const NO_ROOT: &str = "root=UUID=0badc0de-0000-4000-8000-00000000dead";
 
 /// The boot tests' firmware sets (ADR 0468), by name and version, in the
 /// repository [`TEST_FIRMWARE_REPO`] beside [`TEST_UPDATES`]: `good` and
@@ -550,6 +577,12 @@ pub const TEST_FIRMWARE: [(&str, &str); 3] =
 /// The folder of the firmware sets' repository on the [`UPDATE_RELEASES`]
 /// disk.
 pub const TEST_FIRMWARE_REPO: &str = "firmware";
+
+/// The folder of the repository of this build's own release on the
+/// [`UPDATE_RELEASES`] disk, with no file in its store: the signed list
+/// that `sysupdate verify` reads slot A back against, as the test image
+/// holds no Rescue to take it from (ADR 0536).
+pub const CURRENT_RELEASE: &str = "current";
 
 /// The version of the test firmware set `name` of [`TEST_FIRMWARE`].
 pub fn test_firmware_version(name: &str) -> &'static str {
@@ -1676,11 +1709,15 @@ const MICROCODE_REVISION: u32 = 0x7f;
 // same place in CASES. They run after CASES, in the order of the phases.
 mod affected;
 mod console_client;
+mod fuzz;
+mod matrix;
 mod phase11;
 mod phase12;
 mod phase13;
+mod replay;
 pub mod soak;
 mod stall;
+mod upgrade;
 
 /// The boot tests in test/cases, one file each, which build.rs lists (see
 /// test/cases/README.md): two pull requests that add a test each then
@@ -1700,12 +1737,13 @@ pub fn all_cases() -> impl Iterator<Item = &'static Case> {
         .chain(phase12::CASES)
         .chain(phase13::CASES)
         .chain(cases::FILES.iter().map(|&(_, case, _)| case))
+        .chain(upgrade::cases())
 }
 
 /// The boot tests in test/cases, with the description their files'
 /// `//!` lines give, for dukovo-boot-tests(7).
 pub fn described_cases() -> impl Iterator<Item = (&'static Case, String)> {
-    cases::FILES.iter().map(|&(_, case, text)| (case, file_doc(text)))
+    cases::FILES.iter().map(|&(_, case, text)| (case, file_doc(text))).chain(upgrade::described())
 }
 
 /// The `//!` lines at the top of `text`, without their marker.
@@ -3373,30 +3411,55 @@ pub const CASES: &[Case] = &[
     },
 ];
 
-/// Gives each [`RTC_AN_HOUR_AHEAD`] of `args` the date an hour from now.
+/// Gives each of `args` that is [`RTC_AN_HOUR_AHEAD`], [`RTC_A_YEAR_AHEAD`]
+/// or [`RTC_A_YEAR_BEHIND`] the date that long off from now.
 fn start_clocks_ahead(args: &mut [String]) {
-    for arg in args.iter_mut().filter(|arg| arg.as_str() == RTC_AN_HOUR_AHEAD) {
-        *arg = rtc_ahead(3600);
+    for arg in args.iter_mut() {
+        let offset = match arg.as_str() {
+            RTC_AN_HOUR_AHEAD => 3600,
+            RTC_A_YEAR_AHEAD => A_YEAR,
+            RTC_A_YEAR_BEHIND => -A_YEAR,
+            _ => continue,
+        };
+        *arg = rtc_ahead(offset);
     }
 }
 
-/// The value of QEMU's `-rtc` that starts a guest's real-time clock `ahead`
-/// seconds past the host's clock now. The guest's clock then runs on with
-/// the host's.
-fn rtc_ahead(ahead: u64) -> String {
+/// The host's clock now, in seconds since 1970, `ahead` seconds on (or
+/// back, when negative).
+fn host_time_ahead(ahead: i64) -> u64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    rtc_base(now + ahead)
+    now.saturating_add_signed(ahead)
+}
+
+/// The value of QEMU's `-rtc` that starts a guest's real-time clock `ahead`
+/// seconds past the host's clock now (before it, when negative). The
+/// guest's clock then runs on with the host's.
+fn rtc_ahead(ahead: i64) -> String {
+    rtc_base(host_time_ahead(ahead))
+}
+
+/// The year of the host's clock `ahead` seconds from now, which a guest
+/// started with [`rtc_ahead`] of the same offset shows.
+fn year_ahead(ahead: i64) -> u64 {
+    crate::image::civil(host_time_ahead(ahead) / 86_400).0
 }
 
 /// `-rtc`'s `base=` and the date `time` seconds since 1970 is, in UTC,
 /// which is how QEMU reads it.
 fn rtc_base(time: u64) -> String {
+    format!("base={}", clock_text(time).replacen(' ', "T", 1))
+}
+
+/// The date and time `time` seconds since 1970 is, in UTC, as
+/// `YYYY-MM-DD hh:mm:ss`: what *timedatectl set-time* takes.
+fn clock_text(time: u64) -> String {
     let (year, month, day) = crate::image::civil(time / 86_400);
     let seconds = time % 86_400;
     format!(
-        "base={year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
         seconds / 3600,
         seconds / 60 % 60,
         seconds % 60
@@ -3405,6 +3468,9 @@ fn rtc_base(time: u64) -> String {
 
 /// `ob test`.
 pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
+    if args.flag("matrix") {
+        return matrix::command(args);
+    }
     // The options first, so that the suite is not taken from a value of one.
     let timeout = match args.value("--timeout")? {
         Some(value) => value.parse::<u64>().ok().filter(|&secs| secs > 0).ok_or_else(|| {
@@ -3433,6 +3499,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
     let image_only = args.flag("--image-only");
     let retry = args.flag("--retry");
     let profile = args.profile(&ctx.config)?;
+    let replay_options = replay::Options::take(args)?;
+    let fuzz_options = fuzz::Options::take(args)?;
     let which = args.positional();
     args.finish()?;
     if plan && affected.is_none() {
@@ -3448,9 +3516,10 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             );
         }
         let changed = affected::changed_files(ctx, commit)?;
-        let choice = affected::choose(&changed, &|path| {
+        let mut choice = affected::choose(&changed, &|path| {
             crate::site::check::has_examples(&ctx.root.join(path))
         });
+        choice.cases = upgrade::without_fixture_cases(choice.cases);
         eprintln!(
             "{} files changed since {commit}; what each adds to the boot tests (ADR 0421):",
             changed.len()
@@ -3511,6 +3580,21 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             "--image-only writes the images of boot tests; give `boot` and --case with it"
         );
     }
+    if which.as_deref() == Some("replay") {
+        if shard.is_some() || retry || image_only {
+            crate::bail!("`replay` takes --case, --points, --part, --seed, --log and --point");
+        }
+        let timeout = Duration::from_secs(timeout);
+        return replay::command(ctx, profile, &selected, &replay_options, timeout);
+    }
+    if which.as_deref() == Some("fuzz") {
+        if shard.is_some() || retry || image_only || !selected.is_empty() {
+            crate::bail!("`fuzz` takes --target and --seconds");
+        }
+        return fuzz::command(ctx, &fuzz_options);
+    }
+    replay_options.none_given()?;
+    fuzz_options.none_given()?;
     let (unit, boot) = match which.as_deref() {
         None if selected.is_empty() => (true, true),
         None | Some("boot") => (false, true),
@@ -3525,8 +3609,8 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
             crate::bail!("--case and --shard select boot tests; they cannot be used with `{suite}`")
         }
         Some(other) => crate::bail!(
-            "unknown test suite `{other}`; use `unit`, `boot`, `kani`, `tla`, `tuf`, `corpus`, \
-             `riscv` or `lab-writer`"
+            "unknown test suite `{other}`; use `unit`, `boot`, `replay`, `matrix`, `fuzz`, `kani`, \
+             `tla`, `tuf`, `corpus`, `riscv` or `lab-writer`"
         ),
     };
     if shard.is_some() && which.as_deref() != Some("boot") {
@@ -3536,7 +3620,7 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
         crate::bail!("--retry runs a failed boot test again; give `boot` with it");
     }
     let mut cases: Vec<&Case> = if selected.is_empty() {
-        all_cases().collect()
+        upgrade::without_fixture_cases(all_cases().collect())
     } else {
         let mut cases = Vec::new();
         for name in &selected {
@@ -3575,6 +3659,9 @@ pub fn command(ctx: &Ctx, args: &mut Args) -> Result<()> {
 /// Builds the kernel and the programs for `cases`, and packs the catalog's
 /// bundles if one of them installs them.
 fn build_for(ctx: &Ctx, profile: crate::config::Profile, cases: &[&Case]) -> Result<Built> {
+    // Before anything is signed or built: the fixtures of the cases that
+    // update from an old release trust keys that these builds must use.
+    upgrade::adopt_keys(ctx, cases)?;
     let built =
         Built { kernel: kernel::build(ctx, profile)?, programs: userspace::build(ctx, profile)? };
     // The catalog's bundles are packed only for a case that installs
@@ -3644,6 +3731,10 @@ pub const PROVED_LIBRARIES: &[&str] = &[
     "radix-net",
 ];
 
+/// The programs on Rust's standard library with Kani proof harnesses,
+/// checked as a host build of their workspace.
+pub const PROVED_PROGRAMS: &[&str] = &["slots"];
+
 /// `ob test kani`: checks the Kani proof harnesses. They take minutes each,
 /// so plain `ob test` leaves them to this suite (and to their CI job).
 fn kani(ctx: &Ctx) -> Result<()> {
@@ -3669,6 +3760,21 @@ fn kani(ctx: &Ctx) -> Result<()> {
         // own instead of sharing the kernel's.
         cmd.arg("--target-dir").arg(ctx.target.join("kani"));
         cmd.args(["-p", library, "--output-format", "terse"]);
+        process::run(ctx, &mut cmd)?;
+    }
+    for program in PROVED_PROGRAMS {
+        step(&format!("Checking the Kani proofs of {program}"));
+        let mut cmd = process::cargo(ctx);
+        crate::rustc_wrapper::unconfigure(&mut cmd);
+        // `cargo kani` takes no `--config`, so the lock of the host builds
+        // of the programs (userspace::host_cargo_of) goes in the
+        // environment, and the build gets a directory apart from the
+        // kernel libraries' and from the programs' tests'.
+        cmd.args(["kani", "--manifest-path", userspace::STD_MANIFEST])
+            .env("CARGO_RESOLVER_LOCKFILE_PATH", ctx.root.join(userspace::HOST_LOCK))
+            .arg("--target-dir")
+            .arg(ctx.target.join("kani-programs"))
+            .args(["-p", program, "--output-format", "terse"]);
         process::run(ctx, &mut cmd)?;
     }
     Ok(())
@@ -3715,6 +3821,9 @@ pub fn build_test_image(
         TestImage::Live => "dukovo-test-live",
         TestImage::Installed | TestImage::Cloud => {
             return Err(Error::new("an installed system's test image needs its root's UUID"));
+        }
+        TestImage::Fixture => {
+            return Err(Error::new("a fixture's disk is made by `ob fixture release`"));
         }
     };
     let output = dir.join(format!("{name}.{}", if iso { "iso" } else { "img" }));
@@ -3930,6 +4039,8 @@ fn test_images(
             continue;
         }
         let bytes = match (key.0, roots.of(case)) {
+            // The disk is a copy of the fixture's own, made at the boot.
+            (TestImage::Fixture, _) => Vec::new(),
             (TestImage::Installed | TestImage::Cloud, Some(root)) => {
                 build_installed_test_image(ctx, built, dir, root.uuid)?
             }
@@ -4051,8 +4162,9 @@ pub fn lab_updates(ctx: &Ctx, profile: crate::config::Profile) -> Result<PathBuf
     Ok(updates_dir(&dir))
 }
 
-/// Makes the repositories of [`TEST_UPDATES`] in [`updates_dir`] of
-/// `dir`, with the slot staged from `built` as the one installed.
+/// Makes the repositories of [`TEST_UPDATES`], and [`CURRENT_RELEASE`], in
+/// [`updates_dir`] of `dir`, with the slot staged from `built` as the one
+/// installed.
 fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
     let out = updates_dir(dir);
     if out.exists() {
@@ -4080,17 +4192,27 @@ fn make_test_updates(ctx: &Ctx, built: &Built, dir: &Path) -> Result<()> {
         }
         let repository = out.join(update.name);
         crate::release::make_as(ctx, &tree, &repository, &version, VERSION)?;
-        let store = repository.join("files");
-        for entry in std::fs::read_dir(&store).context(|| format!("reading {}", store.display()))? {
-            let entry = entry.context(|| format!("reading {}", store.display()))?;
-            if installed.contains(&entry.file_name().to_string_lossy().into_owned()) {
-                std::fs::remove_file(entry.path())
-                    .context(|| format!("removing {}", entry.path().display()))?;
-            }
-        }
+        keep_new_files(&repository, &installed)?;
     }
+    let current = out.join(CURRENT_RELEASE);
+    crate::release::make(ctx, &base, &current)?;
+    keep_new_files(&current, &installed)?;
     make_test_firmware(ctx, &staging.join("firmware"), &out.join(TEST_FIRMWARE_REPO))?;
     std::fs::remove_dir_all(&staging).context(|| format!("removing {}", staging.display()))
+}
+
+/// Removes from the store of `repository` the files whose names `installed`
+/// holds, which the installed slot has already.
+fn keep_new_files(repository: &Path, installed: &std::collections::HashSet<String>) -> Result<()> {
+    let store = repository.join("files");
+    for entry in std::fs::read_dir(&store).context(|| format!("reading {}", store.display()))? {
+        let entry = entry.context(|| format!("reading {}", store.display()))?;
+        if installed.contains(&entry.file_name().to_string_lossy().into_owned()) {
+            std::fs::remove_file(entry.path())
+                .context(|| format!("removing {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Makes the repository of [`TEST_FIRMWARE`] at `out`, signed with this
@@ -4191,7 +4313,13 @@ pub fn test_advisory(fixed: &str) -> String {
 pub const TEST_SERVER_CATALOG_KEY: &str = "catalog-key";
 
 /// The boot tests that read [`TEST_SERVER`] over the network.
-const TEST_SERVER_CASES: [&str; 2] = ["update-online", "admin-updates"];
+const TEST_SERVER_CASES: [&str; 5] = [
+    "update-online",
+    "update-bad-network",
+    "update-clock-ahead",
+    "update-clock-behind",
+    "admin-updates",
+];
 
 /// The releases the test update server offers, by their version's last
 /// word: `bridge`, this build with three files added, which updates from
@@ -4581,6 +4709,11 @@ fn case_images(ctx: &Ctx, built: &Built, cases: &[&Case]) -> Result<()> {
     let live = test_live(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, &roots)?;
     for case in cases {
+        if upgrade::needs_fixture(case) {
+            let image = upgrade::fixture_image(ctx, case).map_err(Error::new)?;
+            step(&format!("{} boots {}, which it leaves as it is", case.name, ctx.display(&image)));
+            continue;
+        }
         let iso = case.media.is_cd();
         let base = &images.iter().find(|(made, _)| *made == (case.image, iso)).expect("built").1;
         let path = dir.join(format!("{}.{}", case.name, if iso { "iso" } else { "img" }));
@@ -4620,6 +4753,7 @@ fn boot_tests(
     let roots = test_roots(ctx, built, &dir, cases)?;
     let live = test_live(ctx, built, &dir, cases)?;
     test_updates(ctx, built, &dir, cases)?;
+    upgrade::make_full_repository(ctx, built, &dir, cases)?;
     test_update_server(ctx, built, &dir, cases)?;
     let images = test_images(ctx, built, &dir, cases, &roots)?;
 
@@ -4640,7 +4774,8 @@ fn boot_tests(
         let budget = case_budget(case, timeout);
         let run = || {
             let started = Instant::now();
-            let outcome = run_case(ctx, case, base, (root, live.as_deref()), &dir, kvm, budget);
+            let roots = (root, live.as_deref());
+            let outcome = run_case(ctx, case, base, roots, &dir, (kvm, budget), None);
             (outcome, started.elapsed().as_secs_f32())
         };
         let (mut outcome, mut secs) = run();
@@ -4838,10 +4973,22 @@ fn run_case(
     base: &[u8],
     (root, live): (Option<&Path>, Option<&Path>),
     dir: &Path,
-    kvm: bool,
-    timeout: Duration,
+    (kvm, timeout): (bool, Duration),
+    replaying: Option<&replay::Replaying>,
 ) -> Result<(), String> {
-    let image = dir.join(format!("{}.img", case.name));
+    let image = replaying.map_or_else(
+        || dir.join(format!("{}.img", case.name)),
+        |replaying| replaying.image.clone(),
+    );
+    // A fixture's disk is booted from a sparse copy with room after it:
+    // QEMU keeps what the guest writes in a file of its own
+    // (`snapshot=on`), and the fixture is never written.
+    let fixture = if upgrade::needs_fixture(case) {
+        Some(upgrade::grown_fixture(ctx, case, dir)?)
+    } else {
+        None
+    };
+    let image = fixture.clone().unwrap_or(image);
     let qmp = dir.join(format!("{}.qmp", case.name));
     let disks = make_disks(ctx, dir, case, base, root)?;
     let mut extra: Vec<String> = case.qemu.iter().map(ToString::to_string).collect();
@@ -5038,6 +5185,7 @@ fn run_case(
         gdb: false,
         qmp: Some(qmp.clone()),
         extra: without_disk(&extra, 0),
+        write_log: None,
         direct: None,
     });
     let machine_with = |extra: Vec<String>| Machine {
@@ -5055,6 +5203,7 @@ fn run_case(
         gdb: false,
         qmp: Some(qmp.clone()),
         extra,
+        write_log: replaying.and_then(|replaying| replaying.write_log.clone()),
         direct: None,
     };
     // The second boot's machine lacks what was the first boot's alone.
@@ -5093,6 +5242,7 @@ fn run_case(
             gdb: false,
             qmp: Some(dir.join(format!("{}-peer.qmp", case.name))),
             extra: extra.to_vec(),
+            write_log: None,
             direct: None,
         })
     };
@@ -5139,7 +5289,11 @@ fn run_case(
     };
     // A second boot by the stick's Boot from first disk.
     let first_disk = case.disks.first().is_some_and(|disk| disk.fat == INSTALL_FIRST_DISK);
+    let prepared = replaying.is_some() || fixture.is_some();
     let boot = |name: &str, cmdline: &str, script: Script, again: bool| -> Result<(), String> {
+        if prepared {
+            return run(&machine, name, script);
+        }
         let mut bytes = with_cmdline(base, cmdline)?;
         if again && first_disk {
             bytes = booting_first_disk(bytes)?;
@@ -5149,7 +5303,8 @@ fn run_case(
         append_own(case, &image, root, live)?;
         run(&machine, name, script)
     };
-    let mut result = boot(case.name, case.cmdline, case.script, false);
+    let script = replaying.and_then(|replaying| replaying.script).unwrap_or(case.script);
+    let mut result = boot(case.name, case.cmdline, script, false);
     if let (Ok(()), Some(second)) = (&result, &case.second) {
         let name = format!("{}-reboot", case.name);
         result = (second.before)(case, &disks)
@@ -5165,7 +5320,9 @@ fn run_case(
                 format!("{AFTER_THE_REBOOT}: {err} (serial log: {})", ctx.display(&log))
             });
     }
-    let _ = std::fs::remove_file(&image);
+    if !prepared {
+        let _ = std::fs::remove_file(&image);
+    }
     let _ = std::fs::remove_file(&peer_image);
     let _ = std::fs::remove_file(&cable_path);
     if result.is_ok() {
@@ -5420,6 +5577,11 @@ fn make_disks(
         }
         if disk.fat == UPDATE_RELEASES {
             make_update_releases(disk, &image.path, &updates_dir(dir))?;
+            made.push(image);
+            continue;
+        }
+        if disk.fat == UPDATE_FULL {
+            upgrade::make_full_disk(disk, &image.path, &upgrade::full_dir(dir))?;
             made.push(image);
             continue;
         }
@@ -6090,7 +6252,8 @@ fn make_update_releases(disk: &Disk, path: &Path, updates: &Path) -> Result<(), 
         .arg(disk.kib.to_string());
     host_tool(&mut mkfs)?;
     let image = path.display().to_string();
-    for name in TEST_UPDATES.iter().map(|update| update.name).chain([TEST_FIRMWARE_REPO]) {
+    let names = TEST_UPDATES.iter().map(|update| update.name);
+    for name in names.chain([TEST_FIRMWARE_REPO, CURRENT_RELEASE]) {
         host_tool(
             std::process::Command::new("mcopy")
                 .args(["-s", "-i", &image])
@@ -6389,6 +6552,8 @@ pub struct Vm {
     peer: Option<Box<Vm>>,
     /// That machine, until [`Vm::boot_peer`] boots it.
     pending: Option<Box<Pending>>,
+    /// The write log of the machine's boot image, if it keeps one.
+    write_log: Option<PathBuf>,
 }
 
 /// A peer machine (a case's [`PEER`]) not yet booted.
@@ -6483,6 +6648,7 @@ impl Vm {
             kvm: machine.kvm,
             peer: None,
             pending: None,
+            write_log: machine.write_log.clone(),
         })
     }
 
@@ -6499,6 +6665,26 @@ impl Vm {
             Vm::spawn(pending.verbose, &pending.machine, self.dir(), &pending.name, self.timeout)?;
         self.peer = Some(Box::new(peer));
         Ok(())
+    }
+
+    /// Notes in the marks file beside the write log, as a line `name N`,
+    /// how many entries the log holds, which `ob test replay` takes
+    /// for a point in the run. A `sync` in the guest before it makes the
+    /// count exact. A machine that keeps no write log notes nothing.
+    pub fn mark_write_log(&self, name: &str) -> Result<(), String> {
+        let Some(log) = &self.write_log else {
+            return Ok(());
+        };
+        let entries =
+            crate::writelog::Log::entries_at_superblock(log).map_err(|err| err.to_string())?;
+        let marks = replay::marks_file(log);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&marks)
+            .map_err(|err| format!("opening {}: {err}", marks.display()))?;
+        writeln!(file, "{name} {entries}")
+            .map_err(|err| format!("writing {}: {err}", marks.display()))
     }
 
     /// The machine beside this one, once [`Vm::boot_peer`] has booted it.
@@ -6546,6 +6732,15 @@ impl Vm {
 
     /// Waits until `needle` appears after the previous match.
     pub fn expect(&mut self, needle: &str) -> Result<(), String> {
+        self.expect_first(&[needle]).map(|_| ())
+    }
+
+    /// Waits until one of `needles` appears after the previous match, and
+    /// gives the place in `needles` of the one that comes first in the
+    /// log: for a start that may take either of two ways.
+    pub fn expect_first(&mut self, needles: &[&str]) -> Result<usize, String> {
+        let wanted = needles.iter().map(|needle| format!("\"{needle}\"")).collect::<Vec<_>>();
+        let wanted = wanted.join(" or ");
         // How much QEMU had printed at the last look. The log is cleaned
         // and searched again only once there is more: cleaning all of a
         // Radix boot's log every 50 ms took 1 to 5 ms of a host CPU each
@@ -6558,9 +6753,13 @@ impl Vm {
             if looked != Some(printed) {
                 looked = Some(printed);
                 let log = self.log();
-                if let Some(at) = log.get(self.cursor..).and_then(|rest| rest.find(needle)) {
-                    self.cursor += at + needle.len();
-                    return Ok(());
+                let found = log.get(self.cursor..).and_then(|rest| {
+                    let at = |(place, needle): (usize, &&str)| Some((rest.find(needle)?, place));
+                    needles.iter().enumerate().filter_map(at).min()
+                });
+                if let Some((at, place)) = found {
+                    self.cursor += at + needles[place].len();
+                    return Ok(place);
                 }
             }
             if let Some(status) = self.exited() {
@@ -6570,19 +6769,27 @@ impl Vm {
                     continue;
                 }
                 return Err(format!(
-                    "QEMU exited ({status}) before printing \"{needle}\"{}",
+                    "QEMU exited ({status}) before printing {wanted}{}",
                     self.qemu_stderr()
                 ));
             }
             if Instant::now() >= self.deadline {
                 return Err(if late {
-                    format!("no \"{needle}\": {}", self.ran_out())
+                    format!("no {wanted}: {}", self.ran_out())
                 } else {
-                    format!("no \"{needle}\" within {} s", self.timeout.as_secs())
+                    format!("no {wanted} within {} s", self.timeout.as_secs())
                 });
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Moves the place [`Vm::expect`] reads from to the end of the log,
+    /// after a pause for what the machine wrote just before it was reset,
+    /// so that the next wait sees only what the machine says anew.
+    pub fn skip_output(&mut self) {
+        std::thread::sleep(Duration::from_millis(500));
+        self.cursor = self.log().len();
     }
 
     /// Waits until `needle` appears anywhere in the log, for what a thread
@@ -11492,17 +11699,23 @@ fn answer_prompt_within(vm: &mut Vm, prompt: &str, text: &str, seconds: u64) -> 
 /// empty line nukesh may show, faded, the command usually run next or a
 /// failed one fixed (ADR 0280): the cursor then stands on the hint's first
 /// letter, right after the prompt and its space, and nothing is typed yet.
+/// A hint longer than the screen is wide goes on over the lines below, none
+/// of them longer than the prompt's.
 fn prompt_waits(screen: &[String], prompt: &str) -> (bool, String) {
     let shown = |line: &str| {
         let line = line.trim_end();
         let line = line.split("      ").next().unwrap_or(line).trim_end();
         line.strip_suffix('?').unwrap_or(line).trim_end().to_string()
     };
-    let Some(last) = screen.iter().rev().map(|line| shown(line)).find(|line| !line.is_empty())
-    else {
+    let lines: Vec<String> = screen.iter().map(|line| shown(line)).collect();
+    let Some(end) = lines.iter().rposition(|line| !line.is_empty()) else {
         return (false, String::new());
     };
-    let hinted = last.contains(&format!("{prompt} ?"));
+    let cursor = format!("{prompt} ?");
+    let hinted = lines[..=end].iter().rposition(|line| line.contains(&cursor)).is_some_and(|at| {
+        lines[at + 1..=end].iter().all(|line| !line.is_empty() && line.len() <= lines[at].len())
+    });
+    let last = lines[end].clone();
     (last.ends_with(prompt) || hinted, last)
 }
 
@@ -11803,6 +12016,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_kind_of_disk_has_a_number_of_its_own() {
+        // A number two kinds share makes `make_disks` make each disk of the
+        // one it checks later as the other: each constant of this file
+        // whose doc names `Disk::fat` has a number of its own, and none is
+        // a FAT width.
+        let mut kind_doc = false;
+        let mut kinds: Vec<(u8, &str)> = Vec::new();
+        for line in include_str!("test.rs").lines() {
+            if line.starts_with("///") {
+                kind_doc |= line.contains("[`Disk::fat`]");
+                continue;
+            }
+            if kind_doc
+                && let Some((name, value)) = line
+                    .strip_prefix("const ")
+                    .and_then(|rest| rest.strip_suffix(';'))
+                    .and_then(|rest| rest.split_once(": u8 = "))
+            {
+                kinds.push((value.parse().unwrap(), name));
+            }
+            kind_doc = false;
+        }
+        assert!(kinds.iter().any(|&(kind, _)| kind == UPDATE_FULL), "{kinds:?}");
+        kinds.sort_unstable();
+        for pair in kinds.windows(2) {
+            assert_ne!(pair[0].0, pair[1].0, "{} and {} share a number", pair[0].1, pair[1].1);
+        }
+        for (kind, name) in &kinds {
+            assert!(![12, 16, 32].contains(kind), "{name} is the number of FAT{kind}");
+        }
+    }
+
+    #[test]
+    fn each_case_that_starts_the_test_update_server_has_it_made() {
+        let cases = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/test/cases");
+        let mut starting = Vec::new();
+        for entry in std::fs::read_dir(&cases).unwrap() {
+            let path = entry.unwrap().path();
+            let source = std::fs::read_to_string(&path).unwrap();
+            if source.contains("Server::start(") {
+                let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+                starting.push(name);
+            }
+        }
+        starting.sort();
+        let mut made = TEST_SERVER_CASES.to_vec();
+        made.sort_unstable();
+        assert_eq!(starting, made);
+        for name in TEST_SERVER_CASES {
+            assert!(all_cases().any(|case| case.name == name), "{name} is no case");
+        }
+    }
+
+    #[test]
     fn a_prompt_waits_with_or_without_the_shells_hint() {
         let screen = |lines: &[&str]| lines.iter().copied().map(String::from).collect::<Vec<_>>();
         // A prompt with the cursor after it, and a right prompt past a gap.
@@ -11813,6 +12080,17 @@ mod tests {
         let hinted =
             screen(&["alice@dukovo ~ $ ?at /system/settings/admin.toml | nc -N 10.0.2.2 34269"]);
         assert!(prompt_waits(&hinted, "$").0);
+        // A hint wider than the screen, the third time a long command came
+        // after the one before it: the prompt's line is the widest.
+        let hint =
+            format!("alice@studio ~ $ ?lear; echo \"host: $(hostname)\"; {}", "x".repeat(60));
+        let wrapped = screen(&["prompt: 1", &hint, &"y".repeat(hint.len()), "vice sshd status"]);
+        assert_eq!(prompt_waits(&wrapped, "$"), (true, "vice sshd status".to_string()));
+        // A command whose typed line wraps, running, and output after a gap.
+        let running = screen(&[&format!("alice@studio ~ $ echo {}", "x".repeat(70)), "xx", "?"]);
+        assert!(!prompt_waits(&running, "$").0);
+        assert!(!prompt_waits(&screen(&["alice@studio ~ $ ?at x", "", "out"]), "$").0);
+        assert!(!prompt_waits(&screen(&["alice@studio ~ $ ?at x", &"z".repeat(40)]), "$").0);
         // A typed line that has not ended, and a command that runs, are no prompt.
         assert!(
             !prompt_waits(&screen(&["alice@dukovo ~ $ cat /system/settings/admin.toml?"]), "$").0
@@ -11940,7 +12218,16 @@ mod tests {
         assert_eq!(rtc_base(1_794_560_400 + 3600), "base=2026-11-13T10:00:00");
         assert_eq!(rtc_base(0), "base=1970-01-01T00:00:00");
         assert_eq!(rtc_base(951_782_399), "base=2000-02-28T23:59:59");
+        assert_eq!(clock_text(951_782_399), "2000-02-28 23:59:59");
         assert!(rtc_ahead(3600).starts_with("base=20"));
+        // A year behind and a year ahead are 730 days apart, a year of 365
+        // days each way.
+        let (behind, ahead) = (host_time_ahead(-A_YEAR), host_time_ahead(A_YEAR));
+        assert_eq!(ahead - behind, 2 * 365 * 86_400);
+        let mut args = [RTC_A_YEAR_BEHIND, "-x", RTC_A_YEAR_AHEAD].map(String::from);
+        start_clocks_ahead(&mut args);
+        assert!(args[0].starts_with("base=20") && args[2].starts_with("base=20"));
+        assert_eq!(args[1], "-x");
     }
 
     #[test]

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0450. Updates keep eleven promises, each a gate before a release is signed
 
-- Status: Accepted
+- Status: Accepted; the test matrix runs on GitHub's runners, nightly as a sample and in full for each release candidate, not on a self-hosted runner, since [0536](0536-the-update-test-matrix-runs-nightly-on-githubs-runners-and-in-full-for-every-release-candidate.md)
 - Date: 2026-11-11
 
 ## Context
@@ -48,7 +48,7 @@ its version number.
   override: a flaky test is fixed, never skipped. A promise that cannot
   be tested is not on the list.
 - **The test matrix** behind the gates, which candidates run in full on
-  a self-hosted runner and nightly builds run a sample of:
+  GitHub's runners and nightly builds run a sample of (ADR 0536):
   - Upgrade paths: from every release of the last 12 months and every
     fix release of the current and previous stable, under UEFI and BIOS,
     on a machine full of users, settings, apps and services.
@@ -87,8 +87,8 @@ its version number.
 - A release is late rather than unproven: a release that is not green on
   release day skips that month (ADR 0458).
 - **Not yet:**
-  - `ob release sign` and its gates, with the self-hosted runner for the
-    full matrix, before the first public release, 1.0.0-alpha.1.
-  - The power-cut replay with blklogwrites, the upgrade paths from 12
-    months back, Kani on the slot-state reader, and the fuzzing. The
-    boot test `update-power-cut` cuts one stage at one point meanwhile.
+  - `ob release sign` and its gates, with the full matrix's run on
+    GitHub's runners (ADR 0536) among them, before the first public
+    release, 1.0.0-alpha.1.
+  - The upgrade paths from 12 months back, Kani on the slot-state reader,
+    and the fuzzing (ADR 0536 lists what it still lacks).

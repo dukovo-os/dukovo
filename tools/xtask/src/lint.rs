@@ -10,10 +10,14 @@ use crate::{Ctx, Result, kernel, ports, test, userspace};
 const MANIFESTS: &[&str] =
     &["Cargo.toml", "kernel/Cargo.toml", "userspace/Cargo.toml", "userspace/programs/Cargo.toml"];
 
+/// The fuzz targets' workspace (ADR 0536), formatted as the rest. It has
+/// no lints of its own, so it is not one of [`MANIFESTS`].
+const FUZZ_MANIFEST: &str = "userspace/programs/fuzz/Cargo.toml";
+
 /// `ob fmt`.
 pub fn fmt(ctx: &Ctx) -> Result<()> {
     step("Formatting Rust code");
-    for manifest in MANIFESTS {
+    for manifest in MANIFESTS.iter().chain(&[FUZZ_MANIFEST]) {
         let mut cmd = process::cargo(ctx);
         cmd.args(["fmt", "--all", "--manifest-path", manifest]);
         process::run(ctx, &mut cmd)?;
@@ -24,7 +28,7 @@ pub fn fmt(ctx: &Ctx) -> Result<()> {
 /// `ob lint`.
 pub fn lint(ctx: &Ctx) -> Result<()> {
     step("Checking formatting");
-    for manifest in MANIFESTS {
+    for manifest in MANIFESTS.iter().chain(&[FUZZ_MANIFEST]) {
         let mut cmd = process::cargo(ctx);
         cmd.args(["fmt", "--all", "--check", "--manifest-path", manifest]);
         process::run(ctx, &mut cmd).map_err(|err| err.hint("run `./ob fmt` to fix formatting"))?;

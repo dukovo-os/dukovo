@@ -1,0 +1,22 @@
+{
+  "signatures": [
+    {
+      "keyid": "3336b222894653a1c328c2636b5ada9d8c2f53be3b927369d64e7087014bf619",
+      "sig": "07338effc020c3d674accdf551f9fceb0f49eb42efdb6e47b24a62647beca4f5aaaf73edb04f13bdbc395fd273507ee00d2d484d63920b0d6e3eea8fb670230d"
+    }
+  ],
+  "signed": {
+    "_type": "targets",
+    "expires": "2099-01-01T00:00:00Z",
+    "spec_version": "1.0.31",
+    "targets": {
+      "system/0.15.0": {
+        "hashes": {
+          "sha256": "e9edfb8e46f891370bda2772760ae14bc1572a2ce9263368cd5282dac3241eb8"
+        },
+        "length": 9
+      }
+    },
+    "version": 1
+  }
+}

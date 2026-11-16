@@ -48,6 +48,21 @@ pub const UPDATE_DISKS: &[Disk] = &[update_releases_disk(64 * 1024, "UPDATES")];
 /// Where Spark mounts the test updates' disk.
 pub const UPDATES: &str = "/volumes/vda";
 
+/// What `sysupdate status` says of the slots and the slot state: each
+/// line but the health check's last result, which the check of the start
+/// itself can change while a case waits. Kept before a step and after
+/// it, once the start is [`seen_through`], it shows that the step changed
+/// no slot and wrote no slot state.
+pub const SLOT_STATE: &str = "sysupdate status | grep -E '^(Running|Slot|Next start|Last update)'";
+
+/// Waits for the health check to see slot A's start through, which
+/// writes the slot state and so changes [`SLOT_STATE`].
+pub fn seen_through(vm: &mut Vm) -> Result<(), String> {
+    vm.expect_anywhere(&format!(
+        "sysupdate: this start of slot A (Dukovo {VERSION}) is seen through"
+    ))
+}
+
 /// How long a command typed at tty1 may take, in seconds: a stage reads
 /// the whole slot twice.
 const COMMAND_SECONDS: u64 = 300;

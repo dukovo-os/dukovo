@@ -178,6 +178,10 @@ slot, and names it the update to try at the next restart:
   _/system/resources/updates/root.json_, and refuses a release that is
   not newer than the running version, or that the running version cannot
   update to directly.
+. It adds up the sizes of the files the release changes, an eighth more
+  for Btrfs's metadata and 16 MiB, and refuses if the Dukovo root has
+  less than that free, before it writes anything: "the update needs N MiB
+  on the Dukovo root, and M MiB are free".
 . It snapshots the running slot as _@system.new_, writes only the files
   the release changes, from the files fetched, the repository's _files/_
   or the update file, and removes those it no longer has.
@@ -645,6 +649,14 @@ means that the server could not be read, or that what it sent was not
 signed by keys this system trusts, had expired, was older than what it
 read before, or was not the file the signed list names: the system did
 not use it.
+
+A server's metadata is good for a limited time (a day, for its newest
+timestamp), judged by the computer's clock. When it has expired, the line
+says when it expired and what the computer's clock says, and to set the
+clock (*timedatectl*(1) *set-time*) if it is wrong: a clock far ahead
+refuses the server's current metadata, which is not at fault. A clock
+behind the real time is not refused, since the metadata cannot be too new
+for it, but a timestamp older than the one read before still is.
 
 When an update fell back, the health check's line in the log says what
 failed (*log sysupdate*), and the settings the update had are in

@@ -337,7 +337,7 @@ _target/userspace/_).
 		Pass everything after *--* to *qemu-system-x86_64*(1) unchanged,
 		for example *-- -d int* to log interrupts.
 
-*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list*
+*test* [*unit* | *boot* | *kani* | *tla* | *tuf* | *corpus* | *riscv* | *lab-writer*] [*--case* _name_]... [*--affected* _commit_ [*--plan*]] [*--shard* _part_/_parts_] [*--timeout* _seconds_] [*--retry*] [*--image-only*] [*--debug* | *--release*] | *--list* | *replay* [*--case* _name_] [*--points* *all*|_n_] [*--part* _k_/_m_] [*--seed* _n_] [*--log* _path_ [*--point* _n_]] [*--timeout* _seconds_] | *fuzz* [*--target* _name_] [*--seconds* _n_] | *matrix* *--list* [*--full*]
 	Run the unit tests of the build tool and the kernel libraries on this
 	machine, then the boot tests: build a test image and boot it in QEMU
 	once per case below. Each case follows the serial console, types
@@ -364,7 +364,9 @@ _target/userspace/_).
 	_docs/design/capabilities.md_, _docs/design/scheduler.md_ and
 	_docs/design/ipc.md_), and of the storage libraries' bounds: block
 	requests and partitions, paths, and FAT's table entries and long
-	names. Each takes
+	names; and of the slot state of _userspace/programs/slots_ (ADR
+	0536), which it builds as a host build of the programs' workspace in
+	_target/kani-programs_. Each takes
 	from seconds to several minutes, so plain *ob test* leaves them out,
 	and CI runs them in a job of their own. It needs the Kani release
 	that *ob doctor* names, installed with *cargo install --locked
@@ -445,6 +447,71 @@ _target/userspace/_).
 	network GRUB as *lab* does, and its logs go to
 	_out/lab-writer-check_. Plain *ob test* leaves it out, and CI runs it
 	in the job that holds the Linux of *bench*.
+
+	*replay* checks that a power cut at any point of an update leaves the
+	old system or the new one (ADR 0536). It records the boot test
+	*update-power-replay*, or with *--case* *update-power-replay-bios*,
+	which stages the test update, restarts into it and lets it prove
+	itself, with the boot disk behind QEMU's *blklogwrites* driver, which
+	logs every write, zero write, discard and flush that reaches it. It
+	then rebuilds the disk as a power cut at each flush of the update, or
+	between two flushes, would leave it, boots each on a snapshot, and
+	checks that the machine starts slot A or slot B and nothing else, with
+	no kernel panic and no Btrfs error; that *sysupdate status* names the
+	slot as the running one; that *sysupdate verify* reads it back against
+	its signed list; and, on slot A, that a stage goes through. A cut
+	between two flushes keeps a part of the writes since the first, never
+	none and never all, as a disk that was not told to flush may. Every
+	cut runs, and the exit status is not zero if any failed.
+
+	*--points* _n_ takes a sample of _n_ cuts, which always holds the
+	first and the last flush of the update, and *--points all* every cut;
+	without it, 16. *--part* _k_/_m_ takes every _m_-th of those cuts,
+	starting with the _k_-th, so that _m_ runs on _m_ machines boot each cut
+	once. *--seed* _n_ sets the draw of the sample and of the writes a cut
+	keeps; the run prints it, and without *--seed* it comes from the
+	clock.
+
+	The recording and the cuts leave their files in _out/test/replay/_:
+	_case.log_, the write log; _case.marks_, the entries of the log at the
+	start and at the end of the update; and _case.base.img_, the disk the
+	recording started with, which the log is applied to. A run in which
+	every cut passes removes the log and the disk. A cut that fails keeps
+	them with its own disk, _case-cut-N.img_, and its serial log,
+	_case-cut-N.log_, and prints the command that boots it again without
+	recording: *--log* _path_ takes that recording, whose _case.marks_ and
+	_case.base.img_ lie beside it, and *--point* _n_ boots the cut of that
+	number alone, which is the same whatever *--points* and *--part*
+	chose. *--point* needs *--log*, and leaves out *--points* and *--part*.
+
+	*fuzz* runs the cargo-fuzz targets of the update path's parsers and
+	verifiers (ADR 0536), in _userspace/programs/fuzz_: *release-list*,
+	*tuf-root*, *tuf-targets*, *tuf-snapshot*, *tuf-timestamp*, *rollout*,
+	*advisories*, *canary-report* and *slot-state*. The TUF targets feed
+	mutated metadata through the trusted-metadata update with a fixed root,
+	so that its signature checks run; a target with an encoder checks that
+	what it reads, it writes back and reads again as it was. Each target
+	runs for *--seconds* seconds (60 without it), or only the one *--target*
+	names, on a corpus in a folder of its own under _.cache/fuzz/_, which
+	starts from the seeds kept in git under
+	_userspace/programs/fuzz/corpus/_ and which the run adds to. A crash
+	fails the run, and its input is left in a folder of the target's under
+	_out/fuzz/_: *cargo fuzz run --fuzz-dir userspace/programs/fuzz*
+	_name_ _input_ runs it again. It needs the cargo-fuzz release that
+	*ob doctor* names, installed with *cargo install --locked
+	cargo-fuzz --version* _version_. Plain *ob test* leaves it out.
+
+	*matrix --list* prints the jobs of the update test matrix (ADR 0536) as
+	one line of JSON, an array of objects with a _name_, the _run_ command
+	and, for a job that needs it, an _env_ object of environment variables:
+	_.github/workflows/update-matrix.yml_ takes it as its jobs. The
+	nightly sample is 16 cuts of each firmware type, both first-start kill
+	loops (*update-first-start-kills* and *update-first-start-kills-bios*),
+	the update boot tests together, the TUF conformance suite, and each
+	fuzz target for 600 seconds; *--full*, for a release candidate, is
+	every cut in eight parts of each firmware type, both kill loops with
+	*OB_TEST_KILLS* at 20, the update boot tests, the conformance suite,
+	and each fuzz target for 3600 seconds.
 
 	*uefi-usb*, *bios-usb*, *uefi-cdrom*, *bios-cdrom*
 		Boot with 4 CPUs under each firmware and medium, and check the
@@ -2066,8 +2133,11 @@ _target/userspace/_).
 *fixture* *btrfs-log*|*btrfs-radix-log*|*btrfs-send*|*ntfs-3g* [*--linux-kernel* _file_]
 
 *fixture* *btrfs-send* *--check* _dir_
+
+*fixture* *release* _version_ [*--check*]
 	Make test data that only Linux makes, for the host tests of Radix's
-	filesystems. *btrfs-log* makes a 128 MiB Btrfs disk with
+	filesystems, and the disk of an old release for the boot tests that
+	update from it. *btrfs-log* makes a 128 MiB Btrfs disk with
 	*mkfs.btrfs*, boots Linux in a virtual machine on it with
 	_tools/linux-bench_ as its only process (*--btrfs-log make*), which
 	commits a set of files, changes them with an *fsync*(2) after each
@@ -2116,6 +2186,36 @@ _target/userspace/_).
 	offline. The volume, kept as its sectors that are not all zeros,
 	goes to _kernel/fs/ntfs/src/fixtures/_, which the NTFS host tests and
 	the *ntfs* boot test read (ADR 0236).
+
+	*release* _version_ makes the installed disk of the release _version_
+	(such as 0.15.0) for the boot tests *update-from-*_version_ and
+	*update-from-*_version_*-bios* (ADR 0536), as
+	_target/fixtures/VERSION/installed.img_. It fetches the tag *v*_version_
+	if the repository lacks it, checks it out in a git worktree in
+	_target/fixtures/VERSION/src_, and runs that tree's own *./ob image
+	\--installed \--user alice \--password-file* _file_ *\--test-cost*, so
+	that the disk is the release's own build, with the administrator
+	alice. The worktree builds everything from its sources, with nothing
+	of this checkout's build, so that nothing newer reaches the old
+	release's disk, and is removed afterwards. A
+	second full build needs about 15 GB of free disk and the time of an
+	image build, and the boot tests do not make it for you: they stop and
+	name this command when the fixture is missing.
+
+	A release trusts the root of the update keys that sign what it is
+	offered, which its boot archive carries. The old tree therefore builds
+	with a copy of this checkout's _.cache/release-keys_ (made first when
+	there are none), and a copy of them is kept in
+	_target/fixtures/VERSION/release-keys_, which the disk trusts. A
+	boot test run that includes an *update-from-* case copies the
+	fixture's keys to _.cache/release-keys_ before anything is signed or
+	built if there are none, and stops, saying which to remove, if there
+	are others. A fixture made already for these keys is left as it is.
+
+	With *--check*, it says whether the fixture is made and trusts
+	_.cache/release-keys_ (or whether that is absent, so that the fixture's
+	keys will be used), and exits with 1 when it is missing or trusts
+	other keys.
 
 	*--linux-kernel* _file_
 		As for *bench*; the kernel needs Btrfs, built in or as a module
@@ -2532,6 +2632,16 @@ fails the build.
 *OB_TARGET_DIR*
 	Directory for Cargo output instead of _target/_.
 
+*OB_TEST_KILLS*
+	How many times the boot tests *update-first-start-kills* and
+	*update-first-start-kills-bios* reset the machine during the first
+	start of an update (ADR 0536); 6 by default.
+
+*OB_TEST_SEED*
+	The seed of the random times, between 1 and 40 seconds, that those
+	boot tests wait before each reset. They print it, so that a failure can
+	be run again; by default it comes from the clock.
+
 *OB_UPDATE_SSH*
 	The update server as *ssh*(1) names it, such as
 	_user@updates.dukovo.org_ or a host in _~/.ssh/config_, for *catalog
@@ -2636,6 +2746,14 @@ _out/qemu/radix.gdb_
 
 _out/test/_
 	Test images, serial logs and screenshots from *ob test*.
+
+_out/test/replay/_
+	What *ob test replay* records and replays: the write log, its marks,
+	the disk the recording started with, and what a failed cut leaves.
+
+_out/fuzz/_
+	The input of each crash *ob test fuzz* found, in a folder for its
+	target.
 
 _out/bench/_
 	The benchmark report (_report.md_), its numbers (_results.json_),
