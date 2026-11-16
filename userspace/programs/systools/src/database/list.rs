@@ -6,7 +6,8 @@
 //!
 //! A server that is not installed or does not run is told as such, with
 //! empty lists, and is no failure. A verifier is never read: whether a
-//! role has a password is.
+//! role has a password is. The server's `firewall` is what the block in
+//! the firewall's rules says of its port ([`super::port`]).
 
 use std::fs;
 use std::path::Path;
@@ -15,6 +16,7 @@ use serde::Serialize;
 
 use super::add::{ready, run};
 use super::names::Network;
+use super::port::{self, Firewall};
 use super::server::{Host, value};
 use super::wire::Answer;
 use super::{hba, settings, sql};
@@ -52,6 +54,9 @@ pub struct Server {
     pub ssl: bool,
     /// The certificate it takes TLS with, when `database` set it.
     pub certificate: Option<String>,
+    /// What the firewall's rules say of its port. While the server does
+    /// not run, they are not read, and say nothing.
+    pub firewall: Firewall,
 }
 
 /// A database.
@@ -112,14 +117,16 @@ pub struct Access {
     pub by_hand: bool,
 }
 
-/// A mistake in `pg_hba.conf`.
+/// A mistake in `pg_hba.conf`, or DB-108: the firewall's rules have a
+/// block of `database`'s that is not whole.
 #[derive(Debug, Serialize)]
 pub struct Problem {
     /// The ID of the page that explains it.
     pub id: &'static str,
-    /// PostgreSQL's words.
+    /// PostgreSQL's words, or the firewall's file and what is wrong with
+    /// it.
     pub words: String,
-    /// The line of the file.
+    /// The line of `pg_hba.conf`; none for the firewall's rules.
     pub line: Option<u64>,
 }
 
@@ -161,6 +168,7 @@ fn silent(installed: bool, enabled: bool) -> List {
             listen: None,
             ssl: false,
             certificate: None,
+            firewall: Firewall::default(),
         },
         databases: Vec::new(),
         roles: Vec::new(),
@@ -185,7 +193,7 @@ pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
     let ssl = run(host, "SHOW ssl")?;
     let cert_file = run(host, "SHOW ssl_cert_file")?;
     let hba_file = run(host, "SHOW hba_file")?;
-    let server = Server {
+    let mut server = Server {
         installed: true,
         enabled: service.enabled,
         running: true,
@@ -193,13 +201,18 @@ pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
         listen: value(&listen).map(String::from),
         ssl: value(&ssl) == Some("on"),
         certificate: value(&cert_file).and_then(settings::certificate_of).map(String::from),
+        firewall: Firewall::default(),
     };
     let sessions = run(host, sql::LIST_SESSIONS)?;
     let databases = run(host, sql::LIST_DATABASES)?;
     let roles = run(host, sql::LIST_ROLES)?;
     let access = run(host, sql::LIST_ACCESS)?;
     let hba_text = value(&hba_file).and_then(|path| fs::read_to_string(Path::new(path)).ok());
-    let (access, problems) = access_of(first(&access)?, hba_text.as_deref())?;
+    let (access, mut problems) = access_of(first(&access)?, hba_text.as_deref())?;
+    match port::read(&host.files().firewall) {
+        Ok(firewall) => server.firewall = firewall,
+        Err(words) => problems.push(Problem { id: "DB-108", words, line: None }),
+    }
     Ok(List {
         server,
         databases: databases_of(first(&databases)?, first(&sessions)?),
@@ -359,6 +372,10 @@ pub fn text(list: &List) -> String {
         ));
     }
     for problem in &list.problems {
+        if problem.id == "DB-108" {
+            out.push_str(&format!("{} ({})\n", problem.words, problem.id));
+            continue;
+        }
         let line = problem.line.map_or(String::new(), |line| format!(" at line {line}"));
         out.push_str(&format!(
             "a mistake in pg_hba.conf{line}: {} ({})\n",
@@ -498,10 +515,68 @@ mod tests {
             .with_site("shop", "shop.example.org")
             .with_sessions("shop", "php", 1)
             .listening_with("this-machine")
-            .with_hba_lines(&[("shop", "shop", "192.0.2.0/24")]);
+            .with_hba_lines(&[("shop", "shop", "192.0.2.0/24")])
+            .with_firewall_rules(&format!(
+                "allow tcp 5000-6000\n\n{}",
+                block_of("shop", &["192.0.2.0/24"])
+            ));
         let list = list_of(&mut fake);
         let line = json::line(&list).unwrap();
         json::assert_golden(&line, include_str!("../../tests/json/database-list.json"));
+    }
+
+    /// The firewall's block when `database` is let in from `networks`.
+    fn block_of(database: &str, networks: &[&str]) -> String {
+        let rules: Vec<hba::Rule> = networks
+            .iter()
+            .map(|network| hba::Rule {
+                database: database.into(),
+                role: database.into(),
+                network: Network::parse(network).unwrap(),
+            })
+            .collect();
+        port::wanted("", &rules).unwrap().text
+    }
+
+    #[test]
+    fn the_firewall_is_what_its_block_says_of_the_port() {
+        let mut fake = Fake::new();
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall, Firewall::default(), "no file is no block");
+        let block = block_of("shop", &["192.168.1.0/24", "10.0.0.0/8"]);
+        let mut fake = Fake::new().with_firewall_rules(&format!("deny udp 5353\n{block}"));
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall.networks, ["192.168.1.0/24", "10.0.0.0/8"]);
+        assert_eq!(list.server.firewall.earlier, None);
+        assert!(list.problems.is_empty());
+        let mut fake = Fake::new().with_firewall_rules(&format!("allow tcp\n{block}"));
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall.earlier.as_deref(), Some("allow tcp"));
+    }
+
+    #[test]
+    fn a_firewall_block_that_is_not_whole_is_a_problem_and_no_failure() {
+        let mut fake = Fake::new().with_firewall_rules("allow tcp 22\n# database(8): end\n");
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall, Firewall::default());
+        assert_eq!(list.problems.len(), 1);
+        assert_eq!(list.problems[0].id, "DB-108");
+        assert_eq!(list.problems[0].line, None);
+        assert!(
+            list.problems[0].words.contains("line 2 ends a block that no line starts"),
+            "{}",
+            list.problems[0].words
+        );
+        let said = text(&list);
+        assert!(said.contains("(DB-108)") && !said.contains("a mistake in pg_hba.conf"), "{said}");
+    }
+
+    #[test]
+    fn a_server_that_does_not_run_says_nothing_of_the_firewall() {
+        let block = block_of("shop", &["10.0.0.0/8"]);
+        let mut fake = Fake::new().off().with_firewall_rules(&block);
+        let list = list_of(&mut fake);
+        assert_eq!(list.server.firewall, Firewall::default());
     }
 
     #[test]

@@ -22,9 +22,10 @@
 //! playbook's `register`.
 //!
 //! The service's override, which names the certificates PostgreSQL
-//! serves, is the one file of `allow` and `deny` that admind sees.
-//! `pg_hba.conf` and the server's own settings are under PostgreSQL's
-//! data folder, which it does not.
+//! serves, and the firewall's rules, which hold the block that opens
+//! port 5432 to the networks a database is opened to, are the two files of
+//! `allow` and `deny` that admind sees. `pg_hba.conf` and the server's own
+//! settings are under PostgreSQL's data folder, which it does not.
 //!
 //! Each change compares from a read of the list, `database list --json`,
 //! which PostgreSQL gives only to root. The probe runs as the person, so
@@ -38,6 +39,7 @@ use super::{
     Action, Ansible, Args, Bad, Examples, Field, Nothing, RESULT, Runs, Tests, Undo, command_task,
 };
 use crate::database::names::{self, Network};
+use crate::firewall::SETTINGS as FIREWALL;
 use manifest::service::{CERTIFICATE_NAME_MAX, check_certificate};
 
 /// The area of these actions: the scope a token needs, `databases`.
@@ -520,9 +522,9 @@ impl Args for Allowing {
 }
 
 /// `database allow NAME --from NETWORK... --progress`: lets the networks
-/// sign in to the database from other machines, over TLS, as a task:
-/// PostgreSQL restarts when it has to listen on the network or serve
-/// another certificate.
+/// sign in to the database from other machines, over TLS, and opens port
+/// 5432 in the firewall to them, as a task: PostgreSQL restarts when it
+/// has to listen on the network or serve another certificate.
 pub struct Allow;
 
 impl Action for Allow {
@@ -532,7 +534,7 @@ impl Action for Allow {
     const PATH: &'static str = "/api/1/databases/{name}/allow";
     const RUNS: Runs = Runs::AsAdministrator;
     const LONG: bool = true;
-    const ERRORS: &'static [&'static str] = &["DB-101", "DB-104", "DB-105"];
+    const ERRORS: &'static [&'static str] = &["DB-101", "DB-104", "DB-105", "DB-107", "DB-108"];
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Let other machines into a database";
     type Args = Allowing;
@@ -552,7 +554,7 @@ impl Action for Allow {
     }
 
     fn files(_: &Allowing) -> Vec<String> {
-        vec![OVERRIDE.into()]
+        vec![OVERRIDE.into(), FIREWALL.into()]
     }
 
     fn probe(_: &Allowing) -> Option<Vec<String>> {
@@ -607,8 +609,9 @@ impl Args for Denying {
 }
 
 /// `database deny NAME [--from NETWORK]... --progress`: shuts the networks
-/// out of the database again, or every one, as a task: PostgreSQL listens
-/// on this machine only again when none is left.
+/// out of the database again, or every one, and shuts port 5432 to those
+/// that no database names, as a task: PostgreSQL listens on this machine
+/// only again when none is left.
 pub struct Deny;
 
 impl Action for Deny {
@@ -618,7 +621,7 @@ impl Action for Deny {
     const PATH: &'static str = "/api/1/databases/{name}/deny";
     const RUNS: Runs = Runs::AsAdministrator;
     const LONG: bool = true;
-    const ERRORS: &'static [&'static str] = &["DB-101", "DB-104"];
+    const ERRORS: &'static [&'static str] = &["DB-101", "DB-104", "DB-107", "DB-108"];
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Shut other machines out of a database";
     type Args = Denying;
@@ -637,7 +640,7 @@ impl Action for Deny {
     }
 
     fn files(_: &Denying) -> Vec<String> {
-        vec![OVERRIDE.into()]
+        vec![OVERRIDE.into(), FIREWALL.into()]
     }
 
     fn probe(_: &Denying) -> Option<Vec<String>> {
@@ -686,8 +689,10 @@ impl Args for Removing {
 }
 
 /// `database remove NAME [--role] [--force]`: removes the database, and
-/// with `role` the role that owns it. It is the machine's data that goes:
-/// the playbook has to say it is meant too, in `dukovo_confirm_purge`.
+/// with `role` the role that owns it, and shuts port 5432 in the firewall
+/// to the networks that no database names any more. It is the machine's
+/// data that goes: the playbook has to say it is meant too, in
+/// `dukovo_confirm_purge`.
 pub struct Remove;
 
 impl Action for Remove {
@@ -696,7 +701,7 @@ impl Action for Remove {
     const CHANGES: bool = true;
     const PATH: &'static str = "/api/1/databases/{name}/remove";
     const RUNS: Runs = Runs::AsAdministrator;
-    const ERRORS: &'static [&'static str] = &["DB-101", "DB-103"];
+    const ERRORS: &'static [&'static str] = &["DB-101", "DB-103", "DB-107", "DB-108"];
     const TESTS: Tests = TESTS;
     const TITLE: &'static str = "Remove a database";
     type Args = Removing;
@@ -717,6 +722,10 @@ impl Action for Remove {
 
     fn ansible(args: &Removing) -> Ansible {
         command_task::<Self>(args).when("dukovo_confirm_purge | bool")
+    }
+
+    fn files(_: &Removing) -> Vec<String> {
+        vec![FIREWALL.into()]
     }
 
     fn probe(_: &Removing) -> Option<Vec<String>> {
@@ -771,7 +780,9 @@ mod tests {
     const LIST: &str = r#"{
         "format": 1,
         "server": {"installed": true, "enabled": true, "running": true, "version": "19.0",
-                   "listen": "*", "ssl": true, "certificate": "this-machine"},
+                   "listen": "*", "ssl": true, "certificate": "this-machine",
+                   "firewall": {"networks": ["192.0.2.0/24", "198.51.100.0/24"],
+                                "earlier": null}},
         "databases": [
             {"name": "shop", "owner": "shop", "encoding": "UTF8", "provider": "libc",
              "locale": "en_US.UTF-8", "bytes": 8192, "sessions": 1, "site": "shop.example.org",
@@ -815,7 +826,7 @@ mod tests {
                 "/api/1/databases/{name}/allow",
                 true,
                 false,
-                vec!["DB-101", "DB-104", "DB-105"],
+                vec!["DB-101", "DB-104", "DB-105", "DB-107", "DB-108"],
             ),
             (
                 "databases.deny",
@@ -823,7 +834,7 @@ mod tests {
                 "/api/1/databases/{name}/deny",
                 true,
                 false,
-                vec!["DB-101", "DB-104"],
+                vec!["DB-101", "DB-104", "DB-107", "DB-108"],
             ),
             (
                 "databases.remove",
@@ -831,7 +842,7 @@ mod tests {
                 "/api/1/databases/{name}/remove",
                 false,
                 false,
-                vec!["DB-101", "DB-103"],
+                vec!["DB-101", "DB-103", "DB-107", "DB-108"],
             ),
         ] {
             let one = action(id);
@@ -1071,7 +1082,7 @@ mod tests {
         let prepared = action("databases.allow")
             .prepare(json!({ "name": "lab", "from": "10.0.2.0/24" }))
             .unwrap();
-        assert_eq!(prepared.files, [OVERRIDE]);
+        assert_eq!(prepared.files, [OVERRIDE, FIREWALL]);
         assert!(prepared.probe.is_some() && prepared.ansible.become_root);
         assert_eq!(prepared.ansible.name, "Let other machines into a database: lab");
         assert!(action("databases.allow").long() && action("databases.allow").compares());
@@ -1135,7 +1146,7 @@ mod tests {
         );
         let deny = action("databases.deny");
         let prepared = deny.prepare(json!({ "name": "lab" })).unwrap();
-        assert_eq!(prepared.files, [OVERRIDE]);
+        assert_eq!(prepared.files, [OVERRIDE, FIREWALL]);
         assert!(deny.long() && deny.compares() && prepared.probe.is_some());
         for from in ["", "10.0.2.0", "anywhere", "10.0.2.0/24\n10.0.2.0/24"] {
             let (kind, field, words) =
@@ -1170,7 +1181,8 @@ mod tests {
         assert_eq!(prepared.ansible.when.as_deref(), Some("dukovo_confirm_purge | bool"));
         assert!(yaml(&prepared.ansible).ends_with("  when: \"dukovo_confirm_purge | bool\"\n"));
         assert!(prepared.ansible.become_root && !prepared.ansible.no_log);
-        assert!(prepared.files.is_empty());
+        // The firewall's rules, which lose the networks only it named.
+        assert_eq!(prepared.files, [FIREWALL]);
         for (args, field) in [
             (json!({ "name": "lab", "role": "yes" }), None),
             (json!({ "name": "lab", "force": 1 }), None),

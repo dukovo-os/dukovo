@@ -55,7 +55,7 @@ itself by the socket, as the role of the same name.
 *Letting other machines in.* Until it is told otherwise, PostgreSQL
 listens on this machine only. *allow* lets networks connect to one
 database, and only over TLS, with the password of its role. It does that
-in three places, each changed so that every other line stays as it was
+in four places, each changed so that every other line stays as it was
 written:
 
 - *pg\_hba.conf* gains one line for each network, *hostssl* with the
@@ -77,11 +77,14 @@ written:
   certificate in the service's *certificates*, which Spark copies to the
   folder PostgreSQL reads at each start. The override keeps every item
   that is in it, and every comment.
+- The firewall's rules, _/system/settings/firewall_, gain a block that
+  opens port 5432 to the networks of every database and to no other, as
+  *The firewall* says below.
 
 Before anything takes effect, PostgreSQL is asked to check the files it
 would read (*pg\_hba\_file\_rules* and *pg\_file\_settings*). A mistake it finds
 is the end of the command, and everything it changed is put back (DB-104).
-Then the server is told. A change of *listen\_addresses* or of the
+Then the firewall's rules are written, and the server is told. A change of *listen\_addresses* or of the
 certificate needs a restart, which *database* has Spark do with
 *service postgresql restart*: the sessions that are open end, and the
 command waits until the new server answers. Any other change is a reload,
@@ -89,6 +92,43 @@ which ends nothing. Last, the command connects over TLS to this machine's
 address with the certificate it set, and checks the certificate against
 the names it holds; if that fails, the change is taken back and the
 server told again.
+
+*The firewall.* Once PostgreSQL listens on the network, the firewall lets
+every address reach its port, as it does for any service while it runs, and
+only *pg\_hba.conf* turns the others away, after the TCP and TLS handshakes.
+*allow* and *deny* therefore keep a block of rules for port 5432 in the
+firewall's rules, between two comment lines, as they keep one in
+*pg\_hba.conf*:
+
+```
+# database(8): who reaches PostgreSQL from other machines (ADR 0570)
+allow tcp 5432 from 192.168.1.0/24
+allow tcp 5432 from 10.0.0.0/8
+deny tcp 5432
+# database(8): end
+```
+
+The block has an *allow* for each network that a line of the block of
+*pg\_hba.conf* names, whichever database the line is for, since 5432 is one
+port for all of them, each network once, in the order the lines come, and a
+*deny* that ends it. *deny* and *remove* make the block again from the
+lines that are left, and take it away when none is. A block that is as it should be is not
+written again. A new block goes at the end of the file, after the rules the
+administrator wrote, and a block that is there is written where it is, so
+that the administrator may move it. Every other line stays as it was
+written. After the file is written the command has the firewall load it, as
+*firewall load* does. The change is not a trial of the firewall (*firewall
+allow --try*): Spark's trials hold files under _/system/settings_ alone,
+and *pg\_hba.conf* is not one. A failure at a later step puts the
+firewall's rules back with the rest, and has the firewall load them again.
+
+A rule that the administrator wrote before the block, such as *allow tcp*
+or *allow tcp 5432*, decides first for the connections it names, and
+*database* does not move it: *allow* says so in a line of its output, and
+*list --json* has the rule as *earlier*. While the firewall's rules are
+being tried, *allow*, *deny* and *remove* change nothing (DB-107). A file
+whose block is not whole, or that would hold more rules than the firewall
+holds, ends them the same way (DB-108).
 
 A change takes the lock _/system/state/databases/lock_ for as long as it
 runs, so that two do not mix; the second waits up to a minute.
@@ -157,23 +197,35 @@ set to zero. *allow* takes up to 20 at a time.
 	_name_, as *cert list* shows it, and *this-machine* when
 	*--certificate* is not given; a name that certd does not keep is
 	DB-105. The change is as *Letting other machines in* says. With
-	*--progress* the command tells each of its seven steps as it starts
-	it, as *step 3 of 7: writing the lines of pg\_hba.conf*; the step
-	that restarts PostgreSQL says so. A line that is there already is
-	not written twice, and a setting that is as it should be is not set
-	again, so a second *allow* with the same networks changes nothing.
+	*--progress* the command tells each of its eight steps as it starts
+	it, as *step 3 of 8: writing the lines of pg\_hba.conf*; the step
+	that opens port 5432 in the firewall says so, and so does the step
+	that restarts PostgreSQL. A line that is there already is not
+	written twice, and a setting or a block that is as it should be is
+	not set or written again, so a second *allow* with the same networks
+	changes nothing. A firewall that is being tried, or a block that the
+	file cannot take, ends it before anything is changed (DB-107,
+	DB-108).
 
 *deny* _name_ [*--from* _network_ ...] [*--progress*]
 	Takes the lines of the block out of *pg\_hba.conf*: those of the
 	networks named, or every line of the database _name_ when *--from*
 	is not given. When no line is left in the block, the block goes
 	too, with the blank line before it, and PostgreSQL listens on this
-	machine only again, which restarts it. *--progress* tells five
-	steps. A line outside the block is never touched.
+	machine only again, which restarts it. The block of port 5432 in the
+	firewall's rules is made again from the lines that are left, so that
+	it opens the port to the networks that some database still has, and
+	is taken away with the last. *--progress* tells six steps. A line
+	outside the block is never touched, in *pg\_hba.conf* or in the
+	firewall's rules. A deny that finds no line of the database changes
+	nothing, the firewall's rules included.
 
 *remove* _name_ [*--role*] [*--force*]
-	Drops the database _name_ with its data, and takes its lines out of
-	the block of *pg\_hba.conf*. It stops with the programs that have a
+	Drops the database _name_ with its data, takes its lines out of the
+	block of *pg\_hba.conf*, and shuts port 5432 in the firewall to the
+	networks that no database names any more. A firewall being tried, or
+	a firewall file that cannot take the block, ends it before anything is
+	dropped (DB-107, DB-108). It stops with the programs that have a
 	session open to it, by name, and does nothing (DB-103); *--force*
 	ends the sessions and drops it. With *--role*, the role that owned
 	it is dropped too, but only if *database* made it and it owns and may
@@ -193,7 +245,8 @@ of a document are only added to, never changed or taken away, as long as
 {"format": 1,
  "server": {"installed": true, "enabled": true, "running": true,
             "version": "19.0", "listen": "*", "ssl": true,
-            "certificate": "this-machine"},
+            "certificate": "this-machine",
+            "firewall": {"networks": ["192.0.2.0/24"], "earlier": null}},
  "databases": [{"name": "shop", "owner": "shop", "encoding": "UTF8",
                 "provider": "libc", "locale": "en_US.UTF-8", "bytes": 8192,
                 "sessions": 1, "site": "shop.example.org",
@@ -213,6 +266,13 @@ what PostgreSQL calls itself, *listen* is its *listen\_addresses*
 it, else *null*. While PostgreSQL does not run, *version* and *listen*
 are *null*, and the lists are empty.
 
+*firewall* says what the block of port 5432 in the firewall's rules says:
+*networks* are the networks it opens the port to, as *192.168.1.0/24*, in
+the block's order, none when there is no block; *earlier* is the rule
+before the block that decides first for some connections to the port, as
+the file writes it, or *null* when no rule does. While PostgreSQL does not
+run, *networks* is empty and *earlier* is *null*, the rules not being read.
+
 A database's *provider* is *builtin*, *libc* or *icu*. *locale* may be
 *null*. *sessions* counts the programs signed in to it and *bytes* is its
 size. *site* is the website it was made for, or *null*, and
@@ -230,7 +290,9 @@ line's *address* is the address with its prefix as *192.168.1.0/24*, and
 *all* as PostgreSQL writes it. *by\_hand* is false for the lines inside the
 block of *database*, and true for every other. *problems* has the
 mistakes the server found in the file: its *id* is *DB-104*, *words*
-are PostgreSQL's, and *line* is the line of the file, or *null*.
+are PostgreSQL's, and *line* is the line of the file, or *null*. A block
+in the firewall's rules that is not whole is a problem too, with the *id*
+*DB-108*, the file and what is wrong with it as *words*, and *line* *null*.
 
 *add --json* and *password --json*
 
@@ -281,9 +343,10 @@ The web console shows the page for it.
 *DB-104*
 	PostgreSQL's settings did not pass its check, so nothing was changed:
 	the words are PostgreSQL's, with the file and the line. It also ends
-	an *allow* whose server did not come back or did not answer over TLS
-	after the change; the words then say that the change was taken back,
-	and whether PostgreSQL runs again.
+	an *allow* or a *deny* whose server did not come back or did not
+	answer over TLS after the change, or whose firewall did not take its
+	rules; the words then say that the change was taken back, and whether
+	PostgreSQL runs again.
 
 *DB-105*
 	There is no certificate of the name given to *--certificate*. *cert
@@ -292,6 +355,20 @@ The web console shows the page for it.
 *DB-106*
 	There is no account of the name given to *--peer*. *user list* shows
 	them.
+
+*DB-107*
+	The firewall's rules are being tried (*firewall allow --try*), and
+	Spark would put the file back as it was before the trial, which would
+	lose the block of port 5432. *allow*, *deny* and *remove* changed
+	nothing. Keep
+	or undo the trial with *firewall keep* or *firewall undo*, and run the
+	command again.
+
+*DB-108*
+	The firewall's rules cannot take the block of port 5432: the two
+	comment lines of the block do not make one block, or the file would
+	hold more rules than the firewall holds. *allow*, *deny* and *remove*
+	changed nothing. The words say which, and the line; *list* shows them too.
 
 Other failures have no ID: a database that is not there, a role that
 has no password to sign in with from other machines, or a statement
@@ -319,13 +396,14 @@ certificate, and then shutting them out again:
 
 ```
 # database allow shop --from 192.168.1.0/24 --progress
-step 1 of 7: checking the database, the networks and the certificate
-step 2 of 7: naming the certificate in PostgreSQL's service file
-step 3 of 7: writing the lines of pg_hba.conf
-step 4 of 7: setting what PostgreSQL listens with
-step 5 of 7: having PostgreSQL check its files
-step 6 of 7: restarting PostgreSQL
-step 7 of 7: checking that PostgreSQL answers over TLS
+step 1 of 8: checking the database, the networks and the certificate
+step 2 of 8: naming the certificate in PostgreSQL's service file
+step 3 of 8: writing the lines of pg_hba.conf
+step 4 of 8: setting what PostgreSQL listens with
+step 5 of 8: having PostgreSQL check its files
+step 6 of 8: opening port 5432 to these networks only
+step 7 of 8: restarting PostgreSQL
+step 8 of 8: checking that PostgreSQL answers over TLS
 192.168.1.0/24 may connect to shop over TLS, as shop, with the password
 PostgreSQL restarted, and its open sessions ended
 # database deny shop
@@ -353,7 +431,12 @@ _/system/settings/spark/services/settings.d/postgresql.toml_
 	The service's override: the certificates it serves, which *allow*
 	adds to and keeps the rest of.
 
+_/system/settings/firewall_
+	The firewall's rules, firewall(8): *allow* and *deny* keep the block
+	of port 5432 in it, between their two comment lines, and change no
+	other line.
+
 # SEE ALSO
 
 *website*(8), *cert*(8), *service*(8), *service.toml*(5), *elevate*(8),
-*user*(8), *dukovo-certificates*(7)
+*user*(8), *firewall*(8), *dukovo-certificates*(7)

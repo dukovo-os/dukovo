@@ -20,9 +20,6 @@
 //! which rule before the block decides for the block's port before the
 //! block does.
 
-// database(8) is its caller; until it calls it, nothing does.
-#![allow(dead_code)]
-
 use super::{Action, Protocol, RULES_MAX, Rule, parse_settings, rules, words_of};
 
 /// The two lines that hold a command's block.
