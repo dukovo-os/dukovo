@@ -58,6 +58,12 @@ const TEST = "web-console/actions";
 // which this test's machine has not, and the answer of the first two holds a
 // password. web-console/databases calls each, where its effect is seen and put
 // back.
+//
+// The websites' changes (websites.add, websites.https and websites.remove) are
+// long actions, so the filter above leaves them alone without a row here: they
+// need nginx installed and on and a site to work on, which this test's machine
+// has not, and each reloads or restarts nginx. web-console/websites calls each,
+// where its effect is seen and put back.
 const SKIPPED = new Set([
   "certificate.renew",
   "databases.add",
