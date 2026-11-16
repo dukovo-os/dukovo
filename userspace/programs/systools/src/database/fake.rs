@@ -643,6 +643,22 @@ impl Fake {
                     Some("setting could not be applied".into()),
                 ]);
             }
+            // And a setting taken out of the files, which goes back to its
+            // default at the restart: a row of no file and no name.
+            if !self.auto.contains_key("listen_addresses")
+                && self.running("listen_addresses") != "localhost"
+            {
+                rows.push(vec![
+                    None,
+                    Some("0".into()),
+                    None,
+                    Some(
+                        "parameter \"listen_addresses\" cannot be changed without restarting \
+                         the server"
+                            .into(),
+                    ),
+                ]);
+            }
             return Ok(Fake::answer(&["sourcefile", "sourceline", "name", "error"], rows));
         }
         if sql == super::sql::FILE_SETTINGS {

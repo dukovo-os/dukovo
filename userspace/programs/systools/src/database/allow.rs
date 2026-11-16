@@ -153,7 +153,7 @@ fn mistakes(host: &mut dyn Host, tls_coming: bool) -> Result<Vec<String>, Fail> 
     for row in settings.first().map_or_default(|answer| answer.rows.as_slice()) {
         let cell = |at: usize| row.get(at).and_then(|cell| cell.as_deref());
         let error = cell(3).unwrap_or("it cannot be read");
-        if error == WAITS {
+        if error == WAITS || waits_for_restart(error) {
             continue;
         }
         let file = cell(0).map_or("the settings", |path| path.rsplit('/').next().unwrap_or(path));
@@ -165,6 +165,16 @@ fn mistakes(host: &mut dyn Host, tls_coming: bool) -> Result<Vec<String>, Fail> 
 /// What `pg_file_settings` says of a setting that cannot be applied while
 /// the server runs, as `listen_addresses` cannot: it is not a mistake.
 const WAITS: &str = "setting could not be applied";
+
+/// Whether `error` is what `pg_file_settings` says of a setting taken out
+/// of the files that only a restart takes back to its default, as
+/// `listen_addresses` once `deny` has reset it: it is not a mistake.
+fn waits_for_restart(error: &str) -> bool {
+    error
+        .strip_prefix("parameter \"")
+        .and_then(|rest| rest.strip_suffix("\" cannot be changed without restarting the server"))
+        .is_some_and(|name| !name.is_empty() && !name.contains('"'))
+}
 
 /// What `pg_hba_file_rules` says of a `hostssl` line while the server runs
 /// without TLS.
@@ -696,6 +706,17 @@ mod tests {
         let before = Settings::default();
         assert!(tls_after(&before, &before.to_allow("this-machine")));
         assert!(!tls_after(&before, &before.to_deny()));
+    }
+
+    #[test]
+    fn a_setting_taken_out_that_waits_for_the_restart_is_no_mistake() {
+        assert!(waits_for_restart(
+            "parameter \"listen_addresses\" cannot be changed without restarting the server"
+        ));
+        assert!(!waits_for_restart("invalid value for parameter \"listen_addresses\""));
+        assert!(!waits_for_restart(
+            "parameter \"\" cannot be changed without restarting the server"
+        ));
     }
 
     #[test]
