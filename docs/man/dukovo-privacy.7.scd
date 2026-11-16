@@ -88,9 +88,11 @@ that is not listed is a bug.
 	_/system/live/metrics_, which a boot starts without.
 
 *Alerts*
-	The active alerts and the newest 1000 to 2000 changes, and the
-	messages not yet delivered for 24 hours at most, in files of
-	_/system/state/alerts_ that root alone reads (*alertd*(8)).
+	The active alerts and the newest 1000 to 2000 changes, the
+	messages not yet delivered for 24 hours at most, and for each
+	browser that asked for alerts its name, its push service's address
+	for it and the key to encrypt for, in files of _/system/state/alerts_
+	that root alone reads (*alertd*(8)).
 
 # SENT ON ITS OWN
 
@@ -144,9 +146,13 @@ that is not listed is a bug.
 	The title and detail of each alert, with the machine's name and the
 	time, to the email account and the webhook addresses the user names
 	in *alerts.toml*(5), over TLS only. An alert can name a disk's
-	model and serial number, a mount point or a service. By default it
-	sends nothing; taking the channel out of the file, then *service
-	alertd reload* (*service*(8)), or *enabled = false* in its service
+	model and serial number, a mount point or a service. To a browser
+	that asked for alerts, the same goes through the push service its
+	maker runs, encrypted for that browser alone (RFC 8291), so that
+	the push service sees only when a message is sent and its size. By
+	default it sends nothing; taking the channel out of the file, then
+	*service alertd reload* (*service*(8)), *alerts push remove*
+	(*alerts*(8)) for a browser, or *enabled = false* in its service
 	file stops it (*alertd*(8)).
 
 *updated*
