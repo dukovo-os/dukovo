@@ -133,6 +133,29 @@ fn retry_time(after: &str, now: i64) -> Option<String> {
     }
 }
 
+/// The time, in seconds since 1970, before which the authority asked not to
+/// be asked again: its Retry-After `after` read as a number of seconds from
+/// `now` or as an HTTP date (RFC 9110, `Fri, 31 Dec 2027 23:59:59 GMT`); none
+/// for anything else.
+pub fn retry_at(after: &str, now: i64) -> Option<i64> {
+    let after = after.trim();
+    if let Ok(seconds) = after.parse::<i64>() {
+        return (seconds >= 0).then(|| now.saturating_add(seconds));
+    }
+    let (_, date) = after.split_once(", ")?;
+    let mut parts = date.split(' ');
+    let (day, month, year, clock, zone) =
+        (parts.next()?, parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if zone != "GMT" || parts.next().is_some() {
+        return None;
+    }
+    const MONTHS: [&str; 12] =
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month = MONTHS.iter().position(|name| *name == month)? + 1;
+    // The form tuf reads: the same fields, in UTC, with a `T` and a `Z`.
+    tuf::time::parse(&format!("{year}-{month:02}-{day:0>2}T{clock}Z"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +221,32 @@ mod tests {
         assert!(none.starts_with("the authority's rate limit was reached: try again later"));
         let empty = explain(&error, &n, Some("  "), NOW);
         assert!(empty.contains("try again later"));
+    }
+
+    #[test]
+    fn a_retry_after_is_a_number_of_seconds_or_an_http_date() {
+        assert_eq!(retry_at("3600", NOW), Some(NOW + 3600));
+        assert_eq!(retry_at(" 0 ", NOW), Some(NOW));
+        // 2027-12-31 23:59:59 UTC.
+        assert_eq!(retry_at("Fri, 31 Dec 2027 23:59:59 GMT", NOW), Some(1_830_297_599));
+        assert_eq!(retry_at("Mon, 01 Feb 2027 00:00:00 GMT", NOW), Some(1_801_440_000));
+    }
+
+    #[test]
+    fn a_retry_after_that_says_nothing_sure_gives_no_time() {
+        for word in [
+            "",
+            "-5",
+            "soon",
+            "1.5",
+            "Fri, 31 Dec 2027 23:59:59 UTC",
+            "Fri, 31 Dec 2027 23:59:59 GMT more",
+            "Fri, 31 Foo 2027 23:59:59 GMT",
+            "Fri, 32 Dec 2027 23:59:59 GMT",
+            "Fri, 31 Dec 2027 24:59:59 GMT",
+        ] {
+            assert_eq!(retry_at(word, NOW), None, "{word:?}");
+        }
     }
 
     #[test]
