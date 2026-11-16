@@ -98,6 +98,47 @@ it, so it must not lead alertd into the local network.
   each failed in that time. A machine as installed, with no channel, is
   not warned: it tells its owner on the screen and at sign-in, and
   whether to add a channel is the owner's choice.
+- **Alerts by kind.** Each alert says what it is about, in `about`:
+  `data` (a disk failing or wearing out, a filesystem nearly full, a
+  mirror missing a disk, a backup failed or late), `stopped` (a
+  service, an update or a start that failed, a certificate running
+  out, the kernel stopping, memory running low) or `hardware` (a sensor
+  or a disk running hot, the memory test at the start). Each program
+  tags the alerts it raises; `alerts raise` and `alerts event` tag one
+  with `--about`. Three alerts are about no kind and reach every
+  channel whatever it asked for: `update-not-verified`, since a system
+  whose files are not the release's must not be hidden by a choice of
+  kinds, a browser's `push-ended:ID`, and the test alert. An alert
+  with a word this alertd does not know is kept and sent as one about
+  no kind, so a newer program never loses an alert to an older alertd.
+  A channel asks for kinds with `about`, a list of words, in
+  alerts.toml's `[email]` and each `[[webhook]]`, and in each browser's
+  subscription; without it a channel is told of every kind. `about`
+  can only narrow what a channel is told of, so a mistake in it is read
+  as no narrowing: a word that is no kind is left out, and a list that
+  names no kind, is empty or is not a list of words gives every kind,
+  each logged with ALR-106. It is the one setting whose mistake does
+  not leave the channel out. The key is `about`, not `kinds`, since a
+  `[[webhook]]` has `kind` already: what it speaks. `alerts channel`
+  changes a channel's kinds, and `alerts email`, `alerts webhook` and
+  `alerts push` set channels up from the command line, as the
+  console's Alerts page does.
+- **Setting up a phone.** On a computer, the Alerts page shows a QR
+  code of the console's address, `https://HOST:PORT/alerts?phone=1`,
+  and nothing else: no token, no session, no secret, so a person who
+  sees the code learns only an address anyone on the network can find.
+  HOST is the name the computer reached the console by when the console
+  serves a certificate other than the machine's own and the name is not
+  an address, `localhost` or a `.local` name; otherwise the machine's
+  first private address, which a phone reaches without resolving
+  `.local` names. The phone signs in with the person's password and
+  second factor, as everywhere; the page shows the certificate's
+  SHA-256 fingerprint to compare first, and says to stop when it
+  differs. A browser runs a service worker only for a certificate it
+  trusts that names the address it opened, and the machine's own
+  certificate names no address, so push on the phone needs a
+  certificate from an authority at that name; the page says so, and
+  that email and webhooks reach a phone until then.
 - **ring does it all.** ECDH on P-256, HKDF, AES-128-GCM and ECDSA
   signing are ring's, which alertd has already through rustls: no new
   crate. RFC 8291's Appendix A example is a unit test: its keys, salt
@@ -147,3 +188,13 @@ it, so it must not lead alertd into the local network.
 - **A crate for Web Push.** The ones there are bring an HTTP client and
   a TLS stack of their own; ring and tuf's HTTP over rustls are already
   alertd's.
+- **A top-level `[about]` table for the kinds.** An older alertd would
+  ignore it rather than leave a channel out, but it would have to name
+  each webhook by its place in the file, which changes when one is
+  removed, so a removal could send a kind to the wrong channel. With
+  `about` in a channel's own table, an older release, after going back
+  with today's settings kept, leaves out only a channel narrowed by
+  hand or on the page and says so in its log; a channel told of every
+  kind is written without the key.
+- **A QR code that signs the phone in.** A code anyone glances at
+  would then be a key to the console; the address alone is not.
