@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The refusals of database(8) that have an ID of their own, DB-101 to
-//! DB-108, each as the failure the command exits with. The ID ends the
+//! DB-110, each as the failure the command exits with. The ID ends the
 //! last line in parentheses, as the other tools' IDs do (`ACC-105`): the
 //! web console reads it from the last line of the command's error output
 //! when its action names it, and the support center's page for it is found
@@ -119,6 +119,21 @@ pub fn firewall_block(why: &str) -> Fail {
     ))
 }
 
+/// DB-109: `path` is not a copy of a database that `restore` can put
+/// back; `why` says what is wrong with it, in words that follow the path.
+pub fn bad_copy(path: &str, why: &str) -> Fail {
+    fail(format!("{path} is not a copy that can be put back: {why} (DB-109)"))
+}
+
+/// DB-110: `pg_restore` did not put the copy into `database`. `said` is its
+/// own words, which come first, and may be empty; `back` tells how taking
+/// back what was made went, as a sentence part that follows.
+pub fn not_put_back(database: &str, said: &str, back: &str) -> Fail {
+    let said = said.trim_end();
+    let first = if said.is_empty() { String::new() } else { format!("{said}\n") };
+    fail(format!("{first}the copy was not put into {database}: {back} (DB-110)"))
+}
+
 /// The failure for what a session said after it started: PostgreSQL's own
 /// words, which hold no password, and no ID.
 pub fn said(error: &wire::Error) -> Fail {
@@ -166,12 +181,34 @@ mod tests {
             (no_account("ann"), "DB-106"),
             (firewall_is_tried(), "DB-107"),
             (firewall_block("line 3 starts a block that no line ends"), "DB-108"),
+            (bad_copy("/shared/x.dump", "it is not there"), "DB-109"),
+            (not_put_back("shop_x", "", "the database was removed again"), "DB-110"),
         ];
         for (refusal, id) in refusals {
             assert!(refusal.message.ends_with(&format!(" ({id})")), "{}", refusal.message);
             assert_eq!(refusal.message.lines().count(), 1, "{id}");
             assert_eq!((refusal.code, refusal.usage), (1, false), "{id}");
         }
+    }
+
+    #[test]
+    fn what_pg_restore_said_comes_first_and_the_id_ends_the_last_line() {
+        let failure = not_put_back(
+            "shop_x",
+            "pg_restore: error: could not execute query\npg_restore: error: another\n",
+            "the database was removed again",
+        );
+        let lines: Vec<&str> = failure.message.lines().collect();
+        assert_eq!(lines.len(), 3, "{}", failure.message);
+        assert_eq!(lines[0], "pg_restore: error: could not execute query");
+        assert_eq!(
+            lines[2],
+            "the copy was not put into shop_x: the database was removed again (DB-110)"
+        );
+        assert_eq!(
+            bad_copy("/a/b.dump", "it is a link, not a file").message,
+            "/a/b.dump is not a copy that can be put back: it is a link, not a file (DB-109)"
+        );
     }
 
     #[test]

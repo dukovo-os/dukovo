@@ -15,6 +15,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use super::server::{DUMPS_IN_SHARED, SHARED, SNAPSHOTS_OF_SHARED};
 use crate::cert::acme;
 
 /// The longest name PostgreSQL takes: 63 bytes.
@@ -86,6 +87,63 @@ pub fn check_locale(locale: &str) -> Result<(), String> {
 /// What is wrong with it.
 pub fn check_site(site: &str) -> Result<(), String> {
     acme::check_dns_name_to_check(site, false)
+}
+
+/// The most bytes of a snapshot's name.
+const SNAPSHOT_MAX: usize = 255;
+
+/// The most bytes of a copy's file name, before `.dump`.
+const COPY_NAME_MAX: usize = 100;
+
+/// Whether `name` can be a snapshot's name in a copy's path: 1 to 255
+/// printable ASCII characters, which are not `/` and do not start with a
+/// dot.
+#[must_use]
+pub fn snapshot_name_ok(name: &str) -> bool {
+    (1..=SNAPSHOT_MAX).contains(&name.len())
+        && !name.starts_with('.')
+        && name.bytes().all(|byte| (b' '..=b'~').contains(&byte) && byte != b'/')
+}
+
+/// Checks `path` as a copy that the web console may put back: a file
+/// `NAME.dump` in the folder of the copies the backup hook makes, or in
+/// the same folder of a snapshot of `/shared`.
+///
+/// The file name has letters, digits, `_`, `.` and `-`, and does not start
+/// with a dot or a hyphen, which is what the hook gives a copy.
+///
+/// # Errors
+///
+/// What the path must be.
+pub fn check_copy_path(path: &str) -> Result<(), String> {
+    let wrong = || {
+        format!(
+            "`{}` is not a copy the backup hook made: it is a file NAME.dump in \
+             {SHARED}/{DUMPS_IN_SHARED}, or in the same folder of a snapshot, \
+             {SNAPSHOTS_OF_SHARED}/SNAPSHOT/{DUMPS_IN_SHARED}",
+            path.escape_debug()
+        )
+    };
+    let inside = if let Some(rest) = path.strip_prefix(&format!("{SHARED}/")) {
+        rest
+    } else if let Some(rest) = path.strip_prefix(&format!("{SNAPSHOTS_OF_SHARED}/")) {
+        let (snapshot, rest) = rest.split_once('/').ok_or_else(wrong)?;
+        if !snapshot_name_ok(snapshot) {
+            return Err(wrong());
+        }
+        rest
+    } else {
+        return Err(wrong());
+    };
+    let file = inside
+        .strip_prefix(DUMPS_IN_SHARED)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| rest.strip_suffix(".dump"))
+        .ok_or_else(wrong)?;
+    let fits = (1..=COPY_NAME_MAX).contains(&file.len())
+        && file.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        && file.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
+    if fits { Ok(()) } else { Err(wrong()) }
 }
 
 /// A network a database is opened to: an address and the length of the
@@ -241,6 +299,61 @@ mod tests {
         for fine in ["postgres2", "mypg_x", "template", "pg", "pgsql"] {
             assert_eq!(check_name(fine), Ok(()), "{fine}");
         }
+    }
+
+    #[test]
+    fn a_copy_is_a_dump_in_the_folder_of_the_hook_or_in_a_snapshot_of_it() {
+        let live = "/shared/services/org.postgresql.postgresql/postgres/dumps";
+        let snap =
+            "/snapshots/shared/2026-11-16-0200/services/org.postgresql.postgresql/postgres/dumps";
+        for good in [
+            format!("{live}/shop.dump"),
+            format!("{live}/Shop_2.x-y.dump"),
+            format!("{snap}/shop.dump"),
+            "/snapshots/shared/backup 1/services/org.postgresql.postgresql/postgres/dumps/a.dump"
+                .to_string(),
+            format!("{live}/_x.dump"),
+        ] {
+            assert_eq!(check_copy_path(&good), Ok(()), "{good}");
+        }
+        for bad in [
+            String::new(),
+            "shop.dump".to_string(),
+            format!("{live}/shop.sql"),
+            format!("{live}/.dump"),
+            format!("{live}/.hidden.dump"),
+            format!("{live}/-x.dump"),
+            format!("{live}/a/b.dump"),
+            format!("{live}/../data/x.dump"),
+            format!("{live}/a b.dump"),
+            format!("{live}/{}.dump", "a".repeat(101)),
+            format!("{live}x/shop.dump"),
+            format!("{live}//shop.dump"),
+            "/shared/services/org.postgresql.postgresql/postgres/data/shop.dump".to_string(),
+            "/shared/services/org.postgresql.postgresql/postgres/dumps".to_string(),
+            "/users/ann/shop.dump".to_string(),
+            "/shared/../etc/shop.dump".to_string(),
+            "/snapshots/shared/services/org.postgresql.postgresql/postgres/dumps/shop.dump"
+                .to_string(),
+            "/snapshots/shared/.hidden/services/org.postgresql.postgresql/postgres/dumps/a.dump"
+                .to_string(),
+            "/snapshots/shared/caf\u{e9}/services/org.postgresql.postgresql/postgres/dumps/a.dump"
+                .to_string(),
+            "/snapshots/shared//services/org.postgresql.postgresql/postgres/dumps/a.dump"
+                .to_string(),
+            "/snapshots/users/x/services/org.postgresql.postgresql/postgres/dumps/a.dump"
+                .to_string(),
+            format!("{live}/shop.dump\n"),
+            format!("{live}/shop\0.dump"),
+        ] {
+            assert!(check_copy_path(&bad).is_err(), "{bad:?}");
+        }
+        assert!(snapshot_name_ok("2026-11-16-0200.2"));
+        assert!(snapshot_name_ok("before the update"));
+        for bad in ["", ".x", "a/b", "a\nb", "caf\u{e9}", "a\0b", &"a".repeat(256)] {
+            assert!(!snapshot_name_ok(bad), "{bad:?}");
+        }
+        assert!(snapshot_name_ok(&"a".repeat(255)));
     }
 
     #[test]

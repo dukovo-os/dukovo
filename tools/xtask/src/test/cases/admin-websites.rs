@@ -76,6 +76,15 @@
 //! rules, so that no rule decides for port 5432; a second deny says there is
 //! no line.
 //!
+//! A copy put back. Spark runs the backup hook of PostgreSQL as backup(8)
+//! does before its snapshots, and the hook ends well and leaves a copy of
+//! each database in the account's dumps folder, with none half written.
+//! The list says the server makes copies and when the database's was made,
+//! and databases.copies is what `database copies --json` prints. A row of
+//! the database is changed; databases.restore of the copy as a new name is
+//! a task of three steps that leaves the database as it is, and the new
+//! database has the row as it was. The new database is removed.
+//!
 //! A database removed. With a session open, databases.remove is DB-103 by
 //! the route and by the command, naming the program that holds the session;
 //! with force and role it ends the session and takes the database and its
@@ -137,6 +146,13 @@ const PASSWORD_FILE: &str = "/tmp/phpdb.pw";
 /// sizes and the sessions, which are left out when it is compared.
 const MOVING: [&str; 2] = ["bytes", "sessions"];
 
+/// The copy that PostgreSQL's backup hook makes of the database: a file in
+/// the dumps folder of the account postgres, which only root reads.
+const COPY: &str = "/shared/services/org.postgresql.postgresql/postgres/dumps/phpdb.dump";
+
+/// The new database the copy is put into.
+const RESTORED: &str = "phpdb_back";
+
 /// Dukovo's root on a copy of the test image with 512 MiB of room after it,
 /// and the bundles, with the checks' script and page beside them.
 const DISKS: &[Disk] = &[
@@ -151,7 +167,7 @@ const DISKS: &[Disk] = &[
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-websites",
-    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate is a task of eight steps that has PostgreSQL listen on every address with TLS and the firewall's rules open port 5432 to that network only, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has PostgreSQL listen on localhost again and the firewall's rules take the block of port 5432 away, a second deny saying there is no line; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
+    about: "The web console's Websites and Databases, on nginx, PHP-FPM and PostgreSQL installed for everyone on a root grown over its disk: websites.list is what website list --json prints, with no site, for alice and lab-reader, and websites.check passes for alice and is ADM-122 for lab-reader; websites.plan of a static site named dukovo.local with this-machine's certificate is what website add --dry-run --json prints, with no failed check; websites.add of it is a task of seven steps after which it answers over HTTPS with this-machine's chain alone, port 80 answers 301, the override of nginx's service file names this-machine and port 443, and the default server refuses the handshake of a name no site has; websites.add of a PHP site turns PHP-FPM on, its index.php answers through it without its code, and a .php file in its uploads folder, a dot file and /sites/ answer 404; a file nginx does not read in /system/settings/websites makes websites.check fail with nginx's line and WEB-103, and websites.add of another site fails with WEB-103 before any change and changes nothing; databases.add of phpdb for the PHP site answers with the password, once, a PDO page of the PHP site connects with it, inserts and reads and is refused with another password, databases.list is what database list --json prints but for the sizes and the sessions, and a second add is DB-102; databases.allow from 10.0.2.0/24 with this-machine's certificate is a task of eight steps that has PostgreSQL listen on every address with TLS and the firewall's rules open port 5432 to that network only, a psql that checks the name connects over TLS and one without TLS or with another password does not, a second allow changes nothing, and databases.deny has PostgreSQL listen on localhost again and the firewall's rules take the block of port 5432 away, a second deny saying there is no line; databases.copies and databases.restore: the backup hook that Spark runs makes a copy of each database, the list and databases.copies tell it, and a copy put back as a new database by a task of three steps has the row as it was before the live one was changed, which stays changed, its table is the database owner's, and no role called root is left; databases.remove with a session open is DB-103 by the route and the command, and with force and role ends the session and takes the database and its role away; websites.https with off and websites.remove of both sites leave nginx's override with no certificate and no port 443, the default server gone, the folders kept and nginx's welcome page; lab-reader is ADM-122 for every change and every administrator's read (ADR 0569)",
     firmware: Firmware::Uefi,
     media: Media::Usb,
     // As a normal boot: Spark starts the services, admind among them.
@@ -185,6 +201,7 @@ conf=/system/settings/websites
 override=/system/settings/spark/services/settings.d/nginx.toml
 sites=/shared/www/sites
 password=/tmp/phpdb.pw
+dumps=/shared/services/org.postgresql.postgresql/postgres/dumps
 held=0
 checked=0
 
@@ -408,6 +425,46 @@ session_ended() {
 	eventually grep -q -e 'terminating connection' -e 'FATAL' -e 'server closed' /tmp/sleeper.out
 }
 
+# Spark runs the before hook of every running service that has one, as
+# backup(8) does around its snapshots, and answers once the last has ended,
+# with a line for each: ok, and the service's name, for one that ended
+# well. Root asks it, through elevate.
+hook_runs() {
+	elevate sh -c "printf 'hooks before\n' | nc -w 300 -U /system/live/spark/control" |
+		grep -q '^ok: postgresql'
+}
+
+# The hook leaves a whole copy of the database, and none half written,
+# which only root may look for.
+copy_is_there() {
+	has_file "$dumps/phpdb.dump" && lacks_file "$dumps/phpdb.dump.new"
+}
+
+# The name of the last guest in the database $1, as the superuser reads it.
+last_guest() {
+	elevate psql -U postgres -d "$1" -X -A -t -c 'SELECT name FROM guests ORDER BY id DESC LIMIT 1'
+}
+
+guests_changed() {
+	elevate psql -U postgres -d phpdb -X -q -c "UPDATE guests SET name = 'dormouse'"
+}
+
+old_row_is_back() {
+	test "$(last_guest phpdb_back)" = hatter
+}
+
+live_row_is_kept() {
+	test "$(last_guest phpdb)" = dormouse
+}
+
+owner_owns_the_copy() {
+	test "$(elevate psql -U postgres -d phpdb_back -X -A -t -c "SELECT tableowner FROM pg_tables WHERE tablename = 'guests'")" = phpdb
+}
+
+no_restorer_role() {
+	test "$(elevate psql -U postgres -X -A -t -c "SELECT count(*) FROM pg_roles WHERE rolname = 'root'")" = 0
+}
+
 without_443() {
 	if elevate grep -q 'port = 443' "$override"; then
 		return 1
@@ -486,6 +543,20 @@ tls)
 	;;
 denied)
 	check refused tls_does_not_connect
+	;;
+hook)
+	check runs hook_runs
+	check copy copy_is_there
+	check every_database has_file "$dumps/postgres.dump"
+	;;
+changed)
+	check changed guests_changed
+	;;
+restored)
+	check old_row old_row_is_back
+	check live_row live_row_is_kept
+	check owner owner_owns_the_copy
+	check no_restorer no_restorer_role
 	;;
 session)
 	check open session_open
@@ -708,6 +779,7 @@ fn admin_websites(vm: &mut Vm, case: &Case) -> Result<(), String> {
     a_site_file_nginx_does_not_read(vm, &mut test)?;
     a_database_for_a_site(vm, &mut test)?;
     other_machines_may_connect(vm, &mut test)?;
+    a_copy_put_back(vm, &mut test)?;
     a_database_removed(vm, &mut test)?;
     the_sites_taken_away(vm, &mut test)?;
     what_needs_an_administrator(&mut test)?;
@@ -1057,6 +1129,74 @@ fn other_machines_may_connect(vm: &mut Vm, test: &mut Test) -> Result<(), String
     logs("the second deny", &task, &format!("{DATABASE} has no line in pg_hba.conf for other machines"))
 }
 
+/// The backup hook, which Spark runs as backup(8) does before its
+/// snapshots, makes a copy of each database; the list and the copies say
+/// so, as the command does. With a row of the database changed, the copy
+/// put back as a new database, as a task, has the row as it was, owned by
+/// the database's owner, and leaves the database as it is; the role the
+/// restore signed in as is gone, and the new database is then removed.
+fn a_copy_put_back(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    // pg_restore runs as root for the task, which has no pane to ask in, so
+    // root is asked here, as it was for psql, if its answer is not kept for
+    // the whole bundle.
+    unlock(vm)?;
+    let version = "clear; elevate pg_restore --version";
+    run_answering_until(vm, version, "pg_restore (PostgreSQL) 19", 120)?;
+    step(vm, "hook", 3, 900)?;
+
+    let list = same_as_command(vm, test, "/api/1/databases", "elevate database list --json", &MOVING)?;
+    has_members("the server after the hook", &list["server"], &json!({"copies": true}))?;
+    let made = row(&list, "databases", DATABASE)
+        .ok_or_else(|| format!("the list has no database {DATABASE}: {list}"))?;
+    if !made["copy"]["at_ms"].as_u64().is_some_and(|at| at > 0) {
+        return Err(format!("the list has no time for the copy of {DATABASE}: {made}"));
+    }
+    let copies = same_as_command(
+        vm,
+        test,
+        &format!("/api/1/databases/{DATABASE}/copies"),
+        &format!("elevate database copies {DATABASE} --json"),
+        &[],
+    )?;
+    has_members("the newest copy", &copies["copies"][0], &json!({"from": "live", "path": COPY}))?;
+
+    // The row changes after the copy was made, and the copy goes into a new
+    // database that the task names.
+    step(vm, "changed", 1, 120)?;
+    let body = json!({"from": COPY, "as": RESTORED});
+    let (task, _) = test.task(&format!("/api/1/databases/{DATABASE}/restore"), &body, 900)?;
+    if task["action"] != "databases.restore" || task["steps"] != json!(3) {
+        return Err(format!("the task of the restore is {task}, not one of three steps"));
+    }
+    logs(
+        "the restore",
+        &task,
+        &format!("put the copy into the new database {RESTORED}; {DATABASE} was not changed"),
+    )?;
+    let list = same_as_command(vm, test, "/api/1/databases", "elevate database list --json", &MOVING)?;
+    let new = row(&list, "databases", RESTORED)
+        .ok_or_else(|| format!("the list has no database {RESTORED}: {list}"))?;
+    has_members("the new database", new, &json!({"owner": DATABASE, "encoding": "UTF8"}))?;
+    step(vm, "restored", 4, 120)?;
+
+    // The new database is taken away, and the database stays.
+    test.unlocked()?;
+    let path = format!("/api/1/databases/{RESTORED}/remove");
+    let answer = test
+        .post(Who::Alice, &path, &json!({}))?
+        .must("the removal of the new database", 200)?
+        .json()?;
+    let line = json!(format!("removed the database {RESTORED}"));
+    if !answer["output"].as_array().is_some_and(|output| output.contains(&line)) {
+        return Err(format!("the removal of {RESTORED} answered {answer}, with no {line}"));
+    }
+    let list = same_as_command(vm, test, "/api/1/databases", "elevate database list --json", &MOVING)?;
+    if row(&list, "databases", RESTORED).is_some() || row(&list, "databases", DATABASE).is_none() {
+        return Err(format!("the databases after the removal of {RESTORED} are {list}"));
+    }
+    Ok(())
+}
+
 /// With a session open, the removal is refused, by the route and by the
 /// command, naming the program that holds it; with force and role it ends
 /// the session and takes the database and its role away.
@@ -1127,6 +1267,7 @@ fn what_needs_an_administrator(test: &mut Test) -> Result<(), String> {
     let site = json!({"name": MACHINE, "kind": "static", "owner": "alice"});
     let database = json!({"name": DATABASE, "site": PHP, "locale": "en_US.UTF-8"});
     let allow = json!({"from": "10.0.2.0/24", "certificate": "this-machine"});
+    let restore = json!({"from": COPY, "as": RESTORED});
     let asks: Vec<(String, Value)> = vec![
         ("/api/1/websites/add".to_string(), site),
         (format!("/api/1/websites/{MACHINE}/https"), json!({"off": true})),
@@ -1134,15 +1275,18 @@ fn what_needs_an_administrator(test: &mut Test) -> Result<(), String> {
         ("/api/1/databases/add".to_string(), database),
         (format!("/api/1/databases/{DATABASE}/allow"), allow),
         (format!("/api/1/databases/{DATABASE}/deny"), json!({})),
+        (format!("/api/1/databases/{DATABASE}/restore"), restore),
         (format!("/api/1/databases/{DATABASE}/remove"), json!({})),
     ];
     for (path, body) in &asks {
         test.post(Who::Reader, path, body)?.refused(path, 403, "ADM-122")?;
     }
+    let copies = format!("/api/1/databases/{DATABASE}/copies");
     for path in [
         "/api/1/websites/check",
         "/api/1/websites/plan/dukovo.local?kind=static&owner=alice",
         "/api/1/databases",
+        copies.as_str(),
     ] {
         test.get(Who::Reader, path)?.refused(path, 403, "ADM-122")?;
     }

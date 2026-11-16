@@ -15,6 +15,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::add::{ready, run};
+use super::copies::{self, Copy};
 use super::names::Network;
 use super::port::{self, Firewall};
 use super::server::{Host, value};
@@ -57,6 +58,10 @@ pub struct Server {
     /// What the firewall's rules say of its port. While the server does
     /// not run, they are not read, and say nothing.
     pub firewall: Firewall,
+    /// Whether the backup hook of its service copies each database, as
+    /// the service file and its override say. A machine that has no
+    /// backup set up has the hook and makes no copy.
+    pub copies: bool,
 }
 
 /// A database.
@@ -83,6 +88,9 @@ pub struct Database {
     /// Whether the sorting data changed since it was made: its indexes
     /// are to be rebuilt.
     pub collation_mismatch: bool,
+    /// The newest copy of it that the backup hook made: when, and how
+    /// long. None before the first backup.
+    pub copy: Option<Copy>,
 }
 
 /// A role.
@@ -157,8 +165,17 @@ fn provider(letter: &str) -> String {
     .to_string()
 }
 
+/// Whether the backup hook of the service is the one that copies each
+/// database, by the service file and its override as they are now.
+fn copying(host: &dyn Host) -> bool {
+    let files = host.files();
+    let Ok(file) = fs::read_to_string(&files.service) else { return false };
+    let over = fs::read_to_string(&files.over).ok();
+    settings::copies(&file, over.as_deref())
+}
+
 /// What `list` says of a server that is not there to ask.
-fn silent(installed: bool, enabled: bool) -> List {
+fn silent(installed: bool, enabled: bool, copies: bool) -> List {
     List {
         server: Server {
             installed,
@@ -169,6 +186,7 @@ fn silent(installed: bool, enabled: bool) -> List {
             ssl: false,
             certificate: None,
             firewall: Firewall::default(),
+            copies,
         },
         databases: Vec::new(),
         roles: Vec::new(),
@@ -185,7 +203,7 @@ fn silent(installed: bool, enabled: bool) -> List {
 pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
     let service = host.service()?;
     if !service.installed || !service.running {
-        return Ok(silent(service.installed, service.enabled));
+        return Ok(silent(service.installed, service.enabled, service.installed && copying(host)));
     }
     ready(host)?;
     let version = run(host, "SHOW server_version")?;
@@ -202,6 +220,7 @@ pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
         ssl: value(&ssl) == Some("on"),
         certificate: value(&cert_file).and_then(settings::certificate_of).map(String::from),
         firewall: Firewall::default(),
+        copies: copying(host),
     };
     let sessions = run(host, sql::LIST_SESSIONS)?;
     let databases = run(host, sql::LIST_DATABASES)?;
@@ -215,7 +234,7 @@ pub fn list(host: &mut dyn Host) -> Result<List, Fail> {
     }
     Ok(List {
         server,
-        databases: databases_of(first(&databases)?, first(&sessions)?),
+        databases: databases_of(first(&databases)?, first(&sessions)?, &host.dumps()),
         roles: roles_of(first(&roles)?),
         access,
         problems,
@@ -228,8 +247,9 @@ fn first(answers: &[Answer]) -> Result<&Answer, Fail> {
 }
 
 /// The databases of the answer of [`sql::LIST_DATABASES`], with their
-/// sessions from [`sql::LIST_SESSIONS`].
-fn databases_of(databases: &Answer, sessions: &Answer) -> Vec<Database> {
+/// sessions from [`sql::LIST_SESSIONS`] and their copies from `dumps`, the
+/// folder of the copies.
+fn databases_of(databases: &Answer, sessions: &Answer, dumps: &Path) -> Vec<Database> {
     databases
         .rows
         .iter()
@@ -261,6 +281,7 @@ fn databases_of(databases: &Answer, sessions: &Answer) -> Vec<Database> {
                 made_by_database: comment.is_some_and(|text| text.starts_with(sql::COMMENT))
                     || owner_made_it,
                 collation_mismatch: mismatch,
+                copy: copies::in_folder(dumps, &name),
                 name,
             }
         })
@@ -387,7 +408,7 @@ pub fn text(list: &List) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fake::Fake;
+    use super::super::fake::{Fake, START_MS};
     use super::*;
     use crate::json;
 
@@ -516,6 +537,8 @@ mod tests {
             .with_sessions("shop", "php", 1)
             .listening_with("this-machine")
             .with_hba_lines(&[("shop", "shop", "192.0.2.0/24")])
+            .with_copying_hook()
+            .with_copy("shop", 12345, START_MS)
             .with_firewall_rules(&format!(
                 "allow tcp 5000-6000\n\n{}",
                 block_of("shop", &["192.0.2.0/24"])
@@ -577,6 +600,54 @@ mod tests {
         let mut fake = Fake::new().off().with_firewall_rules(&block);
         let list = list_of(&mut fake);
         assert_eq!(list.server.firewall, Firewall::default());
+    }
+
+    #[test]
+    fn a_database_has_the_copy_the_hook_made_of_it_or_none() {
+        let mut fake = Fake::new()
+            .with_database("shop", "shop")
+            .with_database("blog", "blog")
+            .with_copy("shop", 2048, START_MS - 3_600_000)
+            // A copy of a database that is gone is not any database's.
+            .with_copy("gone", 10, START_MS);
+        let list = list_of(&mut fake);
+        let copy = |name: &str| list.databases.iter().find(|one| one.name == name).unwrap().copy;
+        assert_eq!(copy("shop"), Some(Copy { at_ms: START_MS - 3_600_000, bytes: 2048 }));
+        assert_eq!(copy("blog"), None);
+        // The text of `list` says nothing of it.
+        assert!(!text(&list).contains("copy"), "{}", text(&list));
+    }
+
+    #[test]
+    fn the_server_says_whether_its_backup_hook_copies_the_databases() {
+        let says = |fake: Fake| {
+            let mut fake = fake;
+            list_of(&mut fake).server.copies
+        };
+        assert!(says(Fake::new().with_copying_hook()));
+        // The hook before the bundle copied, and none.
+        assert!(!says(Fake::new().with_checkpoint_hook()));
+        assert!(!says(Fake::new()));
+        // The override is read as Spark reads it: its list replaces the file's.
+        let fake = Fake::new().with_copying_hook();
+        let over = fake.files().over.clone();
+        std::fs::create_dir_all(over.parent().unwrap()).unwrap();
+        std::fs::write(&over, "[backup]\nbefore = []\n").unwrap();
+        assert!(!says(fake));
+        let fake = Fake::new().with_checkpoint_hook();
+        let over = fake.files().over.clone();
+        std::fs::create_dir_all(over.parent().unwrap()).unwrap();
+        std::fs::write(
+            &over,
+            "[backup]\nbefore = [\"/applications/org.postgresql.postgresql/bin/postgresql-backup\"]\n",
+        )
+        .unwrap();
+        assert!(says(fake));
+        // A server that does not run says it too, as far as the file says.
+        let mut off = Fake::new().off().with_copying_hook();
+        assert!(list(&mut off).unwrap().server.copies);
+        let mut none = Fake::new().not_installed().with_copying_hook();
+        assert!(!list(&mut none).unwrap().server.copies);
     }
 
     #[test]

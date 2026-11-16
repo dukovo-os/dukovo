@@ -16,7 +16,10 @@
 //!   `pg_hba.conf` ([`hba`]), the server's settings ([`settings`]), the
 //!   service's certificates and the firewall's rules for the port
 //!   ([`port`]);
-//! - [`list`] says what is there;
+//! - [`list`] says what is there, and [`copies`] the copies that backups
+//!   made of a database;
+//! - [`restore`] puts one of those copies back, into a new database or
+//!   over the database itself, which is kept;
 //! - [`names`] is what a name, a sorting and a network may be, [`sql`] is
 //!   every statement sent, [`errors`] the refusals that have an ID, and
 //!   [`server`] the machine around the statements, which a test stands
@@ -38,6 +41,7 @@ use crate::util::{self, Fail, fail, usage};
 
 mod add;
 mod allow;
+mod copies;
 mod errors;
 #[cfg(test)]
 mod fake;
@@ -45,6 +49,7 @@ mod hba;
 mod list;
 pub(crate) mod names;
 mod port;
+mod restore;
 pub mod scram;
 mod server;
 mod settings;
@@ -54,6 +59,7 @@ pub mod wire;
 use add::{Add, Remove};
 use allow::{Allow, Deny};
 use names::Network;
+use restore::{Restore, Target};
 use server::{Lock, Machine};
 
 /// What `database` says of itself.
@@ -63,6 +69,8 @@ const HELP: &str = "Usage: database list [--json]
        database allow NAME --from NETWORK... [--certificate NAME] [--progress]
        database deny NAME [--from NETWORK]... [--progress]
        database remove NAME [--role] [--force]
+       database copies NAME [--json]
+       database restore NAME --from FILE [--as NEW | --over [--force]] [--progress] [--json]
 
 Makes and removes the databases of PostgreSQL, as database(8) describes. Every
 command needs root; try elevate database.
@@ -88,8 +96,14 @@ command needs root; try elevate database.
   remove    removes the database, which must have no open session unless
             --force ends them; --role removes its role too, when database
             made it and it owns nothing else
+  copies    lists the copies of NAME that backups made, the newest first: the
+            one in use, and those in the snapshots of /shared
+  restore   puts the copy FILE, one that `copies` lists or a pg_dump -Fc file,
+            into a new database NEW, with the owner of NAME (NAME_restored_DATE
+            when --as is not given), or with --over into NAME itself, which is
+            kept as NAME_before_DATE_TIME; --force ends the sessions open to NAME
   --json    prints one line of JSON
-  --progress  tells each step of allow and deny as `step N of M: WORDS`
+  --progress  tells each step of allow, deny and restore as `step N of M: WORDS`
 
 A change takes the lock of database, so that two do not mix, and writes
 pg_hba.conf and the firewall's rules only between the two comment lines it
@@ -131,6 +145,22 @@ enum Command {
     },
     /// `remove`.
     Remove(Remove),
+    /// `copies`.
+    Copies {
+        /// The database.
+        name: String,
+        /// Whether to print JSON.
+        json: bool,
+    },
+    /// `restore`.
+    Restore {
+        /// What to put back, and where.
+        ask: Restore,
+        /// Whether to tell the steps.
+        progress: bool,
+        /// Whether to print JSON.
+        json: bool,
+    },
 }
 
 /// What [`parse`] found.
@@ -200,6 +230,25 @@ fn run(host: &mut Machine, command: Command) -> Result<i32, Fail> {
             let _lock = Lock::system()?;
             say(&add::remove(host, &ask)?);
         }
+        Command::Copies { name, json } => {
+            let found = copies::of(host, &name);
+            if json {
+                json::print(&found)?;
+            } else {
+                print!("{}", copies::text(&found));
+            }
+        }
+        Command::Restore { ask, progress, json } => {
+            let _lock = Lock::system()?;
+            let steps =
+                if progress { Steps::new(restore::steps_of(&ask.target)) } else { Steps::off() };
+            let restored = restore::restore(host, &ask, &steps)?;
+            if json {
+                json::print(&restored)?;
+            } else {
+                say(&restored.words());
+            }
+        }
     }
     Ok(0)
 }
@@ -246,6 +295,8 @@ fn parse(args: &mut Args) -> Result<Parsed, Fail> {
         Some("allow") => allow_options(args)?,
         Some("deny") => deny_options(args)?,
         Some("remove") => remove_options(args)?,
+        Some("copies") => copies_options(args)?,
+        Some("restore") => restore_options(args)?,
         _ => return Err(usage(format!("no such command: {}\n{HELP}", name.to_string_lossy()))),
     };
     Ok(Parsed::Run(command))
@@ -407,6 +458,60 @@ fn remove_options(args: &mut Args) -> Result<Command, Fail> {
         }
     }
     Ok(Command::Remove(Remove { name: checked_name(name)?, role, force }))
+}
+
+/// The options of `copies`.
+fn copies_options(args: &mut Args) -> Result<Command, Fail> {
+    let (mut name, mut json) = (None, false);
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(option) if option == "json" => json = true,
+            Arg::Operand(operand) => take_name(&mut name, operand)?,
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    Ok(Command::Copies { name: checked_name(name)?, json })
+}
+
+/// The options of `restore`.
+fn restore_options(args: &mut Args) -> Result<Command, Fail> {
+    let (mut name, mut from, mut new) = (None, None, None);
+    let (mut over, mut force, mut progress, mut json) = (false, false, false, false);
+    while let Some(arg) = args.next()? {
+        match arg {
+            Arg::Long(option) if option == "from" => from = Some(args.text()?),
+            Arg::Long(option) if option == "as" => new = Some(args.text()?),
+            Arg::Long(option) if option == "over" => over = true,
+            Arg::Long(option) if option == "force" => force = true,
+            Arg::Long(option) if option == "progress" => progress = true,
+            Arg::Long(option) if option == "json" => json = true,
+            Arg::Operand(operand) => take_name(&mut name, operand)?,
+            other => return Err(args.unknown(&other)),
+        }
+    }
+    let name = checked_name(name)?;
+    let from =
+        from.ok_or_else(|| usage("restore needs --from FILE, the copy to put back".into()))?;
+    if !from.starts_with('/') {
+        return Err(usage(format!("--from needs the full path of the copy, from /: `{from}`")));
+    }
+    let target = match (new, over) {
+        (Some(_), true) => {
+            return Err(usage("--as and --over are two ways to restore: use one".into()));
+        }
+        (Some(new), false) => {
+            names::check_name(&new).map_err(usage)?;
+            Target::New(Some(new))
+        }
+        (None, true) => Target::Over { force },
+        (None, false) => Target::New(None),
+    };
+    if force && !over {
+        return Err(usage(
+            "--force ends the sessions that --over finds open; it is for --over".into(),
+        ));
+    }
+    Ok(Command::Restore { ask: Restore { name, from, target }, progress, json })
 }
 
 #[cfg(test)]
@@ -618,6 +723,80 @@ mod tests {
     }
 
     #[test]
+    fn copies_has_json() {
+        assert_eq!(
+            command(&["copies", "shop"]),
+            Command::Copies { name: "shop".into(), json: false }
+        );
+        assert_eq!(
+            command(&["copies", "shop", "--json"]),
+            Command::Copies { name: "shop".into(), json: true }
+        );
+        assert!(refused(&["copies"]).contains("the name of a database is needed"));
+        assert!(refused(&["copies", "Shop"]).contains("not a name"));
+        assert!(refused(&["copies", "a", "b"]).contains("unexpected argument 'b'"));
+    }
+
+    #[test]
+    fn restore_is_into_a_new_database_unless_it_is_over() {
+        let Command::Restore { ask, progress, json } =
+            command(&["restore", "shop", "--from", "/shared/x/shop.dump"])
+        else {
+            panic!("restore")
+        };
+        assert_eq!(
+            ask,
+            Restore {
+                name: "shop".into(),
+                from: "/shared/x/shop.dump".into(),
+                target: Target::New(None)
+            }
+        );
+        assert!(!progress && !json);
+        let Command::Restore { ask, progress, json } = command(&[
+            "restore",
+            "shop",
+            "--from",
+            "/a/shop.dump",
+            "--as",
+            "shop_old",
+            "--progress",
+            "--json",
+        ]) else {
+            panic!("restore")
+        };
+        assert_eq!(ask.target, Target::New(Some("shop_old".into())));
+        assert!(progress && json);
+        for (words, force) in [
+            (&["restore", "shop", "--from", "/a.dump", "--over"][..], false),
+            (&["restore", "shop", "--from", "/a.dump", "--over", "--force"][..], true),
+        ] {
+            let Command::Restore { ask, .. } = command(words) else { panic!("restore") };
+            assert_eq!(ask.target, Target::Over { force });
+        }
+    }
+
+    #[test]
+    fn a_restore_that_is_not_asked_whole_is_refused_before_anything_is_done() {
+        let base = ["restore", "shop", "--from", "/a/shop.dump"];
+        let with = |more: &[&'static str]| -> String {
+            let words: Vec<&str> = base.iter().chain(more).copied().collect();
+            refused(&words)
+        };
+        assert!(with(&["--as", "x", "--over"]).contains("use one"));
+        assert!(with(&["--force"]).contains("it is for --over"));
+        assert!(with(&["--as", "x", "--force"]).contains("it is for --over"));
+        assert!(with(&["--as", "Shop"]).contains("not a name"));
+        assert!(with(&["--as", "pg_x"]).contains("keeps for itself"));
+        assert!(with(&["--nope"]).contains("unrecognized option '--nope'"));
+        assert!(refused(&["restore", "shop"]).contains("needs --from FILE"));
+        assert!(refused(&["restore", "--from", "/a.dump"]).contains("the name of a database"));
+        assert!(refused(&["restore", "shop", "--from", "a.dump"]).contains("the full path"));
+        assert!(refused(&["restore", "Shop", "--from", "/a.dump"]).contains("not a name"));
+        assert!(refused(&["restore", "shop", "x", "--from", "/a.dump"]).contains("unexpected"));
+    }
+
+    #[test]
     fn the_help_names_every_command_and_option() {
         for word in [
             "list",
@@ -626,6 +805,10 @@ mod tests {
             "allow",
             "deny",
             "remove",
+            "copies",
+            "restore",
+            "--as",
+            "--over",
             "--json",
             "--progress",
             "--role",
