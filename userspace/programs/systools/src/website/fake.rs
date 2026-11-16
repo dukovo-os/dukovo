@@ -25,7 +25,9 @@ use super::conf::{self, Facts, Kind};
 use super::host::{BUNDLE_CONF, Checked, Host, NGINX, PHP_FPM, Paths, Rule, STATE, Svc};
 use super::plan::{LOGS, NGINX_HOME, SETTINGS};
 use super::stage::{CONF, conf_view};
+use crate::bundles::sizes;
 use crate::cert::acme::steps::Steps;
+use crate::logd;
 
 /// The text of nginx's service file as the bundle writes it.
 pub const NGINX_SERVICE: &str = "service_version = 1\ndescription = \"nginx\"\n\
@@ -76,6 +78,8 @@ pub struct Fake {
     saw: RefCell<Vec<Option<String>>>,
     logged: RefCell<Vec<String>>,
     held: RefCell<Vec<bool>>,
+    clock: Cell<i64>,
+    cut_walks: Cell<bool>,
 }
 
 /// This process's user and group numbers.
@@ -141,6 +145,8 @@ impl Fake {
             saw: RefCell::default(),
             logged: RefCell::default(),
             held: RefCell::default(),
+            clock: Cell::new(logd::days(2026, 11, 16) * 86_400 + 12 * 3600),
+            cut_walks: Cell::new(false),
         };
         fake.put(SERVICE, NGINX_SERVICE);
         fake.put(BUNDLE_CONF, NGINX_CONF);
@@ -266,6 +272,21 @@ impl Fake {
     /// held when it was made.
     pub fn held(&self) -> Vec<bool> {
         self.held.borrow().clone()
+    }
+
+    /// The time is `seconds` since 1970.
+    pub fn set_now(&self, seconds: i64) {
+        self.clock.set(seconds);
+    }
+
+    /// The day it is, counted from 1970.
+    pub fn today(&self) -> i64 {
+        self.clock.get().div_euclid(86_400)
+    }
+
+    /// The walks of the sites' folders stop short, as a limit would.
+    pub fn cut_walks(&self) {
+        self.cut_walks.set(true);
     }
 
     /// What was said to the log.
@@ -608,4 +629,42 @@ impl Host for Fake {
     fn log(&self, line: &str) {
         self.logged.borrow_mut().push(line.to_string());
     }
+
+    fn now(&self) -> i64 {
+        self.clock.get()
+    }
+
+    fn measure(&self, requests: &[sizes::Request]) -> Result<Vec<sizes::Line>, String> {
+        let ids: Vec<&str> = requests.iter().map(|request| request.id.as_str()).collect();
+        self.tick(&format!("measure {}", ids.join(" ")))?;
+        let mut lines = Vec::new();
+        for request in requests {
+            let mut walked = sizes::Walked { bytes: 0, files: 0, complete: !self.cut_walks.get() };
+            let mut any = false;
+            for folder in &request.folders {
+                any |= taken(&self.real(folder), &mut walked);
+            }
+            if any {
+                lines.push(sizes::Line::App { id: request.id.clone(), walked, took_ms: 3 });
+            }
+        }
+        Ok(lines)
+    }
+}
+
+/// Adds what the folder `at` and what is below it take to `walked`: the
+/// bytes of the files, and how many there are. False when there is no such
+/// folder.
+fn taken(at: &Path, walked: &mut sizes::Walked) -> bool {
+    let Ok(entries) = fs::read_dir(at) else { return false };
+    for entry in entries.flatten() {
+        let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
+        if meta.is_dir() {
+            taken(&entry.path(), walked);
+        } else {
+            walked.bytes += meta.len();
+            walked.files += 1;
+        }
+    }
+    true
 }

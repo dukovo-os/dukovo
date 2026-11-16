@@ -17,6 +17,7 @@ use serde::Serialize;
 
 use super::change::{Ctx, Refusal, Site, State, load, load_with};
 use super::conf::{FILE_MAX, Kind};
+use super::count::{self, Counts, Size, Visits};
 use super::host::Svc;
 use super::plan::{self, SETTINGS};
 use super::stage::{self, conf_view};
@@ -55,6 +56,10 @@ struct SiteJson {
     added_by_hand: bool,
     problems: Vec<Problem>,
     text: String,
+    /// What its folder takes, as the last count found; none before one.
+    size: Option<Size>,
+    /// What its log of requests came to; none before a count.
+    visits: Option<Visits>,
 }
 
 /// What `list` says.
@@ -88,8 +93,19 @@ fn owner_of(ctx: &Ctx<'_>, folder: &str) -> Option<String> {
         .or_else(|| Some(found.uid().to_string()))
 }
 
+/// What has been counted, and the day it is.
+struct Counted {
+    /// What the daily count kept.
+    counts: Counts,
+    /// The day it is, counted from 1970.
+    today: i64,
+}
+
 /// One site as `list` says it.
-fn site_json(ctx: &Ctx<'_>, state: &State, site: &Site) -> SiteJson {
+fn site_json(ctx: &Ctx<'_>, state: &State, site: &Site, counted: &Counted) -> SiteJson {
+    let kept = counted.counts.sites.get(&site.name);
+    let size = kept.and_then(|kept| kept.size);
+    let visits = kept.and_then(|kept| kept.visits(counted.today));
     let file = format!("{SETTINGS}/{}", site.file);
     let added_by_hand = plan::added_by_hand(&site.name, &site.text);
     let too_large = site.text.len() > FILE_MAX;
@@ -125,6 +141,8 @@ fn site_json(ctx: &Ctx<'_>, state: &State, site: &Site) -> SiteJson {
                 added_by_hand,
                 problems,
                 text,
+                size,
+                visits,
             };
         }
     };
@@ -168,6 +186,8 @@ fn site_json(ctx: &Ctx<'_>, state: &State, site: &Site) -> SiteJson {
         added_by_hand,
         problems,
         text,
+        size,
+        visits,
     }
 }
 
@@ -179,7 +199,13 @@ fn site_json(ctx: &Ctx<'_>, state: &State, site: &Site) -> SiteJson {
 pub fn list(ctx: &Ctx<'_>) -> Result<Listing, Refusal> {
     // nginx's own settings are root's to read, and a listing needs none.
     let state = load_with(ctx, false)?;
-    let websites = state.sites.iter().map(|site| site_json(ctx, &state, site)).collect();
+    // What was counted is for the reader's eyes only when it can be read:
+    // a listing with none says so, and still lists.
+    let counted = Counted {
+        counts: count::kept(ctx.paths).unwrap_or_default(),
+        today: ctx.host.now().div_euclid(86_400),
+    };
+    let websites = state.sites.iter().map(|site| site_json(ctx, &state, site, &counted)).collect();
     Ok(Listing { format: 1, nginx: program(state.nginx), php_fpm: program(state.php), websites })
 }
 
@@ -193,8 +219,8 @@ impl Listing {
         serde_json::to_string_pretty(self).map_err(|error| error.to_string())
     }
 
-    /// The listing as a table: name, kind, HTTPS and folder, with a line
-    /// first for what is not as it should be.
+    /// The listing as a table: name, kind, HTTPS, size and folder, with a
+    /// line first for what is not as it should be.
     pub fn plain(&self) -> String {
         let mut text = String::new();
         if !self.nginx.installed {
@@ -206,7 +232,7 @@ impl Listing {
             text.push_str("No websites.\n");
             return text;
         }
-        let rows: Vec<[String; 4]> = self
+        let rows: Vec<[String; 5]> = self
             .websites
             .iter()
             .map(|site| {
@@ -215,29 +241,38 @@ impl Listing {
                     (None, true) => "yes".to_string(),
                     (None, false) => "no".to_string(),
                 };
+                let size = site.size.map_or_else(
+                    || "-".to_string(),
+                    |size| {
+                        let plus = if size.complete { "" } else { "+" };
+                        format!("{}{plus}", crate::util::human(size.bytes, false))
+                    },
+                );
                 [
                     site.name.clone(),
                     site.kind.to_string(),
                     https,
+                    size,
                     site.folder.clone().unwrap_or_default(),
                 ]
             })
             .collect();
-        let head =
-            ["NAME".to_string(), "KIND".to_string(), "HTTPS".to_string(), "FOLDER".to_string()];
+        let head = ["NAME", "KIND", "HTTPS", "SIZE", "FOLDER"].map(ToString::to_string);
         let width =
             |at: usize| rows.iter().chain([&head]).map(|row| row[at].len()).max().unwrap_or(0);
-        let widths = [width(0), width(1), width(2)];
+        let widths = [width(0), width(1), width(2), width(3)];
         for row in [&head].into_iter().chain(rows.iter()) {
             let line = format!(
-                "{:<w0$}  {:<w1$}  {:<w2$}  {}",
+                "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {}",
                 row[0],
                 row[1],
                 row[2],
                 row[3],
+                row[4],
                 w0 = widths[0],
                 w1 = widths[1],
-                w2 = widths[2]
+                w2 = widths[2],
+                w3 = widths[3]
             );
             text.push_str(line.trim_end());
             text.push('\n');
@@ -257,6 +292,7 @@ struct ConfJson {
     path: String,
     includes: bool,
     hides_sites: bool,
+    logs_sites: bool,
 }
 
 /// The result of nginx's check.
@@ -292,7 +328,6 @@ fn site_of(line: &str) -> Option<(String, String)> {
     let name =
         file.strip_suffix(".conf").filter(|name| !name.contains('/') && !name.starts_with('_'))?;
     let message = before.split_once("] ").map_or(before, |(_, rest)| rest);
-    logs_sites: bool,
     Some((name.to_string(), message.trim().to_string()))
 }
 
@@ -308,6 +343,7 @@ pub fn check(ctx: &Ctx<'_>) -> Result<(Report, bool), Refusal> {
         path: conf_view(),
         includes: main.is_some_and(|main| main.includes),
         hides_sites: main.is_some_and(|main| main.hides_sites),
+        logs_sites: main.is_some_and(|main| main.logs_sites),
     };
     let (checked, problems) = if state.conf.is_none() {
         let why = if state.nginx.is_some() {
@@ -346,7 +382,6 @@ pub fn check(ctx: &Ctx<'_>) -> Result<(Report, bool), Refusal> {
                 })
                 .collect(),
         })
-        logs_sites: main.is_some_and(|main| main.logs_sites),
         .collect();
     Ok((Report { format: 1, nginx_conf, check: checked, websites }, ok))
 }
@@ -374,6 +409,10 @@ impl Report {
             "  hide /sites/ in the default server: {}\n",
             yes(self.nginx_conf.hides_sites)
         ));
+        text.push_str(&format!(
+            "  define the log format of the sites' own logs: {}\n",
+            yes(self.nginx_conf.logs_sites)
+        ));
         match (&self.check.passed, &self.check.line) {
             (true, _) => text.push_str("nginx's check: passed\n"),
             (false, Some(line)) => text.push_str(&format!("nginx's check: failed: {line}\n")),
@@ -387,7 +426,3 @@ impl Report {
         text
     }
 }
-        text.push_str(&format!(
-            "  define the log format of the sites' own logs: {}\n",
-            yes(self.nginx_conf.logs_sites)
-        ));

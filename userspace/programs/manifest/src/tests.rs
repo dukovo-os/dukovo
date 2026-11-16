@@ -43,6 +43,7 @@ const SHIPPED: &[(&str, &str)] = &[
         "dukovo-canary-report",
         include_str!("../../../defaults/spark/services/dukovo-canary-report.toml"),
     ),
+    ("website-count", include_str!("../../../defaults/spark/services/website-count.toml")),
     ("sockets-echo", include_str!("../../../spark/tests/services/sockets/sockets-echo.toml")),
     ("netd", include_str!("../../../spark/tests/services/serve/netd.toml")),
     ("timed", include_str!("../../../spark/tests/services/serve/timed.toml")),

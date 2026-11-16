@@ -382,6 +382,15 @@ mod tests {
         }
         fn pause(&self) {}
         fn log(&self, _: &str) {}
+        fn now(&self) -> i64 {
+            0
+        }
+        fn measure(
+            &self,
+            _: &[crate::bundles::sizes::Request],
+        ) -> Result<Vec<crate::bundles::sizes::Line>, String> {
+            Err("not asked".into())
+        }
     }
 
     fn page(content: &str) -> Reply {

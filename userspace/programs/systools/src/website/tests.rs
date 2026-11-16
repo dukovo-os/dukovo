@@ -369,8 +369,8 @@ fn the_list_in_words_is_a_table_and_what_is_wrong_under_it() {
     fake.added(&[SHOP, WWW_SHOP], Kind::Static, None);
     assert_eq!(
         run(&fake, &["list"]).1,
-        "NAME              KIND    HTTPS  FOLDER\n\
-         shop.example.org  static  no     /shared/www/sites/shop.example.org\n"
+        "NAME              KIND    HTTPS  SIZE  FOLDER\n\
+         shop.example.org  static  no     -     /shared/www/sites/shop.example.org\n"
     );
     fake.added(&["blog.example.org"], Kind::Php, Some("wild.example.org"));
     fs::remove_dir_all(fake.real("/shared/www/sites/blog.example.org")).unwrap();
@@ -378,7 +378,7 @@ fn the_list_in_words_is_a_table_and_what_is_wrong_under_it() {
     let out = run(&fake, &["list"]).1;
     assert!(
         out.contains(
-            "blog.example.org  php     wild.example.org  /shared/www/sites/blog.example.org\n"
+            "blog.example.org  php     wild.example.org  -     /shared/www/sites/blog.example.org\n"
         ),
         "{out}"
     );
@@ -417,7 +417,9 @@ fn the_list_as_json_has_the_members_a_page_reads() {
             "owner",
             "problems",
             "redirects_http",
-            "text"
+            "size",
+            "text",
+            "visits"
         ]
     );
     let file = fake.text("/system/settings/websites/shop.example.org.conf").unwrap();
@@ -438,6 +440,8 @@ fn the_list_as_json_has_the_members_a_page_reads() {
             "added_by_hand": false,
             "problems": [],
             "text": file,
+            "size": null,
+            "visits": null,
         })
     );
     assert!(!fake.changed_services());
@@ -596,10 +600,6 @@ fn the_check_fails_for_settings_that_lack_a_line_even_when_nginx_passes_them() {
     assert_eq!(said["nginx_conf"]["includes"], false);
     assert_eq!(said["nginx_conf"]["hides_sites"], true);
     assert_eq!(said["check"]["passed"], true);
-}
-
-#[test]
-fn the_check_of_nginx_that_never_started_and_of_none_says_so_without_asking_nginx() {
     // The same for the format of the sites' logs, which a file that was
     // changed by hand before the sites were logged does not define.
     let old = super::fake::NGINX_CONF.replace(plan::LOG_FORMAT_LINE, "");
@@ -611,6 +611,10 @@ fn the_check_of_nginx_that_never_started_and_of_none_says_so_without_asking_ngin
     let (result, out) = run(&fake, &["check"]);
     assert_eq!(result.unwrap(), 1);
     assert!(out.contains("define the log format of the sites' own logs: no\n"), "{out}");
+}
+
+#[test]
+fn the_check_of_nginx_that_never_started_and_of_none_says_so_without_asking_nginx() {
     let fake = Fake::new().never_started();
     let said = json_of(&fake, &["check", "--json"], 1);
     assert_eq!(said["check"]["passed"], false);
@@ -890,4 +894,77 @@ fn what_is_made_for_a_person_is_theirs_and_the_folders_above_are_root_s() {
     let root = unsafe { libc::geteuid() };
     assert_eq!(fake.owner_of("/shared/www/sites"), root);
     assert_eq!(fake.owner_of("/system/settings/websites/shop.example.org.conf"), root);
+}
+
+#[test]
+fn count_reads_now_and_json_and_only_root_runs_it() {
+    assert_eq!(parsed(&["count"]).unwrap(), Command::Count { now: false, json: false });
+    assert_eq!(parsed(&["count", "--now"]).unwrap(), Command::Count { now: true, json: false });
+    assert_eq!(
+        parsed(&["count", "--json", "--now"]).unwrap(),
+        Command::Count { now: true, json: true }
+    );
+    assert_eq!(parsed(&["count", "--help"]).unwrap(), Command::Help);
+    assert!(mistake(&["count", "--yesterday"]).contains("--yesterday"));
+    assert!(mistake(&["count", SHOP]).contains(SHOP));
+    assert!(parsed(&["count"]).unwrap().needs_root());
+    assert!(USAGE.contains("website count [--now] [--json]"));
+}
+
+#[test]
+fn count_says_a_line_for_each_site_and_json_for_a_program() {
+    let fake = Fake::new();
+    fake.added(&[SHOP, WWW_SHOP], Kind::Static, None);
+    fake.added(&["blog.example.org"], Kind::Static, None);
+    let yesterday = fake.today() - 1;
+    let at = yesterday * 86_400;
+    let log = format!("{}.123 200 2048\n{}.456 404 5\n", at + 5, at + 6);
+    fs::write(fake.real(plan::LOGS).join("shop.example.org.log"), log).unwrap();
+    // The two names are as long as each other, so the starter pages are.
+    let (_, page) = plan::starter(Kind::Static, SHOP, SHOP_FOLDER);
+    assert_eq!(SHOP.len(), "blog.example.org".len());
+    let day = count::day_text(yesterday);
+
+    let (result, out) = run(&fake, &["count"]);
+    assert_eq!(result.unwrap(), 0);
+    assert_eq!(
+        out,
+        format!(
+            "blog.example.org: no log of its requests; folder {len} bytes in 1 files\n\
+             shop.example.org: {day}: 1 visits, 1 errors, 2.1K sent; folder {len} bytes in 1 files\n",
+            len = page.len()
+        )
+    );
+
+    let said = json_of(&fake, &["count", "--json"], 0);
+    assert_eq!(keys(&said), ["day", "problems", "sites"]);
+    assert_eq!(said["day"], day);
+    assert_eq!(said["problems"], json!([]));
+    let shop = said["sites"].as_array().unwrap().iter().find(|site| site["name"] == SHOP).unwrap();
+    assert_eq!(keys(shop), ["day", "name", "problems", "size"]);
+    assert_eq!(
+        shop["day"],
+        json!({"day": day, "visits": 1, "errors": 1, "bytes": 2053, "complete": true})
+    );
+    assert_eq!(keys(&shop["size"]), ["bytes", "complete", "files", "measured_ms"]);
+    assert_eq!(shop["size"]["files"], 1);
+    let blog = said["sites"].as_array().unwrap().iter().find(|site| site["name"] != SHOP).unwrap();
+    assert_eq!(blog["day"], json!(null));
+
+    // With --now it is today so far, and what is in the file is not today's.
+    let said = json_of(&fake, &["count", "--now", "--json"], 0);
+    assert_eq!(said["day"], count::day_text(fake.today()));
+    let shop = said["sites"].as_array().unwrap().iter().find(|site| site["name"] == SHOP).unwrap();
+    assert_eq!(shop["day"]["visits"], 0);
+}
+
+#[test]
+fn count_that_cannot_keep_what_it_counted_ends_with_the_reason() {
+    let fake = Fake::new();
+    fake.added(&[SHOP], Kind::Static, None);
+    // The file the counts are kept in is a folder.
+    fs::create_dir_all(fake.real(count::COUNTS)).unwrap();
+    let (result, _) = run(&fake, &["count"]);
+    let fail = result.unwrap_err();
+    assert!(fail.message.starts_with(count::COUNTS), "{}", fail.message);
 }
