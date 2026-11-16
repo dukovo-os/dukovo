@@ -36,6 +36,8 @@ export function makeCertificateCard({ certificates, preset, onChange }) {
   const body = h('div', { class: 'web-card-body' });
   const element = h('section', { class: 'card', id: 'certificate', 'aria-labelledby': 'certificate-h' }, h('h2', { id: 'certificate-h' }, 'Certificate'), body);
   let how = null;
+  // Until a card is chosen, the one that suits the names is the choice, and it follows them.
+  let picked = false;
   let names = [];
   let choices = null;
 
@@ -47,7 +49,7 @@ export function makeCertificateCard({ certificates, preset, onChange }) {
   function draw() {
     choices = certificateChoices({ names, list: certificates, preset });
     const usable = (id) => choices.options.some((one) => one.id === id && !one.off);
-    if (how === null || !usable(how)) how = choices.initial;
+    if (how === null || !picked || !usable(how)) how = choices.initial;
     short.element.hidden = (names[0] ?? '').length <= CERTIFICATE_NAME_MOST;
     const chosen = there.input.value;
     fill(there.input, choices.here.map((one) => h('option', { value: one.name }, `${one.name} (${(one.names ?? []).join(', ')})`)));
@@ -61,6 +63,7 @@ export function makeCertificateCard({ certificates, preset, onChange }) {
       })),
       onChange: (next) => {
         how = next;
+        picked = true;
         onChange();
       },
     });

@@ -107,7 +107,7 @@ export async function showSite(view, name) {
     if (chosen === null) return;
     await run(`Removing ${site.names?.[0] ?? site.name}`, [removeStep(site.name, chosen.files)], {
       onDone: async () => {
-        fill(body, banner('ok', 'check', `${site.names?.[0] ?? site.name} is removed. ${chosen.files ? 'Its folder is removed too.' : 'Its folder and its certificate are kept.'}`,
+        fill(body, banner('ok', 'check', `${site.names?.[0] ?? site.name} is removed. ${chosen.files ? 'Its folder is removed too.' : (site.folder ? 'Its folder is kept.' : '')}${site.https && site.certificate ? ' Its certificate stays in certd.' : ''}`,
           h('div', { class: 'btns' }, h('a', { class: 'btn default', href: '/websites' }, 'Back to the websites'))));
       },
     });

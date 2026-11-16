@@ -104,7 +104,7 @@ export async function showAdd(view) {
   // ---- what is asked ----
 
   const sheets = new Map();
-  let touched = { folder: false, www: false };
+  const touched = { folder: false, www: false };
   let namesKey = null;
   let checkTimer = null;
   let checkLatest = 0;
@@ -273,7 +273,7 @@ export async function showAdd(view) {
   function drawNotes() {
     folderNote.textContent = folderWords(plan.plan()?.folder) || `A folder under ${folderFor('')}`;
     const who = owner.input.value || 'The owner';
-    ownerNote.textContent = `${who} owns the folder and changes its files${ssh?.running === true ? ', over SSH (sftp)' : ''}. nginx reads them${kindNow() === 'php' ? '; the site\'s PHP reads them and writes only in its uploads folder' : ''}.`;
+    ownerNote.textContent = `${who} owns the folder and changes its files${ssh?.on === true ? ', over SSH (sftp)' : ''}. nginx reads them${kindNow() === 'php' ? '; the site\'s PHP reads them and writes only in its uploads folder' : ''}.`;
   }
 
   // ---- pressing the buttons ----

@@ -551,7 +551,9 @@ const RELOADS = 'nginx reads its settings again, and no visitor is turned away.'
 /** What Remove… says it does, as the lead of its dialog. */
 export function removeLead(site, sites) {
   const first = site.names?.[0] ?? site.name;
-  return [`Removes nginx's site for ${first}. Its folder${site.certificate ? ' and certificate are' : ' is'} kept.`, lastToUse(site, sites) ? RESTARTS : RELOADS];
+  const folder = site.folder ? ' Its folder is kept unless you tick the box below.' : '';
+  const certificate = site.https && site.certificate ? ' Its certificate stays in certd.' : '';
+  return [`Removes nginx's site for ${first}.${folder}${certificate}`, lastToUse(site, sites) ? RESTARTS : RELOADS];
 }
 
 /** What turning HTTPS off says: the certificate stays in certd. */

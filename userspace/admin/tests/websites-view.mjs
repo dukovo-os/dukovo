@@ -9,6 +9,7 @@
 import { ApiError } from '../api.js';
 import { errorView } from '../lib/problem.js';
 import { setUnlockSeconds } from '../unlock.js';
+import { report } from './certificates-fixtures.mjs';
 import { sparkIdle } from './security-fixtures.mjs';
 import { usePageWithProperties } from './security-view.mjs';
 import {
@@ -112,6 +113,8 @@ export async function openWebsites(context, {
     '/api/1/changes?limit=100': { changes: [] },
     '/api/1/console/fresh/firewall': { fresh: true },
     '/api/1/apps/catalog/*': (path) => sheet(decodeURIComponent(path.split('/')[5])),
+    '/api/1/certificates/check/*': () => report(),
+    '/api/1/tasks/*': (path) => finished(Number(path.split('/').at(-1))),
     ...world.reads,
   };
   const calls = [];

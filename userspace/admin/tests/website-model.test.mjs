@@ -479,10 +479,10 @@ test('removing a site, or taking its HTTPS away, restarts nginx only when no oth
   assert.equal(lastToUse(a, [a, c]), true, 'another certificate does not keep this one in nginx\'s service file');
   assert.equal(lastToUse(a, [a, http]), true);
   assert.equal(lastToUse(http, [a, http]), false, 'a site without HTTPS has nothing to lose');
-  assert.match(removeLead(a, [a])[0], /^Removes nginx's site for shop\.example\.org\. Its folder and certificate are kept\.$/);
+  assert.match(removeLead(a, [a])[0], /^Removes nginx's site for shop\.example\.org\. Its folder is kept unless you tick the box below\. Its certificate stays in certd\.$/);
   assert.match(removeLead(a, [a])[1], /^nginx restarts once, since no other site uses this certificate/);
   assert.match(removeLead(a, [a, b])[1], /^nginx reads its settings again/);
-  assert.equal(removeLead(http, [http])[0], 'Removes nginx\'s site for shop.example.org. Its folder is kept.');
+  assert.equal(removeLead(http, [http])[0], 'Removes nginx\'s site for shop.example.org. Its folder is kept unless you tick the box below.');
   assert.match(offLead(a, [a])[0], /^shop\.example\.org is served over HTTP only afterwards, and pages and passwords travel unencrypted\. The certificate stays in certd\.$/);
   assert.match(offLead(a, [a, b])[1], /no visitor is turned away/);
 });

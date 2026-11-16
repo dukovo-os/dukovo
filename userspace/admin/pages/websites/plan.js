@@ -68,6 +68,7 @@ export function makePlan(view, {
   let timer = null;
   let tests = new Map();
   let asked = new Set();
+  let drawn = '';
 
   /** Asks the firewall about each port that matters, once. */
   function test(ports) {
@@ -85,8 +86,13 @@ export function makePlan(view, {
   function drawRuns({ form, ready, missing }) {
     runs.hidden = view.prefs?.commands !== 'shown';
     if (runs.hidden) return;
-    fill(runs, h('h3', {}, 'This runs'), form !== null && ready
-      ? stepsOf(form, missing).map((one) => view.api.panel(one.action, one.args))
+    // A panel asks the server for its command, so one is drawn again only when the steps change.
+    const steps = form !== null && ready ? stepsOf(form, missing) : null;
+    const key = JSON.stringify(steps?.map((one) => [one.action, one.args]) ?? null);
+    if (key === drawn) return;
+    drawn = key;
+    fill(runs, h('h3', {}, 'This runs'), steps !== null
+      ? steps.map((one) => view.api.panel(one.action, one.args))
       : h('p', { class: 'muted' }, 'The commands show when every field is right.'));
   }
 
