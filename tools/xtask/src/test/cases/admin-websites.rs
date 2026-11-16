@@ -551,6 +551,20 @@ fn install(vm: &mut Vm, start: &str, folder: &str, seconds: u64) -> Result<(), S
     vm.expect_screen(&["installed 1"])
 }
 
+/// Elevate unlocked in the pane, as the boot tests' own `unlock` does,
+/// with the prompt brought back first: a line the system logs to the
+/// console, as updated's check ten minutes after the start that finds no
+/// update server, can come below the prompt while the shell waits, and
+/// Enter gives the prompt again below it.
+fn unlock(vm: &mut Vm) -> Result<(), String> {
+    let screen = vm.screen()?;
+    let last = screen.iter().rev().find(|line| !line.trim().is_empty());
+    if last.is_some_and(|line| !line.trim_end().ends_with('$')) {
+        vm.type_text("\n")?;
+    }
+    super::super::unlock(vm)
+}
+
 /// A step of the script: elevate is unlocked in the pane, then the script
 /// runs the step and every one of its `checks` holds.
 fn step(vm: &mut Vm, name: &str, checks: usize, seconds: u64) -> Result<(), String> {
