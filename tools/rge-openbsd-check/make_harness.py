@@ -2,19 +2,20 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Builds obsd_fns.c for model.c: OpenBSD's rge(4) setup functions, as
-# they are in sys/dev/pci/if_rge.c, with the #defines of if_rgereg.h,
-# for the check that radix-rge-net's port makes the same register
-# accesses (kernel/drivers/rge/src/tests.rs, openbsd_sequence). See
-# model.c for how to run it. With "hash", prints the FNV-1a hash and the
-# length of each log model wrote instead, as that test's OPENBSD table
-# holds them.
+# they are in sys/dev/pci/if_rge.c revision 1.49 (OpenBSD's git mirror,
+# commit 5d93c3d6d499aea4a818d84ce43f618561cba4e6), with the #defines of
+# if_rgereg.h revision 1.21, for the check that radix-rge-net's port
+# makes the same register accesses (kernel/drivers/rge/src/tests.rs,
+# openbsd_sequence). See model.c for how to run it. With "hash", prints
+# the FNV-1a hash and the length of each log model wrote instead, as that
+# test's OPENBSD table holds them.
 #
 #   python3 -I make_harness.py <OpenBSD's sys/dev/pci> <out>/obsd_fns.c
 #   python3 -I make_harness.py hash <out>
 import re, sys
 
 if sys.argv[1] == 'hash':
-    for name in ['r25', 'r25b', 'r25d1', 'r25d2', 'r26_1', 'r26_2']:
+    for name in ['r25', 'r25b', 'r25d1', 'r25d2', 'r26_1', 'r26_2', 'r27']:
         text = open(f'{sys.argv[2]}/c_{name}.log', 'rb').read()
         h = 0xcbf29ce484222325
         for byte in text:
@@ -60,7 +61,9 @@ def fn(name):
     raise SystemExit('no ' + name)
 
 funcs = ['rge_reset', 'rge_chipinit', 'rge_set_phy_power', 'rge_ephy_config',
-         'rge_ephy_config_mac_r25', 'rge_ephy_config_mac_r25b', 'rge_phy_config',
+         'rge_ephy_config_mac_r25', 'rge_ephy_config_mac_r25b',
+         'rge_ephy_config_mac_r27', 'rge_r27_write_ephy', 'rge_check_ephy_ext_add',
+         'rge_phy_config', 'rge_phy_config_mac_r27',
          'rge_phy_config_mac_r26_1', 'rge_phy_config_mac_r26_2', 'rge_phy_config_mac_r25',
          'rge_phy_config_mac_r25b', 'rge_phy_config_mac_r25d_1', 'rge_phy_config_mac_r25d_2',
          'rge_set_macaddr', 'rge_hw_init', 'rge_hw_reset', 'rge_disable_phy_ocp_pwrsave',
@@ -128,9 +131,6 @@ void DELAY(int us);
 static void rge_mac_config_mcu(struct rge_softc *sc, enum rge_mac_type t) { (void)sc; (void)t; }
 static void rge_mac_config_ext_mcu(struct rge_softc *sc, enum rge_mac_type t) { (void)sc; (void)t; }
 static void rge_phy_config_mcu(struct rge_softc *sc, uint16_t v) { (void)sc; (void)v; }
-/* The RTL8127's, which the port leaves out. */
-static void rge_ephy_config_mac_r27(struct rge_softc *sc) { (void)sc; abort(); }
-static void rge_phy_config_mac_r27(struct rge_softc *sc) { (void)sc; abort(); }
 '''
 pre += '\n'.join(defs) + '\n'
 pre += ephy + '\n'

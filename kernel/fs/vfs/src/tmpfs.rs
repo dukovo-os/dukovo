@@ -5,12 +5,13 @@
 //!
 //! Directories list their entries in the order they were made, with an
 //! index sorted by name, and a map of names that lookups read without the
-//! directory's lock ([`RcuMap`], ADR 0367); files are page caches with no
-//! disk below ([`FileCache`] with a non-persistent backing), so a file's
-//! pages are its data and holes read as zeros. A filesystem has a size
-//! limit, charged by the bytes its files are long, and its files' memory
-//! goes when the last reference to them does: a file removed while a
-//! program has it open lives until the program lets go, as on Linux.
+//! directory's lock ([`RcuMap`], ADR 0367; it holds its nodes weakly, so
+//! that a removed file's space is free at once); files are page caches
+//! with no disk below ([`FileCache`] with a non-persistent backing), so a
+//! file's pages are its data and holes read as zeros. A filesystem has a
+//! size limit, charged by the bytes its files are long, and its files'
+//! memory goes when the last reference to them does: a file removed while
+//! a program has it open lives until the program lets go, as on Linux.
 //!
 //! A node keeps its extended attributes in memory too, charged to the
 //! limit by their names' and values' bytes, at most [`ATTRIBUTES_MAX`]
@@ -165,8 +166,11 @@ impl DirState {
 }
 
 /// A directory's names for lookups, kept with its entries under its lock
-/// and read without it.
-type Names = RcuMap<KArc<TmpNode>, Alloc>;
+/// and read without it. The names hold their nodes weakly: a removed
+/// name's link is freed after an RCU grace period, and a strong reference
+/// in it would keep the node, and the space its bytes are charged for,
+/// until then. The entries and open files own the nodes.
+type Names = RcuMap<Weak<TmpNode, Alloc>, Alloc>;
 
 enum Body {
     Dir(Mutex<DirState>, Names),
@@ -412,7 +416,8 @@ impl TmpNode {
             }
             self.shared.count_file()?;
         }
-        let made = self.names()?.pending(name.as_bytes(), node.clone()).ok_or(Error::NoMemory);
+        let made =
+            self.names()?.pending(name.as_bytes(), KArc::downgrade(&node)).ok_or(Error::NoMemory);
         if let Err(e) = made.and_then(|pending| {
             dir.insert(at, name_bytes, node.clone())?;
             self.names()?.insert(pending);
@@ -573,8 +578,11 @@ impl Node for TmpNode {
     }
 
     fn lookup(&self, name: &str) -> Result<NodeRef> {
-        // Without the directory's lock: one lookup, in a read section.
-        Ok(self.names()?.get(name.as_bytes()).ok_or(Error::NotFound)?)
+        // Without the directory's lock: one lookup, in a read section. A
+        // node that is gone by the upgrade lost its name after the lookup,
+        // as with an unlink that wins the race on Linux.
+        let node = self.names()?.get(name.as_bytes()).and_then(|node| node.upgrade());
+        Ok(node.ok_or(Error::NotFound)?)
     }
 
     fn access(&self) -> Access {
@@ -705,7 +713,8 @@ impl Node for TmpNode {
         }
         let name = mem::copy(to.as_bytes())?;
         let names = target.names()?;
-        let pending = names.pending(to.as_bytes(), moving.clone()).ok_or(Error::NoMemory)?;
+        let pending =
+            names.pending(to.as_bytes(), KArc::downgrade(&moving)).ok_or(Error::NoMemory)?;
         {
             let mut dest = target.dir()?.lock();
             match dest.find(to) {
@@ -907,7 +916,7 @@ fn rename_within(dir: &mut DirState, names: &Names, from: &str, to: &str) -> Res
     }
     let mut name = mem::copy(to.as_bytes())?;
     let moving = dir.at_mut(at).node.clone();
-    let pending = names.pending(to.as_bytes(), moving.clone()).ok_or(Error::NoMemory)?;
+    let pending = names.pending(to.as_bytes(), KArc::downgrade(&moving)).ok_or(Error::NoMemory)?;
     match dir.find(to) {
         Ok(old) => {
             let entry = dir.at_mut(old);

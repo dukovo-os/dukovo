@@ -194,9 +194,18 @@ pub fn load_with(ctx: &Ctx<'_>, conf: bool) -> Result<State, Refusal> {
         conf,
         service,
         over,
-        nginx: ctx.host.state(NGINX).map_err(plain)?,
-        php: ctx.host.state(PHP_FPM).map_err(plain)?,
+        nginx: known(ctx, NGINX)?,
+        php: known(ctx, PHP_FPM)?,
     })
+}
+
+/// What Spark says of `service`. Spark reads a bundle's service file as
+/// the service first starts, so one that never ran is not Spark's yet: its
+/// file there says that it is installed, and off.
+fn known(ctx: &Ctx<'_>, service: &str) -> Result<Option<Svc>, Refusal> {
+    let file = ctx.paths.real(&crate::servicefiles::path(service));
+    let said = ctx.host.state(service).map_err(Refusal::plain)?;
+    Ok(said.or_else(|| file.exists().then_some(Svc { enabled: false, running: false })))
 }
 
 /// A site file that was written live, and what was there before.
@@ -899,8 +908,9 @@ fn remove_site(ctx: &Ctx<'_>, file: &str, done: &mut Done) -> Result<(), Refusal
 }
 
 /// Step: the new set of site files goes live, one rename each, and nginx
-/// reads it: reloaded when it runs, turned on when it is off and the
-/// change is one that starts it, and PHP-FPM turned on for a PHP site.
+/// reads it: reloaded when it runs, or restarted when this change
+/// restarted it already, turned on when it is off and the change is one
+/// that starts it, and PHP-FPM turned on for a PHP site.
 fn live_step(
     ctx: &Ctx<'_>,
     state: &State,
@@ -916,7 +926,15 @@ fn live_step(
         remove_site(ctx, file, done)?;
     }
     let running = state.nginx.is_some_and(|svc| svc.running);
-    if running {
+    if running && done.restarted {
+        // As it starts, nginx closes the sockets Spark handed it that its
+        // settings do not use yet, as port 443's when the first site with
+        // HTTPS is added, and Spark keeps them bound: nginx takes them up
+        // again only as it starts, never as it reloads.
+        ctx.host.restart(NGINX).map_err(|why| {
+            Refusal::new("WEB-104", format!("nginx did not start with the new settings: {why}"))
+        })?;
+    } else if running {
         done.reloaded = true;
         ctx.host.reload(NGINX).map_err(|why| {
             Refusal::new("WEB-104", format!("nginx did not take the new settings: {why}"))

@@ -57,6 +57,20 @@ struct timeval timeval_of(uint64_t ns) {
 	return tv;
 }
 
+// What is left of an armed timer as a timeval: never 0, as on Linux, so
+// that a caller re-arming it with what it read does not turn it off. The
+// kernel reports a timer that is due but has not sent its signal yet as
+// 1 ns left.
+struct timeval timer_left(uint64_t ns) {
+	if(ns > 0 && ns < 1000) {
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = 1;
+		return tv;
+	}
+	return timeval_of(ns);
+}
+
 // A set of signals as the kernel takes one: bit n - 1 for signal n.
 uint64_t mask_of(const sigset_t *set) {
 	uint64_t mask;
@@ -1119,7 +1133,7 @@ int Sysdeps<SetItimer>::operator()(int which, const struct itimerval *new_value,
 	if(status)
 		return radix::to_errno(status);
 	if(old_value) {
-		old_value->it_value = timeval_of(r.value_ns);
+		old_value->it_value = timer_left(r.value_ns);
 		old_value->it_interval = timeval_of(r.interval_ns);
 	}
 	return 0;

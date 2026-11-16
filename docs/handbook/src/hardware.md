@@ -5,8 +5,191 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # Supported hardware
 
-Dukovo 1.0 targets 64-bit x86 computers. Three systems are tested on every
-change or release:
+Dukovo 1.0 runs on 64-bit Intel and AMD PCs, servers, virtual machines
+and clouds. Disks, wired networks and USB work. Wi-Fi, graphics
+acceleration and Bluetooth come in release 1.6, and full audio in 1.7.
+
+<div class="hwkinds">
+<div><span class="hwpill hw-ok">Works</span><h3>Virtual machines and clouds</h3><p>QEMU and KVM, VMware, Hyper-V and Azure, AWS, Google Cloud and VirtualBox. Every paravirtual disk and network card they offer has a driver.</p></div>
+<div><span class="hwpill hw-ok">Works</span><h3>Desktops and servers on a wired network</h3><p>NVMe and SATA disks, Intel, Realtek, Broadcom and Killer Ethernet up to 10 Gb/s, and every kind of USB port. The screen is a text console until the desktop arrives in 1.1.</p></div>
+<div><span class="hwpill hw-part">Partly</span><h3>Laptops</h3><p>Everything a desktop has, plus SD card readers and USB-C port status. Connect with an Ethernet port, a USB Ethernet adapter or a phone's USB tethering until Wi-Fi arrives in 1.6.</p></div>
+<div><span class="hwpill hw-plan">1.6</span><h3>Gaming and graphics work</h3><p>Every graphics card shows a picture through the firmware's framebuffer. Acceleration for AMD, Intel and NVIDIA, several monitors and HDR come in 1.6.</p></div>
+</div>
+
+## Check your machine
+
+Start the computer from any Linux live USB, such as Linux Mint or
+Ubuntu, open a terminal and run:
+
+```
+lspci -nn
+```
+
+Paste everything it prints into the box below. The check runs in your
+browser; nothing you paste is sent anywhere. It knows the PCI IDs of
+every network card the drivers take, and the kind of every other part.
+
+<div class="hwcheck" data-hwcheck></div>
+
+On Dukovo itself, `dmesg | grep PCI` lists every part the kernel found,
+and each driver logs the card it took.
+
+The web console's **Hardware** page shows what any machine is and how it
+fares, whatever its make: its model and processor, the last check, the
+temperatures, the disks, the memory and the devices with the driver that took
+each. See [Hardware](web-console.md#hardware).
+
+## Hardware by category
+
+Each status is one of: **Works**; **Partly**, which says what is
+missing; **Planned**, with the release that brings it; or **Not yet**,
+for hardware no release plans for so far. The driver's manual page lists
+the exact chips.
+
+<div class="hwfilter" data-hwfilter></div>
+
+### Storage
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| NVMe SSDs, every drive, with a queue and interrupt for each CPU | Works | nvme |
+| SATA disks and SSDs on every AHCI controller | Works | ahci |
+| Intel VMD (Intel RST, "RAID On" on recent laptops): its NVMe and SATA disks, with no firmware change | Works | vmd |
+| IDE and legacy SATA mode, on older machines | Works | ide |
+| USB sticks and disks: bulk-only, UAS and USB floppy drives | Works | usb-storage |
+| SD card readers on PCI and in chipsets, and Realtek's RTS5209, RTS5227, RTS5229, RTS522A, RTS5249, RTS525A, RTL8402, RTL8411 and RTL8411B | Works | sdhci, rtsx |
+| PC floppy drives | Works | fdc |
+| Hardware RAID and SAS HBAs: Broadcom MegaRAID and mpt3sas, Microchip SmartPQI | Planned, 1.12 | |
+| UFS storage, in a few laptops from 2022 | Not yet | |
+
+### Wired network
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| Intel 82540 to 82547 and 82571 to 82583 gigabit, and the chipset Ethernet from the 6 series to Nova Lake (82579, I217, I218, I219) | Works | e1000(4) |
+| Intel I210, I211, I350, 82576 and 82580 | Works | igb(4) |
+| Intel I225 and I226, 2.5 Gb/s | Works | igc(4) |
+| Intel 82599, X540 and X550, 10 Gb/s | Works | ixgbe(4) |
+| Realtek RTL8111, RTL8168, RTL8169 and RTL810x | Works | re(4) |
+| Realtek RTL8125, RTL8126 and RTL8127, 2.5, 5 and 10 Gb/s, and Killer E3000 and E5000 | Works | rge(4) |
+| Atheros AR813x, AR815x, AR816x and AR817x, Killer E2200, E2400 and E2500 | Works | alc(4) |
+| Broadcom NetXtreme: BCM5717 to BCM5720 in servers, BCM5761, BCM5762, the BCM57765 family and BCM57780 | Works | bge(4) |
+| USB Ethernet adapters and docks (CDC ECM and NCM), ASIX AX88179 and AX88179A, and phones' USB tethering | Works | cdc_ether(4) |
+| Intel X710 and E810, Broadcom NetXtreme-E, Mellanox ConnectX: 25 to 100 Gb/s | Planned, 1.12 | |
+
+### Wireless
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| Wi-Fi: Intel, Realtek, MediaTek (Wi-Fi 7 included) and Qualcomm chips | Planned, 1.6 | |
+| Bluetooth: Intel, Realtek, MediaTek and Qualcomm controllers | Planned, 1.6 | |
+
+### USB and ports
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| USB 3 and USB-C ports (xHCI) | Works | xhci |
+| USB 2 and USB 1.1 ports (EHCI, OHCI, UHCI), with Intel's switch of ports to xHCI | Works | usbhc |
+| USB keyboards and mice | Works | usb-hid |
+| USB serial: CDC-ACM boards such as Arduino and Raspberry Pi Pico, FTDI chips | Works | usb-serial |
+| USB-C port status: what is connected and its power role (UCSI) | Works | ucsi |
+| USB4 and Thunderbolt docks: displays, PCIe and network through the cable | Planned, 1.6 | |
+| Webcams (USB Video Class) and the Camera app | Planned, 1.6 | |
+
+### Input
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| Built-in PS/2 keyboards | Works | i8042 |
+| Touchpads and touchscreens: I2C-HID, Synaptics, Elantech and ALPS, TrackPoints | Planned, 1.1 | |
+| Fingerprint readers and the Fingerprint app | Planned, 1.6 | |
+
+### Graphics and displays
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| Any graphics card: one screen at its native resolution through the firmware's framebuffer, without acceleration | Partly | |
+| AMD Radeon, every GCN and RDNA card and APU, with Vulkan | Planned, 1.6 | |
+| Intel graphics from Haswell, with Vulkan and OpenGL | Planned, 1.6 | |
+| NVIDIA RTX 20 series and later, and older cards through NVK | Planned, 1.6 | |
+| Several monitors and HDR | Planned, 1.6 | |
+
+### Audio
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| Built-in audio (HD Audio) on Intel and AMD chipsets: stereo output to speakers, headphones and line out | Partly | hda |
+| USB headsets, speakers and DACs (USB Audio Class 1 and 2): output | Partly | usb-audio |
+| Microphones, HDMI and DisplayPort audio, laptops' smart amplifiers | Planned, 1.7 | |
+
+### Printing and power
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| Printers and scanners: driverless IPP Everywhere, AirPrint and eSCL, and drivers for older models | Planned, 1.7 | |
+| Hibernation, battery health and charge limits | Planned, 1.7 | |
+
+### Platform
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| 64-bit Intel and AMD processors, every core, with microcode updates | Works | |
+| IOMMU: Intel VT-d and AMD-Vi, which keep every device to its own memory | Works | vtd, amdvi |
+| Serial ports: every 16550, PCI serial cards, Intel AMT Serial-over-LAN | Works | uart(4) |
+| Watchdogs (Intel TCO, AMD FCH), SMBus, GPIO and I2C controllers | Works | watchdog, smbus, i2c |
+| Framework and ChromeOS embedded controllers: fans, LEDs and sensors | Works | crosec |
+| 64-bit ARM | Planned, 1.17 | |
+| RISC-V | Planned, 1.18 | |
+
+### Virtual machines and clouds
+
+| Device | Status | Driver |
+| --- | --- | --- |
+| QEMU and KVM: virtio disk, network, SCSI, console and sound | Works | virtio |
+| VMware: VMXNET3, PVSCSI and the VMware Tools features | Works | vmxnet3(4), pvscsi(4), vmware(4) |
+| Hyper-V and Azure: VMBus network and storage, Azure MANA | Works | hyperv, mana(4) |
+| Amazon Web Services: ENA network and NVMe disks | Works | ena(4) |
+| Google Cloud: gVNIC network, NVMe and virtio disks | Works | gve(4) |
+| VirtualBox: its Intel network card and AHCI disks | Works | e1000(4) |
+
+## How drivers reach a machine
+
+The drivers that start the computer, for disks, USB, the keyboard and
+wired networks, are built into Dukovo and never downloaded. From release
+1.6, other drivers come from the Dukovo catalog, reviewed and signed:
+Settings › Devices › Drivers lists each device and offers a missing
+driver with one click, showing its license and what it can reach.
+Drivers are matched on the machine, so no hardware ID is ever sent. Some
+chips need firmware from their maker, which comes in the optional
+firmware package.
+
+## Common questions
+
+**My laptop has only Wi-Fi. Can I use Dukovo now?** Yes, with a wired
+connection: a USB Ethernet adapter (most use the standard CDC protocols
+or an ASIX chip, which work), a dock, or a phone's USB tethering.
+
+**Does my graphics card work?** Every graphics card shows the console
+and, from release 1.1, the desktop, through the picture the firmware sets
+up: one screen at its native resolution, with no 3D acceleration. Native
+drivers come in 1.6.
+
+**My disks are in "RAID On" or Intel RST mode.** Intel VMD, the mode
+recent laptops ship in, works as it is. On older machines, set SATA
+Operation to AHCI in the firmware setup, as for the Dell below. Hardware
+RAID cards come in 1.12; until then Btrfs RAID across plain disks covers
+most uses.
+
+**Do I need to turn off Secure Boot?** Yes, for 1.0. Signed boot comes in
+release 1.2. Cloud images boot without it.
+
+**A part of mine is not listed.** Open an issue with the output of
+`lspci -nn` and `lsusb`, as [Reporting a problem](reporting-a-problem.md)
+describes. What people report decides which driver comes next.
+
+## Reference machines
+
+Three systems are tested on every change or release:
 
 - **QEMU** (q35 machine, UEFI through OVMF and BIOS through SeaBIOS), in
   every CI run;
@@ -15,12 +198,7 @@ change or release:
 - the **Framework Desktop**, the reference desktop and bare-metal server
   (ADR 0079), before every release once it is set up.
 
-The web console's **Hardware** page shows what any machine is and how it
-fares, whatever its make: its model and processor, the last check, the
-temperatures, the disks, the memory and the devices with the driver that took
-each. See [Hardware](web-console.md#hardware).
-
-## Dell Inspiron 15 5570
+### Dell Inspiron 15 5570
 
 This is the reference machine as it is: Dell's parts list for its
 service tag, with the two SSDs it has now in place of the factory disks.
@@ -40,7 +218,7 @@ service tag, with the two SSDs it has now in place of the factory disks.
 | Audio | Realtek ALC3246 | HDA driver in 1.0 |
 | Serial port | None | Kernel output goes to the screen, and to the crash log for the next boot |
 
-### Firmware settings
+#### Firmware settings
 
 Open the firmware setup by pressing **F2** at the Dell logo, and set:
 
@@ -56,7 +234,7 @@ Open the firmware setup by pressing **F2** at the Dell logo, and set:
 
 Press **F12** at the Dell logo for the one-time boot menu.
 
-### Smoke test
+#### Smoke test
 
 The latest USB image is booted on the laptop at the end of Phases 1, 2, 6
 and 9, and of every later phase. Each run does these steps, with the
@@ -146,7 +324,7 @@ issue for anything that fails, with the photos.
 | --- | --- | --- | --- | --- | --- |
 | 6 | 2026-10-22 | `daa2682` | not recorded | not recorded | It booted without issue. Which firmware mode, and the individual checks above, were not recorded. |
 
-### Disk check
+#### Disk check
 
 From Phase 10, each sub-phase also ends with the disk check on the
 machine's disks (ADR 0122), which also measures the benchmarks of
@@ -201,7 +379,7 @@ Linux live system, Linux Mint or Ubuntu 22.04 or later.
    ./ob bench --from dukovo-bench.txt
    ```
 
-## Framework Desktop
+### Framework Desktop
 
 The second reference machine, from Framework's published specifications.
 The parts get confirmed with `lspci -nn` and `lsusb` from a Linux live

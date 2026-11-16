@@ -145,15 +145,16 @@ export async function answerUnlock(t, page) {
 /**
  * Presses `control`, which asks the console to POST to `route` or `GET` it,
  * and gives the answer. A console that is locked asks to unlock first: the
- * dialog is answered when it comes.
+ * dialog is answered when it comes. `statuses` are the answers that are
+ * right: 200, or `[202]` for a long action, which starts a task.
  */
-export async function pressAndAnswer(t, page, control, route, method = "POST") {
+export async function pressAndAnswer(t, page, control, route, method = "POST", statuses = [200]) {
   const answered = page.waitForResponse((answer) => answer.request().method() === method && new URL(answer.url()).pathname === route);
   await control.click();
   const asked = await unlockDialog(page).waitFor({ state: "visible", timeout: 2000 }).then(() => true, () => false);
   if (asked) await answerUnlock(t, page);
   const answer = await answered;
-  ensure(answer.status() === 200, `${method} ${route} was answered ${answer.status()}: ${await answer.text()}`);
+  ensure(statuses.includes(answer.status()), `${method} ${route} was answered ${answer.status()}: ${await answer.text()}`);
   return answer;
 }
 

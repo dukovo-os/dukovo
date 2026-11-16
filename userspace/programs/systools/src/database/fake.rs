@@ -600,13 +600,22 @@ impl Fake {
             return Ok(self.access());
         }
         if sql == super::sql::HBA_ERRORS {
+            // A hostssl line is one the server running without TLS says
+            // cannot match, as PostgreSQL does.
+            let tls = self.running("ssl") == "on";
             let rows = self
                 .hba_text()
                 .lines()
                 .enumerate()
-                .filter(|(_, line)| line.contains("BROKEN"))
-                .map(|(at, _)| {
-                    vec![Some((at + 1).to_string()), Some("invalid IP address \"BROKEN\"".into())]
+                .filter_map(|(at, line)| {
+                    let error = if line.contains("BROKEN") {
+                        "invalid IP address \"BROKEN\""
+                    } else if line.starts_with("hostssl") && !tls {
+                        "hostssl record cannot match because SSL is disabled"
+                    } else {
+                        return None;
+                    };
+                    Some(vec![Some((at + 1).to_string()), Some(error.into())])
                 })
                 .collect();
             return Ok(Fake::answer(&["line_number", "error"], rows));
@@ -632,6 +641,22 @@ impl Fake {
                     Some("3".into()),
                     Some("listen_addresses".into()),
                     Some("setting could not be applied".into()),
+                ]);
+            }
+            // And a setting taken out of the files, which goes back to its
+            // default at the restart: a row of no file and no name.
+            if !self.auto.contains_key("listen_addresses")
+                && self.running("listen_addresses") != "localhost"
+            {
+                rows.push(vec![
+                    None,
+                    Some("0".into()),
+                    None,
+                    Some(
+                        "parameter \"listen_addresses\" cannot be changed without restarting \
+                         the server"
+                            .into(),
+                    ),
                 ]);
             }
             return Ok(Fake::answer(&["sourcefile", "sourceline", "name", "error"], rows));

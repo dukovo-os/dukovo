@@ -132,7 +132,8 @@ pub trait Host {
     /// Spark's line, when the file does not pass.
     fn service_check(&self, service: &str) -> Result<(), String>;
 
-    /// Restarts `service`, and waits until Spark says it runs.
+    /// Restarts `service`, and waits until Spark says it runs, and nginx
+    /// until it answers.
     ///
     /// # Errors
     ///
@@ -147,7 +148,7 @@ pub trait Host {
     fn reload(&self, service: &str) -> Result<(), String>;
 
     /// Turns `service` on, now and at boot, or off, and when on waits
-    /// until Spark says it runs.
+    /// until Spark says it runs, and nginx until it answers.
     ///
     /// # Errors
     ///
@@ -193,13 +194,37 @@ pub trait Host {
 pub struct System;
 
 /// The part of `output` that says what nginx's check found: its first
-/// line that names an error, or else its last line.
+/// line that names an error, or else its last line, as [`plain_line`]
+/// gives it.
 pub fn check_line(output: &str) -> Option<String> {
     let lines: Vec<&str> = output.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
     let named = lines.iter().find(|line| {
         ["[emerg]", "[alert]", "[crit]", "[error]"].iter().any(|level| line.contains(level))
     });
-    named.or(lines.last()).map(|line| (*line).to_string())
+    named.or(lines.last()).map(|line| plain_line(line))
+}
+
+/// nginx's line as `nginx -t` prints it at a terminal: `nginx: [LEVEL]
+/// MESSAGE`. Once its error log is set, nginx starts a line with the time
+/// and puts its process and thread after the level, as `2026/11/16
+/// 19:56:39 [emerg] 535#0: MESSAGE`, which change from one check to the
+/// next: they are left out. Any other line is as it was.
+pub fn plain_line(line: &str) -> String {
+    let as_it_was = || line.to_string();
+    let Some((time, rest)) = line.split_once(" [") else { return as_it_was() };
+    let timed = !time.is_empty() && time.bytes().all(|b| b.is_ascii_digit() || b"/: ".contains(&b));
+    let Some((level, message)) = rest.split_once("] ") else { return as_it_was() };
+    if !timed {
+        return as_it_was();
+    }
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let message = match message.split_once(": ") {
+        Some((ids, after)) if ids.split_once('#').is_some_and(|(a, b)| digits(a) && digits(b)) => {
+            after
+        }
+        _ => message,
+    };
+    format!("nginx: [{level}] {message}")
 }
 
 /// Waits until Spark says service `name` runs, for `START_WAIT`.
@@ -224,6 +249,29 @@ fn running_within(name: &str) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+/// Waits until nginx answers on port 80, for `START_WAIT`. Spark holds
+/// nginx's sockets and says it runs as soon as it has started it, while
+/// nginx still reads its settings: until it answers, a site does not, and
+/// a signal to read its settings again would end it.
+fn nginx_answers() -> Result<(), String> {
+    let ask = Fetch { port: 80, host: "localhost".into(), path: "/".into(), certificate: None };
+    let until = Instant::now() + START_WAIT;
+    loop {
+        let Err(why) = answer::fetch(&ask, &[]) else { return Ok(()) };
+        if Instant::now() >= until {
+            let wait = START_WAIT.as_secs();
+            return Err(format!("nginx did not answer on port 80 within {wait} seconds: {why}"));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Waits until `service` runs, and nginx until it answers.
+fn up(service: &str) -> Result<(), String> {
+    running_within(service)?;
+    if service == NGINX { nginx_answers() } else { Ok(()) }
 }
 
 impl Host for System {
@@ -271,7 +319,7 @@ impl Host for System {
     fn restart(&self, service: &str) -> Result<(), String> {
         crate::service::change("restart", service, &["--quiet".to_string()])
             .map_err(|fail| fail.message)?;
-        running_within(service)
+        up(service)
     }
 
     fn reload(&self, service: &str) -> Result<(), String> {
@@ -280,7 +328,7 @@ impl Host for System {
 
     fn turn(&self, service: &str, on: bool) -> Result<(), String> {
         servicefiles::turn(service, on).map_err(|fail| fail.message)?;
-        if on { running_within(service) } else { Ok(()) }
+        if on { up(service) } else { Ok(()) }
     }
 
     fn nginx_check(&self, conf: &str) -> Result<Checked, String> {
@@ -374,8 +422,28 @@ mod tests {
             check_line(output).as_deref(),
             Some("nginx: [emerg] unknown directive \"listn\" in /conf/.website-next/a.conf:3")
         );
+        let logged = "2026/11/16 19:56:39 [emerg] 535#0: unknown directive \"x\" in /c/b.conf:4\n";
+        assert_eq!(
+            check_line(logged).as_deref(),
+            Some("nginx: [emerg] unknown directive \"x\" in /c/b.conf:4")
+        );
         assert_eq!(check_line("something odd\n\n").as_deref(), Some("something odd"));
         assert_eq!(check_line("\n  \n"), None);
         assert_eq!(check_line(""), None);
+    }
+
+    #[test]
+    fn a_line_of_nginx_s_log_is_plain_without_its_time_and_process() {
+        assert_eq!(
+            plain_line("2026/11/16 19:56:39 [warn] 12#3: a warning: of this"),
+            "nginx: [warn] a warning: of this"
+        );
+        assert_eq!(
+            plain_line("2026/11/16 19:56:39 [emerg] no ids: here"),
+            "nginx: [emerg] no ids: here"
+        );
+        for kept in ["nginx: [emerg] as it is", "odd [x] line", "[emerg] 1#2: no time", "x [y"] {
+            assert_eq!(plain_line(kept), kept);
+        }
     }
 }

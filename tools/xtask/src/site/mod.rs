@@ -219,7 +219,7 @@ pub fn build(ctx: &Ctx, version: Option<&str>, check: bool) -> Result<()> {
     advisories::write_feed(&out, &feed)?;
     advisories::write_statements(ctx, &out)?;
     write(&out.join("search-index.js"), &search_index(&docs))?;
-    for asset in ["site.css", "site.js"] {
+    for asset in ["site.css", "site.js", "hardware-ids.js"] {
         let from = ctx.root.join("docs/site").join(asset);
         std::fs::copy(&from, out.join(asset)).context(|| format!("copying {}", from.display()))?;
     }
@@ -630,5 +630,42 @@ mod tests {
                 assert!(root.join("docs/handbook/src").join(file).exists(), "{file}");
             }
         }
+    }
+
+    /// Every PCI ID that "Check your machine" says a driver takes is in
+    /// that driver's source (docs/site/hardware-ids.js).
+    #[test]
+    fn the_hardware_check_names_only_ids_the_drivers_take() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let ids = std::fs::read_to_string(root.join("docs/site/hardware-ids.js")).unwrap();
+        let mut rows = 0;
+        for line in ids.lines().map(str::trim).filter(|l| l.starts_with("['")) {
+            let fields: Vec<&str> = line.split('\'').skip(1).step_by(2).collect();
+            let [driver, vendor, devices] = fields[..] else { panic!("a row of three: {line}") };
+            let mut source = String::new();
+            let mut dirs = vec![root.join("kernel/drivers").join(driver).join("src")];
+            while let Some(dir) = dirs.pop() {
+                for entry in std::fs::read_dir(&dir).unwrap_or_else(|_| panic!("{driver}")) {
+                    let path = entry.unwrap().path();
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    if name.starts_with("tests") {
+                        continue;
+                    }
+                    if path.is_dir() {
+                        dirs.push(path);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        source.push_str(&std::fs::read_to_string(&path).unwrap().to_lowercase());
+                    }
+                }
+            }
+            for id in std::iter::once(vendor).chain(devices.split(' ')) {
+                assert!(
+                    source.contains(&format!("0x{id}")),
+                    "{driver} does not name {vendor}:{id}"
+                );
+            }
+            rows += 1;
+        }
+        assert!(rows > 10, "read {rows} rows");
     }
 }

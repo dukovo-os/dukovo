@@ -311,9 +311,22 @@ pub(super) fn ask(
         if let Some(why) = refusal(&line) {
             return Err(fail(why));
         }
+        if is_end(&line) {
+            break;
+        }
         each(&line)?;
     }
     Ok(())
+}
+
+/// Whether `line` is the line alertd ends a list with, which is the
+/// socket's and not a command's: `--json` prints the items alone, so that
+/// a list with nothing in it is no line at all.
+fn is_end(line: &str) -> bool {
+    let value: Option<serde_json::Value> = serde_json::from_str(line).ok();
+    value.as_ref().and_then(serde_json::Value::as_object).is_some_and(|object| {
+        object.len() == 1 && object.get("end").and_then(serde_json::Value::as_bool) == Some(true)
+    })
 }
 
 /// What alertd refused in `line`, if it is a refusal: a line of JSON
@@ -755,5 +768,14 @@ mod tests {
                 "  waiting     1 message",
             ]
         );
+    }
+
+    #[test]
+    fn the_socket_s_end_line_is_no_item_and_ends_the_answer() {
+        assert!(is_end(r#"{"end":true}"#));
+        assert!(!is_end(r#"{"end":false}"#));
+        assert!(!is_end(r#"{"kind":"email","end":true}"#), "an item that holds an end is an item");
+        assert!(!is_end(r#"{"key":"disk-health:vda","severity":"warning"}"#));
+        assert!(!is_end("not json"));
     }
 }

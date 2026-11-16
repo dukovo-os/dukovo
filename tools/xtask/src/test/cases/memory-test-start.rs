@@ -41,7 +41,8 @@ use serde_json::{Value, json};
 
 use super::super::console_client::{ALICE_PASSWORD, Browser, Console, Pane, Reply, elevated};
 use super::super::*;
-use super::problem_report::run;
+use super::crash_dump::answer_within;
+use super::problem_report::{run, shown_within};
 
 /// The most the first start may take, from the restart to the result the
 /// health check keeps, and the second's wait for the same, in seconds.
@@ -306,6 +307,13 @@ fn the_result_is_kept(vm: &mut Vm, pane: &Pane) -> Result<(), String> {
     )
 }
 
+/// [`run`], taking alertd's notice off the bottom line first whenever it
+/// is there.
+fn noticed(vm: &mut Vm, command: &str, seconds: u64, shown: &[&str]) -> Result<(), String> {
+    answer_within(vm, "$", &format!("clear; {command}"), 60)?;
+    shown_within(vm, shown, seconds).map_err(|err| format!("`{command}`: {err}"))
+}
+
 /// The second start, with `memtest=fault` given by hand: one error in one
 /// range, which the status keeps, the kernel counts as corrupted memory,
 /// and alertd has as a critical alert.
@@ -315,8 +323,13 @@ fn second_start(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     owner_made(vm)?;
     vm.expect_anywhere("netd: net0 has 10.0.2.15/24")?;
     let pane = Pane::open()?;
-    elevated(vm)?;
-    run(
+    // alertd's notice of the error comes on the console's bottom line, below
+    // the prompt, at a moment of its own: each line is typed as crash-dump
+    // types after a panic, taking the notice off first.
+    answer_within(vm, "$", "clear; elevate -k; elevate true; echo \"elevated $?\"", 60)?;
+    answer_prompt(vm, "to run /system/commands/true:", ALICE_PASSWORD)?;
+    vm.expect_screen(&["elevated 0"])?;
+    noticed(
         vm,
         "i=0; while [ $i -lt 150 ] && [ \"$(elevate alerts list --json | grep -c \
          'memory-test.*critical')\" -lt 1 ]; do sleep 2; i=$((i + 1)); done; [ $i -lt 150 ] && \
@@ -324,13 +337,14 @@ fn second_start(vm: &mut Vm, _case: &Case) -> Result<(), String> {
         RESULT_SECONDS,
         &["alerted 42"],
     )?;
-    run(
+    noticed(
         vm,
         "echo \"kind $(elevate alerts list --json | grep 'memory-test' | grep -c \
          '\"about\":\"hardware\"')\"",
         60,
         &["kind 1"],
     )?;
+    answer_within(vm, "$", "clear", 60)?;
     let status = printed(vm, &pane)?;
     let last = &status["last"];
     let bad = last["bad"].as_array().map_or(0, Vec::len);
@@ -340,7 +354,7 @@ fn second_start(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     if last["retired"].as_u64().is_none_or(|pages| pages < 1) || !status["asked"].is_null() {
         return Err(format!("the status after the test is {status}"));
     }
-    run(
+    noticed(
         vm,
         "echo \"corrupted $(grep -c 'hardware_corrupted: 4 KiB' /processes/meminfo)\"",
         30,

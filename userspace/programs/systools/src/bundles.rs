@@ -675,6 +675,25 @@ pub(crate) fn answer(input: &mut BufReader<UnixStream>) -> Result<Answer, Fail> 
     }
 }
 
+/// Whether everyone's bundles update by themselves, as bundled says. Its
+/// state is root's to read, and this is how anyone else learns it.
+///
+/// # Errors
+///
+/// When bundled cannot be reached or gives no answer within 5 seconds.
+pub(crate) fn automatic_for_everyone() -> Result<bool, String> {
+    let (_stream, mut input) = ask(&Request::AutomaticForEveryone, None)?;
+    // As below: a socket that cannot take a time limit is read without one,
+    // and bundled answers this at once.
+    let _ = input.get_ref().set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    match Answer::read(&mut input) {
+        Ok(Some(Answer::Ok(word))) if word == "on" || word == "off" => Ok(word == "on"),
+        Ok(Some(Answer::Error(why))) => Err(why),
+        Ok(_) => Err("bundled answered out of turn".into()),
+        Err(e) => Err(format!("bundled: {e}")),
+    }
+}
+
 /// Asks `question` on the terminal: whether the line typed starts with
 /// one of `yes`'s letters.
 fn agree(question: &str, yes: &[char]) -> Result<bool, Fail> {

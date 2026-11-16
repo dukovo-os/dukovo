@@ -1537,8 +1537,8 @@ fn start_card(function: &Function, card: Known, index: usize) -> Result<(), Fail
     };
     let regs = map_registers(function, first)?;
     // VMXNET3's commands are in a second BAR, gVNIC's doorbells in its
-    // third, and the APE of Broadcom's chips that have one too; the
-    // 82579's flash registers in its second.
+    // third, and the APE of Broadcom's chips that have one too; the flash
+    // registers of the 82579, I217 and I218 in their second.
     let more = match card {
         Known::Vmxnet3 => Some(map_registers(function, 1)?),
         Known::Gve => Some(map_registers(function, 2)?),

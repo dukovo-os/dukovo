@@ -577,7 +577,7 @@ jobs:
 
   # A pull request runs the boot tests its changes reach (ADR 0421), on
   # as many machines as they need; main and the nightly run run them all
-  # on ten. --shard gives each the same amount of work by the times in
+  # on twenty. --shard gives each the same amount of work by the times in
   # tools/xtask/src/test/times.txt.
   boot:
     name: Boot tests (${{ matrix.shard }}/${{ needs.scope.outputs.boot-parts }})
@@ -924,7 +924,7 @@ jobs:
       # A pull request's boot tests are those its changes reach, compared
       # with main's commit under the merge commit, and the number of
       # machines they need; ob lists each changed file and what it adds.
-      # Everything else runs all of them on ten, and a pull request of
+      # Everything else runs all of them on twenty, and a pull request of
       # documentation alone runs none.
       - name: Choose the boot tests
         id: boot
@@ -936,7 +936,7 @@ jobs:
           elif [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             ./ob test boot --affected HEAD^1 --plan | tee -a "$GITHUB_OUTPUT"
           else
-            printf 'parts=10\nshards=[1,2,3,4,5,6,7,8,9,10]\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'parts=20\nshards=[%s]\n' "$(seq -s, 1 20)" | tee -a "$GITHUB_OUTPUT"
           fi
 
   kani:

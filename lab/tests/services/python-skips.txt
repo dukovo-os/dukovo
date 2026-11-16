@@ -111,11 +111,132 @@ test.test_tempfile.TestTemporaryDirectory.test_cleanup_with_symlink_race
 # What the bundle leaves out: libpython, Python's headers and its
 # Makefile, which nothing on Radix could load or build against, and the
 # platform's multiarch name, which only Linux and Android have.
+test.test_build_details.CPythonBuildDetailsTests.test_c_api
 test.test_build_details.CPythonBuildDetailsTests.test_implementation
+test.test_build_details.CPythonBuildDetailsTests.test_libpython_static
 test.test_build_details.CPythonBuildDetailsTests.test_platform
 test.test_sysconfig.MakefileTests.test_get_makefile_filename
 test.test_sysconfig.TestSysConfig.test_get_config_h_filename
 test.test_sysconfig.TestSysConfig.test_srcdir
+
+# dbm.sqlite3 opens its database in WAL mode, whose index SQLite's unix
+# VFS keeps in a shared writable mapping of the -shm file: Radix maps a
+# file writable and shared in /dev/shm only (ADR 0511), so every write
+# fails with "disk I/O error" (deferred work: shared writable mappings of
+# files). dbm tries dbm.sqlite3 first, and the bundle has no gdbm or
+# ndbm, so the tests of dbm and shelve that open a database use it; the
+# classes of test_dbm_sqlite3 are listed whole, as each of their tests
+# writes.
+test.test_dbm_sqlite3.CorruptDatabase.*
+test.test_dbm_sqlite3.DataTypes.*
+test.test_dbm_sqlite3.Misuse.*
+test.test_dbm_sqlite3.ReadOnly.*
+test.test_dbm_sqlite3.ReadOnlyFilesystem.*
+test.test_dbm_sqlite3.ReadWrite.*
+test.test_dbm.TestCase_sqlite3.test_anydbm_access
+test.test_dbm.TestCase_sqlite3.test_anydbm_creation
+test.test_dbm.TestCase_sqlite3.test_anydbm_creation_n_file_exists_with_invalid_contents
+test.test_dbm.TestCase_sqlite3.test_anydbm_keys
+test.test_dbm.TestCase_sqlite3.test_anydbm_modification
+test.test_dbm.TestCase_sqlite3.test_anydbm_read
+test.test_dbm.TestCase_sqlite3.test_anydbm_readonly_reorganize
+test.test_dbm.TestCase_sqlite3.test_anydbm_reorganize_decreased_size
+test.test_dbm.TestCase_sqlite3.test_anydbm_reorganize_not_changed_content
+test.test_dbm.TestCase_sqlite3.test_clear
+test.test_dbm.TestCase_sqlite3.test_empty_value
+test.test_dbm.TestCase_sqlite3.test_keys
+test.test_dbm.TestCase_sqlite3.test_open_with_bytes
+test.test_dbm.TestCase_sqlite3.test_open_with_pathlib_path
+test.test_dbm.TestCase_sqlite3.test_open_with_pathlib_path_bytes
+test.test_dbm.WhichDBTestCase.test_whichdb
+test.test_dbm.WhichDBTestCase.test_whichdb_sqlite3
+test.test_shelve.TestCase.test_ascii_file_shelf
+test.test_shelve.TestCase.test_binary_file_shelf
+test.test_shelve.TestCase.test_bytes_path_file_shelf
+test.test_shelve.TestCase.test_custom_incomplete_deserializer
+test.test_shelve.TestCase.test_custom_serializer_and_deserializer
+test.test_shelve.TestCase.test_open_template
+test.test_shelve.TestCase.test_pathlib_bytes_path_file_shelf
+test.test_shelve.TestCase.test_pathlib_path_file_shelf
+test.test_shelve.TestCase.test_proto2_file_shelf
+test.test_shelve.TestProto0File_sqlite3Shelve.test_bool
+test.test_shelve.TestProto0File_sqlite3Shelve.test_constructor
+test.test_shelve.TestProto0File_sqlite3Shelve.test_get
+test.test_shelve.TestProto0File_sqlite3Shelve.test_items
+test.test_shelve.TestProto0File_sqlite3Shelve.test_keys
+test.test_shelve.TestProto0File_sqlite3Shelve.test_len
+test.test_shelve.TestProto0File_sqlite3Shelve.test_pop
+test.test_shelve.TestProto0File_sqlite3Shelve.test_popitem
+test.test_shelve.TestProto0File_sqlite3Shelve.test_read
+test.test_shelve.TestProto0File_sqlite3Shelve.test_setdefault
+test.test_shelve.TestProto0File_sqlite3Shelve.test_update
+test.test_shelve.TestProto0File_sqlite3Shelve.test_values
+test.test_shelve.TestProto0File_sqlite3Shelve.test_write
+test.test_shelve.TestProto1File_sqlite3Shelve.test_bool
+test.test_shelve.TestProto1File_sqlite3Shelve.test_constructor
+test.test_shelve.TestProto1File_sqlite3Shelve.test_get
+test.test_shelve.TestProto1File_sqlite3Shelve.test_items
+test.test_shelve.TestProto1File_sqlite3Shelve.test_keys
+test.test_shelve.TestProto1File_sqlite3Shelve.test_len
+test.test_shelve.TestProto1File_sqlite3Shelve.test_pop
+test.test_shelve.TestProto1File_sqlite3Shelve.test_popitem
+test.test_shelve.TestProto1File_sqlite3Shelve.test_read
+test.test_shelve.TestProto1File_sqlite3Shelve.test_setdefault
+test.test_shelve.TestProto1File_sqlite3Shelve.test_update
+test.test_shelve.TestProto1File_sqlite3Shelve.test_values
+test.test_shelve.TestProto1File_sqlite3Shelve.test_write
+test.test_shelve.TestProto2File_sqlite3Shelve.test_bool
+test.test_shelve.TestProto2File_sqlite3Shelve.test_constructor
+test.test_shelve.TestProto2File_sqlite3Shelve.test_get
+test.test_shelve.TestProto2File_sqlite3Shelve.test_items
+test.test_shelve.TestProto2File_sqlite3Shelve.test_keys
+test.test_shelve.TestProto2File_sqlite3Shelve.test_len
+test.test_shelve.TestProto2File_sqlite3Shelve.test_pop
+test.test_shelve.TestProto2File_sqlite3Shelve.test_popitem
+test.test_shelve.TestProto2File_sqlite3Shelve.test_read
+test.test_shelve.TestProto2File_sqlite3Shelve.test_setdefault
+test.test_shelve.TestProto2File_sqlite3Shelve.test_update
+test.test_shelve.TestProto2File_sqlite3Shelve.test_values
+test.test_shelve.TestProto2File_sqlite3Shelve.test_write
+test.test_shelve.TestProto3File_sqlite3Shelve.test_bool
+test.test_shelve.TestProto3File_sqlite3Shelve.test_constructor
+test.test_shelve.TestProto3File_sqlite3Shelve.test_get
+test.test_shelve.TestProto3File_sqlite3Shelve.test_items
+test.test_shelve.TestProto3File_sqlite3Shelve.test_keys
+test.test_shelve.TestProto3File_sqlite3Shelve.test_len
+test.test_shelve.TestProto3File_sqlite3Shelve.test_pop
+test.test_shelve.TestProto3File_sqlite3Shelve.test_popitem
+test.test_shelve.TestProto3File_sqlite3Shelve.test_read
+test.test_shelve.TestProto3File_sqlite3Shelve.test_setdefault
+test.test_shelve.TestProto3File_sqlite3Shelve.test_update
+test.test_shelve.TestProto3File_sqlite3Shelve.test_values
+test.test_shelve.TestProto3File_sqlite3Shelve.test_write
+test.test_shelve.TestProto4File_sqlite3Shelve.test_bool
+test.test_shelve.TestProto4File_sqlite3Shelve.test_constructor
+test.test_shelve.TestProto4File_sqlite3Shelve.test_get
+test.test_shelve.TestProto4File_sqlite3Shelve.test_items
+test.test_shelve.TestProto4File_sqlite3Shelve.test_keys
+test.test_shelve.TestProto4File_sqlite3Shelve.test_len
+test.test_shelve.TestProto4File_sqlite3Shelve.test_pop
+test.test_shelve.TestProto4File_sqlite3Shelve.test_popitem
+test.test_shelve.TestProto4File_sqlite3Shelve.test_read
+test.test_shelve.TestProto4File_sqlite3Shelve.test_setdefault
+test.test_shelve.TestProto4File_sqlite3Shelve.test_update
+test.test_shelve.TestProto4File_sqlite3Shelve.test_values
+test.test_shelve.TestProto4File_sqlite3Shelve.test_write
+test.test_shelve.TestProto5File_sqlite3Shelve.test_bool
+test.test_shelve.TestProto5File_sqlite3Shelve.test_constructor
+test.test_shelve.TestProto5File_sqlite3Shelve.test_get
+test.test_shelve.TestProto5File_sqlite3Shelve.test_items
+test.test_shelve.TestProto5File_sqlite3Shelve.test_keys
+test.test_shelve.TestProto5File_sqlite3Shelve.test_len
+test.test_shelve.TestProto5File_sqlite3Shelve.test_pop
+test.test_shelve.TestProto5File_sqlite3Shelve.test_popitem
+test.test_shelve.TestProto5File_sqlite3Shelve.test_read
+test.test_shelve.TestProto5File_sqlite3Shelve.test_setdefault
+test.test_shelve.TestProto5File_sqlite3Shelve.test_update
+test.test_shelve.TestProto5File_sqlite3Shelve.test_values
+test.test_shelve.TestProto5File_sqlite3Shelve.test_write
 
 # Other gaps of Radix's that these tests find, each in deferred work:
 # scandir's attributes (the file number d_ino), TLS shut down on a slow

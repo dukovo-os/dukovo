@@ -5,6 +5,13 @@ about = "Three starts in a row cut short before the health check sees them throu
 time = "20m"
 fresh = true
 
+# The fresh start is seen through first. A start that the health check
+# has not seen through when the reset comes counts as cut short too: on
+# a fast machine the check below is in place before sysupdate sees that
+# start through, and Rescue would then come a cut early.
+[[step]]
+serial = "is seen through"
+
 # A health check that never ends, so that no start is seen through, and
 # the cuts below never race it.
 [[step]]

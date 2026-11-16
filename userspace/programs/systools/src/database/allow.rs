@@ -131,12 +131,17 @@ fn running(host: &mut dyn Host, name: &str) -> Result<String, Fail> {
 
 /// The mistakes PostgreSQL finds in `pg_hba.conf` and its settings as
 /// they are on disk now. A setting that waits for a restart is no
-/// mistake, though it is listed as one.
-fn mistakes(host: &mut dyn Host) -> Result<Vec<String>, Fail> {
+/// mistake, though it is listed as one, and neither is a `hostssl` line
+/// while the server runs without TLS when the files turn TLS on
+/// (`tls_coming`): the server takes TLS as it reads them.
+fn mistakes(host: &mut dyn Host, tls_coming: bool) -> Result<Vec<String>, Fail> {
     let mut found = Vec::new();
     let hba = run(host, sql::HBA_ERRORS)?;
     for row in hba.first().map_or_default(|answer| answer.rows.as_slice()) {
         let cell = |at: usize| row.get(at).and_then(|cell| cell.as_deref());
+        if tls_coming && cell(1) == Some(TLS_OFF) {
+            continue;
+        }
         found.push(errors::problem_words(
             "pg_hba.conf",
             cell(0),
@@ -148,7 +153,7 @@ fn mistakes(host: &mut dyn Host) -> Result<Vec<String>, Fail> {
     for row in settings.first().map_or_default(|answer| answer.rows.as_slice()) {
         let cell = |at: usize| row.get(at).and_then(|cell| cell.as_deref());
         let error = cell(3).unwrap_or("it cannot be read");
-        if error == WAITS {
+        if error == WAITS || waits_for_restart(error) {
             continue;
         }
         let file = cell(0).map_or("the settings", |path| path.rsplit('/').next().unwrap_or(path));
@@ -160,6 +165,28 @@ fn mistakes(host: &mut dyn Host) -> Result<Vec<String>, Fail> {
 /// What `pg_file_settings` says of a setting that cannot be applied while
 /// the server runs, as `listen_addresses` cannot: it is not a mistake.
 const WAITS: &str = "setting could not be applied";
+
+/// Whether `error` is what `pg_file_settings` says of a setting taken out
+/// of the files that only a restart takes back to its default, as
+/// `listen_addresses` once `deny` has reset it: it is not a mistake.
+fn waits_for_restart(error: &str) -> bool {
+    error
+        .strip_prefix("parameter \"")
+        .and_then(|rest| rest.strip_suffix("\" cannot be changed without restarting the server"))
+        .is_some_and(|name| !name.is_empty() && !name.contains('"'))
+}
+
+/// What `pg_hba_file_rules` says of a `hostssl` line while the server runs
+/// without TLS.
+const TLS_OFF: &str = "hostssl record cannot match because SSL is disabled";
+
+/// Whether the files turn TLS on once `changes` are made to `before`.
+fn tls_after(before: &Settings, changes: &[Change]) -> bool {
+    match changes.iter().find(|change| change.name == settings::SSL) {
+        Some(change) => change.to.as_deref() == Some("on"),
+        None => before.ssl_on(),
+    }
+}
 
 /// Asks the server to read its files again, and waits until it has.
 fn reload(host: &mut dyn Host) -> Result<(), Fail> {
@@ -362,7 +389,7 @@ pub fn allow(host: &mut dyn Host, ask: &Allow, steps: &Steps) -> Result<Vec<Stri
     }
 
     steps.next("having PostgreSQL check its files");
-    let found = mistakes(host);
+    let found = mistakes(host, tls_after(&attempt.settings, &changes));
     let found = match found {
         Ok(found) => found,
         Err(why) => return Err(stopped(host, &mut attempt, &why.message)),
@@ -507,7 +534,7 @@ pub fn deny(host: &mut dyn Host, ask: &Deny, steps: &Steps) -> Result<Vec<String
         return Err(stopped(host, &mut attempt, &why.message));
     }
     steps.next("having PostgreSQL check its files");
-    let found = match mistakes(host) {
+    let found = match mistakes(host, tls_after(&attempt.settings, &changes)) {
         Ok(found) => found,
         Err(why) => return Err(stopped(host, &mut attempt, &why.message)),
     };
@@ -665,6 +692,31 @@ mod tests {
         let said = fake.sent().iter().filter(|sql| sql.contains("pg_file_settings")).count();
         assert!(said >= 1);
         assert_eq!(fake.restarts(), 1);
+    }
+
+    #[test]
+    fn a_hostssl_line_while_tls_is_off_is_a_mistake_unless_the_files_turn_tls_on() {
+        let mut fake = shop().with_hba_lines(&[("shop", "shop", "10.0.2.0/24")]);
+        let found = mistakes(&mut fake, false).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains(TLS_OFF), "{found:?}");
+        assert!(mistakes(&mut fake, true).unwrap().is_empty());
+        // A server whose files have no TLS gets it with the change that lets
+        // others in, and not with the one that takes them out.
+        let before = Settings::default();
+        assert!(tls_after(&before, &before.to_allow("this-machine")));
+        assert!(!tls_after(&before, &before.to_deny()));
+    }
+
+    #[test]
+    fn a_setting_taken_out_that_waits_for_the_restart_is_no_mistake() {
+        assert!(waits_for_restart(
+            "parameter \"listen_addresses\" cannot be changed without restarting the server"
+        ));
+        assert!(!waits_for_restart("invalid value for parameter \"listen_addresses\""));
+        assert!(!waits_for_restart(
+            "parameter \"\" cannot be changed without restarting the server"
+        ));
     }
 
     #[test]

@@ -614,11 +614,17 @@ static void watching(void) {
 // socket (spark(8)): shutdowns planned and called off, and what Spark
 // answers in a boot that starts no services; and the watchdog it pets. The `consoles` boot test
 // powers the machine off, and `spark-oom` has Spark restart a service.
+// With nothing set, `shutdown -c` has nothing to cancel, and that is no
+// failure (shutdown(8)), so a script can cancel twice.
 static void power(void) {
-	STATUS(1, "/bin/shutdown", "-c");
-	STATUS(0, "/bin/shutdown", "-r", "+30", "a planned restart");
 	STATUS(0, "/bin/shutdown", "-c");
-	STATUS(1, "/bin/shutdown", "-c");
+	OUTPUT("", "No shutdown is set.\n", "/bin/shutdown", "--show");
+	OUTPUT("", "{\"format\":1,\"shutdown\":null}\n", "/bin/shutdown", "--show", "--json");
+	STATUS(0, "/bin/shutdown", "-r", "+30", "a planned restart");
+	CONTAINS("; `shutdown -c` cancels it.\n", "/bin/shutdown", "--show");
+	STATUS(0, "/bin/shutdown", "-c");
+	STATUS(0, "/bin/shutdown", "-c");
+	OUTPUT("", "No shutdown is set.\n", "/bin/shutdown", "--show");
 	STATUS(0, "/bin/shutdown", "-H", "--no-wall", "23:59");
 	STATUS(0, "/bin/shutdown", "--no-wall", "-c");
 	STATUS(0, "/bin/shutdown", "-k", "now");

@@ -20,8 +20,9 @@ use super::*;
 use crate::admind::fixture::{self, Asked, Console, run};
 use crate::admind::guard::TRUST_COOKIE;
 use crate::admind::link::Fault;
+use crate::admind::reach::Network;
 use crate::admind::sessions;
-use crate::admind::shared::unix_now;
+use crate::admind::shared::{IDENTITY_FRESH, Identity, unix_now};
 
 mod act;
 mod changes;
@@ -948,6 +949,31 @@ fn a_host_that_is_not_this_machines_is_not_answered_whatever_it_asks_for() {
             let answered = send(&world, get("/api/1/health").with("host", Some(host))).await;
             assert_eq!(answered.status, 200, "{host}");
         }
+    });
+}
+
+#[test]
+fn an_address_a_card_takes_after_the_start_is_answered_without_waiting_for_the_upkeep() {
+    run(async {
+        let world = world("late-address");
+        let shared = &world.console.shared;
+        shared.reads_identity.set(|names| {
+            let card = Network { ip: [192, 0, 2, 7].into(), prefix: 24 };
+            Identity::new("nas", vec![card], names)
+        });
+        let by_address = || get("/api/1/health").with("host", Some("192.0.2.7:9090"));
+        // Read a moment ago: the miss reads nothing, and is refused.
+        let refused = send(&world, by_address()).await;
+        assert_eq!((refused.status, refused.error().as_str()), (421, "ADM-114"));
+        // Read longer ago than IDENTITY_FRESH: the miss reads them again,
+        // and the card's address is the machine's.
+        shared.identity_read.set(Instant::now() - IDENTITY_FRESH);
+        assert_eq!(send(&world, by_address()).await.status, 200);
+        // Another host is still refused after a read of its own.
+        shared.identity_read.set(Instant::now() - IDENTITY_FRESH);
+        let other = send(&world, get("/api/1/health").with("host", Some("evil.example"))).await;
+        assert_eq!((other.status, other.error().as_str()), (421, "ADM-114"));
+        assert!(shared.identity_read.get().elapsed() < IDENTITY_FRESH);
     });
 }
 

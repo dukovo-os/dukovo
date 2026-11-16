@@ -140,11 +140,14 @@ fn says_automatic(text: &str) -> bool {
         .any(|place| Place::parse(place) == Ok(Place::Everyone))
 }
 
-/// Whether bundled updates the apps of everyone by themselves, as the file
-/// it keeps says; no when there is none or it cannot be read.
+/// Whether bundled updates the apps of everyone by themselves. bundled
+/// answers anyone who asks; its file, which only root may read, is the
+/// answer while bundled cannot be reached, and no when there is none.
 fn automatic() -> bool {
-    let file = Path::new(registry::STATE).join(registry::AUTOMATIC);
-    std::fs::read_to_string(file).is_ok_and(|text| says_automatic(&text))
+    crate::bundles::automatic_for_everyone().unwrap_or_else(|_| {
+        let file = Path::new(registry::STATE).join(registry::AUTOMATIC);
+        std::fs::read_to_string(file).is_ok_and(|text| says_automatic(&text))
+    })
 }
 
 /// `update settings`: how this system updates, in words, or with `json`

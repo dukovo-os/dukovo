@@ -4,10 +4,10 @@
 //! The NVM of the Ethernet in the chipset: the GbE region of the
 //! chipset's SPI flash, which the driver reads through the flash
 //! registers, one cycle at a time (FreeBSD's e1000_read_nvm_ich8lan and
-//! e1000_read_nvm_spt). On the 82579 they are 16-bit registers in a BAR
-//! of their own, and the region is where GFPREG says; on the I219 they
-//! are in BAR 0, at 0xe000, written 32 bits at a time, and the region
-//! starts at 0 with the size STRAP says.
+//! e1000_read_nvm_spt). On the 82579, I217 and I218 they are 16-bit
+//! registers in a BAR of their own, and the region is where GFPREG says;
+//! on the I219 they are in BAR 0, at 0xe000, written 32 bits at a time,
+//! and the region starts at 0 with the size STRAP says.
 //!
 //! The region holds two banks, one of them valid, as its signature says;
 //! the driver reads only, so it never changes which.
@@ -68,28 +68,25 @@ pub struct Nvm {
 
 impl Nvm {
     /// The NVM of a chip `mac` whose registers are `regs`, its flash
-    /// registers being `flash` on the 82579; none if they are not there.
+    /// registers being `flash` where the chip has a BAR for them
+    /// ([`Mac::flash_bar`]); none if they are not there.
     pub fn new(mac: Mac, regs: &Mmio, flash: Option<Mmio>) -> Option<Nvm> {
-        match mac {
-            Mac::Pch2 => {
-                let flash = flash.filter(|flash| flash.len() >= END)?;
-                let sectors = flash.read32(GFPREG);
-                let start = sectors & SECTOR_MASK;
-                let end = ((sectors >> 16) & SECTOR_MASK) + 1;
-                let bytes = end.checked_sub(start).filter(|&n| n > 0)? << SECTOR_SHIFT;
-                Some(Nvm {
-                    regs: flash,
-                    wide: false,
-                    base: start << SECTOR_SHIFT,
-                    bank_words: bytes / 4,
-                })
-            }
-            Mac::Spt => {
-                let flash = regs.window(super::reg::FLASH, END)?;
-                let size = (((regs.read32(super::reg::STRAP) >> 1) & 0x1f) + 1) * 4096;
-                Some(Nvm { regs: flash, wide: true, base: 0, bank_words: size / 4 })
-            }
+        if mac.flash_bar() {
+            let flash = flash.filter(|flash| flash.len() >= END)?;
+            let sectors = flash.read32(GFPREG);
+            let start = sectors & SECTOR_MASK;
+            let end = ((sectors >> 16) & SECTOR_MASK) + 1;
+            let bytes = end.checked_sub(start).filter(|&n| n > 0)? << SECTOR_SHIFT;
+            return Some(Nvm {
+                regs: flash,
+                wide: false,
+                base: start << SECTOR_SHIFT,
+                bank_words: bytes / 4,
+            });
         }
+        let flash = regs.window(super::reg::FLASH, END)?;
+        let size = (((regs.read32(super::reg::STRAP) >> 1) & 0x1f) + 1) * 4096;
+        Some(Nvm { regs: flash, wide: true, base: 0, bank_words: size / 4 })
     }
 
     /// Where the valid bank starts, in words: the first whose signature

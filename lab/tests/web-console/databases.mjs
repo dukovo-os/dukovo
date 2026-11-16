@@ -4,10 +4,11 @@
 // What web-console/databases drives in each engine, with the lab's browser
 // runner (lab repository, docs/test-files.md, "Browser tests"): the list at
 // /databases, Add a database at /databases/add and one database's page at
-// /databases/{name}. The list shows what `database list --json` says, which
-// `GET /api/1/databases` runs, for an administrator whose console is
-// unlocked: listing signs in to PostgreSQL as its superuser, so a locked
-// console is asked to unlock and a reader is told who may.
+// /databases/{name} for the database it adds. The list shows what `database
+// list --json` says, which `GET /api/1/databases` runs, for an administrator
+// whose console is unlocked: listing signs in to PostgreSQL as its
+// superuser, so a locked console is asked to unlock and a reader is told who
+// may.
 //
 // Add a database is opened from a site (`?site=shop-lab.example.org`), which
 // gives the name shop_lab. Pressing Add the database makes a role and a

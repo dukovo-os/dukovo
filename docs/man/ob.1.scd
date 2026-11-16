@@ -1566,7 +1566,7 @@ _target/userspace/_).
 		test takes on CI; a test it does not name counts as 40 seconds.
 		Tests that install the catalog's bundles tend to land together,
 		as the first of them in a run packs the bundles. CI runs the boot
-		tests in up to ten jobs this way. It needs *boot*.
+		tests in up to twenty jobs this way. It needs *boot*.
 
 	*--affected* _commit_
 		Run only the boot tests that the changes since _commit_ reach, as

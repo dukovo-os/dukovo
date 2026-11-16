@@ -715,12 +715,13 @@ fn the_email_account(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     }
 
     // alerts.toml is root's alone, has the push section the test wrote, and
-    // holds the password, as the file must.
+    // holds the password, as the file must. The pattern does not spell the
+    // password, since authd logs the command it elevates.
     let said = test.said(
         vm,
         &format!(
             "elevate ls -ln {SETTINGS} > /tmp/alerts.txt; elevate grep -c '^private' {SETTINGS} \
-             >> /tmp/alerts.txt; elevate grep -c 'tea party' {SETTINGS} >> /tmp/alerts.txt; cat \
+             >> /tmp/alerts.txt; elevate grep -c 'tea [p]arty' {SETTINGS} >> /tmp/alerts.txt; cat \
              /tmp/alerts.txt"
         ),
     )?;
@@ -826,12 +827,14 @@ fn a_webhook_and_the_kinds(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     }
 
     // A file written by hand: an about of a kind and a word that is none.
-    // The kind is kept, and the log has ALR-106 for the other.
+    // The kind is kept, and the log has ALR-106 for the other. It is
+    // written in alice's home, which root's commands see: /tmp is each
+    // session's own.
     let written = format!(
         "printf '%s\\n' '[push]' 'private = [\"10.0.2.0/24\"]' '' '[[webhook]]' 'kind = \
          \"json\"' 'url = \"{HOOK}\"' 'token = \"{WEBHOOK_TOKEN}\"' 'about = [\"data\", \
-         \"colour\"]' > /tmp/hand.toml; elevate cp /tmp/hand.toml {SETTINGS}; elevate chmod 600 \
-         {SETTINGS}; elevate service alertd reload; sleep 3; echo \"written $?\""
+         \"colour\"]' > $HOME/hand.toml && elevate cp $HOME/hand.toml {SETTINGS} && elevate \
+         chmod 600 {SETTINGS} && elevate service alertd reload && sleep 3; echo \"written $?\""
     );
     run(vm, &written, 60, &["written 0"])?;
     test.channels_where(60, "the webhook told of data", |all| {

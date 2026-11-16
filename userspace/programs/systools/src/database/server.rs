@@ -11,7 +11,6 @@ use std::fs::TryLockError;
 use std::fs::{self, File, OpenOptions};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,6 +21,7 @@ use spark_api::show::State;
 use super::wire::{self, Answer, Error, Session};
 use crate::cert::inspect;
 use crate::cert::store::Store;
+use crate::deadline::Quiet;
 use crate::tls;
 use crate::util::{Fail, fail};
 use crate::{logger, service, servicefiles};
@@ -146,7 +146,7 @@ pub fn value(answers: &[Answer]) -> Option<&str> {
 /// The machine this runs on, with PostgreSQL's socket.
 pub struct Machine {
     /// The session, once there is one.
-    session: Option<Session<UnixStream>>,
+    session: Option<Session<Quiet>>,
     /// The files of the service.
     files: Files,
 }
@@ -159,7 +159,7 @@ impl Machine {
     }
 
     /// Signs in, unless a session is open.
-    fn session(&mut self) -> Result<&mut Session<UnixStream>, Error> {
+    fn session(&mut self) -> Result<&mut Session<Quiet>, Error> {
         if self.session.is_none() {
             self.session = Some(Session::connect(Path::new(SOCKET))?);
         }

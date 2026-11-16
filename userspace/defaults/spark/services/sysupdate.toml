@@ -56,6 +56,9 @@ memory = "64M"
 #   likely cause then.
 # - The settings, to write, since the start after a fallback holds the
 #   release it fell back from in updates.toml(5).
+# - The hardware state, where a memory test asked for at a start is kept
+#   with its history and what was asked is cleared once the start is seen
+#   through (hardware(8)).
 [permissions]
 files.root-subvolumes = ["@system.a", "@system.b", "@system.new", "@firmware"]
 files.efi-system = "read-write"
@@ -68,6 +71,7 @@ files.read-write = [
     "/system/settings",
     "/system/state/starts",
     "/system/state/bisect",
+    "/system/state/hardware",
     "/system/live/sysupdate",
     "/system/live/sign-in",
     "/system/live/spark/control",

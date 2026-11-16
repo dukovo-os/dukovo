@@ -43,6 +43,7 @@ use super::registry::{self, Place};
 use super::run::{self, ARCH};
 use super::services::{self, Record};
 use super::{answer, ask};
+use crate::deadline::Deadline;
 use crate::util;
 
 /// How long to wait for Spark's answer: the program's time, and room for
@@ -159,14 +160,15 @@ fn program_of(
 fn ask_spark(line: &str) -> Result<Vec<u8>, String> {
     let socket = crate::power::CONTROL;
     let failed = |e: std::io::Error| format!("{socket}: {}", util::strip_os_error(&e));
-    let mut stream = UnixStream::connect(socket).map_err(failed)?;
-    stream.set_read_timeout(Some(ANSWER_WAIT)).map_err(failed)?;
-    stream.write_all(format!("{line}\n").as_bytes()).map_err(failed)?;
+    let stream = UnixStream::connect(socket).map_err(failed)?;
+    // Radix's Unix sockets take no SO_RCVTIMEO: the wait is by poll.
+    let mut timed = Deadline::new(&stream, ANSWER_WAIT).map_err(failed)?;
+    timed.write_all(format!("{line}\n").as_bytes()).map_err(failed)?;
     let _ = stream.shutdown(Shutdown::Write);
     let mut answer = Vec::new();
     // The first line, and the output Spark keeps: no more is read.
     let most = (spark_run::OUTPUT_MAX + 64) as u64;
-    stream.take(most).read_to_end(&mut answer).map_err(failed)?;
+    timed.take(most).read_to_end(&mut answer).map_err(failed)?;
     Ok(answer)
 }
 

@@ -463,7 +463,7 @@ async function tonightAndNot(t, page, bundles) {
   await t.see(button(page, `Update to ${waiting.update}`));
   const words = await panel(page).locator(".apps-buttons").innerText();
   ensure(words.includes("Installs tonight, between "), `the page of ${waiting.id} does not say the window: ${words}`);
-  await pressAndAnswer(t, page, button(page, "Tonight"), pathOf(ROUTES.tonight, info.id));
+  await pressAndAnswer(t, page, button(page, "Tonight"), pathOf(ROUTES.tonight, info.id), "POST", [202]);
   const asked = await appsBecome(page, (all) => all.some((one) => one.id === info.id && (one.tonight != null || one.version === waiting.update)), `be asked for tonight or be updated: ${info.id}`, 120);
   const now = asked.find((one) => one.id === info.id);
   if (now.tonight == null) {
