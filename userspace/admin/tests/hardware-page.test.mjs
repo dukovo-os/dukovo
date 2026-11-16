@@ -10,7 +10,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { ApiError } from '../api.js';
 import {
-  about, broken, clean, inventory, last, NOW, sensors, show, skipped, storage, task,
+  about, broken, clean, diskHealth, inventory, last, NOW, sensors, show, skipped, storage, task,
 } from './hardware-fixtures.mjs';
 import {
   buttonOf, openHardware, refusal, settle, useStore,
@@ -450,10 +450,10 @@ test('Temperatures and fans is a table of the processor, the disks and the zones
   assert.equal(world.card('temps').getAttribute('aria-labelledby'), 'temps-h');
 });
 
-test('the cards come in the order of the phone, the temperatures and the lists across both columns', async (context) => {
+test('the cards come in the order of the phone, with the temperatures and the restart across both columns', async (context) => {
   const world = await openHardware(context);
   const cards = world.view.main.querySelector('.hw').children.filter((one) => one.tag === 'section');
-  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'memory', 'power']);
+  assert.deepEqual(cards.map((one) => one.id), ['machine', 'check', 'temps', 'disks', 'memory', 'power']);
   assert.deepEqual(cards.filter((one) => one.classes.has('hw-wide')).map((one) => one.id), ['temps', 'power']);
 });
 
@@ -543,4 +543,116 @@ test('a reader sees the temperatures too', async (context) => {
 test('the card is reached by its address, and says it is reading while the first answer is awaited', async (context) => {
   const world = await openHardware(context, { hash: '#temps', world: { reads: { '/api/1/hardware/sensors': () => new Promise(() => {}) } } });
   assert.match(text(world.card('temps')), /Reading the temperatures…/);
+});
+
+// ---- Disks -------------------------------------------------------------------
+
+const DISKS_NOTE = 'Unlock to see the disks\' own tests';
+/** A disk's row as three parts, `head | tests | buttons`, since the blocks of a page have a break between them. */
+const lineOf = (world, disk) => world.card('disks').querySelectorAll('li').find((one) => one.textContent.startsWith(disk))
+  .children.map((part) => (part.classes.has('btns') ? part.children.map(text).join(' + ') : text(part))).join(' | ');
+
+test('Disks lists each whole disk with its model and health, its last short and extended tests, and the two buttons that run one', async (context) => {
+  const world = await openHardware(context);
+  assert.ok(world.calls.includes('/api/1/storage/disks/sda/health'));
+  assert.ok(world.calls.includes('/api/1/storage/disks/sdb/health'));
+  assert.equal(lineOf(world, 'sda'), 'sda · WD Red Healthy | Short test Nov 14, passed (at hour 21,800) · Extended test Nov 6, passed (at hour 21,604) | Short test + Extended test');
+  assert.match(lineOf(world, 'sdb'), /^sdb · WD Red Wearing \| /);
+  const link = world.card('disks').querySelector('a');
+  assert.deepEqual([link.textContent, link.getAttribute('href')], ['sda', '/storage/sda']);
+  assert.equal(world.card('disks').querySelector('.pill.ok').textContent, 'Healthy');
+  assert.equal(world.card('disks').querySelector('.pill.warn').textContent, 'Wearing');
+  assert.match(text(world.card('disks')), /A short test is the disk's health, its short self-test and a read of 256 places, about 3 minutes\. An extended test is its long self-test and a read of all of it: hours\./);
+  assert.ok(buttonOf(world.card('disks'), DISKS_NOTE).hidden, 'an unlocked console has nothing to unlock');
+  assert.equal(world.card('disks').getAttribute('aria-labelledby'), 'disks-h');
+});
+
+test('the Short test button runs the disks area on that disk, and the Extended test one a full check of it', async (context) => {
+  const open = () => openHardware(context, { world: { answers: { 'hardware.check': { ok: true, task: 77 } } } });
+  const world = await open();
+  await world.press(world.card('disks').querySelectorAll('li')[1], 'Short test');
+  const more = await open();
+  await more.press(more.card('disks').querySelectorAll('li')[1], 'Extended test');
+  assert.deepEqual(world.ran('hardware.check'), [{ areas: 'disks', disk: 'sdb' }]);
+  assert.deepEqual(more.ran('hardware.check'), [{ areas: 'disks', disk: 'sdb', full: true }]);
+  const [first] = world.ranWith('hardware.check');
+  assert.equal(first[2].where.slot, world.card('disks').querySelector('.hw-errors'));
+  assert.equal(first[2].words.running, 'Checking the hardware');
+  assert.equal(world.dialog(), null, 'no dialog asks first: a test is a button');
+});
+
+test('a disk with a test running says how far it is, and every button that starts a check is off', async (context) => {
+  const running = task({ args: { areas: 'disks', disk: 'sdb' }, percent: 40, step: 2, steps: 3 });
+  const world = await openHardware(context, { world: { reads: { '/api/1/tasks': { tasks: [running] } } } });
+  assert.equal(lineOf(world, 'sdb'), 'sdb · WD Red Wearing | Testing: 40% | Short test + Extended test');
+  assert.match(lineOf(world, 'sda'), /\| Short test Nov 14, passed/);
+  for (const one of world.card('disks').querySelectorAll('.btns button')) assert.equal(one.getAttribute('aria-disabled'), 'true');
+  assert.equal(world.card('disks').querySelector('#disks-why').hidden, false);
+  await world.press(world.card('disks'), 'Short test');
+  assert.deepEqual(world.ran('hardware.check'), []);
+  await world.emit('task', { id: 41, action: 'hardware.check', state: 'running', percent: 70 });
+  assert.match(lineOf(world, 'sdb'), /Testing: 70%/);
+  const unknown = task({ args: { areas: 'disks', disk: 'sdb' } });
+  const bare = await openHardware(context, { world: { reads: { '/api/1/tasks': { tasks: [unknown] } } } });
+  assert.match(lineOf(bare, 'sdb'), /Testing…/);
+});
+
+test('when a test ends the page reads the logs again, and a button keeps its focus while its test runs', async (context) => {
+  const world = await openHardware(context, { world: { answers: { 'hardware.check': { ok: true, task: 77 } } } });
+  const button = buttonOf(world.card('disks').querySelectorAll('li')[0], 'Short test');
+  button.focus();
+  await world.press(world.card('disks').querySelectorAll('li')[0], 'Short test');
+  assert.equal(world.document.activeElement, button, 'the row is not made again');
+  assert.equal(button.getAttribute('aria-disabled'), 'true');
+  const reads = world.calls.filter((call) => call === '/api/1/storage/disks/sda/health').length;
+  world.answers['/api/1/tasks'] = { tasks: [] };
+  world.answers['/api/1/storage/disks/sda/health'] = diskHealth('sda', { self_tests: [{ kind: 'short', result: 'failed', at_hours: 21804 }] });
+  await world.emit('task', { id: 77, action: 'hardware.check', state: 'done' });
+  assert.equal(world.calls.filter((call) => call === '/api/1/storage/disks/sda/health').length, reads + 1);
+  assert.equal(lineOf(world, 'sda'), 'sda · WD Red Healthy | Short test Nov 14, failed (at hour 21,804) | Short test + Extended test');
+  assert.ok(world.card('disks').querySelector('.bad'));
+  assert.equal(button.getAttribute('aria-disabled'), null);
+});
+
+test('a locked administrator is offered the tests and sees them once the console unlocks, and a reader is told who sees them', async (context) => {
+  const locked = await openHardware(context, { unlocked: false });
+  assert.ok(!locked.calls.some((call) => call.includes('/health')));
+  assert.equal(lineOf(locked, 'sda'), 'sda · WD Red Healthy |  | Short test + Extended test');
+  assert.equal(buttonOf(locked.card('disks'), DISKS_NOTE).hidden, false);
+  const { setUnlockSeconds } = await import('../unlock.js');
+  setUnlockSeconds(900);
+  await locked.emit('unlock');
+  assert.match(lineOf(locked, 'sda'), /Short test Nov 14, passed/);
+  assert.equal(buttonOf(locked.card('disks'), DISKS_NOTE).hidden, true);
+  const reader = await openHardware(context, { session: { admin: false } });
+  assert.ok(!reader.calls.some((call) => call.includes('/health')));
+  assert.equal(lineOf(reader, 'sda'), 'sda · WD Red Healthy | ');
+  assert.equal(reader.card('disks').querySelectorAll('button').length, 0);
+  assert.match(text(reader.card('disks')), /Administrators see the disks' own tests$/);
+});
+
+test('a disk that does not report its health says so and may still be tested, and a log that cannot be read is said', async (context) => {
+  const answer = storage();
+  answer.disks.push({ name: 'sdc', model: 'Expansion', health: null });
+  const world = await openHardware(context, { world: { reads: { '/api/1/storage': answer, '/api/1/storage/disks/sdb/health': refusal('ADM-500', 'down', 500) } } });
+  assert.equal(lineOf(world, 'sdc'), 'sdc · Expansion Not checked | This disk does not report its health or its tests. | Short test + Extended test');
+  assert.ok(!world.calls.includes('/api/1/storage/disks/sdc/health'));
+  assert.match(lineOf(world, 'sdb'), /Its own tests could not be read/);
+  assert.equal(world.problems.length, 0);
+});
+
+test('a disk with no log of its own tests says so, and so does one whose log has no short or extended test', async (context) => {
+  const world = await openHardware(context, { world: { reads: {
+    '/api/1/storage/disks/sda/health': diskHealth('sda', { self_tests: null }),
+    '/api/1/storage/disks/sdb/health': diskHealth('sdb', { self_tests: [{ kind: 'conveyance', result: 'passed', at_hours: 21000 }] }),
+  } } });
+  assert.match(lineOf(world, 'sda'), /Healthy \| This disk keeps no log of its own tests \|/);
+  assert.match(lineOf(world, 'sdb'), /Wearing \| No short or extended test is in its log \|/);
+});
+
+test('the disks that cannot be read, and a machine with none, are said', async (context) => {
+  const down = await openHardware(context, { world: { reads: { '/api/1/storage': refusal('ADM-500', 'down', 500) } } });
+  assert.match(text(down.card('disks')), /The disks could not be read\./);
+  const none = await openHardware(context, { world: { reads: { '/api/1/storage': { disks: [] } } } });
+  assert.match(text(none.card('disks')), /No disk was found\./);
 });

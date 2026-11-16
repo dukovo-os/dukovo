@@ -187,6 +187,19 @@ export const updates = () => ({
   apps: [],
 });
 
+/** `GET /api/1/storage/disks/DISK/health` as an administrator gets it: the disk's summary and its log of its own tests, newest first. */
+export const diskHealth = (disk = 'sda', more = {}) => plain({
+  disk,
+  model: 'WD Red',
+  verdict: 'passed',
+  hours: 21804,
+  self_tests: [
+    { kind: 'short', result: 'passed', at_hours: 21800 },
+    { kind: 'extended', result: 'passed', at_hours: 21604 },
+  ],
+  ...more,
+});
+
 /** A running `hardware.check` as `GET /api/1/tasks` lists it. */
 export const task = (more = {}) => ({
   id: 41, action: 'hardware.check', args: {}, state: 'running', step: 4, steps: 11, words: 'disks sda self-test passed', started: Math.floor(NOW / 1000) - 120, ...more,

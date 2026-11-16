@@ -9,6 +9,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { AREAS, checkArgs } from '../pages/hardware/check-model.js';
+import { healthWords } from '../lib/disk-model.js';
+import {
+  disksOf, pillOf, testArgs, testsOf,
+} from '../pages/hardware/disks-model.js';
 import {
   degrees, fanRows, noRecordWords, startTimes, tempRows, unitOf,
 } from '../pages/hardware/sensors-model.js';
@@ -17,7 +21,7 @@ import {
   modelWords, moduleWords, processorWords, stateOf, summaryWords, tookBackWords, upWords,
 } from '../pages/hardware/model.js';
 import {
-  about, broken, clean, highest, history, inventory, last, NOW, sensors, show, skipped, storage, task, time, updates,
+  about, broken, clean, diskHealth, highest, history, inventory, last, NOW, sensors, show, skipped, storage, task, time, updates,
 } from './hardware-fixtures.mjs';
 
 test('amounts of memory are in GiB from one and in MiB below it, and none for no memory', () => {
@@ -341,4 +345,59 @@ test('the times of the changes of the system come from the update history, and o
   assert.deepEqual(startTimes(updates()), [Date.UTC(2026, 10, 13, 3, 0, 0) / 1000]);
   assert.deepEqual(startTimes({ changes: [{ time: 'soon' }] }), []);
   assert.deepEqual(startTimes(null), []);
+});
+
+// ---- Disks ---------------------------------------------------------------------
+
+test('a disk\'s pill is the one Storage\'s list gives it', () => {
+  const healths = [null, { verdict: 'passed', rose: null }, { verdict: 'passed', rose: { title: 'x' } }, { verdict: 'warning', rose: null }, { verdict: 'failing', rose: null }];
+  for (const health of healths) {
+    const { word, tone } = healthWords(health);
+    assert.deepEqual(pillOf(health), { word, tone }, JSON.stringify(health));
+  }
+  assert.deepEqual(pillOf({ verdict: 'passed' }), { word: 'Healthy', tone: 'ok' });
+});
+
+test('the disks are the whole disks of the storage answer with their model and pill, and none when it was not read', () => {
+  assert.deepEqual(disksOf(storage()), [
+    { name: 'sda', model: 'WD Red', pill: { word: 'Healthy', tone: 'ok' }, hasHealth: true },
+    { name: 'sdb', model: 'WD Red', pill: { word: 'Wearing', tone: 'warn' }, hasHealth: true },
+  ]);
+  assert.deepEqual(disksOf({ disks: [{ name: 'vda', model: '', health: null }] }), [{ name: 'vda', model: null, pill: { word: 'Not checked', tone: 'off' }, hasHealth: false }]);
+  assert.equal(disksOf(null), null);
+  assert.equal(disksOf({}), null);
+});
+
+test('a test of one disk is the disks area with its name, and a full one is an extended test', () => {
+  assert.deepEqual(testArgs('sda', false), { areas: 'disks', disk: 'sda' });
+  assert.deepEqual(testArgs('nvme0n1', true), { areas: 'disks', disk: 'nvme0n1', full: true });
+});
+
+test('the last short and extended tests have the day, found from the hours the disk has been on, and the hour they were at', () => {
+  assert.deepEqual(testsOf(diskHealth(), time, Math.floor(NOW / 1000)), [
+    { words: 'Short test Nov 14, passed (at hour 21,800)', tone: null },
+    { words: 'Extended test Nov 6, passed (at hour 21,604)', tone: null },
+  ]);
+  const failed = diskHealth('sda', { self_tests: [{ kind: 'extended', result: 'failed', at_hours: 21000 }, { kind: 'short', result: 'aborted', at_hours: 20000 }] });
+  assert.deepEqual(testsOf(failed, time, Math.floor(NOW / 1000)).map((one) => [one.words, one.tone]), [
+    ['Short test Aug 31, aborted (at hour 20,000)', null],
+    ['Extended test Oct 12, failed (at hour 21,000)', 'bad'],
+  ]);
+  const newest = diskHealth('sda', { self_tests: [{ kind: 'short', result: 'passed', at_hours: 21800 }, { kind: 'short', result: 'failed', at_hours: 100 }] });
+  assert.equal(testsOf(newest, time, Math.floor(NOW / 1000)).length, 1, 'the log is newest first, and each kind is said once');
+});
+
+test('a test with no hours, a disk with no hours and a test that runs are said as far as they are known', () => {
+  const now = Math.floor(NOW / 1000);
+  assert.equal(testsOf(diskHealth('sda', { hours: null }), time, now)[0].words, 'Short test passed (at hour 21,800)');
+  assert.equal(testsOf(diskHealth('sda', { self_tests: [{ kind: 'extended', result: 'passed', at_hours: null }] }), time, now)[0].words, 'Extended test passed');
+  assert.equal(testsOf(diskHealth('sda', { self_tests: [{ kind: 'short', result: 'running', at_hours: null }] }), time, now)[0].words, 'Short test running');
+  assert.equal(testsOf(diskHealth('sda', { hours: 21000 }), time, now)[0].words.startsWith('Short test Nov 14, passed'), true, 'a test logged after the hours is today\'s');
+});
+
+test('a log that cannot be read, a disk that keeps none and a log with neither test say so', () => {
+  const now = Math.floor(NOW / 1000);
+  assert.deepEqual(testsOf(null, time, now), [{ words: 'Its own tests could not be read' }]);
+  assert.deepEqual(testsOf(diskHealth('sda', { self_tests: null }), time, now), [{ words: 'This disk keeps no log of its own tests' }]);
+  assert.deepEqual(testsOf(diskHealth('sda', { self_tests: [] }), time, now), [{ words: 'No short or extended test is in its log' }]);
 });

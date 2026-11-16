@@ -14,6 +14,7 @@ import { stepWords } from '../../lib/tasks-words.js';
 import { askToUnlock, isUnlocked } from '../../unlock.js';
 import { button, makeCard, setOff } from './cards.js';
 import { makeCheck } from './check.js';
+import { makeDisks } from './disks.js';
 import { makeMachine } from './machine.js';
 import { makeMemory } from './memory.js';
 import {
@@ -51,7 +52,8 @@ export async function show(view) {
     admin,
     data,
     pendingHost: null,
-    running: () => [...tasks.values()].find(running) ?? null,
+    /** The check that runs, or with `disk` the one that runs on that disk; null for none. */
+    running: (disk) => [...tasks.values()].find((one) => running(one) && (disk === undefined || one.args?.disk === disk)) ?? null,
     say: (words) => { say.textContent = words; },
     show(id) {
       const target = view.main.querySelector(`#${id}`);
@@ -112,12 +114,13 @@ export async function show(view) {
   const tempsCard = makeCard('temps', 'Temperatures and fans');
   fill(tempsCard.body, h('p', { class: 'muted' }, 'Reading the temperatures…'));
   let temps = null;
+  const disks = makeDisks(ctx);
   const memory = makeMemory(ctx);
   const power = makePower(ctx);
   ctx.pendingHost = power.host;
 
   // The cards come in when the first read is in, so that none says "Not checked yet" before it knows.
-  let cards = [machine, check, tempsCard, memory, power].map((one) => one.element);
+  let cards = [machine, check, tempsCard, disks, memory, power].map((one) => one.element);
   tempsCard.element.classList.add('hw-wide');
   power.element.classList.add('hw-wide');
   view.head({ title: 'Hardware', commands: true, buttons: admin ? [checkNow] : [] });
@@ -132,12 +135,12 @@ export async function show(view) {
     if (task) {
       fill(lead, `Checking the hardware. ${stepWords(task)}`);
     } else if (loaded) {
-      const disks = diskNotes(data.storage);
+      const health = diskNotes(data.storage);
       fill(lead,
         hasResult(data.last) && summaryWords(data.last, view.time),
-        disks && [hasResult(data.last) && ' ', disks.lead, disks.notes.flatMap((note) => ['; ', h('a', { href: note.href }, note.words)]), '.']);
+        health && [hasResult(data.last) && ' ', health.lead, health.notes.flatMap((note) => ['; ', h('a', { href: note.href }, note.words)]), '.']);
     }
-    for (const one of [machine, check, memory]) one.draw();
+    for (const one of [machine, check, disks, memory]) one.draw();
   }
 
   /** Reads the modules; `ask` lets a locked console be asked to unlock. Gives whether they were read. */
@@ -203,6 +206,7 @@ export async function show(view) {
     }
     drawAll();
     temps?.draw();
+    disks.read(false);
     if (first) readTemps(Object.keys(TEMPS));
     for (const name of ['machine', 'last']) if (found[names.indexOf(name)].status === 'rejected') view.problem(found[names.indexOf(name)].reason, { slot: name === 'machine' ? machine.errors : check.errors });
     const status = await view.api.get('/api/1/power').catch(() => null);
@@ -234,6 +238,7 @@ export async function show(view) {
     if (event?.shutdown) (await ctx.pending()).set(event.shutdown);
   });
   view.on('unlock', async () => {
+    disks.read(false);
     if (data.access !== 'ok' && await readInventory(false)) drawAll();
   });
   view.on('online', () => read());
