@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0383. bundled installs from the catalogs an administrator trusts
 
-- Status: Accepted
+- Status: Accepted; an app's sheet can be read before its install, and
+  the install pinned to it, since
+  [0569](0569-websites-databases-and-apps-are-added-from-the-web-console-through-website-8-database-8-and-the-catalog-s-sheet.md)
 - Date: 2026-11-03
 
 ## Context
