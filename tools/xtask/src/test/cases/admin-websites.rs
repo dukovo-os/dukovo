@@ -570,7 +570,14 @@ fn same_as_command(
 ) -> Result<Value, String> {
     unlock(vm)?;
     test.unlocked()?;
-    let mut said = test.read(Who::Alice, route)?;
+    let mut said = match test.read(Who::Alice, route) {
+        Ok(said) => said,
+        // What the command says, its errors with it, tells why.
+        Err(why) => {
+            let text = test.pane.output(vm, &format!("{command} 2>&1"))?;
+            return Err(format!("{why}; `{command}` prints {:?}", text.trim()));
+        }
+    };
     let mut printed = test.printed(vm, command)?;
     without(&mut said, skip);
     without(&mut printed, skip);
