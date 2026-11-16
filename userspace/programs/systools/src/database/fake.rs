@@ -600,13 +600,22 @@ impl Fake {
             return Ok(self.access());
         }
         if sql == super::sql::HBA_ERRORS {
+            // A hostssl line is one the server running without TLS says
+            // cannot match, as PostgreSQL does.
+            let tls = self.running("ssl") == "on";
             let rows = self
                 .hba_text()
                 .lines()
                 .enumerate()
-                .filter(|(_, line)| line.contains("BROKEN"))
-                .map(|(at, _)| {
-                    vec![Some((at + 1).to_string()), Some("invalid IP address \"BROKEN\"".into())]
+                .filter_map(|(at, line)| {
+                    let error = if line.contains("BROKEN") {
+                        "invalid IP address \"BROKEN\""
+                    } else if line.starts_with("hostssl") && !tls {
+                        "hostssl record cannot match because SSL is disabled"
+                    } else {
+                        return None;
+                    };
+                    Some(vec![Some((at + 1).to_string()), Some(error.into())])
                 })
                 .collect();
             return Ok(Fake::answer(&["line_number", "error"], rows));
