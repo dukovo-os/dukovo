@@ -16,6 +16,7 @@
 .rp-actions { display: flex; flex-direction: column; gap: .571rem; }
 .rp-actions p, .rp-live p, .rp-lead p { margin: 0; }
 .rp-privacy { margin: 0; }
+.rp-privacy summary { padding: .929rem 0; }
 .rp-privacy p { margin: .429rem 0 0; max-width: 60rem; }
 .rp-choices, .rp-answers, .rp-editor { display: flex; flex-direction: column; gap: .429rem; }
 .rp-answers, .rp-editor { gap: .857rem; }

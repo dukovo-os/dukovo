@@ -548,7 +548,7 @@ test('Download by QR code asks for a link for the draft and the hash of the text
   assert.deepEqual(body, { sha256: sha(text) });
   const dialog = app.dialog();
   assert.equal(dialog.querySelector('h2').textContent, 'Download by QR code');
-  assert.ok(dialog.textContent.includes('https://192.168.1.20:8443/once/3q2-7wHq9Zk0aB1cD2eF3g/report.txt'));
+  assert.ok(dialog.textContent.includes('https://192.168.1.20:8443/once/9f3c1a7e5b2d4c6a8e0f1b3d5a7c9e2b/report.txt'));
   assert.ok(dialog.querySelector('svg'), 'the code is drawn');
   assert.ok(dialog.textContent.includes('0A:11:18:1F:26:2D:34:3B'), 'the fingerprint is in groups');
   assert.ok(dialog.querySelector('[role="timer"]'));

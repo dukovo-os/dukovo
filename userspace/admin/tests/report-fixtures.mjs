@@ -206,7 +206,7 @@ export function makeDesk({ base = crashBase } = {}) {
       const id = made.toString(16).padStart(32, '0');
       kept.set(id, { parts, args });
       const answer = apply(parts);
-      kept.get(id).sha256 = answer.sha256;
+      Object.assign(kept.get(id), { sha256: answer.sha256, text: answer.text });
       return { ...answer, draft: id };
     },
     /** What `POST /api/1/reports/drafts/{draft}/redact` answers. */
@@ -216,7 +216,7 @@ export function makeDesk({ base = crashBase } = {}) {
       if (!one) throw Object.assign(new Error('That draft has ended'), { id: 'RPT-101' });
       if (one.sha256 !== sha256) throw Object.assign(new Error('The report is not the one you read'), { id: 'RPT-102' });
       const answer = apply(one.parts, JSON.parse(edits));
-      one.sha256 = answer.sha256;
+      Object.assign(one, { sha256: answer.sha256, text: answer.text });
       return { ...answer, draft: id };
     },
   };
@@ -253,7 +253,7 @@ export const sendAnswer = (more = {}) => ({
 
 /** `POST /api/1/reports/drafts/{draft}/phone`. */
 export const phone = (more = {}) => ({
-  url: 'https://192.168.1.20:8443/once/3q2-7wHq9Zk0aB1cD2eF3g/report.txt',
+  url: 'https://192.168.1.20:8443/once/9f3c1a7e5b2d4c6a8e0f1b3d5a7c9e2b/report.txt',
   expires_ms: NOW + 600_000,
   fingerprint_sha256: Array.from({ length: 32 }, (_, at) => (at * 7 + 10).toString(16).padStart(2, '0').toUpperCase()).join(':'),
   ...more,
