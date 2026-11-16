@@ -12,7 +12,11 @@
 // an update to `update checks --json`. Save changes the settings and the
 // channel (`POST /api/1/updates/settings` and `/channel`) and Undo puts them
 // back; Hold this version and Release the hold change the system's hold
-// (`POST /api/1/updates/{item}/hold` and `/unhold`); Stage it stages the
+// (`POST /api/1/updates/{item}/hold` and `/unhold`), a hold asks "Why
+// (optional)" first and the Held card says when, by whom and why; Later puts
+// the reminder of an update off for a day or a week and Remind me now brings
+// it back (`POST /api/1/updates/{item}/later`), unless the update fixes an
+// advisory, which is never put off and says so; Stage it stages the
 // system's release, a task (`POST /api/1/updates/{item}/apply`), which the
 // banner "Restart to finish the update" tells of, and Take it back unstages it
 // (`POST /api/1/updates/unstage`). A check is added and removed, and so is a
@@ -20,8 +24,12 @@
 // `/essential`). The advisories and the history are read when asked for. An
 // app that the check offers an update for is updated from the Apps card, a
 // task (`POST /api/1/apps/{id}/update`), and put back through the route that
-// the app's own page calls (`POST /api/1/apps/{id}/rollback`); the lab
-// machine's catalog may offer none, and the script says so when it does not.
+// the app's own page calls (`POST /api/1/apps/{id}/rollback`); Tonight asks
+// for it in tonight's window (`POST /api/1/apps/{id}/tonight`), Install
+// tonight for every app that has one (`POST /api/1/apps/tonight`) and Not
+// tonight takes the request away (`POST /api/1/apps/{id}/not-tonight`); the
+// lab machine's catalog may offer no app an update, and the script says so
+// when it does not.
 //
 // The restart, the fallback of an update, What happened and the search for a
 // bad change are in updates-restart.mjs and updates-bisect.mjs, each in one
@@ -48,7 +56,7 @@ import {
   sidewaysScroll,
   sleep,
 } from "./console.mjs";
-import { PASSWORD, PHONE, answerUnlock, pressAndAnswer, smallControls, unlockNow } from "./trial.mjs";
+import { PASSWORD, PHONE, answerUnlock, pressAndAnswer, smallControls, unlockDialog, unlockNow } from "./trial.mjs";
 import {
   LOCKED_SLOTS,
   READER_WORDS,
@@ -77,6 +85,8 @@ const READER = "wc-updates-reader";
 const UNSAVED = "Nothing to change.";
 const NO_CHECK_NAME = "lab-web";
 const NEVER_TOLD = "Nobody is told of security fixes. SEC-131 warns after 7 days.";
+const REASON = "lab: waiting for the next alpha";
+const NOT_PUT_OFF = /is not put off|so it is not put off/;
 
 // --- Reading the machine ---
 
@@ -217,6 +227,19 @@ async function checkAgain(t, page) {
   return doc;
 }
 
+/** The apps the check offers an update for, now: the ones with a Later and a Tonight to press. */
+const waitingApps = (doc) => appOffers(doc).filter((one) => one.state === "update");
+
+/** Presses `control`, which asks a question of its own: answers the unlock if it comes first, and gives the dialog called `name`. */
+async function opensDialog(t, page, control, name) {
+  await control.click();
+  const asked = await unlockDialog(page).waitFor({ state: "visible", timeout: 2000 }).then(() => true, () => false);
+  if (asked) await answerUnlock(t, page);
+  const dialog = page.getByRole("dialog", { name, exact: true });
+  await t.see(dialog);
+  return dialog;
+}
+
 /** Hold this version holds what the system is offered, and Release the hold lets it go. */
 async function holdAndRelease(t, page, doc) {
   const system = offerOf(doc, "system");
@@ -225,21 +248,93 @@ async function holdAndRelease(t, page, doc) {
     return false;
   }
   const box = card(page, "system");
+  const to = system.to.replace(/\./g, "\\.");
   await pressAndAnswer(t, page, box.getByRole("button", { name: "Hold this version", exact: true }), pathOf(ROUTES.hold, { item: "system" }));
-  await t.see(box.getByText(new RegExp(`${system.to.replace(/\./g, "\\.")} is held`)));
+  await t.see(box.getByText(new RegExp(`${to} is held`)));
   await t.see(card(page, "held").getByText(`System ${system.to}`));
   const held = await settingsNow(page);
   ensure(held.hold?.system === system.to, `the machine holds ${held.hold?.system} and the page held ${system.to}`);
   // The Held card's own Release does what the System card's does.
   await pressAndAnswer(t, page, card(page, "held").getByRole("button", { name: "Release", exact: true }), pathOf(ROUTES.unhold, { item: "system" }));
   await t.see(card(page, "held").getByText("Nothing is held."));
-  await t.see(box.getByText(new RegExp(`${system.to.replace(/\./g, "\\.")} is ready`)));
+  await t.see(box.getByText(new RegExp(`${to} is ready`)));
   ensure((await settingsNow(page)).hold?.system == null, "the machine still holds the system after Release");
-  // Hold a version, from the Held card's own choice.
-  await card(page, "held").getByLabel("Hold a version", { exact: true }).selectOption({ label: `The system, ${system.to}` });
-  await pressAndAnswer(t, page, card(page, "held").getByRole("button", { name: "Hold it", exact: true }), pathOf(ROUTES.hold, { item: "system" }));
+  await holdWithReason(t, page, system);
   await pressAndAnswer(t, page, box.getByRole("button", { name: "Release the hold", exact: true }), pathOf(ROUTES.unhold, { item: "system" }));
-  await t.see(box.getByText(new RegExp(`${system.to.replace(/\./g, "\\.")} is ready`)));
+  await t.see(box.getByText(new RegExp(`${to} is ready`)));
+  const after = await settingsNow(page);
+  ensure(after.hold?.system == null && after.hold_reasons?.system == null, `the machine keeps ${JSON.stringify(after.hold_reasons)} of a hold that was released`);
+  return true;
+}
+
+/** Hold a version, from the Held card's own choice, asks why before it holds: Cancel holds nothing, and the reason is kept with the hold and said by the cards. */
+async function holdWithReason(t, page, system) {
+  const held = card(page, "held");
+  const path = pathOf(ROUTES.hold, { item: "system" });
+  await held.getByLabel("Hold a version", { exact: true }).selectOption({ label: `The system, ${system.to}` });
+  const opener = held.getByRole("button", { name: "Hold it…", exact: true });
+  const title = `Hold the system update ${system.to}`;
+  let dialog = await opensDialog(t, page, opener, title);
+  const field = dialog.getByLabel("Why (optional)", { exact: true });
+  await t.see(field);
+  ensure((await field.getAttribute("maxlength")) === "200", "the reason may have more than 200 characters");
+  await t.see(dialog.getByText("Everyone who can sign in sees the reason, here and with `update settings`.", { exact: true }));
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await t.gone(dialog);
+  ensure((await settingsNow(page)).hold?.system == null, "Cancel in the question that asks why held the system");
+
+  dialog = await opensDialog(t, page, opener, title);
+  await dialog.getByLabel("Why (optional)", { exact: true }).fill(REASON);
+  const sent = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === path);
+  await pressAndAnswer(t, page, dialog.getByRole("button", { name: "Hold it", exact: true }), path);
+  const body = (await sent).postData() ?? "";
+  ensure(body.includes(`"why":${JSON.stringify(REASON)}`) || body.includes(`"why": ${JSON.stringify(REASON)}`), `${ROUTES.hold} was sent ${JSON.stringify(body)}, without the reason`);
+  await t.gone(dialog);
+  const settings = await settingsNow(page);
+  const kept = settings.hold_reasons?.system;
+  ensure(settings.hold?.system === system.to && kept?.text === REASON && kept?.version === system.to, `the machine keeps ${JSON.stringify(settings.hold)} and ${JSON.stringify(settings.hold_reasons)} for a hold with a reason`);
+  // The Held card and the System card say when, by whom and why.
+  const row = held.locator("li.upd-row").filter({ hasText: `System ${system.to}` });
+  await t.see(row);
+  const words = await wordsOf(row);
+  ensure(/held (?:today|yesterday|on [A-Z][a-z]{2} \d{1,2}) at \d{1,2}:\d{2} [AP]M/.test(words) && words.includes(`: "${REASON}"`), `the Held card says ${words} of a hold made just now for "${REASON}"`);
+  ensure((await wordsOf(card(page, "system"))).includes(`: "${REASON}"`), `the System card does not say why it is held: ${await wordsOf(card(page, "system"))}`);
+}
+
+/** Later puts the reminder of the system's update off and Remind me now brings it back; an update that fixes an advisory has no Later and says why. */
+async function laterAndRemind(t, page, doc) {
+  const system = offerOf(doc, "system");
+  if (system === null || system.state !== "update") {
+    console.log(`the system's offer is ${system?.state ?? "none"}, so Later was not pressed`);
+    return false;
+  }
+  const box = card(page, "system");
+  const later = box.getByRole("button", { name: "Later for the system update", exact: true });
+  if ((await later.count()) === 0) {
+    ensure(NOT_PUT_OFF.test(await wordsOf(box)), `the System card has no Later and does not say why: ${await wordsOf(box)}`);
+    console.log("the system's update fixes an advisory, or the machine cannot tell, so Later was not pressed");
+    return false;
+  }
+  await later.click();
+  const menu = box.getByRole("menu", { name: "Put off the reminder of the system update", exact: true });
+  await t.see(menu);
+  const choices = await menu.getByRole("menuitem").evaluateAll((items) => items.map((item) => item.textContent.trim()));
+  ensure(JSON.stringify(choices) === JSON.stringify(["Remind me tomorrow", "Remind me in a week"]), `Later offers ${JSON.stringify(choices)}`);
+  await pressAndAnswer(t, page, menu.getByRole("menuitem", { name: "Remind me tomorrow", exact: true }), pathOf(ROUTES.later, { item: "system" }));
+  const put = box.getByText(/^Put off until /);
+  await put.waitFor({ state: "visible", timeout: 30_000 }).catch(async () => {
+    throw new Error(`the System card does not say it is put off: ${await wordsOf(box)}; update settings says ${JSON.stringify((await settingsNow(page)).later)}`);
+  });
+  const entry = ((await settingsNow(page)).later ?? []).find((one) => one.item === "system");
+  ensure(entry !== undefined && entry.version === system.to, `update settings lists ${JSON.stringify(entry)} for a reminder put off for ${system.to}`);
+  const hours = (entry.until_ms - entry.at_ms) / 3_600_000;
+  ensure(hours >= 12 && hours <= 48, `the reminder of a day is put off for ${hours} hours`);
+  ensure((await box.getByRole("button", { name: "Later for the system update", exact: true }).count()) === 0, "the System card has Later while the update is put off");
+
+  await pressAndAnswer(t, page, box.getByRole("button", { name: "Remind me now", exact: true }), pathOf(ROUTES.later, { item: "system" }));
+  await t.see(box.getByRole("button", { name: "Later for the system update", exact: true }));
+  await t.gone(box.getByText(/^Put off until /));
+  ensure(((await settingsNow(page)).later ?? []).every((one) => one.item !== "system"), "update settings still lists the reminder of the system after Remind me now");
   return true;
 }
 
@@ -286,6 +381,93 @@ async function appUpdate(t, page, doc) {
   ensure(back.status === 200 || back.status === 202, `POST /api/1/apps/${offer.item}/rollback was answered ${back.status}: ${back.text}`);
   await appBecomes(page, offer.item, (app) => app.version === offer.from, `go back to ${offer.from}`);
   return offer.item;
+}
+
+/** The route of an app, `{id}` filled in: the Apps card calls the routes of the app's own page. */
+const appRoute = (route, id) => route.slice(route.indexOf(" ") + 1).replace("{id}", encodeURIComponent(id));
+const APP_ROUTES = {
+  tonight: "POST /api/1/apps/{id}/tonight",
+  tonightAll: "POST /api/1/apps/tonight",
+  notTonight: "POST /api/1/apps/{id}/not-tonight",
+};
+
+/** Presses Not tonight on the row of `offer` and waits until the machine no longer has the request. */
+async function notTonight(t, page, row, offer) {
+  await pressAndAnswer(t, page, row.getByRole("button", { name: "Not tonight", exact: true }), appRoute(APP_ROUTES.notTonight, offer.item));
+  await appBecomes(page, offer.item, (app) => app.tonight == null, "be taken off tonight's window", 60);
+  await t.see(row.getByRole("button", { name: "Tonight", exact: true }));
+  await t.gone(row.getByText("Installs tonight", { exact: true }));
+}
+
+/**
+ * An app's row has Later with its menu, Tonight with the window in words, and
+ * Install tonight asks for every update at once; Not tonight takes each
+ * request away. Gives the routes it called, as the page's requests name them.
+ */
+async function appTonight(t, page, doc) {
+  const offers = waitingApps(doc);
+  if (offers.length === 0) {
+    console.log("no app of this machine has an update to take, so Later, Tonight and Install tonight were not pressed");
+    return [];
+  }
+  const settings = await settingsNow(page);
+  const box = card(page, "apps");
+  const [offer] = offers;
+  const row = box.locator("li.upd-row").filter({ hasText: offer.to }).first();
+  const words = await wordsOf(box);
+  ensure(words.includes("Installs tonight, between "), `the Apps card does not say the window: ${words}`);
+  if (settings.restart == null) ensure(words.includes("Installs tonight, between 2:00 and 3:00 AM."), `the machine has no restart time and the card says ${words}`);
+  else ensure(words.includes("the hour before this server's restart time."), `the machine restarts at ${settings.restart} and the card says ${words}`);
+
+  // Later, when apps are told of and the update fixes no advisory.
+  const later = row.getByRole("button", { name: /^Later for / });
+  const called = [];
+  if ((await later.count()) === 0) {
+    ensure(settings.apps === "auto" || NOT_PUT_OFF.test(await wordsOf(row)), `the row of ${offer.item} has no Later and does not say why: ${await wordsOf(row)}`);
+  } else {
+    await later.click();
+    await pressAndAnswer(t, page, box.getByRole("menuitem", { name: "Remind me in a week", exact: true }), pathOf(ROUTES.later, { item: offer.item }));
+    await t.see(row.getByText(/^Put off until /));
+    await pressAndAnswer(t, page, row.getByRole("button", { name: "Remind me now", exact: true }), pathOf(ROUTES.later, { item: offer.item }));
+    await t.see(row.getByRole("button", { name: /^Later for / }));
+    called.push(`POST ${pathOf(ROUTES.later, { item: offer.item })}`);
+  }
+
+  // Tonight asks for the update in the window, and the row says so.
+  await pressAndAnswer(t, page, row.getByRole("button", { name: "Tonight", exact: true }), appRoute(APP_ROUTES.tonight, offer.item));
+  called.push(`POST ${appRoute(APP_ROUTES.tonight, offer.item)}`);
+  const app = await appBecomes(page, offer.item, (one) => one.tonight != null || one.version === offer.to, "be asked for tonight or be updated", 120);
+  if (app.tonight == null) {
+    // The machine's window is open now: a request made inside it runs at once.
+    console.log(`${offer.item} was updated at once, so the window is open now; Not tonight was not pressed`);
+    const back = await fetchAsPage(page, "POST", `/api/1/apps/${encodeURIComponent(offer.item)}/rollback`, {});
+    ensure(back.status === 200 || back.status === 202, `POST /api/1/apps/${offer.item}/rollback was answered ${back.status}: ${back.text}`);
+    await appBecomes(page, offer.item, (one) => one.version === offer.from, `go back to ${offer.from}`);
+    // Going back holds the app at that version; the update is on offer again once it is let go.
+    const free = await fetchAsPage(page, "POST", `/api/1/apps/${encodeURIComponent(offer.item)}/unhold`, {});
+    ensure(free.status === 200, `POST /api/1/apps/${offer.item}/unhold was answered ${free.status}: ${free.text}`);
+    await page.reload();
+    await openUpdates(t, page);
+    return called;
+  }
+  await t.see(row.getByText("Installs tonight", { exact: true }));
+  await notTonight(t, page, row, offer);
+  called.push(`POST ${appRoute(APP_ROUTES.notTonight, offer.item)}`);
+
+  // Install tonight asks for every update at once; with one app, no button is there, and the route is the same.
+  if (offers.length > 1) {
+    await pressAndAnswer(t, page, box.getByRole("button", { name: "Install tonight", exact: true }), appRoute(APP_ROUTES.tonightAll));
+  } else {
+    await t.gone(box.getByRole("button", { name: "Install tonight", exact: true }));
+    const asked = await fetchAsPage(page, "POST", appRoute(APP_ROUTES.tonightAll), {});
+    ensure(asked.status === 200, `${APP_ROUTES.tonightAll} was answered ${asked.status}: ${asked.text}`);
+  }
+  called.push(`POST ${appRoute(APP_ROUTES.tonightAll)}`);
+  for (const one of offers) await appBecomes(page, one.item, (found) => found.tonight != null, "be asked for tonight", 120);
+  await page.reload();
+  await openUpdates(t, page);
+  for (const one of offers) await notTonight(t, page, box.locator("li.upd-row").filter({ hasText: one.to }).first(), one);
+  return called;
 }
 
 /** The advisories are read when asked for, and the page lists what the machine says. */
@@ -360,7 +542,9 @@ async function administrator(t) {
   const doc = await checkAgain(t, page);
   await cardsAsKept(t, page, { updates: doc });
   await holdAndRelease(t, page, doc);
+  const later = await laterAndRemind(t, page, doc);
   await stageAndTakeBack(t, page, doc);
+  const asked = await appTonight(t, page, doc);
   const app = await appUpdate(t, page, doc);
   await advisoriesShown(t, page);
   await historyShown(t, page);
@@ -385,7 +569,9 @@ async function administrator(t) {
     ...(offerOf(doc, "system")?.state === "update"
       ? [routeFor(ROUTES.hold, { item: "system" }), routeFor(ROUTES.unhold, { item: "system" }), routeFor(ROUTES.apply, { item: "system" }), routeFor(ROUTES.unstage)]
       : []),
+    ...(later ? [routeFor(ROUTES.later, { item: "system" })] : []),
     ...(app === null ? [] : [`POST /api/1/apps/${encodeURIComponent(app)}/update`]),
+    ...asked,
   ]);
   await signOut(t, page);
   await page.context().close();
@@ -405,9 +591,10 @@ async function reader(t) {
   const extra = names.filter((name) => !allowed.has(name));
   ensure(extra.length === 0, `a reader's page has the buttons ${extra.join(", ")}`);
   await t.see(page.getByRole("button", { name: "Check now", exact: true }));
-  for (const name of ["Stage it", "Save", "Hold this version", "Add a check…", "Restart now…"]) {
+  for (const name of ["Stage it", "Save", "Hold this version", "Hold it…", "Add a check…", "Restart now…", "Install tonight", "Tonight", "Not tonight", "Remind me now"]) {
     ensure((await page.getByRole("button", { name, exact: true }).count()) === 0, `a reader's page has ${name}`);
   }
+  ensure((await page.getByRole("button", { name: /^Later for / }).count()) === 0, "a reader's page has Later");
   // The slots are an administrator's read.
   const slots = await read(page, ROUTES.slots);
   ensure(slots.status === 403 || slots.status === 401, `${ROUTES.slots} was answered ${slots.status} to a reader`);
