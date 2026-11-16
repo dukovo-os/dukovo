@@ -1305,3 +1305,63 @@ runs = "as-administrator"
 long = false
 compares = false
 tests = { checks = "admind::actions::private::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.show"
+title = "Show what this machine is"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.inventory"
+title = "Show the memory modules"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware/inventory"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.last"
+title = "Show the last hardware check"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware/check"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.history"
+title = "Show the hardware checks by day"
+area = "hardware"
+changes = false
+method = "GET"
+path = "/api/1/hardware/history"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+
+[[action]]
+id = "hardware.check"
+title = "Check the hardware"
+area = "hardware"
+changes = true
+method = "POST"
+path = "/api/1/hardware/check"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }

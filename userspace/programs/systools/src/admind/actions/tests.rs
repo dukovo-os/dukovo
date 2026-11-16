@@ -1303,6 +1303,10 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     ("account.password", "current"),
     ("account.password", "new"),
     ("account.key-add", "line"),
+    // A list of areas holds each once, and with a disk it is the disks
+    // alone, which a pattern cannot say.
+    ("hardware.check", "areas"),
+    ("hardware.check", "disk"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1386,6 +1390,13 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("private.serve", r#"{"address":"10.8.0.0/24"}"#),
     ("private.serve", r#"{"address":"10.8.0.255/24"}"#),
     ("private.serve", r#"{"endpoint":"-lab.example.org"}"#),
+    // An area named twice, and a disk with the areas that are not the disks
+    // alone: the code's.
+    ("hardware.check", r#"{"areas":"memory memory"}"#),
+    ("hardware.check", r#"{"areas":"disks cpu disks"}"#),
+    ("hardware.check", r#"{"areas":"memory","disk":"vda"}"#),
+    ("hardware.check", r#"{"areas":"disks cpu","disk":"vda"}"#),
+    ("hardware.check", r#"{"disk":"vda"}"#),
     ("backups.add", r#"{"every":"hand","name":"lab","to":"relative/folder","verify":"never"}"#),
     // The key as a file and typed, or as neither; a card choice that is no
     // card of this machine; and no more than eight of them: the code's.
