@@ -136,11 +136,11 @@ Opening one opens what it stands for, on a read-only mount too:
   with *no_device*. On a filesystem a program serves (*fuse*, below)
   every device node fails with *denied* (EACCES), as on a Linux mount
   with *nodev*.
-- A socket's name is bound with *bind_socket* and connected through
-  with *connect_socket* (*radix-directory*(2)), and fails with
-  *no_device* when opened. On Btrfs it stays on the disk,
-  but what is bound to it lasts only while the filesystem is mounted,
-  as on Linux.
+- A socket's name is bound with *bind_socket*, connected through with
+  *connect_socket* and sent datagrams with *send_datagram*
+  (*radix-directory*(2)), and fails with *no_device* when opened. On
+  Btrfs it stays on the disk, but what is bound to it lasts only while
+  the filesystem is mounted, as on Linux.
 
 *stat*'s *changed* is when the file's names, times or contents last
 changed, kept by tmpfs and Btrfs; FAT and exFAT give *modified*.

@@ -366,6 +366,7 @@ help-session userspace/defaults/spark/services/authd.toml userspace/defaults/spa
 held-sockets userspace/posix/listenfd.c userspace/posix/connectloop.c userspace/spark/
 held-sockets userspace/spark/tests/services/sockets/ userspace/programs/manifest/
 held-sockets userspace/programs/systools/src/service.rs userspace/programs/systools/src/servicefiles.rs
+held-sockets kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
 hyperv kernel/drivers/hyperv/ kernel/radix/src/hyperv.rs kernel/arch/x86_64/src/hyperv.rs
 hyperv kernel/arch/x86_64/src/time.rs kernel/radix/src/fs/disk/storvsc.rs
 hyperv kernel/drivers/mana/ kernel/radix/src/vpci.rs
@@ -597,6 +598,7 @@ ntfs-write userspace/storage/
 offered-sockets userspace/posix/listenfd.c userspace/spark/ userspace/programs/manifest/
 offered-sockets userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
 offered-sockets userspace/programs/systools/src/authd.rs tools/xtask/src/bundles.rs
+offered-sockets kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
 oom kernel/mm/
 optical kernel/drivers/ahci/ kernel/drivers/scsi/ kernel/drivers/usb/ kernel/drivers/xhci/
 optical kernel/radix/src/fs/disk/handed.rs kernel/radix/src/fs/disk/optical.rs kernel/radix/src/fs/disk/usb.rs
@@ -612,6 +614,7 @@ php ports/bzip2/ ports/curl/ ports/libxml2/ ports/openssl/ ports/php/ ports/post
 php ports/rustls-ffi/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs tools/xtask/src/licenses.rs
 php tools/xtask/src/ports.rs userspace/programs/dkv/ userspace/programs/manifest/
 php userspace/programs/systools/src/bundled.rs userspace/programs/systools/src/bundles/
+php kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/ ports/mlibc/sysdeps/radix/generic/socket.cpp
 php-fpm ports/bzip2/ ports/curl/ ports/libxml2/ ports/nginx/ ports/openssl/ ports/php/
 php-fpm ports/postgresql/ ports/rustls-ffi/ ports/zlib/ ports/zstd/ tools/xtask/src/bundles.rs
 php-fpm tools/xtask/src/licenses.rs tools/xtask/src/ports.rs userspace/programs/dkv/
@@ -635,13 +638,15 @@ posix ports/netcat/ ports/nvi/ ports/onetrueawk/ ports/openssh/ ports/openssl/ p
 posix ports/pciids/ ports/sed/ ports/tcpdump/ ports/tmux/ ports/tzdata/ ports/usbids/
 posix ports/uutils-coreutils/ ports/uutils-findutils/ ports/xz/ ports/zip/ ports/zstd/
 posix userspace/posix/admin.c userspace/posix/cancel.c userspace/posix/commands.c
-posix userspace/posix/cxx.cpp userspace/posix/dynamic/ userspace/posix/exec-helper.c
-posix userspace/posix/exec.c userspace/posix/expected/ userspace/posix/files.c
-posix userspace/posix/fork.c userspace/posix/format-cases.h userspace/posix/format.c
-posix userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c userspace/posix/library.c
-posix userspace/posix/limits.c userspace/posix/locks.c userspace/posix/pipe.c userspace/posix/poll.c
-posix userspace/posix/programs.h userspace/posix/run.c userspace/posix/shm.c userspace/posix/signal.c
-posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/
+posix userspace/posix/cxx.cpp userspace/posix/datagram.c userspace/posix/dynamic/
+posix userspace/posix/exec-helper.c userspace/posix/exec.c userspace/posix/expected/
+posix userspace/posix/files.c userspace/posix/fork.c userspace/posix/format-cases.h
+posix userspace/posix/format.c userspace/posix/hello.c userspace/posix/inet.c userspace/posix/job.c
+posix userspace/posix/library.c userspace/posix/limits.c userspace/posix/locks.c
+posix userspace/posix/pipe.c userspace/posix/poll.c userspace/posix/programs.h userspace/posix/run.c
+posix userspace/posix/shm.c userspace/posix/signal.c
+posix kernel/radix/src/fs/shm/ kernel/radix/src/user/memory/ kernel/radix/src/fs/socket.rs kernel/radix/src/fs/socket/
+posix ports/mlibc/sysdeps/radix/generic/socket.cpp
 posix userspace/posix/socket.c userspace/posix/spawn.c userspace/posix/thread.c
 posix userspace/posix/time.c userspace/posix/tty.c userspace/posix/utilities.c
 posix userspace/posix/zones.c userspace/programs/acl/ userspace/programs/nukesh/

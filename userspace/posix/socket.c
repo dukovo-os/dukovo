@@ -10,7 +10,8 @@
 // backlog, and connections from another process. And descriptors passed
 // with SCM_RIGHTS: pipes, files and directories, between processes too,
 // MSG_CTRUNC, MSG_CMSG_CLOEXEC, the bytes they ride on, and the limits.
-// And MSG_PEEK, of bytes and of descriptors (ADR 0341).
+// And MSG_PEEK, of bytes and of descriptors (ADR 0341). The datagram
+// sockets are datagram.c's.
 
 #include <fcntl.h>
 #include <limits.h>
@@ -92,7 +93,7 @@ static void described(void) {
 	close(pipe_fds[1]);
 	CHECK_ERROR(send(-1, "x", 1, 0), EBADF);
 	CHECK_ERROR(shutdown(fds[0], 7), EINVAL);
-	// Only AF_UNIX makes pairs, of streams so far.
+	// Only the family's own protocol makes a pair.
 	CHECK_ERROR(socketpair(AF_UNIX, SOCK_STREAM, 99, fds), EPROTONOSUPPORT);
 	close(fds[0]);
 	close(fds[1]);
@@ -670,8 +671,10 @@ static void passing(void) {
 	memcpy(CMSG_DATA(cmsg), &file, sizeof(int));
 	CHECK(sendmsg(fds[0], &empty, 0) == 0);
 	CHECK_ERROR(recv(fds[1], buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);
-	// Sockets are not sent (ADR 0091), nor are descriptors that are not.
-	CHECK_ERROR(send_fds(fds[0], 's', &fds[1], 1), EOPNOTSUPP);
+	// The other end of a connection is not sent over it, as it would sit
+	// in the queue it reads (ADR 0525; datagram.c sends sockets), nor is
+	// a descriptor that is none.
+	CHECK_ERROR(send_fds(fds[0], 's', &fds[1], 1), ETOOMANYREFS);
 	int bad = 1000;
 	CHECK_ERROR(send_fds(fds[0], 'b', &bad, 1), EBADF);
 	CHECK_ERROR(recv(fds[1], buffer, sizeof(buffer), MSG_DONTWAIT), EAGAIN);

@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0091. Named sockets connect through the tree, and descriptors ride on their bytes
 
-- Status: Accepted
+- Status: Accepted; sockets are sent with `SCM_RIGHTS` under a rule that keeps cycles out, and datagram sockets and credentials as control messages exist, since [0525](0525-unix-datagram-sockets-and-sockets-passed-under-a-rule-that-keeps-out-cycles.md)
 - Date: 2026-10-23
 
 ## Context

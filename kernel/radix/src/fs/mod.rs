@@ -651,25 +651,26 @@ fn defer_drop(file: FileRef) {
     crate::caps::queued();
 }
 
-/// Drops the objects [`defer_drop`] queued. Called with no lock held.
+/// Drops the objects [`defer_drop`] queued, and those their drops queue
+/// in turn: a Unix socket's last reference held by another's queue
+/// (`pipe::Passed`). Called with no lock held.
 pub fn drop_deferred() {
-    if !ANY_DROPPED.load(Ordering::Acquire) {
-        return;
-    }
-    let mut list = {
-        let mut head = DROPPED.lock();
-        ANY_DROPPED.store(false, Ordering::Release);
-        head.take()
-    };
-    // One after another, never recursively. Once taken off, an object
-    // released again meanwhile is queued again, with its own reference.
-    while let Some(file) = list {
-        list = {
-            let mut link = file.next.lock();
-            link.queued = false;
-            link.next.take()
+    while ANY_DROPPED.load(Ordering::Acquire) {
+        let mut list = {
+            let mut head = DROPPED.lock();
+            ANY_DROPPED.store(false, Ordering::Release);
+            head.take()
         };
-        drop(file);
+        // One after another, never recursively. Once taken off, an object
+        // released again meanwhile is queued again, with its own reference.
+        while let Some(file) = list {
+            list = {
+                let mut link = file.next.lock();
+                link.queued = false;
+                link.next.take()
+            };
+            drop(file);
+        }
     }
 }
 

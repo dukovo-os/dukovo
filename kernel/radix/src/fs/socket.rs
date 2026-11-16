@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Sockets (Phase 9): POSIX's stream sockets of the AF_UNIX family. Two
-//! connected ones (radix-process(2)'s `socket_pair`), as `socketpair`
-//! makes; and one alone (`socket`), which can be given a name in the tree
+//! Sockets of the AF_UNIX family: POSIX's stream sockets (Phase 9) and
+//! datagram sockets (Phase 16, ADR 0525). Two connected stream sockets
+//! (radix-process(2)'s `socket_pair`), as `socketpair` makes; and one
+//! alone (`socket`), which can be given a name in the tree
 //! (radix-directory(2)'s `bind_socket`), connect to a name
 //! (`connect_socket`), or listen (radix-file(2)'s `listen`) and take the
 //! connections made to its name (`accept`).
@@ -20,36 +21,49 @@
 //!
 //! A [`Socket`] is a node on the pipes' detached filesystem, so its
 //! descriptions are copied, passed and inherited as a pipe's are (ADR
-//! 0085). It starts fresh and moves on once: to listening, or to
-//! connected, when it gets an end. Its name is a node of the tree that
-//! holds a [`Binding`], through which a connecting socket finds the
+//! 0085). A stream socket starts fresh and moves on once: to listening,
+//! or to connected, when it gets an end. Its name is a node of the tree
+//! that holds a [`Binding`], through which a connecting socket finds the
 //! socket's [`Listener`] while it listens: the connection's pipes are made
 //! then, and the listening side's end waits in the listener's queue until
 //! `accept` gives it a socket of its own.
 //!
-//! A socket cannot be sent with `send_files`, so the files riding on a
-//! connection never hold a socket, and no socket can keep itself alive
-//! through its own connection: there are no cycles for a collector to
-//! find, as Linux's must (ADR 0091). Network sockets come with Phase 12.
+//! A datagram socket (`datagram_socket`, `datagram_pair`) has a queue of
+//! its own instead, where what is sent to its name, or by the socket it
+//! is connected to, waits: [`datagram`].
+//!
+//! Unix sockets may be sent among the files a socket of either type
+//! sends, under a rule that keeps one from coming to hold itself open
+//! through its own queues, which no process could then close: [`flight`].
+//! Network sockets are `inet`'s.
 
 use core::any::Any;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use alloc::sync::Weak;
+
 use radix_abi::Status;
 use radix_abi::errors::Kernel;
-use radix_abi::file::{BACKLOG_MAX, SOCKET_NAME_MAX};
+use radix_abi::file::{BACKLOG_MAX, SOCKET_NAME_MAX, SocketOption};
+use radix_abi::network::SocketType;
 use radix_abi::process::PipeFlags;
 use radix_cap::{ObjectKind, Rights, SlotRef};
+use radix_mm::Kmalloc;
 use radix_sync::{Mutex, Once, SpinLock};
 use radix_vfs::mount::{Location, Vfs};
 use radix_vfs::{In, KArc, Kind, Node, NodeRef, Out, SocketBinding, Stat, mem, next_id};
 
+use self::datagram::{Datagram, Inbox};
+use self::flight::Queue;
 use super::pipe::{self, Files, Pipe};
 use super::{Description, FileObject, FileRef};
 use crate::sched::{self, wait};
 use crate::user::Fifo;
 use crate::user::posix::poll::{self, Polled};
 use crate::user::posix::signal::{Restart, interrupted};
+
+mod datagram;
+mod flight;
 
 /// A socket's name: the path `bind_socket` was given, as the program gave
 /// it to `bind`, of at most SOCKET_NAME_MAX bytes; empty for none.
@@ -107,10 +121,46 @@ pub struct Peer {
 }
 
 impl Peer {
+    /// No process: what a socket gives that has none to give.
+    pub const NONE: Peer = Peer { process: 0, user: 0, group: 0 };
+
     /// `process` as it is now.
     pub fn of(process: &crate::user::process::ProcessObject) -> Peer {
         let identity = process.identity();
         Peer { process: process.number(), user: identity.user, group: identity.group }
+    }
+}
+
+/// What a receive took.
+pub struct Received {
+    /// How many bytes came; and how many the datagram held, which is
+    /// more when the buffer had no room for the rest, which is lost (a
+    /// stream's are the same).
+    pub count: usize,
+    pub size: usize,
+    /// The files that came with them.
+    pub files: Option<Files>,
+    /// The name of the socket they came from, and its process: a
+    /// datagram's sender as it was at the send, or the other end of a
+    /// connection as it was when the connection was made.
+    pub from: Name,
+    pub sender: Peer,
+}
+
+impl Received {
+    /// Nothing, from no one: a receive at the end.
+    const NOTHING: Received =
+        Received { count: 0, size: 0, files: None, from: Name::NONE, sender: Peer::NONE };
+
+    /// Closes the files that came, for a receive that does not take
+    /// them, with no lock held: a Unix socket among them goes now, not
+    /// at the store's next change (`pipe::Passed`).
+    pub fn close_files(&mut self) {
+        let files = self.files.take();
+        if files.is_some() {
+            drop(files);
+            super::drop_deferred();
+        }
     }
 }
 
@@ -184,11 +234,6 @@ impl End {
         self.rx.len()
     }
 
-    /// The process at the other end.
-    pub fn peer(&self) -> Peer {
-        self.peer
-    }
-
     /// The events `poll` finds on it, as Linux's for a stream socket: it
     /// is readable while data waits or once a read would return the end,
     /// writable while [`pipe::ATOMIC`] bytes fit or once a write would
@@ -247,16 +292,22 @@ impl Listener {
 
     /// Queues `end`, the listening side of a new connection, for
     /// `accept`, waiting for room unless `non_blocking`; fails with
-    /// refused once the socket has gone.
+    /// refused once the socket has gone. An end that does not go in goes
+    /// once the queue is unlocked, as its pipes take their own locks.
     fn enqueue(&self, end: End, non_blocking: bool) -> Result<(), Status> {
         loop {
             {
                 let mut queue = self.queue.lock();
                 if self.closed.load(Ordering::Acquire) {
+                    drop(queue);
                     return Err(Kernel::Refused.status(0));
                 }
                 if queue.len() < self.backlog.load(Ordering::Acquire) {
-                    queue.push_back(end).map_err(|_| Kernel::NoMemory.status(0))?;
+                    if let Err(lost) = queue.push_back(end) {
+                        drop(queue);
+                        drop(lost);
+                        return Err(Kernel::NoMemory.status(0));
+                    }
                     self.waiting.store(queue.len(), Ordering::Release);
                     drop(queue);
                     self.changed();
@@ -303,12 +354,17 @@ impl Listener {
     }
 
     /// Puts `end`, which an accept took but could not give a socket, back
-    /// at the front of the queue for the next accept; it goes if the
-    /// socket has gone meanwhile, or if there is no memory to keep it.
+    /// at the front of the queue for the next accept. It goes instead if
+    /// the socket has gone meanwhile, if there is no memory to keep it, or
+    /// if a Unix socket rides in the pipe it reads: while it was out, no
+    /// socket kept that pipe, so sockets sent meanwhile were checked
+    /// without it, and its coming back could close a cycle (`flight`).
     fn give_back(&self, end: End) {
         let lost = {
+            // Nothing rides into the pipe while the rule's lock is held.
+            let _sending = flight::hold();
             let mut queue = self.queue.lock();
-            if self.closed.load(Ordering::Acquire) {
+            if self.closed.load(Ordering::Acquire) || end.rx.sockets() > 0 {
                 Some(end)
             } else {
                 let lost = queue.push_front(end).err();
@@ -316,8 +372,12 @@ impl Listener {
                 lost
             }
         };
-        // Outside the lock, as the other end then sees the end.
-        drop(lost);
+        // Outside the locks, as the other end then sees the end; a Unix
+        // socket riding in it goes now (`pipe::Passed`).
+        if lost.is_some() {
+            drop(lost);
+            super::drop_deferred();
+        }
         self.changed();
     }
 
@@ -335,9 +395,42 @@ impl Listener {
     }
 }
 
-/// What a socket's name holds: the socket's listener, while it listens.
+/// What a socket's name holds, through which a socket that connects or
+/// sends to the name finds the socket.
 pub struct Binding {
+    /// Whether the socket is still there.
+    alive: AtomicBool,
+    /// A stream socket's listener, while it listens.
     listener: SpinLock<Option<KArc<Listener>>>,
+    /// A datagram socket's inbox.
+    inbox: Option<Weak<Inbox, Kmalloc>>,
+    /// The socket's name, which a datagram socket that connects to it
+    /// gives as its peer's.
+    name: Name,
+}
+
+impl Binding {
+    /// The binding `named`, a node of the tree, holds, if its socket is
+    /// still there: refused for a name whose socket has gone and for any
+    /// other file.
+    fn of(named: &NodeRef) -> Result<KArc<Binding>, Status> {
+        let refused = Kernel::Refused.status(0);
+        let held = named.socket_binding().ok_or(refused)?;
+        let binding = held.downcast::<Binding>().map_err(|_| refused)?;
+        if !binding.alive.load(Ordering::Acquire) {
+            return Err(refused);
+        }
+        Ok(binding)
+    }
+}
+
+/// The inbox of the datagram socket named `named`, a node of the tree,
+/// and its name: refused for a name whose socket has gone and for any
+/// other file, wrong_type for a stream socket's name.
+fn inbox_named(named: &NodeRef) -> Result<(KArc<Inbox>, Name), Status> {
+    let binding = Binding::of(named)?;
+    let inbox = binding.inbox.as_ref().ok_or(Kernel::WrongType.status(0))?;
+    Ok((inbox.upgrade().ok_or(Kernel::Refused.status(0))?, binding.name))
 }
 
 /// Where a socket is in its life.
@@ -347,6 +440,9 @@ enum Phase {
     Fresh,
     /// Being named or connected, by a call under way.
     Busy,
+    /// Made by `accept`, which is giving it its connection: it can be
+    /// sent nowhere until it has it (`flight`).
+    Accepting,
     /// Taking connections.
     Listening,
     /// Connected: it has an end.
@@ -361,6 +457,11 @@ struct State {
     name: Name,
     /// What its name holds, once it was given one.
     binding: Option<KArc<Binding>>,
+    /// While a stream socket connects, the pipe its end will read, which
+    /// the other side can write to before the end is the socket's: the
+    /// rule for sockets on their way counts it as the socket's
+    /// (`flight`).
+    connecting: Option<KArc<Pipe>>,
 }
 
 /// A socket, as a node.
@@ -368,58 +469,116 @@ pub struct Socket {
     /// Its number, which its node shows.
     id: u64,
     state: SpinLock<State>,
-    /// Its end of a connection, once it is connected.
+    /// A stream socket's end of a connection, once it is connected.
     end: Once<End>,
-    /// What takes its connections, once it listens.
+    /// What takes a stream socket's connections, once it listens.
     listener: Once<KArc<Listener>>,
+    /// A datagram socket's part; none for a stream socket.
+    datagram: Option<Datagram>,
+    /// SO_PASSCRED: whether the program asked for the credentials of what
+    /// it receives (`receive_unix`).
+    pass_credentials: AtomicBool,
 }
 
 impl Socket {
-    fn new(phase: Phase, name: Name) -> Socket {
+    fn new(phase: Phase, name: Name, datagram: Option<Datagram>) -> Socket {
         Socket {
             id: next_id(),
-            state: SpinLock::new(State { phase, name, binding: None }),
+            state: SpinLock::new(State { phase, name, binding: None, connecting: None }),
             end: Once::new(),
             listener: Once::new(),
+            datagram,
+            pass_credentials: AtomicBool::new(false),
         }
     }
 
-    /// A connected socket, with `end`.
+    /// A connected stream socket, with `end`.
     fn connected_with(end: End, name: Name) -> Socket {
-        let socket = Socket::new(Phase::Connected, name);
+        let socket = Socket::new(Phase::Connected, name, None);
         // It is new, so its end is not set.
         let _ = socket.end.set(end);
         socket
     }
 
-    /// Its end of a connection, if it is connected.
-    pub fn end(&self) -> Option<&End> {
-        self.end.get()
+    /// Whether it is a datagram socket.
+    pub fn is_datagram(&self) -> bool {
+        self.datagram.is_some()
     }
 
-    /// Its end of a connection; not_connected if it is not.
-    pub fn connected(&self) -> Result<&End, Status> {
-        self.end().ok_or(Kernel::NotConnected.status(0))
+    /// A stream socket's end of its connection; not_connected if it has
+    /// none, as a datagram socket never has.
+    fn connected(&self) -> Result<&End, Status> {
+        self.end.get().ok_or(Kernel::NotConnected.status(0))
     }
 
-    /// Receives as [`End::receive`] does, closing the files that came.
+    /// Receives up to `out.len()` bytes into `out`, waiting for some
+    /// unless `non_blocking`, with the files that came with them: as
+    /// [`End::receive`] does on a stream socket's connection, and the next
+    /// datagram on a datagram socket, of which what `out` has no room for
+    /// is lost. With `peek`, what came stays for the next receive, and
+    /// copies of the files come.
     pub fn receive(
         &self,
         out: &mut dyn Out,
         non_blocking: bool,
         peek: bool,
+    ) -> Result<Received, Status> {
+        if let Some(datagram) = &self.datagram {
+            return datagram.receive(out, non_blocking, peek);
+        }
+        let end = self.connected()?;
+        let (count, files) = end.receive(out, non_blocking, peek)?;
+        Ok(Received { count, size: count, files, from: end.peer_name, sender: end.peer })
+    }
+
+    /// Sends `data`, with `files`, for `sender`, waiting for room unless
+    /// `non_blocking`: on a stream socket's connection as [`End::send`]
+    /// does, and on a datagram socket as one datagram to the socket it is
+    /// connected to. A Unix socket among `files` goes under the rule of
+    /// [`flight`].
+    pub fn send(
+        &self,
+        data: &dyn In,
+        files: Option<Files>,
+        sender: Peer,
+        non_blocking: bool,
+        signal: bool,
     ) -> Result<usize, Status> {
-        self.connected()?.receive(out, non_blocking, peek).map(|(read, _)| read)
+        if let Some(datagram) = &self.datagram {
+            let from = self.state.lock().name;
+            return datagram.send_to_peer(data, files, from, sender, non_blocking);
+        }
+        let end = self.connected()?;
+        match files {
+            Some(files) if pipe::sockets_among(&files) > 0 => {
+                flight::send_stream(end, data, files, non_blocking, signal)
+            }
+            files => end.send(data, files, non_blocking, signal),
+        }
     }
 
-    /// Sends as [`End::send`] does, without files.
-    pub fn send(&self, data: &dyn In, non_blocking: bool, signal: bool) -> Result<usize, Status> {
-        self.connected()?.send(data, None, non_blocking, signal)
+    /// Shuts it for reading, for writing, or both: POSIX's `shutdown`. A
+    /// stream socket must be connected.
+    pub fn shutdown(&self, read: bool, write: bool) -> Result<(), Status> {
+        match &self.datagram {
+            Some(datagram) => datagram.shutdown(read, write),
+            None => {
+                self.connected()?.shutdown(read, write);
+                // The files that rode in the pipe it read have gone: a
+                // Unix socket among them goes now (`pipe::Passed`).
+                super::drop_deferred();
+            }
+        }
+        Ok(())
     }
 
-    /// How many bytes wait to be received.
+    /// How many bytes wait to be received: for a datagram socket, how many
+    /// the next datagram holds.
     pub fn pending(&self) -> usize {
-        self.end().map_or(0, End::pending)
+        match &self.datagram {
+            Some(datagram) => datagram.pending(),
+            None => self.end.get().map_or(0, End::pending),
+        }
     }
 
     /// Whether it listens.
@@ -427,20 +586,84 @@ impl Socket {
         self.listener.get().is_some()
     }
 
-    /// Its name, or with `peer` the name of the socket at the other end
-    /// of its connection.
-    pub fn name(&self, peer: bool) -> Result<Name, Status> {
-        if peer {
-            return Ok(self.connected()?.peer_name);
+    /// Whether it is connected: a stream socket once it has an end, a
+    /// datagram socket while it has a peer.
+    pub fn is_connected(&self) -> bool {
+        match &self.datagram {
+            Some(datagram) => datagram.is_connected(),
+            None => self.end.get().is_some(),
         }
-        Ok(self.state.lock().name)
     }
 
-    /// The events `poll` finds on it: a connected one's are its end's; a
-    /// listening one is readable while a connection waits; one that is
-    /// neither is writable and hung up, as on Linux.
+    /// The process at the other end, as `socket_state` gives it
+    /// (SO_PEERCRED): a stream connection's, as it was when the connection
+    /// was made; for one of a pair of either type, the pair's maker; none
+    /// otherwise.
+    pub fn peer(&self) -> Peer {
+        match &self.datagram {
+            Some(datagram) => datagram.pair_maker(),
+            None => self.end.get().map_or(Peer::NONE, |end| end.peer),
+        }
+    }
+
+    /// Its name, or with `peer` the name of the socket it is connected to.
+    pub fn name(&self, peer: bool) -> Result<Name, Status> {
+        if !peer {
+            return Ok(self.state.lock().name);
+        }
+        match &self.datagram {
+            Some(datagram) => datagram.peer_name(),
+            None => Ok(self.connected()?.peer_name),
+        }
+    }
+
+    /// Has a datagram socket forget its peer (radix-file(2)'s
+    /// `disconnect`); not_supported for a stream socket.
+    pub fn disconnect(&self) -> Result<(), Status> {
+        let datagram = self.datagram.as_ref().ok_or(Kernel::NotSupported.status(0))?;
+        datagram.disconnect();
+        Ok(())
+    }
+
+    /// Whether the program asked for the credentials of what it receives
+    /// (SO_PASSCRED).
+    pub fn passes_credentials(&self) -> bool {
+        self.pass_credentials.load(Ordering::Acquire)
+    }
+
+    /// Reads, and with `set` changes, one of its options (radix-file(2)'s
+    /// `socket_option`), returning it as it was: pass_credentials, and
+    /// unix_kind, which is read only. The others are a network socket's,
+    /// which fail with not_supported.
+    pub fn option(&self, option: SocketOption, set: Option<u64>) -> Result<u64, Status> {
+        match option {
+            SocketOption::PassCredentials => {
+                let old = match set {
+                    Some(value) => self.pass_credentials.swap(value != 0, Ordering::AcqRel),
+                    None => self.passes_credentials(),
+                };
+                Ok(u64::from(old))
+            }
+            SocketOption::UnixKind => {
+                if set.is_some() {
+                    return Err(Kernel::InvalidArgument.status(0));
+                }
+                let kind =
+                    if self.is_datagram() { SocketType::Datagram } else { SocketType::Stream };
+                Ok(u64::from(kind.raw()))
+            }
+            _ => Err(Kernel::NotSupported.status(0)),
+        }
+    }
+
+    /// The events `poll` finds on it: a connected stream socket's are its
+    /// end's, and a datagram socket's its own; a listening one is readable
+    /// while a connection waits; a stream socket that is neither is
+    /// writable and hung up, as on Linux.
     pub fn events(&self) -> u16 {
-        if let Some(end) = self.end() {
+        if let Some(datagram) = &self.datagram {
+            datagram.events()
+        } else if let Some(end) = self.end.get() {
             end.events()
         } else if let Some(listener) = self.listener.get() {
             if listener.waiting.load(Ordering::Acquire) > 0 { poll::READABLE } else { 0 }
@@ -450,26 +673,65 @@ impl Socket {
     }
 
     /// Calls `each` with what its pollers count themselves in, as
-    /// [`Socket::events`] looks: both pipes of its connection, or its
-    /// listener.
+    /// [`Socket::events`] looks: both pipes of its connection, its
+    /// listener, or a datagram socket's own.
     pub fn polled(&self, each: &mut dyn FnMut(&Polled)) {
-        if let Some(end) = self.end() {
+        if let Some(datagram) = &self.datagram {
+            datagram.polled(each);
+        } else if let Some(end) = self.end.get() {
             each(end.rx.polled());
             each(end.tx.polled());
         } else if let Some(listener) = self.listener.get() {
             each(&listener.polled);
         }
     }
+
+    /// Calls `each` with each queue it receives from, and how many Unix
+    /// sockets ride in it, for the rule of [`flight`]: a stream socket's
+    /// pipe it reads, or will once it is connected; a listening one's
+    /// those of the connections that wait for `accept`; a datagram
+    /// socket's own queue. Returns false, having called nothing, for one
+    /// that `accept` is giving its connection, which cannot say yet.
+    fn each_kept(&self, each: &mut dyn FnMut(Queue, usize)) -> bool {
+        if let Some(datagram) = &self.datagram {
+            let inbox = datagram.inbox();
+            each(Queue::inbox(inbox), inbox.sockets());
+            return true;
+        }
+        {
+            let state = self.state.lock();
+            if state.phase == Phase::Accepting {
+                return false;
+            }
+            // Looked at under the lock, without a reference of its own:
+            // dropping one here could free the pipe.
+            if let Some(rx) = &state.connecting {
+                each(Queue::pipe(rx), rx.sockets());
+            }
+        }
+        if let Some(end) = self.end.get() {
+            each(Queue::pipe(&end.rx), end.rx.sockets());
+        }
+        if let Some(listener) = self.listener.get() {
+            for end in listener.queue.lock().iter() {
+                each(Queue::pipe(&end.rx), end.rx.sockets());
+            }
+        }
+        true
+    }
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
         let binding = self.state.lock().binding.take();
-        if let Some(listener) = self.listener.get() {
-            // No socket finds it through the name from here.
-            if let Some(binding) = &binding {
+        // No socket finds it through its name from here.
+        if let Some(binding) = &binding {
+            binding.alive.store(false, Ordering::Release);
+            if self.listener.get().is_some() {
                 *binding.listener.lock() = None;
             }
+        }
+        if let Some(listener) = self.listener.get() {
             listener.close();
         }
     }
@@ -498,11 +760,14 @@ impl Node for Socket {
     // Reads and writes through the node itself (the kernel's own) never
     // wait.
     fn read(&self, _offset: u64, out: &mut dyn Out) -> radix_vfs::Result<usize> {
-        self.receive(out, true, false).map_err(|_| radix_vfs::Error::NotSupported)
+        let mut received =
+            self.receive(out, true, false).map_err(|_| radix_vfs::Error::NotSupported)?;
+        received.close_files();
+        Ok(received.count)
     }
 
     fn write(&self, _offset: u64, data: &dyn In) -> radix_vfs::Result<usize> {
-        self.send(data, true, true).map_err(|_| radix_vfs::Error::NotSupported)
+        self.send(data, None, Peer::NONE, true, true).map_err(|_| radix_vfs::Error::NotSupported)
     }
 
     fn set_size(&self, _size: u64) -> radix_vfs::Result<()> {
@@ -546,6 +811,22 @@ fn install(
     )
 }
 
+/// Puts the two descriptions of a new pair in `user`'s slots `first` and
+/// `second`, with `flags`, or neither.
+fn install_pair(
+    user: &crate::user::UserRef,
+    (first, second): (u32, u32),
+    (one, other): (FileRef, FileRef),
+    flags: PipeFlags,
+) -> Result<(), Status> {
+    install(user, first, one, flags)?;
+    if let Err(err) = install(user, second, other, flags) {
+        let _ = crate::caps::delete(SlotRef::new(user.process.cspace(), first));
+        return Err(err);
+    }
+    Ok(())
+}
+
 /// Makes a socket pair for `user`'s process: a description of one end in
 /// slot `first` and of the other in slot `second`, with `flags`.
 pub fn make_pair(
@@ -563,18 +844,39 @@ pub fn make_pair(
     // If a step fails, the sockets made go, and with them their ends.
     let one = file(user, Socket::connected_with(one, Name::NONE), flags)?;
     let other = file(user, Socket::connected_with(other, Name::NONE), flags)?;
-    install(user, first, one, flags)?;
-    if let Err(err) = install(user, second, other, flags) {
-        let _ = crate::caps::delete(SlotRef::new(user.process.cspace(), first));
-        return Err(err);
-    }
-    Ok(())
+    install_pair(user, (first, second), (one, other), flags)
 }
 
 /// Makes a socket for `user`'s process, neither named nor connected, in
 /// slot `to`, with `flags`.
 pub fn make(user: &crate::user::UserRef, to: u32, flags: PipeFlags) -> Result<(), Status> {
-    install(user, to, file(user, Socket::new(Phase::Fresh, Name::NONE), flags)?, flags)
+    install(user, to, file(user, Socket::new(Phase::Fresh, Name::NONE, None), flags)?, flags)
+}
+
+/// Makes a datagram socket for `user`'s process, neither named nor
+/// connected, in slot `to`, with `flags` (radix-process(2)'s
+/// `datagram_socket`).
+pub fn make_datagram(user: &crate::user::UserRef, to: u32, flags: PipeFlags) -> Result<(), Status> {
+    let socket = Socket::new(Phase::Fresh, Name::NONE, Some(Datagram::new()?));
+    install(user, to, file(user, socket, flags)?, flags)
+}
+
+/// Makes a pair of datagram sockets for `user`'s process, each connected
+/// to the other: one in slot `first` and the other in slot `second`,
+/// with `flags` (radix-process(2)'s `datagram_pair`).
+pub fn make_datagram_pair(
+    user: &crate::user::UserRef,
+    first: u32,
+    second: u32,
+    flags: PipeFlags,
+) -> Result<(), Status> {
+    if first == second {
+        return Err(Kernel::InvalidArgument.status(1));
+    }
+    let (one, other) = Datagram::pair(Peer::of(&user.process))?;
+    let one = file(user, Socket::new(Phase::Fresh, Name::NONE, Some(one)), flags)?;
+    let other = file(user, Socket::new(Phase::Fresh, Name::NONE, Some(other)), flags)?;
+    install_pair(user, (first, second), (one, other), flags)
 }
 
 /// Gives `socket` the name `path` beneath `dir` (radix-directory(2)'s
@@ -597,17 +899,21 @@ pub fn bind(
             _ => return Err(Kernel::InvalidArgument.status(0)),
         }
     }
-    let made = mem::arc(Binding { listener: SpinLock::new(None) })
-        .map_err(|_| Kernel::NoMemory.status(0))
-        .and_then(|binding| {
-            let held: SocketBinding = binding.clone();
-            vfs.make_socket(who, dir, path, held, access).map_err(|err| match err {
-                // FAT has no sockets' names: Linux says EPERM.
-                radix_vfs::Error::NotSupported => Kernel::NotPermitted.status(0),
-                err => super::status(err),
-            })?;
-            Ok(binding)
-        });
+    let binding = Binding {
+        alive: AtomicBool::new(true),
+        listener: SpinLock::new(None),
+        inbox: socket.datagram.as_ref().map(Datagram::downgrade),
+        name,
+    };
+    let made = mem::arc(binding).map_err(|_| Kernel::NoMemory.status(0)).and_then(|binding| {
+        let held: SocketBinding = binding.clone();
+        vfs.make_socket(who, dir, path, held, access).map_err(|err| match err {
+            // FAT has no sockets' names: Linux says EPERM.
+            radix_vfs::Error::NotSupported => Kernel::NotPermitted.status(0),
+            err => super::status(err),
+        })?;
+        Ok(binding)
+    });
     let mut state = socket.state.lock();
     state.phase = Phase::Fresh;
     state.binding = Some(made?);
@@ -615,11 +921,14 @@ pub fn bind(
     Ok(())
 }
 
-/// Has `socket`, which has a name and is not connected, take connections,
-/// at most `backlog` waiting at once (radix-file(2)'s `listen`), for the
-/// process `process`. A socket that listens already takes the new
-/// backlog.
+/// Has `socket`, a stream socket which has a name and is not connected,
+/// take connections, at most `backlog` waiting at once (radix-file(2)'s
+/// `listen`), for the process `process`. A socket that listens already
+/// takes the new backlog. A datagram socket fails with not_supported.
 pub fn listen(socket: &Socket, backlog: u32, process: Peer) -> Result<(), Status> {
+    if socket.is_datagram() {
+        return Err(Kernel::NotSupported.status(0));
+    }
     let backlog = u64::from(backlog).clamp(1, BACKLOG_MAX) as usize;
     if let Some(listener) = socket.listener.get() {
         listener.backlog.store(backlog, Ordering::Release);
@@ -654,47 +963,65 @@ pub fn listen(socket: &Socket, backlog: u32, process: Peer) -> Result<(), Status
     Ok(())
 }
 
-/// Connects `socket` to the socket listening at `named`, a node of the
-/// tree (radix-directory(2)'s `connect_socket`), for the process
-/// `process`; waits for room in the listener's queue unless
-/// `non_blocking`.
+/// Connects `socket` to the socket named `named`, a node of the tree
+/// (radix-directory(2)'s `connect_socket`), for the process `process`. A
+/// stream socket connects to one that listens, waiting for room in its
+/// queue unless `non_blocking`; a datagram socket sends there from here
+/// on, and takes datagrams from there alone (`Datagram::connect`).
 pub fn connect(
     socket: &Socket,
     named: &NodeRef,
     process: Peer,
     non_blocking: bool,
 ) -> Result<(), Status> {
+    if let Some(datagram) = &socket.datagram {
+        let (target, name) = inbox_named(named)?;
+        return datagram.connect(&target, name);
+    }
     let name = {
         let mut state = socket.state.lock();
         match state.phase {
             Phase::Fresh => state.phase = Phase::Busy,
-            Phase::Busy => return Err(Kernel::Busy.status(0)),
+            Phase::Busy | Phase::Accepting => return Err(Kernel::Busy.status(0)),
             Phase::Connected => return Err(Kernel::Connected.status(0)),
             Phase::Listening => return Err(Kernel::InvalidArgument.status(0)),
         }
         state.name
     };
-    let connected = connect_to(named, name, process, non_blocking).map(|end| {
+    let connected = connect_to(socket, named, name, process, non_blocking).map(|end| {
         // It is busy, so no other call set its end.
         let _ = socket.end.set(end);
     });
-    socket.state.lock().phase = if connected.is_ok() { Phase::Connected } else { Phase::Fresh };
+    let connecting = {
+        let mut state = socket.state.lock();
+        state.phase = if connected.is_ok() { Phase::Connected } else { Phase::Fresh };
+        state.connecting.take()
+    };
+    // Outside the lock: it may be the last reference to the pipe.
+    drop(connecting);
     connected
 }
 
-/// The end of a new connection to the socket listening at `named`, from
-/// a socket named `name` of the process `process`.
+/// The end of a new connection from `socket`, named `name`, of the
+/// process `process`, to the socket listening at `named`: refused for a
+/// name whose socket does not listen, or has gone, and for any other
+/// file; wrong_type for a datagram socket's name.
 fn connect_to(
+    socket: &Socket,
     named: &NodeRef,
     name: Name,
     process: Peer,
     non_blocking: bool,
 ) -> Result<End, Status> {
-    let refused = || Kernel::Refused.status(0);
-    let held = named.socket_binding().ok_or_else(refused)?;
-    let binding = held.downcast_ref::<Binding>().ok_or_else(refused)?;
-    let listener = binding.listener.lock().clone().ok_or_else(refused)?;
+    let binding = Binding::of(named)?;
+    if binding.inbox.is_some() {
+        return Err(Kernel::WrongType.status(0));
+    }
+    let listener = binding.listener.lock().clone().ok_or(Kernel::Refused.status(0))?;
     let (end, theirs) = End::pair((listener.name, listener.process), (name, process))?;
+    // Once the other side is queued, it can be accepted and write to the
+    // pipe this end reads.
+    socket.state.lock().connecting = Some(end.rx.clone());
     listener.enqueue(theirs, non_blocking)?;
     Ok(end)
 }
@@ -703,7 +1030,9 @@ fn connect_to(
 /// one unless `non_blocking`, and puts a description of a new socket,
 /// connected, with the listening one's name, in `user`'s slot `to`, with
 /// `flags`. A connection that cannot go in the slot, as another thread
-/// filled it first, goes back to the front of the queue, so none is lost.
+/// filled it first, goes back to the front of the queue, so none is lost,
+/// unless a Unix socket rides in it (`Listener::give_back`). A datagram
+/// socket fails with not_supported.
 pub fn accept(
     user: &crate::user::UserRef,
     socket: &Socket,
@@ -711,11 +1040,14 @@ pub fn accept(
     flags: PipeFlags,
     non_blocking: bool,
 ) -> Result<(), Status> {
+    if socket.is_datagram() {
+        return Err(Kernel::NotSupported.status(0));
+    }
     let listener = socket.listener.get().ok_or(Kernel::InvalidArgument.status(0))?;
     let end = listener.accept(non_blocking)?;
-    // The new socket is busy until it is in the slot and has the end,
-    // which can go back until then.
-    let file = match file(user, Socket::new(Phase::Busy, listener.name), flags) {
+    // The new socket can be sent nowhere until it is in the slot and has
+    // the end, which can go back until then.
+    let file = match file(user, Socket::new(Phase::Accepting, listener.name, None), flags) {
         Ok(file) => file,
         Err(err) => {
             listener.give_back(end);
@@ -727,10 +1059,35 @@ pub fn accept(
         return Err(err);
     }
     let accepted = file.socket().ok_or(Kernel::NotSocket.status(0))?;
-    // It is new and busy, so no other call set its end.
+    // It is new and accepting, so no other call set its end.
     let _ = accepted.end.set(end);
     accepted.state.lock().phase = Phase::Connected;
     Ok(())
+}
+
+/// Sends `data`, with `files`, as one datagram from `socket` for `sender`
+/// to the datagram socket named by the node `find` finds
+/// (radix-directory(2)'s `send_datagram`), waiting for room unless
+/// `non_blocking`; returns how many bytes went, all of them. A stream
+/// socket fails with connected if it is connected, else with
+/// not_supported, before the name is looked up, as on Linux; so does a
+/// datagram that cannot go from `socket` at all (`Datagram::may_send`).
+pub fn send_datagram(
+    socket: &Socket,
+    data: &dyn In,
+    files: Option<Files>,
+    sender: Peer,
+    non_blocking: bool,
+    find: &mut dyn FnMut() -> Result<NodeRef, Status>,
+) -> Result<usize, Status> {
+    let Some(datagram) = &socket.datagram else {
+        let connected = socket.end.get().is_some();
+        return Err(if connected { Kernel::Connected } else { Kernel::NotSupported }.status(0));
+    };
+    datagram.may_send(data.len())?;
+    let from = socket.state.lock().name;
+    let mut target = || inbox_named(&find()?).map(|(inbox, _)| inbox);
+    datagram.send_to(&mut target, data, files, from, sender, non_blocking)
 }
 
 /// The socket `node` is, if it is one.

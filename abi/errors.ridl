@@ -110,11 +110,14 @@ errors kernel = 1 {
     connected = 38 => EISCONN;
     /// The socket is not connected.
     not_connected = 39 => ENOTCONN;
-    /// The call does not take what it was given: a socket among the
-    /// files sent with radix-file(2)'s `send_files`.
+    /// The call does not take what it was given: `listen` on a datagram
+    /// socket, or a datagram sent to a name from a stream socket
+    /// (radix-file(2), radix-directory(2)'s `send_datagram`).
     not_supported = 40 => EOPNOTSUPP;
     /// Too many files are on their way through the socket already, sent
-    /// and not yet received (radix-file(2)'s `send_files`).
+    /// and not yet received, or a Unix socket among the files sent could
+    /// come to hold itself open through its own queues (radix-file(2)'s
+    /// `send_files`, ADR 0525).
     too_many = 41 => ETOOMANYREFS;
     /// Another socket is bound to the address and port already
     /// (radix-file(2)'s `bind_address`), or every port the kernel picks
@@ -165,6 +168,11 @@ errors kernel = 1 {
     /// `set_threads`, ADR 0476), as Linux's `pids.max`: `fork` and
     /// `pthread_create` fail with EAGAIN.
     too_many_threads = 57 => EAGAIN;
+    /// The name is that of a socket of the other type: a datagram
+    /// socket's for a stream socket, or a stream socket's for a datagram
+    /// socket (radix-directory(2)'s `connect_socket` and `send_datagram`).
+    /// (Since Phase 16, ADR 0525.)
+    wrong_type = 58 => EPROTOTYPE;
 }
 
 /// Errors of files and directories (radix-directory(2), radix-file(2)).

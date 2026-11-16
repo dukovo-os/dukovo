@@ -1,16 +1,23 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// Sockets on Radix (ADRs 0085 and 0091): AF_UNIX stream sockets. The
-// pairs radix-process(2)'s `socket_pair` makes, connected to each other,
-// and those its `socket` makes, which bind names through
+// Sockets on Radix (ADRs 0085, 0091 and 0525): AF_UNIX stream and
+// datagram sockets. The pairs radix-process(2)'s `socket_pair` and
+// `datagram_pair` make, connected to each other, and those its `socket`
+// and `datagram_socket` make, which bind names through
 // radix-directory(2)'s `bind_socket`, connect through `connect_socket`,
-// and listen and accept with radix-file(2)'s `listen` and `accept`. Each
-// is a file description, so read, write, poll, dup, fcntl and close treat
-// it as they treat a pipe; send and receive are radix-file(2)'s `send`
-// and `receive`, which take MSG_DONTWAIT and MSG_NOSIGNAL, or with
-// SCM_RIGHTS descriptors, `send_files` and `receive_files`; shutdown is
-// its `shutdown`.
+// and, for a stream socket, listen and accept with radix-file(2)'s
+// `listen` and `accept`. Each is a file description, so read, write,
+// poll, dup, fcntl and close treat it as they treat a pipe; send and
+// receive are radix-file(2)'s `send` and `receive`, which take
+// MSG_DONTWAIT and MSG_NOSIGNAL, or with SCM_RIGHTS descriptors,
+// `send_files` and `receive_files`; shutdown is its `shutdown`. A
+// datagram socket sends to a name with `send_datagram`, and a Unix
+// socket of either kind learns where what it received came from, and
+// with SO_PASSCRED who sent it, from `receive_unix`, which the C library
+// gives as the address and an SCM_CREDENTIALS message. Any Unix socket
+// may be sent as a descriptor, unless the kernel finds that it could hold
+// itself open (ETOOMANYREFS).
 //
 // AF_INET stream and datagram sockets are the kernel's TCP and UDP
 // (ADR 0183), made, bound, connected and sent from through the network
@@ -119,19 +126,31 @@ int send_bytes(radix_syscall_fn *syscall, int fd, const void *data, size_t size,
 }
 
 // What a receive with room for descriptors got: where they go, how many
-// fit, how many came, and whether some were lost for want of room.
+// fit, how many came, and whether some were lost for want of room. And
+// where the bytes came from, as radix-file(2)'s `receive_unix` says: the
+// `name_len` bytes of the sender's name (a datagram's sender's, a
+// stream's peer's; none for one without a name), its process, user and
+// group, whether the socket asks for them (SO_PASSCRED), and the whole
+// size of a datagram, which the buffer may have cut short.
 struct Received {
 	uint32_t *slots;
 	size_t room;
 	size_t count;
 	bool lost;
+	char name[sizeof(sockaddr_un::sun_path)] = {};
+	size_t name_len = 0;
+	uint64_t process = 0;
+	uint32_t user = 0;
+	uint32_t group = 0;
+	bool credentials = false;
+	size_t whole = 0;
 };
 
 // Receives up to `size` bytes on `fd` into `buffer`, waiting for some
 // unless `dont_wait`: 0 bytes once the other end has stopped sending.
 // With `peek`, they stay for the next receive (MSG_PEEK). With `files`,
 // the descriptors that came with the bytes go there, closed by exec if
-// `close_on_exec`. Made with `syscall`.
+// `close_on_exec`, and so does where they came from. Made with `syscall`.
 int receive_bytes(radix_syscall_fn *syscall, int fd, void *buffer, size_t size, bool dont_wait,
 		bool peek, Received *files, bool close_on_exec, size_t *got) {
 	uint32_t slot;
@@ -144,12 +163,20 @@ int receive_bytes(radix_syscall_fn *syscall, int fd, void *buffer, size_t size, 
 	if(files) {
 		if(close_on_exec)
 			flags |= RADIX_SOCKET_FLAGS_CLOSE_ON_EXEC;
-		struct radix_file_receive_files_results r;
-		status = radix_file_receive_files_with(syscall, slot, buffer, size,
-				files->slots + files->count, (files->room - files->count) * sizeof(uint32_t),
-				flags, &r);
+		// A datagram's whole size says whether the buffer cut it short.
+		flags |= RADIX_SOCKET_FLAGS_WHOLE_SIZE;
+		struct radix_file_receive_unix_results r;
+		status = radix_file_receive_unix_with(syscall, slot, buffer, size, files->name,
+				sizeof(files->name), files->slots + files->count,
+				(files->room - files->count) * sizeof(uint32_t), flags, &r);
 		if(!status) {
-			*got = r.count;
+			*got = r.count < size ? r.count : size;
+			files->whole = r.count;
+			files->name_len = r.name_len;
+			files->process = r.process;
+			files->user = r.user;
+			files->group = r.group;
+			files->credentials = r.credentials;
 			// The kernel put them in the lowest free slots it found.
 			for(size_t i = files->count; i < files->count + r.files; i++)
 				radix::fd_taken(static_cast<int>(files->slots[i] - radix::FD_BASE));
@@ -166,12 +193,14 @@ int receive_bytes(radix_syscall_fn *syscall, int fd, void *buffer, size_t size, 
 	return 0;
 }
 
-// Peeks into the buffers of `iov`, as recvmsg(2) with MSG_PEEK and
-// `flags`: one receive, through a buffer of their sum's size if there are
-// more than one, as a second would see the same bytes again. MSG_WAITALL
-// waits for no more than some bytes. As receive_vector otherwise.
-int peek_vector(int fd, const struct iovec *iov, size_t count, int flags, Received *files,
-		ssize_t *length) {
+// Receives into the buffers of `iov` with one receive, as recvmsg(2) with
+// `flags`, peeking if `peek` (MSG_PEEK): through a buffer of their sum's
+// size if there are more than one, as a second receive would see the
+// same bytes again, or take the next datagram. MSG_WAITALL waits for no
+// more than some bytes. With MSG_TRUNC, which needs `files`, the length
+// is a datagram's whole size. As receive_vector otherwise.
+int receive_once(int fd, const struct iovec *iov, size_t count, int flags, bool peek,
+		Received *files, ssize_t *length) {
 	size_t size;
 	if(int e = radix::iov_total(iov, count, &size); e)
 		return e;
@@ -184,7 +213,7 @@ int peek_vector(int fd, const struct iovec *iov, size_t count, int flags, Receiv
 	size_t got = 0;
 	bool dont_wait = flags & MSG_DONTWAIT;
 	bool close_on_exec = flags & MSG_CMSG_CLOEXEC;
-	int e = receive_bytes(radix::cancellable, fd, buffer, size, dont_wait, true, files,
+	int e = receive_bytes(radix::cancellable, fd, buffer, size, dont_wait, peek, files,
 			close_on_exec, &got);
 	if(!e && count != 1) {
 		size_t at = 0;
@@ -198,7 +227,8 @@ int peek_vector(int fd, const struct iovec *iov, size_t count, int flags, Receiv
 		free(buffer);
 	if(e)
 		return e;
-	*length = static_cast<ssize_t>(got);
+	bool whole = files && (flags & MSG_TRUNC);
+	*length = static_cast<ssize_t>(whole ? files->whole : got);
 	return 0;
 }
 
@@ -208,13 +238,15 @@ int peek_vector(int fd, const struct iovec *iov, size_t count, int flags, Receiv
 // comes after some bytes (which are then what it returns). With `files`,
 // the descriptors that come with the bytes go there, and the receive ends
 // with the bytes they came with, as on Linux. With MSG_PEEK, what comes
-// stays (peek_vector). A cancellation point until bytes come.
+// stays (receive_once). A datagram socket (`datagram`) takes one datagram
+// of the buffers, whatever MSG_WAITALL says, and MSG_TRUNC, which only its
+// receive takes. A cancellation point until bytes come.
 int receive_vector(int fd, const struct iovec *iov, size_t count, int flags, Received *files,
-		ssize_t *length) {
-	if(flags & ~RECEIVE_FLAGS)
+		ssize_t *length, bool datagram = false) {
+	if(flags & ~(datagram ? RECEIVE_FLAGS | MSG_TRUNC : RECEIVE_FLAGS))
 		return EOPNOTSUPP;
-	if(flags & MSG_PEEK)
-		return peek_vector(fd, iov, count, flags, files, length);
+	if(datagram || (flags & MSG_PEEK))
+		return receive_once(fd, iov, count, flags, flags & MSG_PEEK, files, length);
 	bool dont_wait = flags & MSG_DONTWAIT;
 	bool wait_all = (flags & MSG_WAITALL) && !dont_wait;
 	bool close_on_exec = flags & MSG_CMSG_CLOEXEC;
@@ -248,8 +280,9 @@ int receive_vector(int fd, const struct iovec *iov, size_t count, int flags, Rec
 	return 0;
 }
 
-// The two ends of a pair in the lowest free descriptors.
-int make_pair(uint32_t flags, int *fds) {
+// The two ends of a pair, of datagram sockets if `datagram`, in the lowest
+// free descriptors.
+int make_pair(uint32_t flags, bool datagram, int *fds) {
 	for(;;) {
 		radix::SlotClaim first_end;
 		radix::SlotClaim second_end;
@@ -262,7 +295,11 @@ int make_pair(uint32_t flags, int *fds) {
 		if(int e = radix::free_slot(next, &second_end); e)
 			return e;
 		uint32_t second = second_end.slot();
-		uint64_t status = radix_process_socket_pair(radix::SLOT_PROCESS, first, second, flags);
+		uint64_t status;
+		if(datagram)
+			status = radix_process_datagram_pair(radix::SLOT_PROCESS, first, second, flags);
+		else
+			status = radix_process_socket_pair(radix::SLOT_PROCESS, first, second, flags);
 		// Something else filled one of them first: that one stays taken.
 		if(is(status, RADIX_KERNEL_OCCUPIED)) {
 			first_end.keep_if_full();
@@ -311,6 +348,24 @@ int unix_path(const struct sockaddr *addr, socklen_t length, char *out, size_t *
 	return 0;
 }
 
+// Whether socket `slot` is a Unix datagram socket. A network socket and
+// what is no socket have no such kind, and are not.
+bool is_unix_datagram(uint32_t slot) {
+	struct radix_file_socket_option_results r;
+	if(radix_file_socket_option(slot, RADIX_SOCKET_OPTION_UNIX_KIND, false, 0, &r))
+		return false;
+	return r.value == RADIX_SOCKET_TYPE_DATAGRAM;
+}
+
+// Whether Unix socket `slot` asks for the credentials of what it receives
+// (SO_PASSCRED). What is no Unix socket does not.
+bool passes_credentials(uint32_t slot) {
+	struct radix_file_socket_option_results r;
+	if(radix_file_socket_option(slot, RADIX_SOCKET_OPTION_PASS_CREDENTIALS, false, 0, &r))
+		return false;
+	return r.value != 0;
+}
+
 bool is_inet(uint32_t slot, int *type = nullptr);
 int inet_name(uint32_t slot, bool peer, struct sockaddr *addr, socklen_t max, socklen_t *actual);
 
@@ -340,24 +395,59 @@ int address(int fd, bool peer, struct sockaddr *addr, socklen_t max, socklen_t *
 	return 0;
 }
 
-// The address recvfrom and recvmsg give: the name of the socket at the
-// other end, or nothing (a length of 0) if it has none, as on Linux.
-int sender(int fd, struct sockaddr *addr, socklen_t max, socklen_t *actual) {
-	if(int e = address(fd, true, addr, max, actual); e)
-		return e;
-	if(*actual <= offsetof(struct sockaddr_un, sun_path))
+// The address recvfrom and recvmsg give, from where `files` says what was
+// received came from: the name of the socket that sent a datagram, or of a
+// stream's peer, in `addr` (at most `max` bytes of it) as it was bound,
+// with its NUL, and its length in `actual`; or nothing (a length of 0) if
+// the sender has no name, as on Linux.
+void give_sender(const Received &files, struct sockaddr *addr, socklen_t max,
+		socklen_t *actual) {
+	if(!files.name_len) {
 		*actual = 0;
+		return;
+	}
+	struct sockaddr_un un;
+	memset(&un, 0, sizeof(un));
+	un.sun_family = AF_UNIX;
+	size_t n = files.name_len < sizeof(un.sun_path) ? files.name_len : sizeof(un.sun_path) - 1;
+	memcpy(un.sun_path, files.name, n);
+	size_t len = offsetof(struct sockaddr_un, sun_path) + n + 1;
+	if(addr)
+		memcpy(addr, &un, max < len ? max : len);
+	*actual = static_cast<socklen_t>(len);
+}
+
+// Checks the SCM_CREDENTIALS message `cmsg` of a send on a Unix socket:
+// EINVAL for a length other than a struct ucred's, EPERM unless it names
+// the caller's own process, user and group, as Linux answers a process
+// without the privilege to send another's. A process has one user and one
+// group, real and effective alike (radix-names(2)). The message is not
+// sent: the kernel records the sender itself.
+int check_credentials(const struct cmsghdr *cmsg) {
+	if(cmsg->cmsg_len != CMSG_LEN(sizeof(struct ucred)))
+		return EINVAL;
+	struct ucred cred;
+	memcpy(&cred, CMSG_DATA(cmsg), sizeof(cred));
+	if(cred.pid != static_cast<pid_t>(radix::pid()) || cred.uid != mlibc::sysdep<GetUid>()
+			|| cred.gid != mlibc::sysdep<GetGid>())
+		return EPERM;
 	return 0;
 }
 
 // The slots of the descriptors in `hdr`'s SCM_RIGHTS messages, in `slots`
-// (room for RADIX_FILE_SEND_FILES_MAX), and how many in `count`.
+// (room for RADIX_FILE_SEND_FILES_MAX), and how many in `count`. The
+// other messages a Unix socket takes, SCM_CREDENTIALS, are checked and
+// not sent (check_credentials); any other fails with EINVAL, as on Linux.
 int rights_of(const struct msghdr *hdr, uint32_t *slots, size_t *count) {
 	*count = 0;
 	if(!hdr->msg_control || !hdr->msg_controllen)
 		return 0;
 	for(auto cmsg = CMSG_FIRSTHDR(hdr); cmsg; cmsg = CMSG_NXTHDR(hdr, cmsg)) {
-		// Credentials and the like are not sent.
+		if(cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_CREDENTIALS) {
+			if(int e = check_credentials(cmsg); e)
+				return e;
+			continue;
+		}
 		if(cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS
 				|| cmsg->cmsg_len < CMSG_LEN(0))
 			return EINVAL;
@@ -377,35 +467,62 @@ int rights_of(const struct msghdr *hdr, uint32_t *slots, size_t *count) {
 	return 0;
 }
 
-// Fills `hdr`'s control buffer with one SCM_RIGHTS message holding the
-// descriptors `files` got, if any came; sets MSG_CTRUNC if some were lost.
-// The length it gives is at most the buffer's, as Linux's is when the
-// buffer has no room for the last message's padding.
-void give_rights(struct msghdr *hdr, const Received &files) {
-	size_t room = hdr->msg_controllen;
+// Fills `hdr`'s control buffer with what came with the bytes, as Linux
+// does: first, if the socket asks for them (SO_PASSCRED), one
+// SCM_CREDENTIALS message, a struct ucred of the sender; then one
+// SCM_RIGHTS message holding the descriptors `files` got, if any came,
+// which had the room the credentials left (MSG_CTRUNC if some were lost).
+// MSG_CTRUNC too if the buffer has no room for the credentials. The
+// length it gives is at most the buffer's, as Linux's is when the buffer
+// has no room for the last message's padding.
+void give_control(struct msghdr *hdr, const Received &files) {
+	size_t room = hdr->msg_control ? hdr->msg_controllen : 0;
+	auto control = static_cast<unsigned char *>(hdr->msg_control);
 	hdr->msg_controllen = 0;
 	if(files.lost)
 		hdr->msg_flags |= MSG_CTRUNC;
-	if(!files.count)
-		return;
-	auto cmsg = reinterpret_cast<struct cmsghdr *>(hdr->msg_control);
-	cmsg->cmsg_level = SOL_SOCKET;
-	cmsg->cmsg_type = SCM_RIGHTS;
-	cmsg->cmsg_len = CMSG_LEN(files.count * sizeof(int));
-	unsigned char *data = CMSG_DATA(cmsg);
-	for(size_t i = 0; i < files.count; i++) {
-		int fd = static_cast<int>(files.slots[i] - radix::FD_BASE);
-		// A new descriptor has no directory path until it is given one.
-		radix::forget_dir_path(fd);
-		memcpy(data + i * sizeof(int), &fd, sizeof(int));
+	size_t used = 0;
+	if(files.credentials) {
+		// The descriptors had the room left after the credentials, unless
+		// SO_PASSCRED was set after the receive asked for it.
+		size_t needs = files.count
+				? CMSG_SPACE(sizeof(struct ucred)) + CMSG_LEN(files.count * sizeof(int))
+				: CMSG_LEN(sizeof(struct ucred));
+		if(room < needs) {
+			hdr->msg_flags |= MSG_CTRUNC;
+		} else {
+			struct ucred cred;
+			cred.pid = static_cast<pid_t>(files.process);
+			cred.uid = static_cast<uid_t>(files.user);
+			cred.gid = static_cast<gid_t>(files.group);
+			auto cmsg = reinterpret_cast<struct cmsghdr *>(control);
+			cmsg->cmsg_level = SOL_SOCKET;
+			cmsg->cmsg_type = SCM_CREDENTIALS;
+			cmsg->cmsg_len = CMSG_LEN(sizeof(cred));
+			memcpy(CMSG_DATA(cmsg), &cred, sizeof(cred));
+			used = CMSG_SPACE(sizeof(cred));
+		}
 	}
-	size_t used = CMSG_SPACE(files.count * sizeof(int));
+	if(files.count) {
+		auto cmsg = reinterpret_cast<struct cmsghdr *>(control + used);
+		cmsg->cmsg_level = SOL_SOCKET;
+		cmsg->cmsg_type = SCM_RIGHTS;
+		cmsg->cmsg_len = CMSG_LEN(files.count * sizeof(int));
+		unsigned char *data = CMSG_DATA(cmsg);
+		for(size_t i = 0; i < files.count; i++) {
+			int fd = static_cast<int>(files.slots[i] - radix::FD_BASE);
+			// A new descriptor has no directory path until it is given one.
+			radix::forget_dir_path(fd);
+			memcpy(data + i * sizeof(int), &fd, sizeof(int));
+		}
+		used += CMSG_SPACE(files.count * sizeof(int));
+	}
 	hdr->msg_controllen = used < room ? used : room;
 }
 
 // Whether socket `slot` is a network socket, and its type in `type`
 // (SOCK_STREAM, or SOCK_DGRAM for a datagram or a ping socket) if it is:
-// a Unix socket has no options.
+// a Unix socket gives its kind with RADIX_SOCKET_OPTION_UNIX_KIND instead.
 bool is_inet(uint32_t slot, int *type) {
 	struct radix_file_socket_option_results r;
 	if(radix_file_socket_option(slot, RADIX_SOCKET_OPTION_KIND, false, 0, &r))
@@ -658,11 +775,12 @@ void give_packet_info(struct msghdr *hdr, const struct radix_address &to, uint32
 // `from_max` bytes, its length in `from_len`; nothing if `from` is null).
 // With `hdr`, whose control buffer it fills, where it came to too, if
 // the socket asked for that (IP_PKTINFO, IPV6_RECVPKTINFO); nothing else
-// comes there.
+// comes there. MSG_WAITALL waits for no more than the one datagram, as on
+// Linux.
 int receive_datagram(uint32_t slot, const struct iovec *iov, int count, int flags,
 		struct sockaddr *from, socklen_t from_max, socklen_t *from_len, ssize_t *length,
 		struct msghdr *hdr = nullptr) {
-	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_PEEK | MSG_TRUNC))
+	if(flags & ~(MSG_DONTWAIT | MSG_CMSG_CLOEXEC | MSG_PEEK | MSG_TRUNC | MSG_WAITALL))
 		return EOPNOTSUPP;
 	size_t size;
 	if(int e = radix::iov_total(iov, count, &size); e)
@@ -833,7 +951,63 @@ int send_inet(uint32_t slot, const void *data, size_t size, int flags,
 	return 0;
 }
 
-// Reads network socket option `option` of `slot` into `value`.
+// Sends the `size` bytes at `data` as one datagram from Unix socket `slot`
+// to the socket that `to`, an AF_UNIX address of `length` bytes, names, as
+// sendto(2) with `flags`, with the `count` descriptors `slots` holds. The
+// name is resolved as connect resolves it. A stream socket fails as on
+// Linux does: EISCONN if it is connected, else EOPNOTSUPP.
+int send_to_name(uint32_t slot, const void *data, size_t size, int flags,
+		const struct sockaddr *to, socklen_t length, const uint32_t *slots, size_t count,
+		ssize_t *sent) {
+	if(flags & ~SEND_FLAGS)
+		return EOPNOTSUPP;
+	char name[sizeof(sockaddr_un::sun_path) + 1];
+	size_t len;
+	if(int e = unix_path(to, length, name, &len); e)
+		return e;
+	radix::Path path;
+	if(int e = radix::resolve(AT_FDCWD, name, &path); e)
+		return e;
+	struct radix_directory_send_datagram_results r;
+	if(uint64_t status = radix_directory_send_datagram_with(radix::cancellable, path.dir,
+			path.text, path.len, slot, data, size, slots, count * sizeof(uint32_t),
+			send_flags(flags), &r); status)
+		return socket_errno(status);
+	*sent = static_cast<ssize_t>(r.count);
+	return 0;
+}
+
+// Sends the `sum` bytes of `hdr`'s buffers as one datagram from Unix
+// datagram socket `fd`, in slot `slot`, as sendmsg(2) with `flags`, with
+// the `files` descriptors `slots` holds, to the socket `hdr`'s name gives
+// if it has one. A datagram goes in one call, so the buffers are gathered.
+int send_datagram_vector(int fd, uint32_t slot, const struct msghdr *hdr, size_t sum, int flags,
+		const uint32_t *slots, size_t files, ssize_t *length) {
+	if(sum > RADIX_FILE_DATAGRAM_MAX)
+		return EMSGSIZE;
+	const void *data = hdr->msg_iovlen == 1 ? hdr->msg_iov[0].iov_base : nullptr;
+	char *gathered = nullptr;
+	if(hdr->msg_iovlen != 1) {
+		if(int e = gather(hdr->msg_iov, hdr->msg_iovlen, sum, &gathered); e)
+			return e;
+		data = gathered;
+	}
+	int e;
+	if(hdr->msg_name && hdr->msg_namelen) {
+		e = send_to_name(slot, data, sum, flags,
+				static_cast<const struct sockaddr *>(hdr->msg_name), hdr->msg_namelen, slots,
+				files, length);
+	} else {
+		size_t sent = 0;
+		e = send_bytes(radix::cancellable, fd, data, sum, flags, slots, files, &sent);
+		if(!e)
+			*length = static_cast<ssize_t>(sent);
+	}
+	free(gathered);
+	return e;
+}
+
+// Reads socket option `option` of `slot` into `value`.
 int get_option(uint32_t slot, enum radix_socket_option option, uint64_t *value) {
 	struct radix_file_socket_option_results r;
 	if(uint64_t status = radix_file_socket_option(slot, option, false, 0, &r); status)
@@ -842,7 +1016,7 @@ int get_option(uint32_t slot, enum radix_socket_option option, uint64_t *value) 
 	return 0;
 }
 
-// Sets network socket option `option` of `slot` to `value`.
+// Sets socket option `option` of `slot` to `value`.
 int set_option(uint32_t slot, enum radix_socket_option option, uint64_t value) {
 	struct radix_file_socket_option_results r;
 	uint64_t status = radix_file_socket_option(slot, option, true, value, &r);
@@ -1297,9 +1471,9 @@ int Sysdeps<Socket>::operator()(int family, int type_and_flags, int protocol, in
 	if(family != AF_UNIX)
 		return EAFNOSUPPORT;
 	switch(type) {
-	case SOCK_STREAM: break;
+	case SOCK_STREAM:
+	case SOCK_DGRAM: break;
 	// Linux's AF_UNIX has these, which Radix does not yet.
-	case SOCK_DGRAM:
 	case SOCK_SEQPACKET: return ESOCKTNOSUPPORT;
 	default: return EINVAL;
 	}
@@ -1307,6 +1481,8 @@ int Sysdeps<Socket>::operator()(int family, int type_and_flags, int protocol, in
 		return EPROTONOSUPPORT;
 	uint32_t flags = description_flags(type_and_flags);
 	return radix::place(0, fd, [&](uint32_t slot) {
+		if(type == SOCK_DGRAM)
+			return radix_process_datagram_socket(radix::SLOT_PROCESS, slot, flags);
 		return radix_process_socket(radix::SLOT_PROCESS, slot, flags);
 	});
 }
@@ -1316,14 +1492,14 @@ int Sysdeps<Socketpair>::operator()(int domain, int type_and_flags, int proto, i
 		return EAFNOSUPPORT;
 	int type = type_and_flags & ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
 	switch(type) {
-	case SOCK_STREAM: break;
-	case SOCK_DGRAM:
+	case SOCK_STREAM:
+	case SOCK_DGRAM: break;
 	case SOCK_SEQPACKET: return ESOCKTNOSUPPORT;
 	default: return EINVAL;
 	}
 	if(proto != 0 && proto != PF_UNIX)
 		return EPROTONOSUPPORT;
-	return make_pair(description_flags(type_and_flags), fds);
+	return make_pair(description_flags(type_and_flags), type == SOCK_DGRAM, fds);
 }
 
 int Sysdeps<Bind>::operator()(int fd, const struct sockaddr *addr, socklen_t length) {
@@ -1407,6 +1583,14 @@ int Sysdeps<Connect>::operator()(int fd, const struct sockaddr *addr, socklen_t 
 					sizeof(address));
 		});
 	}
+	// A datagram socket forgets its peer. A stream socket cannot, and fails
+	// as Linux's connect does for an address of another family.
+	if(addr && length >= sizeof(sa_family_t) && addr->sa_family == AF_UNSPEC) {
+		uint64_t status = radix_file_disconnect(slot);
+		if(is(status, RADIX_KERNEL_NOT_SUPPORTED))
+			return EINVAL;
+		return status ? socket_errno(status) : 0;
+	}
 	char name[sizeof(sockaddr_un::sun_path) + 1];
 	size_t len;
 	if(int e = unix_path(addr, length, name, &len); e)
@@ -1468,11 +1652,7 @@ int Sysdeps<Sendto>::operator()(int fd, const void *buffer, size_t size, int fla
 			return e;
 		if(is_inet(slot))
 			return send_inet(slot, buffer, size, flags, sock_addr, addr_length, length);
-		// A stream socket sends to the socket it is connected to: an
-		// address is one too many, as on Linux.
-		if(int e = check_socket(fd); e)
-			return e;
-		return EISCONN;
+		return send_to_name(slot, buffer, size, flags, sock_addr, addr_length, nullptr, 0, length);
 	}
 	size_t sent;
 	if(int e = send_bytes(radix::cancellable, fd, buffer, size, flags, nullptr, 0, &sent); e)
@@ -1513,11 +1693,6 @@ int Sysdeps<MsgSend>::operator()(int fd, const struct msghdr *hdr, int flags, ss
 		free(gathered);
 		return e;
 	}
-	if(hdr->msg_name && hdr->msg_namelen) {
-		if(int e = check_socket(fd); e)
-			return e;
-		return EISCONN;
-	}
 	uint32_t slots[RADIX_FILE_SEND_FILES_MAX];
 	size_t files;
 	if(int e = rights_of(hdr, slots, &files); e)
@@ -1529,6 +1704,13 @@ int Sysdeps<MsgSend>::operator()(int fd, const struct msghdr *hdr, int flags, ss
 		return EMSGSIZE;
 	if(int e = radix::iov_total(hdr->msg_iov, hdr->msg_iovlen, &sum); e)
 		return e;
+	// A name is for a datagram, and a stream socket says so itself. A
+	// datagram goes in one send of all its buffers, and may have no
+	// bytes: the kind of socket is asked for only where it changes that.
+	if(hdr->msg_name && hdr->msg_namelen)
+		return send_datagram_vector(fd, slot, hdr, sum, flags, slots, files, length);
+	if((hdr->msg_iovlen > 1 || !sum) && is_unix_datagram(slot))
+		return send_datagram_vector(fd, slot, hdr, sum, flags, slots, files, length);
 	// Descriptors go with a byte, and a stream with no bytes sends none,
 	// as on Linux.
 	if(!sum) {
@@ -1589,9 +1771,11 @@ int Sysdeps<Recvfrom>::operator()(int fd, void *buffer, size_t size, int flags,
 	if((flags & MSG_ERRQUEUE) && is_inet(slot, &type))
 		return receive_error(slot, &iov, 1, sock_addr, addr_length ? *addr_length : 0,
 				addr_length, length, nullptr);
-	// MSG_TRUNC, which only a datagram's receive takes, asks for the
-	// family too.
-	if((addr_length || (flags & MSG_TRUNC)) && is_inet(slot, &type)) {
+	// MSG_TRUNC and MSG_WAITALL, which mean something else to a datagram's
+	// receive, and a buffer of no bytes, into which a datagram's receive
+	// takes a datagram all the same, ask for the family too.
+	bool kind = (flags & (MSG_TRUNC | MSG_WAITALL)) || !size;
+	if((addr_length || kind) && is_inet(slot, &type)) {
 		if(type == SOCK_DGRAM)
 			return receive_datagram(slot, &iov, 1, flags, sock_addr,
 					addr_length ? *addr_length : 0, addr_length, length);
@@ -1603,15 +1787,17 @@ int Sysdeps<Recvfrom>::operator()(int fd, void *buffer, size_t size, int flags,
 			*addr_length = 0;
 		return 0;
 	}
-	if(int e = receive_vector(fd, &iov, 1, flags, nullptr, length); e)
+	if(!addr_length && !kind)
+		return receive_vector(fd, &iov, 1, flags, nullptr, length);
+	// A Unix socket says who sent what it received, which for a datagram
+	// socket is not the socket it is connected to.
+	uint32_t none[1];
+	Received files = {none, 0, 0, false};
+	bool datagram = kind && is_unix_datagram(slot);
+	if(int e = receive_vector(fd, &iov, 1, flags, &files, length, datagram); e)
 		return e;
-	// The sender is the socket at the other end.
-	if(addr_length) {
-		socklen_t actual;
-		if(sender(fd, sock_addr, *addr_length, &actual))
-			actual = 0;
-		*addr_length = actual;
-	}
+	if(addr_length)
+		give_sender(files, sock_addr, *addr_length, addr_length);
 	return 0;
 }
 
@@ -1662,38 +1848,50 @@ int Sysdeps<MsgRecv>::operator()(int fd, struct msghdr *hdr, int flags, ssize_t 
 		hdr->msg_namelen = from ? from_len : 0;
 		return 0;
 	};
-	// MSG_TRUNC, which only a datagram's receive takes, asks too.
-	if((asks || (flags & MSG_TRUNC)) && is_inet(slot, &type))
-		return inet();
 	if(int e = radix::iov_total(hdr->msg_iov, hdr->msg_iovlen, &sum); e)
 		return e;
-	// Room for as many descriptors as the control buffer holds: those
-	// with nowhere to go are closed, and MSG_CTRUNC says so.
+	// MSG_TRUNC and MSG_WAITALL, and buffers of no bytes, ask too, as in
+	// recvfrom.
+	bool kind = (flags & (MSG_TRUNC | MSG_WAITALL)) || !sum;
+	if((asks || kind) && is_inet(slot, &type))
+		return inet();
+	// Room for as many descriptors as the control buffer holds after the
+	// credentials, which come first if the socket asks for them, as on
+	// Linux: those with nowhere to go are closed, and MSG_CTRUNC says so.
 	uint32_t slots[RADIX_FILE_SEND_FILES_MAX];
 	Received files = {slots, 0, 0, false};
-	if(hdr->msg_control && hdr->msg_controllen >= CMSG_LEN(sizeof(int))) {
-		files.room = (hdr->msg_controllen - CMSG_LEN(0)) / sizeof(int);
+	size_t control = hdr->msg_control ? hdr->msg_controllen : 0;
+	if(control && passes_credentials(slot)) {
+		size_t credentials = CMSG_SPACE(sizeof(struct ucred));
+		control -= control < credentials ? control : credentials;
+	}
+	if(control >= CMSG_LEN(sizeof(int))) {
+		files.room = (control - CMSG_LEN(0)) / sizeof(int);
 		if(files.room > RADIX_FILE_SEND_FILES_MAX)
 			files.room = RADIX_FILE_SEND_FILES_MAX;
 	}
-	if(int e = receive_vector(fd, hdr->msg_iov, hdr->msg_iovlen, flags, &files, length); e) {
+	// A datagram socket's receive takes one datagram, whatever the buffers
+	// and MSG_WAITALL say, even into none: the kind of socket is asked for
+	// where they say something else.
+	bool datagram = (hdr->msg_iovlen > 1 || kind) && is_unix_datagram(slot);
+	if(int e = receive_vector(fd, hdr->msg_iov, hdr->msg_iovlen, flags, &files, length,
+			datagram); e) {
 		// No files ride on a network socket's bytes: one that was not
 		// asked about, as nothing in `hdr` asked, is received as one.
 		if(e == EOPNOTSUPP && is_inet(slot, &type))
 			return inet();
 		return e;
 	}
-	hdr->msg_flags = 0;
+	hdr->msg_flags = files.whole > sum ? MSG_TRUNC : 0;
 	if(hdr->msg_name && hdr->msg_namelen) {
 		socklen_t actual;
-		if(sender(fd, static_cast<struct sockaddr *>(hdr->msg_name), hdr->msg_namelen,
-				&actual))
-			actual = 0;
+		give_sender(files, static_cast<struct sockaddr *>(hdr->msg_name), hdr->msg_namelen,
+				&actual);
 		hdr->msg_namelen = actual;
 	} else {
 		hdr->msg_namelen = 0;
 	}
-	give_rights(hdr, files);
+	give_control(hdr, files);
 	return 0;
 }
 
@@ -1721,27 +1919,47 @@ int Sysdeps<GetSockopt>::operator()(int fd, int layer, int number, void *__restr
 		return ENOPROTOOPT;
 	if(number == SO_PEERCRED) {
 		// The process at the other end, and the user and group it acted
-		// for, as they were when the connection was made (ADR 0218).
+		// for, as they were when the connection was made (ADR 0218). A
+		// socket with none to give has process number 0 (a datagram
+		// socket connected by name), and the unset ones of Linux's, never
+		// user 0, which would read as root. A datagram pair's are its
+		// maker's, as long as the socket lives.
 		struct ucred cred;
-		cred.pid = state.connected ? static_cast<pid_t>(state.peer) : 0;
-		cred.uid = state.connected ? static_cast<uid_t>(state.user) : static_cast<uid_t>(-1);
-		cred.gid = state.connected ? static_cast<gid_t>(state.group) : static_cast<gid_t>(-1);
+		bool known = state.peer != 0;
+		cred.pid = known ? static_cast<pid_t>(state.peer) : 0;
+		cred.uid = known ? static_cast<uid_t>(state.user) : static_cast<uid_t>(-1);
+		cred.gid = known ? static_cast<gid_t>(state.group) : static_cast<gid_t>(-1);
 		socklen_t len = *size < sizeof(cred) ? *size : sizeof(cred);
 		memcpy(buffer, &cred, len);
 		*size = len;
 		return 0;
 	}
 	int value;
+	uint64_t option;
 	switch(number) {
-	case SO_TYPE: value = SOCK_STREAM; break;
+	case SO_TYPE:
+		if(int e = get_option(slot, RADIX_SOCKET_OPTION_UNIX_KIND, &option); e)
+			return e;
+		value = option == RADIX_SOCKET_TYPE_DATAGRAM ? SOCK_DGRAM : SOCK_STREAM;
+		break;
+	case SO_PASSCRED:
+		if(int e = get_option(slot, RADIX_SOCKET_OPTION_PASS_CREDENTIALS, &option); e)
+			return e;
+		value = option != 0;
+		break;
 	case SO_DOMAIN: value = AF_UNIX; break;
 	case SO_PROTOCOL: value = 0; break;
 	// Errors come back from each call, so none waits here.
 	case SO_ERROR: value = 0; break;
 	case SO_ACCEPTCONN: value = state.listening; break;
-	// Each way has a pipe's buffer (radix-posix(7)).
+	// Each way of a stream has a pipe's buffer, and a datagram socket the
+	// bytes its queue holds (radix-posix(7)).
 	case SO_RCVBUF:
-	case SO_SNDBUF: value = 65536; break;
+	case SO_SNDBUF:
+		if(int e = get_option(slot, RADIX_SOCKET_OPTION_UNIX_KIND, &option); e)
+			return e;
+		value = option == RADIX_SOCKET_TYPE_DATAGRAM ? RADIX_FILE_DATAGRAM_BYTES_MAX : 65536;
+		break;
 	default: return ENOPROTOOPT;
 	}
 	if(*size < sizeof(int))
@@ -1773,6 +1991,14 @@ int Sysdeps<SetSockopt>::operator()(int fd, int layer, int number, const void *b
 		if(size < sizeof(int))
 			return EINVAL;
 		return 0;
+	// Whether each receive gives the sender's credentials (ADR 0525).
+	case SO_PASSCRED: {
+		int as_int;
+		if(size < sizeof(int))
+			return EINVAL;
+		memcpy(&as_int, buffer, sizeof(int));
+		return set_option(slot, RADIX_SOCKET_OPTION_PASS_CREDENTIALS, as_int != 0);
+	}
 	default: return ENOPROTOOPT;
 	}
 }

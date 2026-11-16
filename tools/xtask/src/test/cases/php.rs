@@ -46,26 +46,43 @@ const PROGRAM: &str = "/applications/net.php.php/bin/php";
 /// library's gethostbyname(3), as build.sh tells configure, which the
 /// sockets extension's tests do to make their listening socket; and calls
 /// nested too deep end in an Error, not a crash, as build.sh tells
-/// configure the stack grows down.
+/// configure the stack grows down; and the Unix datagram sockets the C
+/// library and the kernel give (ADR 0525), all nine of the tests that
+/// waited for them: datagrams sent to a name and received with their
+/// sender's, by the sockets extension and by `udg://` streams, the
+/// credentials and the descriptors that come with one, sockets among
+/// them, and the errors of a name too long and of a datagram cut short.
 const SUITE: &[&str] = &[
     "Zend/tests/gh18572.phpt",
     "ext/standard/tests/streams/gh8472.phpt",
     "ext/standard/tests/network/gethostbyname_basic003.phpt",
     "ext/standard/tests/network/gethostbynamel_basic1.phpt",
+    "ext/standard/tests/network/udgloop.phpt",
+    "ext/sockets/tests/bug76839.phpt",
     "ext/sockets/tests/gh17921.phpt",
+    "ext/sockets/tests/mcast_sockettype_error.phpt",
+    "ext/sockets/tests/socket_cmsg_credentials.phpt",
+    "ext/sockets/tests/socket_cmsg_rights.phpt",
     "ext/sockets/tests/socket_connect_params.phpt",
     "ext/sockets/tests/socket_create_listen-nobind.phpt",
     "ext/sockets/tests/socket_create_listen.phpt",
     "ext/sockets/tests/socket_create_listen_invalid_port.phpt",
     "ext/sockets/tests/socket_create_listen_used.phpt",
     "ext/sockets/tests/socket_read_params.phpt",
+    "ext/sockets/tests/socket_recv_overflow.phpt",
     "ext/sockets/tests/socket_send_params.phpt",
+    "ext/sockets/tests/socket_sendmsg_scm_rights_object.phpt",
     "ext/sockets/tests/socket_sendto_invalid_port.phpt",
     "ext/sockets/tests/socket_sendto_params.phpt",
+    "ext/sockets/tests/socket_sendto_unix_addr_too_long.phpt",
+    "ext/sockets/tests/socket_sentto_recvfrom_unix.phpt",
     "ext/sockets/tests/socket_set_block-retval.phpt",
     "ext/sockets/tests/socket_set_nonblock-retval.phpt",
     "ext/sockets/tests/socket_set_nonblock.phpt",
 ];
+
+/// Files beside [`SUITE`]'s tests that some of them include.
+const HELPERS: &[&str] = &["ext/sockets/tests/mcast_helpers.php.inc"];
 
 /// Dukovo's root on a copy of the test image, and the bundles, with the
 /// checks' script and the list of the suite's tests beside them.
@@ -192,15 +209,21 @@ c("pdo_pgsql", in_array("pgsql", PDO::getAvailableDrivers()));
 c("opcache", opcache_get_status()["opcache_enabled"]);
 "#;
 
-/// Makes the disk of bundles, with the checks' script, `checks.php`, and
-/// the list of the suite's tests, `suite.txt`, beside the bundles.
+/// Makes the disk of bundles, with the checks' script, `checks.php`, the
+/// list of the suite's tests, `suite.txt`, and that of the files they need,
+/// `files.txt`, the tests and their helpers, beside the bundles.
 pub fn make_disk(ctx: &Ctx, disk: &Disk, path: &Path) -> Result<(), String> {
     let list = SUITE.join("\n") + "\n";
+    let files = SUITE.iter().chain(HELPERS).copied().collect::<Vec<_>>().join("\n") + "\n";
     make_bundle_files_with(
         ctx,
         disk,
         path,
-        &[("checks.php", CHECKS_SCRIPT), ("suite.txt", list.as_str())],
+        &[
+            ("checks.php", CHECKS_SCRIPT),
+            ("suite.txt", list.as_str()),
+            ("files.txt", files.as_str()),
+        ],
     )
 }
 
@@ -284,13 +307,14 @@ fn php(vm: &mut Vm, case: &Case) -> Result<(), String> {
     )?;
     vm.expect_screen(&[&format!("checks {CHECKS} of {CHECKS}")])?;
     // A part of PHP's own test suite, the disk's list of it, run as the
-    // lab runs the whole of it: on a copy, as run-tests.php writes beside
-    // each test, and by the program's path.
+    // lab runs the whole of it: on a copy, with the helpers its tests
+    // include, as run-tests.php writes beside each test, and by the
+    // program's path.
     run_within(
         vm,
         &format!(
             "clear; sh -c 'cd /applications/net.php.php/tests && for f in run-tests.php $(cat \
-             {VOLUME}/suite.txt); do mkdir -p /tmp/t/$(dirname $f) && cp $f /tmp/t/$f; done'"
+             {VOLUME}/files.txt); do mkdir -p /tmp/t/$(dirname $f) && cp $f /tmp/t/$f; done'"
         ),
         300,
     )?;

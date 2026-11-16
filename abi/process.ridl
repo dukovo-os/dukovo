@@ -305,7 +305,7 @@ enum ProcessState: u8 {
 }
 
 /// A process.
-interface process = 0x000a version 10 {
+interface process = 0x000a version 11 {
     kind = process;
     /// Makes a kernel object, charged to this process's resource domain,
     /// and puts its capability, with every right, in slot `to`: a process
@@ -733,4 +733,21 @@ interface process = 0x000a version 10 {
     /// the control right. (Since version 10, ADR 0476.)
     method start_limit = 58 (resource: LimitKind, current: u64, max: u64) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, not_permitted];
+    /// Makes a datagram socket in slot `to`, POSIX's `socket` for AF_UNIX
+    /// and SOCK_DGRAM: neither named nor connected. Each send is one
+    /// datagram, which a receive takes whole. radix-directory(2)'s
+    /// `bind_socket` names it, its `connect_socket` sets where its sends
+    /// go and the only socket it receives from, and its `send_datagram`
+    /// sends to a name. It holds at most radix-file(2)'s
+    /// DATAGRAM_QUEUE_MAX datagrams and DATAGRAM_BYTES_MAX bytes waiting
+    /// to be received. (Since Phase 16, ADR 0525.)
+    method datagram_socket = 59 (to: slot, flags: PipeFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, no_memory];
+    /// Makes a pair of datagram sockets, each connected to the other,
+    /// POSIX's `socketpair` for AF_UNIX and SOCK_DGRAM: one in slot
+    /// `first` and the other in slot `second`, as `datagram_socket`
+    /// makes them. Each one's peer (radix-file(2)'s `socket_state`) is
+    /// the process that made the pair. (Since Phase 16, ADR 0525.)
+    method datagram_pair = 60 (first: slot, second: slot, flags: PipeFlags) -> ()
+        raises [no_such_slot, missing_rights, occupied, invalid_argument, no_memory];
 }

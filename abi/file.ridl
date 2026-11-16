@@ -152,8 +152,10 @@ flags SocketFlags: u32 {
     whole_size = 4;
 }
 
-/// A network socket's option, which `socket_option` reads and sets, as
-/// POSIX's `getsockopt` and `setsockopt` name them. A boolean is 0 or 1.
+/// A socket's option, which `socket_option` reads and sets, as POSIX's
+/// `getsockopt` and `setsockopt` name them. A boolean is 0 or 1. A Unix
+/// socket has pass_credentials and unix_kind alone; a network socket has
+/// the others.
 enum SocketOption: u32 {
     /// SO_REUSEADDR, a boolean. A port is free once the socket bound to
     /// it is closed, so for a stream socket it changes nothing, but it is
@@ -278,13 +280,33 @@ enum SocketOption: u32 {
     /// it set on Linux: Radix has no out-of-band receive. (Since Phase
     /// 16, ADR 0496.)
     out_of_band_inline = 27;
+    /// SO_PASSCRED, a boolean, of a Unix socket's: `receive_unix` says
+    /// that the program asked for the credentials of what each receive
+    /// came from. (Since Phase 16, ADR 0525.)
+    pass_credentials = 28;
+    /// SO_TYPE of a Unix socket, read only: its radix-network(2)
+    /// SocketType, stream or datagram. `kind` stays a network socket's
+    /// alone, so that it tells the two families apart. (Since Phase 16,
+    /// ADR 0525.)
+    unix_kind = 29;
 }
 
 /// The most files one `send_files` sends, as Linux's SCM_MAX_FD.
 const SEND_FILES_MAX: u64 = 253;
 /// The most files on their way through one direction of a connection,
-/// sent and not yet received.
+/// or to one datagram socket, sent and not yet received.
 const FILES_IN_FLIGHT_MAX: u64 = 1024;
+/// The most bytes of a Unix datagram socket's datagram: Linux's, with
+/// its default send buffer of 212,992 bytes. (Since Phase 16, ADR 0525.)
+const DATAGRAM_MAX: u64 = 212960;
+/// The most datagrams that wait to be received at a Unix datagram
+/// socket: the `net.unix.max_dgram_qlen` Linux systems run with. (Since
+/// Phase 16, ADR 0525.)
+const DATAGRAM_QUEUE_MAX: u64 = 512;
+/// The most bytes of datagrams that wait to be received at a Unix
+/// datagram socket, Linux's default SO_RCVBUF; a datagram always goes
+/// into an empty queue. (Since Phase 16, ADR 0525.)
+const DATAGRAM_BYTES_MAX: u64 = 212992;
 /// The most connections a listening socket keeps waiting: SOMAXCONN.
 const BACKLOG_MAX: u64 = 4096;
 /// The longest name a socket takes, in bytes: sockaddr_un's sun_path,
@@ -295,7 +317,7 @@ const SOCKET_NAME_MAX: u64 = 107;
 const PIPE_SIZE_MAX: u64 = 1048576;
 
 /// A file.
-interface file = 0x000c version 12 {
+interface file = 0x000c version 13 {
     kind = file;
     /// Reads from byte `offset` into `buffer`; returns how many bytes it
     /// read, fewer than asked at the end of the file. Needs the read right.
@@ -378,17 +400,25 @@ interface file = 0x000c version 12 {
     /// `flags`; returns how many bytes went. Sending to an end that is
     /// gone, or shut for reading, raises SIGPIPE (unless no_signal) and
     /// fails with gone. A datagram socket sends `data` as one datagram to
-    /// the address it is connected to. Needs the write right.
+    /// the address it is connected to. A Unix datagram socket's peer
+    /// that is gone fails with refused once, and the socket is then not
+    /// connected; a peer connected to another socket fails with
+    /// not_permitted; a socket shut for writing, or a peer shut for
+    /// reading, with gone, never raising SIGPIPE
+    /// (radix-directory(2)'s `send_datagram`). Needs the write right.
     method send = 12 (data: in bytes, flags: SocketFlags) -> (count: u64)
         raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket, would_block,
                 gone, interrupted, not_connected, reset, message_too_long, unreachable, broadcast,
                 refused, host_unreachable, protocol_error, host_down, no_network,
-                protocol_unreachable, prohibited, not_supported];
+                protocol_unreachable, prohibited, not_supported, not_permitted];
     /// Receives what a socket's other end sent into `buffer`, as `read`
     /// does but with `flags`; returns how many bytes came, 0 once the
     /// other end is gone or shut for writing and all it sent has been
     /// read. A datagram socket receives the next datagram, of which what
-    /// `buffer` has no room for is lost. Needs the read right.
+    /// `buffer` has no room for is lost. A Unix datagram socket shut for
+    /// reading with none waiting returns 0 where it would wait, and fails
+    /// with would_block where it may not, as on Linux. Needs the read
+    /// right.
     method receive = 13 (buffer: out bytes, flags: SocketFlags) -> (count: u64)
         raises [no_such_slot, empty_slot, missing_rights, bad_address, not_socket, would_block,
                 interrupted, not_connected, reset, refused, unreachable, host_unreachable,
@@ -397,7 +427,9 @@ interface file = 0x000c version 12 {
     /// Shuts a socket's end for reading (what the other end sends then
     /// fails with gone), for writing (the other end then receives the
     /// end), or both, for every description of the end: POSIX's
-    /// `shutdown`.
+    /// `shutdown`. A Unix datagram socket need not be connected, and
+    /// what it shuts is its own: its sends fail with gone, and so do
+    /// those to it, once it is shut for writing or for reading.
     method shutdown = 14 (read: bool, write: bool) -> ()
         raises [no_such_slot, empty_slot, not_socket, not_connected];
     /// Has a socket radix-process(2)'s `socket` made, which has a name
@@ -410,8 +442,8 @@ interface file = 0x000c version 12 {
     /// right for its port, else missing_rights; the kernel holds up to
     /// `backlog` of its connections on each interface, 128 at most, being
     /// made or waiting, and leaves a SYN that comes when it holds that
-    /// many unanswered, for its client to send again (ADR 0494). Needs the
-    /// write right.
+    /// many unanswered, for its client to send again (ADR 0494). A Unix
+    /// datagram socket fails with not_supported. Needs the write right.
     method listen = 15 (backlog: u32) -> ()
         raises [no_such_slot, empty_slot, missing_rights, invalid_argument, no_memory,
                 not_socket, busy, no_buffers, not_supported];
@@ -421,11 +453,14 @@ interface file = 0x000c version 12 {
     /// own, connected, with the listening socket's name. Slot `to` must
     /// be empty, else occupied; a connection that cannot go in it, as
     /// another thread filled it while the call waited, goes back to the
-    /// front of those that wait, so none is lost. A socket that does not
-    /// listen fails with invalid_argument. Needs the read right.
+    /// front of those that wait, so none is lost, unless a Unix socket
+    /// the other end sent rides in it already, when it goes as if the
+    /// listening socket had gone (ADR 0525). A socket that does not
+    /// listen fails with invalid_argument, and a Unix datagram socket
+    /// with not_supported. Needs the read right.
     method accept = 16 (to: slot, flags: PipeFlags) -> ()
         raises [no_such_slot, empty_slot, missing_rights, occupied, invalid_argument,
-                no_memory, not_socket, would_block, interrupted];
+                no_memory, not_socket, would_block, interrupted, not_supported];
     /// Writes the name of a socket (radix-directory(2)'s `bind_socket`),
     /// or with `peer` of the socket at a connection's other end, into
     /// `buffer`, as the path the binding was asked for; returns its
@@ -442,23 +477,35 @@ interface file = 0x000c version 12 {
     /// group (radix-names(2)). That is the process that connected, or for
     /// the connecting end, the one that listened, as each was when the
     /// connection was made or the listening began; for a pair's ends, the
-    /// process that made the pair; for a network socket, 0 for all three.
-    /// A service such as authd tells who asks it so.
+    /// process that made the pair, a datagram pair's even once
+    /// disconnected; for a network socket, and a Unix datagram socket not
+    /// of a pair, 0 for all three, which no process is. A Unix datagram
+    /// socket is connected while it has a peer (radix-directory(2)'s
+    /// `connect_socket`). A service such as authd tells who asks it so.
     method socket_state = 18 () -> (listening: bool, connected: bool, peer: u64, user: u32,
                                     group: u32)
         raises [no_such_slot, empty_slot, not_socket];
     /// Sends `data` as `send` does, with the files whose slots `slots`
     /// holds (u32 each, at most SEND_FILES_MAX): copies of their
     /// capabilities, with their rights, which go with the first byte of
-    /// `data` and come out with it at the other end. Each must be a file
-    /// or directory capability with the copy right, and no socket: a
-    /// socket among them fails with not_supported. More than
-    /// FILES_IN_FLIGHT_MAX on their way fails with too_many. `data` must
-    /// hold a byte at least. Needs the write right.
+    /// `data` and come out with it at the other end, or with a Unix
+    /// datagram socket's datagram. Each must be a file or directory
+    /// capability with the copy right. More than FILES_IN_FLIGHT_MAX on
+    /// their way fails with too_many. On a stream socket `data` must hold
+    /// a byte at least; a datagram may be empty.
+    ///
+    /// A Unix socket among the files goes unless it could come to hold
+    /// itself open, which no process could then close: when a queue it
+    /// receives from holds a Unix socket on its way, or when the files
+    /// go into a queue it receives from, the send fails with too_many
+    /// (ADR 0525). A socket receives from its connection's pipe that it
+    /// reads, a listening one from those of the connections that wait
+    /// for `accept`, a datagram socket from its own queue. Needs the
+    /// write right.
     method send_files = 19 (data: in bytes, slots: in bytes, flags: SocketFlags) -> (count: u64)
         raises [no_such_slot, empty_slot, wrong_kind, missing_rights, invalid_argument,
                 no_memory, bad_address, not_socket, not_connected, not_supported, too_many,
-                would_block, gone, interrupted];
+                would_block, gone, interrupted, refused, not_permitted, message_too_long];
     /// Receives as `receive` does, with the files that came with the
     /// bytes received: a receive that starts at a byte files came with
     /// takes them, and one that does not ends before such a byte. Puts
@@ -467,7 +514,9 @@ interface file = 0x000c version 12 {
     /// as POSIX's lowest free descriptor, and writes their numbers into
     /// `slots` (u32 each). Returns how many bytes and how many files it
     /// put in slots, and how many files came that `slots` or the slots
-    /// had no room for, which are closed. Needs the read right.
+    /// had no room for, which are closed. A Unix datagram socket receives
+    /// the next datagram, and the files that came with it. Needs the read
+    /// right.
     method receive_files = 20 (buffer: out bytes, slots: out bytes, flags: SocketFlags)
         -> (count: u64, files: u32, lost: u32)
         raises [no_such_slot, empty_slot, missing_rights, bad_address, no_memory, not_socket,
@@ -527,10 +576,10 @@ interface file = 0x000c version 12 {
                 would_block, interrupted, reset, refused, unreachable, host_unreachable,
                 protocol_error, host_down, no_network, protocol_unreachable, prohibited,
                 message_too_long, not_supported];
-    /// Reads, and with `set` changes to `value`, one of a network
-    /// socket's options, and returns it as it was. A read-only option
-    /// fails with invalid_argument when set, and a socket that is not a
-    /// network one with not_supported.
+    /// Reads, and with `set` changes to `value`, one of a socket's
+    /// options, and returns it as it was. A read-only option fails with
+    /// invalid_argument when set, and one the socket's family does not
+    /// have (SocketOption) with not_supported.
     method socket_option = 25 (option: SocketOption, set: bool, value: u64) -> (value: u64)
         raises [no_such_slot, empty_slot, invalid_argument, not_socket, not_supported];
     /// Changes the file's owner, group or permission bits, as
@@ -646,4 +695,29 @@ interface file = 0x000c version 12 {
         -> (filesystem: FilesystemKind, flags: MountFlags, block_size: u32, blocks: u64, free: u64,
             files: u64, free_files: u64)
         raises [no_such_slot, empty_slot];
+    /// Receives as `receive_files` does, from a Unix socket of either
+    /// type, and says where it came from: the name of the socket that
+    /// sent a datagram, or of a stream socket's peer, into `name`, its
+    /// length in `name_len` (0 for a socket with no name; more than
+    /// `name` holds if it was cut short); the process that sent it, the
+    /// user it acted for and that user's group, as they were at the send
+    /// for a datagram and as `socket_state` gives them for a stream; and
+    /// whether the socket's pass_credentials option is set, for the C
+    /// library to give them as SCM_CREDENTIALS. With whole_size, a
+    /// datagram's `count` is its whole size. Needs the read right.
+    /// (Since Phase 16, ADR 0525.)
+    method receive_unix = 37 (buffer: out bytes, name: out bytes, slots: out bytes,
+                              flags: SocketFlags)
+        -> (count: u64, name_len: u64, files: u32, lost: u32, process: u64, user: u32,
+            group: u32, credentials: bool)
+        raises [no_such_slot, empty_slot, missing_rights, bad_address, no_memory, not_socket,
+                not_connected, would_block, interrupted, not_supported];
+    /// Has a Unix datagram socket forget its peer (radix-directory(2)'s
+    /// `connect_socket`), as POSIX's `connect` to AF_UNSPEC does: it
+    /// then receives from any socket, and its sends need a name. If it
+    /// was connected, the datagrams that wait for it are thrown away, as
+    /// on Linux. Any other socket fails with not_supported. (Since Phase 16, ADR
+    /// 0525.)
+    method disconnect = 38 () -> ()
+        raises [no_such_slot, empty_slot, not_socket, not_supported];
 }

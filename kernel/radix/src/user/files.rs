@@ -929,6 +929,36 @@ pub fn directory_method(
             socket::connect(socket, &named.node, socket::Peer::of(&user.process), non_blocking)?;
             answer(label, 0, [0; 8])
         }
+        directory::SEND_DATAGRAM => {
+            let a = directory::SendDatagramArgs::decode(args)?;
+            let dir = directory_of(found, Rights::WRITE)?;
+            let (_, file) = objects::file(cspace, a.socket, Rights::WRITE)?;
+            let socket = file.socket().ok_or(error(Kernel::NotSocket))?;
+            let mut path = Path::Empty;
+            let path = path.copy(a.path)?;
+            let files = files_to_send(user, a.slots)?;
+            let (address, len) = user_range(a.data)?;
+            let data = UserIn { address, len };
+            let non_blocking =
+                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+            let who = who(found.cap.rights(), dir)?;
+            // Looked up once the datagram is known to be able to go, as on
+            // Linux.
+            let mut find = || {
+                let named = vfs()?.resolve(&who, &dir.at, path.as_str()?).map_err(fs::status)?;
+                // As unix(7) has it, sending needs write permission on the
+                // socket's name, as connecting does.
+                who.check(&*named.node, want::WRITE).map_err(fs::status)?;
+                Ok(named.node)
+            };
+            let sender = socket::Peer::of(&user.process);
+            let count =
+                socket::send_datagram(socket, &data, files, sender, non_blocking, &mut find)?
+                    as u64;
+            user.process.note_written(count);
+            let results = directory::SendDatagramResults { count };
+            answer(label, directory::SendDatagramResults::WORDS, results.encode())
+        }
         directory::CHECK_ACCESS => {
             let a = directory::CheckAccessArgs::decode(args)?;
             let dir = directory_of(found, Rights::READ)?;
@@ -2083,7 +2113,10 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
             let signal = !a.flags.contains(SocketFlags::NO_SIGNAL);
             let count = match socket {
-                AnySocket::Unix(socket) => socket.send(&data, non_blocking, signal)?,
+                AnySocket::Unix(socket) => {
+                    let sender = socket::Peer::of(&user.process);
+                    socket.send(&data, None, sender, non_blocking, signal)?
+                }
                 AnySocket::Inet(socket) => socket.send(&data, None, non_blocking, signal)?,
             } as u64;
             user.process.note_written(count);
@@ -2098,16 +2131,24 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
             let peek = a.flags.contains(SocketFlags::PEEK);
             let count = match socket {
-                AnySocket::Unix(socket) => socket.receive(&mut out, non_blocking, peek)?,
-                AnySocket::Inet(socket) => socket.receive(&mut out, non_blocking, peek)?.count,
-            } as u64;
-            user.process.note_read(count);
+                AnySocket::Unix(socket) => {
+                    let mut received = socket.receive(&mut out, non_blocking, peek)?;
+                    received.close_files();
+                    user.process.note_read(received.count as u64);
+                    unix_count(&received, a.flags)
+                }
+                AnySocket::Inet(socket) => {
+                    let count = socket.receive(&mut out, non_blocking, peek)?.count as u64;
+                    user.process.note_read(count);
+                    count
+                }
+            };
             answer(label, file::ReceiveResults::WORDS, file::ReceiveResults { count }.encode())
         }
         file::SHUTDOWN => {
             let a = file::ShutdownArgs::decode(args)?;
             match any_socket_of(found, Rights::NONE)?.1 {
-                AnySocket::Unix(socket) => socket.connected()?.shutdown(a.read, a.write),
+                AnySocket::Unix(socket) => socket.shutdown(a.read, a.write)?,
                 AnySocket::Inet(socket) => socket.shutdown(a.read, a.write)?,
             }
             answer(label, 0, [0; 8])
@@ -2168,13 +2209,13 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             file::SocketStateArgs::decode(args)?;
             let results = match any_socket_of(found, Rights::NONE)?.1 {
                 AnySocket::Unix(socket) => {
-                    let peer = socket.end().map(socket::End::peer);
+                    let peer = socket.peer();
                     file::SocketStateResults {
                         listening: socket.listens(),
-                        connected: peer.is_some(),
-                        peer: peer.map_or(0, |p| p.process),
-                        user: peer.map_or(0, |p| p.user),
-                        group: peer.map_or(0, |p| p.group),
+                        connected: socket.is_connected(),
+                        peer: peer.process,
+                        user: peer.user,
+                        group: peer.group,
                     }
                 }
                 AnySocket::Inet(socket) => {
@@ -2306,17 +2347,20 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
         file::SOCKET_OPTION => {
             let a = file::SocketOptionArgs::decode(args)?;
             let needs = if a.set { Rights::WRITE } else { Rights::NONE };
-            let (_, socket) = inet_of(found, needs)?;
-            let value = socket.option(a.option, a.set.then_some(a.value))?;
+            let set = a.set.then_some(a.value);
+            let value = match any_socket_of(found, needs)?.1 {
+                AnySocket::Unix(socket) => socket.option(a.option, set)?,
+                AnySocket::Inet(socket) => socket.option(a.option, set)?,
+            };
             let results = file::SocketOptionResults { value };
             answer(label, file::SocketOptionResults::WORDS, results.encode())
         }
         file::SEND_FILES => {
             let a = file::SendFilesArgs::decode(args)?;
             let (file, socket) = socket_of(found, Rights::WRITE)?;
-            let end = socket.connected()?;
             let (address, len) = user_range(a.data)?;
-            if len == 0 {
+            // A datagram may be empty; a stream's files ride on a byte.
+            if len == 0 && !socket.is_datagram() {
                 return Err(Kernel::InvalidArgument.status(0));
             }
             let files = files_to_send(user, a.slots)?;
@@ -2324,33 +2368,48 @@ pub fn file_method(user: &UserRef, found: &Found, label: u32, args: &[u64; 8]) -
             let non_blocking =
                 a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
             let signal = !a.flags.contains(SocketFlags::NO_SIGNAL);
-            let count = end.send(&data, files, non_blocking, signal)? as u64;
+            let sender = socket::Peer::of(&user.process);
+            let count = socket.send(&data, files, sender, non_blocking, signal)? as u64;
             user.process.note_written(count);
             answer(label, file::SendFilesResults::WORDS, file::SendFilesResults { count }.encode())
         }
         file::RECEIVE_FILES => {
             let a = file::ReceiveFilesArgs::decode(args)?;
             let (file, socket) = socket_of(found, Rights::READ)?;
-            let end = socket.connected()?;
-            let (address, len) = user_range(a.buffer)?;
-            if !a.slots.len.is_multiple_of(4)
-                || !radix_ipc::range::user_bytes(a.slots.address, a.slots.len)
-            {
+            let (received, files, lost) =
+                receive_unix(user, file, socket, a.buffer, a.slots, a.flags)?;
+            let count = unix_count(&received, a.flags);
+            let results = file::ReceiveFilesResults { count, files, lost };
+            answer(label, file::ReceiveFilesResults::WORDS, results.encode())
+        }
+        file::RECEIVE_UNIX => {
+            let a = file::ReceiveUnixArgs::decode(args)?;
+            let (file, socket) = socket_of(found, Rights::READ)?;
+            let (name, name_room) = user_range(a.name)?;
+            let (received, files, lost) =
+                receive_unix(user, file, socket, a.buffer, a.slots, a.flags)?;
+            let from = received.from.bytes();
+            let fits = &from[..from.len().min(name_room)];
+            if !fits.is_empty() && !Arch::copy_to_user(name, fits) {
                 return Err(error(Kernel::BadAddress));
             }
-            let mut out = UserOut { address, len };
-            let non_blocking =
-                a.flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
-            let peek = a.flags.contains(SocketFlags::PEEK);
-            let (count, files) = end.receive(&mut out, non_blocking, peek)?;
-            let close_on_exec = a.flags.contains(SocketFlags::CLOSE_ON_EXEC);
-            let (files, lost) = match files {
-                Some(files) => install_received(user, files, a.slots, close_on_exec)?,
-                None => (0, 0),
+            let results = file::ReceiveUnixResults {
+                count: unix_count(&received, a.flags),
+                name_len: from.len() as u64,
+                files,
+                lost,
+                process: received.sender.process,
+                user: received.sender.user,
+                group: received.sender.group,
+                credentials: socket.passes_credentials(),
             };
-            user.process.note_read(count as u64);
-            let results = file::ReceiveFilesResults { count: count as u64, files, lost };
-            answer(label, file::ReceiveFilesResults::WORDS, results.encode())
+            answer(label, file::ReceiveUnixResults::WORDS, results.encode())
+        }
+        file::DISCONNECT => {
+            file::DisconnectArgs::decode(args)?;
+            let (_, socket) = socket_of(found, Rights::NONE)?;
+            socket.disconnect()?;
+            answer(label, 0, [0; 8])
         }
         file::PIPE_SIZE => {
             let a = file::PipeSizeArgs::decode(args)?;
@@ -2486,6 +2545,42 @@ fn received_count(received: &inet::Received, flags: SocketFlags) -> u64 {
     count as u64
 }
 
+/// A Unix socket's receive's count: with whole_size, a datagram's whole
+/// size (a stream's is what came).
+fn unix_count(received: &socket::Received, flags: SocketFlags) -> u64 {
+    let count =
+        if flags.contains(SocketFlags::WHOLE_SIZE) { received.size } else { received.count };
+    count as u64
+}
+
+/// Receives from `socket`, the Unix socket of `file`, into `buffer`, with
+/// `flags`, as radix-file(2)'s `receive_files` does: the files that come
+/// go in the caller's free slots, whose numbers go into `slots`. Returns
+/// what came, and how many files went in slots and how many were closed.
+fn receive_unix(
+    user: &UserRef,
+    file: &FileRef,
+    socket: &socket::Socket,
+    buffer: UserBuffer,
+    slots: UserBuffer,
+    flags: SocketFlags,
+) -> Result<(socket::Received, u32, u32)> {
+    let (address, len) = user_range(buffer)?;
+    if !slots.len.is_multiple_of(4) || !radix_ipc::range::user_bytes(slots.address, slots.len) {
+        return Err(error(Kernel::BadAddress));
+    }
+    let mut out = UserOut { address, len };
+    let non_blocking = flags.contains(SocketFlags::DONT_WAIT) || file.description().non_blocking;
+    let mut received = socket.receive(&mut out, non_blocking, flags.contains(SocketFlags::PEEK))?;
+    let close_on_exec = flags.contains(SocketFlags::CLOSE_ON_EXEC);
+    let (files, lost) = match received.files.take() {
+        Some(files) => install_received(user, files, slots, close_on_exec)?,
+        None => (0, 0),
+    };
+    user.process.note_read(received.count as u64);
+    Ok((received, files, lost))
+}
+
 /// Copies `bytes`, an Address, into the caller's `buffer`, as much as it
 /// has room for.
 fn put_address(bytes: [u8; radix_abi::network::Address::SIZE], buffer: UserBuffer) -> Result<()> {
@@ -2550,10 +2645,6 @@ fn files_to_send(user: &UserRef, slots: UserBuffer) -> Result<Option<pipe::Files
         let Some(Object::File(file) | Object::Directory(file)) = found.object.take() else {
             return Err(error(Kernel::Gone));
         };
-        // A socket sent could hold itself open (`fs::socket`).
-        if file.socket().is_some() {
-            return Err(error(Kernel::NotSupported));
-        }
         // Room was reserved above.
         let _ = files.push_within_capacity(pipe::Passed { kind, rights: found.cap.rights(), file });
     }
@@ -2608,6 +2699,9 @@ fn install_received(
         put += 1;
         from = slot + 1;
     }
+    // A Unix socket among them that was closed goes now, not at the
+    // store's next change (`pipe::Passed`).
+    fs::drop_deferred();
     Ok((put, lost))
 }
 
@@ -2835,7 +2929,10 @@ fn read_special(
     let non_blocking = never_wait || file.description().non_blocking;
     match target(file) {
         Target::Pipe(end) => end.pipe().read(out, non_blocking).map(|n| n as u64),
-        Target::Socket(socket) => socket.receive(out, non_blocking, false).map(|n| n as u64),
+        Target::Socket(socket) => socket.receive(out, non_blocking, false).map(|mut received| {
+            received.close_files();
+            received.count as u64
+        }),
         Target::Inet(socket) => socket.receive(out, non_blocking, false).map(|r| r.count as u64),
         Target::Tty(handle) => handle.read(user, out, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::read(file, out, non_blocking).map(|n| n as u64),
@@ -2945,7 +3042,10 @@ fn write_special(
     let non_blocking = never_wait || file.description().non_blocking;
     match target(file) {
         Target::Pipe(end) => end.pipe().write(data, non_blocking, true).map(|n| n as u64),
-        Target::Socket(socket) => socket.send(data, non_blocking, true).map(|n| n as u64),
+        Target::Socket(socket) => {
+            let sender = socket::Peer::of(&user.process);
+            socket.send(data, None, sender, non_blocking, true).map(|n| n as u64)
+        }
         Target::Inet(socket) => socket.send(data, None, non_blocking, true).map(|n| n as u64),
         Target::Tty(handle) => handle.write(user, data, non_blocking).map(|n| n as u64),
         Target::Kmsg => fs::kmsg::write(data).map(|n| n as u64),

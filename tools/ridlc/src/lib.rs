@@ -487,6 +487,7 @@ pub const ERRNOS: &[(&str, i32)] = &[
     ("EPROTO", 71),
     ("ENOTSOCK", 88),
     ("EMSGSIZE", 90),
+    ("EPROTOTYPE", 91),
     ("ENOPROTOOPT", 92),
     ("EOPNOTSUPP", 95),
     ("EADDRINUSE", 98),

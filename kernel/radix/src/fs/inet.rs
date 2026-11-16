@@ -1719,6 +1719,10 @@ impl InetSocket {
                 self.watch(&mut state)?;
                 return Ok(old);
             }
+            // A Unix socket's alone (`socket`).
+            SocketOption::PassCredentials | SocketOption::UnixKind => {
+                return Err(status(Kernel::NotSupported));
+            }
             SocketOption::Kind => {
                 if set.is_some() {
                     return Err(status(Kernel::InvalidArgument));

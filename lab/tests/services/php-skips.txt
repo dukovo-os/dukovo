@@ -29,19 +29,6 @@ ext/standard/tests/network/ghsa-www2-q4fc-65wf.phpt
 ext/standard/tests/network/dns_check_record_error_conditions.phpt
 ext/standard/tests/network/dns_get_record_error_conditions.phpt
 
-# Unix-domain sockets of the datagram type are not there: socket(2) answers
-# ESOCKTNOSUPPORT (94) for AF_UNIX with SOCK_DGRAM, and the tests that send
-# descriptors or credentials in a message start from one.
-ext/sockets/tests/bug76839.phpt
-ext/sockets/tests/mcast_sockettype_error.phpt
-ext/sockets/tests/socket_recv_overflow.phpt
-ext/sockets/tests/socket_sendto_unix_addr_too_long.phpt
-ext/sockets/tests/socket_sentto_recvfrom_unix.phpt
-ext/sockets/tests/socket_sendmsg_scm_rights_object.phpt
-ext/sockets/tests/socket_cmsg_credentials.phpt
-ext/sockets/tests/socket_cmsg_rights.phpt
-ext/standard/tests/network/udgloop.phpt
-
 # Socket options the kernel does not offer answer ENOPROTOOPT (92):
 # TCP_CONGESTION, SO_ZEROCOPY and IPV6_PKTINFO and IPV6_RECVPKTINFO; the
 # test of an option that must be refused for a different reason expects

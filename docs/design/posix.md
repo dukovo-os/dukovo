@@ -296,8 +296,27 @@ read an atomic count beside it. Files sent with `send_files` ride on a
 byte of the pipe: each pipe keeps a queue of attachments, each the
 position of its byte in all that was written and the files, and a read
 ends before the next attachment's byte unless it starts there, so the
-files come out with their bytes. A socket is never sent, so the files
-in flight hold no socket, and no cycle of sockets can keep itself alive.
+files come out with their bytes.
+
+A datagram socket (ADR 0525) owns the queue its datagrams come out of,
+an inbox of at most 512 datagrams and 212,992 bytes. Each datagram holds
+its bytes, the name, process, user and group of its sender, and the files
+that ride with it. A named socket's binding gives its inbox to whoever
+sends to the name; a connected socket finds its peer's through a weak
+reference, so that a pair's two ends do not hold each other open.
+
+A socket may be sent as a file, unless that could make a cycle of sockets
+that hold each other open, which no process could then close. A socket
+keeps the queues it reads: a stream end the pipe it reads, a listener
+the pipes of the connections that wait, a datagram socket its inbox. A
+send fails with `too_many` (`ETOOMANYREFS`) when a queue the socket keeps
+holds a socket on its way, or when the files go into a queue it keeps.
+Such a send starts no cycle: it adds only edges into the socket, which
+has none out of it until then, and every check and the insertion after it
+happen under one lock, so two sends never each pass against the state
+before the other (ADR 0525 has the proof). The kernel needs no collector. A queue that holds sockets
+frees them through the kernel's deferred drops, one after the other, so
+that a chain of them does not recurse down the stack.
 
 ## poll
 
@@ -786,11 +805,11 @@ list go before it sets the timer, the race above; a waiter reading
 - CPU time is split between user mode and the kernel by the timer's
   samples, 100 a second, as Linux splits it (`times`, `getrusage`,
   `wait`'s times; ADR 0092); CPU-time timers fire within a tick (10 ms).
-- Only `AF_UNIX` stream sockets, which pass no sockets: network
-  sockets come with Phase 12. No System V message queues, POSIX message
-  queues, POSIX asynchronous I/O, `epoll`, `eventfd`, `signalfd`, `timerfd` or
-  `inotify`. Linux's `madvise` is not declared; `posix_madvise` is
-  advice only.
+- `AF_UNIX` sockets are streams and datagrams, without sequenced
+  packets, abstract names or autobind. No System V message queues, POSIX
+  message queues, POSIX asynchronous I/O, `epoll`, `eventfd`, `signalfd`,
+  `timerfd` or `inotify`. Linux's `madvise` is not declared;
+  `posix_madvise` is advice only.
 - mlibc's hard-coded paths outside `/system` stay as they are until the
   phases that bring them: `/bin/sh` for `system`, `popen` and `wordexp`
   (Phase 9 decides where the shell is), `/etc/localtime`, `/etc/hosts`,
