@@ -3,8 +3,9 @@
 
 //! hardware(8): `hardware check` looks for hardware that is failing,
 //! `hardware last` shows what the last check found (ADR 0488), `hardware
-//! history` lists the checks that were kept, and `hardware show` says what
-//! the machine is.
+//! history` lists the checks that were kept, `hardware show` says what
+//! the machine is, and `hardware memtest` asks for the memory to be
+//! tested at the next start.
 //!
 //! A check looks at six areas: the memory (the errors the memory
 //! controller counted, and a test of a share of the free memory), the
@@ -22,8 +23,8 @@
 //! `/system/state/hardware/last.json`; `history` the line of each kept
 //! result, in `/system/state/hardware/history`; `show` what the machine
 //! is; `sensors` and `devices` the temperatures and the devices it has;
-//! one module for each area; and `drivetest` and `scan` for a disk's
-//! self-test and read scan.
+//! `memtest` the memory test at the next start; one module for each area;
+//! and `drivetest` and `scan` for a disk's self-test and read scan.
 
 mod battery;
 pub(crate) mod check;
@@ -33,6 +34,7 @@ mod disks;
 mod drivetest;
 mod history;
 mod memory;
+pub(crate) mod memtest;
 mod monitors;
 mod network;
 mod plan;
@@ -58,7 +60,8 @@ use saved::Saved;
 const USAGE: &str = "usage: hardware check [AREA...] [--full] [--disk DISK] [--time SECONDS] \
                      [--yes] [--progress] [--json]\n       hardware last [--json]\n       \
                      hardware history [--json]\n       hardware show [--json]\n       hardware \
-                     sensors [--json]\n       hardware devices [--json]";
+                     sensors [--json]\n       hardware devices [--json]\n       hardware memtest \
+                     --next-start | --cancel | --status [--json]";
 
 /// Set by SIGINT, SIGTERM or SIGHUP: the check stops, and aborts the
 /// self-tests it started.
@@ -78,6 +81,11 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         Some(command) if command == "show" => show_command(args),
         Some(command) if command == "sensors" => sensors_command(args),
         Some(command) if command == "devices" => devices_command(args),
+        // A refusal of memtest is a status 1 of its own, as `changes bisect`'s.
+        Some(command) if command == "memtest" => {
+            return memtest::main(args)
+                .map_err(|fail| if fail.usage { Fail { code: 3, ..fail } } else { fail });
+        }
         _ => Err(usage(USAGE.into())),
     };
     ended.map_err(|fail| Fail { code: 3, ..fail })
