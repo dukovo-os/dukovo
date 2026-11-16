@@ -28,9 +28,7 @@ use serde_json::{Value, json};
 
 use super::secret::Secret;
 use super::trial::refusal;
-use super::{
-    Action, Args, Bad, DOCUMENT_MAX, Examples, Field, Nothing, Runs, Tests, Undo,
-};
+use super::{Action, Args, Bad, DOCUMENT_MAX, Examples, Field, Nothing, Runs, Tests, Undo};
 use crate::cert::acme;
 use crate::cert::machine;
 use manifest::service::{CERTIFICATE_NAME_MAX, check_certificate};
@@ -229,7 +227,8 @@ const EMAIL_PATTERN: &str = "^[^@ \t\r\n]+@[^@ \t\r\n]+$";
 const EMAIL_MAX: usize = 254;
 
 /// The reasons `cert revoke` takes, as it says them.
-const REASONS: [&str; 4] = ["unspecified", "key-compromise", "superseded", "cessation-of-operation"];
+const REASONS: [&str; 4] =
+    ["unspecified", "key-compromise", "superseded", "cessation-of-operation"];
 
 /// The words of a refusal of the names of an order, and which field.
 fn bad_names_of(why: &str) -> Bad {
@@ -410,8 +409,11 @@ impl Args for Getting {
         ),
         Field::flag("dns", "Whether the names are proved by DNS records, not on port 80.")
             .optional(),
-        Field::flag("dry_run", "Whether to order from the authority's test service and install nothing.")
-            .optional(),
+        Field::flag(
+            "dry_run",
+            "Whether to order from the authority's test service and install nothing.",
+        )
+        .optional(),
         Field::text(
             "email",
             "The address the authority writes to about the certificate, for a new account.",
@@ -420,7 +422,10 @@ impl Args for Getting {
             Some(EMAIL_PATTERN),
         )
         .optional(),
-        Field::flag("agree_terms", "That you agree to the authority's terms of service, which must be true."),
+        Field::flag(
+            "agree_terms",
+            "That you agree to the authority's terms of service, which must be true.",
+        ),
     ];
 
     fn check(&self) -> Result<(), Bad> {
@@ -581,8 +586,11 @@ impl Args for Adding {
             "The private key, then the certificate and the chain that leads to its authority, each in PEM.",
             DOCUMENT_MAX,
         ),
-        Field::flag("replace", "Whether it replaces a certificate of this name that was added by hand.")
-            .optional(),
+        Field::flag(
+            "replace",
+            "Whether it replaces a certificate of this name that was added by hand.",
+        )
+        .optional(),
         Field::flag("untrusted", "Whether it is from an authority this server does not trust.")
             .optional(),
     ];
@@ -611,7 +619,8 @@ impl Action for Add {
     type Args = Adding;
 
     fn argv(args: &Adding) -> Vec<String> {
-        let mut argv = ["cert", "add", args.name.as_str(), "--from", "-"].map(String::from).to_vec();
+        let mut argv =
+            ["cert", "add", args.name.as_str(), "--from", "-"].map(String::from).to_vec();
         if args.replace {
             argv.push("--replace".into());
         }
@@ -761,11 +770,7 @@ impl Action for Remove {
     }
 
     fn examples() -> Examples<Named> {
-        Examples {
-            good: vec![Named { name: "shop".into() }],
-            bad: bad_names(),
-            undo: None,
-        }
+        Examples { good: vec![Named { name: "shop".into() }], bad: bad_names(), undo: None }
     }
 }
 
@@ -1079,7 +1084,17 @@ mod tests {
     fn a_check_names_the_certificate_by_its_first_name_unless_it_is_told_another() {
         assert_eq!(
             argv("certificate.check", json!({ "names": "a.example,b.example" })),
-            ["cert", "get", "a.example", "--name", "a.example", "--name", "b.example", "--check", "--json"]
+            [
+                "cert",
+                "get",
+                "a.example",
+                "--name",
+                "a.example",
+                "--name",
+                "b.example",
+                "--check",
+                "--json"
+            ]
         );
         assert_eq!(
             argv(
@@ -1087,8 +1102,16 @@ mod tests {
                 json!({ "as": "wild", "dns": true, "names": "*.a.example,a.example" })
             ),
             [
-                "cert", "get", "wild", "--name", "*.a.example", "--name", "a.example", "--dns",
-                "--check", "--json"
+                "cert",
+                "get",
+                "wild",
+                "--name",
+                "*.a.example",
+                "--name",
+                "a.example",
+                "--dns",
+                "--check",
+                "--json"
             ]
         );
         let prepared = registered("certificate.check")
@@ -1112,15 +1135,16 @@ mod tests {
     #[test]
     fn a_check_takes_a_name_of_one_word_and_an_order_does_not() {
         // The check tells what is wrong with `localhost`; an order is refused.
-        assert_eq!(
-            argv("certificate.check", json!({ "names": "localhost" }))[2],
-            "localhost"
-        );
+        assert_eq!(argv("certificate.check", json!({ "names": "localhost" }))[2], "localhost");
         let refused = registered("certificate.get")
             .prepare(json!({ "agree_terms": true, "name": "shop", "names": "localhost" }))
             .unwrap_err();
         assert_eq!((refused.kind, refused.field), (Kind::BadValue, Some("names")));
-        assert!(refused.detail.contains("is not a name an authority issues for"), "{}", refused.detail);
+        assert!(
+            refused.detail.contains("is not a name an authority issues for"),
+            "{}",
+            refused.detail
+        );
         // Neither takes a wildcard without dns, a name twice, an empty word,
         // more than 20 names or an address in place of a name.
         let twenty: Vec<String> = (0..20).map(|n| format!("n{n}.example")).collect();
@@ -1137,9 +1161,7 @@ mod tests {
             assert!(refused.detail.contains(words), "{args}: {}", refused.detail);
         }
         assert!(
-            registered("certificate.check")
-                .prepare(json!({ "names": twenty.join(",") }))
-                .is_ok()
+            registered("certificate.check").prepare(json!({ "names": twenty.join(",") })).is_ok()
         );
         let refused = registered("certificate.check")
             .prepare(json!({ "names": more.join(",") }))
@@ -1171,8 +1193,20 @@ mod tests {
                 })
             ),
             [
-                "cert", "get", "wild", "--name", "*.a.example", "--name", "a.example", "--dns",
-                "--dry-run", "--email", "me@example.org", "--agree-terms", "--yes", "--progress"
+                "cert",
+                "get",
+                "wild",
+                "--name",
+                "*.a.example",
+                "--name",
+                "a.example",
+                "--dns",
+                "--dry-run",
+                "--email",
+                "me@example.org",
+                "--agree-terms",
+                "--yes",
+                "--progress"
             ]
         );
         // `this-machine` is cert's own refusal, which the task shows.
@@ -1195,9 +1229,18 @@ mod tests {
         for fine in ["a@b", "me@example.org", "a.b+c@d.e", &format!("{}@x", "a".repeat(252))] {
             assert!(take(fine).is_ok(), "{fine}");
         }
-        for wrong in
-            ["", "a", "@b", "a@", "a@b@c", "a b@c", "a@b c", "a\n@b", "a\t@b", &format!("{}@x", "a".repeat(253))]
-        {
+        for wrong in [
+            "",
+            "a",
+            "@b",
+            "a@",
+            "a@b@c",
+            "a b@c",
+            "a@b c",
+            "a\n@b",
+            "a\t@b",
+            &format!("{}@x", "a".repeat(253)),
+        ] {
             assert!(take(wrong).is_err(), "{wrong:?}");
         }
         let refused = take("nobody").unwrap_err();
@@ -1268,7 +1311,13 @@ mod tests {
         assert_eq!(add.input_max(), 131_072);
         assert_eq!(add.errors(), ["CRT-111", "CRT-112", "CRT-113"]);
         // A read or another change gives no input.
-        assert!(registered("certificate.remove").prepare(first_example("certificate.remove")).unwrap().input.is_none());
+        assert!(
+            registered("certificate.remove")
+                .prepare(first_example("certificate.remove"))
+                .unwrap()
+                .input
+                .is_none()
+        );
     }
 
     #[test]
@@ -1339,7 +1388,8 @@ mod tests {
 
     #[test]
     fn a_name_is_one_certd_and_cert_keep_for_each_change_of_the_page() {
-        for id in ["certificate.get", "certificate.add", "certificate.revoke", "certificate.remove"] {
+        for id in ["certificate.get", "certificate.add", "certificate.revoke", "certificate.remove"]
+        {
             for name in ["This-Machine", "-x", "a..b", "../x", ""] {
                 let mut args = first_example(id);
                 args["name"] = json!(name);

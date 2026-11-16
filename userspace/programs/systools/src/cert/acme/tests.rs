@@ -66,9 +66,7 @@ fn a_check_takes_a_name_of_one_label_for_the_check_to_tell_of() {
     for wrong in ["", "Localhost", "-a", "a_b", "a..b", "*.localhost-", "203.0.113.7"] {
         assert!(check_dns_name_to_check(wrong, true).is_err(), "{wrong}");
     }
-    assert!(
-        check_dns_name_to_check("*.example.org", false).unwrap_err().contains("add --dns")
-    );
+    assert!(check_dns_name_to_check("*.example.org", false).unwrap_err().contains("add --dns"));
     assert_eq!(
         check_names_with(&names(&["localhost", "a.example"]), false, check_dns_name_to_check),
         Ok(())

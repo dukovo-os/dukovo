@@ -59,11 +59,7 @@ impl Action for Name {
     }
 
     fn examples() -> Examples<Nothing> {
-        Examples {
-            good: vec![Nothing {}],
-            bad: vec![json!({ "name": "lab" })],
-            undo: None,
-        }
+        Examples { good: vec![Nothing {}], bad: vec![json!({ "name": "lab" })], undo: None }
     }
 }
 
@@ -212,7 +208,10 @@ mod tests {
             ["hostnamectl", "set-hostname", "lab-renamed.example.org", "--apply"]
         );
         assert_eq!(prepared.files, ["/system/settings/hostname"]);
-        assert_eq!(prepared.probe.as_deref(), Some(&["hostnamectl", "status", "--json"].map(String::from)[..]));
+        assert_eq!(
+            prepared.probe.as_deref(),
+            Some(&["hostnamectl", "status", "--json"].map(String::from)[..])
+        );
         assert!(rename.compares());
         assert_eq!(prepared.trial, None);
         assert!(prepared.ansible.become_root);
@@ -224,7 +223,8 @@ mod tests {
     fn what_is_compared_is_the_name_the_command_prints_and_the_name_in_its_file() {
         let rename = registered("machine.rename");
         let args = json!({ "name": "lab-renamed.example.org" });
-        let status = r#"{"format":1,"name":"dukovo","first":"dukovo","domain":null,"local":"dukovo.local"}"#;
+        let status =
+            r#"{"format":1,"name":"dukovo","first":"dukovo","domain":null,"local":"dukovo.local"}"#;
         assert_eq!(rename.probed(&args, status).as_deref(), Some("dukovo"));
         assert_eq!(rename.probed(&args, "{}"), None);
         assert_eq!(rename.probed(&args, "dukovo"), None);
@@ -240,9 +240,15 @@ mod tests {
     #[test]
     fn a_name_is_what_hostname_asks_for_and_what_is_not_is_refused_with_the_field() {
         let rename = registered("machine.rename");
-        for fine in
-            ["a", "lab", "lab-renamed", "lab-renamed.example.org", "A1.b-2.c", &"a".repeat(63), &format!("{}.{}", "a".repeat(30), "b".repeat(33))]
-        {
+        for fine in [
+            "a",
+            "lab",
+            "lab-renamed",
+            "lab-renamed.example.org",
+            "A1.b-2.c",
+            &"a".repeat(63),
+            &format!("{}.{}", "a".repeat(30), "b".repeat(33)),
+        ] {
             let argv = rename.prepare(json!({ "name": fine })).unwrap().argv;
             assert_eq!(argv[2], fine);
         }
@@ -262,11 +268,7 @@ mod tests {
             &format!("{}.{}", "a".repeat(32), "b".repeat(32)),
         ] {
             let refused = rename.prepare(json!({ "name": wrong })).unwrap_err();
-            assert_eq!(
-                (refused.kind, refused.field),
-                (Kind::BadValue, Some("name")),
-                "{wrong:?}"
-            );
+            assert_eq!((refused.kind, refused.field), (Kind::BadValue, Some("name")), "{wrong:?}");
             assert!(refused.detail.ends_with("Nothing was done."), "{}", refused.detail);
         }
         assert_eq!(rename.prepare(json!({})).unwrap_err().kind, Kind::BadRequest);

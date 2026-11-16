@@ -1096,8 +1096,7 @@ fn order_certificate(options: &Get, trace: &mut Trace) -> Result<i32, Fail> {
         serving_for_http(nginx_runs())
     };
     let with_inbound = matches!(serving, Ok(Serving::Files(_)));
-    let facts =
-        preflight::gather(now, &looked, !options.dns, &directory, &firewall, with_inbound);
+    let facts = preflight::gather(now, &looked, !options.dns, &directory, &firewall, with_inbound);
     let verdict = preflight::check(&facts);
     for warning in &verdict.warnings {
         eprintln!("cert: {warning}");
@@ -1189,8 +1188,7 @@ fn check_order(options: &Get) -> Result<i32, Fail> {
     // As an order has it: this command's own socket has no inbound right,
     // what nginx or a service holds has.
     let with_inbound = !matches!(holder, None | Some(Holder::Free | Holder::Other(_)));
-    let mut facts =
-        preflight::gather(now, &looked, http, &directory, &firewall, with_inbound);
+    let mut facts = preflight::gather(now, &looked, http, &directory, &firewall, with_inbound);
     facts.holder = holder;
     let terms_url = terms_url_within(&directory, TERMS_WAIT);
     let dns: Vec<dns::Record> = if options.dns {

@@ -716,7 +716,10 @@ mod tests {
         assert_eq!(held(&[ssh.clone(), nginx.clone()], true), Holder::Nginx);
         assert_eq!(held(&[certd.clone(), nginx.clone()], true), Holder::Nginx);
         assert_eq!(held(std::slice::from_ref(&certd), false), Holder::Certd);
-        assert_eq!(held(std::slice::from_ref(&wide), false), Holder::Other(String::from("lighttpd")));
+        assert_eq!(
+            held(std::slice::from_ref(&wide), false),
+            Holder::Other(String::from("lighttpd"))
+        );
         assert_eq!(held(&[certd, wide], false), Holder::Other(String::from("lighttpd")));
         // A socket nobody that runs names: nginx when it runs, as an order
         // assumes, else some program.
