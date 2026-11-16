@@ -163,20 +163,24 @@ export function runsAs(services) {
   return `${accounts.length === 1 ? 'its own account' : 'its own accounts'}, ${accounts.join(', ')}`;
 }
 
-/** What a permission lets the app do, with its folders, ports and apps: each a line of the "May use" row. */
-export function mayUseOf(info) {
-  return listOf(info.permissions).filter((permission) => permission && (isText(permission.lets) || isText(permission.name))).map((permission) => {
-    const folders = listOf(permission.folders).filter((one) => isText(one?.folder)).map((one) => `${one.folder}${isText(one.access) ? ` (${one.access})` : ''}`);
-    const ports = listOf(permission.ports).map(String);
-    const apps = listOf(permission.apps).filter(isText);
-    return [
-      isText(permission.lets) ? permission.lets : permission.name,
-      folders.length > 0 && `folders ${folders.join(', ')}`,
-      ports.length > 0 && `${ports.length === 1 ? 'port' : 'ports'} ${ports.join(', ')}`,
-      apps.length > 0 && `with ${apps.join(', ')}`,
-    ].filter(Boolean).join(' · ');
-  });
+/** What one permission lets the app do, with its folders, ports and apps: a line of the "May use" row. */
+export function permissionLine(permission) {
+  const folders = listOf(permission.folders).filter((one) => isText(one?.folder)).map((one) => `${one.folder}${isText(one.access) ? ` (${one.access})` : ''}`);
+  const ports = listOf(permission.ports).map(String);
+  const apps = listOf(permission.apps).filter(isText);
+  return [
+    isText(permission.lets) ? permission.lets : permission.name,
+    folders.length > 0 && `folders ${folders.join(', ')}`,
+    ports.length > 0 && `${ports.length === 1 ? 'port' : 'ports'} ${ports.join(', ')}`,
+    apps.length > 0 && `with ${apps.join(', ')}`,
+  ].filter(Boolean).join(' · ');
 }
+
+/** Whether `permission` has something to say: its words or its name. */
+export const isPermission = (permission) => Boolean(permission) && (isText(permission.lets) || isText(permission.name));
+
+/** What the permissions of the app let it do, each a line of the "May use" row. */
+export const mayUseOf = (info) => listOf(info.permissions).filter(isPermission).map(permissionLine);
 
 /** What an interface or a socket that the app provides or uses is called: "fastcgi at /run/php-fpm.sock". */
 export const linkWords = (link) => [link?.interface, link?.socket && `at ${link.socket}`].filter(isText).join(' ');
@@ -194,6 +198,40 @@ export function usedByOf(info) {
   return info.used_by.filter((one) => isText(one?.id)).map((one) => ({
     id: one.id, name: isText(one.name) ? one.name : one.id, what: isText(one.what) ? one.what : null, href: appHref(one.id),
   }));
+}
+
+/** The bundles whose own pages manage what they serve: nginx's websites and PostgreSQL's databases. */
+export const NGINX_ID = 'org.nginx.nginx';
+export const POSTGRESQL_ID = 'org.postgresql.postgresql';
+
+/**
+ * Where each of those apps' work is listed: the name of the row, the page
+ * that manages it, the list that says how many there are, and whether only
+ * an administrator may read it. `key` names the answer's list and the page
+ * in the links.
+ */
+const MANAGED = new Map([
+  [NGINX_ID, { key: 'websites', name: 'Websites', path: '/websites', read: '/api/1/websites', admin: false }],
+  [POSTGRESQL_ID, { key: 'databases', name: 'Databases', path: '/databases', read: '/api/1/databases', admin: true }],
+]);
+
+/** The address to read to count what app `id` manages, or null when it manages nothing or the person may not read the list. */
+export function manageRead(id, admin) {
+  const one = MANAGED.get(id);
+  return one && (admin || !one.admin) ? one.read : null;
+}
+
+/**
+ * The line of an app that has pages to manage what it serves, `{name, count,
+ * href}`: "Websites: 2 · Manage". `answer` is what `manageRead` gave (null
+ * when it was not read, and then the line has no count), and `links` says
+ * which pages this console has. Null for any other app.
+ */
+export function manageOf(id, answer, links) {
+  const one = MANAGED.get(id);
+  if (!one || links?.[one.key] !== true) return null;
+  const list = answer?.[one.key];
+  return { name: one.name, count: Array.isArray(list) ? list.length : null, href: one.path };
 }
 
 /** The data folder of each service of the app, which ADR 0385 puts at `/shared/services/ID/ACCOUNT`. */

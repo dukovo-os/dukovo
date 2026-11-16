@@ -46,7 +46,7 @@ export async function show(view) {
   const wanted = idOf(view.rest);
   const isApp = wanted !== '';
   const admin = view.session.admin;
-  const links = { updates: hasPath('/updates') };
+  const links = { updates: hasPath('/updates'), websites: hasPath('/websites'), databases: hasPath('/databases') };
   const addable = hasPath(ADD_PATH);
 
   let apps = null;
@@ -54,6 +54,7 @@ export async function show(view) {
   let info = null;
   let services = null;
   let settings = null;
+  let managed = null;
   let row = null;
   let latest = 0;
   let failed = false;
@@ -128,8 +129,9 @@ export async function show(view) {
   const list = makeList(view, {
     updateAll: (button) => run(updateAllCall(), button, UPDATE_ALL_WORDS),
   });
-  // The panel is read only for an app's page.
+  // The panel and its words are read only for an app's page.
   const app = isApp ? (await import('./app.js')).makeApp(view, act) : null;
+  const model = isApp ? await import('./app-model.js') : null;
   const missingWords = h('p', {});
   const missing = h('div', { class: 'card apps-missing', role: 'status', hidden: true },
     missingWords, h('p', {}, h('a', { href: '/apps' }, 'All the apps')));
@@ -184,7 +186,7 @@ export async function show(view) {
 
   // ---- reading ----
 
-  /** Reads the apps, the last check and, for an app's page, the app: only the last read counts. */
+  /** Reads the apps, the last check and, for an app's page, the app and what it manages: only the last read counts. */
   async function read() {
     latest += 1;
     const mine = latest;
@@ -196,12 +198,14 @@ export async function show(view) {
           return { error };
         })
         : null;
-      const [bundles, checked, found, spark, rule] = await Promise.all([
+      const counted = one && model.manageRead(wanted, admin);
+      const [bundles, checked, found, spark, rule, manage] = await Promise.all([
         view.api.get('/api/1/apps'),
         soft(view.api.get('/api/1/updates'), undefined),
         one,
         one && soft(view.api.get('/api/1/services'), null),
         one && soft(view.api.get('/api/1/updates/settings'), null),
+        counted && soft(view.api.get(counted), null),
       ]);
       if (mine !== latest) return;
       const listed = (Array.isArray(bundles?.bundles) ? bundles.bundles : []).some((bundle) => bundle?.id === wanted);
@@ -212,6 +216,7 @@ export async function show(view) {
       info = found?.answer ?? null;
       services = spark;
       settings = rule;
+      managed = manage;
       failed = false;
       draw();
     } catch (error) {
@@ -252,7 +257,7 @@ export async function show(view) {
     const own = rowsOf({ bundles: [info] }, last);
     row = [...rows.everyone, ...rows.yours].find((one) => one.id === info.id) ?? [...own.everyone, ...own.yours][0];
     app.set({
-      info, row, show: services, settings, admin, links, sheet: row.update.state === 'update' ? stopped.get(info.id) ?? null : null,
+      info, row, show: services, settings, managed, admin, links, sheet: row.update.state === 'update' ? stopped.get(info.id) ?? null : null,
     });
   }
 

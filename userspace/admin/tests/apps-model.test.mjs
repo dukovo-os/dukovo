@@ -13,8 +13,8 @@ import {
   appHref, askedMore, checkOf, fixesWords, flawWords, offersOf, sheetOf, updateWords,
 } from '../pages/apps/apps-model.js';
 import {
-  bannerOf, byline, dataFolders, fixedWords, flawLine, flawsOf, heldWords, linksOf, mayUseOf, noFlawsWords, NO_PREVIOUS,
-  REMOVE_CHOICES, removeLead, rollbackWords, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf, usersWords,
+  bannerOf, byline, dataFolders, fixedWords, flawLine, flawsOf, heldWords, linksOf, manageOf, manageRead, mayUseOf, noFlawsWords,
+  NO_PREVIOUS, permissionLine, REMOVE_CHOICES, removeLead, rollbackWords, ruleWords, runsAs, serviceLines, servicesOf, sizeWords, usedByOf, usersWords,
   versionsOf,
 } from '../pages/apps/app-model.js';
 import {
@@ -120,12 +120,12 @@ test('the flaws of the version installed are counted with the worst, and none kn
 test('the list puts the flawed first, the worst first, then the updates, then the rest by name', () => {
   const rows = rowsOf(list(), last());
   assert.deepEqual(idsOf(rows.everyone), [
-    'io.valkey.valkey', 'net.php.php-fpm', 'org.postgresql.postgresql', 'io.nginx.nginx', 'org.python.python', 'org.sqlite.sqlite',
+    'io.valkey.valkey', 'net.php.php-fpm', 'org.postgresql.postgresql', 'org.nginx.nginx', 'org.python.python', 'org.sqlite.sqlite',
   ]);
   const flawed = list();
-  flawed.bundles.find((one) => one.id === 'io.nginx.nginx').flaws = { state: 'known', count: 1, worst: 'critical' };
+  flawed.bundles.find((one) => one.id === 'org.nginx.nginx').flaws = { state: 'known', count: 1, worst: 'critical' };
   flawed.bundles.find((one) => one.id === 'org.python.python').flaws = { state: 'known', count: 3, worst: 'medium' };
-  assert.deepEqual(idsOf(rowsOf(flawed, last()).everyone).slice(0, 3), ['io.nginx.nginx', 'io.valkey.valkey', 'org.python.python'], 'critical, high, medium');
+  assert.deepEqual(idsOf(rowsOf(flawed, last()).everyone).slice(0, 3), ['org.nginx.nginx', 'io.valkey.valkey', 'org.python.python'], 'critical, high, medium');
 });
 
 test('two apps of one name are in the order of their IDs, and names are compared without their case', () => {
@@ -149,22 +149,22 @@ test('an app that is a person\'s own is listed apart, Yours, with the commands t
 test('a row says its update from the check, then from the list, and what it says when there is none depends on what the check says', () => {
   const byId = (rows, id) => rows.everyone.find((row) => row.id === id);
   const checked = rowsOf(list(), last());
-  assert.equal(byId(checked, 'io.nginx.nginx').update.words, 'Up to date');
+  assert.equal(byId(checked, 'org.nginx.nginx').update.words, 'Up to date');
   assert.equal(byId(checked, 'io.valkey.valkey').update.words, '8.0.4 · fixes only');
   assert.equal(byId(checked, 'net.php.php-fpm').update.state, 'waiting');
   assert.equal(byId(checked, 'org.sqlite.sqlite').update.words, 'Held at 3.47.2');
   // No check has run: the list's own `update` is what is known, and the rest are not known to be current.
   const none = rowsOf(list(), null);
   assert.equal(byId(none, 'org.postgresql.postgresql').update.words, '17.3 · new version');
-  assert.equal(byId(none, 'io.nginx.nginx').update.words, 'Not checked yet');
-  assert.equal(byId(rowsOf(list(), undefined), 'io.nginx.nginx').update.words, 'Not known');
-  assert.equal(byId(rowsOf(list(), last({ unchecked: [{ item: 'apps', why: 'x' }] })), 'io.nginx.nginx').update.words, 'Could not check');
+  assert.equal(byId(none, 'org.nginx.nginx').update.words, 'Not checked yet');
+  assert.equal(byId(rowsOf(list(), undefined), 'org.nginx.nginx').update.words, 'Not known');
+  assert.equal(byId(rowsOf(list(), last({ unchecked: [{ item: 'apps', why: 'x' }] })), 'org.nginx.nginx').update.words, 'Could not check');
 });
 
 test('a held app is held whatever the check says, and says the version it is held at', () => {
   const held = list();
-  held.bundles.find((one) => one.id === 'io.nginx.nginx').held = true;
-  const row = rowsOf(held, last()).everyone.find((one) => one.id === 'io.nginx.nginx');
+  held.bundles.find((one) => one.id === 'org.nginx.nginx').held = true;
+  const row = rowsOf(held, last()).everyone.find((one) => one.id === 'org.nginx.nginx');
   assert.equal(row.held, true);
   assert.equal(row.update.state, 'held');
   assert.equal(row.update.words, 'Held at 1.27.3');
@@ -191,10 +191,10 @@ test('the states the palette filters by, and the words after an app\'s name in i
   assert.equal(stateWord(rows['org.sqlite.sqlite']), 'held');
   assert.equal(stateWord(rows['org.postgresql.postgresql']), 'update');
   assert.equal(stateWord(rows['net.php.php-fpm']), 'update');
-  assert.equal(stateWord(rows['io.nginx.nginx']), null);
+  assert.equal(stateWord(rows['org.nginx.nginx']), null);
   assert.equal(paletteWords(rows['io.valkey.valkey']), '8.0.3 · update waits · 2 known flaws, worst high');
   assert.equal(paletteWords(rows['org.sqlite.sqlite']), '3.47.2 · held');
-  assert.equal(paletteWords(rows['io.nginx.nginx']), '1.27.3');
+  assert.equal(paletteWords(rows['org.nginx.nginx']), '1.27.3');
   assert.deepEqual(updatable(Object.values(rows)).map((row) => row.id).sort(), ['io.valkey.valkey', 'org.postgresql.postgresql']);
 });
 
@@ -278,6 +278,31 @@ test('what an app may use is each permission in the system\'s words with its fol
   ]);
   assert.deepEqual(mayUseOf(valkey({ permissions: [{ name: 'x.y', ports: [1, 2], apps: ['io.a.a'] }, null, {}] })), ['x.y · ports 1, 2 · with io.a.a']);
   assert.deepEqual(mayUseOf(plain('a.b', 'AB', '1')), []);
+});
+
+test('one permission is said by itself as the list says all of them', () => {
+  assert.equal(permissionLine({ lets: 'reach any address', name: 'network.outbound' }), 'reach any address');
+  assert.equal(permissionLine({ name: 'net.listen', ports: [80, 443] }), 'net.listen · ports 80, 443');
+  assert.equal(permissionLine({ lets: 'use PHP', folders: [{ folder: '/shared/www', access: 'read' }, { access: 'write' }], apps: ['net.php.php'] }), 'use PHP · folders /shared/www (read) · with net.php.php');
+});
+
+test('nginx has a line for its websites and PostgreSQL for its databases, with the count when the list was read, and no other app has one', () => {
+  const links = { websites: true, databases: true };
+  assert.deepEqual(manageOf('org.nginx.nginx', { websites: [{}, {}] }, links), { name: 'Websites', count: 2, href: '/websites' });
+  assert.deepEqual(manageOf('org.nginx.nginx', { websites: [] }, links), { name: 'Websites', count: 0, href: '/websites' });
+  assert.deepEqual(manageOf('org.postgresql.postgresql', { databases: [{}, {}, {}] }, links), { name: 'Databases', count: 3, href: '/databases' });
+  assert.equal(manageOf('org.nginx.nginx', null, links).count, null);
+  assert.equal(manageOf('org.nginx.nginx', { databases: [{}] }, links).count, null, 'the list of the other page is not this one\'s');
+  assert.equal(manageOf('org.nginx.nginx', { websites: [{}] }, { websites: false }), null, 'no line for a page this console does not have');
+  assert.equal(manageOf('io.valkey.valkey', { websites: [{}] }, links), null);
+});
+
+test('the list that counts what an app manages is read for an administrator, and for a reader only when anyone may read it', () => {
+  assert.equal(manageRead('org.nginx.nginx', true), '/api/1/websites');
+  assert.equal(manageRead('org.nginx.nginx', false), '/api/1/websites');
+  assert.equal(manageRead('org.postgresql.postgresql', true), '/api/1/databases');
+  assert.equal(manageRead('org.postgresql.postgresql', false), null);
+  assert.equal(manageRead('io.valkey.valkey', true), null);
 });
 
 test('what an app provides and uses are its interfaces and sockets, and an older bundle info that says none leaves the rows out', () => {
@@ -412,8 +437,8 @@ test('the task that updates every app counts for an app that has an update, and 
   const jobs = makeJobs();
   jobs.started(12, 'apps.update-all', {});
   assert.equal(jobs.of('io.valkey.valkey', true).id, 12);
-  assert.equal(jobs.of('io.nginx.nginx', false), null);
-  assert.equal(jobs.of('io.nginx.nginx'), null);
+  assert.equal(jobs.of('org.nginx.nginx', false), null);
+  assert.equal(jobs.of('org.nginx.nginx'), null);
   assert.equal(jobs.any(), true);
 });
 
