@@ -1770,12 +1770,16 @@ fn info(
     };
     if json {
         let said = shared.grants().of(asker, id, &installed.key);
+        let started = started_services(&manifest, installed.place);
+        let used_by = used_by(shared, &manifest, installed.place);
         let installation = sheet::Installation {
             installed: installed.when,
             folder: &folder,
             data: &data,
             previous: kept.as_deref(),
             held,
+            started: &started,
+            used_by: &used_by,
         };
         let document = crate::json::line(&sheet::details(&facts, &said, &installation))
             .map_err(|fail| fail.message)?;
@@ -1789,6 +1793,44 @@ fn info(
     let kept = kept.map_or_default(|v| format!("; it can go back to {v}"));
     let held = if held { "; held at its version" } else { "" };
     Ok(format!("installed on {when}; in {folder}; its data: {data}{kept}{held}"))
+}
+
+/// The names of `manifest`'s services that Spark starts at each boot: the
+/// ones whose service files, which only a bundle installed for everyone
+/// has, say they are enabled.
+fn started_services(manifest: &Manifest, place: Place) -> Vec<String> {
+    if place != Place::Everyone {
+        return Vec::new();
+    }
+    manifest
+        .services
+        .iter()
+        .filter(|service| {
+            fs::read_to_string(services::file_path(&service.name.0))
+                .ok()
+                .and_then(|text| services::enabled(&text))
+                .unwrap_or(false)
+        })
+        .map(|service| service.name.0.clone())
+        .collect()
+}
+
+/// The bundles installed in `place` whose manifests use what `manifest`
+/// provides: those the manifest of which cannot be read are left out.
+fn used_by(shared: &Shared, manifest: &Manifest, place: Place) -> Vec<sheet::Dependent> {
+    if manifest.provides.is_empty() {
+        return Vec::new();
+    }
+    let ids: Vec<String> = shared
+        .lock()
+        .installed
+        .iter()
+        .filter(|installed| installed.place == place)
+        .map(|installed| installed.id.clone())
+        .collect();
+    let others: Vec<Manifest> =
+        ids.iter().filter_map(|id| installed_manifest(place, id).ok()).collect();
+    sheet::dependents(manifest, &others)
 }
 
 fn remove(

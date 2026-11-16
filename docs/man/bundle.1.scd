@@ -720,6 +720,28 @@ bundle you can run, by ID and then yours before everyone's:
 *services*
 	What each of its services is, in a line, as the sheet says it.
 
+*service_list*
+	The same services as a list of objects: *name*; *account*, the account
+	it runs as; and *start*, *on* when Spark starts it at each boot, *off*
+	when it does not, which is also so for one installed for yourself or
+	one an administrator has not enabled yet.
+
+*license*
+	Its license, as the SPDX expression its manifest gives.
+
+*provides*, *uses*
+	The sockets and interfaces its manifest offers and the ones it
+	talks to, each an object of *interface*, as *NAME/MAJOR*, and
+	*socket*, which is the socket's name for *provides* and the
+	provider's ID and the name, *ID/NAME*, for *uses*; each is *null*
+	where the entry names the other.
+
+*used_by*
+	The bundles installed in the same place whose *uses* name an
+	interface or a socket this bundle *provides*, each an object of *id*,
+	*name* and *what*, the interface or the socket, as *uses* gives it,
+	that they use. A bundle that uses nothing of it is not listed.
+
 *grants*
 	What you said of its permissions, each an object: *permission*,
 	*said* (*allow* or *never*), *since*, and *given*, what it gives, in
