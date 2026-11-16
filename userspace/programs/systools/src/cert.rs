@@ -656,13 +656,11 @@ fn add_certificate(args: &mut Args) -> Result<i32, Fail> {
         checked.details.names.join(", "),
         util::time_text(checked.details.not_after, "%F", true)
     );
-    if let Err(why) = history::append(
+    history::record(
         &store,
         &lock,
         &history::Entry::new(now, &name, event, &detail, history::By::Cert),
-    ) {
-        eprintln!("cert: the history cannot be written: {why}");
-    }
+    );
     drop(lock);
     println!(
         "{name} added: {}, runs out {}",
@@ -702,6 +700,14 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
         return Err(fail(format!("{}: remove it there first", each.join("; "))));
     }
     store.remove(&lock, &name).map_err(fail)?;
+    let entry = history::Entry::new(
+        now(),
+        &name,
+        history::Event::Removed,
+        "taken out of the store",
+        history::By::Cert,
+    );
+    history::record(&store, &lock, &entry);
     drop(lock);
     println!("{name} removed");
     if let Err(why) = tell_spark(power::CONTROL, &name) {
@@ -711,7 +717,8 @@ fn remove(args: &mut Args) -> Result<i32, Fail> {
 }
 
 /// `cert get NAME [--name DNS]... [--dns] [--staging] [--dry-run] [--directory URL]
-/// [--email ADDRESS] [--agree-terms] [--key TYPE] [--profile PROFILE] [--yes]`.
+/// [--email ADDRESS] [--agree-terms] [--key TYPE] [--profile PROFILE] [--yes]
+/// [--progress]`, or with `--check [--json]` what the checks before it find.
 fn get(args: &mut Args) -> Result<i32, Fail> {
     let mut options = acme::Get {
         name: String::new(),
@@ -725,6 +732,9 @@ fn get(args: &mut Args) -> Result<i32, Fail> {
         key: None,
         profile: None,
         yes: false,
+        check: false,
+        progress: false,
+        json: false,
     };
     let mut name = None;
     let text = |args: &mut Args| -> Result<String, Fail> {
@@ -744,6 +754,9 @@ fn get(args: &mut Args) -> Result<i32, Fail> {
             }
             Arg::Long(option) if option == "profile" => options.profile = Some(text(args)?),
             Arg::Long(option) if option == "yes" => options.yes = true,
+            Arg::Long(option) if option == "check" => options.check = true,
+            Arg::Long(option) if option == "progress" => options.progress = true,
+            Arg::Long(option) if option == "json" => options.json = true,
             Arg::Operand(operand) if name.is_none() => name = Some(operand),
             other => return Err(args.unknown(&other)),
         }
@@ -754,6 +767,14 @@ fn get(args: &mut Args) -> Result<i32, Fail> {
     if options.directory.is_some() && options.staging {
         return Err(usage(
             "--staging and --directory each name an authority: give one of them".into(),
+        ));
+    }
+    if options.json && !options.check {
+        return Err(usage("--json is for --check: it tells what the checks found".into()));
+    }
+    if options.check && options.progress {
+        return Err(usage(
+            "--check orders nothing, so it has no steps: leave out --progress".into(),
         ));
     }
     if let Some(email) = &options.email
@@ -813,6 +834,14 @@ fn renew(args: &mut Args) -> Result<i32, Fail> {
     }
     let lock = store.lock().map_err(fail)?;
     let details = machine::renew(&store, &lock, &util::hostname(), now).map_err(fail)?;
+    let entry = history::Entry::new(
+        now,
+        &name,
+        history::Event::Made,
+        &format!("for {}", util::hostname()),
+        history::By::Cert,
+    );
+    history::record(&store, &lock, &entry);
     drop(lock);
     println!(
         "{name} made anew: SHA-256 {}, runs out {}",

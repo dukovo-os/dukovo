@@ -129,6 +129,15 @@ pub fn append(store: &Store, _lock: &Lock, entry: &Entry) -> Result<(), String> 
     append_to(&store.history(), entry)
 }
 
+/// Appends `entry` as [`append`] does, holding the store's lock. A failure
+/// is told on standard error and goes no further: a history that cannot be
+/// written does not stop what it records.
+pub fn record(store: &Store, lock: &Lock, entry: &Entry) {
+    if let Err(why) = append(store, lock, entry) {
+        eprintln!("cert: the history cannot be written: {why}");
+    }
+}
+
 /// Appends `entry`, taking the store's lock for the moment it takes. A
 /// failure is told on standard error and goes no further: a history that
 /// cannot be written does not stop what it records.

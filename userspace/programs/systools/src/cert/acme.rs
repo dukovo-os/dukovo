@@ -14,7 +14,10 @@
 //! - [`preflight`] checks, before the authority is asked, what a person can
 //!   fix at once: the clock, the names' addresses and the firewall;
 //! - [`answer`] is the responder that answers the authority on port 80;
-//! - [`dns`] is DNS-01 by hand.
+//! - [`dns`] is DNS-01 by hand;
+//! - [`steps`] writes the lines that `--progress` adds;
+//! - [`check`] is what `cert get --check` tells of the checks before an
+//!   order.
 //!
 //! The answers to HTTP-01 are served in one of two ways, by what holds port
 //! 80: when it is free, `acme-answer` binds it for the length of the order;
@@ -25,10 +28,12 @@
 //! certd did, and `cert show NAME` what a certificate holds.
 
 pub mod answer;
+pub mod check;
 pub mod dns;
 pub mod http;
 pub mod preflight;
 pub mod problems;
+pub mod steps;
 
 use std::fs;
 use std::io::{self, Write};
@@ -56,7 +61,10 @@ use x509_cert::ext::pkix::AuthorityKeyIdentifier;
 
 use self::answer::Responder;
 use self::http::TufClient;
+use self::preflight::Holder;
+use self::steps::Steps;
 use super::add::{self, Text};
+use super::history::{self, By, Event};
 use super::inspect::{self, Details};
 use super::store::{Acme, Challenge, Files, KeyKind, Kind, Lock, Store, Stored};
 use super::{now, spark_warning, tell_spark};
@@ -196,6 +204,14 @@ pub struct Get {
     pub key: Option<KeyKind>,
     pub profile: Option<String>,
     pub yes: bool,
+    /// Run the checks before an order and tell what they found, without
+    /// ordering (`--check`).
+    pub check: bool,
+    /// Write `step N of M: WORDS` lines, and for DNS the records to add
+    /// (`--progress`).
+    pub progress: bool,
+    /// Tell the checks as JSON (`--json`, with `--check`).
+    pub json: bool,
 }
 
 /// Whether `directory` is Let's Encrypt's own, whose certificates the
@@ -557,6 +573,9 @@ fn serve(serving: &Serving, answers: &[(String, String)]) -> Result<Guard, Strin
 pub struct Setup<'a> {
     pub client: &'a TufClient,
     pub now: i64,
+    /// The steps the order tells as it goes: none for an order nobody
+    /// watches by its steps.
+    pub steps: Steps,
 }
 
 /// Runs an order for `wanted` on `account`: the answers, the wait, the
@@ -634,7 +653,7 @@ pub async fn order(
     say(serving.words());
     let guard = serve(serving, &answers)?;
     if let Serving::ByHand { enter } = serving {
-        by_hand(&records, *enter, say)?;
+        by_hand(&records, *enter, say, &setup.steps)?;
     }
     {
         let mut authorizations = ordered.authorizations();
@@ -647,6 +666,10 @@ pub async fn order(
             challenge.set_ready().await.map_err(explain)?;
         }
     }
+    setup.steps.next(match serving {
+        Serving::ByHand { .. } => "the authority checks the records",
+        _ => "the authority checks port 80",
+    });
     say("waiting for the authority to check the names");
     let status = ordered.poll_ready(&POLL).await.map_err(explain)?;
     drop(guard);
@@ -655,6 +678,7 @@ pub async fn order(
     }
     say("the names are proven");
 
+    setup.steps.next("getting the certificate");
     say(&format!("making a key ({})", wanted.key.word()));
     let (key, request) = make_request(&wanted.names, wanted.key)?;
     ordered.finalize_csr(&request).await.map_err(explain)?;
@@ -664,9 +688,21 @@ pub async fn order(
 }
 
 /// Shows the records to add, waits for Enter, then for the resolver to show
-/// each.
-fn by_hand(records: &[dns::Record], enter: bool, say: &mut dyn FnMut(&str)) -> Result<(), String> {
+/// each. Under `--progress` each record is also given as an `add:` line, and
+/// the wait says how many looks it has made and how many records it found.
+fn by_hand(
+    records: &[dns::Record],
+    enter: bool,
+    say: &mut dyn FnMut(&str),
+    steps: &Steps,
+) -> Result<(), String> {
+    steps.next("waiting for the TXT records to show");
     print!("{}", dns::instructions(records, enter));
+    if steps.is_on() {
+        for record in records {
+            println!("{}", record.add_line());
+        }
+    }
     let _ = io::stdout().flush();
     if enter {
         match crate::prompt::ask("", true) {
@@ -681,6 +717,23 @@ fn by_hand(records: &[dns::Record], enter: bool, say: &mut dyn FnMut(&str)) -> R
         &mut |at| dns::lookup(at),
         &mut std::thread::sleep,
         say,
+        &mut dns::Watch {
+            // What the zone said of the name before the record was there is
+            // not kept for its time to live.
+            before: &mut || {
+                let _ = crate::resolvectl::flush_caches();
+            },
+            after: &mut |look| {
+                steps.again(&format!(
+                    "waiting for the TXT records to show: looked {} {}, {} of {} found",
+                    look.number,
+                    if look.number == 1 { "time" } else { "times" },
+                    look.found,
+                    look.records
+                ));
+                steps.percent(look.number * 100 / look.of.max(1));
+            },
+        },
     )
 }
 
@@ -830,18 +883,24 @@ fn days_left(stored: &Stored, now: i64) -> Result<(Details, i64), String> {
     Ok((details, days))
 }
 
-/// `cert get`.
-pub fn get(options: &Get) -> Result<i32, Fail> {
-    super::need_root()?;
-    let now = now();
-    super::need_clock(now)?;
-    let name = options.name.clone();
-    tuf_check_name(&name)?;
-    let store = Store::system();
+/// What `cert get` works out before it asks for anything: what the
+/// certificate is now, and what is asked of which authority.
+struct Plan {
+    existing: Option<Stored>,
+    wanted: Wanted,
+    directory: Url,
+}
+
+/// Works out what `options` ask for: from the command line, else from the
+/// certificate that is there, else from the defaults. A command that only
+/// checks takes no lock, which a person who is not root cannot take; the
+/// store may be read without one.
+fn plan(options: &Get, store: &Store, locked: bool) -> Result<Plan, Fail> {
+    let name = &options.name;
     let existing = {
-        let lock = store.lock().map_err(fail)?;
-        let found = match store.generation(&name).map_err(fail)? {
-            Some(_) => Some(store.get(&name).map_err(fail)?),
+        let lock = if locked { Some(store.lock().map_err(fail)?) } else { None };
+        let found = match store.generation(name).map_err(fail)? {
+            Some(_) => Some(store.get(name).map_err(fail)?),
             None => None,
         };
         drop(lock);
@@ -856,9 +915,6 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
         }
         None => None,
     };
-
-    // What is asked: what the command line says, else what the certificate
-    // already holds, else the defaults.
     let names = if !options.names.is_empty() {
         options.names.clone()
     } else if let Some(kept) = &kept {
@@ -887,6 +943,63 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
         key: options.key.or(kept.as_ref().map(|kept| kept.key)).unwrap_or(KeyKind::EcdsaP256),
         profile: options.profile.clone().or(kept.as_ref().and_then(|kept| kept.profile.clone())),
     };
+    Ok(Plan { existing, wanted, directory })
+}
+
+/// What an order says of its failure for the history, which `get` fills in
+/// where it knows more than the failure's words.
+#[derive(Default)]
+struct Trace {
+    /// The order has begun: what fails from here on is the history's.
+    began: Option<std::time::Instant>,
+    /// The failure with the IDs of the checks that found it, if it was
+    /// one of them.
+    detail: Option<String>,
+}
+
+/// The authority as a person names it: Let's Encrypt, else its host.
+pub fn authority_words(directory: &str) -> String {
+    if directory == LETS_ENCRYPT {
+        String::from("Let's Encrypt")
+    } else if directory == LETS_ENCRYPT_STAGING {
+        String::from("Let's Encrypt staging")
+    } else {
+        Url::parse(directory).map_or_else(|_| directory.to_string(), |url| url.host().to_string())
+    }
+}
+
+/// `cert get`.
+pub fn get(options: &Get) -> Result<i32, Fail> {
+    if options.check {
+        return check_order(options);
+    }
+    let mut trace = Trace::default();
+    let result = order_certificate(options, &mut trace);
+    if let (Err(failure), Some(began)) = (&result, trace.began)
+        && !options.dry_run
+    {
+        let detail = trace.detail.clone().unwrap_or_else(|| failure.message.replace('\n', "; "));
+        let entry = history::Entry::new(now(), &options.name, Event::Failed, &detail, By::Cert);
+        history::note(&Store::system(), &entry.took(elapsed_ms(began)));
+    }
+    result
+}
+
+/// The milliseconds since `began`.
+fn elapsed_ms(began: std::time::Instant) -> u64 {
+    u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// `cert get` without `--check`: asks the authority and installs what it
+/// gives.
+fn order_certificate(options: &Get, trace: &mut Trace) -> Result<i32, Fail> {
+    super::need_root()?;
+    let now = now();
+    super::need_clock(now)?;
+    let name = options.name.clone();
+    tuf_check_name(&name)?;
+    let store = Store::system();
+    let Plan { existing, wanted, directory } = plan(options, &store, true)?;
     let terminal = crate::prompt::interactive();
     if options.dns && !terminal && !options.yes {
         return Err(fail(String::from(
@@ -905,6 +1018,18 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
     {
         return Err(fail(String::from("nothing was changed")));
     }
+
+    // The steps of the order, which `--progress` tells: the checks, the
+    // order, the authority's check (and for DNS the records before it), the
+    // certificate, and what is installed.
+    let installs = !options.dry_run;
+    let steps = if options.progress {
+        Steps::new(4 + usize::from(installs) + usize::from(options.dns))
+    } else {
+        Steps::off()
+    };
+    trace.began = Some(std::time::Instant::now());
+    steps.next("checking the names and this machine");
 
     // Before the authority is asked.
     let firewall = preflight::firewall_settings();
@@ -929,19 +1054,21 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
         eprintln!("cert: {warning}");
     }
     if !verdict.failures.is_empty() {
+        trace.detail = Some(verdict.failures_with_ids.join("; "));
         return Err(fail(verdict.failures.join("\n")));
     }
     let serving = serving.map_err(fail)?;
     println!("the names and this machine are ready");
 
     let client = TufClient::default();
-    let setup = Setup { client: &client, now };
+    let setup = Setup { client: &client, now, steps };
     let creation =
         Creation { email: options.email.clone(), agree_terms: options.agree_terms, terminal };
     let runtime = runtime().map_err(fail)?;
     let mut say = |line: &str| println!("{line}");
     let issued = runtime
         .block_on(async {
+            setup.steps.next("asking the authority for the certificate");
             let account =
                 open_account(&store, &client, &directory, Some(&creation), now, &mut say).await?;
             let replaces = match &existing {
@@ -956,6 +1083,7 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
         println!("the dry run worked: nothing was installed, as it asked");
         return Ok(0);
     }
+    setup.steps.next("installing the certificate");
     let acme = Acme {
         directory: directory.to_string(),
         names: wanted.names.clone(),
@@ -967,6 +1095,10 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
     };
     let lock = store.lock().map_err(fail)?;
     let (details, notes) = install(&store, &lock, &name, &issued, &acme, now).map_err(fail)?;
+    let took = trace.began.map_or(0, elapsed_ms);
+    let entry =
+        history::Entry::new(now, &name, Event::Got, &authority_words(&acme.directory), By::Cert);
+    history::record(&store, &lock, &entry.took(took));
     drop(lock);
     println!(
         "{name} installed: {}, runs out {}",
@@ -988,6 +1120,60 @@ pub fn get(options: &Get) -> Result<i32, Fail> {
         eprintln!("cert: {}", spark_warning(&why));
     }
     Ok(0)
+}
+
+/// `cert get --check`: what the checks before an order find, told without
+/// ordering, as a person who is not root may ask. Exits 0 when none failed.
+fn check_order(options: &Get) -> Result<i32, Fail> {
+    let now = now();
+    tuf_check_name(&options.name)?;
+    let store = Store::system();
+    let Plan { wanted, directory, .. } = plan(options, &store, false)?;
+    let http = !options.dns;
+    let firewall = preflight::firewall_settings();
+    let looked: Vec<(String, Vec<IpAddr>)> = if http {
+        wanted.names.iter().map(|name| (name.clone(), preflight::lookup(name))).collect()
+    } else {
+        wanted.names.iter().map(|name| (name.clone(), Vec::new())).collect()
+    };
+    let holder = http.then(preflight::port80_holder);
+    // As an order has it: this command's own socket has no inbound right,
+    // what nginx or a service holds has.
+    let with_inbound = !matches!(holder, None | Some(Holder::Free | Holder::Other(_)));
+    let mut facts =
+        preflight::gather(now, &looked, http, directory.host(), &firewall, with_inbound);
+    facts.holder = holder;
+    let terms_url = terms_url_within(&directory, TERMS_WAIT);
+    let dns: Vec<dns::Record> = if options.dns {
+        wanted
+            .names
+            .iter()
+            .map(|name| dns::Record { name: name.clone(), value: String::new() })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let report = check::Report::of(&facts, terms_url, &dns);
+    if options.json {
+        println!("{}", report.json().map_err(fail)?);
+    } else {
+        print!("{}", report.text());
+    }
+    Ok(i32::from(report.failed()))
+}
+
+/// How long `cert get --check` waits for the authority to give its terms.
+const TERMS_WAIT: Duration = Duration::from_secs(8);
+
+/// The address of the authority's terms of service, if the directory gives
+/// one within `wait`; none when it does not, or cannot be reached.
+fn terms_url_within(directory: &Url, wait: Duration) -> Option<String> {
+    let (send, receive) = std::sync::mpsc::channel();
+    let directory = directory.clone();
+    std::thread::spawn(move || {
+        let _ = send.send(terms_of_service(&directory));
+    });
+    receive.recv_timeout(wait).ok()?.ok()?
 }
 
 /// Checks the certificate's own name.
@@ -1083,7 +1269,7 @@ pub fn look_at_window(
 ) -> Result<Option<Window>, String> {
     let directory = check_directory(directory, &preflight::lookup)?;
     let client = TufClient::default();
-    let setup = Setup { client: &client, now };
+    let setup = Setup { client: &client, now, steps: Steps::off() };
     let runtime = runtime()?;
     runtime.block_on(async {
         let account = open_account(store, &client, &directory, None, now, &mut |_| {}).await?;
@@ -1146,7 +1332,8 @@ pub enum Who {
 }
 
 /// Renews certificate `name` now, with what it was got with, as `who`
-/// asks: the new certificate's details.
+/// asks: the new certificate's details. What happened is put in the
+/// history.
 ///
 /// # Errors
 ///
@@ -1157,6 +1344,27 @@ pub fn renew(
     who: Who,
     now: i64,
     say: &mut dyn FnMut(&str),
+) -> Result<(Details, Vec<String>), String> {
+    let mut trace = Trace::default();
+    let result = renew_certificate(store, name, who, now, say, &mut trace);
+    if let (Err(why), Some(began)) = (&result, trace.began) {
+        let detail = trace.detail.clone().unwrap_or_else(|| why.clone());
+        let by = if who == Who::Certd { By::Certd } else { By::Cert };
+        let entry = history::Entry::new(now, name, Event::Failed, &detail, by);
+        history::note(store, &entry.took(elapsed_ms(began)));
+    }
+    result
+}
+
+/// [`renew`], with `trace` filled in as it goes for what it says of a
+/// failure.
+fn renew_certificate(
+    store: &Store,
+    name: &str,
+    who: Who,
+    now: i64,
+    say: &mut dyn FnMut(&str),
+    trace: &mut Trace,
 ) -> Result<(Details, Vec<String>), String> {
     let stored = store.get(name)?;
     let Some(kept) = stored.acme.clone().filter(|_| stored.kind == Kind::Acme) else {
@@ -1169,6 +1377,7 @@ pub fn renew(
         ));
     }
     let directory = check_directory(&kept.directory, &preflight::lookup)?;
+    trace.began = Some(std::time::Instant::now());
     let wanted = Wanted { names: kept.names.clone(), key: kept.key, profile: kept.profile.clone() };
     let firewall = preflight::firewall_settings();
     let looked: Vec<(String, Vec<IpAddr>)> =
@@ -1183,11 +1392,12 @@ pub fn renew(
     let facts = preflight::gather(now, &looked, true, directory.host(), &firewall, with_inbound);
     let verdict = preflight::check(&facts);
     if !verdict.failures.is_empty() {
+        trace.detail = Some(verdict.failures_with_ids.join("; "));
         return Err(verdict.failures.join("; "));
     }
     let serving = serving?;
     let client = TufClient::default();
-    let setup = Setup { client: &client, now };
+    let setup = Setup { client: &client, now, steps: Steps::off() };
     let runtime = runtime()?;
     let issued = runtime.block_on(async {
         let account = open_account(store, &client, &directory, None, now, say).await?;
@@ -1195,9 +1405,15 @@ pub fn renew(
         order(&setup, &account, &wanted, &serving, replaces, say).await
     })?;
     drop(serving);
+    let authority = authority_words(&kept.directory);
     let fresh = Acme { renew_at: None, revoked: false, ..kept };
     let lock = store.lock()?;
-    install(store, &lock, name, &issued, &fresh, now)
+    let installed = install(store, &lock, name, &issued, &fresh, now)?;
+    let by = if who == Who::Certd { By::Certd } else { By::Cert };
+    let took = trace.began.map_or(0, elapsed_ms);
+    let entry = history::Entry::new(now, name, Event::Renewed, &authority, by).took(took);
+    history::record(store, &lock, &entry);
+    Ok(installed)
 }
 
 /// The reasons `cert revoke` takes, by name.
@@ -1220,6 +1436,7 @@ pub fn revoke(name: &str, reason: Option<&str>) -> Result<i32, Fail> {
     let now = now();
     super::need_clock(now)?;
     manifest::service::check_certificate(name).map_err(fail)?;
+    let reason_word = reason;
     let reason = reason.map(revocation_reason).transpose().map_err(fail)?;
     let store = Store::system();
     let (stored, kept) = {
@@ -1253,6 +1470,10 @@ pub fn revoke(name: &str, reason: Option<&str>) -> Result<i32, Fail> {
     kept.revoked = true;
     let lock = store.lock().map_err(fail)?;
     store.set_acme(&lock, name, &kept).map_err(fail)?;
+    let detail = reason_word
+        .map_or_else(|| String::from("no reason given"), |word| format!("reason: {word}"));
+    let entry = history::Entry::new(now, name, Event::Revoked, &detail, By::Cert);
+    history::record(&store, &lock, &entry);
     drop(lock);
     println!(
         "{name} revoked: the services keep using it until it is replaced: get a new one with \
