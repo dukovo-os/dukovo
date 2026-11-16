@@ -260,9 +260,9 @@ pub enum TestImage {
     /// space after the root, as a cloud's disk is larger than its image.
     Cloud,
     /// The disk an old release's own tree made (`ob fixture release`,
-    /// [`upgrade`]): attached as it is, as a copy-on-write overlay that
-    /// the guest writes to and the file never is, so nothing is built or
-    /// put after its partitions.
+    /// [`upgrade`]): nothing is built; a sparse copy of it with room after
+    /// its partitions is attached as a copy-on-write overlay that the
+    /// guest writes to and the fixture never is.
     Fixture,
 }
 
@@ -4039,7 +4039,7 @@ fn test_images(
             continue;
         }
         let bytes = match (key.0, roots.of(case)) {
-            // The disk is the fixture's own, attached as it is.
+            // The disk is a copy of the fixture's own, made at the boot.
             (TestImage::Fixture, _) => Vec::new(),
             (TestImage::Installed | TestImage::Cloud, Some(root)) => {
                 build_installed_test_image(ctx, built, dir, root.uuid)?
@@ -4975,11 +4975,14 @@ fn run_case(
         || dir.join(format!("{}.img", case.name)),
         |replaying| replaying.image.clone(),
     );
-    // A fixture's disk is booted where it is: QEMU keeps what the guest
-    // writes in a file of its own (`snapshot=on`), and the disk is never
-    // written.
-    let fixture =
-        if upgrade::needs_fixture(case) { Some(upgrade::fixture_image(ctx, case)?) } else { None };
+    // A fixture's disk is booted from a sparse copy with room after it:
+    // QEMU keeps what the guest writes in a file of its own
+    // (`snapshot=on`), and the fixture is never written.
+    let fixture = if upgrade::needs_fixture(case) {
+        Some(upgrade::grown_fixture(ctx, case, dir)?)
+    } else {
+        None
+    };
     let image = fixture.clone().unwrap_or(image);
     let qmp = dir.join(format!("{}.qmp", case.name));
     let disks = make_disks(ctx, dir, case, base, root)?;

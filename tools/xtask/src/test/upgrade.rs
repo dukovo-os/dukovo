@@ -7,13 +7,17 @@
 //! UEFI as *update-from-VERSION* and under a BIOS as
 //! *update-from-VERSION-bios*, so that GRUB's *core.img* in the BIOS boot
 //! partition is the old release's too. The machine boots a copy-on-write
-//! overlay of the release's fixture (*ob fixture release VERSION*), the
-//! disk that release's own tree made, which is never written; the keys
-//! the fixture trusts are this checkout's, adopted before anything is
-//! signed when it has none.
+//! overlay of a sparse copy of the release's fixture (*ob fixture release
+//! VERSION*), the disk that release's own tree made, with a GiB of room
+//! after its partitions; the fixture is never written, and the keys it
+//! trusts are this checkout's, adopted before anything is signed when it
+//! has none.
 //!
 //! The old release runs first, and alice, its administrator, fills the
-//! machine with commands that release has: a second account, bob
+//! machine with commands that release has: the root grown to the disk's
+//! end (*rdisk --grow*, *device resize max*), as an installed machine's
+//! root fills its disk, since the second stage builds a slot while both
+//! releases' slots are there; a second account, bob
 //! (*user*), files in her home and a checksum of one, a hostname and a
 //! time zone (*hostname*, *timedatectl*), a setting of her shell, a
 //! service that is off until it is turned on, *sshd* (*service*), the
@@ -54,6 +58,11 @@ const BIOS_SUFFIX: &str = "-bios";
 /// KiB: the slot of a system is a few hundred MiB at most, since the whole
 /// root is [`image::ROOT_BYTES`] and holds two slots.
 const FULL_KIB: u64 = 512 * 1024;
+
+/// The room after the fixture's partitions on the disk the machine boots,
+/// which the fill grows the root over: a root of [`image::ROOT_BYTES`]
+/// holds two slots, and the second stage builds a third beside them.
+const ROOM: u64 = 1 << 30;
 
 /// The disk of the full repository, which Spark mounts at
 /// [`UPDATES`].
@@ -217,6 +226,23 @@ pub fn fixture_image(ctx: &Ctx, case: &Case) -> Result<std::path::PathBuf, Strin
     Ok(image)
 }
 
+/// The disk `case` boots, made in the boot tests' folder `dir`: a sparse
+/// copy of its release's fixture with [`ROOM`] after it, which QEMU
+/// attaches as a copy-on-write overlay (`snapshot=on`).
+pub fn grown_fixture(ctx: &Ctx, case: &Case, dir: &Path) -> Result<std::path::PathBuf, String> {
+    let fixture = fixture_image(ctx, case)?;
+    let copy = dir.join(format!("{}.img", case.name));
+    (|| -> std::io::Result<()> {
+        let mut from = std::fs::File::open(&fixture)?;
+        let len = from.metadata()?.len();
+        let mut to = std::fs::File::create(&copy)?;
+        to.set_len(len + ROOM)?;
+        image::copy_sparse(&mut from, 0, &mut to, 0, len)
+    })()
+    .map_err(|err| format!("copying {} to {}: {err}", fixture.display(), copy.display()))?;
+    Ok(copy)
+}
+
 /// The FAT32 disk of `kib` KiB, labelled `label`, that holds the full
 /// repository of this build ([`UPDATE_FULL`]).
 pub const fn update_full_disk(kib: u64, label: &'static str) -> Disk {
@@ -315,10 +341,18 @@ pub fn make_full_disk(disk: &Disk, path: &Path, repository: &Path) -> Result<(),
 ///
 /// Each is a command typed at alice's prompt, and the lines the screen
 /// then shows. Only commands the manual pages of Dukovo 0.15.0 describe:
-/// *user*(8), *hostname*(5), *timedatectl*(1), *service*(8),
-/// *health.toml*(5), *bundle*(1) and *settings.toml*(5).
+/// *rdisk*(8), *device*(8), *user*(8), *hostname*(5), *timedatectl*(1),
+/// *service*(8), *health.toml*(5), *bundle*(1) and *settings.toml*(5).
 fn fill_steps() -> Vec<(String, Vec<&'static str>)> {
     vec![
+        // The root, sda3, grown over the room after it.
+        (
+            as_root("sh -c 'rdisk --grow sda 3 && device resize max /system/settings'"),
+            vec![
+                "/devices/sda3 grows from 512 MiB to",
+                "Resized device id 1 of '/system/settings' to",
+            ],
+        ),
         // Root's: an account, the machine's name and zone, the health
         // check's wait made short, and a service that is off until it is
         // turned on.
