@@ -169,6 +169,7 @@ export function failedOf(answer, time) {
         words: `Find which change broke it. The machine restarts up to ${counted(restarts, 'time')}, and nothing is changed for good.`,
         command: 'elevate changes bisect',
         later: 'An administrator can also run it from What happened on Updates.',
+        run: { words: 'Run it from What happened on Updates', href: '/updates#happened' },
       }
       : null,
   };
