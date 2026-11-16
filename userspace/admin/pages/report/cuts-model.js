@@ -1,13 +1,11 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// The text of a report and what a person cuts of it, as plain values: the
-// text as rows that know their part and their number in it, the list of cuts
-// that reportd takes (against the lines as it first drafted them, never
-// against the text as it stands), and the way a place in the shown text goes
-// back to the line and the characters that were drafted. No DOM.
+// The text of a report as rows that know their part and number, the list of
+// cuts reportd takes (against the lines as first drafted), and the way a place
+// in the shown text goes back to the drafted line and characters. No DOM.
 
-/** The parts of a report that the system gathered, which can be cut and never typed into. */
+/** The parts the system gathered: they can be cut and never typed into. */
 export const CUTTABLE = ['crash', 'failed-start', 'log', 'start-log'];
 
 /** What a cut run of words reads as in the text. */
@@ -16,14 +14,10 @@ export const CUT = '[cut]';
 const CUT_LENGTH = [...CUT].length;
 const MARKS = /\[(?:user|host|IPv4|IPv6|MAC|email|Wi-Fi|serial|machine|cut)\]/g;
 
-/** The characters of `text` before the UTF-16 offset `at`, counted as the code points that reportd counts. */
+/** The code points before the UTF-16 offset `at`: reportd counts characters so. */
 const pointsBefore = (text, at) => [...text.slice(0, at)].length;
 
-/**
- * A line as pieces: `[{text, mark}]`, `mark` being `'taken'` for what
- * redaction took out (`[user]`), `'cut'` for words the person cut, and null
- * for the rest.
- */
+/** A line as pieces `[{text, mark}]`: `mark` is `taken` for what redaction took out, `cut` for words the person cut, null for the rest. */
 export function piecesOf(line) {
   const pieces = [];
   let at = 0;
@@ -36,14 +30,7 @@ export function piecesOf(line) {
   return pieces;
 }
 
-/**
- * The rows of an answer's text, one for each line: `{n, text, kind, section,
- * at}`. `kind` is `head` (and its blank line, which is `plain`), `heading`,
- * `typed` for what the person wrote, `gathered` for what the system did, or
- * `plain`; `section` is the part's ID and `at` the line's number in it,
- * from 0, which is its place in the lines of the draft as the answer says
- * the part is now. A heading of the answers carries `typed: true`.
- */
+/** The rows of an answer's text: `{n, text, kind, section, at}`; `kind` is `head`, `heading`, `typed`, `gathered` or `plain`, `at` the line's number in its part now. */
 export function rowsOf(answer) {
   const lines = String(answer?.text ?? '').split('\n');
   if (lines.at(-1) === '') lines.pop();
@@ -58,7 +45,7 @@ export function rowsOf(answer) {
   return rows;
 }
 
-/** The lines of each part that the system gathered, as the first draft has them: a Map of the part's ID to its lines. */
+/** The lines the system gathered, as the first draft has them: a Map of the part's ID to its lines. */
 export function gatheredOf(first) {
   const lines = new Map();
   for (const row of rowsOf(first)) {
@@ -69,7 +56,7 @@ export function gatheredOf(first) {
 
 // ---- the list of cuts ------------------------------------------------------
 
-/** The cuts, put in order and merged: whole lines as runs, and words as ranges that touch merged, none inside a line cut whole. */
+/** The cuts in order and merged: whole lines as runs, words that touch as one range, none inside a line cut whole. */
 export function normalize(cuts) {
   const gone = new Map();
   const words = new Map();
@@ -111,35 +98,28 @@ export function normalize(cuts) {
 /** The cuts with the lines `line` to `through` of `section` cut whole. */
 export const withLines = (cuts, section, line, through = line) => normalize([...cuts, { section, line, through }]);
 
-/** The cuts with the characters `from` to `to` (not including it) of a line cut. */
+/** The cuts with the characters `from` to `to` (not included) of a line cut. */
 export const withWords = (cuts, section, line, from, to) => normalize([...cuts, { section, line, from, to }]);
 
-/** The edit list reportd takes: the cuts, and the answers when the person wrote them anew. */
+/** The edit list reportd takes: the cuts, and the answers when the person wrote them again. */
 export const editsOf = (cuts, answers = null) => (answers ? { cuts, answers } : { cuts });
 
-/** The lines of `section` that are cut whole, by their number in the draft. */
-function goneOf(cuts, section) {
-  const gone = new Set();
-  for (const cut of cuts) {
-    if (cut.section === section && cut.from === undefined) for (let at = cut.line; at <= (cut.through ?? cut.line); at += 1) gone.add(at);
-  }
-  return gone;
-}
-
-/** The ranges of words cut of the line `line` of `section`: `[[from, to]]`. */
+/** The ranges of words cut of the line `line` of `section`. */
 export const rangesOf = (cuts, section, line) => cuts.filter((cut) => cut.section === section && cut.line === line && cut.from !== undefined).map((cut) => [cut.from, cut.to]);
 
-/** The number in the draft of the `at`th line that is left of `section`, which is the line as it was first drafted; one past the last line when `at` is past the lines that are left. */
+/** The number in the first draft of the `at`th line left of `section`; one past the last when `at` is past the lines left. */
 export function drafted(cuts, section, at) {
-  const gone = goneOf(cuts, section);
-  let seen = -1;
-  for (let line = 0; ; line += 1) {
+  const gone = new Set();
+  for (const cut of cuts) {
+    if (cut.section === section && cut.from === undefined) for (let line = cut.line; line <= (cut.through ?? cut.line); line += 1) gone.add(line);
+  }
+  for (let line = 0, seen = -1; ; line += 1) {
     if (!gone.has(line)) seen += 1;
     if (seen === at) return line;
   }
 }
 
-/** `line` as it reads when the characters of `ranges` are cut. */
+/** `line` as it reads with the characters of `ranges` cut. */
 export function shownLine(line, ranges) {
   const chars = [...line];
   let at = 0;
@@ -151,12 +131,7 @@ export function shownLine(line, ranges) {
   return out + chars.slice(at).join('');
 }
 
-/**
- * The place `shown` of a line that has `[cut]` in it, in code points, as a
- * place in the line as drafted. A place inside a `[cut]` is the start of
- * the words it stands for when it begins a selection, and their end when it
- * ends one.
- */
+/** A place `shown` in a line that has `[cut]` in it, as a place in the line as drafted; inside a `[cut]` it is the start of the words when it begins a selection, their end when it ends one. */
 function backTo(ranges, shown, ends) {
   let shift = 0;
   for (const [from, to] of ranges) {
@@ -171,12 +146,10 @@ function backTo(ranges, shown, ends) {
 // ---- what was selected ------------------------------------------------------
 
 /**
- * What a selection of words inside one row cuts, as a cut `{section, line,
- * from, to}` of the drafted line, or null: the row is not one the system
- * gathered, its text is not what the cuts so far make of the drafted line
- * (redaction changed it), or nothing is left selected. `from` and `to` are
- * the UTF-16 offsets in the row's text. `original` is `gatheredOf` the first
- * draft.
+ * What the words `from` to `to` (UTF-16 offsets) selected in `row` cut: `{section,
+ * line, from, to}` of the drafted line, or null when the system did not gather
+ * the row, its text is not what the cuts make of the drafted line (redaction
+ * changed it), or nothing is selected. `original` is `gatheredOf` the first draft.
  */
 export function wordsPick({ cuts, original }, row, from, to) {
   if (row.kind !== 'gathered') return null;
@@ -190,11 +163,7 @@ export function wordsPick({ cuts, original }, row, from, to) {
   return start < end ? { section: row.section, line, from: start, to: end } : null;
 }
 
-/**
- * What a selection of several rows cuts, as a run of whole lines `{section,
- * line, through}`, or null when a row is not one the system gathered or the
- * rows are of two parts.
- */
+/** What `rows` selected cut, as a run of whole lines `{section, line, through}`, or null when one is not gathered or they are of two parts. */
 export function linesPick({ cuts, original }, rows) {
   const [first] = rows;
   if (!first || rows.some((row) => row.kind !== 'gathered' || row.section !== first.section)) return null;

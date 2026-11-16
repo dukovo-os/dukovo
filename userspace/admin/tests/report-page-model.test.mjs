@@ -16,9 +16,10 @@ import {
 } from '../pages/report/cuts-model.js';
 import {
   aboutOf, answersOf, bringsBackWords, choicesOf, draftArgs, emptyFields, fileNameOf, happenedOf, holdsWords, jsonOf, keyOf, listOf,
-  marksWords, noteMax, offered, partsOf, QUEUED_WORDS, ready, sendOf, sentWords, shownChoices, statusMap, tableRows, takenOutList,
-  takenOutWords, titleOf, whyWords, youCutWords,
+  marksWords, noteMax, offered, partsOf, QUEUED_WORDS, ready, sendOf, sentWords, shownChoices, takenOutList,
+  takenOutWords, titleOf, youCutWords,
 } from '../pages/report/model.js';
+import { statusMap, tableRows, whyWords } from '../pages/report/sent-model.js';
 import {
   apply, crashBase, crashes, failed, list, makeDesk, NOW, services, status,
 } from './report-fixtures.mjs';

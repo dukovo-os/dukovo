@@ -1,71 +1,77 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// Report a problem as plain values: what can be reported and how a choice is
-// asked of reportd, the words for what the draft holds and what was taken
-// out of it, what Send answers, and the table of the reports from this
-// server. No DOM.
+// Report a problem as plain values: what can be reported, how a choice is asked
+// of reportd, the words for what the draft holds, and what Send answers. No DOM.
 
-import { bytesWords, counted } from '../../lib/size-words.js';
-
-/** The longest an answer is, in characters (the argument's own limit). */
+/** The longest an answer is, in characters. */
 export const ANSWER_MAX = 2000;
 
 /** The longest a report's title is, in characters. */
-export const TITLE_MAX = 80;
+const TITLE_MAX = 80;
 
-/** The most crashes the choices list before "Show more". */
-export const CRASHES_SHOWN = 5;
+/** The most crashes the choices list before Show more. */
+const CRASHES_SHOWN = 5;
 
-/** The kinds `reports.draft` takes for `about`, by the word the address uses for each. */
+/** The kinds `reports.draft` takes, by the word the address uses for each. */
 const ABOUT_WORDS = { failure: 'failure', crash: 'crash', service: 'service', hardware: 'hardware', update: 'update', updates: 'update', other: 'other' };
+
+/** `count` and its noun, with an s when it is not one. */
+const counted = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/** A size as the board writes it: "612 B", "19.2 KB". */
+const sizeWords = (bytes) => (bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(1)} KB`);
 
 const text = (value) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : null);
 
-/** `answer`'s list named `key`: the answer may be the list or an object that holds it. */
+/** `answer`'s list named `key`; the answer may be the list itself. */
 export const listOf = (answer, key) => (Array.isArray(answer) ? answer : Array.isArray(answer?.[key]) ? answer[key] : []);
 
-/**
- * What an action that changes something answers, as its JSON: the answer
- * itself when it is that, else the last line of its output that is a JSON
- * object, which is how a command's JSON comes back. Null when there is none.
- */
+/** What a change answers as JSON: the answer itself, else the last output line that is a JSON object; null when none. */
 export function jsonOf(result) {
   if (result && typeof result === 'object' && !Array.isArray(result.output) && result.done === undefined) return result;
-  const lines = Array.isArray(result?.output) ? result.output : [];
-  for (const line of [...lines].reverse()) {
+  for (const line of [...(Array.isArray(result?.output) ? result.output : [])].reverse()) {
     try {
       const found = JSON.parse(line);
       if (found && typeof found === 'object' && !Array.isArray(found)) return found;
     } catch {
-      // A line that is words, not JSON.
+      // A line of words.
     }
   }
   return null;
 }
+
+// ---- reportd ------------------------------------------------------
+
+/** Whether reportd is a service of `show` (the services' document) that is not running. */
+export function reportdDown(show) {
+  const one = listOf(show, 'services').find((service) => service?.name === 'reportd');
+  return Boolean(one) && !['running', 'listening', 'starting'].includes(one.state);
+}
+
+/** Whether `error` is reportd not answering at all: the command says how to start it. */
+export const reportdStopped = (error) => /elevate service reportd start|reportd is not running/i.test([error?.title, error?.detail, error?.fix, error?.command?.stderr].filter(Boolean).join(' '));
+
+/** Whether `error` says the draft ended or is not the text that was read: drafting again is the answer. */
+export const draftEnded = (error) => error?.id === 'RPT-101' || error?.id === 'RPT-102';
 
 // ---- what can be reported ------------------------------------------------------
 
 /** The key of a choice: `failure`, `crash:ID`, `service:NAME`, `hardware`, `update`, `other`. */
 export const keyOf = ({ about, crash, name }) => (about === 'crash' ? `crash:${crash}` : about === 'service' ? `service:${name}` : about);
 
-/**
- * What `/report?about=…` asks for, from the address's query: `{about, crash,
- * name, note}`, or null when it names nothing the page can choose. `about`
- * is `failure`, `crash` with `id`, `service` with `name`, `hardware`,
- * `update` (or `updates`) and `other`; `note` is the person's first words.
- */
+/** What `/report?about=…` asks for, `{about, crash, name, note}`, or null when it names nothing the page can choose. */
 export function aboutOf(query) {
   const about = ABOUT_WORDS[query.get('about')];
-  if (!about) return null;
   const crash = text(query.get('id'));
   const name = text(query.get('name'));
-  if ((about === 'crash' && !crash) || (about === 'service' && !name)) return null;
-  const note = (query.get('note') ?? '').slice(0, ANSWER_MAX);
-  return { about, crash: about === 'crash' ? crash : null, name: about === 'service' ? name : null, note };
+  if (!about || (about === 'crash' && !crash) || (about === 'service' && !name)) return null;
+  return {
+    about, crash: about === 'crash' ? crash : null, name: about === 'service' ? name : null, note: (query.get('note') ?? '').slice(0, ANSWER_MAX),
+  };
 }
 
-/** "at 8:09 AM", "yesterday at 7:40 PM", "on Nov 12 at 8:09 AM": the words after "stopped with an error". */
+/** "at 8:09 AM", "yesterday at 7:40 PM", "on Nov 12 at 8:09 AM". */
 export function atWords(time, seconds) {
   const words = time.when(seconds);
   if (/^\d/.test(words)) return `at ${words}`;
@@ -74,26 +80,13 @@ export function atWords(time, seconds) {
   return found ? `on ${found[1]} at ${found[2]}` : `on ${words}`;
 }
 
-/**
- * The failed start as a choice: "The update to alpha.2 was taken back", or
- * a start that failed, with when this server found it and the check it
- * failed. `failed` is `changes --failed --json`'s `failed`.
- */
+/** The failed start (`changes --failed --json`'s `failed`) as a choice. */
 function failedChoice(failed, time) {
-  const seconds = Number.isFinite(failed.at_ms) ? failed.at_ms / 1000 : null;
-  const title = failed.result === 'fell-back'
-    ? `The update to ${text(failed.release) ?? 'the new version'} was taken back`
-    : `Start ${failed.start ?? ''} failed`.replace(/\s+/g, ' ');
-  const found = seconds === null ? '' : ` ${atWords(time, seconds)}`;
+  const title = failed.result === 'fell-back' ? `The update to ${text(failed.release) ?? 'the new version'} was taken back` : `Start ${failed.start ?? ''} failed`.replace(/\s+/g, ' ');
+  const found = Number.isFinite(failed.at_ms) ? ` ${atWords(time, failed.at_ms / 1000)}` : '';
   const check = text(failed.check);
   return {
-    key: 'failure',
-    about: 'failure',
-    title,
-    words: `Found by this server${found}${check ? `: it failed the check ${check}` : ''}.`,
-    line: `${title}${found}.`,
-    admin: true,
-    questions: false,
+    key: 'failure', about: 'failure', title, words: `Found by this server${found}${check ? `: it failed the check ${check}` : ''}.`, line: `${title}${found}.`, admin: true, questions: false,
   };
 }
 
@@ -112,7 +105,7 @@ function crashChoice(crash, time) {
   };
 }
 
-/** A failed service as a choice. `since` is when it failed, in seconds since 1970, or null. */
+/** A failed service as a choice; `since` is when it failed, in seconds since 1970, or null. */
 function serviceChoice(name, since, time) {
   const title = `${name} failed`;
   return {
@@ -133,42 +126,29 @@ const FIXED = [
   { key: 'other', about: 'other', title: 'Something else', words: 'Describe it below.' },
 ].map((choice) => ({ ...choice, line: '', admin: false, questions: true }));
 
-/**
- * The choices of "What went wrong?", the newest first: the failed start,
- * each crash not reported (`crashes`, reportd's list), each failed service,
- * then the hardware, installing or updating, and something else.
- * `failed` is `/api/1/updates/failed`'s answer, `show` the services'
- * document (its times count from the machine's start, so `now` is the
- * browser's time in seconds). A reader is offered neither the failed start
- * nor a service: an administrator reports those.
- */
+/** The choices of "What went wrong?": the failed start, the crashes not reported, the failed services (an administrator's), then the three always there. `now` is seconds since 1970; the services' times count from the machine's start. */
 export function choicesOf({
   failed, crashes, show, now, time, admin,
 }) {
   const choices = [];
   if (admin && failed?.failed) choices.push(failedChoice(failed.failed, time));
-  const crashed = listOf(crashes, 'crashes')
-    .filter((crash) => crash && typeof crash.id === 'string' && typeof crash.program === 'string' && !crash.reported)
-    .sort((a, b) => b.at - a.at);
-  choices.push(...crashed.map((crash) => crashChoice(crash, time)));
+  choices.push(...listOf(crashes, 'crashes')
+    .filter((crash) => typeof crash?.id === 'string' && typeof crash.program === 'string' && !crash.reported)
+    .sort((a, b) => b.at - a.at)
+    .map((crash) => crashChoice(crash, time)));
   if (admin) {
-    const services = listOf(show, 'services').filter((one) => one?.state === 'failed' && typeof one.name === 'string');
-    choices.push(...services.map((one) => {
-      const since = Number.isFinite(show?.now_ms) && Number.isFinite(one.since_ms) ? Math.floor(now - Math.max(0, show.now_ms - one.since_ms) / 1000) : null;
-      return serviceChoice(one.name, since, time);
-    }));
+    for (const one of listOf(show, 'services').filter((service) => service?.state === 'failed' && typeof service.name === 'string')) {
+      const ago = Number.isFinite(show.now_ms) && Number.isFinite(one.since_ms) ? Math.max(0, show.now_ms - one.since_ms) / 1000 : null;
+      choices.push(serviceChoice(one.name, ago === null ? null : Math.floor(now - ago), time));
+    }
   }
   return [...choices, ...FIXED];
 }
 
-/** The choices that are shown: the crashes beyond `CRASHES_SHOWN` stay behind "Show more" unless `all` or `keep` (the chosen one) is among them. Gives `{shown, more}`. */
+/** `{shown, more}`: the crashes past `CRASHES_SHOWN` are behind Show more, unless `all` or the chosen one (`keep`) is among them. */
 export function shownChoices(choices, { all, keep }) {
   let crashes = 0;
-  const shown = choices.filter((choice) => {
-    if (choice.about !== 'crash') return true;
-    crashes += 1;
-    return all || crashes <= CRASHES_SHOWN || choice.key === keep;
-  });
+  const shown = choices.filter((choice) => choice.about !== 'crash' || all || (crashes += 1) <= CRASHES_SHOWN || choice.key === keep);
   return { shown, more: choices.length - shown.length };
 }
 
@@ -180,10 +160,7 @@ export const emptyFields = () => ({
 });
 
 /** The first answer: the choice's own line and the note after it, or what the person wrote. */
-export function happenedOf(choice, fields) {
-  if (choice.questions) return fields.happened.trim();
-  return [choice.line, fields.note.trim()].filter(Boolean).join(' ');
-}
+export const happenedOf = (choice, fields) => (choice.questions ? fields.happened.trim() : [choice.line, fields.note.trim()].filter(Boolean).join(' '));
 
 /** How long the note can be: the answer's limit less the choice's own line. */
 export const noteMax = (choice) => Math.max(0, ANSWER_MAX - choice.line.length - 1);
@@ -191,45 +168,37 @@ export const noteMax = (choice) => Math.max(0, ANSWER_MAX - choice.line.length -
 /** Whether a draft can be made: a choice that asks questions needs the first answer. */
 export const ready = (choice, fields) => choice !== null && (!choice.questions || fields.happened.trim() !== '');
 
-/**
- * The arguments of `reports.draft`, for `choice`, the form's `fields` and the
- * boxes `{security, withoutLogs}`.
- */
+/** The arguments of `reports.draft` for `choice`, the form's `fields` and the boxes. */
 export function draftArgs(choice, fields, { security = false, withoutLogs = false } = {}) {
   const args = { about: choice.about, happened: happenedOf(choice, fields) };
   if (choice.crash) args.crash = choice.crash;
   if (choice.name) args.name = choice.name;
-  if (choice.questions) {
-    if (fields.expected.trim() !== '') args.expected = fields.expected.trim();
-    if (fields.again.trim() !== '') args.again = fields.again.trim();
-  }
+  for (const name of choice.questions ? ['expected', 'again'] : []) if (fields[name].trim() !== '') args[name] = fields[name].trim();
   if (withoutLogs) args.without_logs = true;
   if (security) args.security = true;
   return args;
 }
 
-/** The three answers as the person has them: for a choice with one question, its line and note are the first. */
+/** The three answers as the person has them, which the form for writing them again starts with. */
 export const answersOf = (choice, fields) => ({
   happened: happenedOf(choice, fields), expected: choice.questions ? fields.expected.trim() : '', again: choice.questions ? fields.again.trim() : '',
 });
 
-/** The title the report goes by in the table: what happened, to its first line, at most `TITLE_MAX` characters. */
+/** The title of the report: the first line of what happened, or the choice's own words, in at most `TITLE_MAX` characters. */
 export function titleOf(choice, happened) {
-  const first = choice.questions ? (happened.split('\n').find((line) => line.trim() !== '') ?? '').trim() : choice.title;
-  const title = first === '' ? choice.title : first;
-  const chars = [...title];
-  return chars.length <= TITLE_MAX ? title : `${chars.slice(0, TITLE_MAX - 1).join('').trimEnd()}…`;
+  const first = choice.questions ? (happened.split('\n').find((line) => line.trim() !== '') ?? '').trim() : '';
+  const chars = [...(first || choice.title)];
+  return chars.length <= TITLE_MAX ? chars.join('') : `${chars.slice(0, TITLE_MAX - 1).join('').trimEnd()}…`;
 }
 
-/** The name of the file that Save to a file writes: `report-2026-11-16.txt`, by the day in the person's zone. */
+/** `report-2026-11-16.txt`, by the day in the person's zone. */
 export function fileNameOf(zone, now = Date.now()) {
-  const day = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
-  return `report-${day}.txt`;
+  return `report-${new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now)}.txt`;
 }
 
 // ---- what the report holds ------------------------------------------------------
 
-/** What each mark of `cut_by` counts, in the order the sentence has them: `[keys, one, many]`. */
+/** What each mark of `cut_by` counts, in the order of the sentence: `[keys, one, many]`. */
 const MARKS = [
   [['user'], 'account name', 'account names'],
   [['host'], 'host name', 'host names'],
@@ -241,138 +210,74 @@ const MARKS = [
   [['machine'], 'machine ID', 'machine IDs'],
 ];
 
-/** "3 addresses, 2 account names, 1 host name", most first; "" when nothing was taken out. `cut_by` is the draft's. */
+const countOf = (cutBy, keys) => keys.reduce((sum, key) => sum + (Number.isFinite(cutBy?.[key]) ? cutBy[key] : 0), 0);
+
+/** "3 addresses, 2 account names, 1 host name", the most first; "" when nothing was taken out. */
 export function takenOutList(cutBy) {
   return MARKS
-    .map(([keys, one, many]) => ({ count: keys.reduce((sum, key) => sum + (Number.isFinite(cutBy?.[key]) ? cutBy[key] : 0), 0), one, many }))
+    .map(([keys, one, many]) => ({ count: countOf(cutBy, keys), one, many }))
     .filter((mark) => mark.count > 0)
     .sort((a, b) => b.count - a.count)
     .map((mark) => `${mark.count} ${mark.count === 1 ? mark.one : mark.many}`)
     .join(', ');
 }
 
-/** The sentence under the parts: what was taken out before anything was shown. */
+/** What was taken out before anything was shown. */
 export function takenOutWords(cutBy) {
   const list = takenOutList(cutBy);
   return list === '' ? 'Nothing needed to be taken out.' : `Taken out before anything is shown: ${list}.`;
 }
 
-/** The parts of the report and their sizes, as rows `{title, size}`. */
-export const partsOf = (answer) => (Array.isArray(answer?.parts) ? answer.parts : []).map((part) => ({ title: part.title, size: bytesWords(part.bytes) }));
+/** The parts of the report and their sizes: `[{title, size}]`. */
+export const partsOf = (answer) => (Array.isArray(answer?.parts) ? answer.parts : []).map((part) => ({ title: part.title, size: sizeWords(part.bytes) }));
 
-/** "What the report holds" and its size. */
-export const holdsWords = (answer) => bytesWords(answer?.bytes);
+/** The size of the whole report in words. */
+export const holdsWords = (answer) => sizeWords(answer?.bytes ?? 0);
 
-/** What a person is told of the marks in the text: what they are, how many were taken out and how many words they cut. */
+/** What the marks in the text are, and how many words were cut, said before the text. */
 export function marksWords(cutBy, you) {
-  const marks = MARKS.reduce((sum, [keys]) => sum + keys.reduce((inner, key) => inner + (cutBy?.[key] ?? 0), 0), 0);
-  const cut = you > 0 ? ` [cut] shows what you cut: ${you}.` : '';
-  return `A mark such as [user] shows what was taken out: ${marks} in all.${cut}`;
+  const marks = countOf(cutBy, MARKS.flatMap(([keys]) => keys));
+  return `A mark such as [user] shows what was taken out: ${marks} in all.${you > 0 ? ` [cut] shows what you cut: ${you}.` : ''}`;
 }
 
-/** The card's name for the text, as a screen reader says it. */
+/** The name a screen reader gives the text. */
 export const textLabel = (answer) => `Exactly what is sent, ${holdsWords(answer)}`;
 
-/** What is off while a report is for the security team: it goes encrypted and only so, so the file and the code are not offered. */
-export const SECURITY_WORDS = 'A security report is sent encrypted only';
+/** Why Save to a file and Download by QR code are off for a security report. */
+const SECURITY_WORDS = 'A security report is sent encrypted only';
 
-/**
- * Which of the buttons under the report are on, for a report with a text
- * (`has`) that goes to the security team or not: Send always, and Save to a
- * file and Download by QR code unless the report is a security report, which
- * is sent encrypted only. Gives `{send, save, qr, why}`; `why` is what is
- * said of the two that are off, or null.
- */
+/** Which buttons are on, for a report with a text (`has`) that is for the security team or not; `why` is said of the two that are off. */
 export const offered = ({ has, security }) => ({
   send: has, save: has && !security, qr: has && !security, why: security ? SECURITY_WORDS : null,
 });
 
-/** "You cut 12 lines and 3 parts of lines.", or "" when nothing is cut. `you` is `cut_by_you`. */
-export function youCutWords(you) {
-  const parts = cutNouns(you);
-  return parts === '' ? '' : `You cut ${parts}.`;
-}
-
-/** "12 lines and 3 parts of lines", "1 line", "1 part of a line". */
+/** "12 lines and 3 parts of lines", "1 line", "1 part of a line"; `you` is `cut_by_you`. */
 function cutNouns(you) {
   const lines = you?.lines > 0 ? counted(you.lines, 'line') : null;
   const parts = you?.parts > 0 ? (you.parts === 1 ? '1 part of a line' : `${you.parts} parts of lines`) : null;
   return [lines, parts].filter(Boolean).join(' and ');
 }
 
-/** The question before a new draft takes the changes away: `you` is `cut_by_you`, `typed` whether the answers were edited. */
+/** "You cut 12 lines and 3 parts of lines.", or "" when nothing is cut. */
+export const youCutWords = (you) => (cutNouns(you) === '' ? '' : `You cut ${cutNouns(you)}.`);
+
+/** The question before a new draft takes the cuts, and the answers written again, away. */
 export function bringsBackWords(you, typed) {
   const cut = cutNouns(you);
-  const said = [cut !== '' && `the ${cut} you cut`, typed && 'your answers as you first wrote them'].filter(Boolean).join(' and ');
-  return `Drafting again brings back ${said}. Draft again?`;
+  return `Drafting again brings back ${[cut !== '' && `the ${cut} you cut`, typed && 'your answers as you first wrote them'].filter(Boolean).join(' and ')}. Draft again?`;
 }
 
 // ---- Send ------------------------------------------------------
 
-/** What Send says when the report was sent: its number. */
+/** What Send says of a report sent. */
 export const sentWords = (number) => (Number.isFinite(number) ? `Sent as report ${number}.` : 'Sent.');
 
-/** What Send says when the report waits: when reports.dukovo.org cannot be reached, and when reportd tries again. */
+/** What Send says of a report that waits. */
 export const QUEUED_WORDS = 'Queued: it is sent when reports.dukovo.org can be reached. reportd tries again after 1, 5, 15 and 60 minutes, then every hour for 30 days.';
 
-/** What `reports.send` answered, as `{number, queued, why}`; null when it answered nothing the page can read. */
+/** What `reports.send` answered, `{number, queued, why}`; null when the page cannot read it. */
 export function sendOf(result) {
   const answer = jsonOf(result);
   if (!answer || (answer.state !== 'sent' && answer.state !== 'queued')) return null;
   return { number: Number.isFinite(answer.number) ? answer.number : null, queued: answer.state === 'queued', why: text(answer.why) };
 }
-
-// ---- Reports from this server ------------------------------------------------------
-
-/** The kind a status gets: a report fixed is good, one that will not be is plain, the others wait. */
-const statusKind = (words) => (/^Fixed/.test(words) ? 'ok' : /^Will not/.test(words) ? 'warn' : 'off');
-
-/** Words for a time given in milliseconds since 1970, or "" when it is none. */
-const whenWords = (time, ms) => (Number.isFinite(ms) ? time.when(ms / 1000) : '');
-
-/**
- * The rows of the table: the reports that wait first, then those sent, the
- * newest first. `status` is what `reports.status` answered, a Map of the
- * number to its row, or null when it was not asked; `asked` is `{why}` when
- * asking failed. Each row is `{number, sent, title, status, note, kind,
- * canDelete, queued}`.
- */
-export function tableRows(list, { status = null, asked = null, time }) {
-  const reports = listOf(list, 'reports').filter((report) => Number.isFinite(report?.number) || report?.state === 'queued');
-  const order = (report) => (report.state === 'queued' ? Number.MAX_SAFE_INTEGER : (report.sent_ms ?? report.queued_ms ?? 0));
-  return [...reports].sort((a, b) => order(b) - order(a)).map((report) => {
-    const row = {
-      number: report.number ?? null,
-      title: text(report.title) ?? 'A report',
-      sent: report.state === 'sent' ? whenWords(time, report.sent_ms) : report.state === 'queued' ? 'Waiting' : 'Not sent',
-      canDelete: report.state === 'sent',
-      queued: report.state === 'queued',
-      note: null,
-    };
-    if (report.state === 'queued') {
-      const tried = report.tries > 0 ? ` · tried ${counted(report.tries, 'time')}` : '';
-      const next = Number.isFinite(report.next_ms) ? `, next at ${time.when(report.next_ms / 1000)}` : '';
-      return { ...row, kind: 'off', status: 'Queued', note: `Sends when reports.dukovo.org can be reached${tried}${next}${text(report.why) ? `, last: ${report.why}` : ''}` };
-    }
-    if (report.state === 'failed') {
-      return { ...row, kind: 'bad', status: 'Could not be sent', note: text(report.why) ?? 'It was tried for 30 days.' };
-    }
-    if (asked) return { ...row, kind: 'warn', status: `Could not ask: ${asked.why}`, note: null };
-    const got = status?.get(report.number);
-    if (got?.unreachable) return { ...row, kind: 'warn', status: 'Could not ask: reports.dukovo.org did not answer', note: null };
-    if (got) {
-      const words = text(got.status) ?? 'Received';
-      return { ...row, kind: statusKind(words), status: words, note: null };
-    }
-    return { ...row, kind: 'off', status: 'Not asked yet', note: 'Check the status to ask the server.' };
-  });
-}
-
-/** The status answers of `reports.status` as a Map of number to row. */
-export const statusMap = (answer) => new Map(listOf(answer, 'reports').filter((one) => Number.isFinite(one?.number)).map((one) => [one.number, one]));
-
-/** The words of an error, to say why the server could not be asked. */
-export const whyWords = (error) => [error?.title, error?.detail].filter(Boolean).join(': ') || 'no answer';
-
-/** What the delete question says. */
-export const DELETE_WORDS = 'Deletes it on the reports server and here.';

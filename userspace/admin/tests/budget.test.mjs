@@ -105,12 +105,13 @@ test('each page with its style sheets is within 150 KB beyond the shell', () => 
 // one that needs more says so, with what grew, and raises the row. Security,
 // Move and Reliability keep a little room for what they gain; the Terminal's
 // graph is as it was.
+// Report a problem's row is 7,000 more than it was, for the cuts the page makes.
 const PAGE_LIMITS = {
   updates: 70_000,
   apps: 55_000,
   hardware: 55_000,
   certificates: 60_000,
-  report: 60_000,
+  report: 67_000,
   alerts: 60_000,
   security: 147_000,
   move: 107_000,
