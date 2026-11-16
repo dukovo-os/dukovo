@@ -47,10 +47,15 @@
 .certs-pem { width: 100%; min-height: 7rem; height: auto; padding: .429rem .571rem; resize: vertical; white-space: pre; }
 .certs-reasons { display: flex; flex-direction: column; gap: .429rem; }
 @container (max-width: 51.4rem) {
-  .certs .btn, .certs .input, .certs-more > summary, .certs-file, .dialog .certs-file { min-height: 3.143rem; }
+  .certs .btn, .certs .input, .certs-more > summary, .certs-file { min-height: 3.143rem; }
   .certs .btn.small, .certs-more > summary { display: inline-flex; align-items: center; }
   .certs-menu { width: 100%; }
   .certs-menu .btn { width: 100%; justify-content: flex-start; }
   .certs-form .choices .radio-card { flex-basis: 100%; }
   .certs-actions .btns > .btn { flex: 1 1 auto; }
+}
+/* A dialog is not inside the page, so the width of the window decides: its boxes and the choice it asks are as tall as a thumb. */
+@media (max-width: 51.4rem) {
+  .dialog .certs-file, .dialog #upload-name, .dialog #rename-first, .dialog #rename-domain { min-height: 3.143rem; }
+  .dialog label.check { min-height: 3.143rem; align-items: center; }
 }
