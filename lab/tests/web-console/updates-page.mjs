@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 // What the web console's Updates scripts share (updates.mjs, updates-offline.mjs,
-// updates-restart.mjs and updates-bisect.mjs): the routes the page calls, its
-// cards as locators, opening the page and waiting until its first read is
-// drawn, the machine's own answers read through the console, and the words
-// that a card says for each state of an offer. The scripts import it from
-// beside themselves.
+// updates-restart.mjs, updates-back.mjs and updates-bisect.mjs): the routes the
+// page calls, its cards as locators, opening the page and waiting until its
+// first read is drawn, the machine's own answers read through the console, and
+// the words that a card says for each state of an offer. The scripts import it
+// from beside themselves.
 
 import { ensure, fetchAsPage, openConsole, signInDone, sleep } from "./console.mjs";
 import { PASSWORD } from "./trial.mjs";
@@ -29,6 +29,7 @@ export const ROUTES = {
   unstage: "POST /api/1/updates/unstage",
   hold: "POST /api/1/updates/{item}/hold",
   unhold: "POST /api/1/updates/{item}/unhold",
+  undo: "POST /api/1/updates/{item}/undo",
   later: "POST /api/1/updates/{item}/later",
   failed: "GET /api/1/updates/failed",
   bisectStatus: "GET /api/1/updates/bisect",

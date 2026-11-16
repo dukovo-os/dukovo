@@ -28,12 +28,15 @@
 // failed starts as the page opens (`GET /api/1/updates/failed`). An
 // app that the check offers an update for is updated from the Apps card, a
 // task (`POST /api/1/apps/{id}/update`), and put back through the route that
-// the app's own page calls (`POST /api/1/apps/{id}/rollback`); Tonight asks
-// for it in tonight's window (`POST /api/1/apps/{id}/tonight`), Install
-// tonight for every app that has one (`POST /api/1/apps/tonight`) and Not
-// tonight takes the request away (`POST /api/1/apps/{id}/not-tonight`); the
-// lab machine's catalog may offer no app an update, and the script says so
-// when it does not.
+// the app's own page calls (`POST /api/1/apps/{id}/rollback`); Update all, on
+// the Apps page while two apps or more wait for an update, updates every one
+// of them as a task (`POST /api/1/apps/update`), and each is put back the same
+// way; Tonight asks for it in tonight's window
+// (`POST /api/1/apps/{id}/tonight`), Install tonight for every app that has
+// one (`POST /api/1/apps/tonight`) and Not tonight takes the request away
+// (`POST /api/1/apps/{id}/not-tonight`); the lab machine's catalog may offer
+// fewer apps an update than a press needs, and the script says so for each
+// press it leaves out.
 //
 // The restart, the fallback of an update, What happened and the search for a
 // bad change are in updates-restart.mjs and updates-bisect.mjs, each in one
@@ -350,7 +353,7 @@ async function stageAndTakeBack(t, page, doc) {
     return;
   }
   const box = card(page, "system");
-  await pressAndAnswer(t, page, box.getByRole("button", { name: "Stage it", exact: true }), pathOf(ROUTES.apply, { item: "system" }));
+  await pressAndAnswer(t, page, box.getByRole("button", { name: "Stage it", exact: true }), pathOf(ROUTES.apply, { item: "system" }), "POST", [202]);
   // The staging fetches the release, which takes as long as the lab network does.
   await page.waitForFunction(() => /is staged in slot [AB]/.test(document.querySelector("main section#system")?.textContent ?? ""), null, { timeout: 8 * 60 * 1000 });
   await t.see(bannerOf(page).getByText("Restart to finish the update"));
@@ -377,7 +380,7 @@ async function appUpdate(t, page, doc) {
     return null;
   }
   const row = card(page, "apps").locator("li.upd-row").filter({ hasText: offer.to });
-  await pressAndAnswer(t, page, row.getByRole("button", { name: "Update", exact: true }), `/api/1/apps/${encodeURIComponent(offer.item)}/update`);
+  await pressAndAnswer(t, page, row.getByRole("button", { name: "Update", exact: true }), `/api/1/apps/${encodeURIComponent(offer.item)}/update`, "POST", [202]);
   await appBecomes(page, offer.item, (app) => app.version === offer.to, `be at ${offer.to}`);
   await t.gone(card(page, "apps").locator("li.upd-row").filter({ hasText: `${offer.from}` }));
   // Going back is the app's own page; its route is the same.
@@ -390,6 +393,7 @@ async function appUpdate(t, page, doc) {
 /** The route of an app, `{id}` filled in: the Apps card calls the routes of the app's own page. */
 const appRoute = (route, id) => route.slice(route.indexOf(" ") + 1).replace("{id}", encodeURIComponent(id));
 const APP_ROUTES = {
+  updateAll: "POST /api/1/apps/update",
   tonight: "POST /api/1/apps/{id}/tonight",
   tonightAll: "POST /api/1/apps/tonight",
   notTonight: "POST /api/1/apps/{id}/not-tonight",
@@ -438,7 +442,7 @@ async function appTonight(t, page, doc) {
   }
 
   // Tonight asks for the update in the window, and the row says so.
-  await pressAndAnswer(t, page, row.getByRole("button", { name: "Tonight", exact: true }), appRoute(APP_ROUTES.tonight, offer.item));
+  await pressAndAnswer(t, page, row.getByRole("button", { name: "Tonight", exact: true }), appRoute(APP_ROUTES.tonight, offer.item), "POST", [202]);
   called.push(`POST ${appRoute(APP_ROUTES.tonight, offer.item)}`);
   const app = await appBecomes(page, offer.item, (one) => one.tonight != null || one.version === offer.to, "be asked for tonight or be updated", 120);
   if (app.tonight == null) {
@@ -472,6 +476,55 @@ async function appTonight(t, page, doc) {
   await openUpdates(t, page);
   for (const one of offers) await notTonight(t, page, box.locator("li.upd-row").filter({ hasText: one.to }).first(), one);
   return called;
+}
+
+/** An app goes back by the route its own page calls and is let go: going back holds it at that version, and the update is on offer again once it is let go. */
+async function appPutBack(page, id, from) {
+  const back = await fetchAsPage(page, "POST", `/api/1/apps/${encodeURIComponent(id)}/rollback`, {});
+  ensure(back.status === 200 || back.status === 202, `POST /api/1/apps/${id}/rollback was answered ${back.status}: ${back.text}`);
+  await appBecomes(page, id, (app) => app.version === from, `go back to ${from}`);
+  const free = await fetchAsPage(page, "POST", `/api/1/apps/${encodeURIComponent(id)}/unhold`, {});
+  ensure(free.status === 200, `POST /api/1/apps/${id}/unhold was answered ${free.status}: ${free.text}`);
+}
+
+/**
+ * Update all is on the Apps page, and only while more than one app waits for
+ * an update: it updates every app that waits, as one task, and each app goes
+ * back by the route its own page calls. With fewer than two apps waiting the
+ * page has no such button, and the script says so. Gives whether it was
+ * pressed.
+ */
+async function appUpdateAll(t, page, doc) {
+  await page.goto(new URL("/apps", page.url()).href);
+  await t.see(page.getByRole("heading", { level: 1, name: "Apps", exact: true }));
+  const drawn = () => page.waitForFunction(() => document.querySelectorAll(".apps-list a.apps-who, .apps-list .apps-empty").length > 0, null, { timeout: 30_000 });
+  const waiting = () => page.locator('td[data-updates="true"]').evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-app")));
+  const button = page.getByRole("button", { name: /^Update all/ });
+  await drawn();
+  const ids = await waiting();
+  if (ids.length < 2) {
+    ensure((await button.count()) === 0, `${ids.length} apps have an update and the Apps page has Update all`);
+    console.log(`${ids.length} apps of this machine have an update to take, and Update all is there for two or more, so it was not pressed`);
+    await openUpdates(t, page);
+    return false;
+  }
+  const answer = await fetchAsPage(page, "GET", "/api/1/apps");
+  ensure(answer.status === 200 && Array.isArray(answer.json?.bundles), `GET /api/1/apps was answered ${answer.status}: ${answer.text}`);
+  const apps = ids.map((id) => {
+    const bundle = answer.json.bundles.find((one) => one.id === id);
+    return { id, from: bundle?.version, to: offerOf(doc, id)?.to ?? bundle?.update };
+  });
+  ensure(apps.every((one) => one.from && one.to && one.to !== one.from), `the Apps page says ${ids.join(", ")} wait for an update, and the machine has ${JSON.stringify(apps)}`);
+  await t.see(page.getByRole("button", { name: `Update all (${ids.length})`, exact: true }));
+  await pressAndAnswer(t, page, button, appRoute(APP_ROUTES.updateAll), "POST", [202]);
+  // Each app is at the version its update brings, which takes as long as the lab network does.
+  for (const one of apps) await appBecomes(page, one.id, (app) => app.version === one.to, `be at ${one.to}`, 600);
+  await page.reload();
+  await drawn();
+  ensure((await waiting()).length === 0 && (await button.count()) === 0, `after Update all the Apps page still says ${JSON.stringify(await waiting())} wait for an update`);
+  for (const one of apps) await appPutBack(page, one.id, one.from);
+  await openUpdates(t, page);
+  return true;
 }
 
 /** The advisories are read when asked for, and the page lists what the machine says. */
@@ -549,6 +602,7 @@ async function administrator(t) {
   const later = await laterAndRemind(t, page, doc);
   await stageAndTakeBack(t, page, doc);
   const asked = await appTonight(t, page, doc);
+  const updatedAll = await appUpdateAll(t, page, doc);
   const app = await appUpdate(t, page, doc);
   await advisoriesShown(t, page);
   await historyShown(t, page);
@@ -575,6 +629,7 @@ async function administrator(t) {
       : []),
     ...(later ? [routeFor(ROUTES.later, { item: "system" })] : []),
     ...(app === null ? [] : [`POST /api/1/apps/${encodeURIComponent(app)}/update`]),
+    ...(updatedAll ? [`POST ${appRoute(APP_ROUTES.updateAll)}`] : []),
     ...asked,
   ]);
   await signOut(t, page);
