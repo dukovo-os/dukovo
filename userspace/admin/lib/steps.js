@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// The steps of a flow that changes the machine more than once (design 3.4,
-// 5.4 and 10): a list that runs actions one after the other, says each step's
-// state in words as well as by mark, and stops at the first one that fails.
-// What was done stays done: each command takes back its own half-made
-// change, so nothing here undoes anything, and the step that failed says what
-// stands. A step is an answer, which the call itself gives, or a task, which
-// the Tasks stream follows to its end. The pages that run a flow read this
-// file when a flow starts.
+// The steps of a flow that changes the machine more than once: a list that runs
+// actions one after the other, says each step's state in words as well as by
+// mark, and stops at the first one that fails. What was done stays done: each
+// command takes back its own half-made change, so nothing here undoes anything,
+// and the step that failed says what stands. A step is an answer, which the
+// call itself gives, or a task, which the Tasks stream follows to its end. The
+// pages that run a flow read this file when a flow starts.
 
 import { ApiError } from '../api.js';
 import { fill, h, icon } from '../dom.js';
@@ -26,7 +25,7 @@ const STATES = Object.freeze({
 
 /** The mark of each state: the shell's round tick, filled or ringed. */
 const MARKS = Object.freeze({
-  waiting: 'tick', running: 'tick run', done: 'tick done', failed: 'tick bad', skipped: 'tick',
+  waiting: 'tick', running: 'tick going', done: 'tick done', failed: 'tick bad', skipped: 'tick',
 });
 
 /** The last line of `lines` that says something, or empty text. */
@@ -38,7 +37,7 @@ const idOf = (line) => /\(([A-Z]{2,5}-\d{3})\)\s*$/.exec(line)?.[1] ?? null;
 /** One step of the list: its row, the place a failure is drawn, and `show(state, words)`. */
 function itemOf(step) {
   const mark = h('span', { 'aria-hidden': 'true' });
-  const state = h('span', { class: 'flow-state' });
+  const state = h('span', { class: 'flow-state small muted' });
   const line = h('p', { class: 'small muted flow-line', role: 'status' });
   const stands = h('p', { class: 'flow-stands', hidden: true });
   const problem = h('div', { class: 'flow-problem', tabindex: '-1' });

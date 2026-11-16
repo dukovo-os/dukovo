@@ -141,7 +141,7 @@ test('each item is in a list whose line is a polite status and says its state wi
   assert.equal(one.getAttribute('data-state'), 'running');
   assert.equal(two.getAttribute('data-state'), 'waiting');
   assert.equal(one.querySelector('.flow-line').getAttribute('role'), 'status');
-  assert.ok(one.querySelector('.tick').classes.has('run'));
+  assert.ok(one.querySelector('.tick').classes.has('going'));
   await run.finished;
   assert.ok(one.querySelector('.tick').classes.has('done'));
   assert.equal(one.querySelector('.tick .ic-check') !== null, true);
