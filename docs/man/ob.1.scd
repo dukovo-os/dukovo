@@ -2475,8 +2475,12 @@ library for Radix (ADR 0080), used as *cargo* is: it builds for the
 links with *x86_64-radix-cc*, and gives the program the crates the
 rust-crates port patched for Radix in place of crates.io's, each one
 the workspace's Cargo.lock names (all of them when there is no
-Cargo.lock yet). Cargo warns of a patch it then finds no use for, such
-as one for another version of a crate the lock names. When *ob* builds
+Cargo.lock yet). It gives them through a link to them, _.radix-crates_,
+that it makes in the workspace's folder: Cargo names a crate inside the
+workspace by its path from there, so that the names of what it builds
+do not depend on where the checkout is (ADR 0535). Cargo warns of a
+patch it then finds no use for, such as one for another version of a
+crate the lock names. When *ob* builds
 the programs on Rust's standard library itself, it gives Cargo
 *SQLITE3_LIB_DIR* and *SQLITE3_INCLUDE_DIR*, the sysroot's _libraries_
 and _include_, and *SQLITE3_STATIC*, so that libsqlite3-sys links the

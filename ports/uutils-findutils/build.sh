@@ -9,10 +9,7 @@
 set -eu
 
 cd "$PORT_SRC"
-# Linked without its symbols, which the bundle does not keep, so that the
-# build ID the linker writes covers the program as it ships (ADR 0535).
-CARGO_PROFILE_RELEASE_STRIP=symbols \
-	"$CARGO_RADIX" build --release --bin find --bin xargs --target-dir "$PORT_BUILD/radix" \
+"$CARGO_RADIX" build --release --bin find --bin xargs --target-dir "$PORT_BUILD/radix" \
 	--jobs "$JOBS"
 mkdir -p "$SYSROOT/system/commands" "$SYSROOT/system/resources/man/man1"
 for program in find xargs; do

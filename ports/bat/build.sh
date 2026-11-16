@@ -16,10 +16,7 @@ patch="patch.crates-io.ansi_colours.path=\"$PORT_DIR/ansi_colours\""
 features="--no-default-features --features application"
 "$CARGO_RADIX" update --config "$patch" -p ansi_colours --offline 2>/dev/null ||
 	"$CARGO_RADIX" update --config "$patch" -p ansi_colours
-# Linked without its symbols, which the bundle does not keep, so that the
-# build ID the linker writes covers the program as it ships (ADR 0535).
-CARGO_PROFILE_RELEASE_STRIP=symbols \
-	"$CARGO_RADIX" build --config "$patch" --release --locked $features --bin bat \
+"$CARGO_RADIX" build --config "$patch" --release --locked $features --bin bat \
 	--target-dir "$PORT_BUILD/radix" --jobs "$JOBS"
 mkdir -p "$PORT_BUNDLE/bin" "$PORT_BUNDLE/man/man1"
 $STRIP -o "$PORT_BUNDLE/bin/bat" "$PORT_BUILD/radix/x86_64-unknown-radix/release/bat"

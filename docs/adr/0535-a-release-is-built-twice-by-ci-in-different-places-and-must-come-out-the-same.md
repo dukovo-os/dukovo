@@ -103,23 +103,25 @@ when it is built in two places:
     - rustc's arguments with the four directories written as their names;
     - the package's name, version and folder;
     - each dependency's own hash, which the wrapper keeps beside the
-      dependency's output.
+      dependency's output, by the hash in its file names, or by its name
+      for a library that is a static or C library too, whose file names
+      hold no hash (boringtun).
 
     Where the outputs go and where libraries are looked for are left out,
     as Cargo names those folders by its own hashes. The file names Cargo
     chose stay, so Cargo finds what it built. A build script's output
     folder, `OUT_DIR`, is written as `/dukovo-out/<package>`. A wrapper
     already set, such as sccache, runs after it.
-  - The Rust ports that strip their programs (bat, ripgrep and uutils'
-    coreutils and findutils) link them without their symbols
-    (`CARGO_PROFILE_RELEASE_STRIP=symbols`), so that the build ID the
-    linker writes is a hash of the program as it ships. Under ThinLTO,
-    rustc takes a program's crates in the order of their object files'
-    names, which begin with the file names Cargo chose; for two crates of
-    one name, such as the two versions of `nix` that findutils uses, those
-    depend on where the checkout is, and so does the order of the
-    crates' symbols. The code is the same either way, but a build ID
-    taken before the symbols are stripped covers them.
+  - Cargo for Radix gives the crates the ports patch through a link to
+    them, `.radix-crates`, that it makes in the workspace's folder.
+    Cargo names a path dependency inside the workspace by its path from
+    there and one outside by its whole path, and the name is in the file
+    names of all it builds, which the wrapper leaves as they are. rustc
+    takes a program's crates under ThinLTO in the order of the names of
+    their object files, which begin with those file names: the two
+    versions of `getrandom` and of `nix` that uutils use, and the patched
+    `libc` and that of Rust's standard library, came in another order in
+    a copy of the checkout elsewhere, and so did their code and data.
   - `terminfo(5)` is edited after ncurses installs it, to give its
     source files as `../include/...`.
   - Each of these changes a stamp: the wrappers' text is part of what

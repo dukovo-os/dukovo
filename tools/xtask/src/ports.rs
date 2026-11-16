@@ -991,8 +991,9 @@ exec '{clang}' "$@"
     /// the x86_64-unknown-radix target against the rust-std port's
     /// sysroot, with the crates the ports patch for Radix in place of
     /// crates.io's (those the workspace's Cargo.lock names, so Cargo has no
-    /// unused patches to warn of; all of them before there is one), and
-    /// links with the toolchain's C compiler, which the cc crate builds C
+    /// unused patches to warn of; all of them before there is one), given
+    /// through a link to them, `.radix-crates`, in the workspace's folder,
+    /// and links with the toolchain's C compiler, which the cc crate builds C
     /// with too. The pinned Rust toolchain builds, whatever a port's tree
     /// pins.
     fn cargo_script(&self, ctx: &Ctx) -> Result<String> {
@@ -1036,11 +1037,34 @@ while [ -z "$lock" ]; do
 	fi
 	dir=$(dirname "$dir")
 done
+# The patched crates are given through a link in the workspace's folder:
+# Cargo names a crate inside the workspace by its path from there, and
+# one outside by its whole path, which every name Cargo gives what it
+# builds would then hold (ADR 0535).
+link=
+if [ -n "$lock" ]; then
+	link=${{lock%/*}}/.radix-crates
+	if [ "$(readlink "$link" 2>/dev/null)" != '{crates}' ]; then
+		if [ -e "$link" ] && [ ! -L "$link" ]; then
+			link=
+		else
+			ln -sfn '{crates}' "$link" 2>/dev/null || link=
+		fi
+	fi
+fi
 for patch in '{patches}'/*.toml; do
 	[ -f "$patch" ] || continue
-	name=${{patch##*/}}
-	name=${{name%-*}}
-	if [ -z "$lock" ] || grep -qx "name = \"$name\"" "$lock"; then
+	crate=${{patch##*/}}
+	crate=${{crate%.toml}}
+	name=${{crate%-*}}
+	if [ -n "$lock" ] && ! grep -qx "name = \"$name\"" "$lock"; then
+		continue
+	fi
+	if [ -n "$link" ] && [ -d "$link/$crate" ]; then
+		table=$name-$(printf '%s' "${{crate##*-}}" | tr . _)
+		set -- --config "patch.crates-io.$table.package=\"$name\"" \
+			--config "patch.crates-io.$table.path=\"$link/$crate\"" "$@"
+	else
 		set -- --config "$patch" "$@"
 	fi
 done
@@ -1060,6 +1084,7 @@ export CARGO_FUTURE_INCOMPAT_REPORT_FREQUENCY=never
 exec cargo "$command" "$@"
 "#,
             patches = self.crate_patches().display(),
+            crates = self.rust().join("crates").display(),
             // The flags are separated by the unit separator, as Cargo reads
             // them from CARGO_ENCODED_RUSTFLAGS.
             remaps = crate::repro::rustc_flags(ctx)

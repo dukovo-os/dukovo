@@ -9,10 +9,7 @@
 set -eu
 
 cd "$PORT_SRC"
-# Linked without its symbols, which the bundle does not keep, so that the
-# build ID the linker writes covers the program as it ships (ADR 0535).
-CARGO_PROFILE_RELEASE_STRIP=symbols \
-	"$CARGO_RADIX" build --release --bin rg --target-dir "$PORT_BUILD/radix" --jobs "$JOBS"
+"$CARGO_RADIX" build --release --bin rg --target-dir "$PORT_BUILD/radix" --jobs "$JOBS"
 mkdir -p "$PORT_BUNDLE/bin" "$PORT_BUNDLE/man/man1"
 $STRIP -o "$PORT_BUNDLE/bin/rg" "$PORT_BUILD/radix/x86_64-unknown-radix/release/rg"
 

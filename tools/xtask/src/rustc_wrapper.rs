@@ -56,7 +56,7 @@ const NEXT: &str = "OB_REPRO_NEXT_WRAPPER";
 
 /// What the identity's format is called. A change to what goes into an
 /// identity changes this, and with it every hash.
-pub const FORMAT: &str = "dukovo rustc identity 1";
+pub const FORMAT: &str = "dukovo rustc identity 2";
 
 /// The name a build script's output folder is written under, followed
 /// by the package's name.
@@ -169,8 +169,17 @@ fn rewrite(
     let extra = codegen_values(args, "extra-filename")
         .first()
         .map(|&(at, start)| args[at][start..].to_string());
-    if let (Some(extra), Some(out_dir)) = (extra, flag_value(args, "--out-dir")) {
-        keep(Path::new(&out_dir), &extra, &hash)?;
+    if let Some(out_dir) = flag_value(args, "--out-dir") {
+        // A library that is a static or C library too has no hash in its
+        // file names: Cargo gives it no extra-filename.
+        let kept = match (extra, flag_value(args, "--crate-name")) {
+            (Some(extra), _) => Some(format!(".repro{extra}")),
+            (None, Some(name)) => Some(format!(".repro.lib{name}")),
+            (None, None) => None,
+        };
+        if let Some(kept) = kept {
+            keep(Path::new(&out_dir), &kept, &hash)?;
+        }
     }
     if let Some(out_dir) = env("OUT_DIR") {
         let package = env("CARGO_PKG_NAME").unwrap_or_default();
@@ -322,21 +331,26 @@ fn dependency(path: &str, maps: &[(String, String)]) -> String {
 
 /// Where the hash of the crate in `file` is kept: `.repro-<hash>` beside
 /// it, `<hash>` being what Cargo put at the end of its name
-/// (`libname-<hash>.rlib`).
+/// (`libname-<hash>.rlib`), or `.repro.libname` for a name with no hash
+/// (`libname.rlib`).
 fn kept_beside(file: &Path) -> Option<PathBuf> {
     let stem = file.file_stem()?.to_str()?;
-    let (_, hash) = stem.rsplit_once('-')?;
-    if hash.is_empty() || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return None;
+    let hash = stem.rsplit_once('-').map(|(_, hash)| hash);
+    match hash.filter(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit())) {
+        Some(hash) => Some(file.with_file_name(format!(".repro-{hash}"))),
+        None if stem.starts_with("lib") && !stem.contains('-') => {
+            Some(file.with_file_name(format!(".repro.{stem}")))
+        }
+        None => None,
     }
-    Some(file.with_file_name(format!(".repro-{hash}")))
 }
 
-/// Keeps `hash` beside the output in `out_dir` whose names end in
-/// `extra`, for the crates that depend on it, whole or not at all.
-fn keep(out_dir: &Path, extra: &str, hash: &str) -> Result<(), String> {
-    let path = out_dir.join(format!(".repro{extra}"));
-    let partial = out_dir.join(format!(".repro{extra}.{}", std::process::id()));
+/// Keeps `hash` in `out_dir` as `kept`, the name [`kept_beside`] gives
+/// for the crate's files, for the crates that depend on it, whole or not
+/// at all.
+fn keep(out_dir: &Path, kept: &str, hash: &str) -> Result<(), String> {
+    let path = out_dir.join(kept);
+    let partial = out_dir.join(format!("{kept}.{}", std::process::id()));
     std::fs::create_dir_all(out_dir)
         .and_then(|()| std::fs::write(&partial, hash))
         .and_then(|()| std::fs::rename(&partial, &path))
@@ -500,6 +514,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(kept, metadata(&args));
         assert_eq!(read, metadata(&args));
+    }
+
+    #[test]
+    fn the_hash_of_a_library_whose_files_have_no_hash_is_kept_by_its_name() {
+        // A library that is a static library too: `libdep.rlib`,
+        // `libdep.a`, with no extra-filename from Cargo.
+        let dir = temp("kept-unhashed");
+        let out = dir.join("out");
+        let mut args = strings(&["--crate-name", "dep", "src/lib.rs", "-C", "metadata=ffff"]);
+        args.extend(strings(&["--crate-type", "staticlib", "--crate-type", "rlib", "--out-dir"]));
+        args.push(out.display().to_string());
+        rewrite(&mut args, &[], &|_| None).unwrap();
+        let rlib = out.join("libdep.rlib");
+        let read = dependency(rlib.to_str().unwrap(), &[]);
+        let elsewhere = dependency("/elsewhere/libdep.rlib", &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(kept_beside(&rlib), Some(out.join(".repro.libdep")));
+        assert_eq!(read, metadata(&args));
+        assert_eq!(elsewhere, "/elsewhere/libdep.rlib");
     }
 
     #[test]
