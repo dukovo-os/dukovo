@@ -683,10 +683,9 @@ pub(crate) fn answer(input: &mut BufReader<UnixStream>) -> Result<Answer, Fail> 
 /// When bundled cannot be reached or gives no answer within 5 seconds.
 pub(crate) fn automatic_for_everyone() -> Result<bool, String> {
     let (_stream, mut input) = ask(&Request::AutomaticForEveryone, None)?;
-    input
-        .get_ref()
-        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-        .map_err(|e| format!("bundled: {e}"))?;
+    // As below: a socket that cannot take a time limit is read without one,
+    // and bundled answers this at once.
+    let _ = input.get_ref().set_read_timeout(Some(std::time::Duration::from_secs(5)));
     match Answer::read(&mut input) {
         Ok(Some(Answer::Ok(word))) if word == "on" || word == "off" => Ok(word == "on"),
         Ok(Some(Answer::Error(why))) => Err(why),
