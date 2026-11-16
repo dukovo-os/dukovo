@@ -559,9 +559,13 @@ mod tests {
         assert_eq!(list.answers(), [0, 1]);
         // hardware last ends with the status of the check it shows, or with 3
         // for none kept; a hardware check that found a failure or a warning
-        // ends with 1 or 2, and has said what it found.
-        for (id, answers) in [("hardware.last", &[0, 1, 2, 3][..]), ("hardware.check", &[0, 1, 2])]
-        {
+        // ends with 1 or 2, and has said what it found. cert get --check ends
+        // with 1 when a check of the names failed, and has printed each.
+        for (id, answers) in [
+            ("hardware.last", &[0, 1, 2, 3][..]),
+            ("hardware.check", &[0, 1, 2]),
+            ("certificate.check", &[0, 1]),
+        ] {
             let action =
                 crate::admind::actions::REGISTRY.iter().find(|action| action.id() == id).unwrap();
             assert_eq!(action.answers(), answers, "{id}");
@@ -576,6 +580,7 @@ mod tests {
             "snapshots.list",
             "hardware.last",
             "hardware.check",
+            "certificate.check",
         ];
         for action in crate::admind::actions::REGISTRY.iter().filter(|a| !named.contains(&a.id())) {
             assert_eq!(action.answers(), [0], "{}", action.id());

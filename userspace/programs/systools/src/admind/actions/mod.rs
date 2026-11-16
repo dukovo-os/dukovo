@@ -58,6 +58,7 @@ mod hardware;
 #[cfg(any(test, feature = "lab"))]
 pub mod lab;
 pub mod logs;
+mod machine;
 mod metrics;
 mod moving;
 mod network;
@@ -181,8 +182,6 @@ pub const SECRET_PATTERN: &str = "^[^\n\r\0]*$";
 pub const DOCUMENT_PATTERN: &str = "^[^\0]*$";
 
 /// The most bytes a document field takes.
-// The certificate's upload takes it; the registry's rules hold every field.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const DOCUMENT_MAX: usize = 64 << 10;
 
 /// One argument of an action, as its input's schema describes it.
@@ -249,8 +248,6 @@ impl Field {
     /// A required argument that is a document of 1 to `max` bytes, which
     /// is a secret, as a certificate's key is: read into a [`Secret`], and
     /// never shown, kept or put in a log.
-    // For a certificate's key and chain.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn secret_document(name: &'static str, about: &'static str, max: usize) -> Field {
         Field { name, kind: Type::Document { max, secret: true }, required: true, about }
     }
@@ -1083,6 +1080,14 @@ registry![
     certificate::List,
     certificate::Show,
     certificate::Renew,
+    certificate::Check,
+    certificate::Get,
+    certificate::Add,
+    certificate::Revoke,
+    certificate::Remove,
+    certificate::History,
+    machine::Name,
+    machine::Rename,
     console::SetReach,
     console::SetCertificate,
     console::About,

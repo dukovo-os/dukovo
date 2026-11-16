@@ -581,6 +581,9 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "service.stop",
             "service.enable",
             "service.disable",
+            "certificate.get",
+            "certificate.add",
+            "machine.rename",
             "console.reach",
             "console.certificate",
             "console.undo",
@@ -1334,6 +1337,13 @@ const CODE_DECIDES: &[(&str, &str)] = &[
     // alone, which a pattern cannot say.
     ("hardware.check", "areas"),
     ("hardware.check", "disk"),
+    // Each name an order or a check is for is read as `cert get` reads it,
+    // once, a wildcard only with dns, which a pattern of the letters a name
+    // has cannot say; and the terms are agreed to only with true, which a
+    // flag says as true or false.
+    ("certificate.check", "names"),
+    ("certificate.get", "names"),
+    ("certificate.get", "agree_terms"),
 ];
 
 /// The bad examples whose rule a schema cannot say, which `check` alone
@@ -1425,6 +1435,15 @@ const BEYOND_THE_SCHEMA: &[(&str, &str)] = &[
     ("hardware.check", r#"{"areas":"disks cpu","disk":"vda"}"#),
     ("hardware.check", r#"{"disk":"vda"}"#),
     ("backups.add", r#"{"every":"hand","name":"lab","to":"relative/folder","verify":"never"}"#),
+    // A name with an empty word, a wildcard without dns, a name twice, a
+    // name of one word for an order, and terms not agreed to: the code's.
+    ("certificate.check", r#"{"names":"shop..example.org"}"#),
+    ("certificate.check", r#"{"names":"*.example.org"}"#),
+    ("certificate.check", r#"{"names":"a.example.org,a.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":false,"name":"shop","names":"shop.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"shop..example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"*.example.org"}"#),
+    ("certificate.get", r#"{"agree_terms":true,"name":"shop","names":"shop"}"#),
     // The key as a file and typed, or as neither; a card choice that is no
     // card of this machine; and no more than eight of them: the code's.
     ("move.plan", r#"{"source":"/volumes/LAB/dukovo-backup/lab-machine"}"#),
