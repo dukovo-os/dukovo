@@ -10,18 +10,22 @@
 // /api/1/updates/check`, which Check now asks), How this server updates to
 // `update settings --json` (`GET /api/1/updates/settings`), the checks after
 // an update to `update checks --json`. Save changes the settings and the
-// channel (`POST /api/1/updates/settings` and `/channel`) and Undo puts them
-// back; Hold this version and Release the hold change the system's hold
-// (`POST /api/1/updates/{item}/hold` and `/unhold`), a hold asks "Why
-// (optional)" first and the Held card says when, by whom and why; Later puts
+// channel (`POST /api/1/updates/settings` and `POST /api/1/updates/channel`)
+// and Undo puts them back; Hold this version and Release the hold change the
+// system's hold (`POST /api/1/updates/{item}/hold` and `POST
+// /api/1/updates/{item}/unhold`), a hold asks "Why (optional)" first and the
+// Held card says when, by whom and why; Later puts
 // the reminder of an update off for a day or a week and Remind me now brings
 // it back (`POST /api/1/updates/{item}/later`), unless the update fixes an
 // advisory, which is never put off and says so; Stage it stages the
 // system's release, a task (`POST /api/1/updates/{item}/apply`), which the
 // banner "Restart to finish the update" tells of, and Take it back unstages it
 // (`POST /api/1/updates/unstage`). A check is added and removed, and so is a
-// service that must run again (`POST /api/1/updates/checks`, `.../remove` and
-// `/essential`). The advisories and the history are read when asked for. An
+// service that must run again (`POST /api/1/updates/checks`, `POST
+// /api/1/updates/checks/{name}/remove` and `POST /api/1/updates/essential`).
+// The advisories and the history are read when asked for (`GET
+// /api/1/updates/advisories` and `GET /api/1/updates/history`), and the
+// failed starts as the page opens (`GET /api/1/updates/failed`). An
 // app that the check offers an update for is updated from the Apps card, a
 // task (`POST /api/1/apps/{id}/update`), and put back through the route that
 // the app's own page calls (`POST /api/1/apps/{id}/rollback`); Tonight asks
