@@ -28,7 +28,7 @@ example the change's undo is called, and the service the examples use is put
 back as it was found (console.py). It leaves alone the changes at
 LEFT_ALONE: renewing the certificate, the changes that are tried, installing
 an app from the catalogs, and those whose examples need what only their own
-tests set up.
+tests set up, as the databases' do.
 
 A request that is refused changes nothing, so the first two runs leave the
 machine as it was. What each run checks of every answer: it is not a 5xx,
@@ -134,7 +134,25 @@ SET_UP = {
 # machine lists, so each example would end as a task that failed (APP-101): the browser test web-console/add-app
 # adds a catalog of its own and installs from it, and the boot test admin-updates installs from another.
 CATALOG_CHANGES = {"apps.install"}
-LEFT_ALONE = {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP
+# The changes of the Databases page. PostgreSQL is a bundle that a machine may not have, and what
+# these change is its databases, which the boot test admin-websites and the browser test
+# web-console/databases set up, change and take away.
+DATABASES = {
+    # Makes a role and shows its password once, in the answer: a failure's report would print it.
+    # The example names a database that must not be there, and the undo takes it away.
+    "databases.add",
+    # Makes a new password for the role of a database that only the tests above have made, and
+    # shows it in the answer, as databases.add does.
+    "databases.password",
+    # Opens PostgreSQL to another network, which restarts it, and needs a database and a
+    # certificate that the tests above have set up.
+    "databases.allow",
+    # Shuts out the network that databases.allow let in, which only that change makes.
+    "databases.deny",
+    # Removes a database with its data, which nothing puts back.
+    "databases.remove",
+}
+LEFT_ALONE = {"certificate.renew"} | CATALOG_CHANGES | TRIED | SET_UP | DATABASES
 # The reads the second run leaves alone: lab.missing, which a lab machine offers, runs a command
 # no image has, and is answered 501 (ADM-129) by design, which Schemathesis takes for a server error.
 # apps.search and apps.sheet read the catalogs, which bundled reads anew at each request, over the
