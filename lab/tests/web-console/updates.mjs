@@ -350,7 +350,7 @@ async function stageAndTakeBack(t, page, doc) {
     return;
   }
   const box = card(page, "system");
-  await pressAndAnswer(t, page, box.getByRole("button", { name: "Stage it", exact: true }), pathOf(ROUTES.apply, { item: "system" }));
+  await pressAndAnswer(t, page, box.getByRole("button", { name: "Stage it", exact: true }), pathOf(ROUTES.apply, { item: "system" }), "POST", [202]);
   // The staging fetches the release, which takes as long as the lab network does.
   await page.waitForFunction(() => /is staged in slot [AB]/.test(document.querySelector("main section#system")?.textContent ?? ""), null, { timeout: 8 * 60 * 1000 });
   await t.see(bannerOf(page).getByText("Restart to finish the update"));
@@ -377,7 +377,7 @@ async function appUpdate(t, page, doc) {
     return null;
   }
   const row = card(page, "apps").locator("li.upd-row").filter({ hasText: offer.to });
-  await pressAndAnswer(t, page, row.getByRole("button", { name: "Update", exact: true }), `/api/1/apps/${encodeURIComponent(offer.item)}/update`);
+  await pressAndAnswer(t, page, row.getByRole("button", { name: "Update", exact: true }), `/api/1/apps/${encodeURIComponent(offer.item)}/update`, "POST", [202]);
   await appBecomes(page, offer.item, (app) => app.version === offer.to, `be at ${offer.to}`);
   await t.gone(card(page, "apps").locator("li.upd-row").filter({ hasText: `${offer.from}` }));
   // Going back is the app's own page; its route is the same.
@@ -438,7 +438,7 @@ async function appTonight(t, page, doc) {
   }
 
   // Tonight asks for the update in the window, and the row says so.
-  await pressAndAnswer(t, page, row.getByRole("button", { name: "Tonight", exact: true }), appRoute(APP_ROUTES.tonight, offer.item));
+  await pressAndAnswer(t, page, row.getByRole("button", { name: "Tonight", exact: true }), appRoute(APP_ROUTES.tonight, offer.item), "POST", [202]);
   called.push(`POST ${appRoute(APP_ROUTES.tonight, offer.item)}`);
   const app = await appBecomes(page, offer.item, (one) => one.tonight != null || one.version === offer.to, "be asked for tonight or be updated", 120);
   if (app.tonight == null) {
