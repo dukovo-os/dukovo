@@ -18,12 +18,9 @@ update - see, take, hold back and undo every update: the system, its firmware se
 *update advisories* [*--json*]++
 *update last* [*--json*]++
 *update settings* [*--json*]++
-*update set* [*--check* *notify*|*download*|*off*] [*--apps* *notify*|*auto*]
-[*--unattended* *on*|*off*] [*--restart* _HH:MM_ | *--no-restart*]
-[*--metered* *wait*|*download*]++
+*update set* [*--check* *notify*|*download*|*off*] [*--apps* *notify*|*auto*] [*--unattended* *on*|*off*] [*--restart* _HH:MM_ | *--no-restart*] [*--metered* *wait*|*download*]++
 *update checks* [*--json*]++
-*update checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_)
-[*--required*] [*--timeout* _seconds_]++
+*update checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_) [*--required*] [*--timeout* _seconds_]++
 *update checks remove* _name_++
 *update checks essential* _service_ *on*|*off*
 
@@ -181,12 +178,12 @@ that the update server offers.
 
 *checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_) [*--required*] [*--timeout* _seconds_]
 	Adds a check to *health.toml*(5). *--url* makes a check that
-	passes when the web address answers: the command *curl -fsS -g
-	--max-time* _seconds_ _url_, with *-k* after *-g* for *--insecure*,
+	passes when the web address answers: the command
+	*curl -fsS -g --max-time* _seconds_ _url_, with *-k* after *-g* for *--insecure*,
 	which accepts a certificate that is not trusted. *--service* makes
 	a check that passes when the service runs: *systemctl is-active*
 	_name_. Give one of the two. _name_ is what the log calls the check,
-	1 to 64 letters, digits, spaces, *.*, *_* and *-*, starting with a
+	1 to 64 letters, digits, spaces, *.*, *\_* and *-*, starting with a
 	letter or a digit. *--required* makes an update fail when the check
 	fails; without it the check is only logged. *--timeout* is the
 	seconds it may take, 1 to 600, 30 by default. A name in use is

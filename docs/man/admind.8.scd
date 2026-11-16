@@ -1273,8 +1273,8 @@ a signed-in session. It tells:
 
 *event: power*
 	*{"shutdown": {"end": "reboot", "in\_seconds": 41, "at\_ms":
-	1800000060000}}*, the restart or shut down that is set, as *shutdown
-	--show --json* prints it, with the seconds left as of when it is
+	1800000060000}}*, the restart or shut down that is set, as
+	*shutdown --show --json* prints it, with the seconds left as of when it is
 	sent; *{"shutdown": null}* when none is. It is told to every stream
 	of every signed-in session: to one that opens while one is set, at
 	once, and to all of them each time what is set changes. admind sees

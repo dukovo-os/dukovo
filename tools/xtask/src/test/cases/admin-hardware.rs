@@ -7,8 +7,8 @@
 //! owner, is an administrator; bob may use the console and is no
 //! administrator.
 //!
-//! What the machine is. `GET /api/1/hardware` is what `hardware show
-//! --json` prints in alice's pane, for bob and for alice: the same
+//! What the machine is. `GET /api/1/hardware` is what
+//! `hardware show --json` prints in alice's pane, for bob and for alice: the same
 //! document, whose memory has no `ecc` and no `modules` since a person is
 //! not told what only the firmware's tables say, and which has no serial
 //! number or ID of the machine anywhere. `GET /api/1/hardware/inventory`

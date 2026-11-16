@@ -43,14 +43,14 @@ system = "2026.3.1"
 	*"notify"*, the default, tells of app updates; *"auto"* has
 	*updated*(8) update the apps installed for everyone itself. It is
 	one of two settings that say so: *bundled*(8) keeps whether it
-	updates them by itself (*bundle update --automatic*), and *update set
-	--apps* writes both, so that they agree. *update settings* says when
+	updates them by itself (*bundle update --automatic*), and
+	*update set --apps* writes both, so that they agree. *update settings* says when
 	they do not.
 
 *metered*
 	*"wait"*, the default, downloads nothing while the connection is
-	metered; *"download"* takes it as any other. *update set
-	--metered* writes it.
+	metered; *"download"* takes it as any other.
+	*update set --metered* writes it.
 
 *channel*
 	*stable*, the default, the releases most people run; *beta*, each
