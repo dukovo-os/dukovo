@@ -101,6 +101,13 @@ web-console/apps use. The reads and the settings' changes of the Updates page
 are run: they need no server, and updates.check answers with what it could not
 reach.
 
+Nor are the Databases' changes (SET_UP): they need PostgreSQL installed and on,
+and a database to work on, which a lab machine has not, and databases.allow
+and databases.deny make it listen on the network and restart. Their tasks are
+the commands the console shows, which the boot test admin-websites runs, and
+the browser test web-console/databases uses. databases.list is run: it
+answers with what a machine without PostgreSQL says.
+
 Nor are the Certificates page's changes but its reads: certificate.get asks
 Let's Encrypt for a certificate of names that are not this machine's,
 certificate.add reads its certificate and key from variables of the
@@ -156,8 +163,8 @@ from console import (
 # history they read; checks.run runs dukovo-check, as checks.last does; the
 # changes that are tried (TRIED) need a trial; ssh.on and ssh.off (UNDER)
 # stop the sshd that Ansible's tasks come through; the actions of the
-# Snapshots, Backups, Move, Accounts, Your account, Security, Updates and Apps
-# pages whose examples need what only their tests set up (SET_UP); and the grow of a
+# Snapshots, Backups, Move, Accounts, Your account, Security, Updates, Apps and
+# Databases pages whose examples need what only their tests set up (SET_UP); and the grow of a
 # second disk (ON_A_SECOND_DISK).
 TRIED = {
     "network.set", "network.keep", "network.undo",
@@ -193,6 +200,10 @@ UNDER = {"ssh.on", "ssh.off"}
 # apps.unhold, apps.remove, apps.tonight and apps.not-tonight name an app of
 # the test catalog, which a lab machine has not installed, and apps.tonight-all
 # asks for the update of each such app.
+# databases.add, databases.password, databases.allow, databases.deny and
+# databases.remove need PostgreSQL installed and on, and a database to work
+# on, which a lab machine has not; databases.allow and databases.deny also
+# make PostgreSQL listen on the network and restart.
 # certificate.get asks Let's Encrypt for names that are not this machine's;
 # certificate.add reads a certificate and its key from variables this test
 # does not give; certificate.revoke and certificate.remove name the
@@ -210,6 +221,7 @@ SET_UP = {
     "apps.show", "apps.update", "apps.update-all", "apps.rollback", "apps.hold", "apps.unhold", "apps.remove",
     "certificate.get", "certificate.add", "certificate.revoke", "certificate.remove", "machine.rename",
     "apps.tonight", "apps.tonight-all", "apps.not-tonight",
+    "databases.add", "databases.password", "databases.allow", "databases.deny", "databases.remove",
 }
 # storage.grow's example grows vdb, a boot test's second disk with room after its last
 # partition; a lab machine has no such disk, and a grow of its own cannot be undone.

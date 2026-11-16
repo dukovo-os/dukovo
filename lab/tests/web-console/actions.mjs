@@ -49,7 +49,23 @@ const TEST = "web-console/actions";
 // The actions this test leaves alone, each with its reason above.
 // A long action, which a lab build has, answers 202 and runs as a task
 // (web-console/tasks), so it is left alone too.
-const SKIPPED = new Set(["certificate.renew"]);
+//
+// The databases' changes are left alone. databases.allow makes PostgreSQL
+// listen on the network and restart, and databases.deny puts it back: with
+// the example's network they would change what a machine whose network the lab
+// needs listens on, under the other tests. databases.add, databases.password
+// and databases.remove need PostgreSQL installed and a database to work on,
+// which this test's machine has not, and the answer of the first two holds a
+// password. web-console/databases calls each, where its effect is seen and put
+// back.
+const SKIPPED = new Set([
+  "certificate.renew",
+  "databases.add",
+  "databases.password",
+  "databases.allow",
+  "databases.deny",
+  "databases.remove",
+]);
 
 // The reads that may be answered with the machine's own words, by error
 // ID, where the rest are 200: checks.last runs `dukovo-check --last`, which
