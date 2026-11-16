@@ -4190,8 +4190,8 @@ pub fn test_advisory(fixed: &str) -> String {
 /// deploys a catalog.
 pub const TEST_SERVER_CATALOG_KEY: &str = "catalog-key";
 
-/// The boot test that reads [`TEST_SERVER`] over the network.
-const TEST_SERVER_CASE: &str = "update-online";
+/// The boot tests that read [`TEST_SERVER`] over the network.
+const TEST_SERVER_CASES: [&str; 2] = ["update-online", "admin-updates"];
 
 /// The releases the test update server offers, by their version's last
 /// word: `bridge`, this build with three files added, which updates from
@@ -4215,7 +4215,8 @@ pub fn test_update_file() -> String {
 /// Makes [`TEST_SERVER`] in `dir` if a case of `cases` reads it.
 fn test_update_server(ctx: &Ctx, built: &Built, dir: &Path, cases: &[&Case]) -> Result<()> {
     let wanted = cases.iter().any(|case| {
-        case.name == TEST_SERVER_CASE || case.disks.iter().any(|disk| disk.fat == UPDATE_FILE)
+        TEST_SERVER_CASES.contains(&case.name)
+            || case.disks.iter().any(|disk| disk.fat == UPDATE_FILE)
     });
     if wanted { make_update_server(ctx, built, dir) } else { Ok(()) }
 }

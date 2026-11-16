@@ -1319,157 +1319,313 @@ compares = false
 tests = { checks = "admind::actions::private::tests", route = "admin-security", same_as_command = "admin-security", browser = "web-console/security", ansible = "web-console/ansible" }
 
 [[action]]
-id = "power.status"
-title = "Show a restart or shut down that is set"
-area = "power"
-changes = false
-method = "GET"
-path = "/api/1/power"
-runs = "as-the-person"
-long = false
-compares = false
-tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "power.restart"
-title = "Restart this machine"
-area = "power"
-changes = true
-method = "POST"
-path = "/api/1/power/restart"
-runs = "as-administrator"
-long = false
-compares = true
-tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "power.shutdown"
-title = "Shut down this machine"
-area = "power"
-changes = true
-method = "POST"
-path = "/api/1/power/shutdown"
-runs = "as-administrator"
-long = false
-compares = true
-tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "power.cancel"
-title = "Cancel a restart or shut down"
-area = "power"
-changes = true
-method = "POST"
-path = "/api/1/power/cancel"
-runs = "as-administrator"
-long = false
-compares = true
-tests = { checks = "admind::actions::power::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "updates.bisect-status"
-title = "Show the search for a bad change"
+id = "updates.last"
+title = "Show the last check for updates"
 area = "updates"
 changes = false
 method = "GET"
-path = "/api/1/updates/bisect"
+path = "/api/1/updates"
 runs = "as-the-person"
 long = false
 compares = false
-tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
 
 [[action]]
-id = "updates.bisect"
-title = "Search for the change that broke a start"
+id = "updates.check"
+title = "Check for updates"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/check"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.slots"
+title = "Show the slots of the system"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/slots"
+runs = "as-administrator"
+long = false
+compares = false
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.history"
+title = "Show what was updated"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/history"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.advisories"
+title = "Show the security advisories"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/advisories"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.settings"
+title = "Show how the machine updates"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/settings"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.set"
+title = "Change how the machine updates"
 area = "updates"
 changes = true
 method = "POST"
-path = "/api/1/updates/bisect"
+path = "/api/1/updates/settings"
 runs = "as-administrator"
 long = false
 compares = true
-tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
 
 [[action]]
-id = "updates.bisect-stop"
-title = "Stop the search for a bad change"
+id = "updates.channel"
+title = "Change the update channel"
 area = "updates"
 changes = true
 method = "POST"
-path = "/api/1/updates/bisect/stop"
+path = "/api/1/updates/channel"
 runs = "as-administrator"
 long = false
 compares = true
-tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
 
 [[action]]
-id = "updates.bisect-confirm"
-title = "Make sure of the change the search named"
+id = "updates.checks"
+title = "Show the checks made after an update"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/checks"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.check-add"
+title = "Add a check made after an update"
 area = "updates"
 changes = true
 method = "POST"
-path = "/api/1/updates/bisect/confirm"
+path = "/api/1/updates/checks"
 runs = "as-administrator"
 long = false
 compares = true
-tests = { checks = "admind::actions::bisect::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
 
 [[action]]
-id = "hardware.show"
-title = "Show what this machine is"
-area = "hardware"
-changes = false
-method = "GET"
-path = "/api/1/hardware"
-runs = "as-the-person"
-long = false
-compares = false
-tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "hardware.inventory"
-title = "Show the memory modules"
-area = "hardware"
-changes = false
-method = "GET"
-path = "/api/1/hardware/inventory"
-runs = "as-administrator"
-long = false
-compares = false
-tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "hardware.last"
-title = "Show the last hardware check"
-area = "hardware"
-changes = false
-method = "GET"
-path = "/api/1/hardware/check"
-runs = "as-the-person"
-long = false
-compares = false
-tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "hardware.history"
-title = "Show the hardware checks by day"
-area = "hardware"
-changes = false
-method = "GET"
-path = "/api/1/hardware/history"
-runs = "as-the-person"
-long = false
-compares = false
-tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
-
-[[action]]
-id = "hardware.check"
-title = "Check the hardware"
-area = "hardware"
+id = "updates.check-remove"
+title = "Remove a check made after an update"
+area = "updates"
 changes = true
 method = "POST"
-path = "/api/1/hardware/check"
+path = "/api/1/updates/checks/{name}/remove"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.essential"
+title = "Change which services must run after an update"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/essential"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.apply"
+title = "Take an update"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/{item}/apply"
 runs = "as-administrator"
 long = true
 compares = false
-tests = { checks = "admind::actions::hardware::tests", route = "admin-hardware", same_as_command = "admin-hardware", browser = "web-console/hardware", ansible = "web-console/ansible" }
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.unstage"
+title = "Do not try the staged update"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/unstage"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.undo"
+title = "Go back to the version before"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/{item}/undo"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.hold"
+title = "Hold an update back"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/{item}/hold"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.unhold"
+title = "Stop holding an update back"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/{item}/unhold"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "updates.failed"
+title = "Show what changed before a start failed"
+area = "updates"
+changes = false
+method = "GET"
+path = "/api/1/updates/failed"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.list"
+title = "List the apps"
+area = "apps"
+changes = false
+method = "GET"
+path = "/api/1/apps"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.show"
+title = "Show an app"
+area = "apps"
+changes = false
+method = "GET"
+path = "/api/1/apps/{id}"
+runs = "as-the-person"
+long = false
+compares = false
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.update"
+title = "Update an app"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/update"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.update-all"
+title = "Update every app"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/update"
+runs = "as-administrator"
+long = true
+compares = false
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.rollback"
+title = "Go back to an app's version before"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/rollback"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.hold"
+title = "Hold an app back"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/hold"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.unhold"
+title = "Stop holding an app back"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/unhold"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }
+
+[[action]]
+id = "apps.remove"
+title = "Remove an app"
+area = "apps"
+changes = true
+method = "POST"
+path = "/api/1/apps/{id}/remove"
+runs = "as-administrator"
+long = true
+compares = true
+tests = { checks = "admind::actions::apps::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/apps", ansible = "web-console/ansible" }

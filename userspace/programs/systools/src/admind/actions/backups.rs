@@ -379,7 +379,7 @@ impl Args for Added {
 }
 
 /// `words` as "a, b or c".
-fn or_list(words: &[&str]) -> String {
+pub(super) fn or_list(words: &[&str]) -> String {
     match words.split_last() {
         Some((last, [])) => (*last).to_string(),
         Some((last, rest)) => format!("{} or {last}", rest.join(", ")),

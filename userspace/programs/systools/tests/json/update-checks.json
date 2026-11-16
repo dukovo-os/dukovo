@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "essential": ["logd", "sshd"],
+  "stable": 90,
+  "deadline": 600,
+  "checks": [
+    {
+      "name": "web site",
+      "command": ["curl", "-fsS", "-k", "--max-time", "20", "https://localhost/"],
+      "required": true,
+      "timeout": 20,
+      "kind": "url",
+      "target": "https://localhost/"
+    },
+    {
+      "name": "nginx",
+      "command": ["systemctl", "is-active", "nginx"],
+      "required": false,
+      "timeout": 60,
+      "kind": "service",
+      "target": "nginx"
+    },
+    {
+      "name": "backup disk",
+      "command": ["findmnt", "/volumes/BACKUP"],
+      "required": false,
+      "timeout": 60,
+      "kind": "command",
+      "target": "findmnt /volumes/BACKUP"
+    }
+  ]
+}

@@ -559,9 +559,18 @@ mod tests {
         assert_eq!(list.answers(), [0, 1]);
         // hardware last ends with the status of the check it shows, or with 3
         // for none kept; a hardware check that found a failure or a warning
-        // ends with 1 or 2, and has said what it found.
-        for (id, answers) in [("hardware.last", &[0, 1, 2, 3][..]), ("hardware.check", &[0, 1, 2])]
-        {
+        // ends with 1 or 2, and has said what it found. updates.last's 3 is
+        // no check kept yet, and updates.advisories' 1 is an advisory that
+        // applies and its 3 a list that could not be read; each prints its
+        // JSON then too. apps.update's 1 is the stop that says what an
+        // update asks for before it is told yes.
+        for (id, answers) in [
+            ("hardware.last", [0, 1, 2, 3].as_slice()),
+            ("hardware.check", [0, 1, 2].as_slice()),
+            ("updates.last", [0, 3].as_slice()),
+            ("updates.advisories", [0, 1, 3].as_slice()),
+            ("apps.update", [0, 1].as_slice()),
+        ] {
             let action =
                 crate::admind::actions::REGISTRY.iter().find(|action| action.id() == id).unwrap();
             assert_eq!(action.answers(), answers, "{id}");
@@ -576,6 +585,9 @@ mod tests {
             "snapshots.list",
             "hardware.last",
             "hardware.check",
+            "updates.last",
+            "updates.advisories",
+            "apps.update",
         ];
         for action in crate::admind::actions::REGISTRY.iter().filter(|a| !named.contains(&a.id())) {
             assert_eq!(action.answers(), [0], "{}", action.id());

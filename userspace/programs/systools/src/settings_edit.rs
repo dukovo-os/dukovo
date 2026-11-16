@@ -10,7 +10,9 @@
 //! see no change. [`edited`] is its part that works on text, without a
 //! file. [`table`], [`set_string`], [`set_integer`] and [`set_bool`] are the
 //! edits the console makes, which keep the comment after a value they replace and
-//! put a new key where a person would.
+//! put a new key where a person would. [`set_strings`], [`push_string`],
+//! [`remove_string`] and [`remove_key`] edit a list of words, and
+//! [`push_table`] and [`remove_table`] the `[[tables]]` of one.
 //!
 //! [`write`] puts the new text into a new file beside the old one, which
 //! gets the old file's owner and mode and is made durable, and then takes
@@ -30,7 +32,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use toml_edit::{DocumentMut, Item, Table, TableLike, Value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 
 use crate::util::strip_os_error;
 
@@ -260,15 +262,118 @@ pub fn set_bool(table: &mut dyn TableLike, key: &str, value: bool) {
     }
 }
 
-/// [`set_string`] for a list of strings, written on one line.
-pub fn set_strings(table: &mut dyn TableLike, key: &str, values: &[&str]) {
-    let now: Option<Vec<&str>> = table
-        .get(key)
-        .and_then(Item::as_array)
-        .and_then(|array| array.iter().map(Value::as_str).collect());
-    if now.as_deref() != Some(values) {
-        put(table, key, Value::Array(values.iter().copied().collect()));
+/// Makes `key` of `table` the list of strings `values`, keeping the comment
+/// after the list it replaces. A list that holds them already is left as
+/// the file wrote it.
+pub fn set_strings(table: &mut dyn TableLike, key: &str, values: &[String]) {
+    let same = table.get(key).and_then(Item::as_array).is_some_and(|array| {
+        array.len() == values.len()
+            && array.iter().zip(values).all(|(old, new)| old.as_str() == Some(new))
+    });
+    if !same {
+        put(table, key, Value::Array(values.iter().map(String::as_str).collect()));
     }
+}
+
+/// Adds the string `value` to the end of the list `key` of `table`,
+/// making the list when there is none. Returns false, having changed
+/// nothing, when the list holds it already, and when `key` holds
+/// something that is not a list of strings.
+pub fn push_string(table: &mut dyn TableLike, key: &str, value: &str) -> bool {
+    if table.get(key).is_none() {
+        table.insert(key, Item::Value(Value::Array(Array::new())));
+    }
+    let Some(array) = table.get_mut(key).and_then(Item::as_array_mut) else { return false };
+    if array.iter().any(|old| old.as_str() == Some(value)) {
+        return false;
+    }
+    array.push(value);
+    true
+}
+
+/// Takes the string `value` out of the list `key` of `table`. Returns
+/// false, having changed nothing, when the list does not hold it.
+pub fn remove_string(table: &mut dyn TableLike, key: &str, value: &str) -> bool {
+    let Some(array) = table.get_mut(key).and_then(Item::as_array_mut) else { return false };
+    let Some(at) = array.iter().position(|old| old.as_str() == Some(value)) else { return false };
+    array.remove(at);
+    // The one that comes first keeps no space before it, as a list written
+    // by hand has none after its bracket; a long list keeps its lines.
+    if at == 0
+        && let Some(first) = array.get_mut(0)
+        && first.decor().prefix().and_then(|prefix| prefix.as_str()) == Some(" ")
+    {
+        first.decor_mut().set_prefix("");
+    }
+    true
+}
+
+/// Takes `key` out of `table`, with the comment that is on its line.
+/// Returns false when it is not there.
+pub fn remove_key(table: &mut dyn TableLike, key: &str) -> bool {
+    table.remove(key).is_some()
+}
+
+/// Adds a table to the `[[name]]` tables of `document`, after the others,
+/// and gives it. The comments that end the file go above the first one,
+/// as [`table`] puts them above a table of its own. None when `name` is
+/// a key that holds something other than `[[tables]]`.
+pub fn push_table<'a>(document: &'a mut DocumentMut, name: &str) -> Option<&'a mut Table> {
+    let first = !document.contains_key(name);
+    let mut made = Table::new();
+    let before = document.trailing().as_str().unwrap_or_default().to_string();
+    let anything = !document.as_table().is_empty() || !before.is_empty();
+    if first {
+        let mut prefix = before;
+        if !prefix.is_empty() {
+            document.set_trailing("");
+            if !prefix.ends_with("\n\n") {
+                prefix.push_str(if prefix.ends_with('\n') { "\n" } else { "\n\n" });
+            }
+        } else if anything {
+            prefix.push('\n');
+        }
+        made.decor_mut().set_prefix(prefix);
+        document.insert(name, Item::ArrayOfTables(ArrayOfTables::new()));
+    } else {
+        made.decor_mut().set_prefix("\n");
+    }
+    let tables = document.get_mut(name)?.as_array_of_tables_mut()?;
+    tables.push(made);
+    let last = tables.len() - 1;
+    tables.get_mut(last)
+}
+
+/// Takes out the first of the `[[name]]` tables of `document` that
+/// `which` picks, with the comments above it. When it was the last one,
+/// those comments stay at the end of the file, where they were before the
+/// first was added. Returns false when none is picked.
+pub fn remove_table(
+    document: &mut DocumentMut,
+    name: &str,
+    which: impl Fn(&Table) -> bool,
+) -> bool {
+    let Some(tables) = document.get_mut(name).and_then(Item::as_array_of_tables_mut) else {
+        return false;
+    };
+    let Some(at) = tables.iter().position(which) else { return false };
+    let prefix = tables
+        .get(at)
+        .and_then(|table| table.decor().prefix())
+        .and_then(|prefix| prefix.as_str())
+        .unwrap_or_default()
+        .to_string();
+    tables.remove(at);
+    if tables.is_empty() {
+        document.remove(name);
+        // What `push_table` put above the table: the comments, and the
+        // blank line it adds before the table that follows them.
+        if !prefix.trim().is_empty() {
+            let after = document.trailing().as_str().unwrap_or_default().to_string();
+            document.set_trailing(format!("{}\n{after}", prefix.trim_end_matches('\n')));
+        }
+    }
+    true
 }
 
 /// Puts `value` at `key`, in the place and with the comment of the value
@@ -735,5 +840,90 @@ session-hours = 12
             PathBuf::from(format!("/system/settings/.admin.toml.new-{}", std::process::id()))
         );
         assert!(new_name(Path::new("/")).is_err());
+    }
+
+    /// What `edit` makes of `text`, which it changes and cannot fail.
+    fn made(text: &str, edit: impl FnOnce(&mut DocumentMut)) -> String {
+        let made = edited(text, |document| {
+            edit(document);
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|_| unreachable!());
+        made.unwrap_or_else(|| text.to_string())
+    }
+
+    #[test]
+    fn a_list_of_words_gains_and_loses_one_and_keeps_what_is_around_it() {
+        let text = "# Whom.\nessential = [\"logd\", \"sshd\"] # the minimum\nstable = 120\n";
+        let more = made(text, |d| assert!(push_string(d.as_table_mut(), "essential", "nginx")));
+        assert_eq!(
+            more,
+            "# Whom.\nessential = [\"logd\", \"sshd\", \"nginx\"] # the minimum\nstable = 120\n"
+        );
+        let less = made(&more, |d| assert!(remove_string(d.as_table_mut(), "essential", "logd")));
+        assert_eq!(
+            less,
+            "# Whom.\nessential = [\"sshd\", \"nginx\"] # the minimum\nstable = 120\n"
+        );
+        let last = made(&less, |d| assert!(remove_string(d.as_table_mut(), "essential", "nginx")));
+        assert_eq!(last, "# Whom.\nessential = [\"sshd\"] # the minimum\nstable = 120\n");
+        // One that is there already, or not there, changes nothing.
+        let same = made(text, |d| {
+            assert!(!push_string(d.as_table_mut(), "essential", "sshd"));
+            assert!(!remove_string(d.as_table_mut(), "essential", "nginx"));
+            assert!(!remove_string(d.as_table_mut(), "other", "nginx"));
+        });
+        assert_eq!(same, text);
+        // A list that is not there is made, and a key that is no list is left alone.
+        assert_eq!(
+            made("", |d| assert!(push_string(d.as_table_mut(), "essential", "logd"))),
+            "essential = [\"logd\"]\n"
+        );
+        made("essential = 3\n", |d| assert!(!push_string(d.as_table_mut(), "essential", "x")));
+    }
+
+    #[test]
+    fn a_list_is_set_whole_and_a_key_is_taken_out_with_its_comment() {
+        let words = ["a".to_string(), "b".to_string()];
+        let set = made("x = 1\n", |d| set_strings(d.as_table_mut(), "list", &words));
+        assert_eq!(set, "x = 1\nlist = [\"a\", \"b\"]\n");
+        // The same list, as the file wrote it, is not written again.
+        let spaced = "list = [ \"a\",\"b\" ]\n";
+        assert_eq!(made(spaced, |d| set_strings(d.as_table_mut(), "list", &words)), spaced);
+        let text = "a = 1 # one\nb = 2 # two\n";
+        let less = made(text, |d| assert!(remove_key(d.as_table_mut(), "a")));
+        assert_eq!(less, "b = 2 # two\n");
+        made(text, |d| assert!(!remove_key(d.as_table_mut(), "c")));
+    }
+
+    #[test]
+    fn a_table_of_a_list_comes_after_the_comments_and_goes_with_the_ones_above_it() {
+        let shipped = "stable = 120\n\n# Checks of your own.\n# [[check]]\n# name = \"x\"\n";
+        let one = made(shipped, |d| {
+            push_table(d, "check").unwrap().insert("name", Item::Value(Value::from("a")));
+        });
+        assert_eq!(
+            one,
+            "stable = 120\n\n# Checks of your own.\n# [[check]]\n# name = \"x\"\n\n[[check]]\nname = \"a\"\n"
+        );
+        let two = made(&one, |d| {
+            push_table(d, "check").unwrap().insert("name", Item::Value(Value::from("b")));
+        });
+        assert!(two.ends_with("name = \"a\"\n\n[[check]]\nname = \"b\"\n"), "{two}");
+        // The last takes the comments back to the end of the file.
+        let back = made(&two, |d| {
+            assert!(remove_table(d, "check", |t| t.get("name").and_then(Item::as_str) == Some("a")));
+        });
+        assert!(back.contains("[[check]]\nname = \"b\"") && !back.contains("name = \"a\""));
+        let gone = made(&one, |d| assert!(remove_table(d, "check", |_| true)));
+        assert_eq!(gone, shipped);
+        made(&one, |d| assert!(!remove_table(d, "check", |_| false)));
+        made(&one, |d| assert!(!remove_table(d, "other", |_| true)));
+        // A table in a file with nothing else, and a key that holds a value.
+        let alone = made("", |d| {
+            push_table(d, "check").unwrap().insert("name", Item::Value(Value::from("a")));
+        });
+        assert_eq!(alone, "[[check]]\nname = \"a\"\n");
+        made("check = 3\n", |d| assert!(push_table(d, "check").is_none()));
     }
 }

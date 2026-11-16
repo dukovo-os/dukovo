@@ -124,14 +124,16 @@ struct Shared {
 /// The test update server: the repository, over HTTP on a free port of
 /// the host's loopback, which the machine reaches as 10.0.2.2, and, when
 /// asked, the path canaries post their reports to. It stops when dropped.
-struct Server {
-    port: u16,
+pub(super) struct Server {
+    /// The port of the host's loopback it answers on.
+    pub(super) port: u16,
     stop: Arc<AtomicBool>,
     shared: Arc<Shared>,
 }
 
 impl Server {
-    fn start(repo: &Path) -> Result<Server, String> {
+    /// Starts serving `repo` as `/system/`.
+    pub(super) fn start(repo: &Path) -> Result<Server, String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|err| format!("no port for the update server: {err}"))?;
         let port = listener.local_addr().map_err(|err| err.to_string())?.port();
@@ -160,7 +162,7 @@ impl Server {
     }
 
     /// Serves `repo` from now on.
-    fn serve(&self, repo: &Path) {
+    pub(super) fn serve(&self, repo: &Path) {
         *self.shared.repo.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
             repo.to_path_buf();
     }

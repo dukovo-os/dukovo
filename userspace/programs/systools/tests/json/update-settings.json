@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "channel": "beta",
+  "check": "notify",
+  "apps": "notify",
+  "metered": "wait",
+  "unattended": true,
+  "restart": "03:30",
+  "hold": {"system": "1.0.0-alpha.2", "firmware": null},
+  "held": {"version": "1.0.0-alpha.2", "why": "fell-back", "at_ms": 1794000000000, "start": 14},
+  "apps_automatic": true,
+  "apps_disagree": true,
+  "server": "https://updates.dukovo.org/system/",
+  "canary": false
+}

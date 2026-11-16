@@ -57,7 +57,10 @@
     "notes"
   ],
   "commands_with_your_access": [],
-  "services": [],
+  "services": [
+    "notes-sync, as the account notes, starting once an administrator enables it",
+    "notes-mail, as the account notes-mail, starting once an administrator enables it"
+  ],
   "grants": [
     {
       "given": [],
@@ -76,5 +79,21 @@
   "folder": "/applications/org.example.notes",
   "data": "each person's data",
   "previous": "0.0.9",
-  "held": true
+  "held": true,
+  "license": "MIT",
+  "service_list": [
+    {"name": "notes-sync", "account": "notes", "start": "on"},
+    {"name": "notes-mail", "account": "notes-mail", "start": "off"}
+  ],
+  "provides": [
+    {"interface": null, "socket": "api"},
+    {"interface": "org.example.notes/1", "socket": null}
+  ],
+  "uses": [
+    {"interface": "dukovo.certificates/1", "socket": null},
+    {"interface": null, "socket": "org.example.mail/smtp"}
+  ],
+  "used_by": [
+    {"id": "org.example.reader", "name": "A user", "what": "org.example.notes/api"}
+  ]
 }

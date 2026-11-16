@@ -120,6 +120,13 @@ admin-trials userspace/programs/systools/src/trial.rs userspace/programs/systool
 admin-trials userspace/spark/src/supervisor/ userspace/defaults/admin.toml userspace/defaults/firewall userspace/defaults/network
 admin-trials userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/firewall.toml
 admin-trials userspace/defaults/spark/services/netd.toml tools/xtask/src/test/console_client.rs ports/netcat/
+admin-updates userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-updates userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-updates userspace/programs/systools/src/update.rs userspace/programs/systools/src/update/ userspace/programs/systools/src/changes.rs
+admin-updates userspace/programs/systools/src/sysupdate.rs userspace/programs/systools/src/sysupdate/ userspace/programs/systools/src/settings_edit.rs
+admin-updates userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/ userspace/programs/systools/src/bundled.rs
+admin-updates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sysupdate-stage.toml
+admin-updates tools/update-server/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
 ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
 ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs
 ansible tools/xtask/src/test/ansible/ tools/xtask/src/test/ansible.lock

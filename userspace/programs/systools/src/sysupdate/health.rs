@@ -39,7 +39,7 @@ use crate::troubleshoot::Hit;
 use crate::util::Fail;
 
 /// health.toml(5), in the settings.
-const CONFIG: &str = "/system/settings/sysupdate/health.toml";
+pub(crate) const CONFIG: &str = "/system/settings/sysupdate/health.toml";
 
 /// What became of the CPU microcode GRUB handed the kernel
 /// (radix-sysfs(5)).
