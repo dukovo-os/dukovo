@@ -1679,6 +1679,18 @@ compares = true
 tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
 
 [[action]]
+id = "updates.later"
+title = "Put an update off for a while"
+area = "updates"
+changes = true
+method = "POST"
+path = "/api/1/updates/{item}/later"
+runs = "as-administrator"
+long = false
+compares = true
+tests = { checks = "admind::actions::updates::tests", route = "admin-updates", same_as_command = "admin-updates", browser = "web-console/updates", ansible = "web-console/ansible" }
+
+[[action]]
 id = "updates.failed"
 title = "Show what changed before a start failed"
 area = "updates"

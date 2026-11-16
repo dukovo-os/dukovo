@@ -14,16 +14,14 @@ update - see, take, hold back and undo every update: the system, its firmware se
 *update undo* _item_ [*--settings-from-before* | *--keep-settings*]++
 *update hold* _item_ [*--why* _text_]++
 *update unhold* _item_++
+*update later* _item_ (*--for* *1d* | *--for* *7d* | *--off*)++
 *update history* [*--json*]++
 *update advisories* [*--json*]++
 *update last* [*--json*]++
 *update settings* [*--json*]++
-*update set* [*--check* *notify*|*download*|*off*] [*--apps* *notify*|*auto*]
-[*--unattended* *on*|*off*] [*--restart* _HH:MM_ | *--no-restart*]
-[*--metered* *wait*|*download*]++
+*update set* [*--check* *notify*|*download*|*off*] [*--apps* *notify*|*auto*] [*--unattended* *on*|*off*] [*--restart* _HH:MM_ | *--no-restart*] [*--metered* *wait*|*download*]++
 *update checks* [*--json*]++
-*update checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_)
-[*--required*] [*--timeout* _seconds_]++
+*update checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_) [*--required*] [*--timeout* _seconds_]++
 *update checks remove* _name_++
 *update checks essential* _service_ *on*|*off*
 
@@ -104,6 +102,29 @@ that the update server offers.
 
 *unhold* _item_
 	Lifts the hold, and the reason kept with it.
+
+*later* _item_ (*--for* *1d* | *--for* *7d* | *--off*)
+	Puts the reminder of an update off for a day or for a week, or, with
+	*--off*, brings it back now. Root's, so that it is run through
+	*elevate*: it is a choice for everyone who is told of updates. It
+	reads the offers as *check* does, with the network, and refuses an
+	item that has no update on offer, one that is held (a hold is the
+	other way to wait, and has no end of its own), and an update that
+	fixes a security advisory, or whose advisories could not all be read
+	(UPD-107): the first is not put off, the second fails closed. It keeps
+	the item, the version offered, until when, who asked and when in
+	_/system/state/sysupdate/later.json_, one entry for an item.
+
+	While an entry stands, no reader tells of that update: *updated*(8)
+	sends no notice of it and leaves the apps put off out of its count,
+	*dukovo-check*(8) passes its *waiting* line with "put off", and
+	*check* says "put off until DATE (update later)" under it. An entry
+	stands only until its time, for the version it was made for, and
+	while no advisory names that version: a newer release, or an
+	advisory published after, ends it at the next look, and the update
+	is told of as before. An advisory's own notice (*updated*(8)) is
+	never put off. The update is not held, and *update apply* takes it
+	when asked.
 
 *history*
 	Each change of the system and the firmware set, by the start that
@@ -194,12 +215,12 @@ that the update server offers.
 
 *checks add* _name_ (*--url* _url_ [*--insecure*] | *--service* _name_) [*--required*] [*--timeout* _seconds_]
 	Adds a check to *health.toml*(5). *--url* makes a check that
-	passes when the web address answers: the command *curl -fsS -g
-	--max-time* _seconds_ _url_, with *-k* after *-g* for *--insecure*,
+	passes when the web address answers: the command
+	*curl -fsS -g --max-time* _seconds_ _url_, with *-k* after *-g* for *--insecure*,
 	which accepts a certificate that is not trusted. *--service* makes
 	a check that passes when the service runs: *systemctl is-active*
 	_name_. Give one of the two. _name_ is what the log calls the check,
-	1 to 64 letters, digits, spaces, *.*, *_* and *-*, starting with a
+	1 to 64 letters, digits, spaces, *.*, *\_* and *-*, starting with a
 	letter or a digit. *--required* makes an update fail when the check
 	fails; without it the check is only logged. *--timeout* is the
 	seconds it may take, 1 to 600, 30 by default. A name in use is
@@ -268,6 +289,11 @@ same exit status.
 	catalog it updates from, or *null* for its own feed. *held_reason*
 	is why it is held, as for the system, or *null*.
 
+	Each with *state* *update* also has *later_until_ms*, when the
+	reminder of that update is put off until, in milliseconds since 1970,
+	and *null* unless an entry of *later* stands for this version, with
+	the advisories this check read.
+
 *running_withdrawn*
 	*null*, or, when the release keys withdrew the release this system
 	runs, *version*, *reason*, and *advice*, *rollback* to go back to
@@ -333,6 +359,17 @@ With no check kept, it prints *null*, and ends with status 3.
 	with it: an object with *version*, the version held, *text*, *by*,
 	the user ID of who held it, and *at_ms*, when. The words of
 	*settings* say it as *hold system reason = text*, where there is one.
+
+*later*
+	A list with an object for each update put off by *later*: *item*,
+	*version*, the version offered when it was put off, *until_ms*,
+	when its time ends, in milliseconds since 1970, *by*, the user ID of
+	who asked, *at_ms*, when, and *stands*, whether it puts off the
+	reminder now. *stands* goes by the last check root kept (*last*),
+	since *settings* reads no network: with no such check, or one whose
+	advisories were not read, it is *false*, and an app's is *false*
+	while any app has a known flaw. The words of *settings* say an entry
+	that stands as *later ITEM = until DATE, version VERSION*.
 
 *apps_automatic*
 	Whether *bundled*(8) updates the apps of everyone by themselves.
@@ -453,6 +490,15 @@ $ elevate update unhold system
 update: system is no longer held back
 ```
 
+Put the system's update off for a week, and bring it back:
+
+```
+$ elevate update later system --for 7d
+update: Dukovo 2026.3.1 is put off until 2026-11-23: no reminder of it until then; `update later system --off` brings it back
+$ elevate update later system --off
+update: system is no longer put off: its reminders are back
+```
+
 What changed, start by start:
 
 ```
@@ -486,6 +532,11 @@ _/system/state/sysupdate/hold-reasons.json_
 	The reasons kept with the holds of *system* and *firmware*, one
 	line of JSON, mode 0644, which *hold --why* writes, *check* and
 	*settings* read, and *unhold* takes from.
+
+_/system/state/sysupdate/later.json_
+	The updates put off, one line of JSON, mode 0644, which *later*
+	writes, and *check*, *settings*, *updated*(8) and *dukovo-check*(8)
+	read. It is not in *updates.toml*(5), which has no key for it.
 
 _/system/state/starts_
 	The starts' records that *history* reads (*changes*(1)).

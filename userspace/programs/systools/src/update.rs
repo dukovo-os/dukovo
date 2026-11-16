@@ -58,7 +58,8 @@ mod advisories;
 pub(crate) mod checks;
 mod documents;
 mod held;
-mod last;
+pub(crate) mod last;
+mod later;
 mod settings;
 
 use std::ffi::OsString;
@@ -71,6 +72,7 @@ use crate::alerts::protocol::{Alert, Severity};
 use crate::args::{Arg, Args};
 use crate::notifyd::{self, Urgency};
 use crate::sysupdate::checked::Found;
+use crate::sysupdate::later::{self as reminder, Later};
 use crate::sysupdate::online::{self, Apps, Check, Metered, Plan, Settings};
 use crate::sysupdate::reasons::{Reason, Reasons};
 use crate::sysupdate::starts::{self, Outcome};
@@ -80,7 +82,7 @@ use crate::{bundles, power};
 
 const USAGE: &str = "usage: update [check [--json] | apply [--only PART] [--yes] | undo ITEM \
                      [--settings-from-before | --keep-settings] | hold ITEM [--why TEXT] | \
-                     unhold ITEM | \
+                     unhold ITEM | later ITEM (--for 1d | --for 7d | --off) | \
                      history [--json] | advisories [--json] | last [--json] | settings [--json] | \
                      set [--check WORD] [--apps WORD] [--unattended on|off] [--restart HH:MM | \
                      --no-restart] [--metered WORD] | checks [--json] | checks add NAME \
@@ -115,6 +117,7 @@ pub fn update(args: &mut Args) -> Result<i32, Fail> {
     // These read their own options.
     match action.as_deref() {
         Some("last") => return last::last(args),
+        Some("later") => return later::later(args),
         Some("settings") => return settings::settings(args),
         Some("set") => return settings::set(args),
         Some("checks") => return checks::checks(args),
@@ -196,9 +199,25 @@ fn check(json: bool) -> Result<i32, Fail> {
         last::keep(last::By::UpdateCheck, &line);
         return Ok(0);
     }
+    // What the advisories say is read first: an update that fixes one is
+    // not put off.
+    let advice = advisories::gather(true);
+    let later = Later::read();
+    let now_ms = util::now_ns() / 1_000_000;
+    let put_off = |item: &str, offered: &str| {
+        later
+            .standing(item, offered, advice.fixes(item, offered), now_ms)
+            .map(|entry| later::standing_line(entry.until_ms))
+    };
     println!("System:");
-    if let Err(why) = sysupdate::check(None, false) {
-        println!("update: the system cannot be checked: {}", why.message);
+    match sysupdate::check_offering(None, false) {
+        Ok((_, Some(offered))) => {
+            if let Some(line) = put_off("system", &offered) {
+                println!("  {line}");
+            }
+        }
+        Ok(_) => {}
+        Err(why) => println!("update: the system cannot be checked: {}", why.message),
     }
     if let Some(note) = withdrawn_running().ok().flatten() {
         println!("update: {}", note.0);
@@ -212,6 +231,11 @@ fn check(json: bool) -> Result<i32, Fail> {
             {
                 println!("  held: {}", reason.text);
             }
+            if offer.found == Found::Update
+                && let Some(line) = offer.take.as_deref().and_then(|set| put_off("firmware", set))
+            {
+                println!("  {line}");
+            }
         }
         Err(why) => println!("update: the firmware cannot be checked: {}", why.message),
     }
@@ -219,8 +243,15 @@ fn check(json: bool) -> Result<i32, Fail> {
     if let Err(why) = bundle(&["update", "--check"]) {
         println!("update: the apps cannot be checked: {}", why.message);
     }
+    if let Ok(pending) = bundles::pending_updates() {
+        for row in pending.rows.iter().filter(|row| !row.held) {
+            if let Some(line) = put_off(&row.id, &row.to) {
+                println!("  {}: {line}", row.id);
+            }
+        }
+    }
     println!("\nSecurity:");
-    for line in advisories::check_lines(&advisories::gather(true)) {
+    for line in advisories::check_lines(&advice) {
         println!("update: {line}");
     }
     Ok(0)
@@ -348,6 +379,15 @@ fn found() -> documents::Updates {
         Err(why) => updates.unchecked.push(documents::Unchecked::new("apps", &why.message)),
     }
     let security = advisories::gather(true);
+    // An update put off says until when, while the entry stands.
+    let later = Later::read();
+    let now_ms = util::now_ns() / 1_000_000;
+    for offer in &mut updates.offers {
+        let until = offer.update().and_then(|(item, to)| {
+            later.standing(item, to, security.fixes(item, to), now_ms).map(|entry| entry.until_ms)
+        });
+        offer.put_off(until);
+    }
     updates.security =
         documents::Security { system: security.system, app_flaws: security.apps.len() };
     updates.unchecked.extend(
@@ -942,13 +982,39 @@ fn round(settings: &Settings) -> bool {
             tell(&said);
         }
     }
+    // The reminders put off, and what the advisories say of the updates
+    // they put off, which is read only when there is one: an update that
+    // fixes an advisory is told of as any is.
+    let later = Later::read();
+    let advice = if later.later.is_empty() {
+        advisories::Advisories::default()
+    } else {
+        advisories::gather(later.later.iter().any(|entry| reminder::is_app(&entry.item)))
+    };
+    let put_off = PutOff { later: &later, advice: &advice, now_ms: util::now_ns() / 1_000_000 };
     if !staged {
-        staged = system_round(settings, metered);
+        staged = system_round(settings, metered, &put_off);
     }
     security_round();
-    apps_round(settings, metered);
+    apps_round(settings, metered, &put_off);
     keep_last();
     staged
+}
+
+/// The updates put off, for a round of a check: the entries, what the
+/// advisories say, and the time, which decide together whether an entry
+/// stands ([`reminder::stands`]).
+struct PutOff<'a> {
+    later: &'a Later,
+    advice: &'a advisories::Advisories,
+    now_ms: u64,
+}
+
+impl PutOff<'_> {
+    /// Whether the reminder of the update `offered` of `item` is put off.
+    fn stands(&self, item: &str, offered: &str) -> bool {
+        self.later.standing(item, offered, self.advice.fixes(item, offered), self.now_ms).is_some()
+    }
 }
 
 /// Keeps what a check finds now as the last one, for `update last`.
@@ -1046,8 +1112,30 @@ fn apps_notice(summary: &str, waiting: bool) -> String {
     }
 }
 
+/// What a check tells of the system and firmware updates on offer: the
+/// system's, unless it is put off, else the firmware's, unless it is. The
+/// firmware's is asked for only when it may be told.
+#[derive(Debug, PartialEq, Eq)]
+enum Told {
+    System(String),
+    Firmware(String),
+}
+
+/// The update to tell of, given the system's (`system`) and, asked for
+/// when wanted, the firmware's (`firmware`).
+fn to_tell(
+    system: Option<String>,
+    firmware: impl FnOnce() -> Option<String>,
+    put_off: &PutOff<'_>,
+) -> Option<Told> {
+    if let Some(offered) = system.filter(|offered| !put_off.stands("system", offered)) {
+        return Some(Told::System(offered));
+    }
+    firmware().filter(|set| !put_off.stands("firmware", set)).map(Told::Firmware)
+}
+
 /// The system and firmware part of a check.
-fn system_round(settings: &Settings, metered: bool) -> bool {
+fn system_round(settings: &Settings, metered: bool, put_off: &PutOff<'_>) -> bool {
     let choice = choice(settings, metered);
     if choice == Choice::Stage {
         return match stage_offered(Part::Either) {
@@ -1076,13 +1164,20 @@ fn system_round(settings: &Settings, metered: bool) -> bool {
         let mut client = online::Client::connect(settings.clone())?;
         online::plan(&mut client, &running, None)
     });
-    if let Ok(Plan::Update { offered, .. }) = waiting {
-        if choice == Choice::Download {
-            let _ = sysupdate::check(None, true);
+    let system = match waiting {
+        Ok(Plan::Update { offered, .. }) => Some(offered),
+        _ => None,
+    };
+    let firmware = || firmware_offer().ok().and_then(|offer| offer.take);
+    match to_tell(system, firmware, put_off) {
+        Some(Told::System(offered)) => {
+            if choice == Choice::Download {
+                let _ = sysupdate::check(None, true);
+            }
+            tell(&system_notice(&offered, choice));
         }
-        tell(&system_notice(&offered, choice));
-    } else if let Ok(FirmwareOffer { take: Some(set), .. }) = firmware_offer() {
-        tell(&firmware_notice(&set, choice));
+        Some(Told::Firmware(set)) => tell(&firmware_notice(&set, choice)),
+        None => {}
     }
     false
 }
@@ -1096,8 +1191,34 @@ fn security_round() {
     }
 }
 
+/// What a check tells of the apps' updates, from what `bundle update
+/// --check` printed in `text`: its summary, or the summary of those that
+/// are not put off, or nothing when it listed none or all are put off.
+fn apps_to_tell(text: &str, put_off: &PutOff<'_>) -> Option<String> {
+    let summary = text.lines().last().unwrap_or_default().to_string();
+    let mut lines = text.lines().skip_while(|line| !line.starts_with("ID "));
+    lines.next()?;
+    // The rows: an app's ID, the version it has, the one on offer.
+    let rows: Vec<(&str, &str)> = lines
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let id = words.next().filter(|id| manifest::bundle::check_full_id(id).is_ok())?;
+            Some((id, words.nth(1)?))
+        })
+        .collect();
+    if rows.is_empty() {
+        return Some(summary);
+    }
+    let told = rows.iter().filter(|(id, to)| !put_off.stands(id, to)).count();
+    match told {
+        0 => None,
+        n if n == rows.len() => Some(summary),
+        n => Some(format!("{n} to update")),
+    }
+}
+
 /// The apps part of a check: updated for everyone, or told of.
-fn apps_round(settings: &Settings, metered: bool) {
+fn apps_round(settings: &Settings, metered: bool, put_off: &PutOff<'_>) {
     let waiting = waits(settings, metered);
     let takes = takes_apps(settings, metered);
     let mut words = vec!["update", "--for-everyone"];
@@ -1107,7 +1228,7 @@ fn apps_round(settings: &Settings, metered: bool) {
     let text = String::from_utf8_lossy(&output.stdout);
     let summary = text.lines().last().unwrap_or_default().to_string();
     println!("updated: apps: {summary}");
-    if !takes && text.lines().any(|line| line.starts_with("ID ")) {
+    if !takes && let Some(summary) = apps_to_tell(&text, put_off) {
         tell(&apps_notice(&summary, waiting));
     }
 }
@@ -1128,6 +1249,161 @@ mod tests {
 
     fn settings(check: Check, unattended: bool, metered: Metered, apps: Apps) -> Settings {
         Settings { check, unattended, metered, apps, ..Settings::default() }
+    }
+
+    const NOW_MS: u64 = 1_794_657_630_000;
+    const DAY_MS: u64 = 86_400_000;
+
+    /// The reminders of a machine that put off the system's update to
+    /// 1.0.0-alpha.2 and the app notes' to 1.3.0, until `until_ms`.
+    fn put_off_until(until_ms: u64) -> Later {
+        let mut later = Later::default();
+        for (item, version) in [("system", "1.0.0-alpha.2"), ("org.example.notes", "1.3.0")] {
+            later.put(reminder::Entry {
+                item: item.into(),
+                version: version.into(),
+                until_ms,
+                by: 1000,
+                at_ms: NOW_MS,
+            });
+        }
+        later
+    }
+
+    /// An advisory the update to `release` of the system fixes, and one
+    /// the update to `fixed_by` of notes does.
+    fn advice(system_fix: Option<&str>, notes_fix: Option<&str>) -> advisories::Advisories {
+        let system = system_fix.map(|release| advisories::SystemFlaw {
+            id: "DKSA-2026-0007".into(),
+            severity: dkv::flaws::Severity::High,
+            summary: "A local user can read another user's files".into(),
+            aliases: Vec::new(),
+            fixed_in: vec![release.into()],
+            action: None,
+            fix: advisories::Fix::Offered,
+            release: Some(release.into()),
+        });
+        let notes = notes_fix.map(|update| advisories::AppFlaw {
+            item: "org.example.notes".into(),
+            version: "1.2.0".into(),
+            id: "DKSA-2026-0008".into(),
+            severity: dkv::flaws::Severity::Medium,
+            summary: "Notes leaks a path".into(),
+            aliases: Vec::new(),
+            fixed_in: vec![update.into()],
+            action: None,
+            source: "dksa",
+            component: None,
+            fixed_by_update: Some(update.into()),
+        });
+        advisories::Advisories {
+            system: system.into_iter().collect(),
+            apps: notes.into_iter().collect(),
+            unchecked: Vec::new(),
+            running: Some("1.0.0-alpha.1".into()),
+            with_apps: true,
+        }
+    }
+
+    #[test]
+    fn a_check_tells_nothing_of_an_update_put_off_and_tells_of_it_once_it_no_longer_stands() {
+        let tomorrow = put_off_until(NOW_MS + DAY_MS);
+        let none = advice(None, None);
+        let system = || Some("1.0.0-alpha.2".to_string());
+        let nothing = || None;
+        let at = |now_ms: u64, later: &Later, advice: &advisories::Advisories| {
+            let put_off = PutOff { later, advice, now_ms };
+            to_tell(system(), nothing, &put_off)
+        };
+        // Put off: nothing is told. Its time past, it is.
+        assert_eq!(at(NOW_MS, &tomorrow, &none), None);
+        assert_eq!(at(NOW_MS + DAY_MS - 1, &tomorrow, &none), None);
+        let told = Some(Told::System("1.0.0-alpha.2".into()));
+        assert_eq!(at(NOW_MS + DAY_MS, &tomorrow, &none), told);
+        // An advisory that came after, with the fix in this release, ends it at once.
+        assert_eq!(at(NOW_MS, &tomorrow, &advice(Some("1.0.0-alpha.2"), None)), told);
+        // One whose fix is another release, does not.
+        assert_eq!(at(NOW_MS, &tomorrow, &advice(Some("1.0.0-alpha.3"), None)), None);
+        // Advisories that could not be read leave the reminder as it is told.
+        let mut unread = advice(None, None);
+        unread.unchecked.push(documents::Unchecked::new("security", "the server did not answer"));
+        assert_eq!(at(NOW_MS, &tomorrow, &unread), told);
+        // A newer release than the one put off is told of, and so is an item put off for none.
+        let newer = |later: &Later| {
+            let put_off = PutOff { later, advice: &none, now_ms: NOW_MS };
+            to_tell(Some("1.0.0-alpha.3".into()), nothing, &put_off)
+        };
+        assert_eq!(newer(&tomorrow), Some(Told::System("1.0.0-alpha.3".into())));
+        assert_eq!(at(NOW_MS, &Later::default(), &none), told);
+    }
+
+    #[test]
+    fn a_firmware_update_is_told_of_when_the_system_s_is_put_off_and_not_when_its_own_is() {
+        let none = advice(None, None);
+        let mut later = put_off_until(NOW_MS + DAY_MS);
+        let firmware = || Some("2026.3".to_string());
+        let put_off = PutOff { later: &later, advice: &none, now_ms: NOW_MS };
+        let system = Some("1.0.0-alpha.2".to_string());
+        assert_eq!(
+            to_tell(system.clone(), firmware, &put_off),
+            Some(Told::Firmware("2026.3".into()))
+        );
+        // The system's is told of first, and then the firmware's is not asked for.
+        let empty = Later::default();
+        let told = PutOff { later: &empty, advice: &none, now_ms: NOW_MS };
+        let never = || panic!("the firmware is not asked for when the system's is told of");
+        assert_eq!(
+            to_tell(system.clone(), never, &told),
+            Some(Told::System("1.0.0-alpha.2".into()))
+        );
+        later.put(reminder::Entry {
+            item: "firmware".into(),
+            version: "2026.3".into(),
+            until_ms: NOW_MS + DAY_MS,
+            by: 1000,
+            at_ms: NOW_MS,
+        });
+        let put_off = PutOff { later: &later, advice: &none, now_ms: NOW_MS };
+        assert_eq!(to_tell(system, firmware, &put_off), None);
+        assert_eq!(to_tell(None, firmware, &put_off), None);
+    }
+
+    /// What `bundle update --for-everyone --check` prints for two apps.
+    const APPS_CHECKED: &str = "ID                 INSTALLED  NEWEST  CATALOG\n\
+        org.example.notes  1.2.0      1.3.0   dukovo\n\
+        org.example.tea    0.9.0      0.9.1   dukovo  (held)\n  held: tea 0.9 is the one the shop uses\n\
+        Everyone's bundles update by themselves, daily, since 2026-10-02\n\
+        2 to update, 5 up to date";
+
+    #[test]
+    fn a_check_tells_of_the_apps_that_are_not_put_off_and_nothing_when_all_are() {
+        let none = advice(None, None);
+        let told = |later: &Later, advice: &advisories::Advisories, now_ms: u64| {
+            apps_to_tell(APPS_CHECKED, &PutOff { later, advice, now_ms })
+        };
+        let summary = "2 to update, 5 up to date";
+        assert_eq!(told(&Later::default(), &none, NOW_MS).as_deref(), Some(summary));
+        // One of the two is put off: the summary counts the other.
+        let tomorrow = put_off_until(NOW_MS + DAY_MS);
+        assert_eq!(told(&tomorrow, &none, NOW_MS).as_deref(), Some("1 to update"));
+        // Its time past, or an advisory fixed by the update, and it is told of again.
+        assert_eq!(told(&tomorrow, &none, NOW_MS + DAY_MS).as_deref(), Some(summary));
+        assert_eq!(told(&tomorrow, &advice(None, Some("1.3.0")), NOW_MS).as_deref(), Some(summary));
+        // Both put off: nothing.
+        let mut both = put_off_until(NOW_MS + DAY_MS);
+        both.put(reminder::Entry {
+            item: "org.example.tea".into(),
+            version: "0.9.1".into(),
+            until_ms: NOW_MS + DAY_MS,
+            by: 1000,
+            at_ms: NOW_MS,
+        });
+        assert_eq!(told(&both, &none, NOW_MS), None);
+        // No table, no notice; a table that cannot be read is told as it was.
+        let put_off = PutOff { later: &both, advice: &none, now_ms: NOW_MS };
+        assert_eq!(apps_to_tell("0 to update, 7 up to date", &put_off), None);
+        let odd = "ID  INSTALLED  NEWEST\nnot an id\n1 to update";
+        assert_eq!(apps_to_tell(odd, &put_off).as_deref(), Some("1 to update"));
     }
 
     fn said(version: &str, text: &str) -> Reason {

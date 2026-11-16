@@ -107,7 +107,7 @@ its result in the same way.
 :  No person's account that is not disabled is in _admins_, so that nothing can be elevated, and Rescue asks for nobody (*SEC-121*)
 |  updates
 :  waiting
-:  The last look at the update server found a newer release that this system takes now, and it is not installed (*SEC-130*)
+:  The last look at the update server found a newer release that this system takes now, and it is not installed or put off (*SEC-130*)
 |  updates
 :  last check
 :  The update server was last looked at over 7 days ago, or never (*SEC-131*)
@@ -131,7 +131,12 @@ The checks of SSH look at *sshd* only while its service is on: with SSH
 off, nothing signs in over it, whatever its file says, and they pass with
 "SSH is off". The check *waiting* looks at the release this system runs
 when the look was made: a look from before an update says nothing, and
-the check is skipped until the next one.
+the check is skipped until the next one. A release put off with *update
+later* (*update*(8)) passes with "put off until DATE" for as long as the
+reminder stands: its time has not come, the release is the one it was
+made for, and the last check root kept (*update last*) read the
+advisories and none is fixed by that release. With no such check, or one
+whose advisories were not read, the line warns as if nothing were put off.
 
 # OPTIONS
 

@@ -1221,6 +1221,7 @@ registry![
     updates::Undoing,
     updates::Hold,
     updates::Unhold,
+    updates::Later,
     updates::Failed,
     apps::List,
     apps::Show,

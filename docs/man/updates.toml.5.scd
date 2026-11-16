@@ -43,14 +43,14 @@ system = "2026.3.1"
 	*"notify"*, the default, tells of app updates; *"auto"* has
 	*updated*(8) update the apps installed for everyone itself. It is
 	one of two settings that say so: *bundled*(8) keeps whether it
-	updates them by itself (*bundle update --automatic*), and *update set
-	--apps* writes both, so that they agree. *update settings* says when
+	updates them by itself (*bundle update --automatic*), and
+	*update set --apps* writes both, so that they agree. *update settings* says when
 	they do not.
 
 *metered*
 	*"wait"*, the default, downloads nothing while the connection is
-	metered; *"download"* takes it as any other. *update set
-	--metered* writes it.
+	metered; *"download"* takes it as any other.
+	*update set --metered* writes it.
 
 *channel*
 	*stable*, the default, the releases most people run; *beta*, each
@@ -144,6 +144,11 @@ system = "2026.3.1"
 	again at its next check, and keeps why in
 	_/system/state/sysupdate/held.json_, which *update settings* and
 	*update check --json* read. *update unhold system* takes both away.
+
+	An update put off with *update later* is not here either: it is
+	kept in _/system/state/sysupdate/later.json_, which
+	*update settings --json* says as *later*. It is not a hold: the
+	update is told of again once its day or week is over.
 
 # EXAMPLES
 

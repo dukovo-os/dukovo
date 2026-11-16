@@ -12,6 +12,10 @@
     "system": {"version": "1.0.0-alpha.2", "text": "Waiting for the nginx fix", "by": 1000, "at_ms": 1794000000000},
     "firmware": null
   },
+  "later": [
+    {"item": "system", "version": "1.0.0-alpha.2", "until_ms": 1794700000000, "by": 1000, "at_ms": 1794000000000, "stands": true},
+    {"item": "org.example.notes", "version": "1.3.0", "until_ms": 1794700000000, "by": 1000, "at_ms": 1794000000000, "stands": false}
+  ],
   "apps_automatic": true,
   "apps_disagree": true,
   "server": "https://updates.dukovo.org/system/",

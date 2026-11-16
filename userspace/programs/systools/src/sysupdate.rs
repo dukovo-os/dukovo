@@ -31,6 +31,7 @@ mod documents;
 pub(crate) mod firmware;
 pub mod health;
 pub(crate) mod keep_rescue;
+pub(crate) mod later;
 pub(crate) mod online;
 pub(crate) mod place;
 pub(crate) mod reasons;
@@ -254,6 +255,19 @@ fn say_status(facts: &documents::Facts) {
 /// system, and how much of it this system lacks; `download` then fetches
 /// that, for the next `sysupdate stage`.
 pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> {
+    check_offering(version, download).map(|(status, _)| status)
+}
+
+/// As [`check`], and the version of the update the channel offers when
+/// this system takes it, which `update check` asks whether is put off.
+///
+/// # Errors
+///
+/// When the system cannot be checked.
+pub(crate) fn check_offering(
+    version: Option<&str>,
+    download: bool,
+) -> Result<(i32, Option<String>), Fail> {
     let root = place::root()?;
     let running = stage::running_version(&root)?;
     let settings = online::Settings::load()?;
@@ -261,7 +275,7 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
     if let Some(said) = online::keep_signatures(&mut client) {
         println!("sysupdate: {said}");
     }
-    let release = match online::plan(&mut client, &running, version)? {
+    let (release, offered) = match online::plan(&mut client, &running, version)? {
         online::Plan::Current { offered } => {
             let compared = slots::version::Version::parse(&offered)
                 .zip(slots::version::Version::parse(&running))
@@ -272,7 +286,7 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
                 ", which this system runs: it is up to date".into()
             };
             println!("sysupdate: {}{then}", online::offers(&client.settings, version, &offered));
-            return Ok(0);
+            return Ok((0, None));
         }
         online::Plan::Waiting { offered, day, held } => {
             let offers = online::offers(&client.settings, version, &offered);
@@ -280,11 +294,11 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
             for line in online::waiting(&offered, day, held.as_deref()) {
                 println!("sysupdate: {line}");
             }
-            return Ok(0);
+            return Ok((0, None));
         }
         online::Plan::Withdrawn { offered, reason } => {
             println!("sysupdate: Dukovo {offered} was withdrawn: {reason}; nothing to do");
-            return Ok(0);
+            return Ok((0, None));
         }
         online::Plan::Held { offered, held } => {
             let offers = online::offers(&client.settings, version, &offered);
@@ -296,7 +310,7 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
             if let Some(reason) = reasons::Reasons::read().standing("system", Some(&held)) {
                 println!("  held: {}", reason.text);
             }
-            return Ok(0);
+            return Ok((0, None));
         }
         online::Plan::Update { offered, from, release } => {
             println!(
@@ -309,7 +323,7 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
                     release.version
                 );
             }
-            release
+            (release, offered)
         }
     };
     let needed = online::needed(&root.slot(root.running), &release)?;
@@ -321,7 +335,7 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
             needed.fetch.len(),
             online::mib(needed.bytes)
         );
-        return Ok(0);
+        return Ok((0, Some(offered)));
     }
     let fetched = online::fetch(&client, &needed)?;
     println!(
@@ -331,7 +345,7 @@ pub(crate) fn check(version: Option<&str>, download: bool) -> Result<i32, Fail> 
         online::mib(fetched.bytes),
         fetched.copied
     );
-    Ok(0)
+    Ok((0, Some(offered)))
 }
 
 /// `sysupdate channel [NAME]`: the channel this system follows, or, with

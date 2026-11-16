@@ -88,6 +88,9 @@ pub(crate) struct SystemOffer {
     held_at: Option<String>,
     /// With `state` `held`: the reason kept with the hold, if one was.
     held_reason: Option<String>,
+    /// With `state` `update`: until when `update later` puts off the
+    /// reminder of it, in milliseconds since 1970, while that stands.
+    later_until_ms: Option<u64>,
 }
 
 /// What staging a release fetches.
@@ -114,6 +117,9 @@ pub(crate) struct FirmwareSet {
     held_at: Option<String>,
     /// With `state` `held`: the reason kept with the hold, if one was.
     held_reason: Option<String>,
+    /// With `state` `update`: until when `update later` puts off the
+    /// reminder of it, in milliseconds since 1970, while that stands.
+    later_until_ms: Option<u64>,
 }
 
 /// An app with a newer version in its catalog or its own feed.
@@ -129,6 +135,9 @@ pub(crate) struct App {
     catalog: Option<String>,
     /// With `state` `held`: the reason kept with the hold, if one was.
     held_reason: Option<String>,
+    /// With `state` `update`: until when `update later` puts off the
+    /// reminder of it, in milliseconds since 1970, while that stands.
+    later_until_ms: Option<u64>,
 }
 
 /// A release that was withdrawn, which this system runs.
@@ -204,6 +213,7 @@ impl Offer {
             held_because: why.as_ref().map(|why| why.because),
             held_at: why.and_then(|why| why.at),
             held_reason,
+            later_until_ms: None,
         })
     }
 
@@ -226,6 +236,7 @@ impl Offer {
             held_because: why.as_ref().map(|why| why.because),
             held_at: why.and_then(|why| why.at),
             held_reason,
+            later_until_ms: None,
         })
     }
 
@@ -238,7 +249,32 @@ impl Offer {
             state: if row.held { Found::Held } else { Found::Update },
             catalog: row.catalog.clone(),
             held_reason: row.held_reason.clone().filter(|_| row.held),
+            later_until_ms: None,
         })
+    }
+
+    /// The item and the version of an offer that is an update to take,
+    /// which is what `update later` puts off.
+    pub(crate) fn update(&self) -> Option<(&str, &str)> {
+        match self {
+            Offer::System(offer) if offer.state == Found::Update => {
+                Some((offer.item, offer.to.as_str()))
+            }
+            Offer::Firmware(set) if set.state == Found::Update => {
+                Some((set.item, set.to.as_deref()?))
+            }
+            Offer::App(app) if app.state == Found::Update => Some((&app.item, &app.to)),
+            _ => None,
+        }
+    }
+
+    /// Says until when the reminder of this offer is put off, while it is.
+    pub(crate) fn put_off(&mut self, until_ms: Option<u64>) {
+        match self {
+            Offer::System(offer) => offer.later_until_ms = until_ms,
+            Offer::Firmware(set) => set.later_until_ms = until_ms,
+            Offer::App(app) => app.later_until_ms = until_ms,
+        }
     }
 }
 
@@ -521,6 +557,50 @@ mod tests {
         assert_eq!(held["state"], "held");
         assert_eq!(held["held_because"], "asked");
         assert_eq!(held["held_reason"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn an_offer_that_is_an_update_says_until_when_it_is_put_off() {
+        let update = Plan::Update {
+            offered: "0.16.0".into(),
+            from: "0.15.0".into(),
+            release: release("0.16.0"),
+        };
+        let mut system = Offer::system(&update, "0.15.0", None, None, &Reasons::default());
+        assert_eq!(system.update(), Some(("system", "0.16.0")));
+        system.put_off(Some(1_794_744_030_000));
+        assert_eq!(serde_json::to_value(&system).unwrap()["later_until_ms"], 1_794_744_030_000_u64);
+        system.put_off(None);
+        assert_eq!(
+            serde_json::to_value(&system).unwrap()["later_until_ms"],
+            serde_json::Value::Null
+        );
+        // An offer that is waiting, held or current is not one to put off.
+        let held = Plan::Held { offered: "0.16.0".into(), held: "0.15.1".into() };
+        let held = Offer::system(&held, "0.15.0", None, None, &Reasons::default());
+        assert_eq!(held.update(), None);
+        let firmware = |found, to: Option<&str>| {
+            Offer::firmware(
+                &FirmwareOffer {
+                    take: None,
+                    said: String::new(),
+                    running: Some("2026.2".into()),
+                    offered: to.map(Into::into),
+                    found,
+                    held: None,
+                },
+                None,
+                &Reasons::default(),
+            )
+        };
+        assert_eq!(firmware(Found::Update, Some("2026.3")).update(), Some(("firmware", "2026.3")));
+        assert_eq!(firmware(Found::Held, Some("2026.3")).update(), None);
+        assert_eq!(firmware(Found::Update, None).update(), None);
+        assert_eq!(Offer::app(&app(false)).update(), Some(("org.nginx.nginx", "1.3.0")));
+        assert_eq!(Offer::app(&app(true)).update(), None);
+        let mut notes = Offer::app(&app(false));
+        notes.put_off(Some(5));
+        assert_eq!(serde_json::to_value(&notes).unwrap()["later_until_ms"], 5);
     }
 
     #[test]

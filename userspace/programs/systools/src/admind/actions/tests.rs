@@ -623,6 +623,7 @@ fn the_list_says_which_changes_compare_a_probe_and_which_always_changed() {
             "updates.undo",
             "updates.hold",
             "updates.unhold",
+            "updates.later",
             "apps.update",
             "apps.rollback",
             "apps.hold",
