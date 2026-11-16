@@ -193,13 +193,37 @@ pub trait Host {
 pub struct System;
 
 /// The part of `output` that says what nginx's check found: its first
-/// line that names an error, or else its last line.
+/// line that names an error, or else its last line, as [`plain_line`]
+/// gives it.
 pub fn check_line(output: &str) -> Option<String> {
     let lines: Vec<&str> = output.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
     let named = lines.iter().find(|line| {
         ["[emerg]", "[alert]", "[crit]", "[error]"].iter().any(|level| line.contains(level))
     });
-    named.or(lines.last()).map(|line| (*line).to_string())
+    named.or(lines.last()).map(|line| plain_line(line))
+}
+
+/// nginx's line as `nginx -t` prints it at a terminal: `nginx: [LEVEL]
+/// MESSAGE`. Once its error log is set, nginx starts a line with the time
+/// and puts its process and thread after the level, as `2026/11/16
+/// 19:56:39 [emerg] 535#0: MESSAGE`, which change from one check to the
+/// next: they are left out. Any other line is as it was.
+pub fn plain_line(line: &str) -> String {
+    let as_it_was = || line.to_string();
+    let Some((time, rest)) = line.split_once(" [") else { return as_it_was() };
+    let timed = !time.is_empty() && time.bytes().all(|b| b.is_ascii_digit() || b"/: ".contains(&b));
+    let Some((level, message)) = rest.split_once("] ") else { return as_it_was() };
+    if !timed {
+        return as_it_was();
+    }
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    let message = match message.split_once(": ") {
+        Some((ids, after)) if ids.split_once('#').is_some_and(|(a, b)| digits(a) && digits(b)) => {
+            after
+        }
+        _ => message,
+    };
+    format!("nginx: [{level}] {message}")
 }
 
 /// Waits until Spark says service `name` runs, for `START_WAIT`.
@@ -374,8 +398,28 @@ mod tests {
             check_line(output).as_deref(),
             Some("nginx: [emerg] unknown directive \"listn\" in /conf/.website-next/a.conf:3")
         );
+        let logged = "2026/11/16 19:56:39 [emerg] 535#0: unknown directive \"x\" in /c/b.conf:4\n";
+        assert_eq!(
+            check_line(logged).as_deref(),
+            Some("nginx: [emerg] unknown directive \"x\" in /c/b.conf:4")
+        );
         assert_eq!(check_line("something odd\n\n").as_deref(), Some("something odd"));
         assert_eq!(check_line("\n  \n"), None);
         assert_eq!(check_line(""), None);
+    }
+
+    #[test]
+    fn a_line_of_nginx_s_log_is_plain_without_its_time_and_process() {
+        assert_eq!(
+            plain_line("2026/11/16 19:56:39 [warn] 12#3: a warning: of this"),
+            "nginx: [warn] a warning: of this"
+        );
+        assert_eq!(
+            plain_line("2026/11/16 19:56:39 [emerg] no ids: here"),
+            "nginx: [emerg] no ids: here"
+        );
+        for kept in ["nginx: [emerg] as it is", "odd [x] line", "[emerg] 1#2: no time", "x [y"] {
+            assert_eq!(plain_line(kept), kept);
+        }
     }
 }
