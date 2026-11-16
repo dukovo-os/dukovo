@@ -3899,7 +3899,7 @@ offered**, with **Stage it**, and **After the system update has proved itself**
 when **Stage it** is off, since the two share the spare slot. A held set says so,
 with **Release the hold**.
 
-### Apps
+### App updates
 
 **Apps** lists each app that has an update, with its name, **8.0.3 to 8.0.4**,
 **fixes only** or **new version**, and what the update fixes, **Fixes 1 security
@@ -3909,7 +3909,7 @@ anyway** takes it as it asks. **Install 3 now** takes them all. The card's pill
 says how many wait, **3 waiting**. A held app says **Held at 8.0.3**, and one
 that waits for its wave **Reaches this machine soon**. The **Apps** page lists every app, not only those that have an update.
 
-### Security
+### Security fixes
 
 **Security** says how many advisories apply to the release the system runs, **1
 advisory applies to this system**, and how many flaws the apps have, **2 flaws
