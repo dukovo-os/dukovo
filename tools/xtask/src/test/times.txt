@@ -31,7 +31,7 @@ admin-security 600
 admin-storage 360
 admin-terminal 360
 admin-trials 900
-admin-updates 780
+admin-updates 960
 ansible 300
 aml-off 16
 audio-cd 60

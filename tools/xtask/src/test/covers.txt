@@ -134,6 +134,7 @@ admin-updates userspace/programs/systools/src/sysupdate.rs userspace/programs/sy
 admin-updates userspace/programs/systools/src/bundles.rs userspace/programs/systools/src/bundles/ userspace/programs/systools/src/bundled.rs
 admin-updates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/sysupdate-stage.toml
 admin-updates userspace/programs/systools/src/check.rs userspace/programs/systools/src/check/
+admin-updates userspace/programs/systools/src/json.rs
 admin-updates tools/update-server/ tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py ports/netcat/
 ansible ports/bzip2/ ports/ncurses/ ports/openssl/ ports/python/ ports/ripgrep/ ports/xz/ ports/zlib/ ports/zstd/
 ansible tools/xtask/src/ansible.rs tools/xtask/src/bundles.rs tools/xtask/src/catalog.rs

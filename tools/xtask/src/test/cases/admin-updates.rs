@@ -79,6 +79,21 @@
 //! word `keep` is a task that takes diary away and leaves its data in
 //! alice's folder, and a word that is neither `keep` nor `purge` is ADM-125.
 //!
+//! What the catalog offers. With nothing of it installed, apps.search is the
+//! answer of bundle search --json, for alice and for the reader: the newest
+//! version of diary and of fetcher, of the catalog test, none of them installed
+//! and no catalog unread; a word narrows it, as the words that follow two
+//! hyphens do for the command, and a word with a capital is ADM-125. apps.sheet
+//! of diary and then of fetcher is what the command bundle sheet prints with
+//! its json option: fetcher's says that it asks to connect out and gives the
+//! SHA-256 of its file, and the one download bundled keeps, in the catalog's
+//! downloads, is that of the sheet read last. An ID that is none is ADM-125 and
+//! one that no catalog lists APP-101. apps.install of fetcher with the hash of
+//! another file is a task that ends failed with APP-102 and installs nothing,
+//! the kept download still there; with the hash of the sheet that was read it
+//! installs 1.1.0 for everyone and takes the kept download, and the search then
+//! says that it is installed; apps.remove takes it away.
+//!
 //! An update. updates.apply of the system is a task that stages the bridge
 //! release in the other slot, which updates.slots, what `sysupdate
 //! status --json` prints as root, shows; updates.unstage leaves the slots
@@ -123,6 +138,17 @@ const AUTOMATIC: &str = "/system/state/bundled/automatic";
 /// The app of the catalog the update steps use.
 const DIARY: &str = "org.example.diary";
 
+/// The app of the catalog whose 1.1.0 asks to connect out, which nothing
+/// installs until the catalog's apps are tried.
+const FETCHER: &str = "org.example.fetcher";
+
+/// The route that searches the catalogs' apps.
+const SEARCH: &str = "/api/1/apps/catalog/search";
+
+/// Where bundled keeps the files it fetched of the catalog test, each named
+/// by its SHA-256, until the install that takes it.
+const DOWNLOADS: &str = "/system/state/bundled/catalogs/test/downloads";
+
 /// The app whose service has a folder for its data, which bundled walks.
 const PROVIDER: &str = "org.example.echoprov";
 
@@ -136,7 +162,7 @@ const APP_WHY: &str = "diary 1.1.0 is not ready";
 /// The test.
 pub const CASE: Case = Case {
     name: "admin-updates",
-    about: "The web console's Updates and Apps pages on an installed system whose update server is the host's test server: updates.settings, updates.checks and updates.last are what their commands print, for alice and lab-reader, with no check kept yet; updates.set is refused for nothing to change, a bad time, a word that is none and a restart time without updating by itself, and with check and apps writes updates.toml with its comment and tells bundled, then changes nothing the second time and is put back by its undo; updates.check offers the release of the stable channel by its bridge, root's check is kept for updates.last and a person's is not, and with the server away unchecked names the system and the status is 0; updates.check-add, updates.essential and updates.check-remove show in health.toml and update checks, each change run twice with the second changing nothing; updates.later puts the release off for a day, which update settings says stands and dukovo-check passes as put off until updates.later says off and it warns again (ADR 0565); updates.hold holds the system as asked, with a reason that update settings keeps for the release until updates.unhold lets it go; apps.list, apps.show with its license, service, socket and user, apps.hold with a reason that the list shows until apps.unhold, apps.update, apps.rollback, apps.update-all and apps.remove of an app installed from the test catalog, the tasks finishing and the data staying; the sheet of an app with a service has no data size until bundled walks its data, and then the bytes, whole; apps.tonight keeps an update for the night's window, which apps.not-tonight and apps.tonight-all ask for and take away, and with a restart time around now installs it at once, in a row of the history that says who asked; updates.apply stages the bridge release as a task and updates.unstage takes it back; the journal's rows name the files; a reader is ADM-122 and a locked administrator ADM-106 for what needs an administrator (ADR 0515)",
+    about: "The web console's Updates and Apps pages on an installed system whose update server is the host's test server: updates.settings, updates.checks and updates.last are what their commands print, for alice and lab-reader, with no check kept yet; updates.set is refused for nothing to change, a bad time, a word that is none and a restart time without updating by itself, and with check and apps writes updates.toml with its comment and tells bundled, then changes nothing the second time and is put back by its undo; updates.check offers the release of the stable channel by its bridge, root's check is kept for updates.last and a person's is not, and with the server away unchecked names the system and the status is 0; updates.check-add, updates.essential and updates.check-remove show in health.toml and update checks, each change run twice with the second changing nothing; updates.later puts the release off for a day, which update settings says stands and dukovo-check passes as put off until updates.later says off and it warns again (ADR 0565); updates.hold holds the system as asked, with a reason that update settings keeps for the release until updates.unhold lets it go; apps.list, apps.show with its license, service, socket and user, apps.hold with a reason that the list shows until apps.unhold, apps.update, apps.rollback, apps.update-all and apps.remove of an app installed from the test catalog, the tasks finishing and the data staying; the sheet of an app with a service has no data size until bundled walks its data, and then the bytes, whole; apps.tonight keeps an update for the night's window, which apps.not-tonight and apps.tonight-all ask for and take away, and with a restart time around now installs it at once, in a row of the history that says who asked; apps.search lists the newest version of each app of the test catalog and apps.sheet reads the sheet of one before it is installed, with its permission to connect out and the SHA-256 of its file, the download of the sheet read last being the one bundled keeps; apps.install with the hash of another file is a task that fails with APP-102 and installs nothing, and with the hash of the sheet that was read installs the app, which apps.remove takes away; updates.apply stages the bridge release as a task and updates.unstage takes it back; the journal's rows name the files; a reader is ADM-122 and a locked administrator ADM-106 for what needs an administrator (ADR 0515)",
     firmware: Firmware::Uefi,
     // The installed image keeps the slots the update is staged in.
     media: Media::Disk,
@@ -196,6 +222,7 @@ fn admin_updates(vm: &mut Vm, _case: &Case) -> Result<(), String> {
     a_hold(vm, &mut test, &year)?;
     the_channel(vm, &mut test)?;
     the_apps(vm, &mut test)?;
+    what_the_catalog_offers(vm, &mut test)?;
     an_update(vm, &mut test, &bridge)?;
     the_journal(&mut test)?;
     what_needs_an_administrator(&mut test)?;
@@ -1074,6 +1101,224 @@ fn the_apps(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
     Ok(())
 }
 
+/// The row of `found`, the answer of `bundle search --json`, that is `id`.
+fn found_row<'a>(found: &'a Value, id: &str) -> Option<&'a Value> {
+    found["bundles"].as_array()?.iter().find(|row| row["id"] == id)
+}
+
+/// The names of the files in the downloads of the catalog test, which
+/// bundled keeps them in, as root.
+fn downloaded(test: &Test, vm: &mut Vm) -> Result<Vec<String>, String> {
+    let listing =
+        test.pane.output(vm, &format!("elevate sh -c 'ls {DOWNLOADS} 2>/dev/null; true'"))?;
+    Ok(listing.split_whitespace().map(str::to_string).collect())
+}
+
+/// A task as alice that must end failed, within two minutes: the task.
+fn failed_task(test: &mut Test, path: &str, body: &Value) -> Result<Value, String> {
+    test.unlocked()?;
+    let reply = test.post(Who::Alice, path, body)?.must(path, 202)?;
+    let id = reply.json()?["task"].as_i64().ok_or("no task number")?;
+    let task = wait_for(&format!("the end of the task of {path}"), 120, || {
+        let task = test.read(Who::Alice, &format!("/api/1/tasks/{id}"))?;
+        let running = matches!(task["state"].as_str(), Some("waiting" | "running"));
+        Ok(if running { Err(task.to_string()) } else { Ok(task) })
+    })?;
+    if task["state"] != json!("failed") {
+        return Err(format!("the task of {path} ended as {task}, not failed"));
+    }
+    Ok(task)
+}
+
+/// What the catalog test offers, which nothing of is installed: searched,
+/// its sheets read, and one app installed from it, and taken away.
+fn what_the_catalog_offers(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    elevated(vm)?;
+    the_search(vm, test)?;
+    let sha256 = the_sheets(vm, test)?;
+    the_install(vm, test, &sha256)
+}
+
+/// The search of the catalogs: every app, then the ones a word keeps, as
+/// the command prints them.
+fn the_search(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    let all = same_as_command(vm, test, SEARCH, "bundle search --json")?;
+    let reader = test.read(Who::Reader, SEARCH)?;
+    if reader != all {
+        return Err(format!("{SEARCH} is {reader} for the reader, and {all} for alice"));
+    }
+    let listed = all["bundles"].as_array().map_or(0, Vec::len);
+    if all["format"] != json!(1) || listed != 2 || all["unread"] != json!([]) {
+        return Err(format!("the search with no word is {all}, not the two apps of the catalog"));
+    }
+    for id in [DIARY, FETCHER] {
+        let row = found_row(&all, id).ok_or_else(|| format!("the search has no {id}: {all}"))?;
+        if row["version"] != json!("1.1.0")
+            || row["catalog"] != json!("test")
+            || !row["name"].is_string()
+            || !row["installed"].is_null()
+            || !row["flaws"]["state"].is_string()
+        {
+            return Err(format!("{id} in the search is {row}, not 1.1.0 of the catalog test"));
+        }
+    }
+    // A word the ID or the name holds keeps one; a word nothing holds, none.
+    let route = format!("{SEARCH}?words=fetch");
+    let one = same_as_command(vm, test, &route, "bundle search --json -- fetch")?;
+    if one["bundles"].as_array().map(Vec::len) != Some(1) || found_row(&one, FETCHER).is_none() {
+        return Err(format!("the search for fetch is {one}, which should be {FETCHER} alone"));
+    }
+    let route = format!("{SEARCH}?words=nothing");
+    let none = same_as_command(vm, test, &route, "bundle search --json -- nothing")?;
+    if none["bundles"] != json!([]) || none["unread"] != json!([]) {
+        return Err(format!("the search for nothing is {none}, which should list no app"));
+    }
+    test.get(Who::Alice, &format!("{SEARCH}?words=Fetch"))?.refused(
+        "a word with a capital",
+        400,
+        "ADM-125",
+    )?;
+    Ok(())
+}
+
+/// The sheets of diary and of fetcher, read before either is installed:
+/// the SHA-256 of the file of fetcher's, which is the one download kept.
+fn the_sheets(vm: &mut Vm, test: &mut Test) -> Result<String, String> {
+    let route = |id: &str| format!("/api/1/apps/catalog/{id}/sheet");
+    let kept = |sheet: &Value| format!("{}.dkv", sheet["sha256"].as_str().unwrap_or_default());
+
+    // diary's is the download kept.
+    let diary = test.read(Who::Alice, &route(DIARY))?;
+    let (sha256, files) = (diary["sha256"].as_str().unwrap_or_default(), downloaded(test, vm)?);
+    if diary["id"] != json!(DIARY) || diary["version"] != json!("1.1.0") || sha256.len() != 64 {
+        return Err(format!("the sheet of {DIARY} is {diary}"));
+    }
+    if !files.contains(&kept(&diary)) {
+        return Err(format!("the download of the sheet of {DIARY} is not kept: {files:?}"));
+    }
+
+    // fetcher's is what the command prints, says what it asks for, and takes
+    // the place of diary's download.
+    let sheet =
+        same_as_command(vm, test, &route(FETCHER), &format!("bundle sheet {FETCHER} --json"))?;
+    let hash = sheet["sha256"].as_str().unwrap_or_default().to_string();
+    let lowercase_hex =
+        |text: &str| text.len() == 64 && text.bytes().all(|b| b"0123456789abcdef".contains(&b));
+    if sheet["format"] != json!(1)
+        || sheet["id"] != json!(FETCHER)
+        || sheet["version"] != json!("1.1.0")
+        || sheet["trust"]["catalog"] != json!("test")
+        || sheet["catalog"] != json!("test")
+        || sheet["license"] != json!("MIT")
+        || !lowercase_hex(&hash)
+        || sheet["download_bytes"].as_u64().is_none_or(|bytes| bytes == 0)
+        || !sheet["installed"].is_null()
+        || !sheet["refusal"].is_null()
+    {
+        return Err(format!("the sheet of {FETCHER} is {sheet}"));
+    }
+    let asks = sheet["permissions"].as_array().cloned().unwrap_or_default();
+    let connects = |ask: &&Value| {
+        ask["name"] == "network.outbound" && ask["need"] == "required" && ask["why"] == "To fetch."
+    };
+    if asks.iter().filter(connects).count() != 1 {
+        return Err(format!(
+            "the sheet of {FETCHER} does not say that it asks to connect out: {sheet}"
+        ));
+    }
+    let reader = test.read(Who::Reader, &route(FETCHER))?;
+    for member in ["id", "version", "sha256", "permissions"] {
+        if reader[member] != sheet[member] {
+            return Err(format!("the reader's sheet of {FETCHER} has another {member}: {reader}"));
+        }
+    }
+    let files = downloaded(test, vm)?;
+    if !files.contains(&kept(&sheet)) || files.contains(&kept(&diary)) {
+        return Err(format!(
+            "after fetcher's sheet the downloads are {files:?}, and the one kept is {}",
+            kept(&sheet)
+        ));
+    }
+
+    // An ID that is no ID, and an app no catalog lists.
+    test.get(Who::Alice, &route("Notes"))?.refused(
+        "a sheet of an ID that is none",
+        400,
+        "ADM-125",
+    )?;
+    let refused = test.get(Who::Alice, &route("org.example.none"))?;
+    let refused = refused.refused("a sheet of an app no catalog lists", 422, "APP-101")?;
+    if !refused.detail().contains("org.example.none") {
+        return Err(format!(
+            "the refusal of the sheet of an app that is none says {:?}",
+            refused.detail()
+        ));
+    }
+    Ok(hash)
+}
+
+/// fetcher installed from the catalog with the hash of the sheet that was
+/// read: the hash of another file is APP-102 and installs nothing, then
+/// the install is done, takes the kept download, and is taken away.
+fn the_install(vm: &mut Vm, test: &mut Test, sha256: &str) -> Result<(), String> {
+    let install = format!("/api/1/apps/catalog/{FETCHER}/install");
+    let kept = format!("{sha256}.dkv");
+    // What is refused before anything is asked of the machine.
+    test.post(Who::Reader, &install, &json!({"sha256": sha256}))?.refused(
+        "the reader's install",
+        403,
+        "ADM-122",
+    )?;
+    let upper = sha256.to_uppercase();
+    for hash in ["xyz", upper.as_str()] {
+        let words = "64 lowercase hexadecimal digits";
+        is_refused(test, &install, &json!({"sha256": hash}), (400, "ADM-125"), words)?;
+    }
+    is_refused(test, "/api/1/apps/catalog/Notes/install", &json!({}), (400, "ADM-125"), "")?;
+
+    // A hash that is not the file the catalog lists says APP-102 as the last
+    // line of the task, and nothing is installed or taken from the kept
+    // download.
+    let task = failed_task(test, &install, &json!({"sha256": "0".repeat(64)}))?;
+    let note = task["note"].as_str().unwrap_or_default();
+    if task["action"] != json!("apps.install")
+        || !note.ends_with("(APP-102)")
+        || !note.contains("sheet again")
+    {
+        return Err(format!("the install of a file that is not the sheet's ended as {task}"));
+    }
+    if app_row(&test.read(Who::Alice, "/api/1/apps")?, FETCHER).is_some() {
+        return Err(format!("{FETCHER} is installed after an install that ended with APP-102"));
+    }
+    if !downloaded(test, vm)?.contains(&kept) {
+        return Err(
+            "the download of the sheet read is gone after an install that was refused".into()
+        );
+    }
+
+    // The hash of the sheet that was read installs it, from that download.
+    let list = app_task(test, &install, &json!({"sha256": sha256}))?;
+    let row =
+        app_row(&list, FETCHER).ok_or_else(|| format!("{FETCHER} is not in the list: {list}"))?;
+    if row["version"] != json!("1.1.0") || row["catalog"] != json!("test") {
+        return Err(format!("{FETCHER} after its install is {row}"));
+    }
+    if downloaded(test, vm)?.contains(&kept) {
+        return Err("the download of the sheet read is still kept after its install".into());
+    }
+    let found = test.read(Who::Alice, &format!("{SEARCH}?words=fetch"))?;
+    if found_row(&found, FETCHER).is_none_or(|row| row["installed"] != json!("1.1.0")) {
+        return Err(format!("the search does not say that {FETCHER} is installed: {found}"));
+    }
+
+    // Taken away again, as it was found.
+    let list = app_task(test, &format!("/api/1/apps/{FETCHER}/remove"), &json!({"data": "keep"}))?;
+    if app_row(&list, FETCHER).is_some() {
+        return Err(format!("{FETCHER} is in the list after apps.remove: {list}"));
+    }
+    Ok(())
+}
+
 /// The system's update staged as a task, and not tried.
 fn an_update(vm: &mut Vm, test: &mut Test, bridge: &str) -> Result<(), String> {
     elevated(vm)?;
@@ -1130,6 +1375,7 @@ fn the_journal(test: &mut Test) -> Result<(), String> {
         ("updates.check-remove", Some(HEALTH)),
         ("apps.hold", None),
         ("apps.update", None),
+        ("apps.install", None),
         ("updates.unstage", None),
     ] {
         let rows = of(action);
@@ -1209,6 +1455,7 @@ fn what_needs_an_administrator(test: &mut Test) -> Result<(), String> {
         (true, "/api/1/apps/org.example.diary/hold", json!({})),
         (true, "/api/1/apps/org.example.diary/unhold", json!({})),
         (true, "/api/1/apps/org.example.diary/remove", json!({"data": "keep"})),
+        (true, "/api/1/apps/catalog/org.example.fetcher/install", json!({})),
     ];
     test.locked()?;
     for (post, path, body) in &asks {
@@ -1228,6 +1475,8 @@ fn what_needs_an_administrator(test: &mut Test) -> Result<(), String> {
         "/api/1/updates/failed",
         "/api/1/apps",
         "/api/1/apps/org.example.echoprov",
+        "/api/1/apps/catalog/search",
+        "/api/1/apps/catalog/org.example.fetcher/sheet",
     ] {
         test.read(Who::Reader, path)?;
         test.read(Who::Alice, path)?;
