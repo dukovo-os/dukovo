@@ -75,8 +75,8 @@ and on real machines in the project's test lab.
 | 17 | Go toolchain | Planned |
 | 18 | Linux containers through Podman: **Release 1.0** | Planned |
 
-After 1.0, releases 1.1 to 1.18 add the desktop, the UI kit and
-Store, Linux desktop apps, developer tools, a local AI assistant, gaming,
+After 1.0, releases 1.1 to 1.20 add the desktop, the UI kit,
+Settings and the Store, everyday apps, Linux desktop apps, developer tools, a local AI assistant, gaming,
 and AArch64 and RISC-V. Then Dukovo is 2.0.
 
 ## Quick start

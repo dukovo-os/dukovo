@@ -305,7 +305,7 @@ log keeps each reset, and every administrator is told at their next
 sign-in, before their shell starts. The menu gives nothing that the boot
 menu did not give already, since anyone at it can start root's shell; a
 server is reached through its own console or its cloud provider's.
-Once disks are encrypted, in release 1.4, a reset will need the
+Once disks are encrypted, in release 1.2, a reset will need the
 recovery key.
 
 ## Where accounts are kept
