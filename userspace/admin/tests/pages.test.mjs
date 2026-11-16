@@ -59,6 +59,31 @@ test('the paths are one to a page, the root is the Overview\'s and the navigatio
   );
 });
 
+test('the phone has Overview, Services, Logs and Alerts in its four places, and Alerts is for administrators and has no row of the navigation', () => {
+  assert.deepEqual(
+    Object.fromEntries(PAGES.filter((entry) => entry.phone).map((entry) => [entry.phone, entry.id])),
+    { 1: 'overview', 2: 'services', 3: 'logs', 4: 'alerts' },
+  );
+  const alerts = PAGES.find((entry) => entry.id === 'alerts');
+  assert.equal(alerts.nav, null);
+  assert.equal(alerts.needs, 'admin');
+  assert.equal(PAGES.find((entry) => entry.id === 'reliability').phone, null, 'Reliability is in More');
+});
+
+test('the pages that were added each list pages.css and a sheet of their own, load their page, and have both files', () => {
+  const added = ['apps', 'certificates', 'hardware', 'updates', 'report', 'alerts'];
+  for (const id of added) {
+    const entry = PAGES.find((one) => one.id === id);
+    assert.equal(entry.css.length, 2, `${id}: two sheets`);
+    assert.equal(entry.css[0], 'pages.css', `${id}: pages.css first`);
+    assert.match(entry.css[1], new RegExp(`^pages/${id}/[a-z-]+\\.css$`), `${id}: a sheet of its folder`);
+    assert.equal(typeof entry.load, 'function', `${id}: load`);
+    assert.ok(existsSync(new URL(`pages/${id}/page.js`, ROOT)), `${id}: page.js`);
+    assert.match(readFileSync(new URL(entry.css[1], ROOT), 'utf8'), /^\/\*\n \* SPDX-FileCopyrightText: .+\n \* SPDX-License-Identifier: .+\n \*\//, `${id}: its sheet has the licence header`);
+  }
+  assert.deepEqual(Object.keys(PAGES.find((entry) => entry.id === 'certificates').parts), ['overview', 'palette'], 'Certificates keeps the parts it had');
+});
+
 test('the pages that are shown have a page with a show function, and a folder of parts only has none', async () => {
   for (const entry of PAGES) {
     if (entry.load === null) {

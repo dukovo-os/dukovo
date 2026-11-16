@@ -75,20 +75,73 @@ test('each graph the shell starts later is within 150 KB beyond the shell', () =
   }
 });
 
+/** The bytes `page` brings beyond the shell: its page and what it imports, with the style sheets its entry lists. */
+function pageBytes(page, shell) {
+  const entry = `${ROOT}pages/${page.id}/page.js`;
+  let files = new Set();
+  try {
+    statSync(entry);
+    files = graphOf(entry, shell.files).files;
+  } catch {
+    // A page with no `page.js` of its own: parts only.
+  }
+  // A sheet that is not there yet is left out, as a part is.
+  const sheets = (page.css ?? []).map((name) => `${ROOT}${name}`).filter((file) => existsSync(file));
+  return sizeOf(files) + sizeOf(sheets);
+}
+
 test('each page with its style sheets is within 150 KB beyond the shell', () => {
   const { shell } = laterGraphs();
   for (const page of PAGES) {
-    const entry = `${ROOT}pages/${page.id}/page.js`;
-    let files = new Set();
-    try {
-      statSync(entry);
-      files = graphOf(entry, shell.files).files;
-    } catch {
-      // A page with no `page.js` of its own: parts only.
-    }
-    // A sheet that is not there yet is left out, as a part is.
-    const sheets = (page.css ?? []).map((name) => `${ROOT}${name}`).filter((file) => existsSync(file));
-    const size = sizeOf(files) + sizeOf(sheets);
+    const size = pageBytes(page, shell);
     assert.ok(size <= LIMIT, `page ${page.id} brings ${size} bytes beyond the shell, over ${LIMIT}`);
+  }
+});
+
+// A page's own row, tighter than the 150 KB: the bytes it brings beyond the
+// shell, with its sheets. A page that grows past its row fails with its name;
+// one that needs more says so, with what grew, and raises the row. Security,
+// Move and Reliability keep a little room for what they gain; the Terminal's
+// graph is as it was.
+const PAGE_LIMITS = {
+  updates: 70_000,
+  apps: 55_000,
+  hardware: 55_000,
+  certificates: 60_000,
+  report: 60_000,
+  alerts: 60_000,
+  security: 147_000,
+  move: 107_000,
+  reliability: 22_000,
+  terminal: 149_908,
+};
+
+// The parts the Overview reads from a page, each a graph the shell starts
+// later, and the service worker, which no graph holds: the browser fetches it.
+const PART_LIMITS = {
+  'pages/updates/overview.js': 8_000,
+  'pages/hardware/overview.js': 8_000,
+  'pages/alerts/overview.js': 8_000,
+  'sw.js': 6_000,
+};
+
+test('each page is within its own row', () => {
+  const { shell } = laterGraphs();
+  for (const [id, limit] of Object.entries(PAGE_LIMITS)) {
+    const page = PAGES.find((one) => one.id === id);
+    assert.ok(page, `${id} is a page of the console`);
+    const size = pageBytes(page, shell);
+    assert.ok(size <= limit, `page ${id} brings ${size} bytes beyond the shell, over its row of ${limit}`);
+  }
+});
+
+test('each part the Overview reads, and the service worker, is within its own row', () => {
+  const { shell } = laterGraphs();
+  for (const [name, limit] of Object.entries(PART_LIMITS)) {
+    const file = `${ROOT}${name}`;
+    // A part that is not written yet is left out, as a page's missing sheet is.
+    if (!existsSync(file)) continue;
+    const size = name.endsWith('sw.js') ? statSync(file).size : sizeOf(graphOf(file, shell.files).files);
+    assert.ok(size <= limit, `${name} brings ${size} bytes, over its row of ${limit}`);
   }
 });
