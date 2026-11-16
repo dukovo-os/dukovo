@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0 OR MIT
 
 # 0488. hardware check tests the machine, and the start menu tests its memory
 
-- Status: Accepted
+- Status: Accepted; the kernel tests the free memory at a start asked for since [0565](0565-updates-are-run-from-the-console-and-a-release-that-fell-back-is-held.md); memtest86+ stays the full test
 - Date: 2026-11-13
 
 ## Context
