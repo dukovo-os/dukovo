@@ -41,7 +41,7 @@ as below.
 | Reports: the number the server gave, a key that asks about it, the title and the time of each sent, and the text of each that waits for the network | `/system/state/reports`, kept by reportd | A report that waits is tried for 30 days and then dropped; `report delete` forgets a sent one |
 | Notifications | notifyd's memory only | The last 64, until notifyd stops |
 | The machine's history: processors, memory, disks, networks, temperatures and services | `/system/state/metrics`, kept by metricsd | A reading a minute for two weeks, and each hour's average, least and greatest for 13 months ("Metrics and early warnings") |
-| Alerts | `/system/state/alerts`, kept by alertd, in files that root alone reads | The active alerts, the newest 1000 to 2000 changes, and for 24 hours at most the messages not yet delivered ("Alerts: email, ntfy and webhooks") |
+| Alerts | `/system/state/alerts`, kept by alertd, in files that root alone reads | The active alerts, the newest 1000 to 2000 changes, for 24 hours at most the messages not yet delivered, the key that signs notices to browsers, and the subscription of each browser that gets alerts until it is turned off ("Alerts: email, ntfy and webhooks") |
 
 A crash goes nowhere by itself. Dukovo offers to report it once, at the
 next sign-in, and sends nothing until you have read the whole report and
@@ -62,11 +62,25 @@ off; anything else sent on its own is a bug:
 | netlog | The log, to a computer you name, only when you name one to debug a machine | It sends nothing by default |
 | logforward | The log, to the syslog servers you name in logforward.toml(5), over TLS, TCP or UDP, from when you name each, and again to a server that missed some | It sends nothing until you name a server; take the destination out, or `enabled = false` in its service file (logforward(8)) |
 | metricsd | Nothing on its own. A Prometheus server that metrics.toml(5) names gets the machine's figures when it asks | It listens nowhere by default; take `listen` out of metrics.toml(5), or `enabled = false` in its service file (metricsd(8)) |
-| alertd | The title and detail of each alert, which can name a disk's model and serial number, a mount point or a service, with the machine's name and the time, to the email account and the webhook addresses you name in alerts.toml(5), over TLS only | It sends nothing until you name a channel; take the channel out of the file and run `service alertd reload`, or `enabled = false` in its service file (alertd(8)) |
+| alertd | The title and detail of each alert, which can name a disk's model and serial number, a mount point or a service, with the machine's name and the time, to the email account and the webhook addresses you name in alerts.toml(5), over TLS only; and to the push service of the maker of each browser that you turned alerts on in, encrypted for that browser (below) | It sends nothing until you name a channel or turn alerts on in a browser; take the channel out of the file and run `service alertd reload`, turn alerts off in the browser or run `alerts push remove ID`, or `enabled = false` in its service file (alertd(8)) |
 | discoverd | The machine's name and addresses, by multicast DNS on the local network only, so that `ssh name.local` works, and WS-Discovery probes that find Windows machines, printers and scanners there; nothing leaves the local network | `enabled = false` in its service file (discoverd(8)) |
 | updated | Ten minutes after each start, then once a day, a read of the update channel at `updates.dukovo.org`, or the server you name, for a newer system and firmware set, and of the app catalogs; nothing about the machine | `check = "off"` in updates.toml(5), or `enabled = false` in its service file (updated(8)) |
 | dukovo-canary-report | Nothing on a machine that is not a canary. A canary, which the owner makes with `sysupdate canary enrol`, sends each hour a signed report to the update server it follows: the machine's name on the server's list, the version it runs and the one staged, its channel, its last health check, the failures and warnings of `dukovo-check`, and the services that failed; the words of a failed check can name a service, a file or a setting, and no log line, address or file content is sent | Take `canary` out of updates.toml(5), or `enabled = false` in its service file (sysupdate(8)) |
 | bundled | For bundles installed from a catalog, a daily read of that catalog for updates and known flaws, at `updates.dukovo.org` for Dukovo's own | Nothing is read while no catalog bundle is installed; updates by themselves stay off unless you turn them on with `bundle update --automatic on` (bundle(1)) |
+
+### Alerts to a browser
+
+A push notice goes from this server to the push service of your browser's
+maker (for Chromium-based browsers, Google's; for Firefox, Mozilla's), which
+hands it to the browser. The notice's words are encrypted on this server for
+this browser alone (RFC 8291): the push service cannot read them. The push
+service does see this server's IP address, when each notice is sent and how big
+it is, the address it gave your browser (which it can tie to that browser), and
+this server's push key, which is the same on every notice, with the project's
+address as its contact, not yours. Nothing is sent until you turn push on in a
+browser, and Turn off ends it. The web console's Alerts page says this under
+**This browser**, before push is turned on and after (see [This
+browser](web-console.md#this-browser)).
 
 ## What you send when you report a problem
 
@@ -91,11 +105,31 @@ report for the security team is encrypted to its keys before it leaves
 the machine. `report --save` writes the text to a file or hands it to a
 phone, and sends nothing to a server.
 
+The first lines of a report say where it came from: the version of Dukovo, the
+kind of computer, what the report is about and how many lines its sender cut.
+They hold nothing that names you, your computer or your network. You may cut any
+line that the system gathered for the report, a crash's frames or a service's
+log, whole or in part, and it then reads `[cut]`; you may write your own answers
+again; you may not type into a line the system gathered. The web console's
+Report a problem page does exactly this, and shows the report before it sends it
+(see "Reporting a problem" and [Report a
+problem](web-console.md#report-a-problem)). At a terminal `report` lets you
+change the whole text in your editor, and what you leave is cleaned again.
+
 `reports.dukovo.org` keeps no address of yours: it logs none, and it
 limits how often one sender may send by a keyed hash of the address that
 it forgets after 10 minutes. It keeps a report a year, unless you delete
 it sooner with `report delete`; a deleted report is gone from every
 backup within 30 days. The reference is dukovo-privacy(7).
+
+## From the web console
+
+The web console says what leaves the machine where it would leave it. The Alerts
+page says what a push service sees before alerts are turned on in a browser and
+after (see [Alerts and the phone](web-console.md#alerts-and-the-phone)), and the
+Report a problem page says **Nothing leaves this server until you press Send,
+and you see every byte first.** and shows the whole report before it sends it
+(see [Report a problem](web-console.md#report-a-problem)).
 
 ## Reporting a security problem
 

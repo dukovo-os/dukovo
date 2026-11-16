@@ -121,6 +121,31 @@ is private to you in what you typed, so read the preview, and use `E` to
 take out what should not go. What is sent is the text you last saw, byte
 for byte.
 
+## From the web console
+
+The web console's **Report a problem** page makes the same report in a browser,
+and shows every byte of it before it sends anything. It lists what it can
+report: the failed start the machine found, each crash, each service that failed,
+the hardware, an install or an update that went wrong, and something else. It
+asks reportd to draft the report, and shows the draft with the marks above, and
+the number of pieces taken out of it. The text is reportd's and not the
+browser's: the page sends the draft by its hash, so that what is sent is what
+you read.
+
+You can take out more, and write your answers again, as `E` does at a terminal.
+**Cut line** takes out a line of what the system gathered, a crash's frames or a
+service's log, or **Cut these words** and **Cut these lines** take out what you
+select; each reads `[cut]`. **Edit your answers** writes the three answers
+again. A line that the system gathered cannot be typed into, so what reaches the
+project from the system is what the system wrote, or less ([RPT-105](../../errors/RPT-105.md)),
+and the first lines, which say where the report comes from, and the headings
+cannot be cut ([RPT-104](../../errors/RPT-104.md)). **Send** is `S`, **Save to a file…** is `F`
+and **Download by QR code…** is `P`: the link is for one download in 10 minutes
+on the console's own port, needs no sign-in and no new rule of the firewall.
+**This is a security problem.** seals the report to the security team's keys and
+leaves out the two ways to take it away. See [Report a
+problem](web-console.md#report-a-problem) in the chapter on the console.
+
 ## Saving a report, or sending it from a phone
 
 A machine with no network, or one that you do not want to send from, can

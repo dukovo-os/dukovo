@@ -15,6 +15,11 @@ change or release:
 - the **Framework Desktop**, the reference desktop and bare-metal server
   (ADR 0079), before every release once it is set up.
 
+The web console's **Hardware** page shows what any machine is and how it
+fares, whatever its make: its model and processor, the last check, the
+temperatures, the disks, the memory and the devices with the driver that took
+each. See [Hardware](web-console.md#hardware).
+
 ## Dell Inspiron 15 5570
 
 This is the reference machine as it is: Dell's parts list for its
@@ -268,3 +273,34 @@ names, at their speeds, which GRUB runs only on a PCI card's first port
 and only at 8 data bits and no parity. A change takes effect at the next
 start ([ADR 0481](https://github.com/dukovo-os/dukovo/blob/main/docs/adr/0481-the-boot-menu-follows-the-serial-console-and-the-stick-installs-on-any-port.md)).
 serial(8) has the details.
+
+## Disk temperatures
+
+`hardware sensors` lists every temperature the machine reads: each sensor of
+the hardware monitors, each thermal zone of the firmware and each disk, with
+its limits where it has them. diskhealth looks at each disk
+every 10 minutes, and metricsd keeps the reading as the series
+`temp{disk/NAME}`, so that `metrics show 'temp{disk/NAME}' --since 30d`
+shows how hot a disk ran.
+
+A look never wakes a disk. Before the system reads a SATA disk's health
+record, it asks the disk which power mode it is in, with a command that no
+disk spins up for, and reads nothing from a disk in standby. A disk that
+sleeps keeps what was last read of it, and `hardware sensors` says so,
+**sdb asleep since 08:15, not read**; its series has a gap for the time and
+never a made-up point. A disk that gives no temperature says that.
+
+A disk's limits are its own where it says them: an NVMe drive's come from its
+health log, and a SATA disk's critical limit from the threshold of its airflow
+temperature attribute where that counts down as the disk warms. Where it gives
+none, the usual for its kind is used: a hard disk is warm at 50 °C and hot at
+60 °C, a solid-state disk at 65 °C and 70 °C, and an NVMe drive at 70 °C and
+80 °C. metricsd warns of a disk at its warning temperature after 5 readings in
+a row ([MET-108](../../errors/MET-108.md)), the same way it warns of a hot
+sensor, and the warning is critical at the second limit. It clears when the
+disk is 3 degrees below the line it was raised at. The alert is of the kind
+Hardware (see "Which alerts go where" in [Alerts: email, ntfy and
+webhooks](alerts.md#which-alerts-go-where)). The web console shows each disk's
+temperature, its highest in 30 days and its limit under **Temperatures and
+fans** on the Hardware page (see [Temperatures and
+fans](web-console.md#temperatures-and-fans)).
