@@ -386,13 +386,17 @@ fn check_steps(runs: u32) -> Vec<(String, Vec<String>)> {
                 "prompt: 1".into(),
             ],
         ),
+        // Spark's control socket is root's on 0.15.0, so the service's
+        // state is asked for as root.
         (
-            "echo \"host: $(hostname)\"; echo \"zone: $(readlink /system/settings/localtime | \
-             grep -c Europe/Berlin)\"; echo \"health: $(cat \
-             /system/settings/sysupdate/health.toml)\"; grep -q 'enabled = true' \
-             /system/settings/spark/services/sshd.toml && echo \"sshd file: on\"; service sshd \
-             status > /dev/null && echo \"sshd: running\""
-                .into(),
+            format!(
+                "echo \"host: $(hostname)\"; echo \"zone: $(readlink /system/settings/localtime \
+                 | grep -c Europe/Berlin)\"; echo \"health: $(cat \
+                 /system/settings/sysupdate/health.toml)\"; grep -q 'enabled = true' \
+                 /system/settings/spark/services/sshd.toml && echo \"sshd file: on\"; {} > \
+                 /dev/null && echo \"sshd: running\"",
+                as_root("service sshd status")
+            ),
             vec![
                 "host: studio".into(),
                 "zone: 1".into(),
