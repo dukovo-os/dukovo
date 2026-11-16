@@ -547,13 +547,15 @@ fn make(
 /// The words of `pg_restore`: signed in over the server's socket as
 /// [`RESTORER`], as the owner of the database from its first statement,
 /// into the database `new`, and ending at the first thing it cannot do.
-/// The copy is read from its standard input.
+/// A subscription of the copy, which would connect to another server, is
+/// not made. The copy is read from its standard input.
 #[must_use]
 pub fn pg_restore_argv(owner: &str, new: &str) -> Vec<String> {
     [
         "--no-owner",
         &format!("--role={owner}"),
         "--exit-on-error",
+        "--no-subscriptions",
         "-h",
         SOCKET_DIR,
         "-U",
@@ -792,6 +794,7 @@ mod tests {
                 "--no-owner",
                 "--role=shop",
                 "--exit-on-error",
+                "--no-subscriptions",
                 "-h",
                 "/system/live/services/postgres",
                 "-U",

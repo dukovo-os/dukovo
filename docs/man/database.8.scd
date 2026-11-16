@@ -243,8 +243,10 @@ set to zero. *allow* takes up to 20 at a time.
 	file of at most 64 GiB that starts as a copy made with *pg\_dump -Fc*
 	does (DB-109). What was checked is what is read: the open file is the
 	standard input of the bundle's *pg\_restore*, which *restore* runs as
-	root, as *--no-owner --role=* the owner *--exit-on-error -h
-	/system/live/services/postgres -U root -d* the new database.
+	root, as *--no-owner --role=* the owner *--exit-on-error*
+	*--no-subscriptions -h /system/live/services/postgres -U root -d* the
+	new database: a subscription of the copy, which would connect to
+	another server, is not made.
 
 	A copy holds what the owner of the database wrote, and putting it
 	back runs some of it, as a check that calls a function of the
@@ -407,8 +409,8 @@ The web console shows the page for it.
 
 *DB-103*
 	The database has open sessions, from the programs the words name.
-	Stop them, or use *--force* to end them: *remove* and *restore
-	--over* both say so.
+	Stop them, or use *--force* to end them: *remove* and
+	*restore --over* both say so.
 
 *DB-104*
 	PostgreSQL's settings did not pass its check, so nothing was changed:
