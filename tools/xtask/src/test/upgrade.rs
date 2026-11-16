@@ -435,7 +435,7 @@ fn restart(vm: &mut Vm) -> Result<(), String> {
 }
 
 /// Stages this build from the disk of the full repository; on a failure,
-/// says what alice and root find of that disk.
+/// says what root finds of that disk, and what the serial log says of it.
 fn stage(vm: &mut Vm, version: &str) -> Result<(), String> {
     run(
         vm,
@@ -445,21 +445,30 @@ fn stage(vm: &mut Vm, version: &str) -> Result<(), String> {
     .map_err(|err| format!("{err}\n{}", what_is_there(vm)))
 }
 
-/// What alice, and then root, see of the volumes and the repository's
-/// metadata, one line each.
+/// What root sees of the disk of the full repository, one line, and the
+/// lines of the serial log that name its device or volumed.
 fn what_is_there(vm: &mut Vm) -> String {
-    let look = format!("ls -d /volumes/* {UPDATES}/{FULL}/metadata/*");
-    let mut seen = Vec::new();
-    for (who, command) in [("alice", look.clone()), ("root", as_root(&format!("sh -c '{look}'")))] {
-        let screen = answer_within(vm, "$", &format!("clear; {command}"), COMMAND_SECONDS)
-            .and_then(|()| answer_within(vm, "$", "", COMMAND_SECONDS))
-            .and_then(|()| vm.screen());
-        seen.push(match screen {
-            Ok(lines) => format!("{who} sees: {}", lines.join(" | ")),
-            Err(err) => format!("{who}: {err}"),
-        });
-    }
-    seen.join("\n")
+    let look = format!(
+        "ls {UPDATES} {UPDATES}/{FULL} {UPDATES}/{FULL}/metadata; ls {UPDATES}/{FULL}/files | wc \
+         -l; volumed --list; df {UPDATES}"
+    );
+    let command = as_root(&format!("sh -c '{look}'"));
+    let screen = answer_within(vm, "$", &format!("clear; {command}"), COMMAND_SECONDS)
+        .and_then(|()| answer_within(vm, "$", "", COMMAND_SECONDS))
+        .and_then(|()| vm.screen());
+    let seen = match screen {
+        Ok(lines) => {
+            let lines: Vec<&str> = lines.iter().map(|line| line.trim_end()).collect();
+            format!("root sees: {}", lines.join(" | "))
+        }
+        Err(err) => format!("root: {err}"),
+    };
+    let log = vm.log();
+    let said: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("vda") || line.contains("volumed") || line.contains("FAT"))
+        .collect();
+    format!("{seen}\nthe serial log of vda: {}", said.join(" | "))
 }
 
 /// Restarts into the staged update, and waits for it to prove itself.
