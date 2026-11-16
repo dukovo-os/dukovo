@@ -228,7 +228,12 @@ Planned, each to be described here in full before it ships:
 	team, with age, before it is queued, so that only they can read it;
 	the server stores it as it came and cannot open it.
 	*report --save* writes the text to a file, or offers it once to a
-	phone on the local network, and sends nothing to a server. A report
+	phone on the local network, and sends nothing to a server. The web
+	console's Report a problem page does the same through the console's
+	own port: its link works once, for 10 minutes. A draft the page
+	makes is kept in memory for an hour at most, for its own user, and
+	its sender may cut any line the system gathered, or a part of one,
+	before it is sent (ADR 0568). A report
 	that cannot be sent waits in a queue on the machine and is tried
 	again for 30 days (*reportd*(8)).
 

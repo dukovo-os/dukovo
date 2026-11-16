@@ -252,7 +252,12 @@ mod tests {
         let drafted: Drafted = Client::at(&socket).one(&request, QUICK).unwrap();
         assert_eq!(
             drafted,
-            Drafted { text: "Dukovo problem report\n".into(), cuts: 2, has_logs: true }
+            Drafted {
+                text: "Dukovo problem report\n".into(),
+                cuts: 2,
+                has_logs: true,
+                ..Drafted::default()
+            }
         );
         assert_eq!(served.join().unwrap(), "{\"ask\":\"redact\",\"text\":\"hello\"}\n");
     }

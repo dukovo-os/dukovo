@@ -25,7 +25,9 @@ use std::path::PathBuf;
 
 use super::client::{self, Client};
 use super::preview::{self, Choice};
-use super::protocol::{About, Answers, Crash, Drafted, Request, Sent, Status, Waiting, title_of};
+use super::protocol::{
+    About, Answers, Crash, Drafted, KeptText, Request, Sent, Status, Waiting, title_of,
+};
 use super::save::{self, Outcome};
 use crate::alertd::text::date_time;
 use crate::args::{Arg, Args};
@@ -41,6 +43,7 @@ const HELP: &str = "Usage: report [--security] [--save [FILE]] [--port PORT]
        report delete N
        report forget ID
        report retry
+       report text DRAFT --sha256 HEX
 
 Writes a problem report, shows the exact text that would leave this
 computer, and sends it, saves it or hands it to a phone, as report(1)
@@ -55,6 +58,8 @@ describes. Nothing is sent before you press S.
   delete N      deletes report N, here and on the reports server
   forget ID     puts crash ID away, so that it is not offered again
   retry         sends the reports that wait now
+  text DRAFT    prints the text of a draft reportd keeps for you, whose
+                SHA-256 is HEX: the web console's download to a phone
   --security    sends it to the security team only, encrypted
   --save [FILE] saves it to FILE, or serves it once to a phone with no FILE,
                 instead of sending it
@@ -63,7 +68,8 @@ describes. Nothing is sent before you press S.
 
 /// The words that start a subcommand, which `--save` does not take for a
 /// file's name.
-const SUBCOMMANDS: [&str; 7] = ["crash", "failure", "list", "status", "delete", "forget", "retry"];
+const SUBCOMMANDS: [&str; 8] =
+    ["crash", "failure", "list", "status", "delete", "forget", "retry", "text"];
 
 /// What the person asked for.
 #[derive(Debug, PartialEq, Eq)]
@@ -79,6 +85,8 @@ enum Command {
     Delete(u64),
     Forget(String),
     Retry,
+    /// The text of a kept draft, by its ID and its SHA-256.
+    Text(String, String),
 }
 
 impl Command {
@@ -131,7 +139,7 @@ fn is_subcommand(word: &OsStr) -> bool {
 
 /// What the command line says.
 fn parse(args: &mut Args) -> Result<Parsed, Fail> {
-    let (mut security, mut save, mut port) = (false, None, None);
+    let (mut security, mut save, mut port, mut sha256) = (false, None, None, None);
     let mut operands: Vec<String> = Vec::new();
     while let Some(arg) = args.next()? {
         match arg {
@@ -146,6 +154,7 @@ fn parse(args: &mut Args) -> Result<Parsed, Fail> {
                 });
                 save = Some(file.map_or(Save::Phone, |file| Save::File(PathBuf::from(file))));
             }
+            Arg::Long(name) if name == "sha256" && sha256.is_none() => sha256 = Some(args.text()?),
             Arg::Long(name) if name == "port" => {
                 let number: u16 = args.number()?;
                 if number == 0 {
@@ -160,7 +169,14 @@ fn parse(args: &mut Args) -> Result<Parsed, Fail> {
             other => return Err(args.unknown(&other)),
         }
     }
-    let command = command_of(&operands)?;
+    let command = match (command_of(&operands)?, sha256) {
+        (Command::Text(draft, _), Some(sha256)) => Command::Text(draft, sha256),
+        (Command::Text(..), None) => {
+            return Err(usage("report text names the draft's SHA-256 with --sha256".into()));
+        }
+        (_, Some(_)) => return Err(usage("--sha256 is for report text".into())),
+        (command, None) => command,
+    };
     check_options(&command, security, save.as_ref(), port)?;
     Ok(Parsed::Run(Run { command, security, save, port }))
 }
@@ -193,6 +209,7 @@ fn command_of(operands: &[String]) -> Result<Command, Fail> {
         "status" => return Err(usage("report status takes the number of one report".into())),
         "delete" => Command::Delete(number(&one("the number of a report")?)?),
         "forget" => Command::Forget(one("the ID of a crash")?),
+        "text" => Command::Text(one("the ID of a draft")?, String::new()),
         other => return Err(usage(format!("no such command: {other}\n{HELP}"))),
     })
 }
@@ -258,7 +275,22 @@ fn execute(client: &Client, run: &Run) -> Result<i32, Fail> {
         Command::Delete(number) => delete(client, *number),
         Command::Forget(id) => forget(client, id),
         Command::Retry => retry(client),
+        Command::Text(draft, sha256) => text(client, draft, sha256),
     }
+}
+
+/// Prints the text of the draft `draft` reportd keeps for the person,
+/// whose SHA-256 is `sha256`, as it is: the bytes a phone downloads.
+fn text(client: &Client, draft: &str, sha256: &str) -> Result<i32, Fail> {
+    use std::io::Write;
+    let request =
+        Request { draft: Some(draft.into()), sha256: Some(sha256.into()), ..request("text") };
+    let kept: KeptText = client.one(&request, client::QUICK)?;
+    let mut out = std::io::stdout().lock();
+    out.write_all(kept.text.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|err| util::failed(&"standard output", err))?;
+    Ok(0)
 }
 
 /// The lines of the failure notice (ADR 0501), with what changed in the
@@ -1003,5 +1035,17 @@ mod tests {
         assert!(!Command::List.writes() && !Command::Retry.writes());
         assert!(!Command::Status(None).writes() && !Command::Delete(1).writes());
         assert!(!Command::Forget("x".into()).writes());
+    }
+
+    #[test]
+    fn text_names_a_draft_and_its_hash_and_the_hash_is_for_text_alone() {
+        let hash = "a".repeat(64);
+        assert_eq!(
+            run(&["text", "0123", "--sha256", &hash]).command,
+            Command::Text("0123".into(), hash.clone())
+        );
+        assert!(failure(&["text", "0123"]).contains("--sha256"));
+        assert!(failure(&["list", "--sha256", &hash]).contains("for report text"));
+        assert!(failure(&["text", "--sha256", &hash]).contains("the ID of a draft"));
     }
 }

@@ -52,69 +52,172 @@ impl Parts {
     /// each and its lines.
     fn logs(&self) -> Vec<(&str, &[String])> {
         let log = self.log.as_ref().map(|(heading, lines)| (heading.as_str(), lines.as_slice()));
-        let start = self.start_log.as_deref().map(|lines| (START_LOG, lines));
+        let start = self.start_log.as_deref().map(|lines| (START_LOG_HEADING, lines));
         log.into_iter().chain(start).filter(|(_, lines)| !lines.is_empty()).collect()
     }
 }
 
 /// The heading of the failed start's log lines.
-const START_LOG: &str = "Warnings and errors of the failed start";
+const START_LOG_HEADING: &str = "Warnings and errors of the failed start";
+
+/// The IDs of a report's sections, as a kept draft's answer names them
+/// (ADR 0568): the head, the three answers, and what the system gathered.
+pub const HEAD: &str = "head";
+pub const HAPPENED: &str = "happened";
+pub const EXPECTED: &str = "expected";
+pub const AGAIN: &str = "again";
+pub const CRASH: &str = "crash";
+pub const FAILED_START: &str = "failed-start";
+pub const LOG: &str = "log";
+pub const START_LOG: &str = "start-log";
+
+/// The sections the person typed.
+pub const ANSWERS: [&str; 3] = [HAPPENED, EXPECTED, AGAIN];
+
+/// A section of a report's text: its ID, its heading (the head has none),
+/// and its lines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Section {
+    pub id: &'static str,
+    pub heading: Option<String>,
+    pub lines: Vec<String>,
+}
+
+impl Section {
+    fn of<T: Into<String>>(
+        id: &'static str,
+        heading: &str,
+        lines: impl Iterator<Item = T>,
+    ) -> Section {
+        Section { id, heading: Some(heading.to_string()), lines: lines.map(Into::into).collect() }
+    }
+}
 
 /// The text of the report for `parts` and the person's `answers`; without
 /// the logs when `without_logs` is set.
 pub fn compose(parts: &Parts, answers: &Answers, without_logs: bool) -> String {
-    let mut lines = vec!["Dukovo problem report".to_string()];
+    text_of(&sections(parts, answers, without_logs))
+}
+
+/// The sections of the report for `parts` and `answers`, the head first,
+/// then each that has lines.
+pub fn sections(parts: &Parts, answers: &Answers, without_logs: bool) -> Vec<Section> {
+    let mut head = vec!["Dukovo problem report".to_string()];
     let mut facts = parts.facts.lines();
-    lines.push(facts.remove(0));
-    lines.push(format!("About: {}", parts.about));
-    lines.extend(facts);
-    lines.push(String::new());
-    let mut text = lines.join("\n") + "\n";
-    for (heading, body) in [
-        ("What happened", &answers.happened),
-        ("What was expected", &answers.expected),
-        ("How to make it happen again", &answers.again),
-    ] {
-        section(&mut text, heading, answer_lines(body).into_iter());
-    }
+    head.push(facts.remove(0));
+    head.push(format!("About: {}", parts.about));
+    head.extend(facts);
+    let mut sections = vec![Section { id: HEAD, heading: None, lines: head }];
+    sections.extend(answer_sections(answers));
     if let Some(crash) = &parts.crash {
-        section(&mut text, "Crash", crash.iter().map(String::as_str));
+        sections.push(Section::of(CRASH, "Crash", crash.iter().map(String::as_str)));
     }
     if let Some(notice) = &parts.notice {
-        section(&mut text, "Failed start", notice.iter().map(String::as_str));
+        sections.push(Section::of(FAILED_START, "Failed start", notice.iter().map(String::as_str)));
     }
     if !without_logs {
-        for (heading, lines) in parts.logs() {
-            section(&mut text, heading, lines.iter().map(String::as_str));
+        if let Some((heading, lines)) = &parts.log {
+            sections.push(Section::of(LOG, heading, lines.iter().map(String::as_str)));
+        }
+        if let Some(lines) = &parts.start_log {
+            sections.push(Section::of(
+                START_LOG,
+                START_LOG_HEADING,
+                lines.iter().map(String::as_str),
+            ));
+        }
+    }
+    sections.retain(|section| section.id == HEAD || !section.lines.is_empty());
+    sections
+}
+
+/// The sections of the person's answers, each that is not empty.
+pub fn answer_sections(answers: &Answers) -> Vec<Section> {
+    [
+        (HAPPENED, "What happened", &answers.happened),
+        (EXPECTED, "What was expected", &answers.expected),
+        (AGAIN, "How to make it happen again", &answers.again),
+    ]
+    .into_iter()
+    .map(|(id, heading, answer)| Section::of(id, heading, answer_lines(answer).into_iter()))
+    .filter(|section| !section.lines.is_empty())
+    .collect()
+}
+
+/// The text of `sections`: the head's lines and a blank line, then each
+/// other section that has lines, as `== heading` and its lines.
+pub fn text_of(sections: &[Section]) -> String {
+    let mut text = String::new();
+    for section in sections {
+        match &section.heading {
+            None => {
+                for line in &section.lines {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+                text.push('\n');
+            }
+            Some(heading) if !section.lines.is_empty() => {
+                text.push_str("== ");
+                text.push_str(heading);
+                text.push('\n');
+                for line in &section.lines {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+            }
+            Some(_) => {}
         }
     }
     text
 }
 
+/// `sections` again, with the headings and lines of `text`, which is their
+/// text redacted: redaction leaves each line where it is.
+pub fn split_like(sections: &[Section], text: &str) -> Vec<Section> {
+    let mut lines = text.split('\n');
+    let mut out = Vec::with_capacity(sections.len());
+    for section in sections {
+        let mut next = || lines.next().unwrap_or_default().to_string();
+        match &section.heading {
+            None => {
+                let head = section.lines.iter().map(|_| next()).collect();
+                next();
+                out.push(Section { lines: head, ..section.clone() });
+            }
+            Some(_) if !section.lines.is_empty() => {
+                let heading = next();
+                let heading = heading.strip_prefix("== ").unwrap_or(&heading).to_string();
+                let body = section.lines.iter().map(|_| next()).collect();
+                out.push(Section { id: section.id, heading: Some(heading), lines: body });
+            }
+            Some(_) => out.push(section.clone()),
+        }
+    }
+    out
+}
+
+/// The heading on line `at` of `lines` (each with its end of line), without
+/// its `== `.
+pub fn heading_of(lines: &[&str], at: usize) -> String {
+    let line = lines.get(at).copied().unwrap_or_default().trim_end_matches('\n');
+    line.strip_prefix("== ").unwrap_or(line).to_string()
+}
+
 /// The lines of an answer: as typed, without trailing spaces and without
-/// blank lines before and after it.
-fn answer_lines(answer: &str) -> Vec<&str> {
+/// blank lines before and after it. A line that starts `==` gets a space
+/// before it, so that nothing typed passes for a heading of the report.
+fn answer_lines(answer: &str) -> Vec<String> {
     let mut lines: Vec<&str> = answer.lines().map(str::trim_end).collect();
     while lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
     }
     let blank = lines.iter().take_while(|line| line.is_empty()).count();
-    lines.split_off(blank)
-}
-
-/// Adds `== heading` and `lines` to `text`, unless there are no lines.
-fn section<'a>(text: &mut String, heading: &str, lines: impl Iterator<Item = &'a str>) {
-    let mut lines = lines.peekable();
-    if lines.peek().is_none() {
-        return;
-    }
-    text.push_str("== ");
-    text.push_str(heading);
-    text.push('\n');
-    for line in lines {
-        text.push_str(line);
-        text.push('\n');
-    }
+    lines
+        .split_off(blank)
+        .into_iter()
+        .map(|line| if line.starts_with("==") { format!(" {line}") } else { line.to_string() })
+        .collect()
 }
 
 /// Whether the report for `parts` has a log, which `without_logs` leaves
@@ -275,5 +378,26 @@ mod tests {
             Answers { happened: "\n\n  first  \n\nsecond \n\n".into(), ..Answers::default() };
         let text = compose(&Parts::default(), &answers, false);
         assert!(text.ends_with("== What happened\n  first\n\nsecond\n"), "{text}");
+    }
+
+    #[test]
+    fn a_typed_line_that_looks_like_a_heading_gets_a_space_before_it() {
+        let answers = Answers { happened: "== Crash\nfine\n==x".into(), ..Answers::default() };
+        let text = compose(&Parts::default(), &answers, false);
+        assert!(text.ends_with("== What happened\n == Crash\nfine\n ==x\n"), "{text}");
+    }
+
+    #[test]
+    fn the_sections_make_the_text_and_a_redacted_text_splits_back_into_them() {
+        let parts = crashed_service();
+        let sections = sections(&parts, &answers(), false);
+        let ids: Vec<&str> = sections.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [HEAD, HAPPENED, EXPECTED, AGAIN, CRASH, LOG]);
+        let text = text_of(&sections);
+        assert_eq!(text, compose(&parts, &answers(), false));
+        let changed = text.replace("web", "[user]");
+        let split = split_like(&sections, &changed);
+        assert_eq!(text_of(&split), changed);
+        assert_eq!(split[5].heading.as_deref(), Some("Log of the service [user] (last 200 lines)"));
     }
 }

@@ -530,6 +530,23 @@ fn seeds(actions: &[&'static dyn Registered]) -> Vec<Seed> {
                 Some(json!({})),
             )
         },
+        Seed {
+            params: vec![("draft".into(), super::once::DRAFT.into())],
+            ..Seed::new(
+                "phone link",
+                "POST",
+                "/api/1/reports/drafts/{draft}/phone",
+                Some(json!({ "sha256": super::once::SHA256 })),
+            )
+        },
+        Seed {
+            params: vec![("token".into(), "5".repeat(32))],
+            ..Seed::new("one-time link", "GET", "/once/{token}/report.txt", None)
+        },
+        Seed {
+            params: vec![("token".into(), "5".repeat(32))],
+            ..Seed::new("one-time link head", "HEAD", "/once/{token}/report.txt", None)
+        },
         Seed::new("lock", "POST", "/api/1/lock", Some(json!({}))),
         Seed::new("sign-out", "POST", "/api/1/sign-out", Some(json!({}))),
     ];
@@ -1052,12 +1069,26 @@ fn broken(
     let path = sent.path();
     let api = path.starts_with("/api/");
     let head = sent.method == b"HEAD";
+    // A one-time link is a phone's: its answers are plain words, which
+    // name their ID, and each fetch counts against the address's tries.
+    let once = matches!(sent.method.as_slice(), b"GET" | b"HEAD")
+        && matches!(lookup(Verb::Get, &path), Lookup::Found(entry, _) if entry.route == Route::Once);
     let body = String::from_utf8_lossy(&got.body);
     let json: Option<Value> = serde_json::from_slice(&got.body).ok();
     // An error is JSON with an ID, a title and a detail.
     let error = if got.status >= 400 {
         if head {
             None
+        } else if once && json.is_none() {
+            // Refused before the route, as for a wrong host, it is JSON.
+            let id = if got.status == 429 { "ADM-105" } else { "ADM-140" };
+            if !body.contains(&format!("({id})")) {
+                return Some(format!(
+                    "{} from a one-time link does not name {id}: {body}",
+                    got.status
+                ));
+            }
+            Some(id.to_string())
         } else {
             let Some(error) = json.as_ref().map(|json| &json["error"]) else {
                 return Some(format!("{} is not JSON: {body}", got.status));
@@ -1128,7 +1159,7 @@ fn broken(
     if counted > 1 {
         return Some(format!("one request counted {counted} sign-in tries"));
     }
-    if !sign_in && counted != 0 {
+    if !sign_in && !once && counted != 0 {
         return Some(format!("{counted} sign-in tries were counted for a request that is not one"));
     }
     // Whether authd was asked about the sign-in itself: a token the
@@ -1190,7 +1221,11 @@ fn every_route_of_the_table_has_a_request_to_start_from() {
         {
             continue;
         }
-        let method = if entry.verb == Verb::Get { "GET" } else { "POST" };
+        let method = match entry.verb {
+            Verb::Get => "GET",
+            Verb::Head => "HEAD",
+            Verb::Post => "POST",
+        };
         assert!(
             seeds.iter().any(|seed| seed.method == method && seed.template == entry.path),
             "no request starts from {method} {}",

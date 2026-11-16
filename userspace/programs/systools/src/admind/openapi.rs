@@ -531,6 +531,19 @@ const SIGNED_IN_END: &[Kind] = &[
     Kind::Internal,
 ];
 
+/// What asking for a one-time link can answer with besides: a draft or a
+/// hash that is not one, reportd's refusal (RPT-101 and RPT-102 as the
+/// command's own), and too many links.
+const PHONE: &[Kind] = &[
+    Kind::BadRequest,
+    Kind::BadValue,
+    Kind::CommandFailed,
+    Kind::WorkerSilent,
+    Kind::NoProgram,
+    Kind::Wait,
+    Kind::Internal,
+];
+
 /// What the Terminal's socket can answer with besides: the opening request
 /// did not come from the console's page with the session's token.
 const SOCKET: &[Kind] = &[
@@ -563,6 +576,10 @@ fn own_kinds(route: Route) -> &'static [Kind] {
         Route::TerminalSocket => SOCKET,
         Route::SignedIn => SIGNED_IN,
         Route::SignedInEnd => SIGNED_IN_END,
+        Route::Phone => PHONE,
+        // A link used, or none, in plain words for a phone; too many tries
+        // from its address.
+        Route::Once | Route::OnceHead => &[Kind::OnceGone, Kind::NoRoute, Kind::Wait],
         Route::Changes
         | Route::Change
         | Route::Keep
@@ -868,6 +885,37 @@ fn success_of(route: Route) -> (&'static str, Value) {
                 },
             })),
         ),
+        Route::Phone => ok(
+            "The one-time link to the draft's text, for a phone.",
+            Some(json!({
+                "type": "object",
+                "required": ["url", "expires_ms", "fingerprint_sha256"],
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "https://ADDRESS:PORT/once/TOKEN/report.txt, by an address \
+                            of this machine a phone on its network reaches.",
+                    },
+                    "expires_ms": {
+                        "type": "integer",
+                        "description": "When the link ends, in milliseconds since 1970.",
+                    },
+                    "fingerprint_sha256": {
+                        "type": "string",
+                        "description": "The fingerprint of the certificate the console serves, \
+                            which the phone's warning shows.",
+                    },
+                },
+            })),
+        ),
+        Route::Once | Route::OnceHead => (
+            "200",
+            json!({
+                "description": "The report's text, once, as a file to keep. A link used is \
+                    410 and one not kept 404, each with plain words that name ADM-140.",
+                "content": { "text/plain": {} },
+            }),
+        ),
         _ => ok("What the route answers, as JSON.", None),
     }
 }
@@ -936,6 +984,8 @@ fn summary(route: Route) -> &'static str {
             "Says whether the browser reaches the console by a connection opened after a tried \
              change took effect."
         }
+        Route::Phone => "Makes a one-time link to a draft's text, for a phone to download.",
+        Route::Once | Route::OnceHead => "Gives a report's text once, with no session.",
         #[cfg(feature = "lab")]
         Route::TestElevate => "Runs a command as an administrator in an unlocked session.",
     }

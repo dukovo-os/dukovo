@@ -1413,6 +1413,35 @@ detached from the pane, so that other pages go on. At most 64 KiB of typing
 waits for a pane; past that, admind reads no more from that page until the
 shell has taken some.
 
+## One-time links
+
+The Report a problem page hands a report to a phone by a QR code (ADR
+0568). *POST /api/1/reports/drafts/*_draft_*/phone*, with
+*{"sha256": "..."}*, has the person's worker run *report text* _draft_
+*--sha256* _hash_ (*report*(1)): reportd gives the text of a draft it keeps
+only to the person who drafted it, and only while its SHA-256 is the one
+the page read (RPT-101, RPT-102). admind keeps the text in memory under a
+token of 128 random bits and answers *{"url", "expires_ms",
+"fingerprint_sha256"}*: the link, when it ends, and the fingerprint of the
+certificate the console serves, which the phone's warning shows. The
+link's host is the address the browser used when it is a private one, else
+the machine's first private address, IPv4 first, since a phone may not
+resolve the machine's name; else the name the browser used. A session has
+at most 4 links at once and the console 32 (ADM-105, with the seconds until
+one ends).
+
+*GET /once/*_token_*/report.txt* needs no session, as the phone has none.
+The first request gets the text as a file to keep (*text/plain*, with
+*Content-Disposition: attachment*), and a link works for 10 minutes. A
+*HEAD* counts as that request, since a program that only looks at a link,
+as a chat program does for a preview, is not the person. A later request
+is told in plain words that the link was used (410), and a token admind
+does not keep that there is nothing there (404), both naming ADM-140. A
+text whose connection was lost before it was handed over is kept for the
+next request. Each request counts against its address's tries, as a
+sign-in does (ADM-105 after 10 in a minute). Links are kept by their
+token's SHA-256, never in the log or on disk, and a restart forgets them.
+
 ## Errors
 
 An error is *{"error": {"id", "title", "detail", "fix"}}*, with an ID that
@@ -1539,6 +1568,10 @@ or the journal could not do: *the journal could not look at the files*, *the
 journal could not keep* an action's change, *the journal cannot tell who
 changed a file* (logd did not answer, so the rows say *outside the
 console*), and *task 42 could not be saved*.
+
+A one-time link has a line as it is made, such as *alice made a one-time
+link to a report's text*, and as it is opened, with the address it was
+opened from, never its token; a request for one that was used says so.
 
 Each terminal's pane has a line as it opens, such as *terminal 3 pane 12
 opened for alice as an administrator from 192.0.2.7 (pts/7)*, as a page
