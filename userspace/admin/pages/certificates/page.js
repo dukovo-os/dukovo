@@ -158,5 +158,9 @@ export async function show(view) {
   if (row) ctx.act('show', row);
   else if (wanted !== '' && data.list) list.say(`There is no certificate called ${wanted}.`);
   const target = globalThis.location?.hash?.slice(1);
-  if (target) ctx.show(target);
+  if (target === 'upload') {
+    if (admin) upload.click();
+  } else if (target) {
+    ctx.show(target);
+  }
 }
