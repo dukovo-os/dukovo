@@ -3,7 +3,9 @@
 
 // The split of the style sheets (design 23.1): console.css holds what the
 // shell draws, pages.css what only some pages draw, and each of those pages
-// names pages.css in its entry. The checks read the sources, so a page that
+// names pages.css in its entry; dialogs.css holds what a dialog draws and
+// sign-in.css what the sign-in page draws, each linked by the modules that
+// draw them. The checks read the sources, so a page that
 // draws a class of pages.css without naming it, or a class that moves back
 // into the shell's files, fails here and not as an unstyled page. Every icon
 // is a file of icons/ with one line of console.css, so that none is a
@@ -22,6 +24,8 @@ const read = (file) => readFileSync(file, 'utf8');
 const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
 const consoleCss = stripComments(read(`${ROOT}console.css`));
 const pagesCss = stripComments(read(`${ROOT}pages.css`));
+// The other sheets the shell links: each has rules that console.css does not.
+const OTHER_SHEETS = new Map(['pages.css', 'dialogs.css', 'sign-in.css'].map((name) => [name, stripComments(read(`${ROOT}${name}`))]));
 
 const classesOf = (css) => new Set([...css.matchAll(/\.([A-Za-z][\w-]*)/g)].map((found) => found[1]));
 const inShell = classesOf(consoleCss);
@@ -119,14 +123,23 @@ test('every page\'s icon has a rule in console.css and a file, since the navigat
   }
 });
 
-test('pages.css has no icon rule', () => {
-  assert.doesNotMatch(pagesCss, /\.ic-/);
+test('the icons of the power, devices and phone notices are there, as a file and as a rule', () => {
+  for (const name of ['power', 'chip', 'push']) {
+    assert.ok(iconNamesWithRules.includes(name), `console.css has no .ic-${name}`);
+    assert.ok(exists(`${ROOT}icons/${name}.svg`), `icons/${name}.svg is not a file`);
+  }
 });
 
-test('no rule is in both sheets', () => {
+test('no sheet but console.css has an icon rule', () => {
+  for (const [name, css] of OTHER_SHEETS) assert.doesNotMatch(css, /\.ic-/, name);
+});
+
+test('no rule is in two sheets', () => {
   const shellRules = new Set(consoleCss.split('\n').map((line) => line.trim()).filter(Boolean));
-  for (const line of pagesCss.split('\n').map((one) => one.trim()).filter((one) => one && one !== '}' && !one.startsWith('@'))) {
-    assert.equal(shellRules.has(line), false, `${line.slice(0, 60)} is in console.css too`);
+  for (const [name, css] of OTHER_SHEETS) {
+    for (const line of css.split('\n').map((one) => one.trim()).filter((one) => one && one !== '}' && !one.startsWith('@'))) {
+      assert.equal(shellRules.has(line), false, `${line.slice(0, 60)} is in console.css and in ${name}`);
+    }
   }
 });
 

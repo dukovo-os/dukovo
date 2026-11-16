@@ -106,6 +106,9 @@ html, body { margin: 0; }
 .ic-db { --m: url("/icons/db.svg"); }
 .ic-globe { --m: url("/icons/globe.svg"); }
 .ic-tasks { --m: url("/icons/tasks.svg"); }
+.ic-power { --m: url("/icons/power.svg"); }
+.ic-chip { --m: url("/icons/chip.svg"); }
+.ic-push { --m: url("/icons/push.svg"); }
 /* The boards' components */
 .top { display: flex; flex-wrap: wrap; align-items: center; gap: .714rem 1rem; padding: .5rem 1rem;
   background: linear-gradient(var(--cmd-1), var(--cmd-2)); border-bottom: 1px solid var(--cmd-b); }

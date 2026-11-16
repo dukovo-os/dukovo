@@ -30,7 +30,7 @@ const ENTRIES = [
     load: () => import('./pages/logs/page.js'),
   },
   {
-    id: 'reliability', title: 'Reliability', path: '/reliability', icon: 'reliability', nav: { order: 30 }, phone: 4,
+    id: 'reliability', title: 'Reliability', path: '/reliability', icon: 'reliability', nav: { order: 30 },
     keywords: ['crash', 'starts', 'boot', 'history'],
     css: ['boards.css', 'pages.css', 'pages/reliability/rel.css'],
     load: () => import('./pages/reliability/page.js'),
@@ -127,8 +127,17 @@ const ENTRIES = [
     },
   },
   {
-    id: 'certificates', title: 'Certificates', path: '/certificates', icon: 'certs',
-    keywords: ['certificate', 'https', 'tls', 'renew', 'let\'s encrypt', 'expire'],
+    id: 'apps', title: 'Apps', path: '/apps', icon: 'apps', nav: { order: 100 },
+    keywords: ['bundle', 'install', 'remove', 'catalog', 'rollback', 'licence'],
+    css: ['pages.css', 'pages/apps/apps.css'],
+    load: () => import('./pages/apps/page.js'),
+    parts: { palette: () => import('./pages/apps/palette.js') },
+  },
+  {
+    id: 'certificates', title: 'Certificates', path: '/certificates', icon: 'certs', nav: { order: 110 },
+    keywords: ['certificate', 'https', 'tls', 'renew', 'let\'s encrypt', 'expire', 'host name', 'domain'],
+    css: ['pages.css', 'pages/certificates/certs.css'],
+    load: () => import('./pages/certificates/page.js'),
     parts: {
       overview: () => import('./pages/certificates/overview.js'),
       palette: () => import('./pages/certificates/palette.js'),
@@ -140,6 +149,37 @@ const ENTRIES = [
     css: ['boards.css', 'pages.css', 'lib/trial-banner.css', 'pages/security/sec.css'],
     load: () => import('./pages/security/page.js'),
     parts: { overview: () => import('./pages/security/overview.js') },
+  },
+  {
+    id: 'hardware', title: 'Hardware', path: '/hardware', icon: 'hardware', nav: { order: 130 },
+    keywords: ['restart', 'shut down', 'reboot', 'power off', 'temperature', 'fan', 'memory test', 'devices', 'driver', 'self-test'],
+    css: ['pages.css', 'pages/hardware/hardware.css'],
+    load: () => import('./pages/hardware/page.js'),
+    parts: { overview: () => import('./pages/hardware/overview.js'), palette: () => import('./pages/hardware/palette.js') },
+  },
+  {
+    id: 'updates', title: 'Updates', path: '/updates', icon: 'updates', nav: { order: 140 },
+    keywords: ['update', 'upgrade', 'rollback', 'go back', 'channel', 'hold', 'firmware', 'bisect', 'health check'],
+    css: ['pages.css', 'pages/updates/updates.css'],
+    load: () => import('./pages/updates/page.js'),
+    parts: {
+      overview: () => import('./pages/updates/overview.js'),
+      badge: () => import('./pages/updates/badge.js'),
+      palette: () => import('./pages/updates/palette.js'),
+    },
+  },
+  {
+    id: 'report', title: 'Report a problem', path: '/report', icon: 'report', nav: { order: 1000, bottom: true },
+    keywords: ['bug', 'crash', 'problem', 'feedback', 'support'],
+    css: ['pages.css', 'pages/report/report.css'],
+    load: () => import('./pages/report/page.js'),
+  },
+  {
+    id: 'alerts', title: 'Alerts', path: '/alerts', icon: 'bell', phone: 4, needs: 'admin',
+    keywords: ['alert', 'notification', 'email', 'webhook', 'ntfy', 'push', 'phone'],
+    css: ['pages.css', 'pages/alerts/alerts.css'],
+    load: () => import('./pages/alerts/page.js'),
+    parts: { overview: () => import('./pages/alerts/overview.js'), palette: () => import('./pages/alerts/palette.js') },
   },
 ];
 

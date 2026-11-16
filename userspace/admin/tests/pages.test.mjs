@@ -53,7 +53,7 @@ test('the paths are one to a page, the root is the Overview\'s and the navigatio
     Object.fromEntries(PAGES.filter((entry) => entry.nav).map((entry) => [entry.id, entry.nav.order])),
     {
       overview: 10, logs: 20, reliability: 30, storage: 40, snapshots: 50, networking: 60, firewall: 70, accounts: 80,
-      services: 90, security: 120, terminal: 150,
+      services: 90, apps: 100, certificates: 110, security: 120, hardware: 130, updates: 140, terminal: 150, report: 1000,
     },
     'the orders of the table at the top of pages.js',
   );
@@ -72,7 +72,7 @@ test('the pages that are shown have a page with a show function, and a folder of
 test('the files an entry links exist, unless its page is still a stand-in', () => {
   for (const entry of PAGES) {
     const page = new URL(`pages/${entry.id}/page.js`, ROOT);
-    const standIn = existsSync(page) && readFileSync(page, 'utf8').includes('Coming in this PR');
+    const standIn = existsSync(page) && readFileSync(page, 'utf8').includes('This page is being built.');
     for (const css of entry.css) {
       assert.match(css, /^(?:(?:pages\/[a-z-]+|lib)\/)?[a-z-]+\.css$/);
       assert.ok(standIn || existsSync(new URL(css, ROOT)), `${entry.id}: ${css} is a file`);

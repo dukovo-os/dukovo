@@ -61,7 +61,7 @@ test('the pages a person may see are rows, with their children and sections, and
     'Your account', 'Your account › Display', 'Your account › Time zone', 'Your account › Second step', 'Your account › API tokens',
     'Terminal', 'Terminal › Sessions', 'Terminal › Terminal settings', 'Terminal › Terminal keys',
     'Services', 'Services › Scheduled tasks',
-    'Security',
+    'Apps', 'Certificates', 'Security', 'Hardware', 'Updates', 'Report a problem', 'Alerts',
   ]);
   const terminal = rows.find((one) => one.title === 'Terminal › Terminal keys');
   assert.deepEqual(terminal, {
@@ -72,7 +72,9 @@ test('the pages a person may see are rows, with their children and sections, and
   const shown = new Set(rows.map((one) => one.target.path.split('#')[0]));
   assert.equal(shown.has('/welcome'), false, 'the welcome page is shown once and not found');
   assert.equal(shown.has('/services'), true);
-  assert.equal(shown.has('/certificates'), false, 'a folder of parts only has no page to go to');
+  assert.equal(shown.has('/certificates'), true);
+  const folder = { id: 'folder', title: 'Folder', path: '/folder', load: null, needs: 'person' };
+  assert.deepEqual(pageRows([folder], admin), [], 'a folder of parts only has no page to go to');
 });
 
 test('a reader does not find the administrators\' pages, and a person with no terminal does not find the terminal', () => {
@@ -94,7 +96,8 @@ test('whether an address is a page that is registered and that this person may s
   assert.equal(reaches(PAGES, admin, '/account#display'), true);
   assert.equal(reaches(PAGES, admin, '/?x=1'), true);
   assert.equal(reaches(PAGES, admin, '/services/nginx'), true);
-  assert.equal(reaches(PAGES, admin, '/certificates'), false, 'a folder of parts only is no page');
+  assert.equal(reaches(PAGES, admin, '/certificates'), true);
+  assert.equal(reaches([{ id: 'folder', path: '/folder', load: null, needs: 'person' }], admin, '/folder'), false, 'a folder of parts only is no page');
   assert.equal(reaches(PAGES, admin, '/setup'), true);
   assert.equal(reaches(PAGES, reader, '/setup'), false);
   assert.equal(reaches(PAGES, reader, '/terminal'), false);
@@ -174,8 +177,8 @@ test('a thing goes to its page when that page is registered, and to its action w
       groups: [{
         group: 'Pages', kind: 'page-thing', items: [
           { key: 'a', title: 'Account', href: '/account', action: 'service.explain', args: { name: 'a' } },
-          { key: 'b', title: 'Certificates', href: '/certificates', action: 'service.explain', args: { name: 'b' } },
-          { key: 'c', title: 'Nothing yet', href: '/certificates/c' },
+          { key: 'b', title: 'Nowhere', href: '/nowhere', action: 'service.explain', args: { name: 'b' } },
+          { key: 'c', title: 'Nothing yet', href: '/nowhere/c' },
           { key: 'd', title: 'Only an action', action: 'service.restart' },
         ],
       }],
