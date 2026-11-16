@@ -2574,6 +2574,7 @@ fn fetch_newest(
     id: &str,
     catalog: Option<&str>,
     everyone: bool,
+    sha256: Option<&str>,
 ) -> Result<Fetched, String> {
     let place = if everyone { Place::Everyone } else { Place::User(asker) };
     let bound = {
@@ -2609,23 +2610,44 @@ fn fetch_newest(
         }
         return Err(why + " (APP-101)");
     };
+    if let Some(why) = another_file(&name, id, &entry, sha256) {
+        return Err(why);
+    }
     Ok(Fetched { catalog: name, file: read.fetch(&entry)? })
+}
+
+/// Why `entry`, the file `catalog` lists for `id` now, is not the one whose
+/// SHA-256 `wanted` names, ending in APP-102; none when it is, or none was
+/// named. It is said before the file is fetched.
+fn another_file(
+    catalog: &str,
+    id: &str,
+    entry: &catalogs::Entry,
+    wanted: Option<&str>,
+) -> Option<String> {
+    let wanted = wanted.filter(|wanted| !wanted.eq_ignore_ascii_case(&entry.sha256))?;
+    Some(format!(
+        "catalog {catalog} now lists {id} {}, a file whose SHA-256 is not {wanted}: read its \
+         sheet again (APP-102)",
+        entry.version
+    ))
 }
 
 /// `bundle install ID`: the newest version of `id` that `catalog`, or the
 /// first catalog that lists it, lists; or, when `id` came from a catalog
 /// already here, that catalog's. Fetched by the client, checked against
-/// its targets, then installed as a file is.
+/// its targets, then installed as a file is; with `sha256`, only if that
+/// is the file's.
 fn get(
     shared: &Shared,
     connection: &mut Connection,
     asker: u32,
     id: &str,
     catalog: Option<&str>,
-    everyone: bool,
-    yes: bool,
+    (everyone, yes): (bool, bool),
+    sha256: Option<&str>,
 ) -> Result<String, String> {
-    let fetched = fetch_newest(shared, asker, id, catalog, everyone)?;
+    let fetched = fetch_newest(shared, asker, id, catalog, everyone, sha256)?;
     let archive = File::open(&fetched.file).map_err(|e| format!("{}: {e}", fetched.file.display()));
     let result = archive.and_then(|archive| {
         let how = How { yes, from: Some(&fetched.catalog), ..How::default() };
@@ -2650,7 +2672,7 @@ fn sheet_of(
     id: &str,
     from: Option<&str>,
 ) -> Result<String, String> {
-    let fetched = fetch_newest(shared, asker, id, from, false)?;
+    let fetched = fetch_newest(shared, asker, id, from, false, None)?;
     shared.sheet.keep(&fetched.file);
     let archive =
         File::open(&fetched.file).map_err(|e| format!("{}: {e}", fetched.file.display()))?;
@@ -3968,8 +3990,9 @@ fn serve(shared: &Shared, stream: UnixStream) {
         Ok(_) if !fds.is_empty() => {
             Err("only an install request, or adding a catalog, comes with a file".into())
         }
-        Ok(Request::Get { id, catalog, everyone, yes }) => {
-            get(shared, &mut connection, asker, &id, catalog.as_deref(), everyone, yes)
+        Ok(Request::Get { id, catalog, everyone, yes, sha256 }) => {
+            let ask = (everyone, yes);
+            get(shared, &mut connection, asker, &id, catalog.as_deref(), ask, sha256.as_deref())
         }
         Ok(Request::Sheet { id, from }) => {
             sheet_of(shared, &mut connection, asker, &id, from.as_deref())
@@ -4181,6 +4204,27 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_other_than_the_one_named_is_said_before_it_is_fetched() {
+        let entry = catalogs::Entry {
+            path: "bundles/org.nginx.nginx-1.30.6.dkv".into(),
+            sha256: "ab".repeat(32),
+            length: 3_100_000,
+            id: "org.nginx.nginx".into(),
+            version: "1.30.6".into(),
+            name: "nginx".into(),
+        };
+        let said = |wanted: Option<&str>| another_file("dukovo", &entry.id, &entry, wanted);
+        // None named, the same in either case: it goes on.
+        assert_eq!(said(None), None);
+        assert_eq!(said(Some(&"ab".repeat(32))), None);
+        assert_eq!(said(Some(&"AB".repeat(32))), None);
+        let other = "cd".repeat(32);
+        let why = said(Some(&other)).unwrap();
+        assert!(why.starts_with("catalog dukovo now lists org.nginx.nginx 1.30.6, "), "{why}");
+        assert!(why.contains(&other) && why.ends_with("(APP-102)"), "{why}");
+    }
 
     #[test]
     fn only_the_download_of_the_sheet_read_last_is_kept() {

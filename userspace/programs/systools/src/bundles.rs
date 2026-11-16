@@ -84,7 +84,7 @@ const USAGE: &str =
        bundle feed FOLDER [FILE.dkv...] [--key SECRET-KEY-FILE] [--days N]
        bundle unpack FILE.dkv FOLDER
        bundle install FILE.dkv [--unsigned] [--for-everyone] [--yes]
-       bundle install ID [--from CATALOG] [--for-everyone] [--yes]
+       bundle install ID [--from CATALOG] [--sha256 HEX] [--for-everyone] [--yes]
        bundle search WORD...
        bundle search --json [WORD...]
        bundle sheet ID [--from CATALOG] [--json]
@@ -155,6 +155,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let mut days = None;
     let mut unsigned = false;
     let mut json = false;
+    let mut sha256 = None;
     let mut why = None;
     let mut tonight = false;
     let mut not_tonight = false;
@@ -183,6 +184,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
             Arg::Long(l) if l == "license" => license = Some(args.text()?),
             Arg::Long(l) if l == "key" => key = Some(args.text()?),
             Arg::Long(l) if l == "from" => from = Some(args.text()?),
+            Arg::Long(l) if l == "sha256" && sha256.is_none() => sha256 = Some(args.text()?),
             Arg::Long(l) if l == "why" && why.is_none() => why = Some(args.text()?),
             Arg::Long(l) if l == "output" => output = Some(args.text()?),
             Arg::Long(l) if l == "days" && days.is_none() => {
@@ -234,6 +236,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
     let yes_ok = matches!(sub, Some("install" | "update")) || !yes;
     let data_ok = sub == Some("remove") || data.is_none();
     let from_ok = matches!(sub, Some("install" | "sheet")) || from.is_none();
+    let sha256_ok = sub == Some("install") || sha256.is_none();
     let update_ok = sub == Some("update") || (!check_only && automatic.is_none());
     let automatic_ok = automatic.is_none() || (!check_only && !yes && operands.is_empty());
     let clear_ok = (sub == Some("default") && operands.len() == 1) || !clear;
@@ -250,6 +253,7 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         || !yes_ok
         || !data_ok
         || !from_ok
+        || !sha256_ok
         || !update_ok
         || !automatic_ok
         || !clear_ok
@@ -278,10 +282,10 @@ pub fn main(args: &mut Args) -> Result<i32, Fail> {
         }
         (Some("unpack"), []) if confined => Ok(confine::confined()),
         (Some("unpack"), [archive, folder]) => unpack(archive, folder),
-        (Some("install"), [what]) if from.is_none() && is_file(what) => {
+        (Some("install"), [what]) if from.is_none() && sha256.is_none() && is_file(what) => {
             install(what, everyone, yes, unsigned)
         }
-        (Some("install"), [id]) if !unsigned => get(id, from, everyone, yes),
+        (Some("install"), [id]) if !unsigned => get(id, from, everyone, yes, sha256),
         (Some("sheet"), [id]) => sheet(id, from, json),
         (Some("search"), words) if json => search_json(words),
         (Some("search"), words) if !words.is_empty() => search(words),
@@ -769,8 +773,16 @@ fn sign_unsigned(archive: &str, file: &File) -> Result<Option<(File, PathBuf)>, 
 }
 
 /// `bundle install ID`: bundled fetches the newest version a catalog
-/// lists, then shows its sheet and asks, as for a file.
-pub(crate) fn get(id: &str, from: Option<String>, everyone: bool, yes: bool) -> Result<i32, Fail> {
+/// lists, then shows its sheet and asks, as for a file; with `sha256`, it
+/// fetches only a file that has it, and says APP-102 when the catalog
+/// lists another.
+pub(crate) fn get(
+    id: &str,
+    from: Option<String>,
+    everyone: bool,
+    yes: bool,
+    sha256: Option<String>,
+) -> Result<i32, Fail> {
     bundle::check_full_id(id).map_err(|why| {
         usage(format!(
             "{id}: neither a file nor a bundle's ID ({why}); `bundle search` finds a bundle's ID"
@@ -779,7 +791,15 @@ pub(crate) fn get(id: &str, from: Option<String>, everyone: bool, yes: bool) -> 
     if let Some(name) = &from {
         catalogs::check_name(name).map_err(usage)?;
     }
-    let request = Request::Get { id: id.into(), catalog: from, everyone, yes };
+    // The file's SHA-256 as `bundle sheet --json` says it, in either case.
+    let sha256 = sha256
+        .map(|hex| {
+            let ok = hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit());
+            ok.then(|| hex.to_ascii_lowercase())
+                .ok_or_else(|| usage("--sha256 takes the 64 hex digits of a SHA-256".into()))
+        })
+        .transpose()?;
+    let request = Request::Get { id: id.into(), catalog: from, everyone, yes, sha256 };
     let (stream, input) = ask(&request, None).map_err(fail)?;
     installing(id, &stream, input)
 }
