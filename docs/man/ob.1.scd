@@ -2393,8 +2393,9 @@ _build.sh_
 	specification of programs on Rust's standard library), pkg-config's
 	settings for the sysroot and *SOURCE_DATE_EPOCH*, which is
 	2026-01-01 00:00:00 UTC for every port at every commit, so that a port
-	cached at one commit is the port another builds; the host's own
-	*CPPFLAGS*, *LDFLAGS* and *PKG_CONFIG_PATH* are taken away.
+	cached at one commit is the port another builds; *LANG* and *LC_ALL*
+	are _C.UTF-8_, and the host's own *CPPFLAGS*, *LDFLAGS* and
+	*PKG_CONFIG_PATH* are taken away.
 
 Sources are fetched once into _target/ports/_: with git by commit, and
 checked to be that commit; release archives from their *url* or, when
@@ -2475,10 +2476,11 @@ library for Radix (ADR 0080), used as *cargo* is: it builds for the
 links with *x86_64-radix-cc*, and gives the program the crates the
 rust-crates port patched for Radix in place of crates.io's, each one
 the workspace's Cargo.lock names (all of them when there is no
-Cargo.lock yet). It gives them through a link to them, _.radix-crates_,
-that it makes in the workspace's folder: Cargo names a crate inside the
-workspace by its path from there, so that the names of what it builds
-do not depend on where the checkout is (ADR 0535). Cargo warns of a
+Cargo.lock yet), and the libc crate the rust-std port patched. It gives
+them through a link to the toolchain's Rust folder they are in,
+_.radix-rust_, that it makes in the workspace's folder: Cargo names a
+crate inside the workspace by its path from there, so that the names of
+what it builds do not depend on where the checkout is (ADR 0535). Cargo warns of a
 patch it then finds no use for, such as one for another version of a
 crate the lock names. When *ob* builds
 the programs on Rust's standard library itself, it gives Cargo
@@ -2545,7 +2547,8 @@ fails the build.
 	Timestamp for files in the image, and, with the version and the kind
 	of image, what the identifiers of its disks and filesystems are made
 	from (ADR 0535). By default *ob* uses the time of the current Git
-	commit. Ports are built at a time of their own, whatever this says.
+	commit. Ports, and the programs on Rust's standard library, are built
+	at a time of their own, whatever this says.
 
 # FILES
 

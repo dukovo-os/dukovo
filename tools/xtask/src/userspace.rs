@@ -469,13 +469,19 @@ pub fn cargo(ctx: &Ctx, subcommand: &str) -> std::process::Command {
 /// rust-std port builds, with the crates the ports patch for Radix in
 /// place of crates.io's, linked by the Radix C compiler (ADR 0070). It
 /// points libsqlite3-sys at the sqlite port's library ([`sqlite_env`]),
-/// and runs rustc through `ob` ([`crate::rustc_wrapper`]).
+/// builds at the ports' time ([`ports::PORT_TIME`]), and runs rustc
+/// through `ob` ([`crate::rustc_wrapper`]).
 pub fn std_cargo(ctx: &Ctx, subcommand: &str, toolchain: &ports::Toolchain) -> Command {
     let mut cmd = Command::new(toolchain.cargo());
     cmd.current_dir(&ctx.root)
         .args([subcommand, "--manifest-path", STD_MANIFEST])
         .env("CARGO_TARGET_DIR", ctx.target.join("programs"))
-        .envs(sqlite_env(&ctx.out.join("sysroot")));
+        .envs(sqlite_env(&ctx.out.join("sysroot")))
+        // A crate that records a time takes this one instead of the
+        // clock's or a file's: rust-embed, which age builds its
+        // translations in with, records when each file was made, which is
+        // when Cargo unpacked the crate (ADR 0535).
+        .env("SOURCE_DATE_EPOCH", ports::PORT_TIME);
     // The crates the ports patch for Radix are path dependencies outside
     // this workspace, whose identity Cargo would take from where the
     // checkout is (ADR 0535).

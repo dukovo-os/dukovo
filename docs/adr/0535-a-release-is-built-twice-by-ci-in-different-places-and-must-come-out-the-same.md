@@ -112,16 +112,25 @@ when it is built in two places:
     chose stay, so Cargo finds what it built. A build script's output
     folder, `OUT_DIR`, is written as `/dukovo-out/<package>`. A wrapper
     already set, such as sccache, runs after it.
-  - Cargo for Radix gives the crates the ports patch through a link to
-    them, `.radix-crates`, that it makes in the workspace's folder.
-    Cargo names a path dependency inside the workspace by its path from
-    there and one outside by its whole path, and the name is in the file
-    names of all it builds, which the wrapper leaves as they are. rustc
-    takes a program's crates under ThinLTO in the order of the names of
-    their object files, which begin with those file names: the two
-    versions of `getrandom` and of `nix` that uutils use, and the patched
-    `libc` and that of Rust's standard library, came in another order in
-    a copy of the checkout elsewhere, and so did their code and data.
+  - Cargo for Radix gives the crates the ports patch, `libc` among them,
+    through a link to the toolchain's Rust folder they are in,
+    `.radix-rust`, that it makes in the workspace's folder. Cargo names a
+    path dependency inside the workspace by its path from there and one
+    outside by its whole path, and the name is in the file names of all
+    it builds and of all that depends on it, which the wrapper leaves as
+    they are. rustc takes a program's crates under ThinLTO in the order of
+    the names of their object files, which begin with those file names:
+    the two versions of `getrandom` and of `nix` that uutils use, and the
+    patched `libc` and that of Rust's standard library, came in another
+    order in a copy of the checkout elsewhere, and so did their code and
+    data, or their symbols alone, which the linker's build ID covers.
+  - The programs on Rust's standard library are built with
+    `SOURCE_DATE_EPOCH` at the ports' time: rust-embed, which `age`
+    builds its translations in with, records when each file was made
+    unless it is set, and that is when Cargo unpacked the crate.
+  - A port is built with `LANG` and `LC_ALL` as `C.UTF-8`: uutils'
+    `uucore` builds in the translations of `LANG`'s language beside
+    English.
   - `terminfo(5)` is edited after ncurses installs it, to give its
     source files as `../include/...`.
   - Each of these changes a stamp: the wrappers' text is part of what

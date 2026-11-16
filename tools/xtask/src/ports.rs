@@ -992,10 +992,10 @@ exec '{clang}' "$@"
     /// sysroot, with the crates the ports patch for Radix in place of
     /// crates.io's (those the workspace's Cargo.lock names, so Cargo has no
     /// unused patches to warn of; all of them before there is one), given
-    /// through a link to them, `.radix-crates`, in the workspace's folder,
-    /// and links with the toolchain's C compiler, which the cc crate builds C
-    /// with too. The pinned Rust toolchain builds, whatever a port's tree
-    /// pins.
+    /// through a link to the toolchain's Rust folder, `.radix-rust`, in the
+    /// workspace's folder, and links with the toolchain's C compiler, which
+    /// the cc crate builds C with too. The pinned Rust toolchain builds,
+    /// whatever a port's tree pins.
     fn cargo_script(&self, ctx: &Ctx) -> Result<String> {
         let pin = ctx.root.join("rust-toolchain.toml");
         let text =
@@ -1037,18 +1037,19 @@ while [ -z "$lock" ]; do
 	fi
 	dir=$(dirname "$dir")
 done
-# The patched crates are given through a link in the workspace's folder:
-# Cargo names a crate inside the workspace by its path from there, and
-# one outside by its whole path, which every name Cargo gives what it
-# builds would then hold (ADR 0535).
+# The patched crates, which are in the toolchain's Rust folder, are given
+# through a link to it in the workspace's folder: Cargo names a crate
+# inside the workspace by its path from there, and one outside by its
+# whole path, which every name Cargo gives what it builds would then hold
+# (ADR 0535).
 link=
 if [ -n "$lock" ]; then
-	link=${{lock%/*}}/.radix-crates
-	if [ "$(readlink "$link" 2>/dev/null)" != '{crates}' ]; then
+	link=${{lock%/*}}/.radix-rust
+	if [ "$(readlink "$link" 2>/dev/null)" != '{rust}' ]; then
 		if [ -e "$link" ] && [ ! -L "$link" ]; then
 			link=
 		else
-			ln -sfn '{crates}' "$link" 2>/dev/null || link=
+			ln -sfn '{rust}' "$link" 2>/dev/null || link=
 		fi
 	fi
 fi
@@ -1060,10 +1061,12 @@ for patch in '{patches}'/*.toml; do
 	if [ -n "$lock" ] && ! grep -qx "name = \"$name\"" "$lock"; then
 		continue
 	fi
-	if [ -n "$link" ] && [ -d "$link/$crate" ]; then
+	path=$(sed -n 's/^path = "\(.*\)"$/\1/p' "$patch")
+	rest=${{path#'{rust}'/}}
+	if [ -n "$link" ] && [ "$rest" != "$path" ] && [ -d "$link/$rest" ]; then
 		table=$name-$(printf '%s' "${{crate##*-}}" | tr . _)
 		set -- --config "patch.crates-io.$table.package=\"$name\"" \
-			--config "patch.crates-io.$table.path=\"$link/$crate\"" "$@"
+			--config "patch.crates-io.$table.path=\"$link/$rest\"" "$@"
 	else
 		set -- --config "$patch" "$@"
 	fi
@@ -1084,7 +1087,6 @@ export CARGO_FUTURE_INCOMPAT_REPORT_FREQUENCY=never
 exec cargo "$command" "$@"
 "#,
             patches = self.crate_patches().display(),
-            crates = self.rust().join("crates").display(),
             // The flags are separated by the unit separator, as Cargo reads
             // them from CARGO_ENCODED_RUSTFLAGS.
             remaps = crate::repro::rustc_flags(ctx)
@@ -1282,7 +1284,9 @@ const BUILD_TOOLS: [(&str, &str); 7] = [
 /// a `__DATE__` or a manual page's date, is then the same at every
 /// commit, so that a port cached by its stamp at one commit is the port
 /// another builds from the same recipe (ADR 0535). It is part of every
-/// port's stamp: changing it builds every port again.
+/// port's stamp: changing it builds every port again. The programs on
+/// Rust's standard library are built at it too
+/// ([`crate::userspace::std_cargo`]).
 pub const PORT_TIME: &str = "1767225600";
 
 /// What went into a port's build: its directory's files, the toolchain
@@ -1748,6 +1752,10 @@ fn build(ctx: &Ctx, toolchain: &Toolchain, port: &Port) -> Result<()> {
         .env("PKG_CONFIG_LIBDIR", sysroot.join("system/libraries/pkgconfig"))
         .env("PKG_CONFIG_SYSROOT_DIR", &sysroot)
         .env("SOURCE_DATE_EPOCH", PORT_TIME)
+        // The host's language must not reach a build either: uutils'
+        // uucore, for one, builds in the translations of LANG's.
+        .env("LANG", "C.UTF-8")
+        .env("LC_ALL", "C.UTF-8")
         // What a recipe that sets compiler flags itself, and does not use
         // the toolchain's wrappers, adds to them so that what it builds
         // does not record where it was built (ADR 0535): the flags for
