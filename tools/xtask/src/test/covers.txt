@@ -57,6 +57,13 @@ admin-backups userspace/programs/systools/src/subvolume/ userspace/programs/syst
 admin-backups userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/backup.toml
 admin-backups kernel/fs/btrfs/ kernel/fs/exfat/ ports/uutils-coreutils/ ports/netcat/
 admin-backups tools/xtask/src/test/console_client.rs tools/xtask/src/test/websocket_client.py
+admin-certificates userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-certificates userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-certificates userspace/programs/systools/src/cert.rs userspace/programs/systools/src/cert/ userspace/programs/systools/src/certd.rs
+admin-certificates userspace/programs/systools/src/hostnamectl.rs userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/resolvectl.rs
+admin-certificates userspace/programs/systools/src/servicefiles.rs userspace/programs/systools/src/admin_certificate.rs ports/openssl/ ports/netcat/
+admin-certificates userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/certd.toml
+admin-certificates userspace/spark/tests/services/admin-certificates/ tools/xtask/src/test/console_client.rs
 admin-journal userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_lab.rs userspace/programs/systools/src/admin_put_back.rs
 admin-journal userspace/programs/systools/src/admin_put_back/ userspace/programs/systools/src/admin_export.rs ports/git/
 admin-journal userspace/admin/ userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml
