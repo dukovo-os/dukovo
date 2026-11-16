@@ -41,12 +41,15 @@ table and say what the area is, in two to five capitals.
 | --- | --- | --- |
 | `ACC` | Accounts: user(8) and authd's accounts | 0.16.0 |
 | `ADM` | The web console, Dukovo Admin: its sign-in, second steps, unlock and requests | 0.16.0 |
+| `ALR` | Alerts: alertd's channels and push notices | 0.16.0 |
 | `BAK` | Snapshots and backups: snap(1), backup(8) and moving a machine | 0.16.0 |
 | `BOOT` | Starting the computer: the health check of each start | 0.15.0 |
+| `CRT` | Certificates: cert(8), certd(8) and the checks before an order | 0.16.0 |
 | `DSK` | Disks and storage: storage(8), the disks' health and their checks | 0.16.0 |
 | `FW` | Firmware sets and the firmware the kernel loads | 0.15.0 |
 | `HW` | Hardware: the checks of `hardware check` | 0.16.0 |
 | `MET` | The machine's history and its early warnings: a full disk, a missing one, memory, heat and certificates | 0.16.0 |
 | `NET` | Networking: the layers `netcheck` checks, the network settings and the firewall | 0.16.0 |
+| `RPT` | Problem reports: report(1) and reportd(8) | 0.16.0 |
 | `SEC` | Security and health checks: the findings of `dukovo-check` | 0.16.0 |
 | `UPD` | Updates of the system | 0.15.0 |

@@ -82,6 +82,13 @@ admin-security userspace/programs/systools/src/admind.rs userspace/programs/syst
 admin-security userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
 admin-security userspace/programs/systools/src/admin.rs userspace/programs/systools/src/admin_settings.rs userspace/programs/systools/src/admin_settings/
 admin-security userspace/programs/systools/src/ssh_server.rs userspace/programs/systools/src/ssh_server/ userspace/programs/systools/src/trial.rs
+admin-hardware userspace/programs/systools/src/admind.rs userspace/programs/systools/src/admind/ userspace/programs/systools/src/authd.rs
+admin-hardware userspace/programs/systools/src/authd/ userspace/programs/accounts/ userspace/admin/
+admin-hardware userspace/programs/systools/src/hardware.rs userspace/programs/systools/src/hardware/ userspace/programs/systools/src/hwinfo.rs
+admin-hardware userspace/programs/systools/src/lscpu.rs userspace/programs/systools/src/admin_about.rs userspace/programs/systools/src/dukofetch.rs
+admin-hardware userspace/programs/systools/src/sensors.rs userspace/programs/systools/src/nic.rs kernel/lib/smbios/ kernel/lib/sensors/
+admin-hardware userspace/defaults/admin.toml userspace/defaults/spark/services/admind.toml userspace/defaults/spark/services/authd.toml
+admin-hardware tools/xtask/src/test/console_client.rs ports/netcat/
 admin-security userspace/programs/systools/src/private_access.rs userspace/programs/systools/src/private_access/ userspace/programs/systools/src/wireguard.rs
 admin-security userspace/programs/systools/src/firewall.rs userspace/programs/systools/src/firewall/ userspace/programs/systools/src/check.rs
 admin-security userspace/programs/systools/src/check/ userspace/programs/spark-api/ userspace/spark/src/supervisor/ userspace/programs/sshd/

@@ -302,6 +302,9 @@ pub(crate) fn test_check(bytes: u64, threads: usize, found: Option<Wrong>, stopp
     )
 }
 
+/// How many checks [`run`] gives.
+pub(crate) const CHECKS: usize = 2;
+
 /// The checks of the memory area: the test of `bytes` of the free memory
 /// by `threads` threads, then the errors counted, which include any that
 /// the test caused.
@@ -314,7 +317,8 @@ pub(crate) fn run(bytes: u64, threads: usize, stop: &AtomicBool) -> Vec<Check> {
         }
         Err(why) => Check::skipped(Area::Memory, "memory test", why),
     };
-    vec![test, errors_check(read_errors(Path::new(EDAC)))]
+    let checks: [Check; CHECKS] = [test, errors_check(read_errors(Path::new(EDAC)))];
+    checks.into()
 }
 
 #[cfg(test)]

@@ -54,6 +54,7 @@ mod certificate;
 pub mod checks;
 mod console;
 mod firewall;
+mod hardware;
 #[cfg(any(test, feature = "lab"))]
 pub mod lab;
 pub mod logs;
@@ -1187,6 +1188,11 @@ registry![
     bisect::Begin,
     bisect::Stop,
     bisect::Confirm,
+    hardware::Show,
+    hardware::Inventory,
+    hardware::Last,
+    hardware::History,
+    hardware::Check,
 ];
 
 /// The actions the console offers: [`REGISTRY`], and in a lab build the

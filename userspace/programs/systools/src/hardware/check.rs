@@ -56,7 +56,7 @@ pub(crate) enum Outcome {
 impl Outcome {
     /// The word of a line: `FAILED` stands out as diskhealth's `FAILING`
     /// does.
-    fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Outcome::Passed => "passed",
             Outcome::Warning => "warning",
@@ -274,18 +274,45 @@ pub(crate) fn status(checks: &[Check], stopped: bool) -> i32 {
     }
 }
 
-/// How many checks ended each way: `11 passed, 1 warning, 0 FAILED, 2
-/// skipped`.
+/// How many checks ended each way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Counts {
+    pub(crate) passed: usize,
+    pub(crate) warnings: usize,
+    pub(crate) failed: usize,
+    pub(crate) skipped: usize,
+}
+
+impl Counts {
+    /// The counts of `checks`.
+    pub(crate) fn of(checks: &[Check]) -> Counts {
+        let count =
+            |outcome: Outcome| checks.iter().filter(|check| check.outcome == outcome).count();
+        Counts {
+            passed: count(Outcome::Passed),
+            warnings: count(Outcome::Warning),
+            failed: count(Outcome::Failed),
+            skipped: count(Outcome::Skipped),
+        }
+    }
+
+    /// The counts as a line says them: `11 passed, 1 warning, 0 FAILED, 2
+    /// skipped`.
+    pub(crate) fn text(&self) -> String {
+        format!(
+            "{} passed, {} {}, {} FAILED, {} skipped",
+            self.passed,
+            self.warnings,
+            if self.warnings == 1 { "warning" } else { "warnings" },
+            self.failed,
+            self.skipped
+        )
+    }
+}
+
+/// How many checks ended each way, as [`Counts::text`] says it.
 pub(crate) fn summary(checks: &[Check]) -> String {
-    let count = |outcome: Outcome| checks.iter().filter(|check| check.outcome == outcome).count();
-    let warnings = count(Outcome::Warning);
-    format!(
-        "{} passed, {warnings} {}, {} FAILED, {} skipped",
-        count(Outcome::Passed),
-        if warnings == 1 { "warning" } else { "warnings" },
-        count(Outcome::Failed),
-        count(Outcome::Skipped)
-    )
+    Counts::of(checks).text()
 }
 
 #[cfg(test)]
@@ -365,6 +392,18 @@ mod tests {
         ];
         assert_eq!(summary(&checks), "2 passed, 1 warning, 0 FAILED, 1 skipped");
         assert_eq!(summary(&[]), "0 passed, 0 warnings, 0 FAILED, 0 skipped");
+    }
+
+    #[test]
+    fn the_counts_say_one_warning_in_the_singular() {
+        let checks = [
+            Check::passed(Area::Cpu, "a", String::new()),
+            Check::warning(Area::Cpu, "c", Problem::CpuHot, String::new()),
+            Check::failed(Area::Cpu, "e", Problem::CpuWrongResult, String::new()),
+        ];
+        let counts = Counts::of(&checks);
+        assert_eq!(counts, Counts { passed: 1, warnings: 1, failed: 1, skipped: 0 });
+        assert_eq!(counts.text(), "1 passed, 1 warning, 1 FAILED, 0 skipped");
     }
 
     #[test]

@@ -22,6 +22,7 @@ admin-accounts 480
 admin-actions 370
 admin-backups 600
 admin-commands 320
+admin-hardware 420
 admin-journal 270
 admin-logs 330
 admin-move 540

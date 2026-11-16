@@ -1,0 +1,516 @@
+// SPDX-FileCopyrightText: 2026 The Dukovo contributors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+//! The Hardware of the web console, Dukovo Admin: what the machine is, the
+//! memory modules the firmware lists, the last check of the hardware and
+//! the checks that came before it, and a check as a task. alice, the
+//! owner, is an administrator; bob may use the console and is no
+//! administrator.
+//!
+//! What the machine is. `GET /api/1/hardware` is what `hardware show
+//! --json` prints in alice's pane, for bob and for alice: the same
+//! document, whose memory has no `ecc` and no `modules` since a person is
+//! not told what only the firmware's tables say, and which has no serial
+//! number or ID of the machine anywhere. `GET /api/1/hardware/inventory`
+//! is ADM-122 for bob and ADM-106 for alice while locked; unlocked, it is
+//! the same document with the memory's slots and modules filled in, from
+//! the tables of QEMU's SMBIOS, which add up to at least the memory the
+//! kernel counts.
+//!
+//! Before any check. `GET /api/1/hardware/check` is `null`, and so is what
+//! the command `hardware last --json` prints, which ends with status 3;
+//! the history, `GET /api/1/hardware/history` and `hardware history
+//! --json`, is the empty list.
+//!
+//! A check. `POST /api/1/hardware/check` for the sensors and the CPUs is
+//! ADM-122 for bob and ADM-106 for alice while locked, and for what cannot
+//! work (an area that is none, one named twice, a disk with an area that is
+//! not the disks) ADM-125 with its field, and none of these starts a
+//! check. Asked for, it is a task that ends, and its log has the `step N of
+//! M` lines of the checks, counted one by one up to M. Then bob reads the
+//! result the check kept, which is the file of a check made by root that
+//! everyone may read, the same as alice's pane prints with `hardware last
+//! --json`, and the history has the one line of the check, as `hardware
+//! history --json` prints it.
+//!
+//! What the pane's commands print reaches the host through nc, to a port on
+//! the host's loopback that QEMU's user network gives the guest at
+//! 10.0.2.2.
+
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+use super::super::console_client::{ALICE_PASSWORD, Browser, Console, Pane, Reply, elevated};
+use super::super::*;
+
+/// The password of bob, whom alice makes: he may use the console, and is
+/// no administrator.
+const BOB_PASSWORD: &str = "looking-glass";
+
+/// The areas the check of this test looks at: the ones that need no disk,
+/// and take about a minute, which the processors under load do.
+const AREAS: &str = "sensors cpu";
+
+/// The most seconds the check may take: its minute of load, the other
+/// checks and the time the machine needs to start it.
+const CHECK_SECONDS: u64 = 420;
+
+/// The test.
+pub const CASE: Case = Case {
+    name: "admin-hardware",
+    about: "The web console's Hardware: GET /api/1/hardware is what hardware show --json prints in alice's pane, for bob and for alice, with no memory modules and no serial number; hardware.inventory is ADM-122 for bob and ADM-106 for alice locked, and unlocked the same document with the memory's slots and modules from the tables of QEMU's SMBIOS; before any check hardware.last is null and hardware last --json prints null and ends with status 3, and hardware.history is the empty list; hardware.check is ADM-122 for bob and ADM-106 for alice locked, an area that is none, an area named twice and a disk with another area are ADM-125 with their fields, none of them starts a check, and for the sensors and the processors it is a task that ends with the step N of M lines of its checks in its log; bob then reads the result it kept, as hardware last --json prints it in alice's pane, and the history has its one line, as hardware history --json prints it",
+    firmware: Firmware::Uefi,
+    media: Media::Usb,
+    // As a normal boot: Spark starts the services, admind among them.
+    cmdline: "lockdep",
+    cpus: 2,
+    memory: "1G",
+    reboot: false,
+    image: TestImage::Plain,
+    cpu_model: None,
+    qemu: &["-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"],
+    script: admin_hardware,
+    disks: &[],
+    second: None,
+};
+
+/// Who asks the console.
+#[derive(Clone, Copy)]
+enum Who {
+    Alice,
+    Bob,
+}
+
+/// What the test keeps from one step to the next.
+struct Test {
+    console: Console,
+    pane: Pane,
+    alice: Browser,
+    bob: Browser,
+}
+
+impl Test {
+    /// Opens the console and the pane once the machine has its network and
+    /// admind answers.
+    fn open(vm: &mut Vm) -> Result<Test, String> {
+        vm.expect_anywhere("netd: net0 has 10.0.2.15/24")?;
+        vm.expect_anywhere("admind: answers at ")?;
+        Ok(Test {
+            console: Console::open(vm)?,
+            pane: Pane::open()?,
+            alice: Browser::default(),
+            bob: Browser::default(),
+        })
+    }
+
+    /// Signs alice and bob in, as the console's page does, each with a
+    /// session of its own, locked.
+    fn sign_in(&mut self) -> Result<(), String> {
+        self.alice = Browser::default();
+        self.console.sign_in(&mut self.alice, "alice", ALICE_PASSWORD)?;
+        self.console.read_session(&mut self.alice)?;
+        self.bob = Browser::default();
+        self.console.sign_in(&mut self.bob, "bob", BOB_PASSWORD)?;
+        self.console.read_session(&mut self.bob)?;
+        Ok(())
+    }
+
+    /// A read of `path` for `who`, whatever the answer.
+    fn get(&mut self, who: Who, path: &str) -> Result<Reply, String> {
+        let console = &self.console;
+        let browser = match who {
+            Who::Alice => &mut self.alice,
+            Who::Bob => &mut self.bob,
+        };
+        console.get(browser, path)
+    }
+
+    /// What `path` says to `who`, which must be 200.
+    fn read(&mut self, who: Who, path: &str) -> Result<Value, String> {
+        self.get(who, path)?.must(path, 200)?.json()
+    }
+
+    /// A change at `path` with `body`, for `who`, whatever the answer.
+    fn post(&mut self, who: Who, path: &str, body: &Value) -> Result<Reply, String> {
+        let console = &self.console;
+        let browser = match who {
+            Who::Alice => &mut self.alice,
+            Who::Bob => &mut self.bob,
+        };
+        console.post(browser, path, body)
+    }
+
+    /// Unlocks alice's session with her password, if it is locked.
+    fn unlocked(&mut self) -> Result<(), String> {
+        let session =
+            self.console.get(&mut self.alice, "/api/1/session")?.must("her session", 200)?;
+        if session.json()?["unlock_seconds"].as_u64().is_some_and(|left| left > 120) {
+            return Ok(());
+        }
+        let unlock = json!({"kind": "password", "password": ALICE_PASSWORD});
+        self.console.post(&mut self.alice, "/api/1/unlock", &unlock)?.must("her unlocking", 200)?;
+        Ok(())
+    }
+
+    /// Locks alice's session, as the page's Lock does.
+    fn locked(&mut self) -> Result<(), String> {
+        self.post(Who::Alice, "/api/1/lock", &json!({}))?.must("alice's lock", 200).map(drop)
+    }
+
+    /// A change that bob may not ask for, ADM-122, and alice may not while
+    /// her session is locked, ADM-106: she is locked first, and the caller
+    /// unlocks her again. `what` says which in the failure.
+    fn refused_for_both(&mut self, what: &str, path: &str, body: &Value) -> Result<(), String> {
+        self.locked()?;
+        self.post(Who::Bob, path, body)?.refused(
+            &format!("{what} asked by bob"),
+            403,
+            "ADM-122",
+        )?;
+        let locked = self.post(Who::Alice, path, body)?;
+        locked.refused(&format!("{what} asked by alice, locked"), 403, "ADM-106")?;
+        Ok(())
+    }
+
+    /// A read that runs as an administrator, which bob may not ask for,
+    /// ADM-122, and alice may not while her session is locked, ADM-106.
+    fn read_refused_for_both(&mut self, what: &str, path: &str) -> Result<(), String> {
+        self.locked()?;
+        self.get(Who::Bob, path)?.refused(&format!("{what} read by bob"), 403, "ADM-122")?;
+        let locked = self.get(Who::Alice, path)?;
+        locked.refused(&format!("{what} read by alice, locked"), 403, "ADM-106")?;
+        Ok(())
+    }
+
+    /// The task `id` once `ready` is true of it, within `seconds`.
+    fn task_where(
+        &mut self,
+        id: i64,
+        seconds: u64,
+        ready: impl Fn(&Value) -> bool,
+    ) -> Result<Value, String> {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            let task = self.read(Who::Alice, &format!("/api/1/tasks/{id}"))?;
+            if ready(&task) {
+                return Ok(task);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("task {id} is not as wanted after {seconds} s: {task}"));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    /// What `command`, which prints JSON, prints in the pane.
+    fn typed(&self, vm: &mut Vm, command: &str) -> Result<Value, String> {
+        let text = self.pane.output(vm, command)?;
+        serde_json::from_str(text.trim())
+            .map_err(|err| format!("{command} printed {text:?}: {err}"))
+    }
+}
+
+/// A number of `value`, or the failure that says `what` is none.
+fn number(value: &Value, what: &str) -> Result<u64, String> {
+    value.as_u64().ok_or_else(|| format!("{what} is {value}, not a number"))
+}
+
+/// Whether `value` has a member called, or containing, `needle` anywhere
+/// in it, in any case.
+fn has_member(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::Object(members) => members.iter().any(|(name, inside)| {
+            name.to_lowercase().contains(needle) || has_member(inside, needle)
+        }),
+        Value::Array(items) => items.iter().any(|item| has_member(item, needle)),
+        _ => false,
+    }
+}
+
+/// `report` without what only the firmware's tables say of the memory,
+/// which a person who may not read them is not told.
+fn without_the_tables(report: &Value) -> Value {
+    let mut report = report.clone();
+    for member in ["ecc", "slots", "modules"] {
+        report["memory"][member] = Value::Null;
+    }
+    report
+}
+
+/// The `step N of M: WORDS` lines of a task's log, as N, M and the words.
+fn step_lines<'a>(log: &[&'a str]) -> Vec<(u32, u32, &'a str)> {
+    log.iter()
+        .filter_map(|line| {
+            let (numbers, words) = line.strip_prefix("step ")?.split_once(": ")?;
+            let (step, steps) = numbers.split_once(" of ")?;
+            Some((step.parse().ok()?, steps.parse().ok()?, words))
+        })
+        .collect()
+}
+
+/// Makes bob, in group console and no administrator, once the owner alice
+/// is signed in at the console, and starts the console's sessions for
+/// alice and bob; alice's pane is elevated.
+fn people(vm: &mut Vm) -> Result<Test, String> {
+    let mut test = Test::open(vm)?;
+    elevated(vm)?;
+    answer_prompt(
+        vm,
+        "$",
+        &format!(
+            "clear; elevate sh -c 'echo {BOB_PASSWORD} | user add bob; user set --yes --console \
+             bob'"
+        ),
+    )?;
+    vm.expect("authd: changed the account bob")?;
+    vm.expect_screen(&["Made bob"])?;
+    test.sign_in()?;
+    Ok(test)
+}
+
+/// The test: the machine as shown, what is kept before any check, and a
+/// check.
+fn admin_hardware(vm: &mut Vm, case: &Case) -> Result<(), String> {
+    owner_signs_in(vm, case)?;
+    let mut test = people(vm)?;
+
+    what_the_machine_is(vm, &mut test)?;
+    nothing_kept_yet(vm, &mut test)?;
+    a_check(vm, &mut test)?;
+    // Step 4 goes here: hardware.sensors, which is the empty list with
+    // status 0 on QEMU, hardware.highest, and hardware.devices, with the
+    // virtio and QEMU's PCI functions and the network card's driver.
+    //
+    // Step 5 goes after it, and ends the test in place of the power button
+    // below: power.restart while the console trial runs, and the restart
+    // of the machine that follows.
+
+    vm.press_power_button()?;
+    vm.expect("spark: every service has stopped")?;
+    vm.expect("Power: `spark` asked to power off the machine; syncing the filesystems")?;
+    vm.expect_exit(QEMU_EXIT_POWER_OFF)
+}
+
+/// Step 1: `hardware.show` for bob and alice, which is what the pane
+/// prints, and `hardware.inventory`, which only an administrator reads.
+fn what_the_machine_is(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    let bob = test.read(Who::Bob, "/api/1/hardware")?;
+    let alice = test.read(Who::Alice, "/api/1/hardware")?;
+    if bob != alice {
+        return Err(format!("bob is shown {bob}, and alice {alice}"));
+    }
+    let typed = test.typed(vm, "hardware show --json")?;
+    if typed != bob {
+        return Err(format!("the pane has {typed}, and the route {bob}"));
+    }
+    if bob["format"] != json!(1) {
+        return Err(format!("hardware show has the format {}, not 1", bob["format"]));
+    }
+    for member in ["maker", "model", "processor", "memory", "firmware"] {
+        if bob[member].is_null() {
+            return Err(format!("hardware show has no {member}: {bob}"));
+        }
+    }
+    // The processors are the two the machine was given; the memory the
+    // kernel counts is no more than the 1 GiB it was given.
+    if bob["processor"]["threads"] != json!(2) {
+        return Err(format!("the machine has two CPUs, and hardware show {}", bob["processor"]));
+    }
+    let bytes = number(&bob["memory"]["bytes"], "the memory")?;
+    if bytes == 0 || bytes > 1 << 30 {
+        return Err(format!("the memory is {bytes} bytes, of the 1 GiB the machine was given"));
+    }
+    // What a person is not told, and what no one is.
+    if !bob["memory"]["ecc"].is_null() || !bob["memory"]["modules"].is_null() {
+        return Err(format!("a person is told what only the tables say: {}", bob["memory"]));
+    }
+    for needle in ["serial", "uuid"] {
+        if has_member(&bob, needle) {
+            return Err(format!("hardware show has a member with {needle} in its name: {bob}"));
+        }
+    }
+
+    // The same, as an administrator, with the modules.
+    test.read_refused_for_both("hardware.inventory", "/api/1/hardware/inventory")?;
+    test.unlocked()?;
+    let inventory = test.read(Who::Alice, "/api/1/hardware/inventory")?;
+    if without_the_tables(&inventory) != without_the_tables(&bob) {
+        return Err(format!("the inventory is {inventory}, and the show {bob}"));
+    }
+    let Some(modules) = inventory["memory"]["modules"].as_array() else {
+        return Err(format!(
+            "the inventory has no modules, so the command did not read the tables: {}",
+            inventory["memory"]
+        ));
+    };
+    if modules.is_empty() {
+        return Err(format!("the tables of QEMU's SMBIOS list no module: {}", inventory["memory"]));
+    }
+    let mut installed = 0;
+    for module in modules {
+        let slot = module["slot"].as_str().unwrap_or_default();
+        if slot.is_empty() || !module["kind"].is_string() {
+            return Err(format!("a module has no slot or no kind: {module}"));
+        }
+        installed += number(&module["bytes"], &format!("the size of the module {slot}"))?;
+    }
+    if installed < bytes {
+        return Err(format!("the modules are {installed} bytes, and the kernel counts {bytes}"));
+    }
+    let slots = number(&inventory["memory"]["slots"], "the slots")?;
+    if slots < modules.len() as u64 {
+        return Err(format!("{slots} slots hold {} modules", modules.len()));
+    }
+    Ok(())
+}
+
+/// Step 2: before any check, the last is `null` and the history is empty,
+/// as the routes say them and as the commands do.
+fn nothing_kept_yet(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    for who in [Who::Bob, Who::Alice] {
+        let last = test.get(who, "/api/1/hardware/check")?.must("the last check", 200)?;
+        if last.json()? != Value::Null {
+            return Err(format!("the last check, before any, is {}", last.body));
+        }
+        let history = test.read(who, "/api/1/hardware/history")?;
+        if history != json!([]) {
+            return Err(format!("the history, before any check, is {history}"));
+        }
+    }
+    let said = test.pane.output(vm, "hardware last --json")?;
+    if said.trim() != "null" {
+        return Err(format!("hardware last --json printed {said:?}, not null"));
+    }
+    let status = test.pane.status(vm, "hardware last --json")?;
+    if status != 3 {
+        return Err(format!("hardware last --json ended with status {status}, not 3"));
+    }
+    let history = test.typed(vm, "hardware history --json")?;
+    if history != json!([]) {
+        return Err(format!("hardware history --json printed {history}"));
+    }
+    Ok(())
+}
+
+/// Step 3: a check of the sensors and the processors, as a task, and what
+/// it kept.
+fn a_check(vm: &mut Vm, test: &mut Test) -> Result<(), String> {
+    let path = "/api/1/hardware/check";
+    let body = json!({"areas": AREAS});
+    test.refused_for_both("hardware.check", path, &body)?;
+    test.unlocked()?;
+    for (bad, field) in [
+        (json!({"areas": "gpu"}), "areas"),
+        (json!({"areas": "memory memory"}), "areas"),
+        (json!({"areas": "memory", "disk": "vda"}), "areas"),
+        (json!({"disk": "vda"}), "areas"),
+        (json!({"areas": "disks", "disk": "../x"}), "disk"),
+    ] {
+        let refused = test.post(Who::Alice, path, &bad)?;
+        let refused = refused.refused(&format!("the check {bad}"), 400, "ADM-125")?;
+        if refused.json()?["error"]["field"] != json!(field) {
+            return Err(format!("the refusal of {bad} does not name the field {field}"));
+        }
+    }
+
+    let reply = test.post(Who::Alice, path, &body)?;
+    let id =
+        reply.must("the check", 202)?.json()?["task"].as_i64().ok_or("the check has no task")?;
+    let task = test.task_where(id, CHECK_SECONDS, |task| {
+        task["state"] != "running" && task["state"] != "waiting"
+    })?;
+    let words = ["hardware", "check", "--json", "--progress", "sensors", "cpu"];
+    if task["action"] != "hardware.check" || task["argv"] != json!(words) {
+        return Err(format!("the check task is {task}"));
+    }
+    // A check that finds nothing ends with 0 and is done. One that finds a
+    // warning or a failure ends with 2 or 1, which the task is failed for.
+    let status = task["status"].as_i64().unwrap_or(-1);
+    match (task["state"].as_str(), status) {
+        (Some("done"), 0) | (Some("failed"), 1 | 2) => {}
+        _ => return Err(format!("the check task ended as {task}")),
+    }
+
+    // The log has a line for each check, in order, each of the two areas.
+    let log: Vec<&str> =
+        task["log"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let steps = step_lines(&log);
+    let Some(&(_, total, _)) = steps.last() else {
+        return Err(format!("the check's log has no step N of M line: {log:?}"));
+    };
+    for (at, (step, of, words)) in steps.iter().enumerate() {
+        let area = words.split(' ').next().unwrap_or_default();
+        if *step != at as u32 + 1 || *of != total || !AREAS.split(' ').any(|wanted| wanted == area)
+        {
+            return Err(format!("step {step} of {of}: {words} is not the {}th of {total}", at + 1));
+        }
+    }
+    if steps.len() as u32 != total {
+        return Err(format!("the log has {} steps, and the last says of {total}", steps.len()));
+    }
+
+    // What it kept, for bob and for alice, and what the pane prints.
+    let last = test.read(Who::Bob, path)?;
+    if test.read(Who::Alice, path)? != last {
+        return Err("alice and bob are shown different checks".into());
+    }
+    let typed = test.typed(vm, "hardware last --json")?;
+    if typed != last {
+        return Err(format!("the pane has {typed}, and the route {last}"));
+    }
+    let ended = test.pane.status(vm, "hardware last --json")?;
+    if last["status"] != json!(status) || i64::from(ended) != status {
+        let kept = &last["status"];
+        return Err(format!("the check ended with {status}, kept {kept} and said {ended}"));
+    }
+    if last["full"] != json!(false) || number(&last["time"], "the time of the check")? == 0 {
+        return Err(format!("the kept check is {last}"));
+    }
+    let checks = last["checks"].as_array().ok_or("the kept check has no checks")?;
+    if checks.len() as u32 != total {
+        return Err(format!("the kept check has {} checks, and the log {total}", checks.len()));
+    }
+    let mut counts = [0u64; 4];
+    for check in checks {
+        let area = check["area"].as_str().unwrap_or_default();
+        let at = ["passed", "warning", "failed", "skipped"]
+            .iter()
+            .position(|result| check["result"] == *result)
+            .ok_or_else(|| format!("a check has the result {}: {check}", check["result"]))?;
+        counts[at] += 1;
+        if !AREAS.split(' ').any(|wanted| wanted == area) || !check["check"].is_string() {
+            return Err(format!("the kept check has a check that was not asked for: {check}"));
+        }
+    }
+    for area in AREAS.split(' ') {
+        if !checks.iter().any(|check| check["area"] == area) {
+            return Err(format!("the kept check has nothing of the area {area}: {last}"));
+        }
+    }
+
+    // The history has the one line of it, which says the same.
+    let history = test.read(Who::Bob, "/api/1/hardware/history")?;
+    let typed = test.typed(vm, "hardware history --json")?;
+    if typed != history {
+        return Err(format!("the pane has {typed}, and the route {history}"));
+    }
+    let [line] = &history.as_array().ok_or("the history is no list")?[..] else {
+        return Err(format!("the history is {history}, not the one line of the check"));
+    };
+    let counted = json!({
+        "passed": counts[0], "warnings": counts[1], "failed": counts[2], "skipped": counts[3]
+    });
+    let said = json!({
+        "passed": line["passed"], "warnings": line["warnings"], "failed": line["failed"],
+        "skipped": line["skipped"]
+    });
+    if said != counted || line["status"] != json!(status) || line["full"] != json!(false) {
+        return Err(format!("the history's line is {line}, and the check kept {last}"));
+    }
+    if line["at_ms"] != json!(number(&last["time"], "the time")? * 1000) || !line["ids"].is_array()
+    {
+        return Err(format!("the history's line is {line}, and the check kept {last}"));
+    }
+    Ok(())
+}
