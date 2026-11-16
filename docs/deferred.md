@@ -59,7 +59,6 @@ machine with AMT, an AMD machine and a laptop; see
 
 | Item | Why it waits | Waits on |
 | --- | --- | --- |
-| Lab harness parts 9c and 10: the screen, keyboard and mouse through AMT's remote screen, and the suite's first run on the Intel lab machine | Parts 9a and 9b brought power, the serial console and a fresh disk for each test (ADR 0429); these come next | Intel lab machine |
 | The installer's tests on a real lab machine: booting it from the install stick or DVD | The `amt` driver boots only the lab image, written to the disk by the net-booted writer (ADR 0429); a stick a person plugs in still needs the machine told to boot from it | Lab harness |
 | The security range's attacker on a real lab machine | The attacker runs on a private QEMU network; a real machine needs a second network of its own for it | Lab harness |
 | The power button and a graceful off on a real lab machine (`power = "button"` and `"off"`) | AMT asks the system to shut down only when an agent in the system answers AMT, which Dukovo has none of | A decision by the maintainers |
@@ -71,10 +70,11 @@ machine with AMT, an AMD machine and a laptop; see
 | Tests that need two disks besides the stick, such as installing the mirror layout (`install/mirror-needs-two`, ADR 0315) | The lab gives a test one disk | Lab harness |
 | A lab test of a PostgreSQL standby: streaming replication between two machines (`libpqwalreceiver` is built and `pg_basebackup` is in the bundle, ADRs 0521, 0522) | The lab gives a test one machine, and a standby needs a second server | Lab harness |
 | A lab image without the lab account, to test the first boot's "no account yet" page (ADR 0401) | The lab image always has its account | Lab harness |
-| `ob lab` checks that a machine is free before a run; a Stop for one test | Left out of the harness's first parts | Lab harness |
+| A Stop for one test, which skips the test that is running and goes on with the run (`dukovo-lab stop` ends a whole run, and a run refuses a machine another run holds) | Left out of the harness's first parts | Lab harness |
 | A lab test of a keyring entry set and read back | Needs a console sign-in with a password, which tests cannot type yet | Lab harness |
 | A lab test of `whois` | Needs a reachable whois server | Lab harness |
 | Receive-side scaling, checksum and segmentation offloads for the server cards and virtio-net; GSO and multi-queue tunnels (ADR 0339) | Measured against Linux on 10 GbE, and the lab's network is 1 GbE; moved out of Phase 16 so it does not hold 1.0.0-alpha.1 | 10 GbE in the lab: two Intel X520, X540 or X550 cards and a cable |
+| Intel's I217, I218 and I219s of Cannon Lake and later, and Realtek's RTL8127, on real chips (ADRs 0580, 0581) | No lab machine has one and QEMU emulates none; the unit tests check FreeBSD's and OpenBSD's sequences | A machine or card with one |
 | `services/log-forward` on the Mint lab PC, where it skips: AppArmor's profile for rsyslogd lets it read no configuration outside /etc; a local rule in `/etc/apparmor.d/local/usr.sbin.rsyslogd` allowing `/run/user/*/dukovo-lab/** rw,` lets it run | AppArmor's rules are the lab PC owner's to change, never a test's | A local AppArmor rule on the lab PC |
 
 ### Installer, boot and cloud (Phase 14)
@@ -134,13 +134,13 @@ machine with AMT, an AMD machine and a laptop; see
 | Each slot's release list kept beside it, so that `sysupdate check` reads none of the slot's files (ADR 0466) | A check reads the running slot's files whose size matches a wanted one, as a stage does | A need |
 | The three cloud canaries (ADRs 0456, 0533) | The reference machine and the lab machines are the canaries: each reports every hour, and one that fails or goes quiet holds the waves | Buying the cloud machines, before 1.0.0-alpha.1 |
 | `system-release pull` signing with the hardware keys (ADRs 0457, 0469) | It signs with the release keys' files, as `add` and `channel` do | The key ceremony |
-| Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, Phase 17) |
+| Firmware that drivers load for their cards, in firmware sets, with a per-device check that the driver loaded it (ADR 0468) | Sets hold CPU microcode only; no driver Dukovo has loads firmware yet | A port: the first driver that needs firmware (Wi-Fi, release 1.6) |
 | AMD CPU microcode in firmware sets (ADRs 0014, 0468) | The kernel's loader is Intel's; AMD's patches have their own format and loader | A need |
 | Disks other than the root's in the health check's device record (ADR 0468) | Data disks, USB disks and discs come and go with their owner, so a missing one says nothing of the update | A need |
 | A summary of the last starts on the EFI system partition, for a root Rescue cannot mount (ADRs 0500, 0501) | Rescue reads the root's records, and says how many starts the boot menu counted as not seen through | A need |
 | A boot test that starts Repair startup from the install stick's menu entry, on the hotkey R, and one of a repair that finds the partition readable, with only GRUB or its menu gone (ADR 0503) | The `repair-startup` boot test runs the repair from the live system's shell, on a partition whose FAT is overwritten with zeros, and restarts from the stick in place; the entry and the readable case have unit tests, and the lab test waits too (Lab machines and harness) | When the boot tests gain a third boot |
 | How far a start got before Spark, in the kernel or mounting the root, written as it is reached (ADR 0503) | Spark marks the starts that reached their services; Rescue tells the rest from the boot menu's count | A need, with the starts' summary on the EFI system partition |
-| Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, after 1.0 |
+| Rescue, Repair startup and the memory test unlocking an encrypted root with its recovery key or passphrase (ADR 0501) | No root is encrypted yet | Disk encryption, release 1.2 |
 | Unattended updates limited to security fixes, and the security advisories each update fixes, shown by `update` (ADR 0502) | Unattended updates take every release, through the waves; the release notes name fixes | The channel listing advisories per release, 16b |
 | Pinning the system so that no newer version is taken (ADR 0502) | `update hold` skips one version and `update later` puts a reminder off | A need |
 | SFTP in Rescue, to copy files off over the network (ADR 0540) | Rescue's menu copies the users' and shared files to another disk, and its shell is there over SSH; the only session over SSH is the menu, so that no program that faces the network reads the root's files, and sshd refuses SFTP, commands and forwarding there | A need, after the outside security review of SSH into Rescue (16e) |
@@ -186,7 +186,7 @@ machine with AMT, an AMD machine and a laptop; see
 | The update server publishing the troubleshoot signatures as the target `troubleshoot/signatures.toml`, an update file carrying them, and the `update-online` boot test checking that a served set is kept (ADR 0474) | The machine's side is done: the daily check and a stage from an update file or a repository read the target, keep it when its version is newer and refuse a file that does not parse; the repository's `publish_with` writes one, but `updates::publish` and the update server's scripts do not yet, so no server has one to offer | Phase 16, with the update server on Dukovo (16e) |
 | The Ubuntu update server's files (`tools/update-server/setup.sh`, its systemd units and Caddy's settings) removed (ADR 0542) | They stay beside `tools/update-server/dukovo/` until the move to Dukovo is done, so that going back is the DNS record alone | After the move, `docs/runbooks/update-server-move.md` |
 | Accounts for services that no bundle installs, such as the update server's jobs (ADR 0542) | The jobs run as root without its right to pass owners and modes, each in a view of the folders its file names; the incoming folders are the deploying login's | Phase 17 |
-| The `server` preset's web console reachable from private networks, and SSH with keys only once a key is added | The preset sets authd's jobs, `tune`, unattended updates at 03:30 and `dukovo-check`; the console's reach comes with its pages | Phase 16, with the console's `console.reach` |
+| The `server` preset's web console reachable from private networks, and SSH with keys only once a key is added | The preset sets authd's jobs, `tune`, unattended updates at 03:30 and `dukovo-check`; the console's reach comes with its pages (C3) | Ready to do: `console.reach` arrived with the Security page (ADR 0562) |
 | The facts of troubleshoot's planted faults saved from machines that really had each fault (ADR 0474) | Each shipped signature is proved by facts written by hand to match what the kernel, Spark and the health check say; a fault made on a machine and saved with `troubleshoot --save-facts` would also prove that what they say is what the signature reads | Real hardware, for the firmware and disk faults; a boot test that makes the others |
 | Rescue naming the cause of a root that does not mount from more than its own line (BOOT-105, ADR 0474) | The starts' records and logs are on the root, which Rescue cannot read then; a short summary of the last starts kept on the EFI system partition would give it more to match | A decision by the maintainers |
 | troubleshoot of an older start matching on which services had failed and how full the disks were (ADR 0474) | Spark's states and the filesystems' fullness are read as they are now, so only the newest start has them; an older start matches by its record, what changed and its log | A need: a record of each start's failed services and fullness |
@@ -219,8 +219,8 @@ machine with AMT, an AMD machine and a laptop; see
 | A look at keys typed while nukesh waits for a cursor answer after a resize (the boot test admin-terminal, the lab test web-console/terminal) | After a resize, nukesh's line editor draws its prompt again, asks where the cursor is and waits up to 2 s for the answer; a line typed in that wait did not reach the shell, from a test client that had not answered and, once, from the Terminal page in Chromium, which answers at once. The boot test reads for 5 s before it types, and the lab test waits until the screen has not changed for 2 s. A pane resized again within that wait may also have its prompt drawn over the lines above it, its last output among them: the lab test lost a line so when it chose a layout less than a second after the one before, and now waits until no pane's screen has changed for 2 s after each | A need: a person who loses keys or output after splitting a pane, changing the layout or resizing the window |
 | WebAuthn attestation checking (ADR 0514) | authd takes any passkey of a kind it checks, ES256, EdDSA or RS256, and does not check who made the key, so it cannot limit passkeys to certain makes | A need, for an organisation that allows only certain keys |
 | Modules of the `dukovo.system` Ansible collection for the actions that have none: `certificate.renew`, `console.reach` and `console.certificate` (ADRs 0515, 0545, 0567) | Show's task for the services' changes is the collection's `dukovo.system.service`, which reports "changed" only when it changed something; the task for these is `ansible.builtin.command`, which cannot tell a change from no change, so it reports "changed" on its second run too, and the lab test web-console/ansible says so | A need: a playbook that renews a certificate, sets the console's reach or sets the certificate the console serves and must report no change when there is none |
-| The web console's lab tests run on QEMU in CI for every PR (ADR 0510) | CI runs no lab tests yet; they run on QEMU before each pull request | A job in CI that starts QEMU and runs the lab's web console tests |
-| Screenshots of the real web console for dukovo.org, saved by the lab's web-console category at each release: the duke-nas demo data, dark and light, of the boards the site shows (Overview, Services with Show commands, Reliability, Firewall, the phone views and Move to new hardware); then a clickable demo mode of the console (ADR 0510) | The site shows drawn pictures of the console's boards | The lab's run for the next release, for the screenshots; 1.0.0-alpha.1 for the demo mode |
+| The web console's lab tests run on QEMU in CI for every PR (ADR 0510) | CI runs no lab tests yet; they run on QEMU before each PR that changes the console | A CI job that runs lab tests on QEMU |
+| Screenshots of the real web console for dukovo.org, saved by the lab's web-console category at each release: the duke-nas demo data, dark and light, of the boards the site shows (Overview, Services with Show commands, Reliability, Firewall, the phone views and Move to new hardware); then a clickable demo mode of the console (ADR 0510) | The site shows drawn pictures of the console's boards | The console's pages (C3 to C6) for the screenshots; 1.0.0-alpha.1 for the demo mode |
 | Changing a service's file, limits or timer from the Services page (ADR 0518) | No command sets one key of a service file; `service try NAME` opens an editor, so the page shows the limits, the file's path and the command to change them | A `service NAME set KEY VALUE` command, after the console's last page PR |
 | Keeping or undoing a `service try` trial from the Services page (ADR 0518) | The page shows the trial and the commands that keep or undo it, since it cannot begin one (the row above) | The row above |
 | A per-person view of the Services page | Spark runs no services for a person, only the system's | A need |
@@ -274,17 +274,17 @@ These come from finished work; the releases themselves are in the
 | The Precision Touchpad's reports (fingers, scrolling, gestures), touchpad sleep and wake (ADR 0235) | The desktop reads them | Release 1.1 |
 | The lid lock, brightness keys and sleep; the sleep button; wake events (ADRs 0142, 0201) | Power management with the desktop | Release 1.1 |
 | Mouse selection in the consoles, and fonts beyond Spleen's (ADR 0100) | Console polish | Release 1.1 or a need |
-| Console layouts whose letters are not Latin, with a second group (ADR 0149) | Needs group switching in the consoles | Release 1.1 or a need |
-| A sound server that mixes, as the one player (ADR 0320) | The desktop's sound | Release 1.1 |
-| Version 2 of the bundle manifest: `entries`, `actions` and `display` (ADR 0221) | Desktop integration | Releases 1.1 and 1.5 |
-| The Trash for deleted bundle data; installing by dropping a file into `~/applications` (ADR 0223) | Desktop features | Release 1.1 |
-| Optional permissions asked through the desktop's portals (ADR 0224) | Portals | Release 1.5 |
+| Console layouts whose letters are not Latin, with a second group (ADR 0149) | Needs group switching in the consoles | Release 1.20 (languages) or a need |
+| A sound server that mixes, as the one player (ADR 0320) | Full audio | Release 1.7 |
+| Version 2 of the bundle manifest: `entries`, `actions` and `display` (ADR 0221) | Desktop integration | Releases 1.3 and 1.4 |
+| The Trash for deleted bundle data; installing by dropping a file into `~/applications` (ADR 0223) | The file manager | Release 1.4 |
+| Optional permissions asked through the desktop's portals (ADR 0224) | Portals | Release 1.4 |
 | Secrets sealed by the TPM (ADR 0217) | TPM support | Release 1.2 |
-| Password reset with the recovery key once disks are encrypted (ADR 0253) | Disk encryption | Release 1.4 |
-| Bundle signing keys with passwords (ADR 0222) | Key store | Release 1.6 |
-| zellij | Needs Wasmtime | Release 1.5 |
+| Password reset with the recovery key once disks are encrypted (ADR 0253) | Disk encryption | Release 1.2 |
+| Bundle signing keys with passwords (ADR 0222) | Key store | Release 1.2 |
+| zellij | Needs Wasmtime | Release 1.10 |
 | Ogg Opus and Vorbis for music CDs (ADR 0447) | Needs the media service's libopus port | The media service |
-| Crash dumps of all the kernel's memory, which a post-mortem tool reads with the kernel's symbols (ADR 0483) | The text dump holds the state a person reads without a tool; a dump of memory is as large as the RAM and needs somewhere to be written from the panic path | Release 1.13 |
+| Crash dumps of all the kernel's memory, which a post-mortem tool reads with the kernel's symbols (ADR 0483) | The text dump holds the state a person reads without a tool; a dump of memory is as large as the RAM and needs somewhere to be written from the panic path | Release 1.15 |
 
 ## Waiting on a port, an upstream or a description
 
@@ -301,11 +301,11 @@ These come from finished work; the releases themselves are in the
 | `crypt(3)`, for nginx's `auth_basic` with `$5$` and `$6$` hashes (ADR 0491) | The C library has none; nginx's own schemes, `$apr1$` among them, work | A port that needs it, or upstream |
 | jemalloc for Valkey, with its active defragmentation: Valkey uses the C library's allocator (ADR 0492) | jemalloc has no port for Radix | A jemalloc port |
 | Valkey's own test suite (`runtest --host`) run against the machine from the lab PC; the lab test `services/valkey` stores and reads back keys with a client of its own meanwhile (ADR 0492) | Needs Tcl and Valkey's tests at the bundle's version on the lab PC; many of them need the `DEBUG` command, which Valkey keeps off unless its settings turn it on | A lab step that fetches them |
-| Python's modules that need a library Dukovo has no port of: `ctypes` (libffi), `dbm.gnu` and `dbm.ndbm` (GDBM, Berkeley DB), `readline` (GNU Readline or libedit), `uuid`'s C part (libuuid), `tkinter` and IDLE (Tk) (ADR 0495) | Each module is built into `python3` when its library is | A port of each library |
+| Python's modules that need a library Dukovo has no port of: `ctypes` (libffi), `dbm.gnu` and `dbm.ndbm` (GDBM, Berkeley DB), `readline` (GNU Readline or libedit; libedit is now ported, so this one waits only on Python's build), `uuid`'s C part (libuuid), `tkinter` and IDLE (Tk) (ADR 0495) | Each module is built into `python3` when its library is | A port of each library |
 | Python packages with code in C, from PyPI (ADR 0495) | Radix loads no library at run time; Python's own modules in C are built in | Loading libraries, or a bundle that builds a package in |
 | The kernel's gaps CPython's suite finds (ADR 0495, `lab/tests/services/python-skips.txt`): `mmap(2)` of tmpfs files; multiprocessing's three suites, which needed Unix-domain sockets passed with `SCM_RIGHTS` (ADR 0525 gives them) and wait for a run of them that passes; RFC 3542 IPv6 ancillary data, and urgent data sent with `MSG_OOB` (ftplib's `abort()`), which smoltcp does not carry (ADR 0496); `scandir` results | Found by the suite, not by a program that needs them yet | Kernel work, each removing its lines from the skip list |
 | PHP's extensions that need a library Dukovo has no port of: `gd` (libgd, with libpng, libjpeg-turbo, libwebp and FreeType), `intl` (ICU, which PostgreSQL's ICU collations need too, ADR 0521), `zip` (libzip), `sodium` (libsodium), `gmp` (GMP), `iconv` (the C library has no `iconv(3)`) and mbstring's regular expressions, `mb_ereg` (Oniguruma) (ADR 0499) | Each is built into `php` when its library is | A port of each library, and `iconv(3)` in the C library |
-| PHP's `sqlite3` and `pdo_sqlite` (ADR 0499) | They need SQLite | A port of SQLite |
+| PHP's `sqlite3` and `pdo_sqlite` (ADR 0499) | They needed SQLite, which is now ported (ADR 0511); PHP's build does not turn them on yet | Ready to do: PHP's build |
 | PHP's JIT, for PCRE and for opcache (ADR 0499) | Both want memory that is writable and executable at once, which a program's pages never are on Radix; nginx's PCRE2 is built without JIT as well (ADR 0491) | A decision to allow such mappings, or a JIT that does without |
 | PHP's `dl()`, and extensions from PECL (ADR 0499) | `php` is a static program that loads no library at run time | Loading libraries, or building PHP with `-dynamic` (ADR 0071) for a catalog that needs extensions of its own |
 | PHP's `dns_get_record`, `dns_check_record` (`checkdnsrr`) and `dns_get_mx` (`getmxrr`) (ADR 0499) | They need `res_search(3)`, which the C library lacks | `res_search(3)` in the C library, or a resolver of PHP's own |
@@ -313,7 +313,7 @@ These come from finished work; the releases themselves are in the
 | PHP-FPM's slow log, `request_slowlog_timeout` (ADR 0520) | It reads a worker's stack with `ptrace` or `/proc/PID/mem`, which Radix does not offer | `ptrace` or `/proc/PID/mem` |
 | Installing a service bundle's commands for one person, without its services: PHP's `php` and PostgreSQL's `psql` (ADR 0385, ADR 0520, ADR 0522) | A bundle with services installs only for everyone, so a person who is not an administrator cannot have PHP's command line or `psql` for themselves | A decision by the maintainers on how a bundle offers its commands alone |
 | PHP-FPM pools that run as different accounts (ADR 0520) | PHP-FPM must start as root to give a pool another account, and a bundle's service never runs as root (ADR 0385); every pool runs as `php` | A decision to let a service start as root and drop to accounts of its own |
-| PostgreSQL's PL/Perl, PL/Python and PL/Tcl (ADR 0521) | There is no Perl or Tcl port, and Python's is static and has no `libpython` to embed | Ports of Perl and Tcl, and a Python that can be embedded |
+| PostgreSQL's PL/Perl, PL/Python and PL/Tcl (ADR 0521) | There is no Perl port, Python's is static and has no `libpython` to embed, and Tcl is ported but PostgreSQL is built `--without-tcl` | A Perl port, a Python that can be embedded, and PostgreSQL's build for PL/Tcl |
 | PostgreSQL's JIT compilation of queries, which uses LLVM (ADR 0521) | There is no port of LLVM's libraries | An LLVM port |
 | PostgreSQL's contrib modules `uuid-ossp` (libuuid), `xml2` (libxslt) and `sepgsql` (SELinux) (ADR 0521) | Each is built into the bundle when its library is; Dukovo has no SELinux | Ports of libuuid and libxslt |
 | PostgreSQL's `io_method = io_uring` (ADR 0521) | Radix has rings of its own, not Linux's `io_uring`; PostgreSQL reads asynchronously through its worker processes meanwhile | A decision to offer Linux's `io_uring`, or a PostgreSQL that uses Radix's rings |
@@ -322,6 +322,7 @@ These come from finished work; the releases themselves are in the
 | What PostgreSQL's build works around (ADR 0521, `ports/postgresql/build.sh`): the processes' titles in `ps`, such as `postgres: checkpointer`, which Radix has no way to set; `sync_file_range(2)`, without which the `*_flush_after` settings are 0; and `backtrace(3)`, which looks for a `libgcc_s` that a bundle does not have, so backtraces are off | Found by the build, not by a program that needs them yet | Kernel and C library work, each removing its workaround |
 | A cap on the memory a user's pipes hold (Linux's `pipe-user-pages-soft`) (ADR 0497) | Pipe buffers are kernel memory, not yet charged to a resource domain | Charging kernel memory to resource domains |
 | The RTS5260 card reader; UHS-I, MultiMediaCards and Memory Sticks on Realtek readers (ADR 0448) | Only GPL drivers describe them | Realtek's documentation or a BSD driver |
+| The RTL8127ATF, the RTL8127 with an SFP+ cage (ADR 0581) | rge(4) refuses it: OpenBSD's driver sets up no SerDes for the cage, and Linux's setup is under the GPL | A BSD-licensed description of its SerDes setup |
 | AML fixes reach Dukovo when uACPI is vendored again (ADR 0200) | `aml=off` works around a firmware table uACPI cannot run until then | Upstream |
 | eSpeak NG is pinned to a commit of master after 1.52.0 (`ports/espeak-ng`, version `1.53.0~git20261108`); the pin moves to the 1.53.0 release | No release holds the fixes of nine memory-safety flaws that OSS-Fuzz's records name, and `ob ports outdated` does not watch a port pinned to a commit alone, so the move is done when the release is tagged | The 1.53.0 release |
 
@@ -398,7 +399,8 @@ machine asks for them.
 | ENA's low-latency queues; gVNIC's DQO queue format; SFP+ modules; fiber and SerDes gigabit cards | ADR 0197 |
 | Legacy INTx interrupts through `_PRT`, for cards and SD controllers without MSI | ADRs 0197, 0198, 0437 |
 | MSI-X with several queues in driver programs | ADR 0198 |
-| Intel PCH Ethernet: Energy Efficient Ethernet, wake on LAN, jumbo frames, I217, I218, newer I219s, 82577 and 82578 | ADR 0361 |
+| Intel PCH Ethernet: Energy Efficient Ethernet, wake on LAN, jumbo frames, 82577 and 82578 | ADRs 0361, 0580 |
+| K1 kept off on the two Meteor Lake laptops Linux lists for it (Dell Pro 16 Plus PB16250, ThinkPad P14s Gen 5): the list goes by the machine's DMI names, which the driver does not see | ADR 0580 |
 | Promiscuous mode for packet capture | ADR 0346 |
 | Firewall rules for outbound traffic and rate limits | ADR 0334 |
 | `netcheck` saying that a firewall rule stops this machine's own DNS, HTTPS or time (NET-151): the firewall filters only what other machines start, so no rule can until it has outbound rules | ADR 0334, ADR 0489 |
@@ -538,7 +540,7 @@ finding or removed.
 | Item | Why |
 | --- | --- |
 | Support center pages built from the settings schemas (each field with the release it arrived in and its stability) and stability labels on the pages ridlc writes from `abi/*.ridl` (ADR 0419) | `ob docs site` renders the docs in the tree first; these generators follow it |
-| Error pages in `docs/errors/`, one per error ID such as `UPD-103` (ADR 0420) | No program gives its errors IDs yet; the first area to do so adds its row to `docs/errors/README.md` and a page for each ID |
 | A scheduled check of the support center's links to other sites (ADR 0420) | Pull requests check only the links between the site's own pages; outside links need a job of their own |
 | The *Known limits* sections of `docs/design/posix.md` and `docs/design/storage.md`, and radix-posix(7) | They still describe Phases 7 to 9: no network sockets, no users, no hot plug, no exFAT, no Btrfs quotas, locales "until Phase 12" |
 | The roadmap's catalog ports paragraph says Go comes with release 1.1 | Go is Phase 17 |
+| The roadmap's Phase 16 status paragraph | It lists the work up to the web console's sign-in (ADR 0514); the console's pages, PostgreSQL, PHP, nginx, Valkey, certificates, the update server on Dukovo, Ansible and problem reports have merged since |

@@ -305,6 +305,17 @@ static void characters(void) {
 	CHECK(MB_CUR_MAX == 1);
 	CHECK(setlocale(LC_ALL, "C.utf8") != NULL && MB_CUR_MAX == 4);
 	setlocale(LC_ALL, "C");
+	// A category that is not one of Linux's is refused, and the locale
+	// stays as it was.
+	char kept[64];
+	snprintf(kept, sizeof(kept), "%s", setlocale(LC_ALL, NULL));
+	static const int not_categories[] = {12345, -1, LC_IDENTIFICATION + 1};
+	for(size_t i = 0; i < sizeof(not_categories) / sizeof(not_categories[0]); i++) {
+		errno = 0;
+		char *refused = setlocale(not_categories[i], i == 1 ? "C" : NULL);
+		CHECK(refused == NULL && errno == EINVAL);
+	}
+	CHECK(!strcmp(setlocale(LC_ALL, NULL), kept));
 }
 
 int main(void) {

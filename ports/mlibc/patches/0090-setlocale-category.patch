@@ -1,0 +1,33 @@
+SPDX-FileCopyrightText: 2026 The Dukovo contributors
+SPDX-License-Identifier: Apache-2.0 OR MIT
+
+setlocale() returns NULL with errno EINVAL for a category that is not
+one of LC_CTYPE to LC_IDENTIFICATION, LC_ALL among them, as glibc does.
+It did not look at the category: getCategoryLocaleName switches over the
+thirteen categories and ends in __builtin_unreachable() for any other,
+so setlocale(12345, NULL) crashed the program. Python's test_locale
+calls it that way. Meant for upstream.
+
+--- a/options/ansi/generic/locale.cpp
++++ b/options/ansi/generic/locale.cpp
+@@ -1,4 +1,5 @@
+ 
++#include <errno.h>
+ #include <limits.h>
+ #include <locale.h>
+ #include <stdlib.h>
+@@ -11,6 +12,14 @@
+ #include <frg/optional.hpp>
+ 
+ char *setlocale(int category, const char *name) {
++	// A category that is not LC_CTYPE to LC_IDENTIFICATION (LC_ALL is
++	// among them) is an error, as in glibc. Past those the locale's
++	// tables have no entry to look up.
++	if (category < LC_CTYPE || category > LC_IDENTIFICATION) {
++		errno = EINVAL;
++		return nullptr;
++	}
++
+ 	if (name && *name == '\0') {
+ 		auto lc_all = getenv("LC_ALL");
+ 

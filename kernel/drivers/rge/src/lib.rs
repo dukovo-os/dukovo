@@ -1,24 +1,26 @@
 // SPDX-FileCopyrightText: 2026 The Dukovo contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Realtek's 2.5 and 5 gigabit Ethernet controllers (ADR 0197): the
-//! RTL8125A, RTL8125B and RTL8125D at 2.5 Gb/s, and the RTL8126A at
-//! 5 Gb/s, on desktop boards, cards and laptops, among them Killer's
-//! E3000 and E5000 and the Framework Desktop's port. OpenBSD's and
-//! FreeBSD's `rge(4)` drive them, and Linux's `r8169`.
+//! Realtek's 2.5, 5 and 10 gigabit Ethernet controllers (ADR 0197, and
+//! ADR 0581 for the last): the RTL8125A, RTL8125B and RTL8125D at
+//! 2.5 Gb/s, the RTL8126A at 5 Gb/s and the RTL8127 at 10 Gb/s, on
+//! desktop boards, cards and laptops, among them Killer's E3000 and
+//! E5000 and the Framework Desktop's port. OpenBSD's and FreeBSD's
+//! `rge(4)` drive them, and Linux's `r8169`.
 //!
-//! Two PCI device IDs, and Killer's two, stand for the chips, which the
+//! Three PCI device IDs, and Killer's two, stand for the chips, which the
 //! revision in their transmit configuration register tells apart
 //! ([`Kind`]); the driver refuses a revision it does not know, and the
-//! RTL8127, whose 10 gigabit chip it leaves out. It sets the chip up as
-//! OpenBSD's does ([`setup`], translated from OpenBSD's ISC-licensed
-//! code), without the microcode Realtek ships for the chips' MAC and PHY
-//! processors, which is firmware under Realtek's own licence: the chips
-//! then run on the code in their ROMs, as Linux runs them without its
-//! `rtl_nic` files. The registers behind the chip's own, the MAC's and
-//! the PHY's, are reached through [`ocp`].
+//! RTL8127ATF, the RTL8127 with an SFP+ cage, whose SerDes setup it does
+//! not have. It sets the chip up as OpenBSD's does ([`setup`], translated
+//! from OpenBSD's ISC-licensed code), without the microcode Realtek
+//! ships for the chips' MAC and PHY processors, which is firmware under
+//! Realtek's own licence: the chips then run on the code in their ROMs,
+//! as Linux runs them without its `rtl_nic` files. The registers behind
+//! the chip's own, the MAC's and the PHY's, are reached through [`ocp`].
 //!
-//! Frames are copied through 256 slots each way ([`rings`]), with no
+//! Frames are copied through 256 slots each way ([`rings`], whose
+//! descriptors are 16 bytes on the RTL8127 and 32 on the others), with no
 //! offloads, no VLAN tag stripping, and every multicast frame taken,
 //! which IPv6 and mDNS need. With an MSI the chip raises it for frames
 //! received and sent, for errors and for link changes; writing the
@@ -42,7 +44,7 @@ use radix_nic::{Error, Info, Link, Nic, usable_mac};
 
 use crate::ocp::Ocp;
 use crate::reg::{isr, phystat};
-use crate::rings::Rings;
+use crate::rings::{Format, Rings};
 
 /// Realtek's PCI vendor ID, which Killer's cards have too.
 pub const VENDOR: u16 = 0x10ec;
@@ -71,6 +73,8 @@ pub enum Kind {
     R26_1,
     /// The RTL8126A's second.
     R26_2,
+    /// The RTL8127, at 10 Gb/s.
+    R27,
 }
 
 impl Kind {
@@ -83,6 +87,7 @@ impl Kind {
             0x6890_0000 => Some(Kind::R25D2),
             0x6490_0000 => Some(Kind::R26_1),
             0x64a0_0000 => Some(Kind::R26_2),
+            0x6c90_0000 => Some(Kind::R27),
             _ => None,
         }
     }
@@ -94,6 +99,7 @@ impl Kind {
             Kind::R25B => "Realtek RTL8125B",
             Kind::R25D1 | Kind::R25D2 => "Realtek RTL8125D",
             Kind::R26_1 | Kind::R26_2 => "Realtek RTL8126A",
+            Kind::R27 => "Realtek RTL8127",
         }
     }
 
@@ -106,6 +112,11 @@ impl Kind {
     fn r26(self) -> bool {
         matches!(self, Kind::R26_1 | Kind::R26_2)
     }
+
+    /// Whether it is an RTL8127, at 10 Gb/s: `RGE_TYPE_R27`.
+    fn r27(self) -> bool {
+        self == Kind::R27
+    }
 }
 
 /// A card this driver knows, by its PCI device ID.
@@ -115,10 +126,11 @@ pub struct Model {
     pub name: Option<&'static str>,
 }
 
-/// The cards: Realtek's two device IDs, and Killer's.
+/// The cards: Realtek's three device IDs, and Killer's.
 const CARDS: &[(u16, Option<&str>)] = &[
     (0x8125, None),
     (0x8126, None),
+    (0x8127, None),
     (0x3000, Some("Killer E3000")),
     (0x5000, Some("Killer E5000")),
 ];
@@ -177,6 +189,13 @@ pub fn start(
     }
     let kind = Kind::from_txcfg(txcfg).ok_or(Error::Unsupported("this revision of the chip"))?;
     let mut c = Ocp::new(&regs, kind, delay);
+    // The MAC tells the RTL8127ATF from the RTL8127, which has the same
+    // revision.
+    if kind.r27() && c.mac_read(0xd006) == 0x0007 {
+        return Err(Error::Unsupported(
+            "the RTL8127ATF, whose SFP+ cage needs a setup the driver does not have",
+        ));
+    }
     // As OpenBSD's rge_attach() and rge_attachhook() do.
     if let Some(express) = express {
         setup::disable_aspm(&mut c, express);
@@ -189,7 +208,7 @@ pub fn start(
     // again, the PHY configured, the MAC set up and started.
     setup::stop(&mut c);
     setup::set_mac_address(&mut c, mac);
-    let rings = Rings::new(regs.clone(), RECEIVE, TRANSMIT, alloc)?;
+    let rings = Rings::new(regs.clone(), Format::of(kind), RECEIVE, TRANSMIT, alloc)?;
     setup::chip_init(&mut c)?;
     setup::phy_config(&mut c)?;
     let (receive, transmit) = rings.addresses();
@@ -299,7 +318,9 @@ impl Nic for Card {
         if status == u16::MAX || status & phystat::LINK == 0 {
             return Link::default();
         }
-        let mbps = if status & phystat::MBPS_5000 != 0 {
+        let mbps = if status & phystat::MBPS_10000 != 0 {
+            10000
+        } else if status & phystat::MBPS_5000 != 0 {
             5000
         } else if status & phystat::MBPS_2500 != 0 {
             2500

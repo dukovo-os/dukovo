@@ -37,19 +37,20 @@ error is left stopped, and the log says so.
 # THE ETHERNET IN INTEL'S CHIPSETS
 
 The 82579LM and 82579V, with Intel's 6 and 7 series chipsets (from
-2011), and the I219-LM and I219-V with the 100 and 200 series, Lewisburg
-and Comet Lake H (from 2015), as on many Dell OptiPlex, Precision and
-Latitude machines: a MAC in the chipset with a PHY chip beside it, with
-the same legacy descriptors, and an MSI (ADR 0361). Their PHY is shared
-with Intel's management engine, which runs AMT on vPro machines: while
-an AMT Serial-over-LAN or IDE-R session blocks PHY resets, the driver
-resets the MAC alone and leaves the link as AMT set it up. On the 82579
-with the management engine running, a ring tail that the engine made
-the chip lose stops the card, and the log says so.
+2011), the I217 and I218 with the 8 and 9 series chipsets and the
+Haswell and Broadwell laptops' chips (from 2013), and the I219-LM and
+I219-V from the 100 series (from 2015) to Nova Lake, as on many Dell
+OptiPlex, Precision and Latitude machines: a MAC in the chipset with a
+PHY chip beside it, with the same legacy descriptors, and an MSI (ADR
+0361, ADR 0580). Their PHY is shared with Intel's management engine,
+which runs AMT on vPro machines: while an AMT Serial-over-LAN or IDE-R
+session blocks PHY resets, the driver resets the MAC alone and leaves
+the link as AMT set it up. On the 82579 with the management engine
+running, a ring tail that the engine made the chip lose stops the card,
+and the log says so.
 
-The I217 and I218, the I219s of Cannon Lake and later chipsets, and the
-82577 and 82578 are not driven yet. None of these chips can be a driver
-program (*e1000=program*).
+The 82577 and 82578 are not driven yet. None of these chips can be a
+driver program (*e1000=program*).
 
 # AS A PROGRAM
 

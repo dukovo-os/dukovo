@@ -23,8 +23,8 @@
  * it writes, chip by chip, is what that test's openbsd_sequence checks
  * the port's against, by hash. init_rest() is OpenBSD's rge_init() after
  * the PHY's configuration with the port's differences, which its
- * comment lists. Checked against if_rge.c revision 1.48 (OpenBSD's git
- * mirror, commit 21ea132db7eac1d478645cd6150c5787dc366ebc):
+ * comment lists. Checked against if_rge.c revision 1.49 (OpenBSD's git
+ * mirror, commit 5d93c3d6d499aea4a818d84ce43f618561cba4e6):
  *
  *   git clone --depth 1 --filter=blob:none --sparse https://github.com/openbsd/src
  *   git -C src sparse-checkout set sys/dev/pci
@@ -36,6 +36,10 @@
 #include "obsd_fns.c"
 
 static uint8_t regs[0x10000];
+/* The EPHY's address is seven bits: the RTL8127's extended address
+ * register (RGE_EPHYAR_EXT_ADDR, 0x0ffe) lands on 0x7e and the registers
+ * its pages hold on the seven bits of theirs, as OpenBSD's own accesses
+ * do. */
 static uint16_t mac[0x8000], phy[0x8000], ephy[0x80];
 static uint32_t csi[0x1000 / 4];
 static uint32_t revision;
@@ -110,6 +114,9 @@ static void init_rest(struct rge_softc *sc) {
 	uint32_t rxconf, val, reg;
 	int i, num_miti;
 
+	if (RGE_TYPE_R27(sc))
+		sc->rge_flags |= RGE_FLAG_DESCV2;
+
 	RGE_SETBIT_1(sc, RGE_EECMD, RGE_EECMD_WRITECFG);
 
 	RGE_CLRBIT_1(sc, 0xf1, 0x80);
@@ -130,6 +137,8 @@ static void init_rest(struct rge_softc *sc) {
 		rxconf = RGE_RXCFG_CONFIG_8125D;
 	else
 		rxconf = RGE_RXCFG_CONFIG_8126;
+	if (sc->rge_flags & RGE_FLAG_DESCV2)
+		rxconf &= ~RGE_RXCFG_ENBDESCV1;
 	RGE_WRITE_4(sc, RGE_RXCFG, rxconf);
 	RGE_WRITE_4(sc, RGE_TXCFG, RGE_TXCFG_CONFIG);
 
@@ -152,10 +161,21 @@ static void init_rest(struct rge_softc *sc) {
 	rge_write_mac_ocp(sc, 0xc140, 0xffff);
 	rge_write_mac_ocp(sc, 0xc142, 0xffff);
 
-	RGE_MAC_SETBIT(sc, 0xeb58, 0x0001);
+	if (sc->rge_flags & RGE_FLAG_DESCV2) {
+		val = rge_read_mac_ocp(sc, 0xeb58) & ~0x0003;
+		rge_write_mac_ocp(sc, 0xeb58, val | 0x0002);
+	} else
+		RGE_MAC_SETBIT(sc, 0xeb58, 0x0001);
 
 	if (RGE_TYPE_R26(sc) || RGE_TYPE_R27(sc)) {
-		RGE_CLRBIT_1(sc, 0xd8, 0x02);
+		if (sc->rge_flags & RGE_FLAG_DESCV2)
+			RGE_SETBIT_1(sc, 0xd8, 0x02);
+		else
+			RGE_CLRBIT_1(sc, 0xd8, 0x02);
+		if (RGE_TYPE_R27(sc)) {
+			RGE_MAC_CLRBIT(sc, 0xe00c, 0x1000);
+			RGE_MAC_CLRBIT(sc, 0xc0c2, 0x0040);
+		}
 	}
 
 	val = rge_read_mac_ocp(sc, 0xe614);
@@ -228,7 +248,18 @@ static void init_rest(struct rge_softc *sc) {
 
 	RGE_CLRBIT_2(sc, 0x1880, 0x0030);
 
-	if (sc->rge_type != MAC_R25)
+	if (RGE_TYPE_R27(sc)) {
+		val = rge_read_mac_ocp(sc, 0xd40c) & ~0xe038;
+		rge_write_mac_ocp(sc, 0xd40c, val | 0x8020);
+	}
+
+	/* One vector, no RGE_FLAG_MULTIVEC. */
+	if (RGE_TYPE_R27(sc)) {
+		val = RGE_READ_1(sc, RGE_INT_CFG0);
+		val &= ~(RGE_INT_CFG0_EN | RGE_INT_CFG0_AUTO_CLEAR_IMR |
+		    RGE_INT_CFG0_AVOID_MISS_INTR);
+		RGE_WRITE_1(sc, RGE_INT_CFG0, val);
+	} else if (sc->rge_type != MAC_R25)
 		RGE_CLRBIT_1(sc, RGE_INT_CFG0, RGE_INT_CFG0_EN);
 
 	RGE_WRITE_4(sc, RGE_TIMERINT0, 0);
@@ -285,6 +316,9 @@ static void init_rest(struct rge_softc *sc) {
 		RGE_WRITE_4(sc, RGE_MAR4, 0xffffffff);
 	}
 
+	if (RGE_TYPE_R27(sc))
+		RGE_CLRBIT_1(sc, RGE_RADMFIFO_PROTECT, 0x2001);
+
 	rge_disable_aspm_clkreq(sc);
 
 	RGE_CLRBIT_1(sc, RGE_EECMD, RGE_EECMD_WRITECFG);
@@ -300,6 +334,9 @@ static void init_rest(struct rge_softc *sc) {
 			RGE_PHY_CLRBIT(sc, 0xa5ea, 0x0001);
 		val = rge_read_phy_ocp(sc, 0xa5d4);
 		switch (sc->rge_type) {
+		case MAC_R27:
+			val &= ~RGE_ADV_10000TFDX;
+			/* fallthrough */
 		case MAC_R26_1:
 		case MAC_R26_2:
 			val &= ~RGE_ADV_5000TFDX;
@@ -313,6 +350,8 @@ static void init_rest(struct rge_softc *sc) {
 		val |= RGE_ADV_2500TFDX;
 		if (RGE_TYPE_R26(sc))
 			val |= RGE_ADV_5000TFDX;
+		else if (sc->rge_type == MAC_R27)
+			val |= RGE_ADV_5000TFDX | RGE_ADV_10000TFDX;
 		rge_write_phy(sc, 0, MII_ANAR, anar | ANAR_PAUSE_ASYM | ANAR_FC);
 		rge_write_phy(sc, 0, MII_100T2CR, gig);
 		rge_write_phy_ocp(sc, 0xa5d4, val);
@@ -333,6 +372,7 @@ int main(int argc, char **argv) {
 		{ "r25", MAC_R25, 0x60900000 }, { "r25b", MAC_R25B, 0x64100000 },
 		{ "r25d1", MAC_R25D_1, 0x68800000 }, { "r25d2", MAC_R25D_2, 0x68900000 },
 		{ "r26_1", MAC_R26_1, 0x64900000 }, { "r26_2", MAC_R26_2, 0x64a00000 },
+		{ "r27", MAC_R27, 0x6c900000 },
 	};
 	const uint8_t addr0[6] = { 0x00, 0xe0, 0x4c, 0x68, 0x12, 0x34 };
 	for (unsigned k = 0; k < nitems(kinds); k++) {
@@ -350,13 +390,18 @@ int main(int argc, char **argv) {
 		for (uint32_t i = 0; i < 0x80; i++) ephy[i] = (uint16_t)((i * 0x27D4EB2Fu) >> 16);
 		for (uint32_t i = 0; i < 0x400; i++) csi[i] = i * 0x165667B1u;
 		phy[0xa420 >> 1] = 3;
+		mac[0xd006 >> 1] = 0;
 		put(RGE_ADDR0, 4, addr0[0] | addr0[1] << 8 | addr0[2] << 16 | (uint32_t)addr0[3] << 24);
 		put(RGE_ADDR1, 2, addr0[4] | addr0[5] << 8);
 		csi[(0x70 + 0x10) >> 2] = 0x00110143;
 		struct rge_softc s = { 0 }, *sc = &s;
 		sc->rge_type = kinds[k].type;
-		/* The port's start(): rge_attach()'s TXCFG read, ASPM off, address. */
+		/* The port's start(): rge_attach()'s TXCFG read, which for the
+		 * RTL8127 asks the MAC whether it is the ATF (0xd006 reads 7),
+		 * ASPM off, address. */
 		(void)RGE_READ_4(sc, RGE_TXCFG);
+		if (kinds[k].type == MAC_R27 && rge_read_mac_ocp(sc, 0xd006) == 0x0007)
+			return 1;
 		{
 			uint32_t reg = rge_read_csi(sc, 0x70 + 0x10);
 			rge_write_csi(sc, 0x70 + 0x10, reg & ~(0x1 | 0x2 | 0x100));

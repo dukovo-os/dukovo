@@ -15,7 +15,7 @@
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 //! How the chips are set up, translated from OpenBSD's `rge(4)`
-//! (`sys/dev/pci/if_rge.c` revision 1.48 and `if_rgereg.h`, by Kevin Lo,
+//! (`sys/dev/pci/if_rge.c` revision 1.49 and `if_rgereg.h`, by Kevin Lo,
 //! with the hardware programming Realtek gave), function by function in
 //! its order, with its names in the comments: the chip taken out of its
 //! out-of-band mode and reset, its PHY powered up, configured as each
@@ -26,17 +26,18 @@
 //! and the PHY's processors, which OpenBSD loads from the firmware files
 //! `rge-rtl8125`... under Realtek's own licence, and Dukovo does not ship
 //! (the chips run on the code in their ROMs, as Linux runs them without
-//! its `rtl_nic` files); the RTL8127; receive side scaling, VLAN tag
-//! stripping, checksum and segmentation offloads; the simulated
-//! interrupt moderation; and Wake on LAN. Frames are no longer than a
-//! slot, where OpenBSD takes jumbo frames, and every multicast frame is
-//! taken.
+//! its `rtl_nic` files); the RTL8127ATF, the RTL8127 with an SFP+ cage,
+//! for which OpenBSD sets up no SerDes; the RTL8127's several interrupt
+//! vectors; receive side scaling, VLAN tag stripping, checksum and
+//! segmentation offloads; the simulated interrupt moderation; and Wake
+//! on LAN. Frames are no longer than a slot, where OpenBSD takes jumbo
+//! frames, and every multicast frame is taken.
 
 use radix_nic::{Error, SLOT};
 
 use crate::Kind;
 use crate::ocp::Ocp;
-use crate::reg::{self, cmd, int_cfg0, mcucmd, mii, rxcfg};
+use crate::reg::{self, cmd, ephyar, int_cfg0, mcucmd, mii, rxcfg};
 
 /// OpenBSD's `RGE_TIMEOUT`: how many looks most waits take.
 const TIMEOUT: u32 = 100;
@@ -60,7 +61,8 @@ const ASPM_L1: u32 = 0x0002;
 const ECPM: u32 = 0x0100;
 
 /// The PCI Express PHY's settings, by register, for the RTL8125A
-/// (`mac_r25_ephy`) and the RTL8125B (`mac_r25b_ephy`).
+/// (`mac_r25_ephy`), the RTL8125B (`mac_r25b_ephy`) and the RTL8127
+/// (`mac_r27_ephy`), whose registers' pages are in their top four bits.
 const MAC_R25_EPHY: [(u16, u16); 12] = [
     (0x0004, 0xd000),
     (0x000a, 0x8653),
@@ -86,6 +88,44 @@ const MAC_R25B_EPHY: [(u16, u16); 10] = [
     (0x0062, 0x0023),
     (0x0042, 0x60c2),
     (0x0069, 0xff00),
+];
+const MAC_R27_EPHY: [(u16, u16); 36] = [
+    (0x8088, 0x0064),
+    (0x8488, 0x0064),
+    (0x8888, 0x0064),
+    (0x8c88, 0x0064),
+    (0x8188, 0x0064),
+    (0x8588, 0x0064),
+    (0x8988, 0x0064),
+    (0x8d88, 0x0064),
+    (0x808c, 0x09b0),
+    (0x848c, 0x09b0),
+    (0x888c, 0x0f90),
+    (0x8c8c, 0x0f90),
+    (0x818c, 0x09b0),
+    (0x858c, 0x09b0),
+    (0x898c, 0x0f90),
+    (0x8d8c, 0x0f90),
+    (0x808a, 0x09b8),
+    (0x848a, 0x09b8),
+    (0x888a, 0x0f98),
+    (0x8c8a, 0x0f98),
+    (0x818a, 0x09b8),
+    (0x858a, 0x09b8),
+    (0x898a, 0x0f98),
+    (0x8d8a, 0x0f98),
+    (0x9020, 0x0080),
+    (0x9420, 0x0080),
+    (0x9820, 0x0080),
+    (0x9c20, 0x0080),
+    (0x901e, 0x0190),
+    (0x941e, 0x0190),
+    (0x981e, 0x0140),
+    (0x9c1e, 0x0140),
+    (0x901c, 0x0190),
+    (0x941c, 0x0190),
+    (0x981c, 0x0140),
+    (0x9c1c, 0x0140),
 ];
 
 impl Ocp<'_> {
@@ -224,7 +264,7 @@ fn disable_aspm_clkreq(c: &mut Ocp<'_>) {
     if unlock {
         c.set8(reg::EECMD, reg::EECMD_WRITECFG);
     }
-    if c.kind.r26() {
+    if c.kind.r26() || c.kind.r27() {
         c.clear8(reg::INT_CFG0, int_cfg0::CLKREQ_8126);
     } else {
         c.clear8(reg::CFG2, reg::CFG2_CLKREQ_EN);
@@ -300,8 +340,8 @@ pub fn set_mac_address(c: &mut Ocp<'_>, mac: [u8; 6]) {
     c.clear8(reg::EECMD, reg::EECMD_WRITECFG);
 }
 
-/// Sets the PCI Express PHY up (`rge_ephy_config`): the RTL8125A's and
-/// RTL8125B's; the others need nothing.
+/// Sets the PCI Express PHY up (`rge_ephy_config`): the RTL8125A's,
+/// RTL8125B's and RTL8127's; the others need nothing.
 fn ephy_config(c: &mut Ocp<'_>) {
     match c.kind {
         Kind::R25 => {
@@ -326,13 +366,30 @@ fn ephy_config(c: &mut Ocp<'_>) {
                 c.ephy_write(reg, value);
             }
         }
+        Kind::R27 => {
+            for (reg, value) in MAC_R27_EPHY {
+                // The register's page first (`rge_r27_write_ephy`). The
+                // access keeps the seven bits of the EPHY's address, so
+                // the page register 0x0ffe is reached at 0x7e, as on
+                // OpenBSD.
+                c.ephy_write(ephyar::EXT_ADDR, reg >> 12);
+                c.ephy_write(reg & 0x0fff, value);
+            }
+            c.ephy_write(ephyar::EXT_ADDR, 0);
+        }
         _ => {}
     }
 }
 
 /// The PHY's advertisements of the speeds above a gigabit the chip has.
 fn fast_speeds(kind: Kind) -> u16 {
-    if kind.r26() { reg::ADV_5000TFDX | reg::ADV_2500TFDX } else { reg::ADV_2500TFDX }
+    if kind.r27() {
+        reg::ADV_10000TFDX | reg::ADV_5000TFDX | reg::ADV_2500TFDX
+    } else if kind.r26() {
+        reg::ADV_5000TFDX | reg::ADV_2500TFDX
+    } else {
+        reg::ADV_2500TFDX
+    }
 }
 
 /// Resets the PHY and configures it as the chip needs, with its energy
@@ -369,6 +426,7 @@ pub fn phy_config(c: &mut Ocp<'_>) -> Result<(), Error> {
         Kind::R25D2 => r25d_2(c),
         Kind::R26_1 => r26_1(c),
         Kind::R26_2 => r26_2(c),
+        Kind::R27 => r27(c),
     }
     c.phy_clear(0xa5b4, 0x8000);
     // Disable EEE.
@@ -379,8 +437,8 @@ pub fn phy_config(c: &mut Ocp<'_>) -> Result<(), Error> {
     } else if c.kind == Kind::R25B || c.kind.r25d() {
         c.phy_set(0xa432, 0x0010);
     }
-    c.phy_clear(0xa5d0, 0x0006);
-    if c.kind.r26() {
+    c.phy_clear(0xa5d0, if c.kind.r27() { 0x000e } else { 0x0006 });
+    if c.kind.r26() || c.kind.r27() {
         c.phy_clear(0xa6d4, 0x0003);
     } else {
         c.phy_clear(0xa6d4, 0x0001);
@@ -415,12 +473,14 @@ pub fn init(c: &mut Ocp<'_>, receive: u64, transmit: u64) {
         Kind::R25B => rxcfg::CONFIG_8125B,
         Kind::R25D1 | Kind::R25D2 => rxcfg::CONFIG_8125D,
         Kind::R26_1 | Kind::R26_2 => rxcfg::CONFIG_8126,
+        // The second descriptor format (`RGE_FLAG_DESCV2`).
+        Kind::R27 => rxcfg::CONFIG_8126 & !rxcfg::ENBDESCV1,
     };
     c.regs.write32(reg::RXCFG, rxconf);
     c.regs.write32(reg::TXCFG, reg::TXCFG_CONFIG);
     let value = c.csi_read(0x70c) & !0x3f00_0000;
     c.csi_write(0x70c, value | 0x2700_0000);
-    if kind.r26() {
+    if kind.r26() || kind.r27() {
         // Disable L1 timeout.
         let value = c.csi_read(0x890) & !0x0000_0001;
         c.csi_write(0x890, value);
@@ -434,13 +494,23 @@ pub fn init(c: &mut Ocp<'_>, receive: u64, transmit: u64) {
     c.clear8(reg::CFG1, reg::CFG1_SPEED_DOWN);
     c.mac_write(0xc140, 0xffff);
     c.mac_write(0xc142, 0xffff);
-    c.mac_set(0xeb58, 0x0001);
+    if kind.r27() {
+        c.mac_modify(0xeb58, 0x0003, 0x0002);
+    } else {
+        c.mac_set(0xeb58, 0x0001);
+    }
     if kind.r26() {
         c.clear8(0xd8, 0x02);
+    } else if kind.r27() {
+        // The second descriptor format.
+        c.set8(0xd8, 0x02);
+        c.mac_clear(0xe00c, 0x1000);
+        c.mac_clear(0xc0c2, 0x0040);
     }
-    let value = c.mac_read(0xe614) & !0x0700;
+    let value = c.mac_read(0xe614) & if kind.r27() { !0x0f00 } else { !0x0700 };
     let value = match kind {
         Kind::R25B => value | 0x0200,
+        Kind::R27 => value | 0x0f00,
         _ => value | 0x0300,
     };
     c.mac_write(0xe614, value);
@@ -473,7 +543,7 @@ pub fn init(c: &mut Ocp<'_>, receive: u64, transmit: u64) {
         // Disable EEE plus.
         c.mac_clear(0xe080, 0x0002);
     }
-    if kind.r26() {
+    if kind.r26() || kind.r27() {
         c.mac_clear(0xea1c, 0x0304);
     } else {
         c.mac_clear(0xea1c, 0x0004);
@@ -483,8 +553,17 @@ pub fn init(c: &mut Ocp<'_>, receive: u64, transmit: u64) {
     c.delay(1);
     c.mac_clear(0xeb54, 0x0001);
     c.clear16(0x1880, 0x0030);
-    // Config interrupt type.
-    if kind != Kind::R25 {
+    if kind.r27() {
+        c.mac_modify(0xd40c, 0xe038, 0x8020);
+    }
+    // Config interrupt type: one vector, so the RTL8127's mode of several
+    // stays off.
+    if kind.r27() {
+        c.clear8(
+            reg::INT_CFG0,
+            int_cfg0::EN | int_cfg0::AUTO_CLEAR_IMR | int_cfg0::AVOID_MISS_INTR,
+        );
+    } else if kind != Kind::R25 {
         c.clear8(reg::INT_CFG0, int_cfg0::EN);
     }
     // Clear timer interrupts.
@@ -531,6 +610,11 @@ pub fn init(c: &mut Ocp<'_>, receive: u64, transmit: u64) {
     c.regs.write32(reg::RXCFG, filters | rxcfg::INDIV | rxcfg::BROAD | rxcfg::MULTI);
     c.regs.write32(reg::MAR0, u32::MAX);
     c.regs.write32(reg::MAR4, u32::MAX);
+    if kind.r27() {
+        // OpenBSD clears 0x2001 of this 8-bit register, which takes the
+        // low bit alone.
+        c.clear8(reg::RADMFIFO_PROTECT, 0x01);
+    }
     disable_aspm_clkreq(c);
     c.clear8(reg::EECMD, reg::EECMD_WRITECFG);
     c.delay(10);
@@ -544,7 +628,7 @@ pub fn init(c: &mut Ocp<'_>, receive: u64, transmit: u64) {
 fn negotiate(c: &mut Ocp<'_>) {
     // Disable Gigabit Lite.
     c.phy_clear(0xa428, 0x0200);
-    if c.kind.r26() {
+    if c.kind.r26() || c.kind.r27() {
         c.phy_clear(0xa5ea, 0x0007);
     } else {
         c.phy_clear(0xa5ea, 0x0001);
@@ -1140,4 +1224,229 @@ fn r26_2(c: &mut Ocp<'_>) {
     c.phy_modify(0xb87e, 0xff00, 0x5000);
     c.phy_write(0xb87c, 0x809d);
     c.phy_modify(0xb87e, 0xff00, 0x5000);
+}
+
+fn r27(c: &mut Ocp<'_>) {
+    const MAC_CFG_VALUE: [u16; 12] = [
+        0x815a, 0x0150, 0x81f4, 0x0150, 0x828e, 0x0150, 0x81b1, 0x0000, 0x824b, 0x0000, 0x82e5,
+        0x0000,
+    ];
+    const MAC_CFG2_VALUE: [u16; 18] = [
+        0x88d7, 0x01a0, 0x88d9, 0x01a0, 0x8ffa, 0x002a, 0x8fee, 0xffdf, 0x8ff0, 0xffff, 0x8ff2,
+        0x0a4a, 0x8ff4, 0xaa5a, 0x8ff6, 0x0a4a, 0x8ff8, 0xaa5a,
+    ];
+    const MAC_CFG_A438_VALUE: [u16; 12] = [
+        0x003b, 0x0086, 0x00b7, 0x00db, 0x00fe, 0x00fe, 0x00fe, 0x00fe, 0x00c3, 0x0078, 0x0047,
+        0x0023,
+    ];
+    c.phy_write(0xa4d2, 0x0000);
+    // OpenBSD reads the register and uses nothing of it; the read is
+    // kept, as every access OpenBSD makes is (openbsd_sequence).
+    let _ = c.phy_read(0xa4d4);
+    c.phy_clear(0xa442, 0x0800);
+    c.phy_write(0xa436, 0x8415);
+    c.phy_modify(0xa438, 0xff00, 0x9300);
+    c.phy_write(0xa436, 0x81a3);
+    c.phy_modify(0xa438, 0xff00, 0x0f00);
+    c.phy_write(0xa436, 0x81ae);
+    c.phy_modify(0xa438, 0xff00, 0x0f00);
+    c.phy_write(0xa436, 0x81b9);
+    c.phy_modify(0xa438, 0xff00, 0xb900);
+    c.phy_write(0xb87c, 0x83b0);
+    c.phy_clear(0xb87e, 0x0e00);
+    c.phy_write(0xb87c, 0x83c5);
+    c.phy_clear(0xb87e, 0x0e00);
+    c.phy_write(0xb87c, 0x83da);
+    c.phy_clear(0xb87e, 0x0e00);
+    c.phy_write(0xb87c, 0x83ef);
+    c.phy_clear(0xb87e, 0x0e00);
+    c.phy_modify(0xbf38, 0x01f0, 0x0160);
+    c.phy_modify(0xbf3a, 0x001f, 0x0014);
+    c.phy_clear(0xbf28, 0x6000);
+    c.phy_clear(0xbf2c, 0xc000);
+    c.phy_modify(0xbf28, 0x1fff, 0x0187);
+    c.phy_modify(0xbf2a, 0x003f, 0x0003);
+    c.phy_write(0xa436, 0x8173);
+    c.phy_write(0xa438, 0x8620);
+    c.phy_write(0xa436, 0x8175);
+    c.phy_write(0xa438, 0x8671);
+    c.phy_write(0xa436, 0x817c);
+    c.phy_set(0xa438, 0x2000);
+    c.phy_write(0xa436, 0x8187);
+    c.phy_set(0xa438, 0x2000);
+    c.phy_write(0xa436, 0x8192);
+    c.phy_set(0xa438, 0x2000);
+    c.phy_write(0xa436, 0x819d);
+    c.phy_set(0xa438, 0x2000);
+    c.phy_write(0xa436, 0x81a8);
+    c.phy_clear(0xa438, 0x2000);
+    c.phy_write(0xa436, 0x81b3);
+    c.phy_clear(0xa438, 0x2000);
+    c.phy_write(0xa436, 0x81be);
+    c.phy_set(0xa438, 0x2000);
+    c.phy_write(0xa436, 0x817d);
+    c.phy_modify(0xa438, 0xff00, 0xa600);
+    c.phy_write(0xa436, 0x8188);
+    c.phy_modify(0xa438, 0xff00, 0xa600);
+    c.phy_write(0xa436, 0x8193);
+    c.phy_modify(0xa438, 0xff00, 0xa600);
+    c.phy_write(0xa436, 0x819e);
+    c.phy_modify(0xa438, 0xff00, 0xa600);
+    c.phy_write(0xa436, 0x81a9);
+    c.phy_modify(0xa438, 0xff00, 0x1400);
+    c.phy_write(0xa436, 0x81b4);
+    c.phy_modify(0xa438, 0xff00, 0x1400);
+    c.phy_write(0xa436, 0x81bf);
+    c.phy_modify(0xa438, 0xff00, 0xa600);
+    c.phy_clear(0xaeaa, 0x0028);
+    c.phy_write(0xb87c, 0x84f0);
+    c.phy_write(0xb87e, 0x201c);
+    c.phy_write(0xb87c, 0x84f2);
+    c.phy_write(0xb87e, 0x3117);
+    c.phy_write(0xaec6, 0x0000);
+    c.phy_write(0xae20, 0xffff);
+    c.phy_write(0xaece, 0xffff);
+    c.phy_write(0xaed2, 0xffff);
+    c.phy_write(0xaec8, 0x0000);
+    c.phy_clear(0xaed0, 0x0001);
+    c.phy_write(0xadb8, 0x0150);
+    c.phy_write(0xb87c, 0x8197);
+    c.phy_modify(0xb87e, 0xff00, 0x5000);
+    c.phy_write(0xb87c, 0x8231);
+    c.phy_modify(0xb87e, 0xff00, 0x5000);
+    c.phy_write(0xb87c, 0x82cb);
+    c.phy_modify(0xb87e, 0xff00, 0x5000);
+    c.phy_write(0xb87c, 0x82cd);
+    c.phy_modify(0xb87e, 0xff00, 0x5700);
+    c.phy_write(0xb87c, 0x8233);
+    c.phy_modify(0xb87e, 0xff00, 0x5700);
+    c.phy_write(0xb87c, 0x8199);
+    c.phy_modify(0xb87e, 0xff00, 0x5700);
+    for &[at, value] in MAC_CFG_VALUE.as_chunks::<2>().0 {
+        c.phy_write(0xb87c, at);
+        c.phy_write(0xb87e, value);
+    }
+    c.phy_write(0xb87c, 0x84f7);
+    c.phy_modify(0xb87e, 0xff00, 0x2800);
+    c.phy_set(0xaec2, 0x1000);
+    c.phy_write(0xb87c, 0x81b3);
+    c.phy_modify(0xb87e, 0xff00, 0xad00);
+    c.phy_write(0xb87c, 0x824d);
+    c.phy_modify(0xb87e, 0xff00, 0xad00);
+    c.phy_write(0xb87c, 0x82e7);
+    c.phy_modify(0xb87e, 0xff00, 0xad00);
+    c.phy_modify(0xae4e, 0x000f, 0x0001);
+    c.phy_write(0xb87c, 0x82ce);
+    c.phy_modify(0xb87e, 0xf000, 0x4000);
+    c.phy_write(0xb87c, 0x83a5);
+    c.phy_modify(0xb87e, 0xff00, 0x0400);
+    c.phy_write(0xb87c, 0x83a6);
+    c.phy_modify(0xb87e, 0xff00, 0x0400);
+    c.phy_write(0xb87c, 0x83a7);
+    c.phy_modify(0xb87e, 0xff00, 0x0400);
+    c.phy_write(0xb87c, 0x83a8);
+    c.phy_modify(0xb87e, 0xff00, 0x0400);
+    c.phy_write(0xb87c, 0x84ac);
+    c.phy_write(0xb87e, 0x0000);
+    c.phy_write(0xb87c, 0x84ae);
+    c.phy_write(0xb87e, 0x0000);
+    c.phy_write(0xb87c, 0x84b0);
+    c.phy_write(0xb87e, 0xf818);
+    c.phy_write(0xb87c, 0x84b2);
+    c.phy_modify(0xb87e, 0xff00, 0x6000);
+    c.phy_write(0xb87c, 0x8ffc);
+    c.phy_write(0xb87e, 0x6008);
+    c.phy_write(0xb87c, 0x8ffe);
+    c.phy_write(0xb87e, 0xf4ff);
+    c.phy_write(0xb87c, 0x8015);
+    c.phy_set(0xb87e, 0x0200);
+    c.phy_write(0xb87c, 0x8016);
+    c.phy_clear(0xb87e, 0x0800);
+    c.phy_write(0xb87c, 0x8fe6);
+    c.phy_modify(0xb87e, 0xff00, 0x0800);
+    c.phy_write(0xb87c, 0x8fe4);
+    c.phy_write(0xb87e, 0x2114);
+    c.phy_write(0xb87c, 0x8647);
+    c.phy_write(0xb87e, 0xa7b1);
+    c.phy_write(0xb87c, 0x8649);
+    c.phy_write(0xb87e, 0xbbca);
+    c.phy_write(0xb87c, 0x864b);
+    c.phy_modify(0xb87e, 0xff00, 0xdc00);
+    c.phy_write(0xb87c, 0x8154);
+    c.phy_modify(0xb87e, 0xc000, 0x4000);
+    c.phy_write(0xb87c, 0x8158);
+    c.phy_clear(0xb87e, 0xc000);
+    c.phy_write(0xb87c, 0x826c);
+    c.phy_write(0xb87e, 0xffff);
+    c.phy_write(0xb87c, 0x826e);
+    c.phy_write(0xb87e, 0xffff);
+    c.phy_write(0xb87c, 0x8872);
+    c.phy_modify(0xb87e, 0xff00, 0x0e00);
+    c.phy_write(0xa436, 0x8012);
+    c.phy_set(0xa438, 0x0800);
+    c.phy_write(0xa436, 0x8012);
+    c.phy_set(0xa438, 0x4000);
+    c.phy_set(0xb576, 0x0001);
+    c.phy_write(0xa436, 0x834a);
+    c.phy_modify(0xa438, 0xff00, 0x0700);
+    c.phy_write(0xb87c, 0x8217);
+    c.phy_modify(0xb87e, 0x3f00, 0x2a00);
+    c.phy_write(0xa436, 0x81b1);
+    c.phy_modify(0xa438, 0xff00, 0x0b00);
+    c.phy_write(0xb87c, 0x8fed);
+    c.phy_modify(0xb87e, 0xff00, 0x4e00);
+    c.phy_write(0xb87c, 0x88ac);
+    c.phy_modify(0xb87e, 0xff00, 0x2300);
+    c.phy_set(0xbf0c, 0x3800);
+    c.phy_write(0xb87c, 0x88de);
+    c.phy_clear(0xb87e, 0xff00);
+    c.phy_write(0xb87c, 0x80b4);
+    c.phy_write(0xb87e, 0x5195);
+    c.phy_write(0xa436, 0x8370);
+    c.phy_write(0xa438, 0x8671);
+    c.phy_write(0xa436, 0x8372);
+    c.phy_write(0xa438, 0x86c8);
+    c.phy_write(0xa436, 0x8401);
+    c.phy_write(0xa438, 0x86c8);
+    c.phy_write(0xa436, 0x8403);
+    c.phy_write(0xa438, 0x86da);
+    c.phy_write(0xa436, 0x8406);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x8408);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x840a);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x840c);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x840e);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x8410);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x8412);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x8414);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x8416);
+    c.phy_modify(0xa438, 0x1800, 0x1000);
+    c.phy_write(0xa436, 0x82bd);
+    c.phy_write(0xa438, 0x1f40);
+    c.phy_modify(0xbfb4, 0x07ff, 0x0328);
+    c.phy_write(0xbfb6, 0x3e14);
+    c.phy_write(0xa436, 0x81c4);
+    for value in MAC_CFG_A438_VALUE {
+        c.phy_write(0xa438, value);
+    }
+    for &[at, value] in MAC_CFG2_VALUE.as_chunks::<2>().0 {
+        c.phy_write(0xb87c, at);
+        c.phy_write(0xb87e, value);
+    }
+    c.phy_write(0xb87c, 0x88d5);
+    c.phy_modify(0xb87e, 0xff00, 0x0200);
+    c.phy_write(0xa436, 0x84bb);
+    c.phy_modify(0xa438, 0xff00, 0x0a00);
+    c.phy_write(0xa436, 0x84c0);
+    c.phy_modify(0xa438, 0xff00, 0x1600);
+    c.phy_set(0xa430, 0x0003);
+    c.phy_set(0xa442, 0x0080);
+    c.phy_clear(0xa430, 0x1000);
 }

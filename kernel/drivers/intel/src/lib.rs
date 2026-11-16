@@ -16,9 +16,10 @@
 //!   the few registers that moved.
 //! - [`ixgbe`]: the 10 gigabit 82599, X540 and X550, with registers of
 //!   their own and igb's advanced descriptors.
-//! - [`pch`]: the Ethernet in Intel's chipsets, the 82579 and the I219,
-//!   a MAC in the chipset with a PHY of its own beside it, which Intel's
-//!   management engine may share; e1000's legacy descriptors.
+//! - [`pch`]: the Ethernet in Intel's chipsets, the 82579, the I217 and
+//!   I218, and the I219 from Sunrise Point to Nova Lake, a MAC in the
+//!   chipset with a PHY of its own beside it, which Intel's management
+//!   engine may share; e1000's legacy descriptors.
 //!
 //! Each driver is written from Intel's datasheets, with FreeBSD's drivers
 //! (BSD-3-Clause, Intel's shared code) as the reference for the sequences
